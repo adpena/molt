@@ -16,6 +16,8 @@ Features:
 
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironment
+
 import ast
 import os
 import subprocess
@@ -253,8 +255,7 @@ def run_repl(
             if capabilities:
                 cmd.extend(["--capabilities", capabilities])
 
-            env = os.environ.copy()
-            env["MOLT_IO_MODE"] = io_mode
+            env = ProcessEnvironment(os.environ).updated({"MOLT_IO_MODE": io_mode})
 
             timeout = process_guard.timeout_from_env(
                 REPL_MEMORY_GUARD_PREFIX,

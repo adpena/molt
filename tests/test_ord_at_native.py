@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
+
 import os
 import shutil
 import sys
@@ -76,19 +78,21 @@ LUAU_EXPECTED = "\n".join(
 )
 
 
-def _env(root: Path) -> dict[str, str]:
-    env = development_artifact_env(
-        root,
-        os.environ,
-        session_prefix="ord-at-native",
-        session_id=os.environ.get("MOLT_SESSION_ID") or "ord-at-native",
-        create_dirs=True,
+def _env(root: Path) -> ProcessEnvironment:
+    env = ProcessEnvironmentBuilder(
+        development_artifact_env(
+            root,
+            os.environ,
+            session_prefix="ord-at-native",
+            session_id=os.environ.get("MOLT_SESSION_ID") or "ord-at-native",
+            create_dirs=True,
+        )
     )
     env["PYTHONPATH"] = str(root / "src")
     env.setdefault("CARGO_BUILD_JOBS", "1")
     env.setdefault("MOLT_BACKEND_DAEMON", "0")
     env.setdefault("MOLT_CARGO_TIMEOUT", "900")
-    return env
+    return ProcessEnvironment(env)
 
 
 def _write_program(tmp_path: Path, name: str, source: str = PROGRAM) -> Path:

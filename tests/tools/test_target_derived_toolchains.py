@@ -16,6 +16,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from molt.process_environment import NameRule, ProcessEnvironment
+
 from molt import llvm_wasi_tools
 from molt.cli import source_extension_toolchain, wasm_link_inputs
 from molt.cli.source_extension_compiler_inputs import compiler_sysroot_arg_value
@@ -735,7 +737,7 @@ def test_canonical_native_resolver_uses_only_selected_environment(
 
     def family(*, target_family, explicit_commands, sibling_directories, environment):
         assert target_family == "native"
-        assert environment == selected
+        assert environment == ProcessEnvironment(selected, rule=NameRule.host())
         seen.append(environment)
         return replace(
             resolved.tools,
@@ -753,7 +755,7 @@ def test_canonical_native_resolver_uses_only_selected_environment(
     )
     assert actual.commands["c"][0] == str(resolved.tools.cc.path)
     assert actual.commands["cpp"][0] == str(resolved.tools.cxx.path)
-    assert seen == [selected]
+    assert seen == [ProcessEnvironment(selected, rule=NameRule.host())]
     assert os.environ[cc_key] == "ambient-must-not-be-selected"
 
 
@@ -770,12 +772,12 @@ def test_canonical_wasm_resolver_passes_environment_to_every_selection(
 
     def family(*, target_family, environment, explicit_commands=None):
         assert target_family == "wasm"
-        assert environment == selected
+        assert environment == ProcessEnvironment(selected, rule=NameRule.host())
         seen.append("family")
         return resolved.tools
 
     def probe(command, *, target_plan, environment):
-        assert environment == selected
+        assert environment == ProcessEnvironment(selected, rule=NameRule.host())
         assert target_plan == resolved.target_plan
         seen.append("probe")
         return None
@@ -800,7 +802,7 @@ def test_compiler_probe_subprocess_receives_exact_environment(tmp_path, monkeypa
     calls = []
 
     def run(command, **kwargs):
-        assert kwargs["env"] == selected
+        assert kwargs["env"] == ProcessEnvironment(selected, rule=NameRule.host())
         calls.append(command)
         return subprocess.CompletedProcess(command, 0, "", "")
 
@@ -921,14 +923,18 @@ def test_wasi_compiler_user_sysroot_uses_same_selected_path_for_probe_and_identi
     selected = llvm_toolchain.project_wasm_toolchain_environment(
         install, environ={home_key: str(home)}
     )
-    selected["MOLT_WASM_CC"] = (
-        '"'
-        + selected["CC_wasm32-wasip1"]
-        + '" --sysroot'
-        + ("=" if joined else " ")
-        + '"~/'
-        + install.sysroot.relative_to(home).as_posix()
-        + '"'
+    selected = selected.updated(
+        {
+            "MOLT_WASM_CC": (
+                '"'
+                + selected["CC_wasm32-wasip1"]
+                + '" --sysroot'
+                + ("=" if joined else " ")
+                + '"~/'
+                + install.sysroot.relative_to(home).as_posix()
+                + '"'
+            )
+        }
     )
     monkeypatch.setenv(home_key, str(tmp_path / "ambient"))
     monkeypatch.setattr(

@@ -10,6 +10,8 @@ regresses, the cache silently turned off again or Molt installed a tool unasked.
 
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironmentBuilder
+
 import os
 from pathlib import Path
 
@@ -179,10 +181,12 @@ def test_maybe_enable_sccache_forces_incremental_off(monkeypatch, tmp_path: Path
     # Name the cache: a derived default follows the run context, which this
     # minimal environment lacks, and would pin its server temp dir in a CI
     # clone's checkout.
-    env = {
-        "MOLT_USE_SCCACHE": "1",  # forced on
-        "SCCACHE_DIR": str(tmp_path / ".sccache"),
-    }
+    env = ProcessEnvironmentBuilder(
+        {
+            "MOLT_USE_SCCACHE": "1",  # forced on
+            "SCCACHE_DIR": str(tmp_path / ".sccache"),
+        }
+    )
     ce._maybe_enable_sccache(env)
     assert env.get("RUSTC_WRAPPER", "").endswith("sccache")
     assert env["CARGO_INCREMENTAL"] == "0"
@@ -261,10 +265,12 @@ def test_cli_sccache_selection_does_not_probe_or_start_a_server(tmp_path, monkey
     monkeypatch.setattr(ce, "pinned_sccache", lambda env: "/opt/sccache")
     monkeypatch.setattr(ce, "_run_completed_command", reject_process)
     monkeypatch.setattr(ce, "_SCCACHE_DIAG_EMITTED", True, raising=False)
-    env = _scratch_cargo_env(
-        tmp_path,
-        MOLT_USE_SCCACHE="1",
-        MOLT_EXT_ROOT=str(tmp_path / "artifacts"),
+    env = ProcessEnvironmentBuilder(
+        _scratch_cargo_env(
+            tmp_path,
+            MOLT_USE_SCCACHE="1",
+            MOLT_EXT_ROOT=str(tmp_path / "artifacts"),
+        )
     )
     del env["SCCACHE_DIR"]  # the CLI selects the cache beside its artifacts
 
@@ -329,7 +335,7 @@ def test_lld_link_enabled_on_windows_when_available(monkeypatch):
         "llvm_linker_candidates",
         lambda role: (Path("C:/LLVM/bin/lld-link.exe"),) if role == "lld-link" else (),
     )
-    env: dict[str, str] = {}
+    env = ProcessEnvironmentBuilder({})
     ce._maybe_enable_lld_link(env)
     assert env["CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER"].endswith("lld-link.exe")
 
@@ -340,7 +346,7 @@ def test_lld_link_noop_when_absent(monkeypatch):
 
     install_module_os_view(monkeypatch, ce, name="nt")
     monkeypatch.setattr(ce, "llvm_linker_candidates", lambda _role: ())
-    env: dict[str, str] = {}
+    env = ProcessEnvironmentBuilder({})
     ce._maybe_enable_lld_link(env)
     assert "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER" not in env
 
@@ -349,7 +355,7 @@ def test_lld_link_noop_non_windows(monkeypatch):
     import molt.cli.cargo_execution as ce
 
     install_module_os_view(monkeypatch, ce, name="posix")
-    env: dict[str, str] = {}
+    env = ProcessEnvironmentBuilder({})
     ce._maybe_enable_lld_link(env)
     assert "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER" not in env
 
@@ -358,7 +364,9 @@ def test_lld_link_respects_explicit_override(monkeypatch):
     import molt.cli.cargo_execution as ce
 
     install_module_os_view(monkeypatch, ce, name="nt")
-    env = {"CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER": "custom-linker"}
+    env = ProcessEnvironmentBuilder(
+        {"CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER": "custom-linker"}
+    )
     ce._maybe_enable_lld_link(env)
     assert env["CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER"] == "custom-linker"
 

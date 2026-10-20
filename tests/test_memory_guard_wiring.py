@@ -17,6 +17,7 @@ from molt import pytest_memory_guard_bootstrap
 from molt import pytest_memory_guard_config_plugin
 from molt import memory_guard_paths
 from molt import temporary_artifacts
+from molt.process_environment import ProcessEnvironment
 from tests.process_guard_common import (
     current_thread_only,
     guarded_temporary_directory,
@@ -713,7 +714,7 @@ def test_pytest_startup_windows_handoff_interrupt_exits_cleanly(monkeypatch) -> 
     try:
         pytest_memory_guard_bootstrap.handoff_to_outer_guard(
             [sys.executable, "-m", "pytest"],
-            {},
+            ProcessEnvironment({}),
         )
     except SystemExit as exc:
         assert exc.code == 130
@@ -949,7 +950,7 @@ def test_custody_root_transition_keeps_parent_child_and_reader_on_one_path(
         701, command=("pytest",), cwd=REPO_ROOT, environ=child_env
     )
     assert marker.parent == state / "active"
-    child_env.update(
+    child_env = child_env.updated(
         {
             "MOLT_MEMORY_GUARD_PID": "701",
             "MOLT_MEMORY_GUARD_TOKEN": token,

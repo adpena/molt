@@ -1,7 +1,8 @@
 # Process environment authority
 
-Status: steps 1-2 implemented, 2026-10-18; steps 3-6 pending. Owner: integrator
-(coordination task `claude-winenv-process-environment`). Ledger: HF-355.
+Status: all six implementation steps migrated; qualification is recorded in
+the HF-355 row of `docs/agent/V1_HANDOFF_FINDINGS.md`. The release matrix remains
+the authority for supported execution cells.
 
 ## Problem
 
@@ -42,8 +43,9 @@ folded map.
 
 ## Design
 
-One module, `molt.process_environment`, owns the rule. Nothing else folds
-names.
+One module, `molt.process_environment`, owns environment-name comparison.
+Consumers select its explicit host or portable declaration rule; filename,
+tool-role and secret-redaction comparisons have separate semantics.
 
 - `NameRule`: `EXACT` (POSIX) or `WINDOWS`. `NameRule.host()` is the rule of
   the host that will run the child. A test may pass `WINDOWS` on any host, as
@@ -62,24 +64,47 @@ names.
   independent of stored spelling or insertion order. A plain mapping has no
   rule and is not an equal process environment.
 - `ProcessEnvironmentBuilder`: the one mutable form, for staged construction.
-  It replaces `_CargoEnvironment`.
+  It replaces `_CargoEnvironment`. DX, discovery, Cargo, proof, release and
+  benchmark producers retain the rule through construction and freeze complete
+  environments. Consumers that continue construction use a builder or `updated`.
 - Spawn boundary: `molt.process_guard` spawn helpers take a
   `ProcessEnvironment`, so `ty` rejects a plain `dict` there. Plans and
-  identities that hold an environment hold this type
-  (`RuntimeCargoPlan.environment` already holds `CargoEnvironment`, which
-  becomes this type).
-- Projections that are serialized (identities, C flag projections) name each
-  variable as its consumer spells it (cc-rs, Cargo), never as the host folds
-  it, so equal inputs give equal identities on every host.
+  identities that hold an environment hold this type, including
+  `RuntimeCargoPlan.environment`. Dictionaries belong at the OS or serialized
+  data boundary; declared overlays remain ordinary mappings.
+- Fixed consumer projections name variables as their consumer spells them
+  (cc-rs, Cargo), never as the host folds them. Execution receipts retain actual
+  exported spellings because those records attest the child block. Their raw
+  declaration and receipt admission checks precede snapshot construction;
+  canonicalization must not conceal conflicting claims.
+- The source-isolated process guard retains its existing per-checkout loader.
+  Its environment type and the admitted harness's type have different nominal
+  identities. Each boundary projects the closed `NameRule` value explicitly
+  into the recipient's enum before constructing its snapshot. Ordinary copies
+  never guess a foreign object's rule. This preserves worktree custody without
+  a second registry, import alias or fallback.
+- Portable proof declarations reject Windows-equivalent duplicate or locked
+  names on every host. Actual child lookups use the captured rule. Windows
+  executable suffixes, search separators and filesystem rules still describe
+  the executing platform, independently of the environment-name test coordinate.
+- The dependency-free release bootstrap verifies both path and environment
+  source bytes before executing either in an isolated in-memory package with
+  no filesystem search path. It neither imports an ambient Molt installation
+  nor executes an unverified dependency. Both source digests define its locked
+  environment generation.
 
 ## Costs
 
-Hot path: none new. A lookup folds one name (bounded by the name length) and
-does one dict probe, the same as today's `str.upper()` sites. Building a
-`ProcessEnvironment` from `os.environ` is one pass, O(n) in the number of
-variables, done once per spawn plan; today several sites rebuild their own
-folded copy. Memory: one index dict beside the value dict, under 10 KB for a
-normal environment.
+These costs belong to compiler and development processes, not emitted guest
+binaries. A lookup folds one name and probes one dictionary: O(name length).
+Building from a raw mapping or freezing mutable construction is linear in the
+input names and values; one index stores canonical names and original
+spelling/value pairs. Child export sorts that index, O(n log n), only when a
+dictionary is required. Copying an existing immutable snapshot with the same
+rule shares its immutable index in O(1); mutable sources and rule changes still
+produce independent snapshots. The two nominal source-custody boundaries require
+linear representation transfers, using the existing cached module loader.
+No syscall, process, lock, cache or registry is added to environment lookup.
 
 ## Migration
 
@@ -95,14 +120,20 @@ that run under both rules on any host:
 4. Toolchain discovery: `toolchain_identity`, `python_runtime_admission`,
    `llvm_wasi_tools`, `platform_toolchain`.
 5. Release and bench tools.
-6. Spawn boundary typing in `process_guard`; then delete every remaining
-   `name.upper() if os.name == "nt"` site. A search for that spelling is the
-   completion check, and the typed boundary keeps it from coming back.
+6. Spawn boundary typing in `process_guard`, including DX, harness, wrapper,
+   installation and test construction consumers. Remove the replaced folding
+   and flattening paths. Source searches establish migration completeness;
+   the typed boundary rejects subsequent plain-dictionary callers.
 
 ## Verification
 
 - Unit tests of the module under both rules, with Go-style rule parameters.
-- The bat00 Windows cell (`windows-x86_64-py312-queue-portability`) for each
-  migrated family, through the farm cell runner.
+- Actual bat00 Windows x64/Python 3.12 execution for each migrated family,
+  using the existing source-bound guarded runner and exact source/tool custody.
 - No hosted-only proof: every family also has a both-rules test that runs on
   macOS and Linux.
+- The existing guard tests exercise real source selection, both nominal
+  boundaries and DX/limit resolution, intercepting only the final launch.
+  A positive/negative `ty` fixture proves typed snapshots are admitted while
+  plain dictionaries are refused. Bootstrap tests run plain CPython with
+  `-I -S` and reject tampered dependency bytes before executing either module.

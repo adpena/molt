@@ -323,7 +323,7 @@ def sccache_server_endpoint(environ: Mapping[str, str]) -> tuple[str, str] | Non
 
 def sccache_client_environment(
     environ: Mapping[str, str],
-) -> tuple[dict[str, str], tuple[str, ...]]:
+) -> tuple[ProcessEnvironment, tuple[str, ...]]:
     """Return ``environ`` with the sccache server's temp dir and endpoint pinned.
 
     Every process that may start or reach the shared server (a Cargo child
@@ -336,15 +336,15 @@ def sccache_client_environment(
     child = ProcessEnvironmentBuilder(environ)
     temporary = sccache_server_temp_dir(child)
     if temporary is None:
-        return ProcessEnvironment(child).child_block(), ()
+        return ProcessEnvironment(child), ()
     temporary.mkdir(parents=True, exist_ok=True)
     for name in TEMPORARY_DIRECTORY_ENV_NAMES:
         child[name] = str(temporary)
     endpoint = sccache_server_endpoint(child)
     if endpoint is None:
-        return ProcessEnvironment(child).child_block(), (SCCACHE_SERVER_TEMP_POLICY,)
+        return ProcessEnvironment(child), (SCCACHE_SERVER_TEMP_POLICY,)
     child[endpoint[0]] = endpoint[1]
-    return ProcessEnvironment(child).child_block(), (
+    return ProcessEnvironment(child), (
         SCCACHE_SERVER_TEMP_POLICY,
         SCCACHE_SERVER_ENDPOINT_POLICY,
     )
@@ -354,7 +354,7 @@ def normalize_cargo_environment(
     environ: Mapping[str, str] | None,
     *,
     default_incremental: str | None = None,
-) -> tuple[dict[str, str], tuple[str, ...]]:
+) -> tuple[ProcessEnvironment, tuple[str, ...]]:
     """Return one executable Cargo environment and its applied policy names.
 
     Cargo accepts compiler wrappers through both direct Rust variables and
@@ -374,19 +374,17 @@ def normalize_cargo_environment(
         return selected, (SCCACHE_INCREMENTAL_POLICY, *pinned)
     if default_incremental is not None and "CARGO_INCREMENTAL" not in child:
         child["CARGO_INCREMENTAL"] = default_incremental
-        return ProcessEnvironment(child).child_block(), (
-            DIRECT_RUSTC_INCREMENTAL_POLICY,
-        )
-    return ProcessEnvironment(child).child_block(), ()
+        return ProcessEnvironment(child), (DIRECT_RUSTC_INCREMENTAL_POLICY,)
+    return ProcessEnvironment(child), ()
 
 
 def without_sccache_compiler_wrappers(
     environ: Mapping[str, str],
-) -> dict[str, str]:
+) -> ProcessEnvironment:
     child = ProcessEnvironmentBuilder(environ)
     for name, _value in sccache_compiler_wrappers(child):
         child.pop(name, None)
-    return ProcessEnvironment(child).child_block()
+    return ProcessEnvironment(child)
 
 
 def _executable_name(value: str) -> str:
@@ -574,9 +572,13 @@ def cargo_subprocess_environment(
     environ: Mapping[str, str] | None,
     *,
     default_incremental: str | None = None,
-) -> tuple[Mapping[str, str] | None, tuple[str, ...]]:
+) -> tuple[ProcessEnvironment | None, tuple[str, ...]]:
     if not is_cargo_command(command):
-        return environ, ()
+        return (
+            environ
+            if environ is None or isinstance(environ, ProcessEnvironment)
+            else ProcessEnvironment(environ)
+        ), ()
     return normalize_cargo_environment(
         environ,
         default_incremental=default_incremental,

@@ -22,6 +22,8 @@ from typing import Protocol
 import pytest
 
 from molt.exact_json import canonical_json_sha256
+from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
+from molt.process_environment import ProcessEnvironment
 from molt.python_environment_location import (
     PYTHON_ENVIRONMENT_LOCATION_SCHEMA,
     validate_python_environment_location,
@@ -391,7 +393,7 @@ def publish_receipt_custody(
         "command": command,
         "environment": supervisor_custody.bind_required_environment(
             environment or {}, required_environment or {}
-        ),
+        ).child_block(),
         "root_role": root_role,
         "fixed_images": fixed_images,
         "derived_roots": [],
@@ -429,7 +431,13 @@ def publish_receipt_custody(
     provision_target = cargo_output_layout.CargoOutputLayout.create(
         result_root=directory
     ).supervisor_target
-    generation_inputs = {"profile": "release", "synthetic_fixture": True}
+    generation_inputs = {
+        "profile": "release",
+        "synthetic_fixture": True,
+        "cargo_environment": CargoEnvironmentInputs.capture(
+            ProcessEnvironment({}), (), local_unit_count=1
+        ).to_dict(),
+    }
     generation = {
         "schema": custody_cas.ARTIFACT_SCHEMA,
         "kind": supervisor_generation.GENERATION_SCHEMA,

@@ -22,6 +22,7 @@ from molt.cli import (
     source_extension_toolchain,
 )
 from molt.llvm_linker_roles import LlvmLinkerRole, executable_selects_linker_role
+from molt.process_environment import NameRule, ProcessEnvironment
 from molt.toolchain_identity import resolve_explicit_tool_command
 from tests.cli.native_link_test_support import (
     LLVM_BITCODE_STAND_IN,
@@ -54,6 +55,77 @@ def _isolate_tool_selection(monkeypatch):
 def _tool_path(directory: Path, role: str) -> Path:
     suffix = ".exe" if os.name == "nt" else ""
     return directory / f"{_TOOL_FILE_NAMES[role]}{suffix}"
+
+
+@pytest.mark.parametrize("first_rule", [NameRule.EXACT, NameRule.WINDOWS])
+def test_candidate_cache_preserves_environment_rule_with_identical_spellings(
+    tmp_path, monkeypatch, first_rule
+):
+    directory = tmp_path / "native-tools"
+    directory.mkdir()
+    compiler = _tool_path(directory, "cc")
+    compiler.write_bytes(b"selected compiler")
+    compiler.chmod(0o755)
+    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
+    other_rule = NameRule.WINDOWS if first_rule is NameRule.EXACT else NameRule.EXACT
+    for rule in (first_rule, other_rule, first_rule):
+        environment = ProcessEnvironment(
+            {"Path": str(directory), "NoDefaultCurrentDirectoryInExePath": "1"},
+            rule=rule,
+        )
+        selected = llvm_wasi_tools.llvm_named_tool_candidates(
+            "clang", environment=environment, target_family="native"
+        )
+        assert selected == (() if rule is NameRule.EXACT else (compiler.absolute(),))
+
+
+@pytest.mark.parametrize("rule", [NameRule.EXACT, NameRule.WINDOWS])
+def test_default_managed_root_removes_only_equivalent_explicit_selector(
+    tmp_path, monkeypatch, rule
+):
+    observed = []
+    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: (tmp_path,))
+
+    def root(_checkout, environment, **_kwargs):
+        observed.append(environment)
+        return tmp_path / "default"
+
+    monkeypatch.setattr(llvm_wasi_tools, "canonical_toolchain_root", root)
+    environment = ProcessEnvironment(
+        {"molt_target_root": str(tmp_path / "explicit")}, rule=rule
+    )
+    llvm_wasi_tools._managed_llvm_bin_directories(
+        None, environment=environment, target_family="native"
+    )
+    assert observed[0].rule is rule
+    assert dict(observed[0]) == (dict(environment) if rule is NameRule.EXACT else {})
+
+
+@pytest.mark.parametrize("rule", [NameRule.EXACT, NameRule.WINDOWS])
+def test_rust_metadata_guard_receives_the_explicit_environment_rule(
+    tmp_path, monkeypatch, rule
+):
+    sysroot = tmp_path / "sysroot"
+    (sysroot / "lib/rustlib/host/bin").mkdir(parents=True)
+    calls = []
+    monkeypatch.setattr(
+        llvm_wasi_tools, "resolve_executable", lambda *_a, **_k: tmp_path / "rustc"
+    )
+
+    def run(argv, **kwargs):
+        calls.append(kwargs["env"])
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            "rustc fixture\nhost: host\n" if "-vV" in argv else str(sysroot),
+            "",
+        )
+
+    monkeypatch.setattr(llvm_wasi_tools, "_run_completed_command", run)
+    environment = ProcessEnvironment({"Path": "retained alias"}, rule=rule)
+    llvm_wasi_tools._rust_llvm_bin_directories(environment=environment)
+    assert calls == [environment, environment]
+    assert all(env.rule is rule for env in calls)
 
 
 def _write_tool_family(directory: Path) -> dict[str, Path]:
@@ -806,7 +878,7 @@ def test_sdk_source_compilers_disable_hidden_config_before_probe_and_materializa
     probes = []
 
     def run(command, **kwargs):
-        assert kwargs["env"] == environment
+        assert dict(kwargs["env"]) == ProcessEnvironment(environment).child_block()
         probes.append(tuple(command))
         return subprocess.CompletedProcess(command, 0, "", "")
 
@@ -1363,9 +1435,10 @@ def test_captured_rust_tool_lookup_threads_actual_executable_and_environment(
     assert llvm_wasi_tools._rust_llvm_bin_directories(environment=environment) == (
         reader.parent,
     )
+    expected = ProcessEnvironment(environment)
     assert seen == [
-        ([str(selected_rustc), "--print", "sysroot"], environment),
-        ([str(selected_rustc), "-vV"], environment),
+        ([str(selected_rustc), "--print", "sysroot"], expected),
+        ([str(selected_rustc), "-vV"], expected),
     ]
 
 
@@ -1841,7 +1914,7 @@ def test_managed_extension_family_uses_receipt_without_sdk_reads_or_probes(
         selected_compiler = alias / selected_compiler.relative_to(
             installation.sdk.parent
         )
-        environment["MOLT_WASM_CC"] = str(selected_compiler)
+        environment = environment.updated({"MOLT_WASM_CC": str(selected_compiler)})
     original_open = Path.open
 
     def checked_open(path, *args, **kwargs):

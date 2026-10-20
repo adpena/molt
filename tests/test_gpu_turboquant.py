@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
+
 import os
 import sys
 import ast
@@ -11,18 +13,20 @@ from molt.dx import development_artifact_env
 from tests.native_process_guard import run_native_test_process
 
 
-def _native_molt_env(root: Path) -> dict[str, str]:
-    env = development_artifact_env(
-        root,
-        os.environ,
-        session_prefix="gpu-turboquant",
-        session_id=os.environ.get("MOLT_SESSION_ID") or "gpu-turboquant",
-        create_dirs=True,
+def _native_molt_env(root: Path) -> ProcessEnvironment:
+    env = ProcessEnvironmentBuilder(
+        development_artifact_env(
+            root,
+            os.environ,
+            session_prefix="gpu-turboquant",
+            session_id=os.environ.get("MOLT_SESSION_ID") or "gpu-turboquant",
+            create_dirs=True,
+        )
     )
     env["PYTHONPATH"] = str(root / "src")
     env["MOLT_HERMETIC_MODULE_ROOTS"] = "1"
     env["MOLT_BACKEND_DAEMON"] = "0"
-    return env
+    return ProcessEnvironment(env)
 
 
 def test_turboquant_codec_rejects_non_power_of_two_hadamard_dimensions():

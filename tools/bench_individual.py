@@ -24,6 +24,7 @@ import statistics
 import sys
 import tempfile
 import time
+from collections.abc import Mapping
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -180,12 +181,12 @@ class BackendDaemonCleanupReport:
         return len(self.killed)
 
 
-def _build_state_root_from_env(env: dict[str, str]) -> Path:
+def _build_state_root_from_env(env: Mapping[str, str]) -> Path:
     return project_build_state_root(REPO_ROOT, env)
 
 
 def _current_session_identity_files(
-    env: dict[str, str],
+    env: Mapping[str, str],
 ) -> dict[int, daemon_custody.BackendDaemonIdentityRecord]:
     return {
         record.identity.pid: record
@@ -207,7 +208,7 @@ def _daemon_cleanup_artifact_path() -> Path:
 def _record_daemon_cleanup(
     *,
     report: BackendDaemonCleanupReport,
-    env: dict[str, str],
+    env: Mapping[str, str],
 ) -> str | None:
     if not report.killed:
         return None
@@ -376,7 +377,7 @@ def molt_build(
     Returns (binary_path_or_None, build_time_seconds, error_message).
     """
     env = harness_memory_guard.canonical_harness_env(os.environ, repo_root=REPO_ROOT)
-    env["PYTHONPATH"] = str(REPO_ROOT / "src")
+    env = env.updated({"PYTHONPATH": str(REPO_ROOT / "src")})
 
     args = [
         *_molt_build_cmd(),

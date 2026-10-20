@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from molt.process_environment import NameRule, ProcessEnvironment
 from tests import proof_queue_custody_test_support, proof_queue_owned_roots
 from tools.proof_queue_pkg import (
     command_admission,
@@ -684,14 +685,18 @@ def test_native_verification_cannot_substitute_content_or_byte_count(
         )
 
 
-def test_required_launch_environment_is_captured_and_cannot_be_overridden() -> None:
+@pytest.mark.parametrize("rule", list(NameRule))
+def test_required_launch_environment_is_captured_and_cannot_be_overridden(rule) -> None:
     required = {"_NO_DEBUG_HEAP": "1"}
     selected, contract = execution_environment._deterministic_execution_environment(
-        {"PATH": "host-tools", "UNCLASSIFIED": "discard"},
+        ProcessEnvironment(
+            {"PATH": "host-tools", "UNCLASSIFIED": "discard"}, rule=rule
+        ),
         override_names=[],
         required_environment=required,
     )
-    assert selected == {"PATH": "host-tools", **required}
+    assert selected.rule is rule
+    assert dict(selected) == {"PATH": "host-tools", **required}
     assert contract["passed_names"] == ["_NO_DEBUG_HEAP", "PATH"]
     assert contract["supervisor_owned_names"] == ["_NO_DEBUG_HEAP"]
     assert contract["omitted_names"] == ["UNCLASSIFIED"]
@@ -708,18 +713,27 @@ def test_required_launch_environment_is_captured_and_cannot_be_overridden() -> N
         authority["variables"]["_NO_DEBUG_HEAP"]["class"] == "supervisor-owned-launch"
     )
     assert authority["variables"]["_NO_DEBUG_HEAP"]["redacted"] is True
-    for name in ("_NO_DEBUG_HEAP", "_no_debug_heap"):
+    for name in (
+        ["_NO_DEBUG_HEAP", "_no_debug_heap"]
+        if rule is NameRule.WINDOWS
+        else ["_NO_DEBUG_HEAP"]
+    ):
         with pytest.raises(ValueError, match="cannot be overridden"):
             execution_environment._deterministic_execution_environment(
-                {name: "1"}, override_names=[name], required_environment=required
+                ProcessEnvironment({name: "1"}, rule=rule),
+                override_names=[name],
+                required_environment=required,
             )
 
 
-def test_inventory_and_execution_share_canonical_binding() -> None:
+def test_inventory_and_execution_share_canonical_binding(monkeypatch) -> None:
+    monkeypatch.setattr(NameRule, "host", classmethod(lambda cls: NameRule.WINDOWS))
     required = {"_NO_DEBUG_HEAP": "1"}
-    assert supervisor_custody.bind_required_environment(
+    selected = supervisor_custody.bind_required_environment(
         {"_no_debug_heap": "1", "PATH": "tools"}, required
-    ) == {"PATH": "tools", **required}
+    )
+    assert selected.rule is NameRule.WINDOWS
+    assert dict(selected) == {"PATH": "tools", **required}
     with pytest.raises(ValueError, match="conflicts"):
         supervisor_custody.bind_required_environment({"_no_debug_heap": "0"}, required)
     with pytest.raises(ValueError, match="case-ambiguous"):
@@ -728,13 +742,34 @@ def test_inventory_and_execution_share_canonical_binding() -> None:
         )
 
 
+@pytest.mark.parametrize("rule", list(NameRule))
+def test_supervisor_binding_obeys_child_environment_rule(rule) -> None:
+    env = ProcessEnvironment(
+        {"Path": "mixed", "PATH": "tools", "_no_debug_heap": "0"}, rule=rule
+    )
+    required = {"_NO_DEBUG_HEAP": "1"}
+    if rule is NameRule.WINDOWS:
+        with pytest.raises(ValueError, match="conflicts"):
+            supervisor_custody.bind_required_environment(env, required)
+    else:
+        selected = supervisor_custody.bind_required_environment(env, required)
+        assert selected.rule is rule
+        assert dict(selected) == {
+            "Path": "mixed",
+            "PATH": "tools",
+            "_no_debug_heap": "0",
+            **required,
+        }
+
+
 def test_no_platform_requirement_does_not_admit_windows_environment() -> None:
     selected, contract = execution_environment._deterministic_execution_environment(
         {"_NO_DEBUG_HEAP": "1", "PATH": "tools"},
         override_names=[],
         required_environment={},
     )
-    assert selected == {"PATH": "tools"}
+    assert selected.rule is NameRule.host()
+    assert dict(selected) == {"PATH": "tools"}
     assert contract["omitted_names"] == ["_NO_DEBUG_HEAP"]
     assert "supervisor_owned_names" not in contract
 

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 import sys
 import hashlib
 import json
@@ -23,6 +24,10 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 bind_repository_imports(__file__)
 
 from molt.temporary_artifacts import OwnedTemporaryDirectory  # noqa: E402
+from molt.process_environment import (  # noqa: E402
+    ProcessEnvironment,
+    ProcessEnvironmentBuilder,
+)
 
 from tools.command_execution import CommandExecutor  # noqa: E402
 
@@ -112,7 +117,7 @@ def _run(
     argv: list[str],
     *,
     cwd: Path,
-    env: dict[str, str],
+    env: ProcessEnvironment,
     timeout: int,
     role: str,
     expected_stdout: str | None = None,
@@ -151,7 +156,7 @@ def _run(
 def _capture_python_execution(
     python: Path,
     *,
-    env: dict[str, str],
+    env: ProcessEnvironment,
     cwd: Path,
     target: dict[str, object],
     reference_python: str,
@@ -197,7 +202,7 @@ def _capture_python_execution(
     }
 
 
-def _absent_probe(python: Path, *, env: dict[str, str], cwd: Path) -> None:
+def _absent_probe(python: Path, *, env: ProcessEnvironment, cwd: Path) -> None:
     _COMMANDS.run(
         [
             str(python),
@@ -213,8 +218,8 @@ def _absent_probe(python: Path, *, env: dict[str, str], cwd: Path) -> None:
     )
 
 
-def _consumer_environment(root: Path) -> dict[str, str]:
-    env = os.environ.copy()
+def _consumer_environment(root: Path) -> ProcessEnvironment:
+    env = ProcessEnvironmentBuilder(os.environ)
     for name in (
         "PYTHONPATH",
         "PYTHONHOME",
@@ -301,8 +306,8 @@ def _same_directory(entry: str, directory: Path) -> bool:
 
 
 def rust_toolchain_absent_environment(
-    env: dict[str, str], *, root: Path
-) -> dict[str, str]:
+    env: Mapping[str, str], *, root: Path
+) -> ProcessEnvironment:
     """Consumer environment in which no Rust toolchain can be resolved.
 
     Installed Molt must compile guests with Cargo, rustc and rustup absent: Rust
@@ -311,7 +316,7 @@ def rust_toolchain_absent_environment(
     executable-search authority. A Rust tool that shares a directory with the
     consumer's own tools fails closed instead of weakening the proof.
     """
-    result = dict(env)
+    result = ProcessEnvironmentBuilder(env)
     for name in _RUST_TOOLCHAIN_ENVIRONMENT:
         result.pop(name, None)
     empty = root / "rust-toolchain-absent"
@@ -323,15 +328,11 @@ def rust_toolchain_absent_environment(
         for command in _RUST_TOOLCHAIN_COMMANDS
         for candidate in executable_candidates(command, environment=result)
     }
-    keys = [
-        key for key in result if (key.upper() if os.name == "nt" else key) == "PATH"
-    ] or ["PATH"]
-    for key in keys:
-        result[key] = os.pathsep.join(
-            entry
-            for entry in result.get(key, "").split(os.pathsep)
-            if entry and not any(_same_directory(entry, path) for path in providers)
-        )
+    result["PATH"] = os.pathsep.join(
+        entry
+        for entry in result.get("PATH", "").split(os.pathsep)
+        if entry and not any(_same_directory(entry, path) for path in providers)
+    )
     remaining = [
         str(candidate)
         for command in _RUST_TOOLCHAIN_COMMANDS
@@ -347,7 +348,7 @@ def rust_toolchain_absent_environment(
             "release consumer Rust toolchain shares a PATH directory with uv; "
             "use a host whose Rust toolchain is installed separately"
         )
-    return result
+    return ProcessEnvironment(result)
 
 
 def _require_no_cargo_runtime(home: Path) -> None:
@@ -415,7 +416,7 @@ def _verify_guest_cells(
     project: Path,
     source: Path,
     launcher: list[str],
-    env: dict[str, str],
+    env: ProcessEnvironment,
     compiler: InstalledCompiler,
     minor: str,
     target: dict[str, object],
@@ -425,12 +426,11 @@ def _verify_guest_cells(
     role_prefix: str,
 ) -> list[dict[str, object]]:
     """One installed producer for bundle and wheel, with explicit lane selectors."""
-    runtime_env = env.copy()
-    runtime_env.pop("PYTHON", None)
+    runtime_env = env.without(("PYTHON",))
     cells: list[dict[str, object]] = []
     for lane in consumer_lanes():
         guest_target = lane.target
-        cell_env = {**env, **lane.environment()}
+        cell_env = env.updated(lane.environment())
         # One fresh directory per cell keeps outputs and manifests apart and
         # proves every observed artifact came from this cell's command.
         cell_root = project / lane.id
@@ -655,7 +655,7 @@ def _verify_python_coordinate(
         reference_python=reference,
     )
     _absent_probe(python, env=env, cwd=root)
-    env["PYTHON"] = str(python)
+    env = env.updated({"PYTHON": str(python)})
     launcher = _launcher(bundle_root)
     commands.append(
         _run(

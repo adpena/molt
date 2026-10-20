@@ -178,7 +178,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     build_env = development_artifact_env(ROOT, session_prefix="nightly")
     if args.target_root is not None:
-        build_env["CARGO_TARGET_DIR"] = str(args.target_root.resolve())
+        build_env = build_env.updated(
+            {"CARGO_TARGET_DIR": str(args.target_root.resolve())}
+        )
     try:
         summary = prepare(
             output_root=args.output_root.resolve(),

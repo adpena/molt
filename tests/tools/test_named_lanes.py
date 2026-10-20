@@ -12,6 +12,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from molt.process_environment import NameRule, ProcessEnvironment
+
 from tests.executable_test_support import custody_spelling
 from tests.process_guard_common import current_thread_only
 from tools import proof_plan
@@ -301,10 +303,9 @@ def test_llvm_family_lanes_project_the_complete_declared_sdk(
     assert actual[llvm_toolchain.mlir_sys_prefix_env_var(pin.major)] == str(prefix)
     assert actual[llvm_toolchain.tablegen_prefix_env_var(pin.major)] == str(prefix)
     assert selected == {"PATH": ambient}
-    assert (
-        ge.project_declared_sdk_environment(selected, ["python", "uv"], cwd=tmp_path)
-        == selected
-    )
+    assert ge.project_declared_sdk_environment(
+        selected, ["python", "uv"], cwd=tmp_path
+    ) == ProcessEnvironment(selected, rule=NameRule.host())
     assert len(observed) == 1
 
     monkeypatch.setattr(
@@ -428,7 +429,9 @@ def test_declared_external_wasm_role_needs_no_native_or_managed_sdk(
         ),
     )
     actual = ge.project_declared_sdk_environment(environment, ["wasm-ld"], cwd=request)
-    assert actual == {**environment, "MOLT_WASM_LD": str(tool)}
+    assert actual == ProcessEnvironment(
+        {**environment, "MOLT_WASM_LD": str(tool)}, rule=NameRule.host()
+    )
     assert environment["MOLT_WASM_LD"] == "external/wasm-ld"
 
 
@@ -454,7 +457,7 @@ def test_queue_sdk_role_launch_and_attestation_share_absolute_selection(
     def sdk_role(root, role, *, environ, cwd):
         assert cwd == tmp_path
         assert root == proof_plan.ROOT and role == "wasm-ld"
-        assert environ == environment
+        assert environ == ProcessEnvironment(environment, rule=NameRule.host())
         return selected
 
     monkeypatch.setattr(llvm_toolchain, "resolve_wasi_sdk_tool", sdk_role)

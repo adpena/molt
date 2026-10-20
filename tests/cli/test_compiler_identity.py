@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironment
+
 import json
 import hashlib
 import os
@@ -123,7 +125,7 @@ def test_wrapper_converts_compiler_identity_rejection(
         file_path=str(tmp_path / "app.py"),
         module=None,
         build_args=[],
-        env={},
+        env=ProcessEnvironment({}),
         project_root=tmp_path,
         json_output=True,
         command=command,

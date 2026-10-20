@@ -1,6 +1,8 @@
 import statistics
 from pathlib import Path
 
+from molt.process_environment import ProcessEnvironment
+
 from tools.bench_friends_env import _materialize_output_env_paths
 from tools.bench_friends_manifest import _resolve_env, _resolve_tokenized
 from tools.bench_friends_phase import (
@@ -19,7 +21,7 @@ def _run_prepare_steps(
     suite: SuiteSpec,
     *,
     suite_workdir: Path,
-    suite_env: dict[str, str],
+    suite_env: ProcessEnvironment,
     tokens: dict[str, str],
     timeout_sec: int,
     logs_dir: Path,
@@ -56,7 +58,7 @@ def _run_runner(
     *,
     suite: SuiteSpec,
     suite_workdir: Path,
-    suite_env: dict[str, str],
+    suite_env: ProcessEnvironment,
     tokens: dict[str, str],
     logs_dir: Path,
     dry_run: bool,
@@ -77,8 +79,7 @@ def _run_runner(
             reason="run_cmd not configured",
         )
 
-    env = suite_env.copy()
-    env.update(_resolve_env(runner.env, tokens))
+    env = suite_env.updated(_resolve_env(runner.env, tokens))
     if not dry_run and (output_root := tokens.get("output_root")):
         _materialize_output_env_paths(env, output_root=Path(output_root))
     result = RunnerResult(name=runner.name, role=runner.role, status="ok")

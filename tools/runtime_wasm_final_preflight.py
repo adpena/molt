@@ -24,6 +24,7 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
 
+from molt.process_environment import ProcessEnvironment  # noqa: E402
 from molt.cli.atomic_io import _atomic_write_text  # noqa: E402
 from molt.cli.cargo_profiles import _resolve_cargo_profile_name  # noqa: E402
 from molt.cli.runtime_paths import (  # noqa: E402
@@ -120,7 +121,7 @@ class RuntimeWasmPreflightRoots:
 class RuntimeWasmPreflightContext:
     roots: RuntimeWasmPreflightRoots
     claim: RuntimeWasmBuildClaim
-    build_env: Mapping[str, str]
+    build_env: ProcessEnvironment
 
 
 def _git_bytes(project_root: Path, *args: str) -> bytes:
@@ -493,7 +494,7 @@ def _resolve_preflight_context(
         authority="runtime-WASM proof queue database",
         require_exists=True,
     )
-    build_env.update(
+    build_env = build_env.updated(
         {
             "CARGO_TARGET_DIR": os.fspath(target),
             "MOLT_CACHE": os.fspath(cache),

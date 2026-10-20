@@ -10,6 +10,7 @@ from pathlib import Path
 
 from tools import harness_memory_guard
 from molt.cargo_execution_policy import normalize_cargo_environment
+from molt.process_environment import ProcessEnvironment
 
 from tools.command_execution import CommandExecutor  # type: ignore
 
@@ -55,7 +56,7 @@ def _run_driver_command(
     cmd: list[str],
     *,
     cwd: Path | None = None,
-    env: dict[str, str] | None = None,
+    env: ProcessEnvironment | None = None,
     input_text: str | None = None,
     timeout: float | None = 60.0,
     prefix: str = "MOLT_DEV",
@@ -77,7 +78,7 @@ def _run_driver_command_bytes(
     cmd: list[str],
     *,
     cwd: Path,
-    env: dict[str, str],
+    env: ProcessEnvironment,
     timeout: float,
     prefix: str,
 ) -> subprocess.CompletedProcess[bytes]:
@@ -97,7 +98,7 @@ def _run_fast_captured_command(
     cmd: list[str],
     *,
     cwd: Path | None = None,
-    env: dict[str, str] | None = None,
+    env: ProcessEnvironment | None = None,
     input_text: str | None = None,
     timeout: float | None = 60.0,
 ) -> subprocess.CompletedProcess[str]:
@@ -129,7 +130,7 @@ def _run_fast_captured_command(
 
 
 def _run_live_gate(
-    cmd: str | tuple[str, ...], *, repo: Path, env: dict[str, str]
+    cmd: str | tuple[str, ...], *, repo: Path, env: ProcessEnvironment
 ) -> int:
     """Run shell syntax or structured argv live through memory custody."""
     # A compound shell gate can launch Cargo in any arm. Its opaque shell argv

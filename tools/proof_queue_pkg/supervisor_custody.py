@@ -14,6 +14,7 @@ from typing import Literal, Mapping, Sequence, TypedDict, cast
 
 from molt import cargo_workspace
 from molt.dx import PROOF_SCRATCH_ROOT_ENV
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
 from molt.exact_json import (
     ExactJsonError,
     capture_exact,
@@ -648,6 +649,7 @@ def required_execution_environment(
     *, binary: Path, mode: str, cwd: Path, env: Mapping[str, str]
 ) -> dict[str, str]:
     """Read launch requirements from the exact native supervisor authority."""
+    env = ProcessEnvironment(env)
     completed = command_identity._run_captured(
         (str(binary), "capability", mode), cwd=cwd, env=env, timeout=30.0
     )
@@ -672,26 +674,26 @@ def required_execution_environment(
 
 def bind_required_environment(
     env: Mapping[str, str], required: Mapping[str, str]
-) -> dict[str, str]:
+) -> ProcessEnvironment:
     """Bind native-owned settings before capture, rejecting conflicting inputs."""
-    required_names = {name.casefold(): name for name in required}
-    selected: dict[str, str] = {}
+    rule = ProcessEnvironment(env).rule
+    required = ProcessEnvironment(required, rule=rule)
+    selected = ProcessEnvironmentBuilder({}, rule=rule)
     seen: set[str] = set()
     for name, value in env.items():
-        folded = name.casefold()
+        folded = rule.key(name)
         if folded in seen:
             raise ValueError(f"execution environment has case-ambiguous name {name!r}")
         seen.add(folded)
-        canonical = required_names.get(folded)
-        if canonical is None:
+        if name not in required:
             selected[name] = value
-        elif value != required[canonical]:
+        elif value != required[name]:
             raise ValueError(
-                f"native supervisor requires canonical environment {canonical!r}; "
+                f"native supervisor requires canonical environment {name!r}; "
                 "the supplied value conflicts with its launch contract"
             )
     selected.update(required)
-    return selected
+    return ProcessEnvironment(selected)
 
 
 def validate_required_environment_binding(
@@ -707,11 +709,11 @@ def validate_required_environment_binding(
         raise ValueError(
             "native process supervisor required-environment metadata mismatch"
         )
-    required_names = {name.casefold() for name in required}
+    required_names = ProcessEnvironment(required_environment)
     policy_required = {
         str(name): value
         for name, value in policy_environment.items()
-        if str(name).casefold() in required_names
+        if str(name) in required_names
     }
     if policy_required != required:
         raise ValueError(
@@ -983,6 +985,7 @@ def _validated_supervisor_receipt(
     rootfs: Path | None = None,
     require_closed: bool = False,
 ) -> dict[str, object]:
+    env = ProcessEnvironment(env)
     try:
         receipt_identity, receipt = capture_exact(
             receipt_path,

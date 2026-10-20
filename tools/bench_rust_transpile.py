@@ -61,6 +61,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC_ROOT = REPO_ROOT / "src"
 
 
+from molt.process_environment import ProcessEnvironment  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402
 from tools import perf_authority  # noqa: E402
 from molt.dx import development_artifact_env  # noqa: E402
@@ -124,8 +125,8 @@ def _find_cpython() -> str:
     sys.exit(1)
 
 
-def _molt_env() -> dict[str, str]:
-    """Build environment dict for molt CLI invocations."""
+def _molt_env() -> ProcessEnvironment:
+    """Build the environment snapshot for molt CLI invocations."""
     env = development_artifact_env(
         REPO_ROOT,
         os.environ,
@@ -134,7 +135,7 @@ def _molt_env() -> dict[str, str]:
         or f"bench-rust-transpile-{os.getpid()}",
         create_dirs=True,
     )
-    env.update(
+    env = env.updated(
         {
             "MOLT_USE_SCCACHE": "0",
             "MOLT_BACKEND_DAEMON": "0",

@@ -2104,6 +2104,8 @@ def python_session(tmp_path, monkeypatch, runtime_receipt):
 def test_python_identity_uses_exact_isolated_facade_in_v3_build_receipt(
     python_session, runtime_receipt
 ):
+    from molt.process_environment import ProcessEnvironment
+
     admission, selected, session, calls = python_session
     environment = {
         "MOLT_BUILD_PYTHON": str(selected),
@@ -2118,7 +2120,7 @@ def test_python_identity_uses_exact_isolated_facade_in_v3_build_receipt(
     assert session.verifications == 1
     assert len(session.fresh_calls) == 1
     assert session.fresh_calls[0][0][-1] == "--runtime-selection"
-    assert session.fresh_calls[0][1]["env"] == environment
+    assert session.fresh_calls[0][1]["env"] == ProcessEnvironment(environment)
     assert len(calls) == 1
     assert second["runtime"] == runtime_receipt
     assert second["identity_sha256"] == canonical_json_sha256(
@@ -2138,9 +2140,58 @@ def test_python_identity_uses_exact_isolated_facade_in_v3_build_receipt(
         "--hash-workers",
         "4",
     ]
-    assert calls[0][1]["env"] == environment
+    assert calls[0][1]["env"] == ProcessEnvironment(environment)
     with pytest.raises(ValueError, match="revoked"):
         owner.capture(environment)
+
+
+@pytest.mark.parametrize("windows_names", [False, True])
+def test_build_python_admission_preserves_name_rule_at_both_launches(
+    python_session, windows_names
+):
+    from molt.process_environment import NameRule, ProcessEnvironment
+
+    admission, selected, session, calls = python_session
+    rule = NameRule.WINDOWS if windows_names else NameRule.EXACT
+    environment = ProcessEnvironment(
+        {
+            "MOLT_BUILD_PYTHON": str(selected),
+            "Path": "distinct alias",
+            "PATH": "original",
+        },
+        rule=rule,
+    )
+    with admission.BuildPythonAdmission() as owner:
+        owner.capture(environment)
+        owner.capture(environment)
+    assert calls[0][1]["env"] == environment
+    assert session.fresh_calls[0][1]["env"] == environment
+    assert calls[0][1]["env"].rule is session.fresh_calls[0][1]["env"].rule is rule
+    assert session.verifications == 1
+
+
+@pytest.mark.parametrize("windows_names", [False, True])
+def test_build_python_loader_policy_distinguishes_posix_path_alias(
+    python_session, windows_names
+):
+    from molt.process_environment import NameRule, ProcessEnvironment
+
+    admission, selected, session, _calls = python_session
+    environment = ProcessEnvironment(
+        {"MOLT_BUILD_PYTHON": str(selected), "PATH": "original"},
+        rule=NameRule.WINDOWS if windows_names else NameRule.EXACT,
+    )
+    with admission.BuildPythonAdmission() as owner:
+        owner.capture(environment)
+        changed = environment.updated({"Path": "changed"})
+        if windows_names:
+            with pytest.raises(ValueError, match="selection/configuration changed"):
+                owner.capture(changed)
+            assert session.fresh_calls == []
+        else:
+            owner.capture(changed)
+            assert session.fresh_calls[0][1]["env"] == changed
+            assert session.verifications == 1
 
 
 @pytest.mark.parametrize(
@@ -2326,6 +2377,8 @@ def test_python_identity_live_content_probe(with_custody) -> None:
 def test_build_python_admission_observes_fresh_startup_selection(
     python_session, change
 ):
+    from molt.process_environment import ProcessEnvironment
+
     admission, selected, session, calls = python_session
     env = {"MOLT_BUILD_PYTHON": str(selected), "LD_LIBRARY_PATH": "same-directory"}
     owner = admission.BuildPythonAdmission()
@@ -2339,7 +2392,7 @@ def test_build_python_admission_observes_fresh_startup_selection(
     with pytest.raises(ValueError, match="fresh startup selection changed"):
         owner.capture(env)
     assert len(calls) == 1
-    assert session.fresh_calls[0][1]["env"] == env
+    assert session.fresh_calls[0][1]["env"] == ProcessEnvironment(env)
     assert session.verifications == 0
     assert owner.terminal
 

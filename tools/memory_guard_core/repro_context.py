@@ -5,6 +5,7 @@ import json
 import heapq
 import stat
 from pathlib import Path
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
 from molt.memory_guard_paths import (
     PYTEST_CURRENT_TEST_FILE_MAX_BYTES,
     canonical_pytest_current_test_file_path,
@@ -235,10 +236,10 @@ def test_custody_launch_env(
     root: Path,
     fallback_pid: int,
     current_test_file_env: str,
-) -> dict[str, str]:
-    env = dict(environ)
+) -> ProcessEnvironment:
+    env = ProcessEnvironmentBuilder(environ)
     if not _command_requests_test_custody(command, cwd=cwd, root=root):
-        return env
+        return ProcessEnvironment(env)
     summary_dir = pytest_guard_summary_dir(root, env)
     summary_dir.mkdir(parents=True, exist_ok=True)
     env[current_test_file_env] = str(
@@ -250,7 +251,7 @@ def test_custody_launch_env(
             fallback_pid=fallback_pid,
         )
     )
-    return env
+    return ProcessEnvironment(env)
 
 
 def _read_pytest_current_test_json(path: Path) -> dict[str, object]:

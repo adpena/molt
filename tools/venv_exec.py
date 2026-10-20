@@ -21,6 +21,7 @@ SRC_ROOT = ROOT / "src"
 
 
 from molt.process_spawn import forward_command  # noqa: E402
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder  # noqa: E402
 
 
 class VenvExecError(RuntimeError):
@@ -40,7 +41,7 @@ def resolve_venv(
     env: Mapping[str, str] | None = None,
     explicit: str | None = None,
 ) -> Path:
-    source = os.environ if env is None else env
+    source = ProcessEnvironment(os.environ if env is None else env)
     # UV_PROJECT_ENVIRONMENT is where uv sync placed the project environment
     # (CI custody puts it outside the checkout); the checkout .venv is uv's
     # default only when nothing names another location.
@@ -84,8 +85,8 @@ def venv_env(
     *,
     venv: Path,
     env: Mapping[str, str] | None = None,
-) -> dict[str, str]:
-    merged = dict(os.environ if env is None else env)
+) -> ProcessEnvironment:
+    merged = ProcessEnvironmentBuilder(os.environ if env is None else env)
     bin_dir = venv_bin_dir(venv)
     old_path = merged.get("PATH", "")
     merged["VIRTUAL_ENV"] = str(venv)
@@ -97,7 +98,7 @@ def venv_env(
     merged["PATH"] = (
         str(bin_dir) if not old_path else f"{bin_dir}{os.pathsep}{old_path}"
     )
-    return merged
+    return ProcessEnvironment(merged)
 
 
 def resolve_command(command: Sequence[str], *, venv: Path) -> list[str]:

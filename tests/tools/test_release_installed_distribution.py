@@ -21,6 +21,8 @@ import zipfile
 import pytest
 
 from molt.toolchain_identity import find_executable
+from molt.process_environment import NameRule, ProcessEnvironment
+from tools.release import verify_consumer
 from tools.release import build_bundle, release_authority, release_model
 from tools.release.archive import ArchivePolicy
 from tools.release.binary_compatibility import wheel_platform_tag_matches
@@ -308,6 +310,44 @@ def test_consumer_environment_fails_closed_when_rust_shares_uv_directory(
     _tool(shared, "uv")
     with pytest.raises(RuntimeError, match="shares a PATH directory with uv"):
         rust_toolchain_absent_environment(_base_env(shared), root=tmp_path / "consumer")
+
+
+@pytest.mark.parametrize("rule", list(NameRule))
+def test_rust_absent_environment_uses_child_name_rule(tmp_path, monkeypatch, rule):
+    rust, tools = tmp_path / "rust", tmp_path / "tools"
+    original = ProcessEnvironment(
+        {
+            "Path": "unrelated POSIX variable",
+            "PATH": os.pathsep.join(map(str, (rust, tools))),
+            "cargo": "ambient selector",
+            "Rustup_Home": "ambient home",
+        },
+        rule=rule,
+    )
+
+    def candidates(command, *, environment):
+        directories = environment.get("PATH", "").split(os.pathsep)
+        directory = tools if command == "uv" else rust
+        return (
+            iter((directory / command,)) if str(directory) in directories else iter(())
+        )
+
+    monkeypatch.setattr(verify_consumer, "executable_candidates", candidates)
+    result = rust_toolchain_absent_environment(original, root=tmp_path / "consumer")
+    assert result.rule is rule
+    assert result["Path"] == (
+        str(tools) if rule is NameRule.WINDOWS else "unrelated POSIX variable"
+    )
+    if rule is NameRule.WINDOWS:
+        assert "PATH" not in dict(result) and "cargo" not in result
+        assert result["Rustup_Home"] == str(
+            tmp_path / "consumer/rust-toolchain-absent/rustup"
+        )
+    else:
+        assert result["PATH"] == str(tools)
+        assert result["cargo"] == "ambient selector"
+        assert result["Rustup_Home"] == "ambient home"
+    assert original["PATH"] == os.pathsep.join(map(str, (rust, tools)))
 
 
 def _admit(release_inputs, mutate):

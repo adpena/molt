@@ -61,6 +61,8 @@ from tests.process_guard_common import (
 
 import pytest
 
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TOOLS_ROOT = REPO_ROOT / "tools"
 
@@ -85,8 +87,7 @@ def drv():
 
 
 def _git(repo: Path, *args: str, check: bool = True, input_text: str | None = None):
-    env = os.environ.copy()
-    env["GIT_TERMINAL_PROMPT"] = "0"
+    env = ProcessEnvironment(os.environ).updated({"GIT_TERMINAL_PROMPT": "0"})
     proc = _run_fast_captured_command(
         ["git", "-C", str(repo), *args],
         cwd=REPO_ROOT,
@@ -234,8 +235,8 @@ def _gate_shell_command(*argv: str) -> str:
     return subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
 
 
-def _gate_caller_env(hostile: Path) -> dict[str, str]:
-    env = dict(os.environ)
+def _gate_caller_env(hostile: Path) -> ProcessEnvironmentBuilder:
+    env = ProcessEnvironmentBuilder(os.environ)
     for key in ("MOLT_VENV", "UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV"):
         env.pop(key, None)
     env.update(
@@ -308,8 +309,8 @@ def test_run_gate_activates_selected_project_python(drv, tmp_path, selection):
         _gate_shell_command("python", str(script), str(output)) for output in outputs
     )
     before = dict(env)
-    assert drv.run_gate(command, repo, env) == 0
-    assert env == before
+    assert drv.run_gate(command, repo, ProcessEnvironment(env)) == 0
+    assert dict(env) == before
     expected = {
         "token": "selected λ",
         "prefix": str(selected.resolve()),
@@ -323,7 +324,10 @@ def test_run_gate_activates_selected_project_python(drv, tmp_path, selection):
         expected,
         expected,
     ]
-    assert drv.run_gate('python -c "raise SystemExit(23)"', repo, env) == 23
+    assert (
+        drv.run_gate('python -c "raise SystemExit(23)"', repo, ProcessEnvironment(env))
+        == 23
+    )
 
 
 @pytest.mark.parametrize(
@@ -377,8 +381,8 @@ def test_run_gate_compound_shell_preserves_durable_cargo_environment(
         for output in outputs
     )
     before = dict(env)
-    assert drv.run_gate(command, repo, env) == 0
-    assert env == before
+    assert drv.run_gate(command, repo, ProcessEnvironment(env)) == 0
+    assert dict(env) == before
     first, second = [json.loads(path.read_text(encoding="utf-8")) for path in outputs]
     assert first == second
     assert first[wrapper] == env[wrapper]
@@ -402,9 +406,11 @@ def test_run_gate_invalid_selected_venv_never_launches_shell(drv, tmp_path, sele
         env["UV_PROJECT_ENVIRONMENT"] = str(repo / ".venv")
     before = dict(env)
     with pytest.raises(drv.DriverError, match="virtualenv Python not found"):
-        drv.run_gate("echo should-not-run > launched.txt", repo, env)
+        drv.run_gate(
+            "echo should-not-run > launched.txt", repo, ProcessEnvironment(env)
+        )
     assert not (repo / "launched.txt").exists()
-    assert env == before
+    assert dict(env) == before
 
 
 def test_run_gate_invalid_worktree_venv_does_not_fall_back_to_main(drv, tmp_path):
@@ -417,7 +423,9 @@ def test_run_gate_invalid_worktree_venv_does_not_fall_back_to_main(drv, tmp_path
     (work / ".venv").mkdir()
     with pytest.raises(drv.DriverError, match="virtualenv Python not found"):
         drv.run_gate(
-            "echo should-not-run > launched.txt", work, _gate_caller_env(main / ".venv")
+            "echo should-not-run > launched.txt",
+            work,
+            ProcessEnvironment(_gate_caller_env(main / ".venv")),
         )
     assert not (work / "launched.txt").exists()
 
@@ -427,12 +435,19 @@ def test_run_gate_missing_project_venv_refuses_python_but_allows_generic_shell(
 ):
     env = _gate_caller_env(tmp_path / "absent")
     with pytest.raises(drv.DriverError, match="virtualenv Python not found"):
-        drv.run_gate('python -c "raise SystemExit(0)"', tmp_path, env)
-    assert drv.run_gate("echo generic > observed.txt", tmp_path, env) == 0
+        drv.run_gate(
+            'python -c "raise SystemExit(0)"', tmp_path, ProcessEnvironment(env)
+        )
+    assert (
+        drv.run_gate("echo generic > observed.txt", tmp_path, ProcessEnvironment(env))
+        == 0
+    )
     assert (tmp_path / "observed.txt").read_text(encoding="utf-8").strip() == "generic"
     if os.name != "nt":
         # POSIX sh reports unmatched quotes; cmd.exe accepts that spelling.
-        assert drv.run_gate('echo "unterminated', tmp_path, env) != 0
+        assert (
+            drv.run_gate('echo "unterminated', tmp_path, ProcessEnvironment(env)) != 0
+        )
 
 
 def test_run_gate_missing_selected_python_alias_never_uses_host_path(drv, tmp_path):
@@ -444,7 +459,9 @@ def test_run_gate_missing_selected_python_alias_never_uses_host_path(drv, tmp_pa
     with pytest.raises(
         drv.DriverError, match="virtualenv command 'python3' not executable"
     ):
-        drv.run_gate('python3 -c "raise SystemExit(0)"', tmp_path, env)
+        drv.run_gate(
+            'python3 -c "raise SystemExit(0)"', tmp_path, ProcessEnvironment(env)
+        )
 
 
 @pytest.mark.parametrize("head", ['"python"', '"python3"', '"python.exe"'])
@@ -461,7 +478,7 @@ def test_run_gate_quoted_windows_python_requires_project_environment(
         drv.run_gate(
             f'{head} -c "raise SystemExit(0)"',
             tmp_path,
-            _gate_caller_env(tmp_path / "absent"),
+            ProcessEnvironment(_gate_caller_env(tmp_path / "absent")),
         )
 
 
@@ -658,7 +675,12 @@ def test_structured_gate_preserves_node_ids_without_a_shell(
     monkeypatch.setattr(
         molt_dev_common.harness_memory_guard, "guarded_completed_process", guarded
     )
-    assert molt_dev_common._run_live_gate(command, repo=tmp_path, env={}) == 0
+    assert (
+        molt_dev_common._run_live_gate(
+            command, repo=tmp_path, env=ProcessEnvironment({})
+        )
+        == 0
+    )
     assert observed == [
         [
             "python",
@@ -732,14 +754,21 @@ def test_run_gate_structured_arguments_use_selected_python(drv, tmp_path):
         "Path(sys.argv[1]).write_text(json.dumps([TOKEN,sys.prefix,sys.argv[2]]), encoding='utf-8')"
     )
     command = ("python", "-c", script, str(observed), literal)
-    assert drv.run_gate(command, repo, _gate_caller_env(tmp_path / "absent")) == 0
+    assert (
+        drv.run_gate(
+            command, repo, ProcessEnvironment(_gate_caller_env(tmp_path / "absent"))
+        )
+        == 0
+    )
     assert json.loads(observed.read_text(encoding="utf-8")) == [
         "selected",
         str(selected),
         literal,
     ]
     with pytest.raises(drv.DriverError, match="virtualenv Python not found"):
-        drv.run_gate(command, tmp_path, _gate_caller_env(tmp_path / "absent"))
+        drv.run_gate(
+            command, tmp_path, ProcessEnvironment(_gate_caller_env(tmp_path / "absent"))
+        )
 
 
 @pytest.mark.parametrize(
@@ -2008,7 +2037,7 @@ print(json.dumps(result))
                 str(SCRIPT_PATH),
             ],
             cwd=REPO_ROOT,
-            env=env,
+            env=ProcessEnvironment(env),
             timeout=30,
         )
         assert result.returncode == 0, result.stdout + result.stderr
@@ -2965,7 +2994,7 @@ def test_integrate_cli_starts_without_ambient_pythonpath(tmp_path):
     result = _run_fast_captured_command(
         [sys.executable, "-E", "-S", "-c", bootstrap],
         cwd=tmp_path,
-        env=env,
+        env=ProcessEnvironment(env),
     )
     assert result.returncode == 0, result.stderr
     assert "--expected-upstream" in result.stdout
@@ -3032,7 +3061,7 @@ version_pattern = '.*'
         drv.GateConfig,
         "environments",
         lambda self, gates, *, baseline: {
-            gate.toolchains: dict(baseline) for gate in gates
+            gate.toolchains: ProcessEnvironment(baseline) for gate in gates
         },
     )
 
@@ -3154,7 +3183,7 @@ def test_transitive_cargo_metadata_availability_adds_no_build_requirement(drv):
     gates, _ = cfg.select(["docs/agent/V1_HANDOFF_FINDINGS.md"])
     # This is the real ledger-only policy, including its generator dependency.
     assert ("python", "git", "generators") in [gate.toolchains for gate in gates]
-    environments = {gate.toolchains: {} for gate in gates}
+    environments = {gate.toolchains: ProcessEnvironment({}) for gate in gates}
     assert cfg.cargo_outputs(environments) == {}
 
 
@@ -3337,11 +3366,12 @@ def test_selected_catalog_admission_preserves_imports_after_proof_plan_collectio
     result = run_guarded_test_process(
         [sys.executable, "-c", code],
         cwd=REPO_ROOT,
-        env={
-            **os.environ,
-            "PYTHONPATH": os.pathsep.join((str(REPO_ROOT), str(REPO_ROOT / "src"))),
-            "PYTEST_ADDOPTS": "",
-        },
+        env=ProcessEnvironment(os.environ).updated(
+            {
+                "PYTHONPATH": os.pathsep.join((str(REPO_ROOT), str(REPO_ROOT / "src"))),
+                "PYTEST_ADDOPTS": "",
+            }
+        ),
         timeout=60,
     )
     assert result.returncode == 0, result.stdout + result.stderr

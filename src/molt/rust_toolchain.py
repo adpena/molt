@@ -7,6 +7,8 @@ Keep this lookup separate from PATH discovery and preserve its provenance.
 
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironment
+
 from contextlib import contextmanager
 from dataclasses import dataclass
 import os
@@ -16,7 +18,6 @@ import sys
 import tomllib
 from typing import Generator, Iterator, Mapping, Sequence
 
-from molt.default_paths import executable_environment_value
 from molt.exact_json import string_keyed_mapping
 from molt.toolchain_identity import (
     find_executable,
@@ -146,7 +147,7 @@ def resolve_rustup_proxy(
         result = process_guard.run_completed_command(
             [os.fspath(entrypoint), "which", role],
             cwd=root,
-            env=dict(env),
+            env=ProcessEnvironment(env),
             check=False,
             capture_output=True,
             text=True,
@@ -258,15 +259,12 @@ def cargo_config_arguments(command: Sequence[str], *, cwd: Path) -> list[str]:
 
 def cargo_home_path(root: Path, env: Mapping[str, str]) -> Path:
     """Cargo home selection shared by config and external-subcommand lookup."""
-    home_value = executable_environment_value(
-        env, "CARGO_HOME", windows=os.name == "nt"
-    )
+    environment = ProcessEnvironment(env)
+    home_value = environment.get("CARGO_HOME", "")
     if home_value:
         home = Path(home_value)
     else:
-        profile = executable_environment_value(
-            env, "USERPROFILE" if os.name == "nt" else "HOME", windows=os.name == "nt"
-        )
+        profile = environment.get("USERPROFILE" if os.name == "nt" else "HOME", "")
         home = (Path(profile) if profile else Path.home()) / ".cargo"
     return home if home.is_absolute() else root / home
 
@@ -279,12 +277,10 @@ def cargo_external_subcommand_path(
     Keep lexical PATH order, including a deliberately lower-priority Cargo home;
     resolving aliases before the membership check changes Cargo's selection.
     """
-    path_value = executable_environment_value(env, "PATH", windows=os.name == "nt")
+    environment = ProcessEnvironment(env)
+    path_value = environment.get("PATH", "")
     directories: list[Path] = []
-    if any(
-        (name.casefold() == "path" if os.name == "nt" else name == "PATH")
-        for name in env
-    ):
+    if "PATH" in environment:
         # Rust's Windows split_paths ignores quotes and splits semicolons only
         # outside them. Cargo adds no implicit cwd beyond an empty PATH entry.
         if os.name == "nt":
@@ -301,7 +297,7 @@ def cargo_external_subcommand_path(
         else:
             chunks = path_value.split(":")
         directories = [Path(value) for value in chunks]
-    home_bin = cargo_home_path(cwd, env) / "bin"
+    home_bin = cargo_home_path(cwd, environment) / "bin"
     if str(home_bin) not in {str(directory) for directory in directories}:
         directories.insert(0, home_bin)
     name = f"cargo-{command}" + (".exe" if os.name == "nt" else "")

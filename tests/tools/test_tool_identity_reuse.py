@@ -13,6 +13,7 @@ from dataclasses import replace
 
 import pytest
 
+from molt.process_environment import NameRule, ProcessEnvironment
 from tests.executable_test_support import custody_spelling
 from tools import proof_plan
 from tools.proof_queue_pkg import (
@@ -22,6 +23,39 @@ from tools.proof_queue_pkg import (
 )
 
 pytestmark = pytest.mark.usefixtures("admitted_build_capacity")
+
+
+@pytest.mark.parametrize("rule", list(NameRule))
+def test_compile_and_probe_environment_names_follow_child_rule(rule):
+    env = ProcessEnvironment(
+        {
+            "Path": "mixed-tools",
+            "PATH": "tools",
+            "Rustflags": "-Copt-level=2",
+            "mlir_sys_220_prefix": "sdk",
+            "cargo_build_jobs": "8",
+            "SELECTED": "custom",
+        },
+        rule=rule,
+    )
+    selected = command_identity.compile_environment_selection(
+        env, configured_names=["selected"]
+    )
+    probe = command_identity._probe_environment_selection(env)
+    if rule is NameRule.EXACT:
+        assert selected == {}
+        assert probe == {"PATH": command_identity.canonical_json_sha256("tools")}
+    else:
+        assert selected == {
+            "Rustflags": command_identity.canonical_json_sha256("-Copt-level=2"),
+            "mlir_sys_220_prefix": command_identity.canonical_json_sha256("sdk"),
+            "SELECTED": command_identity.canonical_json_sha256("custom"),
+        }
+        assert probe == {
+            "Path": command_identity.canonical_json_sha256("tools"),
+            "Rustflags": command_identity.canonical_json_sha256("-Copt-level=2"),
+            "mlir_sys_220_prefix": command_identity.canonical_json_sha256("sdk"),
+        }
 
 
 def test_selected_content_capture_versions_content_and_rechecks_resolver_before_reuse(
@@ -549,7 +583,7 @@ def test_wasi_compiler_identity_selects_sdk_before_outer_command_or_path(
         # The request cwd anchors a relative tool-state selection.
         assert root == proof_plan.ROOT
         assert cwd == tmp_path
-        assert environ == {}
+        assert environ == ProcessEnvironment({}, rule=NameRule.host())
         selected.append(role)
         return compiler
 

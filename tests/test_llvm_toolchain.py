@@ -14,6 +14,11 @@ import pytest
 
 from molt import llvm_toolchain
 from molt.flag_strings import FlagStringRule
+from molt.process_environment import (
+    NameRule,
+    ProcessEnvironment,
+    ProcessEnvironmentBuilder,
+)
 from molt.llvm_toolchain import (
     LlvmToolchainConfigError,
     llvm_sys_prefix_env_var,
@@ -304,8 +309,9 @@ def test_llvm_prefix_resolution_rejects_split_binding_families(
         )
 
 
+@pytest.mark.parametrize("name_rule", [NameRule.EXACT, NameRule.WINDOWS])
 def test_discovery_accepts_versioned_llvm_config_outside_matching_prefix(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name_rule
 ) -> None:
     _write_facade(tmp_path, '"molt-backend-native/llvm"')
     _write_native(tmp_path, '"llvm22-1"', "221.0.1")
@@ -331,11 +337,16 @@ def test_discovery_accepts_versioned_llvm_config_outside_matching_prefix(
 
     discovery = llvm_toolchain.discover_llvm_toolchain(
         tmp_path,
-        environ={
-            "LLVM_SYS_221_PREFIX": str(prefix),
-            "PATH": str(external_config.parent),
-            "PATHEXT": ".EXE",
-        },
+        environ=ProcessEnvironment(
+            {
+                "LLVM_SYS_221_PREFIX": str(prefix),
+                "PATH" if name_rule is NameRule.EXACT else "Path": str(
+                    external_config.parent
+                ),
+                "PATHEXT": ".EXE",
+            },
+            rule=name_rule,
+        ),
     )
 
     assert discovery is not None
@@ -985,22 +996,26 @@ def test_apply_provisioned_wasm_toolchain_keeps_explicit_selectors_consistent(
         "CARGO_TARGET_WASM32_WASIP1_LINKER",
     ],
 )
+@pytest.mark.parametrize("name_rule", [NameRule.EXACT, NameRule.WINDOWS])
 def test_apply_wasi_projection_refuses_foreign_selector_atomically(
-    tmp_path: Path, key: str
+    tmp_path: Path, key: str, name_rule
 ) -> None:
     prefix = _write_wasi_sdk_installation(tmp_path)
     install = llvm_toolchain.load_wasi_sdk_installation(ROOT, prefix, verify_tree=False)
-    environment = {
-        "WASI_SDK_PATH": str(install.sdk),
-        key: "foreign",
-        "CFLAGS_wasm32-wasip1": "-O2",
-    }
-    original = dict(environment)
+    environment = ProcessEnvironmentBuilder(
+        {
+            "WASI_SDK_PATH": str(install.sdk),
+            key if name_rule is NameRule.EXACT else key.lower(): "foreign",
+            "CFLAGS_wasm32-wasip1": "-O2",
+        },
+        rule=name_rule,
+    )
+    original = ProcessEnvironment(environment)
     with pytest.raises(llvm_toolchain.LlvmToolchainConfigError, match="differs"):
         llvm_toolchain.apply_provisioned_wasm_toolchain(
             ROOT, environment, rust_target="wasm32-wasip1"
         )
-    assert environment == original
+    assert ProcessEnvironment(environment) == original
 
 
 def test_apply_provisioned_wasm_toolchain_never_guesses_without_an_sdk(
@@ -1179,9 +1194,99 @@ def test_default_wasm_projection_preserves_user_rust_selection_without_selecting
         ROOT, applied, installation=installation
     )
     assert set(managed) == set(delta)
-    assert applied == projected == {**prior, **delta}
+    assert (
+        ProcessEnvironment(applied)
+        == projected
+        == ProcessEnvironment({**prior, **delta})
+    )
     empty = llvm_toolchain.project_wasm_toolchain_environment(installation, environ={})
     assert not any(key.startswith("CARGO_TARGET_") for key in empty)
+
+
+@pytest.mark.parametrize("name_rule", [NameRule.EXACT, NameRule.WINDOWS])
+def test_wasm_sdk_projection_retains_name_rule_and_consumer_spelled_delta(
+    tmp_path, name_rule
+):
+    prefix = _write_wasi_sdk_installation(tmp_path)
+    installation = llvm_toolchain.load_wasi_sdk_installation(
+        ROOT, prefix, verify_tree=False
+    )
+    key = "CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS"
+    environment = ProcessEnvironment(
+        {
+            "PATH": "canonical path",
+            "Path": "alias path",
+            key: "--cfg canonical_flags",
+            key.lower(): "--cfg alias_flags",
+        },
+        rule=name_rule,
+    )
+    projected = llvm_toolchain.project_wasm_toolchain_environment(
+        installation, environ=environment, rust_target="wasm32-wasip1"
+    )
+    assert projected.rule is name_rule
+    assert projected["PATH"] == (
+        "canonical path" if name_rule is NameRule.EXACT else "alias path"
+    )
+    assert projected["Path"] == "alias path"
+    flags = FlagStringRule.CARGO_LIST.decode(projected[key])
+    assert (
+        "canonical_flags" if name_rule is NameRule.EXACT else "alias_flags"
+    ) in flags
+    assert (
+        "alias_flags" if name_rule is NameRule.EXACT else "canonical_flags"
+    ) not in flags
+    delta = llvm_toolchain.wasm_toolchain_environment_delta(
+        installation, environ=environment, rust_target="wasm32-wasip1"
+    )
+    assert delta[key] == projected[key]
+    assert key.lower() not in delta
+    assert "CC_wasm32-wasip1" in delta
+    assert dict(environment)["PATH"] == (
+        "canonical path" if name_rule is NameRule.EXACT else "alias path"
+    )
+
+
+@pytest.mark.parametrize("name_rule", [NameRule.EXACT, NameRule.WINDOWS])
+def test_native_sdk_projection_preserves_alias_and_path_precedence(
+    tmp_path, monkeypatch, name_rule
+):
+    install_module_view(monkeypatch, "sys", sys, llvm_toolchain, platform="linux")
+    pin = required_llvm_backend_pin(ROOT)
+    assert pin is not None
+    prefix = tmp_path / "SDK"
+    verification = SimpleNamespace(
+        prefix=prefix,
+        llvm_config=prefix / "bin/llvm-config",
+        version=pin.default_release,
+    )
+    environment = ProcessEnvironment(
+        {"PATH": "canonical path", "Path": "alias path"}, rule=name_rule
+    )
+    projected = llvm_toolchain.project_llvm_toolchain_environment(
+        ROOT, verification, environ=environment
+    )
+    assert projected.rule is name_rule
+    assert projected["PATH"].split(os.pathsep) == [
+        str(prefix / "bin"),
+        "canonical path" if name_rule is NameRule.EXACT else "alias path",
+    ]
+    assert projected["Path"] == (
+        "alias path" if name_rule is NameRule.EXACT else projected["PATH"]
+    )
+    assert environment["PATH"] == (
+        "canonical path" if name_rule is NameRule.EXACT else "alias path"
+    )
+    assert projected[pin.env_var] == str(prefix)
+
+
+@pytest.mark.parametrize("name_rule", [NameRule.EXACT, NameRule.WINDOWS])
+def test_sdk_probe_environment_keeps_the_explicit_name_rule(monkeypatch, name_rule):
+    install_module_view(monkeypatch, "sys", sys, llvm_toolchain, platform="linux")
+    environment = ProcessEnvironment({"Path": "alias path"}, rule=name_rule)
+    projected = llvm_toolchain.llvm_sdk_probe_environment(environment)
+    assert projected == environment
+    assert projected.rule is name_rule
 
 
 def test_wasm_ci_profile_rejects_receipt_asset_drift(tmp_path: Path) -> None:
@@ -1322,7 +1427,9 @@ def test_wasm_llvm_nm_checks_resolved_entrypoint_and_content_custody(
 
         def find_executable(command, *, environment, cwd):
             assert command == selected.name
-            assert environment == {"MOLT_LLVM_NM": raw, "PATH": str(selected.parent)}
+            assert environment == ProcessEnvironment(
+                {"MOLT_LLVM_NM": raw, "PATH": str(selected.parent)}
+            )
             assert cwd is None
             return selected
 
@@ -2368,7 +2475,7 @@ def test_projected_sdk_target_flags_have_complete_ordered_search_context(
     llvm_toolchain.apply_provisioned_wasm_toolchain(
         ROOT, applied, installation=installation, rust_target=rust_target
     )
-    assert applied == projected
+    assert ProcessEnvironment(applied) == projected
 
 
 def test_production_llvm_feature_keeps_pin_and_forces_static():

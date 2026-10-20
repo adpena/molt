@@ -5,6 +5,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from molt.process_environment import ProcessEnvironment
+
 from tools.bench_friends_env import _emit_progress
 from tools.bench_friends_types import MAX_FAILURE_MESSAGE_CHARS, PhaseResult
 
@@ -196,7 +198,7 @@ def _run_command(
     cmd: list[str],
     *,
     cwd: Path,
-    env: dict[str, str],
+    env: ProcessEnvironment,
     timeout_sec: int,
     stdout_path: Path,
     stderr_path: Path,

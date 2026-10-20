@@ -29,6 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 
 
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder  # noqa: E402
 from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
 from molt.process_guard import run_completed_command  # noqa: E402
 
@@ -349,7 +350,7 @@ def _run_with_evidence(
     run_dir: Path,
     stem: str,
     timeout: float,
-    env: dict[str, str] | None = None,
+    env: ProcessEnvironment | None = None,
 ):
     stdout_path = run_dir / f"{stem}.stdout"
     stderr_path = run_dir / f"{stem}.stderr"
@@ -486,7 +487,7 @@ def benchmark(
                         "benchmark executable changed after build and before direct launch"
                     )
                 order = "baseline-first" if index % 2 == 0 else "candidate-first"
-                env = dict(os.environ)
+                env = ProcessEnvironmentBuilder(os.environ)
                 env.update(child_env)
                 env["MOLT_CEXT_BENCH_CANDIDATE"] = candidate
                 env["MOLT_CEXT_BENCH_ORDER"] = order
@@ -504,7 +505,7 @@ def benchmark(
                     run_dir=run_dir,
                     stem=f"sample-{candidate}-{index:02d}",
                     timeout=sample_timeout,
-                    env=env,
+                    env=ProcessEnvironment(env),
                 )
                 sample = parse_sample(
                     Path(str(evidence["stdout_path"])).read_text(encoding="utf-8")

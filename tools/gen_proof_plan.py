@@ -25,6 +25,7 @@ from tools.proof_plan import (  # noqa: E402
     local_gate_commands,
 )
 from tools.generator_io import generator_main, write_generated_texts  # noqa: E402
+from molt.process_environment import ProcessEnvironment  # noqa: E402
 from molt.cargo_execution_policy import (  # noqa: E402
     PROOF_COMMAND_TIMEOUT_ENV,
     load_ci_cargo_policy,
@@ -52,7 +53,7 @@ def _index_projection(*, manifest: Path, check: bool) -> int:
         run_git_source_python,
     )
 
-    environment = dict(os.environ)
+    environment = ProcessEnvironment(os.environ)
     git = resolve_executable("git", environment=environment, label="staged source Git")
     try:
         relative_manifest = manifest.absolute().relative_to(ROOT)

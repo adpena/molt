@@ -773,7 +773,7 @@ def _link_runtime_staticlib_to_reloc_wasm(
         process = _run_completed_command(
             list(command),
             cwd=output_path.parent,
-            env=dict(cargo_plan.environment),
+            env=cargo_plan.environment,
             capture_output=True,
             memory_guard_prefix="MOLT_WASM_LINK",
             timeout=link_timeout,

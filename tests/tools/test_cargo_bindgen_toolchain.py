@@ -51,6 +51,108 @@ def _outputs(command: list[str]) -> cargo_output_environment.CargoOutputEnvironm
 
 
 @pytest.mark.parametrize("rule", list(NameRule))
+def test_proof_tool_binding_replaces_only_equivalent_environment_names(
+    tmp_path, monkeypatch, rule
+):
+    cargo = tmp_path / "selected-cargo"
+    monkeypatch.setattr(
+        command_identity, "_cargo_executable_path", lambda *_a, **_k: cargo
+    )
+    monkeypatch.setattr(
+        execution_environment,
+        "_require_cargo_build_tool_environment_context",
+        lambda *_a, **_k: {},
+    )
+    monkeypatch.setattr(
+        toolchain_capture,
+        "select_cargo_build_tool_environment",
+        lambda **_k: ({"CC": "selected-cc"}, {}),
+    )
+    inherited = ProcessEnvironment(
+        {
+            "Cargo": "mixed-cargo",
+            "Cc": "mixed-cc",
+            "CC": "old-cc",
+            "Rustup_Toolchain": "old",
+        },
+        rule=rule,
+    )
+    selected, contract = execution_environment._bind_cargo_build_tool_environment(
+        command_admission.envelope_for_command(["cargo", "+nightly", "build"]),
+        inherited,
+        {"override_names": ["CC"]},
+        cwd=tmp_path,
+    )
+    expected = {"CARGO": str(cargo), "CC": "selected-cc", "RUSTUP_TOOLCHAIN": "nightly"}
+    if rule is NameRule.EXACT:
+        expected.update(
+            {"Cargo": "mixed-cargo", "Cc": "mixed-cc", "Rustup_Toolchain": "old"}
+        )
+    assert selected.rule is rule
+    assert dict(selected) == expected
+    assert contract["override_names"] == ["CC"]
+    assert inherited["Cargo"] == "mixed-cargo"
+
+
+@pytest.mark.parametrize("rule", list(NameRule))
+def test_proof_config_tool_lookup_uses_environment_rule(tmp_path, monkeypatch, rule):
+    config = tmp_path / "cargo.toml"
+    config.write_text('build.rustc = "configured-rustc"', encoding="utf-8")
+    monkeypatch.setattr(
+        command_identity,
+        "_tool_configuration_identities",
+        lambda *_a, **_k: [{"path": str(config)}],
+    )
+    command = ["cargo", "build"]
+    env = ProcessEnvironment(
+        {"Rustc": "selected-rustc", "CARGO_HOME": str(tmp_path / "home")}, rule=rule
+    )
+    if rule is NameRule.EXACT:
+        with pytest.raises(ValueError, match="defines build.rustc"):
+            execution_environment._require_cargo_build_tool_environment_context(
+                command_admission.envelope_for_command(command),
+                outputs=_outputs(command),
+                cwd=tmp_path,
+                env=env,
+            )
+    else:
+        effective = execution_environment._require_cargo_build_tool_environment_context(
+            command_admission.envelope_for_command(command),
+            outputs=_outputs(command),
+            cwd=tmp_path,
+            env=env,
+        )
+        assert effective["RUSTC"] == "selected-rustc"
+
+
+@pytest.mark.parametrize("rule", list(NameRule))
+def test_proof_secondary_output_lookup_uses_environment_rule(
+    tmp_path, monkeypatch, rule
+):
+    monkeypatch.setattr(
+        command_identity, "_tool_configuration_identities", lambda *_a, **_k: []
+    )
+    env = ProcessEnvironment(
+        {"Cargo_Build_Target_Dir": "other", "CARGO_HOME": str(tmp_path / "home")},
+        rule=rule,
+    )
+    outputs = cargo_output_environment.CargoOutputEnvironment(
+        False, external_placement=True
+    )
+    envelope = command_admission.envelope_for_command(["cargo", "build"])
+    if rule is NameRule.WINDOWS:
+        with pytest.raises(ValueError, match="secondary build-dir/target-dir"):
+            execution_environment._require_cargo_build_tool_environment_context(
+                envelope, outputs=outputs, cwd=tmp_path, env=env
+            )
+    else:
+        effective = execution_environment._require_cargo_build_tool_environment_context(
+            envelope, outputs=outputs, cwd=tmp_path, env=env
+        )
+        assert effective["Cargo_Build_Target_Dir"] == "other"
+
+
+@pytest.mark.parametrize("rule", list(NameRule))
 def test_cargo_flag_capture_preserves_rules_and_serializes_cargo_names(
     tmp_path, monkeypatch, rule
 ):
@@ -85,11 +187,13 @@ def test_cargo_flag_capture_preserves_rules_and_serializes_cargo_names(
             capture_inputs=cache,
         )
         captured[selected_rule] = context
+        assert isinstance(_env, ProcessEnvironment)
+        assert _env.rule is selected_rule
         assert _env["rustflags"] == "-C opt-level=1"
         if selected_rule is NameRule.EXACT:
             assert _env["RUSTFLAGS"] == "-C opt-level=2"
         else:
-            assert "RUSTFLAGS" not in _env
+            assert "RUSTFLAGS" not in _env.child_block()
     assert captured[NameRule.EXACT]["environment"] == {}
     assert captured[NameRule.EXACT]["selected_flags"] == ["-C", "opt-level=2"]
     assert captured[NameRule.WINDOWS]["environment"] == {"RUSTFLAGS": "-C opt-level=1"}
@@ -354,7 +458,7 @@ def test_bindgen_inputs_survive_filter_and_selected_driver_reaches_supervisor(
     env, contract = execution_environment._deterministic_execution_environment(
         inherited, override_names=[]
     )
-    assert env == inherited
+    assert env == ProcessEnvironment(inherited, rule=NameRule.host())
     envelope = command_admission.envelope_for_command(["cargo", "build"])
     env, contract = execution_environment._bind_cargo_build_tool_environment(
         envelope, env, contract, cwd=tmp_path
@@ -407,7 +511,7 @@ def test_native_dependency_config_is_bound_before_tool_identity_and_cache_select
     env, contract = execution_environment._deterministic_execution_environment(
         inherited, override_names=["AWS_LC_SYS_SMALL"]
     )
-    assert env == inherited
+    assert env == ProcessEnvironment(inherited, rule=NameRule.host())
 
     def select(**kwargs):
         assert kwargs["env"]["AWS_LC_SYS_USE_SYSTEM"] == "0"
@@ -521,7 +625,7 @@ def test_non_build_command_does_not_select_bindgen(command, tmp_path, monkeypatc
         {"passed_names": [], "override_names": []},
         cwd=tmp_path,
     )
-    assert env == {}
+    assert env == ProcessEnvironment({}, rule=NameRule.host())
     assert "build_tool_selection" not in contract
 
 
@@ -816,7 +920,7 @@ def test_missing_rustup_formatter_component_preserves_optional_vs_explicit_polic
 
     def unavailable(command, **kwargs):
         assert kwargs["cwd"] == tmp_path
-        assert kwargs["env"] == env
+        assert kwargs["env"] == ProcessEnvironment(env, rule=NameRule.host())
         return subprocess.CompletedProcess(command, 1, "", "component not installed\n")
 
     monkeypatch.setattr(process_guard, "run_completed_command", unavailable)
@@ -1119,7 +1223,9 @@ def test_documentation_temporary_executables_stay_in_existing_cargo_root(
         assert bound["cargo_output_environment"] == outputs.identity()
     else:
         # A non-documentation build keeps the caller's temporary directory.
-        assert env == {**original, **build_outputs}
+        assert env == ProcessEnvironment(
+            {**original, **build_outputs}, rule=NameRule.host()
+        )
         assert bound["cargo_output_environment"] == outputs.identity()
     assert original["TEMP"] == str(tmp_path / "guard-scratch")
 

@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import os
 from dataclasses import asdict
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 _SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
 
 
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder  # noqa: E402
 from tools import bench  # noqa: E402
 from tools import bench_suites  # noqa: E402
 from molt.node_runtime import NodeRuntimeError  # noqa: E402
@@ -30,7 +32,7 @@ from tools.perf_scoreboard_model import (  # noqa: E402
 )
 
 
-def _perfscore_build_env(spec: BackendSpec, profile: str) -> dict[str, str]:
+def _perfscore_build_env(spec: BackendSpec, profile: str) -> ProcessEnvironment:
     """Build the conformance/build env for a backend lane.
 
     Sets the constitution's session isolation and the LLVM_SYS prefix.
@@ -41,7 +43,7 @@ def _perfscore_build_env(spec: BackendSpec, profile: str) -> dict[str, str]:
     from tools.perf_scoreboard_build_profiles import profile_selection
 
     selection = profile_selection(spec, profile)
-    base = os.environ.copy()
+    base = ProcessEnvironmentBuilder(os.environ)
     base.update(selection.environment())
     # Scoreboard parity compares user-observable stderr. Profiler epochs emit
     # Molt-only diagnostics, so canonical timing runs explicitly disable ambient
@@ -63,12 +65,12 @@ def _perfscore_build_env(spec: BackendSpec, profile: str) -> dict[str, str]:
     return env
 
 
-def _cpython_run_env() -> dict[str, str]:
+def _cpython_run_env() -> ProcessEnvironment:
     """Env for the CPython baseline — src on PYTHONPATH, deterministic hashing."""
     env = bench._base_python_env()
     env["MOLT_SESSION_ID"] = PERFSCORE_SESSION_ID
     env.pop("MOLT_SESSION_ID_GENERATED", None)
-    return env
+    return ProcessEnvironment(env)
 
 
 def measure_cell(
@@ -693,7 +695,7 @@ def _measure_codon_warm(
     rss_mb: int,
     timeout_s: float,
     label: str,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> float | None:
     """Warm median wall time of a compiled Codon binary (safe_run-guarded)."""
     if env is None:

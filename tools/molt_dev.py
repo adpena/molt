@@ -134,6 +134,7 @@ import sys
 import tempfile
 import time
 import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -153,6 +154,7 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 bind_repository_imports(__file__)
 
 from molt import python_interpreter  # noqa: E402
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder  # noqa: E402
 
 from tools.molt_dev_common import (  # noqa: E402
     DEFAULT_REPO,
@@ -240,7 +242,7 @@ class Git:
         env["GIT_TERMINAL_PROMPT"] = "0"
         proc = _run_fast_captured_command(
             ["git", "-C", str(self.repo), *args],
-            env=env,
+            env=ProcessEnvironment(env),
             input_text=input_text,
         )
         if check and proc.returncode != 0:
@@ -668,8 +670,8 @@ class GateConfig:
         return selected, matched_rules
 
     def environments(
-        self, gates: list[SelectedGate], *, baseline: dict[str, str]
-    ) -> dict[tuple[str, ...], dict[str, str]]:
+        self, gates: list[SelectedGate], *, baseline: Mapping[str, str]
+    ) -> dict[tuple[str, ...], ProcessEnvironment]:
         """Project once per declared tool selection, never from aggregate admission."""
         from tools.proof_plan import (
             load_toolchain_policies,
@@ -694,7 +696,9 @@ class GateConfig:
                     environ=baseline,
                     root=self.root,
                 )
-                environments[gate.toolchains] = {**baseline, **projection.delta}
+                environments[gate.toolchains] = ProcessEnvironment(baseline).updated(
+                    projection.delta
+                )
             return environments
         except (ValueError, OSError, KeyError) as exc:
             raise DriverError(
@@ -703,7 +707,7 @@ class GateConfig:
 
     def cargo_outputs(
         self,
-        environments: dict[tuple[str, ...], dict[str, str]],
+        environments: dict[tuple[str, ...], ProcessEnvironment],
     ) -> dict[tuple[str, ...], tuple[Path, ...]]:
         """Outputs of gate owners explicitly declaring Cargo capability.
 
@@ -802,7 +806,7 @@ def _git_common_directory(repo: Path) -> Path | None:
     proc = _run_driver_command_bytes(
         ["git", "rev-parse", "--git-common-dir"],
         cwd=repo,
-        env=immutable_git_environment(os.environ),
+        env=ProcessEnvironment(immutable_git_environment(os.environ)),
         timeout=30.0,
         prefix="MOLT_DEV",
     )
@@ -824,7 +828,7 @@ def _integration_lock_path(repo: Path) -> Path:
     return common / "molt-integrate.lock"
 
 
-def _resolve_repo_venv(repo: Path, env: dict[str, str]) -> Path | None:
+def _resolve_repo_venv(repo: Path, env: Mapping[str, str]) -> Path | None:
     """Use the shared explicit selectors, then the checkout or main-worktree venv.
 
     An existing or explicitly selected environment is returned even when broken:
@@ -849,7 +853,7 @@ def _resolve_repo_venv(repo: Path, env: dict[str, str]) -> Path | None:
     return None
 
 
-def run_gate(cmd: str | tuple[str, ...], repo: Path, env: dict[str, str]) -> int:
+def run_gate(cmd: str | tuple[str, ...], repo: Path, env: ProcessEnvironment) -> int:
     """Run one shell gate or structured argument vector in the selected environment.
 
     The command is a shell string from the manifest (so it can use
@@ -893,8 +897,9 @@ def run_gate(cmd: str | tuple[str, ...], repo: Path, env: dict[str, str]) -> int
                         f"virtualenv command {head!r} not executable under "
                         f"{venv_exec.venv_bin_dir(venv)}; use the project Python alias"
                     )
-            env = venv_exec.venv_env(venv=venv, env=env)
-            env["MOLT_VENV"] = str(venv)
+            env = venv_exec.venv_env(venv=venv, env=env).updated(
+                {"MOLT_VENV": str(venv)}
+            )
         except venv_exec.VenvExecError as exc:
             raise DriverError(str(exc)) from exc
     return _run_live_gate(cmd, repo=repo, env=env)
@@ -992,7 +997,7 @@ def gate_time_summary(gate_seconds: list[tuple[float, str]], *, top: int = 8) ->
 
 def _admit_selected_output_capacity(
     outputs: dict[tuple[str, ...], tuple[Path, ...]],
-    environments: dict[tuple[str, ...], dict[str, str]],
+    environments: dict[tuple[str, ...], ProcessEnvironment],
 ) -> dict[tuple[str, ...], int]:
     """Check current volumes before any gate, without forecasting growth."""
     from molt.disk_capacity import minimum_headroom_bytes, require_build_capacity
@@ -1733,7 +1738,7 @@ def _main_worktree(git: Git) -> Path | None:
 
 def _difftest_toolchain_env(
     root: Path, session: str, extra_env: list[str] | None
-) -> dict[str, str]:
+) -> ProcessEnvironment:
     """Build the env that roots frontend AND runtime/backend at the SAME tree.
 
     This is the hazard-12 fix in one place (and the unit-testable core): set
@@ -1742,7 +1747,7 @@ def _difftest_toolchain_env(
     diverge. ``extra_env`` items are ``KEY=VALUE`` passthroughs applied to both
     build and run (e.g. a trace flag).
     """
-    env = os.environ.copy()
+    env = ProcessEnvironmentBuilder(os.environ)
     env["MOLT_PROJECT_ROOT"] = str(root)
     existing_pp = env.get("PYTHONPATH")
     env["PYTHONPATH"] = str(root / "src") + (
@@ -1756,11 +1761,11 @@ def _difftest_toolchain_env(
             )
         key, value = kv.split("=", 1)
         env[key] = value
-    return env
+    return ProcessEnvironment(env)
 
 
 def _difftest_capture(
-    cmd: list[str], *, env: dict[str, str], cwd: Path, timeout: int
+    cmd: list[str], *, env: ProcessEnvironment, cwd: Path, timeout: int
 ) -> tuple[int, bytes, bytes]:
     """Run `cmd` capturing raw BYTES (not text) so stdout compares are exact.
 
@@ -1994,7 +1999,7 @@ def cmd_fix(args: argparse.Namespace) -> int:
     unstaged work); this is the one command their failures point to.
     """
     repo = Path(args.repo).resolve()
-    env = dict(os.environ)
+    env = ProcessEnvironment(os.environ)
     python = "python"
     steps = (
         ("pin text encodings", f"{python} tools/encoding_gate.py --fix"),

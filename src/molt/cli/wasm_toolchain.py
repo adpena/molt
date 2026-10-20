@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironment
+
 from collections.abc import Mapping
 from dataclasses import dataclass
 import functools
@@ -168,11 +170,11 @@ def rust_target_missing_message(
     )
 
 
-def _wasm_linker_version(path: Path, *, env: Mapping[str, str], cwd: Path) -> str:
+def _wasm_linker_version(path: Path, *, env: ProcessEnvironment, cwd: Path) -> str:
     result = _run_completed_command(
         [str(path), "--version"],
         capture_output=True,
-        env=dict(env),
+        env=env,
         cwd=cwd,
         memory_guard_prefix="MOLT_BUILD",
     )
@@ -189,7 +191,7 @@ def _wasm_linker_version(path: Path, *, env: Mapping[str, str], cwd: Path) -> st
 def _wasm_linker_binary_identity(
     path: Path,
     *,
-    env: Mapping[str, str],
+    env: ProcessEnvironment,
     cwd: Path,
 ) -> tuple[str, str]:
     with stable_executable_probe(path, label="runtime WASM linker") as (
@@ -218,7 +220,7 @@ def resolve_wasm_linker(
     )
     from molt.source_root import compiler_source_root
 
-    environment = dict(os.environ if env is None else env)
+    environment = ProcessEnvironment(os.environ if env is None else env)
     try:
         linker = resolve_wasi_sdk_tool(
             compiler_source_root(), "wasm-ld", environ=environment, cwd=cwd

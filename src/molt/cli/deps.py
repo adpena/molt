@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
+
 import datetime as dt
 import hashlib
 import ipaddress
@@ -290,14 +292,14 @@ def _molt_venv_python(venv: Path) -> Path:
     return venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
 
-def _project_dependency_env(venv: Path) -> dict[str, str]:
-    env = os.environ.copy()
+def _project_dependency_env(venv: Path) -> ProcessEnvironment:
+    env = ProcessEnvironmentBuilder(os.environ)
     env["UV_PROJECT_ENVIRONMENT"] = str(venv)
     env.pop("VIRTUAL_ENV", None)
     # These operations promise to apply the current project's declarations.
     env.pop("UV_NO_SYNC", None)
     env.pop("UV_FROZEN", None)
-    return env
+    return ProcessEnvironment(env)
 
 
 def install(

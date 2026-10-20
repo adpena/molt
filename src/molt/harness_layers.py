@@ -15,7 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Generator
+from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +26,7 @@ from molt.cargo_workspace import workspace_package_names
 from molt.dx import development_artifact_env, scratch_dir
 from molt.harness_report import LayerResult, LayerStatus
 from molt.process_guard import raise_for_guard_outcome
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
 from molt.source_root import compiler_source_root
 
 _SOURCE_ROOT = compiler_source_root()
@@ -58,9 +59,10 @@ def _require_harness_memory_guard():
     return harness_memory_guard
 
 
-def _merged_env(env: dict[str, str] | None = None) -> dict[str, str]:
-    run_env = os.environ.copy()
-    if env:
+def _merged_env(env: Mapping[str, str] | None = None) -> ProcessEnvironment:
+    supplied = ProcessEnvironment(os.environ if env is None else env)
+    run_env = ProcessEnvironmentBuilder(os.environ, rule=supplied.rule)
+    if env is not None:
         run_env.update(env)
     return development_artifact_env(
         compiler_source_root(),
@@ -71,7 +73,7 @@ def _merged_env(env: dict[str, str] | None = None) -> dict[str, str]:
 
 
 def harness_memory_limits(
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> "harness_memory_guard.HarnessMemoryLimits":
     guard = _require_harness_memory_guard()
     return guard.limits_from_env(HARNESS_MEMORY_PREFIX, _merged_env(env))

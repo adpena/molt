@@ -34,6 +34,7 @@ DEFAULT_BUDGET = ROOT / "bench" / "scoreboard" / "startup_budget.json"
 
 
 from tools import output_startup_size_audit as output_audit  # noqa: E402
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder  # noqa: E402
 from molt.python_interpreter import PythonInterpreter, probe_python_command  # noqa: E402
 from molt.default_paths import (  # noqa: E402
     executable_environment_value,
@@ -79,7 +80,12 @@ def _stats(samples_ms: list[float]) -> dict[str, Any]:
 
 
 def _measure(
-    command: list[str], *, env: dict[str, str], samples: int, timeout: float, label: str
+    command: list[str],
+    *,
+    env: ProcessEnvironment,
+    samples: int,
+    timeout: float,
+    label: str,
 ) -> dict[str, Any]:
     del label
     values: list[float] = []
@@ -171,7 +177,7 @@ def _build(
     case: output_audit.MatrixCase,
     script: Path,
     out_dir: Path,
-    env: dict[str, str],
+    env: ProcessEnvironment,
     timeout: float,
 ):
     result = output_audit._build_molt_artifact(
@@ -200,15 +206,15 @@ def _node_command(artifact: Path) -> list[str]:
     ]
 
 
-def _cpython_env(env: dict[str, str]) -> dict[str, str]:
-    isolated = dict(env)
+def _cpython_env(env: ProcessEnvironment) -> ProcessEnvironment:
+    isolated = ProcessEnvironmentBuilder(env)
     for name in ("PYTHONPATH", "PYTHONHOME", "UV_PROJECT_ENVIRONMENT"):
         isolated.pop(name, None)
     isolated["PYTHONNOUSERSITE"] = "1"
-    return isolated
+    return ProcessEnvironment(isolated)
 
 
-def _baseline_python(env: dict[str, str]) -> PythonInterpreter:
+def _baseline_python(env: ProcessEnvironment) -> PythonInterpreter:
     selected = executable_environment_value(env, "MOLT_STARTUP_PYTHON", sys.executable)
     if not selected or "\0" in selected:
         raise ValueError("MOLT_STARTUP_PYTHON must name a CPython executable")
@@ -222,7 +228,7 @@ def _measure_probe(
     name: str,
     script: Path,
     *,
-    env: dict[str, str],
+    env: ProcessEnvironment,
     baseline: PythonInterpreter,
     samples: int,
     timeout: float,
@@ -272,8 +278,7 @@ def _measure_probe(
     except Exception as exc:
         row["build_blocker"] = {"type": type(exc).__name__, "message": str(exc)}
         return row
-    trace_env = dict(env)
-    trace_env["MOLT_TRACE_RUNTIME_INIT"] = "1"
+    trace_env = env.updated({"MOLT_TRACE_RUNTIME_INIT": "1"})
     native_run = _measure(
         [str(native.artifact)],
         env=trace_env,

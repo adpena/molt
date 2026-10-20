@@ -18,6 +18,7 @@ import time
 from typing import BinaryIO
 
 from molt.default_paths import executable_environment_value, expand_user_path
+from molt.process_environment import ProcessEnvironment
 
 from molt.file_hashing import (
     DIGEST_RACY_WINDOW_NS,
@@ -222,12 +223,13 @@ def executable_name_candidates(
     """Expand executable suffixes solely from the captured PATHEXT policy."""
     if windows is None:
         windows = os.name == "nt"
+    environment = ProcessEnvironment(environment)
     if not windows:
         return (command,)
     extensions = tuple(
         extension.rstrip(".")
         for extension in (
-            executable_environment_value(environment, "PATHEXT", windows=True)
+            executable_environment_value(environment, "PATHEXT")
             or ".COM;.EXE;.BAT;.CMD;.VBS;.JS;.WS;.MSC"
         ).split(";")
         if extension
@@ -253,13 +255,12 @@ def executable_search_directories(
     """
     if windows is None:
         windows = os.name == "nt"
-    path = executable_environment_value(environment, "PATH", windows=windows)
+    environment = ProcessEnvironment(environment)
+    path = executable_environment_value(environment, "PATH")
     if not path:
         return ()
     roots: list[Path] = []
-    if windows and not any(
-        key.casefold() == "nodefaultcurrentdirectoryinexepath" for key in environment
-    ):
+    if windows and "NoDefaultCurrentDirectoryInExePath" not in environment:
         roots.append(cwd)
     for raw in path.split(";" if windows else ":"):
         root = Path(raw.strip('"') if windows else raw) if raw else cwd
@@ -1275,7 +1276,7 @@ def probe_executable(
             try:
                 completed = subprocess.run(
                     [str(entrypoint), *arguments],
-                    env=dict(environment),
+                    env=ProcessEnvironment(environment).child_block(),
                     check=False,
                     capture_output=True,
                     text=True,

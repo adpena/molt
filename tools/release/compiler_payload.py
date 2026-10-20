@@ -19,6 +19,7 @@ from molt.compiler_distribution import (
 )
 from molt.host_tool_products import HostToolProduct
 from molt.exact_json import write_exact
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
 from molt.toolchain_identity import (
     resolve_executable,
     stable_regular_file_content_identity,
@@ -79,27 +80,38 @@ REQUIRED_MARKERS = frozenset(
 )
 
 
-def source_environment() -> dict[str, str]:
-    allowed = {
-        "COMSPEC",
-        "HOME",
-        "HOMEDRIVE",
-        "HOMEPATH",
-        "PATH",
-        "PATHEXT",
-        "SYSTEMDRIVE",
-        "SYSTEMROOT",
-        "TEMP",
-        "TMP",
-        "USERPROFILE",
-        "WINDIR",
-    }
-    env = {key: value for key, value in os.environ.items() if key.upper() in allowed}
-    env.update(
-        GIT_CONFIG_GLOBAL=os.devnull,
-        GIT_CONFIG_NOSYSTEM="1",
-        GIT_OPTIONAL_LOCKS="0",
-        LC_ALL="C",
+def source_environment() -> ProcessEnvironmentBuilder:
+    inherited = ProcessEnvironment(os.environ)
+    allowed = ProcessEnvironment(
+        dict.fromkeys(
+            {
+                "COMSPEC",
+                "HOME",
+                "HOMEDRIVE",
+                "HOMEPATH",
+                "PATH",
+                "PATHEXT",
+                "SYSTEMDRIVE",
+                "SYSTEMROOT",
+                "TEMP",
+                "TMP",
+                "USERPROFILE",
+                "WINDIR",
+            },
+            "",
+        ),
+        rule=inherited.rule,
+    )
+    env = ProcessEnvironment(
+        {key: value for key, value in inherited.items() if key in allowed},
+        rule=inherited.rule,
+    ).updated(
+        {
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_OPTIONAL_LOCKS": "0",
+            "LC_ALL": "C",
+        }
     )
     return immutable_git_environment(env)
 

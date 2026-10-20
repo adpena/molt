@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironment
+
 import os
 from pathlib import Path
 import signal
@@ -87,7 +89,9 @@ def _smoke_probe_native_binary(binary: Path, target_triple: str | None) -> None:
         proc = _run_completed_command(
             [str(binary)],
             timeout=20,
-            env={**os.environ, "MOLT_BUILD_VALIDITY_PROBE": "1"},
+            env=ProcessEnvironment(os.environ).updated(
+                {"MOLT_BUILD_VALIDITY_PROBE": "1"}
+            ),
             cwd=binary.parent,
             capture_output=True,
             memory_guard_prefix="MOLT_BUILD",

@@ -288,7 +288,6 @@ def test_run_one_derives_dx_environment_from_requested_overrides_before_launch(
         "SCCACHE_DIR",
         "MOLT_DIFF_ROOT",
         "MOLT_DIFF_TMPDIR",
-        "MOLT_BACKEND_DAEMON_SOCKET_DIR",
         "PYTHONPYCACHEPREFIX",
         "TMPDIR",
         "TMP",
@@ -298,6 +297,13 @@ def test_run_one_derives_dx_environment_from_requested_overrides_before_launch(
         assert Path(derived[name]).is_relative_to(requested_root), (name, derived[name])
 
     launch_env = launch_observations[0]
+    # IPC directories follow the short host-socket policy, independently of
+    # artifact placement. The queue must preserve that selected path.
+    socket_dir = Path(derived["MOLT_BACKEND_DAEMON_SOCKET_DIR"])
+    assert socket_dir.is_absolute() and not socket_dir.is_relative_to(repo_root)
+    assert launch_env["MOLT_BACKEND_DAEMON_SOCKET_DIR"] == str(socket_dir)
+    if os.name != "nt":
+        assert len(os.fsencode(socket_dir / "moltbd.ffffffffffffffff.sock")) < 104
     assert launch_env["MOLT_EXT_ROOT"] == str(requested_root)
     assert launch_env["MOLT_TARGET_ROOT"] == str(requested_tools)
     assert launch_env["MOLT_SESSION_ID"] == session_id

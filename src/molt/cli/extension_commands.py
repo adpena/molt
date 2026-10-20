@@ -937,7 +937,7 @@ def extension_build(
     build_env = source_extension_compiler_environment(os.environ)
     # Reproducibility is a build input, never ambient policy.
     if deterministic or profile == "release":
-        build_env["SOURCE_DATE_EPOCH"] = "315532800"
+        build_env = build_env.updated({"SOURCE_DATE_EPOCH": "315532800"})
 
     module_rel = source_extension_artifact_path(module_parts, target_plan)
     init_symbol = f"PyInit_{module_parts[-1]}"

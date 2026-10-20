@@ -5,6 +5,7 @@ import argparse
 import os
 from pathlib import Path
 import sys
+from collections.abc import Mapping
 from typing import Literal, Sequence, cast
 
 
@@ -21,6 +22,7 @@ SRC_ROOT = REPO_ROOT / "src"
 
 
 from molt.llvm_toolchain import apply_provisioned_wasm_toolchain  # noqa: E402
+from molt.process_environment import ProcessEnvironmentBuilder  # noqa: E402
 from molt.dx import (  # noqa: E402
     CANONICAL_RUN_ENV_KEYS,
     DX_ENV_KEYS,
@@ -30,7 +32,7 @@ from molt.dx import (  # noqa: E402
 )
 
 
-def emit_shell_exports(env: dict[str, str], keys: Sequence[str]) -> str:
+def emit_shell_exports(env: Mapping[str, str], keys: Sequence[str]) -> str:
     return render_env(env, keys, "posix")
 
 
@@ -88,13 +90,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         session_prefix=args.session_prefix,
         prefer_external_artifacts=args.prefer_external_artifacts,
     )
-    base_env = dict(os.environ)
+    base_env = ProcessEnvironmentBuilder(os.environ)
     if args.session_id:
         base_env["MOLT_SESSION_ID"] = args.session_id
     if args.dx:
         base_env.setdefault("MOLT_UV_PROJECT_PURPOSE", args.uv_project_purpose)
         base_env.setdefault("MOLT_UV_PROJECT_PYTHON", args.uv_project_python)
-    env = (
+    env = ProcessEnvironmentBuilder(
         context.dx_env(base_env, create_dirs=False)
         if args.dx
         else context.canonical_env(base_env, create_dirs=False)

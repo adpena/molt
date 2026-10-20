@@ -17,6 +17,7 @@ import pytest
 
 from molt.cli import process_execution, quality_commands, script_commands
 from molt.node_runtime import NodeRuntime
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
 from molt.llvm_toolchain import LlvmBackendPin
 from tests.cli.process_guard import run_cli_test_process
 from tests.process_guard_common import install_module_view
@@ -24,7 +25,7 @@ from molt.cli import deps as cli_deps
 from molt.cli import debug_helpers as cli_debug_helpers
 from molt.cli import backend_cache as cli_backend_cache
 from molt.cli import wrapper_build as cli_wrapper_build
-from molt import toolchain_identity
+from molt import process_environment, toolchain_identity
 from molt.cli.toolchain_validation import _MaintenanceStep, _ValidationStep
 from molt.cli.wrapper_build import _WrapperBuildContract
 
@@ -117,10 +118,11 @@ def _fake_cli_harness(
         def __init__(
             self,
             prefix: str,
-            env: dict[str, str] | None,
+            env: ProcessEnvironment | None,
             repo_root: Path,
         ) -> None:
             self.prefix = prefix
+            assert env is None or isinstance(env, ProcessEnvironment)
             self.env = env
             self.repo_root = repo_root
 
@@ -128,7 +130,7 @@ def _fake_cli_harness(
         def from_env(
             cls,
             prefix: str,
-            env: dict[str, str] | None,
+            env: ProcessEnvironment | None,
             *,
             repo_root: Path,
         ):
@@ -136,7 +138,7 @@ def _fake_cli_harness(
                 {
                     "method": "context",
                     "prefix": prefix,
-                    "env": env,
+                    "env": None if env is None else env.child_block(),
                     "repo_root": repo_root,
                 }
             )
@@ -148,7 +150,7 @@ def _fake_cli_harness(
                     "method": "run",
                     "cmd": cmd,
                     "prefix": self.prefix,
-                    "env": self.env,
+                    "env": None if self.env is None else self.env.child_block(),
                     "repo_root": self.repo_root,
                     **kwargs,
                 }
@@ -158,6 +160,8 @@ def _fake_cli_harness(
             return subprocess.CompletedProcess(cmd, 0, "stdout\n", "stderr\n")
 
     class FakeMemoryGuard:
+        NameRule = process_environment.NameRule
+        ProcessEnvironment = process_environment.ProcessEnvironment
         HarnessExecutionContext = FakeContext
 
         @staticmethod
@@ -421,7 +425,7 @@ def test_cli_run_command_uses_memory_guard_prefix(
     rc = process_execution._run_command(
         ["python3", "-c", "print('ok')"],
         cwd=ROOT,
-        env={"PATH": "/usr/bin"},
+        env=ProcessEnvironment({"PATH": "/usr/bin"}),
         memory_guard_prefix="MOLT_BENCH",
     )
 
@@ -463,7 +467,7 @@ def test_cli_timed_command_uses_memory_guard_elapsed(
     result = process_execution._run_command_timed(
         ["python3", "-c", "print('ok')"],
         cwd=ROOT,
-        env={"PATH": "/usr/bin"},
+        env=ProcessEnvironment({"PATH": "/usr/bin"}),
         capture_output=True,
         memory_guard_prefix="MOLT_CLI",
     )
@@ -495,7 +499,7 @@ def test_cli_guard_preserves_operator_limits_for_sanitized_env(
     result = COMMAND_RUNTIME._run_completed_command(
         ["python3", "-c", "pass"],
         cwd=ROOT,
-        env={"PATH": "/usr/bin"},
+        env=ProcessEnvironment({"PATH": "/usr/bin"}),
         capture_output=True,
         memory_guard_prefix="MOLT_CLI",
     )
@@ -577,11 +581,13 @@ def test_maybe_enable_sccache_installs_shared_dx_cache_defaults(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     artifact_root = tmp_path / "artifacts"
-    env = {
-        "PATH": "/usr/bin",
-        "MOLT_EXT_ROOT": str(artifact_root),
-        "MOLT_USE_SCCACHE": "1",
-    }
+    env = ProcessEnvironmentBuilder(
+        {
+            "PATH": "/usr/bin",
+            "MOLT_EXT_ROOT": str(artifact_root),
+            "MOLT_USE_SCCACHE": "1",
+        }
+    )
     monkeypatch.setattr(
         CARGO_EXECUTION, "pinned_sccache", lambda _env: "/usr/bin/sccache"
     )
@@ -631,7 +637,7 @@ def test_cli_wrapper_build_uses_default_memory_guard(
         file_path=str(entry),
         module=None,
         build_args=[],
-        env={"PATH": "/usr/bin"},
+        env=ProcessEnvironment({"PATH": "/usr/bin"}),
         project_root=tmp_path,
         json_output=True,
         command="run",

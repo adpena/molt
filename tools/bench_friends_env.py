@@ -1,8 +1,13 @@
 import datetime as dt
 import os
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
+from molt.process_environment import (
+    ProcessEnvironment,
+    ProcessEnvironmentBuilder,
+)
 from tools.bench_friends_context import REPO_ROOT
 
 from tools import harness_memory_guard
@@ -78,14 +83,10 @@ _PASSTHROUGH_ENV_KEYS = {
     "WindowsSDKLibVersion",
     "WindowsSDKVersion",
 }
-_PASSTHROUGH_ENV_KEY_NAMES = {key.upper() for key in _PASSTHROUGH_ENV_KEYS}
 
 _PASSTHROUGH_ENV_PREFIXES = (
     "MOLT_BENCH_",
     "MOLT_MEMORY_GUARD_",
-)
-_PASSTHROUGH_ENV_PREFIX_NAMES = tuple(
-    prefix.upper() for prefix in _PASSTHROUGH_ENV_PREFIXES
 )
 
 
@@ -146,19 +147,22 @@ def _path_is_under(path: Path, root: Path) -> bool:
     return True
 
 
-def _materialize_output_env_paths(env: dict[str, str], *, output_root: Path) -> None:
+def _materialize_output_env_paths(env: Mapping[str, str], *, output_root: Path) -> None:
     """Create output-root env path custody before a suite process starts."""
     output_root = output_root.resolve()
+    env = ProcessEnvironment(env)
+    file_keys = ProcessEnvironment(
+        dict.fromkeys(_FILE_ENV_PATH_KEYS, ""), rule=env.rule
+    )
+    dir_keys = ProcessEnvironment(dict.fromkeys(_DIR_ENV_PATH_KEYS, ""), rule=env.rule)
     for key, value in env.items():
         if not value:
             continue
-        normalized_key = key.upper()
-        is_file_path = normalized_key in _FILE_ENV_PATH_KEYS or normalized_key.endswith(
+        normalized_key = env.rule.key(key)
+        is_file_path = key in file_keys or normalized_key.endswith(
             _FILE_ENV_PATH_SUFFIXES
         )
-        is_dir_path = normalized_key in _DIR_ENV_PATH_KEYS or normalized_key.endswith(
-            _DIR_ENV_PATH_SUFFIXES
-        )
+        is_dir_path = key in dir_keys or normalized_key.endswith(_DIR_ENV_PATH_SUFFIXES)
         if not is_file_path and not is_dir_path:
             continue
         candidates = (
@@ -178,23 +182,30 @@ def _materialize_output_env_paths(env: dict[str, str], *, output_root: Path) -> 
                 candidate_path.mkdir(parents=True, exist_ok=True)
 
 
-def _base_run_env() -> dict[str, str]:
-    canonical_key_names = {
-        key.upper() for key in harness_memory_guard.CANONICAL_RUN_ENV_KEYS
-    }
+def _base_run_env() -> ProcessEnvironment:
+    source = ProcessEnvironment(os.environ)
+    allowed = ProcessEnvironment(
+        dict.fromkeys(
+            _PASSTHROUGH_ENV_KEYS | set(harness_memory_guard.CANONICAL_RUN_ENV_KEYS),
+            "",
+        ),
+        rule=source.rule,
+    )
     inherited = {
         key: value
-        for key, value in os.environ.items()
-        if (normalized_key := key.upper()) in _PASSTHROUGH_ENV_KEY_NAMES
-        or normalized_key in canonical_key_names
+        for key, value in source.items()
+        if key in allowed
         or any(
-            normalized_key.startswith(prefix)
-            for prefix in _PASSTHROUGH_ENV_PREFIX_NAMES
+            source.rule.key(key).startswith(prefix)
+            for prefix in _PASSTHROUGH_ENV_PREFIXES
         )
     }
-    env = harness_memory_guard.canonical_harness_env(
-        inherited,
-        repo_root=REPO_ROOT,
+    env = ProcessEnvironmentBuilder(
+        harness_memory_guard.canonical_harness_env(
+            inherited,
+            repo_root=REPO_ROOT,
+        ),
+        rule=source.rule,
     )
     env["PYTHONHASHSEED"] = "0"
     env["PYTHONUNBUFFERED"] = "1"
@@ -203,4 +214,4 @@ def _base_run_env() -> dict[str, str]:
         env["TMP"] = tmpdir
         env["TEMP"] = tmpdir
     env.pop("PYTHONPATH", None)
-    return env
+    return ProcessEnvironment(env)

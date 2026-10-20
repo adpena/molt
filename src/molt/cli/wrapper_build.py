@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironment
+
 import hashlib
 import json
 import os
@@ -611,7 +613,7 @@ def _run_wrapper_build(
     file_path: str | None,
     module: str | None,
     build_args: Sequence[str],
-    env: Mapping[str, str],
+    env: ProcessEnvironment,
     project_root: Path,
     json_output: bool,
     command: str,
@@ -695,7 +697,7 @@ def _run_wrapper_build(
     start = time.monotonic()
     build_res = _run_completed_command(
         build_cmd,
-        env=dict(env),
+        env=env,
         cwd=project_root,
         capture_output=True,
         memory_guard_prefix=memory_guard_prefix,

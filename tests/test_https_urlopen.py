@@ -67,7 +67,7 @@ def _compile_and_run(source: str) -> str:
             session_id=os.environ.get("MOLT_SESSION_ID") or "https-urlopen",
             create_dirs=True,
         )
-        env["PYTHONPATH"] = str(MOLT_DIR / "src")
+        env = env.updated({"PYTHONPATH": str(MOLT_DIR / "src")})
         build = run_native_test_process(
             [
                 sys.executable,

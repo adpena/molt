@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
+
 import json
 import os
 import subprocess
@@ -24,7 +28,7 @@ FIXTURE = ROOT / "tests" / "fixtures" / "pending_call_probe"
 PROGRAM = FIXTURE / "finally_pending_observer.py"
 
 
-def _cpython_oracle_env(env: dict[str, str]) -> dict[str, str]:
+def _cpython_oracle_env(env: Mapping[str, str]) -> dict[str, str]:
     # -I isolates Python imports, not setuptools/sysconfig or C compiler input.
     # Use this interpreter's native build configuration, never an inherited
     # Molt/WASM cross-build override. Preserve PATH and all guard/custody limits;
@@ -69,7 +73,7 @@ def _cpython_oracle_env(env: dict[str, str]) -> dict[str, str]:
     }
 
 
-def _run_cpython_oracle(artifact_root: Path, env: dict[str, str]) -> Outputs:
+def _run_cpython_oracle(artifact_root: Path, env: Mapping[str, str]) -> Outputs:
     oracle_root = artifact_root / "cpython"
     oracle_env = _cpython_oracle_env(env)
     build = run_native_test_process(
@@ -104,16 +108,18 @@ def _run_cpython_oracle(artifact_root: Path, env: dict[str, str]) -> Outputs:
     return Outputs(oracle.stdout, oracle.stderr, oracle.returncode)
 
 
-def _test_env(artifact_root: Path) -> dict[str, str]:
+def _test_env(artifact_root: Path) -> ProcessEnvironment:
     base = dict(os.environ)
     # Preserve the caller's admitted compiler/runtime and proof-custody roots.
     # Only module discovery points at this test's extension directory; the DX
     # owner already resolves generated session IDs and defaults when absent.
-    env = development_artifact_env(
-        ROOT,
-        base,
-        session_prefix="finally-pending-observer",
-        create_dirs=True,
+    env = ProcessEnvironmentBuilder(
+        development_artifact_env(
+            ROOT,
+            base,
+            session_prefix="finally-pending-observer",
+            create_dirs=True,
+        )
     )
     env["PYTHONPATH"] = str(ROOT / "src")
     env["MOLT_MODULE_ROOTS"] = str(artifact_root)
@@ -121,12 +127,12 @@ def _test_env(artifact_root: Path) -> dict[str, str]:
     env["MOLT_HERMETIC_MODULE_ROOTS"] = "1"
     env.setdefault("MOLT_BACKEND_DAEMON", "0")
     env.setdefault("MOLT_CARGO_TIMEOUT", "900")
-    return env
+    return ProcessEnvironment(env)
 
 
 def _build_extension(
     artifact_root: Path,
-    env: dict[str, str],
+    env: Mapping[str, str],
     *,
     target: str,
     target_python: TargetPythonVersion,
@@ -182,7 +188,7 @@ def _build_extension(
 
 def _run_native_program(
     artifact_root: Path,
-    env: dict[str, str],
+    env: Mapping[str, str],
     target_python: TargetPythonVersion,
 ) -> subprocess.CompletedProcess[str]:
     native_path = artifact_root / ("observer.exe" if os.name == "nt" else "observer")

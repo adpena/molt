@@ -47,6 +47,11 @@ from molt.cargo_execution_policy import cargo_subprocess_environment  # noqa: E4
 from molt.memory_guard_paths import harness_guard_artifact_dir  # noqa: E402
 from molt.llvm_linker_roles import lexical_executable_path  # noqa: E402
 from molt.process_spawn import ProcessGroupKwargs, detached_process_group_kwargs  # noqa: E402
+from molt.process_environment import NameRule as NameRule  # noqa: E402
+from molt.process_environment import (  # noqa: E402
+    ProcessEnvironment,
+    ProcessEnvironmentBuilder,
+)
 from tools.compat import diff_output_layout  # noqa: E402
 
 CANONICAL_ROOT_ENV_KEYS = _CANONICAL_ROOT_ENV_KEYS
@@ -332,10 +337,11 @@ def _label_from_prefix(prefix: str) -> str:
 
 def _effective_env(env: Mapping[str, str] | None) -> Mapping[str, str]:
     if env is None:
-        return os.environ
-    merged = dict(os.environ)
+        return ProcessEnvironment(os.environ)
+    supplied = ProcessEnvironment(env)
+    merged = ProcessEnvironmentBuilder(os.environ, rule=supplied.rule)
     merged.update(env)
-    return merged
+    return ProcessEnvironment(merged)
 
 
 def _harness_prefers_external_artifacts(root: Path, env: Mapping[str, str]) -> bool:
@@ -352,20 +358,22 @@ def canonical_harness_env(
     *,
     repo_root: Path | None = None,
     force_default_keys: Collection[str] = (),
-) -> dict[str, str]:
+) -> ProcessEnvironment:
     """Return a subprocess env with DX-governed artifact/cache defaults installed."""
 
     root = (repo_root or _REPO_ROOT).resolve()
-    merged = dict(os.environ) if env is None else dict(env)
-    resolved = RunContext(
-        root,
-        session_prefix="guard",
-        prefer_external_artifacts=_harness_prefers_external_artifacts(root, merged),
-    ).canonical_env(
-        merged,
-        create_dirs=False,
-        force_default_keys=force_default_keys,
-        admit_toolchain_root=False,
+    merged = ProcessEnvironment(os.environ if env is None else env)
+    resolved = ProcessEnvironmentBuilder(
+        RunContext(
+            root,
+            session_prefix="guard",
+            prefer_external_artifacts=_harness_prefers_external_artifacts(root, merged),
+        ).canonical_env(
+            merged,
+            create_dirs=False,
+            force_default_keys=force_default_keys,
+            admit_toolchain_root=False,
+        )
     )
     # Admit before defaults cross a process boundary and become indistinguishable
     # from explicit caller selections in the differential child.
@@ -379,7 +387,7 @@ def canonical_harness_env(
             if merged.get(key)
         },
     )
-    return resolved
+    return ProcessEnvironment(resolved)
 
 
 def _artifact_root_from_env(env: Mapping[str, str] | None) -> Path:
@@ -2338,7 +2346,7 @@ def repo_process_sentinel(
 class HarnessExecutionContext:
     prefix: str
     repo_root: Path
-    env: Mapping[str, str]
+    env: ProcessEnvironment
     limits: HarnessMemoryLimits
     artifact_root: Path
 

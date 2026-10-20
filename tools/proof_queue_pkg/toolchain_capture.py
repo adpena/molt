@@ -141,7 +141,7 @@ def _run_rust_link_probe(
     unit: str,
     cwd: Path,
     compiler_cwd: Path,
-    env: Mapping[str, str],
+    env: ProcessEnvironment,
     timeout: float,
     probes: list[dict[str, object]],
     input: str | None = None,
@@ -163,7 +163,7 @@ def _run_rust_link_probe(
         result = _COMMANDS.run(
             command,
             cwd=cwd,
-            env=dict(env),
+            env=env,
             check=False,
             capture_output=True,
             text=True,
@@ -260,8 +260,7 @@ def capture_clippy_selection(
     fields = dict(
         line.split(": ", 1) for line in compiler_version.splitlines() if ": " in line
     )
-    selected_env = dict(env)
-    selected_env.update(
+    selected_env = ProcessEnvironment(env).updated(
         rust_toolchain_library_environment(Path(paths["cargo-clippy"]), env)
     )
     versions: dict[str, str] = {}
@@ -398,6 +397,7 @@ def select_cargo_build_tool_environment(
     proxies become their selected component before the same executable-input
     capture; Cargo documentation and doctests do not get a separate allowlist.
     """
+    env = ProcessEnvironment(env)
     updates: dict[str, str] = {}
     probes: list[dict[str, object]] = []
     search_diagnostics: list[dict[str, object]] = []
@@ -747,6 +747,7 @@ def _collect2_selected_linker(
     `-print-prog-name=ld` follows a different search and can name another
     file than the one collect2 runs.
     """
+    env = ProcessEnvironment(env)
     report = _run_rust_link_probe(
         [str(driver), *link_argv, "-Wl,-debug"],
         phase="collect2-linker",
@@ -963,6 +964,7 @@ def _cargo_forwarded_compiler_context(
     flag changes the first root, not the fallback. Never infer this from cwd or
     a hand-parsed Cargo.toml, and never compile an original package here.
     """
+    env = ProcessEnvironment(env)
     context_args, packages, _selectors, _root_override = _cargo_context_request(
         command, cwd=cwd
     )
@@ -1567,6 +1569,7 @@ def capture_llvm_sdk_selection(
     selection: Mapping[str, object], *, cwd: Path, env: Mapping[str, str]
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
     """Trace SDK verification and ordinary C final-link helpers without compiling."""
+    env = ProcessEnvironment(env)
     from molt.llvm_toolchain import (
         _llvm_link_closure,
     )
@@ -1574,7 +1577,7 @@ def capture_llvm_sdk_selection(
     prefix = Path(selection["prefix"])
     tools = {role: Path(value) for role, value in selection["tools"].items()}
     closure, _libraries = _llvm_link_closure(prefix, tools["llvm-config"])
-    probe_env = {**env, **selection["probe_environment"]}
+    probe_env = env.updated(cast(Mapping[str, str], selection["probe_environment"]))
     images = llvm_sdk_tool_images(selection)
     phases = []
     probes = []
@@ -1806,6 +1809,7 @@ def capture_native_compiler_process_images(
     captured_images: Sequence[Mapping[str, object]] = (),
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
     """Capture actual source-to-object driver phases in operation-owned storage."""
+    env = ProcessEnvironment(env)
     from molt.cli.native_link_plan import is_zig_compiler_command
     from molt.llvm_linker_roles import executable_entrypoint_name
 
@@ -2106,7 +2110,7 @@ def _cargo_flag_context(
     flag_kind: str = "rustflags",
     compiler_context: Mapping[str, object] | None = None,
     capture_inputs=None,
-) -> tuple[dict[str, object], dict[str, str]]:
+) -> tuple[dict[str, object], ProcessEnvironment]:
     from molt.cli.runtime_cargo_plan import (
         capture_cargo_configuration_inputs,
         cargo_selected_value,
@@ -2271,16 +2275,12 @@ def _cargo_flag_context(
             (root / "output").mkdir()
             safe = _proof_rust_probe_arguments(flags, root)
             argv = [*compiler_command, *cargo_target_query_arguments(target, safe)]
-            query_env = (
-                ProcessEnvironment(configured_env)
-                .updated(
-                    {
-                        "CARGO_ENCODED_RUSTFLAGS": FlagStringRule.CARGO_ENCODED.encode(
-                            safe, variable="CARGO_ENCODED_RUSTFLAGS"
-                        )
-                    }
-                )
-                .child_block()
+            query_env = ProcessEnvironment(configured_env).updated(
+                {
+                    "CARGO_ENCODED_RUSTFLAGS": FlagStringRule.CARGO_ENCODED.encode(
+                        safe, variable="CARGO_ENCODED_RUSTFLAGS"
+                    )
+                }
             )
             result = _run_rust_link_probe(
                 argv,
@@ -2306,7 +2306,7 @@ def _cargo_flag_context(
             selected, Path(scratch), documenter=flag_kind == "rustdocflags"
         )
     context["selected_flags"] = list(selected)
-    return context, ProcessEnvironment(configured_env).child_block()
+    return context, ProcessEnvironment(configured_env, rule=environment.rule)
 
 
 def _resolve_cargo_flag_context(
@@ -2581,15 +2581,17 @@ def toolchain_capture_environment(
     environment: Mapping[str, str],
     cwd: Path,
     cargo_command: Sequence[str] = ("cargo",),
-) -> Mapping[str, str]:
+) -> ProcessEnvironment:
     """Build generators observe Cargo's effective environment, including force."""
+    environment = ProcessEnvironment(environment)
     if policy.data.get("compiler_tool_selector") != "build-python":
         return environment
     from molt.cli.runtime_cargo_plan import capture_cargo_configuration_inputs
 
-    return capture_cargo_configuration_inputs(
+    configured = capture_cargo_configuration_inputs(
         cwd, env=environment, cargo_command=cargo_command
     )[1]
+    return ProcessEnvironment(configured, rule=environment.rule)
 
 
 def bind_build_python_environment(identity, *, policy, env, cwd, cargo_command):
@@ -2624,11 +2626,12 @@ def bind_build_python_environment(identity, *, policy, env, cwd, cargo_command):
     previous = env.get("MOLT_BUILD_PYTHON_SIGNATURE")
     if previous is not None and previous != signature:
         raise ValueError("build Python signature differs from its isolated capture")
-    bound = {
-        **env,
-        "MOLT_BUILD_PYTHON": str(entrypoint),
-        "MOLT_BUILD_PYTHON_SIGNATURE": signature,
-    }
+    bound = ProcessEnvironment(env).updated(
+        {
+            "MOLT_BUILD_PYTHON": str(entrypoint),
+            "MOLT_BUILD_PYTHON_SIGNATURE": signature,
+        }
+    )
     effective = toolchain_capture_environment(
         policy,
         environment=bound,
@@ -2646,7 +2649,7 @@ def bind_build_python_environment(identity, *, policy, env, cwd, cargo_command):
 def resolve_runtime_gate_cargo_operation(operation, *, cwd, env, compiler_host):
     """Resolve the one declared runtime-CABI operation through its existing owner."""
     if operation.environment != "runtime-wasi":
-        return list(operation.command), dict(env), None
+        return list(operation.command), ProcessEnvironment(env), None
     from molt.cli.runtime_cargo_plan import resolve_runtime_cargo_plan
     from tools.runtime_test_gate_plan import WASI_TARGET
 
@@ -2659,7 +2662,7 @@ def resolve_runtime_gate_cargo_operation(operation, *, cwd, env, compiler_host):
         rustflags_transform=lambda flags: (*flags, "-C", "link-arg=--export-table"),
     )
     plan.verify()
-    return list(plan.command), dict(plan.environment), plan
+    return list(plan.command), plan.environment, plan
 
 
 def rust_link_selections(
@@ -2717,6 +2720,7 @@ def _capture_runtime_gate_rust_operations(
     linker_build_tools,
     rustc_version,
 ):
+    env = ProcessEnvironment(env)
     from tools.proof_queue_pkg import command_admission
     from tools.proof_queue_pkg.command_identity import _rust_target
     from tools.runtime_test_gate_plan import cargo_operations
@@ -2958,6 +2962,7 @@ def _capture_rust_compilation(
     wasi_command_abi: WasiCAbiProjection | None = None,
 ):
     """One actual Rust/Cargo operation; its caller owns source admission."""
+    env = ProcessEnvironment(env)
     from tools.proof_queue_pkg import command_admission
 
     compiler_probes: list[dict[str, object]] = []
@@ -3180,14 +3185,18 @@ def _capture_rust_link_unit(
             result["path_kind"] = "selection"
         return result
 
-    probe_env = dict(env)
+    probe_env = ProcessEnvironment(env)
     # Cargo's synthetic and forwarded-context probes must use the same retained
     # compiler as metadata and payload, never select another Rustup component.
     if cargo is not None:
         from molt.rust_toolchain import rust_toolchain_library_environment
 
-        probe_env["RUSTC"] = str(rustc)
-        probe_env.update(rust_toolchain_library_environment(rustc, probe_env))
+        probe_env = probe_env.updated(
+            {
+                "RUSTC": str(rustc),
+                **rust_toolchain_library_environment(rustc, probe_env),
+            }
+        )
 
     mode = command_admission.rust_compilation_mode(
         command_argv,
@@ -3297,8 +3306,12 @@ def _capture_rust_link_unit(
             )
         _proof_rust_probe_arguments(documenter_flags, root, documenter=True)
         if cargo is not None:
-            probe_env["CARGO_ENCODED_RUSTFLAGS"] = FlagStringRule.CARGO_ENCODED.encode(
-                safe_flags, variable="CARGO_ENCODED_RUSTFLAGS"
+            probe_env = probe_env.updated(
+                {
+                    "CARGO_ENCODED_RUSTFLAGS": FlagStringRule.CARGO_ENCODED.encode(
+                        safe_flags, variable="CARGO_ENCODED_RUSTFLAGS"
+                    )
+                }
             )
         compiler_cwd = root if cargo is not None else cwd
         forwarded_context: dict[str, object] | None = None
@@ -3452,8 +3465,9 @@ def _capture_rust_link_unit(
                 + feature_table,
                 encoding="utf-8",
             )
-            probe_env["CARGO_TARGET_DIR"] = str(root / "target")
-            probe_env["CARGO_INCREMENTAL"] = "0"
+            probe_env = probe_env.updated(
+                {"CARGO_TARGET_DIR": str(root / "target"), "CARGO_INCREMENTAL": "0"}
+            )
             command = [
                 str(cargo),
                 "rustc",

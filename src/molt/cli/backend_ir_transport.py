@@ -25,7 +25,7 @@ def write_backend_ir(handle: BinaryIO, ir: Mapping[str, Any]) -> None:
     """
     encode = msgspec.msgpack.Encoder(order="sorted").encode
     handle.write(_container_header(len(ir), array=False))
-    for key, value in ir.items():
+    for key, value in sorted(ir.items()):
         handle.write(encode(key))
         if isinstance(value, list):
             handle.write(_container_header(len(value), array=True))

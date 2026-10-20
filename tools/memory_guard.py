@@ -27,6 +27,10 @@ if str(_REPO_ROOT) not in sys.path:
 from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
+from molt.process_environment import (  # noqa: E402
+    ProcessEnvironment,
+    ProcessEnvironmentBuilder,
+)
 
 DEFAULT_POLL_INTERVAL_SEC = 0.10
 DEFAULT_FAST_START_POLL_INTERVAL_SEC = 0.02
@@ -842,7 +846,7 @@ def run_guarded(
         raise TypeError("bytes input requires text=False")
     if not text and isinstance(input, str):
         raise TypeError("str input requires text=True")
-    child_env = dict(os.environ) if env is None else dict(env)
+    child_env = ProcessEnvironmentBuilder(os.environ if env is None else env)
     child_env[ACTIVE_ENV] = "1"
     child_env[ACTIVE_GUARD_PID_ENV] = str(os.getpid())
     guard_token, guard_marker = _write_active_guard_marker(
@@ -986,7 +990,7 @@ def run_guarded(
         child_env[_temporary_artifacts.SCRATCH_ENV] = str(scratch_lease.target)
         launch = _guarded_launch(
             command,
-            child_env,
+            ProcessEnvironment(child_env),
             child_rlimit_kb=child_rlimit_kb,
         )
         _update_active_guard_marker(
@@ -1028,7 +1032,11 @@ def run_guarded(
                 stderr_capture = tempfile.TemporaryFile(mode="w+b")
         popen_kwargs: ProcessSpawnKwargs = {
             "cwd": cwd,
-            "env": dict(launch.env) if launch.env is not None else None,
+            "env": (
+                ProcessEnvironment(launch.env).child_block()
+                if launch.env is not None
+                else None
+            ),
             "text": text,
             **_guarded_popen_process_isolation_kwargs(),
         }
@@ -2747,7 +2755,7 @@ def test_custody_launch_env(
     *,
     environ: Mapping[str, str] | None = None,
     cwd: str | Path | None = None,
-) -> dict[str, str]:
+) -> ProcessEnvironment:
     return _repro_context.test_custody_launch_env(
         command,
         environ=os.environ if environ is None else environ,
@@ -2929,7 +2937,7 @@ def _load_internal_command(environ: Mapping[str, str]) -> list[str] | None:
     )
 
 
-def _child_env_without_internal_keys(environ: Mapping[str, str]) -> dict[str, str]:
+def _child_env_without_internal_keys(environ: Mapping[str, str]) -> ProcessEnvironment:
     return _cli_contract.child_env_without_internal_keys(
         environ,
         internal_env_keys=_INTERNAL_ENV_KEYS,
@@ -2942,7 +2950,7 @@ def _worker_env(
     *,
     launch_id: str | None = None,
     startup_json: str | None = None,
-) -> dict[str, str]:
+) -> ProcessEnvironment:
     return _cli_contract.worker_env(
         environ,
         command,
@@ -3038,7 +3046,7 @@ def main(
         if _process_model.is_windows_process_model():
             completed = subprocess.run(
                 worker_argv,
-                env=_worker_env(current_env, command),
+                env=_worker_env(current_env, command).child_block(),
                 check=False,
                 **inherit_stdio_kwargs(),
                 **_guarded_popen_process_isolation_kwargs(),
@@ -3061,7 +3069,7 @@ def main(
         execve(
             sys.executable,
             worker_argv,
-            _worker_env(current_env, command),
+            _worker_env(current_env, command).child_block(),
         )
         print("memory_guard: failed to exec internal worker", file=sys.stderr)
         return 2

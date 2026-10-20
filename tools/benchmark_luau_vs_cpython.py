@@ -170,7 +170,7 @@ def compile_to_luau(
         or f"bench-luau-vs-cpython-{os.getpid()}",
         create_dirs=True,
     )
-    env.update(
+    env = env.updated(
         {
             "RUSTC_WRAPPER": "",
             "PYTHONPATH": str(REPO_ROOT / "src"),

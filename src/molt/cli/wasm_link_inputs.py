@@ -6,6 +6,8 @@ Read-only toolchain readiness and linker validation remain in wasm_toolchain.
 
 from __future__ import annotations
 
+from molt.process_environment import NameRule, ProcessEnvironment
+
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 import functools
@@ -82,7 +84,7 @@ def rust_target_libdir(
     environment: Mapping[str, str] | None = None,
     root: Path | None = None,
 ) -> Path | None:
-    selected = dict(os.environ if environment is None else environment)
+    selected = ProcessEnvironment(os.environ if environment is None else environment)
     cwd = (compiler_source_root() if root is None else root).resolve()
     rustc = find_executable(
         executable_environment_value(selected, "RUSTC", "rustc"),
@@ -102,6 +104,7 @@ def rust_target_libdir(
             identity.sha256,
             str(cwd),
             tuple(sorted(selected.items())),
+            selected.rule,
         )
 
 
@@ -112,6 +115,7 @@ def _rust_target_libdir_cached(
     generation: str,
     cwd: str,
     environment: tuple[tuple[str, str], ...],
+    rule: NameRule,
 ) -> Path | None:
     del generation  # The selected compiler generation participates in cache identity.
     try:
@@ -119,7 +123,7 @@ def _rust_target_libdir_cached(
             [rustc, "--print", "target-libdir", "--target", target_triple],
             capture_output=True,
             timeout=30,
-            env=dict(environment),
+            env=ProcessEnvironment(dict(environment), rule=rule),
             cwd=Path(cwd),
             memory_guard_prefix="MOLT_BUILD",
         )

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
+
 import contextlib
 import hashlib
 import io
@@ -624,7 +626,7 @@ def _run_locked_source_extension_producer(
     argv = replace(invocation, prepared=True).module_argv(
         str(environment.python_executable)
     )
-    child_environment = os.environ.copy()
+    child_environment = ProcessEnvironmentBuilder(os.environ)
     current_src = str((compiler_source_root() / "src").resolve())
     child_environment["PYTHONPATH"] = current_src
     child_environment.pop("PYTHONHOME", None)
@@ -637,7 +639,7 @@ def _run_locked_source_extension_producer(
     return process_guard.run_completed_command(
         argv,
         cwd=compiler_source_root(),
-        env=child_environment,
+        env=ProcessEnvironment(child_environment),
         check=False,
     ).returncode
 
@@ -764,7 +766,7 @@ def _run_meson_setup(
     # one fixed POSIX-absolute location that names no machine at all.
     argv.append(f"--prefix={MESON_INSTALL_PREFIX}")
     argv.extend(setup_args)
-    environment = {**os.environ, "NINJA": backend.command[0]}
+    environment = ProcessEnvironment(os.environ).updated({"NINJA": backend.command[0]})
     # Compiler detection can create a.out even when querying a linker version.
     # The existing build directory owns all Meson subprocess scratch output.
     result = _run_process(argv, cwd=build_root, env=environment)

@@ -18,6 +18,11 @@ from molt.dx import (
 )
 
 from molt.process_guard import run_completed_command as _run_completed_command
+from molt.process_environment import (
+    NameRule,
+    ProcessEnvironment,
+    ProcessEnvironmentBuilder,
+)
 from molt.llvm_toolchain import LlvmToolchainConfigError, selected_wasi_sdk_installation
 from molt.source_root import compiler_source_root
 from molt.wasi_sysroot import normalize_wasi_sysroot
@@ -213,6 +218,7 @@ def _managed_llvm_bin_directories(
     environment: Mapping[str, str],
     target_family: LlvmTargetFamily,
 ) -> tuple[Path, ...]:
+    environment = ProcessEnvironment(environment)
     roots: list[Path] = []
     if target_root is not None:
         roots.append(target_root)
@@ -224,11 +230,7 @@ def _managed_llvm_bin_directories(
     # Each source checkout's default tool state (molt.dx): a worktree shares
     # its checkout family's root and an installed compiler uses its Molt home.
     # An explicit MOLT_TARGET_ROOT is already the selected root above.
-    defaults = {
-        name: value
-        for name, value in environment.items()
-        if name.casefold() != "molt_target_root"
-    }
+    defaults = environment.without(("MOLT_TARGET_ROOT",))
     roots.extend(
         canonical_toolchain_root(checkout, defaults, require_exists=False)
         for checkout in _source_checkout_roots()
@@ -384,7 +386,9 @@ def llvm_tool_is_wasi_sdk(
     path: Path, *, environment: Mapping[str, str] | None = None
 ) -> bool:
     """Identify SDK provenance while retaining a tool's lexical entrypoint."""
-    effective_environment = os.environ if environment is None else environment
+    effective_environment = ProcessEnvironment(
+        os.environ if environment is None else environment
+    )
     sdk_bins = _selected_wasi_sdk_bins(effective_environment)
     provenance = _tool_is_wasi_sdk(path, sdk_bins, {})
     if provenance is None:
@@ -396,8 +400,8 @@ def _native_search_environment(
     environment: Mapping[str, str],
     selected_bins: tuple[Path, ...],
     observations: _ProvenanceObservations,
-) -> dict[str, str]:
-    result = dict(environment)
+) -> ProcessEnvironment:
+    result = ProcessEnvironmentBuilder(environment)
     directories = executable_search_directories(environment=environment, cwd=Path.cwd())
     admitted = [
         directory
@@ -407,18 +411,15 @@ def _native_search_environment(
     if admitted != list(directories):
         # Reuse the executable authority's quoted-PATH and implicit-cwd rules.
         # Preserve captured key spelling, including equivalent Windows aliases.
-        keys = [
-            key for key in result if (key.upper() if os.name == "nt" else key) == "PATH"
-        ]
-        for key in keys or ["PATH"]:
-            result[key] = os.pathsep.join(map(str, admitted))
+        result["PATH"] = os.pathsep.join(map(str, admitted))
         if os.name == "nt":
             result["NoDefaultCurrentDirectoryInExePath"] = "1"
-    return result
+    return ProcessEnvironment(result)
 
 
 def _rust_llvm_bin_directories(*, environment: Mapping[str, str]) -> tuple[Path, ...]:
     """Return rustc-matched LLVM tool directories for LTO object readers."""
+    environment = ProcessEnvironment(environment)
     probe_cwd = Path.cwd()
     try:
         rustc = resolve_executable(
@@ -430,7 +431,7 @@ def _rust_llvm_bin_directories(*, environment: Mapping[str, str]) -> tuple[Path,
             [str(rustc), "--print", "sysroot"],
             capture_output=True,
             timeout=10,
-            env=dict(environment),
+            env=environment,
             cwd=probe_cwd,
             memory_guard_prefix=None,
             encoding="utf-8",
@@ -443,7 +444,7 @@ def _rust_llvm_bin_directories(*, environment: Mapping[str, str]) -> tuple[Path,
             [str(rustc), "-vV"],
             capture_output=True,
             timeout=10,
-            env=dict(environment),
+            env=environment,
             cwd=probe_cwd,
             memory_guard_prefix=None,
             encoding="utf-8",
@@ -495,17 +496,19 @@ def _dedupe_search_directories(
 def _observed_search_directories(
     search_directories: tuple[str, ...],
     environment: tuple[tuple[str, str], ...],
+    environment_rule: NameRule,
     cwd: str,
 ) -> tuple[Path, ...]:
     """Reuse normalized directory objects while their configuration is stable."""
+    selected_environment = ProcessEnvironment(dict(environment), rule=environment_rule)
     return _dedupe_search_directories(
         (
             *map(Path, search_directories),
             *executable_search_directories(
-                environment=dict(environment), cwd=Path(cwd)
+                environment=selected_environment, cwd=Path(cwd)
             ),
         ),
-        environment=dict(environment),
+        environment=selected_environment,
     )
 
 
@@ -522,6 +525,7 @@ def _cached_llvm_named_tool_candidates(
     search_directories: tuple[str, ...],
     directory_identities: tuple[tuple[int, int, int, int, int], ...],
     environment_items: tuple[tuple[str, str], ...],
+    environment_rule: NameRule,
     cwd: str,
     module_file: str,
     finder_identity: int,
@@ -538,7 +542,7 @@ def _cached_llvm_named_tool_candidates(
         module_file,
         finder_identity,
     )
-    environment = dict(environment_items)
+    environment = ProcessEnvironment(dict(environment_items), rule=environment_rule)
     sdk_bins = _selected_wasi_sdk_bins(environment)
     observations: _ProvenanceObservations = {}
 
@@ -721,7 +725,9 @@ def llvm_named_tool_candidates(
         raise ValueError("at least one non-empty LLVM tool name is required")
     if target_family not in {"native", "wasm"}:
         raise ValueError(f"unknown LLVM target family: {target_family!r}")
-    effective_environment = dict(os.environ if environment is None else environment)
+    effective_environment = ProcessEnvironment(
+        os.environ if environment is None else environment
+    )
     sdk_bins = _selected_wasi_sdk_bins(effective_environment)
     observations: _ProvenanceObservations = {}
     for selected_bin in sdk_bins:
@@ -774,6 +780,7 @@ def llvm_named_tool_candidates(
             ),
         ),
         environment_items,
+        effective_environment.rule,
         cwd,
     )
     directory_identities = tuple(
@@ -785,6 +792,7 @@ def llvm_named_tool_candidates(
         normalized_search_directories,
         directory_identities,
         environment_items,
+        effective_environment.rule,
         cwd,
         os.path.abspath(__file__),
         id(find_executable),
@@ -818,7 +826,7 @@ def _tool_version(
             [str(path), "--version"],
             capture_output=True,
             timeout=10,
-            env=None if environment is None else dict(environment),
+            env=None if environment is None else ProcessEnvironment(environment),
             cwd=path.parent,
             memory_guard_prefix=None,
             encoding="utf-8",
@@ -852,7 +860,9 @@ def resolve_llvm_wasi_tool_family(
     environment: Mapping[str, str] | None = None,
 ) -> LlvmWasiToolFamily:
     """Resolve and attest the complete LLVM/WASI binary family exactly once."""
-    effective_environment = dict(os.environ if environment is None else environment)
+    effective_environment = ProcessEnvironment(
+        os.environ if environment is None else environment
+    )
     explicit = {
         role: _selected_tool_command(command, environment=effective_environment)
         for role, command in (explicit_commands or {}).items()

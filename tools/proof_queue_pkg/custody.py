@@ -21,6 +21,7 @@ from molt.process_spawn import (
 )
 from tools.proof_queue_pkg import state
 from molt.windows_process_api import process_query_api
+from molt.process_environment import ProcessEnvironment
 
 MEMORY_GUARD_POLL_SEC_ENV = "MOLT_MEMORY_GUARD_POLL_SEC"
 
@@ -204,7 +205,7 @@ def _launch_queued_command(
     command: list[str],
     *,
     cwd: Path,
-    env: dict[str, str],
+    env: ProcessEnvironment,
     stdout: TextIO,
 ) -> Popen[str]:
     """Launch through the queue-owned process boundary.
@@ -217,7 +218,7 @@ def _launch_queued_command(
     return Popen(
         command,
         cwd=cwd,
-        env=env,
+        env=env.child_block(),
         stdout=stdout,
         stderr=subprocess.STDOUT,
         text=True,

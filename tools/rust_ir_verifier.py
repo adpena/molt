@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 from collections.abc import Sequence
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 
 
+from molt.process_environment import ProcessEnvironment  # noqa: E402
 from molt.cargo_execution_policy import require_cargo_build_capacity  # noqa: E402
 from molt.dx import development_artifact_env  # noqa: E402
 from tools.command_execution import CommandExecutor  # noqa: E402
@@ -33,7 +35,7 @@ _COMMANDS = CommandExecutor.for_file(__file__)
 _DEFAULT_REQUEST_TIMEOUT_SECONDS = 60.0
 
 
-def _request_timeout_seconds(env: dict[str, str]) -> float:
+def _request_timeout_seconds(env: Mapping[str, str]) -> float:
     raw = env.get("MOLT_IR_VERIFIER_REQUEST_TIMEOUT_SEC", "").strip()
     if not raw:
         return _DEFAULT_REQUEST_TIMEOUT_SECONDS
@@ -168,14 +170,14 @@ def _process_metrics(pid: int) -> tuple[float, int]:
         return (0.0, 0)
 
 
-def _verifier_environment() -> dict[str, str]:
+def _verifier_environment() -> ProcessEnvironment:
     return development_artifact_env(ROOT)
 
 
 _BUILD_COMMAND = ("cargo", "build", "-p", "molt-ir", "--bin", "molt-ir-verify")
 
 
-def verifier_binary(*, env: dict[str, str] | None = None) -> Path:
+def verifier_binary(*, env: Mapping[str, str] | None = None) -> Path:
     env = _verifier_environment() if env is None else env
     target_root = Path(env["CARGO_TARGET_DIR"])
     binary = target_root / "debug" / _BINARY_NAME
@@ -198,10 +200,10 @@ class RustIrVerifier:
         self,
         *,
         command: Sequence[str] | None = None,
-        env: dict[str, str] | None = None,
+        env: Mapping[str, str] | None = None,
         request_timeout_seconds: float | None = None,
     ) -> None:
-        env = _verifier_environment() if env is None else dict(env)
+        env = _verifier_environment() if env is None else ProcessEnvironment(env)
         resolved_command = (
             [str(verifier_binary(env=env))]
             if command is None

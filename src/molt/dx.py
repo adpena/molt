@@ -12,10 +12,12 @@ import sys
 import tempfile
 import tomllib
 import uuid
-from collections.abc import Collection
+from collections.abc import Collection, MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Mapping, Sequence, cast
+
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
 
 from molt.cargo_execution_policy import cargo_compiler_wrappers, sccache_server_endpoint
 from molt.disk_capacity import capacity_bytes_from_gib, probe_capacity
@@ -421,7 +423,9 @@ def _looks_like_ambient_tmpdir(raw: str) -> bool:
     return normalized in {"/tmp", "/var/tmp"} or normalized.startswith("/var/folders/")
 
 
-def _drop_ambient_tmpdir(env: dict[str, str], *, prefer_external: bool) -> None:
+def _drop_ambient_tmpdir(
+    env: MutableMapping[str, str], *, prefer_external: bool
+) -> None:
     if not prefer_external:
         return
     if _env_bool(env, ("MOLT_PRESERVE_AMBIENT_TMPDIR",), default=False):
@@ -1336,7 +1340,7 @@ def pinned_sccache(env: Mapping[str, str]) -> str | None:
     return None if discovery is None else str(discovery.executable)
 
 
-def _ensure_sccache_wrapper(env: dict[str, str]) -> None:
+def _ensure_sccache_wrapper(env: MutableMapping[str, str]) -> None:
     """Wire ``RUSTC_WRAPPER=sccache`` for content-addressed, cross-worktree-shared
     rustc caching across EVERY DX/proof build path. When the pinned release is
     not provisioned, DEGRADE LOUDLY (cold builds saturate memory under parallel
@@ -1384,7 +1388,7 @@ def _ensure_sccache_wrapper(env: dict[str, str]) -> None:
     env["CARGO_INCREMENTAL"] = "0"
 
 
-def _install_dx_defaults(repo_root: Path, env: dict[str, str]) -> None:
+def _install_dx_defaults(repo_root: Path, env: MutableMapping[str, str]) -> None:
     ext_root = Path(env[ARTIFACT_ROOT_ENV]).expanduser()
     if "MOLT_BACKEND_DAEMON_SOCKET_DIR" not in env:
         env["MOLT_BACKEND_DAEMON_SOCKET_DIR"] = str(
@@ -1523,8 +1527,8 @@ class RunContext:
         create_dirs: bool = True,
         force_default_keys: Collection[str] = (),
         admit_toolchain_root: bool = True,
-    ) -> dict[str, str]:
-        env = dict(os.environ if base is None else base)
+    ) -> ProcessEnvironment:
+        env = ProcessEnvironmentBuilder(os.environ if base is None else base)
         try:
             check_process_environment(env, program="molt-dev")
         except EnvironmentRegistryError as exc:
@@ -1630,10 +1634,6 @@ class RunContext:
         install_default("RUFF_CACHE_DIR", ext_root / ".ruff-cache")
         # MOLT_TARGET_ROOT is durable toolchain state, not scratch capacity. The
         # same selector serves direct discovery, provisioning and DX children.
-        if os.name == "nt":
-            for key in tuple(env):
-                if key.casefold() == "molt_target_root":
-                    del env[key]
         env["MOLT_TARGET_ROOT"] = str(selected_toolchain_root)
         install_default("PYTHONPYCACHEPREFIX", run_scratch / "pycache")
         install_default("TMPDIR", run_scratch)
@@ -1659,9 +1659,9 @@ class RunContext:
                 value = env.get(key)
                 if value:
                     Path(value).expanduser().mkdir(parents=True, exist_ok=True)
-        return env
+        return ProcessEnvironment(env)
 
-    def root_env(self, base: Mapping[str, str] | None = None) -> dict[str, str]:
+    def root_env(self, base: Mapping[str, str] | None = None) -> ProcessEnvironment:
         """Return ``base`` with this context's Molt roots; create nothing.
 
         Only `MOLT_ROOT_ENV_KEYS` change, to the values `canonical_env`
@@ -1670,10 +1670,10 @@ class RunContext:
         values. A test session enters its roots this way (HF-114).
         """
 
-        env = dict(os.environ if base is None else base)
+        env = ProcessEnvironmentBuilder(os.environ if base is None else base)
         canonical = self.canonical_env(env, create_dirs=False)
         env.update({key: canonical[key] for key in MOLT_ROOT_ENV_KEYS})
-        return env
+        return ProcessEnvironment(env)
 
     def dx_env(
         self,
@@ -1681,11 +1681,13 @@ class RunContext:
         *,
         create_dirs: bool = True,
         force_default_keys: Collection[str] = (),
-    ) -> dict[str, str]:
-        env = self.canonical_env(
-            base,
-            create_dirs=create_dirs,
-            force_default_keys=force_default_keys,
+    ) -> ProcessEnvironment:
+        env = ProcessEnvironmentBuilder(
+            self.canonical_env(
+                base,
+                create_dirs=create_dirs,
+                force_default_keys=force_default_keys,
+            )
         )
         _install_dx_defaults(self.root, env)
         if create_dirs:
@@ -1693,7 +1695,7 @@ class RunContext:
                 value = env.get(key)
                 if value:
                     Path(value).expanduser().mkdir(parents=True, exist_ok=True)
-        return env
+        return ProcessEnvironment(env)
 
 
 def development_artifact_env(
@@ -1703,10 +1705,10 @@ def development_artifact_env(
     session_prefix: str = "dev",
     session_id: str | None = None,
     create_dirs: bool = True,
-) -> dict[str, str]:
+) -> ProcessEnvironment:
     """Resolve Molt developer build/cache/temp roots through the DX authority."""
 
-    env = dict(os.environ if base is None else base)
+    env = ProcessEnvironmentBuilder(os.environ if base is None else base)
     if session_id:
         inherited_generated_session = generated_session_id(env) and (
             env.get("MOLT_SESSION_ID", "").strip() == session_id
@@ -1717,16 +1719,18 @@ def development_artifact_env(
             # inherited from an outer guard.  Re-passing that guard's identical
             # generated ID is propagation, not a request for shard isolation.
             env.pop("MOLT_SESSION_ID_GENERATED", None)
-    env = RunContext(
-        repo_root,
-        session_prefix=session_prefix,
-        prefer_external_artifacts=True,
-    ).dx_env(env, create_dirs=create_dirs)
+    env = ProcessEnvironmentBuilder(
+        RunContext(
+            repo_root,
+            session_prefix=session_prefix,
+            prefer_external_artifacts=True,
+        ).dx_env(env, create_dirs=create_dirs)
+    )
     ensure_repo_src_pythonpath(repo_root, env)
-    return env
+    return ProcessEnvironment(env)
 
 
-def ensure_repo_src_pythonpath(repo_root: Path, env: dict[str, str]) -> None:
+def ensure_repo_src_pythonpath(repo_root: Path, env: MutableMapping[str, str]) -> None:
     src = repo_root.resolve() / "src"
     existing = env.get("PYTHONPATH", "")
     parts = [part for part in existing.split(os.pathsep) if part]
@@ -1734,7 +1738,7 @@ def ensure_repo_src_pythonpath(repo_root: Path, env: dict[str, str]) -> None:
         env["PYTHONPATH"] = str(src) if not existing else f"{src}{os.pathsep}{existing}"
 
 
-def bind_repo_src_pythonpath(repo_root: Path, env: dict[str, str]) -> None:
+def bind_repo_src_pythonpath(repo_root: Path, env: MutableMapping[str, str]) -> None:
     """Make one repository source tree the complete import-path authority."""
 
     env["PYTHONPATH"] = str(repo_root.resolve() / "src")
@@ -1800,8 +1804,8 @@ class DxProject:
         *,
         python: str | None,
         project_env_matches_python: bool | None = None,
-    ) -> dict[str, str]:
-        run_env = dict(env)
+    ) -> ProcessEnvironment:
+        run_env = ProcessEnvironmentBuilder(env)
         run_env.setdefault("PYTHONUNBUFFERED", "1")
         run_env["UV_PROJECT_ENVIRONMENT"] = str(self.uv_project_env_dir(run_env))
         for name in ("VIRTUAL_ENV", "PYTHONHOME", "CONDA_PREFIX", "CONDA_DEFAULT_ENV"):
@@ -1815,16 +1819,16 @@ class DxProject:
                 )
             if not env_matches:
                 run_env.pop("UV_NO_SYNC", None)
-        return run_env
+        return ProcessEnvironment(run_env)
 
     def canonical_env(
         self,
         base: Mapping[str, str] | None = None,
         *,
         create_dirs: bool = True,
-    ) -> dict[str, str]:
+    ) -> ProcessEnvironment:
         dx = self.load_config()
-        env = dict(os.environ if base is None else base)
+        env = ProcessEnvironmentBuilder(os.environ if base is None else base)
         for name in ("VIRTUAL_ENV", "PYTHONHOME", "CONDA_PREFIX", "CONDA_DEFAULT_ENV"):
             env.pop(name, None)
         prefer_external = bool(dx.get("prefer_external_artifacts"))
@@ -1864,13 +1868,15 @@ class DxProject:
                 if key in CANONICAL_ROOT_ENV_KEYS or key == "PYTHONPATH":
                     value = str(Path(value).expanduser().resolve())
                 env[key] = value
-        env = RunContext(
-            self.root,
-            session_prefix="dev",
-            prefer_external_artifacts=prefer_external,
-        ).canonical_env(
-            env,
-            create_dirs=create_dirs,
+        env = ProcessEnvironmentBuilder(
+            RunContext(
+                self.root,
+                session_prefix="dev",
+                prefer_external_artifacts=prefer_external,
+            ).canonical_env(
+                env,
+                create_dirs=create_dirs,
+            )
         )
         ensure_repo_src_pythonpath(self.root, env)
         env.setdefault("MOLT_SESSION_ID", f"dev-{os.getpid()}")
@@ -1886,22 +1892,24 @@ class DxProject:
             jobs_cfg = _memory_bounded_cargo_jobs()
         if jobs_cfg is not None:
             env.setdefault("CARGO_BUILD_JOBS", str(jobs_cfg))
-        return env
+        return ProcessEnvironment(env)
 
     def dx_env(
         self,
         base: Mapping[str, str] | None = None,
         *,
         create_dirs: bool = True,
-    ) -> dict[str, str]:
-        env = self.canonical_env(base, create_dirs=create_dirs)
+    ) -> ProcessEnvironment:
+        env = ProcessEnvironmentBuilder(
+            self.canonical_env(base, create_dirs=create_dirs)
+        )
         _install_dx_defaults(self.root, env)
         if create_dirs:
             for key in ("MOLT_BACKEND_DAEMON_SOCKET_DIR", "SCCACHE_DIR"):
                 value = env.get(key)
                 if value:
                     Path(value).expanduser().mkdir(parents=True, exist_ok=True)
-        return env
+        return ProcessEnvironment(env)
 
     def require_project_python(
         self,

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
+
 import contextlib
 from dataclasses import dataclass
 import os
@@ -228,7 +230,7 @@ def cargo_execution_evidence(
 
 # Cargo `--jobs` memory-bounding authority now lives in molt.dx (the resource
 # authority, importable without a cycle). See dx._memory_bounded_cargo_jobs.
-def _apply_memory_bounded_cargo_jobs(env: dict[str, str]) -> None:
+def _apply_memory_bounded_cargo_jobs(env: ProcessEnvironmentBuilder) -> None:
     """Default ``CARGO_BUILD_JOBS`` to a memory-fit ceiling when unset.
 
     An explicit operator/DX ``CARGO_BUILD_JOBS`` always wins; this only supplies
@@ -242,7 +244,7 @@ def _apply_memory_bounded_cargo_jobs(env: dict[str, str]) -> None:
         env["CARGO_BUILD_JOBS"] = str(jobs)
 
 
-def _maybe_enable_lld_link(env: dict[str, str]) -> None:
+def _maybe_enable_lld_link(env: ProcessEnvironmentBuilder) -> None:
     """On Windows, use LLVM ``lld-link`` as the MSVC linker when it is available.
 
     ``lld-link`` links the backend daemon / runtime staticlib dramatically faster
@@ -281,7 +283,7 @@ def _sccache_diag(msg: str) -> None:
     print(f"[molt sccache] {msg}", file=sys.stderr, flush=True)
 
 
-def _maybe_enable_sccache(env: dict[str, str]) -> None:
+def _maybe_enable_sccache(env: ProcessEnvironmentBuilder) -> None:
     if cargo_compiler_wrappers(env):
         normalized, _applied = normalize_cargo_environment(env)
         env.update(normalized)
@@ -309,7 +311,7 @@ def _maybe_enable_sccache(env: dict[str, str]) -> None:
             "set MOLT_USE_SCCACHE=1 to force. Using direct rustc."
         )
         return
-    cache_env = dict(env)
+    cache_env = ProcessEnvironmentBuilder(env)
     if not cache_env.get("SCCACHE_DIR"):
         # The DX authority owns the artifact root. Deriving it here fell back to
         # the checkout, which put the cache, and the server temp dir pinned
@@ -327,17 +329,21 @@ def _maybe_enable_sccache(env: dict[str, str]) -> None:
     )
 
 
-def _cargo_build_env(source: Mapping[str, str] | None = None) -> dict[str, str]:
-    env = dict(os.environ if source is None else source)
+def _cargo_build_env(
+    source: Mapping[str, str] | None = None,
+) -> ProcessEnvironmentBuilder:
+    env = ProcessEnvironmentBuilder(os.environ if source is None else source)
     if development_artifacts_requested(env):
         # The run context's target follows the one project rule
         # (molt.dx.project_cargo_target_dir): only a pinned MOLT_SESSION_ID
         # scopes it, never a per-process id.
-        env = development_artifact_env(
-            compiler_source_root(),
-            env,
-            session_prefix="cargo-build",
-            create_dirs=True,
+        env = ProcessEnvironmentBuilder(
+            development_artifact_env(
+                compiler_source_root(),
+                env,
+                session_prefix="cargo-build",
+                create_dirs=True,
+            ),
         )
     # Incremental compilation is the primary WARM-REBUILD accelerator: edit one
     # file -> recompile only that crate's changed codegen units, not the whole
@@ -348,7 +354,8 @@ def _cargo_build_env(source: Mapping[str, str] | None = None) -> dict[str, str]:
     # Explicit incremental policy wins only when it is compatible with the
     # active wrapper. The invariant is enforced here because every production
     # nested Cargo build obtains its environment through this authority.
-    env, _applied = normalize_cargo_environment(env, default_incremental="1")
+    normalized_env, _applied = normalize_cargo_environment(env, default_incremental="1")
+    env = ProcessEnvironmentBuilder(normalized_env)
     if sys.executable:
         env.setdefault("MOLT_BUILD_PYTHON", sys.executable)
     _apply_memory_bounded_cargo_jobs(env)
@@ -358,14 +365,14 @@ def _cargo_build_env(source: Mapping[str, str] | None = None) -> dict[str, str]:
 
 
 def _attest_sccache_stats(
-    sccache: str, label: str, *, cwd: Path, env: Mapping[str, str]
+    sccache: str, label: str, *, cwd: Path, env: ProcessEnvironment
 ) -> None:
     """Report the selected cache's cumulative counters, not per-build attribution."""
     try:
         result = _run_completed_command(
             [sccache, "--show-stats", "--stats-format", "json"],
             cwd=cwd,
-            env=dict(env),
+            env=env,
             capture_output=True,
             memory_guard_prefix="MOLT_BUILD",
             timeout=15,
@@ -477,14 +484,14 @@ def _run_cargo_attempt(
     cmd: list[str],
     *,
     cwd: Path,
-    env: Mapping[str, str],
+    env: ProcessEnvironment,
     timeout: float | None,
     tempfile_runner: _TempfileCargoRunner | None,
     progress_label: str | None,
     resolved_environment: bool = False,
 ) -> subprocess.CompletedProcess[Any]:
     normalized_env = (
-        dict(env) if resolved_environment else normalize_cargo_environment(env)[0]
+        env if resolved_environment else normalize_cargo_environment(env)[0]
     )
     if normalized_env.get("CARGO_TARGET_DIR") is None:
         raise ValueError(

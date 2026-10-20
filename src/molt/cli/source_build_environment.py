@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
+
 import json
 import os
 import shutil
@@ -187,7 +189,7 @@ def _probe_source_build_python(
 ) -> dict[str, object]:
     """One isolated bootstrap for recipe and realized-environment identities."""
 
-    probe_environment = os.environ.copy()
+    probe_environment = ProcessEnvironmentBuilder(os.environ)
     probe_environment.pop("PYTHONHOME", None)
     probe_environment.pop("PYTHONPATH", None)
     probe_environment["PYTHONNOUSERSITE"] = "1"
@@ -215,7 +217,7 @@ def _probe_source_build_python(
         encoding="utf-8",
         errors="replace",
         check=False,
-        env=probe_environment,
+        env=ProcessEnvironment(probe_environment),
         timeout=120,
     )
     if result.returncode != 0:
@@ -382,14 +384,14 @@ def _run_uv_sync(
     argv: Sequence[str],
     *,
     cwd: Path,
-    environment: Mapping[str, str],
+    environment: ProcessEnvironment,
 ) -> subprocess.CompletedProcess[bytes]:
     """Run the single provisioning mutation behind its module-owned seam."""
 
     return process_guard.run_completed_command(
         list(argv),
         cwd=cwd,
-        env=dict(environment),
+        env=environment,
         check=False,
     )
 
@@ -463,11 +465,12 @@ def _provision_source_build_environment(
                 sort_keys=True,
             )
 
-        environment = os.environ.copy()
+        environment = ProcessEnvironmentBuilder(os.environ)
         # This sync has an exact destination; the launcher's active venv is not
         # a second environment selector (nor a useful uv mismatch warning).
         environment.pop("VIRTUAL_ENV", None)
         environment["UV_PROJECT_ENVIRONMENT"] = str(root)
+        child_environment = ProcessEnvironment(environment)
         raw_base = getattr(sys, "_base_executable", None) or sys.executable
         # uv is the provisioner for the environment that will subsequently
         # launch guarded build work. The canonical file lock and provisional
@@ -491,7 +494,7 @@ def _provision_source_build_environment(
         result = _run_uv_sync(
             sync_argv,
             cwd=repo_root,
-            environment=environment,
+            environment=child_environment,
         )
         if result.returncode != 0:
             raise _schema.SourceBuildEnvironmentError(

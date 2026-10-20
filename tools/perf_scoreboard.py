@@ -115,6 +115,7 @@ from tools.perf_scoreboard_model import (  # noqa: E402
 # Reuse the canonical build + suite machinery rather than rebuilding a timing
 # loop. bench.py owns the daemon batch build, the memory guard, and the
 # binary-size / compile-time capture; bench_suites owns the curated suite.
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder  # noqa: E402
 from tools import bench  # noqa: E402
 from tools import bench_suites  # noqa: E402
 from tools import perf_methodology  # noqa: E402
@@ -811,7 +812,7 @@ def _resolve_sampler() -> str | None:
 def _profiling_popen(
     cmd: list[str],
     *,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> subprocess.Popen[str]:
     """Start one interactive profiling child under MOLT_BENCH process custody."""
     limits = harness_memory_guard.limits_from_env("MOLT_BENCH", env)
@@ -829,7 +830,7 @@ def _profiling_popen(
 def capture_cycle_profile(
     cmd: list[str],
     *,
-    env: dict[str, str],
+    env: Mapping[str, str],
     rss_mb: int,
     timeout_s: float,
     sample_seconds: int = 3,
@@ -1082,8 +1083,8 @@ class CodonRunner:
         cand = root / "lib" / "codon"
         return cand if cand.exists() else None
 
-    def _run_env(self) -> dict[str, str]:
-        env = _cpython_run_env()
+    def _run_env(self) -> ProcessEnvironment:
+        env = ProcessEnvironmentBuilder(_cpython_run_env())
         if self.lib_dir is not None:
             existing = env.get("DYLD_LIBRARY_PATH", "")
             env["DYLD_LIBRARY_PATH"] = (
@@ -1092,9 +1093,9 @@ class CodonRunner:
             # macOS hardened-runtime strips DYLD_* across some exec boundaries;
             # CODON_LIBRARY is also honored by codon-compiled binaries.
             env.setdefault("CODON_LIBRARY", str(self.lib_dir))
-        return env
+        return ProcessEnvironment(env)
 
-    def _ensure_tmp(self, env: dict[str, str]) -> Path:
+    def _ensure_tmp(self, env: Mapping[str, str]) -> Path:
         if self._tmp_dir is None:
             self._tmp_dir = bench._new_bench_temp(bench._bench_tmp_root(env), env)
         return Path(self._tmp_dir.name)

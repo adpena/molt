@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
+
 import os
 import shutil
 import sys
@@ -32,18 +34,20 @@ SCRIPT = (
 )
 
 
-def _native_env(root: Path) -> dict[str, str]:
-    env = development_artifact_env(
-        root,
-        os.environ,
-        session_prefix="bytearray-fill-range",
-        session_id=os.environ.get("MOLT_SESSION_ID") or "bytearray-fill-range-test",
-        create_dirs=True,
+def _native_env(root: Path) -> ProcessEnvironment:
+    env = ProcessEnvironmentBuilder(
+        development_artifact_env(
+            root,
+            os.environ,
+            session_prefix="bytearray-fill-range",
+            session_id=os.environ.get("MOLT_SESSION_ID") or "bytearray-fill-range-test",
+            create_dirs=True,
+        )
     )
     env["PYTHONPATH"] = str(root / "src")
     env.setdefault("CARGO_BUILD_JOBS", "1")
     env.setdefault("MOLT_BACKEND_DAEMON_CACHE_MB", "128")
-    return env
+    return ProcessEnvironment(env)
 
 
 def test_bytearray_counted_fill_native_parity(tmp_path: Path) -> None:

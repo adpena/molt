@@ -20,7 +20,7 @@ import pytest
 
 from molt import environment_registry as R
 from molt.dx import DxConfigError, RunContext
-from tests.process_guard_common import install_module_os_view
+from molt.process_environment import NameRule, ProcessEnvironment
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT / "tools") not in sys.path:
@@ -190,23 +190,35 @@ def test_retired_family_suffix_is_an_error_for_a_stem() -> None:
     assert f"{registry.stems[0].name}{suffix.replacement_suffix}" in errors[0].message
 
 
-def test_lower_case_spelling_is_reported_on_case_sensitive_platforms(
-    monkeypatch,
-) -> None:
-    install_module_os_view(monkeypatch, R, name="posix")
-    errors, warnings = R.inspect_environment({"molt_home": "/x"})
+def test_lower_case_spelling_is_reported_on_case_sensitive_platforms() -> None:
+    errors, warnings = R.inspect_environment(
+        ProcessEnvironment({"molt_home": "/x"}, rule=NameRule.EXACT)
+    )
     assert errors == []
     assert len(warnings) == 1
     assert "case-sensitive" in warnings[0].message
     assert "MOLT_HOME" in warnings[0].message
 
 
-def test_windows_matches_names_case_insensitively(monkeypatch) -> None:
-    install_module_os_view(monkeypatch, R, name="nt")
-    assert R.inspect_environment({"molt_home": "/x"}) == ([], [])
+def test_windows_matches_names_case_insensitively() -> None:
+    assert R.inspect_environment(
+        ProcessEnvironment({"molt_home": "/x"}, rule=NameRule.WINDOWS)
+    ) == ([], [])
     row = _retired_fixed_name()
-    errors, _warnings = R.inspect_environment({row.name.lower(): "1"})
+    errors, _warnings = R.inspect_environment(
+        ProcessEnvironment({row.name.lower(): "1"}, rule=NameRule.WINDOWS)
+    )
     assert len(errors) == 1 and row.replacement in errors[0].message
+
+
+@pytest.mark.parametrize("rule", list(NameRule))
+def test_diagnostic_does_not_expand_environment_name_characters(rule) -> None:
+    env = ProcessEnvironment({"MOLT_ß": "1"}, rule=rule)
+    assert R._molt_keys(env) == [("MOLT_ß", "MOLT_ß")]
+    errors, warnings = R.inspect_environment(env)
+    assert errors == []
+    assert len(warnings) == 1
+    assert warnings[0].message.startswith("MOLT_ß is not a Molt environment variable")
 
 
 def test_check_process_environment_prints_each_warning_once_and_raises(

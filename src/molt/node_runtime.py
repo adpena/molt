@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironment
+
 from collections.abc import Mapping
 from dataclasses import dataclass
 import os
@@ -39,7 +41,7 @@ def _probe_node(
     path: Path,
     *,
     source_root: Path,
-    environment: Mapping[str, str],
+    environment: ProcessEnvironment,
     guard_prefix: str,
 ) -> NodeRuntime:
     try:
@@ -123,11 +125,12 @@ def resolve_node_runtime(
     guard_prefix: str = "MOLT_CROSS",
 ) -> NodeRuntime:
     """Resolve and probe an ordinary host without benchmark identity work."""
+    environment = ProcessEnvironment(os.environ if environment is None else environment)
     root, path = _select_node_path(source_root=source_root, environment=environment)
     return _probe_node(
         path,
         source_root=root,
-        environment=os.environ if environment is None else environment,
+        environment=environment,
         guard_prefix=guard_prefix,
     )
 
@@ -187,6 +190,7 @@ def admit_node_execution(
     ordinary runners. Resolve indirection before admission: later samples never
     reselect an ambient Node or follow a retargeted entrypoint symlink.
     """
+    environment = ProcessEnvironment(os.environ if environment is None else environment)
     root, selected = _select_node_path(source_root=source_root, environment=environment)
     try:
         path = selected.resolve(strict=True)
@@ -195,7 +199,7 @@ def admit_node_execution(
         runtime = _probe_node(
             path,
             source_root=root,
-            environment=os.environ if environment is None else environment,
+            environment=environment,
             guard_prefix=guard_prefix,
         )
         plan = NodeExecutionPlan(

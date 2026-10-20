@@ -10,6 +10,7 @@ import types
 from pathlib import Path
 
 from molt.scientific_stack_versions import resolve_scientific_stack
+from molt.process_environment import NameRule, ProcessEnvironment
 
 import pytest
 
@@ -19,16 +20,10 @@ from tests.process_guard_common import install_module_view
 
 from tools import bench_friends, numpy_off_shelf_adapter, perf_authority
 from tools import tinygrad_off_shelf_adapter
+from tools import bench_friends_env
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-
-
-def _has_env_pair_casefold(env: dict[str, str], name: str, value: str) -> bool:
-    folded = name.upper()
-    return any(
-        key.upper() == folded and candidate == value for key, candidate in env.items()
-    )
 
 
 def _run_tool(*args: str) -> subprocess.CompletedProcess[str]:
@@ -167,32 +162,81 @@ def test_base_run_env_preserves_windows_toolchain_roots(
     monkeypatch.setenv("ProgramData", r"C:\ProgramData")
     monkeypatch.setenv("LOCALAPPDATA", r"C:\Users\tester\AppData\Local")
 
-    env = module._base_run_env()
+    env = ProcessEnvironment(module._base_run_env(), rule=NameRule.WINDOWS)
 
-    assert _has_env_pair_casefold(env, "ProgramFiles(x86)", r"C:\Program Files (x86)")
-    assert _has_env_pair_casefold(env, "ProgramFiles", r"C:\Program Files")
-    assert _has_env_pair_casefold(env, "ProgramW6432", r"C:\Program Files")
-    assert _has_env_pair_casefold(
-        env,
-        "CommonProgramFiles(x86)",
-        r"C:\Program Files (x86)\Common Files",
+    assert env["ProgramFiles(x86)"] == r"C:\Program Files (x86)"
+    assert env["ProgramFiles"] == r"C:\Program Files"
+    assert env["ProgramW6432"] == r"C:\Program Files"
+    assert env["CommonProgramFiles(x86)"] == r"C:\Program Files (x86)\Common Files"
+    assert env["CommonProgramFiles"] == r"C:\Program Files\Common Files"
+    assert env["CommonProgramW6432"] == r"C:\Program Files\Common Files"
+    assert env["ProgramData"] == r"C:\ProgramData"
+    assert env["LOCALAPPDATA"] == r"C:\Users\tester\AppData\Local"
+
+
+@pytest.mark.parametrize("rule", list(NameRule))
+def test_base_run_env_filters_names_with_child_rule(monkeypatch, rule):
+    install_module_view(
+        monkeypatch,
+        "os",
+        os,
+        bench_friends_env,
+        environ=ProcessEnvironment(
+            {
+                "Path": "alternate",
+                "PATH": "tools",
+                "home": "shadow",
+                "HOME": "real",
+                "molt_bench_note": "lowercase setting",
+                "MOLT_BENCH_KEEP": "canonical setting",
+                "UNRELATED": "injection",
+            },
+            rule=rule,
+        ),
     )
-    assert _has_env_pair_casefold(
-        env,
-        "CommonProgramFiles",
-        r"C:\Program Files\Common Files",
+    # DX's artifact defaults are outside this environment-name filter's claim.
+    monkeypatch.setattr(
+        bench_friends_env.harness_memory_guard,
+        "canonical_harness_env",
+        lambda inherited, **_kwargs: dict(inherited),
     )
-    assert _has_env_pair_casefold(
-        env,
-        "CommonProgramW6432",
-        r"C:\Program Files\Common Files",
+    env = bench_friends_env._base_run_env()
+    assert env.rule is rule
+    assert dict(env) == {
+        **(
+            {"Path": "tools", "home": "real", "molt_bench_note": "lowercase setting"}
+            if rule is NameRule.WINDOWS
+            else {"PATH": "tools", "HOME": "real"}
+        ),
+        "MOLT_BENCH_KEEP": "canonical setting",
+        "PYTHONHASHSEED": "0",
+        "PYTHONUNBUFFERED": "1",
+        "PYTHONNOUSERSITE": "1",
+    }
+
+
+@pytest.mark.parametrize("rule", list(NameRule))
+def test_output_environment_paths_use_child_name_rule(tmp_path, rule):
+    output_root = tmp_path / "output"
+    canonical = output_root / "canonical"
+    cache = output_root / "lowercase-cache"
+    directory = output_root / "lowercase-directory"
+    file_parent = output_root / "lowercase-file"
+    env = ProcessEnvironment(
+        {
+            "MOLT_BENCH_CACHE_DIR": str(canonical),
+            "molt_cache": str(cache),
+            "molt_bench_other_dir": str(directory),
+            "molt_bench_trace_file": str(file_parent / "trace.json"),
+        },
+        rule=rule,
     )
-    assert _has_env_pair_casefold(env, "ProgramData", r"C:\ProgramData")
-    assert _has_env_pair_casefold(
-        env,
-        "LOCALAPPDATA",
-        r"C:\Users\tester\AppData\Local",
-    )
+    bench_friends_env._materialize_output_env_paths(env, output_root=output_root)
+    assert canonical.is_dir()
+    assert cache.is_dir() is (rule is NameRule.WINDOWS)
+    assert directory.is_dir() is (rule is NameRule.WINDOWS)
+    assert file_parent.is_dir() is (rule is NameRule.WINDOWS)
+    assert not (file_parent / "trace.json").exists()
 
 
 def test_bench_friends_result_dict_round_trip_preserves_renderer_fields() -> None:
@@ -644,7 +688,7 @@ def test_bench_friends_phase_result_preserves_memory_guard_diagnostics(
     phase = module._run_command(
         ["python3", "-c", "raise SystemExit"],
         cwd=tmp_path,
-        env={},
+        env=ProcessEnvironment({}),
         timeout_sec=30,
         stdout_path=stdout_path,
         stderr_path=stderr_path,
@@ -694,7 +738,7 @@ def test_bench_friends_timeout_uses_typed_guard_outcome(
     intentional = module._run_command(
         ["python3", "-c", "raise SystemExit(124)"],
         cwd=tmp_path,
-        env={},
+        env=ProcessEnvironment({}),
         timeout_sec=30,
         stdout_path=tmp_path / "intentional.stdout.log",
         stderr_path=tmp_path / "intentional.stderr.log",
@@ -704,7 +748,7 @@ def test_bench_friends_timeout_uses_typed_guard_outcome(
     actual_timeout = module._run_command(
         ["python3", "-c", "raise SystemExit(124)"],
         cwd=tmp_path,
-        env={},
+        env=ProcessEnvironment({}),
         timeout_sec=30,
         stdout_path=tmp_path / "timeout.stdout.log",
         stderr_path=tmp_path / "timeout.stderr.log",
@@ -789,7 +833,7 @@ def test_bench_friends_marks_guard_infrastructure_as_non_evidence(
         runner,
         suite=suite,
         suite_workdir=tmp_path,
-        suite_env={},
+        suite_env=ProcessEnvironment({}),
         tokens={},
         logs_dir=tmp_path / "logs",
         dry_run=False,
@@ -888,7 +932,7 @@ def test_bench_friends_molt_runner_classifies_daemon_empty_response(
         runner,
         suite=suite,
         suite_workdir=tmp_path,
-        suite_env={},
+        suite_env=ProcessEnvironment({}),
         tokens={},
         logs_dir=tmp_path / "logs",
         dry_run=False,
@@ -2356,7 +2400,9 @@ def test_tinygrad_off_shelf_adapter_propagates_upat_interpret_nameerror(
             "--json",
         ],
         cwd=REPO_ROOT,
-        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "UPAT_COMPILE": "0"},
+        env=ProcessEnvironment(os.environ).updated(
+            {"PYTHONDONTWRITEBYTECODE": "1", "UPAT_COMPILE": "0"}
+        ),
         text=True,
         capture_output=True,
         check=False,

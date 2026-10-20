@@ -14,6 +14,7 @@ from typing import Any
 
 from molt._host_exit import process_returncode_for_direct_os_exit
 from molt.source_root import compiler_source_root
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
 from molt.process_spawn import (
     ProcessGroupKwargs,
     hidden_windows_process_group_kwargs,
@@ -103,12 +104,12 @@ def _windows_process_group_kwargs() -> ProcessGroupKwargs:
     )
 
 
-def handoff_to_outer_guard(argv: Sequence[str], env: Mapping[str, str]) -> None:
+def handoff_to_outer_guard(argv: Sequence[str], env: ProcessEnvironment) -> None:
     if _is_windows_process_model():
         try:
             completed = subprocess.run(
                 list(argv),
-                env=dict(env),
+                env=env.child_block(),
                 check=False,
                 **inherit_stdio_kwargs(),
                 **_windows_process_group_kwargs(),
@@ -124,7 +125,7 @@ def handoff_to_outer_guard(argv: Sequence[str], env: Mapping[str, str]) -> None:
             os._exit(127)
         _flush_standard_streams()
         os._exit(_process_exit_code(completed.returncode))
-    os.execvpe(argv[0], list(argv), env)
+    os.execvpe(argv[0], list(argv), env.child_block())
 
 
 def _orig_argv_pytest_module_args(orig: Sequence[str]) -> tuple[str, ...] | None:
@@ -384,7 +385,7 @@ def _pytest_user_temp_root(temproot: Path) -> Path:
 
 def run_context_test_env(
     environ: Mapping[str, str], *, repo_root: Path = ROOT
-) -> dict[str, str]:
+) -> ProcessEnvironment:
     """Return ``environ`` with the run context's Molt roots for a test process.
 
     A test builds where a developer run does: the Cargo target, build state
@@ -806,12 +807,12 @@ def ensure_repo_test_module_memory_guard(
             "repo test module was re-execed for memory custody but no live "
             "ancestor tools/memory_guard.py process could be verified"
         )
-    env = run_context_test_env(source)
+    env = ProcessEnvironmentBuilder(run_context_test_env(source))
     outer_guard_summary_dir(env).mkdir(parents=True, exist_ok=True)
     module_name, module_args = invocation
     argv = repo_test_module_outer_guard_argv(module_name, module_args, environ=env)
     env[TEST_SCRIPT_OUTER_GUARD_REEXEC_ENV] = "1"
-    handoff_to_outer_guard(argv, env)
+    handoff_to_outer_guard(argv, ProcessEnvironment(env))
     raise RuntimeError("failed to re-exec repo test module under tools/memory_guard.py")
 
 
@@ -865,12 +866,12 @@ def ensure_repo_test_script_memory_guard(
             "repo test script was re-execed for memory custody but no live "
             "ancestor tools/memory_guard.py process could be verified"
         )
-    env = run_context_test_env(source)
+    env = ProcessEnvironmentBuilder(run_context_test_env(source))
     outer_guard_summary_dir(env).mkdir(parents=True, exist_ok=True)
     script_path, script_args = invocation
     argv = repo_test_script_outer_guard_argv(script_path, script_args, environ=env)
     env[TEST_SCRIPT_OUTER_GUARD_REEXEC_ENV] = "1"
-    handoff_to_outer_guard(argv, env)
+    handoff_to_outer_guard(argv, ProcessEnvironment(env))
     raise RuntimeError("failed to re-exec repo test script under tools/memory_guard.py")
 
 
@@ -980,7 +981,7 @@ def ensure_pytest_memory_guard(
             "pytest was re-execed for memory custody but no live ancestor "
             "tools/memory_guard.py process could be verified"
         )
-    env = run_context_test_env(source)
+    env = ProcessEnvironmentBuilder(run_context_test_env(source))
     outer_guard_summary_dir(env).mkdir(parents=True, exist_ok=True)
     argv = outer_guard_argv(args, environ=env)
     env[PYTEST_OUTER_GUARD_REEXEC_ENV] = "1"
@@ -992,7 +993,7 @@ def ensure_pytest_memory_guard(
             environ=env,
         )
     )
-    handoff_to_outer_guard(argv, env)
+    handoff_to_outer_guard(argv, ProcessEnvironment(env))
     raise RuntimeError("failed to re-exec pytest under tools/memory_guard.py")
 
 

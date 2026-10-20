@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
+
 import argparse
 import json
 import os
@@ -20,17 +22,19 @@ from tests.runtime_profile_fixtures import process_profile_payload
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _base_env() -> dict[str, str]:
-    env = development_artifact_env(
-        ROOT,
-        os.environ,
-        session_prefix="tests-cli-debug",
-        session_id=os.environ.get("MOLT_SESSION_ID") or "tests-cli-debug",
-        create_dirs=True,
+def _base_env() -> ProcessEnvironment:
+    env = ProcessEnvironmentBuilder(
+        development_artifact_env(
+            ROOT,
+            os.environ,
+            session_prefix="tests-cli-debug",
+            session_id=os.environ.get("MOLT_SESSION_ID") or "tests-cli-debug",
+            create_dirs=True,
+        )
     )
     env["PYTHONPATH"] = str(ROOT / "src")
     env.setdefault("MOLT_BACKEND_DAEMON", "0")
-    return env
+    return ProcessEnvironment(env)
 
 
 def _python_executable() -> str:

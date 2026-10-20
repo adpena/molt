@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironmentBuilder
+
 import os
 import shutil
 import subprocess
@@ -174,13 +176,13 @@ def wasm_test_build_env(
     session_prefix: str = "test-wasm",
     session_id: str | None = None,
     create_dirs: bool = True,
-) -> dict[str, str]:
+) -> ProcessEnvironmentBuilder:
     """Return shared WASM test policy without overriding Cargo/DX authority.
 
     The pinned build session scopes scratch, never the Cargo target: the
     target is `wasm_test_cargo_target_dir`, so builds stay warm across tests.
     """
-    base = dict(os.environ if base_env is None else base_env)
+    base = ProcessEnvironmentBuilder(os.environ if base_env is None else base_env)
     base["CARGO_TARGET_DIR"] = str(wasm_test_cargo_target_dir(root, base))
     inherited_session_id = base.get("MOLT_SESSION_ID", "").strip()
     if generated_session_id(base):
@@ -188,12 +190,14 @@ def wasm_test_build_env(
     resolved_session_id = (
         session_id or inherited_session_id or f"{session_prefix}-{_wasm_test_lane()}"
     )
-    env = development_artifact_env(
-        root,
-        base,
-        session_prefix=session_prefix,
-        session_id=resolved_session_id,
-        create_dirs=create_dirs,
+    env = ProcessEnvironmentBuilder(
+        development_artifact_env(
+            root,
+            base,
+            session_prefix=session_prefix,
+            session_id=resolved_session_id,
+            create_dirs=create_dirs,
+        )
     )
     if linked is not None:
         env["MOLT_WASM_LINKED"] = "1" if linked else "0"

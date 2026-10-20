@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironment
+
 from molt.python_runtime_admission import BuildPythonAdmission
 
 import os
@@ -101,7 +103,7 @@ class _RuntimeWasmBuildSpec(NamedTuple):
     cargo_profile: str
     profile_dir: str
     incremental_enabled: bool
-    env: dict[str, str]
+    env: ProcessEnvironment
     artifact_selection: RuntimeArtifactSelection
     runtime_exports: tuple[str, ...]
     link_flags: tuple[str, ...]
@@ -120,7 +122,7 @@ class _RuntimeWasmBuildSpec(NamedTuple):
     def with_cargo_plan(self, plan: RuntimeCargoPlan) -> _RuntimeWasmBuildSpec:
         return self._replace(
             cargo_plan=plan,
-            env=dict(plan.environment),
+            env=plan.environment,
             cargo_rustflags=plan.rustflags,
             fingerprint_rustflags=(*plan.rustflags, *self.link_flags),
         )
@@ -160,8 +162,7 @@ def _resolve_runtime_wasm_cargo_specs(
     freestanding: bool,
 ) -> tuple[_RuntimeWasmBuildSpec, _RuntimeWasmBuildSpec]:
     """Resolve the one command/environment consumed by capture and execution."""
-    env = dict(shared.env)
-    env["CARGO_TARGET_DIR"] = str(shared.target_root)
+    env = shared.env.updated({"CARGO_TARGET_DIR": str(shared.target_root)})
     command = _runtime_wasm_combined_cargo_command(shared)
     command[0] = env.get("CARGO", command[0])
     link_args = wasm_link_args_from_rust_flag_tokens(shared.link_flags)
@@ -453,7 +454,7 @@ def _compute_runtime_wasm_build_spec(
         cargo_profile=cargo_profile,
         profile_dir=profile_dir,
         incremental_enabled=incremental_enabled,
-        env=env,
+        env=ProcessEnvironment(env),
         artifact_selection=artifact_selection,
         runtime_exports=runtime_exports,
         link_flags=link_flags,

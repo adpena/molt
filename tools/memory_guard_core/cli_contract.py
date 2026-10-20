@@ -4,6 +4,7 @@ import argparse
 from collections.abc import Mapping, Sequence
 import json
 from pathlib import Path
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
 
 
 INTERNAL_LAUNCH_ID_ENV = "MOLT_MEMORY_GUARD_LAUNCH_ID"
@@ -155,11 +156,8 @@ def child_env_without_internal_keys(
     environ: Mapping[str, str],
     *,
     internal_env_keys: Sequence[str],
-) -> dict[str, str]:
-    child_env = dict(environ)
-    for key in internal_env_keys:
-        child_env.pop(key, None)
-    return child_env
+) -> ProcessEnvironment:
+    return ProcessEnvironment(environ).without(internal_env_keys)
 
 
 def worker_env(
@@ -170,15 +168,15 @@ def worker_env(
     command_env_name: str,
     launch_id: str | None = None,
     startup_json: str | None = None,
-) -> dict[str, str]:
-    result = dict(environ)
+) -> ProcessEnvironment:
+    result = ProcessEnvironmentBuilder(environ)
     result[command_env_name] = json.dumps(list(command))
     result[worker_env_name] = "1"
     if launch_id is not None or startup_json is not None:
         result[INTERNAL_LAUNCH_ID_ENV] = launch_id or ""
         result[INTERNAL_STARTUP_PATH_ENV] = startup_json or ""
         interactive_launch(result)
-    return result
+    return ProcessEnvironment(result)
 
 
 def worker_argv(

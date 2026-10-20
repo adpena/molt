@@ -15,6 +15,7 @@ import pytest
 import molt.dx as molt_dx
 from molt import custody_layout
 from molt.memory_guard_paths import harness_guard_artifact_dir
+from molt.process_environment import NameRule, ProcessEnvironment
 from tools import harness_memory_guard
 from tests.process_guard_common import current_thread_only, guard_custody_env
 
@@ -1023,7 +1024,8 @@ def test_guarded_completed_process_preallocates_pytest_current_test_env(
 
     assert result.returncode == 0
     child_env = captured["env"]
-    assert isinstance(child_env, dict)
+    assert isinstance(child_env, ProcessEnvironment)
+    assert child_env.rule is NameRule.host()
     assert child_env["MOLT_PYTEST_CURRENT_TEST_FILE"].startswith(str(tmp_path))
 
 

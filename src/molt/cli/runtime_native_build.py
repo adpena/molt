@@ -674,8 +674,8 @@ class _NativeRuntimeBuildPlan:
         return list(self.cargo_plan.command)
 
     @property
-    def build_env(self) -> dict[str, str]:
-        return dict(self.cargo_plan.environment)
+    def build_env(self) -> ProcessEnvironment:
+        return self.cargo_plan.environment
 
     def record_execution_failure(
         self, error: OSError | ValueError, *, stage: str
@@ -911,7 +911,7 @@ def _prepare_native_runtime_build(
             rustflags_transform=rust_cpu.rustflags,
         )
         cmd = list(cargo_plan.command)
-        build_env = dict(cargo_plan.environment)
+        build_env = cargo_plan.environment
     except (OSError, ValueError) as exc:
         summary = f"Failed to resolve the exact runtime Cargo plan: {exc}"
         if not json_output:

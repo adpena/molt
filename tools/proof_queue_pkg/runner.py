@@ -17,6 +17,7 @@ from typing import Mapping, TextIO, TypeGuard
 
 from molt.dx import bind_repo_src_pythonpath, development_artifact_env
 from molt import disk_capacity
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
 from molt.exact_json import (
     ExactJsonError,
     capture_exact,
@@ -1612,7 +1613,7 @@ def _run_one(
             log_path=log_path,
             policy_error=policy_error,
         )
-    env: dict[str, str] | None = None
+    env: ProcessEnvironmentBuilder | None = None
     capacity_admission = None
     try:
         session_id = state._proof_session_id(resource_family, contention_key)
@@ -1634,7 +1635,8 @@ def _run_one(
             if admitted_envelope.get("cargo_output_root") is not None
             else None,
         )
-        requested_environment = {**os.environ, **env_overrides}
+        requested_environment = ProcessEnvironmentBuilder(os.environ)
+        requested_environment.update(env_overrides)
         output_layout.validate_environment(requested_environment)
         if uses_cargo:
             # The queue owns Cargo and derived output below the result root.
@@ -1646,12 +1648,14 @@ def _run_one(
                 else (logs_root,),
                 env=requested_environment,
             ).as_dict()
-        env = development_artifact_env(
-            repo_root,
-            requested_environment,
-            session_prefix=f"proof-{resource_family}",
-            session_id=session_id,
-            create_dirs=uses_cargo and output_layout.declaration is None,
+        env = ProcessEnvironmentBuilder(
+            development_artifact_env(
+                repo_root,
+                requested_environment,
+                session_prefix=f"proof-{resource_family}",
+                session_id=session_id,
+                create_dirs=uses_cargo and output_layout.declaration is None,
+            )
         )
         if not uses_cargo:
             # A non-Cargo proof owns no Cargo artifact lane.  The native proof
@@ -1772,7 +1776,7 @@ def _run_one(
         proc = custody._launch_queued_command(
             wrapped,
             cwd=repo_root,
-            env=env,
+            env=ProcessEnvironment(env),
             stdout=log,
         )
     except Exception as exc:

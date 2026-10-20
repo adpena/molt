@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironment
+
 import io
 import json
 import shlex
@@ -301,6 +303,7 @@ def test(
     env = _base_env(root, molt_root=root)
     if trusted:
         env["MOLT_CAPABILITY_TIER"] = MAXIMUM_BUILTIN_CAPABILITY_TIER
+    environment = ProcessEnvironment(env)
     if suite == "dev":
         cmd = [sys.executable, "tools/dev.py", "test"]
     elif suite == "diff":
@@ -325,7 +328,7 @@ def test(
         cmd.extend(pytest_args)
     return _run_command(
         cmd,
-        env=env,
+        env=environment,
         cwd=root,
         json_output=json_output,
         verbose=verbose,

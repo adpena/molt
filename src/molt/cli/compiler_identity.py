@@ -7,6 +7,8 @@ Only an explicit source-fingerprint operation owns reuse of live admissions.
 
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironment
+
 import os
 import subprocess
 from dataclasses import dataclass
@@ -108,11 +110,11 @@ class LlvmCompilerInputs:
     verification: LlvmPrefixVerification
     resources: CargoResourceCustody
 
-    def environment(self, env: Mapping[str, str]) -> dict[str, str]:
+    def environment(self, env: Mapping[str, str]) -> ProcessEnvironment:
         from molt.llvm_toolchain import project_llvm_toolchain_environment
 
         return project_llvm_toolchain_environment(
-            self.root, self.verification, environ=dict(env)
+            self.root, self.verification, environ=env
         )
 
     def verify(self) -> None:
@@ -125,7 +127,7 @@ def admit_llvm_compiler_inputs(
     from molt.cli.cargo_resource_custody import CargoResourceCustody, CargoResourceRoot
     from molt.llvm_toolchain import sdk_content_paths, verify_available_llvm_toolchain
 
-    verification = verify_available_llvm_toolchain(root, environ=dict(env))
+    verification = verify_available_llvm_toolchain(root, environ=env)
     if verification is None:
         raise CompilerIdentityError(
             "Selected LLVM backend has no admitted LLVM toolchain"
@@ -218,26 +220,29 @@ def backend_build_admission(
         )
     # The complete caller environment keys operation-local reuse; semantic output
     # identity below projects only admitted Cargo/profile/toolchain selectors.
+    environment = ProcessEnvironment(env)
     key = (
         os.fspath(root.resolve()),
         product.value,
         cargo_profile,
         ",".join(sorted(features)),
         rust_cpu.value,
-        canonical_json_sha256(dict(env)),
+        canonical_json_sha256(
+            {"rule": environment.rule.value, "values": dict(environment)}
+        ),
     )
     if transaction is not None and key in transaction.compiler_plans:
         return cast(BackendBuildAdmission, transaction.compiler_plans[key])
     try:
-        prepared = _cargo_build_env(env)
+        prepared = _cargo_build_env(environment)
         prepared["CARGO_TARGET_DIR"] = os.fspath(
             project_cargo_target_dir(root, prepared)
         )
         llvm_inputs: LlvmCompilerInputs | None = None
 
-        def compiler_environment(environment: Mapping[str, str]) -> Mapping[str, str]:
+        def compiler_environment(environment: ProcessEnvironment) -> Mapping[str, str]:
             nonlocal llvm_inputs
-            effective = dict(environment)
+            effective = environment
             if "llvm" not in features:
                 return effective
             llvm_inputs = admit_llvm_compiler_inputs(root, effective)

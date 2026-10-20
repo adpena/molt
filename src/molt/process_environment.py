@@ -42,9 +42,18 @@ class ProcessEnvironment(Mapping[str, str]):
     rule: NameRule
     _values: Mapping[str, tuple[str, str]]
 
+    def __new__(
+        cls, values: Mapping[str, str], *, rule: NameRule | None = None
+    ) -> ProcessEnvironment:
+        if type(values) is cls and (rule is None or rule is values.rule):
+            return values
+        return object.__new__(cls)
+
     def __init__(
         self, values: Mapping[str, str], *, rule: NameRule | None = None
     ) -> None:
+        if self is values:
+            return
         builder = ProcessEnvironmentBuilder(values, rule=rule)
         object.__setattr__(self, "rule", builder.rule)
         object.__setattr__(self, "_values", MappingProxyType(builder._values))

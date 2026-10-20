@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
+
 from molt.default_paths import executable_environment_value, expand_user_path
 
 from molt.native_target_shape import native_artifact_shape
@@ -384,17 +386,22 @@ def _resolve_source_extension_wasm_toolchain(
 ) -> _SourceExtensionWasmToolchain:
     if not target_plan.is_wasm:
         raise ValueError("WASM toolchain resolution requires a WASM target plan")
-    environment = source_extension_compiler_environment(
-        os.environ if environment is None else environment
+    mutable_environment = ProcessEnvironmentBuilder(
+        source_extension_compiler_environment(
+            os.environ if environment is None else environment
+        )
     )
     requires_wasi = target_plan.target_triple == "wasm32-wasip1"
     wasi_c_abi = None
     if requires_wasi:
-        if not apply_provisioned_wasm_toolchain(compiler_source_root(), environment):
+        if not apply_provisioned_wasm_toolchain(
+            compiler_source_root(), mutable_environment
+        ):
             raise ValueError(
                 "the pinned WASI SDK is missing; run tools/provision_wasi_sdk.py"
             )
-        wasi_c_abi = wasi_c_abi_projection(environment)
+        wasi_c_abi = wasi_c_abi_projection(mutable_environment)
+    environment = ProcessEnvironment(mutable_environment)
     raw_wasm_cc = executable_environment_value(environment, "MOLT_WASM_CC").strip()
     if raw_wasm_cc:
         return _resolve_env_wasm_compiler(
@@ -1235,14 +1242,9 @@ def _materialize_source_extension_target_metadata_with_toolchain(
     else:
         # Build-machine generators cannot inherit the cross compiler or an
         # ambient CC/CXX (Meson otherwise discovers arbitrary GCC/cache tools).
-        build_environment = {
-            key: value
-            for key, value in (
-                os.environ if environment is None else environment
-            ).items()
-            if key.upper()
-            not in {"CC", "CXX", "MOLT_CROSS_CC", "MOLT_CROSS_CXX", "MOLT_WASM_CC"}
-        }
+        build_environment = ProcessEnvironment(
+            os.environ if environment is None else environment
+        ).without({"CC", "CXX", "MOLT_CROSS_CC", "MOLT_CROSS_CXX", "MOLT_WASM_CC"})
         build_toolchain = _resolve_source_extension_native_toolchain(
             host_plan, environment=build_environment
         )

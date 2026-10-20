@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 from molt.node_runtime import NodeRuntime
+from molt.process_environment import ProcessEnvironment
 from tests.wasm_execution_manifest import write_wasm_execution_manifest
 from tools import output_startup_size_audit
 
@@ -49,7 +50,7 @@ def test_measure_executable_uses_fresh_path_copies(
     result = audit._measure_executable(
         binary,
         samples=2,
-        env={},
+        env=ProcessEnvironment({}),
         timeout=1.0,
         fresh_copies=True,
         label="molt_page_cache_cold",
@@ -88,7 +89,7 @@ def test_measure_cold_first_sighting_runs_artifact_once(
 
     result = audit._measure_cold_first_sighting(
         binary,
-        env={},
+        env=ProcessEnvironment({}),
         timeout=1.0,
         label="molt_cold_first_sighting",
         runner_factory=audit._native_runner_factory(),
@@ -168,7 +169,7 @@ def test_wasm_fresh_copy_rebases_manifest_to_measured_bytes(
     result = audit._measure_artifact(
         artifact,
         samples=2,
-        env={},
+        env=ProcessEnvironment({}),
         timeout=1.0,
         fresh_copies=True,
         label="wasm-cold",
@@ -207,7 +208,7 @@ def test_wasm_startup_uses_shared_node_selector_and_deterministic_flags(
 
     monkeypatch.setattr(audit, "resolve_node_runtime", fake_resolve)
     monkeypatch.setattr(audit, "_run_guarded", fake_run)
-    env = {"MOLT_NODE_BIN": str(node)}
+    env = ProcessEnvironment({"MOLT_NODE_BIN": str(node)})
 
     startup = audit._measure_case_startup(
         audit.MatrixCase(target="wasm", build_profile="dev", backend="wasm"),
@@ -247,7 +248,7 @@ def test_wasm_startup_skips_with_selector_diagnostic_when_node_unavailable(
         audit.MatrixCase(target="wasm", build_profile="dev", backend="wasm"),
         tmp_path / "output_linked.wasm",
         samples=1,
-        env={},
+        env=ProcessEnvironment({}),
         timeout=1.0,
     )
 
@@ -273,7 +274,7 @@ def test_wasm_startup_fails_on_unusable_explicit_node_selection(
         audit.MatrixCase(target="wasm", build_profile="dev", backend="wasm"),
         tmp_path / "output_linked.wasm",
         samples=1,
-        env={"MOLT_NODE_BIN": str(tmp_path / "missing-node")},
+        env=ProcessEnvironment({"MOLT_NODE_BIN": str(tmp_path / "missing-node")}),
         timeout=1.0,
     )
 
@@ -312,7 +313,7 @@ def test_build_molt_artifact_emits_progress_on_stderr(
         case=audit.MatrixCase(target="luau", build_profile="dev", backend="luau"),
         script=script,
         out_dir=out_dir,
-        env={},
+        env=ProcessEnvironment({}),
         timeout=42.0,
         extra_molt_args=[],
     )

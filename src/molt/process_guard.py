@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any
 
 from .cargo_execution_policy import cargo_subprocess_environment
+from .process_environment import NameRule as NameRule
+from .process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
 from .source_root import compiler_source_root
 
 
@@ -153,21 +155,22 @@ def load_harness_memory_guard(cwd: Path | None) -> Any:
 
 
 def with_memory_guard_env(
-    env: Mapping[str, str] | None,
+    env: ProcessEnvironment | None,
     memory_guard_prefix: str,
-) -> dict[str, str] | None:
+) -> ProcessEnvironment | None:
     if env is None:
         return None
-    merged = dict(env)
+    merged = ProcessEnvironmentBuilder(env)
+    inherited = ProcessEnvironment(os.environ, rule=env.rule)
     normalized = memory_guard_prefix.strip().upper().rstrip("_")
     names: list[str] = []
     if normalized:
         names.extend(f"{normalized}_{suffix}" for suffix in _MEMORY_GUARD_ENV_SUFFIXES)
     names.extend(f"MOLT_{suffix}" for suffix in _MEMORY_GUARD_ENV_SUFFIXES)
     for name in dict.fromkeys(names):
-        if name not in merged and name in os.environ:
-            merged[name] = os.environ[name]
-    return merged
+        if name not in merged and name in inherited:
+            merged[name] = inherited[name]
+    return ProcessEnvironment(merged)
 
 
 def timeout_from_env(
@@ -191,7 +194,7 @@ def timeout_from_env(
 def run_completed_command(
     cmd: Sequence[str],
     *,
-    env: Mapping[str, str] | None = None,
+    env: ProcessEnvironment | None = None,
     cwd: str | Path | None = None,
     capture_output: bool = False,
     stdout_capture_path: str | Path | None = None,
@@ -231,7 +234,7 @@ def run_completed_command(
         )
         return subprocess.run(
             command,
-            env=dict(env) if env is not None else None,
+            env=env.child_block() if env is not None else None,
             cwd=cwd,
             input=input,
             capture_output=capture_output,
@@ -251,6 +254,11 @@ def run_completed_command(
     guard_env = with_memory_guard_env(env, memory_guard_prefix)
     cwd_path = None if cwd is None else Path(cwd)
     harness_memory_guard = guard_loader(cwd_path)
+    if guard_env is not None:
+        guard_env = harness_memory_guard.ProcessEnvironment(
+            guard_env,
+            rule=harness_memory_guard.NameRule(guard_env.rule.value),
+        )
     guard_context = harness_memory_guard.HarnessExecutionContext.from_env(
         memory_guard_prefix,
         guard_env,

@@ -54,6 +54,7 @@ from tools import proof_receipts, toolchain_probe  # noqa: E402
 from molt import host_capacity  # noqa: E402
 from molt.portable_paths import portable_relative_path  # noqa: E402
 from molt.process_guard import run_completed_command  # noqa: E402
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder  # noqa: E402
 from tools.git_identity import (  # noqa: E402
     changed_paths,
     clean_checkout_status_arguments,
@@ -337,7 +338,9 @@ def _selected_target_python_versions(root: Path) -> tuple[str, ...]:
                 str(source),
             ],
             cwd=root,
-            env={**os.environ, "PYTHONPATH": os.pathsep.join(search_path)},
+            env=ProcessEnvironment(os.environ).updated(
+                {"PYTHONPATH": os.pathsep.join(search_path)}
+            ),
             capture_output=True,
             text=True,
             timeout=5,
@@ -3784,9 +3787,9 @@ def _command_environment(
     *,
     environment: Mapping[str, str],
     memory_share: int | None,
-) -> tuple[dict[str, str], tuple[str, ...]]:
+) -> tuple[ProcessEnvironment, tuple[str, ...]]:
     """Resolve one command environment through shared Cargo invariants."""
-    child_env = dict(environment)
+    child_env = ProcessEnvironmentBuilder(environment)
     if memory_share is not None:
         child_env[host_capacity.MEMORY_SLICE_ENV] = str(memory_share)
     existing_pythonpath = child_env.get("PYTHONPATH", "")
@@ -3800,7 +3803,7 @@ def _command_environment(
     )
     child_env[PROOF_COMMAND_TIMEOUT_ENV] = str(timeout)
     if "cargo" not in command.toolchains:
-        return child_env, ()
+        return ProcessEnvironment(child_env), ()
     return normalize_cargo_environment(child_env)
 
 

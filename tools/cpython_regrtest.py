@@ -33,6 +33,7 @@ from molt import host_capacity  # noqa: E402
 
 from tools.command_execution import CommandExecutor  # noqa: E402
 
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402
 from tools.compat import regrtest_results  # noqa: E402
 from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
@@ -1121,7 +1122,7 @@ def run_coverage(
     host_cmd: list[str],
     *,
     cwd: Path,
-    env: dict[str, str],
+    env: Mapping[str, str],
     log_handle,
 ) -> int:
     coverage_dir = config.coverage_dir
@@ -1404,7 +1405,7 @@ def run_diff_suite(
     host_cmd: list[str],
     python_version: str | None,
     *,
-    env: dict[str, str],
+    env: Mapping[str, str],
     log_handle,
 ) -> DiffSummary | None:
     if not config.diff_enabled:
@@ -1484,7 +1485,7 @@ def run_property_tests(
     config: RegrtestConfig,
     host_cmd: list[str],
     *,
-    env: dict[str, str],
+    env: Mapping[str, str],
     log_handle,
 ) -> int:
     if config.property_tests is None:
@@ -1693,9 +1694,9 @@ def write_root_summary(output_root: Path, runs: list[dict]) -> None:
 def canonical_regrtest_env(
     repo_root: Path,
     env: Mapping[str, str] | None = None,
-) -> dict[str, str]:
-    run_env = os.environ.copy()
-    overrides = dict(env or {})
+) -> ProcessEnvironment:
+    overrides = ProcessEnvironment({} if env is None else env)
+    run_env = ProcessEnvironmentBuilder(os.environ, rule=overrides.rule)
     run_env.update(overrides)
     root = repo_root.resolve()
     force_default_keys = tuple(
@@ -1703,19 +1704,21 @@ def canonical_regrtest_env(
         for key in harness_memory_guard.CANONICAL_RUN_ENV_KEYS
         if key not in overrides and key != "MOLT_SESSION_ID"
     )
-    run_env = harness_memory_guard.canonical_harness_env(
-        run_env,
-        repo_root=root,
-        force_default_keys=force_default_keys,
+    run_env = ProcessEnvironmentBuilder(
+        harness_memory_guard.canonical_harness_env(
+            run_env,
+            repo_root=root,
+            force_default_keys=force_default_keys,
+        )
     )
     run_env.setdefault("PYTHONHASHSEED", "0")
-    return run_env
+    return ProcessEnvironment(run_env)
 
 
-def build_env(config: RegrtestConfig) -> dict[str, str]:
+def build_env(config: RegrtestConfig) -> ProcessEnvironment:
     env = canonical_regrtest_env(config.repo_root)
     if config.molt_capabilities is not None:
-        env["MOLT_CAPABILITIES"] = config.molt_capabilities
+        env = env.updated({"MOLT_CAPABILITIES": config.molt_capabilities})
     return env
 
 
@@ -1767,7 +1770,7 @@ def run_regrtest(
     )
     log_path = output_dir / "regrtest.log"
     with log_path.open("w", encoding="utf-8") as log_handle:
-        env = build_env(run_config)
+        env = ProcessEnvironmentBuilder(build_env(run_config))
         context = harness_memory_guard.HarnessExecutionContext.from_env(
             REGRTEST_MEMORY_PREFIX,
             env,
@@ -1822,6 +1825,7 @@ def run_regrtest(
                     env["MOLT_REGRTEST_COVERAGE_SOURCE"] = ",".join(
                         run_config.coverage_source
                     )
+                env = ProcessEnvironment(env)
                 regrtest_rc = run_coverage(
                     run_config,
                     regrtest_cmd,
@@ -1831,6 +1835,7 @@ def run_regrtest(
                     log_handle=log_handle,
                 )
             else:
+                env = ProcessEnvironment(env)
                 regrtest_rc = run_command(
                     regrtest_cmd,
                     cwd=run_config.cpython_dir,

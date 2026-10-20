@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
+
 import argparse
 import os
 from pathlib import Path
@@ -75,7 +78,7 @@ def _main_worktree_venv(repo_root: Path) -> Path | None:
     return candidate if _valid_project_env(candidate) else None
 
 
-def _warm_project_env(repo_root: Path, env: dict[str, str]) -> Path | None:
+def _warm_project_env(repo_root: Path, env: Mapping[str, str]) -> Path | None:
     explicit = _resolve_candidate_venv(repo_root, env.get("UV_PROJECT_ENVIRONMENT"))
     if explicit is not None:
         return explicit
@@ -91,20 +94,19 @@ def _warm_project_env(repo_root: Path, env: dict[str, str]) -> Path | None:
     return _resolve_candidate_venv(repo_root, env.get("MOLT_VENV"))
 
 
-def _queue_child_env(repo_root: Path, *, queue_size: str | None) -> dict[str, str]:
-    base_env = os.environ.copy()
+def _queue_child_env(repo_root: Path, *, queue_size: str | None) -> ProcessEnvironment:
+    base_env = ProcessEnvironmentBuilder(os.environ)
     warm_env = _warm_project_env(repo_root, base_env)
     if warm_env is not None:
         base_env.setdefault("UV_PROJECT_ENVIRONMENT", str(warm_env))
-    env = development_artifact_env(
+    if queue_size is not None:
+        base_env[PROOF_QUEUE_SIZE_ENV] = queue_size
+    return development_artifact_env(
         repo_root,
         base_env,
         session_prefix="queue",
         create_dirs=True,
     )
-    if queue_size is not None:
-        env[PROOF_QUEUE_SIZE_ENV] = queue_size
-    return env
 
 
 def handle_queue_command(args: argparse.Namespace) -> int:

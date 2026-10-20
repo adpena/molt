@@ -486,7 +486,7 @@ def _ir_top_level_extras_digest(ir: Mapping[str, Any]) -> str:
 # The compact backend IR JSON projection. In-memory text and streamed lease
 # writes share this encoder, so both produce identical bytes.
 _BACKEND_IR_JSON_ENCODER = json.JSONEncoder(
-    separators=(",", ":"), default=_json_ir_default
+    sort_keys=True, separators=(",", ":"), default=_json_ir_default
 )
 
 
@@ -505,9 +505,11 @@ def _write_backend_ir_text(handle: TextIO, ir: Mapping[str, Any]) -> None:
         raise TypeError(f"Object of type {type(ir).__name__} is not JSON serializable")
     encode = _BACKEND_IR_JSON_ENCODER.encode
     handle.write("{")
-    for position, (key, value) in enumerate(ir.items()):
+    for key in ir:
         if not isinstance(key, str):
             raise TypeError(f"backend IR keys must be str, not {type(key).__name__}")
+    for position, key in enumerate(sorted(ir)):
+        value = ir[key]
         if position:
             handle.write(",")
         handle.write(encode(key))

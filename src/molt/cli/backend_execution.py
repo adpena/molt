@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.process_environment import NameRule, ProcessEnvironment
+
 import contextlib
 import functools
 import hashlib
@@ -169,7 +171,8 @@ def _backend_native_codegen_identity(
     The caller also binds the compiler executable and canonical codegen
     environment in its cache variant. Baseline admission needs no subprocess.
     """
-    portable = env.get("MOLT_PORTABLE", "").strip().lower()
+    environment = ProcessEnvironment(env)
+    portable = environment.get("MOLT_PORTABLE", "").strip().lower()
     if portable in {"", "1", "true"}:
         return canonical_json_sha256(
             {
@@ -181,7 +184,11 @@ def _backend_native_codegen_identity(
     if portable not in {"0", "false"}:
         raise ValueError("Invalid MOLT_PORTABLE; expected 0/1 or false/true")
     return _observed_native_codegen_identity(
-        str(backend_bin), backend_identity, target_triple, tuple(sorted(env.items()))
+        str(backend_bin),
+        backend_identity,
+        target_triple,
+        tuple(sorted(environment.items())),
+        environment.rule,
     )
 
 
@@ -191,6 +198,7 @@ def _observed_native_codegen_identity(
     backend_identity: str,
     target_triple: str,
     environment: tuple[tuple[str, str], ...],
+    rule: NameRule,
 ) -> str:
     # Executable content is deliberately part of the memo key, not its path,
     # size, modification time or a Python reconstruction of CPU features.
@@ -198,7 +206,7 @@ def _observed_native_codegen_identity(
         result = _run_completed_command(
             [backend_path, "--native-codegen-identity", target_triple],
             capture_output=True,
-            env=dict(environment),
+            env=ProcessEnvironment(dict(environment), rule=rule),
             cwd=Path(backend_path).parent,
             timeout=30,
             memory_guard_prefix="MOLT_BUILD",

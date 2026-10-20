@@ -537,7 +537,7 @@ def test_wasm_member_lock_boundary_distinguishes_acquisition_from_work(
         cargo_profile="dev-fast",
         profile_dir="dev-fast",
         incremental_enabled=False,
-        env={},
+        env=ProcessEnvironment({}),
         artifact_selection=RUNTIME_CDYLIB_ARTIFACTS,
         runtime_exports=(),
         link_flags=(),
