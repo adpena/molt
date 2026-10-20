@@ -43,33 +43,6 @@ def _strip_leading_double_dash(args: list[str]) -> list[str]:
     return args
 
 
-def _extract_output_arg(args: list[str]) -> Path | None:
-    for idx, arg in enumerate(args):
-        if arg == "--output" and idx + 1 < len(args):
-            return Path(args[idx + 1])
-        if arg.startswith("--output="):
-            return Path(arg.split("=", 1)[1])
-    return None
-
-
-def _extract_out_dir_arg(args: list[str]) -> Path | None:
-    for idx, arg in enumerate(args):
-        if arg == "--out-dir" and idx + 1 < len(args):
-            return Path(args[idx + 1])
-        if arg.startswith("--out-dir="):
-            return Path(arg.split("=", 1)[1])
-    return None
-
-
-def _extract_emit_arg(args: list[str]) -> str | None:
-    for idx, arg in enumerate(args):
-        if arg == "--emit" and idx + 1 < len(args):
-            return args[idx + 1]
-        if arg.startswith("--emit="):
-            return arg.split("=", 1)[1]
-    return None
-
-
 def _build_args_has_cache_flag(args: list[str]) -> bool:
     for arg in args:
         if arg in {"--cache", "--no-cache", "--rebuild"}:
@@ -102,20 +75,14 @@ def _build_args_has_capabilities_flag(args: list[str]) -> bool:
 
 
 def _build_args_has_profile_flag(args: list[str]) -> bool:
-    for index, arg in enumerate(args):
-        if arg == "--build-profile" or arg.startswith("--build-profile="):
-            return True
-        if arg == "--profile":
-            if index + 1 >= len(args):
-                return True
-            if args[index + 1] in _build_profile_choices():
-                return True
-            continue
-        if arg.startswith("--profile="):
-            if arg.split("=", 1)[1] in _build_profile_choices():
-                return True
-            continue
-    return False
+    from molt.cli.build_request_resolution import parse_build_arguments
+
+    parsed = parse_build_arguments(args)
+    return (
+        parsed.build_profile is not None
+        or parsed.profile in _build_profile_choices()
+        or parsed.release
+    )
 
 
 _BUILD_ESSENTIAL_FLAGS = frozenset(

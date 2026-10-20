@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from molt.cli.build_request import BuildRequest
+
+
 import ast
 import copy
 import hashlib
@@ -320,6 +323,11 @@ def test_wrapper_build_cache_input_uses_static_import_closure_plan(
     assert resolved is not None
 
     cache_input = cli_wrapper_build._wrapper_build_cache_input(
+        request=BuildRequest(
+            file_path=None,
+            stdlib_profile="auto",
+            python_version=resolved.target_python.short,
+        ),
         resolved_build_entry=resolved,
         build_args=["--target", "native"],
         env={STATIC_IMPORT_MODULES_ENV: "pkg.runtime.ops_cpu"},
@@ -369,6 +377,7 @@ def test_wrapper_complete_binary_cache_tracks_policy_with_same_source_graph(
     assert error is None and resolved is not None
     base_env = {"MOLT_CAPABILITY_TIER": "none", "MOLT_CAPABILITIES": ""}
     common = dict(
+        request=BuildRequest(file_path=None, stdlib_profile="auto"),
         resolved_build_entry=resolved,
         build_args=["--target", "native"],
         project_root=tmp_path,
@@ -404,12 +413,22 @@ def test_wrapper_build_cache_identity_tracks_dead_module_elimination(
     assert resolved is not None
 
     base_payload, base_key = cli_wrapper_build._wrapper_build_cache_input(
+        request=BuildRequest(
+            file_path=None,
+            stdlib_profile="auto",
+            python_version=resolved.target_python.short,
+        ),
         resolved_build_entry=resolved,
         build_args=["--target", "native"],
         env={},
         project_root=tmp_path,
     )
     dme_payload, dme_key = cli_wrapper_build._wrapper_build_cache_input(
+        request=BuildRequest(
+            file_path=None,
+            stdlib_profile="auto",
+            python_version=resolved.target_python.short,
+        ),
         resolved_build_entry=resolved,
         build_args=["--target", "native"],
         env={"MOLT_DEAD_MODULE_ELIMINATION": "1"},

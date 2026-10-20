@@ -714,10 +714,17 @@ def materialize_capability_input(
         prefix="molt_capabilities_",
         delete=False,
     )
+    path = Path(handle.name)
     try:
-        json.dump(value, handle, sort_keys=True, indent=2)
-        handle.write("\n")
-        path = Path(handle.name)
-    finally:
-        handle.close()
+        with handle:
+            json.dump(value, handle, sort_keys=True, indent=2)
+            handle.write("\n")
+    except BaseException:
+        # Custody transfers only when the complete path is returned. Failed
+        # serialization or writes leave cleanup with this producer.
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        raise
     return str(path), path

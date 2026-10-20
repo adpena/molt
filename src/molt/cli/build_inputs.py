@@ -44,13 +44,10 @@ from molt.cli.cargo_profiles import (
 )
 from molt.cli.command_runtime import _resolve_timeout_env
 from molt.cli.config_resolution import (
-    _coerce_bool,
-    _load_molt_config,
-    _resolve_build_config,
     runtime_target,
 )
 from molt.cli.lockfiles import _check_lockfiles
-from molt.cli.build_request import BuildProfile, Target
+from molt.cli.build_request import BuildProfile, BuildRequest, Target
 from molt.cli.models import (
     BinaryImageKind,
     BuildEntrySelectorOrigin,
@@ -1111,31 +1108,6 @@ def _resolve_module_roots(
     )
 
 
-def _build_args_respect_pythonpath(args: list[str]) -> bool:
-    if any(arg == "--no-respect-pythonpath" for arg in args):
-        return False
-    return any(arg == "--respect-pythonpath" for arg in args)
-
-
-def _build_args_lib_paths(args: Sequence[str]) -> list[str]:
-    lib_paths: list[str] = []
-    idx = 0
-    while idx < len(args):
-        arg = args[idx]
-        if arg == "--lib-path":
-            next_idx = idx + 1
-            if next_idx < len(args):
-                lib_paths.append(args[next_idx])
-                idx = next_idx + 1
-                continue
-        elif arg.startswith("--lib-path="):
-            value = arg.split("=", 1)[1].strip()
-            if value:
-                lib_paths.append(value)
-        idx += 1
-    return lib_paths
-
-
 def _resolve_wrapper_build_entry(
     *,
     file_path: str | None,
@@ -1147,39 +1119,58 @@ def _resolve_wrapper_build_entry(
     env: Mapping[str, str] | None = None,
     source_cwd: Path | None = None,
 ) -> tuple[_ResolvedBuildEntry | None, _CliFailure | None]:
-    config = _load_molt_config(project_root)
-    build_cfg = _resolve_build_config(config)
-    respect_pythonpath = _build_args_respect_pythonpath(list(build_args))
-    if not any(
-        arg in {"--respect-pythonpath", "--no-respect-pythonpath"} for arg in build_args
-    ):
-        respect_pythonpath = _coerce_bool(
-            build_cfg.get("respect_pythonpath") or build_cfg.get("respect-pythonpath"),
-            False,
-        )
-    cfg_lib_paths = build_cfg.get("lib_paths") or build_cfg.get("lib-paths") or []
-    if isinstance(cfg_lib_paths, str):
-        cfg_lib_paths = [cfg_lib_paths]
-    lib_paths = _build_args_lib_paths(build_args) + list(cfg_lib_paths)
-    from molt.cli.wrapper_build import _wrapper_target_python
+    from molt.cli.build_request_resolution import resolve_build_arguments
 
     try:
-        target_python = _wrapper_target_python(build_args, project_root=project_root)
+        request = resolve_build_arguments(
+            build_args,
+            file_path=file_path,
+            module=module,
+            project_root=project_root,
+            env=os.environ if env is None else env,
+        )
+    except ValueError as exc:
+        return None, _fail(str(exc), json_output, command=command)
+    return _resolve_request_entry(
+        request=request,
+        project_root=project_root,
+        json_output=json_output,
+        command=command,
+        env=env,
+        source_cwd=source_cwd,
+    )
+
+
+def _resolve_request_entry(
+    *,
+    request: BuildRequest,
+    project_root: Path,
+    json_output: bool,
+    command: str,
+    env: Mapping[str, str] | None = None,
+    source_cwd: Path | None = None,
+) -> tuple[_ResolvedBuildEntry | None, _CliFailure | None]:
+    try:
+        target_python = _resolve_target_python_version(
+            explicit=request.python_version,
+            build_config=request.build_config,
+            project_root=project_root,
+        )
     except ValueError as exc:
         return None, _fail(str(exc), json_output, command=command)
     cwd_root = _find_project_root(Path.cwd() if source_cwd is None else source_cwd)
     return _resolve_build_entry(
-        file_path=file_path,
-        module=module,
+        file_path=request.file_path,
+        module=request.module,
         project_root=project_root,
         cwd_root=cwd_root,
         stdlib_root=_stdlib_root_path(),
-        respect_pythonpath=respect_pythonpath,
+        respect_pythonpath=request.respect_pythonpath,
         json_output=json_output,
         command=command,
-        lib_paths=lib_paths or None,
+        lib_paths=request.lib_paths,
         target_python=target_python,
-        build_config=build_cfg,
+        build_config=request.build_config,
         env=env,
         source_cwd=source_cwd,
     )
