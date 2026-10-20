@@ -366,6 +366,38 @@ def test_nontest_startup_preserves_package_only_import_boundary(monkeypatch, rel
     ]
 
 
+@pytest.mark.parametrize("invocation", ["command", "module", "script"])
+def test_nontest_python_startup_does_not_initialize_test_custody(
+    tmp_path: Path, invocation: str
+) -> None:
+    """Exercise CPython's real site hook before the user program starts."""
+    probe = """
+import json
+import sys
+print(json.dumps({
+    "hook_loaded": "molt.pytest_memory_guard_bootstrap" in sys.modules,
+    "test_custody": sorted(set(sys.modules).intersection({
+        "molt.dx", "molt.temporary_artifacts",
+        "molt.toolchain_identity",
+    })),
+}))
+"""
+    module = tmp_path / "ordinary_startup_probe.py"
+    module.write_text(probe, encoding="utf-8")
+    arguments = {
+        "command": ["-c", probe],
+        "module": ["-m", module.stem],
+        "script": [str(module)],
+    }[invocation]
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join((str(REPO_ROOT / "src"), str(tmp_path)))
+    result = run_guarded_test_process(
+        [sys.executable, *arguments], cwd=tmp_path, env=env, check=True
+    )
+    assert result.stderr == ""
+    assert json.loads(result.stdout) == {"hook_loaded": True, "test_custody": []}
+
+
 @pytest.mark.parametrize("invocation", ["pytest", "module", "script"])
 def test_confirmed_test_invocations_bind_repository_before_guard_check(
     monkeypatch, invocation

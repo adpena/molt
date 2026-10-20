@@ -7,7 +7,6 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from molt.custody_layout import disk_scratch_roots_of
-from molt.dx import control_state_dir
 
 # The proof queue issues one external guard state root per run.
 STATE_ROOT_ENV = "MOLT_MEMORY_GUARD_STATE_ROOT"
@@ -43,6 +42,8 @@ def memory_guard_state_root(
         return root.resolve(strict=False)
     # Every observer (guards, disk_guard, preflights) must see the same
     # markers, so guard state is disk control state, never in the checkout.
+    from molt.dx import control_state_dir
+
     return control_state_dir(repo_root, STATE_DIRNAME, source)
 
 
