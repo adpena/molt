@@ -192,7 +192,7 @@ def test_actual_cache_and_admission_consumers_use_effective_target(
     monkeypatch, tmp_path
 ):
     source = tmp_path / "main.py"
-    source.write_text("pass\n")
+    source.write_text("pass\n", encoding="utf-8")
     request = selection.resolve_build_arguments(
         ["--target=native", "--target=wasm"],
         file_path=str(source),
@@ -291,10 +291,10 @@ def test_run_runtime_route_follows_effective_build_request(
     from molt.cli import entrypoint, script_commands
 
     source = tmp_path / "main.py"
-    source.write_text("pass\n")
+    source.write_text("pass\n", encoding="utf-8")
     if configured_target:
         (tmp_path / "molt.toml").write_text(
-            '[build]\ntarget = "' + configured_target + '"\n'
+            '[build]\ntarget = "' + configured_target + '"\n', encoding="utf-8"
         )
     seen = []
     monkeypatch.setattr(
@@ -379,7 +379,7 @@ def test_compare_capability_temporary_custody_and_preflight(
     from molt.cli import script_commands as scripts
 
     source = tmp_path / "program.py"
-    source.write_text("pass\n")
+    source.write_text("pass\n", encoding="utf-8")
     created = []
     real_materialize = scripts.materialize_capability_input
 
@@ -452,7 +452,7 @@ def test_run_capability_temporary_custody(monkeypatch, tmp_path, route, failure)
     from molt.cli import script_commands as scripts
 
     source = tmp_path / "program.py"
-    source.write_text("pass\n")
+    source.write_text("pass\n", encoding="utf-8")
     created = []
     real_materialize = scripts.materialize_capability_input
 
@@ -509,9 +509,9 @@ def test_deploy_preserves_caller_owned_capability_file(monkeypatch, tmp_path, ra
     from molt.cli import script_commands as scripts
 
     source = tmp_path / "program.py"
-    source.write_text("pass\n")
+    source.write_text("pass\n", encoding="utf-8")
     policy = tmp_path / "capabilities.json"
-    policy.write_text('{"allow": []}')
+    policy.write_text('{"allow": []}', encoding="utf-8")
     monkeypatch.setattr(scripts, "_base_env", lambda *a, **kw: {})
     monkeypatch.setattr(scripts, "_find_project_root", lambda p: tmp_path)
     monkeypatch.setattr(
@@ -521,7 +521,7 @@ def test_deploy_preserves_caller_owned_capability_file(monkeypatch, tmp_path, ra
     )
 
     def build(**kw):
-        assert policy.read_text() == '{"allow": []}'
+        assert policy.read_text(encoding="utf-8") == '{"allow": []}'
         if raises:
             raise RuntimeError("build failed")
         return None, 0.0, 1
@@ -549,7 +549,7 @@ def test_deploy_preserves_caller_owned_capability_file(monkeypatch, tmp_path, ra
             invoke()
     else:
         assert invoke() == 1
-    assert policy.read_text() == '{"allow": []}'
+    assert policy.read_text(encoding="utf-8") == '{"allow": []}'
 
 
 @pytest.mark.parametrize("failure", ["serialization", "write", "interrupt"])
@@ -575,7 +575,7 @@ def test_capability_materialization_failure_is_atomic(monkeypatch, tmp_path, fai
         def failed_write(value, handle, **kwargs):
             handle.write("partial")
             handle.flush()
-            assert Path(handle.name).read_text() == "partial"
+            assert Path(handle.name).read_text(encoding="utf-8") == "partial"
             raise expected("injected failure")
 
         monkeypatch.setattr(capability_policy.json, "dump", failed_write)
