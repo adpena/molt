@@ -564,7 +564,10 @@ def _dispatch_entrypoint_command(
             or build_cfg.get("build_profile")
             or "dev"
         )
-        if compare_profile is not None and compare_profile not in _BUILD_PROFILE_CHOICES:
+        if (
+            compare_profile is not None
+            and compare_profile not in _BUILD_PROFILE_CHOICES
+        ):
             return _fail(
                 f"Invalid compare profile: {compare_profile}",
                 args.json,

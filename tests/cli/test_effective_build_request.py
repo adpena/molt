@@ -370,7 +370,8 @@ def test_wrapper_parser_errors_remain_with_calling_diagnostic_owner(flags, capsy
 
 
 @pytest.mark.parametrize(
-    "failure", ["invalid", "python", "emit", "selector", "oracle", "build", "build-status"]
+    "failure",
+    ["invalid", "python", "emit", "selector", "oracle", "build", "build-status"],
 )
 def test_compare_capability_temporary_custody_and_preflight(
     monkeypatch, tmp_path, failure
