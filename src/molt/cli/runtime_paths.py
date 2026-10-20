@@ -10,6 +10,7 @@ from molt.build_state_layout import build_state_root
 from molt.cli.config_resolution import (
     DEFAULT_RUNTIME_STDLIB_PROFILE,
     RUNTIME_STDLIB_PROFILE_TIERS,
+    RuntimeStdlibProfile,
 )
 from molt.cli.build_output_layout import _wasm_runtime_root_from_env
 from molt.default_paths import configured_artifact_root_text
@@ -20,9 +21,11 @@ _RUNTIME_STDLIB_PROFILE_ALIASES = {
 }
 
 
-def _normalize_runtime_stdlib_profile(stdlib_profile: str | None) -> str:
+def _normalize_runtime_stdlib_profile(
+    stdlib_profile: str | None,
+) -> RuntimeStdlibProfile:
     profile = stdlib_profile or DEFAULT_RUNTIME_STDLIB_PROFILE
-    if profile not in _RUNTIME_STDLIB_PROFILE_ALIASES:
+    if profile not in RUNTIME_STDLIB_PROFILE_TIERS:
         choices = "', '".join(RUNTIME_STDLIB_PROFILE_TIERS)
         raise ValueError(f"runtime stdlib_profile must be one of '{choices}'")
     return profile
