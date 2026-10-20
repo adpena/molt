@@ -238,7 +238,7 @@ lockfiles committed with the manifest change.
   `MOLT_DIFF_CHILD_RLIMIT_GB=0` only for an
   explicit local investigation. Sparse virtual-address reservations are never
   capped by this RSS policy.
-- **Backend daemon mode**: set `MOLT_DIFF_BACKEND_DAEMON=1|0` to force daemon behavior in diff runs; default is platform-safe auto (`0` on macOS, `1` elsewhere).
+- **Backend daemon mode**: set `MOLT_DIFF_BACKEND_DAEMON=1|0` to override daemon behavior in diff runs. Otherwise the compiler's `MOLT_BACKEND_DAEMON` policy applies: enabled by default on POSIX, including macOS, and unavailable on Windows.
 - **dyld preflight**: `MOLT_DIFF_DYLD_PREFLIGHT=1|0` selects the native binary preflight (default on macOS). A detected defect fails that attempt.
 - **Cache and rebuild selection**: set `MOLT_DIFF_FORCE_NO_CACHE=1|0` to force/disable `--no-cache`, or `MOLT_DIFF_FORCE_REBUILD=1` to request rebuilds explicitly. Defaults keep caching enabled and forced rebuilds off; failures preserve the selected roots and settings.
 - **Batch selection**: `MOLT_DIFF_BATCH_COMPILE_SERVER=1` explicitly selects persistent batch builds (default off). Startup and request failures retain their diagnostics and terminate that selected attempt.

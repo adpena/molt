@@ -1072,7 +1072,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_BACKEND_DAEMON_SOCKET_DIR",
       "output_neutral": false,
       "owner": "src/molt/cli/backend_execution.py",
-      "summary": "Directory that holds backend daemon sockets; a relative path resolves against the current directory, unset uses <tempdir>/molt-backend-daemon shortened to /tmp/molt-backend-daemon or /private/tmp/molt-backend-daemon when the Unix socket path would reach 104 bytes, and molt dx sets it to <socket root>/molt-backend-<repo hash>.",
+      "summary": "Directory that holds backend daemon sockets; a relative path resolves against the current directory. Unset uses <tempdir>/molt-backend-daemon; molt dx derives <socket root>/molt-backend-<repo hash>. Both default paths shorten to /tmp/molt-backend-daemon or /private/tmp/molt-backend-daemon before the Unix socket path would reach 104 bytes. Explicit directories are preserved and diagnosed if too long.",
       "values": []
     },
     {
@@ -1082,7 +1082,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_BACKEND_DAEMON_SOCKET_ROOT",
       "output_neutral": false,
       "owner": "src/molt/dx.py",
-      "summary": "Root directory under which molt dx places the per-checkout backend daemon socket directory molt-backend-<repo hash>; unset falls back to TMPDIR, TMP, TEMP, then /tmp (the system temp directory on Windows).",
+      "summary": "Root directory under which molt dx places the per-checkout backend daemon socket directory molt-backend-<repo hash>; unset selects TMPDIR, TMP or TEMP outside guarded command scratch, then /tmp (the system temp directory on Windows), with automatic shortening for Unix socket limits. An explicit root is preserved.",
       "values": []
     },
     {

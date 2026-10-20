@@ -1298,7 +1298,11 @@ def _backend_daemon_socket_root(env: Mapping[str, str]) -> Path:
     for key in ("TMPDIR", "TMP", "TEMP"):
         raw = env.get(key, "").strip()
         if raw:
-            return Path(raw).expanduser()
+            candidate = Path(raw).expanduser()
+            scratch = env.get("MOLT_GUARD_SCRATCH_ROOT", "").strip()
+            if scratch and host_path_is_within(candidate, scratch):
+                continue
+            return candidate
     if os.name == "nt":
         return Path(tempfile.gettempdir())
     return Path("/tmp")
@@ -1308,7 +1312,14 @@ def backend_daemon_socket_dir(repo_root: Path, env: Mapping[str, str]) -> Path:
     """Resolve the short local backend-daemon socket directory for this checkout."""
 
     root_hash = hashlib.sha256(str(repo_root.resolve()).encode()).hexdigest()[:12]
-    return (_backend_daemon_socket_root(env) / f"molt-backend-{root_hash}").resolve()
+    directory = (
+        _backend_daemon_socket_root(env) / f"molt-backend-{root_hash}"
+    ).resolve()
+    if env.get("MOLT_BACKEND_DAEMON_SOCKET_ROOT", "").strip():
+        return directory
+    from molt.cli.backend_daemon_paths import _short_backend_daemon_socket_dir
+
+    return _short_backend_daemon_socket_dir(directory)
 
 
 # The sccache release is pinned in config/tool_releases.toml. Molt never
@@ -1375,10 +1386,10 @@ def _ensure_sccache_wrapper(env: dict[str, str]) -> None:
 
 def _install_dx_defaults(repo_root: Path, env: dict[str, str]) -> None:
     ext_root = Path(env[ARTIFACT_ROOT_ENV]).expanduser()
-    env.setdefault(
-        "MOLT_BACKEND_DAEMON_SOCKET_DIR",
-        str(backend_daemon_socket_dir(repo_root, env)),
-    )
+    if "MOLT_BACKEND_DAEMON_SOCKET_DIR" not in env:
+        env["MOLT_BACKEND_DAEMON_SOCKET_DIR"] = str(
+            backend_daemon_socket_dir(repo_root, env)
+        )
     # sccache off-by-default on Windows: measured 0 cache hits + mid-compile
     # crashes (os error 10054) that time builds out. Power users force it with
     # MOLT_USE_SCCACHE=1; cargo_execution also treats "auto" as off-on-Windows.
