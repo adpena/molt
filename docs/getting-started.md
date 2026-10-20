@@ -103,7 +103,19 @@ uv run --python 3.12 molt compare examples/hello.py
 
 This compares one program, not the whole verified subset. The compiler host
 interpreter and target semantics are separate: `molt build --python-version`
-selects a supported target policy (`3.12`, `3.13`, or `3.14`). See
+selects a supported target policy (`3.12`, `3.13`, or `3.14`). Select the source
+frontend with uv in the same command; it must be at least as new as the target:
+
+```bash
+uv run --python 3.14 molt build examples/hello.py --python-version 3.14
+```
+
+The target comes from the explicit option, project configuration or supported
+project floor; changing the host interpreter alone does not change that policy.
+Differential tooling also uses its launching interpreter as the frontend, so
+`uv run --python 3.14 python tests/molt_diff.py --python-version 3.14 <test.py>`
+selects the frontend and matching CPython oracle without an interpreter override.
+Compiled programs require no host or fallback Python. See
 [compatibility](spec/areas/compat/README.md) for version- and target-scoped proof.
 
 ## Benchmark A Script

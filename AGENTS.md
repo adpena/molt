@@ -79,6 +79,9 @@ prefer live code, tests, measurements and explicit user direction over stale pro
   useful diagnostics.
 - Portability covers compiler/runtime, CLI, tests, build/release tooling, and developer apparatus
   alike; host-specific assumptions must not leak into target semantics or shared infrastructure.
+- Source commands select the compiler frontend with `uv run --python VERSION`; differential
+  tooling inherits that interpreter. Keep the compiled language target under its existing
+  CLI/project authority, and use a frontend new enough to parse it. See `docs/getting-started.md`.
 
 ## Performance is part of correctness
 

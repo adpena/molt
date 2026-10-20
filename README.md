@@ -125,6 +125,9 @@ Run these commands from the repository root after installing the
 [prerequisites](docs/getting-started.md#prerequisites). `uv sync` creates the
 project environment but does not activate it; `uv run` selects it without
 shell-specific activation. The first build may compile the backend and runtime.
+For another supported Python target, select its frontend through uv and its
+language policy through `--python-version`; see
+[version selection](docs/getting-started.md#compare-against-cpython).
 
 ```bash
 uv run --python 3.12 molt run examples/hello.py --release

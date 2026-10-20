@@ -264,7 +264,10 @@ def _parse_source_for_target(
     if frontend_version < target_python.feature_version:
         raise SyntaxError(
             f"Molt target Python {target_python.short} requires a Python "
-            f"{target_python.short}+ frontend; set PYTHON to a CPython "
+            f"{target_python.short}+ frontend; for a source checkout, run "
+            f"`uv run --python {target_python.short} molt build <source> "
+            f"--python-version {target_python.short}`. For a binary bundle, "
+            "set PYTHON to a CPython "
             f"{target_python.short}+ executable, run "
             "`molt setup --install-cli-dependencies`, then retry `molt build`"
         )

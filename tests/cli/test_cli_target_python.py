@@ -15,7 +15,10 @@ from molt import frontend as molt_frontend
 from molt import target_python as molt_target_python
 
 
-def test_newer_target_diagnostic_uses_installed_commands(monkeypatch) -> None:
+@pytest.mark.parametrize("minor", [13, 14])
+def test_newer_target_diagnostic_names_source_and_installed_commands(
+    monkeypatch, minor
+) -> None:
     from types import SimpleNamespace
     import molt.target_python as target_python
 
@@ -31,13 +34,16 @@ def test_newer_target_diagnostic_uses_installed_commands(monkeypatch) -> None:
     )
     with pytest.raises(SyntaxError) as failure:
         target_python._parse_source_for_target(
-            "print(1)", target_python=target_python.TargetPythonVersion(3, 14, 0)
+            "print(1)", target_python=target_python.TargetPythonVersion(3, minor, 0)
         )
     message = str(failure.value)
-    assert "set PYTHON to a CPython 3.14+ executable" in message
+    assert (
+        f"uv run --python 3.{minor} molt build <source> --python-version 3.{minor}"
+        in message
+    )
+    assert f"set PYTHON to a CPython 3.{minor}+ executable" in message
     assert "molt setup --install-cli-dependencies" in message
     assert "retry `molt build`" in message
-    assert "uv run" not in message
 
 
 def test_target_python_defaults_to_lowest_supported_project_floor(
