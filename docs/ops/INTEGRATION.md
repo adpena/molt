@@ -83,6 +83,31 @@ fetch  →  rebase  →  verify-commits  →  markers  →  gates  →  push  �
 Each failure raises a `DriverError` that `main()` translates to a non-zero exit
 code, so `integrate` is CI-usable (exit `0` ok, `1` a check failed, `2` usage).
 
+### Integration progress and cost attribution
+
+`integrate` emits advisory JSON lines with schema
+`molt.integration-progress.v1` into its existing stdout log, alongside human
+output. Candidate selection, gate start, gate result and integration termination
+retain the captured source/upstream, exact argv or shell command, declared
+toolchains, gate ordinal, UTC and monotonic timings, and terminal return status.
+The canonical detached runner already captures this stream; callers need no
+private timing/status wrapper or additional state directory.
+
+A missing terminal event leaves the result unknown. A successful gate event
+cannot establish source stability, descendant closure, push confirmation,
+release acceptance or reusable proof. Those remain owned by the integration
+driver, execution custody and `tools/proof_receipts.py`. Dry-run observations
+must retain their planning status; they cannot become executed-gate evidence.
+
+This follows [Cargo's JSON message stream and build-finished event](https://doc.rust-lang.org/cargo/reference/external-tools.html#json-messages)
+and [Bazel's build-event approach](https://bazel.build/remote/bep) while keeping
+Molt's existing log and proof authorities. The incremental cost is two bounded
+JSON records and stdout flushes per executed gate, plus candidate and terminal
+records: O(gates + command bytes), with no extra process, source scan, image
+hash, fsync, environment dump or retained per-gate state. No emitted program
+executes this development telemetry. It establishes cost attribution, not an
+integration speedup.
+
 ## The hazard → countermeasure table (as implemented)
 
 | # | Hazard | Countermeasure in the driver |

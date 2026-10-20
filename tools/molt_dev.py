@@ -136,6 +136,7 @@ import time
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -1079,23 +1080,87 @@ def _observe_gate_capacity(
         return ()
 
 
+@dataclass
+class _IntegrationProgress:
+    """Advisory stdout events; absent terminal output never establishes success."""
+
+    started: float = field(default_factory=time.monotonic)
+    source_commit: str | None = None
+    upstream_commit: str | None = None
+    gate_total: int = 0
+
+    def emit(self, event: str, **details: object) -> None:
+        now = time.monotonic()
+        payload = {
+            "schema": "molt.integration-progress.v1",
+            "event": event,
+            "advisory": True,
+            "source_commit": self.source_commit,
+            "upstream_commit": self.upstream_commit,
+            "gate_total": self.gate_total,
+            "recorded_at": datetime.now(UTC).isoformat(),
+            "monotonic_seconds": now,
+            "elapsed_seconds": now - self.started,
+            **details,
+        }
+        try:
+            print(json.dumps(payload, ensure_ascii=True), flush=True)
+        except OSError:
+            # Diagnostics cannot replace a gate, custody or publication outcome.
+            pass
+
+
 def cmd_integrate(args: argparse.Namespace) -> int:
-    if args.dry_run:
-        return _integrate_exclusive(args)
-    lock_path = _integration_lock_path(Path(args.repo).resolve())
-    handle = _try_acquire_file_lock(lock_path)
-    if handle is None:
-        raise DriverError(
-            "another integration owns this Git repository; no fetch or gates ran. "
-            "Retry after it finishes; do not remove the integration lock file."
-        )
+    progress = _IntegrationProgress()
+    returncode = None
+    error: BaseException | None = None
     try:
-        return _integrate_exclusive(args)
+        if args.dry_run:
+            returncode = _integrate_exclusive(args, progress=progress)
+            return returncode
+        lock_path = _integration_lock_path(Path(args.repo).resolve())
+        handle = _try_acquire_file_lock(lock_path)
+        if handle is None:
+            raise DriverError(
+                "another integration owns this Git repository; no fetch or gates ran. "
+                "Retry after it finishes; do not remove the integration lock file."
+            )
+        try:
+            returncode = _integrate_exclusive(args, progress=progress)
+            return returncode
+        finally:
+            _release_file_lock(handle)
+    except BaseException as exc:
+        error = exc
+        raise
     finally:
-        _release_file_lock(handle)
+        if error is not None:
+            returncode = (
+                error.code
+                if isinstance(error, DriverError)
+                else EXIT_USAGE
+                if isinstance(error, ValueError)
+                else 130
+                if isinstance(error, KeyboardInterrupt)
+                else None
+            )
+        progress.emit(
+            "integration_finished",
+            status=(
+                "interrupted"
+                if isinstance(error, KeyboardInterrupt)
+                else "completed"
+                if error is None and returncode == 0
+                else "failed"
+            ),
+            returncode=returncode,
+            dry_run=args.dry_run,
+        )
 
 
-def _integrate_exclusive(args: argparse.Namespace) -> int:
+def _integrate_exclusive(
+    args: argparse.Namespace, *, progress: _IntegrationProgress
+) -> int:
     repo = Path(args.repo).resolve()
     git = Git(repo)
     remote = args.remote
@@ -1109,6 +1174,7 @@ def _integrate_exclusive(args: argparse.Namespace) -> int:
 
     # --- preflight: HEAD must be a real commit; record source state ---------
     head_before = require_git_object_id(git.head_sha(), label="integration source")
+    progress.source_commit = head_before
     _assert_integration_source(git, head_before)
     sym = git.symbolic_head()
     _say(f"    HEAD={git.short(head_before)} ({sym or 'detached'})")
@@ -1122,6 +1188,7 @@ def _integrate_exclusive(args: argparse.Namespace) -> int:
     upstream_before = require_git_object_id(
         git.rev_parse(upstream_ref), label="integration upstream"
     )
+    progress.upstream_commit = upstream_before
     if args.expected_upstream is not None:
         require_git_object_id(args.expected_upstream, label="expected upstream")
         if upstream_before != args.expected_upstream:
@@ -1138,6 +1205,7 @@ def _integrate_exclusive(args: argparse.Namespace) -> int:
     source_shas = git.commits_in_range(source_range)
     _assert_integration_source(git, head_before)
     if not source_shas:
+        progress.emit("candidate_selected")
         _ok("no commits to integrate (HEAD already on upstream); nothing to do")
         # Still verify tree cleanliness so an idempotent re-run reports state.
         dirty = _tracked_dirty(git, ignore_globs)
@@ -1191,6 +1259,7 @@ def _integrate_exclusive(args: argparse.Namespace) -> int:
         selected_commit = require_git_object_id(
             git.head_sha(), label="selected integration commit"
         )
+        progress.source_commit = selected_commit
         new_range = f"{upstream_before}..{selected_commit}"
         _ok(f"rebased; HEAD {git.short(head_before)} -> {git.short(selected_commit)}")
         _assert_integration_source(git, selected_commit)
@@ -1263,6 +1332,9 @@ def _integrate_exclusive(args: argparse.Namespace) -> int:
         ]
     except ValueError as exc:
         raise DriverError(f"invalid local gate binding; executed=0: {exc}") from exc
+    progress.source_commit = selected_commit
+    progress.gate_total = len(gate_cmds)
+    progress.emit("candidate_selected")
     _step(
         f"gates ({len(gate_cmds)} selected for {len(touched)} touched path(s); "
         f"matched rules: {', '.join(r.name for r in matched_rules) or 'none'})"
@@ -1297,7 +1369,7 @@ def _integrate_exclusive(args: argparse.Namespace) -> int:
             ) from exc
         _assert_integration_source(git, selected_commit)
     gate_seconds: list[tuple[float, str]] = []
-    for gate in gate_cmds:
+    for ordinal, gate in enumerate(gate_cmds, start=1):
         cmd = gate.command
         display = cmd if isinstance(cmd, str) else shlex.join(cmd)
         _assert_integration_source(git, selected_commit)
@@ -1316,10 +1388,27 @@ def _integrate_exclusive(args: argparse.Namespace) -> int:
             else ()
         )
         started = time.monotonic()
+        details = {
+            "gate_ordinal": ordinal,
+            "command": (
+                {"kind": "shell", "source": cmd}
+                if isinstance(cmd, str)
+                else {"kind": "argv", "argv": list(cmd)}
+            ),
+            "toolchains": list(gate.toolchains),
+        }
+        progress.emit("gate_started", **details)
+        rc = None
         try:
             rc = run_gate(cmd, repo, environments[gate.toolchains])
         finally:
             elapsed = time.monotonic() - started
+            progress.emit(
+                "gate_finished",
+                **details,
+                returncode=rc,
+                duration_seconds=elapsed,
+            )
             if paths:
                 _observe_gate_capacity(
                     paths,
