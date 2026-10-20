@@ -742,6 +742,63 @@ def test_run_context_dx_env_installs_cross_platform_tool_defaults(
     assert env["MOLT_CACHE_MAX_AGE_DAYS"] == "30"
 
 
+@pytest.mark.skipif(os.name != "posix", reason="Unix socket transport")
+def test_dx_default_socket_directory_supports_actual_unix_bind(tmp_path: Path) -> None:
+    import socket
+    import uuid
+
+    # macOS temporary roots and guarded command roots can exceed sun_path
+    # before DX adds the checkout directory and the CLI adds its socket name.
+    directory = dx.backend_daemon_socket_dir(
+        tmp_path, {"TMPDIR": str(tmp_path / ("long-temporary-root-" * 12))}
+    )
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"moltbd.{uuid.uuid4().hex[:16]}.sock"
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as endpoint:
+        endpoint.bind(str(path))
+        try:
+            assert path.is_socket()
+        finally:
+            path.unlink()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Unix daemon default")
+@pytest.mark.parametrize("alias", [False, True])
+def test_dx_default_socket_root_outlives_guarded_command_scratch(
+    tmp_path: Path, alias: bool
+) -> None:
+    scratch = tmp_path / "command-scratch"
+    scratch.mkdir()
+    selected = scratch
+    if alias:
+        selected = tmp_path / "scratch-alias"
+        selected.symlink_to(scratch, target_is_directory=True)
+    env = {key: str(selected) for key in ("TMPDIR", "TMP", "TEMP")}
+    env["MOLT_GUARD_SCRATCH_ROOT"] = str(scratch)
+
+    root = dx._backend_daemon_socket_root(env)
+
+    assert not host_path_is_within(root, scratch)
+
+
+def test_dx_keeps_explicit_socket_directory_without_deriving_a_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unexpected_default(*_args):
+        pytest.fail("an explicit socket directory needs no default resolution")
+
+    monkeypatch.setattr(dx, "backend_daemon_socket_dir", unexpected_default)
+    env = RunContext(tmp_path).dx_env(
+        {
+            "MOLT_BACKEND_DAEMON_SOCKET_DIR": "operator-selected",
+            "MOLT_USE_SCCACHE": "0",
+        },
+        create_dirs=False,
+    )
+
+    assert env["MOLT_BACKEND_DAEMON_SOCKET_DIR"] == "operator-selected"
+
+
 def test_dx_env_sets_uv_copy_link_mode_for_windows_exfat_root(
     monkeypatch,
     tmp_path: Path,

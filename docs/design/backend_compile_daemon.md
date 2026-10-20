@@ -25,6 +25,13 @@ one-shot mode. Mach-O validation and actual guest execution retain their first
 failure instead of treating daemon selection as a binary-validity check. This
 is development/compiler work and adds no work to emitted programs.
 
+DX derives socket directories with the same Unix path-length policy as the CLI;
+long default temporary roots cannot turn an enabled daemon into one-shot
+compilation. Its default also excludes guarded command scratch, which can be
+reclaimed before a persistent daemon retires. Explicit socket directories and
+roots retain their operator-selected meaning and fail the existing admission
+checks if unusable. An explicit directory needs no default path resolution.
+
 ### Request-scoped settings
 
 - `src/molt/backend_environment.json` is the one membership authority. `runtime/molt-ir/build.rs`
