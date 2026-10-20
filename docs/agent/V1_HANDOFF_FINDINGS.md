@@ -964,6 +964,15 @@ one target minor. Preserve the zero-spawn path for an already suitable frontend,
 explicit installed dependency setup, source/bundle custody and independent guest
 execution. Resolve the 3.15 parser's best-effort older-grammar behavior at this
 same boundary rather than duplicating version selection in the native launcher.
+The build request migration replaces the independent library keyword schema and
+partial batch option map with one typed request. CLI, factgraph, benchmark,
+differential and conformance producers consume it; wire admission rejects stale
+aliases and invalid types before applying invocation environment overrides.
+Producer admission preserves configuration/build-failure classification; benchmark
+and conformance services start only after a valid request, with existing lifecycle
+and scratch owners retained. The replaced type definitions and reflective per-call signature binding are
+removed. Full request transport and unchanged-build cache controls are qualified
+separately from the still-open automatic frontend-selection obligation above.
 The development runner now schedules directly from the canonical target catalog;
 its copied three-version registry is deleted. Independent synthetic schedules
 including 3.15 and reordered, nonconsecutive versions pass through the actual

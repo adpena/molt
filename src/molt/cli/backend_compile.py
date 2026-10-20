@@ -52,9 +52,9 @@ from molt.cli.config_resolution import (
     DEFAULT_RUNTIME_STDLIB_PROFILE,
 )
 from molt.cli.installed_runtime_contract import InstalledRuntimeError
+from molt.cli.build_request import BuildProfile
 from molt.cli.models import (
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
-    BuildProfile,
     _BackendCacheSetup,
     _CliFailure,
     _ExternalPackageNativeArtifactPlan,

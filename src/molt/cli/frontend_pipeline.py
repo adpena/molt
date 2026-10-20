@@ -64,13 +64,15 @@ from molt.cli.module_source import (
     _ModuleSourceLease,
 )
 from molt.compiler_analysis.python_imports import ModuleExecutionKind
-from molt.cli.models import (
-    _RuntimeImportScanCustody,
+from molt.cli.build_request import (
     BuildProfile,
     EmitMode,
     ParseCodec,
     Target,
     TypeHintPolicy,
+)
+from molt.cli.models import (
+    _RuntimeImportScanCustody,
     _BuildDiagnosticsContext,
     _BinaryImageScope,
     _ExternalPackageNativeArtifactPlan,

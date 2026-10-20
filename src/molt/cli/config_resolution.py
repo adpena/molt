@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import tomllib
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Literal, Mapping, cast, get_args
 
 from molt.backend_executable_names import (
     CODEGEN_BACKENDS,
@@ -56,7 +56,7 @@ STATIC_IMPORT_MODULES_ENV = "MOLT_STATIC_IMPORT_MODULES"
 # linked) the link fails on undefined full-profile intrinsics
 # (`molt_pbkdf2_hmac`, `molt_scrypt`, ...).
 #
-# This module is now the ONE place that knows the legal values, the ONE default,
+# This module owns the closed profile types, their projected choices, the default,
 # and the ONE precedence order. Every consumer routes through
 # `resolve_stdlib_profile`. `build()` passes the resolved intent as a parameter
 # to module-graph construction and to the runtime selector; the CLI never
@@ -65,18 +65,13 @@ STATIC_IMPORT_MODULES_ENV = "MOLT_STATIC_IMPORT_MODULES"
 # for artifact selection.
 MOLT_STDLIB_PROFILE_ENV = "MOLT_STDLIB_PROFILE"
 AUTO_STDLIB_PROFILE = "auto"
-RUNTIME_STDLIB_PROFILE_TIERS: tuple[str, ...] = (
-    "micro",
-    "edge",
-    "standard",
-    "server",
-    "full",
+RuntimeStdlibProfile = Literal["micro", "edge", "standard", "server", "full"]
+StdlibProfile = Literal["auto", RuntimeStdlibProfile]
+RUNTIME_STDLIB_PROFILE_TIERS: tuple[RuntimeStdlibProfile, ...] = get_args(
+    RuntimeStdlibProfile
 )
 DEFAULT_RUNTIME_STDLIB_PROFILE = RUNTIME_STDLIB_PROFILE_TIERS[0]
-STDLIB_PROFILE_CHOICES: tuple[str, ...] = (
-    AUTO_STDLIB_PROFILE,
-    *RUNTIME_STDLIB_PROFILE_TIERS,
-)
+STDLIB_PROFILE_CHOICES: tuple[StdlibProfile, ...] = get_args(StdlibProfile)
 DEFAULT_STDLIB_PROFILE = AUTO_STDLIB_PROFILE
 
 
@@ -86,7 +81,7 @@ def resolve_stdlib_profile(
     build_cfg: Mapping[str, Any] | None = None,
     deploy_defaults: Mapping[str, Any] | None = None,
     env: Mapping[str, str] | None = None,
-) -> tuple[str, str]:
+) -> tuple[StdlibProfile, str]:
     """Resolve the effective stdlib profile and report its provenance.
 
     Precedence (highest first):
@@ -119,12 +114,12 @@ def resolve_stdlib_profile(
         if cfg_value is None:
             cfg_value = build_cfg.get("stdlib-profile")
         if isinstance(cfg_value, str) and cfg_value in STDLIB_PROFILE_CHOICES:
-            return cfg_value, "config"
+            return cast(StdlibProfile, cfg_value), "config"
 
     if deploy_defaults is not None:
         deploy_value = deploy_defaults.get("stdlib_profile")
         if isinstance(deploy_value, str) and deploy_value in STDLIB_PROFILE_CHOICES:
-            return deploy_value, "deploy-profile"
+            return cast(StdlibProfile, deploy_value), "deploy-profile"
 
     return DEFAULT_STDLIB_PROFILE, "default"
 

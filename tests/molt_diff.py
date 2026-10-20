@@ -15,7 +15,7 @@ from collections.abc import Callable, Iterator, Mapping, MutableMapping, Sequenc
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 # Make the repository root importable so the `tools` / `tests` packages resolve
 # regardless of the current working directory or how this harness is launched.
@@ -54,6 +54,12 @@ from molt.file_publication import resolve_owned_path  # noqa: E402
 from molt.portable_paths import portable_relative_path  # noqa: E402
 from molt import backend_daemon_custody as daemon_custody  # noqa: E402
 from molt.cli.backend_daemon_config import _backend_daemon_enabled  # noqa: E402
+from molt.cli.build_request import (  # noqa: E402
+    BuildProfile,
+    BuildRequest,
+    ParseCodec,
+    build_request_to_payload,
+)
 from molt import file_locks  # noqa: E402
 from molt import python_interpreter  # noqa: E402
 from molt.target_python import (  # noqa: E402
@@ -2327,33 +2333,27 @@ def _run_batch_compile_build(
     rebuild: bool,
     request_timeout: float,
     budget: compat_backends.ItemBudget,
-    extra_params: dict[str, object] | None = None,
 ) -> compat_backends.BackendResult:
     diff_caps = _diff_capabilities(env)
     try:
         stdlib_profile = compat_backends.stdlib_profile_from_environment(env)
+        request = BuildRequest(
+            file_path=file_path,
+            profile=cast(BuildProfile, build_profile),
+            output=str(output_binary),
+            out_dir=str(output_root),
+            emit="bin",
+            cache=not no_cache and not rebuild,
+            respect_pythonpath=True,
+            python_version=target_python.short if target_python is not None else None,
+            stdlib_profile=stdlib_profile,
+            capabilities=diff_caps or None,
+        )
+        if "MOLT_CODEC" in env:
+            request = replace(request, parse_codec=cast(ParseCodec, env["MOLT_CODEC"]))
+        params = build_request_to_payload(request)
     except ValueError as exc:
         return compat_backends.BackendResult(None, str(exc), 2, build_failed=True)
-    params: dict[str, object] = {
-        "file_path": file_path,
-        "profile": build_profile,
-        "output": str(output_binary),
-        "out_dir": str(output_root),
-        "target": "native",
-        "emit": "bin",
-        "cache": not no_cache and not rebuild,
-        "respect_pythonpath": True,
-        "env_overrides": env,
-        "codec": env.get("MOLT_CODEC", "msgpack"),
-    }
-    if target_python is not None:
-        params["python_version"] = target_python.short
-    if stdlib_profile is not None:
-        params["stdlib_profile"] = stdlib_profile
-    if diff_caps:
-        params["capabilities"] = diff_caps
-    if extra_params:
-        params.update(extra_params)
     build_cap = budget.policy.phase("native", "build")
     if build_cap is not None:
         request_timeout = (
@@ -2396,7 +2396,9 @@ def _run_batch_compile_build(
     if request_timeout == 0:
         return budget.exhausted_result(build_failed=True)
     try:
-        response = client.request("build", params=params, timeout=request_timeout)
+        response = client.request(
+            "build", params=params, env_overrides=env, timeout=request_timeout
+        )
     except Exception as error:
         # Capture the submitted request's outcome before shutdown can change
         # process observations. An indeterminate request is never resubmitted.

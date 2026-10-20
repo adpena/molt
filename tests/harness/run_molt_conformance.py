@@ -17,8 +17,9 @@ import shutil
 import subprocess
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import cast
 
 # Ensure the harness directory is on sys.path so the import works
 # regardless of the caller's working directory.
@@ -40,6 +41,11 @@ from molt.harness_conformance import (  # noqa: E402
     write_molt_conformance_summary,
 )
 from molt.temporary_artifacts import execution_scratch  # noqa: E402
+from molt.cli.build_request import (  # noqa: E402
+    BuildRequest,
+    ParseCodec,
+    build_request_to_payload,
+)
 from run_monty_conformance import parse_expectation  # noqa: E402
 from tools.batch_compile_client import BatchCompileServerClient  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402
@@ -51,6 +57,7 @@ SMOKE_MANIFEST = CORPUS_DIR / "SMOKE.txt"
 COMPILE_TIMEOUT = 30  # seconds per file (after warmup)
 WARMUP_TIMEOUT = 300  # seconds per build until one succeeds (runtime may recompile)
 RUN_TIMEOUT = 5  # seconds per binary
+PING_TIMEOUT = 10.0
 
 
 # ---------------------------------------------------------------------------
@@ -139,19 +146,10 @@ def _molt_batch_build_params(
     src: Path, out: Path, env: dict[str, str]
 ) -> dict[str, object]:
     """Build-server params matching the previous native `molt build` contract."""
-    return {
-        "file_path": str(src),
-        "target": "native",
-        "codec": env.get("MOLT_CODEC", "msgpack"),
-        "type_hints": "check",
-        "output": str(out),
-        "json_output": False,
-        "deterministic": True,
-        "trusted": False,
-        "cache": True,
-        "profile": "release",
-        "env_overrides": _batch_env_overrides(env),
-    }
+    request = BuildRequest(file_path=str(src), output=str(out))
+    if "MOLT_CODEC" in env:
+        request = replace(request, parse_codec=cast(ParseCodec, env["MOLT_CODEC"]))
+    return build_request_to_payload(request)
 
 
 def _response_text(response: dict[str, object], key: str) -> str:
@@ -178,7 +176,7 @@ def _compile_failure_detail(response: dict[str, object], *, limit: int = 300) ->
 
 
 class ConformanceBatchCompiler:
-    """Shared native compiler backed by Molt's internal batch build server."""
+    """Own the native batch client; validate the first build before startup."""
 
     def __init__(
         self,
@@ -197,7 +195,6 @@ class ConformanceBatchCompiler:
         return _batch_server_cmd(self._molt_cmd)
 
     def __enter__(self) -> "ConformanceBatchCompiler":
-        self.start()
         return self
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
@@ -239,13 +236,16 @@ class ConformanceBatchCompiler:
         op: str,
         *,
         params: dict[str, object] | None = None,
+        env_overrides: dict[str, str] | None = None,
         timeout: float,
     ) -> dict[str, object]:
         self.start()
         if self._client is None:
             raise BatchBuildServerError("batch compile server did not start")
         try:
-            return self._client.request(op, params=params, timeout=timeout)
+            return self._client.request(
+                op, params=params, env_overrides=env_overrides, timeout=timeout
+            )
         except TimeoutError:
             self.close(force=True)
             raise
@@ -253,21 +253,42 @@ class ConformanceBatchCompiler:
             self.close(force=True)
             raise BatchBuildServerError(f"batch compile server failed: {exc}") from exc
 
-    def ping(self, *, timeout: float = 10.0) -> None:
-        try:
-            response = self._request("ping", timeout=timeout)
-        except TimeoutError as exc:
-            raise BatchBuildServerError("batch compile server ping timed out") from exc
+    def _ping(self, *, timeout: float) -> None:
+        response = self._request("ping", timeout=timeout)
         if response.get("ok") is not True or response.get("pong") is not True:
             raise BatchBuildServerError(
                 f"batch compile server ping failed: {response!r}"
             )
 
+    def ping(self, *, timeout: float = PING_TIMEOUT) -> None:
+        try:
+            self._ping(timeout=timeout)
+        except TimeoutError as exc:
+            raise BatchBuildServerError("batch compile server ping timed out") from exc
+
     def build(self, src: Path, out: Path, *, timeout: float) -> dict[str, object]:
+        deadline = time.monotonic() + timeout
+        try:
+            params = _molt_batch_build_params(src, out, self._env)
+        except ValueError as exc:
+            return {"ok": False, "returncode": 2, "stderr": str(exc)}
+
+        def remaining_timeout() -> float:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self.close(force=True)
+                raise TimeoutError("batch build budget exhausted before dispatch")
+            return remaining
+
+        if self._client is None:
+            remaining_timeout()
+            self.start()
+            self._ping(timeout=min(PING_TIMEOUT, remaining_timeout()))
         return self._request(
             "build",
-            params=_molt_batch_build_params(src, out, self._env),
-            timeout=timeout,
+            params=params,
+            env_overrides=_batch_env_overrides(self._env),
+            timeout=remaining_timeout(),
         )
 
 
@@ -633,8 +654,6 @@ def main(argv: list[str] | None = None) -> int:
                     print(
                         f"Using Molt batch build server: {shlex.join(compiler.command)}"
                     )
-                    compiler.ping()
-
                     # Preflight -- also warms up the runtime build cache
                     print(
                         "Running preflight (first build may take minutes if runtime "

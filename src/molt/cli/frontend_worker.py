@@ -17,11 +17,9 @@ from molt.frontend.lowering.exception_lowering import MoltSyntaxError
 from molt.frontend import ClassId, ClassInfo
 from molt.type_facts import TypeFacts
 
+from molt.cli.build_request import BuildProfile, ParseCodec, TypeHintPolicy
 from molt.cli.models import (
-    BuildProfile,
     ModuleExecutionKind,
-    ParseCodec,
-    TypeHintPolicy,
     _FrontendModuleResultTimings,
     _ModuleGraphMetadata,
     _ScopedLoweringInputView,

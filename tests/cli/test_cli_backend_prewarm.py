@@ -30,6 +30,7 @@ from molt.cli import build_inputs as cli_build_inputs
 from molt.cli import entrypoint_dispatch, entrypoint_parser
 from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
 from molt.cli.build_output_layout import _resolve_build_output_layout
+from molt.cli.build_request import BuildRequest
 from molt.cli.models import _BackendCacheSetup
 from molt.cli.project_roots import _find_project_root
 from molt.cli.runtime_paths import _cargo_profile_dir, _cargo_target_root
@@ -136,7 +137,7 @@ def _dispatch(
     build_fn: Any = None,
     build_cfg: dict[str, Any] | None = None,
 ) -> int:
-    def unexpected_build(*_args: object, **_kwargs: object) -> int:
+    def unexpected_build(_request: BuildRequest) -> int:
         raise AssertionError("the prewarm must not build a program")
 
     parser = entrypoint_parser._build_entrypoint_parser()
@@ -430,9 +431,9 @@ def test_prewarm_admits_the_backend_the_build_selects(
     build_targets: list[str] = []
     build_backends: list[str] = []
 
-    def build_fn(*args: Any, **kwargs: Any) -> int:
-        build_targets.append(args[1])
-        build_backends.append(kwargs["codegen_backend"])
+    def build_fn(request: BuildRequest) -> int:
+        build_targets.append(request.target)
+        build_backends.append(request.codegen_backend)
         return 0
 
     build_rc = _dispatch(
@@ -522,8 +523,8 @@ def test_prewarm_defaults_to_the_configured_build_target(
     admissions = _record_backend_admission(monkeypatch)
     build_targets: list[str] = []
 
-    def build_fn(*args: Any, **_kwargs: Any) -> int:
-        build_targets.append(args[1])
+    def build_fn(request: BuildRequest) -> int:
+        build_targets.append(request.target)
         return 0
 
     build_cfg = {"target": "wasm"}

@@ -28,10 +28,8 @@ from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
 from molt.cli import frontend_parallel as _frontend_parallel
 from molt.cli import frontend_integration as _frontend_integration
 from molt.cli import frontend_worker as _frontend_worker
+from molt.cli.build_request import BuildProfile, ParseCodec, TypeHintPolicy
 from molt.cli.models import (
-    BuildProfile,
-    ParseCodec,
-    TypeHintPolicy,
     _FrontendIntegrationState,
     _FrontendLayerPlan,
     _FrontendModuleResultTimings,

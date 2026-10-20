@@ -5,7 +5,7 @@ import sys
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Callable
 
 from molt.cli.entrypoint_parser import _build_entrypoint_parser
 from molt.cli.output import fail
@@ -14,6 +14,9 @@ from molt.environment_registry import (
     check_process_environment,
 )
 from molt.target_python import require_frontend_python
+
+if TYPE_CHECKING:
+    from molt.cli.build_request import BuildRequest
 
 
 @contextmanager
@@ -36,7 +39,7 @@ def _cli_profile() -> Generator[None]:
         profiler.dump_stats(path)
 
 
-def _build(*args: Any, **kwargs: Any) -> int:
+def _build(request: BuildRequest) -> int:
     """Run `build_command.build`, importing the build pipeline only now.
 
     Commands that never build, such as ``molt --version``, then skip the
@@ -45,10 +48,10 @@ def _build(*args: Any, **kwargs: Any) -> int:
     """
     from molt.cli import build_command
 
-    return build_command.build(*args, **kwargs)
+    return build_command.build(request)
 
 
-def main(build_fn: Callable[..., int] | None = None) -> int:
+def main(build_fn: Callable[[BuildRequest], int] | None = None) -> int:
     try:
         require_frontend_python()
     except RuntimeError as exc:

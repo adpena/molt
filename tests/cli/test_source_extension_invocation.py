@@ -176,7 +176,7 @@ def test_prepared_precondition_reaches_shared_execution_body(
         entrypoint_dispatch._dispatch_entrypoint_command(
             parsed,
             parser=parser,
-            build_fn=lambda **_: 0,
+            build_fn=lambda _request: 0,
             config_root=tmp_path,
             config={},
             build_cfg={},

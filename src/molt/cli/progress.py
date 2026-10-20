@@ -227,15 +227,15 @@ def finish_after(function: Callable[_P, _R]) -> Callable[_P, _R]:
 
 
 def present_build(
-    function: Callable[..., int],
+    function: Callable[_P, int],
     *,
     mode: str = "auto",
     headless: bool = False,
     quiet: bool = False,
     json_output: bool = False,
-) -> Callable[..., int]:
+) -> Callable[_P, int]:
     @wraps(function)
-    def build(*args: Any, **kwargs: Any) -> int:
+    def build(*args: _P.args, **kwargs: _P.kwargs) -> int:
         with BuildProgress(
             mode=mode, headless=headless, quiet=quiet, json_output=json_output
         ):

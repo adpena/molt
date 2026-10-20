@@ -190,6 +190,7 @@ import socket
 import tracemalloc
 from molt.cli import backend_cache as cli_backend_cache
 from molt.cli import build_command as cli_build_command
+from molt.cli.build_request import BuildRequest
 from molt.cli import artifact_sync as cli_artifact_sync
 from molt.cli import backend_daemon_config as cli_backend_daemon_config
 from molt.cli import backend_daemon_logs as cli_backend_daemon_logs
@@ -18923,13 +18924,15 @@ def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
     first_stdout = io.StringIO()
     with contextlib.redirect_stdout(first_stdout):
         rc = cli_build_command.build(
-            str(entry),
-            emit="obj",
-            output=str(tmp_path / "first.o"),
-            profile="dev",
-            deterministic=False,
-            json_output=True,
-            diagnostics=True,
+            BuildRequest(
+                file_path=str(entry),
+                emit="obj",
+                output=str(tmp_path / "first.o"),
+                profile="dev",
+                deterministic=False,
+                json_output=True,
+                diagnostics=True,
+            )
         )
     assert rc == 0, first_stdout.getvalue()
     first_submit_calls = submit_calls
@@ -18939,13 +18942,15 @@ def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
     second_stdout = io.StringIO()
     with contextlib.redirect_stdout(second_stdout):
         rc = cli_build_command.build(
-            str(entry),
-            emit="obj",
-            output=str(tmp_path / "second.o"),
-            profile="dev",
-            deterministic=False,
-            json_output=True,
-            diagnostics=True,
+            BuildRequest(
+                file_path=str(entry),
+                emit="obj",
+                output=str(tmp_path / "second.o"),
+                profile="dev",
+                deterministic=False,
+                json_output=True,
+                diagnostics=True,
+            )
         )
     assert rc == 0, second_stdout.getvalue()
     assert 0 <= submit_calls < first_submit_calls
@@ -19089,13 +19094,15 @@ def test_parallel_build_reuses_dependent_cache_after_stable_interface_change(
     first_stdout = io.StringIO()
     with contextlib.redirect_stdout(first_stdout):
         rc = cli_build_command.build(
-            str(entry),
-            emit="obj",
-            output=str(tmp_path / "first.o"),
-            profile="dev",
-            deterministic=False,
-            json_output=True,
-            diagnostics=True,
+            BuildRequest(
+                file_path=str(entry),
+                emit="obj",
+                output=str(tmp_path / "first.o"),
+                profile="dev",
+                deterministic=False,
+                json_output=True,
+                diagnostics=True,
+            )
         )
     assert rc == 0, first_stdout.getvalue()
 
@@ -19104,13 +19111,15 @@ def test_parallel_build_reuses_dependent_cache_after_stable_interface_change(
     second_stdout = io.StringIO()
     with contextlib.redirect_stdout(second_stdout):
         rc = cli_build_command.build(
-            str(entry),
-            emit="obj",
-            output=str(tmp_path / "second.o"),
-            profile="dev",
-            deterministic=False,
-            json_output=True,
-            diagnostics=True,
+            BuildRequest(
+                file_path=str(entry),
+                emit="obj",
+                output=str(tmp_path / "second.o"),
+                profile="dev",
+                deterministic=False,
+                json_output=True,
+                diagnostics=True,
+            )
         )
     assert rc == 0, second_stdout.getvalue()
 
@@ -19254,15 +19263,17 @@ def test_parallel_build_allows_scoped_type_facts(
     stdout = io.StringIO()
     with contextlib.redirect_stdout(stdout):
         rc = cli_build_command.build(
-            str(entry),
-            emit="obj",
-            output=str(tmp_path / "typed.o"),
-            type_facts_path=str(facts_path),
-            profile="dev",
-            deterministic=False,
-            json_output=True,
-            diagnostics=True,
-            type_hint_policy="trust",
+            BuildRequest(
+                file_path=str(entry),
+                emit="obj",
+                output=str(tmp_path / "typed.o"),
+                type_facts_path=str(facts_path),
+                profile="dev",
+                deterministic=False,
+                json_output=True,
+                diagnostics=True,
+                type_hint_policy="trust",
+            )
         )
 
     assert rc == 0, stdout.getvalue()
@@ -19319,12 +19330,14 @@ def test_build_one_shot_backend_compile_uses_ir_file_lease(
     )
 
     rc = cli_build_command.build(
-        str(entry),
-        emit="obj",
-        output=str(tmp_path / "out.o"),
-        profile="dev",
-        deterministic=False,
-        json_output=False,
+        BuildRequest(
+            file_path=str(entry),
+            emit="obj",
+            output=str(tmp_path / "out.o"),
+            profile="dev",
+            deterministic=False,
+            json_output=False,
+        )
     )
 
     captured = capsys.readouterr()
@@ -19415,13 +19428,15 @@ def test_build_skips_daemon_preflight_when_socket_exists(
     stdout = io.StringIO()
     with contextlib.redirect_stdout(stdout):
         rc = cli_build_command.build(
-            str(entry),
-            emit="obj",
-            output=str(tmp_path / "out.o"),
-            profile="dev",
-            deterministic=False,
-            json_output=True,
-            diagnostics=True,
+            BuildRequest(
+                file_path=str(entry),
+                emit="obj",
+                output=str(tmp_path / "out.o"),
+                profile="dev",
+                deterministic=False,
+                json_output=True,
+                diagnostics=True,
+            )
         )
 
     assert rc == 0, stdout.getvalue()
@@ -19480,12 +19495,14 @@ def test_build_emit_obj_does_not_route_stdlib_object_env_from_helper(
     _install_fake_backend_compile(monkeypatch, seen_envs=seen_envs)
 
     rc = cli_build_command.build(
-        str(entry),
-        emit="obj",
-        output=str(tmp_path / "out.o"),
-        profile="dev",
-        deterministic=False,
-        json_output=False,
+        BuildRequest(
+            file_path=str(entry),
+            emit="obj",
+            output=str(tmp_path / "out.o"),
+            profile="dev",
+            deterministic=False,
+            json_output=False,
+        )
     )
 
     captured = capsys.readouterr()
@@ -25997,12 +26014,14 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
     )
 
     rc = cli_build_command.build(
-        str(entry),
-        target="rust",
-        output=str(backend_output),
-        profile="dev",
-        deterministic=False,
-        json_output=False,
+        BuildRequest(
+            file_path=str(entry),
+            target="rust",
+            output=str(backend_output),
+            profile="dev",
+            deterministic=False,
+            json_output=False,
+        )
     )
 
     captured = capsys.readouterr()
@@ -26148,12 +26167,14 @@ def test_build_release_rust_target_uses_release_backend_profile_by_default(
     )
 
     rc = cli_build_command.build(
-        str(entry),
-        target="rust",
-        output=str(backend_output),
-        profile="release",
-        deterministic=False,
-        json_output=False,
+        BuildRequest(
+            file_path=str(entry),
+            target="rust",
+            output=str(backend_output),
+            profile="release",
+            deterministic=False,
+            json_output=False,
+        )
     )
 
     captured = capsys.readouterr()
@@ -26195,9 +26216,8 @@ def test_browser_deploy_profile_enables_split_runtime_publication(
     entry.write_text("print('ok')\n", encoding="utf-8")
     seen: list[bool] = []
 
-    def fake_build(*args: object, **kwargs: object) -> int:
-        del args
-        seen.append(bool(kwargs.get("split_runtime")))
+    def fake_build(request: BuildRequest) -> int:
+        seen.append(request.split_runtime)
         return 0
 
     monkeypatch.setattr(cli_build_command, "build", fake_build)
@@ -26220,9 +26240,8 @@ def test_wasm_optimizer_level_follows_build_intent_and_explicit_override(
     entry.write_text("print('ok')\n", encoding="utf-8")
     seen: list[str | None] = []
 
-    def fake_build(*args: object, **kwargs: object) -> int:
-        del args
-        seen.append(cast(str | None, kwargs.get("wasm_opt_level")))
+    def fake_build(request: BuildRequest) -> int:
+        seen.append(request.wasm_opt_level)
         return 0
 
     monkeypatch.setattr(cli_build_command, "build", fake_build)
@@ -26268,9 +26287,8 @@ def test_build_cli_defaults_to_auto_wasm_profile(
     entry.write_text("print('ok')\n", encoding="utf-8")
     seen_profiles: list[str | None] = []
 
-    def fake_build(*args: object, **kwargs: object) -> int:
-        del args
-        seen_profiles.append(cast(str | None, kwargs.get("wasm_profile")))
+    def fake_build(request: BuildRequest) -> int:
+        seen_profiles.append(request.wasm_profile)
         return 0
 
     monkeypatch.setattr(cli_build_command, "build", fake_build)
@@ -26293,9 +26311,8 @@ def test_build_cli_defaults_to_auto_stdlib_profile(
     entry.write_text("print('ok')\n", encoding="utf-8")
     seen_profiles: list[str | None] = []
 
-    def fake_build(*args: object, **kwargs: object) -> int:
-        del args
-        seen_profiles.append(cast(str | None, kwargs.get("stdlib_profile")))
+    def fake_build(request: BuildRequest) -> int:
+        seen_profiles.append(request.stdlib_profile)
         return 0
 
     monkeypatch.setattr(cli_build_command, "build", fake_build)
@@ -26316,9 +26333,8 @@ def test_build_cli_keeps_deploy_stdlib_profile_auto_intent(
     entry.write_text("print('ok')\n", encoding="utf-8")
     seen_profiles: list[str | None] = []
 
-    def fake_build(*args: object, **kwargs: object) -> int:
-        del args
-        seen_profiles.append(cast(str | None, kwargs.get("stdlib_profile")))
+    def fake_build(request: BuildRequest) -> int:
+        seen_profiles.append(request.stdlib_profile)
         return 0
 
     monkeypatch.setattr(cli_build_command, "build", fake_build)
@@ -26359,16 +26375,18 @@ def test_build_scopes_pipeline_env_updates(
     monkeypatch.setenv("MOLT_WASM_PROFILE", "pure")
 
     rc = cli_build_command.build(
-        str(entry),
-        module="demo.main",
-        target="wasm",
-        portable=True,
-        split_runtime=True,
-        wasm_profile="full",
-        stdlib_profile="full",
-        audit_log="jsonl:stderr",
-        io_mode="virtual",
-        json_output=True,
+        BuildRequest(
+            file_path=str(entry),
+            module="demo.main",
+            target="wasm",
+            portable=True,
+            split_runtime=True,
+            wasm_profile="full",
+            stdlib_profile="full",
+            audit_log="jsonl:stderr",
+            io_mode="virtual",
+            json_output=True,
+        )
     )
 
     assert rc != 0
@@ -34760,14 +34778,16 @@ def _cli_build_diagnostics(
     stdout = io.StringIO()
     with contextlib.redirect_stdout(stdout):
         result = cli_build_command.build(
-            str(project / entry),
-            emit="obj",
-            output=str(project / output),
-            parse_codec=parse_codec,
-            profile="dev",
-            deterministic=False,
-            json_output=True,
-            diagnostics=True,
+            BuildRequest(
+                file_path=str(project / entry),
+                emit="obj",
+                output=str(project / output),
+                parse_codec=parse_codec,
+                profile="dev",
+                deterministic=False,
+                json_output=True,
+                diagnostics=True,
+            )
         )
     assert result == 0, (entry, stdout.getvalue())
     return json.loads(stdout.getvalue())["data"]["compile_diagnostics"]

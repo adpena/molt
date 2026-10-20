@@ -44,6 +44,7 @@ from molt.type_facts import TypeFacts
 from molt.toolchain_identity import StableRegularFileIdentity
 
 if TYPE_CHECKING:
+    from molt.cli.build_request import BuildProfile, ParseCodec, TypeHintPolicy
     from molt.cli.external_native import (
         _ExternalNativeAbiSymbol,
         _ExternalNativeCapiSymbol,
@@ -77,11 +78,6 @@ if TYPE_CHECKING:
         SourceExtensionLinkRequirements,
     )
 
-ParseCodec = Literal["msgpack", "cbor", "json"]
-TypeHintPolicy = Literal["ignore", "trust", "check"]
-BuildProfile = Literal["dev", "release"]
-EmitMode = Literal["bin", "obj", "wasm"]
-Target = str
 ImportScanMode = Literal["full", "module_init"]
 BinaryImageKind = Literal[
     "entry_script",

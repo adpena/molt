@@ -12,11 +12,8 @@ from typing import Any, cast
 
 from molt.cli.atomic_io import _atomic_write_json
 from molt.cli.config_resolution import _coerce_bool
-from molt.cli.models import (
-    BuildProfile,
-    _BuildDiagnosticsContext,
-    _FrontendTimingRecorderConfig,
-)
+from molt.cli.build_request import BuildProfile
+from molt.cli.models import _BuildDiagnosticsContext, _FrontendTimingRecorderConfig
 from molt.cli.runtime_wasm_cache_diagnostics import (
     _runtime_wasm_cache_diagnostics_snapshot,
 )

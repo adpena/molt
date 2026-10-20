@@ -15,6 +15,7 @@ from molt.cli import deps
 from molt.cli import entrypoint
 from molt.cli import entrypoint_dispatch
 from molt.cli import entrypoint_parser
+from molt.cli.build_request import BuildRequest
 from molt.cli.config_resolution import _select_capability_input
 
 
@@ -68,11 +69,11 @@ def test_removed_fallback_option_is_refused_by_the_command_parser(
 
 
 @pytest.mark.parametrize("policy", ["error", "bridge"])
-def test_removed_build_policy_keyword_is_refused_before_build_execution(
+def test_removed_build_policy_field_is_refused_before_build_execution(
     policy: str,
 ) -> None:
     with pytest.raises(TypeError, match="fallback_policy"):
-        build_command.build(Path("retired-policy.py"), fallback_policy=policy)
+        BuildRequest(file_path="retired-policy.py", fallback_policy=policy)
 
 
 @pytest.mark.parametrize("config_name", ["molt.toml", "pyproject.toml"])
@@ -94,7 +95,7 @@ def test_removed_project_fallback_is_refused_before_build_dispatch(
     monkeypatch.setenv("MOLT_PROJECT_ROOT", str(tmp_path))
     monkeypatch.setattr(sys, "argv", ["molt", "build", str(source), "--json"])
 
-    def forbidden_build(*_args: object, **_kwargs: object) -> int:
+    def forbidden_build(_request: BuildRequest) -> int:
         pytest.fail("retired configuration reached the build")
 
     assert entrypoint.main(build_fn=forbidden_build) == 2

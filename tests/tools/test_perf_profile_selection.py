@@ -212,20 +212,29 @@ def test_unknown_profile_does_not_alias_release():
 def test_batch_request_carries_distinct_profile_inputs(tmp_path):
     from tools import bench
 
+    requests = []
+
+    class Client:
+        def request(self, op, *, params, env_overrides, timeout):
+            assert op == "build" and timeout == 10.0
+            requests.append({"params": params, "env_overrides": dict(env_overrides)})
+            return {"ok": True, "returncode": 0}
+
+    server = bench._BenchBatchBuildServer.__new__(bench._BenchBatchBuildServer)
+    server._client = Client()
     environments = [
         measure._perfscore_build_env(NATIVE_CRANELIFT, p)
         for p in ("release-fast", "release-output")
     ]
-    requests = [
-        bench._molt_build_params(
+    for env in environments:
+        params = bench._molt_build_params(
             script=str(tmp_path / "program.py"),
             extra_args=[],
             env=env,
             build_profile="release",
             out_dir=tmp_path,
         )
-        for env in environments
-    ]
+        server.request_build(params, env_overrides=env, timeout_s=10.0)
     assert requests[0]["env_overrides"]["MOLT_RELEASE_CARGO_PROFILE"] == "release-fast"
     assert (
         requests[1]["env_overrides"]["MOLT_RELEASE_CARGO_PROFILE"] == "release-output"
@@ -307,10 +316,12 @@ def test_batch_restart_preserves_owned_profile_and_isolates_next_cell(monkeypatc
     fast = bench._BenchBatchBuildServer(
         measure._perfscore_build_env(NATIVE_CRANELIFT, "release-fast")
     )
+    fast.start()
     fast.restart()
     output = bench._BenchBatchBuildServer(
         measure._perfscore_build_env(NATIVE_CRANELIFT, "release-output")
     )
+    output.start()
     assert clients[0].closed
     assert clients[0].env == clients[1].env
     assert clients[1].env["MOLT_RELEASE_CARGO_PROFILE"] == "release-fast"
@@ -702,7 +713,8 @@ def test_lane_backend_is_a_build_flag_for_batch_and_cli_builds(
     )
 
     assert "MOLT_BACKEND" not in env
-    assert params.get("backend") == expected
+    assert params["codegen_backend"] == expected
+    assert "backend" not in params
 
 
 @pytest.mark.parametrize(

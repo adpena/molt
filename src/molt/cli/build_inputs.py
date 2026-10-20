@@ -50,14 +50,13 @@ from molt.cli.config_resolution import (
     runtime_target,
 )
 from molt.cli.lockfiles import _check_lockfiles
+from molt.cli.build_request import BuildProfile, Target
 from molt.cli.models import (
     BinaryImageKind,
     BuildEntrySelectorOrigin,
     BuildEntrySelectorTarget,
-    BuildProfile,
     PgoProfileSummary,
     RuntimeFeedbackSummary,
-    Target,
     _BinaryImageScope,
     _PreparedBuildConfig,
     _PreparedBuildPreamble,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import queue
 import threading
 import time
@@ -14,6 +15,8 @@ from tools.batch_compile_client import (
 )
 import subprocess
 from tests.process_guard_common import install_module_view
+from molt.cli.build_request import BuildRequest, build_request_to_payload
+from molt.process_environment import NameRule, ProcessEnvironment
 
 
 class _FakeProc:
@@ -38,6 +41,30 @@ def _bare_client() -> BatchCompileServerClient:
         )
     )
     return client
+
+
+@pytest.mark.parametrize("rule", [NameRule.EXACT, NameRule.WINDOWS])
+def test_batch_build_envelope_keeps_environment_outside_typed_params(
+    monkeypatch, rule
+) -> None:
+    client = _bare_client()
+    monkeypatch.setattr(client, "_readline", lambda timeout: '{"id": 1, "ok": true}')
+    params = build_request_to_payload(
+        BuildRequest(file_path="program.py", profile="dev", parse_codec="json")
+    )
+    environment = ProcessEnvironment(
+        {"Path": "/fixture/bin", "MOLT_CODEC": "json"}, rule=rule
+    )
+
+    client.request("build", params=params, env_overrides=environment, timeout=1.0)
+
+    sent = json.loads(client._proc.stdin.getvalue())
+    assert sent["id"] == 1 and sent["op"] == "build"
+    assert sent["env_overrides"] == {"Path": "/fixture/bin", "MOLT_CODEC": "json"}
+    assert sent["params"] == params
+    assert sent["params"]["profile"] == "dev"
+    assert sent["params"]["parse_codec"] == "json"
+    assert "env_overrides" not in sent["params"]
 
 
 def test_batch_compile_client_rejects_response_id_mismatch(monkeypatch) -> None:

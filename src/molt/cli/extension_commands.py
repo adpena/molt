@@ -68,9 +68,7 @@ from molt.cli.external_native import (
 )
 from molt.file_hashing import _sha256_file
 from molt.cli.lockfiles import _check_lockfiles
-from molt.cli.models import (
-    BuildProfile,
-)
+from molt.cli.build_request import BuildProfile
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import fail as _fail
 from molt.cli.output import json_payload as _json_payload

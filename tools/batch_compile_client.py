@@ -207,6 +207,7 @@ class BatchCompileServerClient:
         op: str,
         *,
         params: dict[str, object] | None = None,
+        env_overrides: Mapping[str, str] | None = None,
         timeout: float,
     ) -> BatchCompileResponse:
         with self._request_lock:
@@ -214,7 +215,9 @@ class BatchCompileServerClient:
             # excludes suite evidence published for an earlier request.
             request_started_at_ns = time.monotonic_ns()
             try:
-                response = self._request(op, params=params, timeout=timeout)
+                response = self._request(
+                    op, params=params, env_overrides=env_overrides, timeout=timeout
+                )
             except Exception as exc:
                 exc.batch_request_custody = BatchCompileRequestCustody(
                     self.child_process, request_started_at_ns, 127
@@ -235,6 +238,7 @@ class BatchCompileServerClient:
         op: str,
         *,
         params: dict[str, object] | None = None,
+        env_overrides: Mapping[str, str] | None = None,
         timeout: float,
     ) -> dict[str, object]:
         if self._poisoned:
@@ -250,6 +254,8 @@ class BatchCompileServerClient:
         request: dict[str, object] = {"id": req_id, "op": op}
         if params is not None:
             request["params"] = params
+        if env_overrides is not None:
+            request["env_overrides"] = dict(env_overrides)
         payload = json.dumps(request, sort_keys=True) + "\n"
         try:
             self._proc.stdin.write(payload)

@@ -916,7 +916,9 @@ def test_batch_compile_server_ping_failure_closes_the_unpublished_client(
         def __init__(self, _env, *, budget) -> None:
             events.append(("init", None))
 
-        def request(self, op: str, *, params=None, timeout: float) -> dict[str, object]:
+        def request(
+            self, op: str, *, params=None, env_overrides=None, timeout: float
+        ) -> dict[str, object]:
             events.append(("request", timeout))
             assert op == "ping"
             raise failure
@@ -947,16 +949,20 @@ def test_run_batch_compile_build_preserves_selected_request_context(
 ) -> None:
     module = _load_diff_module()
     seen_params: list[dict[str, object]] = []
+    seen_environments = []
     starts = []
     environment = {"MOLT_CODEC": "msgpack"}
     if stdlib_profile is not None:
         environment["MOLT_DIFF_STDLIB_PROFILE"] = stdlib_profile
 
     class _Client:
-        def request(self, op: str, *, params=None, timeout: float) -> dict[str, object]:
+        def request(
+            self, op: str, *, params=None, env_overrides=None, timeout: float
+        ) -> dict[str, object]:
             assert op == "build"
             assert isinstance(params, dict)
             seen_params.append(dict(params))
+            seen_environments.append(env_overrides)
             return {
                 "id": 1,
                 "ok": True,
@@ -990,12 +996,13 @@ def test_run_batch_compile_build_preserves_selected_request_context(
     assert starts == [(environment, 8.0, budget)]
     assert len(seen_params) == 1
     assert seen_params[0]["python_version"] == "3.14"
-    assert seen_params[0]["env_overrides"] == environment
+    assert seen_environments == [environment]
+    assert "env_overrides" not in seen_params[0]
+    assert seen_params[0]["profile"] == "dev"
+    assert seen_params[0]["parse_codec"] == "msgpack"
+    assert not {"codec", "type_hints", "type_facts", "backend"} & seen_params[0].keys()
     assert seen_params[0]["respect_pythonpath"] is True
-    if stdlib_profile is None:
-        assert "stdlib_profile" not in seen_params[0]
-    else:
-        assert seen_params[0]["stdlib_profile"] == stdlib_profile
+    assert seen_params[0]["stdlib_profile"] == stdlib_profile
 
 
 def test_run_batch_compile_build_preserves_first_startup_error(
@@ -1008,7 +1015,9 @@ def test_run_batch_compile_build_preserves_first_startup_error(
     original = dict(environment)
 
     class _FakeClient:
-        def request(self, op: str, *, params=None, timeout: float) -> dict[str, object]:
+        def request(
+            self, op: str, *, params=None, env_overrides=None, timeout: float
+        ) -> dict[str, object]:
             requests.append(op)
             assert op == "build"
             assert isinstance(params, dict)
@@ -1060,7 +1069,9 @@ def test_run_batch_compile_build_timeout_is_terminal_and_force_closes_server(
     requests = 0
 
     class _FailingClient:
-        def request(self, op: str, *, params=None, timeout: float) -> dict[str, object]:
+        def request(
+            self, op: str, *, params=None, env_overrides=None, timeout: float
+        ) -> dict[str, object]:
             nonlocal requests
             requests += 1
             assert op == "build"
@@ -1100,7 +1111,9 @@ def test_run_batch_compile_build_timeout_is_terminal_and_force_closes_server(
     assert shutdown_calls == [True]
 
 
-@pytest.mark.parametrize("failure_at", ["deadline", "startup", "request", "unexpected"])
+@pytest.mark.parametrize(
+    "failure_at", ["deadline", "startup", "request", "unexpected", "invalid_request"]
+)
 def test_run_molt_preserves_selected_batch_failure_without_subprocess_fallback(
     monkeypatch, tmp_path: Path, failure_at: str
 ) -> None:
@@ -1124,7 +1137,7 @@ def test_run_molt_preserves_selected_batch_failure_without_subprocess_fallback(
             if failure_at == "startup":
                 raise original_error
 
-        def request(self, op, *, params=None, timeout):
+        def request(self, op, *, params=None, env_overrides=None, timeout):
             requests.append(op)
             assert timeout == 9.0
             if op == "ping":
@@ -1186,6 +1199,9 @@ def test_run_molt_preserves_selected_batch_failure_without_subprocess_fallback(
         environment={
             "MOLT_CAPABILITY_TIER": "none",
             "MOLT_CACHE": str(tmp_path / "molt-cache"),
+            "MOLT_CODEC": "invalid-codec"
+            if failure_at == "invalid_request"
+            else "msgpack",
         },
         budget=module.compat_backends.ItemBudget(
             module.compat_backends.TimeoutPolicy.from_environment(
@@ -1206,6 +1222,12 @@ def test_run_molt_preserves_selected_batch_failure_without_subprocess_fallback(
     if failure_at == "deadline":
         assert result == deadline
         assert metric_statuses == ["build_timeout"]
+    elif failure_at == "invalid_request":
+        assert result.build_failed and result.returncode == 2
+        assert result.stdout is None
+        assert "parse_codec" in result.child_stderr
+        assert "invalid-codec" in result.child_stderr
+        assert not result.timed_out and result.infrastructure_failure is None
     else:
         assert result.build_failed and result.returncode == 127
         assert result.stdout is None
@@ -2380,7 +2402,7 @@ def test_batch_startup_and_request_share_one_item_budget(
     calls = []
 
     class Client:
-        def request(self, op, *, params, timeout):
+        def request(self, op, *, params, env_overrides, timeout):
             calls.append((op, timeout))
             clock.now = 10.0
             raise TimeoutError("batch request exhausted its admitted deadline")

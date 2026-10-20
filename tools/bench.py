@@ -11,10 +11,11 @@ import shutil
 import statistics
 import subprocess
 import sys
-from typing import Any, Literal
+from typing import Any, Literal, cast
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from collections import deque
 from collections.abc import Mapping, MutableMapping
 from pathlib import Path
 
@@ -59,6 +60,14 @@ from tools import bench_reporting  # noqa: E402
 MAX_FAILURE_DETAIL_RECORDS = bench_reporting.MAX_FAILURE_DETAIL_RECORDS
 from tools import perf_authority  # noqa: E402
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder  # noqa: E402
+from molt.cli.build_request import (  # noqa: E402
+    BuildProfile,
+    BuildRequest,
+    ParseCodec,
+    TypeHintPolicy,
+    build_request_to_payload,
+)
+from molt.cli.config_resolution import _select_codegen_backend  # noqa: E402
 from molt import backend_daemon_custody as daemon_custody  # noqa: E402
 from molt.dx import (  # noqa: E402
     artifact_root as dx_artifact_root,
@@ -712,6 +721,8 @@ def _molt_build_cmd(build_profile: str) -> list[str]:
 
 
 class _BenchBatchBuildServer:
+    """Own the persistent client; start after the first payload is admitted."""
+
     def __init__(self, env: Mapping[str, str]) -> None:
         self._env = ProcessEnvironment(env)
         self._guard_context = harness_memory_guard.HarnessExecutionContext.from_env(
@@ -721,7 +732,6 @@ class _BenchBatchBuildServer:
         )
         self._limits = self._guard_context.limits
         self._client: BatchCompileServerClient | None = None
-        self.start()
 
     def start(self) -> None:
         if self._client is not None:
@@ -740,12 +750,18 @@ class _BenchBatchBuildServer:
         )
 
     def request_build(
-        self, params: dict[str, object], *, timeout_s: float
+        self,
+        params: dict[str, object],
+        *,
+        env_overrides: Mapping[str, str],
+        timeout_s: float,
     ) -> dict[str, object]:
         self.start()
         if self._client is None:
             raise RuntimeError("batch compile server did not start")
-        return self._client.request("build", params=params, timeout=timeout_s)
+        return self._client.request(
+            "build", params=params, env_overrides=env_overrides, timeout=timeout_s
+        )
 
     def close(self, *, force: bool = False) -> None:
         client = self._client
@@ -768,56 +784,69 @@ def _molt_build_params(
     use_molt_build_cache: bool = True,
     build_target: Literal["native", "wasm"] = "native",
 ) -> dict[str, object]:
-    params: dict[str, object] = {
-        "file_path": script,
-        "profile": build_profile,
-        "target": build_target,
-        "trusted": build_target == "native",
-        "json_output": True,
-        "out_dir": str(out_dir),
-        "cache": use_molt_build_cache,
-        "env_overrides": env,
-        "codec": env.get("MOLT_CODEC", "msgpack"),
-    }
-    if build_target == "wasm":
-        params.update(linked=True, require_linked=True)
-    remaining = list(extra_args or [])
+    request = BuildRequest(
+        file_path=script,
+        profile=cast(BuildProfile, build_profile),
+        target=build_target,
+        trusted=build_target == "native",
+        json_output=True,
+        out_dir=str(out_dir),
+        cache=use_molt_build_cache,
+        linked=build_target == "wasm",
+        require_linked=build_target == "wasm",
+    )
+    if "MOLT_CODEC" in env:
+        request = replace(request, parse_codec=cast(ParseCodec, env["MOLT_CODEC"]))
+    remaining = deque(extra_args or ())
     while remaining:
-        arg = remaining.pop(0)
+        arg = remaining.popleft()
         if arg == "--python-version":
             if not remaining:
                 raise ValueError("--python-version requires a value")
-            params["python_version"] = remaining.pop(0)
+            request = replace(request, python_version=remaining.popleft())
             continue
         if arg.startswith("--python-version="):
-            params["python_version"] = arg.split("=", maxsplit=1)[1]
+            request = replace(request, python_version=arg.split("=", maxsplit=1)[1])
             continue
         if arg == "--type-hints":
             if not remaining:
                 raise ValueError("--type-hints requires a value")
-            params["type_hints"] = remaining.pop(0)
+            request = replace(
+                request, type_hint_policy=cast(TypeHintPolicy, remaining.popleft())
+            )
             continue
         if arg.startswith("--type-hints="):
-            params["type_hints"] = arg.split("=", maxsplit=1)[1]
+            request = replace(
+                request,
+                type_hint_policy=cast(TypeHintPolicy, arg.split("=", maxsplit=1)[1]),
+            )
             continue
         if arg == "--backend":
             if not remaining:
                 raise ValueError("--backend requires a value")
-            params["backend"] = remaining.pop(0)
-            continue
-        if arg.startswith("--backend="):
-            params["backend"] = arg.split("=", maxsplit=1)[1]
+            backend_choice = remaining.popleft()
+        elif arg.startswith("--backend="):
+            backend_choice = arg.split("=", maxsplit=1)[1]
+        else:
+            backend_choice = None
+        if backend_choice is not None:
+            target, backend, error = _select_codegen_backend(
+                request.target, backend_choice
+            )
+            if error is not None:
+                raise ValueError(error)
+            request = replace(request, target=target, codegen_backend=backend)
             continue
         if arg == "--stdlib-profile":
             if not remaining:
                 raise ValueError("--stdlib-profile requires a value")
-            params["stdlib_profile"] = remaining.pop(0)
+            request = replace(request, stdlib_profile=remaining.popleft())
             continue
         if arg.startswith("--stdlib-profile="):
-            params["stdlib_profile"] = arg.split("=", maxsplit=1)[1]
+            request = replace(request, stdlib_profile=arg.split("=", maxsplit=1)[1])
             continue
         raise ValueError(f"unsupported benchmark Molt build arg: {arg}")
-    return params
+    return build_request_to_payload(request)
 
 
 def _batch_response_completed_process(
@@ -1283,15 +1312,29 @@ def prepare_molt_binary(
         failure: MoltFailure | None = None
         try:
             out_dir = Path(temp_dir.name)
-            params = _molt_build_params(
-                script=script,
-                out_dir=out_dir,
-                build_profile=build_profile,
-                extra_args=extra_args,
-                env=env,
-                use_molt_build_cache=use_molt_build_cache,
-                build_target=build_target,
-            )
+            admission_start = time.perf_counter()
+            try:
+                params = _molt_build_params(
+                    script=script,
+                    out_dir=out_dir,
+                    build_profile=build_profile,
+                    extra_args=extra_args,
+                    env=env,
+                    use_molt_build_cache=use_molt_build_cache,
+                    build_target=build_target,
+                )
+            except ValueError as exc:
+                primary = exc
+                failure = _classified_molt_failure(
+                    phase="build",
+                    returncode=2,
+                    stderr=str(exc),
+                    elapsed_s=time.perf_counter() - admission_start,
+                    default_status="build_failed",
+                    detail="build_request_invalid",
+                )
+                _emit_molt_failure_summary(script, failure)
+                return failure
             args = [
                 *_molt_build_cmd(build_profile),
                 *(["--trusted"] if params["trusted"] else []),
@@ -1318,7 +1361,7 @@ def prepare_molt_binary(
                     )
                 else:
                     response = batch_server.request_build(
-                        params, timeout_s=build_timeout_s
+                        params, env_overrides=env, timeout_s=build_timeout_s
                     )
                     res = _batch_response_completed_process(args, response)
             except (
