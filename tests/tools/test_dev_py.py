@@ -19,9 +19,13 @@ def _fake_dx_env(module):
     }
 
 
-def test_dev_py_update_dispatches_to_cli(monkeypatch) -> None:
+@pytest.mark.parametrize("command", ["doctor", "setup", "update", "validate"])
+def test_dev_py_maintenance_uses_default_frontend(monkeypatch, command) -> None:
     module = dev
     calls: list[tuple[list[str], str | None, bool]] = []
+    monkeypatch.setattr(
+        module.target_python, "SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS", ("3.15", "3.13")
+    )
 
     def fake_run_uv(args, python=None, env=None, tty=False):
         calls.append((list(args), python, tty))
@@ -30,15 +34,15 @@ def test_dev_py_update_dispatches_to_cli(monkeypatch) -> None:
     monkeypatch.setattr(
         module.sys,
         "argv",
-        ["tools/dev.py", "update", "--check", "--all"],
+        ["tools/dev.py", command, "--check", "--all"],
         raising=True,
     )
     module.main()
 
     assert calls == [
         (
-            ["python", "-m", "molt.cli", "update", "--check", "--all"],
-            module.TEST_PYTHONS[0],
+            ["python", "-m", "molt.cli", command, "--check", "--all"],
+            "3.12",
             False,
         )
     ]
@@ -454,65 +458,19 @@ def test_dev_py_canonical_env_keeps_backend_daemon_enabled(
     assert env["MOLT_BACKEND_DAEMON"] == "1"
 
 
-def test_dev_py_test_forwards_random_order_flags(monkeypatch) -> None:
-    module = dev
-    calls: list[tuple[list[str], str | None, bool]] = []
-
-    def fake_run_uv(args, python=None, env=None, tty=False):
-        calls.append((list(args), python, tty))
-
-    monkeypatch.setattr(module, "run_uv", fake_run_uv, raising=True)
-    monkeypatch.setattr(
-        module.sys,
-        "argv",
-        ["tools/dev.py", "test", "--random-order", "--random-seed", "17"],
-        raising=True,
-    )
-    module.main()
-
-    assert calls == [
-        (
-            [
-                "python",
-                "tools/dev_test_runner.py",
-                "--check-verified-subset",
-                "--random-order",
-                "--random-seed",
-                "17",
-            ],
-            module.TEST_PYTHONS[0],
-            False,
-        ),
-        (
-            [
-                "python",
-                "tools/dev_test_runner.py",
-                "--random-order",
-                "--random-seed",
-                "17",
-            ],
-            module.TEST_PYTHONS[1],
-            False,
-        ),
-        (
-            [
-                "python",
-                "tools/dev_test_runner.py",
-                "--random-order",
-                "--random-seed",
-                "17",
-            ],
-            module.TEST_PYTHONS[2],
-            False,
-        ),
-    ]
-
-
+@pytest.mark.parametrize(
+    "catalog", [("3.12", "3.13", "3.14", "3.15"), ("3.15", "3.12", "3.17")]
+)
 @pytest.mark.parametrize("flags", [[], ["--random-order", "--random-seed", "17"]])
-def test_dev_py_test_argv_is_consumed_by_real_runner(monkeypatch, flags) -> None:
+def test_dev_py_test_argv_is_consumed_by_real_runner(
+    monkeypatch, flags, catalog
+) -> None:
     from tools import dev_test_runner
 
     module = dev
+    monkeypatch.setattr(
+        module.target_python, "SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS", catalog
+    )
     batches = []
 
     def capture_batch(args, python=None, env=None, tty=False):
@@ -528,7 +486,15 @@ def test_dev_py_test_argv_is_consumed_by_real_runner(monkeypatch, flags) -> None
     monkeypatch.setattr(module.sys, "argv", ["tools/dev.py", "test", *flags])
     module.main()
 
-    assert [python for _args, python in batches] == list(module.TEST_PYTHONS)
+    assert [python for _args, python in batches] == list(catalog)
+    assert sum("--check-verified-subset" in args for args, _python in batches) == 1
+    for index, (args, _python) in enumerate(batches):
+        assert args == [
+            "python",
+            "tools/dev_test_runner.py",
+            *(["--check-verified-subset"] if index == 0 else []),
+            *flags,
+        ]
     for index, (args, _python) in enumerate(batches):
         commands = []
         monkeypatch.setattr(

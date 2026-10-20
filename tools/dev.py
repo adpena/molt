@@ -25,7 +25,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 from molt.process_environment import ProcessEnvironment  # noqa: E402
-from molt.dx import DX_ENV_KEYS, TEST_PYTHONS, DxProject, render_env  # noqa: E402
+from molt import target_python  # noqa: E402
+from molt.dx import (  # noqa: E402
+    DEFAULT_UV_PROJECT_PYTHON,
+    DX_ENV_KEYS,
+    DxProject,
+    render_env,
+)
 from tools import harness_memory_guard  # noqa: E402
 
 DX = DxProject(ROOT)
@@ -494,11 +500,13 @@ def main() -> None:
             src_path if not existing else f"{src_path}{os.pathsep}{existing}"
         )
         _log(f"PYTHONPATH={env['PYTHONPATH']}")
-        for python in TEST_PYTHONS:
+        for index, python in enumerate(
+            target_python.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
+        ):
             _log(f"tests start (python {python})")
             start = time.monotonic()
             batch_cmd = ["python", "tools/dev_test_runner.py"]
-            if python == TEST_PYTHONS[0]:
+            if index == 0:
                 batch_cmd.append("--check-verified-subset")
             if random_order:
                 batch_cmd.append("--random-order")
@@ -509,25 +517,25 @@ def main() -> None:
     elif cmd[0] == "doctor":
         run_uv(
             ["python", "-m", "molt.cli", "doctor", *cmd[1:]],
-            python=TEST_PYTHONS[0],
+            python=DEFAULT_UV_PROJECT_PYTHON,
             tty=use_tty,
         )
     elif cmd[0] == "setup":
         run_uv(
             ["python", "-m", "molt.cli", "setup", *cmd[1:]],
-            python=TEST_PYTHONS[0],
+            python=DEFAULT_UV_PROJECT_PYTHON,
             tty=use_tty,
         )
     elif cmd[0] == "update":
         run_uv(
             ["python", "-m", "molt.cli", "update", *cmd[1:]],
-            python=TEST_PYTHONS[0],
+            python=DEFAULT_UV_PROJECT_PYTHON,
             tty=use_tty,
         )
     elif cmd[0] == "validate":
         run_uv(
             ["python", "-m", "molt.cli", "validate", *cmd[1:]],
-            python=TEST_PYTHONS[0],
+            python=DEFAULT_UV_PROJECT_PYTHON,
             tty=use_tty,
         )
     elif cmd[0] == "clean-artifacts":

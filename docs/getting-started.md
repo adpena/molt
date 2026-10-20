@@ -101,9 +101,11 @@ uv run --python 3.12 molt build examples/hello.py --profile dev
 uv run --python 3.12 molt compare examples/hello.py
 ```
 
-This compares one program, not the whole verified subset. The compiler host
-interpreter and target semantics are separate: `molt build --python-version`
-selects a supported target policy (`3.12`, `3.13`, or `3.14`). Select the source
+This compares one program, not the whole verified subset. The compiler frontend
+baseline is CPython 3.12+, including 3.15. Its interpreter and target semantics
+are separate: `molt build --python-version` selects an admitted target policy
+(currently `3.12`, `3.13`, or `3.14`; 3.15 completion is tracked in
+[V1-35](agent/V1_HANDOFF_FINDINGS.md)). Select the source
 frontend with uv in the same command; it must be at least as new as the target:
 
 ```bash

@@ -954,6 +954,24 @@ still owns Unicode/StringPrep generation; V1-35 still owns Python 3.15 admission
 Source invocations select the frontend through uv; the harness inherits it.
 Target semantics remain explicit/project-resolved, so interpreter selection
 does not silently change compiled-language policy or add work to emitted guests.
+The compiler frontend baseline is CPython 3.12+, including 3.15. Automatic
+frontend selection remains an implementation obligation: consume the effective
+build request after command-specific flags/configuration and oracle selection,
+then reuse the existing uv/interpreter/environment owners. Record the selected
+frontend version and dependency closure separately from the compiled target.
+The universal uv lock constrains dependencies across versions; it does not choose
+one target minor. Preserve the zero-spawn path for an already suitable frontend,
+explicit installed dependency setup, source/bundle custody and independent guest
+execution. Resolve the 3.15 parser's best-effort older-grammar behavior at this
+same boundary rather than duplicating version selection in the native launcher.
+The development runner now schedules directly from the canonical target catalog;
+its copied three-version registry is deleted. Independent synthetic schedules
+including 3.15 and reordered, nonconsecutive versions pass through the actual
+test runner, while maintenance retains the separate 3.12 development default.
+All 24 owning developer-command checks pass. A real CPython 3.15.0 invocation
+through the existing version-keyed uv environment helper installs the nine
+locked CLI dependencies and completes `molt --version`. This qualifies 3.15 CLI
+startup only; it does not admit the still-incomplete 3.15 language/runtime target.
 
 Version additions use the existing target catalog and pinned CPython source
 authority. Capture the exact upstream delta, classify its semantic and platform

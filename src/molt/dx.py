@@ -40,7 +40,6 @@ from molt.path_custody import (
 )
 from molt.source_root import compiler_source_root, installed_distribution_root
 
-TEST_PYTHONS = ["3.12", "3.13", "3.14"]
 GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV = "MOLT_CI_EPHEMERAL_CUSTODY_ROOT"
 # The operator's artifact root. Only this module reads it: every other
 # consumer asks `configured_artifact_root` or `artifact_root`.
