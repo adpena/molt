@@ -7898,8 +7898,8 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "opcode_payload_312_json",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::TokenPayload312,
-        name: "token_payload_312",
+        import: WasmRuntimeImport::TokenPayload,
+        name: "token_payload",
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::OpcodeMetadataPayload314Json,
@@ -15540,8 +15540,8 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_email_quoprimime_decode" => Some(WasmRuntimeImport::EmailQuoprimimeDecode),
         "opcode_payload_312_json" => Some(WasmRuntimeImport::OpcodePayload312Json),
         "molt_opcode_payload_312_json" => Some(WasmRuntimeImport::OpcodePayload312Json),
-        "token_payload_312" => Some(WasmRuntimeImport::TokenPayload312),
-        "molt_token_payload_312" => Some(WasmRuntimeImport::TokenPayload312),
+        "token_payload" => Some(WasmRuntimeImport::TokenPayload),
+        "molt_token_payload" => Some(WasmRuntimeImport::TokenPayload),
         "opcode_metadata_payload_314_json" => Some(WasmRuntimeImport::OpcodeMetadataPayload314Json),
         "molt_opcode_metadata_payload_314_json" => {
             Some(WasmRuntimeImport::OpcodeMetadataPayload314Json)

@@ -17,9 +17,23 @@ from tests.stdlib_intrinsic_registry import install_registry
 
 
 install_registry({{
+    "molt_token_payload": lambda: {{
+        "ENDMARKER": 0, "NAME": 1, "NUMBER": 2, "NEWLINE": 4,
+        "PLUS": 14, "EQUAL": 22, "OP": 55, "COMMENT": 64, "NL": 65,
+        "ENCODING": 67, "N_TOKENS": 68, "NT_OFFSET": 256,
+        "tok_name": {{0: "ENDMARKER", 1: "NAME", 2: "NUMBER", 4: "NEWLINE",
+                     14: "PLUS", 22: "EQUAL", 55: "OP", 64: "COMMENT", 65: "NL",
+                     67: "ENCODING", 68: "N_TOKENS", 256: "NT_OFFSET"}},
+        "EXACT_TOKEN_TYPES": {{"+": 14, "=": 22}},
+        "__all__": ["tok_name", "ISTERMINAL", "ISNONTERMINAL", "ISEOF",
+                    "EXACT_TOKEN_TYPES", "ENDMARKER", "NAME", "NUMBER", "NEWLINE",
+                    "PLUS", "EQUAL", "OP", "COMMENT", "NL", "ENCODING",
+                    "N_TOKENS", "NT_OFFSET"],
+    }},
     "molt_tokenize_scan": lambda source: [
         (1, "x", (1, 0), (1, 1), source.splitlines()[0]),
-        (4, "\\n", (1, 1), (1, 2), source.splitlines()[0]),
+        (55, "+", (1, 1), (1, 2), source.splitlines()[0]),
+        (4, "\\n", (1, 2), (1, 3), source.splitlines()[0]),
     ],
 }})
 
@@ -33,9 +47,10 @@ def _load_module(name, path_text):
     return module
 
 
+token = _load_module("token", {str(STDLIB_ROOT / "token.py")!r})
 tokenize = _load_module("tokenize", {str(STDLIB_ROOT / "tokenize.py")!r})
 _private = _load_module("_molt_private_tokenize", {str(STDLIB_ROOT / "_tokenize.py")!r})
-tokens = list(_private.tokenize(io.BytesIO(b"x\\n").readline))
+tokens = list(_private.tokenize(io.BytesIO(b"x+\\n").readline))
 
 rows = [
     (name, type(getattr(_private, name)).__name__, bool(callable(getattr(_private, name))))
@@ -52,6 +67,14 @@ checks = {{
         and tokens[0].type == _private.ENCODING
         and tokens[1].type == _private.NAME
         and tokens[1].string == "x"
+        and tokens[1].exact_type == 1
+        and tokens[2].type == 55
+        and tokens[2].exact_type == 14
+        and tokenize.OP == token.OP == 55
+        and tokenize.COMMENT == 64 and tokenize.NL == 65
+        and tokenize.ENCODING == 67
+        and tokenize.TokenInfo(55, "?", (1, 0), (1, 1), "?").exact_type == 55
+        and tokenize.TokenInfo(1, "+", (1, 0), (1, 1), "+").exact_type == 1
     ),
     "private_handles_hidden": (
         "_MOLT_IMPORT_SMOKE_RUNTIME_READY" not in _private.__dict__

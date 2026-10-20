@@ -2,20 +2,13 @@
 
 from __future__ import annotations
 
+from token import COMMENT, ENCODING, ENDMARKER, NAME, NEWLINE, NL, NUMBER, OP
+from token import EXACT_TOKEN_TYPES as _EXACT_TOKEN_TYPES
 from typing import Callable, Iterator
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _MOLT_TOKENIZE_SCAN = _require_intrinsic("molt_tokenize_scan")
-
-ENDMARKER = 0
-NAME = 1
-NUMBER = 2
-NEWLINE = 4
-OP = 54
-COMMENT = 64
-NL = 65
-ENCODING = 67
 
 
 class TokenInfo:
@@ -34,6 +27,12 @@ class TokenInfo:
         self.start = start
         self.end = end
         self.line = line
+
+    @property
+    def exact_type(self) -> int:
+        if self.type == OP:
+            return _EXACT_TOKEN_TYPES.get(self.string, self.type)
+        return self.type
 
 
 def tokenize(

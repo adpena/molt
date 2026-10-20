@@ -14,6 +14,9 @@ CORE_CONSTANTS = (
     "INDENT",
     "DEDENT",
     "OP",
+    "EXCLAMATION",
+    "COMMENT",
+    "NL",
     "ERRORTOKEN",
     "ENCODING",
     "N_TOKENS",
@@ -52,6 +55,13 @@ def _check_constants() -> None:
         values["N_TOKENS"],
         values["NT_OFFSET"],
     )
+
+    for name in token.__all__:
+        value = getattr(token, name)
+        if isinstance(value, int):
+            print("constant", name, value)
+    for name in ("AWAIT", "ASYNC", "TSTRING_START", "TSTRING_MIDDLE", "TSTRING_END"):
+        print("optional", name, getattr(token, name, None))
 
 
 def _check_tok_name_and_exact_types() -> None:
@@ -93,6 +103,10 @@ def _check_tok_name_and_exact_types() -> None:
         token.tok_name[token.EXACT_TOKEN_TYPES["|="]],
     )
 
+    for symbol in sorted(token.EXACT_TOKEN_TYPES):
+        value = token.EXACT_TOKEN_TYPES[symbol]
+        print("exact-entry", symbol, value, token.tok_name[value])
+
 
 def _check_predicates_and_exports() -> None:
     assert isinstance(token.ISTERMINAL(token.NAME), bool)
@@ -116,7 +130,7 @@ def _check_predicates_and_exports() -> None:
     assert all(name in token.__all__ for name in required_exports)
     assert all(name in token.__all__ for name in token.tok_name.values())
 
-    print("exports", len(token.__all__), token.__all__[:5], token.__all__[-5:])
+    print("exports", token.__all__)
     print(
         "predicates",
         token.ISTERMINAL(token.NAME),

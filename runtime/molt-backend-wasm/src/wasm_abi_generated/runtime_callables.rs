@@ -711,7 +711,7 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_sys_set_version_info",
         import: WasmRuntimeImport::SysSetVersionInfo,
-        arity: 6,
+        arity: 5,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_print_builtin",
@@ -7894,8 +7894,8 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 0,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_token_payload_312",
-        import: WasmRuntimeImport::TokenPayload312,
+        runtime_name: "molt_token_payload",
+        import: WasmRuntimeImport::TokenPayload,
         arity: 0,
     },
     RuntimeCallableImportSpec {
@@ -14345,7 +14345,7 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_email_quoprimime_body_encode" => Some(WasmRuntimeImport::EmailQuoprimimeBodyEncode),
         "molt_email_quoprimime_decode" => Some(WasmRuntimeImport::EmailQuoprimimeDecode),
         "molt_opcode_payload_312_json" => Some(WasmRuntimeImport::OpcodePayload312Json),
-        "molt_token_payload_312" => Some(WasmRuntimeImport::TokenPayload312),
+        "molt_token_payload" => Some(WasmRuntimeImport::TokenPayload),
         "molt_opcode_metadata_payload_314_json" => {
             Some(WasmRuntimeImport::OpcodeMetadataPayload314Json)
         }

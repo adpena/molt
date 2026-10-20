@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import ast
 import json
 import re
 from pathlib import Path
@@ -34,6 +35,38 @@ def test_generated_outputs_are_byte_exact() -> None:
             f"{path.relative_to(ROOT)} is stale; run "
             "`python tools/gen_host_capabilities.py --write`"
         )
+
+
+def test_runtime_and_luau_python_defaults_follow_the_target_authority(
+    monkeypatch,
+) -> None:
+    from molt.target_python import TargetPythonVersion
+
+    gen = _gen()
+    # A non-default minor and nonzero release fields catch partial projections
+    # and hard-coded copies of today's 3.12.0 default.
+    target = TargetPythonVersion(3, 14, 7, "candidate", 2)
+    monkeypatch.setattr(gen, "_DEFAULT_TARGET_PYTHON_VERSION", target)
+    for source in (gen.render_rust(gen.load_schema()), gen.render_luau_python_policy()):
+        default = re.search(
+            r"pub const DEFAULT_TARGET_PYTHON_VERSION:[^=]+=(.*?);", source
+        )
+        assert default is not None
+        assert ast.literal_eval(default[1].strip()) == (3, 14, 7, "candidate", 2)
+
+
+def test_luau_supported_versions_follow_the_admitted_catalog(monkeypatch) -> None:
+    gen = _gen()
+    # Deliberately reorder and narrow the fixture to catch a second catalog.
+    monkeypatch.setattr(gen, "TARGET_PYTHON_VERSIONS", frozenset({"3.14", "3.12"}))
+    source = gen.render_luau_python_policy()
+    supported = re.search(
+        r"pub const SUPPORTED_TARGET_PYTHON_VERSIONS:[^=]+=\s*&\[(.*?)\];", source
+    )
+    assert supported is not None
+    assert ast.literal_eval(f"[{supported[1]}]") == [(3, 12), (3, 14)]
+    assert "(3, 13)" not in source
+    assert "(3, 15)" not in source
 
 
 def test_explicit_policy_tier_is_ambientless_and_tiers_are_monotone() -> None:

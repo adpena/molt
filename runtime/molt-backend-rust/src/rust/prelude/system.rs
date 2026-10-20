@@ -16,7 +16,6 @@ struct MoltSysVersionInfo {
     micro: i64,
     releaselevel: String,
     serial: i64,
-    version: String,
 }
 
 impl Default for MoltSysVersionInfo {
@@ -27,7 +26,6 @@ impl Default for MoltSysVersionInfo {
             micro: 0,
             releaselevel: "final".to_string(),
             serial: 0,
-            version: "3.12.0 (molt)".to_string(),
         }
     }
 }
@@ -83,17 +81,14 @@ fn molt_sys_arg_str(args: &[MoltValue], index: usize, default: &str) -> String {
 }
 
 fn molt_sys_set_version_info(args: &mut Vec<MoltValue>) -> MoltValue {
-    let mut next = MoltSysVersionInfo {
+    assert_eq!(args.len(), 5, "sys version metadata requires five fields");
+    let next = MoltSysVersionInfo {
         major: molt_sys_arg_int(args, 0, 3),
         minor: molt_sys_arg_int(args, 1, 12),
         micro: molt_sys_arg_int(args, 2, 0),
         releaselevel: molt_sys_arg_str(args, 3, "final"),
         serial: molt_sys_arg_int(args, 4, 0),
-        version: molt_sys_arg_str(args, 5, ""),
     };
-    if next.version.is_empty() {
-        next.version = next.formatted_version();
-    }
     *molt_sys_version_state().lock().unwrap() = next;
     MoltValue::None
 }
@@ -111,7 +106,7 @@ fn molt_sys_version_info(_args: &mut Vec<MoltValue>) -> MoltValue {
 
 fn molt_sys_version(_args: &mut Vec<MoltValue>) -> MoltValue {
     let state = molt_sys_version_state().lock().unwrap().clone();
-    MoltValue::Str(state.version.clone().into())
+    MoltValue::Str(state.formatted_version().into())
 }
 
 fn molt_sys_hexversion(_args: &mut Vec<MoltValue>) -> MoltValue {

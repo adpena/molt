@@ -11285,7 +11285,7 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     },
     RuntimeBoxedAbi {
         symbol: "molt_sys_set_version_info",
-        arity: 6,
+        arity: 5,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
@@ -11919,7 +11919,7 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
-        symbol: "molt_token_payload_312",
+        symbol: "molt_token_payload",
         arity: 0,
         result: RuntimeBoxedReturn::OwnedValue,
     },

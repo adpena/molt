@@ -34,7 +34,36 @@ current tool inventory. LLVM/Luau execution parity, systematic surface
 enumeration, and elimination of all applicable expected-failure debt remain
 open work.
 
-### One authoritative execution attempt
+### Compiler-selected target metadata
+
+Compiled startup passes the five semantic version fields before module access.
+The runtime's optional committed version record is the sole target authority:
+reads may project the generated default without committing it; identical setup
+is idempotent, and a differing later setup fails without replacing the first.
+Display text and cache tags derive from that record. Ambient process variables
+cannot replace target semantics. Executable identity and process options remain
+separate process facts.
+
+Token constants, operator identities and export order are generated from the
+receipted CPython `Grammar/Tokens`, `Lib/token.py` and
+`Tools/build/generate_token.py` inputs, following
+[CPython's token generator](https://github.com/python/cpython/blob/3.14/Tools/build/generate_token.py)
+and [public token projection](https://github.com/python/cpython/blob/3.14/Lib/token.py).
+The generator compares grammar-derived numbers and symbols to the independently
+parsed module declarations without executing upstream Python. One generated
+closed identity domain and per-target tables serve both scanner conversion and
+the `token` module. A pending source pin does not enter the supported catalog.
+
+Source validation, parsing and Rust formatting run during development. Guests
+select a static table once per payload/scan operation; selection acquires the
+existing version lock once. Payload construction is linear in the bounded
+constant/operator tables, reuses constant-name objects across public maps and
+exports, and executes no JSON parser. Scanner and encoding aggregate builders
+release completed children on every failure while preserving a pending error.
+Complete lexical `tokenize` conformance, other versioned metadata and release
+matrix qualification remain separate obligations in the findings ledger.
+
+## One authoritative execution attempt
 
 Every selected backend comparison runs once through the same adapter registry. Its first
 build or execution outcome reaches the existing raw/backend JSONL rows, cohort
@@ -97,7 +126,13 @@ This plan must advance and compose with the substantial parity machinery already
 - Drives CPython baseline + `molt build` + run, compares stdout byte-exactly (`diff_test` at `tests/molt_diff.py:3679`).
 - **Version-gated stderr comparison**: `_stderr_matches` (`:423`) with `exception_signature` mode compares exception type+message only, ignoring frame/path formatting — the correct cross-engine stderr law (comment at `:434` explicitly notes wasm frame divergence is expected, type+message is not).
 - **Per-file metadata**: `# MOLT_META:` parsed at `_collect_meta` (`:168`) — `skip`, `platforms`, `py`/`min_py`/`max_py`, `wasm`, `expect_fail=molt`/`xfail` (`:447`), `stdlib_profile`. `# MOLT_ENV:` env overrides (`:149`).
-- **Version derivation**: `_molt_sys_env_for_python_exe` (`:298`) stamps `MOLT_PYTHON_VERSION` + `MOLT_SYS_VERSION_INFO` from the CPython under test, so molt's version-gated messages align with the baseline (3.12/3.13/3.14).
+- **Version derivation**: `_resolve_molt_target_python` derives the explicit
+  `TargetPythonVersion` from the CPython oracle and rejects a conflicting build
+  target. One shared execution context forwards that value as `--python-version`
+  to every backend; runtime startup freezes it before imports. A single cached
+  oracle metadata probe supplies the target minor and `MOLT_SYS_EXECUTABLE`.
+  The harness does not write target-owned `sys` fields through environment
+  overrides.
 - **The honesty sink**: `MOLT_DIFF_RESULTS_JSONL` (`_diff_results_jsonl_path` at `:565`) writes one JSON line per test with its **RAW** status (before the xfail/xpass overlay), plus resolved status + reason tag (`_record_diff_result` at `:583`). This is the authoritative record of what molt actually did vs CPython.
 - **Profile dimension**: `--build-profile` (`_diff_build_profile` at `:1635`) — dev / release-fast etc.
 - **Host/memory discipline**: adaptive rlimit and `harness_memory_guard` on every child; native time-based RSS profiling is opt-in with `MOLT_DIFF_MEASURE_RSS=1`. Daemon custody, build-lock pruning and dyld-quarantine retry policy retain their own authorities.
@@ -232,7 +267,10 @@ The arc decomposes into six phases. Each is a *complete structural piece* (per C
 - Create `tools/molt_compat.py` wrapping the rich `molt_diff.py` executor machinery (daemon custody, `harness_memory_guard`, RSS, dyld-retry, `MOLT_DIFF_RESULTS_JSONL`) — *reuse*, do not fork. Add a **backend adapter registry** `tools/compat/backends/`: `native.py` (the existing `molt build --target native` path), `wasm.py` (lift `wasm_diff.py`'s executor: `molt build --target wasm` + node/WASI runner), `llvm.py` (`molt build --target llvm` + `safe_run.py` on the artifact — gated on the keg-only LLVM toolchain per doc 00 §LLVM toolchain unblock), `luau.py` (`molt build --target luau` source emission + a Luau runtime runner — the first `luau_diff` execution path, which does not exist today). Available-backend detection cached at startup (skip-with-loud-`uncalibrated`, never silent skip).
 - Each adapter emits `<backend>_calibration.jsonl` lines with the RAW status (the existing honesty JSONL schema), plus `backend` and `cpython_version` fields so the lines join directly into the matrix.
 - **Backend-Divergence sub-oracle** (FACT 2): when ≥2 backends ran a test, compare their stdout to each other under the shared law (float-tolerance for float-containing programs per doc 31 Risk 6, byte-exact otherwise). Emit a `divergence` record naming the disagreeing backends — a zero-CPython bug witness.
-- **Version dimension**: drive each backend at the requested CPython baseline via the existing `_molt_sys_env_for_python_exe` (`molt_diff.py:298`) so molt's version-gated messages match; the `# MOLT_META: py/min_py/max_py` gating already handles version-specific tests.
+- **Version dimension**: drive each backend at the requested CPython baseline
+  through the shared `TargetPythonVersion` execution context and explicit
+  `--python-version` build flag; `# MOLT_META: min_py/max_py` gating handles
+  version-specific tests through the same oracle coordinate.
 - **SIGURG/host discipline** (doc 31 §1.4): batch + re-exec, per-batch `MOLT_SESSION_ID`, JSONL append-safe; max-2-build-agents honored via the existing diff run-lock (`molt_diff.py:686`).
 
 **Gates:** `molt_compat --backends native --python-version 3.12 <small-suite>` reproduces `molt_diff.py`'s RAW statuses byte-for-byte (proving the wrapper is faithful). `molt_compat --backends native,wasm` on the 4 known wasm-calibrated tests reproduces `wasm_calibration.jsonl`. The Backend-Divergence sub-oracle finds zero false positives on a 100-test deterministic sample (PYTHONHASHSEED=0, MOLT_DETERMINISTIC=1 set on all backends). New unit tests for the adapter registry + divergence record. **Crucially, this phase only *measures* — it cannot regress parity; its risk is false positives, gated above.**

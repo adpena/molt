@@ -84,22 +84,11 @@ def _declare_cpython_oracle(
     oracle = TargetPythonVersion(3, 12 if sys.version_info[:2] == (3, 13) else 13, 0)
     command = module._resolve_python_command(python_exe)
 
-    def version(probed: tuple[str, ...], *, budget=None) -> tuple[int, int]:
+    def metadata(probed: tuple[str, ...], *, budget=None):
         assert probed == command, f"probed {probed}, not the oracle {command}"
-        return oracle.feature_version
+        return module._PythonOracleMetadata(oracle.feature_version, sys.executable)
 
-    def sys_env(probed: tuple[str, ...], *, budget=None) -> dict[str, str]:
-        assert probed == command, f"probed {probed}, not the oracle {command}"
-        return {
-            "MOLT_PYTHON_VERSION": oracle.short,
-            "MOLT_SYS_VERSION_INFO": (
-                f"{oracle.major},{oracle.minor},{oracle.micro},"
-                f"{oracle.release},{oracle.serial}"
-            ),
-        }
-
-    monkeypatch.setattr(module, "_python_command_version", version)
-    monkeypatch.setattr(module, "_molt_sys_env_for_python_command", sys_env)
+    monkeypatch.setattr(module, "_python_command_metadata", metadata)
     return oracle
 
 
@@ -1323,12 +1312,29 @@ def test_run_molt_build_only_uses_build_profile_flag(
     assert diagnostics_path.parent.parent == tmp_path
 
 
-def test_run_molt_preserves_explicit_runtime_diagnostics_file(
-    monkeypatch, tmp_path: Path
+@pytest.mark.parametrize("inherited_target_overrides", [False, True])
+def test_run_molt_preserves_explicit_runtime_environment(
+    monkeypatch, tmp_path: Path, inherited_target_overrides: bool
 ) -> None:
     module = _load_diff_module()
     seen_envs: list[dict[str, str]] = []
     explicit_diagnostics = tmp_path / "explicit-runtime-diagnostics.log"
+    retired_overrides = {
+        "MOLT_PYTHON_VERSION": "9.99",
+        "MOLT_SYS_VERSION_INFO": "not,a,version",
+        "MOLT_SYS_VERSION": "ambient version",
+        "MOLT_SYS_API_VERSION": "9999",
+        "MOLT_SYS_ABIFLAGS": "ambient flags",
+        "MOLT_SYS_IMPLEMENTATION_NAME": "ambient implementation",
+        "MOLT_SYS_CACHE_TAG": "ambient tag",
+    }
+    for name, value in retired_overrides.items():
+        if inherited_target_overrides:
+            monkeypatch.setenv(name, value)
+        else:
+            monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("MOLT_SYS_EXECUTABLE", "explicit-python")
+    monkeypatch.setenv("PYTHONOPTIMIZE", "2")
 
     def fake_run_with_optional_time(
         cmd: list[str], **kwargs: object
@@ -1373,6 +1379,12 @@ def test_run_molt_preserves_explicit_runtime_diagnostics_file(
     assert {env["MOLT_DIAGNOSTICS_FILE"] for env in seen_envs} == {
         str(explicit_diagnostics)
     }
+    for env in seen_envs:
+        assert env["MOLT_SYS_EXECUTABLE"] == "explicit-python"
+        assert env["PYTHONOPTIMIZE"] == "2"
+        assert {name: env[name] for name in retired_overrides if name in env} == (
+            retired_overrides if inherited_target_overrides else {}
+        )
 
 
 def test_run_molt_build_only_uses_diff_stdlib_profile_flag(
@@ -2413,15 +2425,20 @@ def test_metadata_success_cache_excludes_item_deadlines(monkeypatch):
 
     def probe(command, **kwargs):
         calls.append(kwargs["timeout"])
-        return SimpleNamespace(returncode=0, stdout="(3, 12)\n", stderr="")
+        return SimpleNamespace(
+            returncode=0,
+            stdout='{"version_info": [3, 12], "executable": "oracle-python"}\n',
+            stderr="",
+        )
 
     monkeypatch.setattr(module.process_guard_common, "run_guarded_test_process", probe)
     first = backends.ItemBudget.start(policy, ("native",))
-    assert module._python_command_version(("fixture-python",), budget=first) == (3, 12)
+    assert module._python_exe_version(("fixture-python",), budget=first) == (3, 12)
     clock.now = 4.0
     second = backends.ItemBudget.start(policy, ("native",))
-    assert module._python_command_version(("fixture-python",), budget=second) == (3, 12)
+    metadata = module._python_command_metadata(("fixture-python",), budget=second)
+    assert metadata == module._PythonOracleMetadata((3, 12), "oracle-python")
     assert calls == [3]
     with pytest.raises(backends.ItemBudgetExpired):
-        module._python_command_version(("fixture-python",), budget=first)
+        module._python_command_metadata(("fixture-python",), budget=first)
     assert calls == [3]

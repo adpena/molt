@@ -5927,7 +5927,7 @@
     "tk_unbind_command": "molt_tk_unbind_command",
     "tk_widget_bind_callback_register": "molt_tk_widget_bind_callback_register",
     "tk_widget_bind_callback_unregister": "molt_tk_widget_bind_callback_unregister",
-    "token_payload_312": "molt_token_payload_312",
+    "token_payload": "molt_token_payload",
     "tokenize_scan": "molt_tokenize_scan",
     "trace_enter_slot": "molt_trace_enter_slot",
     "trace_exit": "molt_trace_exit",

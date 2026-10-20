@@ -5219,12 +5219,6 @@ fn test_compile_checked_accepts_sys_bootstrap_with_exact_integer_literals() {
                     ..OpIR::default()
                 },
                 OpIR {
-                    kind: "const_str".to_string(),
-                    s_value: Some("3.14.0 (molt)".to_string()),
-                    out: Some("version".to_string()),
-                    ..OpIR::default()
-                },
-                OpIR {
                     kind: "call_internal".to_string(),
                     s_value: Some("molt_sys_set_version_info".to_string()),
                     args: Some(vec![
@@ -5233,7 +5227,6 @@ fn test_compile_checked_accepts_sys_bootstrap_with_exact_integer_literals() {
                         "micro".to_string(),
                         "releaselevel".to_string(),
                         "serial".to_string(),
-                        "version".to_string(),
                     ]),
                     ..OpIR::default()
                 },
@@ -5247,8 +5240,127 @@ fn test_compile_checked_accepts_sys_bootstrap_with_exact_integer_literals() {
         .expect("bounded sys version bootstrap does not require Python import dispatch");
     assert!(source.contains("local major: number = 3"));
     assert!(source.contains("local minor: number = 14"));
-    assert!(source.contains("function molt_sys_set_version_info("));
+    assert!(
+        source.contains(
+            "function molt_sys_set_version_info(major, minor, micro, releaselevel, serial)"
+        )
+    );
     assert!(source.contains("function molt_sys_seed_module()"));
+}
+
+#[test]
+fn lune_oracle_sys_target_commit_is_canonical_idempotent_and_failure_atomic() {
+    let params: Vec<String> = ["major", "minor", "micro", "level", "serial"]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    let ir = SimpleIR {
+        functions: vec![
+            FunctionIR {
+                name: "molt_main".into(),
+                return_abi: molt_ir::FunctionReturnAbi::Void,
+                ops: vec![OpIR {
+                    kind: "ret_void".into(),
+                    ..OpIR::default()
+                }],
+                ..FunctionIR::default()
+            },
+            FunctionIR {
+                name: "set_target_version".into(),
+                return_abi: molt_ir::FunctionReturnAbi::Void,
+                params: params.clone(),
+                ops: vec![
+                    OpIR {
+                        kind: "call_internal".into(),
+                        s_value: Some("molt_sys_set_version_info".into()),
+                        args: Some(params),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".into(),
+                        ..OpIR::default()
+                    },
+                ],
+                ..FunctionIR::default()
+            },
+            FunctionIR {
+                name: "read_target_sys".into(),
+                return_abi: molt_ir::FunctionReturnAbi::Value,
+                ops: vec![
+                    OpIR {
+                        kind: "call_internal".into(),
+                        s_value: Some("molt_sys_seed_module".into()),
+                        args: Some(vec![]),
+                        out: Some("sys_module".into()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".into(),
+                        args: Some(vec!["sys_module".into()]),
+                        ..OpIR::default()
+                    },
+                ],
+                ..FunctionIR::default()
+            },
+        ],
+        profile: None,
+    };
+    let emitted = LuauBackend::new()
+        .compile_checked(&ir)
+        .expect("five-field target bootstrap and real sys metadata consumer");
+    for (minor, micro, level, serial, version, hexversion) in [
+        (12, 0, "final", 0, "3.12.0 (molt)", 0x030c00f0),
+        (13, 0, "alpha", 1, "3.13.0a1 (molt)", 0x030d00a1),
+        (13, 0, "beta", 3, "3.13.0b3 (molt)", 0x030d00b3),
+        (14, 256, "candidate", 17, "3.14.256rc17 (molt)", 0x030e00c1),
+    ] {
+        let mut source = emitted.clone();
+        source.push_str(
+            r#"
+local function expect_error(kind, message, action)
+    local ok, err = pcall(action)
+    assert(not ok and err.__type == kind)
+    assert(err.__msg == message)
+end
+local initial = read_target_sys()
+local provisional = initial.version_info
+assert(provisional[1] == 3 and provisional[2] == 12 and provisional[3] == 0)
+assert(initial.version == "3.12.0 (molt)" and initial.hexversion == 0x030c00f0)
+expect_error("TypeError", "major must be int", function() set_target_version("3", 13, 0, "final", 0) end)
+expect_error("TypeError", "minor must be int", function() set_target_version(3, 13.5, 0, "final", 0) end)
+expect_error("TypeError", "sys.version_info releaselevel must be str", function() set_target_version(3, 13, 0, 0, 0) end)
+expect_error("ValueError", "sys.version_info must be non-negative integers", function() set_target_version(3, 13, -1, "final", 0) end)
+expect_error("ValueError", "sys.version_info releaselevel must be alpha, beta, candidate or final", function() set_target_version(3, 13, 0, "release", 0) end)
+expect_error("ValueError", "unsupported compiled Python target 3.99", function() set_target_version(3, 99, 0, "final", 0) end)
+assert(read_target_sys() == initial and initial.version_info == provisional)
+"#,
+        );
+        let late_minor = if minor == 12 { 13 } else { 12 };
+        source.push_str(&format!(
+            r#"
+set_target_version(3, {minor}, {micro}, {level:?}, {serial})
+local committed = initial.version_info
+assert(committed ~= provisional)
+assert(committed[1] == 3 and committed[2] == {minor} and committed[3] == {micro})
+assert(committed[4] == {level:?} and committed[5] == {serial})
+assert(initial.version == {version:?} and initial.hexversion == {hexversion})
+set_target_version(3, {minor}, {micro}, {level:?}, {serial})
+assert(initial.version_info == committed)
+expect_error("RuntimeError", "compiled Python target is already set", function() set_target_version(3, {late_minor}, 0, "final", 0) end)
+expect_error("RuntimeError", "compiled Python target is already set", function() set_target_version(3, {minor}, {micro} + 1, {level:?}, {serial}) end)
+assert(read_target_sys() == initial and initial.version_info == committed)
+assert(initial.version == {version:?} and initial.hexversion == {hexversion})
+assert(not pcall(function() committed[2] = 99 end))
+assert(provisional[2] == 12 and committed[2] == {minor})
+print("sys target commit preserved")
+"#,
+        ));
+        execute_lune_oracle(
+            &format!("sys_target_commit_{minor}_{level}"),
+            &source,
+            LuneStdout::TrimmedExact("sys target commit preserved"),
+        );
+    }
 }
 
 #[test]

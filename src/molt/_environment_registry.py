@@ -5357,16 +5357,6 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
-      "audience": "user",
-      "default": "",
-      "kind": "string",
-      "name": "MOLT_PYTHON_VERSION",
-      "output_neutral": false,
-      "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
-      "summary": "Target Python version as major.minor or major.minor.micro that the runtime reports in sys.version_info when MOLT_SYS_VERSION_INFO is unset; an unparsable or negative value is ignored; default 3.12.0.",
-      "values": []
-    },
-    {
       "audience": "ci",
       "default": "@informalsystems/quint@0.32.0",
       "kind": "string",
@@ -6115,71 +6105,11 @@ _REGISTRY_JSON = r"""{
     {
       "audience": "user",
       "default": "",
-      "kind": "string",
-      "name": "MOLT_SYS_ABIFLAGS",
-      "output_neutral": false,
-      "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
-      "summary": "Value the runtime reports as sys.abiflags; default empty.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "1013",
-      "kind": "int",
-      "name": "MOLT_SYS_API_VERSION",
-      "output_neutral": false,
-      "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
-      "summary": "Value the runtime reports as sys.api_version; a non-negative integer, and invalid values fall back to the default 1013.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "string",
-      "name": "MOLT_SYS_CACHE_TAG",
-      "output_neutral": false,
-      "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
-      "summary": "Value the runtime reports as sys.implementation.cache_tag; unset or empty computes <implementation name>-<major><minor>, for example molt-312.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
       "kind": "path",
       "name": "MOLT_SYS_EXECUTABLE",
       "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/platform.rs",
       "summary": "Captured once at runtime startup as the path reported by sys.executable and used by multiprocessing spawn; unset or empty selects the frozen argv[0] projection. Later environment mutation cannot rewrite it.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "molt",
-      "kind": "string",
-      "name": "MOLT_SYS_IMPLEMENTATION_NAME",
-      "output_neutral": false,
-      "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
-      "summary": "Value the runtime reports as sys.implementation.name; unset or blank means molt.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "string",
-      "name": "MOLT_SYS_VERSION",
-      "output_neutral": false,
-      "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
-      "summary": "Value the runtime reports as sys.version; unset or empty formats it from the version info.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "string",
-      "name": "MOLT_SYS_VERSION_INFO",
-      "output_neutral": false,
-      "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
-      "summary": "Target Python version the runtime reports as sys.version_info, written as major,minor,micro,releaselevel,serial; a malformed value is ignored, MOLT_PYTHON_VERSION (major.minor or major.minor.micro) is tried next, and the built-in default is 3.12.0 final 0.",
       "values": []
     },
     {
@@ -7294,7 +7224,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_TRACE_SYS_VERSION",
       "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
-      "summary": "Set to exactly 1 to print the raw MOLT_SYS_VERSION_INFO value and sys.version resolution to stderr; the value is read once per process; unset or any other value stays silent.",
+      "summary": "Set to exactly 1 to trace sys.version resolution from the compiled target's frozen version metadata to stderr; the flag is read once per process; unset or any other value stays silent.",
       "values": []
     },
     {

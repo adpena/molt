@@ -96,6 +96,9 @@ EVIDENCE_PATHS = (
     ("stable_abi", "Misc/stable_abi.toml"),
     ("public_headers", "Include"),
     ("release_notes", "Doc/whatsnew/{python}.rst"),
+    ("token_grammar", "Grammar/Tokens"),
+    ("token_module", "Lib/token.py"),
+    ("token_generator", "Tools/build/generate_token.py"),
 )
 HEADER_PATH = "Python/stdlib_module_names.h"
 LIB_PATH = "Lib"

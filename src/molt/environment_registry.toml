@@ -3622,14 +3622,6 @@ owner = "tools/molt_shell_env.sh"
 summary = "Python interpreter path that tools/molt_shell_env.sh exports from molt_init_shell_context (the checkout's venv python.exe or .venv/bin/python, else python3 on PATH) for the scripts that source it; molt_run_context_env reuses an already exported value."
 
 [[variable]]
-name = "MOLT_PYTHON_VERSION"
-audience = "user"
-kind = "string"
-default = ""
-owner = "runtime/molt-runtime/src/object/ops_sys.rs"
-summary = "Target Python version as major.minor or major.minor.micro that the runtime reports in sys.version_info when MOLT_SYS_VERSION_INFO is unset; an unparsable or negative value is ignored; default 3.12.0."
-
-[[variable]]
 name = "MOLT_QUINT_NPM_PACKAGE"
 audience = "ci"
 kind = "string"
@@ -4217,60 +4209,12 @@ owner = "src/molt/cli/build_output_layout.py"
 summary = "Sysroot directory for native linking, resolved against the project root when relative; the --sysroot option wins over it and MOLT_CROSS_SYSROOT is the fallback; unset means no sysroot."
 
 [[variable]]
-name = "MOLT_SYS_ABIFLAGS"
-audience = "user"
-kind = "string"
-default = ""
-owner = "runtime/molt-runtime/src/object/ops_sys.rs"
-summary = "Value the runtime reports as sys.abiflags; default empty."
-
-[[variable]]
-name = "MOLT_SYS_API_VERSION"
-audience = "user"
-kind = "int"
-default = "1013"
-owner = "runtime/molt-runtime/src/object/ops_sys.rs"
-summary = "Value the runtime reports as sys.api_version; a non-negative integer, and invalid values fall back to the default 1013."
-
-[[variable]]
-name = "MOLT_SYS_CACHE_TAG"
-audience = "user"
-kind = "string"
-default = ""
-owner = "runtime/molt-runtime/src/object/ops_sys.rs"
-summary = "Value the runtime reports as sys.implementation.cache_tag; unset or empty computes <implementation name>-<major><minor>, for example molt-312."
-
-[[variable]]
 name = "MOLT_SYS_EXECUTABLE"
 audience = "user"
 kind = "path"
 default = ""
 owner = "runtime/molt-runtime/src/builtins/platform.rs"
 summary = "Captured once at runtime startup as the path reported by sys.executable and used by multiprocessing spawn; unset or empty selects the frozen argv[0] projection. Later environment mutation cannot rewrite it."
-
-[[variable]]
-name = "MOLT_SYS_IMPLEMENTATION_NAME"
-audience = "user"
-kind = "string"
-default = "molt"
-owner = "runtime/molt-runtime/src/object/ops_sys.rs"
-summary = "Value the runtime reports as sys.implementation.name; unset or blank means molt."
-
-[[variable]]
-name = "MOLT_SYS_VERSION"
-audience = "user"
-kind = "string"
-default = ""
-owner = "runtime/molt-runtime/src/object/ops_sys.rs"
-summary = "Value the runtime reports as sys.version; unset or empty formats it from the version info."
-
-[[variable]]
-name = "MOLT_SYS_VERSION_INFO"
-audience = "user"
-kind = "string"
-default = ""
-owner = "runtime/molt-runtime/src/object/ops_sys.rs"
-summary = "Target Python version the runtime reports as sys.version_info, written as major,minor,micro,releaselevel,serial; a malformed value is ignored, MOLT_PYTHON_VERSION (major.minor or major.minor.micro) is tried next, and the built-in default is 3.12.0 final 0."
 
 [[variable]]
 name = "MOLT_TARGET_ROOT"
@@ -5154,7 +5098,7 @@ audience = "user"
 kind = "bool"
 default = "0"
 owner = "runtime/molt-runtime/src/object/ops_sys.rs"
-summary = "Set to exactly 1 to print the raw MOLT_SYS_VERSION_INFO value and sys.version resolution to stderr; the value is read once per process; unset or any other value stays silent."
+summary = "Set to exactly 1 to trace sys.version resolution from the compiled target's frozen version metadata to stderr; the flag is read once per process; unset or any other value stays silent."
 
 [[variable]]
 name = "MOLT_TRACE_TASK_LAST_EXCEPTION_CLEAR"

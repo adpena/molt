@@ -507,6 +507,9 @@ def test_fetch_reads_a_pinned_tag_without_blobs(tmp_path: Path) -> None:
         "stable_abi",
         "public_headers",
         "release_notes",
+        "token_grammar",
+        "token_module",
+        "token_generator",
     )
     for item in snapshot.inputs:
         if item.role == "public_headers":
@@ -736,23 +739,27 @@ def test_source_comparison_reports_literal_delta_and_reference_mismatch(
 
 
 @pytest.mark.parametrize("mutation", ["missing", "role", "path", "text", "forged_hash"])
+@pytest.mark.parametrize(
+    "role", ["ast_schema", "token_grammar", "token_module", "token_generator"]
+)
 def test_source_evidence_rejects_missing_misbound_and_forged_bytes(
-    fixture_authority, mutation
+    fixture_authority, mutation, role
 ):
     def edit(data):
         inputs = data["inputs"]
+        evidence = next(item for item in inputs if item["role"] == role)
         if mutation == "missing":
-            inputs.pop()
+            inputs.remove(evidence)
         elif mutation == "role":
-            inputs[1]["role"] = "startup"
+            evidence["role"] = "startup"
         elif mutation == "path":
-            inputs[1]["path"] = "Parser/Other.asdl"
+            evidence["path"] = "Parser/Other.asdl"
         else:
-            inputs[1]["text"] = "changed\n"
+            evidence["text"] = "changed\n"
             if mutation == "forged_hash":
                 import hashlib
 
-                inputs[1]["sha256"] = hashlib.sha256(b"changed\n").hexdigest()
+                evidence["sha256"] = hashlib.sha256(b"changed\n").hexdigest()
 
     _rewrite_snapshot(gen.SNAPSHOT_PATH, edit)
     with pytest.raises(ValueError, match="evidence"):

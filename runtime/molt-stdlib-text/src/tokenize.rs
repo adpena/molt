@@ -3,36 +3,12 @@
 //! Molt object allocation stays in `molt-runtime`; this module owns the
 //! deterministic byte/string scanning and PEP-263-style encoding-cookie logic.
 
+use crate::token_metadata_generated::TokenConstant;
 use memchr::{memchr, memmem};
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TokenKind {
-    Endmarker,
-    Name,
-    Number,
-    Newline,
-    Op,
-    Comment,
-    Nl,
-}
-
-impl TokenKind {
-    pub fn code(self) -> i64 {
-        match self {
-            Self::Endmarker => 0,
-            Self::Name => 1,
-            Self::Number => 2,
-            Self::Newline => 4,
-            Self::Op => 54,
-            Self::Comment => 64,
-            Self::Nl => 65,
-        }
-    }
-}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TokenRecord {
-    pub kind: TokenKind,
+    pub kind: TokenConstant,
     pub text: String,
     pub start: (i64, i64),
     pub end: (i64, i64),
@@ -64,7 +40,7 @@ fn is_name_char(ch: u8) -> bool {
 #[inline]
 fn push_token(
     tokens: &mut Vec<TokenRecord>,
-    kind: TokenKind,
+    kind: TokenConstant,
     text: impl Into<String>,
     start: (i64, i64),
     end: (i64, i64),
@@ -104,7 +80,7 @@ pub fn scan_tokens(source: &str) -> TokenScan {
                 let comment = line.trim();
                 push_token(
                     &mut tokens,
-                    TokenKind::Comment,
+                    TokenConstant::Comment,
                     comment,
                     (line_no, 0),
                     (line_no, comment.len() as i64),
@@ -113,7 +89,7 @@ pub fn scan_tokens(source: &str) -> TokenScan {
                 if line.ends_with('\n') {
                     push_token(
                         &mut tokens,
-                        TokenKind::Nl,
+                        TokenConstant::Nl,
                         "\n",
                         (line_no, (line_len - 1) as i64),
                         (line_no, line_len as i64),
@@ -136,7 +112,7 @@ pub fn scan_tokens(source: &str) -> TokenScan {
                     let comment = line[col..].trim_end_matches(['\r', '\n']);
                     push_token(
                         &mut tokens,
-                        TokenKind::Comment,
+                        TokenConstant::Comment,
                         comment,
                         (line_no, col as i64),
                         (line_no, (col + comment.len()) as i64),
@@ -152,7 +128,7 @@ pub fn scan_tokens(source: &str) -> TokenScan {
                     }
                     push_token(
                         &mut tokens,
-                        TokenKind::Name,
+                        TokenConstant::Name,
                         &line[start_col..col],
                         (line_no, start_col as i64),
                         (line_no, col as i64),
@@ -168,7 +144,7 @@ pub fn scan_tokens(source: &str) -> TokenScan {
                     }
                     push_token(
                         &mut tokens,
-                        TokenKind::Number,
+                        TokenConstant::Number,
                         &line[start_col..col],
                         (line_no, start_col as i64),
                         (line_no, col as i64),
@@ -178,7 +154,7 @@ pub fn scan_tokens(source: &str) -> TokenScan {
                 }
                 push_token(
                     &mut tokens,
-                    TokenKind::Op,
+                    TokenConstant::Op,
                     &line[col..col + 1],
                     (line_no, col as i64),
                     (line_no, (col + 1) as i64),
@@ -191,9 +167,9 @@ pub fn scan_tokens(source: &str) -> TokenScan {
                 let stripped = line.trim();
                 let has_content = !stripped.is_empty() && !stripped.starts_with('#');
                 let kind = if has_content {
-                    TokenKind::Newline
+                    TokenConstant::Newline
                 } else {
-                    TokenKind::Nl
+                    TokenConstant::Nl
                 };
                 push_token(
                     &mut tokens,
@@ -216,7 +192,7 @@ pub fn scan_tokens(source: &str) -> TokenScan {
     lines.push(String::new());
     push_token(
         &mut tokens,
-        TokenKind::Endmarker,
+        TokenConstant::Endmarker,
         "",
         (line_no, 0),
         (line_no, 0),
@@ -321,7 +297,10 @@ mod tests {
             .iter()
             .map(|token| {
                 (
-                    token.kind.code(),
+                    crate::token_metadata_generated::token_table(3, 12)
+                        .unwrap()
+                        .number(token.kind)
+                        .unwrap(),
                     token.text.as_str(),
                     token.start,
                     token.end,
@@ -333,7 +312,7 @@ mod tests {
             observed,
             [
                 (1, "name", (1, 0), (1, 4), "name = 42 # hi\n"),
-                (54, "=", (1, 5), (1, 6), "name = 42 # hi\n"),
+                (55, "=", (1, 5), (1, 6), "name = 42 # hi\n"),
                 (2, "42", (1, 7), (1, 9), "name = 42 # hi\n"),
                 (64, "# hi", (1, 10), (1, 14), "name = 42 # hi\n"),
                 (4, "\n", (1, 14), (1, 15), "name = 42 # hi\n"),
