@@ -339,10 +339,9 @@ class CommandExecutor:
             command,
             env,
         )
-        from molt.process_spawn import native_popen_command
-
-        return subprocess.Popen(
-            native_popen_command(command),
+        process_guard = _process_guard_authority(str(self.repo_root))
+        process = subprocess.Popen(
+            process_guard.native_popen_command(command),
             cwd=cwd,
             env=None if env is None else env.child_block(),
             stdin=stdin,
@@ -356,6 +355,10 @@ class CommandExecutor:
             creationflags=creationflags,
             start_new_session=start_new_session,
         )
+        # Native shell serialization is an OS-boundary detail, not a change to
+        # the caller-owned child's typed argv contract.
+        process.args = command
+        return process
 
     def wait_owned(
         self,

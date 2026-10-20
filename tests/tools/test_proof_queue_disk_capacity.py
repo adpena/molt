@@ -126,11 +126,19 @@ def test_queue_refuses_low_capacity_before_provisioning_and_retains_receipt(
 
 
 def test_run_one_derives_dx_environment_from_requested_overrides_before_launch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
 ) -> None:
     repo_root = Path(__file__).resolve().parents[2]
     ambient_root = tmp_path / "ambient-artifacts"
     requested_root = tmp_path / "requested-artifacts"
+    if os.name == "nt":
+        from molt.temporary_artifacts import OwnedTemporaryDirectory
+
+        # Exercise the real Cargo path-budget admission, independently of
+        # pytest's long descriptive case directory. Keep ownership and cleanup.
+        temporary = OwnedTemporaryDirectory(prefix="q")
+        request.addfinalizer(temporary.cleanup)
+        requested_root = Path(temporary.name)
     requested_tools = requested_root / "toolchains"
     resource_family = "cargo"
     contention_key = "compiler-build"
