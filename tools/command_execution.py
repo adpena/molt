@@ -246,6 +246,20 @@ class CommandExecutor:
         if capture_output and (stdout is not None or stderr is not None):
             raise ValueError("capture_output cannot be combined with stdout or stderr")
         process_guard = _process_guard_authority(str(self.repo_root))
+        if env is not None:
+            from molt.process_environment import (
+                ProcessEnvironment,
+                ProcessEnvironmentBuilder,
+            )
+
+            # The isolated guard owns its types. Carry the closed rule value
+            # with the mapping instead of inferring it again from this host.
+            rule = (
+                process_guard.NameRule(env.rule.value)
+                if isinstance(env, (ProcessEnvironment, ProcessEnvironmentBuilder))
+                else None
+            )
+            env = process_guard.ProcessEnvironment(env, rule=rule)
         return process_guard.run_completed_command(
             command,
             cwd=cwd,
@@ -328,7 +342,7 @@ class CommandExecutor:
         return subprocess.Popen(
             command,
             cwd=cwd,
-            env=None if env is None else dict(env),
+            env=None if env is None else env.child_block(),
             stdin=stdin,
             stdout=stdout,
             stderr=stderr,

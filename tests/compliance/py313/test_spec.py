@@ -12,18 +12,21 @@ import pytest
 
 from molt import python_interpreter
 from molt.dx import development_artifact_env
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
 from tests.compliance.process_guard import run_compliance_process
 
 MOLT_DIR = Path(__file__).resolve().parents[3]
 
 
-def _molt_build_env() -> dict[str, str]:
-    env = development_artifact_env(
-        MOLT_DIR,
-        os.environ,
-        session_prefix="compliance-py313",
-        session_id=os.environ.get("MOLT_SESSION_ID") or "compliance-py313",
-        create_dirs=True,
+def _molt_build_env() -> ProcessEnvironment:
+    env = ProcessEnvironmentBuilder(
+        development_artifact_env(
+            MOLT_DIR,
+            os.environ,
+            session_prefix="compliance-py313",
+            session_id=os.environ.get("MOLT_SESSION_ID") or "compliance-py313",
+            create_dirs=True,
+        )
     )
     env.update(
         {
@@ -31,7 +34,7 @@ def _molt_build_env() -> dict[str, str]:
             "PYTHONPATH": str(MOLT_DIR / "src"),
         }
     )
-    return env
+    return ProcessEnvironment(env)
 
 
 def _python_for(min_version: tuple[int, int]) -> list[str]:

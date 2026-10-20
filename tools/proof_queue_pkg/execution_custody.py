@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from molt.exact_json import canonical_json_sha256, loads_exact
+from molt.process_environment import NameRule, ProcessEnvironment
 from molt.python_runtime_identity import (
     PYTHON_RUNTIME_SELECTION_SCHEMA,
     python_runtime_selection_locations,
@@ -42,7 +43,6 @@ from tools.proof_queue_pkg.python_child_custody import (
     CHILD_POLICY_ENV as CHILD_POLICY_ENV,
     CHILD_ENDPOINT_ENV as CHILD_ENDPOINT_ENV,
     CHILD_TOKEN_ENV as CHILD_TOKEN_ENV,
-    _environment_value,
     install_python_child_custody as install_python_child_custody,
 )
 
@@ -1939,9 +1939,9 @@ def _search_child_executable(
     if os.name == "nt" and not candidate.suffix:
         raw_extensions = None
         if isinstance(child_env, Mapping):
-            raw_extensions = _environment_value(child_env, "PATHEXT")
-            if isinstance(raw_extensions, bytes):
-                raw_extensions = os.fsdecode(raw_extensions)
+            raw_extensions = ProcessEnvironment(child_env, rule=NameRule.WINDOWS).get(
+                "PATHEXT"
+            )
         extensions = [
             extension
             for extension in str(raw_extensions or ".COM;.EXE;.BAT;.CMD").split(

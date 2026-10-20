@@ -6,6 +6,8 @@ and what it read, not the record's internals.
 
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironment
+
 import inspect
 import os
 import sys
@@ -160,7 +162,7 @@ def test_a_guarded_child_leaves_the_recorded_build_current(
 
     def guarded_build(*args: Any, **kwargs: Any) -> int:
         child = process_guard.run_completed_command(
-            [sys.executable, "-c", "pass"], env=dict(os.environ)
+            [sys.executable, "-c", "pass"], env=ProcessEnvironment(dict(os.environ))
         )
         assert child.returncode == 0
         return fake(*args, **kwargs)

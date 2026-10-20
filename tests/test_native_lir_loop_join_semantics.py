@@ -31,7 +31,7 @@ def _compile_and_run(source: str, profile: str, *, backend: str | None = None) -
             session_prefix=f"test-loop-join-{profile}",
             create_dirs=True,
         )
-        env["PYTHONPATH"] = str(SRC_DIR)
+        env = env.updated({"PYTHONPATH": str(SRC_DIR)})
 
         build = run_native_test_process(
             [

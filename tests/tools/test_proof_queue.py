@@ -31,6 +31,7 @@ import pytest
 
 from tools import proof_plan
 from molt.cargo_execution_policy import normalize_cargo_environment
+from molt.process_environment import NameRule, ProcessEnvironment
 from molt.file_hashing import _sha256_file
 from molt import python_environment_identity
 from molt import llvm_toolchain
@@ -1833,7 +1834,9 @@ def test_full_python_capture_uses_selected_image_cwd_and_admitted_environment(
     elif kind == "py-launcher":
         python["selector"] = "-3.12"
     envelope = {"python": python}
-    environment = {"PATH": "unchanged caller path", "VIRTUAL_ENV": "caller-selection"}
+    environment = ProcessEnvironment(
+        {"PATH": "unchanged caller path", "VIRTUAL_ENV": "caller-selection"}
+    )
     observed = []
 
     class CaptureBoundaryReached(Exception):
@@ -2407,19 +2410,34 @@ def test_uv_unicode_full_capture_uses_existing_producer_digest_authority(
             execution_custody.validated_uv_environment_lock_capture(substituted)
 
 
+@pytest.mark.parametrize("rule", list(NameRule))
 @pytest.mark.parametrize("name", ["UV_ENV_FILE", "uv_env_file"])
-def test_uv_dotenv_uses_existing_unbound_environment_policy(name: str) -> None:
+def test_uv_dotenv_uses_existing_unbound_environment_policy(name: str, rule) -> None:
     unowned_value = "unowned dotenv path must not enter a diagnostic"
     selected, contract = execution_environment._deterministic_execution_environment(
-        {"PATH": "selected-tools", "UV_CACHE_DIR": "owned-cache", name: unowned_value},
+        ProcessEnvironment(
+            {
+                "PATH": "selected-tools",
+                "UV_CACHE_DIR": "owned-cache",
+                name: unowned_value,
+            },
+            rule=rule,
+        ),
         override_names=[],
     )
-    assert selected == {"PATH": "selected-tools", "UV_CACHE_DIR": "owned-cache"}
+    assert selected.rule is rule
+    assert dict(selected) == {"PATH": "selected-tools", "UV_CACHE_DIR": "owned-cache"}
     assert contract["omitted_names"] == [name]
     error = execution_environment.environment_override_policy_error(
-        {name: unowned_value}
+        ProcessEnvironment({name: unowned_value}, rule=rule)
     )
-    assert error == f"nondeterministic environment override {name!r} is forbidden"
+    # A declaration is judged the same on every host: only the canonical
+    # spelling classifies.
+    assert error == (
+        f"unclassified environment override {name!r}"
+        if name == "uv_env_file"
+        else f"nondeterministic environment override {name!r} is forbidden"
+    )
     assert unowned_value not in json.dumps(contract) + error
 
 
@@ -2496,7 +2514,8 @@ def test_llvm_sdk_environment_is_admitted_retained_and_bound(name: str) -> None:
     selected, contract = execution_environment._deterministic_execution_environment(
         inherited, override_names=[name]
     )
-    assert selected == inherited
+    assert selected.rule is NameRule.host()
+    assert dict(selected) == inherited
     assert contract["omitted_names"] == []
     authority = execution_environment._execution_environment_authority(
         selected,
@@ -2559,7 +2578,8 @@ def test_llvm_sdk_environment_does_not_admit_posix_case_aliases(name: str) -> No
     selected, contract = execution_environment._deterministic_execution_environment(
         {name: "1"}, override_names=[]
     )
-    assert selected == {}
+    assert selected.rule is NameRule.host()
+    assert dict(selected) == {}
     assert contract["omitted_names"] == [name]
 
 
@@ -2604,7 +2624,8 @@ def test_deterministic_environment_omits_ambient_injection_and_binds_all_passed(
     selected, contract = execution_environment._deterministic_execution_environment(
         inherited, override_names=["MOLT_TRACE_IMPORT_STAGE"]
     )
-    assert selected == {"PATH": "C:/tools", "MOLT_TRACE_IMPORT_STAGE": "1"}
+    assert selected.rule is NameRule.host()
+    assert dict(selected) == {"PATH": "C:/tools", "MOLT_TRACE_IMPORT_STAGE": "1"}
     assert contract["passed_names"] == ["MOLT_TRACE_IMPORT_STAGE", "PATH"]
     assert contract["override_names"] == ["MOLT_TRACE_IMPORT_STAGE"]
     assert contract["omitted_names"] == [
@@ -2640,17 +2661,127 @@ def test_deterministic_environment_preserves_complete_ci_custody() -> None:
     selected, contract = execution_environment._deterministic_execution_environment(
         inherited, override_names=[]
     )
-    assert selected == inherited
+    assert selected.rule is NameRule.host()
+    assert dict(selected) == inherited
     assert contract["passed_names"] == sorted(inherited)
     assert contract["omitted_names"] == []
 
 
-def test_environment_override_policy_rejects_case_ambiguous_names() -> None:
-    error = execution_environment.environment_override_policy_error(
-        {"MOLT_TRACE_CAPI": "1", "molt_trace_capi": "0"}
+@pytest.mark.parametrize("rule", list(NameRule))
+def test_environment_override_policy_rejects_case_ambiguous_names(
+    monkeypatch, rule
+) -> None:
+    monkeypatch.setattr(NameRule, "host", classmethod(lambda cls: rule))
+    # Declarations run on every host: two names that are one variable on
+    # Windows are refused on POSIX too.
+    for overrides in (
+        {"CC_target": "first", "CC_TARGET": "second"},
+        {"MOLT_TRACE_CAPI": "1", "molt_trace_capi": "0"},
+    ):
+        error = execution_environment.environment_override_policy_error(overrides)
+        assert error is not None and "case-ambiguous" in error
+
+
+@pytest.mark.parametrize("rule", list(NameRule))
+def test_execution_environment_selects_and_fingerprints_names_by_rule(rule) -> None:
+    inherited = ProcessEnvironment(
+        {"Path": "mixed", "PATH": "tools", "MOLT_A": "same", "MOLT_a": "same"},
+        rule=rule,
     )
-    assert error is not None
-    assert "case-ambiguous" in error
+    selected, contract = execution_environment._deterministic_execution_environment(
+        inherited, override_names=["MOLT_A", "PATH"]
+    )
+    assert selected.rule is rule
+    if rule is NameRule.EXACT:
+        assert dict(selected) == {"PATH": "tools", "MOLT_A": "same", "MOLT_a": "same"}
+        assert contract["omitted_names"] == ["Path"]
+        assert contract["override_names"] == ["MOLT_A", "PATH"]
+    else:
+        assert dict(selected) == {"Path": "tools", "MOLT_A": "same"}
+        assert contract["omitted_names"] == []
+        assert contract["override_names"] == ["MOLT_A", "Path"]
+    authority = execution_environment._execution_environment_authority(
+        ProcessEnvironment(selected, rule=rule),
+        applied_cargo_policies=(),
+        fingerprint_key=b"rule-test",
+        contract=contract,
+    )
+    assert (
+        authority["variables"]["PATH" if rule is NameRule.EXACT else "Path"]["class"]
+        == "host-runtime"
+    )
+    if rule is NameRule.EXACT:
+        assert (
+            authority["variables"]["MOLT_A"]["fingerprint"]
+            != authority["variables"]["MOLT_a"]["fingerprint"]
+        )
+
+
+@pytest.mark.parametrize("rule", list(NameRule))
+def test_execution_environment_retains_only_rule_matching_sdk_names(rule) -> None:
+    env = ProcessEnvironment({"mlir_sys_220_prefix": "selected-sdk"}, rule=rule)
+    selected, contract = execution_environment._deterministic_execution_environment(
+        env, override_names=[]
+    )
+    assert selected.rule is rule
+    assert dict(selected) == ({} if rule is NameRule.EXACT else dict(env))
+    assert contract["omitted_names"] == (
+        ["mlir_sys_220_prefix"] if rule is NameRule.EXACT else []
+    )
+
+
+@pytest.mark.parametrize("rule", list(NameRule))
+def test_execution_environment_captures_only_rule_matching_tool_names(
+    tmp_path, monkeypatch, rule
+):
+    tool = tmp_path / "compiler"
+    monkeypatch.setattr(
+        execution_environment,
+        "resolve_explicit_tool_command",
+        lambda *_a, **_k: [str(tool)],
+    )
+    monkeypatch.setattr(
+        command_identity,
+        "_executable_identity",
+        lambda _path: {"resolved_path": str(tool)},
+    )
+    monkeypatch.setattr(
+        command_identity, "_content_identity_available", lambda _identity: True
+    )
+    monkeypatch.setattr(
+        execution_environment.process_image_capture,
+        "capture_image",
+        lambda *_a, **_k: {},
+    )
+    monkeypatch.setattr(
+        execution_environment.process_image_capture,
+        "canonical_images",
+        lambda _images: [],
+    )
+    env = ProcessEnvironment(
+        {
+            "Cc": "mixed",
+            "CC": "selected",
+            "CC_wasm32-wasip1": "target",
+            "cc_wasm32-wasip1": "alias",
+        },
+        rule=rule,
+    )
+    identities = execution_environment._execution_environment_executable_identities(
+        env, cwd=tmp_path
+    )
+    assert identities == {
+        name: {
+            "executable": {"resolved_path": str(tool)},
+            "argument_count": 0,
+            "process_images": [],
+        }
+        for name in (
+            ["CC", "CC_wasm32-wasip1"]
+            if rule is NameRule.EXACT
+            else ["Cc", "CC_wasm32-wasip1"]
+        )
+    }
 
 
 @pytest.mark.parametrize(
@@ -2665,6 +2796,18 @@ def test_environment_pair_parser_rejects_duplicate_names_before_collapsing(
 ) -> None:
     with pytest.raises(SystemExit, match="duplicate environment override names"):
         policy._env_overrides_from_pairs(pairs)
+
+
+def test_declaration_environment_comparison_does_not_expand_name_characters() -> None:
+    assert policy._env_overrides_from_pairs(["MOLT_ß=first", "MOLT_SS=second"]) == {
+        "MOLT_ß": "first",
+        "MOLT_SS": "second",
+    }
+    locked = policy._named_spec_locked_env("nonexpanding", ["MOLT_ß", "MOLT_SS"])
+    assert locked == {"MOLT_ß": "MOLT_ß", "MOLT_SS": "MOLT_SS"}
+    assert policy._named_spec_user_env_overrides(
+        "nonexpanding", {"MOLT_ß": "MOLT_ß"}, ["MOLT_SS=second"]
+    ) == {"MOLT_SS": "second"}
 
 
 def test_uv_custody_flags_cannot_be_spoofed_by_payload_arguments() -> None:
@@ -5226,12 +5369,15 @@ def test_rustup_role_content_resolution_tracks_physical_component_before_reuse(
 
     def resolve(argv, **kwargs):
         assert argv == [custody_spelling(rustup), "which", role]
-        assert kwargs["env"] == environment and kwargs["cwd"] == tmp_path
+        assert dict(kwargs["env"]) == environment and kwargs["cwd"] == tmp_path
+        assert kwargs["env"].rule is NameRule.host()
         resolutions.append(list(argv))
         return subprocess.CompletedProcess(argv, 0, str(selected[0]) + "\n", "")
 
     def version(argv, **kwargs):
-        assert argv[0] == str(selected[0].resolve()) and kwargs["env"] == environment
+        assert argv[0] == str(selected[0].resolve())
+        assert dict(kwargs["env"]) == environment
+        assert kwargs["env"].rule is NameRule.host()
         versions.append(list(argv))
         return subprocess.CompletedProcess(
             argv, 0, f"{role} 1.99.0\nhost: x86_64-unknown-linux-gnu\n", ""

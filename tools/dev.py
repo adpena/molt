@@ -24,6 +24,7 @@ bind_repository_imports(__file__)
 ROOT = Path(__file__).resolve().parents[1]
 
 
+from molt.process_environment import ProcessEnvironment  # noqa: E402
 from molt.dx import DX_ENV_KEYS, TEST_PYTHONS, DxProject, render_env  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402
 
@@ -37,7 +38,7 @@ def _log(msg: str) -> None:
 
 def _check_call_guarded(
     cmd: list[str],
-    env: dict[str, str],
+    env: Mapping[str, str],
     *,
     limits: harness_memory_guard.HarnessMemoryLimits | None = None,
 ) -> None:
@@ -60,21 +61,21 @@ def _check_call_guarded(
         raise subprocess.CalledProcessError(result.returncode, cmd)
 
 
-def _uv_project_env_dir(env: dict[str, str] | None = None) -> Path:
+def _uv_project_env_dir(env: Mapping[str, str] | None = None) -> Path:
     if env is None:
         return DX.project_env_dir()
     return DX.uv_project_env_dir(env)
 
 
-def _uv_project_python(env: dict[str, str] | None = None) -> Path:
+def _uv_project_python(env: Mapping[str, str] | None = None) -> Path:
     return DX.project_python(env)
 
 
 def _uv_project_env_matches_python(
     requested: str | None,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> bool:
-    guard_env = _canonical_harness_env(env or os.environ)
+    guard_env = _canonical_harness_env(os.environ if env is None else env)
     project_python = _uv_project_python(guard_env)
     if not project_python.exists():
         return False
@@ -101,10 +102,10 @@ def _uv_project_env_matches_python(
 
 
 def _normalized_uv_run_env(
-    env: dict[str, str],
+    env: Mapping[str, str],
     *,
     python: str | None,
-) -> dict[str, str]:
+) -> ProcessEnvironment:
     project_env_matches_python: bool | None = None
     if env.get("UV_NO_SYNC") == "1":
         project_env_matches_python = _uv_project_env_matches_python(python, env)
@@ -118,7 +119,7 @@ def _normalized_uv_run_env(
 def run_uv(
     args: list[str],
     python: str | None = None,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str] | None = None,
     tty: bool = False,
 ) -> None:
     cmd = ["uv", "run"]
@@ -137,7 +138,7 @@ def run_uv(
                     "or remove 3.14 from the test matrix."
                 )
     cmd.extend(args)
-    base_env = _canonical_harness_env(env or os.environ)
+    base_env = _canonical_harness_env(os.environ if env is None else env)
     run_env = _normalized_uv_run_env(base_env, python=python)
     limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", run_env)
     _check_call_guarded(cmd, run_env, limits=limits)
@@ -174,13 +175,13 @@ def _canonical_harness_env(
     env: Mapping[str, str] | None = None,
     *,
     create_dirs: bool = True,
-) -> dict[str, str]:
-    base_env = dict(os.environ if env is None else env)
+) -> ProcessEnvironment:
+    base_env = os.environ if env is None else env
     dx_env = DX.dx_env(base_env, create_dirs=create_dirs)
     return harness_memory_guard.canonical_harness_env(dx_env, repo_root=ROOT)
 
 
-def _canonical_env(*, create_dirs: bool = True) -> dict[str, str]:
+def _canonical_env(*, create_dirs: bool = True) -> ProcessEnvironment:
     return _canonical_harness_env(create_dirs=create_dirs)
 
 
@@ -217,13 +218,13 @@ def _split_command_sequence(
     )
 
 
-def _run_repo_cmd(cmd: list[str], env: dict[str, str], *, tty: bool) -> None:
+def _run_repo_cmd(cmd: list[str], env: Mapping[str, str], *, tty: bool) -> None:
     _log("$ " + " ".join(shlex.quote(part) for part in cmd))
     limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", env)
     _check_call_guarded(cmd, env, limits=limits)
 
 
-def _run_dx_command(name: str, env: dict[str, str], *, tty: bool) -> None:
+def _run_dx_command(name: str, env: Mapping[str, str], *, tty: bool) -> None:
     command = _dx_commands().get(name)
     for split in _split_command_sequence(command, name, env=env):
         _run_repo_cmd(split, env, tty=tty)
@@ -232,7 +233,7 @@ def _run_dx_command(name: str, env: dict[str, str], *, tty: bool) -> None:
 def _run_dx_command_with_args(
     name: str,
     extra_args: list[str],
-    env: dict[str, str],
+    env: Mapping[str, str],
     *,
     tty: bool,
 ) -> None:
@@ -244,7 +245,7 @@ def _require_project_python(env: Mapping[str, str]) -> Path:
     return DX.require_project_python("repo gates", env)
 
 
-def _print_canonical_env(env: dict[str, str]) -> None:
+def _print_canonical_env(env: Mapping[str, str]) -> None:
     keys = tuple(key for key in DX_ENV_KEYS if key in env)
     print(render_env(env, keys, "posix"))
 

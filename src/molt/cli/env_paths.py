@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironmentBuilder
+
 import functools
 import os
 from pathlib import Path
@@ -55,8 +57,8 @@ def _base_env(
     script_path: Path | None = None,
     *,
     molt_root: Path | None = None,
-) -> dict[str, str]:
-    env = os.environ.copy()
+) -> ProcessEnvironmentBuilder:
+    env = ProcessEnvironmentBuilder(os.environ)
     paths = [env.get("PYTHONPATH", "")]
     if script_path is not None:
         paths.append(str(script_path.parent))

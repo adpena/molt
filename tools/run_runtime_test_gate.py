@@ -22,6 +22,7 @@ import json
 import os
 import re
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
 import sys
 import uuid
@@ -38,6 +39,7 @@ from tools import cargo_test_binary_runner as runner  # noqa: E402
 from tools import run_cargo_test_truth as truth  # noqa: E402
 from tools import runtime_descendant_receipts as descendants  # noqa: E402
 from tools.command_execution import CommandExecutor  # noqa: E402
+from molt.process_environment import ProcessEnvironment  # noqa: E402
 from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
 from molt.dx import PROOF_SCRATCH_ROOT_ENV, proof_scratch_root  # noqa: E402
 from molt.exact_json import loads_exact  # noqa: E402
@@ -488,7 +490,7 @@ def observed_build(
     cargo_output: str,
     artifact: dict[str, str],
     profile_name: str,
-    environment: dict[str, str | None],
+    environment: Mapping[str, str | None],
 ) -> dict:
     matches = []
     for item in truth.compiler_artifacts(cargo_output, source_context="compiler-only"):
@@ -618,7 +620,7 @@ def execute_child(
     timeout: float,
     require_passed: bool,
     retained_root: Path,
-    environment: dict[str, str] | None = None,
+    environment: Mapping[str, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], list[dict]]:
     child_command = [
         sys.executable,
@@ -711,7 +713,7 @@ def cargo_build(
     command: list[str],
     directory: Path,
     timeout: float,
-    environment: dict[str, str] | None = None,
+    environment: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     admit_cargo_build(command, cwd=ROOT, env=environment)
     build = COMMANDS.run(
@@ -922,8 +924,8 @@ ZLIB_WASI_CASES = frozenset(
 
 
 def zlib_wasi_flags(
-    command: list[str], environment: dict[str, str]
-) -> tuple[dict, dict]:
+    command: list[str], environment: Mapping[str, str]
+) -> tuple[dict, ProcessEnvironment]:
     # Reuse the queue's captured Cargo cfg/flag precedence (including wrappers),
     # without the runtime planner's unrelated external WASI C SDK requirement.
     from molt.cli.runtime_cargo_plan import (
@@ -988,7 +990,7 @@ def zlib_wasi_flags(
 
 
 def zlib_wasi_artifact(
-    output: str, metadata: str, profile: str, environment: dict[str, str]
+    output: str, metadata: str, profile: str, environment: Mapping[str, str]
 ) -> tuple[dict, dict]:
     finished = [
         loads_exact(line) for line in output.splitlines() if line.startswith("{")

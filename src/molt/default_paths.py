@@ -10,27 +10,21 @@ import sys
 from collections.abc import Mapping
 from pathlib import Path
 
+from .process_environment import ProcessEnvironment
+
 
 def executable_environment_value(
     environment: Mapping[str, str],
     key: str,
     default: str = "",
-    *,
-    windows: bool | None = None,
 ) -> str:
-    """Read captured executable-selection inputs with host key semantics."""
-    if windows is None:
-        windows = os.name == "nt"
-    if not windows:
-        return environment.get(key, default)
-    values = {
-        value
-        for name, value in environment.items()
-        if name.casefold() == key.casefold()
-    }
-    if len(values) > 1:
-        raise ValueError(f"conflicting captured environment spellings for {key}")
-    return next(iter(values), default)
+    """Read executable-selection inputs under the caller's captured name rule."""
+    selected = (
+        environment
+        if isinstance(environment, ProcessEnvironment)
+        else ProcessEnvironment(environment)
+    )
+    return selected.get(key, default)
 
 
 def expand_user_path(
@@ -47,6 +41,7 @@ def expand_user_path(
         return Path(raw)
     if environment is None:
         return Path(raw).expanduser()
+    environment = ProcessEnvironment(environment)
     separators = "/\\" if os.name == "nt" else "/"
     end = next(
         (index for index, char in enumerate(raw) if char in separators), len(raw)
@@ -162,7 +157,7 @@ def _default_molt_cache_cached(
 def _default_molt_cache(
     *, environ: Mapping[str, str] | None = None, cwd: Path | None = None
 ) -> Path:
-    env = os.environ if environ is None else environ
+    env = ProcessEnvironment(os.environ if environ is None else environ)
     values = tuple(
         (key, executable_environment_value(env, key))
         for key in (
@@ -177,7 +172,6 @@ def _default_molt_cache(
             "USERNAME",
         )
         if key in env
-        or (os.name == "nt" and any(name.casefold() == key.casefold() for name in env))
     )
     return _default_molt_cache_cached(
         values,

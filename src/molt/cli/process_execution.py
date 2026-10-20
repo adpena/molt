@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironment
+
 import shlex
 import sys
 import time
@@ -24,7 +26,7 @@ class _TimedResult(NamedTuple):
 def _run_command(
     cmd: list[str],
     *,
-    env: dict[str, str] | None = None,
+    env: ProcessEnvironment | None = None,
     cwd: Path | None = None,
     json_output: bool = False,
     verbose: bool = False,
@@ -62,7 +64,7 @@ def _run_command(
 def _run_command_timed(
     cmd: list[str],
     *,
-    env: dict[str, str] | None = None,
+    env: ProcessEnvironment | None = None,
     cwd: Path | None = None,
     verbose: bool = False,
     capture_output: bool = False,

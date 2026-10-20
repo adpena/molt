@@ -8,6 +8,7 @@ import pytest
 
 from tests.process_guard_common import run_guarded_test_process
 from molt.process_spawn import forward_command
+from molt.process_environment import NameRule, ProcessEnvironment
 from tools import venv_exec
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -80,6 +81,51 @@ def test_venv_env_marks_virtualenv_and_prepends_bin(tmp_path: Path) -> None:
     # Gates must never inherit the host console codec (Windows cp1252 class).
     assert env["PYTHONUTF8"] == "1"
     assert env["PYTHONIOENCODING"] == "utf-8"
+
+
+@pytest.mark.parametrize("name_rule", [NameRule.EXACT, NameRule.WINDOWS])
+@pytest.mark.parametrize("canonical_path", [False, True])
+def test_venv_environment_preserves_the_callers_path_name_rule(
+    tmp_path, name_rule, canonical_path
+):
+    values = {"PATH": "canonical path"} if canonical_path else {}
+    values["Path"] = "alias path"
+    original = ProcessEnvironment(values, rule=name_rule)
+    venv = tmp_path / "venv"
+    selected = venv_exec.venv_env(venv=venv, env=original)
+    previous_path = (
+        "alias path"
+        if name_rule is NameRule.WINDOWS
+        else "canonical path"
+        if canonical_path
+        else ""
+    )
+    expected_path = str(venv_exec.venv_bin_dir(venv))
+    if previous_path:
+        expected_path += os.pathsep + previous_path
+    assert selected.rule is name_rule
+    assert selected["PATH"] == expected_path
+    assert selected["Path"] == (
+        "alias path" if name_rule is NameRule.EXACT else expected_path
+    )
+    assert selected["VIRTUAL_ENV"] == str(venv)
+    assert selected["PYTHONUTF8"] == "1"
+    assert selected["PYTHONIOENCODING"] == "utf-8"
+    assert dict(original) == (
+        values
+        if name_rule is NameRule.EXACT
+        else {"PATH" if canonical_path else "Path": "alias path"}
+    )
+
+
+@pytest.mark.parametrize("name_rule", [NameRule.EXACT, NameRule.WINDOWS])
+def test_venv_selector_uses_the_callers_name_rule(tmp_path, name_rule):
+    root = tmp_path / "repo"
+    selected = tmp_path / "selected"
+    environment = ProcessEnvironment({"molt_venv": str(selected)}, rule=name_rule)
+    assert venv_exec.resolve_venv(repo_root=root, env=environment) == (
+        root / ".venv" if name_rule is NameRule.EXACT else selected
+    )
 
 
 def test_resolve_command_rewrites_python_to_venv_python(tmp_path: Path) -> None:

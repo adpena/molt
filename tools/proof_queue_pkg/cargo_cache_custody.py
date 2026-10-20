@@ -30,6 +30,7 @@ from typing import Iterator, Mapping, Sequence
 
 from molt import file_publication
 from molt import disk_capacity
+from molt.process_environment import ProcessEnvironment
 from molt.file_deletion import delete_path
 from molt.file_locks import (
     _acquire_file_lock,
@@ -122,11 +123,10 @@ def input_identity(
     # These names are execution transport, not Cargo compilation inputs. All
     # other selected variables (including target triple/profile flags) remain.
     ignored = command_identity._QUEUE_CUSTODY_ENV_NAMES
-    semantic_env = {
-        name: value
-        for name, value in outputs.caller_environment(env).items()
-        if name.upper() not in ignored
-    }
+    environment = ProcessEnvironment(env)
+    semantic_env = ProcessEnvironment(
+        outputs.caller_environment(environment), rule=environment.rule
+    ).without(ignored)
     return {
         "schema": _INPUT_KIND,
         "host": {"os": sys.platform, "arch": platform.machine()},
@@ -136,7 +136,7 @@ def input_identity(
         ],
         "command": list(command),
         "output_environment": outputs.identity(),
-        "environment_sha256": canonical_json_sha256(semantic_env),
+        "environment_sha256": canonical_json_sha256(semantic_env.child_block()),
         **(
             {
                 # Python import closure includes the editable checkout and pyc
@@ -501,7 +501,7 @@ class CargoCacheLease:
     lock: _FileLockHandle
     provenance: dict[str, object]
     owner: dict[str, object]
-    environment: dict[str, str]
+    environment: ProcessEnvironment
     publication_outcome: dict[str, object] | None = None
     published: bool = False
     owner_persisted: bool = True
@@ -2128,7 +2128,9 @@ def acquire(
         if reused_owner is None:
             target.mkdir(exist_ok=False)
             file_publication.fsync_directory(target.parent)
-        bound_environment = outputs.bind(env, target=target)
+        bound_environment = ProcessEnvironment(
+            outputs.bind(env, target=target), rule=ProcessEnvironment(env).rule
+        )
         validate_prelaunch(
             provenance,
             cargo_output_lifetime=cargo_output_lifetime,

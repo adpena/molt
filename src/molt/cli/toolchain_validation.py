@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironment
+
 import datetime as dt
 import os
 import shlex
@@ -892,7 +894,8 @@ def validate(
     for key, value in _canonical_env_defaults(root).items():
         env.setdefault(key, value)
     env.setdefault("MOLT_SESSION_ID", "validate")
-    guard_summary = _validation_guard_summary(root, env, steps)
+    environment = ProcessEnvironment(env)
+    guard_summary = _validation_guard_summary(root, environment, steps)
     summary_path = (
         _resolve_validate_summary_path(root, summary_out)
         if summary_out is not None
@@ -956,7 +959,7 @@ def validate(
             proc = _run_completed_command(
                 [str(part) for part in step.cmd],
                 cwd=step.cwd,
-                env=env,
+                env=environment,
                 capture_output=True,
                 memory_guard_prefix=guard_prefix,
             )

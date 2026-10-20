@@ -16,9 +16,15 @@ from types import SimpleNamespace
 import pytest
 
 from molt.exact_json import write_exact
+from molt.process_environment import (
+    NameRule,
+    ProcessEnvironment,
+    ProcessEnvironmentBuilder,
+)
 from molt.release_matrix import RUST_TARGET_BY_COORDINATE
 from tests.native_artifact_fixtures import elf_header, macho_header, pe_header
 from tests.runtime_build_identity_helper import build_python_identity_fixture
+from tests.process_guard_common import install_module_view
 from tools.release import native_build
 from tools.release.git_source_snapshot import GitSourceFile, GitSourceSnapshot
 
@@ -388,7 +394,7 @@ def test_msvc_release_path_maps_are_effective_across_build_roots(tmp_path):
             path.write_text(
                 "const char *molt_path(void) { return __FILE__; }\n", encoding="utf-8"
             )
-        selected = dict(env)
+        selected = ProcessEnvironmentBuilder(env)
         native_build._select_build_tools(
             selected,
             paths,
@@ -396,6 +402,7 @@ def test_msvc_release_path_maps_are_effective_across_build_roots(tmp_path):
             triple=RUST_TARGET_BY_COORDINATE[current_host_coordinate()],
             platform="windows",
         )
+        selected = ProcessEnvironment(selected)
         # Decode at the real cc-rs boundary, then execute its compiler argv.
         # Distinct names keep the C and C++ object outputs independently owned.
         outputs = []
@@ -843,3 +850,86 @@ def test_native_receipt_binds_sdk_policy_to_original_source_inventory(
             platform="linux",
             arch="x86_64",
         )
+
+
+@pytest.mark.parametrize("rule", list(NameRule))
+def test_build_environment_filters_and_retains_child_name_rule(tmp_path, rule):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "rust-toolchain.toml").write_text(
+        '[toolchain]\nchannel="1.96.1"\n', encoding="utf-8"
+    )
+    inherited = ProcessEnvironment(
+        {
+            "Path": "alternate",
+            "PATH": "tools",
+            "home": "shadow",
+            "HOME": str(tmp_path / "home"),
+            "Rustup_Home": str(tmp_path / "rustup"),
+        },
+        rule=rule,
+    )
+    env = native_build.build_environment(
+        source, tmp_path / "work", inherited, epoch=123
+    )
+    assert {name: value for name, value in env.items() if name in inherited} == (
+        {
+            "Path": "tools",
+            "home": str(tmp_path / "home"),
+            "Rustup_Home": str(tmp_path / "rustup"),
+        }
+        if rule is NameRule.WINDOWS
+        else {"PATH": "tools", "HOME": str(tmp_path / "home")}
+    )
+    assert env.rule is rule
+    env["PATH"] = "selected tools"
+    assert env["PATH"] == "selected tools"
+    assert ("Path" in set(env)) is (rule is NameRule.WINDOWS)
+    assert inherited["PATH"] == "tools"
+
+
+@pytest.mark.parametrize("rule", list(NameRule))
+def test_native_producer_removes_sdk_names_with_child_rule(tmp_path, monkeypatch, rule):
+    import molt.verified_subset
+
+    monkeypatch.setattr(
+        molt.verified_subset, "current_host_coordinate", lambda: ("linux", "x86_64")
+    )
+    install_module_view(
+        monkeypatch,
+        "os",
+        os,
+        native_build,
+        environ=ProcessEnvironment(
+            {"SdkRoot": "mixed", "SDKROOT": "canonical"}, rule=rule
+        ),
+    )
+    monkeypatch.setattr(native_build, "source_snapshot", lambda *_args: object())
+    monkeypatch.setattr(
+        native_build, "resolve_executable", lambda *_args, **_kwargs: tmp_path / "git"
+    )
+
+    def materialize(_snapshot, output, **_kwargs):
+        output.mkdir()
+        return output
+
+    def admit_llvm(_source, inherited):
+        assert dict(inherited) == (
+            {} if rule is NameRule.WINDOWS else {"SdkRoot": "mixed"}
+        )
+        raise RuntimeError("observed SDK environment")
+
+    monkeypatch.setattr(native_build, "materialize_git_source_snapshot", materialize)
+    monkeypatch.setattr(native_build, "admit_llvm_compiler_inputs", admit_llvm)
+    output = tmp_path / "output"
+    with pytest.raises(RuntimeError, match="observed SDK environment"):
+        native_build.produce_native_build(
+            tmp_path,
+            output,
+            source_sha="a" * 40,
+            source_date_epoch=123,
+            platform="linux",
+            arch="x86_64",
+            build_root=tmp_path / "builds",
+        )
+    assert not output.exists()

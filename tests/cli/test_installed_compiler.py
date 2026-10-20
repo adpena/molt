@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironment
+
 import hashlib
 import json
 import os
@@ -399,6 +401,8 @@ def test_bootstrap_uses_locked_uv_environment_and_reuses_it(tmp_path, explicit_h
     )
     default_paths = package / "default_paths.py"
     shutil.copyfile(repository / "src/molt/default_paths.py", default_paths)
+    process_environment = package / "process_environment.py"
+    shutil.copyfile(repository / "src/molt/process_environment.py", process_environment)
 
     def identity(path):
         return {
@@ -421,6 +425,7 @@ def test_bootstrap_uses_locked_uv_environment_and_reuses_it(tmp_path, explicit_h
                         "pyproject.toml",
                         "uv.lock",
                         "src/molt/default_paths.py",
+                        "src/molt/process_environment.py",
                     )
                 ],
             }
@@ -565,7 +570,7 @@ def test_bootstrap_uses_locked_uv_environment_and_reuses_it(tmp_path, explicit_h
     assert not nested.exists()
 
     # Tampering must fail before uv can repair or execute the altered inputs.
-    for path in (launcher, default_paths, source / "uv.lock"):
+    for path in (launcher, default_paths, process_environment, source / "uv.lock"):
         original = path.read_bytes()
         path.write_bytes(original + b"corruption")
         try:
@@ -696,7 +701,7 @@ def test_installed_public_wrapper_cold_then_cache_hit_owns_admission(
             file_path=str(entry),
             module=None,
             build_args=[],
-            env={},
+            env=ProcessEnvironment({}),
             project_root=project,
             json_output=True,
             command=command,
@@ -842,20 +847,69 @@ raise AssertionError('the molt process entry returned to its caller')
     assert not marker.exists()
 
 
-def test_bootstrap_path_authority_executes_without_molt_importable(tmp_path):
-    # packaging/bootstrap.py runs this file with a plain CPython before any
-    # Molt environment exists, so the module must stay stdlib-only.
+@pytest.mark.parametrize("tamper", [None, "default_paths", "process_environment"])
+def test_bootstrap_path_authority_executes_without_molt_importable(tmp_path, tamper):
+    # Execute the real bootstrap boundary before any Molt environment exists.
+    # Its source dependencies must be verified and loaded together in memory.
     from tests.cli.process_guard import run_cli_test_process
 
     root = Path(__file__).resolve().parents[2]
     cache = tmp_path / "selected-cache"
+    bundle = tmp_path / "bundle"
+    source = bundle / "source"
+    source.mkdir(parents=True)
+    launcher = bundle / "bin" / ("molt.exe" if os.name == "nt" else "molt")
+    launcher.parent.mkdir()
+    launcher.write_bytes(b"launcher identity")
+    names = (
+        "pyproject.toml",
+        "uv.lock",
+        "src/molt/default_paths.py",
+        "src/molt/process_environment.py",
+    )
+    marker = tmp_path / "executed-before-admission"
+    records = []
+    for name in names:
+        path = source / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        content = (root / name).read_bytes()
+        if tamper and path.suffix == ".py":
+            # Both declared modules have an observable execution effect. A
+            # mismatched peer must be refused before either effect can run.
+            content += f"\n__import__('pathlib').Path({str(marker)!r}).write_text('executed')\n".encode()
+        path.write_bytes(content)
+        records.append(
+            {
+                "path": name,
+                "size": len(content),
+                "sha256": hashlib.sha256(content).hexdigest(),
+            }
+        )
+    git = {"object_format": "sha1", "commit": "a" * 40, "tree": "b" * 40}
+    manifest = {
+        "launcher": {
+            "path": "bin/" + launcher.name,
+            "size": launcher.stat().st_size,
+            "sha256": hashlib.sha256(launcher.read_bytes()).hexdigest(),
+        },
+        "git": git,
+        "files": records,
+    }
+    (source / distribution.MANIFEST_NAME).write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
+    if tamper:
+        path = source / f"src/molt/{tamper}.py"
+        path.write_bytes(path.read_bytes() + b"\n# bytes differ from admitted source\n")
     code = (
-        "import importlib.util, sys\n"
+        "import importlib.util, json, runpy, sys\n"
+        "from pathlib import Path\n"
         "assert importlib.util.find_spec('molt') is None, 'molt is importable'\n"
-        "ns = {'__name__': 'molt_bootstrap_default_paths'}\n"
-        "exec(compile(open(sys.argv[1], 'rb').read(), sys.argv[1], 'exec'), ns)\n"
+        "ns = runpy.run_path(sys.argv[1], run_name='bootstrap_contract_probe')\n"
+        "home, identity = ns['_release_inputs'](Path(sys.argv[2]))\n"
         "assert 'molt' not in sys.modules\n"
-        "print(ns['_default_molt_home']())\n"
+        "assert not any(name.startswith('_molt_bootstrap_inputs') for name in sys.modules)\n"
+        "print(json.dumps({'home':str(home), 'identity':identity}))\n"
     )
     env = {
         name: value
@@ -870,7 +924,8 @@ def test_bootstrap_path_authority_executes_without_molt_importable(tmp_path):
             "-S",
             "-c",
             code,
-            str(root / "src/molt/default_paths.py"),
+            str(root / "packaging/bootstrap.py"),
+            str(bundle),
         ],
         cwd=tmp_path,
         env=env,
@@ -878,5 +933,23 @@ def test_bootstrap_path_authority_executes_without_molt_importable(tmp_path):
         text=True,
         timeout=30,
     )
-    assert result.returncode == 0, result.stderr
-    assert Path(result.stdout.strip()) == cache / "home"
+    assert not marker.exists()
+    if tamper:
+        assert result.returncode != 0 and result.stdout == ""
+        assert (
+            f"bundled src/molt/{tamper}.py differs from the release manifest"
+            in result.stderr
+        )
+    else:
+        assert result.returncode == 0, result.stderr
+        observed = json.loads(result.stdout)
+        assert Path(observed["home"]) == cache / "home"
+        expected = hashlib.sha256(json.dumps(git, sort_keys=True).encode())
+        for record in records:
+            expected.update(bytes.fromhex(record["sha256"]))
+        expected.update(
+            json.dumps(
+                [sys.executable, sys.version, sys.implementation.cache_tag]
+            ).encode()
+        )
+        assert observed["identity"] == expected.hexdigest()

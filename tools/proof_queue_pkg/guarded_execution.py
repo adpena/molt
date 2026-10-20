@@ -41,6 +41,7 @@ from molt.cargo_execution_policy import normalize_cargo_environment  # noqa: E40
 from molt import cache_eviction, default_paths, file_locks, file_publication  # noqa: E402
 from molt import disk_capacity  # noqa: E402
 from molt.exact_json import read_exact  # noqa: E402
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder  # noqa: E402
 from molt.python_environment_identity import python_capture_authority_paths  # noqa: E402
 from tools import proof_plan, proof_receipts  # noqa: E402
 from tools.proof_queue_pkg import (  # noqa: E402
@@ -80,7 +81,7 @@ def _run_supervisor_with_transcripts(
     command: Sequence[str],
     *,
     cwd: Path,
-    env: Mapping[str, str],
+    env: ProcessEnvironment,
     result_path: Path,
     result: dict[str, object],
     execution_deadline: float,
@@ -131,9 +132,9 @@ def _supervisor_build_environment(
     *,
     target: Path,
     external_placement: bool = False,
-) -> dict[str, str]:
+) -> ProcessEnvironment:
     """Keep bootstrap outputs external and Unix startup sockets bounded."""
-    build_env = dict(execution_env)
+    build_env = ProcessEnvironmentBuilder(execution_env)
     build_env["CARGO_TARGET_DIR"] = str(target.resolve(strict=True))
     build_env["MOLT_CARGO_BUILD_DIR_BASE"] = build_env["CARGO_TARGET_DIR"]
     # Bootstrap scratch has the same lifetime as its source-bound build store.
@@ -175,7 +176,7 @@ def _supervisor_build_environment(
         socket_temp_root = Path("/tmp").resolve(strict=True)
         for name in ("TMPDIR", "TMP", "TEMP"):
             build_env[name] = str(socket_temp_root)
-    return build_env
+    return ProcessEnvironment(build_env)
 
 
 def tool_release_toolchains(plan: "proof_plan.ProofPlan") -> frozenset[str]:
@@ -189,7 +190,7 @@ def tool_release_toolchains(plan: "proof_plan.ProofPlan") -> frozenset[str]:
 
 def prefer_tool_release_prefixes(
     env: Mapping[str, str], toolchains: object, *, cwd: Path
-) -> tuple[dict[str, str], dict[str, str]]:
+) -> tuple[ProcessEnvironment, dict[str, str]]:
     """Provision each declared pinned tool release and put its bin first on PATH.
 
     A lane that declares a tool the manifest pins (wasm-tools today) must run
@@ -198,13 +199,13 @@ def prefer_tool_release_prefixes(
     (idempotent, digest-verified, fail-closed) before toolchains are located,
     so the version policy sees the pinned binary first.
     """
-    resolved = dict(env)
+    resolved = ProcessEnvironmentBuilder(env)
     declared = (
         {str(name) for name in toolchains} if isinstance(toolchains, list) else set()
     )
     names = sorted(declared & tool_release_toolchains(proof_plan.ProofPlan.load()))
     if not names:
-        return resolved, {}
+        return ProcessEnvironment(resolved), {}
     from molt import tool_releases
     from molt.dx import canonical_toolchain_root
 
@@ -223,12 +224,12 @@ def prefer_tool_release_prefixes(
             if entry and os.path.normcase(entry) != os.path.normcase(bin_dir)
         ]
         resolved["PATH"] = os.pathsep.join([bin_dir, *entries])
-    return resolved, prefixes
+    return ProcessEnvironment(resolved), prefixes
 
 
 def project_declared_sdk_environment(
     env: Mapping[str, str], toolchains: object, *, cwd: Path
-) -> dict[str, str]:
+) -> ProcessEnvironment:
     """Project declared SDK availability before execution identity is captured.
 
     The plan owns provider selection and the SDK authorities own every projected
@@ -242,7 +243,7 @@ def project_declared_sdk_environment(
     selected = tuple(
         policy for policy in plan.toolchain_policies if policy.name in declared
     )
-    resolved = dict(env)
+    resolved = ProcessEnvironmentBuilder(env)
     if any(
         policy.projection == "wasi-sdk" and policy.data.get("executable") == "wasm-ld"
         for policy in selected
@@ -254,7 +255,7 @@ def project_declared_sdk_environment(
         )
     names = tuple(policy.name for policy in selected if policy.projection == "llvm-sdk")
     if not names:
-        return resolved
+        return ProcessEnvironment(resolved)
     projection = proof_plan.project_toolchains(
         plan.toolchain_policies,
         names,
@@ -264,7 +265,7 @@ def project_declared_sdk_environment(
     )
     if projection.missing:
         raise ValueError(proof_plan._not_provisioned(projection.missing))
-    return {**resolved, **projection.delta}
+    return ProcessEnvironment(resolved).updated(projection.delta)
 
 
 def execute_guarded_request(request_path: Path) -> int:
@@ -327,7 +328,9 @@ def execute_guarded_request(request_path: Path) -> int:
     custody_session: execution_custody.ExecutionCustodySession | None = None
     cargo_cache: cargo_cache_custody.CargoCacheLease | None = None
     try:
-        inherited_env = environment._wrapper_execution_environment(envelope, os.environ)
+        inherited_env = ProcessEnvironmentBuilder(
+            environment._wrapper_execution_environment(envelope, os.environ)
+        )
         if "cargo" in envelope.get("toolchains", []):
             cargo_output_environment.CargoOutputEnvironment.for_envelope(
                 envelope
@@ -373,9 +376,10 @@ def execute_guarded_request(request_path: Path) -> int:
             ).as_dict()
             if output_layout.declaration is not None:
                 custody_cas._durable_makedirs(output_layout.temporary)
-            inherited_env, applied_cargo_policies = normalize_cargo_environment(
+            normalized_env, applied_cargo_policies = normalize_cargo_environment(
                 inherited_env
             )
+            inherited_env = ProcessEnvironmentBuilder(normalized_env)
             # A stable selection-only path avoids putting this run's nonce in
             # toolchain discovery. No proof command runs here; after immutable
             # input capture the cache authority selects an exclusively owned,
@@ -398,8 +402,10 @@ def execute_guarded_request(request_path: Path) -> int:
         inherited_env, _tool_release_prefixes = prefer_tool_release_prefixes(
             inherited_env, envelope.get("toolchains", []), cwd=cwd
         )
-        inherited_env = project_declared_sdk_environment(
-            inherited_env, envelope.get("toolchains", []), cwd=cwd
+        inherited_env = ProcessEnvironmentBuilder(
+            project_declared_sdk_environment(
+                inherited_env, envelope.get("toolchains", []), cwd=cwd
+            )
         )
         canonical_env = dict(command_identity.CANONICAL_EXECUTION_ENV)
         if "node" in envelope.get("toolchains", []):
@@ -530,7 +536,7 @@ def execute_guarded_request(request_path: Path) -> int:
             reuse_root=output_layout.supervisor_store
             / supervisor_generation.TOOL_IDENTITY_REUSE_DIRNAME,
         )
-        execution_env.update(selected_tool_environment)
+        execution_env = execution_env.updated(selected_tool_environment)
         environment_contract["passed_names"] = sorted(execution_env, key=str.casefold)
         if output_layout.declaration is not None:
             output_layout.validate(protected_roots=located_roots)
@@ -563,7 +569,7 @@ def execute_guarded_request(request_path: Path) -> int:
                 envelope, exact, policy_identities, environment=execution_env, cwd=cwd
             )
         )
-        execution_env.update(python_launcher_environment)
+        execution_env = execution_env.updated(python_launcher_environment)
         for name in sorted(python_launcher_environment):
             if name not in passed_names:
                 passed_names.append(name)
@@ -868,17 +874,23 @@ def execute_guarded_request(request_path: Path) -> int:
         child_event_server = execution_custody.ChildCustodyEventServer(
             expected_child_runtime, child_policy
         )
-        execution_env[execution_custody.CHILD_POLICY_ENV] = json.dumps(
-            child_policy, sort_keys=True, separators=(",", ":")
+        execution_env = execution_env.updated(
+            {
+                execution_custody.CHILD_POLICY_ENV: json.dumps(
+                    child_policy, sort_keys=True, separators=(",", ":")
+                ),
+                **child_event_server.environment(),
+            }
         )
-        execution_env.update(child_event_server.environment())
         published_custody_names = [
             execution_custody.CHILD_POLICY_ENV,
             execution_custody.CHILD_ENDPOINT_ENV,
             execution_custody.CHILD_TOKEN_ENV,
         ]
         if envelope.get("typed_command") is not None:
-            execution_env["MOLT_PROOF_SOURCE_ROOT"] = str(source_root_path)
+            execution_env = execution_env.updated(
+                {"MOLT_PROOF_SOURCE_ROOT": str(source_root_path)}
+            )
             published_custody_names.append("MOLT_PROOF_SOURCE_ROOT")
         if source_extension_producer:
             captured_extension = toolchains_full.get("source-extension")
@@ -890,8 +902,14 @@ def execute_guarded_request(request_path: Path) -> int:
                     "typed producer has no captured source-extension link inputs"
                 )
             link_inputs_name = command_identity.SOURCE_EXTENSION_LINK_INPUTS_ENV
-            execution_env[link_inputs_name] = json.dumps(
-                captured_extension["link_inputs"], sort_keys=True, separators=(",", ":")
+            execution_env = execution_env.updated(
+                {
+                    link_inputs_name: json.dumps(
+                        captured_extension["link_inputs"],
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                }
             )
             published_custody_names.append(link_inputs_name)
         for name in published_custody_names:

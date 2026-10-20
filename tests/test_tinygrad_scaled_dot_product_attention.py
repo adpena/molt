@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
+
 import math
 import os
 import sys
@@ -11,19 +13,21 @@ from molt.dx import development_artifact_env
 from tests.native_process_guard import run_native_test_process
 
 
-def _native_molt_env(root: Path) -> dict[str, str]:
-    env = development_artifact_env(
-        root,
-        os.environ,
-        session_prefix="tinygrad-sdpa",
-        session_id=os.environ.get("MOLT_SESSION_ID") or "tinygrad-sdpa",
-        create_dirs=True,
+def _native_molt_env(root: Path) -> ProcessEnvironment:
+    env = ProcessEnvironmentBuilder(
+        development_artifact_env(
+            root,
+            os.environ,
+            session_prefix="tinygrad-sdpa",
+            session_id=os.environ.get("MOLT_SESSION_ID") or "tinygrad-sdpa",
+            create_dirs=True,
+        )
     )
     env["PYTHONPATH"] = str(root / "src")
     env["MOLT_STDLIB_PROFILE"] = "full"
     env["MOLT_HERMETIC_MODULE_ROOTS"] = "1"
     env["MOLT_BACKEND_DAEMON"] = "0"
-    return env
+    return ProcessEnvironment(env)
 
 
 def _dot(left: list[float], right: list[float]) -> float:

@@ -1315,18 +1315,22 @@ def test_cargo_wrapper_policy_and_removal_keep_the_name_rule(rule):
         env, default_incremental="1"
     )
     removed = cargo_execution_policy.without_sccache_compiler_wrappers(env)
+    assert selected.rule is removed.rule is rule
     if rule is NameRule.WINDOWS:
-        assert selected == {"rustc_wrapper": "sccache", "Cargo_Incremental": "0"}
+        assert selected.child_block() == {
+            "rustc_wrapper": "sccache",
+            "Cargo_Incremental": "0",
+        }
         assert policies == ("sccache-disables-incremental",)
-        assert removed == {"Cargo_Incremental": "1"}
+        assert removed.child_block() == {"Cargo_Incremental": "1"}
     else:
-        assert selected == {
+        assert selected.child_block() == {
             "rustc_wrapper": "sccache",
             "Cargo_Incremental": "1",
             "CARGO_INCREMENTAL": "1",
         }
         assert policies == ("direct-rustc-enables-incremental",)
-        assert removed == dict(env)
+        assert removed == env
     assert dict(env) == {"rustc_wrapper": "sccache", "Cargo_Incremental": "1"}
 
 
@@ -1339,17 +1343,18 @@ def test_sccache_client_pins_case_preserving_temporary_names(
     temporary = tmp_path / "cache-tmp"
     env = ProcessEnvironment({"Sccache_Dir": str(cache), "Temp": "old"}, rule=rule)
     selected, policies = cargo_execution_policy.sccache_client_environment(env)
+    assert isinstance(selected, ProcessEnvironment) and selected.rule is rule
     if rule is NameRule.WINDOWS:
         assert selected["Temp"] == str(temporary)
         assert selected["TMP"] == selected["TMPDIR"] == str(temporary)
-        assert "TEMP" not in selected
+        assert "TEMP" not in selected.child_block()
         assert policies == (
             "sccache-server-temp-dir",
             "sccache-server-private-endpoint",
         )
         assert temporary.is_dir()
     else:
-        assert selected == dict(env)
+        assert selected == env
         assert policies == ()
         assert not temporary.exists()
     assert dict(env) == {"Sccache_Dir": str(cache), "Temp": "old"}
@@ -3056,7 +3061,7 @@ def test_combined_runtime_plan_applies_target_policy_after_cargo_features(
         cargo_profile="dev-fast",
         profile_dir="dev-fast",
         incremental_enabled=False,
-        env=environment,
+        env=ProcessEnvironment(environment),
         artifact_selection=specs.RUNTIME_CDYLIB_ARTIFACTS,
         runtime_exports=(),
         link_flags=(),

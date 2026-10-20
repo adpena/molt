@@ -21,6 +21,7 @@ import sys
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -38,6 +39,7 @@ BENCH_RESULTS_ROOT = ROOT / "bench" / "results"
 WASM_RUNNER = ROOT / "wasm" / "run_wasm.js"
 
 
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402
 from molt.dx import development_artifact_env, scratch_dir  # noqa: E402
 from molt.node_runtime import NodeRuntimeError, resolve_node_runtime  # noqa: E402
@@ -100,16 +102,18 @@ def _progress(event: str, **fields: Any) -> None:
     print(json.dumps(payload, sort_keys=True), file=sys.stderr, flush=True)
 
 
-def _canonical_env(base: dict[str, str] | None = None) -> dict[str, str]:
-    env = development_artifact_env(
-        ROOT,
-        base or os.environ,
-        session_prefix="output-startup-size-audit",
-        session_id=(
-            (base or os.environ).get("MOLT_SESSION_ID")
-            or f"output-startup-size-audit-{os.getpid()}"
-        ),
-        create_dirs=True,
+def _canonical_env(base: Mapping[str, str] | None = None) -> ProcessEnvironment:
+    env = ProcessEnvironmentBuilder(
+        development_artifact_env(
+            ROOT,
+            os.environ if base is None else base,
+            session_prefix="output-startup-size-audit",
+            session_id=(
+                (os.environ if base is None else base).get("MOLT_SESSION_ID")
+                or f"output-startup-size-audit-{os.getpid()}"
+            ),
+            create_dirs=True,
+        )
     )
     env.setdefault("PYTHONHASHSEED", "0")
     env.setdefault("PYTHONUNBUFFERED", "1")
@@ -118,13 +122,13 @@ def _canonical_env(base: dict[str, str] | None = None) -> dict[str, str]:
         env["PYTHONPATH"] = (
             f"{SRC_ROOT}{os.pathsep}{pythonpath}" if pythonpath else str(SRC_ROOT)
         )
-    return env
+    return ProcessEnvironment(env)
 
 
 def _run_guarded(
     command: list[str],
     *,
-    env: dict[str, str],
+    env: ProcessEnvironment,
     timeout: float | None,
     prefix: str = "MOLT_BENCH",
     progress_label: str | None = None,
@@ -367,7 +371,7 @@ def _build_molt_artifact(
     case: MatrixCase,
     script: Path,
     out_dir: Path,
-    env: dict[str, str],
+    env: ProcessEnvironment,
     timeout: float,
     extra_molt_args: list[str],
 ) -> BuildResult:
@@ -501,14 +505,14 @@ def _fresh_copy_path(artifact: Path, fresh_dir: Path, index: int) -> Path:
     return fresh_dir / f"{artifact.stem}.fresh-{index}{artifact.suffix}"
 
 
-RunnerFactory = Callable[[Path, dict[str, str]], tuple[list[str], dict[str, str]]]
+RunnerFactory = Callable[[Path, ProcessEnvironment], tuple[list[str], dict[str, str]]]
 
 
 def _measure_artifact(
     artifact: Path,
     *,
     samples: int,
-    env: dict[str, str],
+    env: ProcessEnvironment,
     timeout: float,
     fresh_copies: bool,
     label: str,
@@ -535,7 +539,7 @@ def _measure_artifact(
         try:
             command, env_overrides = runner_factory(run_path, env)
             if env_overrides:
-                run_env = {**env, **env_overrides}
+                run_env = env.updated(env_overrides)
             result = _run_guarded(
                 command,
                 env=run_env,
@@ -568,7 +572,7 @@ def _measure_executable(
     binary: Path,
     *,
     samples: int,
-    env: dict[str, str],
+    env: ProcessEnvironment,
     timeout: float,
     fresh_copies: bool,
     label: str,
@@ -586,7 +590,9 @@ def _measure_executable(
 
 
 def _node_runner_factory(node_bin: str) -> RunnerFactory:
-    def runner(path: Path, _env: dict[str, str]) -> tuple[list[str], dict[str, str]]:
+    def runner(
+        path: Path, _env: ProcessEnvironment
+    ) -> tuple[list[str], dict[str, str]]:
         manifest = wasm_runtime_manifest_path(path)
         return (
             [
@@ -613,7 +619,7 @@ def _lune_runner_factory(lune_bin: str) -> RunnerFactory:
 def _measure_cold_first_sighting(
     artifact: Path,
     *,
-    env: dict[str, str],
+    env: ProcessEnvironment,
     timeout: float,
     label: str,
     runner_factory: RunnerFactory,
@@ -632,7 +638,7 @@ def _measure_cold_first_sighting(
     ordinary builds, so the artifact is unprimed when this runs.
     """
     command, env_overrides = runner_factory(artifact, env)
-    run_env = {**env, **env_overrides} if env_overrides else env
+    run_env = env.updated(env_overrides) if env_overrides else env
     result = _run_guarded(
         command,
         env=run_env,
@@ -659,7 +665,7 @@ def _measure_case_startup(
     artifact: Path,
     *,
     samples: int,
-    env: dict[str, str],
+    env: ProcessEnvironment,
     timeout: float,
 ) -> dict[str, Any]:
     if case.target == "native":
@@ -787,7 +793,7 @@ def _measure_cpython(
     script: Path,
     *,
     samples: int,
-    env: dict[str, str],
+    env: ProcessEnvironment,
     timeout: float,
 ) -> dict[str, Any]:
     records: list[dict[str, Any]] = []
@@ -819,7 +825,7 @@ def _measure_c_baseline(
     work_dir: Path,
     *,
     samples: int,
-    env: dict[str, str],
+    env: ProcessEnvironment,
     timeout: float,
 ) -> dict[str, Any]:
     cc = shutil.which("cc") or shutil.which("clang")
@@ -942,7 +948,7 @@ def _build_case_row(
     case: MatrixCase,
     script: Path,
     out_dir: Path,
-    env: dict[str, str],
+    env: ProcessEnvironment,
     args: argparse.Namespace,
 ) -> dict[str, Any]:
     build = _build_molt_artifact(

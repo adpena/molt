@@ -262,6 +262,15 @@ caller and compiler resource guard; the stdin byte ceiling does not bound files.
 Public JSON exports, MLIR's JSON stdin and batch-artifact JSON are distinct
 interfaces and retain their formats.
 
+Executable transport maps use lexical key order in both JSON and MessagePack.
+Cold lowering and hydrated function records can have different insertion orders;
+these must produce identical bytes. The shared JSON C encoder sorts nested
+maps, and both streaming writers sort the small top-level map without building
+a second IR tree. Function/operation array order remains executable order.
+Sorting costs O(k log k) per map; temporary transport memory remains bounded by
+one encoded array element. MessagePack retains its existing sorted function
+codec; emitted guest programs pay none of this compiler-side cost.
+
 The framing follows the [MessagePack specification](https://github.com/msgpack/msgpack/blob/master/spec.md),
 including its container bounds and IEEE 754 values. Reusing the encoder follows
 [msgspec's performance guidance](https://github.com/msgspec/msgspec/blob/main/docs/perf-tips.rst).

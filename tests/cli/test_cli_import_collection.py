@@ -15546,6 +15546,7 @@ def test_backend_source_paths_are_feature_aware() -> None:
     common = {
         "runtime/molt-backend",
         "runtime/molt-artifact-publish",
+        "runtime/molt-host-process",
         "runtime/molt-ir",
         "runtime/molt-passes",
         "runtime/molt-tir",
@@ -15566,7 +15567,6 @@ def test_backend_source_paths_are_feature_aware() -> None:
     }
     wasm_leaf = {
         "runtime/molt-backend-wasm",
-        "runtime/molt-wasm-facts",
     }
     rust_leaf = {
         "runtime/molt-backend-rust",
@@ -15582,6 +15582,9 @@ def test_backend_source_paths_are_feature_aware() -> None:
     assert llvm_paths == common | native_leaf | codegen_abi
     assert "runtime/molt-backend-wasm" not in native_paths
     assert "runtime/molt-backend-native" not in wasm_paths
+    assert "runtime/molt-wasm-facts" not in (
+        native_paths | wasm_paths | rust_paths | luau_paths | llvm_paths
+    )
 
 
 @pytest.mark.usefixtures("developer_host_context")
@@ -23022,7 +23025,7 @@ def _install_fake_wasm_link_runner(
     )
     # This child is mocked, but its scanner remains a real content input.
     # The shared native-image fixture proves custody, not scanner behavior.
-    scanner = fixture_root.native_executable("molt-backend")
+    scanner = fixture_root.native_executable("molt-wasm-facts")
     # This same fixture owns the substituted link process and its file-backed
     # selected image. The bytes prove input custody, not execution of a real SDK.
     linker = fixture_root.native_executable("mock-tools/wasm-ld")
@@ -26667,7 +26670,7 @@ def test_run_wrapper_build_ignores_legacy_mtime_binary_without_manifest(
         file_path=str(entry),
         module=None,
         build_args=["--target", "wasm"],
-        env={},
+        env=ProcessEnvironment({}),
         project_root=project,
         json_output=True,
         command="run",

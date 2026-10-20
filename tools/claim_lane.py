@@ -50,6 +50,7 @@ from tools.command_execution import CommandExecutor  # type: ignore  # noqa: E40
 _COMMANDS = CommandExecutor.for_file(__file__)
 
 from tools.release.git_source_snapshot import immutable_git_environment  # noqa: E402
+from molt.process_environment import ProcessEnvironment  # noqa: E402
 
 CLAIMS_REL = cs.CLAIMS_REL
 
@@ -60,7 +61,7 @@ def _git(
     return _COMMANDS.run(
         ["git", *args],
         cwd=root,
-        env=immutable_git_environment(os.environ),
+        env=ProcessEnvironment(immutable_git_environment(os.environ)),
         check=check,
         capture_output=True,
         text=True,

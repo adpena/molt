@@ -15,6 +15,7 @@ from typing import Any, Literal
 import time
 import uuid
 from dataclasses import dataclass, field
+from collections.abc import Mapping, MutableMapping
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -57,6 +58,7 @@ from tools import bench_reporting  # noqa: E402
 
 MAX_FAILURE_DETAIL_RECORDS = bench_reporting.MAX_FAILURE_DETAIL_RECORDS
 from tools import perf_authority  # noqa: E402
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder  # noqa: E402
 from molt import backend_daemon_custody as daemon_custody  # noqa: E402
 from molt.dx import (  # noqa: E402
     artifact_root as dx_artifact_root,
@@ -108,13 +110,13 @@ CODON_BENCH_RUNTIME_ARGS_BY_NAME = {
 class BenchRunner:
     cmd: list[str]
     script: str | None
-    env: dict[str, str]
+    env: Mapping[str, str]
     temp_dir: OwnedTemporaryDirectory | None
     build_s: float = 0.0
     size_kb: float | None = None
 
 
-def _new_bench_temp(root: Path, env: dict[str, str]) -> OwnedTemporaryDirectory:
+def _new_bench_temp(root: Path, env: Mapping[str, str]) -> OwnedTemporaryDirectory:
     root = _admit_bench_output(root, env, option="temporary directory")
     root.mkdir(parents=True, exist_ok=True)
     return OwnedTemporaryDirectory(prefix="molt-bench-", dir=root)
@@ -152,14 +154,14 @@ class MoltBinary:
 @dataclass(frozen=True)
 class MoltInvocation:
     command: tuple[str, ...]
-    environment: dict[str, str]
+    environment: ProcessEnvironment
     guest_stderr_path: Path | None = None
     execution_host: NodeExecutionPlan | None = None
 
 
 def molt_binary_invocation(
     binary: MoltBinary,
-    environment: dict[str, str],
+    environment: Mapping[str, str],
     *,
     execution_host: NodeExecutionPlan | None = None,
 ) -> MoltInvocation:
@@ -167,7 +169,7 @@ def molt_binary_invocation(
     if binary.manifest_path is None:
         if execution_host is not None:
             raise ValueError("native benchmark must not carry a Node execution host")
-        return MoltInvocation((str(binary.path),), environment.copy())
+        return MoltInvocation((str(binary.path),), ProcessEnvironment(environment))
     if execution_host is None:
         raise ValueError("WASM benchmark requires an admitted Node execution host")
     execution_host.verify()
@@ -189,8 +191,8 @@ def molt_binary_invocation(
     )
 
 
-def _wasm_benchmark_run_env(environment: dict[str, str]) -> dict[str, str]:
-    env = environment.copy()
+def _wasm_benchmark_run_env(environment: Mapping[str, str]) -> ProcessEnvironment:
+    env = ProcessEnvironmentBuilder(environment)
     # A WASM guest has no host-Python dependency. Node policy must be the public
     # runner's policy, not inherited engine flags or warning suppression.
     for key in (
@@ -205,10 +207,10 @@ def _wasm_benchmark_run_env(environment: dict[str, str]) -> dict[str, str]:
         "MOLT_WASM_MANIFEST_PATH",
     ):
         env.pop(key, None)
-    return env
+    return ProcessEnvironment(env)
 
 
-def admit_wasm_execution(environment: dict[str, str]) -> NodeExecutionPlan:
+def admit_wasm_execution(environment: Mapping[str, str]) -> NodeExecutionPlan:
     return admit_node_execution(
         source_root=REPO_ROOT,
         environment=_wasm_benchmark_run_env(environment),
@@ -305,7 +307,7 @@ def _enable_line_buffering() -> None:
 
 def _run_cmd(
     cmd: list[str],
-    env: dict[str, str],
+    env: Mapping[str, str],
     *,
     capture: bool,
     tty: bool,
@@ -349,14 +351,16 @@ def _git_rev() -> str | None:
     return res.stdout.strip() or None
 
 
-def _prepend_pythonpath(env: dict[str, str], path: str) -> dict[str, str]:
+def _prepend_pythonpath(
+    env: ProcessEnvironmentBuilder, path: str
+) -> ProcessEnvironmentBuilder:
     current = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = f"{path}{os.pathsep}{current}" if current else path
     return env
 
 
-def _base_python_env() -> dict[str, str]:
-    env = os.environ.copy()
+def _base_python_env() -> ProcessEnvironmentBuilder:
+    env = ProcessEnvironmentBuilder(os.environ)
     env.setdefault("PYTHONHASHSEED", "0")
     env.setdefault("PYTHONUNBUFFERED", "1")
     return _prepend_pythonpath(env, "src")
@@ -390,7 +394,7 @@ def _backend_daemon_record_payload(
     }
 
 
-def _backend_daemon_cleanup_log_path(env: dict[str, str]) -> Path | None:
+def _backend_daemon_cleanup_log_path(env: Mapping[str, str]) -> Path | None:
     raw_path = env.get("MOLT_BENCH_DAEMON_CLEANUP_LOG", "").strip()
     if not raw_path:
         return None
@@ -403,7 +407,7 @@ def _backend_daemon_cleanup_log_path(env: dict[str, str]) -> Path | None:
 
 
 def _record_backend_daemon_cleanup_event(
-    env: dict[str, str],
+    env: Mapping[str, str],
     event: dict[str, object],
 ) -> None:
     log_path = _backend_daemon_cleanup_log_path(env)
@@ -412,7 +416,7 @@ def _record_backend_daemon_cleanup_event(
     _append_event_jsonl(log_path, event)
 
 
-def _prune_backend_daemons(env: dict[str, str] | None = None) -> int:
+def _prune_backend_daemons(env: Mapping[str, str] | None = None) -> int:
     prune_env = env if env is not None else _canonical_bench_env()
     event: dict[str, object] = {
         "schema_version": 1,
@@ -578,13 +582,13 @@ def _resolve_molt_output(payload: dict) -> Path | None:
     return None
 
 
-def _bench_session_id(env: dict[str, str] | None = None) -> str | None:
+def _bench_session_id(env: Mapping[str, str] | None = None) -> str | None:
     """The caller's pinned session, or None to share the warm Cargo target."""
     source = env if env is not None else os.environ
     return source.get("MOLT_SESSION_ID", "").strip() or None
 
 
-def _bench_tmp_root(env: dict[str, str]) -> Path:
+def _bench_tmp_root(env: Mapping[str, str]) -> Path:
     explicit = env.get("MOLT_BENCH_TMP_ROOT", "").strip()
     if explicit:
         return Path(explicit).expanduser().resolve()
@@ -595,9 +599,9 @@ def _bench_tmp_root(env: dict[str, str]) -> Path:
 
 
 def _canonical_bench_env(
-    base_env: dict[str, str] | None = None, *, create_dirs: bool = True
-) -> dict[str, str]:
-    env = (os.environ.copy() if base_env is None else base_env).copy()
+    base_env: Mapping[str, str] | None = None, *, create_dirs: bool = True
+) -> ProcessEnvironment:
+    env = ProcessEnvironmentBuilder(os.environ if base_env is None else base_env)
     _admit_bench_env_outputs(env)
     explicit_canonical_keys = {key for key in CANONICAL_RUN_ENV_KEYS if env.get(key)}
     for key, value in build_molt_conformance_env(
@@ -622,8 +626,14 @@ def _canonical_bench_env(
         create_dirs=create_dirs,
         force_default_keys=force_default_keys,
     )
-    env["MOLT_BENCH_TMP_ROOT"] = str(
-        _admit_bench_output(_bench_tmp_root(env), env, option="MOLT_BENCH_TMP_ROOT")
+    env = env.updated(
+        {
+            "MOLT_BENCH_TMP_ROOT": str(
+                _admit_bench_output(
+                    _bench_tmp_root(env), env, option="MOLT_BENCH_TMP_ROOT"
+                )
+            )
+        }
     )
     if create_dirs:
         ensure_molt_conformance_dirs(env)
@@ -631,7 +641,7 @@ def _canonical_bench_env(
     return env
 
 
-def _admit_bench_output(path: Path, env: dict[str, str], *, option: str) -> Path:
+def _admit_bench_output(path: Path, env: Mapping[str, str], *, option: str) -> Path:
     """Validate a write destination using the same checkout custody as the run."""
     destination = path.expanduser().resolve()
     custody = checkout_custody(REPO_ROOT, env)
@@ -643,7 +653,7 @@ def _admit_bench_output(path: Path, env: dict[str, str], *, option: str) -> Path
     return destination
 
 
-def _admit_bench_env_outputs(env: dict[str, str]) -> None:
+def _admit_bench_env_outputs(env: MutableMapping[str, str]) -> None:
     # Validate inherited non-DX output selections before canonical_env creates
     # directories. Diagnostic paths use the harness's repository-relative rule;
     # the explicit scratch path keeps its existing working-directory rule.
@@ -661,7 +671,7 @@ def _admit_bench_env_outputs(env: dict[str, str]) -> None:
 
 
 def _admit_bench_guard_artifacts(
-    artifact_root: Path, env: dict[str, str]
+    artifact_root: Path, env: MutableMapping[str, str]
 ) -> dict[str, str]:
     root = _admit_bench_output(artifact_root, env, option="artifact_root")
     artifacts = bench_reporting.bench_guard_artifacts(root)
@@ -702,8 +712,8 @@ def _molt_build_cmd(build_profile: str) -> list[str]:
 
 
 class _BenchBatchBuildServer:
-    def __init__(self, env: dict[str, str]) -> None:
-        self._env = dict(env)
+    def __init__(self, env: Mapping[str, str]) -> None:
+        self._env = ProcessEnvironment(env)
         self._guard_context = harness_memory_guard.HarnessExecutionContext.from_env(
             "MOLT_BENCH",
             self._env,
@@ -754,7 +764,7 @@ def _molt_build_params(
     out_dir: Path,
     build_profile: str,
     extra_args: list[str] | None,
-    env: dict[str, str],
+    env: Mapping[str, str],
     use_molt_build_cache: bool = True,
     build_target: Literal["native", "wasm"] = "native",
 ) -> dict[str, object]:
@@ -1250,7 +1260,7 @@ def _restart_batch_server_for_retry(
 def prepare_molt_binary(
     script: str,
     extra_args: list[str] | None = None,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str] | None = None,
     *,
     build_profile: str = "release",
     batch_server: _BenchBatchBuildServer | None = None,
@@ -1470,7 +1480,7 @@ def prepare_molt_binary(
 
 def measure_molt_run(
     binary: Path,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str] | None = None,
     label: str | None = None,
     run_args: list[str] | None = None,
     timeout_s: float | None = None,
@@ -1770,7 +1780,7 @@ def _nuitka_command(explicit_cmd: str | None) -> list[str] | None:
 def _prepare_nuitka_runner(
     script_path: Path,
     build_root: Path,
-    base_env: dict[str, str],
+    base_env: Mapping[str, str],
     *,
     tty: bool,
     nuitka_cmd: list[str] | None,
@@ -1842,7 +1852,7 @@ def _pyodide_command(explicit_cmd: str | None) -> list[str] | None:
 
 def _prepare_pyodide_runner(
     script_path: Path,
-    base_env: dict[str, str],
+    base_env: Mapping[str, str],
     *,
     pyodide_cmd: list[str] | None,
 ) -> BenchRunner | None:
@@ -1854,7 +1864,7 @@ def _prepare_pyodide_runner(
 def _prepare_codon_runner(
     script_path: Path,
     build_root: Path,
-    base_env: dict[str, str],
+    base_env: Mapping[str, str],
     *,
     tty: bool,
     limits: harness_memory_guard.HarnessMemoryLimits,
@@ -1875,7 +1885,7 @@ def _prepare_codon_runner(
     try:
         module_dir = Path(temp_dir.name)
         binary_path = module_dir / module_name
-        env = base_env.copy()
+        env = ProcessEnvironmentBuilder(base_env)
         codon_home: str | None = None
         if "CODON_HOME" not in env:
             codon_path = Path(codon).resolve()
@@ -1885,6 +1895,7 @@ def _prepare_codon_runner(
                 env["CODON_HOME"] = codon_home
         else:
             codon_home = env.get("CODON_HOME")
+        env = ProcessEnvironment(env)
         build_start = time.perf_counter()
         build = _run_cmd(
             arch_prefix
@@ -1928,7 +1939,7 @@ def _prepare_codon_runner(
 
 
 def _pypy_command(
-    env: dict[str, str], limits: harness_memory_guard.HarnessMemoryLimits
+    env: Mapping[str, str], limits: harness_memory_guard.HarnessMemoryLimits
 ) -> list[str] | None:
     if not shutil.which("uv"):
         print("Skipping PyPy: uv not found.", file=sys.stderr)
@@ -1980,7 +1991,7 @@ def bench_results(
     base_env = _base_python_env()
     if artifact_root is not None:
         _admit_bench_guard_artifacts(artifact_root, base_env)
-    base_env = _canonical_bench_env(base_env)
+    base_env = ProcessEnvironmentBuilder(_canonical_bench_env(base_env))
     bench_tmp_root = _bench_tmp_root(base_env)
     sentinel_artifact_root = _admit_bench_output(
         artifact_root if artifact_root is not None else bench_tmp_root,
@@ -1988,6 +1999,7 @@ def bench_results(
         option="artifact_root",
     )
     _admit_bench_guard_artifacts(sentinel_artifact_root, base_env)
+    base_env = ProcessEnvironment(base_env)
     limits = harness_memory_guard.limits_from_env("MOLT_BENCH", base_env)
     runtimes = {}
     if use_cpython:
@@ -2080,7 +2092,7 @@ def _bench_one(
     molt_build_profile,
     *,
     tty: bool,
-    base_env: dict[str, str],
+    base_env: Mapping[str, str],
     codon_root: Path,
     nuitka_root: Path,
     resolved_nuitka_cmd: list[str] | None,
@@ -2627,7 +2639,9 @@ def main():
     use_pyodide = not args.no_pyodide
     use_tty = args.tty or os.environ.get("MOLT_TTY") == "1"
 
-    initial_cleanup_env = _canonical_bench_env(_base_python_env(), create_dirs=False)
+    initial_cleanup_env = ProcessEnvironmentBuilder(
+        _canonical_bench_env(_base_python_env(), create_dirs=False)
+    )
     json_out = args.json_out
     if json_out is None:
         timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -2669,6 +2683,7 @@ def main():
         _admit_bench_guard_artifacts(artifact_root, initial_cleanup_env)
     )
     initial_cleanup_env["MOLT_BENCH_DAEMON_CLEANUP_REASON"] = "bench_start"
+    initial_cleanup_env = ProcessEnvironment(initial_cleanup_env)
     _prune_backend_daemons(initial_cleanup_env)
 
     warmup = args.warmup if args.warmup is not None else (0 if args.smoke else 1)

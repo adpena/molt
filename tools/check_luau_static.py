@@ -30,6 +30,7 @@ import sys
 import tempfile
 from collections import Counter
 from dataclasses import asdict, dataclass, field
+from collections.abc import Mapping
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -109,11 +110,14 @@ def _repo_root() -> Path:
 REPO_ROOT = _repo_root()
 
 
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402
 
 
-def _with_repo_pythonpath(env: dict[str, str], repo_root: Path) -> dict[str, str]:
-    updated = env.copy()
+def _with_repo_pythonpath(
+    env: Mapping[str, str], repo_root: Path
+) -> ProcessEnvironment:
+    updated = ProcessEnvironmentBuilder(env)
     src_dir = str(repo_root / "src")
     current = updated.get("PYTHONPATH", "")
     if current:
@@ -122,20 +126,22 @@ def _with_repo_pythonpath(env: dict[str, str], repo_root: Path) -> dict[str, str
             updated["PYTHONPATH"] = src_dir + os.pathsep + current
     else:
         updated["PYTHONPATH"] = src_dir
-    return updated
+    return ProcessEnvironment(updated)
 
 
-def make_build_env() -> dict[str, str]:
+def make_build_env() -> ProcessEnvironment:
     """Build child-process env with canonical artifact-root defaults."""
-    env = harness_memory_guard.canonical_harness_env(
-        os.environ,
-        repo_root=_repo_root(),
+    env = ProcessEnvironmentBuilder(
+        harness_memory_guard.canonical_harness_env(
+            os.environ,
+            repo_root=_repo_root(),
+        )
     )
     env.setdefault("PYTHONHASHSEED", "0")
     return _with_repo_pythonpath(env, _repo_root())
 
 
-def _pick_temp_parent(env: dict[str, str]) -> str | None:
+def _pick_temp_parent(env: Mapping[str, str]) -> str | None:
     explicit_keys = {
         key for key in ("MOLT_DIFF_TMPDIR", "TMPDIR") if os.environ.get(key)
     }
@@ -201,7 +207,7 @@ def _trim_output(text: str, limit: int = 2000) -> str:
 def transpile_to_luau(
     source: Path,
     output_path: Path,
-    env: dict[str, str],
+    env: Mapping[str, str],
     timeout_s: float,
 ) -> tuple[bool, int | None, str, str]:
     cmd = [

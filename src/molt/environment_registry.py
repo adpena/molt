@@ -26,6 +26,12 @@ import os
 import sys
 from typing import Any, TextIO
 
+from molt.process_environment import (
+    NameRule,
+    ProcessEnvironment,
+    ProcessEnvironmentBuilder,
+)
+
 AUDIENCES: tuple[str, ...] = ("user", "developer", "ci", "internal")
 KINDS: tuple[str, ...] = (
     "bool",
@@ -443,11 +449,12 @@ class EnvironmentFinding:
 
 
 def _molt_keys(env: Mapping[str, str]) -> list[tuple[str, str]]:
-    """``(key, canonical_upper)`` for every key that names a ``MOLT_*`` fact."""
+    """Find canonical spellings, including unread mixed case for diagnostics."""
 
     found: list[tuple[str, str]] = []
     for key in env:
-        upper = key.upper()
+        # Candidate spellings are diagnosed even when EXACT lookup cannot read them.
+        upper = NameRule.WINDOWS.key(key)
         if upper.startswith(NAME_PREFIX):
             found.append((key, upper))
     found.sort()
@@ -466,13 +473,18 @@ def inspect_environment(
     """
 
     source = os.environ if env is None else env
+    rule = (
+        source.rule
+        if isinstance(source, (ProcessEnvironment, ProcessEnvironmentBuilder))
+        else NameRule.host()
+    )
     keys = _molt_keys(source)
     if not keys:
         return [], []
     registry = load_registry()
     errors: list[EnvironmentFinding] = []
     warnings: list[EnvironmentFinding] = []
-    case_insensitive = os.name == "nt"
+    case_insensitive = rule is NameRule.WINDOWS
     for key, upper in keys:
         if key != upper and not case_insensitive:
             warnings.append(

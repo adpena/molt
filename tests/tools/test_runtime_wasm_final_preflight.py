@@ -13,6 +13,7 @@ import weakref
 import pytest
 
 from molt.dx import CheckoutCustody
+from molt.process_environment import ProcessEnvironment
 from molt.path_custody import PathCustodyError, canonical_host_path
 from tests.process_guard_common import run_guarded_test_process
 from tools.memory_guard_core import active_custody as custody
@@ -180,11 +181,13 @@ def _context(tmp_path: Path) -> preflight.RuntimeWasmPreflightContext:
     return preflight.RuntimeWasmPreflightContext(
         roots=roots,
         claim=claim,
-        build_env={
-            "CARGO_TARGET_DIR": str(target),
-            "MOLT_CACHE": str(cache),
-            "MOLT_WASM_RUNTIME_DIR": str(runtime),
-        },
+        build_env=ProcessEnvironment(
+            {
+                "CARGO_TARGET_DIR": str(target),
+                "MOLT_CACHE": str(cache),
+                "MOLT_WASM_RUNTIME_DIR": str(runtime),
+            }
+        ),
     )
 
 
@@ -485,12 +488,14 @@ def test_context_derives_all_roots_from_existing_custody_authorities(
     monkeypatch.setattr(
         preflight,
         "development_artifact_env",
-        lambda *_args, **_kwargs: {
-            **env,
-            "CARGO_TARGET_DIR": str(target),
-            "MOLT_CACHE": str(cache),
-            "MOLT_WASM_RUNTIME_DIR": str(runtime),
-        },
+        lambda *_args, **_kwargs: ProcessEnvironment(
+            {
+                **env,
+                "CARGO_TARGET_DIR": str(target),
+                "MOLT_CACHE": str(cache),
+                "MOLT_WASM_RUNTIME_DIR": str(runtime),
+            }
+        ),
     )
     monkeypatch.setattr(preflight, "_marker_directories", lambda *_args, **_kwargs: ())
 

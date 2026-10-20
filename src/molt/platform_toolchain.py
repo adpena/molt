@@ -13,6 +13,7 @@ import subprocess
 from molt import process_guard
 from molt.exact_json import loads_exact
 from molt.llvm_toolchain import llvm_host_architecture
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
 from molt.toolchain_identity import (
     find_executable,
     resolve_executable,
@@ -46,7 +47,7 @@ def _query(argv: list[str], env: Mapping[str, str], *, timeout: int = 30) -> str
     try:
         result = process_guard.run_completed_command(
             argv,
-            env=dict(env),
+            env=ProcessEnvironment(env),
             capture_output=True,
             text=True,
             check=True,
@@ -65,11 +66,11 @@ def _query(argv: list[str], env: Mapping[str, str], *, timeout: int = 30) -> str
 
 def visual_studio_installation(component: str, env: Mapping[str, str]) -> Path | None:
     """One bounded vswhere selection shared by setup advice and real builds."""
-    folded = {key.upper(): value for key, value in env.items()}
+    env = ProcessEnvironment(env)
     for name in ("PROGRAMFILES(X86)", "PROGRAMFILES"):
-        if not folded.get(name):
+        if not env.get(name):
             continue
-        vswhere = Path(folded[name]) / "Microsoft Visual Studio/Installer/vswhere.exe"
+        vswhere = Path(env[name]) / "Microsoft Visual Studio/Installer/vswhere.exe"
         if not vswhere.is_file():
             continue
         selected = _query(
@@ -100,10 +101,10 @@ def visual_studio_installation(component: str, env: Mapping[str, str]) -> Path |
 
 def activate_msvc_environment(
     base: Mapping[str, str], *, repo_root: Path, machine: str | None = None
-) -> dict[str, str]:
+) -> ProcessEnvironment:
     """Activate one architecture-selected installation; ATL is a caller policy."""
     if platform.system() != "Windows":
-        return dict(base)
+        return ProcessEnvironment(base)
     host = llvm_host_architecture(repo_root, machine or platform.machine())
     if host is None:
         raise ValueError(
@@ -116,12 +117,11 @@ def activate_msvc_environment(
         raise ValueError(
             "native MSVC architecture is absent from config/llvm_toolchain_arches.toml"
         )
-    env = {
-        key.upper(): value
-        for key, value in base.items()
-        if key.upper() not in SDK_ENVIRONMENT_NAMES
-        and not key.upper().startswith(("VSCMD_", "__VSCMD_"))
-    }
+    env = ProcessEnvironmentBuilder(base)
+    for name in tuple(env):
+        key = env.rule.key(name)
+        if key in SDK_ENVIRONMENT_NAMES or key.startswith(("VSCMD_", "__VSCMD_")):
+            del env[name]
     install = visual_studio_installation(component, env)
     if install is None:
         raise ValueError(
@@ -140,11 +140,15 @@ def activate_msvc_environment(
         environment=env,
         label="MSVC environment command host",
     )
-    observed = _query([str(comspec), "/d", "/s", "/c", command], env, timeout=120)
+    observed = _query(
+        [str(comspec), "/d", "/s", "/c", command],
+        ProcessEnvironment(env),
+        timeout=120,
+    )
     for line in observed.splitlines():
         if "=" in line and not line.startswith("="):
             key, value = line.split("=", 1)
-            env[key.upper()] = value
+            env[key] = value
     env.pop(activation_name, None)
     if (
         env.get("VSCMD_ARG_TGT_ARCH", "").lower() != target_arch.lower()
@@ -162,7 +166,7 @@ def activate_msvc_environment(
             )
     if find_executable("cl", environment=env) is None:
         raise ValueError("Visual Studio activation did not select cl.exe")
-    return env
+    return ProcessEnvironment(env)
 
 
 @dataclass(frozen=True)
@@ -203,6 +207,7 @@ def darwin_toolchain_selector_paths(
     env: Mapping[str, str], *, needs_developer_selection: bool | None = None
 ) -> dict[str, Path]:
     """Exact prerequisite executables used by the Darwin selection transaction."""
+    env = ProcessEnvironment(env)
     if needs_developer_selection is None:
         needs_developer_selection = not env.get("DEVELOPER_DIR")
     tools = {}
@@ -234,6 +239,7 @@ def darwin_deployment_target(
     env: Mapping[str, str], *, sdk_version: str, arch: str | None = None
 ) -> str:
     """Explicit build policy, otherwise the native arch or release SDK floor."""
+    env = ProcessEnvironment(env)
     explicit = env.get("MOLT_MACOSX_DEPLOYMENT_TARGET") or env.get(
         "MACOSX_DEPLOYMENT_TARGET"
     )
@@ -246,6 +252,7 @@ def darwin_deployment_target(
 def _darwin_developer_directory(
     env: Mapping[str, str], *, developer_dir: Path | None
 ) -> Path:
+    env = ProcessEnvironment(env)
     if developer_dir is None and env.get("DEVELOPER_DIR"):
         developer_dir = Path(env["DEVELOPER_DIR"])
     if developer_dir is None:
@@ -276,7 +283,8 @@ def select_darwin_sdk(
     a second, independently selected version. Each operation can project the
     returned environment for reuse; no global memo hides external SDK changes.
     """
-    selected_env = dict(env)
+    env = ProcessEnvironment(env)
+    selected_env = ProcessEnvironmentBuilder(env)
     if developer_dir is not None or env.get("DEVELOPER_DIR") or not env.get("SDKROOT"):
         developer_dir = _darwin_developer_directory(env, developer_dir=developer_dir)
         selected_env["DEVELOPER_DIR"] = str(developer_dir)
@@ -321,7 +329,8 @@ def select_darwin_toolchain(
     """Capture the full native tool set under one fresh SDK selection."""
     developer_dir = _darwin_developer_directory(env, developer_dir=developer_dir)
     sdk = select_darwin_sdk(env, developer_dir=developer_dir)
-    selected_env = {**env, **sdk.environment()}
+    env = ProcessEnvironment(env)
+    selected_env = env.updated(sdk.environment())
     xcrun = resolve_executable(
         "xcrun", environment=selected_env, label="Darwin SDK selector"
     )

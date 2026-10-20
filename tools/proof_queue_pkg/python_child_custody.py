@@ -67,21 +67,6 @@ def _journal(payload: Mapping[str, object]) -> None:
         _child_channel.sendall(line.encode())
 
 
-def _environment_value(environment: object, name: str) -> object | None:
-    if not isinstance(environment, Mapping):
-        return None
-    expected = name.upper()
-    return next(
-        (
-            value
-            for key, value in environment.items()
-            if (os.fsdecode(key) if isinstance(key, bytes) else str(key)).upper()
-            == expected
-        ),
-        None,
-    )
-
-
 def _posix_launch(
     token: object, child_env: object, child_cwd: object
 ) -> dict[str, object]:

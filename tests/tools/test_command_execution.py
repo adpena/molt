@@ -9,10 +9,65 @@ from types import SimpleNamespace
 import pytest
 
 from tools import command_execution
+from molt.process_environment import (
+    NameRule,
+    ProcessEnvironment,
+    ProcessEnvironmentBuilder,
+)
 from tests.process_guard_common import install_module_view
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.mark.parametrize("rule", list(NameRule))
+@pytest.mark.parametrize("owner", ["snapshot", "builder", "isolated-guard"])
+def test_executor_preserves_rule_through_real_guard_context(
+    monkeypatch, tmp_path, rule, owner
+):
+    from tools import harness_memory_guard
+
+    monkeypatch.setenv("MOLT_TEST_MEMORY_GUARD_POLL_SEC", "0.11")
+    monkeypatch.setenv("MOLT_SESSION_ID", "ambient-session")
+    values = {
+        "molt_test_memory_guard_poll_sec": "0.37",
+        "MOLT_SESSION_ID": "canonical-session",
+        "molt_session_id": "pinned-session",
+        "MOLT_EXT_ROOT": str(tmp_path / "artifacts"),
+        "MOLT_TARGET_ROOT": str(tmp_path / "toolchain"),
+        "MOLT_EXTERNAL_MIN_FREE_GB": "0",
+        "Path": "first",
+        "PATH": "second",
+    }
+    supplied = ProcessEnvironment(values, rule=rule)
+    if owner == "builder":
+        supplied = ProcessEnvironmentBuilder(supplied)
+    elif owner == "isolated-guard":
+        guard = command_execution._process_guard_authority(str(ROOT))
+        supplied = guard.ProcessEnvironment(values, rule=guard.NameRule(rule.value))
+    captured = {}
+
+    def observe_run(context, command, **kwargs):
+        captured["context"] = context
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    # Keep source admission, both nominal type boundaries, RunContext and limit
+    # selection real. Only intercept the final process launch.
+    monkeypatch.setattr(
+        harness_memory_guard.HarnessExecutionContext, "run", observe_run
+    )
+    command_execution.CommandExecutor(prefix="MOLT_TEST", repo_root=ROOT).run(
+        ["python", "fixture.py"], env=supplied
+    )
+    context = captured["context"]
+    assert isinstance(context.env, ProcessEnvironment)
+    assert context.env.rule is rule
+    assert context.limits.poll_interval == (0.37 if rule is NameRule.WINDOWS else 0.11)
+    assert context.env["MOLT_SESSION_ID"] == (
+        "pinned-session" if rule is NameRule.WINDOWS else "canonical-session"
+    )
+    assert context.env["Path"] == ("second" if rule is NameRule.WINDOWS else "first")
+    assert dict(supplied) == dict(ProcessEnvironment(values, rule=rule))
 
 
 def test_executor_routes_only_bounded_metadata_to_direct_probe(monkeypatch) -> None:
@@ -372,17 +427,28 @@ def test_guard_summary_rejects_unbound_or_changed_launch_custody(tmp_path, chang
     assert owned.process is process
 
 
-def test_interactive_launch_capability_is_stripped_before_child_spawn(tmp_path):
+@pytest.mark.parametrize("rule", list(NameRule))
+def test_interactive_launch_capability_is_stripped_before_child_spawn(tmp_path, rule):
     from tools import memory_guard
 
+    original = ProcessEnvironment(
+        {"OTHER": "retained", "molt_memory_guard_internal": "untrusted"}, rule=rule
+    )
     environment = memory_guard._worker_env(
-        {"OTHER": "retained"},
+        original,
         ["child"],
         launch_id="a" * 32,
         startup_json=str(tmp_path / "startup.json"),
     )
     child = memory_guard._child_env_without_internal_keys(environment)
-    assert child == {"OTHER": "retained"}
+    assert isinstance(child, ProcessEnvironment)
+    assert child.rule is rule
+    assert child.child_block() == (
+        {"OTHER": "retained", "molt_memory_guard_internal": "untrusted"}
+        if rule is NameRule.EXACT
+        else {"OTHER": "retained"}
+    )
+    assert original["molt_memory_guard_internal"] == "untrusted"
 
 
 def test_interactive_guard_cancels_actual_child_tree_and_closes_streams(tmp_path):

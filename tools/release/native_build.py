@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, MutableMapping, Sequence
 from dataclasses import asdict
 import os
 from pathlib import Path
@@ -35,6 +35,10 @@ from molt.llvm_toolchain import (  # noqa: E402
     required_llvm_targets_for_host,
 )
 from molt.portable_paths import portable_relative_path  # noqa: E402
+from molt.process_environment import (  # noqa: E402
+    ProcessEnvironment,
+    ProcessEnvironmentBuilder,
+)
 from molt.cli.runtime_build_python import build_python_scope  # noqa: E402
 from molt.cli.runtime_identity_schema import _validated_build_python_identity  # noqa: E402
 from molt.compiler_distribution import (  # noqa: E402
@@ -567,12 +571,13 @@ def read_native_build(
 
 def build_environment(
     source: Path, work: Path, inherited: Mapping[str, str], *, epoch: int
-) -> dict[str, str]:
-    env = {
-        key.upper(): value
-        for key, value in inherited.items()
-        if key.upper() in _PLATFORM_ENV
-    }
+) -> ProcessEnvironmentBuilder:
+    inherited = ProcessEnvironment(inherited)
+    allowed = ProcessEnvironment(dict.fromkeys(_PLATFORM_ENV, ""), rule=inherited.rule)
+    env = ProcessEnvironmentBuilder(
+        {key: value for key, value in inherited.items() if key in allowed},
+        rule=inherited.rule,
+    )
     channel = rust_channel((source / "rust-toolchain.toml").read_bytes())
     env.update({name: "" for name in CARGO_WRAPPER_ENV_NAMES})
     env.update(
@@ -596,7 +601,7 @@ def build_environment(
 
 def _tool_paths(
     source: Path,
-    env: dict[str, str],
+    env: Mapping[str, str],
     *,
     platform: str,
     arch: str,
@@ -690,7 +695,7 @@ def _tool_identities(
 
 
 def _select_build_tools(
-    env: dict[str, str],
+    env: MutableMapping[str, str],
     paths: Mapping[str, Path],
     *,
     work: Path,
@@ -832,18 +837,14 @@ def produce_native_build(
         )
         # Platform SDK setup owns include/library search roots. An ambient LIB,
         # INCLUDE or SDKROOT must not survive as an unrecorded build override.
-        inherited = {
-            key: value
-            for key, value in os.environ.items()
-            if key.upper() not in SDK_ENVIRONMENT_NAMES
-        }
+        inherited = ProcessEnvironment(os.environ).without(SDK_ENVIRONMENT_NAMES)
         darwin = None
         versions = {}
         if platform == "windows":
             inherited = activate_msvc_environment(inherited, repo_root=source)
         elif platform == "macos":
             darwin = select_darwin_toolchain(inherited)
-            inherited.update(darwin.environment())
+            inherited = inherited.updated(darwin.environment())
             versions = darwin.versions()
         llvm_inputs = admit_llvm_compiler_inputs(source, inherited)
         env = build_environment(source, work, inherited, epoch=source_date_epoch)
@@ -883,7 +884,9 @@ def produce_native_build(
             for role, plan in plans.items():
                 if role == "compiler":
                     llvm_inputs.verify()
-                role_env = compiler_env if role == "compiler" else env
+                role_env = ProcessEnvironment(
+                    compiler_env if role == "compiler" else env
+                )
                 command = cargo_command(
                     plan, source=source, work=work, cargo=paths["cargo"]
                 )

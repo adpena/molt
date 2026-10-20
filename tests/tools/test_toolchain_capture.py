@@ -24,6 +24,7 @@ from tests.process_guard_common import install_module_view, run_isolated_python_
 
 from molt import file_publication
 from molt.exact_json import canonical_json_sha256
+from molt.process_environment import NameRule, ProcessEnvironment
 from tools.proof_queue_pkg import (
     custody_cas,
     process_image_capture,
@@ -31,6 +32,23 @@ from tools.proof_queue_pkg import (
 )
 
 pytestmark = pytest.mark.usefixtures("admitted_build_capacity")
+
+
+@pytest.mark.parametrize("rule", list(NameRule))
+def test_toolchain_environment_plan_preserves_child_rule(tmp_path, rule):
+    inherited = ProcessEnvironment({"Path": "mixed", "PATH": "tools"}, rule=rule)
+    before = dict(inherited)
+    selected = toolchain_capture.toolchain_capture_environment(
+        SimpleNamespace(data={}), environment=inherited, cwd=tmp_path
+    )
+    assert isinstance(selected, ProcessEnvironment)
+    assert selected.rule is rule
+    assert dict(selected) == (
+        {"Path": "tools"}
+        if rule is NameRule.WINDOWS
+        else {"Path": "mixed", "PATH": "tools"}
+    )
+    assert dict(inherited) == before
 
 
 def _identity(path: Path, *, rows: int = 1) -> dict[str, object]:
@@ -4459,8 +4477,9 @@ def test_llvm_sdk_verification_closure_captures_driver_helpers_and_rejects_omiss
         calls.append(list(argv))
         assert argv[1] == "-###"  # No compiler output is ever produced during capture.
         sdk_probe = any(value.startswith("--ld-path=") for value in argv)
-        assert kwargs["env"] == (
-            overlay if sdk_probe and sys.platform == "darwin" else {}
+        assert kwargs["env"] == ProcessEnvironment(
+            overlay if sdk_probe and sys.platform == "darwin" else {},
+            rule=NameRule.host(),
         )
         linker = next(
             (
@@ -5101,6 +5120,8 @@ def test_build_python_cargo_selection_signature_and_unicode_custody(
     bound = toolchain_capture.bind_build_python_environment(
         first, policy=policy, env=env, cwd=tmp_path, cargo_command=command
     )
+    assert isinstance(bound, ProcessEnvironment)
+    assert bound.rule is NameRule.host()
     assert bound["MOLT_BUILD_PYTHON"] == str(selected)
     assert len(bound["MOLT_BUILD_PYTHON_SIGNATURE"]) == 64
     projected, _updates = command_admission._supervised_execution_command(
@@ -5113,6 +5134,8 @@ def test_build_python_cargo_selection_signature_and_unicode_custody(
     effective_child = toolchain_capture.toolchain_capture_environment(
         policy, environment=bound, cwd=tmp_path, cargo_command=projected
     )
+    assert isinstance(effective_child, ProcessEnvironment)
+    assert effective_child.rule is bound.rule
     assert effective_child["MOLT_BUILD_PYTHON"] == str(selected)
     # The full capture consumer must repeat the isolated startup fence in the
     # same effective Cargo environment, even though the ambient selector differs.

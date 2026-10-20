@@ -25,7 +25,7 @@ def pytest_configure(config):
         session_id=os.environ.get("MOLT_SESSION_ID") or "rust-tests",
         create_dirs=True,
     )
-    env.update(
+    env = env.updated(
         {
             "MOLT_USE_SCCACHE": "0",
             "RUSTC_WRAPPER": "",

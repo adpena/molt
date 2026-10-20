@@ -15,6 +15,7 @@ from typing import Mapping
 
 from molt import process_guard
 from molt.exact_json import ExactJsonError, canonical_json_sha256, loads_exact
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
 from molt.python_environment_identity import (
     python_identity_probe_arguments,
     validate_python_capture,
@@ -46,6 +47,7 @@ def resolve_build_python(
     environment: Mapping[str, str], *, cwd: Path | None = None
 ) -> Path:
     """Select the generator once for its isolated admission and proof projection."""
+    environment = ProcessEnvironment(environment)
     command = (
         environment.get("MOLT_BUILD_PYTHON", "").strip()
         or environment.get("PYTHON", "").strip()
@@ -83,23 +85,24 @@ def build_python_identity(
     return {**material, "identity_sha256": canonical_json_sha256(material)}
 
 
-def _loader_environment(env: Mapping[str, str]) -> tuple[tuple[str, str], ...]:
+def _loader_environment(env: Mapping[str, str]) -> ProcessEnvironment:
     """Isolation ignores Python startup options; native loader policy still applies."""
-    return tuple(
-        sorted(
-            (key.upper() if os.name == "nt" else key, value)
-            for key, value in env.items()
-            if key.upper()
-            in {
-                "PATH",
-                "SYSTEMROOT",
-                "WINDIR",
-                "__PYVENV_LAUNCHER__",
-                "PYTHONEXECUTABLE",
-            }
-            or key.startswith(("LD_", "DYLD_"))
-        )
-    )
+    selected = ProcessEnvironment(env)
+    policy = ProcessEnvironmentBuilder({}, rule=selected.rule)
+    for name in (
+        "PATH",
+        "SYSTEMROOT",
+        "WINDIR",
+        "__PYVENV_LAUNCHER__",
+        "PYTHONEXECUTABLE",
+    ):
+        if name in selected:
+            policy[name] = selected[name]
+    for name in selected:
+        key = selected.rule.key(name)
+        if key.startswith(("LD_", "DYLD_")):
+            policy[key] = selected[name]
+    return ProcessEnvironment(policy)
 
 
 class BuildPythonCleanupError(ValueError):
@@ -137,7 +140,7 @@ class BuildPythonAdmission:
         self._entrypoint_generation: tuple[int, ...] | None = None
         self._entrypoint: Path | None = None
         self._executable: StableRegularFileIdentity | None = None
-        self._environment: tuple[tuple[str, str], ...] | None = None
+        self._environment: ProcessEnvironment | None = None
         self._identity: dict[str, object] | None = None
         self._startup_selection: dict[str, object] | None = None
         self._input_log_dir: str | None = None
@@ -212,7 +215,7 @@ class BuildPythonAdmission:
             raise ValueError("runtime build Python session exited before admission")
         return response
 
-    def _start(self, entrypoint: Path, env: Mapping[str, str]) -> dict[str, object]:
+    def _start(self, entrypoint: Path, env: ProcessEnvironment) -> dict[str, object]:
         from molt import input_report
 
         self._input_log_dir = input_report.worker_log_dir()
@@ -233,7 +236,7 @@ class BuildPythonAdmission:
                         no_site=True,
                     ),
                 ],
-                env=dict(env),
+                env=env,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=self._stderr,
@@ -301,7 +304,9 @@ class BuildPythonAdmission:
                 "runtime build Python identity probe emitted invalid JSON"
             ) from exc
 
-    def _verify_fresh_selection(self, entrypoint: Path, env: Mapping[str, str]) -> None:
+    def _verify_fresh_selection(
+        self, entrypoint: Path, env: ProcessEnvironment
+    ) -> None:
         assert self._executor is not None
         # A launcher can consult any environment key, and unchanged search
         # directories can acquire higher-precedence loader providers. Only a
@@ -313,7 +318,7 @@ class BuildPythonAdmission:
                     ("--runtime-selection",), no_site=True
                 ),
             ],
-            env=dict(env),
+            env=env,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -346,6 +351,7 @@ class BuildPythonAdmission:
             )
 
     def capture(self, env: Mapping[str, str]) -> dict[str, object]:
+        env = ProcessEnvironment(env)
         with self._lock:
             if self._closed:
                 raise ValueError("runtime build Python admission is revoked")

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironmentBuilder
+
 import os
 import sys
 
@@ -17,13 +19,15 @@ SRC_DIR = ROOT / "src"
 SESSION_ID = "pytest-gpu-kernel-compiled"
 
 
-def _native_env() -> dict[str, str]:
-    env = development_artifact_env(
-        ROOT,
-        os.environ,
-        session_prefix="gpu-kernel-compiled",
-        session_id=SESSION_ID,
-        create_dirs=True,
+def _native_env() -> ProcessEnvironmentBuilder:
+    env = ProcessEnvironmentBuilder(
+        development_artifact_env(
+            ROOT,
+            os.environ,
+            session_prefix="gpu-kernel-compiled",
+            session_id=SESSION_ID,
+            create_dirs=True,
+        )
     )
     env["PYTHONPATH"] = str(SRC_DIR)
     env["MOLT_SESSION_ID"] = SESSION_ID
@@ -31,7 +35,7 @@ def _native_env() -> dict[str, str]:
     return env
 
 
-def _gpu_env(*, metal: bool = False) -> dict[str, str]:
+def _gpu_env(*, metal: bool = False) -> ProcessEnvironmentBuilder:
     env = _native_env()
     if metal:
         env["MOLT_RUNTIME_GPU_METAL"] = "1"
@@ -40,7 +44,7 @@ def _gpu_env(*, metal: bool = False) -> dict[str, str]:
     return env
 
 
-def _gpu_env_webgpu() -> dict[str, str]:
+def _gpu_env_webgpu() -> ProcessEnvironmentBuilder:
     env = _native_env()
     env["MOLT_RUNTIME_GPU_WEBGPU"] = "1"
     env["MOLT_GPU_BACKEND"] = "webgpu"
@@ -100,10 +104,12 @@ def test_compiled_gpu_kernel_vector_add_matches_interpreted_semantics(
     # Same admitted image: auto uses compiled Molt CPU, but an explicit missing
     # kernel capability must not quietly execute that CPU implementation.
     for backend in ("cuda", "hip"):
+        backend_env = ProcessEnvironmentBuilder(env)
+        backend_env["MOLT_GPU_BACKEND"] = backend
         refused = run_native_test_process(
             [str(out_path)],
             cwd=ROOT,
-            env={**env, "MOLT_GPU_BACKEND": backend},
+            env=backend_env,
             capture_output=True,
             text=True,
             timeout=60,

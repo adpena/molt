@@ -6,6 +6,7 @@ import shutil
 from pathlib import Path
 
 from tests.process_guard_common import run_guarded_test_process
+from molt.process_environment import NameRule, ProcessEnvironment
 import molt.dx as dx
 from molt import custody_layout
 import pytest
@@ -1639,16 +1640,62 @@ def test_canonical_env_preserves_explicit_toolchain_root_and_adds_ruff_cache(
     assert env["RUFF_CACHE_DIR"] == str(resolved_output / ".ruff-cache")
 
 
-def test_explicit_toolchain_root_is_preserved_independent_of_artifact_root(tmp_path):
+@pytest.mark.parametrize("rule", [NameRule.EXACT, NameRule.WINDOWS])
+@pytest.mark.parametrize(
+    "producer",
+    ["context", "roots", "context_dx", "project", "project_dx", "development", "uv"],
+)
+def test_explicit_toolchain_root_is_preserved_independent_of_artifact_root(
+    tmp_path, rule, producer
+):
     repo = tmp_path / "repo"
     repo.mkdir()
     tools = tmp_path / "separate tools"
+    alias_tools = tmp_path / "alias tools"
     outputs = tmp_path / "builds"
-    env = {"MOLT_TARGET_ROOT": str(tools), "MOLT_EXT_ROOT": str(outputs)}
-    resolved = RunContext(repo).canonical_env(env, create_dirs=False)
-    assert Path(resolved["MOLT_TARGET_ROOT"]) == tools
-    assert dx.canonical_toolchain_root(repo, env, require_exists=False) == tools
-    assert not tools.exists() and not outputs.exists()
+    env = ProcessEnvironment(
+        {
+            "MOLT_TARGET_ROOT": str(tools),
+            "molt_target_root": str(alias_tools),
+            "MOLT_EXT_ROOT": str(outputs),
+            "MOLT_USE_SCCACHE": "0",
+            "pythonhome": "caller alias",
+            "Uv_Project_Environment": str(tmp_path / "python environment"),
+        },
+        rule=rule,
+    )
+    original = dict(env)
+    context = RunContext(repo)
+    project = DxProject(repo)
+    if producer == "context":
+        resolved = context.canonical_env(env, create_dirs=False)
+    elif producer == "roots":
+        resolved = context.root_env(env)
+    elif producer == "context_dx":
+        resolved = context.dx_env(env, create_dirs=False)
+    elif producer == "project":
+        resolved = project.canonical_env(env, create_dirs=False)
+    elif producer == "project_dx":
+        resolved = project.dx_env(env, create_dirs=False)
+    elif producer == "development":
+        resolved = development_artifact_env(repo, env, create_dirs=False)
+    else:
+        resolved = project.normalized_uv_run_env(env, python=None)
+    selected_tools = tools if rule is NameRule.EXACT else alias_tools
+    assert isinstance(resolved, ProcessEnvironment) and resolved.rule is rule
+    assert Path(resolved["MOLT_TARGET_ROOT"]) == selected_tools
+    assert (
+        dx.canonical_toolchain_root(repo, env, require_exists=False) == selected_tools
+    )
+    assert resolved["MOLT_EXT_ROOT"] == str(outputs)
+    if producer in {"project", "project_dx", "uv"}:
+        assert ("pythonhome" in resolved) is (rule is NameRule.EXACT)
+    if rule is NameRule.WINDOWS and producer != "roots":
+        assert resolved["UV_PROJECT_ENVIRONMENT"] == str(
+            tmp_path / "python environment"
+        )
+    assert dict(env) == original
+    assert not tools.exists() and not alias_tools.exists() and not outputs.exists()
 
 
 def test_uv_project_env_is_stable_across_sessions(tmp_path: Path) -> None:
@@ -1980,47 +2027,44 @@ def test_managed_membership_preserves_aliases_but_admits_only_selected_state(tmp
     )
 
 
-@pytest.mark.parametrize("windows", [False, True])
+@pytest.mark.parametrize("rule", list(NameRule))
 def test_tool_state_and_bundle_keys_use_captured_host_environment_semantics(
-    tmp_path, monkeypatch, windows
+    tmp_path, rule
 ):
-    from types import SimpleNamespace
-    from molt import default_paths
-
-    # Change only the pure environment-key authority, not pathlib's host class.
-    monkeypatch.setattr(
-        default_paths,
-        "os",
-        SimpleNamespace(name="nt" if windows else "posix", fspath=os.fspath),
-    )
     source = tmp_path / "bundle/source"
     source.mkdir(parents=True)
-    env = {
-        "molt_bundle_root": str(source.parent),
-        "molt_target_root": str(tmp_path / "selected"),
-        "MOLT_HOME": str(tmp_path / "home"),
-    }
+    env = ProcessEnvironment(
+        {
+            "molt_bundle_root": str(source.parent),
+            "molt_target_root": str(tmp_path / "selected"),
+            "MOLT_HOME": str(tmp_path / "home"),
+        },
+        rule=rule,
+    )
+    windows = rule is NameRule.WINDOWS
     actual = dx.canonical_toolchain_root(source, env, require_exists=False)
     assert actual == (tmp_path / "selected" if windows else source / "target-root")
-    env.pop("molt_target_root")
+    env = env.without(("molt_target_root",))
     assert dx.canonical_toolchain_root(source, env, require_exists=False) == (
         tmp_path / "home/target-root" if windows else source / "target-root"
     )
-    if windows:
-        with pytest.raises(
-            dx.DxConfigError, match="conflicting captured environment spellings"
-        ):
-            dx.canonical_toolchain_root(
-                source,
-                {**env, "MOLT_TARGET_ROOT": "one", "molt_target_root": "two"},
-                require_exists=False,
-            )
-        with pytest.raises(
-            dx.DxConfigError, match="conflicting captured environment spellings"
-        ):
-            dx.canonical_toolchain_root(
-                source, {**env, "MOLT_BUNDLE_ROOT": "different"}, require_exists=False
-            )
+    # Full child environments preserve the first spelling and last value;
+    # declaration/receipt ambiguity checks belong to their admission authority.
+    roots = ProcessEnvironment(
+        {
+            **env,
+            "MOLT_TARGET_ROOT": str(tmp_path / "first"),
+            "molt_target_root": str(tmp_path / "second"),
+        },
+        rule=rule,
+    )
+    assert dx.canonical_toolchain_root(source, roots, require_exists=False) == (
+        tmp_path / ("second" if windows else "first")
+    )
+    other_bundle = env.updated({"MOLT_BUNDLE_ROOT": str(tmp_path / "different")})
+    assert dx.canonical_toolchain_root(source, other_bundle, require_exists=False) == (
+        source / "target-root"
+    )
 
 
 @pytest.mark.parametrize("session", [None, "same-pinned-session"])

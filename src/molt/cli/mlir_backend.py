@@ -10,6 +10,8 @@ import sys
 from typing import Any
 from collections.abc import Callable
 
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
+
 from molt import file_publication
 from molt.artifact_publication import discard_staged_output
 
@@ -67,15 +69,18 @@ def _ensure_mlir_backend_binary(molt_root: Path) -> tuple[Path | None, str | Non
     if cargo is None:
         return None, "MLIR backend is not built and cargo is unavailable on PATH"
     try:
-        env = mlir_toolchain_environment(
-            molt_root,
-            environ=_cargo_build_env(),
+        env = ProcessEnvironmentBuilder(
+            mlir_toolchain_environment(
+                molt_root,
+                environ=_cargo_build_env(),
+            )
         )
     except LlvmToolchainConfigError as exc:
         return None, str(exc)
     # The standalone workspace would default to its own target; build where
     # `_find_mlir_backend_binary` looks.
     env["CARGO_TARGET_DIR"] = os.fspath(_cargo_target_root(molt_root))
+    environment = ProcessEnvironment(env)
 
     command = [
         cargo,
@@ -89,7 +94,7 @@ def _ensure_mlir_backend_binary(molt_root: Path) -> tuple[Path | None, str | Non
         result = _run_subprocess_captured_to_tempfiles(
             command,
             cwd=molt_root,
-            env=env,
+            env=environment,
             timeout=1800,
             progress_label="MLIR backend build",
         )

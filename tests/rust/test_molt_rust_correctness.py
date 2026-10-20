@@ -97,7 +97,7 @@ def _compile_and_run_rust(
             session_id=os.environ.get("MOLT_SESSION_ID") or "rust-correctness",
             create_dirs=True,
         )
-        env.update(
+        env = env.updated(
             {
                 "MOLT_USE_SCCACHE": "0",
                 "MOLT_BACKEND_DAEMON": "0",
@@ -150,7 +150,7 @@ def _compile_and_run_rust(
                     "--python-version",
                     python_version,
                 ]
-                env.pop("UV_NO_SYNC", None)
+                env = env.without(("UV_NO_SYNC",))
 
         # Step 1: molt build --target rust
         try:

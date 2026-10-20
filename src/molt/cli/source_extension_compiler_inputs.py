@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
+
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 import os
@@ -40,18 +42,17 @@ _IMPLICIT_COMPILER_OVERRIDES = frozenset(
 
 def source_extension_compiler_environment(
     environment: Mapping[str, str],
-) -> dict[str, str]:
+) -> ProcessEnvironment:
     """Keep SDK/search inputs while stripping hidden command overrides.
 
     Selected SDK and deployment arguments live in native compiler commands,
     including captured Meson/native generator commands. Generic subprocesses
     and non-Darwin targets perform no Apple SDK discovery here.
     """
-    return {
-        key: value
-        for key, value in environment.items()
-        if key.upper() not in _IMPLICIT_COMPILER_OVERRIDES
-    }
+    selected = ProcessEnvironmentBuilder(environment)
+    for name in _IMPLICIT_COMPILER_OVERRIDES:
+        selected.pop(name, None)
+    return ProcessEnvironment(selected)
 
 
 @dataclass(frozen=True)

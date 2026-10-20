@@ -427,10 +427,14 @@ def main() -> int:
     repos_root = args.repos_root.resolve()
 
     run_env = _base_run_env()
-    run_env.setdefault(
-        "MOLT_GUARD_PROFILE_LOG",
-        str(output_root / "memory_guard" / "commands.jsonl"),
-    )
+    if "MOLT_GUARD_PROFILE_LOG" not in run_env:
+        run_env = run_env.updated(
+            {
+                "MOLT_GUARD_PROFILE_LOG": str(
+                    output_root / "memory_guard" / "commands.jsonl"
+                )
+            }
+        )
     limits = harness_memory_guard.limits_from_env("MOLT_BENCH", run_env)
 
     suite_results: list[SuiteResult] = []
@@ -546,8 +550,7 @@ def main() -> int:
                                 "python": sys.executable,
                                 "project_python": _project_python(),
                             }
-                            suite_env = run_env.copy()
-                            suite_env.update(_resolve_env(suite.env, tokens))
+                            suite_env = run_env.updated(_resolve_env(suite.env, tokens))
                             if not args.dry_run:
                                 _materialize_output_env_paths(
                                     suite_env,

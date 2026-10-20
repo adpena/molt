@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import fields
 import hashlib
+import io
 import json
 import struct
 from typing import Any
@@ -31,6 +32,37 @@ def _wire(metadata: bytes, body: bytes, digest: bytes) -> bytes:
 
 def _digest(body: bytes) -> bytes:
     return hashlib.sha256(b"molt.function-body.msgpack.v1\0" + body).digest()
+
+
+def test_backend_transports_have_canonical_bytes_after_record_hydration() -> None:
+    import msgpack
+
+    from molt.cli import cache_keys
+    from molt.cli.backend_ir_transport import write_backend_ir
+
+    cold = _function()
+    encoded, _seeds = records.encode_lowering_record(b"header", [cold])
+    hydrated, _seeds = records.decode_function_records(
+        records.decode_lowering_record(encoded)
+    )
+    expected_text = (
+        '{"functions":[{"name":"molt_init_fixture","ops":[{"kind":"ret_void"}],'
+        '"params":[],"return_abi":"void"}],"profile":"dev"}'
+    )
+    # A separately implemented codec receives an independently ordered literal.
+    expected_binary = msgpack.packb(json.loads(expected_text))
+    for function in (cold, hydrated[0], dict(reversed(cold.items()))):
+        for ir in (
+            {"profile": "dev", "functions": [function]},
+            {"functions": [function], "profile": "dev"},
+        ):
+            assert cache_keys._backend_ir_text(ir) == expected_text
+            streamed = io.StringIO()
+            cache_keys._write_backend_ir_text(streamed, ir)
+            assert streamed.getvalue() == expected_text
+            binary = io.BytesIO()
+            write_backend_ir(binary, ir)
+            assert binary.getvalue() == expected_binary
 
 
 def test_record_roundtrip_preserves_rich_opaque_metadata_and_exact_body() -> None:

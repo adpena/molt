@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
+
 import os
 import sys
 from pathlib import Path
@@ -8,17 +10,19 @@ from molt.dx import development_artifact_env
 from tests.native_process_guard import run_native_test_process
 
 
-def _native_env(root: Path) -> dict[str, str]:
-    env = development_artifact_env(
-        root,
-        os.environ,
-        session_prefix="native-shift-lowering",
-        session_id=os.environ.get("MOLT_SESSION_ID") or "native-shift-lowering",
-        create_dirs=True,
+def _native_env(root: Path) -> ProcessEnvironment:
+    env = ProcessEnvironmentBuilder(
+        development_artifact_env(
+            root,
+            os.environ,
+            session_prefix="native-shift-lowering",
+            session_id=os.environ.get("MOLT_SESSION_ID") or "native-shift-lowering",
+            create_dirs=True,
+        )
     )
     env["PYTHONPATH"] = str(root / "src")
     env["MOLT_HERMETIC_MODULE_ROOTS"] = "1"
-    return env
+    return ProcessEnvironment(env)
 
 
 def test_native_shift_ops_survive_simple_lowering_chain(tmp_path: Path) -> None:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
+
 import contextlib
 import os
 import shutil
@@ -181,14 +183,14 @@ class WasmDeploymentGeneration:
                     stacklevel=2,
                 )
 
-    def precompile_environment(self) -> dict[str, str]:
-        env = os.environ.copy()
+    def precompile_environment(self) -> ProcessEnvironment:
+        env = ProcessEnvironmentBuilder(os.environ)
         for role, name in PRECOMPILE_ENV.items():
             if role in self.outputs:
                 env[name] = str(self.outputs[role].resolve())
             else:
                 env.pop(name, None)
-        return env
+        return ProcessEnvironment(env)
 
     def publish(self, receipt: FinalLinkReceiptRequest | None) -> None:
         candidates: dict[str, tuple[Path, Path]] = {}

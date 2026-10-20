@@ -6,7 +6,7 @@ import platform
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from tools.bench_friends_context import REPO_ROOT
 from tools.bench_friends_phase import _bounded_failure_text
@@ -497,7 +497,7 @@ def _daemon_record_to_dict(
 
 def _cleanup_backend_daemons(
     *,
-    run_env: dict[str, str],
+    run_env: Mapping[str, str],
     output_root: Path,
     reason: str,
 ) -> dict[str, Any]:
@@ -565,7 +565,7 @@ def _custody_artifacts(
     json_out: Path,
     summary_out: Path,
     failure_details_path: Path,
-    run_env: dict[str, str],
+    run_env: Mapping[str, str],
 ) -> dict[str, str]:
     memory_guard_root = output_root / "memory_guard"
     return {
@@ -654,7 +654,7 @@ def _write_run_outputs(
     interrupted: BenchInterrupted | None,
     backend_daemon_cleanup: list[dict[str, Any]],
     memory_guard_incidents: list[dict[str, Any]],
-    run_env: dict[str, str],
+    run_env: Mapping[str, str],
 ) -> tuple[Path, Path, str]:
     json_out = (args.json_out or (output_root / "results.json")).resolve()
     json_out.parent.mkdir(parents=True, exist_ok=True)

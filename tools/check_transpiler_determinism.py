@@ -22,6 +22,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +45,7 @@ def _repo_root() -> Path:
 REPO_ROOT = _repo_root()
 
 
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402
 from molt.dx import scratch_root  # noqa: E402
 
@@ -60,10 +62,12 @@ def _tmp_root() -> Path:
     return root
 
 
-def _build_env() -> dict[str, str]:
-    env = harness_memory_guard.canonical_harness_env(
-        os.environ,
-        repo_root=_repo_root(),
+def _build_env() -> ProcessEnvironment:
+    env = ProcessEnvironmentBuilder(
+        harness_memory_guard.canonical_harness_env(
+            os.environ,
+            repo_root=_repo_root(),
+        )
     )
     env["PYTHONHASHSEED"] = "0"
     env.setdefault("MOLT_DEV_CARGO_PROFILE", "release-fast")
@@ -77,7 +81,7 @@ def _build_env() -> dict[str, str]:
             env["PYTHONPATH"] = src + os.pathsep + existing_pythonpath
     else:
         env["PYTHONPATH"] = src
-    return env
+    return ProcessEnvironment(env)
 
 
 def _collect_sources(source: str | None, batch_dir: str | None) -> list[Path]:
@@ -116,7 +120,7 @@ def _build_once(
     target: str,
     profile: str,
     timeout: float,
-    env: dict[str, str],
+    env: Mapping[str, str],
 ) -> tuple[Path | None, str | None, float]:
     ext = ".rs" if target == "rust" else ".luau"
     with tempfile.NamedTemporaryFile(
@@ -184,7 +188,7 @@ def _check_source_target(
     runs: int,
     profile: str,
     timeout: float,
-    env: dict[str, str],
+    env: Mapping[str, str],
 ) -> dict[str, Any]:
     run_rows: list[dict[str, Any]] = []
     hashes: list[str] = []

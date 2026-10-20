@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from pathlib import Path
+from molt.process_environment import ProcessEnvironment
 
 from molt.dx import (
     ARTIFACT_ROOT_ENV,
@@ -13,7 +14,7 @@ from molt.dx import (
 
 def build_molt_conformance_env(
     project_root: Path, session_id: str | None, base: Mapping[str, str]
-) -> dict[str, str]:
+) -> ProcessEnvironment:
     """Resolve a conformance run's DX roots from the caller's environment.
 
     The caller's artifact-root and custody selectors (``MOLT_EXT_ROOT``, CI's
@@ -25,14 +26,12 @@ def build_molt_conformance_env(
     ``None`` lets the run context generate one, so the run builds in the warm
     shared target.
     """
-    selectors = {
-        key: value
-        for key, value in base.items()
-        if key == ARTIFACT_ROOT_ENV
-        or (key not in CANONICAL_RUN_ENV_KEYS and key != "PYTHONPATH")
-    }
+    selectors = ProcessEnvironment(base).without(
+        [key for key in CANONICAL_RUN_ENV_KEYS if key != ARTIFACT_ROOT_ENV]
+        + ["PYTHONPATH"]
+    )
     if session_id is not None:
-        selectors["MOLT_SESSION_ID"] = session_id
+        selectors = selectors.updated({"MOLT_SESSION_ID": session_id})
     return development_artifact_env(
         project_root,
         selectors,
@@ -41,7 +40,7 @@ def build_molt_conformance_env(
     )
 
 
-def ensure_molt_conformance_dirs(env: dict[str, str]) -> None:
+def ensure_molt_conformance_dirs(env: Mapping[str, str]) -> None:
     for key in (
         "CARGO_TARGET_DIR",
         "MOLT_CACHE",

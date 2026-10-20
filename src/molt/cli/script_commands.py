@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
+
 import contextlib
 import json
 import shlex
@@ -127,7 +129,7 @@ def _wasm_node_runner(molt_root: Path) -> Path:
 
 
 def _apply_run_capability_policy(
-    env: dict[str, str],
+    env: ProcessEnvironmentBuilder,
     *,
     capabilities: CapabilityInput | None,
     capability_manifest: str | None,
@@ -264,6 +266,7 @@ def _run_script_cross(
     )
     if capability_error is not None:
         return _fail(capability_error, json_output, command="run")
+    env = ProcessEnvironment(env)
 
     wasm_host_command: list[str] | None = None
     if target == "wasm":
@@ -448,6 +451,7 @@ def _deploy(
     )
     if file_path:
         env.update(_build_inputs._collect_env_overrides(file_path))
+    env = ProcessEnvironment(env)
     resolved_build_entry, resolved_build_entry_error = (
         _build_inputs._resolve_wrapper_build_entry(
             file_path=file_path,
@@ -681,6 +685,7 @@ def run_script(
     )
     if capability_error is not None:
         return _fail(capability_error, json_output, command="run")
+    env = ProcessEnvironment(env)
 
     capabilities_tmp: Path | None = None
     if build_profile is not None and not _build_args_has_profile_flag(build_args):
@@ -825,6 +830,7 @@ def compare(
         if resolved_input.policy is not None:
             env.update(CapabilityManifest().to_env_vars(resolved_input.policy))
 
+    env = ProcessEnvironment(env)
     requested_python_selector = python_exe
     requested_target_python = None
     if requested_python_selector is not None:
@@ -1092,6 +1098,7 @@ def parity_run(
     env = _base_env(project_root, source_path, molt_root=molt_root)
     if file_path:
         env.update(_build_inputs._collect_env_overrides(file_path))
+    env = ProcessEnvironment(env)
 
     try:
         python_command = resolve_python_selector(
@@ -1167,6 +1174,7 @@ def diff(
     env = _base_env(root, molt_root=root)
     if trusted:
         env["MOLT_CAPABILITY_TIER"] = MAXIMUM_BUILTIN_CAPABILITY_TIER
+    env = ProcessEnvironment(env)
     cmd = [sys.executable, "tests/molt_diff.py"]
     if python_version:
         cmd.extend(["--python-version", python_version])

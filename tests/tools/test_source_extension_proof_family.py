@@ -9,6 +9,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from molt.process_environment import NameRule, ProcessEnvironment
+
 from molt.cli import source_build_environment as build_environment
 from molt.cli import source_build_environment_schema as build_environment_schema
 from molt.cli import source_extension_set_registry as registry_authority
@@ -318,7 +320,7 @@ def test_named_native_intent_reaches_host_compiler_selection(
 
     def family(*, target_family, explicit_commands, sibling_directories, environment):
         assert target_family == "native"
-        assert environment == selected
+        assert environment == ProcessEnvironment(selected, rule=NameRule.host())
         seen.append(explicit_commands)
 
         def tool(role, command):
@@ -552,7 +554,7 @@ def test_target_derived_capture_receives_selected_environment(
         env=selected,
     )
     assert result == {"fixture": True}
-    assert observed == [selected]
+    assert observed == [ProcessEnvironment(selected, rule=NameRule.host())]
 
 
 def test_sdk_resource_directories_are_in_live_custody(tmp_path: Path) -> None:

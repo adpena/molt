@@ -57,6 +57,7 @@ from molt.llvm_toolchain import (  # noqa: E402
 )
 from tools.resource_pressure import plan_resource_pressure  # noqa: E402
 from molt.platform_toolchain import activate_msvc_environment  # noqa: E402
+from molt.process_environment import ProcessEnvironment  # noqa: E402
 
 
 LLVM_HOST_TARGET_FAMILIES = tuple(
@@ -271,10 +272,10 @@ def _llvm_sys_prefix_env_var(version: str) -> str:
     return llvm_sys_prefix_env_var_for_version(version)
 
 
-def _run(cmd: list[str], *, cwd: Path | None, env: dict[str, str]) -> None:
+def _run(cmd: list[str], *, cwd: Path | None, env: ProcessEnvironment) -> None:
     printable = " ".join(_quote(part) for part in cmd)
     print(f"[bootstrap-llvm] {printable}", flush=True)
-    proc = subprocess.run(cmd, cwd=cwd, env=env, check=False)
+    proc = subprocess.run(cmd, cwd=cwd, env=env.child_block(), check=False)
     if proc.returncode != 0:
         location = f" in {cwd}" if cwd is not None else ""
         raise SystemExit(
@@ -1175,7 +1176,7 @@ def _build_and_publish(
     targets: str,
     required_targets: set[str],
     project_set: set[str],
-    env: dict[str, str],
+    env: ProcessEnvironment,
     is_canonical: bool,
     build_identity: dict[str, object],
     cmake: _BuildTool,
@@ -1563,7 +1564,7 @@ def main(argv: list[str] | None = None) -> int:
         build_dir=build_dir,
     )
     source_sha256 = _source_sha256(args.version, args.development_source_sha256)
-    env = dict(os.environ)
+    env = ProcessEnvironment(os.environ)
     result: tuple[LlvmPrefixVerification, Path] | None = None
     if is_canonical:
         lock_path = build_dir.with_name(f".{build_dir.name}.build.lock")

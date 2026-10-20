@@ -12,6 +12,7 @@ from tests.process_guard_common import (
 )
 
 from molt import dx, process_spawn
+from molt.process_environment import NameRule, ProcessEnvironment
 from tools import uv_project_env
 import subprocess
 
@@ -93,6 +94,48 @@ def test_uv_project_env_accepts_explicit_relative_path(tmp_path: Path) -> None:
     )
 
     assert env["UV_PROJECT_ENVIRONMENT"] == str(tmp_path / "tmp" / "custom-env")
+
+
+@pytest.mark.parametrize("name_rule", [NameRule.EXACT, NameRule.WINDOWS])
+def test_uv_wrapper_selectors_keep_the_captured_environment_rule(tmp_path, name_rule):
+    root = tmp_path / "repo"
+    root.mkdir()
+    artifact_root = tmp_path / "artifacts"
+    alias = tmp_path / "caller-environment"
+    environment = ProcessEnvironment(
+        {
+            "MOLT_EXT_ROOT": str(artifact_root),
+            "uv_project_environment": str(alias),
+            "Path": "retained path",
+        },
+        rule=name_rule,
+    )
+    expected = (
+        dx.stable_uv_project_env_dir(
+            artifact_root, purpose="audit", python="3.14", source_root=root
+        )
+        if name_rule is NameRule.EXACT
+        else alias
+    )
+    assert (
+        uv_project_env.project_environment_path(
+            python="3.14", purpose="audit", repo_root=root, env=environment
+        )
+        == expected
+    )
+    selected = uv_project_env.uv_project_env(
+        python="3.14", purpose="audit", repo_root=root, env=environment
+    )
+    assert selected.rule is name_rule
+    assert selected["UV_PROJECT_ENVIRONMENT"] == str(expected)
+    assert selected["MOLT_UV_PROJECT_PURPOSE"] == "audit"
+    assert selected["MOLT_UV_PROJECT_PYTHON"] == "3.14"
+    assert selected["Path"] == "retained path"
+    assert dict(environment) == {
+        "MOLT_EXT_ROOT": str(artifact_root),
+        "uv_project_environment": str(alias),
+        "Path": "retained path",
+    }
 
 
 def test_parse_command_strips_separator() -> None:

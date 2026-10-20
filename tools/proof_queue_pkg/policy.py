@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from typing import Mapping
 
+from molt.process_environment import NameRule
+
 from tools.proof_queue_pkg import (
     command_admission,
     custody,
@@ -173,11 +175,12 @@ def _parse_env_pair(pair: str) -> tuple[str, str]:
 
 
 def _env_overrides_from_pairs(pairs: list[str]) -> dict[str, str]:
+    # Proof declarations must remain unambiguous on every child platform.
     env: dict[str, str] = {}
     seen: dict[str, str] = {}
     for pair in pairs:
         name, value = _parse_env_pair(pair)
-        folded = name.casefold()
+        folded = NameRule.WINDOWS.key(name)
         if folded in seen:
             raise SystemExit(
                 "duplicate environment override names are forbidden: "
@@ -227,30 +230,30 @@ def _named_spec_locked_env(logical_id: str, raw_locked: object) -> dict[str, str
     )
     if not isinstance(raw_locked, (list, tuple)):
         raise SystemExit(error)
-    locked_by_casefold: dict[str, str] = {}
+    locked_by_name: dict[str, str] = {}
     for name in raw_locked:
         if not isinstance(name, str) or not name:
             raise SystemExit(error)
-        folded = name.casefold()
-        if folded in locked_by_casefold:
+        folded = NameRule.WINDOWS.key(name)
+        if folded in locked_by_name:
             raise SystemExit(
                 f"named proof {logical_id!r} has duplicate locked_env authority"
             )
-        locked_by_casefold[folded] = name
-    return locked_by_casefold
+        locked_by_name[folded] = name
+    return locked_by_name
 
 
 def _named_spec_user_env_overrides(
-    logical_id: str, locked_by_casefold: Mapping[str, str], user_pairs: list[str]
+    logical_id: str, locked_by_name: Mapping[str, str], user_pairs: list[str]
 ) -> dict[str, str]:
     """Admit user diagnostics against the validated named environment authority."""
 
     user_overrides = _env_overrides_from_pairs(user_pairs)
     conflicts = sorted(
         {
-            locked_by_casefold[name.casefold()]
+            locked_by_name[NameRule.WINDOWS.key(name)]
             for name in user_overrides
-            if name.casefold() in locked_by_casefold
+            if NameRule.WINDOWS.key(name) in locked_by_name
         }
     )
     if conflicts:
@@ -266,9 +269,9 @@ def _named_spec_env_overrides(
 ) -> dict[str, str]:
     """Merge admitted diagnostics with a named proof's canonical environment."""
     logical_id = str(spec.get("logical_id") or "named-proof")
-    locked_by_casefold = _named_spec_locked_env(logical_id, spec.get("locked_env", ()))
+    locked_by_name = _named_spec_locked_env(logical_id, spec.get("locked_env", ()))
     user_overrides = _named_spec_user_env_overrides(
-        logical_id, locked_by_casefold, user_pairs
+        logical_id, locked_by_name, user_pairs
     )
 
     raw_defaults = spec.get("env_overrides", {})
@@ -276,11 +279,11 @@ def _named_spec_env_overrides(
         raw_defaults,
         error=f"named proof {logical_id!r} has invalid env_overrides authority",
     )
-    defaults_by_casefold = {name.casefold() for name in env_overrides}
+    defaults_by_name = {NameRule.WINDOWS.key(name) for name in env_overrides}
     missing_locked = sorted(
         name
-        for folded, name in locked_by_casefold.items()
-        if folded not in defaults_by_casefold
+        for folded, name in locked_by_name.items()
+        if folded not in defaults_by_name
     )
     if missing_locked:
         raise SystemExit(

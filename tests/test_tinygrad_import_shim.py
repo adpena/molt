@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
+
 import ast
 import os
 import sys
@@ -16,13 +18,15 @@ from tests.helpers.tinygrad_stdlib_loader import tinygrad_stdlib_context
 
 def _native_molt_env(
     root: Path, *, hermetic: bool = False, module_roots: tuple[Path, ...] = ()
-) -> dict[str, str]:
-    env = development_artifact_env(
-        root,
-        os.environ,
-        session_prefix="tinygrad-import-shim",
-        session_id=os.environ.get("MOLT_SESSION_ID") or "tinygrad-import-shim",
-        create_dirs=True,
+) -> ProcessEnvironment:
+    env = ProcessEnvironmentBuilder(
+        development_artifact_env(
+            root,
+            os.environ,
+            session_prefix="tinygrad-import-shim",
+            session_id=os.environ.get("MOLT_SESSION_ID") or "tinygrad-import-shim",
+            create_dirs=True,
+        )
     )
     env["PYTHONPATH"] = str(root / "src")
     env["MOLT_STDLIB_PROFILE"] = "full"
@@ -30,7 +34,7 @@ def _native_molt_env(
         env["MOLT_MODULE_ROOTS"] = os.pathsep.join(str(path) for path in module_roots)
     if hermetic:
         env["MOLT_HERMETIC_MODULE_ROOTS"] = "1"
-    return env
+    return ProcessEnvironment(env)
 
 
 def _flatten_numeric(values):

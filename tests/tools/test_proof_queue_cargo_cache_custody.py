@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 
 import pytest
+from molt.process_environment import NameRule, ProcessEnvironment
 from tests.test_python_external_custody import standard_finders  # noqa: F401
 from tests.process_guard_common import run_guarded_test_process
 from tools.git_identity import repository_source_paths
@@ -194,6 +195,28 @@ def test_guard_transport_changes_do_not_fork_cargo_compilation_identity(name):
     assert name in command_identity._QUEUE_CUSTODY_ENV_NAMES
 
 
+@pytest.mark.parametrize("rule", list(NameRule))
+def test_cache_transport_filter_uses_child_environment_rule(rule):
+    command = ["cargo", "test"]
+    arguments = {
+        "source": {},
+        "toolchains": {},
+        "command": command,
+        "outputs": _outputs(command),
+    }
+    base = cache.input_identity(
+        **arguments, env=ProcessEnvironment({"RUSTFLAGS": "flags"}, rule=rule)
+    )
+    changed = cache.input_identity(
+        **arguments,
+        env=ProcessEnvironment(
+            {"RUSTFLAGS": "flags", "molt_guard_scratch_root": "semantic-on-posix"},
+            rule=rule,
+        ),
+    )
+    assert (base == changed) is (rule is NameRule.WINDOWS)
+
+
 def test_queue_environment_preserves_scratch_custody_without_admitting_secrets(
     tmp_path,
 ):
@@ -269,7 +292,11 @@ def test_output_environment_roundtrips_acquisition_and_parent_policy(
     lease = cache.acquire(**inputs)
     try:
         outputs = inputs["outputs"]
-        assert lease.environment == outputs.bind(original, target=lease.target)
+        assert isinstance(lease.environment, ProcessEnvironment)
+        assert lease.environment.rule is NameRule.host()
+        assert lease.environment.child_block() == outputs.bind(
+            original, target=lease.target
+        )
         assert inputs["env"] == original
         final_env, contract = execution_environment._cargo_output_environment_contract(
             lease.environment,
@@ -1032,8 +1059,11 @@ def test_runner_input_binding_rejects_forged_semantic_environment(tmp_path):
     inputs = _inputs(tmp_path)
     lease = cache.acquire(**inputs)
     try:
-        forged = copy.deepcopy(lease.environment)
-        forged["RUSTFLAGS"] = "changed"
+        original = lease.environment
+        forged = original.updated({"RUSTFLAGS": "changed"})
+        assert lease.environment is original
+        assert forged.rule is original.rule
+        assert forged["RUSTFLAGS"] == "changed"
         with pytest.raises(ValueError, match="identity mismatch"):
             cache.validate_prelaunch(
                 lease.provenance,
@@ -2085,7 +2115,14 @@ def test_failed_publication_owner_write_keeps_structured_secondary_without_prima
         lambda *args, **kwargs: _raise(primary),
     )
     lease = cache.CargoCacheLease(
-        tmp_path, tmp_path, tmp_path, tmp_path, None, {"input_sha256": "input"}, {}, {}
+        tmp_path,
+        tmp_path,
+        tmp_path,
+        tmp_path,
+        None,
+        {"input_sha256": "input"},
+        {},
+        ProcessEnvironment({}),
     )
     publications = []
 
@@ -2722,8 +2759,12 @@ def test_workspace_uses_actual_run_context_scratch_and_session_provenance(tmp_pa
         env = RunContext(source, session_prefix=session).canonical_env(
             base, create_dirs=False
         )
-        env["MOLT_DIFF_ROOT"] = str(scratch_dir(source, "diff-" + session, env))
-        env["MOLT_PROOF_SCRATCH_ROOT"] = str(tmp_path / "scratch")
+        env = env.updated(
+            {
+                "MOLT_DIFF_ROOT": str(scratch_dir(source, "diff-" + session, env)),
+                "MOLT_PROOF_SCRATCH_ROOT": str(tmp_path / "scratch"),
+            }
+        )
         inputs.update(
             env=env,
             run_id=session,

@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from molt.dx import development_artifact_env
+from molt.process_environment import ProcessEnvironment
 from tests.native_process_guard import run_native_test_process
 from tests import process_guard_common
 
@@ -26,19 +27,22 @@ def _python_executable() -> str:
     return exe
 
 
-def _build_env() -> dict[str, str]:
+def _build_env() -> ProcessEnvironment:
     env = development_artifact_env(
         REPO_ROOT,
         {**os.environ, "MOLT_USE_SCCACHE": "0"},
         session_prefix="tkinter-compile",
         session_id="tkinter-compile",
     )
-    env["PYTHONPATH"] = str(REPO_ROOT / "src")
-    env["MOLT_BACKEND_DAEMON_SOCKET_DIR"] = "/tmp/molt_backend_sockets"
-    env["MOLT_BACKEND_DAEMON"] = "0"
-    env["MOLT_USE_SCCACHE"] = "0"
-    env["MOLT_STDLIB_PROFILE"] = "full"
-    return env
+    return env.updated(
+        {
+            "PYTHONPATH": str(REPO_ROOT / "src"),
+            "MOLT_BACKEND_DAEMON_SOCKET_DIR": "/tmp/molt_backend_sockets",
+            "MOLT_BACKEND_DAEMON": "0",
+            "MOLT_USE_SCCACHE": "0",
+            "MOLT_STDLIB_PROFILE": "full",
+        }
+    )
 
 
 def test_tkinter_ttk_script_compiles_via_cli_build() -> None:

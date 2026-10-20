@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironment
+
 import os
 import subprocess
 from pathlib import Path
@@ -32,9 +34,9 @@ def _load_cli_harness_memory_guard(cwd: Path | None) -> Any:
 
 
 def _with_memory_guard_env(
-    env: dict[str, str] | None,
+    env: ProcessEnvironment | None,
     memory_guard_prefix: str,
-) -> dict[str, str] | None:
+) -> ProcessEnvironment | None:
     return _process_guard.with_memory_guard_env(env, memory_guard_prefix)
 
 
@@ -56,7 +58,7 @@ def _resolve_timeout_env(
 def _run_completed_command(
     cmd: list[str],
     *,
-    env: dict[str, str] | None,
+    env: ProcessEnvironment | None,
     cwd: Path | None,
     capture_output: bool,
     memory_guard_prefix: str | None,
@@ -74,7 +76,7 @@ def _run_completed_command(
     if memory_guard_prefix is None:
         return subprocess.run(
             cmd,
-            env=env,
+            env=None if env is None else env.child_block(),
             cwd=cwd,
             input=input,
             capture_output=capture_output,

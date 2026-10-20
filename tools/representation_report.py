@@ -33,6 +33,7 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
 
+from molt.process_environment import ProcessEnvironment  # noqa: E402
 from molt.frontend import compile_to_tir  # noqa: E402
 from molt.frontend.module_publication import project_frontend_tir_to_executable  # noqa: E402
 
@@ -65,7 +66,7 @@ class FileReport:
     report: dict[str, Any]
 
 
-def _canonical_env() -> dict[str, str]:
+def _canonical_env() -> ProcessEnvironment:
     return development_artifact_env(
         REPO_ROOT,
         os.environ,

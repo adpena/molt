@@ -23,6 +23,7 @@ import tempfile
 import pytest
 
 from molt.dx import development_artifact_env
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
 from tests.native_process_guard import run_native_test_process
 
 MOLT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -33,14 +34,16 @@ MOLT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 # ---------------------------------------------------------------------------
 
 
-def _luau_build_env() -> dict[str, str]:
+def _luau_build_env() -> ProcessEnvironment:
     root = Path(MOLT_DIR)
-    env = development_artifact_env(
-        root,
-        os.environ,
-        session_prefix="luau-regressions",
-        session_id=os.environ.get("MOLT_SESSION_ID") or "luau-regressions",
-        create_dirs=True,
+    env = ProcessEnvironmentBuilder(
+        development_artifact_env(
+            root,
+            os.environ,
+            session_prefix="luau-regressions",
+            session_id=os.environ.get("MOLT_SESSION_ID") or "luau-regressions",
+            create_dirs=True,
+        )
     )
     env.update(
         {
@@ -54,7 +57,7 @@ def _luau_build_env() -> dict[str, str]:
             "UV_NO_SYNC": os.environ.get("UV_NO_SYNC", "1"),
         }
     )
-    return env
+    return ProcessEnvironment(env)
 
 
 def _compile_to_luau(python_source: str) -> str:

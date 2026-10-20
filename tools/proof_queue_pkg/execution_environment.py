@@ -21,6 +21,11 @@ from molt.cargo_execution_policy import (
     validate_cargo_native_dependency_environment,
 )
 from molt import file_publication
+from molt.process_environment import (
+    NameRule,
+    ProcessEnvironment,
+    ProcessEnvironmentBuilder,
+)
 from molt.toolchain_identity import resolve_explicit_tool_command
 from molt.rust_toolchain import cargo_config_arguments
 from molt.python_environment_identity import (
@@ -50,36 +55,37 @@ def command_secret_policy_error(command: Sequence[str]) -> str | None:
     return None
 
 
-def _environment_name_class(name: str) -> str | None:
-    upper = name.upper()
-    if upper in command_identity._QUEUE_CUSTODY_ENV_NAMES - {"PYTHONPATH"}:
+def _environment_name_class(name: str, *, rule: NameRule) -> str | None:
+    key = rule.key(name)
+    if key in command_identity._QUEUE_CUSTODY_ENV_NAMES - {"PYTHONPATH"}:
         return "queue-owned-custody"
-    if upper in command_identity._NONDETERMINISTIC_ENV_NAMES:
+    if key in command_identity._NONDETERMINISTIC_ENV_NAMES:
         return "denied-nondeterministic"
-    if upper in command_identity._ENVIRONMENT_EXACT_NAMES:
+    if key in command_identity._ENVIRONMENT_EXACT_NAMES:
         return "host-runtime"
     if (
-        upper in command_identity._ENVIRONMENT_BUILD_NAMES
-        or command_identity.llvm_toolchain_environment_name(
-            upper if os.name == "nt" else name
-        )
-        or command_identity._runtime_c_environment_name(upper)
-        or cargo_native_dependency_environment_name(upper)
+        key in command_identity._ENVIRONMENT_BUILD_NAMES
+        or command_identity.llvm_toolchain_environment_name(key)
+        or command_identity._runtime_c_environment_name(key)
+        or cargo_native_dependency_environment_name(key)
     ):
         return "build-toolchain"
-    if any(
-        upper.startswith(prefix) for prefix in command_identity._ENVIRONMENT_PREFIXES
-    ):
+    if any(key.startswith(prefix) for prefix in command_identity._ENVIRONMENT_PREFIXES):
         return "semantic-prefix"
     return None
 
 
 def environment_override_policy_error(env_overrides: Mapping[str, str]) -> str | None:
+    # Overrides are proof-plan declarations that run on every host, so the
+    # judgment cannot depend on the host: `Foo` and `FOO` are one variable on
+    # Windows and are refused everywhere, and a name is classified only in
+    # its exact canonical spelling (POSIX tools read no other).
+    portable = NameRule.WINDOWS
     seen: dict[str, str] = {}
     for name, value in sorted(env_overrides.items()):
         if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) is None:
             return f"non-canonical environment override name {name!r}"
-        folded = name.casefold()
+        folded = portable.key(name)
         if folded in seen:
             return (
                 "case-ambiguous environment overrides are forbidden: "
@@ -87,12 +93,12 @@ def environment_override_policy_error(env_overrides: Mapping[str, str]) -> str |
             )
         seen[folded] = name
         if (
-            name.upper() in command_identity.CANONICAL_EXECUTION_ENV
-            or name.upper() == "NODE_OPTIONS"
-            or name.upper() in command_identity._QUEUE_CUSTODY_ENV_NAMES
+            folded in command_identity.CANONICAL_EXECUTION_ENV
+            or folded == "NODE_OPTIONS"
+            or folded in command_identity._QUEUE_CUSTODY_ENV_NAMES
         ):
             return f"queue-owned canonical environment override {name!r} is forbidden"
-        classification = _environment_name_class(name)
+        classification = _environment_name_class(name, rule=NameRule.EXACT)
         if classification is None:
             return f"unclassified environment override {name!r}"
         if classification == "denied-nondeterministic":
@@ -108,11 +114,12 @@ def environment_override_policy_error(env_overrides: Mapping[str, str]) -> str |
 
 def _wrapper_execution_environment(
     envelope: Mapping[str, object], inherited: Mapping[str, str]
-) -> dict[str, str]:
+) -> ProcessEnvironment:
     """Bind the modeled wrapper before interpreter capture or custody starts."""
+    inherited = ProcessEnvironment(inherited)
     wrapper = envelope.get("wrapper")
     if wrapper is None:
-        return dict(inherited)
+        return inherited
     if not isinstance(wrapper, Mapping):
         raise ValueError("proof wrapper descriptor is malformed")
     from tools import venv_exec, uv_project_env
@@ -135,25 +142,25 @@ def _deterministic_execution_environment(
     *,
     override_names: Sequence[str],
     required_environment: Mapping[str, str] | None = None,
-) -> tuple[dict[str, str], dict[str, object]]:
-    required = dict(required_environment or {})
-    required_names = {name.casefold() for name in required}
-    override_keys = [name.casefold() for name in override_names]
+) -> tuple[ProcessEnvironment, dict[str, object]]:
+    rule = ProcessEnvironment(inherited).rule
+    required = ProcessEnvironment(required_environment or {}, rule=rule)
+    # Declared override names are judged under the Windows rule on every host,
+    # as in environment_override_policy_error; the child keeps the host rule.
+    portable = NameRule.WINDOWS
+    override_keys = [portable.key(name) for name in override_names]
     if len(override_keys) != len(set(override_keys)):
         raise ValueError("environment overrides contain case-ambiguous names")
-    overrides = set(override_keys)
-    if overrides & required_names:
+    overrides = {rule.key(name) for name in override_names}
+    portable_required = ProcessEnvironment(required, rule=portable)
+    if any(name in portable_required for name in override_names):
         raise ValueError("native supervisor launch environment cannot be overridden")
     inherited = supervisor_custody.bind_required_environment(inherited, required)
-    selected: dict[str, str] = {}
+    selected = ProcessEnvironmentBuilder({}, rule=rule)
     omitted: list[str] = []
-    seen_names: set[str] = set()
     for name, value in inherited.items():
-        folded = name.casefold()
-        if folded in seen_names:
-            raise ValueError(f"execution environment has case-ambiguous name {name!r}")
-        seen_names.add(folded)
-        if name.upper() in {
+        folded = rule.key(name)
+        if folded in {
             "MOLT_PROOF_SOURCE_ROOT",
             command_identity.SOURCE_EXTENSION_LINK_INPUTS_ENV,
         }:
@@ -162,8 +169,8 @@ def _deterministic_execution_environment(
             continue
         classification = (
             "supervisor-owned-launch"
-            if folded in required_names
-            else _environment_name_class(name)
+            if name in required
+            else _environment_name_class(name, rule=rule)
         )
         if classification in {
             None,
@@ -175,11 +182,7 @@ def _deterministic_execution_environment(
             omitted.append(name)
             continue
         selected[name] = str(value)
-    missing = sorted(
-        name
-        for name in override_names
-        if name.casefold() not in {key.casefold() for key in selected}
-    )
+    missing = sorted(name for name in override_names if name not in selected)
     if missing:
         raise ValueError(
             "classified environment overrides disappeared: " + ", ".join(missing)
@@ -188,14 +191,14 @@ def _deterministic_execution_environment(
         "schema": "molt.proof-execution-environment.v1",
         "passed_names": sorted(selected, key=str.casefold),
         "override_names": sorted(
-            (name for name in selected if name.casefold() in overrides),
+            (name for name in selected if rule.key(name) in overrides),
             key=str.casefold,
         ),
         "omitted_names": sorted(omitted, key=str.casefold),
     }
     if required:
         contract["supervisor_owned_names"] = sorted(required, key=str.casefold)
-    return selected, contract
+    return ProcessEnvironment(selected), contract
 
 
 def _execution_environment_authority(
@@ -205,6 +208,7 @@ def _execution_environment_authority(
     fingerprint_key: bytes,
     contract: Mapping[str, object],
 ) -> dict[str, object]:
+    env = ProcessEnvironment(env)
     names = sorted(env, key=str.casefold)
     supervisor_owned_names = contract.get("supervisor_owned_names", [])
     if not isinstance(supervisor_owned_names, list) or not all(
@@ -219,12 +223,12 @@ def _execution_environment_authority(
                 "supervisor-owned-launch"
                 if name in supervisor_owned_names
                 else "queue-owned-custody"
-                if name.upper() == "PYTHONPATH"
-                else _environment_name_class(name)
+                if env.rule.key(name) == "PYTHONPATH"
+                else _environment_name_class(name, rule=env.rule)
             ),
             "fingerprint": hmac.new(
                 fingerprint_key,
-                f"{name.casefold()}\0{normalized}".encode(),
+                f"{env.rule.key(name)}\0{normalized}".encode(),
                 hashlib.sha256,
             ).hexdigest(),
             "redacted": True,
@@ -248,15 +252,15 @@ def _bind_cargo_build_tool_environment(
     contract: Mapping[str, object],
     *,
     cwd: Path,
-) -> tuple[dict[str, str], dict[str, object]]:
+) -> tuple[ProcessEnvironment, dict[str, object]]:
     """Publish Cargo build-tool selection before any executable/input capture."""
-    selected = dict(env)
+    selected = ProcessEnvironmentBuilder(env)
     bound_contract = dict(contract)
     closure = envelope.get("process_closure")
     if "cargo" not in envelope.get("toolchains", []) or (
         isinstance(closure, Mapping) and closure.get("descendants") == "forbidden"
     ):
-        return selected, bound_contract
+        return ProcessEnvironment(selected), bound_contract
     outer_command = [str(value) for value in envelope["argv"]]
     command = admission._nested_command(outer_command) or outer_command
     invocation = admission.cargo_invocation_for_envelope(envelope)
@@ -269,18 +273,10 @@ def _bind_cargo_build_tool_environment(
         cargo = command_identity._cargo_executable_path(
             envelope, outer_command, cwd=cwd, env=selected, token=command[0]
         )
-        selected = {
-            name: value
-            for name, value in selected.items()
-            if (name.upper() if os.name == "nt" else name) != "CARGO"
-        }
+        selected.pop("CARGO", None)
         selected["CARGO"] = str(cargo)
     if invocation is not None and invocation.toolchain_selector is not None:
-        selected = {
-            name: value
-            for name, value in selected.items()
-            if (name.upper() if os.name == "nt" else name) != "RUSTUP_TOOLCHAIN"
-        }
+        selected.pop("RUSTUP_TOOLCHAIN", None)
         # Rustup's leading +selector overrides inherited RUSTUP_TOOLCHAIN.
         # Publish that context before every Rust/formatter/toolchain capture,
         # not merely to the build script's formatter selection.
@@ -296,37 +292,33 @@ def _bind_cargo_build_tool_environment(
     # Publish effective dependency inputs before identity/reuse capture. This
     # is the same Cargo [env] resolver the staged runtime build uses; binding
     # a default only after capture would attest a different compilation input.
-    selected = {
-        name: value
-        for name, value in selected.items()
-        if not cargo_native_dependency_environment_name(name)
-    }
+    for name in list(selected):
+        if cargo_native_dependency_environment_name(selected.rule.key(name)):
+            del selected[name]
     selected.update(
         (name, value)
         for name, value in configured.items()
-        if cargo_native_dependency_environment_name(name)
+        if cargo_native_dependency_environment_name(selected.rule.key(name))
     )
     updates, selection = toolchain_capture.select_cargo_build_tool_environment(
         cwd=cwd,
         env=selected,
         rustdoc_required=invocation is None or invocation.requires_documenter,
     )
-    folded = {name.casefold() for name in updates}
-    selected = {
-        name: value for name, value in selected.items() if name.casefold() not in folded
-    }
+    for name in updates:
+        selected.pop(name, None)
     selected.update(updates)
     bound_contract["passed_names"] = sorted(selected, key=str.casefold)
     overrides = contract.get("override_names", [])
     if not isinstance(overrides, list):
         raise ValueError("environment override-name contract is malformed")
-    override_keys = {str(name).casefold() for name in overrides}
+    override_keys = {selected.rule.key(str(name)) for name in overrides}
     bound_contract["override_names"] = sorted(
-        (name for name in selected if name.casefold() in override_keys),
+        (name for name in selected if selected.rule.key(name) in override_keys),
         key=str.casefold,
     )
     bound_contract["build_tool_selection"] = selection
-    return selected, bound_contract
+    return ProcessEnvironment(selected), bound_contract
 
 
 def _cargo_output_environment_contract(
@@ -335,9 +327,9 @@ def _cargo_output_environment_contract(
     *,
     outputs: cargo_output_environment.CargoOutputEnvironment,
     target: Path,
-) -> tuple[dict[str, str], dict[str, object]]:
+) -> tuple[ProcessEnvironment, dict[str, object]]:
     """Project the lease's already-bound output environment into final custody."""
-    selected, bound_contract = dict(env), dict(contract)
+    selected, bound_contract = ProcessEnvironment(env), dict(contract)
     names = set(outputs.names)
     supervisor_names = contract.get("supervisor_owned_names", [])
     if not isinstance(supervisor_names, list) or not all(
@@ -376,9 +368,8 @@ def _require_cargo_build_tool_environment_context(
     The runtime resolver owns configuration precedence; its result also feeds
     the caller's native-dependency binding without a second configuration read.
     """
-    if outputs.external_placement and any(
-        name.upper() == "CARGO_BUILD_TARGET_DIR" for name in env
-    ):
+    env = ProcessEnvironment(env)
+    if outputs.external_placement and "CARGO_BUILD_TARGET_DIR" in env:
         raise ValueError(
             "Cargo secondary build-dir/target-dir environment bypasses declared output placement"
         )
@@ -404,7 +395,7 @@ def _require_cargo_build_tool_environment_context(
     for index, value in enumerate(arguments, start=1):
         if "=" in value:
             definitions.append((f"Cargo --config entry {index}", tomllib.loads(value)))
-    inherited_keys = {name.upper() if os.name == "nt" else name for name in env}
+    inherited_keys = {env.rule.key(name) for name in env}
     protected_environment = {
         "CARGO",
         "RUSTC",
@@ -448,11 +439,7 @@ def _require_cargo_build_tool_environment_context(
             if (
                 isinstance(build, Mapping)
                 and role in build
-                and not any(
-                    (name.upper() if os.name == "nt" else name) == role.upper()
-                    and value
-                    for name, value in env.items()
-                )
+                and not env.get(role.upper())
             ):
                 raise ValueError(
                     f"unsupported Cargo build-tool environment context: {origin} defines build.{role}; "
@@ -486,7 +473,7 @@ def _require_cargo_build_tool_environment_context(
         if not isinstance(environment, Mapping):
             continue
         for name, value in environment.items():
-            key = str(name).upper() if os.name == "nt" else str(name)
+            key = env.rule.key(str(name))
             if (
                 key not in protected_environment
                 and not command_identity.llvm_toolchain_environment_name(key)
@@ -519,11 +506,12 @@ def _canonical_environment_sha256(env: Mapping[str, str]) -> str:
 def _execution_environment_executable_identities(
     env: Mapping[str, str], *, cwd: Path
 ) -> dict[str, object]:
+    env = ProcessEnvironment(env)
     identities: dict[str, object] = {}
     for name, value in sorted(env.items()):
-        upper = name.upper()
-        if upper not in command_identity._EXECUTABLE_ENV_NAMES and not any(
-            pattern.fullmatch(upper)
+        key = env.rule.key(name)
+        if key not in command_identity._EXECUTABLE_ENV_NAMES and not any(
+            pattern.fullmatch(key)
             for pattern in command_identity._EXECUTABLE_ENV_PATTERNS
         ):
             continue
@@ -542,7 +530,7 @@ def _execution_environment_executable_identities(
         resolved = Path(str(identity["resolved_path"]))
         if resolved != path:
             images.append(process_image_capture.capture_image(f"env:{name}", resolved))
-        rust_role = upper.removeprefix("CARGO_BUILD_").lower()
+        rust_role = key.removeprefix("CARGO_BUILD_").lower()
         if rust_role in {"cargo", "rustc", "rustdoc", "rustfmt"}:
             from molt.rust_toolchain import resolve_rustup_proxy
 
@@ -571,6 +559,7 @@ def _capture_toolchains(
     hash_workers: int,
     located_toolchains: Mapping[str, object],
 ) -> tuple[dict[str, object] | None, dict[str, object]]:
+    env = ProcessEnvironment(env)
     plan = proof_plan.ProofPlan.load()
     requested_raw = envelope.get("toolchains")
     if (
@@ -843,7 +832,7 @@ def _locate_toolchain_watch_roots(
     requested.sort(
         key=lambda name: 0 if name == "cargo" else 1 if name == "rustc" else 2
     )
-    env = dict(env)
+    env = ProcessEnvironment(env)
     selected_updates: dict[str, str] = {}
     policies = {policy.name: policy for policy in plan.toolchain_policies}
     roots: list[Path] = []
@@ -917,6 +906,7 @@ def _locate_toolchain_watch_roots(
             reuse_telemetry=reuse_telemetry,
         )
         if name in {"rustc", "cargo"}:
+            # Tool roles name canonical selectors; this is not an environment lookup.
             updates = {name.upper(): str(identity["content_path"])}
             if name == "rustc":
                 selection = cast(Mapping[str, object], identity["link_selection"])
@@ -928,7 +918,7 @@ def _locate_toolchain_watch_roots(
                     selection
                 )
                 validate_cargo_native_dependency_environment(
-                    {**env, **native_environment},
+                    ProcessEnvironment(env).updated(native_environment),
                     target=selected_target,
                     compiler_host=compiler_host,
                     native_bound=True,
@@ -942,7 +932,7 @@ def _locate_toolchain_watch_roots(
                     )
                 )
             selected_updates.update(updates)
-            env.update(updates)
+            env = env.updated(updates)
         probes = policies[name].data.get("process_image_probes", [])
         assert isinstance(probes, list)
         if probes:
@@ -1043,6 +1033,7 @@ def _python_editable_ineligible_reasons(
 
 
 def _git_snapshot(cwd: Path, env: Mapping[str, str]) -> dict[str, object]:
+    env = ProcessEnvironment(env)
     head = command_identity._run_captured(
         ("git", "rev-parse", "HEAD"), cwd=cwd, env=env
     )
@@ -1110,7 +1101,7 @@ def _git_snapshot(cwd: Path, env: Mapping[str, str]) -> dict[str, object]:
     }
 
 
-def _git_tracked_paths(cwd: Path, env: Mapping[str, str]) -> list[Path]:
+def _git_tracked_paths(cwd: Path, env: ProcessEnvironment) -> list[Path]:
     return [
         path
         for path in repository_source_paths(
@@ -1121,7 +1112,7 @@ def _git_tracked_paths(cwd: Path, env: Mapping[str, str]) -> list[Path]:
 
 
 def _read_source_git(
-    cwd: Path, arguments: list[str], *, env: Mapping[str, str]
+    cwd: Path, arguments: list[str], *, env: ProcessEnvironment
 ) -> bytes:
     completed = command_identity._run_captured(
         ("git", *arguments),
@@ -1152,6 +1143,7 @@ def capture_source_content(
     expected_files: Mapping[str, str] | None = None,
 ) -> tuple[dict[str, object], dict[str, object], Callable[[], None]]:
     """Capture Git-admitted source and explicit overlays, never local caches."""
+    env = ProcessEnvironment(env)
     from molt.python_file_node_custody import PythonFileCaptureContext
 
     started = time.perf_counter()

@@ -1193,12 +1193,12 @@ def _rust_target_metadata(
         scratch_root = Path(scratch)
         (scratch_root / "output").mkdir()
         safe_flags = rust_probe_arguments(flags, scratch_root)
-        probe_environment = dict(env)
+        probe_environment = ProcessEnvironmentBuilder(env)
         probe_environment.pop("RUSTC_LOG", None)
         result = process_guard.run_completed_command(
             [*command, *cargo_target_query_arguments(target, safe_flags)],
             cwd=root,
-            env=probe_environment,
+            env=ProcessEnvironment(probe_environment),
             input="",
             capture_output=True,
             text=True,
@@ -1246,7 +1246,7 @@ def _require_cargo_build_directory(
         result = process_guard.run_completed_command(
             [os.fspath(cargo.entrypoint), "--version"],
             cwd=root,
-            env=env,
+            env=ProcessEnvironment(env),
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -2017,7 +2017,7 @@ def resolve_runtime_cargo_plan(
     cargo_command: Sequence[str],
     requested_target: str | None,
     host_target: str | None = None,
-    environment_transform: Callable[[Mapping[str, str]], Mapping[str, str]]
+    environment_transform: Callable[[ProcessEnvironment], Mapping[str, str]]
     | None = None,
     rustflags_transform: Callable[[tuple[str, ...]], tuple[str, ...]] | None = None,
 ) -> RuntimeCargoPlan:
@@ -2041,7 +2041,7 @@ def resolve_runtime_cargo_plan(
     )
     if environment_transform is not None:
         environment = ProcessEnvironmentBuilder(
-            environment_transform(MappingProxyType(environment)),
+            environment_transform(ProcessEnvironment(environment)),
             rule=environment.rule,
         )
     rustc_selector = cargo_selected_value(
@@ -2087,7 +2087,7 @@ def resolve_runtime_cargo_plan(
             result = process_guard.run_completed_command(
                 [*command, "-vV"],
                 cwd=root,
-                env=environment,
+                env=ProcessEnvironment(environment),
                 capture_output=True,
                 text=True,
                 encoding="utf-8",

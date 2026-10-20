@@ -6,6 +6,10 @@ then compare outputs for equivalence.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
+
 import os
 import shutil
 import subprocess
@@ -23,23 +27,25 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SRC_DIR = _REPO_ROOT / "src"
 
 
-def _property_env(session_id: str) -> dict[str, str]:
-    env = development_artifact_env(
-        _REPO_ROOT,
-        os.environ,
-        session_prefix="property",
-        session_id=os.environ.get("MOLT_SESSION_ID") or session_id,
-        create_dirs=True,
+def _property_env(session_id: str) -> ProcessEnvironment:
+    env = ProcessEnvironmentBuilder(
+        development_artifact_env(
+            _REPO_ROOT,
+            os.environ,
+            session_prefix="property",
+            session_id=os.environ.get("MOLT_SESSION_ID") or session_id,
+            create_dirs=True,
+        )
     )
     env["PYTHONPATH"] = str(_SRC_DIR)
-    return env
+    return ProcessEnvironment(env)
 
 
 def _run_property_process(
     args: list[str],
     *,
     timeout: float | None = None,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str] | None = None,
     capture_output: bool = True,
     text: bool = True,
 ) -> subprocess.CompletedProcess[str]:

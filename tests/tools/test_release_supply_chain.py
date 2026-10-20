@@ -17,6 +17,7 @@ import zipfile
 import pytest
 
 from molt.exact_json import ExactJsonError, canonical_json_sha256
+from molt.process_environment import NameRule, ProcessEnvironment
 from molt.verified_subset import current_host_coordinate, host_coordinate
 
 from tools.release import build_bundle
@@ -32,6 +33,7 @@ from tools.release import verify_consumer
 from tools.release import compiler_payload
 from tools.release import git_source_snapshot
 from tests.tools.test_release_native_build import native_build_fixture
+from tests.process_guard_common import install_module_view
 
 
 from tests.release_lane_fixtures import (
@@ -42,6 +44,88 @@ from tests.release_lane_fixtures import (
 
 ROOT = Path(__file__).resolve().parents[2]
 _COMMANDS = CommandExecutor.for_file(__file__)
+
+
+@pytest.mark.parametrize("rule", list(NameRule))
+def test_source_environment_allowlist_uses_child_name_rule(monkeypatch, rule):
+    install_module_view(
+        monkeypatch,
+        "os",
+        os,
+        compiler_payload,
+        environ=ProcessEnvironment(
+            {"Path": "alternate", "PATH": "tools", "home": "shadow", "HOME": "real"},
+            rule=rule,
+        ),
+    )
+    env = compiler_payload.source_environment()
+    expected = (
+        {"Path": "tools", "home": "real"}
+        if rule is NameRule.WINDOWS
+        else {"PATH": "tools", "HOME": "real"}
+    )
+    assert dict(env) == {
+        **expected,
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "LC_ALL": "C",
+        "GIT_NO_REPLACE_OBJECTS": "1",
+    }
+    assert env.rule is rule
+
+
+@pytest.mark.parametrize("rule", list(NameRule))
+def test_immutable_git_environment_preserves_distinct_posix_names(rule):
+    original = ProcessEnvironment(
+        {"Git_No_Replace_Objects": "ambient", "GIT_NO_REPLACE_OBJECTS": "0"},
+        rule=rule,
+    )
+    env = git_source_snapshot.immutable_git_environment(original)
+    assert dict(env) == (
+        {"Git_No_Replace_Objects": "1"}
+        if rule is NameRule.WINDOWS
+        else {"Git_No_Replace_Objects": "ambient", "GIT_NO_REPLACE_OBJECTS": "1"}
+    )
+    assert original["Git_No_Replace_Objects"] == (
+        "0" if rule is NameRule.WINDOWS else "ambient"
+    )
+
+
+@pytest.mark.parametrize("rule", list(NameRule))
+def test_captured_index_override_uses_child_name_rule(tmp_path, monkeypatch, rule):
+    index = tmp_path / "index"
+    index.write_bytes(b"captured index bytes")
+    environment = ProcessEnvironment(
+        {"Git_Index_File": "ambient", "GIT_INDEX_FILE": str(index)}, rule=rule
+    )
+    monkeypatch.setattr(
+        git_source_snapshot, "_selected_index_path", lambda *_a, **_k: index
+    )
+
+    def run_git(_git, _root, selected, *_arguments):
+        spellings = {
+            name for name in selected if name in {"Git_Index_File", "GIT_INDEX_FILE"}
+        }
+        assert spellings == (
+            {"Git_Index_File"}
+            if rule is NameRule.WINDOWS
+            else {"Git_Index_File", "GIT_INDEX_FILE"}
+        )
+        if rule is NameRule.EXACT:
+            assert selected["Git_Index_File"] == "ambient"
+        copied = Path(selected["GIT_INDEX_FILE"])
+        assert copied != index and copied.read_bytes() == b"captured index bytes"
+        return "a" * 40
+
+    monkeypatch.setattr(git_source_snapshot, "_run_git_text", run_git)
+    assert (
+        git_source_snapshot._captured_index_tree(
+            tmp_path, git=tmp_path / "git", environment=environment
+        )
+        == "a" * 40
+    )
+    assert index.read_bytes() == b"captured index bytes"
 
 
 def _wheel(path: Path, version: str = "0.0.1") -> Path:

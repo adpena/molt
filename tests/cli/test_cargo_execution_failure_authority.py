@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironmentBuilder
+
 import importlib
 import inspect
 import json
@@ -444,7 +446,9 @@ def test_canonical_cargo_environment_uses_normal_policy_without_sccache(
 def test_existing_sccache_wrapper_is_normalized_before_nested_build(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    env = {"RUSTC_WRAPPER": r"C:\tools\sccache.exe", "CARGO_INCREMENTAL": "1"}
+    env = ProcessEnvironmentBuilder(
+        {"RUSTC_WRAPPER": r"C:\tools\sccache.exe", "CARGO_INCREMENTAL": "1"}
+    )
 
     CARGO._maybe_enable_sccache(env)
 
@@ -1055,7 +1059,7 @@ def test_resolved_runtime_plan_never_changes_environment_or_retries(
     def run(command: list[str], **kwargs: object):
         calls.append(kwargs)
         assert command == list(plan.command)
-        assert kwargs["env"] == dict(plan.environment)
+        assert kwargs["env"] is plan.environment
         return _completed(
             command, 2, stderr="sccache: error: failed to execute compile"
         )
@@ -1158,7 +1162,7 @@ def test_source_compilation_presents_exact_plan_and_restores_status(
 
     def run(command, **kwargs):
         assert command == list(plan.command)
-        assert kwargs["env"] == dict(plan.environment)
+        assert kwargs["env"] is plan.environment
         assert kwargs["progress_label"] is None
         assert stream.getvalue().splitlines()[-1] == (
             f"molt: Runtime build (dev-fast, {plan.target})"

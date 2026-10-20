@@ -10,9 +10,44 @@ from pathlib import Path
 
 import pytest
 
+from molt.process_environment import NameRule, ProcessEnvironment
 from tests.rust.process_guard import run_rust_test_process
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.mark.parametrize("rule", [NameRule.EXACT, NameRule.WINDOWS])
+def test_python_loader_policy_uses_the_callers_name_rule(rule):
+    from molt.python_runtime_admission import _loader_environment
+
+    environment = ProcessEnvironment(
+        {
+            "PATH": "canonical path",
+            "Path": "alias path",
+            "LD_LIBRARY_PATH": "Canonical Loader",
+            "ld_library_path": "Alias Loader",
+            "DYLD_INSERT_LIBRARIES": "Case-Sensitive File.dylib",
+            "PYTHONPATH": "isolated startup ignores this",
+            "pythonexecutable": "alias executable",
+        },
+        rule=rule,
+    )
+    selected = _loader_environment(environment)
+    assert selected.rule is rule
+    assert dict(selected) == (
+        {
+            "PATH": "canonical path",
+            "LD_LIBRARY_PATH": "Canonical Loader",
+            "DYLD_INSERT_LIBRARIES": "Case-Sensitive File.dylib",
+        }
+        if rule is NameRule.EXACT
+        else {
+            "PATH": "alias path",
+            "LD_LIBRARY_PATH": "Alias Loader",
+            "DYLD_INSERT_LIBRARIES": "Case-Sensitive File.dylib",
+            "PYTHONEXECUTABLE": "alias executable",
+        }
+    )
 
 
 @pytest.mark.parametrize(
@@ -25,8 +60,13 @@ ROOT = Path(__file__).resolve().parents[1]
         ("default", "path"),
     ],
 )
+@pytest.mark.parametrize("rule", [NameRule.EXACT, NameRule.WINDOWS])
 def test_generator_selection_is_pinned_before_cargo_changes_cwd(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, channel: str, selector: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    channel: str,
+    selector: str,
+    rule: NameRule,
 ) -> None:
     from molt.cli.runtime_build_python import pin_runtime_build_python_environment
     from molt.python_runtime_admission import resolve_build_python
@@ -44,6 +84,10 @@ def test_generator_selection_is_pinned_before_cargo_changes_cwd(
         environment[channel] = f"bin/{name}" if selector == "explicit" else name
     if channel == "MOLT_BUILD_PYTHON":
         environment["PYTHON"] = "shadowed-unavailable-python"
+    if rule is NameRule.WINDOWS:
+        environment["Path"] = environment.pop("PATH")
+        environment["Molt_Build_Python"] = environment.pop("MOLT_BUILD_PYTHON")
+    environment = ProcessEnvironment(environment, rule=rule)
     original = dict(environment)
     monkeypatch.chdir(crate)
     pinned = pin_runtime_build_python_environment(environment, cwd=operation)
@@ -51,7 +95,8 @@ def test_generator_selection_is_pinned_before_cargo_changes_cwd(
     assert pinned[key] == str(operation / "bin" / name)
     assert resolve_build_python(pinned) == operation / "bin" / name
     assert resolve_build_python(pinned).read_bytes() == b"selected"
-    assert environment == original
+    assert isinstance(pinned, ProcessEnvironment) and pinned.rule is rule
+    assert dict(environment) == original
     assert Path.cwd() == crate
     if channel == "PYTHON":
         assert pinned["MOLT_BUILD_PYTHON"] == " "

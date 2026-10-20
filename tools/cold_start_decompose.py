@@ -59,6 +59,7 @@ import sys
 import tempfile
 import time
 from dataclasses import asdict, dataclass, field
+from collections.abc import Mapping
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -74,6 +75,7 @@ TOOLS_ROOT = REPO_ROOT / "tools"
 SRC_ROOT = REPO_ROOT / "src"
 
 
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder  # noqa: E402
 from tools import bench  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402
 
@@ -124,8 +126,8 @@ class RunStat:
     samples_s: list[float] = field(default_factory=list)
 
 
-def _canonical_env() -> dict[str, str]:
-    base = os.environ.copy()
+def _canonical_env() -> ProcessEnvironment:
+    base = ProcessEnvironmentBuilder(os.environ)
     base["MOLT_SESSION_ID"] = PERFSCORE_SESSION_ID
     return bench._canonical_bench_env(base)
 
@@ -133,7 +135,7 @@ def _canonical_env() -> dict[str, str]:
 def _guarded_text_process(
     cmd: list[str],
     *,
-    env: dict[str, str],
+    env: Mapping[str, str],
     timeout_s: float,
     cwd: Path = REPO_ROOT,
 ) -> harness_memory_guard.GuardedCompletedProcess:
@@ -151,16 +153,16 @@ def _guarded_text_process(
 def _safe_run_elapsed(
     cmd: list[str],
     *,
-    env: dict[str, str],
+    env: Mapping[str, str],
     rss_mb: int,
     timeout_s: float,
     label: str,
-    extra_env: dict[str, str] | None = None,
+    extra_env: Mapping[str, str] | None = None,
 ) -> tuple[float | None, str]:
     """Return the shared guard's child interval and exact child stderr."""
-    run_env = dict(env)
+    run_env = ProcessEnvironment(env)
     if extra_env:
-        run_env.update(extra_env)
+        run_env = run_env.updated(extra_env)
     try:
         outcome = _run_measured_command(
             cmd,
@@ -179,14 +181,14 @@ def _safe_run_elapsed(
 def _measure_binary(
     binary: Path,
     *,
-    env: dict[str, str],
+    env: Mapping[str, str],
     samples: int,
     warmup: int,
     rss_mb: int,
     timeout_s: float,
     label: str,
     fresh_each: bool = True,
-    extra_env: dict[str, str] | None = None,
+    extra_env: Mapping[str, str] | None = None,
 ) -> RunStat:
     """Median wall time over fresh-path copies (defeats macOS dyld/codesign cache).
 
@@ -250,7 +252,7 @@ def _fresh(binary: Path, fresh_dir: Path, idx: int) -> Path:
 def _measure_runtime_init_phases(
     binary: Path,
     *,
-    env: dict[str, str],
+    env: Mapping[str, str],
     samples: int,
     rss_mb: int,
     timeout_s: float,
@@ -323,12 +325,11 @@ def _parse_dyld_total_ms(stderr: str) -> float | None:
 
 
 def _measure_dyld_ms(
-    binary: Path, *, env: dict[str, str], samples: int, timeout_s: float
+    binary: Path, *, env: Mapping[str, str], samples: int, timeout_s: float
 ) -> float | None:
     vals: list[float] = []
     for _ in range(samples):
-        run_env = dict(env)
-        run_env["DYLD_PRINT_STATISTICS"] = "1"
+        run_env = ProcessEnvironment(env).updated({"DYLD_PRINT_STATISTICS": "1"})
         try:
             proc = _guarded_text_process(
                 [str(binary)],
@@ -448,7 +449,9 @@ def decompose_profile(
     bd = ProfileBreakdown(profile=profile)
     env = _canonical_env()
     if profile == "release-output":
-        env["MOLT_STDLIB_PROFILE"] = env.get("MOLT_STDLIB_PROFILE", "full")
+        env = env.updated(
+            {"MOLT_STDLIB_PROFILE": env.get("MOLT_STDLIB_PROFILE", "full")}
+        )
 
     minimal = _build_molt_probe(
         MINIMAL_PY, build_profile=build_flag, stem="minimal", log=log

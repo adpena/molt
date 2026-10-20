@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
+
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -19,7 +21,7 @@ BUILD_PYTHON_SIGNATURE = "MOLT_BUILD_PYTHON_SIGNATURE"
 
 def pin_runtime_build_python_environment(
     environment: Mapping[str, str], *, cwd: Path
-) -> Mapping[str, str]:
+) -> ProcessEnvironment:
     """Pin effective generator selection before its first identity capture.
 
     Cargo launches build scripts from their crate directories. An absolute
@@ -28,16 +30,18 @@ def pin_runtime_build_python_environment(
     """
     from molt.python_runtime_admission import resolve_build_python
 
-    entrypoint = resolve_build_python(environment, cwd=cwd)
+    selected_environment = ProcessEnvironmentBuilder(environment)
+    entrypoint = resolve_build_python(selected_environment, cwd=cwd)
     selected = next(
         (
             name
             for name in ("MOLT_BUILD_PYTHON", "PYTHON")
-            if environment.get(name, "").strip()
+            if selected_environment.get(name, "").strip()
         ),
         "MOLT_BUILD_PYTHON",
     )
-    return {**environment, selected: str(entrypoint)}
+    selected_environment[selected] = str(entrypoint)
+    return ProcessEnvironment(selected_environment)
 
 
 def bind_runtime_build_python(

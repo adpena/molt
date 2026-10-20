@@ -9,6 +9,11 @@ import types
 import pytest
 
 from molt.default_paths import executable_environment_value
+from molt.process_environment import (
+    NameRule,
+    ProcessEnvironment,
+    ProcessEnvironmentBuilder,
+)
 
 from molt.toolchain_identity import (
     executable_name_candidates,
@@ -21,11 +26,14 @@ def test_windows_selection_projects_only_captured_suffix_and_cwd_policy(
 ) -> None:
     path_root = tmp_path / "path"
     current = tmp_path / "cwd"
-    environment = {
-        "Path": str(path_root),
-        "PathExt": ".ALT;.EXE",
-        "NoDefaultCurrentDirectoryInExePath": "",
-    }
+    environment = ProcessEnvironmentBuilder(
+        {
+            "Path": str(path_root),
+            "PathExt": ".ALT;.EXE",
+            "NoDefaultCurrentDirectoryInExePath": "",
+        },
+        rule=NameRule.WINDOWS,
+    )
     assert executable_name_candidates(
         "clang", environment=environment, windows=True
     ) == (
@@ -70,11 +78,43 @@ def test_posix_path_preserves_literal_spaces_and_explicit_empty_component(
     ) == (tmp_path / " spaced ", tmp_path)
 
 
-def test_windows_conflicting_search_key_spellings_fail_closed() -> None:
-    with pytest.raises(ValueError, match="conflicting captured environment"):
-        executable_environment_value(
-            {"Path": "first", "PATH": "second"}, "PATH", windows=True
-        )
+@pytest.mark.parametrize("rule", [NameRule.EXACT, NameRule.WINDOWS])
+def test_executable_environment_uses_canonical_name_and_collision_rules(rule) -> None:
+    environment = ProcessEnvironment({"PATH": "first", "Path": "second"}, rule=rule)
+    assert executable_environment_value(environment, "PATH") == (
+        "first" if rule is NameRule.EXACT else "second"
+    )
+    assert executable_environment_value(environment, "Path") == "second"
+    assert tuple(environment) == (
+        ("PATH", "Path") if rule is NameRule.EXACT else ("PATH",)
+    )
+    nonexpanding = ProcessEnvironment({"ß": "sharp", "SS": "double"}, rule=rule)
+    assert executable_environment_value(nonexpanding, "ß") == "sharp"
+    assert executable_environment_value(nonexpanding, "SS") == "double"
+
+
+@pytest.mark.parametrize("rule", [NameRule.EXACT, NameRule.WINDOWS])
+def test_windows_filesystem_policy_does_not_override_environment_name_rule(
+    tmp_path, rule
+):
+    selected = tmp_path / "selected"
+    unselected = tmp_path / "unselected"
+    environment = ProcessEnvironment(
+        {
+            "PATH": str(selected),
+            "Path": str(unselected),
+            "PATHEXT": ".EXE",
+            "PathExt": ".ALT",
+            "nodefaultcurrentdirectoryinexepath": "1",
+        },
+        rule=rule,
+    )
+    assert executable_name_candidates(
+        "clang", environment=environment, windows=True
+    ) == (("clang.EXE",) if rule is NameRule.EXACT else ("clang.ALT",))
+    assert executable_search_directories(
+        environment=environment, cwd=tmp_path, windows=True
+    ) == ((tmp_path, selected) if rule is NameRule.EXACT else (unselected,))
 
 
 @pytest.mark.parametrize("command", ["npm", "clang.EXE", "tool.alt", "run.py"])

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence, Set as AbcSet
+from collections.abc import Callable, Mapping, MutableMapping, Sequence, Set as AbcSet
 import contextlib
 from dataclasses import dataclass
 import errno
@@ -907,7 +907,9 @@ def take_child_exit_census(
     return census, error
 
 
-def _set_env_gb_ceiling(env: dict[str, str], name: str, limit_kb: int) -> None:
+def _set_env_gb_ceiling(
+    env: MutableMapping[str, str], name: str, limit_kb: int
+) -> None:
     limit_gb = limit_kb / (1024 * 1024)
     raw = env.get(name)
     if raw is not None and raw.strip():
@@ -919,7 +921,7 @@ def _set_env_gb_ceiling(env: dict[str, str], name: str, limit_kb: int) -> None:
 
 
 def _inject_guard_memory_contract_env(
-    env: dict[str, str],
+    env: MutableMapping[str, str],
     *,
     max_rss_kb: int,
     child_rlimit_kb: int | None,

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironmentBuilder
+
 import ast
 import os
 import sys
@@ -11,12 +13,14 @@ from molt.dx import development_artifact_env
 from tests.native_process_guard import run_native_test_process
 
 
-def _native_molt_env(root: Path) -> dict[str, str]:
-    env = development_artifact_env(
-        root,
-        os.environ,
-        session_prefix="test-gpu-kv-cache",
-        session_id="test-gpu-kv-cache",
+def _native_molt_env(root: Path) -> ProcessEnvironmentBuilder:
+    env = ProcessEnvironmentBuilder(
+        development_artifact_env(
+            root,
+            os.environ,
+            session_prefix="test-gpu-kv-cache",
+            session_id="test-gpu-kv-cache",
+        )
     )
     env["PYTHONPATH"] = str(root / "src")
     env["MOLT_HERMETIC_MODULE_ROOTS"] = "1"

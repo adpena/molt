@@ -8,6 +8,7 @@ measurement authority, and child launch-to-exit time excludes guard cleanup.
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
 import json
@@ -80,7 +81,7 @@ def _require_capture_file(
 def _run_measured_command(
     cmd: list[str],
     *,
-    env: dict[str, str],
+    env: Mapping[str, str],
     rss_mb: int,
     timeout_s: float,
     label: str,

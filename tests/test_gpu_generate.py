@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
+
 import os
 import sys
 from pathlib import Path
@@ -26,19 +28,21 @@ def _isolate_dflash_adapter_registry():
         restore_dflash_adapters(snapshot)
 
 
-def _native_molt_env(root: Path) -> dict[str, str]:
-    env = development_artifact_env(
-        root,
-        os.environ,
-        session_prefix="gpu-generate",
-        session_id=os.environ.get("MOLT_SESSION_ID") or "gpu-generate",
-        create_dirs=True,
+def _native_molt_env(root: Path) -> ProcessEnvironment:
+    env = ProcessEnvironmentBuilder(
+        development_artifact_env(
+            root,
+            os.environ,
+            session_prefix="gpu-generate",
+            session_id=os.environ.get("MOLT_SESSION_ID") or "gpu-generate",
+            create_dirs=True,
+        )
     )
     env["PYTHONPATH"] = str(root / "src")
     env["MOLT_STDLIB_PROFILE"] = "full"
     env["MOLT_HERMETIC_MODULE_ROOTS"] = "1"
     env["MOLT_BACKEND_DAEMON"] = "0"
-    return env
+    return ProcessEnvironment(env)
 
 
 def _dflash_conditioning(tag="prefill", token=0):

@@ -706,7 +706,10 @@ def _cmd_pact_witness_acceptance(args: argparse.Namespace) -> int:
 def _cmd_source_extension_produce(args: argparse.Namespace) -> int:
     policy._named_spec_user_env_overrides(
         _SOURCE_EXTENSION_PRODUCER_LOGICAL_ID,
-        _SOURCE_EXTENSION_PRODUCER_LOCKED_ENV,
+        policy._named_spec_locked_env(
+            _SOURCE_EXTENSION_PRODUCER_LOGICAL_ID,
+            _SOURCE_EXTENSION_PRODUCER_LOCKED_ENV,
+        ),
         args.env,
     )
     plan = _source_extension_producer_plan(

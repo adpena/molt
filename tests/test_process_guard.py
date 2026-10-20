@@ -6,7 +6,72 @@ from types import SimpleNamespace
 import pytest
 
 from molt import process_guard
+from molt.process_environment import NameRule, ProcessEnvironment
 from tests.process_guard_common import install_module_view
+
+
+@pytest.mark.parametrize("rule", list(NameRule))
+def test_guard_environment_inheritance_respects_caller_rule(monkeypatch, rule):
+    monkeypatch.setenv("MOLT_TEST_MAX_RSS_GB", "9")
+    monkeypatch.setenv("molt_test_max_total_rss_gb", "11")
+    original = ProcessEnvironment(
+        {"molt_test_max_rss_gb": "7", "Path": "first", "PATH": "second"},
+        rule=rule,
+    )
+    before = original.child_block()
+    result = process_guard.with_memory_guard_env(original, "MOLT_TEST")
+    assert isinstance(result, ProcessEnvironment)
+    assert result.rule is rule
+    assert result["molt_test_max_rss_gb"] == "7"
+    assert result["MOLT_TEST_MAX_RSS_GB"] == ("7" if rule is NameRule.WINDOWS else "9")
+    if rule is NameRule.WINDOWS:
+        assert result["MOLT_TEST_MAX_TOTAL_RSS_GB"] == "11"
+        assert result["Path"] == "second"
+    else:
+        assert "MOLT_TEST_MAX_TOTAL_RSS_GB" not in result
+        assert result["Path"] == "first"
+    assert original.child_block() == before
+
+
+def test_spawn_type_boundary_rejects_unowned_mapping(tmp_path):
+    from pathlib import Path
+    import os
+    import sys
+
+    from tests.process_guard_common import run_guarded_test_process
+
+    root = Path(__file__).resolve().parents[1]
+    checker = Path(sys.executable).with_name("ty.exe" if os.name == "nt" else "ty")
+    fixture = tmp_path / "spawn_environment_contract.py"
+    fixture.write_text(
+        "from molt.process_environment import ProcessEnvironment\n"
+        "from molt.process_guard import run_completed_command, with_memory_guard_env\n"
+        "run_completed_command(['tool'], env=ProcessEnvironment({}))\n"
+        "with_memory_guard_env(ProcessEnvironment({}), 'MOLT_TEST')\n"
+        "run_completed_command(['tool'], env={})\n"
+        "with_memory_guard_env({}, 'MOLT_TEST')\n",
+        encoding="utf-8",
+    )
+    result = run_guarded_test_process(
+        [
+            str(checker),
+            "check",
+            "--project",
+            str(root),
+            "--extra-search-path",
+            str(root / "src"),
+            "--no-force-exclude",
+            "--output-format",
+            "concise",
+            str(fixture),
+        ],
+        cwd=root,
+        timeout=30,
+    )
+    diagnostics = result.stdout + result.stderr
+    assert result.returncode == 1, diagnostics
+    assert diagnostics.count("invalid-argument-type") == 2, diagnostics
+    assert ":5:" in diagnostics and ":6:" in diagnostics, diagnostics
 
 
 def test_guard_loader_rejects_preloaded_foreign_module(monkeypatch, tmp_path):
@@ -126,7 +191,7 @@ def test_cargo_metadata_probe_normalizes_wrapper_incremental_conflict(
     )
     process_guard.run_completed_command(
         ["cargo", "metadata", "--locked", "--format-version", "1"],
-        env={wrapper_env: "sccache", "CARGO_INCREMENTAL": "1"},
+        env=ProcessEnvironment({wrapper_env: "sccache", "CARGO_INCREMENTAL": "1"}),
         memory_guard_prefix=None,
         capture_output=True,
     )

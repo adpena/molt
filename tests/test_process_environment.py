@@ -106,10 +106,13 @@ def test_builder_mutation_keeps_spelling_and_snapshots_do_not_alias(rule):
     builder[selector] = "new"
     assert dict(builder) == {"Path": "new", "KEEP": "value"}
     frozen = ProcessEnvironment(builder)
+    copied = ProcessEnvironment(frozen)
     del builder[selector]
     builder[selector] = "later"
     values["KEEP"] = "outside"
     assert dict(frozen) == {"Path": "new", "KEEP": "value"}
+    assert copied == frozen and copied.rule is rule
+    assert dict(copied) == {"Path": "new", "KEEP": "value"}
     assert dict(builder) == {"KEEP": "value", selector: "later"}
     with pytest.raises(KeyError):
         del builder["missing"]

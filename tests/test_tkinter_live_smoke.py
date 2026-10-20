@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironmentBuilder
+
 import os
 import shutil
 import sys
@@ -39,12 +41,14 @@ def _require_live_smoke_prereqs(expected_platform: str) -> None:
             pytest.skip("linux live tkinter smoke requires DISPLAY or WAYLAND_DISPLAY")
 
 
-def _build_env() -> dict[str, str]:
-    env = development_artifact_env(
-        ROOT,
-        {**os.environ, "MOLT_USE_SCCACHE": "0"},
-        session_prefix="tk-live-smoke",
-        session_id="tk-live-smoke",
+def _build_env() -> ProcessEnvironmentBuilder:
+    env = ProcessEnvironmentBuilder(
+        development_artifact_env(
+            ROOT,
+            {**os.environ, "MOLT_USE_SCCACHE": "0"},
+            session_prefix="tk-live-smoke",
+            session_id="tk-live-smoke",
+        )
     )
     env["PYTHONPATH"] = str(ROOT / "src")
     env["MOLT_BACKEND_DAEMON"] = "0"

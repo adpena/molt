@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import pytest
 
+from molt.process_environment import NameRule, ProcessEnvironment
+
 
 from molt.cli.source_extension_compiler_inputs import (
     compiler_sysroot_arg_value,
@@ -14,7 +16,8 @@ from molt.cli.source_extension_compiler_inputs import (
 from tests.cli.native_link_test_support import write_test_darwin_sdk
 
 
-def test_compiler_environment_removes_hidden_command_overrides_not_sdk_inputs():
+@pytest.mark.parametrize("rule", [NameRule.EXACT, NameRule.WINDOWS])
+def test_compiler_environment_removes_hidden_command_overrides_not_sdk_inputs(rule):
     # An explicit SDKROOT is an SDK input the projection keeps as it is.
     sdk = {
         "INCLUDE": "sdk/include",
@@ -31,9 +34,14 @@ def test_compiler_environment_removes_hidden_command_overrides_not_sdk_inputs():
         "CC_LD_FOR_BUILD": "build-linker",
         "CXX_LD_FOR_BUILD": "build-cpp-linker",
     }
-    captured = {**sdk, **overrides}
-    assert source_extension_compiler_environment(captured) == sdk
-    assert captured == {**sdk, **overrides}
+    captured = ProcessEnvironment({**sdk, **overrides}, rule=rule)
+    observed = source_extension_compiler_environment(captured)
+    expected = dict(sdk)
+    if rule is NameRule.EXACT:
+        expected.update({"_cl_": "/Foother.obj", "cxx_ld": "another-linker"})
+    assert isinstance(observed, ProcessEnvironment) and observed.rule is rule
+    assert dict(observed) == expected
+    assert dict(captured) == {**sdk, **overrides}
 
 
 def test_compiler_grammar_admits_matching_target_sysroot_and_codegen_flags() -> None:
@@ -279,7 +287,7 @@ def test_compiler_environment_never_discovers_an_implicit_sdk(monkeypatch):
         "select_darwin_sdk",
         lambda *_: pytest.fail("environment filtering selected an Apple SDK"),
     )
-    assert source_extension_compiler_environment({"PATH": "selected"}) == {
+    assert dict(source_extension_compiler_environment({"PATH": "selected"})) == {
         "PATH": "selected"
     }
 

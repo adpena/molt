@@ -21,6 +21,7 @@ from collections.abc import Mapping, MutableMapping
 from typing import Any, Literal
 
 from molt.default_paths import expand_user_path
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
 from molt.flag_strings import FlagStringRule
 
 from molt.source_root import compiler_source_root, source_file_revision
@@ -741,7 +742,7 @@ def provisioned_wasi_sdk_prefix(
 
     from molt.dx import DxConfigError, canonical_toolchain_root
 
-    environment = os.environ if environ is None else environ
+    environment = ProcessEnvironment(os.environ if environ is None else environ)
     try:
         toolchain_root = canonical_toolchain_root(
             root, environment, require_exists=False, cwd=cwd
@@ -827,7 +828,7 @@ def selected_wasi_sdk_prefix(
     prefix under checkout custody is selected. Admission is separate.
     """
 
-    environment = os.environ if environ is None else environ
+    environment = ProcessEnvironment(os.environ if environ is None else environ)
     sdk = environment.get("WASI_SDK_PATH") or environment.get("WASI_SDK_PREFIX")
     if sdk:
         prefix = expand_user_path(sdk, environment=environment)
@@ -904,6 +905,7 @@ def selected_wasi_c_abi_plan(
 
     Environment text is a projection, never the provisioned generation authority.
     """
+    environ = ProcessEnvironment(environ)
     installation = selected_wasi_sdk_installation(root, environ=environ)
     if installation is None:
         raise LlvmToolchainConfigError(
@@ -935,17 +937,22 @@ def apply_provisioned_wasm_toolchain(
     Missing installation is a readiness result. Rust C-ABI consumers select
     their target explicitly; generic setup does not select a Rust link mode.
     """
-    installation = installation or selected_wasi_sdk_installation(root, environ=env)
+    selected = ProcessEnvironment(env)
+    installation = installation or selected_wasi_sdk_installation(
+        root, environ=selected
+    )
     if installation is None:
         return ()
     projected = project_wasm_toolchain_environment(
-        installation, environ={}, rust_target=rust_target
+        installation,
+        environ=ProcessEnvironment({}, rule=selected.rule),
+        rust_target=rust_target,
     )
     updates: dict[str, str] = {}
-    c_flag_rule = FlagStringRule.cc(env)
+    c_flag_rule = FlagStringRule.cc(selected)
     for key, value in projected.items():
         if key.startswith(("CFLAGS_", "CXXFLAGS_")):
-            prior = env.get(key, "")
+            prior = selected.get(key, "")
             tokens = c_flag_rule.decode(prior)
             updates[key] = (
                 prior
@@ -958,17 +965,17 @@ def apply_provisioned_wasm_toolchain(
                 "CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS",
                 "CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS",
             }
-            and key in env
+            and key in selected
         ):
             # Effective Cargo lanes are validated by runtime_cargo_plan. Keep
             # unrelated user codegen settings for that single flag authority.
             rule = FlagStringRule.CARGO_LIST
             updates[key] = rule.encode(
-                wasi_c_abi_plan(installation).rustflags(rule.decode(env[key])),
+                wasi_c_abi_plan(installation).rustflags(rule.decode(selected[key])),
                 variable=key,
             )
         else:
-            if key in env and env[key] != value:
+            if key in selected and selected[key] != value:
                 raise LlvmToolchainConfigError(
                     f"{key} differs from the selected WASI SDK"
                 )
@@ -1298,7 +1305,7 @@ def _dedupe_paths(paths: list[tuple[Path, str]]) -> tuple[tuple[Path, str], ...]
 def _llvm_config_candidates(
     root: Path,
     pin: LlvmBackendPin,
-    env: dict[str, str],
+    env: Mapping[str, str],
     explicit_prefix: Path | None,
     llvm_sys_search_prefix: Path | None,
     *,
@@ -1339,7 +1346,7 @@ def _llvm_config_candidates(
 def discover_llvm_toolchain(
     root: Path,
     *,
-    environ: dict[str, str] | None = None,
+    environ: Mapping[str, str] | None = None,
     cwd: Path | None = None,
     probe_timeout: Callable[[float], float] | None = None,
 ) -> LlvmToolchainDiscovery | None:
@@ -1355,7 +1362,7 @@ def discover_llvm_toolchain(
     pin = required_llvm_backend_pin(root)
     if pin is None:
         return None
-    env = dict(os.environ if environ is None else environ)
+    env = ProcessEnvironment(os.environ if environ is None else environ)
     sdk_authority_names = (
         "MOLT_LLVM_PREFIX",
         mlir_sys_prefix_env_var(pin.major),
@@ -1612,14 +1619,14 @@ def llvm_sdk_probe_command(
     ]
 
 
-def llvm_sdk_probe_environment(environ: Mapping[str, str]) -> dict[str, str]:
+def llvm_sdk_probe_environment(environ: Mapping[str, str]) -> ProcessEnvironment:
     """Pin the same SDK loader/target context for capture and verification."""
-    probe_env = dict(environ)
+    probe_env = ProcessEnvironmentBuilder(environ)
     if sys.platform == "darwin":
         from molt.platform_toolchain import select_darwin_toolchain
 
         probe_env.update(select_darwin_toolchain(probe_env).environment())
-    return probe_env
+    return ProcessEnvironment(probe_env)
 
 
 def _compile_link_probe(
@@ -1665,7 +1672,7 @@ def _compile_link_probe(
                 text=True,
                 timeout=timeout,
                 encoding="utf-8",
-                env=probe_env,
+                env=probe_env.child_block(),
             )
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
             raise LlvmToolchainConfigError(
@@ -1961,7 +1968,7 @@ def llvm_verification_tool_paths(
 def llvm_verification_selection(
     *, root: Path, cwd: Path, env: Mapping[str, str]
 ) -> dict[str, object]:
-    discovery = discover_llvm_toolchain(root, environ=dict(env), cwd=cwd)
+    discovery = discover_llvm_toolchain(root, environ=env, cwd=cwd)
     if discovery is None:
         raise ValueError("LLVM SDK verification requires a selected prefix")
     selectors = {}
@@ -2487,7 +2494,7 @@ def _normalized_prefix(
 def resolve_llvm_toolchain_prefix(
     root: Path,
     *,
-    environ: dict[str, str] | None = None,
+    environ: Mapping[str, str] | None = None,
 ) -> Path | None:
     """Resolve the prefix reported by the canonical discovery authority."""
 
@@ -2498,7 +2505,7 @@ def resolve_llvm_toolchain_prefix(
 def verify_available_llvm_toolchain(
     root: Path,
     *,
-    environ: dict[str, str] | None = None,
+    environ: Mapping[str, str] | None = None,
     cwd: Path | None = None,
     content_policy: Literal["cached", "full"] = "cached",
     probe_timeout: Callable[[float], float] | None = None,
@@ -2537,7 +2544,7 @@ def _explicit_wasm_tool(
     raw: str,
     *,
     selector: str,
-    environment: dict[str, str],
+    environment: Mapping[str, str],
     cwd: Path | None = None,
 ) -> Path:
     """Resolve one role-selected executable without consulting ambient state."""
@@ -2582,7 +2589,7 @@ def resolve_wasi_sdk_tool(
     root: Path,
     role: Literal["wasm-ld", "llvm-nm", "clang", "clang++"],
     *,
-    environ: dict[str, str] | None = None,
+    environ: Mapping[str, str] | None = None,
     cwd: Path | None = None,
 ) -> Path:
     """Select an explicit role tool or a provisioned SDK; never install one.
@@ -2609,7 +2616,7 @@ def resolve_wasi_sdk_tool(
     selectors = {"wasm-ld": "MOLT_WASM_LD", "llvm-nm": "MOLT_LLVM_NM"}
     if role not in selectors:
         raise LlvmToolchainConfigError(f"unsupported WASI SDK role: {role}")
-    environment = dict(os.environ if environ is None else environ)
+    environment = ProcessEnvironment(os.environ if environ is None else environ)
     selector = selectors[role]
     configured = environment.get(selector, "").strip()
     if configured:
@@ -2650,10 +2657,10 @@ def managed_wasm_llvm_nm(
     root: Path,
     path: Path,
     *,
-    environ: dict[str, str] | None = None,
+    environ: Mapping[str, str] | None = None,
 ) -> WasmLlvmNmVerification[WasiSdkInstallation] | None:
     """Project an already selected reader; external readers keep live custody."""
-    environment = dict(os.environ if environ is None else environ)
+    environment = ProcessEnvironment(os.environ if environ is None else environ)
     if not (environment.get("WASI_SDK_PATH") or environment.get("WASI_SDK_PREFIX")):
         from molt.dx import selected_toolchain_contains
 
@@ -2689,7 +2696,7 @@ def managed_wasm_llvm_nm(
 def verify_wasm_llvm_nm(
     root: Path,
     *,
-    environ: dict[str, str] | None = None,
+    environ: Mapping[str, str] | None = None,
 ) -> WasmLlvmNmVerification[StableRegularFileIdentity | WasiSdkInstallation]:
     """Verify the sole LLVM symbol reader admitted for WebAssembly artifacts.
 
@@ -2701,7 +2708,7 @@ def verify_wasm_llvm_nm(
     Lookup never provisions.
     """
 
-    environment = dict(os.environ if environ is None else environ)
+    environment = ProcessEnvironment(os.environ if environ is None else environ)
     llvm_nm = resolve_wasi_sdk_tool(root, "llvm-nm", environ=environment)
     if managed := managed_wasm_llvm_nm(root, llvm_nm, environ=environment):
         return managed
@@ -2801,7 +2808,7 @@ def project_wasm_toolchain_environment(
     *,
     environ: Mapping[str, str] | None = None,
     rust_target: str | None = None,
-) -> dict[str, str]:
+) -> ProcessEnvironment:
     """Project one admitted SDK to every shared WASM resolver.
 
     Local builds, CI, and the proof queue all select WebAssembly tools through
@@ -2815,7 +2822,7 @@ def project_wasm_toolchain_environment(
         raise LlvmToolchainConfigError(
             "WASI C-runtime projection requires a supported explicit Rust target"
         )
-    result = dict(os.environ if environ is None else environ)
+    result = ProcessEnvironmentBuilder(os.environ if environ is None else environ)
     sysroot = str(installation.sysroot)
     result["MOLT_WASI_SYSROOT"] = sysroot
     result["WASI_SYSROOT"] = sysroot
@@ -2853,25 +2860,25 @@ def project_wasm_toolchain_environment(
                 ):
                     flags = f"{flags} --no-default-config".lstrip()
                 result[key] = flags
-    return result
+    return ProcessEnvironment(result)
 
 
 def mlir_toolchain_environment(
     root: Path,
     *,
-    environ: dict[str, str] | None = None,
+    environ: Mapping[str, str] | None = None,
     require: bool = True,
-) -> dict[str, str]:
+) -> ProcessEnvironment:
     """Verify one SDK identity and project each binding's required path shape."""
 
     pin = required_llvm_backend_pin(root)
     if pin is None:
         if not require:
-            return dict(os.environ if environ is None else environ)
+            return ProcessEnvironment(os.environ if environ is None else environ)
         raise LlvmToolchainConfigError(
             f"could not resolve LLVM backend feature pin under {root}"
         )
-    result = dict(os.environ if environ is None else environ)
+    result = ProcessEnvironment(os.environ if environ is None else environ)
     verification = verify_available_llvm_toolchain(root, environ=result)
     if verification is None:
         if require:
@@ -2892,7 +2899,7 @@ def project_llvm_toolchain_environment(
     verification: LlvmPrefixVerification,
     *,
     environ: Mapping[str, str] | None = None,
-) -> dict[str, str]:
+) -> ProcessEnvironment:
     """Project an already verified result without rescanning the SDK.
 
     llvm-sys names its executable-search root ``PREFIX`` and searches only its
@@ -2911,7 +2918,7 @@ def project_llvm_toolchain_environment(
             "cannot project an LLVM verification from the wrong release family: "
             f"expected exactly {pin.default_release}, found {verification.version}"
         )
-    result = dict(os.environ if environ is None else environ)
+    result = ProcessEnvironmentBuilder(os.environ if environ is None else environ)
     prefix = verification.prefix
     llvm_config = verification.llvm_config
 
@@ -2943,7 +2950,7 @@ def project_llvm_toolchain_environment(
         selected = select_darwin_toolchain(result).environment()
         for key in DARWIN_SDK_ENV_KEYS:
             result[key] = selected[key]
-    return result
+    return ProcessEnvironment(result)
 
 
 def llvm_toolchain_environment_delta(
@@ -2963,9 +2970,7 @@ def llvm_toolchain_environment_delta(
         raise LlvmToolchainConfigError(
             f"could not resolve LLVM backend feature pin under {root}"
         )
-    projected = project_llvm_toolchain_environment(
-        root, verification, environ=dict(environ)
-    )
+    projected = project_llvm_toolchain_environment(root, verification, environ=environ)
     keys = (
         "MOLT_LLVM_PREFIX",
         pin.env_var,
@@ -2987,7 +2992,7 @@ def wasm_toolchain_environment_delta(
     """The variables the WASM projection sets, at their projected values."""
 
     projected = project_wasm_toolchain_environment(
-        installation, environ=dict(environ), rust_target=rust_target
+        installation, environ=environ, rust_target=rust_target
     )
     keys = project_wasm_toolchain_environment(
         installation, environ={}, rust_target=rust_target

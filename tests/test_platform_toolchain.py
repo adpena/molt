@@ -11,6 +11,7 @@ import platform
 import pytest
 
 from molt import platform_toolchain as platform_tools
+from molt.process_environment import NameRule, ProcessEnvironment
 from tests.process_guard_common import install_module_view
 import subprocess
 
@@ -32,13 +33,116 @@ def test_visual_studio_selection_uses_bounded_guarded_probe(tmp_path, monkeypatc
     monkeypatch.setattr(platform_tools.process_guard, "run_completed_command", run)
     assert (
         platform_tools.visual_studio_installation(
-            "component", {"ProgramFiles(x86)": str(tmp_path)}
+            "component",
+            ProcessEnvironment(
+                {"ProgramFiles(x86)": str(tmp_path)}, rule=NameRule.WINDOWS
+            ),
         )
         == install
     )
     assert calls[0][0][0] == str(vswhere)
     assert calls[0][1]["timeout"] == 30
     assert calls[0][1]["memory_guard_prefix"] == "MOLT_PLATFORM_TOOLCHAIN"
+
+
+@pytest.mark.parametrize("rule", [NameRule.EXACT, NameRule.WINDOWS])
+def test_visual_studio_selection_preserves_the_callers_name_rule(
+    tmp_path, monkeypatch, rule
+):
+    install = tmp_path / "installation"
+    install.mkdir()
+    selected_root = tmp_path / "selected"
+    vswhere = selected_root / "Microsoft Visual Studio/Installer/vswhere.exe"
+    vswhere.parent.mkdir(parents=True)
+    vswhere.write_bytes(b"selected selector")
+    values = (
+        {"PROGRAMFILES(X86)": str(selected_root), "ProgramFiles(x86)": "unselected"}
+        if rule is NameRule.EXACT
+        else {"ProgramFiles(x86)": str(selected_root)}
+    )
+    environment = ProcessEnvironment(values, rule=rule)
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs["env"]))
+        return SimpleNamespace(stdout=str(install), returncode=0)
+
+    monkeypatch.setattr(platform_tools.process_guard, "run_completed_command", run)
+    assert (
+        platform_tools.visual_studio_installation("component", environment) == install
+    )
+    assert calls == [
+        (
+            [
+                str(vswhere),
+                "-latest",
+                "-products",
+                "*",
+                "-requires",
+                "component",
+                "-property",
+                "installationPath",
+            ],
+            environment,
+        )
+    ]
+    assert calls[0][1].rule is rule
+
+
+@pytest.mark.parametrize("rule", [NameRule.EXACT, NameRule.WINDOWS])
+def test_msvc_activation_updates_only_equivalent_environment_names(
+    tmp_path, monkeypatch, rule
+):
+    install = tmp_path / "Visual Studio"
+    script = install / "Common7/Tools/VsDevCmd.bat"
+    script.parent.mkdir(parents=True)
+    script.write_text("", encoding="utf-8")
+    (install / "VC").mkdir()
+    install_module_view(
+        monkeypatch, "platform", platform, platform_tools, system=lambda: "Windows"
+    )
+    monkeypatch.setattr(
+        platform_tools, "visual_studio_installation", lambda *_: install
+    )
+    monkeypatch.setattr(
+        platform_tools, "resolve_executable", lambda *_a, **_k: tmp_path / "cmd"
+    )
+    monkeypatch.setattr(
+        platform_tools, "find_executable", lambda *_a, **_k: tmp_path / "cl"
+    )
+    captured = []
+
+    def query(_argv, env, **_kwargs):
+        captured.append(env)
+        return (
+            f"PATH=activated\nVCINSTALLDIR={install / 'VC'}\nVSINSTALLDIR={install}\n"
+            "VSCMD_ARG_TGT_ARCH=x64\nVSCMD_ARG_HOST_ARCH=x64\nLIB=owned\n"
+        )
+
+    monkeypatch.setattr(platform_tools, "_query", query)
+    environment = ProcessEnvironment(
+        {
+            "Path": "case-sensitive path",
+            "PATH": "canonical path",
+            "lib": "lower",
+            "LIB": "foreign",
+        },
+        rule=rule,
+    )
+    result = platform_tools.activate_msvc_environment(
+        environment, repo_root=ROOT, machine="AMD64"
+    )
+    assert result.rule is captured[0].rule is rule
+    assert "LIB" not in captured[0]
+    if rule is NameRule.EXACT:
+        assert result["Path"] == "case-sensitive path"
+        assert result["PATH"] == "activated"
+        assert result["lib"] == "lower"
+    else:
+        assert result["Path"] == result["PATH"] == "activated"
+        assert "Path" in tuple(result) and "PATH" not in tuple(result)
+    assert result["LIB"] == "owned"
+    assert environment["PATH"] == "canonical path"
 
 
 @pytest.mark.parametrize("machine,arch", [("AMD64", "x64"), ("ARM64", "arm64")])
@@ -69,7 +173,7 @@ def test_msvc_activation_owns_installation_and_search_roots_without_atl(
     )
 
     def query(argv, env, **kwargs):
-        calls.append((argv, env.copy(), kwargs))
+        calls.append((argv, ProcessEnvironment(env), kwargs))
         return f"PATH=activated\nVCINSTALLDIR={install / 'VC'}\nVSINSTALLDIR={install}\nVSCMD_ARG_TGT_ARCH={arch}\nVSCMD_ARG_HOST_ARCH={arch}\nINCLUDE=owned\nLIB=owned\n"
 
     monkeypatch.setattr(platform_tools, "_query", query)
@@ -137,7 +241,7 @@ def test_darwin_resolves_real_tools_under_pinned_developer_and_sdk(
     monkeypatch.setattr(platform_tools, "resolve_executable", resolve)
 
     def query(argv, env, **_kwargs):
-        calls.append((argv, env.copy()))
+        calls.append((argv, ProcessEnvironment(env)))
         if "--print-path" in argv:
             return str(developer)
         assert env["DEVELOPER_DIR"] == str(developer)

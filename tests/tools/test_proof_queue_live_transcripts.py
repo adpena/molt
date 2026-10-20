@@ -8,6 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from molt.process_environment import NameRule, ProcessEnvironment
+
 from tools.proof_queue_pkg import command_admission, command_identity
 from tools.proof_queue_pkg import diagnostic_engine as engine
 from tools.proof_queue_pkg import diagnostic_evidence as evidence
@@ -244,7 +246,8 @@ def test_producer_publishes_only_opened_streams_before_start_and_keeps_owned_wai
 
     def start(command, *, cwd, env, stdout, stderr):
         assert list(command) == json.loads(row["command_json"])
-        assert cwd == tmp_path and env == {}
+        assert cwd == tmp_path and dict(env) == {}
+        assert env.rule is NameRule.host()
         published = json.loads(result_path.read_text(encoding="utf-8"))
         assert published["phase"] == "command"
         assert published["command_started"] is False
@@ -279,7 +282,7 @@ def test_producer_publishes_only_opened_streams_before_start_and_keeps_owned_wai
     )
     arguments = dict(
         cwd=tmp_path,
-        env={},
+        env=ProcessEnvironment({}),
         result_path=result_path,
         result=result,
         execution_deadline=time.monotonic() + (-1 if failure == "deadline" else 30),

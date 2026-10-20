@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
+
 import argparse
 import copy
 import hashlib
@@ -123,8 +125,8 @@ def _merge_debug_manifest(
     return merged
 
 
-def _debug_eval_base_env(cwd: Path) -> dict[str, str]:
-    base_env: dict[str, str] = {}
+def _debug_eval_base_env(cwd: Path) -> ProcessEnvironmentBuilder:
+    base_env = ProcessEnvironmentBuilder({})
     passthrough_names = {
         "ALL_PROXY",
         "COMSPEC",
@@ -154,15 +156,16 @@ def _debug_eval_base_env(cwd: Path) -> dict[str, str]:
         if value:
             base_env[name] = value
 
-    base_env = development_artifact_env(
-        cwd,
-        base_env,
-        session_prefix="debug-eval",
-        session_id=os.environ.get("MOLT_SESSION_ID") or "debug-eval",
-        create_dirs=False,
-    )
     base_env["PYTHONHASHSEED"] = os.environ.get("PYTHONHASHSEED", "0")
-    return base_env
+    return ProcessEnvironmentBuilder(
+        development_artifact_env(
+            cwd,
+            base_env,
+            session_prefix="debug-eval",
+            session_id=os.environ.get("MOLT_SESSION_ID") or "debug-eval",
+            create_dirs=False,
+        )
+    )
 
 
 def _run_debug_eval_command(
@@ -181,11 +184,12 @@ def _run_debug_eval_command(
 
     env = _debug_eval_base_env(cwd)
     env.update(env_updates)
+    environment = ProcessEnvironment(env)
     try:
         proc = _run_completed_command(
             shlex.split(command, posix=True),
             cwd=cwd,
-            env=env,
+            env=environment,
             capture_output=True,
             timeout=max(1, timeout_sec),
             memory_guard_prefix=_CLI_MEMORY_GUARD_PREFIX,

@@ -21,6 +21,7 @@ import sys
 from typing import Any, BinaryIO, Iterable, Mapping, Sequence, cast
 
 from molt import file_publication
+from molt.process_environment import ProcessEnvironment
 from molt.toolchain_identity import executable_environment_value, find_executable
 from molt.exact_json import ExactJsonError, canonical_json_sha256, loads_exact
 from molt.rust_toolchain import cargo_config_arguments, cargo_configuration_paths
@@ -361,7 +362,7 @@ def _run_captured(
     command: Sequence[str],
     *,
     cwd: Path,
-    env: Mapping[str, str],
+    env: ProcessEnvironment,
     timeout: float = 30.0,
     text: bool = True,
 ) -> subprocess.CompletedProcess[Any]:
@@ -369,7 +370,7 @@ def _run_captured(
     return admission._COMMANDS.run(
         list(command),
         cwd=cwd,
-        env=dict(env),
+        env=env,
         check=False,
         capture_output=True,
         text=text,
@@ -383,9 +384,7 @@ def _resolve_outer_executable(token: str, *, cwd: Path, env: Mapping[str, str]) 
 
         try:
             token = str(
-                resolve_wasi_sdk_tool(
-                    proof_plan.ROOT, "wasm-ld", environ=dict(env), cwd=cwd
-                )
+                resolve_wasi_sdk_tool(proof_plan.ROOT, "wasm-ld", environ=env, cwd=cwd)
             )
         except LlvmToolchainConfigError as exc:
             raise ValueError(f"wasm-ld toolchain selection failed: {exc}") from exc
@@ -455,6 +454,7 @@ def _cargo_executable_path(
 def _exact_command(
     envelope: Mapping[str, object], *, cwd: Path, env: Mapping[str, str]
 ) -> list[str]:
+    env = ProcessEnvironment(env)
     argv = [str(value) for value in envelope["argv"]]  # type: ignore[index]
     wrapper = envelope.get("wrapper")
     if isinstance(wrapper, Mapping) and wrapper.get("kind") == "venv":
@@ -713,6 +713,7 @@ def _python_identity(
     selection: Mapping[str, object],
     hash_workers: int,
 ) -> dict[str, object] | None:
+    env = ProcessEnvironment(env)
     if envelope.get("python") is None:
         return None
     location_raw = selection.get("location")
@@ -991,6 +992,7 @@ def _which_in_command_environment(
     cwd: Path,
     env: Mapping[str, str],
 ) -> Path:
+    env = ProcessEnvironment(env)
     if name in {"wasm-ld", "wasm-ld.exe"}:
         # uv's PATH is not a different authority for a manifest-owned SDK role.
         # The returned absolute entrypoint is used for both launch and capture.
@@ -1230,33 +1232,32 @@ def compile_environment_selection(
     env: Mapping[str, str], *, configured_names: Iterable[str] = ()
 ) -> dict[str, str]:
     """Hash every environment value that defines compiled output."""
-    configured = set(configured_names)
+    env = ProcessEnvironment(env)
+    configured = {env.rule.key(name) for name in configured_names}
     return {
         name: canonical_json_sha256(value)
         for name, value in sorted(env.items())
-        if name not in OPERATIONAL_CARGO_NAMES
+        if (key := env.rule.key(name)) not in OPERATIONAL_CARGO_NAMES
         and (
-            name in COMPILE_ENVIRONMENT_NAMES
-            or llvm_toolchain_environment_name(
-                name.upper() if os.name == "nt" else name
-            )
-            or _runtime_c_environment_name(name)
-            or cargo_native_dependency_environment_name(name)
-            or name in configured
-            or name.startswith(COMPILE_ENVIRONMENT_PREFIXES)
+            key in COMPILE_ENVIRONMENT_NAMES
+            or llvm_toolchain_environment_name(key)
+            or _runtime_c_environment_name(key)
+            or cargo_native_dependency_environment_name(key)
+            or key in configured
+            or key.startswith(COMPILE_ENVIRONMENT_PREFIXES)
         )
     }
 
 
 def _probe_environment_selection(env: Mapping[str, str]) -> dict[str, str]:
     """Hash the environment a toolchain probe can observe beyond tool bytes."""
+    env = ProcessEnvironment(env)
     selected = compile_environment_selection(env)
     for name, value in sorted(env.items()):
-        if name in OPERATIONAL_CARGO_NAMES or name in selected:
+        key = env.rule.key(name)
+        if key in OPERATIONAL_CARGO_NAMES or name in selected:
             continue
-        if name in _PROBE_RESOLUTION_NAMES or name.startswith(
-            _PROBE_RESOLUTION_PREFIXES
-        ):
+        if key in _PROBE_RESOLUTION_NAMES or key.startswith(_PROBE_RESOLUTION_PREFIXES):
             selected[name] = canonical_json_sha256(value)
     return dict(sorted(selected.items()))
 
@@ -1484,6 +1485,7 @@ def _tool_identity(
     supervisor, its image inventories and the proof command itself never
     reuse anything; only deterministic version and link probes are skipped.
     """
+    env = ProcessEnvironment(env)
     policies = {policy.name: policy for policy in plan.toolchain_policies}
     try:
         policy = policies[name]
@@ -1525,9 +1527,7 @@ def _tool_identity(
     if sdk_role is not None:
         from molt.llvm_toolchain import resolve_wasi_sdk_tool
 
-        path = resolve_wasi_sdk_tool(
-            proof_plan.ROOT, sdk_role, environ=dict(env), cwd=cwd
-        )
+        path = resolve_wasi_sdk_tool(proof_plan.ROOT, sdk_role, environ=env, cwd=cwd)
     elif name == "cargo":
         path = _cargo_executable_path(envelope, exact, cwd=probe_cwd, env=env)
     elif bound_payload is not None:
@@ -1793,7 +1793,7 @@ def _capture_tool_identity(
     probe_cwd: Path,
     policy_sha256: str,
     cwd: Path,
-    env: Mapping[str, str],
+    env: ProcessEnvironment,
     selected_python_runtime: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     raw_version_args = policy.data.get("version_args")
@@ -2419,7 +2419,7 @@ _EXECUTABLE_ENV_NAMES = frozenset(
     }
 )
 _EXECUTABLE_ENV_PATTERNS = (
-    re.compile(r"(?:AR|CC|CXX|RANLIB|RC|STRIP)_[A-Z0-9_.-]+"),
+    re.compile(r"(?:AR|CC|CXX|RANLIB|RC|STRIP)_[A-Za-z0-9_.-]+"),
     re.compile(r"(?:HOST|TARGET)_(?:AR|CC|CXX|RANLIB)"),
     re.compile(r"CARGO_TARGET_[A-Z0-9_]+_(?:LINKER|RUNNER)"),
     re.compile(r"CMAKE_(?:C|CXX)_COMPILER"),
