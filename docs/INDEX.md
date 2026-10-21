@@ -77,6 +77,7 @@ the source of truth.
 - Memory guard custody sampling (a poll reads its tree's rows through kernel filters, not the host table; after Windows job members, systemd/Bazel cgroups and subreapers; HF-358): [design/memory_guard_custody_sampling.md](design/memory_guard_custody_sampling.md)
 - Landing queue (main advances only to a commit that passed its selected proofs on every cell; rollups on the owner's machines; HF-334): [design/landing_queue.md](design/landing_queue.md)
 - Process environment (one Windows/POSIX name-rule authority for child environments, after Rust `EnvKey`, Cargo `Env` and Go `dedupEnvCase`; HF-355): [design/process_environment.md](design/process_environment.md)
+- Development JIT tier (run from memory through Cranelift JIT, no object or link, after rustc_codegen_cranelift's JIT mode and Goose's TinyCC route; HF-371): [design/dev_jit_tier.md](design/dev_jit_tier.md)
 - Frontend semantic fingerprint (the declared producer set that keys lowering records; rustc tracked options, Bazel action keys; HF-254, HF-182): [design/frontend_semantic_fingerprint.md](design/frontend_semantic_fingerprint.md)
 - Op-kind registry and generated dispatch/classifier direction: [design/foundation/25_op_kind_registry.md](design/foundation/25_op_kind_registry.md)
 - One SimpleIR optimization pipeline for every target: [design/foundation/76_simple_ir_pass_pipeline.md](design/foundation/76_simple_ir_pass_pipeline.md)
