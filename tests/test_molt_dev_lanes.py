@@ -414,7 +414,7 @@ def test_queue_provisions_its_sandbox_and_retires_a_landed_lane(family: Path) ->
     _git(main, "push", "-q", "origin", "HEAD:main")
     worktree = _start(family, "queued")
     tip = _commit_file(worktree, "queued.txt", "queued\n", "queued work")
-    paths = queue._queue_paths(main)
+    paths = queue.queue_paths(main)
     request = queue.enqueue(
         paths, head=tip, worktree=worktree, branch="lane/queued", retire=True
     )

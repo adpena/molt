@@ -57,9 +57,12 @@ harm -> guard -> live-canary registry).
 
 - **bash_guard override:** prefix the command with `MOLT_GUARD_OK=1` once you
   have verified it is safe. The override is audited to `.molt/state/waivers.jsonl`.
-- **landing_gate:** land a commit/proof, or record the real blocker:
-  `python tools/hooks/landing_gate.py --record-blocker "<reason>"`. A
-  `[report-only]` commit-subject token also satisfies the window.
+- **landing_gate:** land the lane
+  (`uv run --python 3.12 python tools/molt_dev.py land --repo <lane>`) or a
+  proof, or record the real blocker:
+  `uv run --python 3.12 python tools/hooks/landing_gate.py --record-blocker "<reason>"`.
+  A pending landing-queue request, a request landed since the window opened,
+  or a `[report-only]` commit-subject token also satisfies the window.
 - **waiver grammar (A9):** inline `# <GATE>_OK:<rationale>` (>=4 real,
   non-placeholder chars) or a `[skip-<gate>]` commit-subject token. Honored
   waivers are appended to `.molt/state/waivers.jsonl`.

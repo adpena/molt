@@ -209,6 +209,7 @@ def _canaries() -> list[Canary]:
                 landing_gate.decide(
                     substantive_activity=True,
                     window_has_commit=False,
+                    landing_progress=False,
                     queue_row_in_flight=False,
                     blocker_recorded=False,
                     report_only=False,
@@ -218,11 +219,27 @@ def _canaries() -> list[Canary]:
         ),
         Canary(
             "landing_gate",
+            "landing-queue-progress-allows",
+            lambda: (
+                landing_gate.decide(
+                    substantive_activity=True,
+                    window_has_commit=False,
+                    landing_progress=True,
+                    queue_row_in_flight=False,
+                    blocker_recorded=False,
+                    report_only=False,
+                )
+                is None
+            ),
+        ),
+        Canary(
+            "landing_gate",
             "landed-commit-allows",
             lambda: (
                 landing_gate.decide(
                     substantive_activity=True,
                     window_has_commit=True,
+                    landing_progress=False,
                     queue_row_in_flight=False,
                     blocker_recorded=False,
                     report_only=False,

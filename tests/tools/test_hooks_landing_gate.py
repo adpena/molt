@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 
 import pytest
 from pathlib import Path
@@ -28,6 +29,7 @@ def test_decide_blocks_report_without_landing():
     reason = lg.decide(
         substantive_activity=True,
         window_has_commit=False,
+        landing_progress=False,
         queue_row_in_flight=False,
         blocker_recorded=False,
         report_only=False,
@@ -40,6 +42,7 @@ def test_decide_allows_non_substantive_turn():
         lg.decide(
             substantive_activity=False,
             window_has_commit=False,
+            landing_progress=False,
             queue_row_in_flight=False,
             blocker_recorded=False,
             report_only=False,
@@ -52,12 +55,14 @@ def test_decide_allows_each_satisfying_signal():
     base = dict(
         substantive_activity=True,
         window_has_commit=False,
+        landing_progress=False,
         queue_row_in_flight=False,
         blocker_recorded=False,
         report_only=False,
     )
     for key in (
         "window_has_commit",
+        "landing_progress",
         "queue_row_in_flight",
         "blocker_recorded",
         "report_only",
@@ -75,6 +80,49 @@ def test_record_and_detect_blocker(tmp_path):
     assert lg._blocker_recorded(tmp_path, "sess-9", 0.0) is True
     # Detected by recency too, even without a session id match.
     assert lg._blocker_recorded(tmp_path, "other", 0.0) is True
+
+
+# --- the landing queue ----------------------------------------------------
+
+
+def _landing_queue(tmp_path):
+    from tools import molt_dev_queue as queue
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    assert common._git(repo, "init", "-q").returncode == 0
+    return repo, queue, queue.queue_paths(repo)
+
+
+def test_landing_progress_reads_the_landing_queue(tmp_path):
+    """Lanes land through the queue, so the session's own HEAD may never move."""
+    repo, queue, paths = _landing_queue(tmp_path)
+    start = time.time()
+    assert lg._landing_progress(repo, start) is False
+    failing = queue.enqueue(paths, head="1" * 40, worktree=repo, branch="lane/one")
+    assert lg._landing_progress(repo, start) is True  # pending: landing work
+    queue.record_result(paths, failing, status=queue.LandingStatus.FAILED, detail="")
+    assert lg._landing_progress(repo, start) is False  # a failure lands nothing
+    landing = queue.enqueue(paths, head="2" * 40, worktree=repo, branch="lane/two")
+    queue.record_result(
+        paths, landing, status=queue.LandingStatus.LANDED, detail="", landed="3" * 40
+    )
+    assert lg._landing_progress(repo, start) is True
+    # A landing recorded before the window opened belongs to another session.
+    assert lg._landing_progress(repo, time.time() + 60) is False
+
+
+def test_landing_progress_fails_open_on_an_unreadable_result(tmp_path):
+    repo, queue, paths = _landing_queue(tmp_path)
+    request = queue.enqueue(paths, head="1" * 40, worktree=repo, branch="lane/one")
+    queue.record_result(paths, request, status=queue.LandingStatus.FAILED, detail="")
+    result = paths.results / f"{request.id}.json"
+    record = json.loads(result.read_text(encoding="utf-8"))
+    record["status"] = "a-retired-spelling"
+    result.write_text(json.dumps(record), encoding="utf-8")
+    assert lg._landing_progress(repo, 0.0) is True
+    log = repo / ".molt" / "state" / "landing_gate.landing_queue_errors.log"
+    assert "a-retired-spelling" in log.read_text(encoding="utf-8")
 
 
 # --- evaluate() end-to-end ------------------------------------------------
@@ -96,11 +144,20 @@ def _seed_marker(root, session_id, start_head, last_block_head=None):
 
 
 def _patch_facts(
-    monkeypatch, *, tool_uses, head, has_commit, queue, blocker, subjects=""
+    monkeypatch,
+    *,
+    tool_uses,
+    head,
+    has_commit,
+    queue,
+    blocker,
+    subjects="",
+    landing=False,
 ):
     monkeypatch.setattr(lg, "_count_execution_tools", lambda p: tool_uses)
     monkeypatch.setattr(lg._common, "git_head", lambda root: head)
     monkeypatch.setattr(lg, "_window_has_commit", lambda root, sh: has_commit)
+    monkeypatch.setattr(lg, "_landing_progress", lambda root, ts: landing)
     monkeypatch.setattr(lg, "_queue_row_in_flight", lambda root: queue)
     monkeypatch.setattr(lg, "_blocker_recorded", lambda root, sid, ts: blocker)
     monkeypatch.setattr(lg, "_window_subjects", lambda root, sh: subjects)

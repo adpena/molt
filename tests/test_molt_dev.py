@@ -2990,7 +2990,7 @@ def _lane(work: Path, name: str, files: dict[str, str]) -> str:
 def _enqueue(drv, work: Path, *heads: str):
     from tools import molt_dev_queue as queue
 
-    paths = queue._queue_paths(work)
+    paths = queue.queue_paths(work)
     return paths, [
         queue.enqueue(paths, head=head, worktree=work, branch=None) for head in heads
     ]
@@ -3186,7 +3186,7 @@ def test_land_runs_static_gates_in_the_lane_before_queueing(
     assert admitted and all("PYTHONPYCACHEPREFIX" in env for env in admitted)
 
     assert counter.read_text(encoding="utf-8").splitlines() == ["run"]
-    assert [item.head for item in queue.pending(queue._queue_paths(lane))] == [head]
+    assert [item.head for item in queue.pending(queue.queue_paths(lane))] == [head]
 
 
 def test_land_queues_nothing_when_a_static_gate_fails_in_the_lane(
@@ -3204,7 +3204,7 @@ def test_land_queues_nothing_when_a_static_gate_fails_in_the_lane(
         _land_without_runner(drv, monkeypatch, lane)
 
     assert counter.read_text(encoding="utf-8").splitlines() == ["run"]
-    assert queue.pending(queue._queue_paths(lane)) == []
+    assert queue.pending(queue.queue_paths(lane)) == []
 
 
 def test_land_no_precheck_queues_without_running_gates(
@@ -3223,7 +3223,7 @@ def test_land_no_precheck_queues_without_running_gates(
     )
 
     assert not counter.exists()
-    assert [item.head for item in queue.pending(queue._queue_paths(lane))] == [head]
+    assert [item.head for item in queue.pending(queue.queue_paths(lane))] == [head]
 
 
 def test_land_waits_for_a_real_runner_through_the_pinned_controller(
@@ -3357,20 +3357,74 @@ def test_queue_plan_survives_between_runners_and_drops_closed_requests(tmp_path)
     batch = queue.next_batch(paths, queue.pending(paths))
     assert batch == requests
     # requests[4] conflicted and left; the four that applied failed together.
-    queue.record_result(paths, requests[4], status="conflict", detail="")
+    queue.record_result(
+        paths, requests[4], status=queue.LandingStatus.CONFLICT, detail=""
+    )
     queue.bisect(paths, batch, requests[:4])
     batch = queue.next_batch(paths, queue.pending(paths))
     assert batch == requests[:2]
     for request in batch:
-        queue.record_result(paths, request, status="landed", detail="", landed=None)
+        queue.record_result(
+            paths, request, status=queue.LandingStatus.LANDED, detail="", landed=None
+        )
     queue.retire_batch_plan(paths, batch)
     assert queue.next_batch(paths, queue.pending(paths)) == requests[2:4]
     # A request closed outside the runner drops out of the plan.
-    queue.record_result(paths, requests[2], status="failed", detail="")
+    queue.record_result(
+        paths, requests[2], status=queue.LandingStatus.FAILED, detail=""
+    )
     assert queue.next_batch(paths, queue.pending(paths)) == requests[3:4]
-    queue.record_result(paths, requests[3], status="landed", detail="", landed=None)
+    queue.record_result(
+        paths, requests[3], status=queue.LandingStatus.LANDED, detail="", landed=None
+    )
     assert queue.next_batch(paths, queue.pending(paths)) == []
     assert not paths.plan.exists()
+
+
+def test_queue_withdraw_closes_pending_requests_only_between_batches(
+    drv, origin_and_clone
+):
+    from tools import molt_dev_queue as queue
+
+    _origin, work = origin_and_clone
+    paths = queue.queue_paths(work)
+    first, second, third = (
+        queue.enqueue(
+            paths, head=f"{index:040x}", worktree=work, branch=f"lane/{index}"
+        )
+        for index in range(1, 4)
+    )
+    # A bisection plan from an earlier runner still names the second request.
+    queue._write_plan(paths, [[first.id, second.id], [third.id]])
+
+    def withdraw(*request_ids: str) -> int:
+        args = drv.build_parser().parse_args(
+            ["queue", "withdraw", "--repo", str(work), *request_ids,
+             "--reason", "review found defects"]
+        )  # fmt: skip
+        return args.func(args)
+
+    assert withdraw(second.id) == drv.EXIT_OK
+    result = queue.read_result(paths, second.id)
+    assert result["status"] == queue.LandingStatus.WITHDRAWN
+    assert result["detail"] == "review found defects"
+    assert queue.pending(paths) == [first, third]
+    assert queue.next_batch(paths, queue.pending(paths)) == [first]
+    assert [row["request"]["id"] for row in queue.recorded_results(paths)] == [
+        second.id
+    ]
+    # All or nothing: one unknown id withdraws nothing.
+    with pytest.raises(drv.DriverError, match="no-such-request"):
+        withdraw(third.id, "no-such-request")
+    assert queue.read_result(paths, third.id) is None
+    # A runner holds the lock for each batch; nothing is withdrawn under it.
+    handle = drv._try_acquire_file_lock(paths.runner_lock)
+    assert handle is not None
+    try:
+        assert withdraw(third.id) == drv.EXIT_FAIL
+    finally:
+        drv._release_file_lock(handle)
+    assert queue.pending(paths) == [first, third]
 
 
 def test_queue_retires_old_runner_logs_and_results_only(tmp_path):
@@ -3389,7 +3443,9 @@ def test_queue_retires_old_runner_logs_and_results_only(tmp_path):
     recent = queue.enqueue(paths, head="2" * 40, worktree=tmp_path, branch=None)
     waiting = queue.enqueue(paths, head="3" * 40, worktree=tmp_path, branch=None)
     for request, age_days in ((old, queue.RESULT_DAYS + 1), (recent, 1)):
-        queue.record_result(paths, request, status="landed", detail="", landed=None)
+        queue.record_result(
+            paths, request, status=queue.LandingStatus.LANDED, detail="", landed=None
+        )
         result = paths.results / f"{request.id}.json"
         os.utime(result, (now - age_days * 86400, now - age_days * 86400))
 

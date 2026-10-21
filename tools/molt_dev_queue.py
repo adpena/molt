@@ -27,6 +27,7 @@ from types import ModuleType
 from typing import Any
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 
 from tools.molt_dev_controller import (
@@ -68,6 +69,16 @@ MAX_BATCH = 8
 RUNNER_LOGS_KEPT = 20
 RESULT_DAYS = 30
 _AWAIT_POLL_S = 10.0
+
+
+class LandingStatus(StrEnum):
+    """How a landing request closed; each result records exactly one."""
+
+    LANDED = "landed"
+    FAILED = "failed"
+    CONFLICT = "conflict"
+    # The integrator withdrew it before any batch tested it (`queue withdraw`).
+    WITHDRAWN = "withdrawn"
 
 
 @dataclass(frozen=True)
@@ -187,7 +198,7 @@ def record_result(
     paths: QueuePaths,
     request: LandingRequest,
     *,
-    status: str,
+    status: LandingStatus,
     detail: str,
     landed: str | None = None,
 ) -> None:
@@ -212,6 +223,34 @@ def read_result(paths: QueuePaths, request_id: str) -> dict | None:
     if not path.is_file():
         return None
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def recorded_results(paths: QueuePaths, *, limit: int | None = None) -> list[dict]:
+    """Closed requests in queue order (oldest first), the newest ``limit``."""
+
+    if not paths.results.is_dir():
+        return []
+    files = sorted(
+        path for path in paths.results.glob("*.json") if not path.name.startswith(".")
+    )
+    if limit is not None:
+        files = files[-limit:] if limit else []
+    return [json.loads(path.read_text(encoding="utf-8")) for path in files]
+
+
+def withdraw(paths: QueuePaths, request_id: str, *, reason: str) -> LandingRequest:
+    """Close a pending request without testing it.
+
+    The caller holds the runner lock, which a runner holds for each batch, so
+    no batch is testing the request; ``next_batch`` drops a withdrawn id from a
+    bisection plan.
+    """
+
+    request = next((item for item in pending(paths) if item.id == request_id), None)
+    if request is None:
+        raise DriverError(f"{request_id} is not a pending landing request")
+    record_result(paths, request, status=LandingStatus.WITHDRAWN, detail=reason)
+    return request
 
 
 # --------------------------------------------------------------------------
@@ -373,7 +412,9 @@ def retire_old_records(paths: QueuePaths, *, now: float) -> None:
 # --------------------------------------------------------------------------
 
 
-def _queue_paths(repo: Path):
+def queue_paths(repo: Path) -> QueuePaths:
+    """The landing queue of ``repo``'s Git common directory, which every
+    worktree of the checkout shares."""
 
     drv = _driver()
     common_dir = drv._git_common_directory(repo)
@@ -394,7 +435,7 @@ def cmd_land(args: argparse.Namespace) -> int:
     if git.is_ancestor(head, upstream):
         _ok(f"{git.short(head)} is already on {args.remote}/{args.branch}")
         return EXIT_OK
-    paths = _queue_paths(repo)
+    paths = queue_paths(repo)
     branch = git.symbolic_head()
     if args.retire and not (branch or "").startswith("lane/"):
         raise DriverError(
@@ -524,8 +565,8 @@ def _await_landing(paths, request_id: str) -> int:
             )
             return EXIT_FAIL
         time.sleep(_AWAIT_POLL_S)
-    status = result["status"]
-    if status == "landed":
+    status = LandingStatus(result["status"])
+    if status is LandingStatus.LANDED:
         _ok(f"{request_id} landed in {result['landed'][:12]}")
         return EXIT_OK
     _fail(f"{request_id} {status}: {result['detail']}")
@@ -556,7 +597,7 @@ def _land_one_batch(args: argparse.Namespace, git, paths) -> None:
     for request in ready:
         if git.is_ancestor(request.head, upstream):
             record_result(
-                paths, request, status="landed", landed=upstream,
+                paths, request, status=LandingStatus.LANDED, landed=upstream,
                 detail="already on main when the runner took it",
             )  # fmt: skip
     ready = pending(paths)
@@ -572,7 +613,7 @@ def _land_one_batch(args: argparse.Namespace, git, paths) -> None:
     _step(f"landing batch of {len(batch)} on {git.short(upstream)}")
     candidate = build_candidate(run_git, upstream, batch)
     for request, reason in candidate.conflicted:
-        record_result(paths, request, status="conflict", detail=reason)
+        record_result(paths, request, status=LandingStatus.CONFLICT, detail=reason)
         _warn(f"{request.id} {reason}")
     if not candidate.included:
         retire_batch_plan(paths, batch)
@@ -607,13 +648,13 @@ def _land_one_batch(args: argparse.Namespace, git, paths) -> None:
             bisect(paths, batch, candidate.included)
             return
         (request,) = candidate.included
-        record_result(paths, request, status="failed", detail=str(exc))
+        record_result(paths, request, status=LandingStatus.FAILED, detail=str(exc))
         retire_batch_plan(paths, batch)
         return
     landed = drv.require_git_object_id(sandbox.head_sha(), label="landed batch")
     for request in candidate.included:
         record_result(
-            paths, request, status="landed", landed=landed,
+            paths, request, status=LandingStatus.LANDED, landed=landed,
             detail=f"landed with {len(candidate.included)} lane(s)",
         )  # fmt: skip
     retire_batch_plan(paths, batch)
@@ -690,7 +731,7 @@ def cmd_queue_run(args: argparse.Namespace) -> int:
     drv = _driver()
     repo = Path(args.repo).resolve()
     git = drv.Git(repo)
-    paths = _queue_paths(repo)
+    paths = queue_paths(repo)
     paths.root.mkdir(parents=True, exist_ok=True)
     controller = integration_controller(args)
     # The runner serves every lane: the sandbox's gates use the sandbox's own
@@ -724,24 +765,45 @@ def cmd_queue_run(args: argparse.Namespace) -> int:
 
 def cmd_queue_status(args: argparse.Namespace) -> int:
 
-    paths = _queue_paths(Path(args.repo).resolve())
+    paths = queue_paths(Path(args.repo).resolve())
     requests = pending(paths)
     plan = (
         json.loads(paths.plan.read_text(encoding="utf-8"))["groups"]
         if paths.plan.is_file()
         else []
     )
-    results = (
-        sorted(paths.results.glob("*.json"))[-args.recent :]
-        if paths.results.is_dir()
-        else []
-    )
     report = {
         "pending": [request.id for request in requests],
         "plan": plan,
-        "recent": [json.loads(path.read_text(encoding="utf-8")) for path in results],
+        "recent": recorded_results(paths, limit=args.recent),
     }
     print(json.dumps(report, indent=2, sort_keys=True))
+    return EXIT_OK
+
+
+def cmd_queue_withdraw(args: argparse.Namespace) -> int:
+    """Close pending requests without testing them, between batches."""
+
+    drv = _driver()
+    paths = queue_paths(Path(args.repo).resolve())
+    paths.root.mkdir(parents=True, exist_ok=True)
+    handle = drv._try_acquire_file_lock(paths.runner_lock)
+    if handle is None:
+        _fail(
+            "a landing batch is running; withdraw after it ends "
+            "(`molt_dev.py queue status` shows the batch plan)"
+        )
+        return EXIT_FAIL
+    try:
+        queued = {request.id for request in pending(paths)}
+        unknown = [item for item in args.request_ids if item not in queued]
+        if unknown:
+            raise DriverError("not pending landing requests: " + ", ".join(unknown))
+        for request_id in args.request_ids:
+            request = withdraw(paths, request_id, reason=args.reason)
+            _ok(f"withdrew {request.id} ({request.branch or request.head[:12]})")
+    finally:
+        drv._release_file_lock(handle)
     return EXIT_OK
 
 
@@ -802,3 +864,14 @@ def add_queue_arguments(
     add_repo_arg(p_status)
     p_status.add_argument("--recent", type=int, default=10, help="results to show")
     p_status.set_defaults(func=cmd_queue_status)
+    p_withdraw = queue_sub.add_parser(
+        "withdraw", help="close pending requests without testing them"
+    )
+    add_repo_arg(p_withdraw)
+    p_withdraw.add_argument(
+        "request_ids", nargs="+", metavar="REQUEST_ID", help="ids that `land` printed"
+    )
+    p_withdraw.add_argument(
+        "--reason", required=True, help="why; the result records it as its detail"
+    )
+    p_withdraw.set_defaults(func=cmd_queue_withdraw)
