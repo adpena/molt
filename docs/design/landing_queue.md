@@ -1,6 +1,7 @@
 # Landing queue
 
-Status: design, 2026-10-17. Owner: landing and main health. Part of HF-334.
+Status: design, 2026-10-17; landing engineering added 2026-10-20 (HF-373).
+Owner: landing and main health. Part of HF-334.
 
 Main advances only to a commit that passed its selected proofs on every
 required cell. One queue on the owner's own machines enforces that rule; no
@@ -100,6 +101,120 @@ within a family once conftest imports are lazy.
    commit has no passing queue receipt. The `[[rule]]` tables and their
    projection are deleted once the queue owns selection.
 
+## Landing engineering (HF-373)
+
+Measured on 2026-10-20, one landing costs an agent a manual loop. The agent
+rebases, rewrites the ledger's commit ids by hand, and starts a private
+wrapper that polls the host lease every 60 s. A move of main stops the
+wrapper, and the agent must repeat the loop. Each lane pays the
+always-run gates alone (26 policy gates, 56 s; HF-35). The candidate's own
+`tools/molt_dev.py` drives its landing: on 2026-10-20 the cleanup change
+crashed with `ImportError` after a confirmed push, because the driver
+imported a module from the worktree it had just removed. Five mechanisms
+remove this loop.
+
+### 1. A pinned controller
+
+The code that decides whether a change lands is never the change.
+
+- **Prior art.** rustc builds stage 1 with the compiler that `src/stage0`
+  pins. Go's `cmd/dist` builds with `GOROOT_BOOTSTRAP`. Zuul tests job
+  changes from untrusted projects speculatively, but a change to a trusted
+  config project takes effect only after it merges. bors and the GitHub merge
+  queue run as services, not from the pull request.
+- **Design.** `integrate` and the queue runner fetch first. Then they run the
+  driver from main's tip: `git archive <tip> tools src/molt pyproject.toml`
+  extracts into `<git-common-dir>/molt/controllers/<key>`, where the key is
+  the digest of the `tools` and `src/molt` tree ids. The driver's import
+  closure is the standard library plus 134 repository modules, so the
+  controller runs as `python -I -S` with the pinned base interpreter and no
+  environment. The candidate still supplies its declared data: gate
+  selection from its `tools/proof_plan.toml`, and its tests. A change to the
+  driver takes effect after it lands, as a stage0 bump does.
+- **Escape.** `--candidate-controller` runs the candidate's driver for a
+  repair of a broken controller on main. The progress stream and the receipt
+  record it.
+- **Cost.** Two `git rev-parse` calls per landing. A new controller tree
+  costs one extraction (1.5 s, 33 MB). Startup is 0.5 s. Retention keeps the
+  four most recently used controllers.
+
+### 2. Declarative checkout provisioning
+
+A checkout's inputs come from its lock files, on demand, as `uv run` does.
+
+- **Prior art.** `uv run` syncs the environment from `uv.lock` before each
+  run. rustup installs the toolchain that `rust-toolchain.toml` names on first
+  use. `npm ci` installs exactly the lock file. Nix and devcontainers declare
+  a checkout's whole environment.
+- **Design.** `molt.checkout_provisioning` owns one table of checkout inputs:
+  the uv environment (`uv.lock`) and the Acorn parser tree
+  (`tools/browser_asset_graph/package-lock.json`). Each input keeps a stamp of
+  its lock digest and tool version. A consumer calls `ensure(<input>)`: a
+  matching stamp costs one `stat` and one small read; a mismatch runs
+  `npm ci --ignore-scripts --prefer-offline` or `uv sync --frozen`, which read
+  from the shared caches. `gen_browser_asset_graph.py` stops asking a person
+  to run a bootstrap script. `lane start` provisions every input at once.
+- **Cost.** 2.2 s for a new worktree (uv 1.5 s, npm 0.7 s, both from warm
+  caches); about 1 ms per consumer afterwards.
+
+### 3. Stable change ids
+
+A commit keeps one identity across rebases, and the ledger cites it.
+
+- **Prior art.** Gerrit's `commit-msg` hook adds a `Change-Id:` trailer that
+  survives rebase and amend. Jujutsu gives every change a stable change id
+  apart from its commit id.
+- **Design.** The `commit-msg` hook adds `Change-Id: I<40 hex>` when it is
+  absent. A ledger row cites a commit of the same lane as `change:I<8+ hex>`.
+  After the rebase and the patch-id check, `integrate` maps each token to the
+  rebased commit that carries that trailer. It rewrites the token to the
+  9-character commit id and amends the lane's ledger commit, so gates and the
+  push see the final text. A token that no candidate commit carries fails
+  before any gate. A row cites a landed commit by its commit id, as now.
+- **Cost.** One `git log` over the candidate range per landing.
+
+### 4. Orchestrator-owned lanes
+
+The driver creates, provisions and retires each lane.
+
+- **Prior art.** Zuul's Nodepool and GitHub's ephemeral runners create a
+  fresh node for each job and delete it after. Bazel runs each action in a
+  sandbox it owns.
+- **Design.** `molt_dev.py lane start <slug>` creates the worktree and the
+  `lane/<slug>` branch from main, writes the coordination record, and
+  provisions it. `lane retire <slug>` accepts a landed lane, or an abandoned
+  one after it writes a Git bundle. It removes the worktree, the branches and
+  the checkout state (HF-313), and closes the record. `lane list` shows each
+  lane's state. The queue retires each lane it lands.
+- **Cost.** The same Git and provisioning work an agent does by hand now,
+  without the forgotten steps.
+
+### 5. A queue with speculative batches and bisection
+
+One runner owns main. Agents enqueue and continue.
+
+- **Prior art.** Zuul's dependent pipelines test each queued change on top of
+  the changes ahead of it, in parallel. The GitHub merge queue tests merge
+  groups up to a size limit with a build concurrency. bors-ng tests a batch
+  and bisects a failed batch. Uber's SubmitQueue ("Keeping Master Green at
+  Scale", EuroSys 2019) ranks speculative builds by their chance to land.
+- **Design.** `molt_dev.py land` checks the lane and writes one request under
+  `<git-common-dir>/molt/landing-queue/`, then returns. It starts the runner
+  if none holds the runner lock. The runner runs from the pinned controller.
+  It builds a candidate in its own sandbox worktree: main's tip, then each
+  ready lane in queue order. A lane that conflicts leaves the batch with a
+  report. The runner resolves change ids, takes the repository integration
+  lock, runs the union of the batch's selected gates once, pushes and
+  confirms. A failed batch splits into halves: a passing first half lands,
+  and the rest retest on the new tip. A single failing lane leaves the queue
+  with its log. A move of main rebuilds the candidate; it never needs a
+  person. Speculation is a candidate chain (main + L1, main + L1 + L2, ...)
+  that runs as far as the admitted capacity allows: one chain on this Mac,
+  wider on the farm.
+- **Cost.** N small lanes pay the fixed gate cost once, not N times. A bad
+  lane costs O(log N) extra runs. The runner is one process that sleeps on
+  the integration lock and on the queue directory; it does not poll Git.
+
 ## Costs
 
 - A candidate that selects every family runs the whole pre-push tier. On
@@ -113,6 +228,10 @@ within a family once conftest imports are lazy.
   the fact, with one bounded run per candidate.
 
 ## Migration
+
+HF-373 lands in this order, one slice per landing: the pinned controller;
+stable change ids; checkout provisioning and lane commands; the queue with
+batches and bisection, which replaces every private landing wrapper.
 
 1. Landing receipts, and landing gates run through the proof executor
    (HF-334 slice 3). The always-gate block and its receipt are done; rule,

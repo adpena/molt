@@ -10371,6 +10371,7 @@
           "tools/check_changed_clippy.py",
           "src/molt/cargo_workspace.py",
           "tools/molt_dev.py",
+          "tools/molt_dev_*.py",
           "tools/proof_plan.toml",
           "tests/tools/test_rust_toolchain_contract.py",
           "tests/tools/test_check_rustfmt.py",

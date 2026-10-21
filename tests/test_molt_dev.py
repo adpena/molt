@@ -1863,6 +1863,7 @@ def test_integrate_marker_mismatch_via_main_returns_fail(drv, origin_and_clone):
             "integrate",
             "--repo",
             str(work),
+            "--candidate-controller",
             "--no-push",
             "--marker",
             "contains:impl.py::NONEXISTENT_TOKEN",
@@ -2396,6 +2397,280 @@ print(json.dumps(result))
     assert (after.st_dev, after.st_ino) == (identity.st_dev, identity.st_ino)
 
 
+# A stand-in for main's driver: it reports how it was launched, then exits 41.
+_CONTROLLER_STUB = """\
+import json, os, sys
+from pathlib import Path
+Path(os.environ["MOLT_TEST_CONTROLLER_REPORT"]).write_text(json.dumps({{
+    "role": {role!r}, "file": __file__, "argv": sys.argv[1:],
+    "isolated": sys.flags.isolated, "prefix": sys.prefix,
+}}), encoding="utf-8")
+raise SystemExit(41)
+"""
+
+
+def _publish_controller_stub(work: Path, role: str) -> str:
+    (work / "pyproject.toml").write_text(
+        '[project]\nname = "fixture"\nversion = "0"\nrequires-python = ">=3.12"\n'
+        "dependencies = []\n",
+        encoding="utf-8",
+    )
+    (work / ".python-version").write_text("3.12\n", encoding="utf-8")
+    uv = os.environ.get("UV") or shutil.which("uv")
+    assert uv, "the pinned controller requires uv"
+    locked = _run_fast_captured_command([uv, "lock", "--offline", "--quiet"], cwd=work)
+    assert locked.returncode == 0, locked.stderr
+    _git(work, "add", "--", "pyproject.toml", ".python-version", "uv.lock")
+    _commit_file(work, "src/molt/__init__.py", "", "molt package")
+    tip = _commit_file(
+        work, "tools/molt_dev.py", _CONTROLLER_STUB.format(role=role), "main driver"
+    )
+    _git(work, "push", "-q", "origin", "HEAD:main")
+    return tip
+
+
+def _land_through_real_driver(work: Path, report: Path) -> tuple[int, dict]:
+    env = dict(os.environ)
+    env["MOLT_TEST_CONTROLLER_REPORT"] = str(report)
+    result = run_guarded_test_process(
+        [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "integrate",
+            "--repo",
+            str(work),
+            "--no-push",
+        ],
+        cwd=REPO_ROOT,
+        env=ProcessEnvironment(env),
+        timeout=60,
+    )
+    assert report.is_file(), result.stdout + result.stderr
+    return result.returncode, json.loads(report.read_text(encoding="utf-8"))
+
+
+def test_integrate_runs_main_pinned_controller_not_the_candidate(
+    origin_and_clone, tmp_path
+):
+    _, work = origin_and_clone
+    main_tip = _publish_controller_stub(work, "main")
+    # The candidate changes the driver; its version must not run its own landing.
+    _commit_file(
+        work, "tools/molt_dev.py", _CONTROLLER_STUB.format(role="candidate"), "edit"
+    )
+    returncode, report = _land_through_real_driver(work, tmp_path / "report.json")
+
+    assert report["role"] == "main"
+    assert returncode == 41, "exec hands the landing's exit status through"
+    assert report["isolated"] == 1
+    controllers = work / ".git" / "molt" / "controllers"
+    (root,) = controllers.iterdir()
+    assert Path(report["file"]) == (root / "tools" / "molt_dev.py").resolve()
+    # It runs in the environment built from main's lock, not the caller's.
+    assert Path(report["prefix"]).resolve() == (root / ".venv").resolve()
+    assert report["argv"] == [
+        "integrate",
+        "--repo",
+        str(work),
+        "--no-push",
+        "--repo",
+        str(work.resolve()),
+        "--pinned-controller",
+        root.name,
+    ]
+    record = json.loads((root / ".molt-controller.json").read_text(encoding="utf-8"))
+    assert record == {
+        "schema": "molt.integration-controller.v1",
+        "key": root.name,
+        "commit": main_tip,
+    }
+
+
+def test_pinned_controller_is_reused_per_tree_and_replaced_when_main_changes(
+    origin_and_clone, tmp_path
+):
+    _, work = origin_and_clone
+    _publish_controller_stub(work, "main")
+    _land_through_real_driver(work, tmp_path / "first.json")
+    controllers = work / ".git" / "molt" / "controllers"
+    (first,) = controllers.iterdir()
+    planted = first / "tools" / "planted.txt"
+    planted.write_text("reuse proof\n", encoding="utf-8")
+
+    # A landing that changes nothing the controller runs reuses its extraction.
+    _commit_file(work, "README.md", "unrelated\n", "docs")
+    _git(work, "push", "-q", "origin", "HEAD:main")
+    _land_through_real_driver(work, tmp_path / "second.json")
+    assert planted.read_text(encoding="utf-8") == "reuse proof\n"
+    assert list(controllers.iterdir()) == [first]
+
+    # A change to main's tools tree selects a new controller.
+    _commit_file(work, "tools/helper.py", "VALUE = 1\n", "tools change")
+    _git(work, "push", "-q", "origin", "HEAD:main")
+    _, report = _land_through_real_driver(work, tmp_path / "third.json")
+    second = Path(report["file"]).parents[1]
+    assert second != first.resolve() and second.parent == controllers.resolve()
+    assert (second / "tools" / "helper.py").read_text(encoding="utf-8") == "VALUE = 1\n"
+    assert not (second / "tools" / "planted.txt").exists()
+
+
+def test_real_driver_lands_and_retires_a_worktree_as_pinned_controller(
+    origin_and_clone, tmp_path
+):
+    # main carries this checkout's driver trees, copied from the working tree
+    # so the test runs the code under test, not the last commit.
+    _, work = origin_and_clone
+    listed = _run_fast_captured_command(
+        [
+            "git",
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "--",
+            "tools",
+            "src/molt",
+            "pyproject.toml",
+            "uv.lock",
+            ".python-version",
+        ],
+        cwd=REPO_ROOT,
+    )
+    assert listed.returncode == 0, listed.stderr
+    for relative in filter(None, listed.stdout.split("\0")):
+        source = REPO_ROOT / relative
+        if source.is_file():
+            target = work / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, target)
+    (work / "tools" / "proof_plan.toml").write_text(
+        'always = ["echo controller-gate"]\n', encoding="utf-8"
+    )
+    _git(
+        work,
+        "add",
+        "-A",
+        "--",
+        "tools",
+        "src",
+        "pyproject.toml",
+        "uv.lock",
+        ".python-version",
+    )
+    _git(work, "commit", "-q", "--no-verify", "-m", "main driver")
+    _git(work, "push", "-q", "origin", "HEAD:main")
+    lane = tmp_path / "lane"
+    _git(work, "worktree", "add", "-q", "-b", "lane/controller", str(lane))
+    lane_tip = _commit_file(lane, "feature.txt", "landed\n", "feature")
+
+    result = run_guarded_test_process(
+        [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "integrate",
+            "--repo",
+            str(lane),
+            "--cleanup-worktree",
+        ],
+        cwd=REPO_ROOT,
+        env=ProcessEnvironment(os.environ),
+        timeout=300,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == molt_dev.EXIT_OK, output
+    events = [
+        json.loads(line)
+        for line in result.stdout.splitlines()
+        if line.startswith('{"schema": "molt.integration-progress.v1"')
+    ]
+    (root,) = (work / ".git" / "molt" / "controllers").iterdir()
+    assert {event["controller"] for event in events} == {f"pinned:{root.name}"}
+    assert events[-1]["status"] == "completed"
+    assert "controller-gate" in output
+    origin_main = _git(work, "ls-remote", "origin", "refs/heads/main").stdout.split()[0]
+    assert origin_main == lane_tip
+    assert not lane.exists(), "the controller survives the worktree it retires"
+
+
+def test_main_without_a_controller_refuses_before_any_gate(origin_and_clone, tmp_path):
+    _, work = origin_and_clone
+    env = dict(os.environ)
+    result = run_guarded_test_process(
+        [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "integrate",
+            "--repo",
+            str(work),
+            "--no-push",
+        ],
+        cwd=REPO_ROOT,
+        env=ProcessEnvironment(env),
+        timeout=60,
+    )
+    assert result.returncode == molt_dev.EXIT_FAIL
+    assert "git rev-parse" in result.stdout + result.stderr
+    assert "integration-policy" not in result.stdout, "no gate may run"
+    assert not (work / ".git" / "molt" / "controllers").exists()
+
+
+def test_pinned_controller_claim_must_match_this_process(drv, origin_and_clone):
+    _, work = origin_and_clone
+    key = "0" * 32
+    with pytest.raises(drv.DriverError, match="has no record"):
+        drv.cmd_integrate(_integrate_ns(drv, repo=str(work), pinned_controller=key))
+    record = work / ".git" / "molt" / "controllers" / key / ".molt-controller.json"
+    record.parent.mkdir(parents=True)
+    record.write_text("{}\n", encoding="utf-8")
+    with pytest.raises(drv.DriverError, match="but this driver runs from"):
+        drv.cmd_integrate(_integrate_ns(drv, repo=str(work), pinned_controller=key))
+
+
+def test_controller_retention_keeps_recent_and_retires_idle(tmp_path):
+    from tools import molt_dev_controller as controller
+
+    now = 10_000_000.0
+    day = 24 * 3600.0
+
+    def entry(name: str, age: float) -> Path:
+        root = tmp_path / name
+        root.mkdir()
+        record = root / controller.RECORD_NAME
+        record.write_text("{}\n", encoding="utf-8")
+        os.utime(record, (now - age, now - age))
+        return root
+
+    current = entry("current", 5 * day)
+    entry("recent-a", 10)
+    entry("recent-b", 20)
+    entry("old-a", 2 * day)
+    entry("old-b", 3 * day)
+    entry("old-c", 4 * day)
+    controller._retire_idle(tmp_path, current=current, now=now)
+    # KEEP=4 counts the current controller; older entries go once idle a day.
+    assert sorted(path.name for path in tmp_path.iterdir()) == [
+        "current",
+        "old-a",
+        "recent-a",
+        "recent-b",
+    ]
+
+    for index in range(4):
+        entry(f"busy-{index}", 60.0 * (index + 1))
+    controller._retire_idle(tmp_path, current=current, now=now)
+    # Entries beyond KEEP stay while used within the idle window.
+    assert {path.name for path in tmp_path.iterdir()} >= {
+        "busy-0",
+        "busy-1",
+        "busy-2",
+        "busy-3",
+        "recent-a",
+        "recent-b",
+    }
+    assert not (tmp_path / "old-a").exists()
+
+
 @pytest.mark.parametrize("outcome", ["success", "driver-error", "interrupt"])
 def test_integrate_lock_released_on_every_exclusive_exit(
     drv, origin_and_clone, monkeypatch, outcome
@@ -2705,6 +2980,8 @@ def _integrate_ns(drv, **overrides):
         dry_run=False,
         no_push=False,
         expected_upstream=None,
+        candidate_controller=False,
+        pinned_controller=None,
         marker=None,
         extra_gate=None,
         cleanup_worktree=False,
