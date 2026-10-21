@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from molt.build_state_layout import build_state_root
+from molt.checkout_state import record_build_control_use, record_checkout_target_use
 
 from molt.cli.config_resolution import (
     DEFAULT_RUNTIME_STDLIB_PROFILE,
@@ -140,6 +141,9 @@ def _cargo_target_root(project_root: Path) -> Path:
     target = project_cargo_target_dir(project_root, environment)
     if not environment.iterated:
         _CARGO_TARGET_ROOTS[key] = (environment.observed(), target)
+    # A build that selects a checkout target uses it (HF-313); the memo makes
+    # this one stat per process.
+    record_checkout_target_use(target, checkout=Path(project_root))
     return target
 
 
@@ -155,11 +159,15 @@ def _build_state_root_cached(
         environment["MOLT_BUILD_STATE_DIR"] = build_state_override
     if artifact_root:
         environment["MOLT_EXT_ROOT"] = artifact_root
-    return build_state_root(
+    root = build_state_root(
         project_root=Path(project_root_str),
         cargo_target=Path(cargo_target_str),
         environment=environment,
     )
+    # A build that selects a build-control root uses it (HF-313); the cache
+    # makes this one stat per process and target.
+    record_build_control_use(root, cargo_target=Path(cargo_target_str))
+    return root
 
 
 def _build_state_root(project_root: Path) -> Path:

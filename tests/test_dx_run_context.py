@@ -343,6 +343,55 @@ def test_development_artifact_env_session_id_overrides_ambient_session(
     )
 
 
+def test_canonical_env_stamps_shared_checkout_state_with_its_owner(
+    tmp_path: Path,
+) -> None:
+    from molt import checkout_state
+
+    repo_root = tmp_path / "repo"
+    external_root = tmp_path / "external-ssd" / "Molt"
+    repo_root.mkdir()
+    context = RunContext(
+        repo_root, session_prefix="test", prefer_external_artifacts=True
+    )
+    base = {
+        "MOLT_EXTERNAL_ARTIFACT_ROOTS": str(external_root),
+        "MOLT_EXTERNAL_MIN_FREE_GB": "0",
+        "TMPDIR": "/var/folders/example/T/",
+    }
+    env = context.canonical_env(base, create_dirs=True)
+    target = Path(env["CARGO_TARGET_DIR"])
+    uv_environment = Path(env["UV_PROJECT_ENVIRONMENT"])
+    owner = checkout_state.CheckoutOwner(repo_root.resolve(), "cargo-target")
+    assert checkout_state.read_checkout_owner(target) == owner
+    # uv has not created the environment yet: a record would precede it.
+    uv_environment.mkdir(parents=True, exist_ok=True)
+    context.canonical_env(base, create_dirs=True)
+    assert checkout_state.read_checkout_owner(uv_environment) is None
+    (uv_environment / "pyvenv.cfg").write_text("home = /x\n", encoding="utf-8")
+    context.canonical_env(base, create_dirs=True)
+    assert checkout_state.read_checkout_owner(uv_environment) == (
+        checkout_state.CheckoutOwner(repo_root.resolve(), "uv-environment")
+    )
+    from molt.build_state_layout import build_state_root
+
+    control = build_state_root(
+        project_root=repo_root, cargo_target=target, environment=env
+    )
+    control.mkdir(parents=True)
+    context.canonical_env(base, create_dirs=True)
+    assert checkout_state.read_checkout_owner(control) == (
+        checkout_state.CheckoutOwner(target.resolve(), "build-control")
+    )
+    # A plain clone keeps its target inside the checkout: nothing to bind.
+    local = RunContext(tmp_path / "clone", session_prefix="test")
+    (tmp_path / "clone").mkdir()
+    local_env = local.canonical_env({"PATH": "/usr/bin"}, create_dirs=True)
+    assert not (
+        Path(local_env["CARGO_TARGET_DIR"]) / checkout_state.OWNER_RECORD
+    ).exists()
+
+
 def test_run_context_prefers_healthy_external_artifact_root(tmp_path: Path) -> None:
     repo_root = tmp_path / "repo"
     external_root = tmp_path / "external-ssd" / "Molt"

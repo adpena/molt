@@ -294,3 +294,37 @@ def test_daemon_session_sweep_stays_in_its_source_checkout(tmp_path, monkeypatch
     assert backend_execution._sweep_orphaned_backend_daemon_locks(first) == 2
     assert not current.exists() and not sibling.exists()
     assert foreign.exists() and obsolete.exists()
+
+
+def test_a_build_that_selects_shared_build_control_records_its_owner_and_use(
+    tmp_path: Path,
+) -> None:
+    from molt import checkout_state
+    from molt.cli import runtime_paths
+
+    artifact = tmp_path / "artifact"
+    project = tmp_path / "project"
+    project.mkdir()
+    target = artifact / "target" / "checkouts" / "project-0123456789ab"
+    control = build_state_root(
+        project_root=project,
+        cargo_target=target,
+        environment={"MOLT_EXT_ROOT": str(artifact)},
+    )
+    control.mkdir(parents=True)
+    runtime_paths._build_state_root_cached.cache_clear()
+    selected = runtime_paths._build_state_root_cached(
+        str(project), None, str(target), str(artifact)
+    )
+    assert selected == control
+    assert checkout_state.read_checkout_owner(control) == (
+        checkout_state.CheckoutOwner(target.resolve(), "build-control")
+    )
+    assert (control / checkout_state.LAST_USE_STAMP).is_file()
+    # Explicit build state is the caller's and stays unstamped.
+    explicit = tmp_path / "explicit-state"
+    explicit.mkdir()
+    runtime_paths._build_state_root_cached(
+        str(project), str(explicit), str(target), str(artifact)
+    )
+    assert not (explicit / checkout_state.OWNER_RECORD).exists()

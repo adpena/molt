@@ -31,15 +31,19 @@ def build_state_root(
         return path if path.is_absolute() else (project_root / path).absolute()
     if configured_artifact_root(environment, relative_to=project_root) is None:
         return cargo_target / ".molt_state"
-    target = resolve_owned_path(cargo_target)
-    address = canonical_json_sha256(
-        {
-            "schema": "molt.build-state-target.v1",
-            "cargo_target": os.path.normcase(str(target)),
-        }
-    )
+    address = build_state_address(cargo_target)
     return resolve_owned_path(
         control_state_dir(project_root, f"build-control/{address}", environment)
+    )
+
+
+def build_state_address(cargo_target: Path) -> str:
+    """The name of the build-control root that Cargo target ``cargo_target`` owns."""
+    return canonical_json_sha256(
+        {
+            "schema": "molt.build-state-target.v1",
+            "cargo_target": os.path.normcase(str(resolve_owned_path(cargo_target))),
+        }
     )
 
 

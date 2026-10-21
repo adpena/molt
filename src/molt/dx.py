@@ -356,23 +356,64 @@ def _maybe_register_lane_target(ext_root: Path, target_dir: Path) -> None:
     gated by the same independent ``MOLT_DISABLE_DISK_GUARD`` flag.
     """
     try:
-        if os.environ.get("MOLT_DISABLE_DISK_GUARD", "").strip().lower() in (
-            "1",
-            "true",
-            "yes",
-            "on",
-        ):
+        if _disk_guard_disabled() or _running_under_pytest():
             return
-        if _running_under_pytest():
-            return
-        tools_dir = compiler_source_root() / "tools"
-        if str(tools_dir.parent) not in sys.path:
-            sys.path.insert(0, str(tools_dir.parent))
-        from tools import disk_guard  # noqa: PLC0415 - lazy, best-effort
-
-        disk_guard.register_lane_target(target_dir, root=str(ext_root))
+        disk_guard = _source_disk_guard()
+        if disk_guard is not None:
+            disk_guard.register_lane_target(target_dir, root=str(ext_root))
     except Exception:
         pass
+
+
+def _disk_guard_disabled() -> bool:
+    return os.environ.get("MOLT_DISABLE_DISK_GUARD", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _source_disk_guard():  # noqa: ANN202 - tools.disk_guard loads lazily
+    """The checkout's `tools/disk_guard.py`, or None for an installed compiler."""
+    tools_dir = compiler_source_root() / "tools"
+    if not (tools_dir / "disk_guard.py").is_file():
+        return None
+    if str(tools_dir.parent) not in sys.path:
+        sys.path.insert(0, str(tools_dir.parent))
+    from tools import disk_guard  # noqa: PLC0415 - lazy, development only
+
+    return disk_guard
+
+
+def _maybe_collect_checkout_state(ext_root: Path, env: Mapping[str, str]) -> None:
+    """Run the disk guard's daily collection of ``ext_root`` (HF-313).
+
+    Cargo runs its automatic GC from build commands once a day; here the
+    common case is one ``stat`` of the GC stamp. A failed collection never
+    fails the command: it is reported, and the next day retries.
+    """
+    from molt.checkout_state import checkout_state_gc_due, claim_checkout_state_gc
+
+    if _disk_guard_disabled() or _running_under_pytest():
+        return
+    if not checkout_state_gc_due(ext_root):
+        return
+    try:
+        disk_guard = _source_disk_guard()
+        if disk_guard is None:
+            return
+        claim_checkout_state_gc(ext_root)
+        results = disk_guard.collect(root=ext_root, env=env)
+    except (OSError, ValueError) as exc:
+        print(f"molt: checkout state GC of {ext_root} failed: {exc}", file=sys.stderr)
+        return
+    reclaimed = sum(len(result.reclaimed) for result in results)
+    if reclaimed:
+        print(
+            f"molt: reclaimed {reclaimed} idle root(s) under {ext_root}",
+            file=sys.stderr,
+        )
 
 
 def _env_bool(
@@ -1658,6 +1699,12 @@ class RunContext:
                 value = env.get(key)
                 if value:
                     Path(value).expanduser().mkdir(parents=True, exist_ok=True)
+            # Record this checkout as the owner and a user of its state under
+            # a shared root, then retire idle state at most once a day (HF-313).
+            from molt.checkout_state import stamp_checkout_state
+
+            if stamp_checkout_state(self.root, env):
+                _maybe_collect_checkout_state(Path(ext_root), env)
         return ProcessEnvironment(env)
 
     def root_env(self, base: Mapping[str, str] | None = None) -> ProcessEnvironment:

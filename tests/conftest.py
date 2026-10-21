@@ -514,9 +514,11 @@ def _keep_hypothesis_storage_in_scratch() -> None:
         from hypothesis.configuration import set_hypothesis_home_dir
     except ImportError:
         return
-    from molt.dx import checkout_component, scratch_dir
+    from molt.checkout_state import checkout_scratch_state_dir
 
-    set_hypothesis_home_dir(scratch_dir(ROOT, f"hypothesis/{checkout_component(ROOT)}"))
+    set_hypothesis_home_dir(
+        checkout_scratch_state_dir("hypothesis-home", ROOT, os.environ)
+    )
 
 
 def pytest_configure() -> None:

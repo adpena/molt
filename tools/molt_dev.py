@@ -1749,6 +1749,8 @@ def _cleanup_worktree(
         _fail("refusing to remove the MAIN worktree; this targets disposable worktrees")
         return EXIT_FAIL
     _retire_checkout_daemons(repo)
+    checkout = repo.resolve()
+    state_root = _stamp_checkout_state(checkout)
     remove_args = ["worktree", "remove"]
     # `git worktree remove` refuses (without --force) on ANY modified/untracked
     # file, including the ignored-set churn (e.g. legacy/keyed wasm sha sidecars) our OWN
@@ -1775,7 +1777,48 @@ def _cleanup_worktree(
         )
         return EXIT_FAIL
     _ok(f"removed worktree {repo}")
+    if state_root is not None:
+        _reclaim_checkout_state(checkout, state_root)
     return EXIT_OK
+
+
+def _stamp_checkout_state(checkout: Path) -> Path | None:
+    """Bind a retiring checkout's state roots to it while it still exists.
+
+    Returns the artifact root that holds them, or None when it cannot be
+    resolved; the roots then stay for `tools/disk_guard.py --gc`.
+    """
+    from molt.checkout_state import stamp_checkout_state
+    from molt.dx import DxConfigError, artifact_root
+
+    try:
+        stamp_checkout_state(checkout, os.environ)
+        return artifact_root(checkout, os.environ)
+    except (OSError, ValueError, DxConfigError) as exc:
+        _warn(f"state roots of {checkout} were not stamped ({exc}); they stay")
+        return None
+
+
+def _reclaim_checkout_state(checkout: Path, state_root: Path) -> None:
+    """Reclaim the removed checkout's state roots through the disk guard.
+
+    A root that the guard defers, for a live guard, a held lock or a protected
+    path, stays for a later `tools/disk_guard.py --gc`. A failure never fails
+    the cleanup.
+    """
+    from tools import disk_guard
+
+    try:
+        result = disk_guard.reclaim_checkout_state(checkout, root=state_root)
+    except (OSError, ValueError) as exc:
+        _warn(f"state roots of {checkout} were not reclaimed ({exc}); they stay")
+        return
+    for item in result.reclaimed:
+        _ok(f"reclaimed {item['kind']} {item['path']}")
+    for item in result.skipped:
+        _warn(f"kept {item['path']} ({item['reason']}); disk_guard --gc retries it")
+    for error in result.errors:
+        _warn(f"state root not reclaimed: {error}")
 
 
 def _retire_checkout_daemons(repo: Path) -> None:

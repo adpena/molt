@@ -1698,6 +1698,16 @@ _REGISTRY_JSON = r"""{
     },
     {
       "audience": "user",
+      "default": "30",
+      "kind": "float",
+      "name": "MOLT_CHECKOUT_STATE_MAX_AGE_DAYS",
+      "output_neutral": false,
+      "owner": "src/molt/checkout_state.py",
+      "summary": "Days a checkout's state root under a shared artifact root (its Cargo target, uv environments, pytest cache, Hypothesis home and its targets' build control) may stay unused before the disk guard retires it, default 30, Cargo's limit for locally recreatable data; a root whose recorded owner is gone retires once unused for two hours. A positive number; anything else fails the collection.",
+      "values": []
+    },
+    {
+      "audience": "user",
       "default": "0",
       "kind": "bool",
       "name": "MOLT_CHECK_TIR_TRANSLATION",
@@ -3528,7 +3538,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_DISABLE_DISK_GUARD",
       "output_neutral": false,
       "owner": "src/molt/dx.py",
-      "summary": "Turns off the artifact-root disk guard; 1, true, yes or on stops tools/disk_guard.py reclaiming space and stops src/molt/dx.py registering per-lane Cargo target directories for TTL garbage collection, default off.",
+      "summary": "Turns off the artifact-root disk guard; 1, true, yes or on stops tools/disk_guard.py reclaiming space, and stops src/molt/dx.py registering per-lane Cargo target directories for TTL garbage collection and running the daily checkout state collection, default off.",
       "values": []
     },
     {

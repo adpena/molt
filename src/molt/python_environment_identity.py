@@ -216,6 +216,8 @@ def python_capture_authority_paths(
         "process_spawn",
         "windows_process_api",
         "dx",
+        "checkout_state",
+        "build_state_layout",
         "backend_daemon_paths",
         "host_capacity",
         "cargo_execution_policy",
