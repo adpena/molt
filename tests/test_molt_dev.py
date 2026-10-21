@@ -2944,6 +2944,54 @@ def test_queue_rebuilds_a_batch_when_main_moves_under_it(
     assert len(runs.splitlines()) == 2
 
 
+def test_land_waits_for_a_real_runner_through_the_pinned_controller(
+    origin_and_clone, tmp_path
+):
+    # The production path: `land` spawns a detached runner, which hands off
+    # to main's pinned driver and lands the request from the queue sandbox.
+    _, work = origin_and_clone
+    copy_driver_trees(work)
+    (work / "tools" / "proof_plan.toml").write_text(
+        'always = ["echo queue-gate"]\n', encoding="utf-8"
+    )
+    _git(work, "add", "-A", "--", ".")
+    _git(work, "commit", "-q", "--no-verify", "-m", "main driver")
+    _git(work, "push", "-q", "origin", "HEAD:main")
+    lane = tmp_path / "lane"
+    _git(work, "worktree", "add", "-q", "-b", "lane/queued", str(lane))
+    tip = _commit_file(lane, "queued.txt", "queued\n", "queued work")
+
+    result = run_guarded_test_process(
+        [sys.executable, str(SCRIPT_PATH), "land", "--wait", "--repo", str(lane)],
+        cwd=REPO_ROOT,
+        env=ProcessEnvironment(os.environ),
+        timeout=600,
+    )
+
+    assert result.returncode == molt_dev.EXIT_OK, result.stdout + result.stderr
+    assert "landed in" in result.stderr
+    _git(work, "fetch", "-q", "origin")
+    landed = _git(work, "show", "origin/main:queued.txt").stdout
+    assert landed == "queued\n"
+    assert _git(work, "rev-parse", "origin/main").stdout.strip() != tip, "replayed"
+
+
+def test_land_wait_fails_when_its_runner_exits_without_landing(tmp_path, monkeypatch):
+    from tools import molt_dev_queue as queue
+
+    paths = queue.QueuePaths(tmp_path / "landing-queue")
+    request = queue.enqueue(paths, head="1" * 40, worktree=tmp_path, branch=None)
+    runner = paths.runners / "runner-1"
+    runner.mkdir(parents=True)
+    # A runner that has not finished may still be starting: keep waiting.
+    assert queue._runner_exited_without(paths, request.id) is None
+    (runner / "rc").write_text("1\n", encoding="utf-8")
+    monkeypatch.setattr(queue, "_AWAIT_POLL_S", 0.01)
+
+    assert queue._await_landing(paths, request.id) == molt_dev.EXIT_FAIL
+    assert queue._runner_exited_without(paths, request.id) == runner
+
+
 def test_queue_plan_survives_between_runners_and_drops_closed_requests(tmp_path):
     from tools import molt_dev_queue as queue
 
