@@ -171,3 +171,35 @@ fn the_abi_witness_is_an_import_like_any_other() {
         Ok(_) => panic!("a missing ABI witness must refuse the program"),
     }
 }
+
+#[test]
+fn jit_and_object_owners_differ_only_in_the_relocation_model() {
+    // One ISA constructor serves both owners. Process memory takes long-range
+    // libcalls everywhere and GOT-relative PIC on x86_64 only, as
+    // cranelift_jit's own builder does; every other setting is shared.
+    let object = SimpleBackend::object_codegen_identity(None);
+    let jit = SimpleBackend::jit_codegen_identity();
+    for field in ["target", "isa_flags", "tir_simd", "backend"] {
+        assert_eq!(object[field], jit[field], "{field}");
+    }
+    let object_flags = object["shared_flags"].as_object().expect("object flags");
+    let jit_flags = jit["shared_flags"].as_object().expect("jit flags");
+    assert_eq!(
+        object_flags.keys().collect::<Vec<_>>(),
+        jit_flags.keys().collect::<Vec<_>>()
+    );
+    let differing: Vec<&str> = object_flags
+        .iter()
+        .filter(|(name, value)| jit_flags[name.as_str()] != **value)
+        .map(|(name, _)| name.as_str())
+        .collect();
+    let jit_pic = cfg!(target_arch = "x86_64");
+    let mut expected = vec![];
+    if object_flags["is_pic"] != serde_json::json!(jit_pic.to_string()) {
+        expected.push("is_pic");
+    }
+    expected.push("use_colocated_libcalls");
+    assert_eq!(differing, expected);
+    assert_eq!(jit_flags["use_colocated_libcalls"], "false");
+    assert_eq!(jit_flags["is_pic"], serde_json::json!(jit_pic.to_string()));
+}
