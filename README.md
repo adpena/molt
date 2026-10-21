@@ -137,7 +137,9 @@ uv run --python 3.12 molt compare examples/hello.py
 `molt run` defaults to `dev`; `molt build` defaults to `release`. Both accept
 `--profile dev|release` and `--release`. For explicit output paths and Windows,
 macOS, and Linux invocation, see
-[build and run](docs/getting-started.md#build-and-run-hello-world).
+[build and run](docs/getting-started.md#build-and-run-hello-world). On macOS
+arm64, `molt run --tier jit` runs the program from memory with no object, link
+or executable; see [the JIT tier](docs/getting-started.md#run-from-memory-jit-tier).
 
 Final-link reuse checks the complete output family against its receipt. Linked
 WASM deployment files are published together; failed builds preserve the previous
