@@ -250,7 +250,18 @@ impl SimpleBackend {
     /// Effective target inputs from the same ISA constructor used by codegen.
     /// TIR and object generation consume the same selected ISA capabilities.
     pub fn object_codegen_identity(target: Option<&str>) -> serde_json::Value {
-        let backend = Self::new_with_target(target);
+        Self::new_with_target(target).codegen_identity()
+    }
+
+    /// The effective target inputs of the JIT code owner on this host. They
+    /// differ from the host object owner's only in the relocation model.
+    #[cfg(feature = "jit")]
+    pub fn jit_codegen_identity() -> serde_json::Value {
+        Self::new_jit(std::sync::Arc::new(|_| None)).codegen_identity()
+    }
+
+    fn codegen_identity(&self) -> serde_json::Value {
+        let backend = self;
         let isa = backend.module.isa();
         let flags: BTreeMap<String, String> = isa
             .flags()
