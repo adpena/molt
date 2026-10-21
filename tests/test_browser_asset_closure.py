@@ -329,7 +329,9 @@ def test_scanner_uses_one_batch_process(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr(
         asset_graph_tool,
         "_COMMANDS",
-        SimpleNamespace(run=counted_run),
+        SimpleNamespace(
+            repo_root=asset_graph_tool._COMMANDS.repo_root, run=counted_run
+        ),
     )
     rows = tuple(
         AssetSource(f"fixture-{idx}.js", "browser", "module", "test", b"export {};\n")

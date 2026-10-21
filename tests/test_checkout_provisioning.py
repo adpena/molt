@@ -461,7 +461,7 @@ def test_the_committed_acorn_policy_is_the_checkout_input() -> None:
     from tools import proof_plan
 
     data = tomllib.loads(
-        (REPO_ROOT / "tools/proof_plan.toml").read_text("utf-8", encoding="utf-8")
+        (REPO_ROOT / "tools/proof_plan.toml").read_text(encoding="utf-8")
     )
     policies = proof_plan.load_toolchain_policies(
         data, root=REPO_ROOT, names=("browser-acorn",)

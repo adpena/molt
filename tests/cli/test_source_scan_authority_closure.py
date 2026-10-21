@@ -44,6 +44,10 @@ from molt.target_python import (
 )
 
 
+# Synthetic fingerprints and cache-hit oracles need exclusive test cache state.
+pytestmark = pytest.mark.usefixtures("isolated_molt_cache")
+
+
 def _source(path: Path, source: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(source, encoding="utf-8")

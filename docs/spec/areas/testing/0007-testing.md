@@ -129,6 +129,11 @@ percentages. Required conformance and release matrix gates still apply.
   lives for seconds fails every command running beside it. The pytest session
   oracle (`tests/conftest.py`) fails a session that leaves any new top-level
   entry in the checkout, and Hypothesis keeps its storage in scratch.
+- **Isolate cache observations.** Synthetic compiler fingerprints and tests
+  that require a warm hit or forbid recomputation use the existing
+  `isolated_molt_cache` fixture. The shared development cache may legitimately
+  return a miss under contention or eviction. Sharing tests explicitly share
+  one private cache; they do not depend on another test's or developer's state.
 - **Budget the execution, not the coverage.** Use the smallest fixture and
   dependency closure that preserves the invariant. Profile slow setup/build/run
   stages before optimizing. Reuse immutable fixture inputs without sharing

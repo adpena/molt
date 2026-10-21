@@ -181,7 +181,12 @@ def session_sentinel_paused(request: pytest.FixtureRequest) -> Iterator[None]:
 
 @pytest.fixture
 def isolated_molt_cache(tmp_path_factory, monkeypatch) -> Path:
-    """Opt-in disposable cache outside a test's compiler/project source tree."""
+    """Disposable cache outside the test's compiler/project source tree.
+
+    Synthetic fingerprints and cache-hit/no-recomputation oracles opt in here.
+    The default shared cache can legitimately be busy or evicted by other runs;
+    a test of cross-process sharing explicitly shares this private root instead.
+    """
     cache = tmp_path_factory.mktemp("molt-cache")
     monkeypatch.setenv("MOLT_CACHE", str(cache))
     return cache
