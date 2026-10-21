@@ -9,6 +9,7 @@ enable the pre-existing pre-commit type-check and block every commit).
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -43,6 +44,8 @@ case "$OSTYPE" in
     selected_bash="$6"
     ;;
 esac
+REAL_GIT="$(command -v git)" || exit 2
+export REAL_GIT
 export PATH="$fake_bin:$PATH"
 export PYTHONHOME="foreign-python-home"
 export PYTHONNOUSERSITE="0"
@@ -92,13 +95,24 @@ def _hook_fixture(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
         LAUNCH.read_text(encoding="utf-8"), encoding="utf-8", newline="\n"
     )
     (main / ".git").mkdir(parents=True)
+    # The worktree is a real repository: the hook's trailer step reads the
+    # committer identity and writes the index tree there, never in this checkout.
+    _git_init(worktree)
+    for key, value in (("user.name", "Molt Dev"), ("user.email", "dev@molt.test")):
+        run_guarded_test_process(
+            ["git", "-C", str(worktree), "config", key, value], check=True
+        )
+    (worktree / ".git" / "COMMIT_EDITMSG").write_text(
+        "Land the feature\n\nWhy it matters.\n", encoding="utf-8", newline="\n"
+    )
+    # Only the repository location is faked; every other command is real Git.
     _write_executable(
         fake_bin / "git",
         """#!/usr/bin/env bash
 case "$*" in
   "rev-parse --show-toplevel") printf '%s\\n' "$FAKE_REPO_ROOT" ;;
   "rev-parse --git-common-dir") printf '%s\\n' "$FAKE_COMMON_DIR" ;;
-  *) exit 2 ;;
+  *) exec "$REAL_GIT" "$@" ;;
 esac
 """,
     )
@@ -154,6 +168,7 @@ def _run_hook(
             bash,
             *args,
         ],
+        cwd=worktree,
         check=False,
     )
 
@@ -382,6 +397,68 @@ def test_commit_msg_hook_runs_the_attribution_checker_on_the_message(
         "--message-file",
         ".git/COMMIT_EDITMSG",
     ]
+
+
+def _native_python_stub(main: Path) -> None:
+    native_python = (
+        main / ".venv" / "Scripts" / "python.exe"
+        if os.name == "nt"
+        else main / ".venv" / "bin" / "python"
+    )
+    _write_executable(native_python, "#!/usr/bin/env bash\nexit 99\n")
+
+
+def _change_ids(message: str) -> list[str]:
+    return re.findall(r"^Change-Id: (I[0-9a-f]{40})$", message, flags=re.MULTILINE)
+
+
+def test_commit_msg_hook_adds_one_stable_change_id(tmp_path: Path) -> None:
+    worktree, main, fake_bin, capture = _hook_fixture(tmp_path)
+    _native_python_stub(main)
+    message = worktree / ".git" / "COMMIT_EDITMSG"
+
+    first = _run_hook(worktree=worktree, main=main, fake_bin=fake_bin, capture=capture)
+    assert first.returncode == 0, first.stderr
+    stamped = message.read_text(encoding="utf-8")
+    (change_id,) = _change_ids(stamped)
+    assert stamped == (
+        f"Land the feature\n\nWhy it matters.\n\nChange-Id: {change_id}\n"
+    )
+
+    # An amend reruns the hook on the stamped message: the identity holds.
+    again = _run_hook(worktree=worktree, main=main, fake_bin=fake_bin, capture=capture)
+    assert again.returncode == 0, again.stderr
+    assert message.read_text(encoding="utf-8") == stamped
+
+
+def test_commit_msg_hook_leaves_fold_commits_without_change_id(tmp_path: Path) -> None:
+    worktree, main, fake_bin, capture = _hook_fixture(tmp_path)
+    _native_python_stub(main)
+    message = worktree / ".git" / "COMMIT_EDITMSG"
+    for subject in ("fixup! Land the feature", "squash! Land", "amend! Land"):
+        message.write_text(f"{subject}\n", encoding="utf-8", newline="\n")
+        completed = _run_hook(
+            worktree=worktree, main=main, fake_bin=fake_bin, capture=capture
+        )
+        assert completed.returncode == 0, completed.stderr
+        assert message.read_text(encoding="utf-8") == f"{subject}\n"
+
+
+def test_commit_msg_hook_refuses_before_stamping_a_rejected_message(
+    tmp_path: Path,
+) -> None:
+    worktree, main, fake_bin, capture = _hook_fixture(tmp_path)
+    _native_python_stub(main)
+    _write_executable(fake_bin / "uv", "#!/usr/bin/env bash\nexit 7\n")
+    message = worktree / ".git" / "COMMIT_EDITMSG"
+    before = message.read_text(encoding="utf-8")
+
+    completed = _run_hook(
+        worktree=worktree, main=main, fake_bin=fake_bin, capture=capture
+    )
+
+    assert completed.returncode == 7
+    assert message.read_text(encoding="utf-8") == before
 
 
 def test_hooks_path_warning_only_when_it_shadows_another_directory(

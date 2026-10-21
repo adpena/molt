@@ -123,20 +123,26 @@ The code that decides whether a change lands is never the change.
   config project takes effect only after it merges. bors and the GitHub merge
   queue run as services, not from the pull request.
 - **Design.** `integrate` and the queue runner fetch first. Then they run the
-  driver from main's tip: `git archive <tip> tools src/molt pyproject.toml`
-  extracts into `<git-common-dir>/molt/controllers/<key>`, where the key is
-  the digest of the `tools` and `src/molt` tree ids. The driver's import
-  closure is the standard library plus 134 repository modules, so the
-  controller runs as `python -I -S` with the pinned base interpreter and no
-  environment. The candidate still supplies its declared data: gate
+  driver from main's tip: `git archive <tip>` of `tools`, `src/molt`,
+  `pyproject.toml`, `uv.lock` and `.python-version` extracts into
+  `<git-common-dir>/molt/controllers/<key>`, where the key is the digest of
+  those tree and blob ids. `uv sync --frozen --no-dev` builds the
+  controller's environment from main's lock, and the driver runs there as
+  `python -I`, so no module, dependency version or `PYTHON*` setting comes
+  from the candidate. The candidate still supplies its declared data: gate
   selection from its `tools/proof_plan.toml`, and its tests. A change to the
   driver takes effect after it lands, as a stage0 bump does.
 - **Escape.** `--candidate-controller` runs the candidate's driver for a
   repair of a broken controller on main. The progress stream and the receipt
   record it.
-- **Cost.** Two `git rev-parse` calls per landing. A new controller tree
-  costs one extraction (1.5 s, 33 MB). Startup is 0.5 s. Retention keeps the
-  four most recently used controllers.
+- **Cost.** Two `git rev-parse` calls and one no-op `uv sync` per landing. A
+  new controller tree costs one extraction (1.5 s, 33 MB) and one environment
+  build from the warm uv cache (0.8 s, 35 MB). Retention keeps the four most
+  recently used controllers.
+- **Status.** Implemented 2026-10-20. A first stdlib-only design ran the
+  driver as `python -I -S`; the end-to-end landing test found that worktree
+  cleanup imports `msgspec`, so the controller pins main's dependencies as
+  rustc's stage0 brings its own libraries.
 
 ### 2. Declarative checkout provisioning
 
@@ -171,7 +177,11 @@ A commit keeps one identity across rebases, and the ledger cites it.
   9-character commit id and amends the lane's ledger commit, so gates and the
   push see the final text. A token that no candidate commit carries fails
   before any gate. A row cites a landed commit by its commit id, as now.
-- **Cost.** One `git log` over the candidate range per landing.
+- **Cost.** One `git log` over the candidate range, and only when a touched
+  document under `docs/` holds a citation.
+- **Status.** Implemented 2026-10-20 (`.githooks/commit-msg`,
+  `tools/molt_dev_change_ids.py`). Code and tests may hold citation-shaped
+  data, so only Markdown under `docs/` resolves.
 
 ### 4. Orchestrator-owned lanes
 

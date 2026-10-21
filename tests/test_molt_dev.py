@@ -1872,6 +1872,127 @@ def test_integrate_marker_mismatch_via_main_returns_fail(drv, origin_and_clone):
     assert rc == drv.EXIT_FAIL
 
 
+# --------------------------------------------------------------------------
+# Stable change ids: citations resolve to the landed commit ids
+# --------------------------------------------------------------------------
+
+_FEATURE_CHANGE = "I" + "3a" * 20
+
+
+def _commit_with_change_id(repo: Path, rel: str, content: str, change: str) -> str:
+    target = repo / rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+    _git(repo, "add", "--", rel)
+    _git(repo, "commit", "-q", "--no-verify", "-m", f"feature\n\nChange-Id: {change}")
+    return _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+
+def _advance_origin(origin: Path, work: Path) -> str:
+    other = work.parent / "upstream"
+    _git(work.parent, "clone", "-q", str(origin), str(other))
+    _git(other, "config", "user.email", "upstream@example.test")
+    _git(other, "config", "user.name", "Upstream")
+    tip = _commit_file(other, "other.py", "other = 1\n", "upstream")
+    _git(other, "push", "-q", "origin", "main")
+    return tip
+
+
+def test_integrate_resolves_change_citations_to_rebased_commits(drv, origin_and_clone):
+    origin, work = origin_and_clone
+    source = _commit_with_change_id(work, "feature.py", "x = 1\n", _FEATURE_CHANGE)
+    # Bytes outside the citation survive exactly, including CRLF line ends.
+    ledger = b"| HF-1 | fixed in change:" + _FEATURE_CHANGE[:11].encode() + b" |\r\n"
+    (work / "docs").mkdir()
+    (work / "docs" / "ledger.md").write_bytes(ledger)
+    # Citation-shaped data outside docs/*.md is never rewritten.
+    (work / "tests").mkdir()
+    (work / "tests" / "data.py").write_text(
+        f'TOKEN = "change:{_FEATURE_CHANGE[:11]}"\n', encoding="utf-8"
+    )
+    _git(work, "add", "--", "docs/ledger.md", "tests/data.py")
+    _git(work, "commit", "-q", "--no-verify", "-m", "ledger")
+    _advance_origin(origin, work)
+
+    assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work))) == drv.EXIT_OK
+
+    landed = _git(work, "ls-remote", "origin", "refs/heads/main").stdout.split()[0]
+    assert landed == _git(work, "rev-parse", "HEAD").stdout.strip()
+    feature = _git(work, "rev-parse", f"{landed}^").stdout.strip()
+    assert feature != source, "the rebase gave the cited commit a new id"
+    assert (
+        _git(
+            work, "log", "-1", "--format=%(trailers:key=Change-Id,valueonly)", feature
+        ).stdout.strip()
+        == _FEATURE_CHANGE
+    )
+    short = _git(work, "rev-parse", "--short=9", feature).stdout.strip()
+    blob = run_guarded_test_process(
+        ["git", "-C", str(work), "cat-file", "blob", f"{landed}:docs/ledger.md"],
+        text=False,
+        check=True,
+    )
+    assert blob.stdout == b"| HF-1 | fixed in " + short.encode() + b" |\r\n"
+    assert (
+        f"change:{_FEATURE_CHANGE[:11]}"
+        in _git(work, "show", f"{landed}:tests/data.py").stdout
+    )
+
+
+@pytest.mark.parametrize(
+    ("citation", "message"),
+    [
+        ("change:Ideadbeef00", "names no commit of this landing"),
+        ("change:I" + "3a" * 4, "names several changes"),
+        ("change:I" + "5b" * 5, "cites the landing's last commit"),
+    ],
+)
+def test_integrate_refuses_unresolved_change_citations_before_gates(
+    drv, origin_and_clone, capsys, citation, message
+):
+    _, work = origin_and_clone
+    _commit_with_change_id(work, "a.py", "a = 1\n", _FEATURE_CHANGE)
+    _commit_with_change_id(work, "b.py", "b = 1\n", "I" + "3a" * 4 + "c" * 32)
+    (work / "docs").mkdir()
+    (work / "docs" / "ledger.md").write_text(f"cites {citation}\n", encoding="utf-8")
+    _git(work, "add", "--", "docs/ledger.md")
+    _git(
+        work, "commit", "-q", "--no-verify", "-m", "ledger\n\nChange-Id: I" + "5b" * 20
+    )
+    origin_before = _git(work, "ls-remote", "origin", "refs/heads/main").stdout
+    head_before = _git(work, "rev-parse", "HEAD").stdout.strip()
+
+    with pytest.raises(drv.DriverError, match=message) as caught:
+        drv.cmd_integrate(_integrate_ns(drv, repo=str(work)))
+
+    assert "executed=0" in str(caught.value)
+    captured = capsys.readouterr()
+    assert "integration-policy" not in captured.out + captured.err, "no gate may run"
+    assert _git(work, "rev-parse", "HEAD").stdout.strip() == head_before
+    assert _git(work, "ls-remote", "origin", "refs/heads/main").stdout == origin_before
+
+
+def test_integrate_dry_run_reports_change_citations_without_amending(
+    drv, origin_and_clone, capsys
+):
+    _, work = origin_and_clone
+    feature = _commit_with_change_id(work, "a.py", "a = 1\n", _FEATURE_CHANGE)
+    (work / "docs").mkdir()
+    (work / "docs" / "ledger.md").write_text(
+        f"fixed in change:{_FEATURE_CHANGE[:9]}\n", encoding="utf-8"
+    )
+    _git(work, "add", "--", "docs/ledger.md")
+    _git(work, "commit", "-q", "--no-verify", "-m", "ledger")
+    head = _git(work, "rev-parse", "HEAD").stdout.strip()
+
+    assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work), dry_run=True)) == 0
+
+    short = _git(work, "rev-parse", "--short=9", feature).stdout.strip()
+    assert f"change:{_FEATURE_CHANGE[:9]} -> {short}" in capsys.readouterr().err
+    assert _git(work, "rev-parse", "HEAD").stdout.strip() == head
+    assert "change:" in (work / "docs" / "ledger.md").read_text(encoding="utf-8")
+
+
 def test_integrate_marker_match_passes(drv, origin_and_clone):
     origin, work = origin_and_clone
     _commit_file(work, "impl.py", "def f():\n    return 1\n", "feat: impl")

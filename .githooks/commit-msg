@@ -4,6 +4,11 @@
 # Co-Authored-By: Claude trailer, no "Generated with Claude Code" footer). CI
 # enforces the same rule over every pushed range; this hook catches it before
 # the commit exists. Both run tools/check_commit_attribution.py.
+#
+# Then the hook gives the commit a stable identity, as Gerrit's commit-msg hook
+# does: a `Change-Id: I<40 hex>` trailer that survives rebase and amend. A
+# ledger row cites a commit of its own landing as `change:I<hex>`, and
+# `tools/molt_dev.py integrate` rewrites the citation to the landed commit id.
 set -uo pipefail
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
@@ -13,4 +18,13 @@ launch="$repo_root/.githooks/molt-hook-launch.sh"
 # shellcheck source=molt-hook-launch.sh
 . "$launch" || exit 1
 
-molt_hook_uv_python commit-msg "$checker" --message-file "$1"
+molt_hook_uv_python commit-msg "$checker" --message-file "$1" || exit $?
+
+case "$(sed -n '1p' "$1")" in
+  fixup!* | squash!* | amend!*) exit 0 ;; # folded into another commit
+esac
+if git interpret-trailers --parse <"$1" | grep -q '^Change-Id: I[0-9a-f]\{40\}$'; then
+  exit 0
+fi
+change_id="$({ git var GIT_COMMITTER_IDENT; git write-tree; cat "$1"; } | git hash-object --stdin)" || exit 1
+git interpret-trailers --in-place --if-exists doNothing --trailer "Change-Id: I$change_id" "$1"
