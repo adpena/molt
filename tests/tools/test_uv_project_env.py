@@ -276,10 +276,12 @@ def test_forwarded_exec_retains_native_reader_without_a_python_registry(tmp_path
         "env=dict(os.environ); env['CARGO_TARGET_DIR']=sys.argv[1]; "
         "forward_command([sys.executable,'-B','-S','-c',sys.argv[2],sys.argv[1]],env=env)"
     )
+    # `-S` drops the venv's site paths, so the source tree is named here and
+    # the test does not depend on a runner that exported it.
     result = run_guarded_test_process(
         [sys.executable, "-B", "-S", "-c", before_exec, str(target), after_exec],
         cwd=ROOT,
-        env=os.environ.copy(),
+        env={**os.environ, "PYTHONPATH": str(ROOT / "src")},
         timeout=30,
     )
     assert result.returncode == 0, result.stderr
