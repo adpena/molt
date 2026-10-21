@@ -283,7 +283,8 @@ cancels a gate declared before the failure, and the first failure in declared
 order is the one reported. Later gates are skipped or cancelled through the
 guard. Each landing leaves an executor receipt with every gate's duration, peak
 RSS and outcome beside the integration lock in the Git common directory. Rule
-gates, pytest batches and Cargo gates still run alone and stream live.
+gates, pytest batches and Cargo gates still run alone; every gate writes its
+streams to files while it runs (section 2.9, item 6).
 
 `CANONICAL_EXECUTION_ENV` forbids bytecode writes so a gate cannot change the
 checkout's import topology, so every gate compiled `tools/`, `src/molt` and the
@@ -769,6 +770,105 @@ The records that keep `DURABLE` describe state that outlives the processes: a
 Cargo-incremental quarantine receipt names a directory that survives the run,
 and artifact, cache-entry and release publications are outputs other
 processes trust. Neither runs on a successful guarded command.
+
+### 2.9 One owner and one last use for every regenerable root (HF-434..HF-437)
+
+Section 2.6 retires checkout state by last use and owner absence. Every other
+family the tools create still sprawls, because nothing owns it. Measured on
+the integrator Mac on 2026-10-21:
+
+- `logs/agents/` held 42 GiB; 34.6 GiB of it sat in 321 task directories idle
+  for 3 days or more (retained tarballs, Git bundles, snapshot checkouts, raw
+  logs). Nothing retires a task's payload when the task ends.
+- `<artifact root>/tmp/` held 20.5 GiB in 1,590 entries: per-agent scratch
+  with no owner record. 1,582 entries were idle for 3 days or more.
+- Two cache roots held 57 GiB (`~/.cache/molt`, in use, and the artifact
+  root's `.molt_cache`, idle). The cache keeps every retired legacy native
+  name forever (4.26 GiB in 1,985 entries, HF-434), and host-wide Rust state
+  has three retention policies (the product store of 2.8, the result cache,
+  the WASM pair store).
+- 38 worktrees were registered; 7 lanes carried one pin refresher. The
+  SPRAWL threshold only reports (HF-436).
+- A manual sweep took about two hours to harvest and lost track of a 52.6 GiB
+  staging folder before its last harvest pass. A failed landing gate printed
+  a 34 KB single-line repro record and no reason, and its receipt kept only
+  `exit 1` (HF-437).
+
+Leading practice, beyond the Go, Cargo and Bazel caches of 2.6:
+
+- Kubernetes deletes a dependent when its owner reference names an object
+  that is gone; cascading deletion runs in the background by default
+  ([garbage collection](https://kubernetes.io/docs/concepts/architecture/garbage-collection/)).
+  Molt takes the rule from it: nothing the tools create exists without an
+  owner.
+- Cloud Storage deletes softly by default: a deleted object stays
+  recoverable for 7 days (7 to 90 configurable)
+  ([soft delete](https://docs.cloud.google.com/storage/docs/soft-delete)).
+  Retirement and the point of no return are separate steps.
+- Uber's SubmitQueue keeps the mainline green while thousands of changes a
+  day land through it (EuroSys 2019, "Keeping master green at scale"). Molt
+  reads this as: lanes that land quickly through a queue do not accumulate.
+
+The design extends `molt.checkout_state`; it adds no second authority.
+
+1. **Agent scratch** (HF-435). A tool or agent gets scratch only from one
+   constructor that writes the 2.6 owner record (its session id or lane) and
+   stamps last use. The scratch kind joins the closed state-kind set, so
+   `disk_guard`'s daily pass retires it by the 2.6 rule: idle past the limit,
+   or soon after its owner is gone. Entries that predate the constructor age
+   out like Cargo's untracked entries.
+2. **Agent evidence** (HF-435). A task's `artifacts/` is a root owned by its
+   coordination record. When the task reaches a terminal state, its harvest
+   keeps the small text records (coordination, handoffs, reports, verdicts,
+   at most 1 MiB each, minus exact repository blobs) beside the record and
+   moves payloads to retirement. A running or recently used task is never
+   touched.
+3. **Soft retirement.** Every retirement first renames the root into
+   `<artifact root>/retired/<date>/` on the same volume (one `rename`), and
+   the daily pass deletes a retired root 7 days later. Recovery inside the
+   window is a rename back; nothing goes through the user's Trash.
+4. **One cache policy** (HF-434). One host cache root. Each store (module
+   caches, the product store, the result cache, the WASM pairs) declares its
+   last-use stamp and byte budget in one table; retired legacy names retire
+   by last use like every other entry, because an old writer touches its
+   files; a `*.publish.lock` is a live name (current code writes it) and
+   retires only after a nonblocking lock attempt proves no writer holds it.
+5. **Lanes** (HF-436). `lane start` refuses when a new lane would take the
+   live worktree count past `drift_harvest`'s limit (12, owner 2026-10-22), and names each
+   worktree idle for 48 hours (unique or superseded commits) to land or
+   retire first; `lane retire --abandon` writes a verified bundle. The idle
+   rule names; it does not retire by force, because a forced retirement of
+   another agent's idle worktree would stop that agent's work. Related moves,
+   such as pin refreshes, go as one stack in one lane.
+6. **Failures say why, briefly** (HF-437). An incident the stream names
+   (an RSS trip, timeout, signal or guard failure) gets its own record file
+   (`incidents/` beside the guard's profile log), and the stream names it in
+   one line; if no record can be written, the context prints whole. A plain
+   nonzero exit stays in the profile log alone. Every landing gate, serial
+   or concurrent, writes its stdout and stderr to files in a per-run
+   directory beside its receipt while it runs, so a killed runner still
+   leaves them, and the guard's keepalive still shows progress; the receipt
+   record and the `gate_finished` event name the files. A failed gate shows
+   their paths and each stream's bounded end; if the files cannot be
+   prepared, its streams print whole. Keeping output never changes a
+   verdict. Named records and gate runs survive at least 7 days. Until
+   item 3's soft retirement covers them (HF-435), two interim rules,
+   `prune_named_records` and `retire_gate_logs`, delete them outright after
+   that window and warn when a deletion fails.
+
+Cost: a scratch or evidence root writes one owner record once and refreshes
+one stamp at most once an hour (2.6 measured 1-15 us per stamp). Retirement
+is one `rename`; the daily pass already runs. A task harvest reads each
+candidate text file once and checks it against the object store in one
+`git cat-file --batch-check` stream. A failure writes one file instead of
+printing 34 KB into every caller.
+
+Proof: per kind, a fake-clock test that a used root survives and an idle or
+orphaned root retires; a test that soft retirement restores by rename; a
+harvest test with an independent oracle (a repository blob is skipped, a
+unique record is kept); a test that a failed gate's receipt names a file that
+holds its stderr; mutation checks for each rule; and the daily pass's wall
+time measured on the real artifact root.
 
 ## 3. The structural facts/mechanisms to build (each tied to the class it retires)
 
