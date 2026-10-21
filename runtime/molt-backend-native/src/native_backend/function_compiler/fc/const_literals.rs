@@ -149,7 +149,7 @@ fn load_owned_literal(
 
 #[cfg(feature = "native-backend")]
 fn declare_literal_data(
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     data_pool: &mut BTreeMap<Vec<u8>, cranelift_module::DataId>,
     next_data_id: &mut u64,
     builder: &mut FunctionBuilder<'_>,
@@ -197,7 +197,7 @@ impl LiteralFailureExit {
 
 #[cfg(feature = "native-backend")]
 fn hoist_outparam_literal(
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     data_pool: &mut BTreeMap<Vec<u8>, cranelift_module::DataId>,
     next_data_id: &mut u64,
@@ -231,7 +231,7 @@ fn hoist_outparam_literal(
 
 #[cfg(feature = "native-backend")]
 fn hoist_bigint_literal(
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     data_pool: &mut BTreeMap<Vec<u8>, cranelift_module::DataId>,
     next_data_id: &mut u64,
@@ -378,7 +378,7 @@ impl HeapLiteralMaterialization {
     pub(in crate::native_backend::function_compiler) fn materialize(
         self,
         hoists: &HeapLiteralHoists,
-        module: &mut ObjectModule,
+        module: &mut dyn Module,
         import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
         data_pool: &mut BTreeMap<Vec<u8>, cranelift_module::DataId>,
         next_data_id: &mut u64,
@@ -446,7 +446,7 @@ impl HeapLiteralMaterialization {
 #[allow(clippy::too_many_arguments)]
 pub(in crate::native_backend::function_compiler) fn handle_const_literal_op(
     op: &OpIR,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     vars: &BTreeMap<String, Variable>,

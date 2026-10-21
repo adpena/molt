@@ -66,7 +66,7 @@ fn entry_custody_word(
 
 #[cfg(feature = "native-backend")]
 fn metadata_target_signature(
-    module: &ObjectModule,
+    module: &dyn Module,
     op_kind: &str,
     target: &str,
     arities: &BTreeMap<String, usize>,
@@ -96,7 +96,7 @@ fn metadata_target_signature(
 pub(in crate::native_backend::function_compiler) fn emit_frame_homes_lend(
     homes: Variable,
     slots: i64,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
 ) -> Value {
@@ -163,7 +163,7 @@ fn emit_frame_home_release(
 #[cfg(feature = "native-backend")]
 #[allow(clippy::too_many_arguments)]
 fn box_frame_home_raw_int(
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     sealed_blocks: &mut BTreeSet<Block>,
@@ -240,7 +240,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
     is_block_filled: bool,
     rc_authority: NativeRcAuthority,
     in_loop: bool,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -264,7 +264,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
     local_dec_ref_obj: FuncRef,
     nbc: &crate::NanBoxConsts,
 ) -> OpFlow {
-    let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
+    let var_get_boxed_overflow_safe = |module: &mut dyn Module,
                                        import_ids: &mut BTreeMap<
         &'static str,
         (cranelift_module::FuncId, ImportSignatureShape),
@@ -1310,7 +1310,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
 #[allow(clippy::too_many_arguments)]
 pub(in crate::native_backend::function_compiler) fn handle_gpu_intrinsic_op(
     op: &OpIR,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,

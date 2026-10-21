@@ -57,7 +57,7 @@ pub(in crate::native_backend::function_compiler) use crate::tir::passes::typed_s
 
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) fn import_func_ref(
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder,
     local_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -76,7 +76,7 @@ pub(in crate::native_backend::function_compiler) fn import_func_ref(
 
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) fn import_runtime_func_ref(
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder,
     local_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -93,7 +93,7 @@ pub(in crate::native_backend::function_compiler) fn import_runtime_func_ref(
 
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) fn declare_function_object_target(
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     op_kind: &str,
     func_name: &str,
     linkage: Linkage,
@@ -122,7 +122,7 @@ pub(in crate::native_backend::function_compiler) fn require_static_target_symbol
 
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) fn emit_guarded_object_field_get(
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,

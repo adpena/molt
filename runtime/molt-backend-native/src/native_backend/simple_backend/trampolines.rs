@@ -8,7 +8,7 @@ use molt_tir::trampolines::TaskCompletion;
 #[cfg(feature = "native-backend")]
 impl SimpleBackend {
     pub(crate) fn ensure_trampoline(
-        module: &mut ObjectModule,
+        module: &mut dyn Module,
         trampoline_ids: &mut BTreeMap<TrampolineKey, cranelift_module::FuncId>,
         import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
         func_name: &str,
@@ -27,7 +27,7 @@ impl SimpleBackend {
     }
 
     fn ensure_trampoline_with_inspector<F>(
-        module: &mut ObjectModule,
+        module: &mut dyn Module,
         trampoline_ids: &mut BTreeMap<TrampolineKey, cranelift_module::FuncId>,
         import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
         func_name: &str,
@@ -289,7 +289,7 @@ impl SimpleBackend {
 
     #[cfg(test)]
     pub(crate) fn task_trampoline_clif_for_test(
-        module: &mut ObjectModule,
+        module: &mut dyn Module,
         import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
         func_name: &str,
         spec: TrampolineSpec,

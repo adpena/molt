@@ -32,7 +32,7 @@ use super::OpFlow;
 #[allow(clippy::too_many_arguments, clippy::manual_map)]
 pub(in crate::native_backend::function_compiler) fn handle_dict_op(
     op: &OpIR,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,

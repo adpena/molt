@@ -77,7 +77,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
     op: &OpIR,
     op_idx: usize,
     func_ir: &FunctionIR,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -111,7 +111,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
         |name: &str| scalar_fast_paths_enabled && representation_plan.name_is_integer_scalar(name);
     let var_is_bool =
         |name: &str| scalar_fast_paths_enabled && representation_plan.name_is_bool_scalar(name);
-    let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
+    let var_get_boxed_overflow_safe = |module: &mut dyn Module,
                                        import_ids: &mut BTreeMap<
         &'static str,
         (cranelift_module::FuncId, ImportSignatureShape),

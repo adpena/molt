@@ -11,7 +11,7 @@ pub(in crate::native_backend::function_compiler) fn bind_runtime_import_result(
     result: Value,
     symbol: &str,
     arity: usize,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     vars: &BTreeMap<String, Variable>,
@@ -35,7 +35,7 @@ fn bind_runtime_import_result_name(
     result: Value,
     symbol: &str,
     arity: usize,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     vars: &BTreeMap<String, Variable>,
@@ -217,7 +217,7 @@ impl<'op> NativeOperandTransaction<'op> {
     pub(in crate::native_backend::function_compiler) fn commit_call_inputs(
         &self,
         op: &OpIR,
-        module: &mut ObjectModule,
+        module: &mut dyn Module,
         import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
         builder: &mut FunctionBuilder<'_>,
         import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -299,7 +299,7 @@ impl<'op> NativeOperandTransaction<'op> {
     /// the dispatch branch separately settles its committed call inputs.
     pub(in crate::native_backend::function_compiler) fn release_temporaries(
         &self,
-        module: &mut ObjectModule,
+        module: &mut dyn Module,
         import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
         builder: &mut FunctionBuilder<'_>,
         import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -330,7 +330,7 @@ impl<'op> NativeOperandTransaction<'op> {
     pub(in crate::native_backend::function_compiler) fn finish_operation(
         self,
         op: &OpIR,
-        module: &mut ObjectModule,
+        module: &mut dyn Module,
         import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
         builder: &mut FunctionBuilder<'_>,
         import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -412,7 +412,7 @@ impl<'op> NativeOperandTransaction<'op> {
     pub(in crate::native_backend::function_compiler) fn operand(
         &mut self,
         name: &'op str,
-        module: &mut ObjectModule,
+        module: &mut dyn Module,
         import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
         builder: &mut FunctionBuilder<'_>,
         import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -455,7 +455,7 @@ impl<'op> NativeOperandTransaction<'op> {
     /// Skip dependent work when the preceding call left an exception pending.
     pub(in crate::native_backend::function_compiler) fn continue_unless_pending(
         &mut self,
-        module: &mut ObjectModule,
+        module: &mut dyn Module,
         import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
         builder: &mut FunctionBuilder<'_>,
         import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -501,7 +501,7 @@ impl<'op> NativeOperandTransaction<'op> {
         self,
         result: Value,
         abandon: Option<Value>,
-        module: &mut ObjectModule,
+        module: &mut dyn Module,
         import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
         builder: &mut FunctionBuilder<'_>,
         import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -555,7 +555,7 @@ pub(in crate::native_backend::function_compiler) fn emit_operand_transaction_cal
     op: &OpIR,
     args: &[String],
     symbol: &'static str,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -663,7 +663,7 @@ pub(in crate::native_backend::function_compiler) fn emit_operand_transaction_cal
 pub(in crate::native_backend::function_compiler) fn emit_fixed_aggregate_constructor(
     op: &OpIR,
     constructor: FixedAggregateConstructor,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -836,7 +836,7 @@ pub(in crate::native_backend::function_compiler) fn emit_fixed_aggregate_constru
 #[allow(clippy::too_many_arguments)]
 pub(in crate::native_backend::function_compiler) fn emit_hash_container_constructor(
     op: &OpIR,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -953,7 +953,7 @@ pub(in crate::native_backend::function_compiler) fn emit_hash_container_construc
 pub(in crate::native_backend::function_compiler) fn bind_owned_runtime_result(
     op: &OpIR,
     result: Value,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     vars: &BTreeMap<String, Variable>,
@@ -974,7 +974,7 @@ pub(in crate::native_backend::function_compiler) fn bind_owned_runtime_result(
 pub(in crate::native_backend::function_compiler) fn bind_owned_runtime_result_name(
     out: Option<&str>,
     result: Value,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     vars: &BTreeMap<String, Variable>,
@@ -1039,7 +1039,7 @@ pub(in crate::native_backend::function_compiler) fn begin_task_initialization(
 pub(in crate::native_backend::function_compiler) fn emit_program_slot_id(
     kind: molt_ir::code_slots::ProgramSlotKind,
     owner: &str,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     builder: &mut FunctionBuilder<'_>,
 ) -> Value {
     let symbol = molt_ir::code_slots::program_slot_symbol(kind, owner);
@@ -1063,7 +1063,7 @@ pub(in crate::native_backend::function_compiler) fn emit_program_slot_id(
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) fn emit_class_definition_slot(
     op: &OpIR,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     builder: &mut FunctionBuilder<'_>,
 ) -> Value {
     let symbol = op
@@ -1083,7 +1083,7 @@ pub(in crate::native_backend::function_compiler) fn emit_class_definition_slot(
 pub(in crate::native_backend::function_compiler) fn emit_owned_execution_frame_enter(
     entered: Variable,
     code_owner: &str,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
 ) {
@@ -1110,7 +1110,7 @@ pub(in crate::native_backend::function_compiler) fn emit_owned_execution_frame_e
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) fn emit_owned_execution_frame_exit(
     entered: Option<Variable>,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,

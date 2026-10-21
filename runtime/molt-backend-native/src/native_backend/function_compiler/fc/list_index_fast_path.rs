@@ -541,7 +541,7 @@ pub(in crate::native_backend::function_compiler) fn collect_pre_loop_defined_nam
 pub(in crate::native_backend::function_compiler) fn emit_loop_list_storage_hoists(
     func_ir: &FunctionIR,
     op_idx: usize,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,

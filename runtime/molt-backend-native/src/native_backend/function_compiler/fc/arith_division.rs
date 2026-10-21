@@ -81,7 +81,7 @@ pub(in crate::native_backend::function_compiler) fn emit_raw_int_div_intmin_debu
 #[allow(clippy::too_many_arguments, clippy::manual_map)]
 pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
     op: &OpIR,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -101,7 +101,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
             && !op_prefers_integer_runtime_lane(op)
             && representation_plan.op_scalar_lane(op) == Some(ScalarKind::Float)
     };
-    let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
+    let var_get_boxed_overflow_safe = |module: &mut dyn Module,
                                        import_ids: &mut BTreeMap<
         &'static str,
         (cranelift_module::FuncId, ImportSignatureShape),

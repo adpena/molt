@@ -31,7 +31,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
     master_return_block: Block,
     returns_value: bool,
     rc_authority: NativeRcAuthority,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -288,7 +288,7 @@ fn release_adopted_call_inputs(
     callable: Option<Value>,
     first_arg: usize,
     args: &[Value],
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -326,7 +326,7 @@ fn release_adopted_call_inputs(
 fn release_adopted_callable(
     op: &OpIR,
     callable: Value,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -353,7 +353,7 @@ fn release_adopted_callable(
 /// borrowing one, and releases the callable last.
 #[cfg(feature = "native-backend")]
 fn emit_owned_dynamic_call(
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     callable: Value,
@@ -409,7 +409,7 @@ fn handle_call_direct_op(
     master_return_block: Block,
     returns_value: bool,
     rc_authority: NativeRcAuthority,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -736,7 +736,7 @@ fn handle_call_direct_op(
 fn handle_call_internal_op(
     op: &OpIR,
     operands: &NativeOperandTransaction<'_>,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -834,7 +834,7 @@ fn handle_call_internal_op(
 #[cfg(feature = "native-backend")]
 #[allow(clippy::too_many_arguments)]
 fn emit_positional_call_bind(
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -900,7 +900,7 @@ fn handle_call_guarded_op(
     func_name: &str,
     master_return_block: Block,
     returns_value: bool,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -1207,7 +1207,7 @@ fn handle_call_func_op(
     op: &OpIR,
     operands: &NativeOperandTransaction<'_>,
     op_idx: usize,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -1535,7 +1535,7 @@ fn native_callable_cranelift_type(
 
 #[cfg(feature = "native-backend")]
 fn declare_native_callable_symbol(
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     builder: &mut FunctionBuilder<'_>,
     symbol: &str,
     signature: &molt_ir::native_callable_abi::NativeCallableMachineSignature,
@@ -1571,7 +1571,7 @@ fn declare_native_callable_symbol(
 #[cfg(feature = "native-backend")]
 #[allow(clippy::too_many_arguments)]
 fn emit_native_forward_f32_call(
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -1700,7 +1700,7 @@ fn handle_invoke_ffi_op(
     operands: &NativeOperandTransaction<'_>,
     op_idx: usize,
     func_name: &str,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -1955,7 +1955,7 @@ fn handle_call_bind_indirect_op(
     operands: &NativeOperandTransaction<'_>,
     op_idx: usize,
     func_name: &str,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -2070,7 +2070,7 @@ const LOADED_METHOD_CALLS: [&str; 5] = [
 fn handle_call_loaded_method_op(
     op: &OpIR,
     operands: &NativeOperandTransaction<'_>,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -2138,7 +2138,7 @@ fn handle_call_method_op(
     operands: &NativeOperandTransaction<'_>,
     op_idx: usize,
     func_name: &str,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -2353,7 +2353,7 @@ fn handle_call_method_op(
 fn handle_getframe_op(
     op: &OpIR,
     operands: &NativeOperandTransaction<'_>,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     vars: &BTreeMap<String, Variable>,

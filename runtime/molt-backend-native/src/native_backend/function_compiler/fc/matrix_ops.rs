@@ -14,7 +14,7 @@ pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] =
 #[allow(clippy::too_many_arguments, clippy::manual_map)]
 pub(in crate::native_backend::function_compiler) fn handle_matrix_op(
     op: &OpIR,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -23,7 +23,7 @@ pub(in crate::native_backend::function_compiler) fn handle_matrix_op(
     representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
 ) -> OpFlow {
-    let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
+    let var_get_boxed_overflow_safe = |module: &mut dyn Module,
                                        import_ids: &mut BTreeMap<
         &'static str,
         (cranelift_module::FuncId, ImportSignatureShape),

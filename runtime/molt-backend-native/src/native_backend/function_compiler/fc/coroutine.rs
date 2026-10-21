@@ -27,7 +27,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
     resume_blocks: &BTreeMap<i64, Block>,
     reachable_blocks: &mut BTreeSet<Block>,
     is_block_filled: &mut bool,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -39,7 +39,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
     local_inc_ref_obj: FuncRef,
     nbc: &crate::NanBoxConsts,
 ) -> OpFlow {
-    let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
+    let var_get_boxed_overflow_safe = |module: &mut dyn Module,
                                        import_ids: &mut BTreeMap<
         &'static str,
         (cranelift_module::FuncId, ImportSignatureShape),

@@ -588,7 +588,7 @@ impl SimpleBackend {
 
         let nbc = NanBoxConsts::new();
 
-        let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
+        let var_get_boxed_overflow_safe = |module: &mut dyn Module,
                                            import_ids: &mut BTreeMap<
             &'static str,
             (cranelift_module::FuncId, ImportSignatureShape),
