@@ -15,11 +15,18 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
 
+from molt.dx import project_cargo_target_dir  # noqa: E402
 from molt.process_environment import (  # noqa: E402
     ProcessEnvironment,
     ProcessEnvironmentBuilder,
 )
 from tools import harness_memory_guard  # noqa: E402
+
+
+def _built_worker(env: ProcessEnvironment) -> Path:
+    """The `molt-worker` that `cargo build -p molt-worker` writes under ``env``."""
+    name = "molt-worker.exe" if os.name == "nt" else "molt-worker"
+    return project_cargo_target_dir(ROOT, env) / "debug" / name
 
 
 def main() -> int:
@@ -39,9 +46,7 @@ def main() -> int:
     )
 
     exports = ROOT / "demo" / "molt_worker_app" / "molt_exports.json"
-    worker_bin = Path(
-        env.get("WORKER_BIN", str(ROOT / "target" / "debug" / "molt-worker"))
-    )
+    worker_bin = Path(env.get("WORKER_BIN", str(_built_worker(env))))
     if not worker_bin.exists():
         build = context.run(
             ["cargo", "build", "-p", "molt-worker"],
@@ -50,7 +55,7 @@ def main() -> int:
         )
         if build.returncode != 0:
             return build.returncode
-        worker_bin = ROOT / "target" / "debug" / "molt-worker"
+        worker_bin = _built_worker(env)
     env = env.updated(
         {
             "MOLT_WORKER_CMD": (
