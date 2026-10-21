@@ -35,6 +35,7 @@ from molt.cli.cargo_resource_custody import (
     CargoResourceCustody,
     CargoResourceRoot,
 )
+from molt.cli.cargo_search_path import cargo_search_path, derives_cargo_search_path
 from molt.cli.runtime_cargo_plan import (
     RuntimeCargoPlan,
     _cargo_build_directory_base,
@@ -745,6 +746,11 @@ def runtime_cargo_plan(
         target=requested_target or host,
         host_target=host,
     )
+    if derives_cargo_search_path():
+        # The real plan derives Cargo's PATH from its final tools (HF-385).
+        environment["PATH"] = cargo_search_path(
+            environment, (*tool_paths.values(), *wrappers.values())
+        )
     custody = (
         *(
             CargoExecutableCustody.capture("tool/" + role, path)
