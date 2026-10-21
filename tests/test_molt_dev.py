@@ -76,7 +76,10 @@ from tools.molt_dev_common import (  # noqa: E402
     GateFailure,
     _run_fast_captured_command,
 )
-from tests.integration_driver_fixture import copy_driver_trees  # noqa: E402
+from tests.integration_driver_fixture import (  # noqa: E402
+    clone_tree,
+    copy_driver_trees,
+)
 
 SCRIPT_PATH = REPO_ROOT / "tools" / "molt_dev.py"
 COMMITTED_GATES = REPO_ROOT / "tools" / "proof_plan.toml"
@@ -173,7 +176,7 @@ def origin_and_clone(tmp_path, _origin_seed, monkeypatch):
     for key in ("MOLT_VENV", "UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV"):
         monkeypatch.delenv(key, raising=False)
     origin = tmp_path / "origin.git"
-    shutil.copytree(_origin_seed, origin)
+    clone_tree(_origin_seed, origin)
     work = tmp_path / "work"
     _git(
         tmp_path,
@@ -2834,10 +2837,10 @@ def test_pinned_controller_is_reused_per_tree_and_replaced_when_main_changes(
 
 
 def test_real_driver_lands_and_retires_a_worktree_as_pinned_controller(
-    origin_and_clone, tmp_path
+    origin_and_clone, tmp_path, driver_seed
 ):
     _, work = origin_and_clone
-    copy_driver_trees(work)
+    copy_driver_trees(work, seed=driver_seed)
     (work / "tools" / "proof_plan.toml").write_text(
         'always = ["echo controller-gate"]\n', encoding="utf-8"
     )
@@ -3230,12 +3233,12 @@ def test_land_no_precheck_queues_without_running_gates(
 
 
 def test_land_waits_for_a_real_runner_through_the_pinned_controller(
-    origin_and_clone, tmp_path
+    origin_and_clone, tmp_path, driver_seed
 ):
     # The production path: `land` spawns a detached runner, which hands off
     # to main's pinned driver and lands the request from the queue sandbox.
     _, work = origin_and_clone
-    copy_driver_trees(work)
+    copy_driver_trees(work, seed=driver_seed)
     (work / "tools" / "proof_plan.toml").write_text(
         'always = ["echo queue-gate"]\n', encoding="utf-8"
     )

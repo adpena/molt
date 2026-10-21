@@ -4,22 +4,46 @@ Every landing runs main's pinned driver (tools/molt_dev_controller.py), so a
 fixture that lands through the real ``integrate`` needs that driver on its
 main. The copy comes from the working tree, tracked and untracked alike, so a
 test runs the code under test rather than the last commit.
+
+The driver is host tooling. ``src/molt/stdlib`` is the compiled program's
+library: the host never imports it (tests/conftest.py refuses it on
+``sys.path``), so the fixture leaves it out; it was 950 of the 2,071 files
+every fixture repository copied, committed, checked out and deleted.
+``tools/browser_asset_graph`` is the Acorn parser's package set: the driver
+never runs the generator that needs it, but a checkout that carries its lock
+declares the ``browser-acorn`` input, and every fixture sandbox then paid an
+``npm ci`` of its own.
+
+Fixture trees are copied many times per session, on whatever volume holds the
+session's temporary files. ``clone_tree`` shares file blocks where the
+filesystem can (APFS, btrfs, XFS) and copies elsewhere, and
+``shared_session_tree`` builds an immutable seed once per session for every
+xdist worker instead of once per worker.
 """
 
 from __future__ import annotations
 
+import ctypes
+import errno
+import os
 import shutil
+import sys
+from collections.abc import Callable
 from pathlib import Path
 
+import pytest
+
+from molt.file_locks import _acquire_file_lock, _release_file_lock
 from tools.molt_dev_common import _run_fast_captured_command
 from tools.molt_dev_controller import CONTROLLER_PATHS
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+# Under the controller paths but not part of the driver (module docstring).
+EXCLUDED_DRIVER_TREES = ("src/molt/stdlib", "tools/browser_asset_graph")
 
 
-def copy_driver_trees(target: Path) -> None:
-    """Copy the controller's trees from this working tree into ``target``."""
-
+def driver_tree_files() -> list[str]:
+    """The driver's files in this working tree, relative to the checkout."""
     listed = _run_fast_captured_command(
         [
             "git",
@@ -33,14 +57,115 @@ def copy_driver_trees(target: Path) -> None:
             # The fixture is a checkout that provisions itself (uv sync
             # writes src/molt.egg-info): it keeps the repository's ignores.
             ".gitignore",
+            *(f":(exclude){tree}" for tree in EXCLUDED_DRIVER_TREES),
         ],
         cwd=REPO_ROOT,
     )
     if listed.returncode != 0:
         raise RuntimeError(f"cannot list the driver trees: {listed.stderr}")
-    for relative in filter(None, listed.stdout.split("\0")):
+    return [relative for relative in listed.stdout.split("\0") if relative]
+
+
+def copy_driver_trees(target: Path, *, seed: Path | None = None) -> None:
+    """Copy the controller's trees from this working tree into ``target``.
+
+    With ``seed`` (the ``driver_seed`` fixture) the files come from that
+    session copy, which shares the target's volume and so clones instead of
+    copying across volumes.
+    """
+    if seed is not None:
+        shutil.copytree(
+            seed, target, symlinks=True, copy_function=clone_file, dirs_exist_ok=True
+        )
+        return
+    for relative in driver_tree_files():
         source = REPO_ROOT / relative
         if source.is_file():
             destination = target / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source, destination)
+            clone_file(source, destination)
+
+
+def _darwin_clonefile() -> Callable[[bytes, bytes, int], int] | None:
+    if sys.platform != "darwin":
+        return None
+    libc = ctypes.CDLL(None, use_errno=True)
+    clonefile = libc.clonefile
+    clonefile.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int]
+    clonefile.restype = ctypes.c_int
+    return clonefile
+
+
+_CLONEFILE = _darwin_clonefile()
+_FICLONE = 0x40049409  # linux/fs.h: share the source's blocks (btrfs, XFS)
+
+
+def clone_file(
+    source: str | os.PathLike[str], destination: str | os.PathLike[str]
+) -> None:
+    """Copy one file, sharing its blocks where the filesystem can.
+
+    A clone is an independent copy (copy-on-write) that costs no data I/O.
+    It needs both paths on one filesystem that supports it; anything else
+    (another volume, Windows, ext4) falls back to a plain copy.
+    """
+    if _CLONEFILE is not None:
+        if _CLONEFILE(os.fsencode(source), os.fsencode(destination), 0) == 0:
+            return
+        if ctypes.get_errno() not in (errno.EXDEV, errno.ENOTSUP, errno.EEXIST):
+            raise OSError(ctypes.get_errno(), os.strerror(ctypes.get_errno()), source)
+    elif sys.platform == "linux":
+        import fcntl
+
+        try:
+            with open(source, "rb") as src, open(destination, "wb") as dst:
+                fcntl.ioctl(dst.fileno(), _FICLONE, src.fileno())
+            shutil.copystat(source, destination)
+            return
+        except OSError as exc:
+            if exc.errno not in (errno.EXDEV, errno.EOPNOTSUPP, errno.EINVAL):
+                raise
+    shutil.copy2(source, destination)
+
+
+def clone_tree(source: Path, destination: Path) -> None:
+    """Copy a directory tree the way ``clone_file`` copies one file."""
+    shutil.copytree(source, destination, symlinks=True, copy_function=clone_file)
+
+
+def shared_session_tree(
+    tmp_path_factory: pytest.TempPathFactory,
+    worker_id: str,
+    name: str,
+    build: Callable[[Path], None],
+) -> Path:
+    """Build an immutable tree once per session, shared by every xdist worker.
+
+    A session fixture runs once per xdist worker, so an expensive seed built
+    in one costs the session N times. The workers share their basetemp's
+    parent: the first to take the lock builds the tree there, the rest find
+    it ready. Callers clone from the result and never write into it.
+    """
+    base = tmp_path_factory.getbasetemp()
+    shared = base if worker_id == "master" else base.parent
+    target = shared / name
+    ready = shared / f"{name}.ready"
+    if ready.is_file():
+        return target
+    # The builder holds the lock until the tree is ready; its exit releases
+    # it. A wall-clock bound here failed waiters while a loaded host built.
+    handle = _acquire_file_lock(
+        shared / f"{name}.lock", timeout_s=None, timeout_message=""
+    )
+    try:
+        if not ready.is_file():
+            staging = shared / f"{name}.staging"
+            if staging.exists():
+                shutil.rmtree(staging)
+            staging.mkdir()
+            build(staging)
+            staging.rename(target)
+            ready.touch()
+    finally:
+        _release_file_lock(handle)
+    return target
