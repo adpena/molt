@@ -33,8 +33,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 const EXIT_RUNNER_FAILURE: u8 = 125;
 const EXIT_USAGE: u8 = 2;
 
-const USAGE: &str =
-    "usage: molt-jit --launch <launch.json> -- <argv0> [args...]\n       molt-jit --probe";
+const USAGE: &str = "usage: molt-jit --launch <launch.json> [--start-receipt <path>] -- <argv0> [args...]\n       molt-jit --probe";
+
+/// The exact contents of a start receipt (`--start-receipt`). The runner
+/// creates it after the program compiled, immediately before the program
+/// starts, so its absence means the runner failed first: the JIT tier's form
+/// of a failed build (`src/molt/cli/run_tier.py`).
+const START_RECEIPT: &str = "{\"schema\":\"molt.jit-start.v1\"}\n";
 
 /// The compiled program's `molt_isolate_bootstrap`, published before the
 /// runtime starts. The runtime image imports the symbol from this executable.
@@ -85,7 +90,17 @@ fn main() -> ExitCode {
                 eprintln!("{USAGE}");
                 return ExitCode::from(EXIT_USAGE);
             };
-            if args.next().as_ref().and_then(|arg| arg.to_str()) != Some("--") {
+            let mut start_receipt = None;
+            let mut separator = args.next();
+            if separator.as_ref().and_then(|arg| arg.to_str()) == Some("--start-receipt") {
+                let Some(path) = args.next().map(PathBuf::from) else {
+                    eprintln!("{USAGE}");
+                    return ExitCode::from(EXIT_USAGE);
+                };
+                start_receipt = Some(path);
+                separator = args.next();
+            }
+            if separator.as_ref().and_then(|arg| arg.to_str()) != Some("--") {
                 eprintln!("{USAGE}");
                 return ExitCode::from(EXIT_USAGE);
             }
@@ -94,7 +109,7 @@ fn main() -> ExitCode {
                 eprintln!("{USAGE}");
                 return ExitCode::from(EXIT_USAGE);
             }
-            match run(&manifest, &argv) {
+            match run(&manifest, start_receipt.as_deref(), &argv) {
                 Ok(never) => match never {},
                 Err(message) => fail(message),
             }
@@ -139,6 +154,7 @@ impl RemovedBackendEnvironment {
 
 fn run(
     manifest_path: &std::path::Path,
+    start_receipt: Option<&std::path::Path>,
     argv: &[OsString],
 ) -> Result<std::convert::Infallible, String> {
     let manifest = LaunchManifest::read(manifest_path)?;
@@ -178,6 +194,9 @@ fn run(
         );
     }
     drop(scope);
+    if let Some(path) = start_receipt {
+        write_start_receipt(path)?;
+    }
     // SAFETY: compilation is over; no thread reads the environment until the
     // runtime starts below, on this thread.
     unsafe { removed.restore() };
@@ -187,6 +206,19 @@ fn run(
     // SAFETY: `entry` belongs to a program compiled against `image`, whose
     // launch API `api` is; the environment is this thread's alone.
     unsafe { launch::run_program(&api, entry, &manifest.launch, argv) }
+}
+
+/// Record that the program compiled and starts next. Exclusive creation
+/// keeps a stale receipt from claiming this start.
+fn write_start_receipt(path: &std::path::Path) -> Result<(), String> {
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| format!("cannot create start receipt {}: {error}", path.display()))?;
+    file.write_all(START_RECEIPT.as_bytes())
+        .map_err(|error| format!("cannot write start receipt {}: {error}", path.display()))
 }
 
 /// Compile the whole program into executable memory against `image`.
