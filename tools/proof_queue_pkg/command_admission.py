@@ -297,25 +297,29 @@ def _uv_prefix_and_payload(argv: Sequence[str]) -> tuple[list[str], list[str]]:
     return [str(value) for value in argv[:index]], payload
 
 
-def _normalized_entrypoint_target(value: str) -> str:
+def _normalized_entrypoint_target(value: str, *, root: Path | None = None) -> str:
+    root = _REPO_ROOT if root is None else root
     normalized = value.replace("\\", "/")
     while normalized.startswith("./"):
         normalized = normalized[2:]
     candidate = Path(value)
     if candidate.is_absolute():
         try:
-            normalized = (
-                candidate.resolve(strict=False).relative_to(_REPO_ROOT).as_posix()
-            )
+            normalized = candidate.resolve(strict=False).relative_to(root).as_posix()
         except ValueError:
             pass
     return normalized.casefold()
 
 
 def _command_wrapper(
-    command: Sequence[str],
+    command: Sequence[str], *, root: Path | None = None
 ) -> tuple[dict[str, object], list[str]] | None:
-    """Model one environment wrapper using its actual argument-parser authority."""
+    """Model one environment wrapper using its actual argument-parser authority.
+
+    ``root`` is the checkout the command runs in; it defaults to the
+    admission root.
+    """
+    root = _REPO_ROOT if root is None else root
     payload = list(command)
     if not payload:
         return None
@@ -339,7 +343,7 @@ def _command_wrapper(
         # nonexistent case alias (on case-sensitive hosts) as executable code.
         candidate = Path(str(invocation.target))
         if not candidate.is_absolute():
-            candidate = _REPO_ROOT / candidate
+            candidate = root / candidate
         try:
             selected = candidate.resolve(strict=True)
         except (OSError, RuntimeError):
@@ -351,7 +355,7 @@ def _command_wrapper(
                     ("venv_exec.py", "venv"),
                     ("uv_project_env.py", "uv-project"),
                 )
-                if selected == (_REPO_ROOT / "tools" / filename).resolve(strict=True)
+                if selected == (root / "tools" / filename).resolve(strict=True)
             ),
             None,
         )
@@ -414,22 +418,26 @@ def _command_wrapper(
 
 
 def _command_entrypoint(
-    argv: Sequence[str], *, _wrapper_depth: int = 0
+    argv: Sequence[str], *, root: Path | None = None, _wrapper_depth: int = 0
 ) -> tuple[str, str] | None:
     """Return the stable program entrypoint whose plan authority cannot drift.
 
     Arguments are deliberately excluded.  If an argv is close enough to execute
     the same Python/Node program as a proof-plan command, it must be an exact plan
     command; otherwise changing one selector could silently discard that
-    command's declared toolchain closure.
+    command's declared toolchain closure. ``root`` is the checkout the command
+    runs in; it defaults to the admission root.
     """
+    root = _REPO_ROOT if root is None else root
     if not argv:
         return None
-    modeled = _command_wrapper(argv)
+    modeled = _command_wrapper(argv, root=root)
     if modeled is not None:
         if _wrapper_depth >= 1:
             raise ValueError("command wrappers are limited to one typed layer")
-        return _command_entrypoint(modeled[1], _wrapper_depth=_wrapper_depth + 1)
+        return _command_entrypoint(
+            modeled[1], root=root, _wrapper_depth=_wrapper_depth + 1
+        )
     payload = [str(value) for value in argv]
     if _basename(payload[0]) in {"uv", "uv.exe"}:
         _prefix, payload = _uv_prefix_and_payload(payload)
@@ -449,15 +457,15 @@ def _command_entrypoint(
             module = str(invocation.target)
             if module == "tools.guarded_exec":
                 return None
-            is_cli = is_molt_cli_payload("module", module, repo_root=_REPO_ROOT)
+            is_cli = is_molt_cli_payload("module", module, repo_root=root)
             entrypoint = ("python-module", module.casefold())
         elif invocation.mode == "script":
             target = str(invocation.target)
             if _basename(target) == "guarded_exec.py":
                 return None
-            normalized = _normalized_entrypoint_target(target)
+            normalized = _normalized_entrypoint_target(target, root=root)
             is_cli = is_molt_cli_payload(
-                "script", str(invocation.target), repo_root=_REPO_ROOT
+                "script", str(invocation.target), repo_root=root
             )
             entrypoint = ("python-script", normalized)
         else:
@@ -470,14 +478,21 @@ def _command_entrypoint(
     if first in {"node", "node.exe"} and len(payload) > 1:
         target = payload[1]
         if not target.startswith("-"):
-            return ("node-script", _normalized_entrypoint_target(target))
+            return ("node-script", _normalized_entrypoint_target(target, root=root))
     return None
 
 
 @functools.lru_cache(maxsize=1)
 def _proof_command_registry() -> dict[str, object]:
-    """Project the proof plan into the one admitted executable/toolchain registry."""
+    """Project the proof plan into the one admitted executable/toolchain registry.
+
+    Plan entrypoints resolve against the plan's own checkout, never the
+    mutable admission root. The process-lifetime cache keys on nothing else,
+    so a projection made while a caller redirected ``_REPO_ROOT`` used to
+    answer for the repository plan for the rest of the process (HF-368).
+    """
     plan = proof_plan.ProofPlan.load()
+    root = plan.path.parent.parent
     exact: dict[tuple[str, ...], dict[str, object]] = {}
     console_tools: dict[str, set[str]] = {}
     policy_executables: dict[str, str] = {}
@@ -507,13 +522,13 @@ def _proof_command_registry() -> dict[str, object]:
             "cargo_native_units": proof_plan.cargo_native_units(lane.data),
             "cargo_build_python": proof_plan.cargo_build_python(lane.data),
         }
-        entrypoint = _command_entrypoint(argv)
+        entrypoint = _command_entrypoint(argv, root=root)
         if entrypoint is not None:
             entrypoints.setdefault(entrypoint, []).append(lane.id)
             named_entrypoints.setdefault(entrypoint, []).append(lane.id)
     for command in plan.commands:
         argv = tuple(str(value) for value in command.argv)
-        entrypoint = _command_entrypoint(argv)
+        entrypoint = _command_entrypoint(argv, root=root)
         if entrypoint is not None:
             entrypoints.setdefault(entrypoint, []).append(command.id)
         if argv and _basename(argv[0]) in {"uv", "uv.exe"}:
