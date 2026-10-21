@@ -226,7 +226,9 @@ def test_ensure_all_reports_every_failure_and_keeps_each_success(
 ) -> None:
     (checkout / "hook-source.txt").write_text("broken\n", encoding="utf-8")
     table = {"uv-environment": _tree(checkout), "git-hooks": _hooks(checkout)}
-    monkeypatch.setattr(cp, "checkout_input", lambda name, *_args: table[name])
+    monkeypatch.setattr(
+        cp, "checkout_input", lambda name, *_args, **_kwargs: table[name]
+    )
 
     with pytest.raises(cp.ProvisioningError) as raised:
         cp.ensure_all(checkout, names=("uv-environment", "git-hooks"))
@@ -415,7 +417,7 @@ def test_admission_provisions_only_selected_checkout_inputs(
     from tools import proof_plan
 
     spec = _tree(checkout)
-    monkeypatch.setattr(cp, "checkout_input", lambda name, *_args: spec)
+    monkeypatch.setattr(cp, "checkout_input", lambda name, *_args, **_kwargs: spec)
     data = {"toolchain_policy": [_acorn_policy()]}
     policies = proof_plan.load_toolchain_policies(data, root=checkout)
     (policy,) = policies
@@ -508,3 +510,27 @@ def test_shared_hooks_install_only_from_sources_matching_main(tmp_path: Path) ->
     _git(work, "checkout", "-q", "--", ".githooks")
     assert cp.ensure("git-hooks", work, environ).provisioned
     assert marker.exists()
+
+
+def test_provisioning_guard_owner_is_distinct_from_content_and_compiler_inputs(
+    checkout, tmp_path, monkeypatch
+):
+    foreign = tmp_path / "compiler-inputs"
+    (foreign / "tools").mkdir(parents=True)
+    (foreign / "pyproject.toml").write_text("[project]\nname='input'\n")
+    (foreign / "tools/harness_memory_guard.py").write_text("")
+    monkeypatch.setenv("MOLT_SOURCE_ROOT", str(foreign))
+    spec = dataclasses.replace(_tree(checkout), guard_source_root=REPO_ROOT)
+    assert spec.environment["MOLT_SOURCE_ROOT"] == str(foreign)
+    digest = cp._action_digest(spec, cp._lock_digests(spec))
+    alternate_owner = dataclasses.replace(spec, guard_source_root=tmp_path)
+    assert (
+        cp._action_digest(alternate_owner, cp._lock_digests(alternate_owner)) == digest
+    )
+    assert cp.ensure_input(spec).provisioned
+    assert _runs(checkout) == ["v1"]
+    before = spec.stamp.read_bytes()
+    with pytest.raises(cp.ProvisioningError, match="absolute"):
+        dataclasses.replace(spec, guard_source_root=Path("relative-owner"))
+    assert spec.stamp.read_bytes() == before
+    assert not cp.ensure_input(spec).provisioned

@@ -143,6 +143,130 @@ def test_run_can_reuse_outer_memory_guard_for_molt_build_phases(
     assert proc.stderr == "err\n"
 
 
+@pytest.mark.parametrize("failure", [None, "launch", "stream", "cleanup"])
+def test_outer_timer_holds_selected_state_until_child_cleanup(
+    tmp_path, monkeypatch, failure
+):
+    import gc
+    import subprocess
+    import weakref
+    from molt.build_state_layout import build_state_root
+    from molt.checkout_state import checkout_state_retirement
+    from molt.dx import checkout_component
+    from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
+    from tests.process_guard_common import install_module_view
+
+    module = dx_build_timer
+    artifact = tmp_path / "artifacts"
+    parent = artifact / "target" / "checkouts" / checkout_component(module.REPO_ROOT)
+    target = parent / "sessions" / "timer-lifetime"
+    target.mkdir(parents=True)
+    env = ProcessEnvironmentBuilder(os.environ)
+    for key in (
+        "MOLT_DIFF_CARGO_TARGET_DIR",
+        "UV_PROJECT_ENVIRONMENT",
+        "MOLT_BUILD_STATE_DIR",
+    ):
+        env.pop(key, None)
+    env.update({"MOLT_EXT_ROOT": str(artifact), "CARGO_TARGET_DIR": str(target)})
+    environment = ProcessEnvironment(env)
+    control = build_state_root(
+        project_root=module.REPO_ROOT, cargo_target=target, environment=environment
+    )
+    protected = (parent, target, control)
+    commands = module._COMMANDS
+    processes = []
+    owner_refs = []
+    if failure == "cleanup":
+        real_atexit = module.atexit
+
+        def register(callback):
+            owner_refs.append(weakref.ref(callback))
+            return real_atexit.register(callback)
+
+        install_module_view(
+            monkeypatch, "atexit", real_atexit, module, register=register
+        )
+
+    def start(*args, **kwargs):
+        for path in protected:
+            with checkout_state_retirement(path) as admitted:
+                assert not admitted
+        process = commands.start_owned(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    def failed_wait(*args, **kwargs):
+        raise OSError("cleanup fault")
+
+    monkeypatch.setattr(
+        module,
+        "_COMMANDS",
+        SimpleNamespace(
+            start_owned=start,
+            wait_owned=failed_wait if failure == "cleanup" else commands.wait_owned,
+        ),
+    )
+    if failure in {"stream", "cleanup"}:
+
+        def interrupted_sleep(_seconds):
+            raise RuntimeError("stream fault")
+
+        install_module_view(
+            monkeypatch, "time", module.time, module, sleep=interrupted_sleep
+        )
+    command = (
+        [str(tmp_path / "missing-timer-child")]
+        if failure == "launch"
+        else [
+            sys.executable,
+            "-I",
+            "-S",
+            "-c",
+            "import time; time.sleep(30)" if failure is not None else "print('timed')",
+        ]
+    )
+    try:
+        if failure is None:
+            completed, _elapsed = module._run_completed_inside_active_guard(
+                command, environment, tmp_path
+            )
+            assert completed.returncode == 0
+            assert completed.stdout == "timed\n"
+        else:
+            with pytest.raises(
+                FileNotFoundError if failure == "launch" else RuntimeError,
+                match=None if failure == "launch" else "stream fault",
+            ) as caught:
+                module._run_completed_inside_active_guard(
+                    command, environment, tmp_path
+                )
+            if failure == "cleanup":
+                assert any(
+                    "child cleanup failed" in note and "cleanup fault" in note
+                    for note in caught.value.__notes__
+                )
+                gc.collect()
+                assert processes[0].poll() is None
+                assert owner_refs[0]() is not None
+                for path in protected:
+                    with checkout_state_retirement(path) as admitted:
+                        assert not admitted
+    finally:
+        monkeypatch.setattr(module, "_COMMANDS", commands)
+        if owner_refs and (owner := owner_refs[0]()) is not None:
+            owner()
+        elif processes and processes[0].poll() is None:
+            try:
+                commands.wait_owned(processes[0], timeout=1.0, terminate_timeout=1.0)
+            except subprocess.TimeoutExpired:
+                assert processes[0].poll() is not None
+    assert all(process.poll() is not None for process in processes)
+    for path in protected:
+        with checkout_state_retirement(path) as admitted:
+            assert admitted
+
+
 def test_touch_journal_restores_and_recovers_crash_left_marker(tmp_path: Path) -> None:
     module = dx_build_timer
     source = tmp_path / "value_range.rs"

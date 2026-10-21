@@ -29,8 +29,12 @@ def _finish_build_input_custody(
     return None
 
 
-def _load_cli_harness_memory_guard(cwd: Path | None) -> Any:
-    return _process_guard.load_harness_memory_guard(cwd)
+def _load_cli_harness_memory_guard(
+    cwd: Path | None, *, guard_source_root: Path | None = None
+) -> Any:
+    return _process_guard.load_harness_memory_guard(
+        cwd, guard_source_root=guard_source_root
+    )
 
 
 def _with_memory_guard_env(

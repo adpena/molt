@@ -58,6 +58,7 @@ def uv_project_env(
     env: Mapping[str, str] | None = None,
     repo_root: Path = ROOT,
     explicit: str | None = None,
+    create_dirs: bool = True,
 ) -> ProcessEnvironment:
     merged = ProcessEnvironmentBuilder(os.environ if env is None else env)
     merged["MOLT_UV_PROJECT_PURPOSE"] = purpose
@@ -72,7 +73,7 @@ def uv_project_env(
         merged,
         session_prefix="uv-project-env",
         session_id=_session_id(python=python, purpose=purpose, env=merged),
-        create_dirs=True,
+        create_dirs=create_dirs,
     )
 
 
@@ -112,16 +113,23 @@ def main(argv: list[str] | None = None) -> int:
         python=args.python,
         purpose=args.purpose,
         explicit=args.venv,
+        create_dirs=False,
     )
-    if args.print_env:
-        print(env["UV_PROJECT_ENVIRONMENT"], flush=True)
+    from molt.checkout_state import checkout_state_command_roots, checkout_state_use
+    from molt.dx import RunContext
 
-    command = _parse_command(args.command)
-    if not command:
+    with checkout_state_use(checkout_state_command_roots(ROOT, env)):
+        # Selection is pure. Acquire before uv or DX materializes any selected
+        # root; retain that same use through the explicit forwarding handoff.
+        env = RunContext(ROOT, session_prefix="uv-project-env").canonical_env(env)
         if args.print_env:
-            return 0
-        parser.error("command is required after --")
-    return forward_command(command, env=env)
+            print(env["UV_PROJECT_ENVIRONMENT"], flush=True)
+        command = _parse_command(args.command)
+        if not command:
+            if args.print_env:
+                return 0
+            parser.error("command is required after --")
+        return forward_command(command, env=env)
 
 
 if __name__ == "__main__":

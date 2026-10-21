@@ -45,6 +45,7 @@ from molt.path_custody import host_path_is_within
 from molt.portable_paths import portable_path_component
 from molt.process_environment import ProcessEnvironment
 from tools.molt_dev_common import (
+    _COMMANDS,
     EXIT_FAIL,
     EXIT_OK,
     EXIT_USAGE,
@@ -261,7 +262,11 @@ def cmd_lane_start(args: argparse.Namespace) -> int:
 
     _step(f"provision {worktree}")
     try:
-        done = checkout_provisioning.ensure_all(worktree, lane_environment(os.environ))
+        done = checkout_provisioning.ensure_all(
+            worktree,
+            lane_environment(os.environ),
+            guard_source_root=_COMMANDS.repo_root,
+        )
     except checkout_provisioning.ProvisioningError as exc:
         _fail(str(exc))
         _say(
@@ -489,7 +494,9 @@ def _checkout_input_states(worktree: Path) -> dict[str, str]:
     environment = lane_environment(os.environ)
     states: dict[str, str] = {}
     for name in checkout_provisioning.CHECKOUT_INPUT_NAMES:
-        spec = checkout_provisioning.checkout_input(name, worktree, environment)
+        spec = checkout_provisioning.checkout_input(
+            name, worktree, environment, guard_source_root=_COMMANDS.repo_root
+        )
         if spec.scope != "checkout":
             continue
         try:
@@ -536,7 +543,9 @@ def lane_state(
 def _repository_input_states(checkout: Path) -> dict[str, str]:
     states: dict[str, str] = {}
     for name in checkout_provisioning.CHECKOUT_INPUT_NAMES:
-        spec = checkout_provisioning.checkout_input(name, checkout)
+        spec = checkout_provisioning.checkout_input(
+            name, checkout, guard_source_root=_COMMANDS.repo_root
+        )
         if spec.scope != "repository":
             continue
         try:

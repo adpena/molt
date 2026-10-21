@@ -447,8 +447,11 @@ def backend_daemon_identity_is_verified(
         or process_started_at_ns(identity.pid) != identity.started_at_ns
     ):
         return False
-    if identity.pid <= 0 or not alive_probe(identity.pid):
-        return False
+    try:
+        if identity.pid <= 0 or not alive_probe(identity.pid):
+            return False
+    except OSError:
+        return False  # Unknown liveness cannot verify or authorize termination.
     if not _backend_daemon_identity_process_matches(
         identity,
         process_command=process_command,
@@ -607,8 +610,11 @@ def terminate_backend_daemon_identity(
     from molt import process_model
 
     alive_probe = pid_alive or process_model.pid_alive
-    if identity.pid <= 0 or not alive_probe(identity.pid):
-        return False
+    try:
+        if identity.pid <= 0 or not alive_probe(identity.pid):
+            return False
+    except OSError:
+        return False  # Unknown liveness cannot verify or authorize termination.
     if _backend_daemon_health_contradicts_identity(
         identity,
         health_probe=health_probe,

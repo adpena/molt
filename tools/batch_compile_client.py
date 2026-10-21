@@ -2,19 +2,21 @@
 
 from __future__ import annotations
 
+import atexit
 import contextlib
 import json
 import os
 import queue
 import subprocess
-import sys
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from dataclasses import dataclass
 
-from tools import harness_memory_guard  # type: ignore
+from tools import harness_memory_guard
+from molt.process_spawn import ProcessGroupKwargs
+from molt.source_root import compiler_source_root
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,41 +86,70 @@ class BatchCompileServerClient:
         env: Mapping[str, str],
         guard_context: harness_memory_guard.HarnessExecutionContext | None = None,
         memory_guard_prefix: str | None = "MOLT",
-        process_group_kwargs: Mapping[str, object] | None = None,
+        process_group_kwargs: ProcessGroupKwargs | None = None,
         force_close: Callable[[subprocess.Popen[str]], None] | None = None,
         reader_name: str = "molt-batch-server-reader",
     ) -> None:
-        self._guard_context = guard_context
-        if self._guard_context is None and memory_guard_prefix is not None:
-            self._guard_context = harness_memory_guard.HarnessExecutionContext.from_env(
-                memory_guard_prefix,
-                env,
-                repo_root=cwd,
-            )
-        launch_env = (
-            dict(self._guard_context.env)
-            if self._guard_context is not None
-            else dict(env)
-        )
-        if process_group_kwargs is None and self._guard_context is not None:
-            process_group_kwargs = self._guard_context.process_group_kwargs()
-        if (
-            force_close is None
-            and self._guard_context is not None
-            and self._guard_context.limits.enabled
-        ):
-            force_close = self._guard_context.force_close_process_group
-        self._force_close = force_close
+        self._proc: subprocess.Popen[str] | None = None
         self._guard_sentinel = None
-        if self._guard_context is not None:
-            label = reader_name.removesuffix("-reader").replace("-", "_")
-            self._guard_sentinel = self._guard_context.start_repo_sentinel(
-                label=label,
-                drain_until_clean_sec=0.1,
-                drain_max_runtime_sec=2.0,
-            )
+        self._force_close: Callable[[subprocess.Popen[str]], None] | None = None
+        self._response_reader: threading.Thread | None = None
+        self._state_use = contextlib.ExitStack()
+        self._poisoned = False
+        atexit.register(self.close)
         try:
-            self._proc = subprocess.Popen(
+            source_root = (
+                guard_context.repo_root
+                if guard_context is not None
+                else compiler_source_root()
+            )
+            self._guard_context = guard_context
+            if self._guard_context is None and memory_guard_prefix is not None:
+                self._guard_context = (
+                    harness_memory_guard.HarnessExecutionContext.from_env(
+                        memory_guard_prefix,
+                        env,
+                        repo_root=source_root,
+                    )
+                )
+            launch_env = (
+                dict(self._guard_context.env)
+                if self._guard_context is not None
+                else dict(env)
+            )
+            if process_group_kwargs is None and self._guard_context is not None:
+                process_group_kwargs = self._guard_context.process_group_kwargs()
+            if (
+                force_close is None
+                and self._guard_context is not None
+                and self._guard_context.limits.enabled
+            ):
+                force_close = self._guard_context.force_close_process_group
+            self._force_close = force_close
+            from molt.checkout_state import (
+                checkout_state_command_roots,
+                checkout_state_use,
+            )
+
+            selected_environment = (
+                self._guard_context.env if self._guard_context is not None else env
+            )
+            self._state_use.enter_context(
+                checkout_state_use(
+                    checkout_state_command_roots(
+                        source_root, selected_environment, cwd=cwd
+                    )
+                )
+            )
+            self._guard_sentinel = None
+            if self._guard_context is not None:
+                label = reader_name.removesuffix("-reader").replace("-", "_")
+                self._guard_sentinel = self._guard_context.start_repo_sentinel(
+                    label=label,
+                    drain_until_clean_sec=0.1,
+                    drain_max_runtime_sec=2.0,
+                )
+            process = subprocess.Popen(
                 list(cmd),
                 cwd=str(cwd),
                 env=launch_env,
@@ -128,48 +159,60 @@ class BatchCompileServerClient:
                 text=True,
                 bufsize=1,
                 errors="replace",
-                **dict(process_group_kwargs or {}),
+                **(process_group_kwargs or {}),
             )
-        except BaseException:
-            if self._guard_sentinel is not None:
-                self._guard_sentinel.__exit__(*sys.exc_info())
+            self._proc = process
+            # Capture the launch birth before any poll can reap a fast server exit.
+            guard = harness_memory_guard.memory_guard
+            self.child_process = guard.GuardedChildProcess(
+                pid=process.pid,
+                pgid=guard._safe_getpgid(process.pid),
+                sid=guard._safe_getsid(process.pid),
+                command=tuple(cmd),
+                started_at=guard._utc_timestamp(),
+                started_at_ns=(
+                    guard.windows_process_handle_started_at_ns(
+                        getattr(process, "_handle", None)
+                    )
+                    if os.name == "nt"
+                    else guard._process_model.process_started_at_ns(process.pid)
+                ),
+            )
+            self._request_lock = threading.Lock()
+            self._next_id = 1
+            self._poisoned = False
+            self._response_queue: queue.Queue[str | BaseException | None] = (
+                queue.Queue()
+            )
+            self._response_reader = threading.Thread(
+                target=self._stdout_reader_loop,
+                name=reader_name,
+                daemon=True,
+            )
+            self._response_reader.start()
+        except BaseException as error:
+            try:
+                self.close(force=True, timeout=0.35)
+            except BaseException as cleanup_error:
+                setattr(error, "batch_client", self)
+                error.add_note(f"batch startup closure unresolved: {cleanup_error}")
             raise
-        # Capture the launch birth before any poll can reap a fast server exit.
-        guard = harness_memory_guard.memory_guard
-        self.child_process = guard.GuardedChildProcess(
-            pid=self._proc.pid,
-            pgid=guard._safe_getpgid(self._proc.pid),
-            sid=guard._safe_getsid(self._proc.pid),
-            command=tuple(cmd),
-            started_at=guard._utc_timestamp(),
-            started_at_ns=(
-                guard.windows_process_handle_started_at_ns(
-                    getattr(self._proc, "_handle", None)
-                )
-                if os.name == "nt"
-                else guard._process_model.process_started_at_ns(self._proc.pid)
-            ),
-        )
-        self._request_lock = threading.Lock()
-        self._next_id = 1
-        self._poisoned = False
-        self._response_queue: queue.Queue[str | BaseException | None] = queue.Queue()
-        self._response_reader = threading.Thread(
-            target=self._stdout_reader_loop,
-            name=reader_name,
-            daemon=True,
-        )
-        self._response_reader.start()
+
+    def _require_process(self) -> subprocess.Popen[str]:
+        if self._proc is None:
+            raise RuntimeError("batch compiler child has not been launched")
+        return self._proc
 
     def _stdout_reader_loop(self) -> None:
-        if self._proc.stdout is None:
+        stdout = self._require_process().stdout
+        if stdout is None:
             self._response_queue.put(
                 RuntimeError("batch compile server stdout pipe unavailable")
             )
             return
         try:
             while True:
-                line = self._proc.stdout.readline()
+                line = stdout.readline()
                 if not line:
                     self._response_queue.put(None)
                     return
@@ -193,9 +236,10 @@ class BatchCompileServerClient:
                 ) from item
             if item is None:
                 error_detail = ""
-                if self._proc.stderr is not None:
+                stderr = self._require_process().stderr
+                if stderr is not None:
                     with contextlib.suppress(Exception):
-                        error_detail = self._proc.stderr.read().strip()
+                        error_detail = stderr.read().strip()
                 raise RuntimeError(
                     "batch compile server closed response pipe"
                     + (f": {error_detail}" if error_detail else "")
@@ -219,8 +263,12 @@ class BatchCompileServerClient:
                     op, params=params, env_overrides=env_overrides, timeout=timeout
                 )
             except Exception as exc:
-                exc.batch_request_custody = BatchCompileRequestCustody(
-                    self.child_process, request_started_at_ns, 127
+                setattr(
+                    exc,
+                    "batch_request_custody",
+                    BatchCompileRequestCustody(
+                        self.child_process, request_started_at_ns, 127
+                    ),
                 )
                 raise
             returncode = response.get("returncode")
@@ -245,9 +293,10 @@ class BatchCompileServerClient:
             raise RuntimeError(
                 "batch compile server protocol state is unsynchronized; restart required"
             )
-        if self._proc.poll() is not None:
+        if self._require_process().poll() is not None:
             raise RuntimeError("batch compile server process is not running")
-        if self._proc.stdin is None:
+        stdin = self._require_process().stdin
+        if stdin is None:
             raise RuntimeError("batch compile server stdin pipe unavailable")
         req_id = self._next_id
         self._next_id += 1
@@ -258,8 +307,8 @@ class BatchCompileServerClient:
             request["env_overrides"] = dict(env_overrides)
         payload = json.dumps(request, sort_keys=True) + "\n"
         try:
-            self._proc.stdin.write(payload)
-            self._proc.stdin.flush()
+            stdin.write(payload)
+            stdin.flush()
         except OSError as exc:
             raise RuntimeError(f"failed to write batch compile request: {exc}") from exc
         try:
@@ -297,28 +346,46 @@ class BatchCompileServerClient:
         return response
 
     def force_close(self) -> None:
+        process = self._proc
+        if process is None:
+            return
         if self._force_close is not None:
-            self._force_close(self._proc)
-            return
-        if self._proc.poll() is not None:
-            return
-        with contextlib.suppress(ProcessLookupError, OSError):
-            self._proc.terminate()
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            self._proc.wait(timeout=0.35)
-        if self._proc.poll() is None:
+            self._force_close(process)
+        elif process.poll() is None:
             with contextlib.suppress(ProcessLookupError, OSError):
-                self._proc.kill()
+                process.terminate()
             with contextlib.suppress(subprocess.TimeoutExpired):
-                self._proc.wait(timeout=0.35)
+                process.wait(timeout=0.35)
+            if process.poll() is None:
+                with contextlib.suppress(ProcessLookupError, OSError):
+                    process.kill()
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    process.wait(timeout=0.35)
+        if process.poll() is None:
+            raise RuntimeError(
+                "batch compile child closure unresolved; use owner retained"
+            )
 
     def close(self, *, force: bool = False, timeout: float = 60.0) -> None:
-        try:
-            if not force and not self._poisoned and self._proc.poll() is None:
+        process = self._proc
+        if process is not None:
+            if not force and not self._poisoned and process.poll() is None:
                 with contextlib.suppress(Exception):
                     self.request("shutdown", timeout=timeout)
             self.force_close()
-        finally:
-            if self._guard_sentinel is not None:
-                self._guard_sentinel.__exit__(None, None, None)
-                self._guard_sentinel = None
+            reader = self._response_reader
+            if reader is not None and reader.ident is not None:
+                reader.join(timeout=min(timeout, 0.35))
+                if reader.is_alive():
+                    raise RuntimeError(
+                        "batch reader closure unresolved; use owner retained"
+                    )
+        if self._guard_sentinel is not None:
+            self._guard_sentinel.__exit__(None, None, None)
+            self._guard_sentinel = None
+        if process is not None:
+            for stream in (process.stdin, process.stdout, process.stderr):
+                if stream is not None:
+                    stream.close()
+        self._state_use.close()
+        atexit.unregister(self.close)

@@ -4,7 +4,9 @@
 preparation (`build_inputs`), the frontend (`frontend_pipeline`) and the
 backend and link (`build_pipeline`). It imports them only when it builds: a
 request whose recorded inputs are unchanged ends before any of them loads.
-The entrypoint loads `build` only for commands that compile.
+The entrypoint loads `build` only for commands that compile. The existing
+build scope owns managed resource use while both validating a cached result
+and performing an actual build; a cache hit still skips frontend/backend work.
 """
 
 from __future__ import annotations
@@ -273,8 +275,8 @@ def _in_build_scope(
     return build
 
 
-@_with_early_cutoff
 @_in_build_scope
+@_with_early_cutoff
 def build(request: BuildRequest) -> int:
     from molt.cli import build_inputs as _build_inputs
     from molt.cli import build_pipeline as _build_pipeline

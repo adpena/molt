@@ -155,7 +155,9 @@ def main(build_fn: Callable[[BuildRequest], int] | None = None) -> int:
     cfg_capabilities = _resolve_capabilities_config(config)
 
     try:
-        with _cli_profile():
+        from molt.checkout_state import checkout_state_use
+
+        with _cli_profile(), checkout_state_use(((Path(sys.prefix), None),)):
             return entrypoint_dispatch._dispatch_entrypoint_command(
                 args,
                 parser=parser,

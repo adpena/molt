@@ -148,6 +148,7 @@ def artifacts_identity(
 class _BuildScope:
     stack: ExitStack
     claimed: set[Path] = field(default_factory=set)
+    state_claimed: set[Path] = field(default_factory=set)
 
 
 _BUILD_SCOPE: ContextVar[_BuildScope | None] = ContextVar(
@@ -161,9 +162,24 @@ def build_scope() -> Generator[None]:
     with ExitStack() as stack:
         token = _BUILD_SCOPE.set(_BuildScope(stack))
         try:
+            _claim_checkout_state(Path(sys.prefix))
             yield
         finally:
             _BUILD_SCOPE.reset(token)
+
+
+def _claim_checkout_state(root: Path, *, cargo_target: Path | None = None) -> None:
+    """Retain only this build's actual managed selection, including cache hits."""
+    scope = _BUILD_SCOPE.get()
+    if scope is None or root in scope.state_claimed:
+        return  # A selector outside a build does not create a hidden lifetime.
+    from molt.checkout_state import CheckoutOwner, checkout_state_use
+
+    owner = (
+        None if cargo_target is None else CheckoutOwner(cargo_target, "build-control")
+    )
+    scope.stack.enter_context(checkout_state_use(((root, owner),)))
+    scope.state_claimed.add(root)
 
 
 def _claim_artifacts_root(root: Path) -> None:

@@ -88,8 +88,11 @@ def _run_supervisor_with_transcripts(
     shutdown_reserve: float,
 ) -> int:
     """Publish opened output custody before launch and retain the owned wait."""
+    from molt.process_spawn import ProcessStateUse
+
     paths = command_identity.execution_transcript_paths(result_path)
     with (
+        ProcessStateUse(_REPO_ROOT, env, cwd) as state_owner,
         paths["stdout"].open("xb") as stdout_handle,
         paths["stderr"].open("xb") as stderr_handle,
     ):
@@ -111,11 +114,21 @@ def _run_supervisor_with_transcripts(
         process = admission._COMMANDS.start_owned(
             command, cwd=cwd, env=env, stdout=stdout_handle, stderr=stderr_handle
         )
+        state_owner.process = process
         result["command_started"] = True
         try:
             supervisor._atomic_json(result_path, result)
-        finally:
-            # Publication errors must not abandon a successfully launched child.
+        except BaseException as failure:
+            # Publication errors still clean up the child, but a failed wait
+            # cannot replace the original error or retire its state owner.
+            try:
+                admission._COMMANDS.wait_owned(
+                    process, timeout=remaining, terminate_timeout=shutdown_reserve
+                )
+            except BaseException as cleanup_error:
+                failure.add_note(f"supervisor cleanup failed: {cleanup_error!r}")
+            raise
+        else:
             returncode = admission._COMMANDS.wait_owned(
                 process, timeout=remaining, terminate_timeout=shutdown_reserve
             )

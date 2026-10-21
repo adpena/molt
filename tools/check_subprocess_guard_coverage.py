@@ -149,6 +149,85 @@ class SubprocessGuardAudit:
 
 ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
     AllowedRawSubprocessUse(
+        "src/molt/process_spawn.py",
+        "forward_command",
+        "process.kill",
+        "terminates only its own unreaped forwarded Windows child after a failed wait; its durable ProcessStateUse retains custody",
+    ),
+    AllowedRawSubprocessUse(
+        "src/molt/process_guard.py",
+        "run_completed_command",
+        "process.kill",
+        "bounded metadata probe cleanup targets only its exact unreaped Popen child; ProcessStateUse retains failed-observation custody",
+        expected_count=2,
+    ),
+    AllowedRawSubprocessUse(
+        "tests/test_batch_compile_client.py",
+        "test_batch_reader_start_failure_and_failed_cleanup_survive_gc.capture",
+        "Popen",
+        "independent actual-child oracle intercepts the production birth and records only that child for bounded cleanup",
+    ),
+    AllowedRawSubprocessUse(
+        "tests/test_batch_compile_client.py",
+        "test_batch_reader_start_failure_and_failed_cleanup_survive_gc",
+        "process.terminate",
+        "bounded cleanup targets only the child this adversarial reader-start oracle created",
+    ),
+    AllowedRawSubprocessUse(
+        "tests/test_molt_dev.py",
+        "test_detached_invalid_ack_retains_parent_use_after_exception_gc",
+        "process.terminate",
+        "releases only the actual fixture child after the invalid-handoff lifetime oracle finishes",
+    ),
+    AllowedRawSubprocessUse(
+        "tests/test_molt_dev.py",
+        "test_detached_retry_preserves_unresolved_birth_and_requires_worker_disposition",
+        "process.kill",
+        "bounded escalation targets only the actual fixture-owned startup worker after its release timeout",
+    ),
+    AllowedRawSubprocessUse(
+        "tests/tools/test_command_execution.py",
+        "test_guard_resource_owner_survives_gc_after_unresolved_wait",
+        "process.terminate",
+        "bounded final cleanup targets only the independently launched fixture worker retained by the unresolved guard owner",
+    ),
+    AllowedRawSubprocessUse(
+        "tests/tools/test_disk_guard.py",
+        "test_explicit_legacy_target_lifetime_and_timed_retention",
+        "Popen",
+        "independent no-Cargo child oracle holds the real ProcessStateUse; stdin rendezvous and finite wait prove closure before retirement",
+    ),
+    AllowedRawSubprocessUse(
+        "tests/tools/test_proof_queue.py",
+        "test_proof_queue_detached_use_survives_startup_and_failed_observation.launch",
+        "Popen",
+        "independent actual detached-worker oracle intercepts production launch and retains the child through release and bounded wait",
+    ),
+    AllowedRawSubprocessUse(
+        "tests/tools/test_proof_queue.py",
+        "test_detached_handoff_error_preserves_actual_child_row.launch",
+        "Popen",
+        "actual SQLite row/child-death oracle uses its own process and finite stdin/exit rendezvous",
+    ),
+    AllowedRawSubprocessUse(
+        "tests/tools/test_proof_queue.py",
+        "test_detached_handoff_error_preserves_actual_child_row",
+        "process.kill",
+        "bounded cleanup escalates only this row-oracle own unreaped child after communication failure",
+    ),
+    AllowedRawSubprocessUse(
+        "tests/tools/test_uv_project_env.py",
+        "test_windows_forward_retains_actual_child_use_after_failed_cleanup_and_gc.start",
+        "Popen",
+        "independent Windows-forward branch oracle records only its real created child and waits through explicit release",
+    ),
+    AllowedRawSubprocessUse(
+        "tests/tools/test_windows_process_api.py",
+        "test_process_liveness_native_self_absent_exit259_and_query_failure",
+        "process.terminate",
+        "native query-negative control terminates only its own known sleeping child before bounded wait",
+    ),
+    AllowedRawSubprocessUse(
         "tests/cli/test_source_record_store.py",
         "_close_fork_observer",
         "process.terminate",
@@ -183,7 +262,7 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
     AllowedRawSubprocessUse(
         "src/molt/process_spawn.py",
         "forward_command",
-        "run",
+        "Popen",
         "Windows counterpart of POSIX exec: wait for the forwarded command's "
         "actual status; the command or existing outer guard owns descendants",
     ),
@@ -779,7 +858,7 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
     AllowedRawSubprocessUse(
         "src/molt/process_guard.py",
         "run_completed_command",
-        "run",
+        "Popen",
         "single typed-argv boundary for explicitly bounded metadata probes",
     ),
     AllowedRawSubprocessUse(

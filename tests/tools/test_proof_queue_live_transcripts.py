@@ -233,7 +233,7 @@ def test_producer_publishes_only_opened_streams_before_start_and_keeps_owned_wai
 
     events = []
     opened_handles = []
-    process = object()
+    process = SimpleNamespace(poll=lambda: 0)
     original_publish = guarded_execution.supervisor._atomic_json
 
     def publish(path, payload):
@@ -323,3 +323,146 @@ def test_producer_publishes_only_opened_streams_before_start_and_keeps_owned_wai
             ("publish", True),
             ("wait", True),
         ]
+
+
+@pytest.mark.parametrize("failure", [None, "spawn", "wait", "publish-and-wait"])
+def test_transcript_supervisor_retains_actual_state_after_failed_wait_and_gc(
+    tmp_path, monkeypatch, failure
+):
+    import gc
+    import os
+    import sys
+    import weakref
+    from molt import checkout_state, dx, process_spawn
+    from tests.process_guard_common import install_module_view
+
+    _row, _request, result_path, _metadata, result, streams = _execution(tmp_path)
+    for path in streams.values():
+        path.unlink()
+    result.pop("live_command_transcript")
+    result.update(phase="identity", command_started=False)
+    artifact = tmp_path / "artifact"
+    target = dx.cargo_target_dir_for_artifact_root(
+        artifact, "reader", source_root=guarded_execution._REPO_ROOT
+    )
+    target.mkdir(parents=True)
+    environment = ProcessEnvironment(
+        {**os.environ, "MOLT_EXT_ROOT": str(artifact), "CARGO_TARGET_DIR": str(target)}
+    )
+    owners, children = [], []
+    commands = guarded_execution.admission._COMMANDS
+    register = process_spawn.atexit.register
+    publish = guarded_execution.supervisor._atomic_json
+
+    def registered(callback):
+        owner = callback.__self__
+        assert owner.source_root == guarded_execution._REPO_ROOT
+        assert owner.cwd == tmp_path and owner.source_root != tmp_path
+        owners.append(weakref.ref(owner))
+        return register(callback)
+
+    def start(command, **kwargs):
+        with checkout_state.checkout_state_retirement(target) as admitted:
+            assert not admitted
+        if failure == "spawn":
+            raise FileNotFoundError("independent supervisor spawn refusal")
+        process = commands.start_owned(command, **kwargs)
+        children.append(process)
+        return process
+
+    def wait(process, **kwargs):
+        if failure in {"wait", "publish-and-wait"}:
+            raise OSError("unobserved supervisor cleanup")
+        return commands.wait_owned(process, **kwargs)
+
+    def published(path, payload):
+        if failure == "publish-and-wait" and payload["command_started"]:
+            raise RuntimeError("original supervisor publication failure")
+        return publish(path, payload)
+
+    install_module_view(
+        monkeypatch, "atexit", process_spawn.atexit, process_spawn, register=registered
+    )
+    monkeypatch.setattr(
+        guarded_execution.admission,
+        "_COMMANDS",
+        SimpleNamespace(start_owned=start, wait_owned=wait),
+    )
+    monkeypatch.setattr(guarded_execution.supervisor, "_atomic_json", published)
+    command = [
+        sys.executable,
+        "-I",
+        "-S",
+        "-c",
+        "import time; time.sleep(30)"
+        if failure in {"wait", "publish-and-wait"}
+        else "print('supervisor complete')",
+    ]
+    try:
+        if failure is None:
+            assert (
+                guarded_execution._run_supervisor_with_transcripts(
+                    command,
+                    cwd=tmp_path,
+                    env=environment,
+                    result_path=result_path,
+                    result=result,
+                    execution_deadline=time.monotonic() + 30,
+                    timeout_seconds=30,
+                    shutdown_reserve=1,
+                )
+                == 0
+            )
+            assert (
+                streams["stdout"].read_text(encoding="utf-8") == "supervisor complete\n"
+            )
+        else:
+            expected = (
+                FileNotFoundError
+                if failure == "spawn"
+                else RuntimeError
+                if failure == "publish-and-wait"
+                else OSError
+            )
+            with pytest.raises(
+                expected,
+                match="independent supervisor spawn refusal"
+                if failure == "spawn"
+                else "original supervisor publication failure"
+                if failure == "publish-and-wait"
+                else "unobserved supervisor cleanup",
+            ) as caught:
+                guarded_execution._run_supervisor_with_transcripts(
+                    command,
+                    cwd=tmp_path,
+                    env=environment,
+                    result_path=result_path,
+                    result=result,
+                    execution_deadline=time.monotonic() + 30,
+                    timeout_seconds=30,
+                    shutdown_reserve=1,
+                )
+            if failure != "spawn":
+                assert caught.value.state_owner is owners[0]()
+                assert caught.value.owned_process is children[0]
+            del caught
+        gc.collect()
+        if failure in {"wait", "publish-and-wait"}:
+            assert owners[0]() is not None and children[0].poll() is None
+            with checkout_state.checkout_state_retirement(target) as admitted:
+                assert not admitted
+        else:
+            assert owners[0]() is None
+            with checkout_state.checkout_state_retirement(target) as admitted:
+                assert admitted
+    finally:
+        for process in children:
+            if process.poll() is None:
+                try:
+                    commands.wait_owned(process, timeout=0.1, terminate_timeout=2)
+                except subprocess.TimeoutExpired:
+                    assert process.poll() is not None
+        if owners and (owner := owners[0]()) is not None:
+            owner._close_at_exit()
+    with checkout_state.checkout_state_retirement(target) as admitted:
+        assert admitted

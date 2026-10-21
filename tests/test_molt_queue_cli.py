@@ -397,6 +397,11 @@ def test_molt_queue_uses_main_worktree_project_env_for_linked_worktree(
     )
     common_git = main_repo / ".git"
     common_git.mkdir(parents=True)
+    registration = common_git / "worktrees" / "lane"
+    registration.mkdir(parents=True)
+    (registration / "HEAD").write_text("ref: refs/heads/lane\n", encoding="utf-8")
+    (registration / "commondir").write_text("../..\n", encoding="utf-8")
+    (registration / "gitdir").write_bytes(os.fsencode(worktree / ".git") + b"\n")
     main_venv = main_repo / ".venv"
     main_venv.mkdir()
     (main_venv / "pyvenv.cfg").write_text("", encoding="utf-8")
@@ -443,14 +448,27 @@ import sys
 import time
 
 root = Path(__file__).resolve().parents[1]
+if sys.argv[1:2] == ["--detached-state-use"]:
+    from tools.command_execution import detached_command_use
+    ready_path, use_token = Path(sys.argv[2]), sys.argv[3]
+    del sys.argv[1:4]
+else:
+    ready_path = use_token = None
 if "--run-id" in sys.argv:
+    from contextlib import ExitStack
     port = int(sys.argv[sys.argv.index("--run-id") + 1])
-    with socket.create_connection(("127.0.0.1", port), timeout=20) as connection:
-        connection.sendall(f"{os.getpid()} {os.getppid()}\n".encode())
-        (root / "runner-connected").write_text(str(os.getpid()), encoding="utf-8")
-        token = connection.recv(1)
-        if token:
-            connection.sendall(token)
+    with ExitStack() as use:
+        if ready_path is not None:
+            use.enter_context(detached_command_use(
+                root, dict(os.environ), cwd=Path.cwd(),
+                ready_path=ready_path, use_token=use_token,
+            ))
+        with socket.create_connection(("127.0.0.1", port), timeout=20) as connection:
+            connection.sendall(f"{os.getpid()} {os.getppid()}\n".encode())
+            (root / "runner-connected").write_text(str(os.getpid()), encoding="utf-8")
+            token = connection.recv(1)
+            if token:
+                connection.sendall(token)
     raise SystemExit(0)
 
 mode = sys.argv[1]

@@ -82,7 +82,9 @@ def _install_guard(monkeypatch: pytest.MonkeyPatch, result_for: Any) -> list[lis
 
     fake = SimpleNamespace(HarnessExecutionContext=Context)
     monkeypatch.setattr(
-        command_runtime, "_load_cli_harness_memory_guard", lambda _cwd: fake
+        command_runtime,
+        "_load_cli_harness_memory_guard",
+        lambda _cwd, *, guard_source_root=None: fake,
     )
     return calls
 
@@ -180,7 +182,9 @@ def _install_tempfile_guard(monkeypatch: pytest.MonkeyPatch, result: Any) -> Non
         guarded_completed_process_to_tempfiles=lambda command, **_kwargs: result
     )
     monkeypatch.setattr(
-        command_runtime, "_load_cli_harness_memory_guard", lambda _cwd: fake
+        command_runtime,
+        "_load_cli_harness_memory_guard",
+        lambda _cwd, *, guard_source_root=None: fake,
     )
 
 

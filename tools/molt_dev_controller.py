@@ -30,8 +30,9 @@ from pathlib import Path
 from types import ModuleType
 
 from molt.process_environment import ProcessEnvironment
+from molt import process_guard
 from tools.git_identity import require_git_object_id
-from tools.molt_dev_common import _COMMANDS, DriverError, _say, _warn
+from tools.molt_dev_common import _COMMANDS, EXIT_USAGE, DriverError, _say, _warn
 from tools.release.git_source_snapshot import immutable_git_environment
 from tools.venv_exec import venv_python
 
@@ -222,9 +223,64 @@ def verify_pinned_controller(key: str, *, driver_file: str, common_dir: Path) ->
         )
 
 
+def add_pinned_controller_arguments(parser: argparse.ArgumentParser) -> None:
+    """One private startup contract shared by integrate and queue-run."""
+    parser.add_argument("--pinned-controller", help=argparse.SUPPRESS)
+    parser.add_argument("--controller-cwd", help=argparse.SUPPRESS)
+
+
+def resume_controller_cwd(args: argparse.Namespace, *, driver_file: str) -> None:
+    """Consume the pinned worker's original context before command selection.
+
+    The venv redirector and waiting Windows launcher stay outside a checkout
+    that this worker may retire. The worker resumes its complete original cwd,
+    preserving every relative environment/tool selection without a second
+    environment-path policy. Only its existing physical controller may do so.
+    """
+    raw = getattr(args, "controller_cwd", None)
+    key = getattr(args, "pinned_controller", None)
+    if raw is None:
+        if os.name == "nt" and key is not None:
+            raise DriverError(
+                "pinned Windows controller has no original cwd", code=EXIT_USAGE
+            )
+        return
+    if key is None:
+        raise DriverError(
+            "controller cwd requires a pinned controller", code=EXIT_USAGE
+        )
+    original = Path(raw)
+    if not original.is_absolute() or not original.is_dir():
+        raise DriverError(
+            "controller cwd must name an existing absolute directory", code=EXIT_USAGE
+        )
+    if not Path(args.repo).is_absolute():
+        raise DriverError(
+            "controller cwd requires an absolute repository", code=EXIT_USAGE
+        )
+    # This layout is the existing cache producer's physical identity. Inspect
+    # it before chdir without selecting Git through the still-unrestored PATH;
+    # integration_controller later verifies the repository's actual common dir.
+    driver = Path(driver_file).resolve()
+    if len(driver.parents) < 5:
+        raise DriverError(
+            "controller driver has no pinned cache identity", code=EXIT_USAGE
+        )
+    common_dir = driver.parents[4]
+    verify_pinned_controller(key, driver_file=driver_file, common_dir=common_dir)
+    try:
+        os.chdir(original)
+    except OSError as error:
+        raise DriverError(
+            f"cannot resume controller cwd {original}: {error}", code=EXIT_USAGE
+        ) from error
+    args.controller_cwd = None  # One consumption; queue-to-integrate never replays it.
+
+
 def run_controller(controller: Controller, argv: Sequence[str], *, repo: Path) -> int:
     """Hand this landing to the controller; never returns on POSIX."""
 
+    repo = repo.resolve()
     interpreter = str(venv_python(controller.root / ENVIRONMENT_NAME))
     command = [
         interpreter,
@@ -242,8 +298,34 @@ def run_controller(controller: Controller, argv: Sequence[str], *, repo: Path) -
     if os.name == "posix":
         # One process: signals, the pid and the exit status stay the landing's own.
         os.execv(interpreter, command)
-    # Windows has no exec: the driver waits on the controller, as a launcher does.
-    return _COMMANDS.run(command, cwd=Path.cwd(), env=os.environ).returncode
+    # Windows launchers retain their startup directory. Keep both this
+    # waiting process and the selected venv redirector in the surviving cache;
+    # only the actual pinned worker resumes the captured logical cwd.
+    original = Path.cwd()
+    # Bind the existing source and descendant owner before leaving the caller's
+    # directory; MOLT_SOURCE_ROOT may itself be relative to that directory.
+    guard = process_guard.load_harness_memory_guard(
+        None, guard_source_root=_COMMANDS.repo_root
+    )
+    limits = guard.limits_from_env(_COMMANDS.prefix, os.environ)
+    command.extend(["--controller-cwd", str(original)])
+    os.chdir(controller.root)
+    # Keep the existing guarded descendant lifecycle, but carry the original
+    # environment directly. A RunContext here would rebase relative selections
+    # before the worker can restore their cwd. The guard uses that same logical
+    # directory for managed-state admission while spawning from the safe cache.
+    result = guard.guarded_completed_process(
+        command,
+        prefix=_COMMANDS.prefix,
+        cwd=controller.root,
+        logical_cwd=original,
+        env=os.environ,
+        limits=limits,
+        capture_output=False,
+        text=False,
+    )
+    process_guard.raise_for_guard_outcome(command, result, timeout=None)
+    return result.returncode
 
 
 def _driver() -> ModuleType:
@@ -261,8 +343,11 @@ def integration_controller(args: argparse.Namespace) -> str:
     common_dir = drv._git_common_directory(Path(args.repo).resolve())
     if common_dir is None:
         raise DriverError("cannot resolve the Git common directory for integration")
+    driver_file = drv.__file__
+    if driver_file is None:
+        raise DriverError("integration driver has no source file")
     verify_pinned_controller(
-        args.pinned_controller, driver_file=drv.__file__, common_dir=common_dir
+        args.pinned_controller, driver_file=driver_file, common_dir=common_dir
     )
     return f"pinned:{args.pinned_controller}"
 

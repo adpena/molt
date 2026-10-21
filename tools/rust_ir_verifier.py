@@ -5,6 +5,7 @@ from __future__ import annotations
 import atexit
 import ctypes
 from ctypes import wintypes
+from contextlib import ExitStack
 import json
 import math
 import os
@@ -24,6 +25,10 @@ SRC = ROOT / "src"
 from molt.process_environment import ProcessEnvironment  # noqa: E402
 from molt.cargo_execution_policy import require_cargo_build_capacity  # noqa: E402
 from molt.dx import development_artifact_env  # noqa: E402
+from molt.checkout_state import (  # noqa: E402
+    checkout_state_command_roots,
+    checkout_state_use,
+)
 from tools.command_execution import CommandExecutor  # noqa: E402
 from molt.windows_process_api import bind_process_query_api  # noqa: E402
 
@@ -182,15 +187,18 @@ def verifier_binary(*, env: Mapping[str, str] | None = None) -> Path:
     target_root = Path(env["CARGO_TARGET_DIR"])
     binary = target_root / "debug" / _BINARY_NAME
     with _BUILD_LOCK:
-        if binary not in _BINARY_READY:
-            # Cargo compiles whenever the binary is stale; below the build
-            # floor no Cargo starts, even for an up-to-date binary.
-            require_cargo_build_capacity(_BUILD_COMMAND, cwd=ROOT, env=env)
-            _COMMANDS.run(list(_BUILD_COMMAND), cwd=ROOT, env=env, check=True)
-            _BINARY_READY.add(binary)
-    if not binary.is_file():
-        raise FileNotFoundError(f"Rust IR verifier build did not produce {binary}")
-    return binary
+        if binary in _BINARY_READY and binary.is_file():
+            return binary
+        # A completed use may be retired before the next verifier starts.
+        # The process-local receipt cannot prove that its binary still exists.
+        # Cargo compiles whenever the binary is stale; below the build
+        # floor no Cargo starts, even for an up-to-date binary.
+        require_cargo_build_capacity(_BUILD_COMMAND, cwd=ROOT, env=env)
+        _COMMANDS.run(list(_BUILD_COMMAND), cwd=ROOT, env=env, check=True)
+        if not binary.is_file():
+            raise FileNotFoundError(f"Rust IR verifier build did not produce {binary}")
+        _BINARY_READY.add(binary)
+        return binary
 
 
 class RustIrVerifier:
@@ -204,12 +212,8 @@ class RustIrVerifier:
         request_timeout_seconds: float | None = None,
     ) -> None:
         env = _verifier_environment() if env is None else ProcessEnvironment(env)
-        resolved_command = (
-            [str(verifier_binary(env=env))]
-            if command is None
-            else [str(part) for part in command]
-        )
-        if not resolved_command:
+        resolved_command = None if command is None else [str(part) for part in command]
+        if resolved_command == []:
             raise ValueError("IR verifier command must not be empty")
         self._request_timeout_seconds = (
             _request_timeout_seconds(env)
@@ -221,31 +225,51 @@ class RustIrVerifier:
             or self._request_timeout_seconds <= 0
         ):
             raise ValueError("IR verifier request timeout must be finite and positive")
-        self._process = _COMMANDS.start_owned(
-            resolved_command,
-            cwd=ROOT,
-            env=env,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            bufsize=1,
-        )
         self._responses: queue.Queue[str | None] = queue.Queue()
-        self._reader = threading.Thread(
-            target=self._read_responses,
-            name=f"molt-ir-verifier-reader-{self._process.pid}",
-            daemon=True,
-        )
-        self._reader.start()
+        self._reader: threading.Thread | None = None
         self._lifetime_peak_rss_bytes = 0
         self._next_request_id = 0
         self._request_lock = threading.Lock()
+        self._state_use = ExitStack()
+        self._process: subprocess.Popen[str] | None = None
+        # Install a durable owner before a child can exist. A failed reader
+        # start followed by failed termination must survive traceback/GC.
         atexit.register(self.close)
+        try:
+            self._state_use.enter_context(
+                checkout_state_use(checkout_state_command_roots(ROOT, env, cwd=ROOT))
+            )
+            if resolved_command is None:
+                resolved_command = [str(verifier_binary(env=env))]
+            self._process = _COMMANDS.start_owned(
+                resolved_command,
+                cwd=ROOT,
+                env=env,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                bufsize=1,
+            )
+        except BaseException:
+            self.close(graceful=False)
+            raise
+        try:
+            self._reader = threading.Thread(
+                target=self._read_responses,
+                name=f"molt-ir-verifier-reader-{self._process.pid}",
+                daemon=True,
+            )
+            self._reader.start()
+        except BaseException:
+            self.close(graceful=False)
+            raise
 
     def _read_responses(self) -> None:
-        stdout = self._process.stdout
+        process = self._process
+        assert process is not None
+        stdout = process.stdout
         if stdout is None:
             self._responses.put(None)
             return
@@ -257,7 +281,9 @@ class RustIrVerifier:
 
     @property
     def pid(self) -> int:
-        return self._process.pid
+        process = self._process
+        assert process is not None
+        return process.pid
 
     def verify(
         self,
@@ -280,9 +306,11 @@ class RustIrVerifier:
         request_id: int | None,
         timeout_seconds: float | None,
     ) -> dict[str, Any]:
-        if self._process.poll() is not None:
+        process = self._process
+        assert process is not None
+        if process.poll() is not None:
             raise RuntimeError(self._process_failure("before request"))
-        if self._process.stdin is None or self._process.stdout is None:
+        if process.stdin is None or process.stdout is None:
             raise RuntimeError("Rust IR verifier pipes are unavailable")
         cpu_before, _peak_before = _process_metrics(self.pid)
         if request_id is None:
@@ -297,8 +325,8 @@ class RustIrVerifier:
             separators=(",", ":"),
             allow_nan=False,
         )
-        self._process.stdin.write(request + "\n")
-        self._process.stdin.flush()
+        process.stdin.write(request + "\n")
+        process.stdin.flush()
         request_timeout = (
             self._request_timeout_seconds
             if timeout_seconds is None
@@ -344,16 +372,18 @@ class RustIrVerifier:
         return report
 
     def _process_failure(self, phase: str) -> str:
+        process = self._process
+        assert process is not None
         stderr = ""
-        if self._process.stderr is not None and self._process.poll() is not None:
-            stderr = self._process.stderr.read().strip()
-        return f"Rust IR verifier exited {self._process.returncode} {phase}" + (
+        if process.stderr is not None and process.poll() is not None:
+            stderr = process.stderr.read().strip()
+        return f"Rust IR verifier exited {process.returncode} {phase}" + (
             f": {stderr}" if stderr else ""
         )
 
     def close(self, *, graceful: bool = True) -> None:
         process = self._process
-        if process.poll() is None:
+        if process is not None and process.poll() is None:
             if graceful and process.stdin is not None:
                 process.stdin.close()
             if not graceful:
@@ -372,7 +402,12 @@ class RustIrVerifier:
                 else:
                     process.kill()
                     process.wait(timeout=1.0)
-        self._reader.join(timeout=1.0)
+        if self._reader is not None and self._reader.ident is not None:
+            self._reader.join(timeout=1.0)
+        # Release only after the owned child has actually exited. Failed
+        # termination keeps its state pinned instead of authorizing deletion.
+        self._state_use.close()
+        atexit.unregister(self.close)
 
 
 _PROCESS_LOCAL_VERIFIER: RustIrVerifier | None = None

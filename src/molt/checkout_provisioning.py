@@ -115,6 +115,11 @@ class ProvisioningError(RuntimeError):
     """An input could not be provisioned; the message names the command."""
 
 
+def _require_guard_source_owner(owner: Path | None) -> None:
+    if owner is not None and not owner.is_absolute():
+        raise ProvisioningError("guard source owner must be an absolute path")
+
+
 @dataclass(frozen=True, slots=True)
 class LockedTree:
     """A tree that one package-manager command builds from lock files.
@@ -140,6 +145,11 @@ class LockedTree:
     # A variable in which a running tool names its own binary (`uv run` sets
     # UV); it outranks PATH.
     tool_variable: str | None = None
+    # Execution implementation custody is independent of provisioned content.
+    guard_source_root: Path | None = None
+
+    def __post_init__(self) -> None:
+        _require_guard_source_owner(self.guard_source_root)
 
     @property
     def stamp(self) -> Path:
@@ -169,6 +179,10 @@ class OwnedInstallation:
     # checkout cannot change what every other worktree runs.
     sources: str | None = None
     published_ref: str = "origin/main"
+    guard_source_root: Path | None = None
+
+    def __post_init__(self) -> None:
+        _require_guard_source_owner(self.guard_source_root)
 
 
 CheckoutInput = LockedTree | OwnedInstallation
@@ -194,8 +208,11 @@ def checkout_input(
     name: CheckoutInputName,
     checkout: Path,
     environ: Mapping[str, str] | None = None,
+    *,
+    guard_source_root: Path | None = None,
 ) -> CheckoutInput:
     """The declared input ``name`` of ``checkout`` under ``environ``."""
+    _require_guard_source_owner(guard_source_root)
     checkout = checkout.expanduser().resolve()
     environment = ProcessEnvironment(os.environ if environ is None else environ)
     match name:
@@ -203,6 +220,7 @@ def checkout_input(
             tree = _uv_environment_path(checkout, environment)
             return LockedTree(
                 name=name,
+                guard_source_root=guard_source_root,
                 checkout=checkout,
                 lock_files=("uv.lock", "pyproject.toml", ".python-version"),
                 tree=tree,
@@ -223,6 +241,7 @@ def checkout_input(
         case "browser-acorn":
             return LockedTree(
                 name=name,
+                guard_source_root=guard_source_root,
                 checkout=checkout,
                 lock_files=(
                     f"{ACORN_ROOT}/package-lock.json",
@@ -245,6 +264,7 @@ def checkout_input(
         case "git-hooks":
             return OwnedInstallation(
                 name=name,
+                guard_source_root=guard_source_root,
                 checkout=checkout,
                 owner=HOOK_INSTALLER,
                 environment=environment,
@@ -301,11 +321,13 @@ def _run(
     cwd: Path,
     environment: ProcessEnvironment,
     guarded: bool,
+    guard_source_root: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """One command; a probe runs unguarded under a bounded timeout."""
     try:
         return process_guard.run_completed_command(
             list(argv),
+            guard_source_root=guard_source_root,
             env=environment,
             cwd=cwd,
             capture_output=True,
@@ -418,6 +440,7 @@ def _tool_version(spec: LockedTree, executable: str) -> str:
         cwd=spec.checkout,
         environment=spec.environment,
         guarded=False,
+        guard_source_root=spec.guard_source_root,
     )
     lines = (result.stdout or "").strip().splitlines()
     if result.returncode != 0 or not lines:
@@ -438,6 +461,7 @@ def _with_caller_choices(spec: LockedTree, executable: str) -> ProcessEnvironmen
             cwd=spec.checkout,
             environment=spec.environment,
             guarded=False,
+            guard_source_root=spec.guard_source_root,
         )
         lines = (result.stdout or "").strip().splitlines()
         if result.returncode != 0 or len(lines) != 1:
@@ -471,6 +495,7 @@ def _provision_locked(spec: LockedTree) -> bool:
             cwd=spec.checkout,
             environment=environment,
             guarded=True,
+            guard_source_root=spec.guard_source_root,
         )
         seconds = time.monotonic() - started
         if result.returncode != 0:
@@ -520,6 +545,7 @@ def _owned_state(spec: OwnedInstallation) -> InputState:
         cwd=spec.checkout,
         environment=spec.environment,
         guarded=False,
+        guard_source_root=spec.guard_source_root,
     )
     if result.returncode == 0:
         return "current"
@@ -534,7 +560,12 @@ def _require_published_sources(spec: OwnedInstallation) -> None:
     argv = ["git", "-C", str(spec.checkout), "diff", "--quiet", spec.published_ref]
     argv += ["--", spec.sources]
     result = _run(
-        spec.name, argv, cwd=spec.checkout, environment=spec.environment, guarded=False
+        spec.name,
+        argv,
+        cwd=spec.checkout,
+        environment=spec.environment,
+        guarded=False,
+        guard_source_root=spec.guard_source_root,
     )
     if result.returncode == 0:
         return
@@ -559,6 +590,7 @@ def _provision_owned(spec: OwnedInstallation) -> bool:
             cwd=spec.checkout,
             environment=spec.environment,
             guarded=True,
+            guard_source_root=spec.guard_source_root,
         )
         if result.returncode != 0:
             raise _failure(spec.name, argv, spec.checkout, result)
@@ -592,15 +624,21 @@ def ensure(
     name: CheckoutInputName,
     checkout: Path,
     environ: Mapping[str, str] | None = None,
+    *,
+    guard_source_root: Path | None = None,
 ) -> Ensured:
     """Make checkout input ``name`` current, as ``uv run`` syncs first."""
-    return ensure_input(checkout_input(name, checkout, environ))
+    return ensure_input(
+        checkout_input(name, checkout, environ, guard_source_root=guard_source_root)
+    )
 
 
 def ensure_all(
     checkout: Path,
     environ: Mapping[str, str] | None = None,
     names: Iterable[CheckoutInputName] = CHECKOUT_INPUT_NAMES,
+    *,
+    guard_source_root: Path | None = None,
 ) -> tuple[Ensured, ...]:
     """Provision every named input; report every failure together.
 
@@ -611,7 +649,9 @@ def ensure_all(
     failures: list[str] = []
     for name in names:
         try:
-            done.append(ensure(name, checkout, environ))
+            done.append(
+                ensure(name, checkout, environ, guard_source_root=guard_source_root)
+            )
         except ProvisioningError as exc:
             failures.append(str(exc))
     if failures:

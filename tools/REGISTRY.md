@@ -128,6 +128,8 @@ self-commits or invents an external scheduling authority.
   host-control-plane are NEVER kill targets). Never name/tree-kill.
 - `molt.process_model.pid_alive(pid)` — the one pid-liveness probe. A zombie is
   not alive and the probe never reaps; Windows waits on the process object.
+  Unknown native query or handle-close errors raise; callers cannot treat
+  an unknown observation as proven death.
   Never probe with `os.kill(pid, 0)`: on Windows signal 0 is `CTRL_C_EVENT`.
 - `tools/memory_guard_custody.py --json` — inspect guard-marker custody; dry-run
   by default. `--apply` reconciles records whose processes are proven gone and

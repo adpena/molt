@@ -300,6 +300,47 @@ def test_process_guard_direct_loader_uses_owning_policy_and_source_authority() -
     assert authority.compiler_source_root() == ROOT.resolve()
 
 
+@pytest.mark.parametrize("guarded", [True, False])
+def test_bound_executor_retains_source_owner_with_foreign_compiler_inputs(
+    tmp_path, monkeypatch, guarded
+):
+    from tools import harness_memory_guard
+
+    foreign = tmp_path / "compiler-inputs"
+    (foreign / "tools").mkdir(parents=True)
+    (foreign / "pyproject.toml").write_text("[project]\nname='input'\n")
+    (foreign / "tools" / "harness_memory_guard.py").write_text("")
+    monkeypatch.setenv("MOLT_SOURCE_ROOT", str(foreign))
+    captured = {}
+    if guarded:
+
+        def observe_run(context, command, **kwargs):
+            captured["owner"] = context.repo_root
+            captured["input"] = context.env["MOLT_SOURCE_ROOT"]
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        monkeypatch.setattr(
+            harness_memory_guard.HarnessExecutionContext, "run", observe_run
+        )
+        command = [sys.executable, "fixture.py"]
+    else:
+        authority = command_execution._process_guard_authority(str(ROOT))
+        original = authority.ProcessStateUse.__enter__
+
+        def enter(use):
+            captured["owner"] = use.source_root
+            captured["input"] = use.environment["MOLT_SOURCE_ROOT"]
+            return original(use)
+
+        monkeypatch.setattr(authority.ProcessStateUse, "__enter__", enter)
+        command = ["git", "rev-parse", "--show-toplevel"]
+    result = command_execution.CommandExecutor(prefix="MOLT_TEST", repo_root=ROOT).run(
+        command, env=dict(os.environ), cwd=ROOT, capture_output=True, text=True
+    )
+    assert result.returncode == 0
+    assert captured == {"owner": ROOT, "input": str(foreign)}
+
+
 def test_process_guard_authority_is_isolated_per_worktree(tmp_path: Path) -> None:
     roots = [tmp_path / "one", tmp_path / "two"]
     for index, root in enumerate(roots):
@@ -509,7 +550,7 @@ def test_interactive_guard_cancels_actual_child_tree_and_closes_streams(tmp_path
         "time.sleep(60)\n",
         encoding="utf-8",
     )
-    env = dict(os.environ)
+    env, managed_roots = _managed_command_roots(tmp_path)
     env["MOLT_MEMORY_GUARD_STATE_ROOT"] = str(tmp_path / "guard-state")
     executor = command_execution.CommandExecutor(
         prefix="MOLT_TEST_INTERACTIVE_GUARD", repo_root=ROOT
@@ -527,6 +568,7 @@ def test_interactive_guard_cancels_actual_child_tree_and_closes_streams(tmp_path
             timeout=15.0,
         )
         try:
+            _assert_retirement_binding(managed_roots, False)
             assert owned.stdin is not None
             owned.stdin.write("start\n")
             owned.stdin.flush()
@@ -553,6 +595,7 @@ def test_interactive_guard_cancels_actual_child_tree_and_closes_streams(tmp_path
             )
             assert summary["descendants_closed"] is True
             assert summary["cancelled"] is True
+            _assert_retirement_binding(managed_roots, True)
             _assert_closure_progress_followed_the_request(owned)
             after = memory_guard.sample_processes()
             assert pids["child"] not in after
@@ -842,8 +885,129 @@ def test_harness_launch_binds_relative_executable_to_worker_root(tmp_path, monke
         harness=True,
         env={"MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path / "state")},
     )
-    assert captured["cwd"] == root
-    assert owned.command == (str(executable.resolve()), "payload")
-    assert memory_guard._load_internal_command(captured["env"]) == list(owned.command)
-    argv = captured["argv"]
-    assert argv[argv.index("--cwd") + 1] == str(root / "other")
+    try:
+        assert captured["cwd"] == root
+        assert owned.command == (str(executable.resolve()), "payload")
+        assert memory_guard._load_internal_command(captured["env"]) == list(
+            owned.command
+        )
+        argv = captured["argv"]
+        assert argv[argv.index("--cwd") + 1] == str(root / "other")
+    finally:
+        # start_owned was a binding stub: no OS process was born. Return this
+        # owner to its proven prebirth state instead of leaving an atexit wait.
+        owned.process = None
+        owned._close_at_exit()
+    assert owned.state_use is None
+
+
+def _managed_command_roots(tmp_path):
+    from molt.build_state_layout import build_state_root
+    from molt.dx import checkout_component
+
+    checkout = tmp_path / "project"
+    checkout.mkdir()
+    artifact = tmp_path / "artifacts"
+    parent = artifact / "target" / "checkouts" / checkout_component(checkout)
+    session = parent / "sessions" / "reader"
+    control = build_state_root(
+        project_root=checkout,
+        cargo_target=session,
+        environment={"MOLT_EXT_ROOT": str(artifact)},
+    )
+    environment = {
+        **os.environ,
+        "CARGO_TARGET_DIR": str(session),
+        "MOLT_EXT_ROOT": str(artifact),
+    }
+    return environment, (parent, session, control)
+
+
+def _assert_retirement_binding(roots, available):
+    from molt.checkout_state import checkout_state_retirement
+
+    for root in roots:
+        with checkout_state_retirement(root) as admitted:
+            assert admitted is available, root
+
+
+@pytest.mark.parametrize("guard_has_exited", [False, True])
+def test_guard_resource_owner_survives_gc_after_unresolved_wait(
+    tmp_path, guard_has_exited
+):
+    """A real living process, not an exception reference, keeps use pinned."""
+    import gc
+    import json
+    import weakref
+    from contextlib import ExitStack
+    from molt.checkout_state import checkout_state_command_roots, checkout_state_use
+
+    environment, roots = _managed_command_roots(tmp_path)
+    stack = ExitStack()
+    stack.enter_context(
+        checkout_state_use(checkout_state_command_roots(ROOT, environment))
+    )
+    executor = command_execution.CommandExecutor(prefix="MOLT_TEST", repo_root=ROOT)
+    process = executor.start_owned(
+        [sys.executable, "-c", "import time; time.sleep(30)"], env=environment
+    )
+    guard_process = (
+        executor.start_owned([sys.executable, "-I", "-S", "-c", "pass"])
+        if guard_has_exited
+        else process
+    )
+    if guard_has_exited:
+        assert guard_process.wait(timeout=5) == 0
+    fixture, startup, terminal = _interactive_guard_fixture(tmp_path, guard_process)
+    if guard_has_exited:
+        terminal["descendants_closed"] = False
+        fixture.summary_path.write_text(json.dumps(terminal), encoding="utf-8")
+    owned = command_execution.GuardedCommand(
+        guard_process,
+        fixture.cancellation_path,
+        fixture.summary_path,
+        fixture.evidence_path,
+        fixture.launch_id,
+        fixture.startup_path,
+        fixture.command,
+        state_use=stack,
+    )
+    reference = weakref.ref(owned)
+    try:
+        with pytest.raises(
+            RuntimeError if guard_has_exited else subprocess.TimeoutExpired,
+            match="unresolved child custody" if guard_has_exited else None,
+        ):
+            owned.wait(timeout=0.01)
+        del owned, stack
+        gc.collect()
+        assert reference() is not None
+        assert process.poll() is None
+        _assert_retirement_binding(roots, False)
+    finally:
+        process.terminate()
+        process.wait(timeout=5)
+        survivor = reference()
+        assert survivor is not None
+        terminal["descendants_closed"] = True
+        fixture.summary_path.write_text(json.dumps(terminal), encoding="utf-8")
+        assert survivor.wait(timeout=5) is not None
+        assert survivor.terminal
+    _assert_retirement_binding(roots, True)
+    del survivor
+    gc.collect()
+    assert reference() is None
+
+
+def test_guard_launch_failure_releases_prelaunch_managed_use(tmp_path, monkeypatch):
+    environment, roots = _managed_command_roots(tmp_path)
+    executor = command_execution.CommandExecutor(prefix="MOLT_TEST", repo_root=ROOT)
+
+    def refuse(self, command, **kwargs):
+        _assert_retirement_binding(roots, False)
+        raise FileNotFoundError("independent launch refusal")
+
+    monkeypatch.setattr(command_execution.CommandExecutor, "start_owned", refuse)
+    with pytest.raises(FileNotFoundError, match="independent launch refusal"):
+        executor.start_guarded([sys.executable, "-c", "pass"], env=environment)
+    _assert_retirement_binding(roots, True)

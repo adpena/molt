@@ -519,3 +519,26 @@ def test_installed_daemon_probes_need_only_the_molt_package(tmp_path: Path) -> N
     assert report["verified_live"] is True
     assert report["verified_exited"] is False
     assert report["tools_loaded"] == []
+
+
+@pytest.mark.parametrize("operation", ["verify", "terminate"])
+def test_unknown_native_liveness_cannot_verify_or_signal_daemon(
+    tmp_path, monkeypatch, operation
+):
+    from molt import process_model
+
+    identity = _identity(tmp_path)
+    monkeypatch.setattr(
+        custody, "process_started_at_ns", lambda pid: identity.started_at_ns
+    )
+
+    def unknown(pid):
+        raise OSError("independent native query unavailable")
+
+    monkeypatch.setattr(process_model, "pid_alive", unknown)
+    if operation == "verify":
+        assert not custody.backend_daemon_identity_is_verified(
+            identity, allow_health_probe=False
+        )
+    else:
+        assert not custody.terminate_backend_daemon_identity(identity)

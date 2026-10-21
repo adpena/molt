@@ -7,19 +7,24 @@ environment, timeout custody, and subprocess-compatible check/output behavior.
 
 from __future__ import annotations
 
+import atexit
 import hashlib
 import json
+import os
 import time
 import uuid
 from datetime import datetime, timezone
 import re
 import subprocess
 import sys
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Generator, Mapping, Sequence
+from dataclasses import dataclass, field
+from contextlib import ExitStack, contextmanager
 from functools import lru_cache
 from pathlib import Path
 from typing import IO, Any
+
+from molt.process_spawn import PROCESS_STATE_HANDOFF_TIMEOUT_S, ProcessStateUse
 
 from tools.import_file import (
     bind_repository_imports,
@@ -108,7 +113,98 @@ def _is_bounded_metadata_probe(command: Sequence[str]) -> bool:
 GUARD_CANCELLATION_OBSERVATION_SECONDS = 5.0
 
 
+def detached_worker_pid(ready_path: Path, use_token: str) -> int | None:
+    """Read the actual worker identity bound to this one-use launch capability."""
+    if re.fullmatch(r"[0-9a-f]{32}", use_token) is None:
+        raise ValueError("invalid detached use token")
+    try:
+        ready = json.loads(ready_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    if (
+        not isinstance(ready, dict)
+        or set(ready) != {"schema_version", "pid", "use_token"}
+        or type(ready.get("schema_version")) is not int
+        or ready["schema_version"] != 1
+        or ready["use_token"] != use_token
+        or type(ready.get("pid")) is not int
+        or ready["pid"] <= 0
+    ):
+        raise RuntimeError(f"invalid use handoff at {ready_path}")
+    return ready["pid"]
+
+
 @dataclass(slots=True)
+class DetachedStateHandoff(ProcessStateUse):
+    """Overlap managed-state use across an existing detached process launch.
+
+    The caller still creates its process. This owner protects interpreter
+    startup until that process acknowledges its own continuous shared use.
+    Failed observation keeps the owner alive through actual child closure.
+    """
+
+    ready_path: Path
+    use_token: str = field(default_factory=lambda: uuid.uuid4().hex)
+    worker_pid: int | None = field(default=None, init=False)
+
+    def wait_ready(self, *, timeout: float = PROCESS_STATE_HANDOFF_TIMEOUT_S) -> None:
+        if self.process is None:
+            raise RuntimeError("detached process has not been launched")
+        deadline = time.monotonic() + timeout
+        # The one-use launch capability binds this acknowledgement. A selected
+        # interpreter may delegate (notably a Windows venv redirector), so the
+        # actual worker PID is distinct from the Popen launcher we still own.
+        while True:
+            worker_pid = detached_worker_pid(self.ready_path, self.use_token)
+            if worker_pid is not None:
+                self.worker_pid = worker_pid
+                self._release()
+                return
+            returncode = self.process.poll()
+            if returncode is not None:
+                raise RuntimeError(
+                    f"worker exited {returncode} before use handoff at {self.ready_path}"
+                )
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError(
+                    f"worker use handoff unresolved at {self.ready_path}"
+                )
+            time.sleep(min(0.1, remaining))
+
+
+@contextmanager
+def detached_command_use(
+    source_root: Path,
+    environment: Mapping[str, str],
+    *,
+    cwd: Path,
+    ready_path: Path,
+    use_token: str,
+) -> Generator[None]:
+    """Acknowledge only after acquiring the detached worker's actual use."""
+    from molt.checkout_state import checkout_state_command_roots, checkout_state_use
+
+    if not ready_path.is_absolute() or re.fullmatch(r"[0-9a-f]{32}", use_token) is None:
+        raise ValueError("invalid detached use handoff descriptor")
+    with checkout_state_use(
+        checkout_state_command_roots(source_root, environment, cwd=cwd)
+    ):
+        temporary = ready_path.with_name(f".{ready_path.name}.{use_token}.tmp")
+        try:
+            temporary.write_text(
+                json.dumps(
+                    {"schema_version": 1, "pid": os.getpid(), "use_token": use_token}
+                ),
+                encoding="utf-8",
+            )
+            os.replace(temporary, ready_path)
+        finally:
+            temporary.unlink(missing_ok=True)
+        yield
+
+
+@dataclass(slots=True, weakref_slot=True)
 class GuardedCommand:
     """Launch handle and admitted guard identity, with cancellation custody.
 
@@ -117,7 +213,7 @@ class GuardedCommand:
     handle instead of being killed while a child might still be alive.
     """
 
-    process: subprocess.Popen[Any]
+    process: subprocess.Popen[Any] | None
     cancellation_path: Path
     summary_path: Path
     evidence_path: Path
@@ -128,34 +224,66 @@ class GuardedCommand:
     guard_pid: int | None = None
     child_identity: dict[str, object] | None = None
     progress_path: Path | None = None
+    state_use: ExitStack | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        # Publish a durable cleanup owner before child creation. An exception
+        # retaining this object alone is insufficient: GC can finalize its
+        # generator-backed use context while the guard still owns a live tree.
+        if self.state_use is not None:
+            atexit.register(self._close_at_exit)
+
+    def _close_at_exit(self) -> None:
+        if self.process is None:
+            self._release_state_use()
+            return
+        if not self.terminal:
+            try:
+                self.cancel_and_wait()
+            except Exception as error:
+                print(
+                    f"guard closure unresolved at {self.evidence_path}: {error}",
+                    file=sys.stderr,
+                )
+
+    def _release_state_use(self) -> None:
+        if self.state_use is not None:
+            self.state_use.close()
+            self.state_use = None
+            atexit.unregister(self._close_at_exit)
+
+    def _require_process(self) -> subprocess.Popen[Any]:
+        if self.process is None:
+            raise RuntimeError("guard process has not been launched")
+        return self.process
 
     @property
     def stdin(self):
-        return self.process.stdin
+        return self._require_process().stdin
 
     @property
     def stdout(self):
-        return self.process.stdout
+        return self._require_process().stdout
 
     @property
     def stderr(self):
-        return self.process.stderr
+        return self._require_process().stderr
 
     @property
     def pid(self) -> int:
         """The owned launcher PID; admitted guard_pid can be different."""
-        return self.process.pid
+        return self._require_process().pid
 
     @property
     def args(self):
-        return self.process.args
+        return self._require_process().args
 
     @property
     def returncode(self):
-        return self.process.returncode
+        return self._require_process().returncode
 
     def poll(self):
-        return self.process.poll()
+        return self._require_process().poll()
 
     def request_cancel(self) -> None:
         # The exclusive launch directory is the capability. No PID lookup,
@@ -201,13 +329,13 @@ class GuardedCommand:
                     mark = renewed
                     window = max(0.0, renewed[1] + timeout - time.time())
         except Exception as exc:
-            exc.guard_command = self
+            setattr(exc, "guard_command", self)
             exc.add_note(f"guard custody retained at {self.evidence_path}")
             raise
 
     def wait(self, timeout: float | None = None) -> int:
         self.terminal = False
-        result = int(self.process.wait(timeout=timeout))
+        result = int(self._require_process().wait(timeout=timeout))
         try:
             startup = json.loads(self.startup_path.read_text(encoding="utf-8"))
             payload = json.loads(self.summary_path.read_text(encoding="utf-8"))
@@ -247,6 +375,7 @@ class GuardedCommand:
             )
         self.guard_pid = startup["guard_pid"]
         self.child_identity = startup["child_process"]
+        self._release_state_use()
         return result
 
 
@@ -303,6 +432,7 @@ class CommandExecutor:
             env = process_guard.ProcessEnvironment(env, rule=rule)
         return process_guard.run_completed_command(
             command,
+            guard_source_root=self.repo_root,
             cwd=cwd,
             env=env,
             input=input,
@@ -434,8 +564,8 @@ class CommandExecutor:
                         f"custody: {process.evidence_path}"
                     )
                     # Keep both errors and the exact live handle inspectable.
-                    timeout_error.guard_command = process
-                    timeout_error.cleanup_error = cleanup_error
+                    setattr(timeout_error, "guard_command", process)
+                    setattr(timeout_error, "cleanup_error", cleanup_error)
                 raise timeout_error
             process.terminate()
             try:
@@ -594,40 +724,64 @@ class CommandExecutor:
             launch_id=launch_id,
             startup_json=str(startup_path),
         )
-        process = self.start_owned(
-            guarded_argv,
-            cwd=self.repo_root if harness else cwd,
-            env=worker_environment,
-            stdin=stdin,
-            stdout=stdout,
-            stderr=stderr,
-            text=text,
-            encoding=encoding,
-            errors=errors,
-            bufsize=bufsize,
+        from molt.checkout_state import checkout_state_command_roots, checkout_state_use
+
+        state_use = ExitStack()
+        state_use.enter_context(
+            checkout_state_use(
+                checkout_state_command_roots(
+                    self.repo_root,
+                    launch_environment,
+                    cwd=cwd,
+                )
+            )
         )
-        owned = GuardedCommand(
-            process,
-            cancellation_path,
-            summary_path,
-            evidence_path,
-            launch_id,
-            startup_path,
-            tuple(command),
-            progress_path=progress_path,
-        )
+        try:
+            owned = GuardedCommand(
+                None,
+                cancellation_path,
+                summary_path,
+                evidence_path,
+                launch_id,
+                startup_path,
+                tuple(command),
+                progress_path=progress_path,
+                state_use=state_use,
+            )
+        except BaseException:
+            state_use.close()
+            raise
+        try:
+            process = self.start_owned(
+                guarded_argv,
+                cwd=self.repo_root if harness else cwd,
+                env=worker_environment,
+                stdin=stdin,
+                stdout=stdout,
+                stderr=stderr,
+                text=text,
+                encoding=encoding,
+                errors=errors,
+                bufsize=bufsize,
+            )
+            owned.process = process
+        except BaseException:
+            # No child was returned by the launch owner. Release the admission
+            # and remove its pre-registered cleanup callback.
+            owned._release_state_use()
+            raise
         evidence.update(launch_pid=process.pid, status="launched")
         try:
             evidence_path.write_text(
                 json.dumps(evidence, sort_keys=True) + "\n", encoding="utf-8"
             )
         except OSError as exc:
-            exc.guard_command = owned
+            setattr(exc, "guard_command", owned)
             try:
                 owned.request_cancel()
                 self.wait_owned(owned, timeout=5.0)
             except (OSError, RuntimeError, subprocess.SubprocessError) as cleanup_error:
-                exc.cleanup_error = cleanup_error
+                setattr(exc, "cleanup_error", cleanup_error)
                 exc.add_note(f"guard cancellation unresolved: {cleanup_error}")
             exc.add_note(f"guard custody retained at {evidence_path}")
             raise

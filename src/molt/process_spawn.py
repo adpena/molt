@@ -2,13 +2,108 @@
 
 from __future__ import annotations
 
+import atexit
 import os
 import ntpath
 import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import ExitStack
+from dataclasses import dataclass, field
 from types import ModuleType
-from typing import IO, Any, TextIO, TypedDict
+from pathlib import Path
+from typing import IO, Any, Self, TextIO, TypedDict
+
+
+PROCESS_STATE_HANDOFF_TIMEOUT_S = 30.0
+
+
+@dataclass(slots=True, weakref_slot=True)
+class ProcessStateUse:
+    """Retain selected managed state before birth through observed child death.
+
+    Callers still create and clean up their own Popen object. The registered
+    bound method keeps this exact owner, child and entered use alive when a
+    failed wait and its exception are collected. Verified handoffs may release
+    the same owner explicitly; no parallel handoff/release flag is needed.
+    """
+
+    source_root: Path
+    environment: Mapping[str, str]
+    cwd: str | os.PathLike[str] | None
+    process: subprocess.Popen[Any] | None = field(default=None, init=False)
+    state_use: ExitStack = field(default_factory=ExitStack, init=False, repr=False)
+    released: bool = field(default=False, init=False)
+    _registered: bool = field(default=False, init=False, repr=False)
+
+    def __enter__(self) -> Self:
+        from .checkout_state import checkout_state_command_roots, checkout_state_use
+
+        if self._registered or self.released:
+            raise RuntimeError("process state owner is single-use")
+        try:
+            self.state_use.enter_context(
+                checkout_state_use(
+                    checkout_state_command_roots(
+                        self.source_root, self.environment, cwd=self.cwd
+                    )
+                )
+            )
+            # Register before any caller can create a child, including callers
+            # whose Popen/reader setup later fails after actual process birth.
+            atexit.register(self._close_at_exit)
+            self._registered = True
+        except BaseException as error:
+            try:
+                self.state_use.close()
+            except BaseException as cleanup_error:
+                error.add_note(f"prebirth state cleanup failed: {cleanup_error!r}")
+            self.released = True
+            raise
+        return self
+
+    def _release(self) -> None:
+        if self.released:
+            return
+        self.state_use.close()
+        self.released = True
+        if self._registered:
+            atexit.unregister(self._close_at_exit)
+            self._registered = False
+
+    def _close_at_exit(self) -> None:
+        if self.released:
+            return
+        if self.process is not None:
+            self.process.wait()
+            if self.process.poll() is None:
+                return
+        self._release()
+
+    def _annotate_error(self, error: BaseException) -> None:
+        setattr(error, "state_owner", self)
+        setattr(error, "state_use", self.state_use)
+        setattr(error, "owned_process", self.process)
+        error.add_note("managed state remains retained until child closure is observed")
+
+    def __exit__(
+        self, exc_type: object, error: BaseException | None, tb: object
+    ) -> None:
+        del exc_type, tb
+        if self.released:
+            return
+        try:
+            closed = self.process is None or self.process.poll() is not None
+            if closed:
+                self._release()
+                return
+        except BaseException as cleanup_error:
+            if error is None:
+                self._annotate_error(cleanup_error)
+                raise
+            error.add_note(f"managed state cleanup failed: {cleanup_error!r}")
+        if error is not None:
+            self._annotate_error(error)
 
 
 class ProcessGroupKwargs(TypedDict, total=False):
@@ -148,19 +243,79 @@ def forward_command(
     argv = list(command)
     if not argv:
         raise ValueError("command is required")
+    from .checkout_state import checkout_state_command_roots, checkout_state_use
+    from .file_locks import _file_lock_descriptor_action, _file_lock_owned_operation
+    from .source_root import compiler_source_root
+
     child_env = dict(env)
+    source = compiler_source_root()
     if os.name == "nt":
-        return subprocess.run(
-            native_popen_command(argv), cwd=cwd, env=child_env, check=False
-        ).returncode
-    if cwd is None:
-        os.execvpe(argv[0], argv, child_env)
-    else:
-        original_cwd = os.getcwd()
-        try:
-            os.chdir(cwd)
-            os.execvpe(argv[0], argv, child_env)
-        finally:
-            # Only failed exec returns to Python; leave a reusable caller intact.
-            os.chdir(original_cwd)
+        with ProcessStateUse(source, child_env, cwd) as state_owner:
+            process = subprocess.Popen(
+                native_popen_command(argv), cwd=cwd, env=child_env
+            )
+            state_owner.process = process
+            error: BaseException | None = None
+            try:
+                try:
+                    process.communicate()
+                except BaseException as failure:
+                    try:
+                        process.kill()
+                    except BaseException as cleanup_error:
+                        failure.add_note(f"child kill failed: {cleanup_error!r}")
+                    raise
+                returncode = process.poll()
+                if returncode is None:
+                    raise RuntimeError("forwarded command has no observed exit status")
+                return returncode
+            except BaseException as failure:
+                error = failure
+                raise
+            finally:
+                # Reuse Popen's stream/wait and KeyboardInterrupt policy. A
+                # failed cleanup must not replace the original child error.
+                try:
+                    process.__exit__(
+                        type(error) if error is not None else None,
+                        error,
+                        error.__traceback__ if error is not None else None,
+                    )
+                except BaseException as cleanup_error:
+                    if error is None:
+                        raise
+                    error.add_note(f"child context cleanup failed: {cleanup_error!r}")
+    with checkout_state_use(
+        checkout_state_command_roots(source, child_env, cwd=cwd)
+    ) as handles:
+        with ExitStack() as custody:
+            for handle in handles:
+                custody.enter_context(
+                    _file_lock_owned_operation(
+                        handle,
+                        expected_lock_path=Path(handle.registry_key),
+                        shared=True,
+                    )
+                )
+            # Prevent a concurrent Python fork from observing the temporary
+            # inheritable descriptors. Exec itself replaces this process.
+            with _file_lock_descriptor_action():
+                inherited = [
+                    (handle.file.fileno(), os.get_inheritable(handle.file.fileno()))
+                    for handle in handles
+                ]
+                original_cwd = os.getcwd()
+                try:
+                    for fd, _ in inherited:
+                        os.set_inheritable(fd, True)
+                    if cwd is not None:
+                        os.chdir(cwd)
+                    os.execvpe(argv[0], argv, child_env)
+                finally:
+                    # Successful exec never returns. Failed transfer restores
+                    # the reusable caller before its shared handles are closed.
+                    for fd, was_inheritable in inherited:
+                        os.set_inheritable(fd, was_inheritable)
+                    if cwd is not None:
+                        os.chdir(original_cwd)
     raise AssertionError("os.execvpe returned")

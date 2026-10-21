@@ -36,9 +36,10 @@ from molt.windows_process_snapshot import (
     WindowsProcessSnapshotRow,
     _windows_process_snapshot_rows_hard_timeout,
     windows_current_process_started_at_ns,
-    windows_pid_alive,
     windows_process_resident_kb,
 )
+
+from molt.windows_process_api import process_is_alive
 
 
 # These are conservative host-protection signatures, never Molt ownership.
@@ -1621,6 +1622,7 @@ def pid_alive(pid: int) -> bool:
     A zombie (exited and not yet reaped by its parent) is not alive. The probe
     never reaps it, so a ``Popen`` owner keeps its child's exit status. A
     process this caller may not signal is alive while the kernel lists it.
+    Unknown native observations raise OSError; only a proven exit returns False.
     Windows asks the process object: there ``os.kill(pid, 0)`` sends
     ``CTRL_C_EVENT`` to a console process group instead of probing.
     """
@@ -1628,7 +1630,9 @@ def pid_alive(pid: int) -> bool:
     if type(pid) is not int or pid <= 0:
         return False
     if os.name == "nt":
-        return windows_pid_alive(pid)
+        if pid > 0xFFFFFFFF:
+            return False
+        return process_is_alive(pid)
     if pid > _POSIX_PID_MAX:
         return False
     try:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 from collections.abc import Callable, Mapping, Sequence
 import contextlib
 from dataclasses import replace
@@ -813,6 +814,7 @@ def run_guarded(
     stderr_capture_path: str | Path | None = None,
     capture_tail_bytes: int | None = None,
     cwd: str | Path | None = None,
+    logical_cwd: str | Path | None = None,
     env: Mapping[str, str] | None = None,
     timeout: float | None = None,
     samples_jsonl: str | None = None,
@@ -1001,7 +1003,26 @@ def run_guarded(
         )
         return scratch_cleanup_error
 
+    from molt.checkout_state import checkout_state_command_roots, checkout_state_use
+
+    # A pinned startup worker restores its caller's cwd after its redirector
+    # starts elsewhere. Retain the original selections through the same full
+    # descendant lifetime; physical launch location must not rebase them.
+    state_use = contextlib.ExitStack()
+    state_closed = False
     try:
+        state_use.enter_context(
+            checkout_state_use(
+                checkout_state_command_roots(
+                    ROOT,
+                    child_env,
+                    cwd=cwd if logical_cwd is None else logical_cwd,
+                )
+            )
+        )
+        # Register before child birth: an unknown terminal result or raised
+        # cleanup failure may outlive this frame and every result reference.
+        atexit.register(state_use.close)
         scratch_lease = _temporary_artifacts.acquire_guard_scratch(ROOT, child_env)
         inherited_scratch = child_env.get(_temporary_artifacts.SCRATCH_ENV)
         if (
@@ -1044,15 +1065,28 @@ def run_guarded(
                     stdout_capture = stdout_path.open(mode="x+b")
                     stderr_capture = stderr_path.open(mode="x+b")
             elif text:
+                # Capture belongs to this guard's admitted scratch lease.
+                # The caller's cached tempfile directory may be the checkout
+                # the child removes; Windows keeps these names until close.
                 stdout_capture = tempfile.TemporaryFile(
-                    mode="w+t", encoding=encoding, errors=errors
+                    mode="w+t",
+                    encoding=encoding,
+                    errors=errors,
+                    dir=scratch_lease.target,
                 )
                 stderr_capture = tempfile.TemporaryFile(
-                    mode="w+t", encoding=encoding, errors=errors
+                    mode="w+t",
+                    encoding=encoding,
+                    errors=errors,
+                    dir=scratch_lease.target,
                 )
             else:
-                stdout_capture = tempfile.TemporaryFile(mode="w+b")
-                stderr_capture = tempfile.TemporaryFile(mode="w+b")
+                stdout_capture = tempfile.TemporaryFile(
+                    mode="w+b", dir=scratch_lease.target
+                )
+                stderr_capture = tempfile.TemporaryFile(
+                    mode="w+b", dir=scratch_lease.target
+                )
         popen_kwargs: ProcessSpawnKwargs = {
             "cwd": cwd,
             "env": (
@@ -2531,6 +2565,7 @@ def run_guarded(
             infrastructure_failure=infrastructure_failure,
             worker_peaks=None if worker_peaks is None else worker_peaks.summary(),
         )
+        state_closed = result.descendants_closed
         _update_active_guard_marker(
             guard_marker,
             guard_token,
@@ -2692,6 +2727,12 @@ def run_guarded(
         _win_job.close_job(guard_job)
         if caught_exception is None:
             _retire_guard_custody(guard_marker, guard_token)
+        if proc is None or state_closed:
+            # proc=None is the existing no-child-launched proof, including
+            # validation/admission/spawn refusal. A reaped root alone cannot
+            # authorize releasing a use whose descendants remain unknown.
+            atexit.unregister(state_use.close)
+            state_use.close()
 
 
 _REPRO_ENV_KEYS = _repro_context.REPRO_ENV_KEYS

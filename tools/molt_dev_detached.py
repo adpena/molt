@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import atexit
+from contextlib import ExitStack, contextmanager
 import json
 import os
 import re
@@ -14,6 +16,7 @@ import tempfile
 import time
 from pathlib import Path
 from typing import TextIO
+from collections.abc import Generator
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
@@ -32,10 +35,14 @@ from tools.molt_dev_common import (  # noqa: E402
     _ok,
     _say,
 )
-from molt.process_model import pid_alive  # noqa: E402
-from tools.molt_dev_probe import probe_path  # noqa: E402
+from tools.molt_dev_probe import probe_path, probe_pid  # noqa: E402
 
-from tools.command_execution import CommandExecutor  # type: ignore  # noqa: E402
+from tools.command_execution import (  # noqa: E402
+    CommandExecutor,
+    DetachedStateHandoff,
+    detached_command_use,
+    detached_worker_pid,
+)
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 
@@ -43,7 +50,7 @@ _COMMANDS = CommandExecutor.for_file(__file__)
 # run.log, rc. The rc file is the ONLY proof of orderly completion: a dead
 # pid with no rc is the hazard-11 died-silent class, and detached-verify
 # reports it as such.
-DETACHED_STATE_ROOT = Path(tempfile.gettempdir()) / "molt_dev_detached"
+
 
 _DETACHED_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 
@@ -67,7 +74,11 @@ def _detached_state_dir(name: str, override: str | None) -> Path:
             f"detached: name {name!r} must match {_DETACHED_NAME_RE.pattern}",
             code=EXIT_USAGE,
         )
-    root = Path(override).resolve() if override else DETACHED_STATE_ROOT
+    root = (
+        Path(override).resolve()
+        if override
+        else Path(tempfile.gettempdir()) / "molt_dev_detached"
+    )
     return root / name
 
 
@@ -92,6 +103,16 @@ def _exec_wait_rc(
     if not command:
         _write_exec_message("detached-run: empty command\n", log_file)
         return 127
+    from molt.checkout_state import checkout_state_command_roots, checkout_state_use
+
+    state_use = ExitStack()
+    state_use.enter_context(
+        checkout_state_use(checkout_state_command_roots(_REPO_ROOT, env))
+    )
+    # Keep the generator-backed hold durable if waiting fails and this frame
+    # unwinds. The existing child wait runs first at process shutdown.
+    atexit.register(state_use.close)
+    proc = None
     try:
         proc = _COMMANDS.start_owned(
             command,
@@ -102,14 +123,22 @@ def _exec_wait_rc(
             stdout=log_file if log_file is not None else None,
             stderr=subprocess.STDOUT if log_file is not None else None,
         )
+        atexit.register(proc.wait)
         returncode = proc.wait()
-        return returncode if returncode >= 0 else 128 + abs(returncode)
-    except FileNotFoundError as exc:
+    except Exception as exc:  # noqa: BLE001 - retain every unresolved child owner
+        if proc is not None and proc.poll() is None:
+            setattr(exc, "owned_process", proc)
+            exc.add_note("detached child wait unresolved; use owner retained")
+            raise
         _write_exec_message(f"detached-run: exec failed: {exc}\n", log_file)
-        return 127
-    except Exception as exc:  # noqa: BLE001 - supervisor must report every exec death
-        _write_exec_message(f"detached-run: exec crashed: {exc}\n", log_file)
-        return 126
+        returncode = 127 if isinstance(exc, FileNotFoundError) else 126
+    finally:
+        if proc is None or proc.poll() is not None:
+            if proc is not None:
+                atexit.unregister(proc.wait)
+            atexit.unregister(state_use.close)
+            state_use.close()
+    return returncode if returncode >= 0 else 128 + abs(returncode)
 
 
 def python_command(*arguments: str) -> list[str]:
@@ -134,32 +163,44 @@ def _detached_daemonize(
     group, command log, child lifetime, and terminal rc record.
     """
     payload_path = state / "worker.json"
+    token = os.urandom(16).hex()
     _atomic_write_text(
         payload_path,
-        json.dumps({"argv": command, "cwd": str(cwd)}, indent=2),
+        json.dumps({"argv": command, "cwd": str(cwd), "use_token": token}, indent=2),
     )
     worker = python_command(
         str(Path(__file__).resolve()), "--detached-worker", str(payload_path)
     )
-    proc = _COMMANDS.start_owned(
-        worker,
-        cwd=str(cwd),
-        env=env,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        close_fds=True,
-        creationflags=_windows_hidden_creationflags() if os.name == "nt" else 0,
-        start_new_session=os.name != "nt",
-    )
-    # The launcher alone publishes the supervisor's identity. It knows the pid
-    # at spawn; a worker that wrote these files would race readers and, on a
-    # loaded host, publish after any fixed deadline. On POSIX the new session
-    # makes the worker its own session leader, so its sid is its pid.
-    sid = f"windows-process-group:{proc.pid}" if os.name == "nt" else str(proc.pid)
-    _atomic_write_text(state / "sid", sid)
-    _atomic_write_text(state / "pid", str(proc.pid))
-    return proc.pid
+    with DetachedStateHandoff(
+        _REPO_ROOT, env, cwd, state / "state-use-ready.json", token
+    ) as handoff:
+        handoff.process = _COMMANDS.start_owned(
+            worker,
+            cwd=str(cwd),
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            creationflags=_windows_hidden_creationflags() if os.name == "nt" else 0,
+            start_new_session=os.name != "nt",
+        )
+        try:
+            handoff.wait_ready()
+        except RuntimeError as error:
+            if os.name == "posix" and handoff.process.returncode is not None:
+                # No redirector exists: the observed process was the actual
+                # worker, and no acknowledgement transferred this parent's use.
+                _atomic_write_text(state / "pid", str(handoff.process.pid))
+                _atomic_write_text(state / "rc", str(handoff.process.returncode or 126))
+            raise DriverError(f"detached: {error}", code=EXIT_FAIL) from error
+        pid = handoff.worker_pid
+        if pid is None:
+            raise RuntimeError("detached handoff has no acknowledged worker identity")
+        sid = f"windows-process-group:{pid}" if os.name == "nt" else str(pid)
+        _atomic_write_text(state / "sid", sid)
+        _atomic_write_text(state / "pid", str(pid))
+        return pid
 
 
 def _detached_worker_main(payload_path: Path) -> int:
@@ -168,16 +209,97 @@ def _detached_worker_main(payload_path: Path) -> int:
     command = list(payload["argv"])
     cwd = Path(payload["cwd"])
     try:
-        with (state / "run.log").open("w", encoding="utf-8", buffering=1) as log:
-            os.chdir(cwd)
-            rc = _exec_wait_rc(command, os.environ.copy(), log)
-            _atomic_write_text(state / "rc", str(rc))
-        return 0
+        env = os.environ.copy()
+        with detached_command_use(
+            _REPO_ROOT,
+            env,
+            cwd=cwd,
+            ready_path=state / "state-use-ready.json",
+            use_token=payload["use_token"],
+        ):
+            with (state / "run.log").open("w", encoding="utf-8", buffering=1) as log:
+                os.chdir(cwd)
+                rc = _exec_wait_rc(command, env, log)
     except Exception as exc:  # noqa: BLE001 - worker must record every death
         with (state / "run.log").open("a", encoding="utf-8", buffering=1) as log:
             log.write(f"detached-run: daemon crashed: {exc}\n")
-        _atomic_write_text(state / "rc", "126")
-        return 0
+        if getattr(exc, "owned_process", None) is not None:
+            # No rc may claim completion while a child wait is unresolved.
+            return 0
+        rc = 126
+    # The terminal record permits replacement of this state directory. Every
+    # owned cleanup and crash-log write must finish before that publication;
+    # this worker must never write into a later run's replacement directory.
+    _atomic_write_text(state / "rc", str(rc))
+    return 0
+
+
+@contextmanager
+def _detached_launch_admission(state: Path, *, replace: bool) -> Generator[None]:
+    """Serialize this existing name's check/replace/start; never erase unknown use."""
+    from molt.file_locks import _try_acquire_file_lock, _release_file_lock
+
+    # Outside the replaceable state tree: replacing a dead run must not replace
+    # the OS lock which excludes a competing launcher for the same name.
+    lock = _try_acquire_file_lock(state.with_name(f".{state.name}.launch.lock"))
+    if lock is None:
+        raise DriverError(f"detached-run: launch admission is busy for {state.name!r}")
+    try:
+        if state.exists():
+            rc_file = state / "rc"
+            try:
+                # Existing terminal authority: the worker writes rc only after
+                # its owned command returns. A PID alone is not this proof.
+                int(rc_file.read_text(encoding="utf-8").strip())
+            except FileNotFoundError:
+                try:
+                    payload = json.loads(
+                        (state / "worker.json").read_text(encoding="utf-8")
+                    )
+                    token = payload["use_token"]
+                    if not isinstance(token, str):
+                        raise ValueError("detached use token is not text")
+                    pid = detached_worker_pid(state / "state-use-ready.json", token)
+                    if pid is None:
+                        raise ValueError("no acknowledged worker")
+                    observation = probe_pid(pid)
+                    if observation["alive"]:
+                        raise DriverError(
+                            f"detached-run: {state.name!r} is already RUNNING (pid {pid}). "
+                            "This driver NEVER kills - wait or use a new --name."
+                        )
+                    if observation["alive"] is None:
+                        raise ValueError("worker death is not established")
+                except DriverError:
+                    raise
+                except (
+                    OSError,
+                    ValueError,
+                    KeyError,
+                    TypeError,
+                    RuntimeError,
+                ) as error:
+                    raise DriverError(
+                        f"detached-run: state for {state.name!r} is INCOMPLETE or "
+                        "unresolved; no terminal result or acknowledged dead worker "
+                        "permits replacement. Preserve this state and use a new --name."
+                    ) from error
+            except (OSError, ValueError) as error:
+                raise DriverError(
+                    f"detached-run: terminal state for {state.name!r} is unreadable; "
+                    "preserve it and use a new --name."
+                ) from error
+            if not replace:
+                raise DriverError(
+                    f"detached-run: state for {state.name!r} already exists at "
+                    f"{state} (finished or died). Pass --replace to clear DEAD "
+                    "state and respawn."
+                )
+            shutil.rmtree(state)
+        state.mkdir(parents=True, exist_ok=False)
+        yield
+    finally:
+        _release_file_lock(lock)
 
 
 def cmd_detached_run(args: argparse.Namespace) -> int:
@@ -187,66 +309,52 @@ def cmd_detached_run(args: argparse.Namespace) -> int:
     if not command:
         raise DriverError("detached-run: give the command after `--`", code=EXIT_USAGE)
     state = _detached_state_dir(args.name, args.state_dir)
-    pid_f, rc_f = state / "pid", state / "rc"
-    if pid_f.exists():
-        old_pid = int(pid_f.read_text(encoding="utf-8").strip() or "0")
-        if old_pid and pid_alive(old_pid) and not rc_f.exists():
+    with _detached_launch_admission(state, replace=args.replace):
+        cwd = Path(args.cwd).resolve() if args.cwd else Path.cwd()
+        if not cwd.is_dir():
             raise DriverError(
-                f"detached-run: {args.name!r} is already RUNNING (pid {old_pid}). "
-                "This driver NEVER kills - wait, detached-verify it, or use a "
-                "new --name."
+                f"detached-run: --cwd {cwd} is not a directory", code=EXIT_USAGE
             )
-        if not args.replace:
-            raise DriverError(
-                f"detached-run: state for {args.name!r} already exists at "
-                f"{state} (finished or died). Pass --replace to clear DEAD "
-                "state and respawn."
-            )
-        shutil.rmtree(state)
-    state.mkdir(parents=True, exist_ok=True)
-    cwd = Path(args.cwd).resolve() if args.cwd else Path.cwd()
-    if not cwd.is_dir():
-        raise DriverError(
-            f"detached-run: --cwd {cwd} is not a directory", code=EXIT_USAGE
+        env = dict(os.environ)
+        # Unbuffered IO so a group-kill cannot eat block-buffered progress (the
+        # empty-log signature that made hazard 11 undiagnosable).
+        env["PYTHONUNBUFFERED"] = "1"
+        for kv in args.env or []:
+            key, sep, value = kv.partition("=")
+            if not sep:
+                raise DriverError(
+                    f"detached-run: --env needs K=V, got {kv!r}", code=EXIT_USAGE
+                )
+            env[key] = value
+        _atomic_write_text(
+            state / "cmd.json",
+            json.dumps(
+                {
+                    "argv": command,
+                    "cwd": str(cwd),
+                    "start_unix": time.time(),
+                    "env_overrides": list(args.env or []),
+                },
+                indent=2,
+            ),
         )
-    env = dict(os.environ)
-    # Unbuffered IO so a group-kill cannot eat block-buffered progress (the
-    # empty-log signature that made hazard 11 undiagnosable).
-    env["PYTHONUNBUFFERED"] = "1"
-    for kv in args.env or []:
-        key, sep, value = kv.partition("=")
-        if not sep:
-            raise DriverError(
-                f"detached-run: --env needs K=V, got {kv!r}", code=EXIT_USAGE
-            )
-        env[key] = value
-    _atomic_write_text(
-        state / "cmd.json",
-        json.dumps(
-            {
-                "argv": command,
-                "cwd": str(cwd),
-                "start_unix": time.time(),
-                "env_overrides": list(args.env or []),
-            },
-            indent=2,
-        ),
-    )
-    daemon_pid = _detached_daemonize(state, command, cwd, env)
-    _ok(f"detached {args.name!r} spawned: pid {daemon_pid}")
-    _say(f"    state: {state}")
-    _say(f"    log:   {state / 'run.log'}")
-    _say("    REQUIRED next step, in a LATER tool call (teardown of THIS call")
-    _say("    is exactly what hazard 11 is about):")
-    _say(
-        f"      python3 tools/molt_dev.py detached-verify --name {args.name}"
-        f" --min-age-s {args.verify_min_age_hint}"
-    )
-    if args.json:
-        print(
-            json.dumps({"name": args.name, "pid": daemon_pid, "state_dir": str(state)})
+        daemon_pid = _detached_daemonize(state, command, cwd, env)
+        _ok(f"detached {args.name!r} spawned: pid {daemon_pid}")
+        _say(f"    state: {state}")
+        _say(f"    log:   {state / 'run.log'}")
+        _say("    REQUIRED next step, in a LATER tool call (teardown of THIS call")
+        _say("    is exactly what hazard 11 is about):")
+        _say(
+            f"      python3 tools/molt_dev.py detached-verify --name {args.name}"
+            f" --min-age-s {args.verify_min_age_hint}"
         )
-    return EXIT_OK
+        if args.json:
+            print(
+                json.dumps(
+                    {"name": args.name, "pid": daemon_pid, "state_dir": str(state)}
+                )
+            )
+        return EXIT_OK
 
 
 def cmd_detached_verify(args: argparse.Namespace) -> int:
@@ -277,7 +385,14 @@ def cmd_detached_verify(args: argparse.Namespace) -> int:
             return EXIT_OK
         _fail(f"detached {args.name!r}: DONE rc={rc} (log {result['log_size']}B)")
         return EXIT_FAIL
-    if pid_alive(pid):
+    observation = probe_pid(pid)
+    if observation["alive"] is None:
+        result["status"], result["detail"] = "unknown", observation["detail"]
+        if args.json:
+            print(json.dumps(result))
+        _fail(f"detached {args.name!r}: UNKNOWN - {observation['detail']}")
+        return EXIT_FAIL
+    if observation["alive"]:
         if age_s < args.min_age_s:
             result["status"] = "too-young"
             if args.json:

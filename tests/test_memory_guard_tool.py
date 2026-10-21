@@ -1042,14 +1042,22 @@ def _use_real_scratch(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def _guarded_pass(state_root: Path) -> memory_guard.GuardResult:
+def _guarded_pass(
+    state_root: Path, environment=None, *, cwd=None, logical_cwd=None, text=True
+) -> memory_guard.GuardResult:
     return memory_guard.run_guarded(
         [sys.executable, "-c", "pass"],
         max_rss_kb=512 * 1024,
         max_total_rss_kb=1024 * 1024,
         poll_interval=0.01,
         child_rlimit_kb=None,
-        env={**os.environ, "MOLT_MEMORY_GUARD_STATE_ROOT": str(state_root)},
+        cwd=cwd,
+        logical_cwd=logical_cwd,
+        text=text,
+        env={
+            **(os.environ if environment is None else environment),
+            "MOLT_MEMORY_GUARD_STATE_ROOT": str(state_root),
+        },
     )
 
 
@@ -1083,12 +1091,15 @@ def test_a_guarded_run_issues_no_fsync(
     assert flushes == []
 
 
+@pytest.mark.parametrize("text", [False, True])
 def test_completed_guard_retires_its_marker_lock_and_scratch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: bool
 ) -> None:
     _use_real_scratch(monkeypatch)
     state_root = tmp_path / "memory_guard"
-    assert _guarded_pass(state_root).returncode == 0
+    environment, roots = _managed_guard_use_environment(tmp_path)
+    assert _guarded_pass(state_root, environment, text=text).returncode == 0
+    _assert_guard_use_retirement(roots, True)
     assert list((state_root / "active").iterdir()) == []
     (retired,) = (state_root / "retired").glob("guard-*.json")
     payload = json.loads(retired.read_text(encoding="utf-8"))
@@ -1103,20 +1114,74 @@ def test_completed_guard_retires_its_marker_lock_and_scratch(
     assert generations == []
 
 
+@pytest.mark.parametrize("relocated", [False, True])
 def test_unproven_closure_keeps_the_completed_marker_active(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, relocated: bool
 ) -> None:
+    import atexit
+    import gc
+    import weakref
+
     proven = memory_guard._temporary_artifact_descendant_closure
+    environment, roots = _managed_guard_use_environment(tmp_path)
+    logical = tmp_path / "original"
+    physical = tmp_path / "controller"
+    logical.mkdir()
+    physical.mkdir()
+    if relocated:
+        environment["CARGO_TARGET_DIR"] = os.path.relpath(roots[1], logical)
+    callbacks = []
+    observed_closed = []
+
+    def register(callback):
+        callbacks.append(callback)
+        return atexit.register(callback)
+
+    def unregister(callback):
+        if callback in callbacks:
+            callbacks.remove(callback)
+        atexit.unregister(callback)
+
+    install_module_view(
+        monkeypatch,
+        "atexit",
+        atexit,
+        memory_guard,
+        register=register,
+        unregister=unregister,
+    )
 
     def unproven(**kwargs: Any) -> tuple[bool, dict[str, object]]:
         _closed, evidence = proven(**kwargs)
+        observed_closed.append(_closed)
         return False, {**evidence, "closed": False}
 
     monkeypatch.setattr(
         memory_guard, "_temporary_artifact_descendant_closure", unproven
     )
     state_root = tmp_path / "memory_guard"
-    _guarded_pass(state_root)
+    result = _guarded_pass(
+        state_root,
+        environment,
+        cwd=physical if relocated else None,
+        logical_cwd=logical if relocated else None,
+    )
+    assert not result.descendants_closed
+    del result
+    gc.collect()
+    _assert_guard_use_retirement(roots, False)
+    # Independent original closure proved this fixture child actually ended;
+    # only now may test cleanup release the deliberately retained unknown use.
+    assert observed_closed == [True]
+    assert len(callbacks) == 1
+    retained_stack = weakref.ref(callbacks[0].__self__)
+    callback = callbacks[0]
+    unregister(callback)
+    callback()
+    del callback
+    gc.collect()
+    assert retained_stack() is None
+    _assert_guard_use_retirement(roots, True)
     active = state_root / "active"
     (marker,) = active.glob("guard-*.json")
     payload = json.loads(marker.read_text(encoding="utf-8"))
@@ -1130,13 +1195,14 @@ def test_unproven_closure_keeps_the_completed_marker_active(
 def test_spawn_failure_records_that_no_child_exists(tmp_path: Path) -> None:
     state_root = tmp_path / "memory_guard"
     missing = tmp_path / "molt-no-such-command"
+    environment, roots = _managed_guard_use_environment(tmp_path)
     with pytest.raises(FileNotFoundError):
         memory_guard.run_guarded(
             [str(missing)],
             max_rss_kb=512 * 1024,
             poll_interval=0.01,
             child_rlimit_kb=None,
-            env={**os.environ, "MOLT_MEMORY_GUARD_STATE_ROOT": str(state_root)},
+            env={**environment, "MOLT_MEMORY_GUARD_STATE_ROOT": str(state_root)},
         )
     (marker,) = (state_root / "active").glob("guard-*.json")
     payload = json.loads(marker.read_text(encoding="utf-8"))
@@ -1148,6 +1214,8 @@ def test_spawn_failure_records_that_no_child_exists(tmp_path: Path) -> None:
     # Once the guard pid is gone, nothing can still hold its launch.
     observation = active_custody.observe_custody(record, {}, now_s=time.time())
     assert observation.state == "closed"
+
+    _assert_guard_use_retirement(roots, True)
 
 
 def test_exiting_guard_sweeps_dead_custody_records(
@@ -9824,3 +9892,102 @@ def test_current_test_raw_short_reads_never_admit_an_oversized_valid_prefix(
         assert record["error"] == "current_test_record_exceeds_byte_limit"
         assert bytes_read[0] == len(prefix)
         assert sum(bytes_read) == memory_guard._PYTEST_CURRENT_TEST_FILE_MAX_BYTES + 1
+
+
+def _managed_guard_use_environment(tmp_path):
+    from molt.dx import checkout_component
+    from molt.build_state_layout import build_state_root
+
+    checkout = tmp_path / "project"
+    checkout.mkdir()
+    artifact = tmp_path / "artifacts"
+    parent = artifact / "target" / "checkouts" / checkout_component(checkout)
+    session = parent / "sessions" / "reader"
+    environment = {
+        **os.environ,
+        "CARGO_TARGET_DIR": str(session),
+        "MOLT_EXT_ROOT": str(artifact),
+    }
+    control = build_state_root(
+        project_root=checkout, cargo_target=session, environment=environment
+    )
+    return environment, (parent, session, control)
+
+
+def _assert_guard_use_retirement(roots, available):
+    from molt.checkout_state import checkout_state_retirement
+
+    for root in roots:
+        with checkout_state_retirement(root) as admitted:
+            assert admitted is available, root
+
+
+@pytest.mark.parametrize("group", [False, True])
+@pytest.mark.parametrize(
+    "observation", ["live", "exited", "unknown", "denied", "lookup", "deadline", "zero"]
+)
+def test_windows_exit_observation_queries_without_signaling(
+    monkeypatch, group, observation
+):
+    from tests.process_guard_common import install_thread_module_view
+
+    now = [0.0]
+    queries = []
+
+    def query(pid):
+        assert pid == 300
+        queries.append(now[0])
+        if observation == "unknown":
+            raise OSError("native query unavailable")
+        if observation == "denied":
+            raise PermissionError("native query denied")
+        if observation == "lookup":
+            # A native-query exception is unknown even if it has this Python
+            # subclass; only the API's actual False result proves exit.
+            raise ProcessLookupError("unclassified native query error")
+        if observation == "exited":
+            return False
+        if observation == "deadline":
+            return now[0] < 0.04
+        return True
+
+    def forbidden_signal(*args, **kwargs):
+        pytest.fail("Windows liveness observation must never call os.kill/killpg")
+
+    install_thread_module_view(
+        monkeypatch,
+        "_process_model",
+        process_model,
+        process_custody,
+        is_windows_process_model=lambda: True,
+        pid_alive=query,
+    )
+    install_thread_module_view(
+        monkeypatch,
+        "os",
+        os,
+        process_custody,
+        kill=forbidden_signal,
+        killpg=forbidden_signal,
+    )
+    install_thread_module_view(
+        monkeypatch,
+        "time",
+        time,
+        process_custody,
+        monotonic=lambda: now[0],
+        sleep=lambda seconds: now.__setitem__(0, now[0] + seconds),
+    )
+    probe = (
+        process_custody.process_group_exited_or_unobservable
+        if group
+        else process_custody._pid_exited_or_unobservable
+    )
+    closed = probe(300, grace=0.0 if observation == "zero" else 0.04)
+    assert closed is (observation in {"exited", "deadline"})
+    if observation == "zero":
+        assert queries == []
+    elif observation == "deadline":
+        assert queries[-1] == 0.04
+    else:
+        assert queries

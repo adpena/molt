@@ -34,12 +34,15 @@ process-tree custody.
 from __future__ import annotations
 
 import argparse
+import atexit
+from contextlib import ExitStack
 from dataclasses import asdict
 import hashlib
 import json
 import os
 import shutil
 import statistics
+import subprocess
 import sys
 import tempfile
 import time
@@ -173,7 +176,7 @@ def _output_text(value: object) -> str:
 
 def _run_completed(
     cmd: list[str],
-    env: dict[str, str],
+    env: Mapping[str, str],
     cwd: Path,
     *,
     progress_label: str | None = None,
@@ -221,7 +224,7 @@ def _outer_memory_guard_reuse_enabled(env: Mapping[str, str]) -> bool:
 
 def _run_completed_inside_active_guard(
     cmd: list[str],
-    env: dict[str, str],
+    env: Mapping[str, str],
     cwd: Path,
     *,
     progress_label: str | None = None,
@@ -246,58 +249,92 @@ def _run_completed_inside_active_guard(
         else None
     )
     next_keepalive = start + interval if interval is not None else None
-    with (
-        tempfile.TemporaryFile(
-            mode="w+t",
-            encoding="utf-8",
-            errors="replace",
-        ) as stdout_tmp,
-        tempfile.TemporaryFile(
-            mode="w+t",
-            encoding="utf-8",
-            errors="replace",
-        ) as stderr_tmp,
-    ):
-        proc = _COMMANDS.start_owned(
-            cmd,
-            cwd=cwd,
-            env=env,
-            stdout=stdout_tmp,
-            stderr=stderr_tmp,
-            text=True,
+    from molt.checkout_state import checkout_state_command_roots, checkout_state_use
+
+    use = ExitStack()
+    proc: subprocess.Popen[str] | None = None
+
+    def close_use() -> None:
+        if proc is not None and proc.poll() is None:
+            try:
+                _COMMANDS.wait_owned(proc, timeout=1.0, terminate_timeout=1.0)
+            except subprocess.TimeoutExpired:
+                if proc.poll() is None:
+                    raise
+        use.close()
+        atexit.unregister(close_use)
+
+    # Retain the lock owner even if interrupted streaming and failed cleanup
+    # outlive this function's exception traceback. No callback means no child.
+    atexit.register(close_use)
+    primary_error: BaseException | None = None
+    try:
+        use.enter_context(
+            checkout_state_use(checkout_state_command_roots(REPO_ROOT, env, cwd=cwd))
         )
-        while proc.poll() is None:
-            now = _now()
-            if next_keepalive is not None and now >= next_keepalive:
-                elapsed = int(now - start)
-                print(
-                    (
-                        f"{progress_label}: still running elapsed={elapsed}s "
-                        f"timeout=unbounded pid={proc.pid}"
-                    ),
-                    flush=True,
-                )
-                next_keepalive = now + interval  # type: ignore[operator]
-            time.sleep(0.1)
-        elapsed = _now() - start
-        stdout_tmp.seek(0)
-        stderr_tmp.seek(0)
-        child_stdout = stdout_tmp.read()
-        child_stderr = stderr_tmp.read()
-        completed = harness_memory_guard.GuardedCompletedProcess(
-            cmd,
-            proc.returncode,
-            child_stdout,
-            child_stderr,
-            elapsed_s=elapsed,
-            child_stderr=child_stderr,
-        )
+        with (
+            tempfile.TemporaryFile(
+                mode="w+t",
+                encoding="utf-8",
+                errors="replace",
+            ) as stdout_tmp,
+            tempfile.TemporaryFile(
+                mode="w+t",
+                encoding="utf-8",
+                errors="replace",
+            ) as stderr_tmp,
+        ):
+            proc = _COMMANDS.start_owned(
+                cmd,
+                cwd=cwd,
+                env=env,
+                stdout=stdout_tmp,
+                stderr=stderr_tmp,
+                text=True,
+            )
+            while proc.poll() is None:
+                now = _now()
+                if next_keepalive is not None and now >= next_keepalive:
+                    elapsed = int(now - start)
+                    print(
+                        (
+                            f"{progress_label}: still running elapsed={elapsed}s "
+                            f"timeout=unbounded pid={proc.pid}"
+                        ),
+                        flush=True,
+                    )
+                    assert interval is not None
+                    next_keepalive = now + interval
+                time.sleep(0.1)
+            elapsed = _now() - start
+            stdout_tmp.seek(0)
+            stderr_tmp.seek(0)
+            child_stdout = stdout_tmp.read()
+            child_stderr = stderr_tmp.read()
+            completed = harness_memory_guard.GuardedCompletedProcess(
+                cmd,
+                proc.returncode,
+                child_stdout,
+                child_stderr,
+                elapsed_s=elapsed,
+                child_stderr=child_stderr,
+            )
+    except BaseException as error:
+        primary_error = error
+        raise
+    finally:
+        try:
+            close_use()
+        except BaseException as cleanup_error:
+            if primary_error is None:
+                raise
+            primary_error.add_note(f"child cleanup failed: {cleanup_error!r}")
     return completed, elapsed
 
 
 def _run(
     cmd: list[str],
-    env: dict[str, str],
+    env: Mapping[str, str],
     cwd: Path,
     *,
     progress_label: str | None = None,

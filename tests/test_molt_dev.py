@@ -58,6 +58,7 @@ import venv
 from pathlib import Path
 from tests.process_guard_common import (
     install_module_os_view,
+    install_module_view,
     run_guarded_test_process,
 )
 
@@ -1491,6 +1492,7 @@ def test_cleanup_imports_nothing_after_it_removes_the_worktree(
     ext.mkdir()
     target, uv_environment = _shared_checkout_state(ext, wt)
     code = f"""
+import os
 import sys
 from pathlib import Path
 sys.path[:0] = [{str(REPO_ROOT / "src")!r}, {str(REPO_ROOT)!r}]
@@ -1521,13 +1523,18 @@ def run(command, **kwargs):
 
 molt_dev_retire._run_fast_captured_command = run
 wt = Path(sys.argv[1])
+if sys.argv[2] == "inside":
+    os.chdir(wt)
+    assert Path.cwd() == wt
 sys.exit(molt_dev_retire.cleanup_worktree(
     drv.Git(wt), wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=None
 ))
 """
     completed = run_guarded_test_process(
-        [sys.executable, "-c", code, str(wt)],
-        cwd=wt if cwd == "inside" else tmp_path,
+        [sys.executable, "-c", code, str(wt), cwd],
+        # The actual worker starts inside when selected; its redirector and
+        # guard must outlive removal and therefore launch from stable scratch.
+        cwd=tmp_path,
         env={**os.environ, "MOLT_EXT_ROOT": str(ext)},
         timeout=180,
     )
@@ -1564,6 +1571,154 @@ def test_failed_worktree_removal_keeps_the_checkouts_state(
     # The roots were bound while the checkout existed, so a later removal of
     # the checkout lets the disk guard reclaim them.
     assert checkout_state.read_checkout_owner(target).path == wt.resolve()
+
+
+@pytest.mark.parametrize("retirement", ["cleanup", "drift-prune"])
+@pytest.mark.parametrize("selection", ["foreign-managed", "caller-owned"])
+@pytest.mark.parametrize("removal_succeeds", [False, True])
+def test_retirement_binds_complete_checkout_inventory_independent_of_caller_selection(
+    drv,
+    origin_and_clone,
+    tmp_path,
+    monkeypatch,
+    retirement,
+    selection,
+    removal_succeeds,
+):
+    from molt import checkout_state
+    from molt.build_state_layout import build_state_root
+    from tools import drift_harvest
+
+    origin, _work = origin_and_clone
+    wt = _worktree_off(origin, tmp_path, "wt_retirement_inventory")
+    main = tmp_path / "mainclone"
+    ext = tmp_path / "artifacts"
+    ext.mkdir()
+    target, uv_environment = _shared_checkout_state(ext, wt)
+    session = target / "sessions" / "idle-session"
+    session.mkdir(parents=True)
+    (session / "payload.bin").write_bytes(b"session payload")
+    target_control = build_state_root(
+        project_root=wt, cargo_target=target, environment={"MOLT_EXT_ROOT": str(ext)}
+    )
+    session_control = build_state_root(
+        project_root=wt, cargo_target=session, environment={"MOLT_EXT_ROOT": str(ext)}
+    )
+    for control in (target_control, session_control):
+        control.mkdir(parents=True)
+        (control / "payload.bin").write_bytes(b"control payload")
+
+    foreign_target, foreign_uv = _shared_checkout_state(ext, main)
+    foreign_control = build_state_root(
+        project_root=main,
+        cargo_target=foreign_target,
+        environment={"MOLT_EXT_ROOT": str(ext)},
+    )
+    foreign_control.mkdir(parents=True)
+    (foreign_control / "payload.bin").write_bytes(b"foreign control")
+    with checkout_state.checkout_state_use(
+        (
+            (foreign_target, checkout_state.CheckoutOwner(main, "cargo-target")),
+            (foreign_uv, checkout_state.CheckoutOwner(main, "uv-environment")),
+            (
+                foreign_control,
+                checkout_state.CheckoutOwner(foreign_target, "build-control"),
+            ),
+        )
+    ):
+        pass
+    operator_target = tmp_path / "caller-owned-output"
+    operator_target.mkdir()
+    (operator_target / "payload.bin").write_bytes(b"caller owned")
+    selected_target = (
+        foreign_target if selection == "foreign-managed" else operator_target
+    )
+    environment = ProcessEnvironment(os.environ).updated(
+        {
+            "MOLT_EXT_ROOT": str(ext),
+            "CARGO_TARGET_DIR": str(selected_target),
+            "UV_PROJECT_ENVIRONMENT": str(foreign_uv),
+            "MOLT_BUILD_STATE_DIR": str(foreign_control),
+            "MOLT_SESSION_ID": "another-checkouts-session",
+        }
+    )
+    for name in (
+        "MOLT_EXT_ROOT",
+        "CARGO_TARGET_DIR",
+        "UV_PROJECT_ENVIRONMENT",
+        "MOLT_BUILD_STATE_DIR",
+        "MOLT_SESSION_ID",
+    ):
+        monkeypatch.setenv(name, environment[name])
+
+    def foreign_bytes():
+        return {
+            str(path): path.read_bytes()
+            for root in (foreign_target, foreign_uv, foreign_control, operator_target)
+            for path in root.rglob("*")
+            if path.is_file()
+        }
+
+    before = foreign_bytes()
+    if retirement == "cleanup":
+        real = molt_dev_retire._run_fast_captured_command
+
+        def remove(command, **kwargs):
+            if not removal_succeeds and command[3:5] == ["worktree", "remove"]:
+                return subprocess.CompletedProcess(
+                    command, 1, "", "independent refusal"
+                )
+            return real(command, **kwargs)
+
+        monkeypatch.setattr(molt_dev_retire, "_run_fast_captured_command", remove)
+        rc = molt_dev_retire.cleanup_worktree(
+            drv.Git(wt), wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=None
+        )
+        assert rc == (drv.EXIT_OK if removal_succeeds else drv.EXIT_FAIL)
+    else:
+        monkeypatch.setattr(drift_harvest, "REPO_ROOT", main)
+        real = drift_harvest._git
+
+        def remove(args, **kwargs):
+            if not removal_succeeds and args[:2] == ["worktree", "remove"]:
+                return subprocess.CompletedProcess(args, 1, "", "independent refusal")
+            return real(args, **kwargs)
+
+        monkeypatch.setattr(drift_harvest, "_git", remove)
+        monkeypatch.setattr(
+            drift_harvest.sys,
+            "argv",
+            [
+                "drift_harvest.py",
+                "--prune",
+                "--no-fetch",
+                "--fresh-hours",
+                "0",
+                "--now",
+                str(time.time() + 3600),
+                "--bundle",
+                str(tmp_path / "signal.bundle"),
+            ],
+        )
+        assert drift_harvest.main() == 0
+
+    assert wt.exists() is not removal_succeeds
+    roots = {
+        target: (str(wt.resolve()), "cargo-target"),
+        session: (str(wt.resolve()), "cargo-target"),
+        uv_environment: (str(wt.resolve()), "uv-environment"),
+        target_control: (str(target.resolve()), "build-control"),
+        session_control: (str(session.resolve()), "build-control"),
+    }
+    for root, (owner, kind) in roots.items():
+        assert root.exists() is not removal_succeeds
+        if not removal_succeeds:
+            assert json.loads((root / ".molt-state-owner.json").read_text()) == {
+                "schema": "molt.state-root-owner.v1",
+                "owner": owner,
+                "kind": kind,
+            }
+    assert foreign_bytes() == before
 
 
 def test_cleanup_refuses_unpushed(drv, origin_and_clone, tmp_path):
@@ -2624,7 +2779,7 @@ def test_landing_commands_run_main_pinned_controller_not_the_candidate(
     assert Path(report["file"]) == (root / "tools" / "molt_dev.py").resolve()
     # It runs in the environment built from main's lock, not the caller's.
     assert Path(report["prefix"]).resolve() == (root / ".venv").resolve()
-    assert report["argv"] == [
+    expected_argv = [
         command[0],
         "--repo",
         str(work),
@@ -2634,6 +2789,9 @@ def test_landing_commands_run_main_pinned_controller_not_the_candidate(
         "--pinned-controller",
         root.name,
     ]
+    if os.name == "nt":
+        expected_argv.extend(["--controller-cwd", str(REPO_ROOT.resolve())])
+    assert report["argv"] == expected_argv
     record = json.loads((root / ".molt-controller.json").read_text(encoding="utf-8"))
     assert record == {
         "schema": "molt.integration-controller.v1",
@@ -3085,7 +3243,17 @@ def test_land_waits_for_a_real_runner_through_the_pinned_controller(
         timeout=600,
     )
 
-    assert result.returncode == molt_dev.EXIT_OK, result.stdout + result.stderr
+    runner_diagnostics = (
+        "\n".join(
+            str(path) + ":\n" + path.read_text(encoding="utf-8")
+            for path in (work / ".git/molt/landing-queue/runners").glob("*/run.log")
+        )
+        if result.returncode
+        else ""
+    )
+    assert result.returncode == molt_dev.EXIT_OK, (
+        result.stdout + result.stderr + runner_diagnostics
+    )
     assert "landed in" in result.stderr
     _git(work, "fetch", "-q", "origin")
     landed = _git(work, "show", "origin/main:queued.txt").stdout
@@ -4933,3 +5101,552 @@ toolchains = ["sdk"]
         ]
     # One union admission and one projection per distinct child selection.
     assert calls == [("rust", "sdk"), ("rust",), ("sdk",)]
+
+
+def _detached_managed_environment(tmp_path):
+    from molt.dx import checkout_component
+    from molt.build_state_layout import build_state_root
+
+    checkout = tmp_path / "project"
+    checkout.mkdir()
+    artifact = tmp_path / "artifacts"
+    parent = artifact / "target" / "checkouts" / checkout_component(checkout)
+    session = parent / "sessions" / "reader"
+    environment = {
+        **os.environ,
+        "CARGO_TARGET_DIR": str(session),
+        "MOLT_EXT_ROOT": str(artifact),
+    }
+    control = build_state_root(
+        project_root=checkout, cargo_target=session, environment=environment
+    )
+    state = tmp_path / "detached-state"
+    state.mkdir()
+    return environment, (parent, session, control), state
+
+
+def _assert_detached_retirement_binding(roots, available):
+    from molt.checkout_state import checkout_state_retirement
+
+    for root in roots:
+        with checkout_state_retirement(root) as admitted:
+            assert admitted is available, root
+
+
+def test_detached_ack_holds_idle_managed_roots_through_actual_child(tmp_path):
+    from tools import molt_dev_detached as detached
+
+    environment, roots, state = _detached_managed_environment(tmp_path)
+    child_ready, release = tmp_path / "child-ready", tmp_path / "release"
+    script = tmp_path / "child.py"
+    script.write_text(
+        "import pathlib,time\n"
+        f"pathlib.Path({str(child_ready)!r}).touch()\n"
+        f"release=pathlib.Path({str(release)!r})\n"
+        "deadline=time.monotonic()+15\n"
+        "while not release.exists() and time.monotonic()<deadline: time.sleep(.02)\n"
+        "assert release.exists(), 'test release deadline'\n",
+        encoding="utf-8",
+    )
+    pid = detached._detached_daemonize(
+        state, [sys.executable, str(script)], tmp_path, environment
+    )
+    try:
+        ready = json.loads((state / "state-use-ready.json").read_text(encoding="utf-8"))
+        assert ready["pid"] == pid
+        assert int((state / "pid").read_text()) == ready["pid"]
+        assert (state / "sid").read_text() == (
+            f"windows-process-group:{pid}" if os.name == "nt" else str(pid)
+        )
+        deadline = time.monotonic() + 10
+        while not child_ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert child_ready.exists(), (state / "run.log").read_text(encoding="utf-8")
+        # A stale activity stamp cannot stand in for the actual lifetime hold.
+        old = time.time() - 40 * 86400
+        for root in roots:
+            for path in (
+                root,
+                root / ".molt-last-use",
+                root / ".molt-state-owner.json",
+            ):
+                if path.exists():
+                    os.utime(path, (old, old))
+        _assert_detached_retirement_binding(roots, False)
+    finally:
+        release.touch()
+        deadline = time.monotonic() + 10
+        while not (state / "rc").exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+    assert (state / "rc").read_text(encoding="utf-8") == "0"
+    # rc is written before the worker's outer use scope closes.
+    deadline = time.monotonic() + 5
+    from molt.checkout_state import checkout_state_retirement
+
+    while time.monotonic() < deadline:
+        with checkout_state_retirement(roots[0]) as admitted:
+            if admitted:
+                break
+        time.sleep(0.02)
+    _assert_detached_retirement_binding(roots, True)
+
+
+def test_detached_invalid_ack_retains_parent_use_after_exception_gc(
+    tmp_path, monkeypatch
+):
+    import atexit
+    import gc
+    import weakref
+    from tools import molt_dev_detached as detached
+
+    environment, roots, state = _detached_managed_environment(tmp_path)
+    (state / "state-use-ready.json").write_text('{"stale": true}', encoding="utf-8")
+    start = detached._COMMANDS.start_owned
+    process = None
+
+    def child(self, command, **kwargs):
+        nonlocal process
+        process = start(
+            [sys.executable, "-c", "import time; time.sleep(30)"], env=environment
+        )
+        return process
+
+    monkeypatch.setattr(type(detached._COMMANDS), "start_owned", child)
+    try:
+        with pytest.raises(detached.DriverError, match="invalid use handoff") as caught:
+            detached._detached_daemonize(state, ["unused"], tmp_path, environment)
+        stack_ref = weakref.ref(caught.value.state_use)
+        handoff = caught.value.state_owner
+        assert caught.value.owned_process is process
+        del caught
+        gc.collect()
+        assert stack_ref() is not None
+        assert process is not None and process.poll() is None
+        _assert_detached_retirement_binding(roots, False)
+    finally:
+        assert process is not None
+        process.terminate()
+        process.wait(timeout=5)
+        atexit.unregister(handoff._close_at_exit)
+        handoff._close_at_exit()
+    _assert_detached_retirement_binding(roots, True)
+
+
+def test_detached_spawn_failure_releases_prelaunch_use(tmp_path, monkeypatch):
+    from tools import molt_dev_detached as detached
+
+    environment, roots, state = _detached_managed_environment(tmp_path)
+
+    def refuse(self, command, **kwargs):
+        _assert_detached_retirement_binding(roots, False)
+        raise FileNotFoundError("independent detached launch refusal")
+
+    monkeypatch.setattr(type(detached._COMMANDS), "start_owned", refuse)
+    with pytest.raises(FileNotFoundError, match="independent detached launch refusal"):
+        detached._detached_daemonize(state, ["unused"], tmp_path, environment)
+    _assert_detached_retirement_binding(roots, True)
+
+
+@pytest.mark.parametrize("completion", ["terminal", "acknowledged", "unknown"])
+def test_detached_retry_preserves_unresolved_birth_and_requires_worker_disposition(
+    drv, tmp_path, capsys, monkeypatch, completion
+):
+    from types import SimpleNamespace
+    from tools import molt_dev_detached as detached
+
+    state_root = tmp_path / "detached"
+    state = state_root / "retry"
+    release = tmp_path / "release-worker"
+    children = []
+    owner = None
+    start = detached._COMMANDS.start_owned
+    command = [sys.executable, "-c", "print('replacement completed')"]
+    args = _dr_ns(drv, "retry", state_root, command)
+
+    def launch(argv, **kwargs):
+        if children:
+            process = start(argv, **kwargs)
+        else:
+            script = (
+                "import json,os,pathlib,sys,time\n"
+                "payload=pathlib.Path(sys.argv[1]); state=payload.parent\n"
+                "token=json.loads(payload.read_text())['use_token']\n"
+                "ready=state/'state-use-ready.json'\n"
+                "pending=state/'ready.tmp'; pending.write_text('null'); os.replace(pending,ready)\n"
+                "release=pathlib.Path(sys.argv[2]); deadline=time.monotonic()+20\n"
+                "while not release.exists() and time.monotonic()<deadline: time.sleep(.01)\n"
+                "assert release.exists(), 'test release deadline'\n"
+                "mode=sys.argv[3]\n"
+                "if mode=='terminal': (state/'rc').write_text('0')\n"
+                "if mode=='acknowledged': ready.write_text(json.dumps({'schema_version':1,'pid':os.getpid(),'use_token':token}))\n"
+            )
+            process = start(
+                [
+                    sys.executable,
+                    "-I",
+                    "-S",
+                    "-c",
+                    script,
+                    str(state / "worker.json"),
+                    str(release),
+                    completion,
+                ],
+                **kwargs,
+            )
+        children.append(process)
+        return process
+
+    monkeypatch.setattr(detached, "_COMMANDS", SimpleNamespace(start_owned=launch))
+    try:
+        with pytest.raises(detached.DriverError, match="invalid use handoff") as caught:
+            detached.cmd_detached_run(args)
+        owner = caught.value.state_owner
+        assert caught.value.owned_process is children[0]
+        assert children[0].poll() is None
+        del caught
+        assert not (state / "pid").exists()
+        preserved = {
+            path.name: path.read_bytes() for path in state.iterdir() if path.is_file()
+        }
+        for replace in (False, True):
+            with pytest.raises(detached.DriverError, match="INCOMPLETE"):
+                detached.cmd_detached_run(
+                    _dr_ns(drv, "retry", state_root, command, replace=replace)
+                )
+            assert len(children) == 1 and children[0].poll() is None
+            assert {
+                path.name: path.read_bytes()
+                for path in state.iterdir()
+                if path.is_file()
+            } == preserved
+        release.touch()
+        assert children[0].wait(timeout=5) == 0
+        owner._close_at_exit()
+        if completion == "unknown":
+            # A dead launcher record does not establish the actual worker's
+            # identity or death (Windows may delegate to a different PID).
+            (state / "pid").write_text(str(children[0].pid), encoding="utf-8")
+            for replace in (False, True):
+                with pytest.raises(detached.DriverError, match="INCOMPLETE"):
+                    detached.cmd_detached_run(
+                        _dr_ns(drv, "retry", state_root, command, replace=replace)
+                    )
+            assert len(children) == 1
+        else:
+            with pytest.raises(detached.DriverError, match="--replace"):
+                detached.cmd_detached_run(args)
+            assert (
+                detached.cmd_detached_run(
+                    _dr_ns(drv, "retry", state_root, command, replace=True)
+                )
+                == detached.EXIT_OK
+            )
+            ready = json.loads((state / "state-use-ready.json").read_text())
+            assert int((state / "pid").read_text()) == ready["pid"]
+            assert _wait_done(drv, capsys, "retry", state_root)["rc"] == 0
+            assert "replacement completed" in (state / "run.log").read_text()
+    finally:
+        release.touch()
+        for process in children:
+            try:
+                process.wait(timeout=5)
+            except BaseException:
+                if process.poll() is None:
+                    process.kill()
+                process.wait(timeout=5)
+                raise
+        if owner is not None:
+            owner._close_at_exit()
+
+
+@pytest.mark.parametrize("platform", ["linux", "win32"])
+def test_probe_unknown_never_admits_replacement_or_reports_death(
+    drv, tmp_path, capsys, monkeypatch, platform
+):
+    from tools import molt_dev_detached as detached, molt_dev_probe as probe
+
+    def unknown(*args):
+        raise OSError("independent process query unavailable")
+
+    install_module_view(monkeypatch, "sys", sys, probe, platform=platform)
+    monkeypatch.setattr(probe.process_model, "pid_alive", unknown)
+    pid = os.getpid()
+    result = probe.probe_pid(pid)
+    assert result["alive"] is None and "unavailable" in result["detail"]
+    ns = _ns(drv, file=None, pid=[pid], json=True)
+    assert drv.cmd_probe(ns) == drv.EXIT_FAIL
+    assert json.loads(capsys.readouterr().out)[0]["alive"] is None
+    ns.json = False
+    assert drv.cmd_probe(ns) == drv.EXIT_FAIL
+    assert "alive=unknown" in capsys.readouterr().err
+
+    state_root = tmp_path / "detached"
+    state = state_root / "unknown"
+    state.mkdir(parents=True)
+    token = "b" * 32
+    (state / "pid").write_text(str(pid), encoding="utf-8")
+    (state / "worker.json").write_text(
+        json.dumps({"use_token": token}), encoding="utf-8"
+    )
+    (state / "state-use-ready.json").write_text(
+        json.dumps({"schema_version": 1, "pid": pid, "use_token": token}),
+        encoding="utf-8",
+    )
+    before = {p.name: p.read_bytes() for p in state.iterdir()}
+    rc, verdict = _verify_json(drv, capsys, _dv_ns(drv, "unknown", state_root))
+    assert rc == drv.EXIT_FAIL and verdict["status"] == "unknown"
+    assert "unavailable" in verdict["detail"]
+    with pytest.raises(detached.DriverError, match="INCOMPLETE"):
+        detached.cmd_detached_run(
+            _dr_ns(drv, "unknown", state_root, ["must-not-launch"], replace=True)
+        )
+    assert {p.name: p.read_bytes() for p in state.iterdir()} == before
+
+
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_detached_terminal_publication_follows_actual_child_and_owner_cleanup(
+    tmp_path, monkeypatch, cleanup_fails
+):
+    from contextlib import contextmanager
+    from tools import molt_dev_detached as detached
+
+    state = tmp_path / "worker"
+    state.mkdir()
+    marker = tmp_path / "command-finished"
+    payload = state / "worker.json"
+    payload.write_text(
+        json.dumps(
+            {
+                "argv": [
+                    sys.executable,
+                    "-B",
+                    "-c",
+                    "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('finished')",
+                    str(marker),
+                ],
+                "cwd": str(Path.cwd()),
+                "use_token": "c" * 32,
+            }
+        ),
+        encoding="utf-8",
+    )
+    real_use = detached.detached_command_use
+    observations = []
+
+    @contextmanager
+    def closing_use(*args, **kwargs):
+        with real_use(*args, **kwargs):
+            yield
+        # A parseable terminal record authorizes another caller to replace the
+        # directory. Observe its absence at the actual owner's final cleanup.
+        observations.append((marker.read_text(), (state / "rc").exists()))
+        if cleanup_fails:
+            raise OSError("independent owner cleanup failure")
+
+    monkeypatch.setattr(detached, "detached_command_use", closing_use)
+    assert detached._detached_worker_main(payload) == 0
+    assert observations == [("finished", False)]
+    assert (state / "rc").read_text() == ("126" if cleanup_fails else "0")
+    log = (state / "run.log").read_text()
+    assert ("independent owner cleanup failure" in log) is cleanup_fails
+
+
+@pytest.mark.parametrize("outcome", [0, 1])
+def test_windows_pinned_controller_preserves_logical_context_and_releases_owned_cwd(
+    origin_and_clone, tmp_path, outcome
+):
+    """The actual new pinned consumer resumes context; supervisors stay outside."""
+    origin, _main = origin_and_clone
+    wt = _worktree_off(origin, tmp_path, "wt_controller_cwd")
+    main = tmp_path / "mainclone"
+    (wt / "relative-tmp").mkdir()
+    if outcome:
+        (wt / "README.md").write_text("independent tracked edit\n", encoding="utf-8")
+    key = "c" * 32
+    cache = main / ".git" / "molt" / "controllers" / key
+    (cache / "tools").mkdir(parents=True)
+    (cache / ".molt-controller.json").write_text("{}\n", encoding="utf-8")
+    report = tmp_path / "controller-context.json"
+    state = tmp_path / "preserved-state"
+    state.write_bytes(b"independent state")
+    driver = cache / "tools" / "molt_dev.py"
+    driver.write_text(
+        f"""
+import json, os, sys, tempfile
+from pathlib import Path
+sys.path[:0] = [{str(REPO_ROOT / "src")!r}, {str(REPO_ROOT)!r}]
+from tools import molt_dev as actual
+from tools import molt_dev_controller as controller
+from tools import molt_dev_retire
+
+args = actual.build_parser().parse_args(sys.argv[1:])
+physical_cwd = Path.cwd()
+controller.resume_controller_cwd(args, driver_file=__file__)
+repo = Path(args.repo)
+assert Path.cwd() == repo
+assert args.controller_cwd is None
+assert args.marker == ["exists:unchanged-relative"]
+assert os.environ["CARGO_TARGET_DIR"] == "relative-target"
+assert os.environ["CARGO_HOME"] == "relative-cargo-home"
+assert os.environ["TMPDIR"] == "relative-tmp"
+assert os.environ["TMP"] == "relative-tmp"
+assert os.environ["TEMP"] == "relative-tmp"
+selected_temp = Path(tempfile.gettempdir())
+assert selected_temp == repo / "relative-tmp"
+# Check repository association only after the original environment context is
+# restored; this is the same existing identity owner used by command dispatch.
+common = actual._git_common_directory(repo)
+assert common is not None
+controller.verify_pinned_controller(args.pinned_controller, driver_file=__file__, common_dir=common)
+result = molt_dev_retire.cleanup_worktree(actual.Git(repo), repo, "origin/main", actual.DEFAULT_IGNORE_GLOBS, force_sha=None)
+Path({str(report)!r}).write_text(json.dumps({{
+    "physical_cwd": str(physical_cwd), "logical_cwd": str(repo),
+    "argv": sys.argv[1:], "remaining_context": args.controller_cwd,
+    "selected_temp": str(selected_temp),
+    "result": result, "repo_exists": repo.exists(),
+}}), encoding="utf-8")
+raise SystemExit(result)
+""",
+        encoding="utf-8",
+    )
+    # Isolate the process-wide cwd transition from pytest's guard threads.
+    code = f"""
+import os, sys
+from pathlib import Path
+from types import SimpleNamespace
+sys.path[:0] = [{str(REPO_ROOT / "src")!r}, {str(REPO_ROOT)!r}]
+from tools import molt_dev_controller as controller
+os.chdir({str(wt)!r})
+assert Path.cwd() == Path({str(wt)!r})
+os.environ.update(CARGO_TARGET_DIR="relative-target", CARGO_HOME="relative-cargo-home", TMPDIR="relative-tmp", TMP="relative-tmp", TEMP="relative-tmp")
+os.environ["MOLT_SOURCE_ROOT"] = os.path.relpath({str(REPO_ROOT)!r}, Path.cwd())
+# Retain the actual selected environment; do not create a second controller venv.
+controller.venv_python = lambda _: Path(sys.executable)
+real_os = controller.os
+controller.os = SimpleNamespace(name="nt", chdir=real_os.chdir, environ=real_os.environ)
+rc = controller.run_controller(controller.Controller({key!r}, Path({str(cache)!r})),
+    ["integrate", "--repo", ".", "--marker", "exists:unchanged-relative", "--no-push"], repo=Path("."))
+assert Path.cwd() == Path({str(cache)!r})
+assert rc == {outcome}
+raise SystemExit(0)
+"""
+    completed = run_guarded_test_process(
+        [sys.executable, "-I", "-c", code],
+        cwd=tmp_path,
+        env=ProcessEnvironment(os.environ),
+        timeout=120,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    observed = json.loads(report.read_text(encoding="utf-8"))
+    assert Path(observed["physical_cwd"]) == cache
+    assert Path(observed["logical_cwd"]) == wt
+    assert observed["remaining_context"] is None
+    assert Path(observed["selected_temp"]) == wt / "relative-tmp"
+    assert observed["result"] == outcome
+    assert observed["repo_exists"] is (outcome != 0)
+    assert wt.exists() is (outcome != 0)
+    assert state.read_bytes() == b"independent state"
+
+
+@pytest.mark.parametrize("command", [["integrate"], ["queue", "run"]])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "unpinned",
+        "relative",
+        "missing",
+        "missing-field",
+        "nonexistent",
+        "wrong-driver",
+        "relative-repo",
+    ],
+)
+def test_pinned_controller_context_rejects_before_command_selection(
+    tmp_path, monkeypatch, command, bad
+):
+    from tools import molt_dev_controller as controller
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("selected command or Git before admitting context")
+
+    monkeypatch.setattr(controller, "runs_from_pinned_controller", forbidden)
+    monkeypatch.setattr(molt_dev, "_git_common_directory", forbidden)
+    install_module_os_view(monkeypatch, controller, name="nt")
+    before = Path.cwd()
+    args = [*command, "--repo", "." if bad == "relative-repo" else str(tmp_path)]
+    if bad != "unpinned":
+        args.extend(["--pinned-controller", "c" * 32])
+    if bad != "missing-field":
+        args.append("--controller-cwd")
+    if bad not in {"missing", "missing-field"}:
+        args.append(
+            "relative"
+            if bad == "relative"
+            else str(tmp_path / "absent")
+            if bad == "nonexistent"
+            else str(tmp_path)
+        )
+    if bad == "missing":
+        with pytest.raises(SystemExit) as caught:
+            molt_dev.main(args)
+        assert caught.value.code == 2
+    else:
+        assert molt_dev.main(args) != 0
+    assert Path.cwd() == before
+
+
+def test_controller_parser_defers_temporary_state_selection_until_command_use(tmp_path):
+    code = f"""
+import sys, tempfile
+from pathlib import Path
+sys.path[:0] = [{str(REPO_ROOT / "src")!r}, {str(REPO_ROOT)!r}]
+def forbidden():
+    raise AssertionError("temporary selection before controller context")
+tempfile.gettempdir = forbidden
+from tools import molt_dev
+from tools import molt_dev_detached
+parser = molt_dev.build_parser()
+assert parser.parse_args(["difftest", "sample.py"]).out_dir is None
+assert parser.parse_args(["difftest", "sample.py", "--out-dir", ""]).out_dir == ""
+parser.parse_args(["integrate", "--repo", {str(tmp_path)!r}, "--dry-run"])
+parser.parse_args(["queue", "run", "--repo", {str(tmp_path)!r}])
+tempfile.gettempdir = lambda: {str(tmp_path)!r}
+assert molt_dev_detached._detached_state_dir("lazy", None) == Path({str(tmp_path)!r}) / "molt_dev_detached" / "lazy"
+print("lazy-temporary-state")
+"""
+    completed = run_guarded_test_process(
+        [sys.executable, "-I", "-c", code], cwd=tmp_path, timeout=60
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert completed.stdout.strip() == "lazy-temporary-state"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="direct POSIX interpreter startup")
+def test_detached_observed_pre_ack_death_publishes_failure_before_replacement(
+    tmp_path, monkeypatch
+):
+    from tools import molt_dev_detached as detached
+    from tools.command_execution import CommandExecutor
+
+    original = CommandExecutor.start_owned
+    children = []
+
+    def exit_before_ack(self, command, **kwargs):
+        child = original(
+            self, [sys.executable, "-I", "-S", "-c", "raise SystemExit(17)"], **kwargs
+        )
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(CommandExecutor, "start_owned", exit_before_ack)
+    state = tmp_path / "startup-state"
+    state.mkdir()
+    with pytest.raises(detached.DriverError, match="worker exited 17"):
+        detached._detached_daemonize(
+            state, [sys.executable, "-c", "pass"], tmp_path, dict(os.environ)
+        )
+    assert len(children) == 1 and children[0].poll() == 17
+    assert (state / "pid").read_text() == str(children[0].pid)
+    assert (state / "rc").read_text() == "17"
+    with detached._detached_launch_admission(state, replace=True):
+        assert list(state.iterdir()) == []

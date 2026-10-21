@@ -55,6 +55,7 @@ bind_repository_imports(__file__)
 from molt.custody_layout import BUNDLES_DIRNAME  # noqa: E402
 from molt.dx import canonical_molt_root  # noqa: E402
 from tools import lane_maturity  # noqa: E402
+from tools.molt_dev_retire import prepare_checkout_state_retirement  # noqa: E402
 
 from tools.command_execution import CommandExecutor  # noqa: E402
 
@@ -393,8 +394,11 @@ def main() -> int:
             prunable = False
         if not prunable:
             continue
+        reclaim_checkout_state = prepare_checkout_state_retirement(Path(r["path"]))
         rm = _git(["worktree", "remove", r["path"]])
         if rm.returncode == 0:
+            if reclaim_checkout_state is not None:
+                reclaim_checkout_state()
             removed += 1
             lane_maturity.complete_worktree_lanes_fail_open(
                 repo_root=REPO_ROOT, worktree=Path(r["path"])

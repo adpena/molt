@@ -1386,19 +1386,46 @@ def _dispatch_detached_runner(
         if skip_reason:
             print(skip_reason)
         return None
+
+    def record_birth(process) -> None:
+        # A Windows redirector PID does not identify the actual worker.
+        if custody._queue_process_spawn_is_windows():
+            return
+        row = state._row_by_run_id(conn, run_id)
+        if row is not None and row["status"] == "dispatched":
+            state._update_run(
+                conn,
+                run_id,
+                guard_pid=process.pid,
+                guard_identity=custody._process_identity(process.pid),
+            )
+
     try:
         pid, runner_log = custody._launch_detached_runner(
-            args, run_id=run_id, timeout=timeout
+            args, run_id=run_id, timeout=timeout, on_birth=record_birth
         )
-    except Exception:
-        state._update_run(
-            conn,
-            run_id,
-            status="failed",
-            returncode=2,
-            finished_at=state._utc_now(),
-            elapsed_s=0.0,
-        )
+    except Exception as error:
+        # After birth, the detached runner may already own or have completed
+        # this row. A handoff error cannot assign its execution outcome; the
+        # runner and existing stale-run authority retain that responsibility.
+        row = state._row_by_run_id(conn, run_id)
+        startup_returncode = getattr(error, "detached_startup_returncode", None)
+        if (
+            row is not None
+            and row["status"] == "dispatched"
+            and (
+                getattr(error, "owned_process", None) is None
+                or startup_returncode is not None
+            )
+        ):
+            state._update_run(
+                conn,
+                run_id,
+                status="failed",
+                returncode=startup_returncode or 2,
+                finished_at=state._utc_now(),
+                elapsed_s=0.0,
+            )
         raise
     row = state._row_by_run_id(conn, run_id)
     if row is not None:

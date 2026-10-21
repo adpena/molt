@@ -67,3 +67,33 @@ def test_arg_helpers_use_build_output_layout_authority_directly() -> None:
     source = inspect.getsource(arg_helpers)
     assert "cli._BUILD_PROFILE_CHOICES" not in source
     assert "from molt.cli.build_output_layout import _BUILD_PROFILE_CHOICES" in source
+
+
+def test_build_scope_owns_cached_managed_target_and_control(tmp_path, monkeypatch):
+    from molt import checkout_state, dx
+    from molt.cli import runtime_paths
+
+    source = tmp_path / "source"
+    source.mkdir()
+    ext = tmp_path / "artifacts"
+    target = dx.cargo_target_dir_for_artifact_root(ext, "reader", source_root=source)
+    target.mkdir(parents=True)
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(ext))
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(target))
+    monkeypatch.delenv("MOLT_BUILD_STATE_DIR", raising=False)
+    # Prime selectors outside the build: both cached-return paths must acquire
+    # a new per-build hold, rather than rely on selector execution/mtime.
+    assert runtime_paths._cargo_target_root(source) == target
+    control = runtime_paths._build_state_root(source)
+    control.mkdir(parents=True, exist_ok=True)
+    with build_output_layout.build_scope():
+        assert runtime_paths._cargo_target_root(source) == target
+        assert runtime_paths._build_state_root(source) == control
+        with checkout_state.checkout_state_retirement(target.parent.parent) as allowed:
+            assert allowed is False
+        with checkout_state.checkout_state_retirement(control) as allowed:
+            assert allowed is False
+    with checkout_state.checkout_state_retirement(target.parent.parent) as allowed:
+        assert allowed is True
+    with checkout_state.checkout_state_retirement(control) as allowed:
+        assert allowed is True
