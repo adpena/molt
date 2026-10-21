@@ -194,19 +194,13 @@ def _origin_seed(tmp_path_factory):
     return origin
 
 
-@pytest.fixture
-def origin_and_clone(tmp_path, _origin_seed, monkeypatch):
-    """Independent real bare origin and working clone for each integration.
-
-    Copy files, never hardlink them: tests mutate refs, hooks, config and objects.
-    Subject fetch/rebase/push operations and clone creation still use real Git.
-    """
+def _clone_origin(tmp_path, seed: Path, monkeypatch) -> tuple[Path, Path]:
     # These repositories exercise generic shell gates, not the caller's venv.
     # Interpreter-selection tests construct and select their own environments.
     for key in ("MOLT_VENV", "UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV"):
         monkeypatch.delenv(key, raising=False)
     origin = tmp_path / "origin.git"
-    clone_tree(_origin_seed, origin)
+    clone_tree(seed, origin)
     work = tmp_path / "work"
     _git(
         tmp_path,
@@ -220,6 +214,56 @@ def origin_and_clone(tmp_path, _origin_seed, monkeypatch):
         str(work),
     )
     return origin, work
+
+
+@pytest.fixture
+def origin_and_clone(tmp_path, _origin_seed, monkeypatch):
+    """Independent real bare origin and working clone for each integration.
+
+    Copy files, never hardlink them: tests mutate refs, hooks, config and objects.
+    Subject fetch/rebase/push operations and clone creation still use real Git.
+    """
+    return _clone_origin(tmp_path, _origin_seed, monkeypatch)
+
+
+def _build_driver_origin(root: Path, driver: Path) -> None:
+    """The seed history, with this checkout's driver trees committed on main."""
+    seed = root / "seed"
+    _init_repo(seed)
+    copy_driver_trees(seed, seed=driver)
+    (seed / "tools/proof_plan.toml").write_text(
+        'always = ["echo integration-policy"]\n', encoding="utf-8"
+    )
+    (seed / "README.md").write_text("seed\n", encoding="utf-8")
+    _git(seed, "add", "-A", "--", ".")
+    _git(seed, "commit", "-q", "--no-verify", "-m", "seed: main driver")
+    _git(root, "clone", "--bare", "-q", str(seed), str(root / "origin.git"))
+
+
+@pytest.fixture(scope="session")
+def _driver_origin_seed(tmp_path_factory, worker_id, driver_seed):
+    """A bare origin whose main carries the driver, built once per session.
+
+    A landing runs main's pinned driver, so a test that lands through it needs
+    the driver committed on main. Each such test copied the driver trees
+    (1,088 files, 25 MB) into its clone and committed them; the session now
+    makes that commit once and each test clones it.
+    """
+    from tests.integration_driver_fixture import shared_session_tree
+
+    root = shared_session_tree(
+        tmp_path_factory,
+        worker_id,
+        "driver-origin",
+        lambda root: _build_driver_origin(root, driver_seed),
+    )
+    return root / "origin.git"
+
+
+@pytest.fixture
+def driver_origin_and_clone(tmp_path, _driver_origin_seed, monkeypatch):
+    """`origin_and_clone` whose main already carries this checkout's driver."""
+    return _clone_origin(tmp_path, _driver_origin_seed, monkeypatch)
 
 
 def test_origin_fixture_copies_history_without_mutable_aliases(
@@ -2869,24 +2913,13 @@ def test_pinned_controller_is_reused_per_tree_and_replaced_when_main_changes(
 
 
 def test_real_driver_lands_and_retires_a_worktree_as_pinned_controller(
-    origin_and_clone, tmp_path, driver_seed
+    driver_origin_and_clone, tmp_path
 ):
-    _, work = origin_and_clone
-    copy_driver_trees(work, seed=driver_seed)
+    _, work = driver_origin_and_clone
     (work / "tools" / "proof_plan.toml").write_text(
         'always = ["echo controller-gate"]\n', encoding="utf-8"
     )
-    _git(
-        work,
-        "add",
-        "-A",
-        "--",
-        "tools",
-        "src",
-        "pyproject.toml",
-        "uv.lock",
-        ".python-version",
-    )
+    _git(work, "add", "--", "tools/proof_plan.toml")
     _git(work, "commit", "-q", "--no-verify", "-m", "main driver")
     _git(work, "push", "-q", "origin", "HEAD:main")
     lane = tmp_path / "lane"
@@ -3265,16 +3298,15 @@ def test_land_no_precheck_queues_without_running_gates(
 
 
 def test_land_waits_for_a_real_runner_through_the_pinned_controller(
-    origin_and_clone, tmp_path, driver_seed
+    driver_origin_and_clone, tmp_path
 ):
     # The production path: `land` spawns a detached runner, which hands off
     # to main's pinned driver and lands the request from the queue sandbox.
-    _, work = origin_and_clone
-    copy_driver_trees(work, seed=driver_seed)
+    _, work = driver_origin_and_clone
     (work / "tools" / "proof_plan.toml").write_text(
         'always = ["echo queue-gate"]\n', encoding="utf-8"
     )
-    _git(work, "add", "-A", "--", ".")
+    _git(work, "add", "--", "tools/proof_plan.toml")
     _git(work, "commit", "-q", "--no-verify", "-m", "main driver")
     _git(work, "push", "-q", "origin", "HEAD:main")
     lane = tmp_path / "lane"
