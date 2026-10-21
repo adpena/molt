@@ -477,7 +477,10 @@ def _run_executor_block(
         gate_seconds.append((elapsed, shown))
         if isinstance(outcome, BaseException):
             raise outcome
-        runtime.check_source()
+        # The executor observed the source after every completion; a gate
+        # that changed it reports the canonical clean-source refusal.
+        if record.get("source_tree_state_after") == "changed":
+            runtime.check_source()
         if status != "success":
             raise runtime.failure(
                 failure_message(record.get("returncode"), elapsed, shown, gate_seconds)
