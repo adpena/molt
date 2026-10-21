@@ -140,10 +140,81 @@ regression tests for developer velocity:
 ### 2.2 Repository scanner ownership and bounded work
 
 HF-35 owns repository-check cost. These are development checks; their source
-projections, process pools and regression oracles add no work to compiled guests.
-Reuse operation-local source snapshots and lexical facts. The earlier whole-tree
-Python AST memo was rejected because retaining every tree increased collector
-work and latency. No persistent scanner cache or second registry is introduced.
+projections, process pools, scan records and regression oracles add no work to
+compiled guests.
+
+**Measured cost.** `tools/molt_dev.py integrate` runs the 24 `always` commands of
+`tools/proof_plan.toml` serially, one process each. At `bac4c7416` on a Mac arm64
+host, warm, the median of three rounds was 62.4 s wall and 99.6 s CPU. Five
+per-file scanners took 37.7 s of that wall time: `structural_audit` 13.6 s,
+`check_subprocess_guard_coverage` 7.0 s, `check_ratio_direction` 6.8 s,
+`encoding_gate` 6.2 s and `check_environment_registry` 4.2 s (19.5 s CPU on eight
+workers). `generators.py check` took 16.1 s. Profiles show one root cause in every
+scanner: each run re-derives every file's facts, although almost every file is
+unchanged. `check_ratio_direction` parses 4,094 files, the subprocess audit 1,947,
+the encoding gate 1,287 and the environment scan 3,125 Python and 2,324 Rust files.
+Nothing keyed a per-file result by its inputs.
+
+**Scan records.** `tools/scan_records.py` is the one authority for content-keyed
+per-file results. A scanner names one pure per-file operation. Its result depends
+only on the file's bytes, an identity text (the repository-relative path, or
+nothing when the result ignores the path) and the scanner's code. The record key
+is SHA-256 over the identity and the bytes. The code generation digests the
+interpreter identity, the scanner's own file and every loaded first-party module.
+Publication recomputes the generation and publishes nothing when a module was
+imported or edited during the run. A record holds JSON facts, never a parse
+tree: a few integers and strings per file for most scanners, and the sites and
+function facts of each module for the environment scan (7.2 MB for 5,449 files,
+parsed in 42 ms). The rejected whole-tree AST memo retained every tree in one
+process; records retain facts across processes and keep no tree.
+
+Only command entry points open records. Library callers and tests compute
+directly, so a monkeypatched test cannot publish a result for unpatched code.
+Each consumer reads a file's bytes once and decodes them exactly as
+`Path.read_text` did, so a concurrent write cannot pair one version's key with
+another version's result. An environment-scan worker that reads a file itself
+returns the key of the bytes it read, with a JSON snapshot taken before the
+parent's helper fixpoint mutates function facts. Records unused for seven days
+expire. A replayed record is renewed after a day. Each scanner keeps four code
+generations under `<Molt cache>/repository-scan-records/`. A narrow run (one
+selected file, a fixture checkout) therefore cannot evict the tree's records, and
+a fully replayed run writes nothing. Parser `SyntaxWarning`s stay silent, so a
+replayed run prints exactly what a computed run prints.
+
+This follows [Ruff's per-file cache](https://docs.astral.sh/ruff/settings/#cache-dir),
+[Go's content-addressed build and test cache](https://pkg.go.dev/cmd/go#hdr-Build_and_test_caching),
+[Bazel's action cache](https://bazel.build/remote/caching) and
+[Cargo's fingerprints](https://doc.rust-lang.org/nightly/nightly-rustc/cargo/core/compiler/fingerprint/index.html).
+Two measured choices differ. Ruff keys a file by its metadata; records key by
+content. Reading and hashing the 57 MB of tracked Python costs about 0.3 s of CPU
+on this host, and a content key is safe to share across worktrees and cannot
+miss a same-size rewrite inside one timestamp tick. The stat-keyed
+`file-digests` store could later skip reading unchanged files. Go's test cache
+traces the files and environment a test reads; records cover only pure per-file
+operations, whose inputs are their arguments. Whole-gate tracing would repeat the
+soundness gaps (environment reads, stat probes) that rejected the HF-263
+test-result cache.
+
+**Result.** Three alternating base/new rounds of all 24 gates on the same host,
+under a competing load average of 20 to 60, with every gate passing:
+
+| Gate | Base wall / CPU (s) | Records wall / CPU (s) | Peak RSS (MB) |
+|---|---|---|---|
+| `check_ratio_direction` | 13.46 / 11.06 | 0.93 / 0.74 | 184 → 47 |
+| `check_subprocess_guard_coverage` | 9.88 / 8.41 | 0.78 / 0.69 | 160 → 40 |
+| `encoding_gate --check` | 7.94 / 6.88 | 0.40 / 0.34 | 159 → 34 |
+| `check_environment_registry --check` | 7.55 / 23.24 | 4.75 / 8.65 | 167 → 154 |
+| All 24 gates (sum of medians) | 113.3 / 131.2 | 73.7 / 90.0 | |
+
+Per-round totals were 120.5, 98.3 and 120.6 s for the base and 68.7, 79.3 and
+72.3 s with records. On a quieter host, one gate at a time, the cold and warm
+runs took 8.8 and 0.58 s for the ratio gate, 4.5 and 0.25 s for the encoding gate,
+5.2 and 0.41 s for the subprocess audit, and 5.8 s / 21 s CPU and 3.0 s / 7.2 s
+CPU for the environment scan. The base gate code run on the records tree, the
+cold records run and the warm records run print byte-identical output for all 24
+gates (generator timing lines excluded). The environment inventory's 10,511 sites
+are byte-identical between cold and warm runs. Against the base code, only the
+line numbers of sites inside the two edited gate files move.
 
 The structural patch probe groups calls by their enclosing function in one AST
 traversal, then checks each group's source order. A nested function's installer
@@ -161,8 +232,9 @@ with a serial lexer tail. One picklable per-file operation retains the same
 strict parser and error translation. Explicit first-party module edges are
 followed in deduplicated waves before the existing production/test closure runs
 in the parent. Workers return compact facts; lexical buffers remain local to a
-file. Standalone and one-worker callers use the same operation serially. No
-executor, filter, cache, registry or output schema is added. Independent external
+file. Standalone and one-worker callers use the same operation serially. The
+per-module Python and Rust facts are scan records; the writer analysis resolves
+module paths on disk, so it is computed on every run. Independent external
 module and malformed-source controls require the same diagnostics under serial
 and actual process-pool execution.
 
@@ -170,8 +242,20 @@ This follows [Ruff's per-file AST and semantic traversal](https://docs.astral.sh
 and [rustc's combined lint traversal](https://rustc-dev-guide.rust-lang.org/diagnostics/lintstore.html):
 share the input analysis while preserving each check's ownership and diagnostic
 contract. Parsed-tree scaling controls distinguish traversal cost from parsing,
-filesystem access, process startup and the complete gate. The live release
-ledger records accepted scope and outstanding audit-cost work.
+filesystem access, process startup and the complete gate.
+
+**Remaining cost.** `generators.py check` (16 s quiet) re-renders 33 generators;
+the largest re-scans every audited source with one regular expression
+(`gen_cpython_coverage`) or starts every target CPython (`gen_unicode_width`,
+`gen_stringprep_tables`). Its renders need keyed inputs, declared or runtime
+identities, before they can be replayed. `structural_audit` (13.6 s) and
+`check_generator_manifest` (3.5 s) hold per-file probes that are the next scan
+record consumers. Every gate also compiles its imports from source, because the
+canonical execution environment sets `PYTHONDONTWRITEBYTECODE` and checkouts hold
+no bytecode; a cache outside the checkout would remove 0.02 to 0.35 s per small
+gate and about 1.7 s of compilation from `generators.py check`. The integrate
+driver runs independent gates serially. The live release ledger records accepted
+scope and outstanding audit-cost work.
 
 ### 2.3 Policy projections and execution freshness
 
