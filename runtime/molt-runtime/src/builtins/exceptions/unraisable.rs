@@ -4,20 +4,9 @@ use super::raised_state::{
     RaisedSnapshot, discard_current_raised, release_raised, resolve_raised, take_raised,
 };
 use super::*;
-use crate::builtins::functions::native_callable::{NativeCallableKind, NativeCallableSpec};
-use crate::object::{ClassEdgeOwnership, object_init_class_edge_unpublished};
 use crate::{
-    alloc_property_obj, call_callable1, missing_bits, molt_get_attr_name, molt_is_callable,
-    molt_sys_stderr, object_class_bits, tuple_from_iter_bits,
+    call_callable1, molt_get_attr_name, molt_is_callable, molt_sys_stderr, object_class_bits,
 };
-
-const UNRAISABLE_FIELDS: [&str; 5] = [
-    "exc_type",
-    "exc_value",
-    "exc_traceback",
-    "err_msg",
-    "object",
-];
 
 fn try_join_text(parts: &[&str]) -> Option<String> {
     let capacity = parts
@@ -422,201 +411,51 @@ pub(crate) fn context_repr(_py: &PyToken<'_>, context_bits: u64) -> String {
     rendered
 }
 
-fn set_class_attr(_py: &PyToken<'_>, class_ptr: *mut u8, name: &str, value_bits: u64) -> bool {
-    let dict_bits = unsafe { class_dict_bits(class_ptr) };
-    let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
-        return false;
+fn build_unraisable_args_class(py: &PyToken<'_>) -> u64 {
+    use molt_cpython_abi::abi_types::{PyStructSequence_Desc, PyStructSequence_Field};
+    // CPython's private UnraisableHookArgs is an ordinary static struct
+    // sequence. Its declaration and allocation therefore use the same sealed
+    // specification, native tail and descriptors as the public C producer.
+    let mut fields = [
+        PyStructSequence_Field {
+            name: c"exc_type".as_ptr(),
+            doc: c"Exception type".as_ptr(),
+        },
+        PyStructSequence_Field {
+            name: c"exc_value".as_ptr(),
+            doc: c"Exception value".as_ptr(),
+        },
+        PyStructSequence_Field {
+            name: c"exc_traceback".as_ptr(),
+            doc: c"Exception traceback".as_ptr(),
+        },
+        PyStructSequence_Field {
+            name: c"err_msg".as_ptr(),
+            doc: c"Error message".as_ptr(),
+        },
+        PyStructSequence_Field {
+            name: c"object".as_ptr(),
+            doc: c"Object causing the exception".as_ptr(),
+        },
+        PyStructSequence_Field {
+            name: std::ptr::null(),
+            doc: std::ptr::null(),
+        },
+    ];
+    let description = PyStructSequence_Desc {
+        name: c"UnraisableHookArgs".as_ptr(),
+        doc: c"UnraisableHookArgs\n\nType used to pass arguments to sys.unraisablehook.".as_ptr(),
+        fields: fields.as_mut_ptr(),
+        n_in_sequence: (fields.len() - 1) as std::os::raw::c_int,
     };
-    if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
-        return false;
+    // The existing interpreter-local atomic cache remains the only owner;
+    // descriptor strings are copied before this stack declaration expires.
+    let class = unsafe { crate::builtins::structseq::from_c_description(py, &description, true) };
+    if exception_pending(py) || obj_from_bits(class).is_none() {
+        0
+    } else {
+        class
     }
-    let name_ptr = alloc_string(_py, name.as_bytes());
-    if name_ptr.is_null() {
-        return false;
-    }
-    let name_bits = MoltObject::from_ptr(name_ptr).bits();
-    let stored = unsafe { dict_set_in_place(_py, dict_ptr, name_bits, value_bits) };
-    dec_ref_bits(_py, name_bits);
-    stored
-}
-
-fn init_class_edge(_py: &PyToken<'_>, ptr: *mut u8, class_bits: u64) -> bool {
-    unsafe { object_init_class_edge_unpublished(_py, ptr, class_bits, ClassEdgeOwnership::Owned) }
-}
-
-fn install_readonly_field(_py: &PyToken<'_>, class_ptr: *mut u8, name: &str, getter: u64) -> bool {
-    // Property dispatch passes self explicitly, so its callback must not bind.
-    let getter_bits = crate::builtins::methods::alloc_builtin_function(_py, getter, 1);
-    if getter_bits == 0 {
-        return false;
-    }
-    let none = MoltObject::none().bits();
-    let property_ptr = alloc_property_obj(_py, getter_bits, none, none);
-    dec_ref_bits(_py, getter_bits);
-    if property_ptr.is_null() {
-        return false;
-    }
-    let property_bits = MoltObject::from_ptr(property_ptr).bits();
-    let installed = set_class_attr(_py, class_ptr, name, property_bits);
-    dec_ref_bits(_py, property_bits);
-    installed
-}
-
-fn discard_unraisable_args_class(_py: &PyToken<'_>, class_bits: u64) -> u64 {
-    molt_cpython_abi::api::errors::with_preserved_error(|| {
-        if !obj_from_bits(class_bits).is_none() {
-            // Retire constructor-owned contents before detaching identity and
-            // the new descriptor/constructor back-edges to the declaring class.
-            if let Some(ptr) = obj_from_bits(class_bits).as_ptr() {
-                unsafe { crate::object::class_storage::clear_class_runtime_contents(_py, ptr) };
-            }
-            class_break_cycles(_py, class_bits);
-            dec_ref_bits(_py, class_bits);
-        }
-    });
-    0
-}
-
-fn build_unraisable_args_class(_py: &PyToken<'_>) -> u64 {
-    let name_ptr = alloc_string(_py, b"UnraisableHookArgs");
-    if name_ptr.is_null() {
-        return 0;
-    }
-    let name_bits = MoltObject::from_ptr(name_ptr).bits();
-    let class_ptr = alloc_class_obj(_py, name_bits);
-    dec_ref_bits(_py, name_bits);
-    if class_ptr.is_null() {
-        return 0;
-    }
-    let class_bits = MoltObject::from_ptr(class_ptr).bits();
-    unsafe {
-        crate::object::class_storage::class_declare_native_slots(
-            class_ptr,
-            crate::object::class_storage::ClassSlotPolicy::default(),
-        );
-    }
-    let builtins = builtin_classes(_py);
-    if !init_class_edge(_py, class_ptr, builtins.type_obj) {
-        return discard_unraisable_args_class(_py, class_bits);
-    }
-    let _ = molt_class_set_base(class_bits, builtins.tuple);
-    if exception_pending(_py) {
-        return discard_unraisable_args_class(_py, class_bits);
-    }
-
-    let module_ptr = alloc_string(_py, b"builtins");
-    if module_ptr.is_null() {
-        return discard_unraisable_args_class(_py, class_bits);
-    }
-    let module_bits = MoltObject::from_ptr(module_ptr).bits();
-    let module_set = set_class_attr(_py, class_ptr, "__module__", module_bits);
-    dec_ref_bits(_py, module_bits);
-    if !module_set
-        || !unsafe {
-            crate::object::class_storage::ClassSemanticPolicy::static_type(false)
-                .apply(_py, class_ptr)
-        }
-        || !set_class_attr(
-            _py,
-            class_ptr,
-            "n_fields",
-            MoltObject::from_int(UNRAISABLE_FIELDS.len() as i64).bits(),
-        )
-        || !set_class_attr(
-            _py,
-            class_ptr,
-            "n_sequence_fields",
-            MoltObject::from_int(UNRAISABLE_FIELDS.len() as i64).bits(),
-        )
-        || !set_class_attr(
-            _py,
-            class_ptr,
-            "n_unnamed_fields",
-            MoltObject::from_int(0).bits(),
-        )
-    {
-        return discard_unraisable_args_class(_py, class_bits);
-    }
-
-    let none = MoltObject::none().bits();
-    let mut match_args = [none; UNRAISABLE_FIELDS.len()];
-    for (initialized, field) in UNRAISABLE_FIELDS.iter().enumerate() {
-        let ptr = alloc_string(_py, field.as_bytes());
-        if ptr.is_null() {
-            for bits in &match_args[..initialized] {
-                dec_ref_bits(_py, *bits);
-            }
-            return discard_unraisable_args_class(_py, class_bits);
-        }
-        match_args[initialized] = MoltObject::from_ptr(ptr).bits();
-    }
-    let match_args_ptr = alloc_tuple(_py, &match_args);
-    for bits in match_args {
-        dec_ref_bits(_py, bits);
-    }
-    if match_args_ptr.is_null() {
-        return discard_unraisable_args_class(_py, class_bits);
-    }
-    let match_args_bits = MoltObject::from_ptr(match_args_ptr).bits();
-    let match_args_set = set_class_attr(_py, class_ptr, "__match_args__", match_args_bits);
-    dec_ref_bits(_py, match_args_bits);
-    if !match_args_set
-        || crate::builtins::methods::builtin_func_bits_with_defaults_tuple(
-            _py,
-            NativeCallableSpec::constructor(class_bits),
-            molt_unraisable_hook_args_new as *const () as usize as u64,
-            3,
-            &[missing_bits(_py)],
-        ) == 0
-        || crate::builtins::methods::builtin_func_bits(
-            _py,
-            NativeCallableSpec::declared(
-                NativeCallableKind::MethodDescriptor,
-                class_bits,
-                "__repr__",
-            ),
-            molt_unraisable_hook_args_repr as *const () as usize as u64,
-            1,
-        ) == 0
-        || !install_readonly_field(
-            _py,
-            class_ptr,
-            "exc_type",
-            molt_unraisable_hook_args_exc_type as *const () as usize as u64,
-        )
-        || !install_readonly_field(
-            _py,
-            class_ptr,
-            "exc_value",
-            molt_unraisable_hook_args_exc_value as *const () as usize as u64,
-        )
-        || !install_readonly_field(
-            _py,
-            class_ptr,
-            "exc_traceback",
-            molt_unraisable_hook_args_exc_traceback as *const () as usize as u64,
-        )
-        || !install_readonly_field(
-            _py,
-            class_ptr,
-            "err_msg",
-            molt_unraisable_hook_args_err_msg as *const () as usize as u64,
-        )
-        || !install_readonly_field(
-            _py,
-            class_ptr,
-            "object",
-            molt_unraisable_hook_args_object as *const () as usize as u64,
-        )
-    {
-        return discard_unraisable_args_class(_py, class_bits);
-    }
-    if exception_pending(_py)
-        || unsafe { crate::object::class_finish_definition(_py, class_ptr) }.is_err()
-    {
-        return discard_unraisable_args_class(_py, class_bits);
-    }
-    class_bits
 }
 
 fn unraisable_args_class(_py: &PyToken<'_>) -> u64 {
@@ -652,215 +491,12 @@ pub extern "C" fn molt_unraisable_hook_args_is_exact(bits: u64) -> u64 {
     })
 }
 
-fn unraisable_args_field(_py: &PyToken<'_>, self_bits: u64, index: usize) -> u64 {
-    let Some(ptr) = obj_from_bits(self_bits).as_ptr() else {
-        return raise_exception::<_>(
-            _py,
-            "TypeError",
-            "UnraisableHookArgs descriptor requires an instance",
-        );
-    };
-    if !unraisable_args_is_exact(_py, self_bits) {
-        return raise_exception::<_>(
-            _py,
-            "TypeError",
-            "UnraisableHookArgs descriptor requires an instance",
-        );
-    }
-    let Some(bits) = (unsafe { crate::object::seq_access::item(ptr, index) }) else {
-        return raise_exception::<_>(_py, "RuntimeError", "invalid UnraisableHookArgs payload");
-    };
-    inc_ref_bits(_py, bits);
-    bits
-}
-
-macro_rules! unraisable_field_getter {
-    ($name:ident, $index:expr) => {
-        extern "C" fn $name(self_bits: u64) -> u64 {
-            crate::with_gil_entry_nopanic!(_py, { unraisable_args_field(_py, self_bits, $index) })
-        }
-    };
-}
-
-unraisable_field_getter!(molt_unraisable_hook_args_exc_type, 0);
-unraisable_field_getter!(molt_unraisable_hook_args_exc_value, 1);
-unraisable_field_getter!(molt_unraisable_hook_args_exc_traceback, 2);
-unraisable_field_getter!(molt_unraisable_hook_args_err_msg, 3);
-unraisable_field_getter!(molt_unraisable_hook_args_object, 4);
-
-extern "C" fn molt_unraisable_hook_args_new(
-    cls_bits: u64,
-    sequence_bits: u64,
-    fields_bits: u64,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        if cls_bits != unraisable_args_class(_py) {
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                "UnraisableHookArgs cannot be subclassed",
-            );
-        }
-        if fields_bits != missing_bits(_py) {
-            let Some(fields_ptr) = obj_from_bits(fields_bits).as_ptr() else {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "UnraisableHookArgs() takes a dict as second arg, if any",
-                );
-            };
-            if unsafe { object_type_id(fields_ptr) } != TYPE_ID_DICT {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "UnraisableHookArgs() takes a dict as second arg, if any",
-                );
-            }
-            if unsafe { crate::dict_len(fields_ptr) } != 0 {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "UnraisableHookArgs() got duplicate or unexpected field name(s)",
-                );
-            }
-        }
-        let Some(source_bits) = (unsafe { tuple_from_iter_bits(_py, sequence_bits) }) else {
-            return MoltObject::none().bits();
-        };
-        let Some(source_ptr) = obj_from_bits(source_bits).as_ptr() else {
-            return MoltObject::none().bits();
-        };
-        let fields = unsafe {
-            crate::object::seq_access::with_immutable_tuple_slice(source_ptr, |fields| {
-                if fields.len() == UNRAISABLE_FIELDS.len() {
-                    Ok([fields[0], fields[1], fields[2], fields[3], fields[4]])
-                } else {
-                    Err(fields.len())
-                }
-            })
-        }
-        .unwrap_or(Err(0));
-        let fields = match fields {
-            Ok(fields) => fields,
-            Err(actual) => {
-                dec_ref_bits(_py, source_bits);
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    &format!(
-                        "UnraisableHookArgs() takes a {}-sequence ({}-sequence given)",
-                        UNRAISABLE_FIELDS.len(),
-                        actual
-                    ),
-                );
-            }
-        };
-        // The source tuple may be the sole owner of one or more heap fields.
-        // Retain them into the new tuple before releasing the source edge.
-        let ptr = alloc_tuple(_py, &fields);
-        dec_ref_bits(_py, source_bits);
-        if ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        if !init_class_edge(_py, ptr, cls_bits) {
-            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-            return MoltObject::none().bits();
-        }
-        MoltObject::from_ptr(ptr).bits()
-    })
-}
-
-extern "C" fn molt_unraisable_hook_args_repr(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let Some(ptr) = obj_from_bits(self_bits).as_ptr() else {
-            return MoltObject::none().bits();
-        };
-        if !unraisable_args_is_exact(_py, self_bits) {
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                "UnraisableHookArgs.__repr__ requires an instance",
-            );
-        }
-        let fields = unsafe {
-            crate::object::seq_access::with_immutable_tuple_slice(ptr, |fields| {
-                (fields.len() == UNRAISABLE_FIELDS.len())
-                    .then(|| [fields[0], fields[1], fields[2], fields[3], fields[4]])
-            })
-        }
-        .flatten();
-        let Some(fields) = fields else {
-            return raise_exception::<_>(_py, "RuntimeError", "invalid UnraisableHookArgs payload");
-        };
-        let mut rendered = String::new();
-        if rendered.try_reserve_exact(96).is_err() {
-            return raise_exception::<_>(
-                _py,
-                "MemoryError",
-                "UnraisableHookArgs repr allocation failed",
-            );
-        }
-        rendered.push_str("UnraisableHookArgs(");
-        for (index, (name, bits)) in UNRAISABLE_FIELDS.iter().zip(fields).enumerate() {
-            let punctuation = if index == 0 { 1 } else { 3 };
-            let reserve = name.len().checked_add(punctuation);
-            if reserve.is_none_or(|reserve| rendered.try_reserve(reserve).is_err()) {
-                return raise_exception::<_>(
-                    _py,
-                    "MemoryError",
-                    "UnraisableHookArgs repr allocation failed",
-                );
-            }
-            if index != 0 {
-                rendered.push_str(", ");
-            }
-            rendered.push_str(name);
-            rendered.push('=');
-            let repr_bits = crate::molt_repr_from_obj(bits);
-            if exception_pending(_py) || obj_from_bits(repr_bits).is_none() {
-                if !obj_from_bits(repr_bits).is_none() {
-                    dec_ref_bits(_py, repr_bits);
-                }
-                return MoltObject::none().bits();
-            }
-            let Some(item) = string_obj_to_owned(obj_from_bits(repr_bits)) else {
-                dec_ref_bits(_py, repr_bits);
-                return raise_exception::<_>(_py, "TypeError", "__repr__ returned non-string");
-            };
-            dec_ref_bits(_py, repr_bits);
-            if rendered.try_reserve(item.len()).is_err() {
-                return raise_exception::<_>(
-                    _py,
-                    "MemoryError",
-                    "UnraisableHookArgs repr allocation failed",
-                );
-            }
-            rendered.push_str(&item);
-        }
-        rendered.push(')');
-        let out = alloc_string(_py, rendered.as_bytes());
-        if out.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(out).bits()
-        }
-    })
-}
-
 fn alloc_unraisable_hook_args(_py: &PyToken<'_>, fields: &[u64; 5]) -> u64 {
     let class_bits = unraisable_args_class(_py);
     if class_bits == 0 || obj_from_bits(class_bits).is_none() {
         return MoltObject::none().bits();
     }
-    let ptr = alloc_tuple(_py, fields);
-    if ptr.is_null() {
-        return MoltObject::none().bits();
-    }
-    if !init_class_edge(_py, ptr, class_bits) {
-        dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-        return MoltObject::none().bits();
-    }
-    MoltObject::from_ptr(ptr).bits()
+    crate::builtins::structseq::from_values(_py, class_bits, fields)
 }
 
 fn build_hook_args(
@@ -1117,7 +753,6 @@ mod tests {
                 Some(true)
             );
             assert!(isinstance_bits(_py, args_bits, builtin_classes(_py).tuple));
-            assert_eq!(unraisable_args_field(_py, args_bits, 1), fields[1]);
 
             let field_name_ptr = alloc_string(_py, b"exc_value");
             assert!(!field_name_ptr.is_null());
@@ -1183,7 +818,7 @@ mod tests {
             let repr_ptr = obj_from_bits(original_repr).as_ptr().unwrap();
             assert_eq!(
                 unsafe { object_class_bits(repr_ptr) },
-                builtin_classes(_py).method_descriptor
+                builtin_classes(_py).wrapper_descriptor
             );
             assert_eq!(
                 unsafe {
@@ -1239,7 +874,7 @@ mod tests {
             dec_ref_bits(_py, constructed_bits);
             dec_ref_bits(_py, source_bits);
 
-            let repr_bits = molt_unraisable_hook_args_repr(args_bits);
+            let repr_bits = crate::molt_repr_from_obj(args_bits);
             assert_eq!(
                 string_obj_to_owned(obj_from_bits(repr_bits)),
                 Some(
@@ -1266,7 +901,10 @@ mod tests {
                 "structured tuple fields are readonly"
             );
             clear_exception(_py);
-            assert_eq!(unraisable_args_field(_py, args_bits, 3), fields[3]);
+            let field = molt_get_attr_name(args_bits, err_name_bits);
+            assert!(!exception_pending(_py));
+            assert_eq!(field, fields[3]);
+            dec_ref_bits(_py, field);
             dec_ref_bits(_py, err_name_bits);
 
             dec_ref_bits(_py, args_bits);

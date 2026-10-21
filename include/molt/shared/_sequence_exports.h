@@ -2,6 +2,18 @@
 #ifndef MOLT_SEQUENCE_EXPORTS_H
 #define MOLT_SEQUENCE_EXPORTS_H
 
+#include "_c_api_linkage.h"
+
+PyAPI_DATA(const char * const) PyStructSequence_UnnamedField;
+extern void PyStructSequence_InitType(PyTypeObject *type, PyStructSequence_Desc *desc);
+extern int PyStructSequence_InitType2(PyTypeObject *type, PyStructSequence_Desc *desc);
+extern PyTypeObject *PyStructSequence_NewType(PyStructSequence_Desc *desc);
+extern PyObject *PyStructSequence_New(PyTypeObject *type);
+extern PyObject *PyStructSequence_GetItem(PyObject *object, Py_ssize_t index);
+extern void PyStructSequence_SetItem(PyObject *object, Py_ssize_t index, PyObject *value);
+#define PyStructSequence_GET_ITEM PyStructSequence_GetItem
+#define PyStructSequence_SET_ITEM PyStructSequence_SetItem
+
 typedef enum {
     PYGEN_RETURN = 0,
     PYGEN_ERROR = -1,

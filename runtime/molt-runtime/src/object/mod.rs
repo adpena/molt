@@ -2707,6 +2707,9 @@ unsafe fn replace_published_class_edge(
     let Some(new_bits) = (unsafe { validated_class_edge_bits(bits) }) else {
         return false;
     };
+    if !unsafe { native_instance::class_edge_fits(ptr, new_bits) } {
+        return false;
+    }
     if flags & HEADER_FLAG_SCOPED != 0
         && !obj_from_bits(new_bits)
             .as_ptr()
@@ -2770,6 +2773,9 @@ pub(crate) unsafe fn object_init_class_edge_unpublished(
     let Some(new_bits) = (unsafe { validated_class_edge_bits(bits) }) else {
         return false;
     };
+    if !unsafe { native_instance::class_edge_fits(ptr, new_bits) } {
+        return false;
+    }
     let snapshot = unsafe { object_aux_snapshot(ptr) };
     let Some(target) = (unsafe { class_edge_target(ptr, snapshot) }) else {
         return false;
@@ -5188,10 +5194,10 @@ mod tests {
     fn non_object_heap_kind_derives_finalizer_policy_from_common_class_edge() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let class_bits = crate::builtin_classes(_py).object;
+            let class_bits = crate::builtin_classes(_py).str;
             let class_ptr = crate::obj_from_bits(class_bits)
                 .as_ptr()
-                .expect("builtin object class");
+                .expect("builtin str class");
             let class_header = unsafe { super::header_from_obj_ptr(class_ptr) };
             let old_flags = unsafe { (*class_header).load_metadata_flags() };
             struct RestoreClassFlags(*mut super::MoltHeader, u32);

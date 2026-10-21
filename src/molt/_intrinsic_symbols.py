@@ -2306,6 +2306,13 @@ INTRINSIC_SIGNATURES: dict[str, tuple[str, int]] = {
     "molt_contextvars_var_repr": ("molt_contextvars_var_repr", 1),
     "molt_contextvars_token_repr": ("molt_contextvars_token_repr", 1),
     "molt_contextvars_missing_repr": ("molt_contextvars_missing_repr", 1),
+    "molt_structseq_type": ("molt_structseq_type", 8),
+    "molt_structseq_new": ("molt_structseq_new", 2),
+    "molt_pwd_module_init": ("molt_pwd_module_init", 0),
+    "molt_pwd_getpwuid": ("molt_pwd_getpwuid", 2),
+    "molt_pwd_getpwnam": ("molt_pwd_getpwnam", 2),
+    "molt_pwd_getpwall": ("molt_pwd_getpwall", 1),
+    "molt_os_stat_result_type": ("molt_os_stat_result_type", 0),
 }
 
 

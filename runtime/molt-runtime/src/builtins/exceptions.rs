@@ -392,7 +392,44 @@ pub(crate) fn raise_import_error(
     path: u64,
     name_from: u64,
 ) -> u64 {
-    let ptr = alloc_exception_bytes(py, "ImportError", message);
+    raise_structured_import_error(
+        py,
+        builtin_exception_spec("ImportError").expect("canonical ImportError schema"),
+        message,
+        name,
+        path,
+        name_from,
+    )
+}
+
+/// A module lookup failure carries the admitted Python name independently of
+/// its rendered message. Only this cold error boundary allocates metadata.
+pub(crate) fn raise_module_not_found(py: &PyToken<'_>, message: &[u8], name: u64) -> u64 {
+    raise_structured_import_error(
+        py,
+        builtin_exception_spec("ModuleNotFoundError")
+            .expect("canonical ModuleNotFoundError schema"),
+        message,
+        name,
+        MoltObject::none().bits(),
+        MoltObject::none().bits(),
+    )
+}
+
+fn raise_structured_import_error(
+    py: &PyToken<'_>,
+    kind: &BuiltinExceptionSpec,
+    message: &[u8],
+    name: u64,
+    path: u64,
+    name_from: u64,
+) -> u64 {
+    // Class preparation/exception allocation may reenter Python. These are
+    // temporary owners of the actual input objects, not diagnostic copies.
+    let name = ExceptionValue::pin(py, name);
+    let path = ExceptionValue::pin(py, path);
+    let name_from = ExceptionValue::pin(py, name_from);
+    let ptr = alloc_exception_bytes(py, kind.name(), message);
     if ptr.is_null() {
         record_emergency_memory_error(py);
         return MoltObject::none().bits();
@@ -402,9 +439,9 @@ pub(crate) fn raise_import_error(
         py,
         exception.bits(),
         &[
-            (ExceptionTypedField::ImportName, name),
-            (ExceptionTypedField::ImportPath, path),
-            (ExceptionTypedField::ImportNameFrom, name_from),
+            (ExceptionTypedField::ImportName, name.bits()),
+            (ExceptionTypedField::ImportPath, path.bits()),
+            (ExceptionTypedField::ImportNameFrom, name_from.bits()),
         ],
     ) {
         if !exception_pending(py) {

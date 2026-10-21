@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
+from sys import _struct_sequence_type, _struct_sequence_new
 
 TYPE_CHECKING = False
 if TYPE_CHECKING:
@@ -152,99 +153,47 @@ class ClockInfo:
         )
 
 
-class struct_time(tuple):
-    __slots__ = ()
+struct_time = _struct_sequence_type(
+    "struct_time",
+    (
+        "tm_year",
+        "tm_mon",
+        "tm_mday",
+        "tm_hour",
+        "tm_min",
+        "tm_sec",
+        "tm_wday",
+        "tm_yday",
+        "tm_isdst",
+        "tm_zone",
+        "tm_gmtoff",
+    ),
+    module="time",
+    visible=9,
+    constructor=3,
+    static_origin=False,
+    docs=(
+        "year, for example, 1993",
+        "month of year, range [1, 12]",
+        "day of month, range [1, 31]",
+        "hours, range [0, 23]",
+        "minutes, range [0, 59]",
+        "seconds, range [0, 61])",
+        "day of week, range [0, 6], Monday is 0",
+        "day of year, range [1, 366]",
+        "1 if summer time is in effect, 0 if not, and -1 if unknown",
+        "abbreviation of timezone name",
+        "offset from UTC in seconds",
+    ),
+    doc="The time value as returned by gmtime(), localtime(), and strptime(), and\n accepted by asctime(), mktime() and strftime().  May be considered as a\n sequence of 9 integers.\n\n Note that several fields' values are not the same as those defined by\n the C language standard for struct tm.  For example, the value of the\n field tm_year is the actual year, not year - 1900.  See individual\n fields' descriptions for details.",
+)
 
-    n_fields = 9
-    n_sequence_fields = 9
-    n_unnamed_fields = 0
-
-    def __new__(cls, seq: Any) -> "struct_time":
-        try:
-            items = tuple(seq)
-        except Exception:
-            raise TypeError("time tuple must be a 9-element sequence")
-        if len(items) != 9:
-            raise TypeError("time tuple must be a 9-element sequence")
-        values = []
-        for item in items:
-            try:
-                values.append(int(item))
-            except Exception:
-                raise TypeError("time tuple elements must be integers")
-        return tuple.__new__(cls, values)
-
-    @property
-    def tm_year(self) -> int:
-        return int(self[0])
-
-    @property
-    def tm_mon(self) -> int:
-        return int(self[1])
-
-    @property
-    def tm_mday(self) -> int:
-        return int(self[2])
-
-    @property
-    def tm_hour(self) -> int:
-        return int(self[3])
-
-    @property
-    def tm_min(self) -> int:
-        return int(self[4])
-
-    @property
-    def tm_sec(self) -> int:
-        return int(self[5])
-
-    @property
-    def tm_wday(self) -> int:
-        return int(self[6])
-
-    @property
-    def tm_yday(self) -> int:
-        return int(self[7])
-
-    @property
-    def tm_isdst(self) -> int:
-        return int(self[8])
-
-    @property
-    def tm_zone(self) -> None:
-        return None
-
-    @property
-    def tm_gmtoff(self) -> None:
-        return None
-
-    def __repr__(self) -> str:
-        return (
-            "time.struct_time(tm_year="
-            + repr(self.tm_year)
-            + ", tm_mon="
-            + repr(self.tm_mon)
-            + ", tm_mday="
-            + repr(self.tm_mday)
-            + ", tm_hour="
-            + repr(self.tm_hour)
-            + ", tm_min="
-            + repr(self.tm_min)
-            + ", tm_sec="
-            + repr(self.tm_sec)
-            + ", tm_wday="
-            + repr(self.tm_wday)
-            + ", tm_yday="
-            + repr(self.tm_yday)
-            + ", tm_isdst="
-            + repr(self.tm_isdst)
-            + ")"
-        )
+_STRUCT_TIME = struct_time
 
 
 def _coerce_time_tuple(value: Any) -> tuple[int, ...]:
     if isinstance(value, struct_time):
-        return tuple(value)
+        return value
     if isinstance(value, tuple):
         return value
     return tuple(value)
@@ -376,14 +325,14 @@ def localtime(secs: float | None = None) -> struct_time:
     if secs is None:
         _require_time_wall()
     parts = _MOLT_TIME_LOCALTIME(secs)
-    return struct_time(parts)
+    return _struct_sequence_new(_STRUCT_TIME, parts)
 
 
 def gmtime(secs: float | None = None) -> struct_time:
     if secs is None:
         _require_time_wall()
     parts = _MOLT_TIME_GMTIME(secs)
-    return struct_time(parts)
+    return _struct_sequence_new(_STRUCT_TIME, parts)
 
 
 def strftime(fmt: str, t: Any | None = None) -> str:
@@ -392,17 +341,13 @@ def strftime(fmt: str, t: Any | None = None) -> str:
         raise TypeError(f"strftime() format must be str, not {name}")
     if t is None:
         t = localtime()
-    tuple_val = _coerce_time_tuple(t)
-    if len(tuple_val) != 9:
-        raise TypeError("time tuple must be a 9-element sequence")
-    return str(_MOLT_TIME_STRFTIME(fmt, tuple_val))
+    return str(_MOLT_TIME_STRFTIME(fmt, t))
 
 
 def asctime(t: Any | None = None) -> str:
     if t is None:
         t = localtime()
-    tt = struct_time(t)
-    return str(_MOLT_TIME_ASCTIME(tuple(tt)))
+    return str(_MOLT_TIME_ASCTIME(t))
 
 
 def ctime(secs: float | None = None) -> str:
@@ -412,10 +357,7 @@ def ctime(secs: float | None = None) -> str:
 
 
 def mktime(t: Any) -> float:
-    tuple_val = _coerce_time_tuple(t)
-    if len(tuple_val) != 9:
-        raise TypeError("mktime(): illegal time tuple argument")
-    return float(_MOLT_TIME_MKTIME(tuple(tuple_val)))
+    return float(_MOLT_TIME_MKTIME(t))
 
 
 def timegm(t: Any) -> int:

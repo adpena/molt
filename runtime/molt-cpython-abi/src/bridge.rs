@@ -477,7 +477,12 @@ struct TupleAllocation {
 }
 
 impl TupleAllocation {
-    fn new(ob_refcnt: isize, ob_type: *mut PyTypeObject, len: usize) -> Option<Self> {
+    fn new(
+        ob_refcnt: isize,
+        ob_type: *mut PyTypeObject,
+        visible: usize,
+        len: usize,
+    ) -> Option<Self> {
         if len > crate::abi_types::Py_ssize_t::MAX as usize {
             unsafe {
                 crate::api::errors::PyErr_SetString(
@@ -531,7 +536,7 @@ impl TupleAllocation {
             object.as_ptr().write(crate::abi_types::PyTupleObject {
                 ob_base: crate::abi_types::PyVarObject {
                     ob_base: PyObject { ob_refcnt, ob_type },
-                    ob_size: len as crate::abi_types::Py_ssize_t,
+                    ob_size: visible as crate::abi_types::Py_ssize_t,
                 },
                 ob_item: [std::ptr::null_mut()],
             });
@@ -968,6 +973,7 @@ enum ManagedView {
     Type {
         object: ManagedTypeAllocation,
         _name: std::ffi::CString,
+        structseq: Option<crate::api::typeobj::StructSequenceTypeProjection>,
     },
     Tuple {
         allocation: TupleAllocation,
@@ -1089,12 +1095,20 @@ impl ManagedView {
                 visit(module, false);
                 visit(class, true);
             },
-            Self::Type { object, .. } => unsafe {
+            Self::Type {
+                object, structseq, ..
+            } => unsafe {
                 if detach && !type_cycle {
                     crate::api::typeobj::unregister_type_address(object.get().addr());
                 }
                 let heap = object.heap();
                 let object = object.get();
+                if !type_cycle && let Some(metadata) = structseq {
+                    if detach {
+                        (*object).tp_members = std::ptr::null_mut();
+                    }
+                    visit(metadata.owned_spec(detach), false);
+                }
                 let roots = [
                     field(&raw mut (*object).tp_dict, detach),
                     if type_cycle {
@@ -2998,8 +3012,8 @@ mod bridge_handle_tests {
     #[test]
     fn tuple_view_uses_one_exact_c_layout_allocation() {
         let len = 17;
-        let allocation =
-            TupleAllocation::new(1, std::ptr::null_mut(), len).expect("tuple sidecar allocation");
+        let allocation = TupleAllocation::new(1, std::ptr::null_mut(), len, len)
+            .expect("tuple sidecar allocation");
         let item_offset = std::mem::offset_of!(crate::abi_types::PyTupleObject, ob_item);
         let expected_size = item_offset + len * std::mem::size_of::<*mut PyObject>();
         assert_eq!(
@@ -3017,7 +3031,7 @@ mod bridge_handle_tests {
         );
         assert!(allocation.items().iter().all(|pointer| pointer.is_null()));
         for refs in [1, 2, crate::abi_types::IMMORTAL_REFCNT] {
-            let empty = TupleAllocation::new(refs, std::ptr::null_mut(), 0)
+            let empty = TupleAllocation::new(refs, std::ptr::null_mut(), 0, 0)
                 .expect("empty tuple projection allocation");
             assert_eq!(unsafe { (*empty.py_obj()).ob_refcnt }, refs);
         }

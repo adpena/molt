@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import abc as _abc
 import sys as _sys
+from sys import _struct_sequence_type, _struct_sequence_new
 import types as _types
 from _collections_abc import MutableMapping as _MutableMapping, Mapping as _Mapping
 
@@ -39,6 +40,7 @@ _MOLT_ENV_MAPPING_ITEMS_ITER = _require_intrinsic("molt_env_mapping_items_iter")
 _MOLT_ENV_PUTENV = _require_intrinsic("molt_env_putenv")
 _MOLT_ENV_UNSETENV = _require_intrinsic("molt_env_unsetenv")
 _MOLT_OS_NAME = _require_intrinsic("molt_os_name")
+_MOLT_OS_STAT_RESULT_TYPE = _require_intrinsic("molt_os_stat_result_type")
 _MOLT_PATH_EXISTS = _require_intrinsic("molt_path_exists")
 _MOLT_PATH_UNLINK = _require_intrinsic("molt_path_unlink")
 _MOLT_PATH_JOIN_MANY = _require_intrinsic("molt_path_join_many")
@@ -397,186 +399,37 @@ def _expect_splitext(value: Any) -> tuple[str, str]:
     raise RuntimeError("os splitext intrinsic returned invalid value")
 
 
-def _expect_stat_result(value: Any, intrinsic: str) -> "stat_result":
-    if not isinstance(value, (tuple, list)) or len(value) != 10:
-        raise RuntimeError(f"os {intrinsic} intrinsic returned invalid value")
-    head: list[int] = []
-    tail: list[float] = []
-    for index, field in enumerate(value):
-        if isinstance(field, bool):
-            raise RuntimeError(f"os {intrinsic} intrinsic returned invalid value")
-        if index < 7:
-            if not isinstance(field, int):
-                raise RuntimeError(f"os {intrinsic} intrinsic returned invalid value")
-            head.append(int(field))
-        else:
-            if not isinstance(field, (int, float)):
-                raise RuntimeError(f"os {intrinsic} intrinsic returned invalid value")
-            tail.append(float(field))
-    return stat_result(tuple(head) + tuple(tail))
-
-
-class stat_result(tuple):
-    __slots__ = ()
-    _SEQUENCE_FIELDS = (
-        "st_mode",
-        "st_ino",
-        "st_dev",
-        "st_nlink",
-        "st_uid",
-        "st_gid",
-        "st_size",
-        "st_atime",
-        "st_mtime",
-        "st_ctime",
-    )
-    n_fields = len(_SEQUENCE_FIELDS)
-    n_sequence_fields = len(_SEQUENCE_FIELDS)
-    n_unnamed_fields = 0
-
-    def __new__(cls, values: tuple[int | float, ...]) -> "stat_result":
-        if len(values) != len(cls._SEQUENCE_FIELDS):
-            raise TypeError("os.stat_result() takes a 10-sequence")
-        return tuple.__new__(cls, values)
-
-    def __repr__(self) -> str:
-        fields = ", ".join(
-            f"{name}={self[index]!r}"
-            for index, name in enumerate(self._SEQUENCE_FIELDS)
-        )
-        return f"os.stat_result({fields})"
-
-    @property
-    def st_mode(self) -> int:
-        return int(self[0])
-
-    @property
-    def st_ino(self) -> int:
-        return int(self[1])
-
-    @property
-    def st_dev(self) -> int:
-        return int(self[2])
-
-    @property
-    def st_nlink(self) -> int:
-        return int(self[3])
-
-    @property
-    def st_uid(self) -> int:
-        return int(self[4])
-
-    @property
-    def st_gid(self) -> int:
-        return int(self[5])
-
-    @property
-    def st_size(self) -> int:
-        return int(self[6])
-
-    @property
-    def st_atime(self) -> float:
-        return float(self[7])
-
-    @property
-    def st_mtime(self) -> float:
-        return float(self[8])
-
-    @property
-    def st_ctime(self) -> float:
-        return float(self[9])
-
-    @property
-    def st_atime_ns(self) -> int:
-        return int(self.st_atime * 1_000_000_000)
-
-    @property
-    def st_mtime_ns(self) -> int:
-        return int(self.st_mtime * 1_000_000_000)
-
-    @property
-    def st_ctime_ns(self) -> int:
-        return int(self.st_ctime * 1_000_000_000)
-
-
-class uname_result:
-    """Result type for os.uname()."""
-
-    __slots__ = ("sysname", "nodename", "release", "version", "machine")
-    n_fields = 5
-    n_sequence_fields = 5
-    n_unnamed_fields = 0
-
-    def __init__(
-        self,
-        sysname: str,
-        nodename: str,
-        release: str,
-        version: str,
-        machine: str,
-    ) -> None:
-        self.sysname = sysname
-        self.nodename = nodename
-        self.release = release
-        self.version = version
-        self.machine = machine
-
-    def __repr__(self) -> str:
-        return (
-            f"posix.uname_result(sysname={self.sysname!r}, "
-            f"nodename={self.nodename!r}, release={self.release!r}, "
-            f"version={self.version!r}, machine={self.machine!r})"
-        )
-
-    def __iter__(self):
-        yield self.sysname
-        yield self.nodename
-        yield self.release
-        yield self.version
-        yield self.machine
-
-    def __getitem__(self, index: int) -> str:
-        return (self.sysname, self.nodename, self.release, self.version, self.machine)[
-            index
-        ]
-
-    def __len__(self) -> int:
-        return 5
-
-    def __eq__(self, other: Any) -> bool:
-        if isinstance(other, uname_result):
-            return (
-                self.sysname == other.sysname
-                and self.nodename == other.nodename
-                and self.release == other.release
-                and self.version == other.version
-                and self.machine == other.machine
-            )
-        if isinstance(other, tuple):
-            return tuple(self) == other
-        return NotImplemented
-
-
-class terminal_size(tuple):
-    """Result type for os.get_terminal_size()."""
-
-    __slots__ = ()
-
-    def __new__(cls, values: tuple[int, int]) -> "terminal_size":
-        if len(values) != 2:
-            raise TypeError("terminal_size() takes a 2-sequence")
-        return tuple.__new__(cls, (int(values[0]), int(values[1])))
-
-    def __repr__(self) -> str:
-        return f"os.terminal_size(columns={self.columns}, lines={self.lines})"
-
-    @property
-    def columns(self) -> int:
-        return int(self[0])
-
-    @property
-    def lines(self) -> int:
-        return int(self[1])
+# The native producer owns the compile-target stat fields and their exact order.
+# Captured types are provider state; rebinding public module attributes cannot
+# change the result type of already initialized native producers.
+stat_result = _MOLT_OS_STAT_RESULT_TYPE()
+uname_result = _struct_sequence_type(
+    "uname_result",
+    ("sysname", "nodename", "release", "version", "machine"),
+    module=name,
+    static_origin=False,
+    docs=(
+        "operating system name",
+        "name of machine on network (implementation-defined)",
+        "operating system release",
+        "operating system version",
+        "hardware identifier",
+    ),
+    doc="uname_result: Result from os.uname().\n\nThis object may be accessed either as a tuple of\n  (sysname, nodename, release, version, machine),\nor via the attributes sysname, nodename, release, version, and machine.\n\nSee os.uname for more information.",
+)
+_UNAME_RESULT = uname_result
+terminal_size = _struct_sequence_type(
+    "terminal_size",
+    ("columns", "lines"),
+    module="os",
+    static_origin=False,
+    docs=(
+        "width of the terminal window in characters",
+        "height of the terminal window in characters",
+    ),
+    doc="A tuple of (columns, lines) for holding terminal window size",
+)
+_TERMINAL_SIZE = terminal_size
 
 
 class DirEntry:
@@ -611,9 +464,9 @@ class DirEntry:
         _require_cap("fs.read")
         if follow_symlinks:
             intrinsic = _require_os_intrinsic("molt_os_stat")
-            return _expect_stat_result(intrinsic(self.path), "stat")
+            return intrinsic(self.path)
         intrinsic = _require_os_intrinsic("molt_os_lstat")
-        return _expect_stat_result(intrinsic(self.path), "lstat")
+        return intrinsic(self.path)
 
     def inode(self) -> int:
         return self.stat(follow_symlinks=False).st_ino
@@ -1494,22 +1347,20 @@ def stat(
     path: Any, *, dir_fd: int | None = None, follow_symlinks: bool = True
 ) -> stat_result:
     if dir_fd is not None:
-        return _expect_stat_result(
-            _MOLT_OS_STAT_AT(path, dir_fd, bool(follow_symlinks)), "stat"
-        )
+        return _MOLT_OS_STAT_AT(path, dir_fd, bool(follow_symlinks))
     if bool(follow_symlinks):
-        return _expect_stat_result(_MOLT_OS_STAT(path), "stat")
-    return _expect_stat_result(_MOLT_OS_LSTAT(path), "lstat")
+        return _MOLT_OS_STAT(path)
+    return _MOLT_OS_LSTAT(path)
 
 
 def lstat(path: Any, *, dir_fd: int | None = None) -> stat_result:
     if dir_fd is not None:
-        return _expect_stat_result(_MOLT_OS_LSTAT_AT(path, dir_fd), "lstat")
-    return _expect_stat_result(_MOLT_OS_LSTAT(path), "lstat")
+        return _MOLT_OS_LSTAT_AT(path, dir_fd)
+    return _MOLT_OS_LSTAT(path)
 
 
 def fstat(fd: int) -> stat_result:
-    return _expect_stat_result(_MOLT_OS_FSTAT(fd), "fstat")
+    return _MOLT_OS_FSTAT(fd)
 
 
 def rename(
@@ -1591,16 +1442,7 @@ def umask(mask: int) -> int:
 
 def uname() -> uname_result:
     intrinsic = _require_callable_intrinsic(_MOLT_OS_UNAME, "molt_os_uname")
-    result = intrinsic()
-    if not isinstance(result, (tuple, list)) or len(result) != 5:
-        raise RuntimeError("os uname intrinsic returned invalid value")
-    return uname_result(
-        _expect_str(result[0], "uname"),
-        _expect_str(result[1], "uname"),
-        _expect_str(result[2], "uname"),
-        _expect_str(result[3], "uname"),
-        _expect_str(result[4], "uname"),
-    )
+    return _struct_sequence_new(_UNAME_RESULT, intrinsic())
 
 
 def getppid() -> int:
@@ -1821,10 +1663,7 @@ def get_terminal_size(fd: int = 1) -> terminal_size:
     intrinsic = _require_callable_intrinsic(
         _MOLT_OS_GET_TERMINAL_SIZE, "molt_os_get_terminal_size"
     )
-    result = intrinsic(fd)
-    if not isinstance(result, (tuple, list)) or len(result) != 2:
-        raise RuntimeError("os get_terminal_size intrinsic returned invalid value")
-    return terminal_size((int(result[0]), int(result[1])))
+    return _struct_sequence_new(_TERMINAL_SIZE, intrinsic(fd))
 
 
 def walk(

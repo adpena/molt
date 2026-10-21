@@ -113,7 +113,7 @@ fn assert_send_hook_result_paths(
 
 pub(crate) use capabilities::{
     capability_fix_hint, freeze_capabilities, has_capability, is_trusted, operation_allowed,
-    raise_capability_denied, require_named_operation, require_operation,
+    operation_supported_here, raise_capability_denied, require_named_operation, require_operation,
     require_operation_with_capabilities,
 };
 pub use channel::molt_chan_recv_blocking;

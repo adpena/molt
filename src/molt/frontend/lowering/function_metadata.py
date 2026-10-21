@@ -8,6 +8,7 @@ call, function, class, and module visitors.
 
 from __future__ import annotations
 
+from molt.builtin_callables import BUILTIN_FUNC_SPECS
 from molt.compiler_analysis.python_imports import normalize_stdlib_module_name
 from molt.compiler_analysis.python_call_arguments import call_form
 
@@ -23,7 +24,6 @@ from typing import TYPE_CHECKING, Any, Callable, Protocol, Sequence, TypeVar
 from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.frontend.lowering.gpu_kernel_descriptor import project_kernel_ops
 from molt.frontend._types import (
-    BUILTIN_FUNC_SPECS,
     GEN_CONTROL_SIZE,
     CodeSlotDeclaration,
     MoltOp,

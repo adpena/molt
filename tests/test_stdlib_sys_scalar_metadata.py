@@ -6,6 +6,7 @@ import types
 from pathlib import Path
 
 import pytest
+from tests.stdlib_intrinsic_registry import struct_sequence_intrinsics
 
 
 SYS_PATH = Path(__file__).resolve().parents[1] / "src/molt/stdlib/sys.py"
@@ -67,6 +68,7 @@ def _load_sys_shim(
     }
     flags.setdefault("gil", 1)
     values = {
+        **struct_sequence_intrinsics(),
         "molt_getframe": sys._getframe,
         "molt_sys_flags_payload": lambda: flags,
         "molt_sys_float_info": lambda: tuple(sys.float_info),
@@ -135,6 +137,33 @@ def test_native_bootstrap_values_survive_eager_publication(monkeypatch):
         "molt_sys_stdout",
         "molt_sys_stderr",
     }.intersection(calls)
+
+
+def test_flags_shape_matches_reference_interpreter(monkeypatch):
+    """Run on each reference minor; CPython owns its field set and values."""
+    module, _ = _load_sys_shim(monkeypatch)
+    expected = sys.flags
+    actual = module.flags
+    assert len(actual) == len(expected)
+    assert tuple(actual) == tuple(expected)
+    assert type(actual).n_fields == type(expected).n_fields
+    assert type(actual).n_sequence_fields == type(expected).n_sequence_fields
+    assert type(actual).n_unnamed_fields == type(expected).n_unnamed_fields
+    assert tuple(
+        name
+        for name, descriptor in vars(type(actual)).items()
+        if isinstance(descriptor, types.MemberDescriptorType)
+    ) == tuple(
+        name
+        for name, descriptor in vars(type(expected)).items()
+        if isinstance(descriptor, types.MemberDescriptorType)
+    )
+    for name, descriptor in vars(type(expected)).items():
+        if isinstance(descriptor, types.MemberDescriptorType):
+            value = getattr(actual, name)
+            reference = getattr(expected, name)
+            assert type(value) is type(reference), name
+            assert value == reference, name
 
 
 @pytest.mark.parametrize("name", ["maxsize", "maxunicode", "byteorder"])

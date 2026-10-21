@@ -9,6 +9,7 @@ SimpleTIRGenerator MRO via self.<method>.
 
 from __future__ import annotations
 
+from molt.builtin_callables import BUILTIN_FUNC_SPECS
 from molt.opcode_literal_payloads import integer_literal_bytes
 
 import ast
@@ -23,7 +24,6 @@ from typing import (
 from molt.frontend._types import (
     _INLINE_INT_MAX,
     _INLINE_INT_MIN,
-    BUILTIN_FUNC_SPECS,
     BUILTIN_TYPE_TAGS,
     ClassId,
     MoltOp,

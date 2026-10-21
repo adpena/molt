@@ -96,7 +96,7 @@ fn operation_platform() -> &'static str {
 }
 
 #[inline]
-fn operation_supported_here(_py: &PyToken<'_>, operation: OperationId) -> bool {
+pub(crate) fn operation_supported_here(_py: &PyToken<'_>, operation: OperationId) -> bool {
     let target = runtime_state(_py)
         .execution_target
         .get()

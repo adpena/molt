@@ -354,6 +354,9 @@ class OperationId(StrEnum):
     IO_OPEN_READWRITE = "io.open.readwrite"
     PATH_MAKEDIRS = "path.makedirs"
     MULTIPROCESSING_SPAWN = "multiprocessing.spawn"
+    PWD_GETPWUID = "pwd.getpwuid"
+    PWD_GETPWNAM = "pwd.getpwnam"
+    PWD_GETPWALL = "pwd.getpwall"
 
 
 OPERATION_CAPABILITIES: Final[Mapping[OperationId, tuple[CapabilityId, ...]]] = (
@@ -667,6 +670,9 @@ OPERATION_CAPABILITIES: Final[Mapping[OperationId, tuple[CapabilityId, ...]]] = 
                 CapabilityId.PROCESS_EXEC,
                 CapabilityId.ENV_READ,
             ),
+            OperationId.PWD_GETPWUID: (CapabilityId.FS_READ,),
+            OperationId.PWD_GETPWNAM: (CapabilityId.FS_READ,),
+            OperationId.PWD_GETPWALL: (CapabilityId.FS_READ,),
         }
     )
 )
@@ -713,6 +719,9 @@ OPERATION_TARGETS: Final[Mapping[OperationId, tuple[str, ...]]] = MappingProxyTy
         OperationId.PATHLIB_GROUP: ("native",),
         OperationId.CONCURRENT_THREADPOOL_DEFAULT: ("native",),
         OperationId.CONCURRENT_PROCESSPOOL_DEFAULT: ("native",),
+        OperationId.PWD_GETPWUID: ("native",),
+        OperationId.PWD_GETPWNAM: ("native",),
+        OperationId.PWD_GETPWALL: ("native",),
     }
 )
 OPERATION_PLATFORMS: Final[Mapping[OperationId, tuple[str, ...]]] = MappingProxyType(
@@ -741,6 +750,9 @@ OPERATION_PLATFORMS: Final[Mapping[OperationId, tuple[str, ...]]] = MappingProxy
         OperationId.OS_SENDFILE: ("linux", "macos"),
         OperationId.PATHLIB_OWNER: ("linux", "macos"),
         OperationId.PATHLIB_GROUP: ("linux", "macos"),
+        OperationId.PWD_GETPWUID: ("linux", "macos"),
+        OperationId.PWD_GETPWNAM: ("linux", "macos"),
+        OperationId.PWD_GETPWALL: ("linux", "macos"),
     }
 )
 OPERATION_ARCHITECTURES: Final[Mapping[OperationId, tuple[str, ...]]] = (

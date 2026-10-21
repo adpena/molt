@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import stat
 import tempfile
+from pathlib import Path
 
 
 root = tempfile.mkdtemp(prefix="molt_os_stat_ops_")
@@ -91,6 +92,64 @@ try:
                 print("link_flavor", type(target).__name__, target)
         finally:
             os.unlink(link)
+
+    # The visible tuple stores integral seconds; the attribute and ns values
+    # are independent native fields. The chosen ns values reject float-derived
+    # reconstruction while remaining representable by common filesystems.
+    stamp = 1_700_000_000_123_456_789
+    os.utime(initial, ns=(stamp, stamp + 123_456_789))
+    precise = os.stat(initial)
+    with open(initial, "rb") as handle:
+        descriptor = os.fstat(handle.fileno())
+    print(
+        "stat_time_coordinates",
+        isinstance(precise[7], int),
+        isinstance(precise.st_atime, float),
+        precise[7] == precise.st_atime_ns // 1_000_000_000,
+        precise[8] == precise.st_mtime_ns // 1_000_000_000,
+    )
+    print(
+        "stat_ns_native_precision",
+        precise.st_atime_ns == stamp,
+        precise.st_mtime_ns == stamp + 123_456_789,
+    )
+    print(
+        "stat_same_snapshot",
+        precise.st_atime_ns == descriptor.st_atime_ns,
+        precise.st_mtime_ns == descriptor.st_mtime_ns,
+        precise.st_ino == descriptor.st_ino,
+        precise.st_dev == descriptor.st_dev,
+        precise.st_nlink == descriptor.st_nlink,
+    )
+    print(
+        "stat_field_geometry",
+        precise.n_sequence_fields,
+        precise.n_unnamed_fields,
+        len(precise),
+        precise.n_fields > len(precise),
+    )
+    fabricated = os.stat_result(
+        tuple(range(10)), {"st_atime": 70.25, "st_mtime_ns": 8_987_654_321}
+    )
+    print(
+        "stat_constructor_hidden",
+        fabricated[7],
+        fabricated.st_atime,
+        fabricated.st_mtime,
+        fabricated.st_mtime_ns,
+        fabricated.st_atime_ns,
+    )
+    cls = os.stat_result
+    os.stat_result = object
+    try:
+        print(
+            "stat_captured_type",
+            type(os.stat(initial)) is cls,
+            type(Path(initial).stat()) is cls,
+            type(Path(initial).lstat()) is cls,
+        )
+    finally:
+        os.stat_result = cls
 
     follow_false = os.stat(initial, follow_symlinks=False)
     print("follow_symlinks_false_size", follow_false[6])

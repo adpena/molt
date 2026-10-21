@@ -335,14 +335,93 @@ mod tests {
     }
 }
 
+/// Exact signed timestamp shared by the route/query and all projections.
+/// Nanoseconds fit i128 for every native i64 second and VFS u64 second input.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct StatTime(i128);
+
+impl StatTime {
+    pub const fn from_parts(seconds: i128, nanoseconds: i128) -> Self {
+        Self(seconds * 1_000_000_000 + nanoseconds)
+    }
+    pub fn from_system_time(time: std::io::Result<std::time::SystemTime>) -> Self {
+        match time {
+            Ok(time) => match time.duration_since(std::time::UNIX_EPOCH) {
+                Ok(value) => Self::from_parts(
+                    i128::from(value.as_secs()),
+                    i128::from(value.subsec_nanos()),
+                ),
+                Err(error) => {
+                    let value = error.duration();
+                    Self(
+                        -Self::from_parts(
+                            i128::from(value.as_secs()),
+                            i128::from(value.subsec_nanos()),
+                        )
+                        .0,
+                    )
+                }
+            },
+            Err(_) => Self::default(),
+        }
+    }
+    pub const fn nanoseconds(self) -> i128 {
+        self.0
+    }
+    pub fn seconds(self) -> i128 {
+        self.0.div_euclid(1_000_000_000)
+    }
+    pub fn as_float(self) -> f64 {
+        self.seconds() as f64 + self.0.rem_euclid(1_000_000_000) as f64 * 1e-9
+    }
+}
+
 /// Fixed metadata projection shared by direct and satellite filesystem callers.
-/// Virtual files expose only their backend-owned facts; zero identity fields
-/// are unknown and must never be used by samefile.
+/// Virtual files expose only backend-owned facts; zero identity fields are
+/// unknown and must never be used by samefile. All time views derive from times.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct PathMetadata {
-    pub fields: [i128; 10],
+    pub fields: [i128; 7],
+    pub times: [StatTime; 3],
     pub virtual_file: bool,
+    #[cfg(any(unix, target_os = "wasi"))]
+    pub block_size: i64,
+    #[cfg(any(unix, target_os = "wasi"))]
+    pub blocks: i64,
+    #[cfg(any(unix, target_os = "wasi"))]
+    pub rdev: u64,
+    #[cfg(any(
+        target_vendor = "apple",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    ))]
+    pub flags: u32,
+    #[cfg(any(
+        target_vendor = "apple",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    ))]
+    pub generation: u32,
+    #[cfg(any(
+        target_vendor = "apple",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        windows
+    ))]
+    pub birthtime: StatTime,
+    #[cfg(windows)]
+    pub file_attributes: u32,
+    #[cfg(windows)]
+    pub reparse_tag: u32,
+    #[cfg(any(target_os = "solaris", target_os = "illumos"))]
+    pub fstype: [u8; 16],
 }
 
 impl PathMetadata {
@@ -358,85 +437,160 @@ impl PathMetadata {
 
     #[cfg(unix)]
     pub fn from_unix_stat(st: &libc::stat) -> Self {
+        #[cfg(not(target_os = "netbsd"))]
+        let times = [
+            StatTime::from_parts(st.st_atime as i128, st.st_atime_nsec as i128),
+            StatTime::from_parts(st.st_mtime as i128, st.st_mtime_nsec as i128),
+            StatTime::from_parts(st.st_ctime as i128, st.st_ctime_nsec as i128),
+        ];
+        #[cfg(target_os = "netbsd")]
+        let times = [
+            StatTime::from_parts(st.st_atime as i128, st.st_atimensec as i128),
+            StatTime::from_parts(st.st_mtime as i128, st.st_mtimensec as i128),
+            StatTime::from_parts(st.st_ctime as i128, st.st_ctimensec as i128),
+        ];
         Self {
             fields: [
-                i128::from(st.st_mode),
+                st.st_mode as i128,
                 st.st_ino as i128,
                 st.st_dev as i128,
                 st.st_nlink as i128,
-                i128::from(st.st_uid),
-                i128::from(st.st_gid),
+                i128::from(crate::utils::uid_integer(st.st_uid)),
+                i128::from(crate::utils::gid_integer(st.st_gid)),
                 st.st_size as i128,
-                st.st_atime as i128,
-                st.st_mtime as i128,
-                st.st_ctime as i128,
             ],
+            times,
             virtual_file: false,
+            block_size: st.st_blksize as i64,
+            blocks: st.st_blocks as i64,
+            rdev: st.st_rdev as u64,
+            #[cfg(any(target_os = "solaris", target_os = "illumos"))]
+            fstype: st.st_fstype.map(|byte| byte as u8),
+            #[cfg(any(
+                target_vendor = "apple",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            flags: st.st_flags as u32,
+            #[cfg(any(
+                target_vendor = "apple",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            generation: st.st_gen as u32,
+            #[cfg(any(target_vendor = "apple", target_os = "freebsd", target_os = "openbsd"))]
+            birthtime: StatTime::from_parts(st.st_birthtime as i128, st.st_birthtime_nsec as i128),
+            #[cfg(target_os = "netbsd")]
+            birthtime: StatTime::from_parts(st.st_birthtime as i128, st.st_birthtimensec as i128),
         }
     }
 
+    #[cfg(not(windows))]
     pub fn from_host(metadata: &std::fs::Metadata) -> Self {
+        Self::from_host_base(metadata)
+    }
+
+    /// Preserve the existing fast query for ordinary Windows files. A reparse
+    /// candidate requires a handle: all returned facts are reacquired from it,
+    /// so the tag is never paired with an earlier path observation.
+    #[cfg(windows)]
+    pub fn from_windows_path(path: &std::path::Path, follow: bool) -> std::io::Result<Self> {
+        use std::os::windows::fs::MetadataExt;
+        let metadata = if follow {
+            std::fs::metadata(path)
+        } else {
+            std::fs::symlink_metadata(path)
+        }?;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT as u32 == 0 {
+            return Ok(Self::from_host_base(&metadata));
+        }
+        let file = crate::windows_abi::open_metadata_file(path, follow)?;
+        Self::from_windows_file(&file)
+    }
+
+    /// Borrow an admitted descriptor or owned path-query handle. A tag-query
+    /// error remains an OS error; it cannot become a fabricated zero tag.
+    #[cfg(windows)]
+    pub fn from_windows_file(file: &std::fs::File) -> std::io::Result<Self> {
+        use std::os::windows::fs::MetadataExt;
+        let metadata = file.metadata()?;
+        let mut result = Self::from_host_base(&metadata);
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT as u32 != 0 {
+            (result.file_attributes, result.reparse_tag) =
+                crate::windows_abi::file_attribute_tag(file)?;
+        }
+        Ok(result)
+    }
+
+    fn from_host_base(metadata: &std::fs::Metadata) -> Self {
+        // This adapter never adds a query: the admitted route owns acquisition.
+        let mut result = Self::from_virtual(
+            metadata.is_file(),
+            metadata.is_dir(),
+            metadata.permissions().readonly(),
+            metadata.len(),
+            0,
+        );
+        result.virtual_file = false;
         #[cfg(unix)]
-        let fields = {
+        {
             use std::os::unix::fs::MetadataExt;
-            [
-                i128::from(metadata.mode()),
+            result.fields = [
+                metadata.mode() as i128,
                 metadata.ino() as i128,
                 metadata.dev() as i128,
                 metadata.nlink() as i128,
-                i128::from(metadata.uid()),
-                i128::from(metadata.gid()),
+                i128::from(crate::utils::uid_integer(metadata.uid())),
+                i128::from(crate::utils::gid_integer(metadata.gid())),
                 metadata.size() as i128,
-                i128::from(metadata.atime()),
-                i128::from(metadata.mtime()),
-                i128::from(metadata.ctime()),
-            ]
-        };
-        #[cfg(not(unix))]
-        let fields = {
-            let mode = if metadata.is_dir() {
-                S_IFDIR
-            } else if metadata.file_type().is_symlink() {
-                S_IFLNK
-            } else {
-                S_IFREG
-            };
-            let permissions = if metadata.permissions().readonly() {
-                if metadata.is_dir() { 0o555 } else { 0o444 }
-            } else if metadata.is_dir() {
-                0o777
-            } else {
-                0o666
-            };
-            let seconds = |time: std::io::Result<std::time::SystemTime>| -> i128 {
-                match time {
-                    Ok(time) => match time.duration_since(std::time::UNIX_EPOCH) {
-                        Ok(duration) => i128::from(duration.as_secs()),
-                        Err(error) => {
-                            -i128::from(error.duration().as_secs())
-                                - i128::from(error.duration().subsec_nanos() != 0)
-                        }
-                    },
-                    Err(_) => 0,
-                }
-            };
-            [
-                i128::from(mode | permissions),
-                0,
-                0,
-                0,
-                0,
-                0,
-                i128::from(metadata.len()),
-                seconds(metadata.accessed()),
-                seconds(metadata.modified()),
-                seconds(metadata.created()),
-            ]
-        };
-        Self {
-            fields,
-            virtual_file: false,
+            ];
+            result.times = [
+                StatTime::from_parts(metadata.atime() as i128, metadata.atime_nsec() as i128),
+                StatTime::from_parts(metadata.mtime() as i128, metadata.mtime_nsec() as i128),
+                StatTime::from_parts(metadata.ctime() as i128, metadata.ctime_nsec() as i128),
+            ];
+            result.block_size = metadata.blksize() as i64;
+            result.blocks = metadata.blocks() as i64;
+            result.rdev = metadata.rdev();
         }
+        #[cfg(target_vendor = "apple")]
+        {
+            use std::os::macos::fs::MetadataExt;
+            result.flags = metadata.st_flags();
+            result.generation = metadata.st_gen();
+        }
+        #[cfg(not(unix))]
+        {
+            if metadata.file_type().is_symlink() {
+                result.fields[0] =
+                    (result.fields[0] & !i128::from(S_IFMT_MASK)) | i128::from(S_IFLNK);
+            }
+            result.times = [
+                StatTime::from_system_time(metadata.accessed()),
+                StatTime::from_system_time(metadata.modified()),
+                StatTime::from_system_time(metadata.created()),
+            ];
+        }
+        #[cfg(any(
+            target_vendor = "apple",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            windows
+        ))]
+        {
+            result.birthtime = StatTime::from_system_time(metadata.created());
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            result.file_attributes = metadata.file_attributes();
+        }
+        result
     }
 
     pub fn from_virtual(
@@ -469,11 +623,53 @@ impl PathMetadata {
                 0,
                 0,
                 i128::from(size),
-                0,
-                i128::from(mtime),
-                0,
+            ],
+            times: [
+                StatTime::default(),
+                StatTime::from_parts(i128::from(mtime), 0),
+                StatTime::default(),
             ],
             virtual_file: true,
+            #[cfg(any(unix, target_os = "wasi"))]
+            block_size: 0,
+            #[cfg(any(unix, target_os = "wasi"))]
+            blocks: 0,
+            #[cfg(any(unix, target_os = "wasi"))]
+            rdev: 0,
+            #[cfg(any(
+                target_vendor = "apple",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            flags: 0,
+            #[cfg(any(
+                target_vendor = "apple",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            generation: 0,
+            #[cfg(any(
+                target_vendor = "apple",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                windows
+            ))]
+            birthtime: StatTime::default(),
+            #[cfg(windows)]
+            file_attributes: 0,
+            #[cfg(windows)]
+            reparse_tag: 0,
+            #[cfg(any(target_os = "solaris", target_os = "illumos"))]
+            fstype: [0; 16],
         }
     }
 }
+
+#[cfg(test)]
+#[path = "stat_support/metadata_tests.rs"]
+mod metadata_time_tests;

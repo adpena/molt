@@ -32,7 +32,8 @@ mod protocol_storage;
 pub(crate) use object_construction::{
     object_init, object_new, object_repr, object_richcompare, object_str,
 };
-pub(crate) use protocol_storage::{TypeProtocolTables, process_runtime_protocols};
+pub(crate) use protocol_storage::process_runtime_protocols;
+pub use protocol_storage::{ExternalStaticType, StructSequenceTypeProjection, TypeProtocolTables};
 pub(crate) mod native_slot_mutation;
 mod root_metadata;
 pub use root_metadata::{TypeAttributeField, native_type_attribute_get, native_type_attribute_set};
@@ -489,7 +490,7 @@ fn retire_type_lifetime(registry: &mut TypeSubclassRegistry, address: usize) {
 /// The caller must hold exclusive runtime teardown custody. Every non-null
 /// pointer must name a live process-owned type shell, and each non-null dict,
 /// bases, MRO, or cache field must own one reference in the still-live runtime.
-pub(crate) unsafe fn retire_static_type_runtime_roots(types: &[(*mut PyTypeObject, bool)]) {
+pub unsafe fn retire_static_type_runtime_roots(types: &[(*mut PyTypeObject, bool)]) {
     {
         let mut registry = TYPE_SUBCLASSES.lock();
         registry.retired_statics.extend(
@@ -574,7 +575,7 @@ pub(crate) fn private_process_type_shells() -> [*mut PyTypeObject; 2] {
 
 /// Reopen only the supplied process-owned shells at the next runtime bootstrap.
 /// This does not resurrect old live identities, roots, version tags, or watches.
-pub(crate) fn reopen_static_type_runtime_roots(types: &[(*mut PyTypeObject, bool)]) {
+pub fn reopen_static_type_runtime_roots(types: &[(*mut PyTypeObject, bool)]) {
     let mut registry = TYPE_SUBCLASSES.lock();
     for &(tp, _) in types {
         registry.retired_statics.remove(&tp.addr());
@@ -2780,23 +2781,7 @@ unsafe fn type_from_spec_impl(
                     return ptr::null_mut();
                 }
             } else {
-                let message = crate::api::refcount::OwnedPyObject::from_owned(
-                    crate::api::errors::PyUnicode_FromFormat(
-                        c"builtin type %.200s has no __module__ attribute".as_ptr(),
-                        (*spec).name,
-                    ),
-                );
-                if message.as_ptr().is_null() {
-                    return ptr::null_mut();
-                }
-                let text = crate::api::strings::PyUnicode_AsUTF8(message.as_ptr());
-                if text.is_null()
-                    || crate::api::errors::PyErr_WarnEx(
-                        (&raw mut crate::abi_types::PyExc_DeprecationWarning).cast(),
-                        text,
-                        1,
-                    ) < 0
-                {
+                if warn_missing_type_module((*spec).name) < 0 {
                     return ptr::null_mut();
                 }
             }
@@ -6608,5 +6593,29 @@ pub(crate) mod subclass_registry_tests {
         );
         drop(registry);
         unregister_type_address(base_address);
+    }
+}
+
+/// Both public descriptor-name factories have the same no-module diagnostic.
+pub(crate) unsafe fn warn_missing_type_module(name: *const c_char) -> c_int {
+    unsafe {
+        let message = crate::api::refcount::OwnedPyObject::from_owned(
+            crate::api::errors::PyUnicode_FromFormat(
+                c"builtin type %.200s has no __module__ attribute".as_ptr(),
+                name,
+            ),
+        );
+        if message.as_ptr().is_null() {
+            return -1;
+        }
+        let text = crate::api::strings::PyUnicode_AsUTF8(message.as_ptr());
+        if text.is_null() {
+            return -1;
+        }
+        crate::api::errors::PyErr_WarnEx(
+            (&raw mut crate::abi_types::PyExc_DeprecationWarning).cast(),
+            text,
+            1,
+        )
     }
 }

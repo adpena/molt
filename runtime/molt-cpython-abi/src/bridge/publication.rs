@@ -618,9 +618,16 @@ impl ObjectBridge {
                     0
                 };
             object.tp_base = base;
+            let mut structseq =
+                unsafe { crate::api::typeobj::StructSequenceTypeProjection::prepare(bits) }.ok()?;
+            let allocation = ManagedTypeAllocation::new(object);
+            if let Some(metadata) = &mut structseq {
+                unsafe { metadata.attach(allocation.get()) };
+            }
             ManagedView::Type {
-                object: ManagedTypeAllocation::new(object),
+                object: allocation,
                 _name: name,
+                structseq,
             }
         } else if tag == MoltTypeTag::Slice {
             ManagedView::Slice(Box::new(UnsafeCell::new(crate::abi_types::PySliceObject {
@@ -647,8 +654,13 @@ impl ObjectBridge {
             object.vectorcall = Some(crate::api::object::molt_runtime_vectorcall);
             ManagedView::RuntimeCallable(Box::new(UnsafeCell::new(object)))
         } else if tag == MoltTypeTag::Tuple {
-            let len = unsafe { crate::hooks::hooks_or_stubs().tuple_len(bits) };
-            let allocation = TupleAllocation::new(ob_refcnt, ob_type, len)?;
+            let hooks = crate::hooks::hooks_or_stubs();
+            let visible = unsafe { hooks.tuple_len(bits) };
+            let Some(len) = visible.checked_add(unsafe { (hooks.tuple_hidden_len)(bits) }) else {
+                unsafe { crate::api::errors::PyErr_NoMemory() };
+                return None;
+            };
+            let allocation = TupleAllocation::new(ob_refcnt, ob_type, visible, len)?;
             ManagedView::Tuple { allocation }
         } else if tag == MoltTypeTag::List {
             let len = unsafe { (crate::hooks::hooks_or_stubs().list_len)(bits) };
@@ -1086,6 +1098,7 @@ impl ObjectBridge {
     pub(crate) fn type_uses_runtime_slots(&self, pointer: *mut PyTypeObject) -> bool {
         self.managed_type_storage(pointer).is_some()
             || crate::api::typeobj::process_runtime_protocols(pointer).is_some()
+            || unsafe { (crate::hooks::hooks_or_stubs().type_runtime_slots)(pointer) }
     }
 
     /// Observe every published class projection without creating a C view.
@@ -2379,6 +2392,7 @@ mod handle_tests {
                 let mut view = ManagedView::Type {
                     object: ManagedTypeAllocation::new(prefix),
                     _name: std::ffi::CString::new("retiring.Type").unwrap(),
+                    structseq: None,
                 };
                 let pointer = view.py_obj().cast::<PyTypeObject>();
                 let address = pointer.addr();
@@ -2484,6 +2498,7 @@ mod handle_tests {
             let mut view = ManagedView::Type {
                 object: allocation,
                 _name: std::ffi::CString::new("storage.Type").unwrap(),
+                structseq: None,
             };
             let mut released = Vec::new();
             view.release_owned_items_with(|edge, mirrored| {
