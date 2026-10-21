@@ -29,6 +29,7 @@ from molt.cli import rustc_probes
 from molt.cli.cargo_resource_custody import CargoExecutableCustody
 from molt.process_environment import ProcessEnvironment
 from tests.executable_test_support import write_mock_executable
+from tests.process_guard_common import run_guarded_test_process
 from tests.rustc_test_support import rustc_target_metadata_stdout
 
 DAY_NS = 86_400 * 1_000_000_000
@@ -359,8 +360,17 @@ def test_file_and_directory_inputs_name_absence_links_and_listings(
         link = tmp_path / "link"
         link.symlink_to(regular)
         _name, link_token = facts.file_input(link)
-        assert link_token is not None and link_token[-1] == os.fspath(regular)
+        assert link_token is not None and link_token[6] == os.fspath(regular)
         assert stat.S_ISLNK(int(link_token[2]))
+        # A probe reads through the link: an edit behind it changes the key.
+        _rewrite_with_restored_mtime(regular, b"LIB")
+        regular.write_bytes(b"libs")
+        _name, edited = facts.file_input(link)
+        assert edited is not None and edited[:7] == link_token[:7]
+        assert edited[7] != link_token[7]
+        dangling = tmp_path / "dangling"
+        dangling.symlink_to(tmp_path / "gone")
+        assert facts.file_input(dangling)[1][7] is None
     (tmp_path / "sub").mkdir()
     (tmp_path / "notes.txt").write_bytes(b"text")
     listing = facts.directory_inputs(tmp_path)
@@ -682,6 +692,254 @@ def test_rustup_selection_is_asked_once_per_selection_inputs(
     _fresh_process(monkeypatch)
     assert resolve() == selected
     assert spawns.count == (1 if change == "unrelated-environment" else 2)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "parent-toolchain-file",
+        "legacy-toolchain-file",
+        "symlinked-toolchain-target",
+        "physical-parent",
+        "spelled-parent",
+        pytest.param(
+            "fallback-settings",
+            marks=pytest.mark.skipif(os.name == "nt", reason="Unix fallback only"),
+        ),
+        "relative-rustup-home",
+    ],
+)
+def test_rustup_selection_keys_what_rustup_reads(
+    tmp_path: Path,
+    isolated_molt_cache: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    change: str,
+) -> None:
+    # Each case changes one input real rustup 1.29 reads while every other
+    # input stays the same; the store must ask rustup again.
+    proxy, _rustup, selected = _rustup_setup(tmp_path)
+    spawns = _Spawns(lambda command, kwargs: (os.fspath(selected) + "\n", ""))
+    monkeypatch.setattr(process_guard, "run_completed_command", spawns)
+    physical = tmp_path / "physical" / "project"
+    physical.mkdir(parents=True)
+    root = physical
+    env = {
+        "RUSTUP_HOME": os.fspath(tmp_path / "rustup-home"),
+        "HOME": os.fspath(tmp_path),
+        "RUSTUP_OVERRIDE_UNIX_FALLBACK_SETTINGS": os.fspath(tmp_path / "fallback.toml"),
+    }
+    if change == "symlinked-toolchain-target":
+        if os.name == "nt":
+            pytest.skip("POSIX symlinks")
+        (tmp_path / "shared.toml").write_text(
+            '[toolchain]\nchannel = "a"\n', encoding="utf-8"
+        )
+        (physical / "rust-toolchain.toml").symlink_to(tmp_path / "shared.toml")
+    elif change == "physical-parent":
+        if os.name == "nt":
+            pytest.skip("POSIX symlinks")
+        root = tmp_path / "alias"
+        root.symlink_to(physical, target_is_directory=True)
+    elif change == "spelled-parent":
+        # Windows rustup walks the path as spelled (a junction or substituted
+        # drive keeps it): the alias's own parent is on no physical chain.
+        if os.name == "nt":
+            pytest.skip("POSIX symlinks")
+        (tmp_path / "aliases").mkdir()
+        root = tmp_path / "aliases" / "alias"
+        root.symlink_to(physical, target_is_directory=True)
+    elif change == "relative-rustup-home":
+        shutil.copytree(tmp_path / "rustup-home", physical / "rel-home")
+        env["RUSTUP_HOME"] = "rel-home"
+
+    def resolve() -> Path:
+        return rust_toolchain.resolve_rustup_proxy(
+            proxy, role="rustc", root=root, env=env
+        )
+
+    assert resolve() == selected and spawns.count == 1
+    _fresh_process(monkeypatch)
+    assert resolve() == selected and spawns.count == 1
+    if change == "parent-toolchain-file":
+        (physical.parent / "rust-toolchain.toml").write_text(
+            '[toolchain]\nchannel = "b"\n', encoding="utf-8"
+        )
+    elif change == "legacy-toolchain-file":
+        (physical / "rust-toolchain").write_text("nightly\n", encoding="utf-8")
+    elif change == "symlinked-toolchain-target":
+        (tmp_path / "shared.toml").write_text(
+            '[toolchain]\nchannel = "bb"\n', encoding="utf-8"
+        )
+    elif change == "physical-parent":
+        # Only the physical walk sees this file; the alias's parent is tmp_path.
+        (physical.parent / "rust-toolchain").write_text("nightly\n", encoding="utf-8")
+    elif change == "spelled-parent":
+        (tmp_path / "aliases" / "rust-toolchain").write_text(
+            "nightly\n", encoding="utf-8"
+        )
+    elif change == "fallback-settings":
+        (tmp_path / "fallback.toml").write_text(
+            "default_toolchain = 'nightly'\n", encoding="utf-8"
+        )
+    else:
+        (physical / "rel-home" / "settings.toml").write_text(
+            "version = '12'\n", encoding="utf-8"
+        )
+    _fresh_process(monkeypatch)
+    assert resolve() == selected
+    assert spawns.count == 2
+
+
+@pytest.mark.parametrize("windows", [False, True])
+def test_rustup_home_follows_the_home_crate(tmp_path: Path, windows: bool) -> None:
+    cwd = tmp_path / "project"
+    relative = {"RUSTUP_HOME": "rel", "HOME": "/h", "USERPROFILE": "/u"}
+    assert rust_toolchain.rustup_home(relative, cwd, windows=windows) == cwd / "rel"
+    absolute = {"RUSTUP_HOME": os.fspath(tmp_path / "abs")}
+    assert (
+        rust_toolchain.rustup_home(absolute, cwd, windows=windows) == tmp_path / "abs"
+    )
+    # An empty RUSTUP_HOME is unset; Windows reads USERPROFILE, never HOME.
+    homes = {"RUSTUP_HOME": "", "HOME": "/h", "USERPROFILE": "/u"}
+    expected = Path("/u" if windows else "/h") / ".rustup"
+    assert rust_toolchain.rustup_home(homes, cwd, windows=windows) == expected
+    assert rust_toolchain.rustup_fallback_settings({}, cwd, windows=windows) == (
+        None if windows else Path("/etc/rustup/settings.toml")
+    )
+    relative = {"RUSTUP_OVERRIDE_UNIX_FALLBACK_SETTINGS": "fb.toml"}
+    assert rust_toolchain.rustup_fallback_settings(relative, cwd, windows=windows) == (
+        None if windows else cwd / "fb.toml"
+    )
+
+
+def test_no_home_is_absent_not_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    import pwd
+
+    def no_entry(_uid):
+        raise KeyError("getpwuid(): uid not found")
+
+    monkeypatch.setattr(pwd, "getpwuid", no_entry)
+    # The `home` crate returns None here; rustup then reports the error itself.
+    assert rust_toolchain.rustup_home({}, Path("/p"), windows=False) is None
+
+
+def _real_rustup() -> Path | None:
+    found = shutil.which("rustup") or os.fspath(Path.home() / ".cargo/bin/rustup")
+    path = Path(found)
+    proxy = path.with_name("rustc")
+    if not (path.is_file() and proxy.exists()):
+        return None
+    # The rustc beside rustup must be a rustup proxy, or there is nothing to ask.
+    return path if rust_toolchain.rustup_proxy_selection(proxy) is not None else None
+
+
+@pytest.mark.skipif(
+    _real_rustup() is None or os.name == "nt", reason="needs a real rustup on POSIX"
+)
+@pytest.mark.parametrize(
+    "change",
+    [
+        "parent-toolchain-file",
+        "legacy-toolchain-file",
+        "symlinked-toolchain-target",
+        "physical-parent",
+        "fallback-settings",
+        "relative-fallback-settings",
+        "relative-rustup-home",
+    ],
+)
+def test_store_answers_what_real_rustup_answers(
+    tmp_path: Path,
+    isolated_molt_cache: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    change: str,
+) -> None:
+    # The oracle is rustup itself, not this file's list of its inputs: an
+    # input the key misses shows up as the store answering the old toolchain.
+    rustup = _real_rustup()
+    assert rustup is not None
+    for name in ("a", "b"):
+        bin_dir = tmp_path / f"tc-{name}" / "bin"
+        bin_dir.mkdir(parents=True)
+        write_mock_executable(bin_dir / "rustc", b"#!/bin/sh\n")
+    home = tmp_path / "rustup-home"
+    (home / "toolchains").mkdir(parents=True)
+    for name in ("a", "b"):
+        (home / "toolchains" / name).symlink_to(tmp_path / f"tc-{name}")
+    physical = tmp_path / "physical" / "project"
+    physical.mkdir(parents=True)
+    root = physical
+    env = {
+        "RUSTUP_HOME": os.fspath(home),
+        "HOME": os.fspath(tmp_path / "home"),
+        "RUSTUP_AUTO_INSTALL": "0",
+        "PATH": "/usr/bin:/bin",
+        "RUSTUP_OVERRIDE_UNIX_FALLBACK_SETTINGS": os.fspath(tmp_path / "none.toml"),
+    }
+
+    def toolchain_file(path: Path, name: str, *, legacy: bool = False) -> None:
+        text = f"{name}\n" if legacy else f'[toolchain]\nchannel = "{name}"\n'
+        path.write_text(text, encoding="utf-8")
+
+    if change == "parent-toolchain-file":
+        toolchain_file(physical.parent / "rust-toolchain.toml", "a")
+    elif change == "legacy-toolchain-file":
+        toolchain_file(physical.parent / "rust-toolchain.toml", "a")
+    elif change == "symlinked-toolchain-target":
+        toolchain_file(tmp_path / "shared.toml", "a")
+        (physical / "rust-toolchain.toml").symlink_to(tmp_path / "shared.toml")
+    elif change == "physical-parent":
+        toolchain_file(tmp_path / "rust-toolchain.toml", "a")
+        root = tmp_path / "alias"
+        root.symlink_to(physical, target_is_directory=True)
+    elif change == "fallback-settings":
+        env["RUSTUP_OVERRIDE_UNIX_FALLBACK_SETTINGS"] = os.fspath(tmp_path / "fb.toml")
+        (tmp_path / "fb.toml").write_text('default_toolchain = "a"\n', encoding="utf-8")
+    elif change == "relative-fallback-settings":
+        env["RUSTUP_OVERRIDE_UNIX_FALLBACK_SETTINGS"] = "fb.toml"
+        (physical / "fb.toml").write_text('default_toolchain = "a"\n', encoding="utf-8")
+    else:
+        shutil.copytree(home, physical / "rel-home", symlinks=True)
+        env["RUSTUP_HOME"] = "rel-home"
+        (physical / "rel-home" / "settings.toml").write_text(
+            'version = "12"\ndefault_toolchain = "a"\n', encoding="utf-8"
+        )
+
+    def via_store() -> Path:
+        return rust_toolchain.resolve_rustup_proxy(
+            rustup.with_name("rustc"), role="rustc", root=root, env=env
+        )
+
+    def direct() -> Path:
+        completed = run_guarded_test_process(
+            [os.fspath(rustup), "which", "rustc"], cwd=root, env=env, timeout=60
+        )
+        assert completed.returncode == 0, completed.stderr
+        return Path(completed.stdout.strip())
+
+    # rustup prints <home>/toolchains/<name>/bin/rustc for the selected one.
+    assert direct().parent.parent.name == "a"
+    assert via_store() == direct()
+    if change == "parent-toolchain-file":
+        toolchain_file(physical.parent / "rust-toolchain.toml", "b")
+    elif change == "legacy-toolchain-file":
+        toolchain_file(physical / "rust-toolchain", "b", legacy=True)
+    elif change == "symlinked-toolchain-target":
+        toolchain_file(tmp_path / "shared.toml", "b")
+    elif change == "physical-parent":
+        toolchain_file(tmp_path / "physical" / "rust-toolchain.toml", "b")
+    elif change == "fallback-settings":
+        (tmp_path / "fb.toml").write_text('default_toolchain = "b"\n', encoding="utf-8")
+    elif change == "relative-fallback-settings":
+        (physical / "fb.toml").write_text('default_toolchain = "b"\n', encoding="utf-8")
+    else:
+        (physical / "rel-home" / "settings.toml").write_text(
+            'version = "12"\ndefault_toolchain = "b"\n', encoding="utf-8"
+        )
+    _fresh_process(monkeypatch)
+    answer = direct()
+    assert answer.parent.parent.name == "b"
+    assert via_store() == answer
 
 
 def test_rustup_failure_is_not_recorded(

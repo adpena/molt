@@ -87,7 +87,8 @@ RUSTC_PROBE_ENVIRONMENT = (
 
 # rustup `which` (rustup-rs config.rs): the explicit toolchain, the rustup
 # home (default `$HOME/.rustup`, `%USERPROFILE%` on Windows) and whether a
-# missing toolchain is installed on demand.
+# missing toolchain is installed on demand. The Unix fallback settings file
+# is keyed by the path it resolves to, so its selector needs no entry here.
 RUSTUP_PROBE_ENVIRONMENT = (
     "RUSTUP_TOOLCHAIN",
     "RUSTUP_HOME",
@@ -196,7 +197,10 @@ def file_input(path: Path | str) -> FileInput:
     """Name one file a probe consults by its no-follow token.
 
     An absent path is a lookup outcome and part of the key: a file that
-    appears later changes the answer. A symlink carries its target too.
+    appears later changes the answer. A symlink carries its text and the
+    token of the file it resolves to, because the probe reads through it: an
+    edit behind the link changes the answer (a dangling link keys as absent
+    behind its text).
     """
     name = os.fspath(path)
     try:
@@ -213,6 +217,21 @@ def file_input(path: Path | str) -> FileInput:
     ]
     if stat.S_ISLNK(metadata.st_mode):
         token.append(os.readlink(name))
+        try:
+            target = os.stat(name)
+        except (FileNotFoundError, NotADirectoryError):
+            token.append(None)
+        else:
+            token.append(
+                [
+                    target.st_dev,
+                    target.st_ino,
+                    target.st_mode,
+                    target.st_size,
+                    target.st_mtime_ns,
+                    target.st_ctime_ns,
+                ]
+            )
     return name, tuple(token)
 
 
