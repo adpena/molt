@@ -93,9 +93,22 @@ from molt.custody_layout import (  # noqa: E402
 )
 from molt.dx import (  # noqa: E402
     # noqa: E402,
+    checkout_component,
     configured_artifact_root,
     session_artifact_component,
     session_targets_dir,
+)
+from molt.checkout_state import (  # noqa: E402
+    PROTECTION_WINDOW_S as CHECKOUT_STATE_WINDOW_S,
+    bound_checkout_owner,
+    checkout_target_of,
+    checkout_state_containers,
+    checkout_state_decision,
+    checkout_state_kind_of,
+    checkout_state_last_use,
+    checkout_state_max_age_s,
+    newest_activity_mtime as _newest_activity_mtime,
+    owner_is_absent,
 )
 from molt.file_deletion import delete_path  # noqa: E402
 from molt.memory_guard_paths import active_guard_marker_dirs_of  # noqa: E402
@@ -335,6 +348,9 @@ def plan_reclaim(
         if c.age_s(now) < min_idle_s:
             plan.skipped.append((c, f"modified <{min_idle_s / 60:.0f}min ago"))
             continue
+        if c.kind == "checkout-state" and c.age_s(now) < CHECKOUT_STATE_WINDOW_S:
+            plan.skipped.append((c, "used within the protection window"))
+            continue
         if running_free >= target_bytes:
             plan.skipped.append((c, "target already met"))
             continue
@@ -388,9 +404,12 @@ def gc_plan(
             continue
         if c.age_s(now) < min_idle_s:
             continue
-        anchor = c.registered_at if c.registered_at is not None else c.mtime
-        if (now - anchor) < ttl_s:
-            continue
+        # Checkout state carries its own retirement decision (last use and
+        # owner); it replaces the TTL, never the activity or lock checks.
+        if c.kind != "checkout-state":
+            anchor = c.registered_at if c.registered_at is not None else c.mtime
+            if (now - anchor) < ttl_s:
+                continue
         out.append(c)
     return out
 
@@ -541,6 +560,10 @@ def _is_reclaimable(
         and registered
     ):
         return "sessions"
+    # A checkout's state root in its managed container under a component
+    # name (HF-313); `checkout_state_decision` decides when it retires.
+    if checkout_state_kind_of(rp, root) is not None:
+        return "checkout-state"
     # cargo-incremental quarantine anywhere under a target tree
     if ".molt_state" in parts and "quarantine" in parts:
         return "quarantine"
@@ -595,47 +618,34 @@ def assert_safe_to_delete(
 # --- I/O helpers (stat / lock probe / size) ---------------------------------
 
 
-def _newest_activity_mtime(path: Path) -> float:
-    """mtime of the dir OR its newest immediate child -- a cheap liveness proxy.
-
-    Cargo touches files DEEP in a target dir continuously during a build while
-    the top-level dir mtime can lag, so a one-level child scan catches an active
-    build without paying a full recursive walk.
-    """
-    newest = 0.0
-    try:
-        newest = path.stat().st_mtime
-    except OSError:
-        return 0.0
-    try:
-        with os.scandir(path) as it:
-            for entry in it:
-                try:
-                    m = entry.stat(follow_symlinks=False).st_mtime
-                except OSError:
-                    continue
-                if m > newest:
-                    newest = m
-    except OSError:
-        pass
-    return newest
+# Locks a live user holds under a reclaimable root. Cargo locks each profile
+# directory (`<target>/debug/.cargo-lock`, `<target>/<triple>/<profile>/...`),
+# not the target root, and a pinned session builds below its checkout target;
+# build control holds its build, diff and daemon-suite owner locks.
+_LOCK_PATTERNS = (
+    ".cargo-lock",
+    "*/.cargo-lock",
+    "*/*/.cargo-lock",
+    "sessions/*/*/.cargo-lock",
+    "sessions/*/*/*/.cargo-lock",
+    "diff_run.lock",
+    "build_locks/*.lock",
+    "backend_daemon/suite-leases/*/owner.lock",
+)
 
 
-def _cargo_lock_held(path: Path) -> bool:
-    """True if a Cargo build lock under ``path`` is currently HELD by a process.
+def _lock_held(path: Path) -> bool:
+    """True if a process now HOLDS a build lock under ``path``.
 
-    Cargo writes ``.cargo-lock`` at a target root and flock()s it for the build.
     We probe by attempting a NON-BLOCKING lock ourselves; if the OS says the
-    region is already locked, a build owns it and the dir is active. This reads a
-    lock -- it never touches any process. Absent/unlocked/unprobeable -> False
-    (the mtime-idle and TTL gates remain the primary liveness signal).
+    region is already locked, a live user owns the dir. This reads a lock -- it
+    never touches any process. Absent/unlocked/unprobeable -> False (the idle
+    and TTL gates remain the primary liveness signal).
     """
-    for name in (".cargo-lock",):
-        lock = path / name
-        if not lock.is_file():
-            continue
-        if _region_locked(lock):
-            return True
+    for pattern in _LOCK_PATTERNS:
+        for lock in path.glob(pattern):
+            if lock.is_file() and not lock.is_symlink() and _region_locked(lock):
+                return True
     return False
 
 
@@ -911,12 +921,15 @@ def discover_candidates(
         candidate = Candidate(
             path=path,
             kind=kind,
+            # Checkout state's last-use stamp is one of these children.
             mtime=_newest_activity_mtime(path),
             size=size,
-            lock_held=_cargo_lock_held(path),
+            lock_held=_lock_held(path),
             registered_at=registered_at,
             owner_root=owner_root,
-            guard_active=guard_active,
+            # Guard markers elsewhere in the artifact root say nothing about
+            # checkout state; its last use and Cargo's lock do.
+            guard_active=False if kind == "checkout-state" else guard_active,
         )
         candidates.append(candidate)
         by_norm[norm] = candidate
@@ -942,6 +955,9 @@ def discover_candidates(
         for child in _iter_dir(owner_root):
             if child.is_dir() and child.name.startswith("cargo-target-"):
                 add(child, "cargo-target", owner_root, guard_active=guard_active)
+        # checkout state roots, evicted by last use under pressure
+        for child in _checkout_state_dirs(owner_root):
+            add(child, "checkout-state", owner_root, guard_active=False)
         # Registry targets may already have been discovered by a static class.
         for rec in registry.values():
             p = Path(str(rec.get("path", "")))
@@ -963,6 +979,18 @@ def _iter_dir(path: Path) -> list[Path]:
         return sorted(path.iterdir())
     except OSError:
         return []
+
+
+def _checkout_state_dirs(root: Path) -> list[Path]:
+    """Checkout state roots in their managed containers (HF-313)."""
+    return [
+        child
+        for container in checkout_state_containers(root)
+        for child in _iter_dir(container)
+        if child.is_dir()
+        and not child.is_symlink()
+        and checkout_state_kind_of(child, root) is not None
+    ]
 
 
 def _iter_quarantine_dirs(root: Path) -> list[Path]:
@@ -1158,6 +1186,7 @@ def gc(
     scope_roots = reclaim_roots(resolved_root)
     cfg = config or GuardConfig.from_env(env)
     now = now_fn()
+    max_age_s = checkout_state_max_age_s(env)
     free_fn = _default_free_fn(resolved_root)
     free_before = free_fn()
     result = ReclaimResult(
@@ -1184,7 +1213,12 @@ def gc(
             p = Path(str(rec.get("path", "")))
             if not p.is_dir():
                 continue
-            if _is_reclaimable(p, owner_root, cfg.lane_globs, registered=True) is None:
+            if _is_reclaimable(p, owner_root, cfg.lane_globs, registered=True) in (
+                None,
+                # Checkout state follows its own policy, even when a lane
+                # registered it as its target.
+                "checkout-state",
+            ):
                 # A registered path outside its owner's allow-set is forgotten
                 # during compaction but never deleted.
                 continue
@@ -1194,7 +1228,7 @@ def gc(
                     path=p,
                     kind="registered",
                     mtime=_newest_activity_mtime(p),
-                    lock_held=_cargo_lock_held(p),
+                    lock_held=_lock_held(p),
                     registered_at=(
                         float(reg_at) if isinstance(reg_at, (int, float)) else None
                     ),
@@ -1202,6 +1236,9 @@ def gc(
                     guard_active=guard_active,
                 )
             )
+        cands.extend(
+            _checkout_state_candidates(owner_root, now=now, max_age_s=max_age_s)
+        )
 
     collectable = gc_plan(
         cands,
@@ -1214,25 +1251,63 @@ def gc(
         cand.owner_root or resolved_root for cand in cands if cand.guard_active
     )
     collected_norms: set[str] = set()
-    for cand in collectable:
-        if apply:
-            owner_root = cand.owner_root or resolved_root
-            try:
-                assert_safe_to_delete(
-                    cand.path,
-                    owner_root,
-                    cfg.lane_globs,
-                    registered=cand.registered_at is not None,
+
+    def reclaim(planned: list[Candidate]) -> None:
+        for cand in planned:
+            if apply:
+                owner_root = cand.owner_root or resolved_root
+                try:
+                    assert_safe_to_delete(
+                        cand.path,
+                        owner_root,
+                        cfg.lane_globs,
+                        registered=cand.registered_at is not None,
+                    )
+                except ValueError as exc:
+                    result.errors.append(str(exc))
+                    continue
+                ok, err = delete_path(cand.path)
+                if not ok:
+                    result.errors.append(f"{cand.path}: {err}")
+                    continue
+            collected_norms.add(_norm(cand.path))
+            result.reclaimed.append({"path": str(cand.path), "kind": cand.kind})
+
+    reclaim(collectable)
+    # A build-control root's owner is its Cargo target, so it is orphaned only
+    # once that target is gone: a second pass retires the build control of
+    # the targets this GC reclaimed.
+    orphaning = sorted(
+        {
+            cand.owner_root
+            for cand in collectable
+            if cand.owner_root is not None and not cand.path.exists()
+        },
+        key=_norm,
+    )
+    if apply and orphaning:
+        reclaim(
+            [
+                cand
+                for cand in gc_plan(
+                    [
+                        cand
+                        for owner_root in orphaning
+                        for cand in _checkout_state_candidates(
+                            owner_root,
+                            now=now,
+                            max_age_s=max_age_s,
+                            build_control=True,
+                        )
+                    ],
+                    now=now,
+                    ttl_s=cfg.gc_ttl_s,
+                    min_idle_s=cfg.min_idle_s,
+                    protected=protected,
                 )
-            except ValueError as exc:
-                result.errors.append(str(exc))
-                continue
-            ok, err = delete_path(cand.path)
-            if not ok:
-                result.errors.append(f"{cand.path}: {err}")
-                continue
-        collected_norms.add(_norm(cand.path))
-        result.reclaimed.append({"path": str(cand.path), "kind": "registered"})
+                if _norm(cand.path) not in collected_norms
+            ]
+        )
 
     if apply:
         # Compact every owner registry independently. Cross-worktree discovery
@@ -1284,7 +1359,7 @@ def reclaim_completed_lane(
         path=target,
         kind="registered",
         mtime=_newest_activity_mtime(target) if target.is_dir() else 0.0,
-        lock_held=_cargo_lock_held(target) if target.is_dir() else False,
+        lock_held=_lock_held(target) if target.is_dir() else False,
         owner_root=resolved_root,
         guard_active=_has_active_guard(resolved_root),
     )
@@ -1296,6 +1371,14 @@ def reclaim_completed_lane(
             scope_roots, env, registered_targets=(Path(path) for path in registry)
         ),
     )
+    if (
+        allowed
+        and _is_reclaimable(target, resolved_root, cfg.lane_globs, registered=True)
+        == "checkout-state"
+    ):
+        # A lane may name a checkout's persistent target; its owner's removal
+        # retires it (`reclaim_checkout_state`), never a completed lane.
+        allowed, reason = False, "checkout-state"
     if not allowed:
         result.skipped.append({"path": str(target), "reason": reason})
         if reason == "lane-active":
@@ -1319,6 +1402,137 @@ def reclaim_completed_lane(
     }
     if apply and len(keep) != len(registry):
         _rewrite_registry(resolved_root, keep)
+    return result
+
+
+def collect(
+    *,
+    root: str | os.PathLike[str] | None = None,
+    env: Mapping[str, str] | None = None,
+) -> list[ReclaimResult]:
+    """The daily collection: retirement by policy, then reclaim under pressure.
+
+    The GC retires lane targets past their TTL and checkout state by last use
+    and owner. The pressure pass is a no-op above the high-water mark and
+    otherwise evicts the least recently used reclaimable roots until the free
+    target is met, as BuildKit keeps a minimum of free space.
+    """
+    return [gc(root=root, env=env), ensure_free(root=root, env=env)]
+
+
+def _checkout_state_candidates(
+    owner_root: Path, *, now: float, max_age_s: float, build_control: bool = False
+) -> list[Candidate]:
+    """Checkout state roots of ``owner_root`` that the retirement policy selects.
+
+    With ``build_control`` it selects only build-control roots, for the pass
+    that follows a GC's reclaimed targets.
+    """
+    return [
+        Candidate(
+            path=child,
+            kind="checkout-state",
+            mtime=checkout_state_last_use(child),
+            lock_held=_lock_held(child),
+            owner_root=owner_root,
+        )
+        for child in _checkout_state_dirs(owner_root)
+        if (not build_control or child.parent.name == "build-control")
+        and checkout_state_decision(child, owner_root, now=now, max_age_s=max_age_s)
+        is not None
+    ]
+
+
+def reclaim_checkout_state(
+    checkout: Path,
+    *,
+    root: str | os.PathLike[str] | None = None,
+    env: Mapping[str, str] | None = None,
+    apply: bool = True,
+) -> ReclaimResult:
+    """Immediately reclaim the state roots that a removed checkout owned (HF-313).
+
+    Each root's owner record must name ``checkout``, and the checkout must be
+    absent; a build-control root goes with the checkout target (or pinned
+    session) that owns it, once that target is gone or retired in this pass.
+    Retirement is the owner's explicit act, so it skips the protection window;
+    a held lock or a protected path still keeps a root.
+    """
+    env = os.environ if env is None else env
+    checkout = checkout.expanduser().resolve()
+    resolved_root = resolve_root(root, env=env)
+    scope_roots = reclaim_roots(resolved_root)
+    cfg = GuardConfig.from_env(env)
+    result = ReclaimResult(
+        root=str(resolved_root),
+        triggered=True,
+        free_before=0,
+        free_after=0,
+        scope_roots=[str(path) for path in scope_roots],
+        mode="apply" if apply else "dry-run",
+    )
+    registries = {owner_root: read_registry(owner_root) for owner_root in scope_roots}
+    protected = _protected_paths(
+        scope_roots,
+        env,
+        registered_targets=(
+            Path(path) for registry in registries.values() for path in registry
+        ),
+    )
+    component = checkout_component(checkout)
+    retired_targets: set[Path] = set()
+    for owner_root in scope_roots:
+        # Build control follows its target, so the targets go first.
+        children = sorted(
+            _checkout_state_dirs(owner_root),
+            key=lambda child: child.parent.name == "build-control",
+        )
+        for child in children:
+            owner = bound_checkout_owner(child.resolve(), owner_root.resolve())
+            if owner is None:
+                continue
+            target = checkout_target_of(owner)
+            if target is None:
+                if owner.path != checkout or not owner_is_absent(owner):
+                    continue
+            elif target.name != component or not (
+                target in retired_targets or owner_is_absent(owner)
+            ):
+                continue
+            candidate = Candidate(
+                path=child.resolve(),
+                kind="checkout-state",
+                mtime=checkout_state_last_use(child),
+                lock_held=_lock_held(child),
+                owner_root=owner_root,
+            )
+            allowed, reason = decide_completed_lane_reclaim(
+                candidate, completed=True, active=False, protected=protected
+            )
+            if not allowed:
+                result.skipped.append({"path": str(candidate.path), "reason": reason})
+                continue
+            assert_safe_to_delete(candidate.path, owner_root, cfg.lane_globs)
+            if apply:
+                ok, error = delete_path(candidate.path)
+                if not ok:
+                    result.errors.append(f"{candidate.path}: {error}")
+                    continue
+            result.reclaimed.append(
+                {"path": str(candidate.path), "kind": "checkout-state"}
+            )
+            if owner.kind == "cargo-target":
+                retired_targets.add(candidate.path)
+    if apply and result.reclaimed:
+        # Session targets registered inside a reclaimed checkout target go too.
+        for owner_root, registry in registries.items():
+            keep = {
+                norm: rec
+                for norm, rec in registry.items()
+                if Path(str(rec.get("path", ""))).is_dir()
+            }
+            if len(keep) != len(registry):
+                _rewrite_registry(owner_root, keep)
     return result
 
 
@@ -1367,6 +1581,8 @@ def _protected_paths(
         raw = str(env.get(name, "")).strip()
         if raw:
             protected.append(Path(raw).expanduser().resolve(strict=False))
+    # This interpreter's own environment, which may be a removed checkout's.
+    protected.append(Path(sys.prefix).resolve(strict=False))
     return protected
 
 
@@ -1577,7 +1793,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--gc",
         action="store_true",
-        help="TTL garbage-collect registered lane target dirs",
+        help="garbage-collect registered lane targets past their TTL and checkout "
+        "state roots by last use (MOLT_CHECKOUT_STATE_MAX_AGE_DAYS) or a removed owner",
     )
     ap.add_argument(
         "--register",

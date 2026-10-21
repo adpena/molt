@@ -251,6 +251,86 @@ admission is excluded; these few observations establish no whole-build speedup.
 This is compiler startup work; emitted native and WASM programs acquire no
 record machinery or additional runtime work.
 
+### 2.6 Checkout state retention (HF-313)
+
+Under a shared artifact root a checkout keeps regenerable state named by
+`molt.dx.checkout_component`: its Cargo target, its uv environments, its
+pytest cache and its Hypothesis home. Each Cargo target, and each pinned
+session below it, owns a build-control root named by
+`molt.build_state_layout.build_state_address`. The names are one-way hashes,
+so they cannot tell the disk guard who owns a root or whether anyone still
+uses it. On 2026-10-20 such roots of removed worktrees held 136.5 GiB on one
+external volume, 12.0 GiB on another and 8.2 GiB on the internal disk, and 613
+build-control roots held 9.2 GiB under one artifact root.
+
+Leading tools retire regenerable state by last use, not by ownership guesses:
+
+- Go's build cache sets an entry's mtime when it is used, at most once an hour,
+  and a trim runs at most once a day (`trim.txt`) and deletes entries unused
+  for 5 days, a limit chosen from measured reuse
+  ([cmd/go cache.go](https://go.googlesource.com/go/+/6b974e2bd3197bf6ff2245f5b24c0fccef352903/src/cmd/go/internal/cache/cache.go)).
+- Cargo records the last use of every global cache entry in a tracker with
+  deferred writes; build commands run an automatic GC once a day that deletes
+  data unused for 1 month (3 months for downloads), and `cargo clean gc`
+  applies age and size limits on demand. Entries that predate the tracker
+  enter it as used now and age out
+  ([global_cache_tracker.rs](https://doc.rust-lang.org/nightly/nightly-rustc/src/cargo/workspace/global_cache_tracker.rs.html),
+  [cache cleaning](https://blog.rust-lang.org/2023/12/11/cargo-cache-cleaning/)).
+- Bazel's disk cache GC applies a maximum size and age while the server idles
+  ([diskcache](https://bazel.googlesource.com/bazel/+/refs/heads/master/src/tools/diskcache/README.md)).
+- Bazel's output base, keyed like ours by a hash of the workspace path, keeps
+  the workspace path in a file inside it. Nix takes per-process temporary-root
+  leases only because its collector deletes by reachability, not by age
+  ([gc.cc](https://git.lix.systems/lix-project/lix/src/commit/85e3b9b87141669801f8feac18b0e7e308619cce/src/libstore/gc.cc)).
+
+Molt follows Go and Cargo. `molt.checkout_state` owns the layout
+(`CHECKOUT_STATE_CONTAINERS`), the projection of one checkout's roots, and two
+files inside each root:
+
+- `.molt-state-owner.json`, the owner record, published once (as Bazel does
+  for its output base) and only when it binds: the owner is an absolute
+  checkout path whose component the root's name carries, or, for build
+  control, the Cargo target whose address names the root.
+- `.molt-last-use`, a stamp that every use refreshes at most once an hour
+  (`record_checkout_state_use`): `RunContext.canonical_env` for every root of
+  its checkout, and a CLI build process, once, for the checkout target and the
+  build-control root it selects. A root's last use is its newest activity mtime (the root and its
+  immediate children, the stamp among them), so a use that writes nothing
+  still counts, and roots that predate this design age out like any other;
+  nothing guesses their owner.
+
+One policy decides retirement (`checkout_state_decision`); `tools/disk_guard.py`
+applies it through `assert_safe_to_delete` and `molt.file_deletion`:
+
+- A root idle past `MOLT_CHECKOUT_STATE_MAX_AGE_DAYS` (default 30, Cargo's
+  limit for locally recreatable data) is reclaimed whether its owner exists or
+  not; rebuilding it is the accepted cost.
+- A root whose recorded owner is gone, while the owner's parent exists, is
+  reclaimed once idle past the protection window (2 hours, above the stamp's
+  1-hour resolution). A missing parent may be an unmounted volume.
+- Under disk pressure, roots idle past the window are evicted oldest first
+  until the free-space target is met.
+- A held lock keeps a root: Cargo's per-profile `.cargo-lock` (Cargo locks
+  `<target>/<profile>` and `<target>/<triple>/<profile>`, and a pinned session
+  builds below its checkout target, never at the target root, which the
+  guard's earlier probe read), build control's build and diff
+  locks, and a backend daemon suite's owner lock. An explicit
+  `CARGO_TARGET_DIR` and the running interpreter's own environment keep a root
+  too. These are facts about live use; guard markers elsewhere in the artifact
+  root are not.
+- Build control follows its target: one GC retires the build control of the
+  targets it reclaimed, and worktree retirement reclaims the build control of
+  the removed checkout's target and sessions with them.
+
+The disk guard applies the policy at most once a day from
+`RunContext.canonical_env` (a stamp at `target/.molt-checkout-state-gc`, so the
+common case costs one `stat`), and on demand with `tools/disk_guard.py --gc`.
+Worktree retirement (`integrate --cleanup-worktree`) retires the worktree's
+daemons, removes it, and then reclaims its roots at once, without the idle
+window: it is the explicit owner action, as `bazel clean --expunge` is. A
+failed removal keeps the roots. Pinned session targets keep their registry TTL
+for now; folding them into this policy is the remaining step.
+
 ## 3. The structural facts/mechanisms to build (each tied to the class it retires)
 
 ### FACT-A: The recompile-blast-radius ratchet (retires DX-1)

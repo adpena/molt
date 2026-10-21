@@ -321,15 +321,15 @@ def guarded_pytest_cache_dir() -> Path:
     The queue owns each run's outputs. Direct worktrees keep separate caches,
     so sibling worktrees never overwrite each other's ``lastfailed``.
     """
-    from molt.dx import PROOF_SCRATCH_ROOT_ENV, checkout_component, control_state_dir
+    from molt.dx import PROOF_SCRATCH_ROOT_ENV
 
     if os.environ.get(PROOF_SCRATCH_ROOT_ENV, "").strip():
         from molt.temporary_artifacts import execution_scratch
 
         return execution_scratch(os.environ) / "pytest-cache"
-    return control_state_dir(
-        ROOT, f"pytest-cache/{checkout_component(ROOT)}", os.environ
-    )
+    from molt.checkout_state import checkout_scratch_state_dir
+
+    return checkout_scratch_state_dir("pytest-cache", ROOT, os.environ)
 
 
 def install_pytest_cache_dir_arg(args: list[str]) -> bool:

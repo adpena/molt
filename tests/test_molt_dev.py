@@ -1435,6 +1435,69 @@ def test_cleanup_retires_the_checkout_daemons_before_removing_it(
     assert not wt.exists()
 
 
+def _shared_checkout_state(ext: Path, checkout: Path) -> tuple[Path, Path]:
+    """A checkout's Cargo target and uv environment under a shared root."""
+    from molt import dx
+
+    target = dx.cargo_target_dir_for_artifact_root(ext, None, source_root=checkout)
+    uv_environment = dx.stable_uv_project_env_dir(
+        ext, purpose="dx", python="3.12", source_root=checkout
+    )
+    for root in (target, uv_environment):
+        root.mkdir(parents=True)
+        (root / "payload.bin").write_bytes(b"\0" * 64)
+    (uv_environment / "pyvenv.cfg").write_text("home = /x\n", encoding="utf-8")
+    return target, uv_environment
+
+
+def test_cleanup_retires_the_checkouts_state_with_it(
+    drv, origin_and_clone, tmp_path, monkeypatch
+):
+    origin, _work = origin_and_clone
+    wt = _worktree_off(origin, tmp_path, "wt_state")
+    ext = tmp_path / "artifacts"
+    ext.mkdir()
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(ext))
+    target, uv_environment = _shared_checkout_state(ext, wt)
+    sibling_target, sibling_uv = _shared_checkout_state(ext, tmp_path / "mainclone")
+    rc = drv._cleanup_worktree(
+        drv.Git(wt), wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=None
+    )
+    assert rc == drv.EXIT_OK
+    assert not wt.exists()
+    assert not target.exists() and not uv_environment.exists()
+    assert sibling_target.is_dir() and sibling_uv.is_dir()
+
+
+def test_failed_worktree_removal_keeps_the_checkouts_state(
+    drv, origin_and_clone, tmp_path, monkeypatch
+):
+    from molt import checkout_state
+
+    origin, _work = origin_and_clone
+    wt = _worktree_off(origin, tmp_path, "wt_state_kept")
+    ext = tmp_path / "artifacts"
+    ext.mkdir()
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(ext))
+    target, uv_environment = _shared_checkout_state(ext, wt)
+    real = drv._run_fast_captured_command
+
+    def refuse_removal(command, **kwargs):
+        if command[3:5] == ["worktree", "remove"]:
+            return subprocess.CompletedProcess(command, 1, "", "locked")
+        return real(command, **kwargs)
+
+    monkeypatch.setattr(drv, "_run_fast_captured_command", refuse_removal)
+    rc = drv._cleanup_worktree(
+        drv.Git(wt), wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=None
+    )
+    assert rc == drv.EXIT_FAIL
+    assert wt.is_dir() and target.is_dir() and uv_environment.is_dir()
+    # The roots were bound while the checkout existed, so a later removal of
+    # the checkout lets the disk guard reclaim them.
+    assert checkout_state.read_checkout_owner(target).path == wt.resolve()
+
+
 def test_cleanup_refuses_unpushed(drv, origin_and_clone, tmp_path):
     origin, _work = origin_and_clone
     wt = _worktree_off(origin, tmp_path, "wt_unpushed")

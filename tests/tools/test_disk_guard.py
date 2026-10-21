@@ -575,7 +575,7 @@ def test_lock_held_dir_never_reclaimed(tmp_path):
             pytest.skip("could not establish a held lock on this platform")
 
         # The guard's probe must observe the held lock.
-        assert dg._cargo_lock_held(d) is True
+        assert dg._lock_held(d) is True
         vol = _SimulatedVolume(start_free=1 * _GB, sized={d: 100 * _GB})
         result = dg.ensure_free(
             root=str(tmp_path),
@@ -947,3 +947,620 @@ def test_pinned_checkout_session_is_protected_without_target_alias(tmp_path, ope
     assert result.reclaimed == []
     if operation != "gc":
         assert any(row["reason"] == "protected" for row in result.skipped)
+
+
+# --- HF-313: checkout state retires by last use and by its removed owner ------
+
+HOUR, DAY = 3600.0, 86400.0
+
+
+def _checkout_state(ext: Path, checkout: Path) -> dict[str, Path]:
+    """Materialize each state root through the producer that places it."""
+    from molt import checkout_state
+
+    env = {"MOLT_EXT_ROOT": str(ext)}
+    roots = {
+        "cargo-target": dx.cargo_target_dir_for_artifact_root(
+            ext, None, source_root=checkout
+        ),
+        "uv-environment": dx.stable_uv_project_env_dir(
+            ext, purpose="dx", python="3.12", source_root=checkout
+        ),
+        "pytest-cache": checkout_state.checkout_scratch_state_dir(
+            "pytest-cache", checkout, env
+        ),
+        "hypothesis-home": checkout_state.checkout_scratch_state_dir(
+            "hypothesis-home", checkout, env
+        ),
+    }
+    from molt.build_state_layout import build_state_root
+
+    roots["build-control"] = build_state_root(
+        project_root=checkout,
+        cargo_target=roots["cargo-target"],
+        environment=env,
+    )
+    for root in roots.values():
+        root.mkdir(parents=True)
+        (root / "payload.bin").write_bytes(b"\0" * 64)
+    (roots["uv-environment"] / "pyvenv.cfg").write_text("home = /x\n", "utf-8")
+    return roots
+
+
+def _checkout_family(tmp_path: Path) -> tuple[Path, Path, dict[str, str]]:
+    ext = tmp_path / "artifacts"
+    projects = tmp_path / "projects"
+    ext.mkdir()
+    projects.mkdir()
+    return ext, projects, {"MOLT_EXT_ROOT": str(ext)}
+
+
+def _last_used(roots, seconds_ago: float, now: float) -> None:
+    """Set every root's stamp and activity to ``seconds_ago`` before ``now``."""
+    stamp = now - seconds_ago
+    for root in roots:
+        for path in (*root.iterdir(), root):
+            os.utime(path, (stamp, stamp), follow_symlinks=False)
+
+
+def _gc(ext: Path, env: dict[str, str], now: float):
+    return dg.gc(root=ext, config=_cfg(), env=env, now_fn=lambda: now, log=False)
+
+
+def _reclaimed(result) -> set[str]:
+    return {row["path"] for row in result.reclaimed}
+
+
+def _resolved(roots) -> set[str]:
+    return {str(path.resolve()) for path in roots}
+
+
+def test_producers_place_checkout_state_where_the_guard_looks(tmp_path):
+    from molt import checkout_state
+
+    ext, projects, env = _checkout_family(tmp_path)
+    checkout = projects / "alpha"
+    checkout.mkdir()
+    roots = _checkout_state(ext, checkout)
+    found = {
+        state.kind: state.path
+        for state in checkout_state.checkout_state_roots(checkout, env)
+    }
+    assert found == {kind: path.resolve() for kind, path in roots.items()}
+    assert {p.resolve() for p in dg._checkout_state_dirs(ext)} == set(found.values())
+    for kind, path in found.items():
+        assert checkout_state.checkout_state_kind_of(path, ext.resolve()) == kind
+
+
+def test_a_removed_checkouts_state_retires_after_the_protection_window(tmp_path):
+    import time
+
+    from molt import checkout_state
+
+    ext, projects, env = _checkout_family(tmp_path)
+    gone, recent, live = projects / "gone", projects / "recent", projects / "live"
+    for checkout in (gone, recent, live):
+        checkout.mkdir()
+    gone_roots = _checkout_state(ext, gone)
+    recent_roots = _checkout_state(ext, recent)
+    live_roots = _checkout_state(ext, live)
+    # A root without an owner record has no proven owner, even if it is gone.
+    unrecorded = _checkout_state(ext, projects / "never-stamped")
+    for checkout in (gone, recent, live):
+        stamped = checkout_state.stamp_checkout_state(checkout, env)
+        assert len(stamped) == 5
+    gone.rmdir()
+    recent.rmdir()
+    now = time.time()
+    _last_used([*gone_roots.values(), *live_roots.values()], 3 * HOUR, now)
+    _last_used(unrecorded.values(), 3 * HOUR, now)
+    _last_used(recent_roots.values(), 1 * HOUR, now)
+
+    result = _gc(ext, env, now)
+
+    assert _reclaimed(result) == _resolved(gone_roots.values())
+    assert {row["kind"] for row in result.reclaimed} == {"checkout-state"}
+    kept = (*recent_roots.values(), *live_roots.values(), *unrecorded.values())
+    assert all(path.is_dir() for path in kept)
+    assert _gc(ext, env, now).reclaimed == []
+
+
+def test_any_checkout_state_retires_once_unused_past_the_max_age(tmp_path):
+    import time
+
+    from molt import checkout_state
+
+    ext, projects, env = _checkout_family(tmp_path)
+    old, young = projects / "old", projects / "young"
+    old.mkdir()
+    young.mkdir()
+    old_roots = _checkout_state(ext, old)
+    young_roots = _checkout_state(ext, young)
+    checkout_state.stamp_checkout_state(old, env)
+    checkout_state.stamp_checkout_state(young, env)
+    # A root from before stamps existed ages by its own activity.
+    legacy = _checkout_state(ext, projects / "legacy")
+    now = time.time()
+    _last_used([*old_roots.values(), *legacy.values()], 31 * DAY, now)
+    _last_used(young_roots.values(), 29 * DAY, now)
+
+    result = _gc(ext, env, now)
+
+    # The owner of `old` still exists: an unused cache retires anyway.
+    assert _reclaimed(result) == _resolved([*old_roots.values(), *legacy.values()])
+    assert all(path.is_dir() for path in young_roots.values())
+    shorter = {**env, checkout_state.MAX_AGE_ENV: "28"}
+    assert _reclaimed(_gc(ext, shorter, now)) == _resolved(young_roots.values())
+
+
+@pytest.mark.parametrize("raw", ["0", "-3", "soon", "nan", "inf"])
+def test_an_invalid_max_age_fails_the_collection(tmp_path, raw):
+    from molt import checkout_state
+
+    ext, _projects, env = _checkout_family(tmp_path)
+    with pytest.raises(ValueError, match=checkout_state.MAX_AGE_ENV):
+        _gc(ext, {**env, checkout_state.MAX_AGE_ENV: raw}, 0.0)
+
+
+def test_last_use_counts_a_write_that_left_the_stamp_old(tmp_path):
+    import time
+
+    from molt import checkout_state
+
+    ext, projects, env = _checkout_family(tmp_path)
+    checkout = projects / "alpha"
+    checkout.mkdir()
+    roots = _checkout_state(ext, checkout)
+    checkout_state.stamp_checkout_state(checkout, env)
+    target = roots["cargo-target"]
+    now = time.time()
+    _last_used([target], 40 * DAY, now)
+    # A build wrote the target without stamping it.
+    fresh = target / "debug"
+    fresh.mkdir()
+    os.utime(target, (now - 40 * DAY, now - 40 * DAY))
+    os.utime(fresh, (now - HOUR, now - HOUR))
+    assert checkout_state.checkout_state_last_use(target) == pytest.approx(now - HOUR)
+    assert str(target.resolve()) not in _reclaimed(_gc(ext, env, now))
+
+
+def test_a_use_rewrites_the_stamp_at_most_once_per_resolution(tmp_path):
+    from molt import checkout_state
+
+    root = tmp_path / "artifacts" / "target" / "checkouts" / "alpha-0123456789ab"
+    checkout_state.record_checkout_state_use(root, now=1_000.0)
+    assert not root.exists(), "recording a use never creates a root"
+    root.mkdir(parents=True)
+    stamp = root / checkout_state.LAST_USE_STAMP
+    checkout_state.record_checkout_state_use(root, now=1_000_000.0)
+    assert stamp.stat().st_mtime == 1_000_000.0
+    checkout_state.record_checkout_state_use(root, now=1_000_000.0 + 0.5 * HOUR)
+    assert stamp.stat().st_mtime == 1_000_000.0
+    checkout_state.record_checkout_state_use(root, now=1_000_000.0 + 1.5 * HOUR)
+    assert stamp.stat().st_mtime == 1_000_000.0 + 1.5 * HOUR
+    session = root / "sessions" / "shard-7"
+    session.mkdir(parents=True)
+    stamp.unlink()
+    checkout_state.record_checkout_target_use(session, checkout=tmp_path / "x")
+    assert stamp.is_file(), "a pinned session's use marks its checkout target"
+    # The root's name is not checkout x's component: no record binds it to x.
+    assert not (root / checkout_state.OWNER_RECORD).exists()
+
+
+def _forge(record: Path, **changes) -> None:
+    payload = json.loads(record.read_text(encoding="utf-8"))
+    payload.update(changes)
+    record.write_text(json.dumps(payload), encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "component",
+        "kind",
+        "relative",
+        "extra-key",
+        "owner-present",
+        "owner-volume-missing",
+        "foreign-record",
+    ],
+)
+def test_a_root_without_exact_owner_proof_waits_for_the_max_age(tmp_path, case):
+    import time
+
+    from molt import checkout_state
+
+    ext, projects, env = _checkout_family(tmp_path)
+    gone = projects / "gone"
+    gone.mkdir()
+    roots = _checkout_state(ext, gone)
+    checkout_state.stamp_checkout_state(gone, env)
+    # A pytest cache and a Cargo target are both named by the component, so
+    # only the kind binding refuses a record of the other kind.
+    target = roots["pytest-cache" if case == "kind" else "cargo-target"]
+    record = target / checkout_state.OWNER_RECORD
+    if case == "component":
+        # A real, absent checkout whose component is not this root's name.
+        _forge(record, owner=str(projects / "elsewhere"))
+    elif case == "kind":
+        _forge(record, kind="cargo-target")
+    elif case == "relative":
+        _forge(record, owner="projects/gone")
+    elif case == "extra-key":
+        _forge(record, note="x")
+    elif case == "foreign-record":
+        # A valid record copied from another checkout's target.
+        other = projects / "other"
+        other.mkdir()
+        other_roots = _checkout_state(ext, other)
+        checkout_state.stamp_checkout_state(other, env)
+        record.write_bytes(
+            (other_roots["cargo-target"] / checkout_state.OWNER_RECORD).read_bytes()
+        )
+        other.rmdir()
+    if case != "owner-present":
+        gone.rmdir()
+    if case == "owner-volume-missing":
+        # The owner's parent is gone too, as for an unmounted volume.
+        unmounted = tmp_path / "volume" / "gone"
+        _forge(record, owner=str(unmounted))
+        moved = target.parent / dx.checkout_component(unmounted)
+        target.rename(moved)
+        target = moved
+    now = time.time()
+    _last_used([target], 3 * HOUR, now)
+    assert str(target.resolve()) not in _reclaimed(_gc(ext, env, now))
+    assert target.is_dir()
+    _last_used([target], 31 * DAY, now)
+    assert str(target.resolve()) in _reclaimed(_gc(ext, env, now))
+
+
+def test_foreign_and_symlinked_entries_are_never_checkout_state(tmp_path):
+    import time
+
+    from molt import checkout_state
+
+    ext, projects, env = _checkout_family(tmp_path)
+    gone = projects / "gone"
+    gone.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    roots = _checkout_state(elsewhere, gone)
+    checkout_state.stamp_checkout_state(gone, {"MOLT_EXT_ROOT": str(elsewhere)})
+    gone.rmdir()
+    containers = ext / "target" / "checkouts"
+    containers.mkdir(parents=True)
+    link = containers / dx.checkout_component(gone)
+    link.symlink_to(roots["cargo-target"], target_is_directory=True)
+    foreign = [
+        containers / "notes",
+        ext / "uv-project-envs" / "my-env",
+        containers / "x",
+    ]
+    for path in foreign:
+        path.mkdir(parents=True)
+    now = time.time()
+    _last_used([roots["cargo-target"], *foreign], 60 * DAY, now)
+    for path in foreign:
+        assert dg._is_reclaimable(path, ext, dg.DEFAULT_LANE_GLOBS) is None
+    assert _gc(ext, env, now).reclaimed == []
+    assert (roots["cargo-target"] / "payload.bin").is_file()
+    assert all(path.is_dir() for path in foreign)
+
+
+def test_live_use_keeps_checkout_state_from_every_reclaim(tmp_path):
+    import time
+
+    from molt import checkout_state
+
+    ext, projects, env = _checkout_family(tmp_path)
+    gone = projects / "gone"
+    gone.mkdir()
+    roots = _checkout_state(ext, gone)
+    checkout_state.stamp_checkout_state(gone, env)
+    gone.rmdir()
+    target = roots["cargo-target"]
+    now = time.time()
+    _last_used(roots.values(), 60 * DAY, now)
+    protected = {**env, "CARGO_TARGET_DIR": str(target)}
+    assert str(target.resolve()) not in _reclaimed(_gc(ext, protected, now))
+    retired = dg.reclaim_checkout_state(gone, root=ext, env=protected)
+    assert {row["path"]: row["reason"] for row in retired.skipped} == {
+        str(target.resolve()): "protected"
+    }
+    if os.name == "nt":
+        return
+    import fcntl
+
+    other = projects / "other"
+    other.mkdir()
+    other_roots = _checkout_state(ext, other)
+    checkout_state.stamp_checkout_state(other, env)
+    other.rmdir()
+    locked = other_roots["cargo-target"]
+    _last_used(other_roots.values(), 60 * DAY, now)
+    with open(locked / ".cargo-lock", "a+b") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        os.utime(locked / ".cargo-lock", (now - 60 * DAY, now - 60 * DAY))
+        assert str(locked.resolve()) not in _reclaimed(_gc(ext, env, now))
+        retired = dg.reclaim_checkout_state(other, root=ext, env=env)
+        assert {row["path"]: row["reason"] for row in retired.skipped} == {
+            str(locked.resolve()): "lock-held"
+        }
+
+
+def test_pressure_evicts_checkout_state_by_last_use_outside_the_window(tmp_path):
+    import time
+
+    from molt import checkout_state
+
+    ext, projects, env = _checkout_family(tmp_path)
+    ages = {"oldest": 20 * DAY, "older": 10 * DAY, "recent": 1 * HOUR}
+    roots = {}
+    for name, age in ages.items():
+        checkout = projects / name
+        checkout.mkdir()
+        roots[name] = _checkout_state(ext, checkout)["cargo-target"]
+        checkout_state.stamp_checkout_state(checkout, env)
+    now = time.time()
+    for name, age in ages.items():
+        _last_used([roots[name]], age, now)
+    # Freeing the oldest root alone meets the target.
+    volume = _SimulatedVolume(
+        start_free=1 * _GB, sized={roots["oldest"]: 50 * _GB, roots["older"]: 50 * _GB}
+    )
+    result = dg.ensure_free(
+        root=ext, config=_cfg(), env=env, free_bytes_fn=volume, now_fn=lambda: now
+    )
+    assert _reclaimed(result) == {str(roots["oldest"].resolve())}
+    assert roots["older"].is_dir() and roots["recent"].is_dir()
+    volume.start_free = -100 * _GB
+    again = dg.ensure_free(
+        root=ext, config=_cfg(), env=env, free_bytes_fn=volume, now_fn=lambda: now
+    )
+    assert _reclaimed(again) == {str(roots["older"].resolve())}
+    assert roots["recent"].is_dir(), "a root used within the window survives pressure"
+
+
+def test_retirement_reclaims_only_its_checkouts_state_at_once(tmp_path):
+    from molt import checkout_state
+    from molt.memory_guard_paths import active_guard_marker_dirs_of
+
+    ext, projects, env = _checkout_family(tmp_path)
+    retired, earlier = projects / "retired", projects / "earlier"
+    retired.mkdir()
+    earlier.mkdir()
+    retired_roots = _checkout_state(ext, retired)
+    earlier_roots = _checkout_state(ext, earlier)
+    checkout_state.stamp_checkout_state(retired, env)
+    checkout_state.stamp_checkout_state(earlier, env)
+    retired.rmdir()
+    earlier.rmdir()
+    # A guard elsewhere in the artifact root says nothing about these roots.
+    markers = active_guard_marker_dirs_of(ext)[0]
+    markers.mkdir(parents=True)
+    _guard_marker(markers, 4242, "child_running")
+
+    dry = dg.reclaim_checkout_state(retired, root=ext, env=env, apply=False)
+    assert len(dry.reclaimed) == 5 and all(p.is_dir() for p in retired_roots.values())
+    result = dg.reclaim_checkout_state(retired, root=ext, env=env)
+    assert _reclaimed(result) == _resolved(retired_roots.values())
+    assert not any(path.exists() for path in retired_roots.values())
+    # Fresh state of another removed checkout waits for the protection window.
+    assert all(path.is_dir() for path in earlier_roots.values())
+
+
+def test_the_running_interpreters_environment_is_never_reclaimed(tmp_path):
+    import venv
+
+    from molt import checkout_state
+    from tests.process_guard_common import run_guarded_test_process
+
+    ext, projects, env = _checkout_family(tmp_path)
+    gone = projects / "gone"
+    gone.mkdir()
+    roots = _checkout_state(ext, gone)
+    # The retiring process may run from the uv environment of its checkout.
+    venv.create(roots["uv-environment"], with_pip=False, symlinks=os.name != "nt")
+    checkout_state.stamp_checkout_state(gone, env)
+    gone.rmdir()
+    python = roots["uv-environment"] / (
+        "Scripts/python.exe" if os.name == "nt" else "bin/python"
+    )
+    code = (
+        "import json, sys; from pathlib import Path\n"
+        f"sys.path.insert(0, {str(ROOT)!r})\n"
+        "import tools.disk_guard as dg\n"
+        "r = dg.reclaim_checkout_state(Path(sys.argv[1]), root=sys.argv[2], env={})\n"
+        "print(json.dumps([sys.prefix, r.skipped, r.reclaimed]))\n"
+    )
+    completed = run_guarded_test_process(
+        [str(python), "-c", code, str(gone), str(ext)], cwd=tmp_path, timeout=120
+    )
+    assert completed.returncode == 0, completed.stderr
+    prefix, skipped, reclaimed = json.loads(completed.stdout.splitlines()[-1])
+    assert Path(prefix).resolve() == roots["uv-environment"].resolve()
+    assert {row["path"]: row["reason"] for row in skipped} == {
+        str(roots["uv-environment"].resolve()): "protected"
+    }
+    assert roots["uv-environment"].is_dir()
+    assert len(reclaimed) == 4 and not roots["cargo-target"].exists()
+
+
+def test_dx_collects_idle_checkout_state_at_most_once_a_day(tmp_path):
+    import time
+
+    from molt import checkout_state
+    from tests.process_guard_common import run_guarded_test_process
+
+    ext, projects, env = _checkout_family(tmp_path)
+    gone, user = projects / "gone", projects / "user"
+    gone.mkdir()
+    user.mkdir()
+    gone_roots = _checkout_state(ext, gone)
+    checkout_state.stamp_checkout_state(gone, env)
+    gone.rmdir()
+    now = time.time()
+    _last_used(gone_roots.values(), 3 * HOUR, now)
+    code = (
+        "import sys; from pathlib import Path\n"
+        f"sys.path.insert(0, {str(ROOT / 'src')!r})\n"
+        "from molt.dx import RunContext\n"
+        "RunContext(Path(sys.argv[1]), session_prefix='t').canonical_env(\n"
+        "    {'MOLT_EXT_ROOT': sys.argv[2], 'PATH': '/usr/bin:/bin'}, create_dirs=True)\n"
+    )
+    # canonical_env collects only outside pytest, as for lane registration.
+    clean = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("PYTEST_", "MOLT_PYTEST_"))
+    }
+
+    def run() -> None:
+        completed = run_guarded_test_process(
+            [sys.executable, "-c", code, str(user), str(ext)],
+            cwd=tmp_path,
+            env=clean,
+            timeout=120,
+        )
+        assert completed.returncode == 0, completed.stderr
+
+    run()
+    assert not any(path.exists() for path in gone_roots.values())
+    assert ext.joinpath(*checkout_state.GC_STAMP).is_file()
+    # The next idle orphan waits for tomorrow's collection.
+    later = projects / "later"
+    later.mkdir()
+    later_roots = _checkout_state(ext, later)
+    checkout_state.stamp_checkout_state(later, env)
+    later.rmdir()
+    _last_used(later_roots.values(), 3 * HOUR, now)
+    run()
+    assert all(path.is_dir() for path in later_roots.values())
+    assert not checkout_state.checkout_state_gc_due(ext)
+    assert checkout_state.checkout_state_gc_due(ext, now=now + 25 * HOUR)
+
+
+def test_the_daily_collection_also_relieves_disk_pressure(tmp_path):
+    import time
+
+    from molt import checkout_state
+    from molt.disk_capacity import DISK_GUARD_HIGH_WATER_ENV
+
+    ext, projects, env = _checkout_family(tmp_path)
+    idle, fresh = projects / "idle", projects / "fresh"
+    idle.mkdir()
+    fresh.mkdir()
+    idle_roots = _checkout_state(ext, idle)
+    fresh_roots = _checkout_state(ext, fresh)
+    checkout_state.stamp_checkout_state(idle, env)
+    checkout_state.stamp_checkout_state(fresh, env)
+    now = time.time()
+    _last_used(idle_roots.values(), 3 * HOUR, now)
+    calm = dg.collect(root=ext, env=env)
+    # Both owners exist and neither root is past the max age: the GC keeps
+    # them, and the pressure pass does nothing above the high-water mark.
+    assert [result.reclaimed for result in calm] == [[], []]
+    # A high-water mark above any real volume puts the root under pressure.
+    pressed = {
+        **env,
+        DISK_GUARD_HIGH_WATER_ENV: "1000000000",
+        dg.ENV_TARGET: "1000000001",
+    }
+    gc_result, pressure = dg.collect(root=ext, env=pressed)
+    assert gc_result.reclaimed == []
+    assert _reclaimed(pressure) == _resolved(idle_roots.values())
+    assert all(path.is_dir() for path in fresh_roots.values())
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX flock")
+@pytest.mark.parametrize(
+    "kind,lock",
+    [
+        ("cargo-target", ".cargo-lock"),
+        ("cargo-target", "debug/.cargo-lock"),
+        ("cargo-target", "wasm32-wasip1/dev-fast/.cargo-lock"),
+        ("cargo-target", "sessions/shard-7/debug/.cargo-lock"),
+        ("cargo-target", "sessions/shard-7/wasm32-wasip1/release/.cargo-lock"),
+        ("build-control", "build_locks/runtime.dev-fast.native.lock"),
+        ("build-control", "diff_run.lock"),
+        ("build-control", "backend_daemon/suite-leases/0123abcd/owner.lock"),
+    ],
+)
+def test_a_held_lock_below_a_root_keeps_it(tmp_path, kind, lock):
+    import fcntl
+    import time
+
+    from molt import checkout_state
+
+    ext, projects, env = _checkout_family(tmp_path)
+    gone = projects / "gone"
+    gone.mkdir()
+    roots = _checkout_state(ext, gone)
+    checkout_state.stamp_checkout_state(gone, env)
+    gone.rmdir()
+    root = roots[kind]
+    held = root / lock
+    held.parent.mkdir(parents=True, exist_ok=True)
+    held.write_bytes(b"")
+    now = time.time()
+    _last_used(roots.values(), 60 * DAY, now)
+    with open(held, "a+b") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert dg._lock_held(root)
+        assert str(root.resolve()) not in _reclaimed(_gc(ext, env, now))
+        assert root.is_dir()
+    assert not dg._lock_held(root)
+    assert str(root.resolve()) in _reclaimed(_gc(ext, env, now))
+
+
+def test_build_control_binds_only_to_the_target_that_names_it(tmp_path):
+    import time
+
+    from molt import checkout_state
+
+    ext, projects, env = _checkout_family(tmp_path)
+    gone, other = projects / "gone", projects / "other"
+    gone.mkdir()
+    other.mkdir()
+    roots = _checkout_state(ext, gone)
+    other_roots = _checkout_state(ext, other)
+    checkout_state.stamp_checkout_state(gone, env)
+    checkout_state.stamp_checkout_state(other, env)
+    control = roots["build-control"]
+    owner = checkout_state.read_checkout_owner(control)
+    assert owner == checkout_state.CheckoutOwner(
+        roots["cargo-target"].resolve(), "build-control"
+    )
+    # A valid record from another target's build control does not bind here.
+    (control / checkout_state.OWNER_RECORD).write_bytes(
+        (other_roots["build-control"] / checkout_state.OWNER_RECORD).read_bytes()
+    )
+    gone.rmdir()
+    other.rmdir()
+    now = time.time()
+    _last_used([*roots.values(), *other_roots.values()], 3 * HOUR, now)
+    reclaimed = _reclaimed(_gc(ext, env, now))
+    assert str(control.resolve()) not in reclaimed
+    assert str(other_roots["build-control"].resolve()) in reclaimed
+
+
+def test_a_lane_that_registers_a_checkout_target_never_retires_it(tmp_path):
+    import time
+
+    from molt import checkout_state
+
+    ext, projects, env = _checkout_family(tmp_path)
+    live = projects / "live"
+    live.mkdir()
+    roots = _checkout_state(ext, live)
+    checkout_state.stamp_checkout_state(live, env)
+    target = roots["cargo-target"]
+    now = time.time()
+    # lane_maturity registers whatever CARGO_TARGET_DIR names, here the
+    # checkout's persistent target, long enough ago for the lane TTL.
+    dg.register_lane_target(target, root=ext, env=env, now=now - 30 * HOUR)
+    _last_used(roots.values(), 3 * HOUR, now)
+    assert str(target.resolve()) not in _reclaimed(_gc(ext, env, now))
+    completed = dg.reclaim_completed_lane(target, root=ext, env=env)
+    assert {row["reason"] for row in completed.skipped} == {"checkout-state"}
+    assert target.is_dir()

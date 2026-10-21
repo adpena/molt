@@ -751,6 +751,14 @@ owner = "runtime/molt-runtime/src/cpython_abi_hooks.rs"
 summary = "tools/benchmark_cext_trampoline.py sets it on Windows to the single-bit process affinity mask for the timed child, and configure_cext_benchmark_process in cpython_abi_hooks.rs applies that mask as a usize and panics when it is unset, non-numeric, holds more than one bit, or disagrees with MOLT_CEXT_BENCH_TARGET_CPU."
 
 [[variable]]
+name = "MOLT_CHECKOUT_STATE_MAX_AGE_DAYS"
+audience = "user"
+kind = "float"
+default = "30"
+owner = "src/molt/checkout_state.py"
+summary = "Days a checkout's state root under a shared artifact root (its Cargo target, uv environments, pytest cache, Hypothesis home and its targets' build control) may stay unused before the disk guard retires it, default 30, Cargo's limit for locally recreatable data; a root whose recorded owner is gone retires once unused for two hours. A positive number; anything else fails the collection."
+
+[[variable]]
 name = "MOLT_CHECK_TIR_TRANSLATION"
 audience = "user"
 kind = "bool"
@@ -2187,7 +2195,7 @@ audience = "user"
 kind = "bool"
 default = "0"
 owner = "src/molt/dx.py"
-summary = "Turns off the artifact-root disk guard; 1, true, yes or on stops tools/disk_guard.py reclaiming space and stops src/molt/dx.py registering per-lane Cargo target directories for TTL garbage collection, default off."
+summary = "Turns off the artifact-root disk guard; 1, true, yes or on stops tools/disk_guard.py reclaiming space, and stops src/molt/dx.py registering per-lane Cargo target directories for TTL garbage collection and running the daily checkout state collection, default off."
 
 [[variable]]
 name = "MOLT_DISABLE_ESCAPE_ANALYSIS"
