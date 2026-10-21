@@ -1350,6 +1350,7 @@ def test_llvm_report_distinguishes_windows_clang_without_config(
             inkwell_feature="llvm22-1",
             inkwell_manifest="runtime/molt-backend-native/Cargo.toml",
             llvm_sys_version="221.0.1",
+            default_release="22.1.8",
         ),
         raising=True,
     )
@@ -1543,6 +1544,7 @@ def test_llvm_detection_rejects_mismatched_config_major(
             inkwell_feature="llvm22-1",
             inkwell_manifest="runtime/molt-backend-native/Cargo.toml",
             llvm_sys_version="221.0.1",
+            default_release="22.1.8",
         ),
         raising=True,
     )

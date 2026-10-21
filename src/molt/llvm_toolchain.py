@@ -72,14 +72,13 @@ class LlvmBackendPin:
     inkwell_feature: str
     inkwell_manifest: str
     llvm_sys_version: str | None
+    # The release the pinning checkout's own manifest selects for this pin,
+    # resolved from that checkout, never from the running code's tree.
+    default_release: str
 
     @property
     def env_var(self) -> str:
         return llvm_sys_prefix_env_var(self.major, self.minor)
-
-    @property
-    def default_release(self) -> str:
-        return default_llvm_release(self.major, self.minor)
 
 
 @dataclass(frozen=True)
@@ -1095,6 +1094,7 @@ def required_llvm_backend_pin(root: Path) -> LlvmBackendPin | None:
         inkwell_feature=feature,
         inkwell_manifest=str(inkwell_manifest_path),
         llvm_sys_version=llvm_sys_version,
+        default_release=default_llvm_release(major, minor, root=root),
     )
 
 
@@ -1135,8 +1135,10 @@ def llvm_sys_prefix_env_var_for_version(version: str) -> str:
     return llvm_sys_prefix_env_var(major, minor)
 
 
-def default_llvm_release(major: int, minor: int = 1) -> str:
-    manifest = load_llvm_releases()
+def default_llvm_release(
+    major: int, minor: int = 1, *, root: Path | None = None
+) -> str:
+    manifest = load_llvm_releases(root)
     selected = next(
         (
             release.version
