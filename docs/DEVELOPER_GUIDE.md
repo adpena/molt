@@ -658,7 +658,10 @@ If you want to modify Molt, follow these steps:
     UV_NO_SYNC=1 UV_CACHE_DIR=$PWD/.uv-cache uv run --python 3.12 python3 tools/dev.py test
     ```
     Multi-Python benchmark and measurement lanes should isolate their uv project
-    environment instead of rewriting the shared repo `.venv`:
+    environment instead of rewriting the shared repo `.venv`. Interpreter and
+    purpose select that environment independently of the persistent Cargo target.
+    Set `MOLT_SESSION_ID` explicitly when a lane requires isolated build artifacts;
+    an explicit `CARGO_TARGET_DIR` remains caller-owned:
     ```bash
     uv run --python 3.12 python3 tools/uv_project_env.py \
       --python 3.14 --purpose output-startup-size -- \

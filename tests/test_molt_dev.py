@@ -540,6 +540,154 @@ def test_committed_gate_manifest_is_valid(drv):
     assert "wasm-host" in names
 
 
+def _selected_pytest_targets(cfg, paths):
+    gates, _ = cfg.select(paths)
+    return {
+        argument
+        for gate in gates
+        if isinstance(gate.command, tuple) and "pytest" in gate.command
+        for argument in gate.command
+        if argument.startswith("tests/")
+    }
+
+
+def test_scanner_gate_edits_select_direct_owners_without_ci_siblings(drv):
+    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    paths = [
+        "docs/design/foundation/56_dx_buildspeed_tooling.md",
+        "tools/check_generator_manifest.py",
+        "tools/structural_audit.py",
+        "tests/test_generator_manifest.py",
+        "tests/test_structural_audit.py",
+    ]
+    assert _selected_pytest_targets(cfg, paths) == {
+        "tests/tools/test_import_file.py",
+        "tests/test_generator_manifest.py",
+        "tests/test_structural_audit.py",
+        "tests/tools/test_structural_audit_records.py",
+    }
+    gates, _ = cfg.select(paths)
+    # Narrowing the consumer run must retain every independent always gate.
+    assert {gate.command for gate in gates} >= set(cfg.always)
+    assert "python tools/check_docs_architecture.py" in {gate.command for gate in gates}
+
+
+@pytest.mark.parametrize(
+    "source,owner",
+    [
+        ("tools/encoding_gate.py", "tests/tools/test_encoding_gate.py"),
+        ("tools/check_ratio_direction.py", "tests/tools/test_signed_ratio.py"),
+        (
+            "tools/check_subprocess_guard_coverage.py",
+            "tests/tools/test_subprocess_guard_coverage.py",
+        ),
+        (
+            "tools/check_environment_registry.py",
+            "tests/tools/test_check_environment_registry.py",
+        ),
+        ("tools/gen_cpython_coverage.py", "tests/tools/test_gen_cpython_coverage.py"),
+        ("tools/gen_stringprep_tables.py", "tests/test_gen_stringprep_tables.py"),
+        ("tools/check_generator_manifest.py", "tests/test_generator_manifest.py"),
+    ],
+)
+def test_scanner_leaf_source_and_test_select_their_owner(drv, source, owner):
+    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    for path in (source, owner):
+        assert _selected_pytest_targets(cfg, [path]) == {
+            "tests/tools/test_import_file.py",
+            owner,
+        }
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "tools/structural_audit.py",
+        "tools/structural_audit_rust_admission.py",
+        "tools/structural_audit_rust_domains.py",
+        "src/molt/rust_source_scan.py",
+    ],
+)
+def test_structural_audit_producers_select_all_parser_consumers(drv, source):
+    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    assert _selected_pytest_targets(cfg, [source]) >= {
+        "tests/test_structural_audit.py",
+        "tests/tools/test_structural_audit_records.py",
+        "tests/test_generator_manifest.py",
+    }
+
+
+def test_unicode_width_source_keeps_its_admitted_runtime_replay_control(drv):
+    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    assert _selected_pytest_targets(cfg, ["tools/gen_unicode_width.py"]) == {
+        "tests/tools/test_import_file.py",
+        "tests/test_runtime_build_python.py::test_unicode_width_facts_replay_keyed_by_the_admitted_runtime",
+    }
+
+
+@pytest.mark.parametrize(
+    "owner",
+    ["tests/test_structural_audit.py", "tests/tools/test_structural_audit_records.py"],
+)
+def test_structural_audit_test_edits_do_not_select_sibling_consumers(drv, owner):
+    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    assert _selected_pytest_targets(cfg, [owner]) == {
+        "tests/tools/test_import_file.py",
+        owner,
+    }
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "tools/scan_records.py",
+        "tools/generators.py",
+        "tools/molt_dev_gates.py",
+        "tools/molt_dev_common.py",
+    ],
+)
+def test_shared_scan_record_producers_select_all_consumer_owners(drv, source):
+    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    assert _selected_pytest_targets(cfg, [source]) >= {
+        "tests/tools/test_encoding_gate.py",
+        "tests/tools/test_signed_ratio.py",
+        "tests/tools/test_subprocess_guard_coverage.py",
+        "tests/tools/test_check_environment_registry.py",
+        "tests/tools/test_gen_cpython_coverage.py",
+        "tests/tools/test_structural_audit_records.py",
+        "tests/test_structural_audit.py",
+        "tests/test_generator_manifest.py",
+        "tests/test_gen_stringprep_tables.py",
+        "tests/test_runtime_build_python.py::test_unicode_width_facts_replay_keyed_by_the_admitted_runtime",
+    }
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["tools/generator_io.py", "tools/proof_plan.toml", ".github/workflows/ci.yml"],
+)
+def test_shared_generator_and_ci_inputs_retain_ci_consumer_closure(drv, source):
+    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    assert _selected_pytest_targets(cfg, [source]) >= {
+        "tests/test_proof_plan.py",
+        "tests/test_ci_workflow_topology.py",
+        "tests/test_dependabot_config.py",
+        "tests/test_ci_cargo_cache.py",
+        "tests/test_generator_manifest.py",
+        "tests/test_resource_pressure.py",
+        "tests/test_translation_validate_roots.py",
+        "tests/tools/test_ci_resource_env.py",
+        "tests/tools/test_fuzz_compiler_cli.py",
+        "tests/tools/test_formal_correspondence_truth.py",
+        "tests/tools/test_nightly_prepare.py",
+        "tests/tools/test_nightly_profile_feedback.py",
+        "tests/tools/test_nightly_runtime_bundle.py",
+        "tests/tools/test_nightly_shard_profile.py",
+        "tests/tools/test_nightly_sharding.py",
+        "tests/tools/test_reproducible_build_truth.py",
+    }
+
+
 def test_selected_rules_run_their_pytest_targets_in_one_invocation(drv, tmp_path):
     source = """
 always = ["python tools/check_a.py"]

@@ -42,7 +42,7 @@ STORE_NAME = "source_records.sqlite"
 SOURCE_RECORD_BATCH_MAX_RECORDS = 256
 SOURCE_RECORD_BATCH_MAX_BYTES = 1 << 20
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _SCHEMA = (
     """CREATE TABLE IF NOT EXISTS records (
         kind TEXT NOT NULL,
@@ -52,7 +52,7 @@ _SCHEMA = (
         revision BLOB NOT NULL,
         used_ns INTEGER NOT NULL,
         PRIMARY KEY (kind, key)
-    ) WITHOUT ROWID""",
+    )""",
     "CREATE INDEX IF NOT EXISTS records_generation ON records (generation)",
     """CREATE TABLE IF NOT EXISTS generations (
         generation TEXT PRIMARY KEY,
@@ -525,7 +525,7 @@ class SourceRecordStore:
     def _schema_ready(connection: sqlite3.Connection) -> bool:
         with closing(connection.execute("PRAGMA user_version")) as cursor:
             version = cursor.fetchone()[0]
-        if version not in (0, _SCHEMA_VERSION):
+        if version not in (0, 1, _SCHEMA_VERSION):
             raise SourceRecordUnavailable("source record schema version is unsupported")
         return version == _SCHEMA_VERSION
 
@@ -548,6 +548,27 @@ class SourceRecordStore:
                 " WHERE generations.generation = records.generation), ?)",
                 (time.time_ns(),),
             ).close()
+        # Large opaque payloads belong in rowid-table leaves, not in the
+        # search tree's interior keys. index_info(table) returns rows only for
+        # WITHOUT ROWID tables; a fresh version-two table needs no copy.
+        with closing(connection.execute("PRAGMA index_info(records)")) as cursor:
+            without_rowid = cursor.fetchone() is not None
+        if without_rowid:
+            connection.execute("DROP INDEX IF EXISTS records_generation").close()
+            connection.execute("DROP INDEX IF EXISTS records_recency").close()
+            connection.execute(
+                "ALTER TABLE records RENAME TO records_without_rowid"
+            ).close()
+            connection.execute(_SCHEMA[0]).close()
+            # SQLite streams this copy inside the existing bootstrap
+            # transaction. No Python payload list or second store escapes.
+            connection.execute(
+                "INSERT INTO records (kind, key, generation, payload, revision, used_ns)"
+                " SELECT kind, key, generation, payload, revision, used_ns"
+                " FROM records_without_rowid"
+            ).close()
+            connection.execute("DROP TABLE records_without_rowid").close()
+            connection.execute(_SCHEMA[1]).close()
         connection.execute(
             "CREATE INDEX IF NOT EXISTS records_recency ON records (used_ns, kind, key)"
         ).close()

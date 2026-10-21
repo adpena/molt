@@ -594,10 +594,10 @@ projection = "tool-release"
 setup_command = "python -m molt.tool_releases provision node"
 executable = "node"
 version_args = ["--version"]
-version_pattern = '^v26\.11\.1$'
-setup_value = "26.11.1"
+version_pattern = '^v26\.12\.1$'
+setup_value = "26.12.1"
 setup_evidence = [
-  "config/tool_releases.toml::version = \"26.11.1\"",
+  "config/tool_releases.toml::version = \"26.12.1\"",
   ".github/actions/setup-project/action.yml::uses: actions/setup-node@",
   ".github/workflows/formal.yml::node-version: pinned",
 ]
@@ -630,10 +630,10 @@ version_args = ["--version", "--verbose"]
 content_path_command = ["rustup", "which", "rustc"]
 linker_process_helpers = { "link.exe" = ["vctip.exe"] }
 linker_build_tools = { "link.exe" = { "cl.exe" = "rust-build-c-compiler", "lib.exe" = "rust-build-archiver" } }
-version_pattern = '^rustc 1\.99\.0\b'
-setup_value = "1.99.0"
+version_pattern = '^rustc 1\.99\.1\b'
+setup_value = "1.99.1"
 setup_evidence = [
-  "rust-toolchain.toml::channel = \"1.99.0\"",
+  "rust-toolchain.toml::channel = \"1.99.1\"",
   ".github/actions/setup-project/action.yml::python3 -I -B .github/actions/setup-project/provision-rust.py",
   ".github/actions/setup-project/action.yml::steps.inputs.outputs.rust-toolchain",
 ]
@@ -669,10 +669,10 @@ dependencies = ["rustc", "git"]
 fingerprint_domain = "rustup"
 version_args = ["--version"]
 content_path_command = ["rustup", "which", "cargo"]
-version_pattern = '^cargo 1\.99\.0\b'
-setup_value = "1.99.0"
+version_pattern = '^cargo 1\.99\.1\b'
+setup_value = "1.99.1"
 setup_evidence = [
-  "rust-toolchain.toml::channel = \"1.99.0\"",
+  "rust-toolchain.toml::channel = \"1.99.1\"",
   ".github/actions/setup-project/action.yml::python3 -I -B .github/actions/setup-project/provision-rust.py",
   ".github/actions/setup-project/action.yml::steps.inputs.outputs.rust-toolchain",
 ]
@@ -4993,31 +4993,17 @@ pytest_select = [
 ]
 
 # --- Repository scan records -------------------------------------------
-# Per-file results that four always gates replay when a file's bytes and the
-# scanner's code are unchanged (HF-35).
+# Shared producers select every consumer. Leaf tools and tests select their
+# own semantic controls; a test change does not invalidate sibling scanners.
 [[rule]]
 name = "repository-scan-records"
 toolchains = ["python"]
-description = "Content-keyed per-file scan records and the gates that replay them."
+description = "Shared scan-record storage and replay select all scanner consumers."
 globs = [
   "tools/scan_records.py",
-  "tools/check_ratio_direction.py",
-  "tools/encoding_gate.py",
-  "tools/check_subprocess_guard_coverage.py",
-  "tools/check_environment_registry.py",
-  "tools/gen_cpython_coverage.py",
   "tools/molt_dev_gates.py",
   "tools/molt_dev_common.py",
-  "tools/structural_audit.py",
   "tools/generators.py",
-  "tools/gen_unicode_width.py",
-  "tools/gen_stringprep_tables.py",
-  "tests/tools/test_encoding_gate.py",
-  "tests/tools/test_signed_ratio.py",
-  "tests/tools/test_subprocess_guard_coverage.py",
-  "tests/tools/test_check_environment_registry.py",
-  "tests/tools/test_structural_audit_records.py",
-  "tests/test_gen_stringprep_tables.py",
 ]
 gates = []
 pytest = [
@@ -5027,9 +5013,90 @@ pytest = [
   "tests/tools/test_check_environment_registry.py",
   "tests/tools/test_gen_cpython_coverage.py",
   "tests/tools/test_structural_audit_records.py",
+  "tests/test_structural_audit.py",
+  "tests/test_generator_manifest.py",
   "tests/test_gen_stringprep_tables.py",
   "tests/test_runtime_build_python.py::test_unicode_width_facts_replay_keyed_by_the_admitted_runtime",
 ]
+
+[[rule]]
+name = "subprocess-guard-coverage"
+toolchains = ["python"]
+description = "Subprocess guard coverage diagnostics and their semantic controls."
+globs = ["tools/check_subprocess_guard_coverage.py", "tests/tools/test_subprocess_guard_coverage.py"]
+gates = []
+pytest = ["tests/tools/test_subprocess_guard_coverage.py"]
+
+[[rule]]
+name = "environment-registry-audit"
+toolchains = ["python"]
+description = "Environment registry audit and its semantic controls."
+globs = ["tools/check_environment_registry.py", "tests/tools/test_check_environment_registry.py"]
+gates = []
+pytest = ["tests/tools/test_check_environment_registry.py"]
+
+[[rule]]
+name = "cpython-coverage-generation"
+toolchains = ["python"]
+description = "CPython coverage generation and scan-record replay controls."
+globs = ["tools/gen_cpython_coverage.py", "tests/tools/test_gen_cpython_coverage.py"]
+gates = []
+pytest = ["tests/tools/test_gen_cpython_coverage.py"]
+
+[[rule]]
+name = "unicode-width-scan-records"
+toolchains = ["python"]
+description = "Unicode-width facts replay against the admitted runtime."
+globs = ["tools/gen_unicode_width.py"]
+gates = []
+pytest = ["tests/test_runtime_build_python.py::test_unicode_width_facts_replay_keyed_by_the_admitted_runtime"]
+
+[[rule]]
+name = "structural-audit"
+toolchains = ["python"]
+description = "Structural audit parser, inventory, policy and regression controls."
+globs = [
+  "tools/structural_audit.py",
+  "tools/structural_audit_rust_admission.py",
+  "tools/structural_audit_rust_domains.py",
+  "src/molt/rust_source_scan.py",
+  "tools/structural_audit_baseline.json",
+  "tools/generator_manifest.toml",
+  "tests/test_structural_audit.py",
+]
+gates = []
+pytest = ["tests/test_structural_audit.py"]
+
+[[rule]]
+name = "structural-audit-records"
+toolchains = ["python"]
+description = "Structural audit scan-record replay matches freshly computed results."
+globs = [
+  "tools/structural_audit.py",
+  "tools/structural_audit_rust_admission.py",
+  "tools/structural_audit_rust_domains.py",
+  "src/molt/rust_source_scan.py",
+  "tests/tools/test_structural_audit_records.py",
+]
+gates = []
+pytest = ["tests/tools/test_structural_audit_records.py"]
+
+[[rule]]
+name = "generator-manifest"
+toolchains = ["python"]
+description = "Generator manifest ownership, shared structural parsing and replay controls."
+globs = [
+  "tools/check_generator_manifest.py",
+  "tools/generator_manifest.toml",
+  "tools/generator_manifest_baseline.json",
+  "tools/structural_audit.py",
+  "tools/structural_audit_rust_admission.py",
+  "tools/structural_audit_rust_domains.py",
+  "src/molt/rust_source_scan.py",
+  "tests/test_generator_manifest.py",
+]
+gates = []
+pytest = ["tests/test_generator_manifest.py"]
 
 # --- Backend daemon custody --------------------------------------------
 [[rule]]
@@ -5290,7 +5357,6 @@ globs = [
   "tools/translation_validate.py",
   "tools/ci_resource_env.py",
   "tools/resource_pressure.py",
-  "tests/test_generator_manifest.py",
   "tests/tools/test_nightly_prepare.py",
   "tests/tools/test_nightly_profile_feedback.py",
   "tests/tools/test_nightly_runtime_bundle.py",

@@ -74,7 +74,7 @@ zlib-rs = { path = "vendor/rust/zlib-rs" }
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.99.0"
+rust-version = "1.99.1"
 
 [workspace.dependencies]
 # Correctly rounded decimal float parsing for JSON IR/runtime values.
