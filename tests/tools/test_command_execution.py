@@ -451,6 +451,15 @@ def test_interactive_launch_capability_is_stripped_before_child_spawn(tmp_path, 
     assert original["molt_memory_guard_internal"] == "untrusted"
 
 
+def _assert_closure_progress_followed_the_request(owned) -> None:
+    """The guard itself told its owner that closure progressed after cancel."""
+    notices = owned.progress_path.read_text(encoding="utf-8").splitlines()
+    assert len(notices) >= 2, notices
+    assert (
+        owned.progress_path.stat().st_mtime >= owned.cancellation_path.stat().st_mtime
+    )
+
+
 def test_interactive_guard_cancels_actual_child_tree_and_closes_streams(tmp_path):
     import json
     import tempfile
@@ -515,6 +524,7 @@ def test_interactive_guard_cancels_actual_child_tree_and_closes_streams(tmp_path
             )
             assert summary["descendants_closed"] is True
             assert summary["cancelled"] is True
+            _assert_closure_progress_followed_the_request(owned)
             after = memory_guard.sample_processes()
             assert pids["child"] not in after
             assert pids["grandchild"] not in after
@@ -610,12 +620,14 @@ def test_harness_owner_survives_observation_expiry_and_admits_eventual_closure(
         if pause == "closure":
             assert entered.is_file()  # Actual guard cleanup reached our barrier.
         release.write_text("release", encoding="utf-8")
-        assert owned.wait(timeout=10) == 137
+        # Released, the guard progresses again; observe it until it stalls.
+        assert owned.cancel_and_wait() == 137
         summary = json.loads(owned.summary_path.read_text(encoding="utf-8"))
         startup = json.loads(owned.startup_path.read_text(encoding="utf-8"))
         assert owned.terminal
         assert summary["cancelled"] is True
         assert summary["descendants_closed"] is True
+        _assert_closure_progress_followed_the_request(owned)
         assert summary["launch_id"] == startup["launch_id"] == owned.launch_id
         assert (
             summary["child_process"] == startup["child_process"] == owned.child_identity
@@ -625,6 +637,131 @@ def test_harness_owner_survives_observation_expiry_and_admits_eventual_closure(
         release.write_text("release", encoding="utf-8")
         if not owned.terminal:
             owned.cancel_and_wait(timeout=10)
+
+
+@pytest.mark.parametrize(("notices", "finishes"), [(0, False), (1, False), (2, True)])
+def test_cancellation_observation_lasts_until_guard_progress_stops(
+    tmp_path, notices, finishes
+):
+    """HF-368: the owner observes a slow guard for as long as it progresses.
+
+    The fake guard appends one closure progress notice in each of its first
+    ``notices`` windows. Observation must end exactly one window after the
+    last notice: ending sooner abandons a progressing guard, ending later
+    hides a stalled one.
+    """
+    progress = tmp_path / "progress"
+    windows: list[float] = []
+
+    class Process:
+        pid = 42
+        returncode = None
+
+        def wait(self, timeout=None):
+            windows.append(timeout)
+            if len(windows) <= notices:
+                with progress.open("a", encoding="utf-8") as handle:
+                    handle.write(f"{len(windows)} closure step\n")
+            elif finishes:
+                self.returncode = 137
+                return self.returncode
+            raise subprocess.TimeoutExpired(["guard"], timeout)
+
+        def terminate(self):
+            pytest.fail("observation must never terminate the guard")
+
+        kill = terminate
+
+    owned, _startup, _terminal = _interactive_guard_fixture(tmp_path, Process())
+    owned.progress_path = progress
+    if finishes:
+        assert owned.cancel_and_wait(timeout=0.5) == 137
+        assert owned.terminal
+    else:
+        with pytest.raises(subprocess.TimeoutExpired) as caught:
+            owned.cancel_and_wait(timeout=0.5)
+        assert caught.value.guard_command is owned
+        assert not owned.terminal
+    assert owned.cancellation_path.is_file()
+    assert len(windows) == notices + 1
+    assert windows[0] == 0.5
+    assert all(0.0 <= window <= 0.5 for window in windows)
+
+
+def test_harness_owner_observes_a_guard_slower_than_one_window(tmp_path, monkeypatch):
+    """A real guard that reports closure progress outlives one window.
+
+    The held guard reaches descendant closure, then reports one progress
+    notice every 0.2 s for 5 s before it closes. The owner observes with a
+    2 s window, so a deadline counted from the request would expire; one
+    counted from the last notice must admit the eventual closure.
+    """
+    import json
+    import time
+
+    entered = tmp_path / "entered"
+    child_ready = tmp_path / "child-ready"
+    wrapper = tmp_path / "progressing_harness.py"
+    wrapper.write_text(
+        "import pathlib,sys,time\n"
+        f"sys.path.insert(0, {str(ROOT)!r})\n"
+        "from tools import guarded_exec\n"
+        f"entered=pathlib.Path({str(entered)!r})\n"
+        "guard=guarded_exec.harness_memory_guard.memory_guard\n"
+        "notify=guard.closure_progress_notifier("
+        "sys.argv[sys.argv.index('--progress-file')+1])\n"
+        "original=guard._temporary_artifact_descendant_closure\n"
+        "def slow(**kwargs):\n"
+        " entered.write_text('entered', encoding='utf-8')\n"
+        " for _ in range(25):\n"
+        "  time.sleep(0.2)\n"
+        "  notify('slow closure step')\n"
+        " return original(**kwargs)\n"
+        "guard._temporary_artifact_descendant_closure=slow\n"
+        "raise SystemExit(guarded_exec.main())\n",
+        encoding="utf-8",
+    )
+    start = command_execution.CommandExecutor.start_owned
+
+    def progressing_start(self, args, **kwargs):
+        assert Path(args[1]).name == "guarded_exec.py"
+        return start(self, [args[0], str(wrapper), *args[2:]], **kwargs)
+
+    monkeypatch.setattr(
+        command_execution.CommandExecutor, "start_owned", progressing_start
+    )
+    executor = command_execution.CommandExecutor(prefix="MOLT_TEST", repo_root=ROOT)
+    owned = executor.start_guarded(
+        [
+            sys.executable,
+            "-c",
+            "import os,pathlib,time; "
+            f"pathlib.Path({str(child_ready)!r}).write_text(str(os.getpid()), encoding='utf-8'); "
+            "time.sleep(30)",
+        ],
+        cwd=ROOT,
+        env={**os.environ, "MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path / "state")},
+        timeout=60,
+        harness=True,
+    )
+    try:
+        # Readiness is a handshake; the guard's own 60 s deadline bounds a hang.
+        deadline = time.monotonic() + 60
+        while not child_ready.exists() and time.monotonic() < deadline:
+            assert owned.poll() is None, str(owned.evidence_path)
+            time.sleep(0.02)
+        assert child_ready.exists(), str(owned.evidence_path)
+        started = time.monotonic()
+        assert owned.cancel_and_wait(timeout=2.0) == 137
+        assert time.monotonic() - started >= 5
+        assert entered.is_file()
+        summary = json.loads(owned.summary_path.read_text(encoding="utf-8"))
+        assert owned.terminal
+        assert summary["cancelled"] is True
+        assert summary["descendants_closed"] is True
+    finally:
+        if not owned.terminal:
+            owned.cancel_and_wait()
 
 
 def test_cancel_publication_refusal_keeps_original_error_and_live_owner(tmp_path):

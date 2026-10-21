@@ -31,6 +31,7 @@ def _install_fake_context(module, monkeypatch, result=None):
             capture_output,
             timeout,
             cancellation_requested,
+            closure_progress,
             running_summary_json,
             running_summary_environ,
         ):
@@ -40,6 +41,7 @@ def _install_fake_context(module, monkeypatch, result=None):
             captured["capture_output"] = capture_output
             captured["timeout"] = timeout
             captured["cancellation_requested"] = cancellation_requested
+            captured["closure_progress"] = closure_progress
             captured["running_summary_json"] = running_summary_json
             captured["running_summary_environ"] = running_summary_environ
             return (
@@ -319,12 +321,19 @@ def test_guarded_exec_forwards_sticky_cancel_and_worker_custody(tmp_path, monkey
     )
     for key, value in worker_env.items():
         monkeypatch.setenv(key, value)
+    progress = tmp_path / "progress"
     captured = _install_fake_context(module, monkeypatch)
-    assert module.main(["--cancel-file", str(cancel)]) == 0
+    assert (
+        module.main(["--cancel-file", str(cancel), "--progress-file", str(progress)])
+        == 0
+    )
     callback = captured["cancellation_requested"]
     assert callback() is False
     cancel.write_text("cancel", encoding="utf-8")
     assert callback() is True
+    # The guard's closure notices reach the owner's progress file.
+    captured["closure_progress"]("tree_signalled")
+    assert progress.read_text(encoding="utf-8").endswith(" tree_signalled\n")
     assert guard._load_internal_command(captured["run_env"]) is None
     assert guard._load_internal_command(captured["running_summary_environ"]) == command
 

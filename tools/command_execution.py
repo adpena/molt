@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 import uuid
 from datetime import datetime, timezone
 import re
@@ -92,6 +93,8 @@ def _is_bounded_metadata_probe(command: Sequence[str]) -> bool:
     return any(flag in _VERSION_FLAGS for flag in command[1:])
 
 
+# One observation window. It renews while the guard reports closure
+# progress, so it bounds a stalled guard, not a slow one.
 GUARD_CANCELLATION_OBSERVATION_SECONDS = 5.0
 
 
@@ -114,6 +117,7 @@ class GuardedCommand:
     terminal: bool = False
     guard_pid: int | None = None
     child_identity: dict[str, object] | None = None
+    progress_path: Path | None = None
 
     @property
     def stdin(self):
@@ -152,13 +156,40 @@ class GuardedCommand:
         except FileExistsError:
             pass
 
+    def _progress_mark(self) -> tuple[int, float]:
+        """Size and wall time of the guard's last closure progress notice."""
+        if self.progress_path is None:
+            return 0, 0.0
+        try:
+            status = self.progress_path.stat()
+        except FileNotFoundError:
+            return 0, 0.0
+        return status.st_size, status.st_mtime
+
     def cancel_and_wait(
         self, *, timeout: float = GUARD_CANCELLATION_OBSERVATION_SECONDS
     ) -> int:
-        """Observe requested closure finitely; expiry never retires the owner."""
+        """Observe requested closure until the guard stops progressing.
+
+        The observation ends ``timeout`` seconds after the guard's last closure
+        progress notice, as systemd renews a stop timeout on
+        ``EXTEND_TIMEOUT_USEC``. A guard slowed by CPU load keeps its owner
+        observing; only a guard that reports nothing for a whole window is a
+        stalled observation. Expiry never retires the owner.
+        """
         try:
             self.request_cancel()
-            return self.wait(timeout=timeout)
+            mark = self._progress_mark()
+            window = timeout
+            while True:
+                try:
+                    return self.wait(timeout=window)
+                except subprocess.TimeoutExpired:
+                    renewed = self._progress_mark()
+                    if renewed[0] == mark[0]:
+                        raise
+                    mark = renewed
+                    window = max(0.0, renewed[1] + timeout - time.time())
         except Exception as exc:
             exc.guard_command = self
             exc.add_note(f"guard custody retained at {self.evidence_path}")
@@ -453,6 +484,7 @@ class CommandExecutor:
         )
         custody.mkdir(parents=True, exist_ok=False)
         cancellation_path = custody / "cancel"
+        progress_path = custody / "progress"
         startup_path = custody / "startup.json"
         summary_path = (
             custody / "guard.json"
@@ -505,6 +537,8 @@ class CommandExecutor:
                 str(summary_path),
                 "--cancel-file",
                 str(cancellation_path),
+                "--progress-file",
+                str(progress_path),
             ]
             if timeout is not None:
                 guarded_argv.extend(("--timeout", str(timeout)))
@@ -531,6 +565,8 @@ class CommandExecutor:
                     str(summary_path),
                     "--cancel-file",
                     str(cancellation_path),
+                    "--progress-file",
+                    str(progress_path),
                 )
             )
         # Use the existing hidden-command worker contract directly. On Windows
@@ -562,6 +598,7 @@ class CommandExecutor:
             launch_id,
             startup_path,
             tuple(command),
+            progress_path=progress_path,
         )
         evidence.update(launch_pid=process.pid, status="launched")
         try:

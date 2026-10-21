@@ -66,6 +66,28 @@ def _platform_detail_no_subprocess() -> str:
     )
 
 
+def closure_progress_notifier(path: str | Path) -> Callable[[str], None]:
+    """Return the notifier that tells a cancelling owner this guard progresses.
+
+    Each notice appends one line to the launch's progress file. The owner
+    renews its cancellation observation window only when a notice arrived
+    within it (systemd's ``EXTEND_TIMEOUT_USEC`` rule), so a guard that is
+    slow under CPU load is still observed, and a window without a notice is a
+    stall. A notice that cannot be written is dropped: the owner then reports
+    an unresolved observation, never a false closure.
+    """
+    target = Path(path)
+
+    def notify(step: str) -> None:
+        try:
+            with target.open("a", encoding="utf-8") as handle:
+                handle.write(f"{time.monotonic_ns()} {step}\n")
+        except OSError:
+            pass
+
+    return notify
+
+
 def paced_poll_interval(poll_interval: float, last_sample_cost_s: float) -> float:
     """Return the next guard poll wait, paced by the last sampling cost.
 
@@ -818,9 +840,15 @@ def run_guarded(
     running_summary_max_global_rss_kb: int | None = None,
     on_spawn: Callable[[int], None] | None = None,
     cancellation_requested: Callable[[], bool] | None = None,
+    closure_progress: Callable[[str], None] | None = None,
 ) -> GuardResult:
     if not command:
         raise ValueError("command is required")
+
+    def progressed(step: str) -> None:
+        if closure_progress is not None:
+            closure_progress(step)
+
     if sampler is None:
         sampler = sample_processes
     if poll_interval <= 0:
@@ -1950,6 +1978,8 @@ def run_guarded(
                 break
             now = time.perf_counter()
             cancelled = cancellation_requested is not None and cancellation_requested()
+            if cancelled:
+                progressed("cancellation_observed")
             if guard_signal is not None or cancelled:
                 signal_snapshot = sample_tracked_tree()
                 assert signal_snapshot is not None
@@ -1977,10 +2007,12 @@ def run_guarded(
                     watched=watched,
                     grace=0.0 if cancelled else OPERATOR_SIGNAL_GRACE_S,
                 )
+                progressed("tree_signalled")
                 try:
                     proc.wait(timeout=termination_wait_s)
                 except subprocess.TimeoutExpired:
                     termination_wait_expired = True
+                progressed("child_wait_finished")
                 break
             if timeout is not None and now - start >= timeout:
                 timed_out = True
@@ -2286,6 +2318,7 @@ def run_guarded(
                 "the summary JSON.\n",
                 text=text,
             )
+        progressed("descendant_closure_started")
         descendants_closed, scratch_closure_evidence = (
             _temporary_artifact_descendant_closure(
                 proc=proc,
@@ -2415,6 +2448,7 @@ def run_guarded(
             success=scratch_clean_success,
             evidence=scratch_closure_evidence,
         )
+        progressed("temporary_artifacts_finished")
         # Guard elapsed time includes exact descendant closure plus scratch
         # retirement/reclamation; storage cleanup latency must remain visible.
         wall_finished = time.perf_counter()
@@ -3082,6 +3116,11 @@ def main(
                 file=sys.stderr,
             )
             return 2
+    closure_progress = (
+        None
+        if args.progress_file is None
+        else closure_progress_notifier(args.progress_file)
+    )
     result = run_guarded(
         command,
         max_rss_kb=max_rss_kb,
@@ -3103,6 +3142,7 @@ def main(
         cancellation_requested=(
             None if args.cancel_file is None else Path(args.cancel_file).exists
         ),
+        closure_progress=closure_progress,
     )
     incident = _incident_payload(result)
     repro_payload: dict[str, object] | None = None
@@ -3138,6 +3178,8 @@ def main(
         except OSError as exc:
             print(f"memory_guard: failed to write summary JSON: {exc}", file=sys.stderr)
             return 2 if result.returncode == 0 else result.returncode
+        if closure_progress is not None:
+            closure_progress("summary_published")
     elif incident is not None:
         incident_summary_path = _default_incident_summary_path(current_env)
         try:

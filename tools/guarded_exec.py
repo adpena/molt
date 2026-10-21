@@ -48,6 +48,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout-env", default=None)
     parser.add_argument("--metrics-json", type=Path)
     parser.add_argument("--cancel-file", type=Path)
+    parser.add_argument("--progress-file", type=Path)
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     command = list(args.command)
@@ -80,6 +81,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     worker_env = dict(env)
     env = harness_memory_guard.memory_guard._child_env_without_internal_keys(env)
+    closure_progress = (
+        None
+        if args.progress_file is None
+        else harness_memory_guard.memory_guard.closure_progress_notifier(
+            args.progress_file
+        )
+    )
     result = context.run(
         command,
         cwd=args.cwd,
@@ -89,6 +97,7 @@ def main(argv: list[str] | None = None) -> int:
         cancellation_requested=(
             None if args.cancel_file is None else args.cancel_file.exists
         ),
+        closure_progress=closure_progress,
         running_summary_json=(
             None if args.metrics_json is None else str(args.metrics_json)
         ),
@@ -169,6 +178,8 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps(metrics, sort_keys=True) + "\n", encoding="utf-8"
         )
         temporary.replace(metrics_path)
+        if closure_progress is not None:
+            closure_progress("metrics_published")
     if result.stderr:
         sys.stderr.write(str(result.stderr))
     profile_path = harness_memory_guard.command_profile_log_path(env)
