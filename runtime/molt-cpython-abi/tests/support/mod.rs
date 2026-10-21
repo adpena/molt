@@ -324,7 +324,7 @@ fn assert_installed_runtime_hooks(requested: RuntimeHooks) {
             number_binary_op,
             number_unary_op,
             number_power,
-            target_python_minor,
+            target_python_at_least,
             dict_op,
             set_op,
             set_new,

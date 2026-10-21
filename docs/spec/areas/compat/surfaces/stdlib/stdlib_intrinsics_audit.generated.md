@@ -17,11 +17,11 @@
 
 ## Progress Summary (Generated)
 - Total audited modules: `949`
-- `intrinsic-backed`: `36`
+- `intrinsic-backed`: `37`
 - `intrinsic-partial`: `162`
 - `intrinsic-support`: `27`
 - `python-compiled`: `344`
-- `stub`: `380`
+- `stub`: `379`
 - `policy-gate`: `0`
 
 ## Priority Lowering Queue (Generated)
@@ -96,6 +96,7 @@
 - `itertools`
 - `math`
 - `opcode`
+- `pwd`
 - `quopri`
 - `secrets`
 - `select`
@@ -954,7 +955,6 @@
 - `posix`
 - `posixpath`
 - `pty`
-- `pwd`
 - `pyclbr`
 - `pydoc`
 - `pydoc_data.module_docs`

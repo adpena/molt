@@ -24,6 +24,25 @@ pub enum CFunctionConvention {
     Method,
 }
 
+/// Pure admission shared by C entry transport and promoted fixed module functions.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CFunctionArgumentError {
+    NoKeywords,
+    NoArguments { given: usize },
+    OneArgument { given: usize },
+}
+
+impl CFunctionArgumentError {
+    pub fn message(self, name: &[u8]) -> Vec<u8> {
+        let suffix = match self {
+            Self::NoKeywords => "() takes no keyword arguments".to_owned(),
+            Self::NoArguments { given } => format!("() takes no arguments ({given} given)"),
+            Self::OneArgument { given } => format!("() takes exactly one argument ({given} given)"),
+        };
+        [name, suffix.as_bytes()].concat()
+    }
+}
+
 pub struct VectorcallArguments<'a> {
     pub values: &'a [*mut PyObject],
     pub positional_count: usize,
@@ -55,6 +74,39 @@ impl CFunctionConvention {
             value if value == METH_VARARGS | METH_KEYWORDS => Some(Self::VarArgsKeywords),
             value if value == METH_FASTCALL | METH_KEYWORDS => Some(Self::FastCallKeywords),
             value if value == METH_METHOD | METH_FASTCALL | METH_KEYWORDS => Some(Self::Method),
+            _ => None,
+        }
+    }
+
+    /// An explicit fixed positional declaration, independent of executable identity.
+    pub fn from_fixed_positional_count(count: u64) -> Option<Self> {
+        match count {
+            0 => Some(Self::NoArgs),
+            1 => Some(Self::OneObject),
+            _ => None,
+        }
+    }
+
+    pub fn argument_error(
+        self,
+        positional: usize,
+        keywords: usize,
+    ) -> Option<CFunctionArgumentError> {
+        if keywords != 0
+            && !matches!(
+                self,
+                Self::VarArgsKeywords | Self::FastCallKeywords | Self::Method
+            )
+        {
+            return Some(CFunctionArgumentError::NoKeywords);
+        }
+        match self {
+            Self::NoArgs if positional != 0 => {
+                Some(CFunctionArgumentError::NoArguments { given: positional })
+            }
+            Self::OneObject if positional != 1 => {
+                Some(CFunctionArgumentError::OneArgument { given: positional })
+            }
             _ => None,
         }
     }
@@ -111,10 +163,8 @@ impl CFunctionConvention {
                 if count < 0 {
                     return ptr::null_mut();
                 }
-                if count != 0 && self == Self::VarArgs {
-                    return unsafe {
-                        type_error(format!("{}() takes no keyword arguments", name()))
-                    };
+                if let Some(error) = self.argument_error(0, count as usize) {
+                    return unsafe { type_error(error.message(name().as_bytes())) };
                 }
                 return unsafe {
                     if self == Self::VarArgs {
@@ -137,32 +187,8 @@ impl CFunctionConvention {
         else {
             return ptr::null_mut();
         };
-        if keyword_count != 0
-            && !matches!(
-                self,
-                Self::VarArgsKeywords | Self::FastCallKeywords | Self::Method
-            )
-        {
-            return unsafe { type_error(format!("{}() takes no keyword arguments", name())) };
-        }
-        match self {
-            Self::NoArgs if positional_count != 0 => {
-                return unsafe {
-                    type_error(format!(
-                        "{}() takes no arguments ({positional_count} given)",
-                        name()
-                    ))
-                };
-            }
-            Self::OneObject if positional_count != 1 => {
-                return unsafe {
-                    type_error(format!(
-                        "{}() takes exactly one argument ({positional_count} given)",
-                        name()
-                    ))
-                };
-            }
-            _ => {}
+        if let Some(error) = self.argument_error(positional_count, keyword_count) {
+            return unsafe { type_error(error.message(name().as_bytes())) };
         }
         let args_ptr = if args.is_empty() {
             ptr::null_mut()
@@ -216,8 +242,8 @@ impl CFunctionConvention {
     }
 }
 
-unsafe fn type_error(message: String) -> *mut PyObject {
-    if let Ok(message) = std::ffi::CString::new(message) {
+unsafe fn type_error(message: impl AsRef<[u8]>) -> *mut PyObject {
+    if let Ok(message) = std::ffi::CString::new(message.as_ref()) {
         unsafe {
             crate::api::errors::PyErr_SetString(
                 (&raw mut crate::abi_types::PyExc_TypeError).cast(),

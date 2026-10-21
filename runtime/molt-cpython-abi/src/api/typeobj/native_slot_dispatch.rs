@@ -348,17 +348,7 @@ unsafe extern "C" fn power(
         if modulo.is_null() || modulo == &raw mut Py_None {
             return binary_dispatch::<{ ts::Py_nb_power }>(left, right, None);
         }
-        let minor = (crate::hooks::hooks_or_stubs().target_python_minor)();
-        if minor < 0 {
-            if errors::PyErr_Occurred().is_null() {
-                errors::PyErr_SetString(
-                    (&raw mut PyExc_SystemError).cast(),
-                    c"semantic Python target unavailable".as_ptr(),
-                );
-            }
-            return ptr::null_mut();
-        }
-        if minor >= 14 {
+        if (crate::hooks::hooks_or_stubs().target_python_at_least)(3, 14) {
             binary_dispatch::<{ ts::Py_nb_power }>(left, right, Some(modulo))
         } else {
             // Older slot_nb_power is left-only even when the raw ternary
@@ -424,13 +414,8 @@ unsafe extern "C" fn truth(receiver: *mut PyObject) -> c_int {
                 Ok(Some(method)) => (method, true),
             },
         };
-        let minor = (crate::hooks::hooks_or_stubs().target_python_minor)();
-        if minor < 0 {
-            crate::bridge::ensure_result_error(c"semantic Python target unavailable");
-            crate::api::refcount::Py_DECREF(method.into_ptr());
-            return -1;
-        }
-        if minor >= 14 && !using_len && method.as_ptr() == &raw mut Py_None {
+        let modern = (crate::hooks::hooks_or_stubs().target_python_at_least)(3, 14);
+        if modern && !using_len && method.as_ptr() == &raw mut Py_None {
             drop(method);
             let name = super::object_type_name_with_precision(receiver, 200);
             errors::set_python_error_bytes(
@@ -443,7 +428,7 @@ unsafe extern "C" fn truth(receiver: *mut PyObject) -> c_int {
         let result = object::PyObject_CallNoArgs(method);
         // 3.12/3.13 slot_nb_bool retains the callable through value validation.
         // 3.14's maybe_call_special_no_args retires it at call completion.
-        if minor >= 14 {
+        if modern {
             crate::api::refcount::Py_DECREF(method);
         }
         let status = if result.is_null() {
@@ -463,7 +448,7 @@ unsafe extern "C" fn truth(receiver: *mut PyObject) -> c_int {
             crate::api::refcount::Py_DECREF(result);
             status
         };
-        if minor < 14 {
+        if !modern {
             crate::api::refcount::Py_DECREF(method);
         }
         status

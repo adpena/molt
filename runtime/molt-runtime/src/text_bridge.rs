@@ -6,7 +6,7 @@
 
 use crate::object::ops::string_obj_to_owned as _string_obj_to_owned;
 use crate::object::ops::type_name as _type_name;
-use crate::object::ops_sys::runtime_target_minor;
+use crate::object::ops_sys::runtime_target_version;
 use crate::*;
 
 #[unsafe(no_mangle)]
@@ -29,7 +29,7 @@ pub extern "C" fn __molt_text_east_asian_width(bits: u64) -> u64 {
         };
         let width = crate::object::ops::unicode_east_asian_width_table::width(
             code,
-            runtime_target_minor(_py),
+            runtime_target_version(_py),
         );
         let ptr = alloc_string(_py, width.as_bytes());
         if ptr.is_null() {
@@ -43,8 +43,8 @@ pub extern "C" fn __molt_text_east_asian_width(bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_text_unidata_version() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let (version, _) = crate::object::ops::unicode_east_asian_width_table::for_minor(
-            runtime_target_minor(_py),
+        let (version, _) = crate::object::ops::unicode_east_asian_width_table::for_version(
+            runtime_target_version(_py),
         )
         .expect("unsupported target Python Unicode version");
         let ptr = alloc_string(_py, version.as_bytes());

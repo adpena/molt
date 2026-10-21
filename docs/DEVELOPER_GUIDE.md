@@ -793,6 +793,12 @@ Keep source discovery, target admission and execution qualification separate.
 `config/cpython_regrtest_sources.toml` owns exact upstream tags and commits;
 `config/verified_subset.toml` owns configured executable references. A pending
 source row does not admit that version or prove an execution coordinate.
+Carry the full `(major, minor)` coordinate through generated tables and runtime
+lookups. Compact target tags resolve from the admitted catalog; ambiguous tags
+require dotted spelling. A new major follows this same workflow, including its
+reviewed semantic delta and explicit rejection until admission. The existing
+projection tests distinguish equal minors in different majors; they prove
+identity transport without claiming compatibility with an unknown release.
 The snapshot retains unmodified upstream text under the existing
 [CPython license](../src/molt/stdlib/collections/LICENSE.cpython).
 

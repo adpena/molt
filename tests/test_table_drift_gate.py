@@ -323,5 +323,38 @@ def test_mutation_target_python_generator_redeclare_caught() -> None:
     )
 
 
+def test_unicode_width_gate_distinguishes_same_minor_across_majors(
+    tmp_path, monkeypatch
+):
+    # This private catalog checks identity transport only, not version admission.
+    monkeypatch.setattr(GATE, "ROOT", tmp_path)
+    fixtures = {
+        "TARGET_PYTHON_PY": "versions = (TargetPythonVersion(3, 0, 0), TargetPythonVersion(4, 0, 0))\n",
+        "STDLIB_UNION_PY": 'BASELINE_PYTHON_VERSIONS = ("3.0", "4.0")\n',
+        "GEN_STDLIB_UNION_PY": "DEFAULT_PYTHONS = SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS\n",
+    }
+    for attribute, source in fixtures.items():
+        path = tmp_path / (attribute + ".py")
+        path.write_text(source)
+        monkeypatch.setattr(GATE, attribute, path)
+    width = tmp_path / "runtime/molt-runtime/src/object/unicode_width_generated.rs"
+    width.parent.mkdir(parents=True)
+    source = (
+        '(3, 0) => Some(("three", WIDTH_3_0)),\n(4, 0) => Some(("four", WIDTH_4_0)),\n'
+    )
+    width.write_text(source)
+    assert GATE.check_target_python_versions().ok
+    # Same minor, wrong major must not be reported as an identical target set.
+    width.write_text(source.replace("(4, 0)", "(3, 0)"))
+    result = GATE.check_target_python_versions()
+    assert not result.ok
+    assert any(
+        item.name == "unicode-width-target-versions" and not item.ok
+        for item in result.items
+    )
+    width.write_text(source)
+    assert GATE.check_target_python_versions().ok
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))

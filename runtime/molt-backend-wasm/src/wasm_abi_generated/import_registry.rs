@@ -7238,6 +7238,10 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "inspect_signature_data",
     },
     RuntimeImportSpec {
+        import: WasmRuntimeImport::FunctionSetFixedBuiltin,
+        name: "function_set_fixed_builtin",
+    },
+    RuntimeImportSpec {
         import: WasmRuntimeImport::BuiltinClassLookup,
         name: "builtin_class_lookup",
     },
@@ -15222,6 +15226,8 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_inspect_getcoroutinestate" => Some(WasmRuntimeImport::InspectGetcoroutinestate),
         "inspect_signature_data" => Some(WasmRuntimeImport::InspectSignatureData),
         "molt_inspect_signature_data" => Some(WasmRuntimeImport::InspectSignatureData),
+        "function_set_fixed_builtin" => Some(WasmRuntimeImport::FunctionSetFixedBuiltin),
+        "molt_function_set_fixed_builtin" => Some(WasmRuntimeImport::FunctionSetFixedBuiltin),
         "builtin_class_lookup" => Some(WasmRuntimeImport::BuiltinClassLookup),
         "molt_builtin_class_lookup" => Some(WasmRuntimeImport::BuiltinClassLookup),
         "dataclasses_make_dataclass" => Some(WasmRuntimeImport::DataclassesMakeDataclass),

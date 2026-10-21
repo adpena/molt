@@ -223,7 +223,7 @@ unsafe fn set_native_namespace_metadata(
         }
         if field == Field::Module {
             PyType_Modified(tp);
-            if (crate::hooks::hooks_or_stubs().target_python_minor)() >= 13 {
+            if (crate::hooks::hooks_or_stubs().target_python_at_least)(3, 13) {
                 let firstline = OwnedPyObject::from_owned(strings::PyUnicode_FromString(
                     c"__firstlineno__".as_ptr(),
                 ));

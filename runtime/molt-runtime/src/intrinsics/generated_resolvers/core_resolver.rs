@@ -381,6 +381,10 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_function_set_builtin",
             crate::molt_function_set_builtin as *const (),
         )),
+        "molt_function_set_fixed_builtin" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_function_set_fixed_builtin",
+            crate::molt_function_set_fixed_builtin as *const (),
+        )),
         "molt_function_set_defaults" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_function_set_defaults",
             crate::molt_function_set_defaults as *const (),

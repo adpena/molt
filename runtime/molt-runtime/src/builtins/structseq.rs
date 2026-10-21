@@ -9,6 +9,7 @@ use crate::builtins::native_arguments::NativeArguments;
 use crate::object::class_storage::{
     ClassDeclaration, ClassReferenceSlot, ClassSemanticPolicy, ClassSlotPolicy,
 };
+use crate::object::ops_format::{FormatError, FormatOutput, FormatWriter, string_obj_bytes};
 use crate::object::seq_access::{PinnedTuple, pin_tuple};
 use crate::*;
 use molt_runtime_core::OwnedRuntimeValue;
@@ -172,10 +173,25 @@ impl<'a, 'py> Spec<'a, 'py> {
 
 pub(crate) fn native_name(_py: &PyToken<'_>, class: u64) -> String {
     let ptr = obj_from_bits(class).as_ptr().unwrap();
-    string_obj_to_owned(obj_from_bits(unsafe {
-        crate::object::layout::class_native_name_bits(ptr)
-    }))
-    .unwrap()
+    String::from_utf8(
+        string_obj_bytes(obj_from_bits(unsafe {
+            crate::object::layout::class_native_name_bits(ptr)
+        }))
+        .unwrap(),
+    )
+    .expect("native type names are validated UTF-8")
+}
+
+// CPython's %.500s diagnostics share the C-API's versioned native-name rule.
+fn diagnostic_name(_py: &PyToken<'_>, class: u64) -> String {
+    unsafe {
+        let name =
+            crate::object::layout::class_native_name_bits(obj_from_bits(class).as_ptr().unwrap());
+        crate::object::ops_format::with_string_bytes(obj_from_bits(name), |bytes| {
+            molt_cpython_abi::api::typeobj::native_name_bytes_with_precision(bytes, 500)
+        })
+        .unwrap()
+    }
 }
 
 fn owned<'a>(py: &'a PyToken<'_>, bits: u64) -> OwnedRuntimeValue<'a> {
@@ -459,6 +475,7 @@ extern "C" fn construct(declaring: u64, args: u64, kwargs: u64) -> u64 {
             Some(bits) => match crate::object::ops::dict_backing_bits(py, bits) {
                 Ok(Some(backing)) => obj_from_bits(backing).as_ptr(),
                 Ok(None) => {
+                    let label = diagnostic_name(py, class);
                     return raise_exception(
                         py,
                         "TypeError",
@@ -480,6 +497,7 @@ extern "C" fn construct(declaring: u64, args: u64, kwargs: u64) -> u64 {
         let count = values.len();
         let max = spec.names.len();
         if count < spec.visible || count > max {
+            let label = diagnostic_name(py, class);
             let constraint = if max == spec.visible {
                 format!("a {}", spec.visible)
             } else if count < spec.visible {
@@ -540,6 +558,7 @@ extern "C" fn construct(declaring: u64, args: u64, kwargs: u64) -> u64 {
         if crate::object::ops_sys::runtime_target_at_least(py, 3, 13)
             && dictionary.is_some_and(|p| unsafe { dict_len(p) } > found)
         {
+            let label = diagnostic_name(py, class);
             return raise_exception(
                 py,
                 "TypeError",
@@ -577,44 +596,58 @@ extern "C" fn repr(instance: u64) -> u64 {
             return MoltObject::none().bits();
         };
         let object = obj_from_bits(instance).as_ptr().unwrap();
-        let mut output = native_name(py, class);
-        output.push('(');
-        // CPython's repr walks the descriptor names, omitting unnamed sequence
-        // positions, while values remain the first visible_count tuple items.
-        let mut names = spec
-            .names
-            .iter()
-            .copied()
-            .filter(|&n| !obj_from_bits(n).is_none());
-        for index in 0..spec.visible {
-            let Some(name) = names.next() else {
-                return raise_exception(
-                    py,
-                    "SystemError",
-                    &format!(
-                        "In structseq_repr(), member {index} name is NULL for type {}",
-                        native_name(py, class)
-                    ),
+        let rendered = (|| {
+            let mut output = FormatWriter::new(py);
+            unsafe {
+                let name = crate::object::layout::class_native_name_bits(
+                    obj_from_bits(class).as_ptr().unwrap(),
                 );
-            };
-            if index != 0 {
-                output.push_str(", ");
+                crate::object::ops_format::with_string_bytes(obj_from_bits(name), |bytes| {
+                    output.append_bytes(bytes)
+                })
+                .unwrap()?;
             }
-            output.push_str(&string_obj_to_owned(obj_from_bits(name)).unwrap());
-            output.push('=');
-            let value = unsafe { read_field(py, object, &spec, index) };
-            let text = owned(py, molt_repr_from_obj(value));
-            if exception_pending(py) {
-                return MoltObject::none().bits();
+            output.append_bytes(b"(")?;
+            // CPython's repr walks descriptor names, omitting unnamed sequence
+            // positions, while values remain the first visible_count tuple items.
+            let mut names = spec
+                .names
+                .iter()
+                .copied()
+                .filter(|&n| !obj_from_bits(n).is_none());
+            for index in 0..spec.visible {
+                let Some(name) = names.next() else {
+                    return Err(FormatError::Diagnostic(
+                        "SystemError",
+                        format!(
+                            "In structseq_repr(), member {index} name is NULL for type {}",
+                            diagnostic_name(py, class)
+                        )
+                        .into(),
+                    ));
+                };
+                if index != 0 {
+                    output.append_bytes(b", ")?;
+                }
+                unsafe {
+                    crate::object::ops_format::with_string_bytes(obj_from_bits(name), |bytes| {
+                        output.append_bytes(bytes)
+                    })
+                    .unwrap()?;
+                }
+                output.append_bytes(b"=")?;
+                let value = unsafe { read_field(py, object, &spec, index) };
+                // The shared writer copies WTF-8 before retiring each callback
+                // string and preserves its pending error if growth fails.
+                output
+                    .append_output(FormatOutput::OwnedString(molt_repr_from_obj(value)), false)?;
             }
-            output.push_str(&string_obj_to_owned(obj_from_bits(text.bits())).unwrap());
-        }
-        output.push(')');
-        let ptr = alloc_string(py, output.as_bytes());
-        if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(ptr).bits()
+            output.append_bytes(b")")?;
+            Ok(output.finish())
+        })();
+        match rendered {
+            Ok(output) => output.into_bits(py),
+            Err(error) => error.raise(py),
         }
     })
 }
@@ -691,12 +724,13 @@ extern "C" fn replace(args: u64, kwargs: u64) -> u64 {
             return MoltObject::none().bits();
         };
         if spec.names.iter().any(|&name| obj_from_bits(name).is_none()) {
+            let name = diagnostic_name(py, class);
             return raise_exception(
                 py,
                 "TypeError",
                 &format!(
                     "__replace__() is not supported for {} because it has unnamed field(s)",
-                    native_name(py, class)
+                    name
                 ),
             );
         }
@@ -752,18 +786,21 @@ extern "C" fn replace(args: u64, kwargs: u64) -> u64 {
                 return MoltObject::none().bits();
             }
             let names = owned(py, MoltObject::from_ptr(names).bits());
-            let text = owned(py, molt_repr_from_obj(names.bits()));
-            if exception_pending(py) {
-                return MoltObject::none().bits();
-            }
-            return raise_exception(
-                py,
-                "TypeError",
-                &format!(
-                    "Got unexpected field name(s): {}",
-                    string_obj_to_owned(obj_from_bits(text.bits())).unwrap()
-                ),
-            );
+            let message = (|| {
+                let mut output = FormatWriter::new(py);
+                output.append_bytes(b"Got unexpected field name(s): ")?;
+                output.append_output(
+                    FormatOutput::OwnedString(molt_repr_from_obj(names.bits())),
+                    false,
+                )?;
+                output.finish().into_bytes_result(py)
+            })();
+            return match message {
+                Ok(message) => {
+                    crate::builtins::exceptions::raise_exception_bytes(py, "TypeError", &message)
+                }
+                Err(error) => error.raise(py),
+            };
         }
         result.into_bits()
     })
@@ -811,7 +848,8 @@ pub extern "C" fn molt_structseq_type(
             return MoltObject::none().bits();
         }
         let namespace = owned(py, MoltObject::from_ptr(namespace).bits());
-        let full_name = string_obj_to_owned(obj_from_bits(name)).unwrap();
+        let full_name = String::from_utf8(string_obj_bytes(obj_from_bits(name)).unwrap())
+            .expect("declaration name passed strict UTF-8 validation");
         let short_name = full_name.rsplit('.').next().unwrap();
         let short_name = alloc_string(py, short_name.as_bytes());
         if short_name.is_null() {
@@ -1114,7 +1152,8 @@ unsafe fn from_description(
         if exception_pending(py) {
             return MoltObject::none().bits();
         }
-        let full_name = string_obj_to_owned(obj_from_bits(name.bits())).unwrap();
+        let full_name = String::from_utf8(string_obj_bytes(obj_from_bits(name.bits())).unwrap())
+            .expect("C description name was decoded as strict UTF-8");
         let module = match full_name.rsplit_once('.') {
             Some((module, _)) => Some(module),
             None if static_origin => Some("builtins"),

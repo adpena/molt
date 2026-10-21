@@ -299,7 +299,7 @@ fn traceback_text_lines(bytes: &[u8]) -> Vec<&[u8]> {
         .collect()
 }
 
-fn traceback_display_width(line: impl AsRef<[u8]>, offset: usize, minor: i64) -> usize {
+fn traceback_display_width(line: impl AsRef<[u8]>, offset: usize, target: (i64, i64)) -> usize {
     let line = line.as_ref();
     if line.is_ascii() {
         return offset;
@@ -307,7 +307,7 @@ fn traceback_display_width(line: impl AsRef<[u8]>, offset: usize, minor: i64) ->
     traceback_chars(line)
         .take(offset)
         .map(
-            |code| match crate::object::ops::unicode_east_asian_width_table::width(code, minor) {
+            |code| match crate::object::ops::unicode_east_asian_width_table::width(code, target) {
                 "W" | "F" => 2,
                 _ => 1,
             },
@@ -576,7 +576,7 @@ mod traceback_format_tests {
             name: "demo".to_string().into_bytes(),
             line: "alpha = (\n    1 +\n    2".to_string().into_bytes(),
         };
-        let lines_312 = traceback_payload_frame_source_lines_for_target(&frame, 12)
+        let lines_312 = traceback_payload_frame_source_lines_for_target(&frame, (3, 12))
             .into_iter()
             .map(|line| String::from_utf8(line).unwrap())
             .collect::<Vec<_>>();
@@ -588,7 +588,7 @@ mod traceback_format_tests {
             1
         );
 
-        let lines_313 = traceback_payload_frame_source_lines_for_target(&frame, 13)
+        let lines_313 = traceback_payload_frame_source_lines_for_target(&frame, (3, 13))
             .into_iter()
             .map(|line| String::from_utf8(line).unwrap())
             .collect::<Vec<_>>();
@@ -611,7 +611,7 @@ mod traceback_format_tests {
         };
         for minor in [12, 13, 14] {
             assert_eq!(
-                traceback_payload_frame_source_lines_for_target(&frame, minor)
+                traceback_payload_frame_source_lines_for_target(&frame, (3, minor))
                     .into_iter()
                     .map(|line| String::from_utf8(line).unwrap())
                     .collect::<Vec<_>>(),
@@ -698,24 +698,26 @@ mod traceback_format_tests {
 
     #[test]
     fn diagnostic_width_and_public_ucd_version_follow_target_not_host() {
-        use crate::object::ops::unicode_east_asian_width_table::{for_minor, width};
+        use crate::object::ops::unicode_east_asian_width_table::{for_version, width};
         for (minor, version, emoji_width) in [
             (12, "15.0.0", "N"),
             (13, "15.1.0", "N"),
             (14, "16.0.0", "W"),
         ] {
-            assert_eq!(for_minor(minor).unwrap().0, version);
-            assert_eq!(width(0x1fae9, minor), emoji_width);
-            assert_eq!(width(0x231a, minor), "W");
-            assert_eq!(width(0xd800, minor), "N");
-            assert_eq!(width(0xff21, minor), "F");
-            assert_eq!(width(0x0301, minor), "A");
+            assert_eq!(for_version((3, minor)).unwrap().0, version);
+            assert_eq!(width(0x1fae9, (3, minor)), emoji_width);
+            assert_eq!(width(0x231a, (3, minor)), "W");
+            assert_eq!(width(0xd800, (3, minor)), "N");
+            assert_eq!(width(0xff21, (3, minor)), "F");
+            assert_eq!(width(0x0301, (3, minor)), "A");
             assert_eq!(
-                super::traceback_display_width("\u{1fae9}", 1, minor),
+                super::traceback_display_width("\u{1fae9}", 1, (3, minor)),
                 if minor == 14 { 2 } else { 1 }
             );
         }
-        assert!(for_minor(99).is_none());
+        for target in [(3, 99), (3, 0), (4, 0), (4, 14)] {
+            assert!(for_version(target).is_none());
+        }
     }
 
     #[test]
@@ -1639,10 +1641,10 @@ fn traceback_byte_offset_to_char_offset(line: impl AsRef<[u8]>, offset: i64) -> 
 
 fn traceback_payload_frame_source_lines_for_target(
     frame: &TracebackPayloadFrame,
-    minor: i64,
+    target: (i64, i64),
 ) -> Vec<Vec<u8>> {
-    let full_span = minor >= 13;
-    let display_width = |line: &[u8], offset| traceback_display_width(line, offset, minor);
+    let full_span = target >= (3, 13);
+    let display_width = |line: &[u8], offset| traceback_display_width(line, offset, target);
     let raw_lines = traceback_text_lines(&frame.line);
     let first = raw_lines.first().copied().unwrap_or(b"");
     if traceback_trim(&frame.line).is_empty() {
@@ -1798,7 +1800,7 @@ fn traceback_payload_frame_source_lines(
     _py: &PyToken<'_>,
     frame: &TracebackPayloadFrame,
 ) -> Vec<Vec<u8>> {
-    traceback_payload_frame_source_lines_for_target(frame, runtime_target_minor(_py))
+    traceback_payload_frame_source_lines_for_target(frame, runtime_target_version(_py))
 }
 
 /// Column offsets are measured in strict UTF-8 by CPython. Filename, function

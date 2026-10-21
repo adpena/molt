@@ -671,8 +671,10 @@ def check_target_python_versions() -> CategoryResult:
         ROOT / "runtime/molt-runtime/src/object/unicode_width_generated.rs"
     )
     width_versions = tuple(
-        f"3.{minor}"
-        for minor in re.findall(r'^\s*(\d+) => Some\(\("', width_text, re.MULTILINE)
+        f"{major}.{minor}"
+        for major, minor in re.findall(
+            r'^\s*\((\d+),\s*(\d+)\) => Some\(\("', width_text, re.MULTILINE
+        )
     )
     result.items.append(
         CheckItem(

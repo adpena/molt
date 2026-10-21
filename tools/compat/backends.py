@@ -291,10 +291,20 @@ class TimeoutPolicy:
             phases.append((backend, *values))
         return cls(run, tuple(phases))
 
-    def phase(self, backend: str, phase: Literal["build", "run"]) -> float | None:
+    def phase(
+        self, backend: str, phase: Literal["build", "run", "first_run"]
+    ) -> float | None:
         for name, build, run in self.backends:
             if name == backend:
-                return build if phase == "build" else run
+                if phase == "build":
+                    return build
+                if phase == "first_run" and build is not None and run is not None:
+                    # A fresh native image has not established execution
+                    # readiness. Spend the attempt's unused build allowance,
+                    # never a new reservation or another backend's time.
+                    cold = build + run
+                    return cold if math.isfinite(cold) else run
+                return run
         raise ValueError(f"unknown differential backend {backend!r}")
 
     def reservation(
@@ -352,6 +362,21 @@ class ItemBudget:
                 suite_deadline if deadline is None else min(deadline, suite_deadline)
             )
         return cls(policy, deadline)
+
+    def for_backend(self, backend: str, *, build_only: bool = False) -> "ItemBudget":
+        """Narrow once to this attempt's existing build/run reservation.
+
+        Clamp before availability and compilation. Re-entering a direct adapter
+        can narrow this deadline but cannot restart or extend it.
+        """
+        scoped = self.start(
+            self.policy,
+            (backend,),
+            cpython=False,
+            build_only=build_only,
+            suite_deadline=self.deadline,
+        )
+        return self if scoped.deadline == self.deadline else scoped
 
     def limit(self, cap: float | None) -> float | None:
         if self.deadline is None:
@@ -642,7 +667,7 @@ def _guarded_run(
     env: dict[str, str],
     budget: ItemBudget,
     backend: str,
-    phase: Literal["build", "run"],
+    phase: Literal["build", "run", "first_run"],
     cwd: str | None = None,
 ) -> BackendResult:
     """Run every cross-backend build/artifact under the shared typed guard."""
@@ -974,6 +999,7 @@ class LlvmAdapter:
         *,
         context: BackendExecutionContext,
     ) -> BackendResult:
+        context = replace(context, budget=context.budget.for_backend(self.name))
         if context.budget.expired():
             return context.budget.exhausted_result(build_failed=True)
         return _with_adapter_scratch(
@@ -1022,7 +1048,7 @@ class LlvmAdapter:
             env=env,
             budget=context.budget,
             backend=self.name,
-            phase="run",
+            phase="first_run",
             cwd=str(_REPO_ROOT),
         )
 

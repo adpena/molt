@@ -685,7 +685,7 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     number_binary_op: fake_number_binary_op,
     number_unary_op: fake_number_unary_op,
     number_power: fake_number_power,
-    target_python_minor: test_target_python_minor,
+    target_python_at_least: test_target_python_at_least,
     dict_op: support::fake_runtime::dict_op,
     set_op: fake_set_op,
     set_new: fake_set_new,
@@ -2905,6 +2905,6 @@ fn module_dictionary_publication_precedes_foreign_retirement_and_preserves_error
     }
 }
 
-unsafe extern "C" fn test_target_python_minor() -> i64 {
-    12
+unsafe extern "C" fn test_target_python_at_least(major: i64, minor: i64) -> bool {
+    (3, 12) >= (major, minor)
 }

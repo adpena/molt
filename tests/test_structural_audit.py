@@ -2533,6 +2533,21 @@ def test_compatibility_protocol_rust_projection_uses_canonical_format(monkeypatc
     )
 
 
+def test_compatibility_projection_preserves_major_without_widening_outcomes():
+    protocol = SA.compatibility_errors
+    # Independent literal coordinates distinguish the same minor in two majors.
+    assert protocol._version_pattern(("3.0", "4.0")) == "(3, 0) | (4, 0)"
+    assert protocol._version_pattern(("4.0",)) == "(4, 0)"
+    assert protocol._version_pattern(("3.12", "3.13", "3.14", "4.0")) == (
+        "(3, 12..=14) | (4, 0)"
+    )
+    assert protocol.OUTCOMES["MemoryviewLookup"].versions == ("3.14",)
+    assert "target.major != 3" not in protocol.RUST_SOURCE
+    assert "matches!(target_version, (3, 14))" in protocol.RUST_SOURCE
+    with pytest.raises(ValueError, match="declared target coordinate"):
+        protocol._version_pattern(())
+
+
 def test_compatibility_protocol_inventory_fails_closed(tmp_path):
     protocol = SA.compatibility_errors
     # The same byte-exact projection used by the gate must match the committed

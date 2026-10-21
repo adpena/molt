@@ -308,7 +308,7 @@ pub(crate) fn prepare_wrapper_members(
         // same rows, so even unusually large version integers cannot collide.
         use molt_cpython_abi::api::typeobj::{self, BuiltinSlotNamespacePolicy};
         const SLOT_POLICY_BIT: u32 = WRAPPER_MEMBERS.len() as u32 + 1;
-        let slot_policy = BuiltinSlotNamespacePolicy::for_minor(minor);
+        let slot_policy = BuiltinSlotNamespacePolicy::for_version(major, minor);
         let version_key = WRAPPER_MEMBERS
             .iter()
             .enumerate()
@@ -1058,10 +1058,13 @@ mod tests {
         ) -> std::ffi::c_int {
             use molt_cpython_abi::abi_types::{PyList_Type, PyMemoryView_Type};
             unsafe {
-                let coherent = (molt_cpython_abi::hooks::hooks_or_stubs().target_python_minor)()
-                    == 14
-                    && PyList_Type.tp_version_tag == 0
-                    && PyMemoryView_Type.tp_version_tag == 0;
+                let coherent =
+                    (molt_cpython_abi::hooks::hooks_or_stubs().target_python_at_least)(3, 14)
+                        && !(molt_cpython_abi::hooks::hooks_or_stubs().target_python_at_least)(
+                            3, 15,
+                        )
+                        && PyList_Type.tp_version_tag == 0
+                        && PyMemoryView_Type.tp_version_tag == 0;
                 WATCH_COHERENT.fetch_and(coherent, Ordering::Relaxed);
                 WATCH_CALLS.fetch_add(1, Ordering::Relaxed);
             }

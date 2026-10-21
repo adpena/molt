@@ -1198,6 +1198,7 @@ INTRINSIC_SIGNATURES: dict[str, tuple[str, int]] = {
     "molt_types_cell_contents_set": ("molt_types_cell_contents_set", 3),
     "molt_types_cell_contents_delete": ("molt_types_cell_contents_delete", 2),
     "molt_function_set_builtin": ("molt_function_set_builtin", 1),
+    "molt_function_set_fixed_builtin": ("molt_function_set_fixed_builtin", 2),
     "molt_function_set_defaults": ("molt_function_set_defaults", 3),
     "molt_function_defaults_version": ("molt_function_defaults_version", 1),
     "molt_builtin_class_lookup": ("molt_builtin_class_lookup", 1),

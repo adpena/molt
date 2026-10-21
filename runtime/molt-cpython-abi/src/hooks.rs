@@ -1130,9 +1130,9 @@ pub struct RuntimeHooks {
         b_bits: u64,
         mod_bits: u64,
     ) -> OwnedHandleResult,
-    /// Semantic target from the runtime version owner; -1 means unavailable/error.
+    /// Total semantic version predicate from the runtime version owner.
     /// This is independent of the physical CPython ABI version.
-    pub target_python_minor: unsafe extern "C" fn() -> i64,
+    pub target_python_at_least: unsafe extern "C" fn(major: i64, minor: i64) -> bool,
     // ── Mapping protocol (PyDict_*) ───────────────────────────────────────────
     //
     // The runtime owns dict iteration (copy / keys / values / items). The ABI
@@ -1491,7 +1491,8 @@ pub const RUNTIME_HOOKS_ABI_MAGIC: u64 = 0x4d4f_4c54_484f_4f4b;
 // import-dictionary hooks that are absent from this main-line hook table.
 // Version 72 adds sealed struct-sequence factories and physical hidden tuple
 // storage to main's Version 68 table without reusing that distinct ABI identity.
-pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 72;
+// Version 73 replaces the minor-only target query with a full-version predicate.
+pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 73;
 
 #[inline]
 fn runtime_hooks_layout_matches(abi_magic: u64, abi_version: u32, struct_size: u32) -> bool {
@@ -2411,8 +2412,9 @@ unsafe extern "C" fn stub_number_power(
 ) -> OwnedHandleResult {
     OwnedHandleResult::error()
 }
-unsafe extern "C" fn stub_target_python_minor() -> i64 {
-    -1
+unsafe extern "C" fn stub_target_python_at_least(major: i64, minor: i64) -> bool {
+    // Standalone ABI operations explicitly model the declared CPython baseline.
+    (3, 12) >= (major, minor)
 }
 unsafe extern "C" fn stub_dict_op(_op: u32, _dict: u64) -> u64 {
     0
@@ -2873,7 +2875,7 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     number_binary_op: stub_number_binary_op,
     number_unary_op: stub_number_unary_op,
     number_power: stub_number_power,
-    target_python_minor: stub_target_python_minor,
+    target_python_at_least: stub_target_python_at_least,
     dict_op: stub_dict_op,
     set_op: stub_set_op,
     set_new: stub_set_new,

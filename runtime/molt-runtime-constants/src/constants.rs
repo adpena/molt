@@ -2,11 +2,14 @@
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicU64;
 
-// Keep in sync with MOLT_BIND_KIND_CLINIC_NAMED in src/molt/frontend/_types.py.
+// Keep in sync with MOLT_BIND_KIND_CLINIC_NAMED in src/molt/builtin_callables.py.
 pub const BIND_KIND_CLINIC_NAMED: i64 = 1;
 pub const BIND_KIND_CAPI_METHOD: i64 = 2;
 pub const BIND_KIND_PACKED_BUILTIN: i64 = 3;
 pub const BIND_KIND_TYPE_NEW_INIT: i64 = 4;
+// Rust-only projections of explicit CFunctionConvention declarations.
+pub const BIND_KIND_FIXED_NOARGS: i64 = 5;
+pub const BIND_KIND_FIXED_ONE_OBJECT: i64 = 6;
 
 include!(concat!(
     env!("CARGO_MANIFEST_DIR"),

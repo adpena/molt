@@ -6,7 +6,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 
 ## Counts
 
-- `authority-routed` files: 63
+- `authority-routed` files: 64
 - `operational-tooling` files: 58
 - `scattered-assumption` files: 344
 
@@ -196,7 +196,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `runtime/molt-cpython-abi/src/api/typeobj/native_slot_dispatch.rs` | 5 | authority-routed | `3.12` |
 | `runtime/molt-cpython-abi/src/api/typeobj/slot_wrappers/tests.rs` | 1 | scattered-assumption | `3.12` |
 | `runtime/molt-cpython-abi/src/api/typeobj/slot_wrappers.rs` | 1 | scattered-assumption | `3.12` |
-| `runtime/molt-cpython-abi/src/api/typeobj.rs` | 14 | authority-routed | `3.12` |
+| `runtime/molt-cpython-abi/src/api/typeobj.rs` | 15 | authority-routed | `3.12` |
 | `runtime/molt-cpython-abi/src/bridge.rs` | 1 | scattered-assumption | `3.12` |
 | `runtime/molt-cpython-abi/src/gil_declarations.rs` | 4 | scattered-assumption | `3.13` |
 | `runtime/molt-cpython-abi/src/hooks.rs` | 1 | authority-routed | `3.13` |
@@ -219,7 +219,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `runtime/molt-cpython-abi/tests/test_sequence_numeric_fallbacks.rs` | 1 | scattered-assumption | `3.12` |
 | `runtime/molt-cpython-abi/tests/test_sequences.rs` | 1 | scattered-assumption | `3.12` |
 | `runtime/molt-cpython-abi/tests/test_slice_unpack.rs` | 1 | scattered-assumption | `3.12` |
-| `runtime/molt-cpython-abi/tests/test_stringification.rs` | 2 | scattered-assumption | `3.5` |
+| `runtime/molt-cpython-abi/tests/test_stringification.rs` | 2 | authority-routed | `3.5` |
 | `runtime/molt-cpython-abi/tests/test_type_operations.rs` | 2 | scattered-assumption | `3.12` |
 | `runtime/molt-cpython-abi/tests/test_typeobj_semantics.rs` | 3 | authority-routed | `3.12` |
 | `runtime/molt-cpython-abi/tests/test_value_type_slots.rs` | 4 | scattered-assumption | `3.12` |
@@ -292,6 +292,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `runtime/molt-runtime/src/builtins/modules.rs` | 7 | authority-routed | `version_info` |
 | `runtime/molt-runtime/src/builtins/numbers.rs` | 20 | authority-routed | `3.14` |
 | `runtime/molt-runtime/src/builtins/platform_tests.rs` | 3 | scattered-assumption | `3.12` |
+| `runtime/molt-runtime/src/builtins/pwd.rs` | 4 | scattered-assumption | `3.13` |
 | `runtime/molt-runtime/src/builtins/sys_ext.rs` | 2 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/builtins/types/class_construction.rs` | 1 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/builtins/types/class_model/hierarchy.rs` | 3 | scattered-assumption | `3.12` |

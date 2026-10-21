@@ -432,6 +432,20 @@ constructor initialization and public class-assignment admission remain separate
 obligations. Private `UnraisableHookArgs` uses the same static struct-sequence
 declaration, allocation, descriptors and constructor as public struct sequences.
 
+Struct-sequence representation and password-lookup/record-replacement errors
+compose Python-produced text through the shared `FormatWriter`. Callback strings
+retain their WTF-8 bytes, including lone surrogates and embedded NULs; the writer
+copies each result before retiring its owner and preserves pending callback or
+allocation errors. Descriptor names are borrowed from the sealed declaration.
+Native C type-name diagnostics separately obey CPython's byte-precision limits;
+the target-version decoder owns the treatment of incomplete trailing UTF-8.
+These are
+different contracts: Python values never pass through a lossy host-text adapter.
+The owning source references are CPython
+[struct sequences](https://github.com/python/cpython/blob/v3.12.13/Objects/structseq.c),
+[password lookup](https://github.com/python/cpython/blob/v3.12.13/Modules/pwdmodule.c),
+and [argument diagnostics](https://github.com/python/cpython/blob/v3.12.13/Python/getargs.c).
+
 Published `__new__` and `__init__` descriptors own the constructor argument and
 conversion contracts. Ordinary class calls invoke these phases through one
 lifecycle: a foreign `__new__` result skips initialization, and a subtype result
@@ -456,6 +470,19 @@ existing argument span. Extension, variadic, wrapper and named-signature
 binders retain their own contracts. This follows pinned CPython's
 [method calls](https://raw.githubusercontent.com/python/cpython/3bb231a6a5dc02b95658877318bf61501a7209e9/Objects/methodobject.c)
 and [descriptor calls](https://raw.githubusercontent.com/python/cpython/3bb231a6a5dc02b95658877318bf61501a7209e9/Objects/descrobject.c).
+
+Module functions declare fixed C argument semantics through
+`molt_function_set_fixed_builtin(function, positional_count)`, with an explicit
+count of zero or one. Promotion validates the executable signature before
+publishing native identity and calling-convention metadata atomically. Rejected
+arguments share `CFunctionConvention` admission with C-API methods, including
+keyword-before-count diagnostics and module-qualified labels from the published
+`__qualname__`. Exact successful positional calls retain direct transport.
+Public code, default and signature mutation remains sealed; publication
+invalidates cached call shapes before retiring displaced owners. Ordinary
+builtin promotion retains its existing binding semantics. This follows CPython's
+[fixed module calls](https://github.com/python/cpython/blob/v3.12.13/Objects/methodobject.c)
+and [function labels](https://github.com/python/cpython/blob/v3.12.13/Objects/object.c).
 
 Native C type readiness and default slot-wrapper publication preserve the same
 method pair and receiver ownership. Default-getter admission uses the canonical
