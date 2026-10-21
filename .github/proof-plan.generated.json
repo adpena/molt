@@ -647,6 +647,7 @@
         "tests/tools/test_hooks_session_learning.py/**",
         "tests/tools/test_hooks_waivers.py/**",
         "tests/tools/test_install_git_hooks.py/**",
+        "tests/tools/test_ledger_merge.py/**",
         "tests/tools/test_magnitude_dismissal_gate.py/**",
         "tests/tools/test_subagent_contract.py/**",
         "tests/tools/test_triality.py/**",
@@ -3713,6 +3714,7 @@
         "tests/tools/test_hooks_session_learning.py",
         "tests/tools/test_hooks_waivers.py",
         "tests/tools/test_install_git_hooks.py",
+        "tests/tools/test_ledger_merge.py",
         "tests/tools/test_magnitude_dismissal_gate.py",
         "tests/tools/test_subagent_contract.py",
         "tests/tools/test_triality.py",
@@ -9381,7 +9383,7 @@
       "local.maintained-zlib-counters.0": "cargo test --locked --profile dev-fast -p zlib-rs@0.6.8 --lib --no-default-features --features rust-allocator,std,ZLIB_DEBUG -- counter_wrap --nocapture --test-threads=1",
       "local.maintained-zlib-counters.1": "python tools/run_runtime_test_gate.py --policy zlib-wasi --profile dev-fast --build-timeout-seconds 300 --child-timeout-seconds 120",
       "local.maintained-zlib-counters.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.0 tests/cli/test_runtime_source_closure.py",
-      "local.managed-git-hooks.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.5 tests/tools/test_install_git_hooks.py tests/tools/test_check_commit_attribution.py",
+      "local.managed-git-hooks.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.5 tests/tools/test_install_git_hooks.py tests/tools/test_check_commit_attribution.py tests/tools/test_ledger_merge.py",
       "local.memory-graph.0": "python tools/check_memory_graph.py --check",
       "local.memory-graph.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_memory_graph.py",
       "local.native-callable-abi.0": "cargo test --locked --profile dev-fast -p molt-ir -p molt-backend-native -p molt-backend-wasm --features molt-backend-wasm/test-util --lib native_callable --no-fail-fast",
@@ -10422,19 +10424,23 @@
         "command_ids": [
           "local.managed-git-hooks.pytest"
         ],
-        "description": "Managed Git hooks, their installer and the attribution checker they run.",
+        "description": "Managed Git hooks and merge drivers, their installer, and the tools they run.",
         "gates": [],
         "globs": [
           ".githooks/**",
+          ".gitattributes",
           "tools/install_git_hooks.py",
           "tools/check_commit_attribution.py",
+          "tools/ledger_merge.py",
           "tests/tools/test_install_git_hooks.py",
-          "tests/tools/test_check_commit_attribution.py"
+          "tests/tools/test_check_commit_attribution.py",
+          "tests/tools/test_ledger_merge.py"
         ],
         "name": "managed-git-hooks",
         "pytest": [
           "tests/tools/test_install_git_hooks.py",
-          "tests/tools/test_check_commit_attribution.py"
+          "tests/tools/test_check_commit_attribution.py",
+          "tests/tools/test_ledger_merge.py"
         ],
         "toolchains": [
           "python"

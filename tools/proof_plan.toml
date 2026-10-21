@@ -2566,7 +2566,7 @@ resource_class = "repository-policy"
 timeout_seconds = 600
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-n", "auto", "--molt-worker-memory-gb=0.5", "tests/test_agent_coordination.py", "tests/tools/test_anti_recurrence_gate.py", "tests/tools/test_apparatus_agent_safety.py", "tests/tools/test_check_commit_attribution.py", "tests/tools/test_check_gate_flips.py", "tests/tools/test_check_gate_liveness.py", "tests/tools/test_check_instruction_hierarchy.py", "tests/tools/test_check_sister_landed.py", "tests/tools/test_claim_lane.py", "tests/tools/test_claims_status.py", "tests/tools/test_commit_serializer.py", "tests/tools/test_custody_apparatus.py", "tests/tools/test_dirty_tree_landing_audit.py", "tests/tools/test_hooks_bash_guard.py", "tests/tools/test_hooks_fail_open.py", "tests/tools/test_hooks_landing_gate.py", "tests/tools/test_hooks_session_digest.py", "tests/tools/test_hooks_session_learning.py", "tests/tools/test_hooks_waivers.py", "tests/tools/test_install_git_hooks.py", "tests/tools/test_magnitude_dismissal_gate.py", "tests/tools/test_subagent_contract.py", "tests/tools/test_triality.py", "tests/tools/test_triality_gate.py"]
+argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-n", "auto", "--molt-worker-memory-gb=0.5", "tests/test_agent_coordination.py", "tests/tools/test_anti_recurrence_gate.py", "tests/tools/test_apparatus_agent_safety.py", "tests/tools/test_check_commit_attribution.py", "tests/tools/test_check_gate_flips.py", "tests/tools/test_check_gate_liveness.py", "tests/tools/test_check_instruction_hierarchy.py", "tests/tools/test_check_sister_landed.py", "tests/tools/test_claim_lane.py", "tests/tools/test_claims_status.py", "tests/tools/test_commit_serializer.py", "tests/tools/test_custody_apparatus.py", "tests/tools/test_dirty_tree_landing_audit.py", "tests/tools/test_hooks_bash_guard.py", "tests/tools/test_hooks_fail_open.py", "tests/tools/test_hooks_landing_gate.py", "tests/tools/test_hooks_session_digest.py", "tests/tools/test_hooks_session_learning.py", "tests/tools/test_hooks_waivers.py", "tests/tools/test_install_git_hooks.py", "tests/tools/test_ledger_merge.py", "tests/tools/test_magnitude_dismissal_gate.py", "tests/tools/test_subagent_contract.py", "tests/tools/test_triality.py", "tests/tools/test_triality_gate.py"]
 toolchains = ["python", "uv"]
 
 [[command]]
@@ -4834,18 +4834,22 @@ pytest = [
 [[rule]]
 name = "managed-git-hooks"
 toolchains = ["python"]
-description = "Managed Git hooks, their installer and the attribution checker they run."
+description = "Managed Git hooks and merge drivers, their installer, and the tools they run."
 globs = [
   ".githooks/**",
+  ".gitattributes",
   "tools/install_git_hooks.py",
   "tools/check_commit_attribution.py",
+  "tools/ledger_merge.py",
   "tests/tools/test_install_git_hooks.py",
   "tests/tools/test_check_commit_attribution.py",
+  "tests/tools/test_ledger_merge.py",
 ]
 gates = []
 pytest = [
   "tests/tools/test_install_git_hooks.py",
   "tests/tools/test_check_commit_attribution.py",
+  "tests/tools/test_ledger_merge.py",
 ]
 
 # --- Development output custody ----------------------------------------
