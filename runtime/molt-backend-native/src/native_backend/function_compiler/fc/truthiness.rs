@@ -12,7 +12,7 @@ use super::list_index_fast_path::ListIndexFastPathState;
 #[cfg(feature = "native-backend")]
 #[allow(clippy::too_many_arguments)]
 pub(in crate::native_backend::function_compiler) fn emit_boxed_truthiness(
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     sealed_blocks: &mut BTreeSet<Block>,

@@ -31,7 +31,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
     reachable_blocks: &mut BTreeSet<Block>,
     is_block_filled: &mut bool,
     rc_authority: NativeRcAuthority,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -52,7 +52,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
     maybe_debug_seal: &dyn Fn(&str, usize, Block),
     nbc: &crate::NanBoxConsts,
 ) {
-    let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
+    let var_get_boxed_overflow_safe = |module: &mut dyn Module,
                                        import_ids: &mut BTreeMap<
         &'static str,
         (cranelift_module::FuncId, ImportSignatureShape),

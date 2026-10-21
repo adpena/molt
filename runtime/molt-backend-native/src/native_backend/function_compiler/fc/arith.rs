@@ -35,7 +35,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
     op: &OpIR,
     op_idx: usize,
     func_name: &str,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -178,7 +178,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
 /// `add` arm of [`handle_arith_op`], body moved verbatim.
 fn handle_add_op(
     op: &OpIR,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -201,7 +201,7 @@ fn handle_add_op(
     let op_prefers_str_lane = |op: &OpIR| {
         scalar_fast_paths_enabled && representation_plan.op_scalar_lane(op) == Some(ScalarKind::Str)
     };
-    let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
+    let var_get_boxed_overflow_safe = |module: &mut dyn Module,
                                        import_ids: &mut BTreeMap<
         &'static str,
         (cranelift_module::FuncId, ImportSignatureShape),
@@ -558,7 +558,7 @@ fn handle_add_op(
 /// `checked_add` arm of [`handle_arith_op`], body moved verbatim.
 fn handle_checked_add_op(
     op: &OpIR,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -567,7 +567,7 @@ fn handle_checked_add_op(
     representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
 ) -> OpFlow {
-    let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
+    let var_get_boxed_overflow_safe = |module: &mut dyn Module,
                                        import_ids: &mut BTreeMap<
         &'static str,
         (cranelift_module::FuncId, ImportSignatureShape),
@@ -707,7 +707,7 @@ fn handle_checked_add_op(
 /// `checked_mul` arm of [`handle_arith_op`], body moved verbatim.
 fn handle_checked_mul_op(
     op: &OpIR,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -716,7 +716,7 @@ fn handle_checked_mul_op(
     representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
 ) -> OpFlow {
-    let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
+    let var_get_boxed_overflow_safe = |module: &mut dyn Module,
                                        import_ids: &mut BTreeMap<
         &'static str,
         (cranelift_module::FuncId, ImportSignatureShape),
@@ -859,7 +859,7 @@ fn handle_checked_mul_op(
 /// `inplace_add` arm of [`handle_arith_op`], body moved verbatim.
 fn handle_inplace_add_op(
     op: &OpIR,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -882,7 +882,7 @@ fn handle_inplace_add_op(
     let op_prefers_str_lane = |op: &OpIR| {
         scalar_fast_paths_enabled && representation_plan.op_scalar_lane(op) == Some(ScalarKind::Str)
     };
-    let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
+    let var_get_boxed_overflow_safe = |module: &mut dyn Module,
                                        import_ids: &mut BTreeMap<
         &'static str,
         (cranelift_module::FuncId, ImportSignatureShape),
@@ -1179,7 +1179,7 @@ fn handle_sub_op(
     op: &OpIR,
     op_idx: usize,
     func_name: &str,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -1200,7 +1200,7 @@ fn handle_sub_op(
             && !op_prefers_integer_runtime_lane(op)
             && representation_plan.op_scalar_lane(op) == Some(ScalarKind::Float)
     };
-    let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
+    let var_get_boxed_overflow_safe = |module: &mut dyn Module,
                                        import_ids: &mut BTreeMap<
         &'static str,
         (cranelift_module::FuncId, ImportSignatureShape),
@@ -1480,7 +1480,7 @@ fn handle_inplace_sub_op(
     op: &OpIR,
     op_idx: usize,
     func_name: &str,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -1500,7 +1500,7 @@ fn handle_inplace_sub_op(
             && !op_prefers_integer_runtime_lane(op)
             && representation_plan.op_scalar_lane(op) == Some(ScalarKind::Float)
     };
-    let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
+    let var_get_boxed_overflow_safe = |module: &mut dyn Module,
                                        import_ids: &mut BTreeMap<
         &'static str,
         (cranelift_module::FuncId, ImportSignatureShape),
@@ -1756,7 +1756,7 @@ fn handle_inplace_sub_op(
 /// `mul` arm of [`handle_arith_op`], body moved verbatim.
 fn handle_mul_op(
     op: &OpIR,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -1777,7 +1777,7 @@ fn handle_mul_op(
             && !op_prefers_integer_runtime_lane(op)
             && representation_plan.op_scalar_lane(op) == Some(ScalarKind::Float)
     };
-    let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
+    let var_get_boxed_overflow_safe = |module: &mut dyn Module,
                                        import_ids: &mut BTreeMap<
         &'static str,
         (cranelift_module::FuncId, ImportSignatureShape),
@@ -2053,7 +2053,7 @@ fn handle_mul_op(
 /// `inplace_mul` arm of [`handle_arith_op`], body moved verbatim.
 fn handle_inplace_mul_op(
     op: &OpIR,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -2073,7 +2073,7 @@ fn handle_inplace_mul_op(
             && !op_prefers_integer_runtime_lane(op)
             && representation_plan.op_scalar_lane(op) == Some(ScalarKind::Float)
     };
-    let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
+    let var_get_boxed_overflow_safe = |module: &mut dyn Module,
                                        import_ids: &mut BTreeMap<
         &'static str,
         (cranelift_module::FuncId, ImportSignatureShape),

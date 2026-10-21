@@ -23,7 +23,7 @@ impl SimpleBackend {
     /// Runtime polls use manifest keys; compiled polls use raw code addresses.
     /// Resolve the domain here so task construction and dispatch need no scan.
     pub(crate) fn task_poll_identity(
-        module: &mut ObjectModule,
+        module: &mut dyn Module,
         builder: &mut FunctionBuilder<'_>,
         name: &str,
         linkage: Linkage,
@@ -44,7 +44,7 @@ impl SimpleBackend {
     }
 
     pub(crate) fn intern_data_segment(
-        module: &mut ObjectModule,
+        module: &mut dyn Module,
         data_pool: &mut BTreeMap<Vec<u8>, cranelift_module::DataId>,
         next_data_id: &mut u64,
         bytes: &[u8],
@@ -72,7 +72,7 @@ impl SimpleBackend {
     /// Takes split borrows (`module` + `import_ids`) so callers can hold a
     /// concurrent `FunctionBuilder` borrow on `self.ctx.func`.
     pub(crate) fn import_func_id_split(
-        module: &mut ObjectModule,
+        module: &mut dyn Module,
         import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
         name: &'static str,
         params: &[types::Type],
@@ -105,7 +105,7 @@ impl SimpleBackend {
     }
 
     pub(crate) fn import_runtime_func_id_split(
-        module: &mut ObjectModule,
+        module: &mut dyn Module,
         import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
         signature: RuntimeImportSignature,
     ) -> cranelift_module::FuncId {

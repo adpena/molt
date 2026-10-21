@@ -15,7 +15,7 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_store_op(
     op: &OpIR,
     op_idx: usize,
     func_name: &str,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,

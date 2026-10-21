@@ -23,7 +23,7 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
     op: &OpIR,
     func_name: &str,
     is_block_filled: bool,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -34,7 +34,7 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
     exc_flag_ptr_slot: Option<cranelift_codegen::ir::StackSlot>,
     nbc: &crate::NanBoxConsts,
 ) {
-    let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
+    let var_get_boxed_overflow_safe = |module: &mut dyn Module,
                                        import_ids: &mut BTreeMap<
         &'static str,
         (cranelift_module::FuncId, ImportSignatureShape),

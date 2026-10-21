@@ -34,7 +34,7 @@ const _: () = assert!(
 /// generated-object ABI. The full fact fingerprint and execution mode are
 /// encoded in the imported symbol, so independently cached backend and runtime
 /// artifacts fail at link admission instead of producing mixed contracts.
-fn emit_generated_object_abi_anchor(module: &mut ObjectModule) {
+fn emit_generated_object_abi_anchor(module: &mut dyn Module) {
     let witness = module
         .declare_data(
             molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL,

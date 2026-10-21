@@ -37,7 +37,7 @@ use super::var_get_boxed_overflow_safe_fn;
 #[cfg(feature = "native-backend")]
 #[allow(clippy::too_many_arguments)]
 pub(in crate::native_backend::function_compiler) fn def_unboxed_lane_from(
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -48,7 +48,7 @@ pub(in crate::native_backend::function_compiler) fn def_unboxed_lane_from(
     src_name: &str,
     out_name: &str,
 ) -> bool {
-    let boxed_source = |module: &mut ObjectModule,
+    let boxed_source = |module: &mut dyn Module,
                         import_ids: &mut BTreeMap<
         &'static str,
         (cranelift_module::FuncId, ImportSignatureShape),
@@ -110,7 +110,7 @@ pub(in crate::native_backend::function_compiler) fn define_alias_result(
     src_name: &str,
     out_name: &str,
     borrowed_boxed_source: Option<Value>,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -174,7 +174,7 @@ pub(in crate::native_backend::function_compiler) fn define_alias_result(
 pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
     op: &OpIR,
     op_idx: usize,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -189,7 +189,7 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
     local_dec_ref_obj: FuncRef,
     nbc: &crate::NanBoxConsts,
 ) {
-    let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
+    let var_get_boxed_overflow_safe = |module: &mut dyn Module,
                                        import_ids: &mut BTreeMap<
         &'static str,
         (cranelift_module::FuncId, ImportSignatureShape),

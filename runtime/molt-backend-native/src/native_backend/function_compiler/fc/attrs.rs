@@ -51,7 +51,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
     op: &OpIR,
     op_idx: usize,
     func_name: &str,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -63,7 +63,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
     // Reconstruct the original op-local closure (captures representation_plan +
     // nbc; all other state threads through explicit params) so the moved arm
     // bodies call it exactly as they did inline.
-    let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
+    let var_get_boxed_overflow_safe = |module: &mut dyn Module,
                                        import_ids: &mut BTreeMap<
         &'static str,
         (cranelift_module::FuncId, ImportSignatureShape),

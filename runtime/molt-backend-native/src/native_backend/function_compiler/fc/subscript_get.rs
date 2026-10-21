@@ -14,7 +14,7 @@ pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = 
 fn bind_index_result(
     out: Option<&str>,
     result: Value,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -64,7 +64,7 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
     op: &OpIR,
     op_idx: usize,
     const_int_map: &BTreeMap<String, i64>,
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,

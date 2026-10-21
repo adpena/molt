@@ -23,7 +23,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
     op_idx: usize,
     func_name: &str,
     func_ops: &[OpIR],
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -58,7 +58,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
     };
     let op_prefers_int_lane =
         |op: &OpIR| super::op_prefers_int_lane(scalar_fast_paths_enabled, representation_plan, op);
-    let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
+    let var_get_boxed_overflow_safe = |module: &mut dyn Module,
                                        import_ids: &mut BTreeMap<
         &'static str,
         (cranelift_module::FuncId, ImportSignatureShape),

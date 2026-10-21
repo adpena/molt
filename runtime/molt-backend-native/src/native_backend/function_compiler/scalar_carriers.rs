@@ -147,7 +147,7 @@ pub(in crate::native_backend::function_compiler) fn bool_raw_value(
 /// not raw-primary.
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) fn ensure_boxed_overflow_safe(
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -186,7 +186,7 @@ pub(in crate::native_backend::function_compiler) fn ensure_boxed_overflow_safe(
 #[cfg(feature = "native-backend")]
 #[allow(clippy::too_many_arguments)]
 pub(in crate::native_backend::function_compiler) fn box_raw_i64_value_overflow_safe(
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -246,7 +246,7 @@ pub(in crate::native_backend::function_compiler) fn box_raw_i64_value_overflow_s
 #[cfg(feature = "native-backend")]
 #[allow(clippy::too_many_arguments)]
 pub(in crate::native_backend::function_compiler) fn var_get_boxed_overflow_safe_base(
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -395,7 +395,7 @@ pub(in crate::native_backend::function_compiler) fn ensure_boxed_bool_safe(
 #[cfg(feature = "native-backend")]
 #[allow(clippy::too_many_arguments)]
 pub(in crate::native_backend::function_compiler) fn ensure_boxed_primitive_safe(
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -445,7 +445,7 @@ pub(in crate::native_backend::function_compiler) fn ensure_boxed_primitive_safe(
 #[cfg(feature = "native-backend")]
 #[allow(clippy::too_many_arguments)]
 pub(in crate::native_backend::function_compiler) fn def_var_from_boxed_transport(
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -485,7 +485,7 @@ pub(in crate::native_backend::function_compiler) fn def_var_from_boxed_transport
 #[cfg(feature = "native-backend")]
 #[allow(clippy::too_many_arguments)]
 pub(in crate::native_backend::function_compiler) fn def_var_from_numeric_result(
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -624,7 +624,7 @@ impl CapturedScalarTransport {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn value_for_home(
         &mut self,
-        module: &mut ObjectModule,
+        module: &mut dyn Module,
         import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
         builder: &mut FunctionBuilder<'_>,
         import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -667,7 +667,7 @@ impl CapturedScalarTransport {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn value_for_storage(
         &mut self,
-        module: &mut ObjectModule,
+        module: &mut dyn Module,
         import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
         builder: &mut FunctionBuilder<'_>,
         import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -733,7 +733,7 @@ impl CapturedScalarTransport {
 #[cfg(feature = "native-backend")]
 #[allow(clippy::too_many_arguments)]
 pub(in crate::native_backend::function_compiler) fn merge_rebind_value_for_storage(
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -758,7 +758,7 @@ pub(in crate::native_backend::function_compiler) fn merge_rebind_value_for_stora
 #[cfg(feature = "native-backend")]
 #[allow(clippy::too_many_arguments)]
 pub(in crate::native_backend::function_compiler) fn def_var_from_merge_rebind_storage(
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -877,7 +877,7 @@ pub(in crate::native_backend::function_compiler) enum BoxedBitwiseOp {
 #[cfg(feature = "native-backend")]
 #[allow(clippy::too_many_arguments)]
 pub(in crate::native_backend::function_compiler) fn emit_guarded_boxed_bitwise(
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -969,7 +969,7 @@ pub(in crate::native_backend::function_compiler) fn dead_scrub_value_for_var(
 
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) fn float_value_from_boxed_extended(
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -1006,7 +1006,7 @@ pub(in crate::native_backend::function_compiler) fn float_value_from_boxed_exten
 #[cfg(feature = "native-backend")]
 #[allow(clippy::too_many_arguments)]
 pub(in crate::native_backend::function_compiler) fn float_value_for_mixed(
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
@@ -1066,7 +1066,7 @@ pub(in crate::native_backend::function_compiler) fn float_value_for_mixed(
 #[cfg(feature = "native-backend")]
 #[allow(clippy::too_many_arguments)]
 pub(in crate::native_backend::function_compiler) fn emit_float_numeric_compare(
-    module: &mut ObjectModule,
+    module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
