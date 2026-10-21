@@ -9,7 +9,6 @@ consumers render AND fail open.
 
 from __future__ import annotations
 
-import io
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -262,21 +261,8 @@ def test_obsidian_export_emits_wikilinks(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# Consumer 1: session_digest nearest-memories (renders + fails open)
+# Session-learning digests stay searchable memory
 # --------------------------------------------------------------------------
-
-
-def test_session_digest_renders_nearest(tmp_path, monkeypatch):
-    from tools.hooks import session_digest as sd
-
-    mem = _write_corpus(tmp_path)
-    monkeypatch.setenv("MOLT_MEMORY_DIR", str(mem))
-    out = io.StringIO()
-    sd._section_nearest_memories(out, tmp_path, str(tmp_path))
-    text = out.getvalue()
-    assert "NEAREST MEMORIES" in text
-    # The witness-flavored note matches the lane context and IS surfaced.
-    assert "witness-note" in text
 
 
 def test_session_digest_subdirectory_is_searchable_memory(tmp_path):
@@ -287,45 +273,16 @@ def test_session_digest_subdirectory_is_searchable_memory(tmp_path):
         "# Session learning s1\n\n## Crux learnings\n- forbidden checkout path policy\n",
         encoding="utf-8",
     )
-    ranked = mg.nearest_memories(
-        "forbidden checkout path policy",
-        k=3,
+    graph = mg.build_graph(
         memory_dir=mem,
         repo_root=tmp_path,
+        include_memory=True,
+        include_ledgers=False,
+        include_findings=False,
+        include_gates=False,
     )
+    ranked = graph.nearest("forbidden checkout path policy", k=3)
     assert any(node.id.startswith("memory:session_digests/") for node, _ in ranked)
-
-
-def test_session_digest_nearest_fails_open(tmp_path, monkeypatch):
-    from tools.hooks import session_digest as sd
-
-    def _boom(*a, **k):
-        raise RuntimeError("graph exploded")
-
-    monkeypatch.setattr(mg, "nearest_memories", _boom, raising=True)
-    out = io.StringIO()
-    # Must NOT raise even though the graph raises inside.
-    sd._section_nearest_memories(out, tmp_path, str(tmp_path))
-    text = out.getvalue()
-    assert "NEAREST MEMORIES" in text
-    assert "recall unavailable" in text  # graceful fallback line
-
-
-def test_session_digest_full_run_survives_graph_error(tmp_path, monkeypatch):
-    from tools.hooks import session_digest as sd
-
-    monkeypatch.setattr(
-        mg,
-        "nearest_memories",
-        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
-        raising=True,
-    )
-    monkeypatch.setattr(sd._common, "read_hook_input", lambda: {"cwd": str(tmp_path)})
-    captured = io.StringIO()
-    monkeypatch.setattr(sys, "stdout", captured)
-    rc = sd.run()
-    assert rc == 0
-    assert "molt session digest" in captured.getvalue()
 
 
 # --------------------------------------------------------------------------

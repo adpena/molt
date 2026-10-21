@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"${CLAUDE_PROJECT_DIR}/tools/hooks/run.sh\" session_digest",
+            "command": "[ -f \"${CLAUDE_PROJECT_DIR}/tools/hooks/run.sh\" ] || exit 1; sh \"${CLAUDE_PROJECT_DIR}/tools/hooks/run.sh\" session_digest",
             "timeout": 15
           }
         ]
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"${CLAUDE_PROJECT_DIR}/tools/hooks/run.sh\" bash_guard",
+            "command": "[ -f \"${CLAUDE_PROJECT_DIR}/tools/hooks/run.sh\" ] || exit 1; sh \"${CLAUDE_PROJECT_DIR}/tools/hooks/run.sh\" bash_guard",
             "timeout": 15
           }
         ]
@@ -29,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"${CLAUDE_PROJECT_DIR}/tools/hooks/run.sh\" stop_gates",
+            "command": "[ -f \"${CLAUDE_PROJECT_DIR}/tools/hooks/run.sh\" ] || exit 1; sh \"${CLAUDE_PROJECT_DIR}/tools/hooks/run.sh\" stop_gates",
             "timeout": 20
           }
         ]

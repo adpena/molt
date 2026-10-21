@@ -187,7 +187,7 @@ def _landing_progress(root: Path, start_ts: float) -> bool:
 
 def _queue_row_in_flight(root: Path) -> bool:
     """True if a proof_queue row is active. Uncertain -> True (fail-open allow)."""
-    cnt = _common.proof_queue_active_count(root, timeout=4.0)
+    cnt = _common.proof_queue_active_count(root)
     if cnt is None:
         return True  # cannot determine -> do not block on this axis
     return cnt > 0

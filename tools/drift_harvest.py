@@ -61,6 +61,9 @@ from tools.command_execution import CommandExecutor  # noqa: E402
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 
+# The SPRAWL threshold (M67): the gate fails above this many live worktrees.
+MAX_LIVE_WORKTREES = 24
+
 
 # Worktrees that must never be pruned regardless of freshness.
 _PROTECTED_SUBSTRINGS = ("OneDrive", "recover-mainclean-20260707", "molt-cli")
@@ -119,8 +122,14 @@ def _git(args: list[str], cwd: Path | None = None) -> subprocess.CompletedProces
     )
 
 
-def _worktrees() -> list[dict]:
-    out = _git(["worktree", "list", "--porcelain"]).stdout
+def _worktrees(root: Path | None = None) -> list[dict]:
+    # Resolve REPO_ROOT per call (in _git): a default argument would bind the
+    # module's value once, past any later rebinding.
+    listing = _git(["worktree", "list", "--porcelain"], cwd=root)
+    if listing.returncode != 0:
+        # An empty listing would pass the SPRAWL gate; fail loud instead.
+        raise RuntimeError(f"git worktree list failed: {listing.stderr.strip()}")
+    out = listing.stdout
     rows: list[dict] = []
     cur: dict = {}
     for line in out.splitlines():
@@ -170,6 +179,16 @@ def _protected(path: str) -> bool:
 
 def _worktree_exists(path: str) -> bool:
     return Path(path).is_dir()
+
+
+def live_worktree_count(root: Path | None = None) -> int:
+    """Count what the SPRAWL gate counts: registered worktrees still on disk.
+
+    This reads one ``git worktree list``; it skips the per-worktree status and
+    patch-id probes that ``classify`` needs, so a session-start digest can
+    afford it.
+    """
+    return sum(1 for wt in _worktrees(root) if _worktree_exists(wt["path"]))
 
 
 def classify(fresh_hours: float, now: float) -> list[dict]:
@@ -315,7 +334,7 @@ def main() -> int:
         action="store_true",
         help="fail (exit 1) on drift: worktree sprawl or aged unlanded SIGNAL",
     )
-    ap.add_argument("--max-worktrees", type=int, default=24)
+    ap.add_argument("--max-worktrees", type=int, default=MAX_LIVE_WORKTREES)
     ap.add_argument("--max-signal-age-hours", type=float, default=72.0)
     ap.add_argument(
         "--no-fetch",

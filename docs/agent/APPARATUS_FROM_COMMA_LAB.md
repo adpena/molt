@@ -390,10 +390,12 @@ loop-safe, uniform waiver grammar with mandatory rationale.
 
 **Build:**
 - `tools/hooks/session_digest.py` (SessionStart): a read-only digest of live
-  facts (about 1.2 s): pointers to the authorities that own the rest
+  facts: pointers to the authorities that own the rest
   (`AGENTS.md`, `tools/agent_coordination.py context`, the v1.0 ledger), the
-  landing queue's pending requests and newest results, proof_queue rows,
-  worktree drift (M67), and what the hooks enforce. As of 2026-10-21 it no
+  landing queue's pending requests and newest results, the proof queue's
+  active runs (read in-process from its SQLite state), the live worktree count
+  against `drift_harvest`'s SPRAWL threshold (M67), and what the hooks
+  enforce, read from their wiring. As of 2026-10-21 it no
   longer restates a goal, a claim count, a build-wall sample or the standing
   directives: those had gone stale (the July witness-closure goal) while
   their owning files moved on.
@@ -406,22 +408,37 @@ loop-safe, uniform waiver grammar with mandatory rationale.
   (c) raw heavy `cargo build`/`molt build` invocations that bypass
   `proof_queue.py` when a queue is live (M27's <=1-2 builds; the pact
   launch-guard class), (d) pushes to origin over https (M19). Override:
-  `MOLT_GUARD_OK=1` in-command + logged rationale.
-- `tools/hooks/stop_gates.py` (Stop): runs the A2 landing gate and A3 drift
-  detector below; prints `{"decision":"block","reason":...}` on violation.
+  `MOLT_GUARD_OK=1` in-command + logged rationale. Since 2026-10-21 the guard
+  is observe-only (owner): its `[[gate_flip]]` is `warn`, so it records each
+  would-be block in `.molt/state/bash_guard_shadow.jsonl` and refuses
+  nothing. A replay of 28,676 recorded session commands found 633 that it
+  would block; it goes strict only when a replay shows zero false blocks and
+  its text prefilter is a proven over-approximation of its rules (HF-423).
+- `tools/hooks/stop_gates.py` (Stop): runs the anti-recurrence advisory, the
+  A3 drift detector and the A6 verdict-scope gate; prints
+  `{"decision":"block","reason":...}` on violation. The A2 landing gate is
+  not wired (see A2).
 
-**Mechanizes:** M12, M16, M17, M18, M19, M20, M27, M67, M01.
+**Mechanizes:** M16, M17, M18, M19, M20, M27, M67.
 **Runs:** `.claude/settings.json` starts every hook through
-`tools/hooks/run.sh`, which selects the interpreter of the checkout's uv
-environment (uv's `UV_PROJECT_ENVIRONMENT` rule, else `.venv`). Until
-2026-10-21 the commands called a bare `python`, which the Claude desktop
-app's PATH does not carry, so every hook failed with exit 127 there.
+`tools/hooks/run.sh`, which sources `.githooks/molt-hook-launch.sh`, the
+launcher the Git hooks use: it selects the common checkout's platform-native
+uv environment and binds imports to the invoking worktree. Until 2026-10-21
+the commands called a bare `python`, which the Claude desktop app's PATH does
+not carry, so every hook failed with exit 127 there.
 **Composes with:** git_guard.py, proof_queue.py, drift_harvest.py,
 tree_drift_check.py. **Cost:** small (the pact hooks are direct templates;
 port decide() + tests). Note Windows: use `msvcrt`/lockfile in place of
 fcntl; keep every hook ASCII-safe and UTF-8-explicit (M43's cp1252 class).
 
 ### A2. Land-or-blocker Stop gate (M12 — the operator's #1 fury, mechanized)
+
+**Status (2026-10-21): not wired.** The gate read checkout-wide facts (HEAD,
+the landing queue, one session-window marker per checkout), so it could not
+tell this session's landings from another session's, and it re-prompted
+sessions on that basis. The owner unwired it until it reads only this
+session's evidence through a per-session window (HF-424). The design below
+is the starting point for that redesign.
 
 **Build:** `tools/hooks/landing_gate.py`, invoked from stop_gates. Window =
 session-start HEAD marker .. current HEAD (per-worktree) + the landing queue
@@ -606,9 +623,10 @@ docs/agent ledgers for `[[wikilinks]]`, M## ids, finding_ids, tool paths;
 build the typed graph (nodes: memory/finding/tool/gate/lane/decision; edges:
 links/supersedes/produces/consumes/cites); expose recall queries
 (`neighbors M12`, `supersedes M52`, `what-consumes finding_x_v1`) and an
-Obsidian export. Then wire two consumers so it is READ, not just built:
-session_digest (A1) surfaces the 3 nearest memories to the current lane;
-the A4 lint suggests link targets. Directly fixes the goldfish class pact
+Obsidian export. Then wire consumers so it is READ, not just built: the A4
+lint suggests link targets. (The session digest showed the 3 nearest
+memories until 2026-10-21; the harness already loads the memory index, so
+the digest stopped restating it.) Directly fixes the goldfish class pact
 named ("apparatus WRITES better than it READS") — molt's MEMORY.md line
 about "a stale line once cost a 30-min detour" is the same bug.
 **Mechanizes:** the MEMORY.md/POINTERS.md system itself; M22 (post-compaction

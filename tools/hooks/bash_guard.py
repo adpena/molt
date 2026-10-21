@@ -19,7 +19,12 @@ Bash command BEFORE it runs and refusing the dangerous classes:
 INVARIANTS (this runs on the operator's OWN sessions):
   * ``decide()`` is PURE and exhaustively unit-tested.
   * the wrapper is FAIL-OPEN: any exception -> ALLOW (``tools/hooks/_common``).
-  * a BLOCK is emitted as exit code 2 with the reason on stderr -- the most
+  * OBSERVE-ONLY while this guard's ``[[gate_flip]]`` state is ``warn`` (owner,
+    2026-10-21): a would-block decision is appended to
+    ``.molt/state/bash_guard_shadow.jsonl`` and the command is allowed. The
+    flip to strict waits for a quote-, heredoc- and directory-aware command
+    model proven by a replay of recorded session commands.
+  * in strict state a BLOCK is emitted as exit code 2 with the reason on stderr -- the most
     portable, version-independent PreToolUse block (the tool call is refused and
     Claude is shown the reason). ALLOW is exit 0 with no output.
   * override token ``MOLT_GUARD_OK=1`` (in-command env-assignment or process
@@ -401,8 +406,34 @@ def _maybe_heavy_build(command: str) -> bool:
 
 def _queue_live(root) -> bool:
     """Is a proof_queue run active? Uncertain -> False (never block a build)."""
-    cnt = _common.proof_queue_active_count(root, timeout=4.0)
+    cnt = _common.proof_queue_active_count(root)
     return bool(cnt) if cnt is not None else False
+
+
+SHADOW_NAME = "bash_guard_shadow.jsonl"
+
+# Every rule needs one of these in the command: git (rules a, b, d), cargo
+# (rule c) or the `build` of `molt build` (rule c). tools/hooks/run.sh applies
+# the same tokens to the raw payload before it starts Python.
+PREFILTER_TOKENS = ("git", "cargo", "build")
+
+
+def enforcement_state() -> str:
+    """This guard's ``[[gate_flip]]`` state in tools/proof_plan.toml.
+
+    ``strict`` blocks; anything else (``warn``, or no readable entry) only
+    records the decision. Read only for a would-block decision, so an allowed
+    command never pays for parsing the plan.
+    """
+    try:
+        from tools.check_gate_flips import DEFAULT_CONFIG, load_flip_entries
+
+        for entry in load_flip_entries(DEFAULT_CONFIG):
+            if entry.get("name") == "bash_guard":
+                return str(entry.get("state", "warn")).lower()
+    except Exception:
+        pass
+    return "warn"
 
 
 def run() -> int:
@@ -415,7 +446,7 @@ def run() -> int:
     if not command:
         return 0
     # Fast path: nothing we guard is mentioned -> allow without any git calls.
-    if not any(tok in command for tok in ("git", "cargo", "molt")):
+    if not any(token in command for token in PREFILTER_TOKENS):
         return 0
 
     cwd = data.get("cwd")
@@ -448,6 +479,18 @@ def run() -> int:
         )
         return 0
 
+    if decision.block and enforcement_state() != "strict":
+        # Observe-only: record what strict mode would refuse; allow the call.
+        _common.append_jsonl(
+            _common.state_dir(root) / SHADOW_NAME,
+            {
+                "rule": decision.rule,
+                "reason": decision.reason,
+                "command": command[:400],
+                "cwd": str(cwd or ""),
+            },
+        )
+        return 0
     if decision.block:
         sys.stderr.write(
             f"[molt bash_guard] BLOCKED ({decision.rule}): {decision.reason}\n"

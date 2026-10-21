@@ -11,6 +11,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -175,19 +177,89 @@ def test_run_fast_path_allows_plain_command(monkeypatch):
     assert code == 0
 
 
-def test_run_blocks_destructive_git_returns_exit_2(monkeypatch, tmp_path):
+@pytest.mark.parametrize(("state", "code"), [("strict", 2), ("warn", 0)])
+def test_run_blocks_only_when_strict_and_records_every_would_be_block(
+    monkeypatch, tmp_path, capsys, state, code
+):
     # Force the guard to treat the cwd as the shared checkout.
     monkeypatch.setattr(bg._common, "is_linked_worktree", lambda root: False)
     monkeypatch.setattr(bg._common, "repo_root", lambda cwd=None: tmp_path)
-    code = _run_with_stdin(
-        monkeypatch,
-        {
-            "tool_name": "Bash",
-            "tool_input": {"command": "git reset --hard HEAD"},
-            "cwd": str(tmp_path),
-        },
-    )
-    assert code == 2
+    monkeypatch.setattr(bg, "enforcement_state", lambda: state)
+    command = "git reset --hard HEAD"
+    payload = {"tool_name": "Bash", "tool_input": {"command": command}}
+    assert _run_with_stdin(monkeypatch, {**payload, "cwd": str(tmp_path)}) == code
+    shadow = tmp_path / ".molt" / "state" / bg.SHADOW_NAME
+    stderr = capsys.readouterr().err
+    if state == "strict":
+        assert "BLOCKED (destructive-git-shared-checkout)" in stderr
+        assert not shadow.exists()
+    else:
+        # Observe-only refuses nothing and says nothing; the record is the proof.
+        assert stderr == ""
+        (record,) = [
+            json.loads(line) for line in shadow.read_text(encoding="utf-8").splitlines()
+        ]
+        assert record["rule"] == "destructive-git-shared-checkout"
+        assert (record["command"], record["cwd"]) == (command, str(tmp_path))
+
+
+def test_enforcement_state_reads_the_gate_flip_and_never_defaults_to_strict(
+    monkeypatch,
+):
+    import tools.check_gate_flips as flips
+
+    def entries(state):
+        return lambda _config: (
+            [{"name": "other", "state": "strict"}]
+            + ([] if state is None else [{"name": "bash_guard", "state": state}])
+        )
+
+    monkeypatch.setattr(flips, "load_flip_entries", entries("STRICT"))
+    assert bg.enforcement_state() == "strict"
+    monkeypatch.setattr(flips, "load_flip_entries", entries("warn"))
+    assert bg.enforcement_state() == "warn"
+    # Another gate's state never leaks in; no entry means observe-only.
+    monkeypatch.setattr(flips, "load_flip_entries", entries(None))
+    assert bg.enforcement_state() == "warn"
+
+    def unreadable(_config):
+        raise OSError("plan unreadable")
+
+    monkeypatch.setattr(flips, "load_flip_entries", unreadable)
+    assert bg.enforcement_state() == "warn"
+
+
+# Commands decide() blocks, one per rule and spelling family above.
+_BLOCKED = (
+    ("git reset --hard HEAD", {"shared": True}),
+    ("git clean -fdx", {"shared": True}),
+    ("git add -A && git commit -m x", {}),
+    ("git commit -am x", {}),
+    ("uv run cargo b", {"queue": True}),
+    ("python tools/venv_exec.py -- cargo +stable --locked t", {"queue": True}),
+    ("python -m molt.cli build examples/hello.py", {"queue": True}),
+    ("git push https://github.com/example/repo.git main", {}),
+    ("git push origin main", {"https": True}),
+)
+
+
+@pytest.mark.parametrize(("command", "context"), _BLOCKED)
+def test_prefilter_passes_every_blocked_command(command, context):
+    assert _d(command, **context).block, command
+    assert any(token in command for token in bg.PREFILTER_TOKENS), command
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="HF-423: the prefilters test substrings, decide() reads shell words",
+)
+@pytest.mark.parametrize(
+    ("command", "context"),
+    [("c\\argo b", {"queue": True}), ("g'i't reset --hard", {"shared": True})],
+)
+def test_prefilter_misses_escaped_spellings(command, context):
+    assert _d(command, **context).block, command
+    assert any(token in command for token in bg.PREFILTER_TOKENS), command
 
 
 def test_wrapper_and_queue_substrings_cannot_hide_heavy_builds():
