@@ -168,7 +168,7 @@ def _run_captured_gate(
     repo: Path,
     env: ProcessEnvironment,
     cancelled: Callable[[], bool],
-) -> tuple[int, str, str]:
+) -> tuple[int, str, str, int | None]:
     """Run one gate beside others: capture its streams, honor cancellation.
 
     The guard owns the child tree; ``cancelled`` lets the scheduler stop a gate
@@ -185,4 +185,6 @@ def _run_captured_gate(
         timeout=None,
         cancellation_requested=cancelled,
     )
-    return proc.returncode, proc.stdout or "", proc.stderr or ""
+    peak = proc.peak_total or proc.peak
+    peak_bytes = None if peak is None else peak.rss_kb * 1024
+    return proc.returncode, proc.stdout or "", proc.stderr or "", peak_bytes

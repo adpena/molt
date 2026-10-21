@@ -136,7 +136,6 @@ import threading
 import time
 import tomllib
 from collections.abc import Callable, Mapping
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -195,7 +194,15 @@ from tools.molt_dev_detached import (  # noqa: E402
     cmd_detached_verify,
 )
 from tools.molt_dev_probe import probe_path, probe_pid  # noqa: E402
-from tools import harness_memory_guard, venv_exec  # noqa: E402
+from tools import venv_exec  # noqa: E402
+from tools.molt_dev_gates import (  # noqa: E402
+    GateOutcome,
+    GateRuntime,
+    concurrent_gate_limit,
+    display as _gate_display,
+    gate_time_summary,
+    run_selected_gates,
+)
 from tools.dirty_tree_policy import (  # noqa: E402
     DEFAULT_DIRTY_TREE_IGNORE_GLOBS as DEFAULT_IGNORE_GLOBS,
     is_ignored as _is_ignored,
@@ -432,6 +439,9 @@ class GateConfig:
     prerequisites: dict[str, tuple[str, tuple[str, ...]]] = field(default_factory=dict)
     prerequisite_policy: dict = field(default_factory=dict)
     root: Path = field(default_factory=lambda: Path(__file__).resolve().parents[1])
+    # The proof executor's declared admission: its ceiling and resource classes.
+    executor_max_workers: int | None = None
+    resource_limits: dict[str, int] = field(default_factory=dict)
 
     @staticmethod
     def load(path: Path) -> "GateConfig":
@@ -503,6 +513,13 @@ class GateConfig:
             commands = local_gate_commands(data, memory_units=memory_units)
         except ValueError as exc:
             raise DriverError(f"invalid local gate policy: {exc}") from exc
+        ceiling = data.get("executor_max_workers")
+        if ceiling is not None and (type(ceiling) is not int or ceiling < 1):
+            raise DriverError("gate manifest `executor_max_workers` must be positive")
+        resource_limits = {
+            str(entry["name"]): int(entry["max_parallel"])
+            for entry in data.get("resource_policy", [])
+        }
         return GateConfig(
             pytest_memory_units=memory_units,
             rules=rules,
@@ -510,12 +527,17 @@ class GateConfig:
             prerequisites=commands,
             prerequisite_policy={"toolchain_policy": data.get("toolchain_policy", [])},
             root=_REPO_ROOT if root is None else root,
+            executor_max_workers=ceiling,
+            resource_limits=resource_limits,
         )
 
     def admit(
         self, touched: list[str], matched: list[GateRule], extra: list[str]
-    ) -> None:
-        """Admit the union once; execution projects each gate from its baseline."""
+    ) -> dict[str, dict]:
+        """Admit the union once; execution projects each gate from its baseline.
+
+        Returns the admitted toolchain fingerprints the gate receipt records.
+        """
         from tools.proof_plan import (
             admit_toolchains,
             load_toolchain_policies,
@@ -549,7 +571,9 @@ class GateConfig:
             for identifier, tools in selected.items():
                 for name in toolchain_closure(policies, tools):
                     owners.setdefault(name, []).append(identifier)
-            admit_toolchains(policies, tuple(owners), owners=owners, root=self.root)
+            return admit_toolchains(
+                policies, tuple(owners), owners=owners, root=self.root
+            ).fingerprints
         except (ValueError, OSError, KeyError) as exc:
             raise DriverError(
                 f"selected gate prerequisites failed; executed=0: {exc}"
@@ -869,11 +893,13 @@ def run_captured_gate(
     repo: Path,
     env: ProcessEnvironment,
     cancelled: Callable[[], bool],
-) -> tuple[int, str, str]:
-    """Run one gate of a concurrent block: the same environment as ``run_gate``,
-    with captured streams and scheduler cancellation."""
+) -> GateOutcome:
+    """Run one gate of the executor block: the same environment as ``run_gate``,
+    with captured streams and the executor's cancellation."""
     cmd, env = _gate_environment(cmd, repo, env)
-    return _run_captured_gate(cmd, repo=repo, env=env, cancelled=cancelled)
+    return GateOutcome(
+        *_run_captured_gate(cmd, repo=repo, env=env, cancelled=cancelled)
+    )
 
 
 def _gate_environment(
@@ -1000,265 +1026,53 @@ def _assert_integration_source(git: Git, commit: str) -> None:
         )
 
 
-def gate_time_summary(gate_seconds: list[tuple[float, str]], *, top: int = 8) -> str:
-    """The gates' total time and the slowest ones, so the costliest gates
-    are visible on every landing."""
-    total = sum(seconds for seconds, _ in gate_seconds)
-    lines = [f"    gates: {len(gate_seconds)} in {total:.1f} s; slowest:"]
-    ranked = sorted(gate_seconds, key=lambda item: item[0], reverse=True)[:top]
-    for seconds, cmd in ranked:
-        lines.append(f"      {seconds:7.1f} s  {cmd}")
-    return "\n".join(lines)
-
-
-def _gate_display(command: str | tuple[str, ...]) -> str:
-    return command if isinstance(command, str) else shlex.join(command)
-
-
-def _gate_details(ordinal: int, gate: SelectedGate) -> dict[str, object]:
-    cmd = gate.command
-    return {
-        "gate_ordinal": ordinal,
-        "command": (
-            {"kind": "shell", "source": cmd}
-            if isinstance(cmd, str)
-            else {"kind": "argv", "argv": list(cmd)}
-        ),
-        "toolchains": list(gate.toolchains),
-    }
-
-
-def _gate_failure(rc: int | None, elapsed: float, display: str, gate_seconds) -> str:
-    return (
-        f"gate failed (exit {rc}) after {elapsed:.1f} s: {display}\n"
-        + gate_time_summary(gate_seconds)
-        + "\n    Integration halts before push; fix the gate and re-run."
-    )
-
-
-# The largest always gate's process tree peaks below 1 GiB (structural_audit
-# 0.69 GB, generators 0.50 GB on the 2026-10 tree), so a GiB per gate bounds a
-# concurrent block by memory as well as by CPUs.
-CONCURRENT_GATE_BYTES = 1 << 30
-
-
-def concurrent_gate_limit() -> int:
-    """Gates this host runs at once, from the host capacity authority."""
-    from molt import host_capacity
-
-    return host_capacity.worker_count(
-        bytes_per_worker=CONCURRENT_GATE_BYTES,
-        headroom_bytes=host_capacity.headroom_bytes(host_capacity.memory_capacity()),
-    )
-
-
-def run_selected_gates(
-    gates: list[SelectedGate],
+def _gate_runtime(
+    git: Git,
+    selected_commit: str,
     *,
     repo: Path,
-    environments: Mapping[tuple[str, ...], ProcessEnvironment],
-    cargo_outputs: Mapping[tuple[str, ...], tuple[Path, ...]],
-    capacity_requirements: Mapping[tuple[str, ...], int],
+    policy: str,
+    config: GateConfig,
+    environments: dict[tuple[str, ...], ProcessEnvironment],
+    cargo_outputs: dict[tuple[str, ...], tuple[Path, ...]],
+    capacity_requirements: dict[tuple[str, ...], int],
     progress: _IntegrationProgress,
-    check_source: Callable[[], None],
-    gate_seconds: list[tuple[float, str]],
-) -> None:
-    """Run gates in declared order; the first failure in that order halts.
+    toolchains: dict[str, dict],
+) -> GateRuntime:
+    def source_changes() -> tuple[str, ...]:
+        status = git._run(list(clean_checkout_status_arguments(null_terminated=True)))
+        return tuple(entry for entry in status.stdout.split("\0") if entry)
 
-    The leading run of concurrent gates without Cargo outputs executes as one
-    block; every later gate runs alone, streaming live.
-    """
-    block = 0
-    while (
-        block < len(gates)
-        and gates[block].concurrent
-        and not cargo_outputs.get(gates[block].toolchains)
-    ):
-        block += 1
-    if block < 2:
-        block = 0
-    else:
-        _run_concurrent_gates(
-            gates[:block],
-            repo=repo,
-            environments=environments,
-            progress=progress,
-            check_source=check_source,
-            gate_seconds=gate_seconds,
-        )
-    for ordinal, gate in enumerate(gates[block:], start=block + 1):
-        _run_serial_gate(
-            ordinal,
-            gate,
-            repo=repo,
-            environments=environments,
-            cargo_outputs=cargo_outputs,
-            capacity_requirements=capacity_requirements,
-            progress=progress,
-            check_source=check_source,
-            gate_seconds=gate_seconds,
-        )
+    def source_identity() -> dict[str, str]:
+        if git.head_sha() != selected_commit:
+            raise DriverError("integration source HEAD changed")
+        tree = git.rev_parse(f"{selected_commit}^{{tree}}")
+        return {"commit": selected_commit, "tree": tree}
 
-
-def _run_serial_gate(
-    ordinal: int,
-    gate: SelectedGate,
-    *,
-    repo: Path,
-    environments: Mapping[tuple[str, ...], ProcessEnvironment],
-    cargo_outputs: Mapping[tuple[str, ...], tuple[Path, ...]],
-    capacity_requirements: Mapping[tuple[str, ...], int],
-    progress: _IntegrationProgress,
-    check_source: Callable[[], None],
-    gate_seconds: list[tuple[float, str]],
-) -> None:
-    cmd = gate.command
-    display = _gate_display(cmd)
-    check_source()
-    paths = cargo_outputs.get(gate.toolchains, ())
-    before = (
-        _observe_gate_capacity(
-            paths,
-            required_bytes=capacity_requirements[gate.toolchains],
-            phase="before",
-            gate=display,
-        )
-        if paths
-        else ()
-    )
-    started = time.monotonic()
-    details = _gate_details(ordinal, gate)
-    progress.emit("gate_started", **details)
-    rc = None
-    try:
-        rc = run_gate(cmd, repo, environments[gate.toolchains])
-    finally:
-        elapsed = time.monotonic() - started
-        progress.emit(
-            "gate_finished",
-            **details,
-            returncode=rc,
-            duration_seconds=elapsed,
-        )
-        if paths:
-            _observe_gate_capacity(
-                paths,
-                required_bytes=capacity_requirements[gate.toolchains],
-                phase="after",
-                gate=display,
-                before=before,
-            )
-    gate_seconds.append((elapsed, display))
-    check_source()
-    if rc != 0:
-        raise DriverError(_gate_failure(rc, elapsed, display, gate_seconds))
-    _ok(f"gate passed in {elapsed:.1f} s: {display}")
-
-
-@dataclass
-class _ConcurrentGateRun:
-    returncode: int | None = None
-    stdout: str = ""
-    stderr: str = ""
-    elapsed: float = 0.0
-    error: BaseException | None = None
-
-
-def _run_concurrent_gates(
-    gates: list[SelectedGate],
-    *,
-    repo: Path,
-    environments: Mapping[tuple[str, ...], ProcessEnvironment],
-    progress: _IntegrationProgress,
-    check_source: Callable[[], None],
-    gate_seconds: list[tuple[float, str]],
-) -> None:
-    """Run read-only gates together and report them as if they ran in order.
-
-    Each gate's output prints in declared order. A gate that fails makes every
-    later gate moot: none of them starts, and running ones are cancelled. The
-    first failure in declared order is the one reported. One repository sentinel
-    watches the block instead of one per gate.
-    """
-    limit = min(len(gates), concurrent_gate_limit())
-    lock = threading.Lock()
-    first_failure = [len(gates) + 1]
-
-    def moot(ordinal: int) -> bool:
-        return ordinal > first_failure[0]
-
-    def fail(ordinal: int) -> None:
-        with lock:
-            first_failure[0] = min(first_failure[0], ordinal)
-
-    def execute(ordinal: int, gate: SelectedGate) -> _ConcurrentGateRun | None:
-        if moot(ordinal):
-            return None
-        progress.emit("gate_started", **_gate_details(ordinal, gate))
-        run = _ConcurrentGateRun()
-        started = time.monotonic()
-        try:
-            run.returncode, run.stdout, run.stderr = run_captured_gate(
-                gate.command,
-                repo,
-                environments[gate.toolchains],
-                lambda: moot(ordinal),
-            )
-        except BaseException as exc:  # reported, in order, by the caller
-            run.error = exc
-        run.elapsed = time.monotonic() - started
-        if run.error is not None or run.returncode != 0:
-            fail(ordinal)
-        return run
-
-    check_source()
-    baseline = environments[gates[0].toolchains]
-    block_started = time.monotonic()
-    with harness_memory_guard.repo_process_sentinel(
-        repo_root=repo,
-        artifact_root=harness_memory_guard._artifact_root_from_env(baseline),
-        label="integrate_gates",
-        limits=harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", baseline),
-        drain_on_exit=False,
-    ):
-        executor = ThreadPoolExecutor(max_workers=limit, thread_name_prefix="gate")
-        try:
-            futures = [
-                executor.submit(execute, ordinal, gate)
-                for ordinal, gate in enumerate(gates, start=1)
-            ]
-            for ordinal, (gate, future) in enumerate(zip(gates, futures), start=1):
-                run = future.result()
-                assert run is not None, "an earlier failure halts the report"
-                display = _gate_display(gate.command)
-                progress.emit(
-                    "gate_finished",
-                    **_gate_details(ordinal, gate),
-                    returncode=run.returncode,
-                    duration_seconds=run.elapsed,
-                )
-                _say(f"    gate: {display}")
-                sys.stdout.write(run.stdout)
-                sys.stdout.flush()
-                sys.stderr.write(run.stderr)
-                sys.stderr.flush()
-                gate_seconds.append((run.elapsed, display))
-                if run.error is not None:
-                    raise run.error
-                check_source()
-                if run.returncode != 0:
-                    raise DriverError(
-                        _gate_failure(
-                            run.returncode, run.elapsed, display, gate_seconds
-                        )
-                    )
-                _ok(f"gate passed in {run.elapsed:.1f} s: {display}")
-        finally:
-            fail(0)
-            executor.shutdown(wait=True, cancel_futures=True)
-    _say(
-        f"    concurrent gates: {len(gates)} in {time.monotonic() - block_started:.1f} s "
-        f"wall, at most {limit} at once"
+    return GateRuntime(
+        repo=repo,
+        environments=environments,
+        cargo_outputs=cargo_outputs,
+        capacity_requirements=capacity_requirements,
+        progress=progress,
+        check_source=lambda: _assert_integration_source(git, selected_commit),
+        source_changes=source_changes,
+        source_identity=source_identity,
+        policy_text=policy,
+        executor_max_workers=config.executor_max_workers,
+        resource_limits=config.resource_limits,
+        toolchains=toolchains,
+        # Beside the integration lock: one namespace for the repository's
+        # worktrees, never inside a working tree.
+        receipt_path=_integration_lock_path(repo).with_name("molt-integrate")
+        / "receipts"
+        / f"{selected_commit}.gates.json",
+        run_gate=lambda cmd, root, environment: run_gate(cmd, root, environment),
+        run_captured_gate=lambda *args: run_captured_gate(*args),
+        observe_capacity=_observe_gate_capacity,
+        say=_say,
+        ok=_ok,
+        failure=DriverError,
     )
 
 
@@ -1625,7 +1439,7 @@ def _integrate_exclusive(
     capacity_requirements: dict[tuple[str, ...], int] = {}
     if not dry:
         _assert_integration_source(git, selected_commit)
-        config.admit(touched, matched_rules, list(args.extra_gate or []))
+        toolchains = config.admit(touched, matched_rules, list(args.extra_gate or []))
         environments = config.environments(gate_cmds, baseline=env)
         try:
             cargo_outputs = config.cargo_outputs(environments)
@@ -1645,13 +1459,20 @@ def _integrate_exclusive(
     else:
         run_selected_gates(
             gate_cmds,
-            repo=repo,
-            environments=environments,
-            cargo_outputs=cargo_outputs,
-            capacity_requirements=capacity_requirements,
-            progress=progress,
-            check_source=lambda: _assert_integration_source(git, selected_commit),
-            gate_seconds=gate_seconds,
+            _gate_runtime(
+                git,
+                selected_commit,
+                repo=repo,
+                policy=policy,
+                config=config,
+                environments=environments,
+                cargo_outputs=cargo_outputs,
+                capacity_requirements=capacity_requirements,
+                progress=progress,
+                toolchains=toolchains,
+            ),
+            gate_seconds,
+            host_limit=lambda: concurrent_gate_limit(),
         )
     if gate_seconds:
         _say(gate_time_summary(gate_seconds))

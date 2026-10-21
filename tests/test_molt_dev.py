@@ -1993,20 +1993,46 @@ def test_integrate_always_gates_run_together_and_report_in_declared_order(
         if line.startswith("{") and '"gate_finished"' in line
     ]
     assert finished == [1, 2]
-    assert "concurrent gates: 2 in" in output.err
+    # The proof executor ran the block and left a landing receipt.
+    summary = next(
+        line for line in output.err.splitlines() if "gate block: 2 gates in" in line
+    )
+    receipt = json.loads(
+        Path(summary.rsplit("receipt ", 1)[1]).read_text(encoding="utf-8")
+    )
+    assert receipt["status"] == "success"
+    assert receipt["execution"]["peak_active_commands"] == 2
+    assert [row["status"] for row in receipt["commands"]] == ["success", "success"]
+    assert all(row["duration_seconds"] > 0 for row in receipt["commands"])
 
 
 def test_integrate_reports_the_first_failure_in_declared_order(
     drv, origin_and_clone, monkeypatch, capfd
 ):
     _, work = origin_and_clone
-    marker = str(work.parent / "second-failed")
     third = work.parent / "third-started"
+    # The first gate fails only after the executor recorded the second gate's
+    # failure and the third gate's skip: neither may cancel it.
+    first = _integration_python(
+        "import json, pathlib, subprocess, sys, time\n"
+        "git = lambda *a: subprocess.run(['git', *a], capture_output=True, "
+        "text=True, check=True).stdout.strip()\n"
+        "receipt = pathlib.Path(git('rev-parse', '--path-format=absolute', "
+        "'--git-common-dir')) / 'molt-integrate' / 'receipts' / "
+        "(git('rev-parse', 'HEAD') + '.gates.json')\n"
+        "deadline = time.monotonic() + 60\n"
+        "while True:\n"
+        "    try:\n"
+        "        rows = json.loads(receipt.read_text())['commands']\n"
+        "    except (OSError, ValueError, KeyError):\n"
+        "        rows = []\n"
+        "    if any(r['id'] == 'local.always.3' for r in rows): sys.exit(5)\n"
+        "    if time.monotonic() > deadline: sys.exit(9)\n"
+        "    time.sleep(0.05)\n"
+    )
     gates = [
-        _wait_for(marker, then="sys.exit(5)"),
-        _integration_python(
-            f"import pathlib, sys; pathlib.Path({marker!r}).touch(); sys.exit(6)"
-        ),
+        first,
+        _integration_python("import sys; sys.exit(6)"),
         _integration_python(f"import pathlib; pathlib.Path({str(third)!r}).touch()"),
     ]
     _commit_integration_policy(work, gates)
@@ -2046,6 +2072,7 @@ def test_integrate_cancels_later_gates_after_an_earlier_failure(
 
 def test_concurrent_gate_limit_comes_from_host_capacity(drv, monkeypatch):
     from molt import host_capacity
+    from tools import molt_dev_gates
 
     calls = []
 
@@ -2055,7 +2082,7 @@ def test_concurrent_gate_limit_comes_from_host_capacity(drv, monkeypatch):
 
     monkeypatch.setattr(host_capacity, "worker_count", worker_count)
     assert drv.concurrent_gate_limit() == 3
-    assert calls == [drv.CONCURRENT_GATE_BYTES]
+    assert calls == [molt_dev_gates.CONCURRENT_GATE_BYTES]
 
 
 def test_integrate_gates_never_write_bytecode_into_the_checkout(
@@ -3663,7 +3690,8 @@ toolchains = ["unrelated"]
     monkeypatch.setattr(
         proof_plan, "_version_fingerprint", lambda _: pytest.fail("unrelated probe ran")
     )
-    assert cfg.admit(["src/one.py"], matched, []) is None
+    # No selected gate declares a toolchain, so nothing is fingerprinted.
+    assert cfg.admit(["src/one.py"], matched, []) == {}
     with pytest.raises(drv.DriverError, match="lack declared prerequisite custody"):
         cfg.admit(["src/one.py"], matched, ["unknown executable"])
 
