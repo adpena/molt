@@ -16,8 +16,6 @@ from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 from molt.default_paths import (
     CACHE_MAINTENANCE_INTERVAL_SECONDS as AUTOMATIC_PRUNE_INTERVAL_SECONDS,
-    DEFAULT_MOLT_CACHE_MAX_AGE_DAYS,
-    DEFAULT_MOLT_CACHE_MAX_GB,
     NATIVE_STDLIB_OBJECT_CACHE_DIRECTORY,
     SHARED_STDLIB_CACHE_DIRECTORY,
     SHARED_SOURCE_RECORDS_DIRECTORY,
@@ -28,6 +26,7 @@ from molt.default_paths import (
     shared_cache_lock_path,
     is_backend_cache_artifact_name,
     native_stdlib_object_cache_entry,
+    resolve_budget,
     shared_stdlib_cache_entry,
     wasm_link_cache_paths,
 )
@@ -716,31 +715,6 @@ def _prune_locked(
             if len(path.name) == 2 and all(c in "0123456789abcdef" for c in path.name)
         ],
     }
-
-
-def resolve_budget(
-    max_gb: float | None,
-    max_age_days: int | None,
-    environ: Mapping[str, str],
-) -> tuple[float, int]:
-    """Return the cache budget: flags, then the projected env, then canonical user-state defaults.
-
-    RunContext projects MOLT_CACHE_MAX_GB and MOLT_CACHE_MAX_AGE_DAYS from the
-    default_paths, so the pruner and every DX entry point share one budget.
-    """
-    gb = (
-        max_gb
-        if max_gb is not None
-        else float(environ.get("MOLT_CACHE_MAX_GB") or DEFAULT_MOLT_CACHE_MAX_GB)
-    )
-    days = (
-        max_age_days
-        if max_age_days is not None
-        else int(
-            environ.get("MOLT_CACHE_MAX_AGE_DAYS") or DEFAULT_MOLT_CACHE_MAX_AGE_DAYS
-        )
-    )
-    return gb, days
 
 
 def _prune(

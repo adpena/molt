@@ -183,6 +183,34 @@ def _default_molt_cache(
 
 DEFAULT_MOLT_CACHE_MAX_GB = "30"
 DEFAULT_MOLT_CACHE_MAX_AGE_DAYS = "30"
+
+
+def resolve_budget(
+    max_gb: float | None,
+    max_age_days: int | None,
+    environ: Mapping[str, str],
+) -> tuple[float, int]:
+    """Return the cache budget: flags, then the projected env, then canonical user-state defaults.
+
+    RunContext projects MOLT_CACHE_MAX_GB and MOLT_CACHE_MAX_AGE_DAYS from these
+    defaults, so the pruner, the digest and toolchain-fact caches and every DX
+    entry point share one budget.
+    """
+    gb = (
+        max_gb
+        if max_gb is not None
+        else float(environ.get("MOLT_CACHE_MAX_GB") or DEFAULT_MOLT_CACHE_MAX_GB)
+    )
+    days = (
+        max_age_days
+        if max_age_days is not None
+        else int(
+            environ.get("MOLT_CACHE_MAX_AGE_DAYS") or DEFAULT_MOLT_CACHE_MAX_AGE_DAYS
+        )
+    )
+    return gb, days
+
+
 CACHE_MAINTENANCE_INTERVAL_SECONDS = 300.0
 # A CLI build applies the cache budget at most once a day, as Go trims its build
 # cache and Cargo runs automatic gc: a sweep costs a full inventory, and an
@@ -226,6 +254,11 @@ def cache_control_root(cache_root: Path) -> Path:
 def file_digest_cache_path(cache_root: Path) -> Path:
     """The host's stat-keyed file digest store within one cache namespace."""
     return cache_root / "file-digests" / "v1.sqlite"
+
+
+def toolchain_fact_store_path(cache_root: Path) -> Path:
+    """The host's toolchain probe answers (`molt.toolchain_facts`) within one cache namespace."""
+    return cache_root / "toolchain-facts" / "v1.json"
 
 
 def shared_cache_lock_path(cache_root: Path, name: str) -> Path:
