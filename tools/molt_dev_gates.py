@@ -1,0 +1,413 @@
+"""Landing-gate execution for ``tools/molt_dev.py integrate``.
+
+Gates run in declared order and the first failure in that order halts the
+landing. The leading run of always gates (read-only whole-repository checks
+without Cargo outputs) executes through the one proof executor
+(``tools/proof_executor.py``): its admission bounds the block by the plan's
+executor ceiling and the gates' resource class, both capped by
+``molt.host_capacity``, and it leaves a receipt with each gate's duration and
+peak RSS. Every later gate runs alone and streams live
+(docs/design/host_capacity.md, "One scheduler").
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
+import datetime as dt
+import hashlib
+import json
+from pathlib import Path
+import sys
+import threading
+import time
+from typing import TYPE_CHECKING, Any, Protocol
+
+from tools import proof_executor, proof_receipts
+
+if TYPE_CHECKING:
+    from molt.process_environment import ProcessEnvironment
+
+# Local always gates share the repository-policy resource class with their CI
+# commands; a policy without that class admits up to the executor ceiling.
+GATE_RESOURCE_CLASS = "repository-policy"
+LOCAL_GATE_FAMILY = "local_integration"
+# The largest always gate's process tree peaks below 1 GiB (structural_audit
+# 0.69 GB, generators 0.50 GB on the 2026-10 tree): the host-capacity unit.
+CONCURRENT_GATE_BYTES = 1 << 30
+
+
+class Gate(Protocol):
+    command: str | tuple[str, ...]
+    toolchains: tuple[str, ...]
+    concurrent: bool
+
+
+class Progress(Protocol):
+    def emit(self, event: str, **details: object) -> None: ...
+
+
+@dataclass(frozen=True)
+class GateOutcome:
+    returncode: int
+    stdout: str
+    stderr: str
+    peak_rss_bytes: int | None
+
+
+@dataclass(frozen=True)
+class GateRuntime:
+    """What one landing's gates run against; integrate builds it once."""
+
+    repo: Path
+    environments: Mapping[tuple[str, ...], ProcessEnvironment]
+    cargo_outputs: Mapping[tuple[str, ...], tuple[Path, ...]]
+    capacity_requirements: Mapping[tuple[str, ...], int]
+    progress: Progress
+    check_source: Callable[[], None]
+    source_changes: Callable[[], tuple[str, ...]]
+    source_identity: Callable[[], dict[str, str]]
+    policy_text: str
+    executor_max_workers: int | None
+    resource_limits: Mapping[str, int]
+    toolchains: Mapping[str, dict[str, Any]]
+    receipt_path: Path
+    run_gate: Callable[[str | tuple[str, ...], Path, ProcessEnvironment], int]
+    run_captured_gate: Callable[..., GateOutcome]
+    observe_capacity: Callable[..., Any]
+    say: Callable[[str], None]
+    ok: Callable[[str], None]
+    failure: Callable[[str], BaseException]
+
+
+def display(command: str | tuple[str, ...]) -> str:
+    import shlex
+
+    return command if isinstance(command, str) else shlex.join(command)
+
+
+def gate_time_summary(gate_seconds: list[tuple[float, str]], *, top: int = 8) -> str:
+    """The gates' total time and the slowest ones, so the costliest gates
+    are visible on every landing."""
+    total = sum(seconds for seconds, _ in gate_seconds)
+    lines = [f"    gates: {len(gate_seconds)} in {total:.1f} s; slowest:"]
+    ranked = sorted(gate_seconds, key=lambda item: item[0], reverse=True)[:top]
+    for seconds, cmd in ranked:
+        lines.append(f"      {seconds:7.1f} s  {cmd}")
+    return "\n".join(lines)
+
+
+def gate_details(ordinal: int, gate: Gate) -> dict[str, object]:
+    cmd = gate.command
+    return {
+        "gate_ordinal": ordinal,
+        "command": (
+            {"kind": "shell", "source": cmd}
+            if isinstance(cmd, str)
+            else {"kind": "argv", "argv": list(cmd)}
+        ),
+        "toolchains": list(gate.toolchains),
+    }
+
+
+def failure_message(
+    rc: int | None, elapsed: float, shown: str, gate_seconds: list[tuple[float, str]]
+) -> str:
+    return (
+        f"gate failed (exit {rc}) after {elapsed:.1f} s: {shown}\n"
+        + gate_time_summary(gate_seconds)
+        + "\n    Integration halts before push; fix the gate and re-run."
+    )
+
+
+def concurrent_gate_limit() -> int:
+    """Gates this host runs at once, from the host capacity authority."""
+    from molt import host_capacity
+
+    return host_capacity.worker_count(
+        bytes_per_worker=CONCURRENT_GATE_BYTES,
+        headroom_bytes=host_capacity.headroom_bytes(host_capacity.memory_capacity()),
+    )
+
+
+def run_selected_gates(
+    gates: list[Gate],
+    runtime: GateRuntime,
+    gate_seconds: list[tuple[float, str]],
+    *,
+    host_limit: Callable[[], int] = concurrent_gate_limit,
+) -> None:
+    """Run gates in declared order; the first failure in that order halts."""
+    block = 0
+    while (
+        block < len(gates)
+        and gates[block].concurrent
+        and not runtime.cargo_outputs.get(gates[block].toolchains)
+    ):
+        block += 1
+    if block >= 2:
+        _run_executor_block(gates[:block], runtime, gate_seconds, host_limit())
+    else:
+        block = 0
+    for ordinal, gate in enumerate(gates[block:], start=block + 1):
+        _run_serial_gate(ordinal, gate, runtime, gate_seconds)
+
+
+def _run_serial_gate(
+    ordinal: int,
+    gate: Gate,
+    runtime: GateRuntime,
+    gate_seconds: list[tuple[float, str]],
+) -> None:
+    cmd = gate.command
+    shown = display(cmd)
+    runtime.check_source()
+    paths = runtime.cargo_outputs.get(gate.toolchains, ())
+    required = runtime.capacity_requirements.get(gate.toolchains, 0)
+    before = (
+        runtime.observe_capacity(
+            paths, required_bytes=required, phase="before", gate=shown
+        )
+        if paths
+        else ()
+    )
+    started = time.monotonic()
+    details = gate_details(ordinal, gate)
+    runtime.progress.emit("gate_started", **details)
+    rc = None
+    try:
+        rc = runtime.run_gate(cmd, runtime.repo, runtime.environments[gate.toolchains])
+    finally:
+        elapsed = time.monotonic() - started
+        runtime.progress.emit(
+            "gate_finished", **details, returncode=rc, duration_seconds=elapsed
+        )
+        if paths:
+            runtime.observe_capacity(
+                paths,
+                required_bytes=required,
+                phase="after",
+                gate=shown,
+                before=before,
+            )
+    gate_seconds.append((elapsed, shown))
+    runtime.check_source()
+    if rc != 0:
+        raise runtime.failure(failure_message(rc, elapsed, shown, gate_seconds))
+    runtime.ok(f"gate passed in {elapsed:.1f} s: {shown}")
+
+
+@dataclass(frozen=True)
+class _ResourcePolicy:
+    name: str
+    max_parallel: int
+
+
+@dataclass(frozen=True)
+class _LocalGatePlan:
+    receipt_schema: str
+    executor_max_workers: int
+    resource_policies: tuple[_ResourcePolicy, ...]
+    toolchain_policies: tuple[Any, ...] = ()
+
+
+@dataclass(frozen=True)
+class _LocalGateCommand:
+    id: str
+    family: str
+    data: dict[str, Any]
+    argv: tuple[str, ...]
+    gate: Any
+    ordinal: int
+    dependencies: tuple[str, ...] = ()
+    evidence_outputs: tuple[str, ...] = ()
+
+
+@dataclass
+class _BlockState:
+    first_failure: int
+    outcomes: dict[str, GateOutcome | BaseException] = field(default_factory=dict)
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def moot(self, ordinal: int) -> bool:
+        return ordinal > self.first_failure
+
+    def fail(self, ordinal: int) -> None:
+        with self.lock:
+            self.first_failure = min(self.first_failure, ordinal)
+
+
+def _local_plan(runtime: GateRuntime, block: int, host: int) -> _LocalGatePlan:
+    ceiling = min(host, block, runtime.executor_max_workers or host)
+    max_parallel = min(
+        ceiling, runtime.resource_limits.get(GATE_RESOURCE_CLASS, ceiling)
+    )
+    return _LocalGatePlan(
+        receipt_schema=proof_receipts.RECEIPT_SCHEMA,
+        executor_max_workers=ceiling,
+        resource_policies=(_ResourcePolicy(GATE_RESOURCE_CLASS, max_parallel),),
+    )
+
+
+def _local_command(ordinal: int, gate: Gate, cell: str) -> _LocalGateCommand:
+    cmd = gate.command
+    argv = ("/bin/sh", "-c", cmd) if isinstance(cmd, str) else tuple(cmd)
+    return _LocalGateCommand(
+        id=f"local.always.{ordinal}",
+        family=LOCAL_GATE_FAMILY,
+        data={
+            "cell": cell,
+            "tiers": ["local-integration"],
+            "resource_class": GATE_RESOURCE_CLASS,
+            # Local always gates keep their unbounded deadline.
+            "timeout_budget": "none",
+            "timeout_seconds": 0,
+        },
+        argv=argv,
+        gate=gate,
+        ordinal=ordinal,
+    )
+
+
+def _run_executor_block(
+    gates: list[Gate],
+    runtime: GateRuntime,
+    gate_seconds: list[tuple[float, str]],
+    host: int,
+) -> None:
+    """Run the block through the proof executor; report it in declared order."""
+    from tools.proof_plan import _normalized_arch, _normalized_os
+
+    plan = _local_plan(runtime, len(gates), host)
+    cell = f"{_normalized_os()}-{_normalized_arch()}-local"
+    commands = [
+        _local_command(ordinal, gate, cell)
+        for ordinal, gate in enumerate(gates, start=1)
+    ]
+    state = _BlockState(first_failure=len(gates) + 1)
+
+    def run_command(
+        _plan: Any, command: _LocalGateCommand, cancel: threading.Event
+    ) -> dict[str, Any]:
+        record: dict[str, Any] = {
+            **proof_receipts.command_record(command),
+            "started_at": dt.datetime.now(dt.UTC).isoformat(),
+            "duration_seconds": 0.0,
+            "peak_rss_bytes": None,
+            "cache_disposition": "none",
+            "guard_metrics_schema": None,
+            "returncode": None,
+        }
+        # A moot gate's record is partition-scoped: it must not stop the
+        # executor, which would cancel the earlier gates still running.
+        moot = {
+            "failure_scope": "partition",
+            "failure_reason": "an earlier gate failed",
+        }
+        if state.moot(command.ordinal):
+            return {
+                **record,
+                **moot,
+                "status": "skipped",
+                "skip_reason": "earlier gate failed",
+            }
+        runtime.progress.emit(
+            "gate_started", **gate_details(command.ordinal, command.gate)
+        )
+        started = time.monotonic()
+        try:
+            outcome = runtime.run_captured_gate(
+                command.gate.command,
+                runtime.repo,
+                runtime.environments[command.gate.toolchains],
+                lambda: cancel.is_set() or state.moot(command.ordinal),
+            )
+        except BaseException as exc:  # reported in declared order below
+            state.outcomes[command.id] = exc
+            state.fail(command.ordinal)
+            raise
+        record["duration_seconds"] = round(time.monotonic() - started, 6)
+        record["peak_rss_bytes"] = outcome.peak_rss_bytes
+        record["returncode"] = outcome.returncode
+        state.outcomes[command.id] = outcome
+        if outcome.returncode == 0:
+            return {**record, "status": "success"}
+        if state.moot(command.ordinal):
+            return {**record, **moot, "status": "cancelled"}
+        if cancel.is_set():
+            return {**record, "status": "cancelled"}
+        state.fail(command.ordinal)
+        # A gate failure does not stop gates declared before it: the landing
+        # reports the first failure in declared order.
+        return {
+            **record,
+            "status": "failure",
+            "failure_scope": "partition",
+            "failure_reason": f"exit {outcome.returncode}",
+        }
+
+    runtime.check_source()
+    authority = hashlib.sha256(b"molt.local-integration-gates.v1\0")
+    authority.update(runtime.policy_text.encode("utf-8"))
+    block_started = time.monotonic()
+    proof_executor.execute_commands(
+        plan,
+        commands,
+        runtime.receipt_path,
+        _source_tree_changes=runtime.source_changes,
+        toolchain_fingerprints=lambda _policies, _names: dict(runtime.toolchains),
+        _authority_sha256=lambda _plan: authority.hexdigest(),
+        _source_identity=runtime.source_identity,
+        _normalized_os=_normalized_os,
+        _normalized_arch=_normalized_arch,
+        _required_toolchains=lambda command: command.gate.toolchains,
+        _run_command=run_command,
+        _cache_disposition=lambda _command: "none",
+    )
+    wall = time.monotonic() - block_started
+    receipt = json.loads(runtime.receipt_path.read_text(encoding="utf-8"))
+    records = {record["id"]: record for record in receipt.get("commands", ())}
+    for command in commands:
+        outcome = state.outcomes.get(command.id)
+        record = records.get(command.id, {})
+        status = record.get("status")
+        shown = display(command.gate.command)
+        if status in {"cancelled", "skipped"} and not isinstance(
+            outcome, BaseException
+        ):
+            # Only a stop caused elsewhere cancels a gate; it never passed.
+            runtime.say(f"    gate {status}: {shown}")
+            continue
+        elapsed = float(record.get("duration_seconds") or 0.0)
+        runtime.progress.emit(
+            "gate_finished",
+            **gate_details(command.ordinal, command.gate),
+            returncode=record.get("returncode"),
+            duration_seconds=elapsed,
+        )
+        runtime.say(f"    gate: {shown}")
+        if isinstance(outcome, GateOutcome):
+            sys.stdout.write(outcome.stdout)
+            sys.stdout.flush()
+            sys.stderr.write(outcome.stderr)
+            sys.stderr.flush()
+        gate_seconds.append((elapsed, shown))
+        if isinstance(outcome, BaseException):
+            raise outcome
+        runtime.check_source()
+        if status != "success":
+            raise runtime.failure(
+                failure_message(record.get("returncode"), elapsed, shown, gate_seconds)
+            )
+        runtime.ok(f"gate passed in {elapsed:.1f} s: {shown}")
+    if receipt.get("status") != "success":
+        raise runtime.failure(
+            "gate block stopped without a classified gate failure: "
+            + "; ".join(receipt.get("errors", ()) or ("no reason recorded",))
+            + f"; receipt {runtime.receipt_path}"
+        )
+    runtime.say(
+        f"    gate block: {len(commands)} gates in {wall:.1f} s wall through the "
+        f"proof executor, at most {plan.executor_max_workers} at once; "
+        f"receipt {runtime.receipt_path}"
+    )
