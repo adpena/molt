@@ -8,7 +8,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 
 - `authority-routed` files: 63
 - `operational-tooling` files: 58
-- `scattered-assumption` files: 343
+- `scattered-assumption` files: 344
 
 ## Files
 
@@ -345,7 +345,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `runtime/molt-runtime/src/object/ops_set.rs` | 3 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/object/ops_slice_tests.rs` | 1 | scattered-assumption | `3.0` |
 | `runtime/molt-runtime/src/object/ops_string.rs` | 10 | scattered-assumption | `3.13` |
-| `runtime/molt-runtime/src/object/ops_sys.rs` | 6 | authority-routed | `3.13` |
+| `runtime/molt-runtime/src/object/ops_sys.rs` | 7 | authority-routed | `3.13` |
 | `runtime/molt-runtime/src/object/ops_sys_traceback.rs` | 6 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/object/ops_sys_version_tests.rs` | 5 | operational-tooling | `3.12` |
 | `runtime/molt-runtime/src/object/string_intern.rs` | 1 | scattered-assumption | `3.14` |
@@ -366,6 +366,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `runtime/molt-runtime-math/src/random_mod.rs` | 5 | scattered-assumption | `3.4` |
 | `runtime/molt-runtime-platform/src/env_support.rs` | 2 | scattered-assumption | `3.15` |
 | `runtime/molt-runtime-platform/src/path_text.rs` | 2 | scattered-assumption | `3.12` |
+| `runtime/molt-runtime-platform/src/userdb.rs` | 1 | scattered-assumption | `3.15` |
 | `runtime/molt-runtime-platform/src/windows_abi.rs` | 1 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime-regex/src/regex/state_machine_tests.rs` | 5 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime-regex/src/regex/substitution.rs` | 1 | scattered-assumption | `3.7` |
