@@ -111,6 +111,17 @@ def _exec_wait_rc(
         return 126
 
 
+def python_command(*arguments: str) -> list[str]:
+    """This interpreter, with this process's isolation, running ``arguments``.
+
+    The pinned controller runs as ``python -I``. A Python helper it starts
+    without ``-I`` reads the caller's ``PYTHONPATH``; inside an integrate gate
+    that names the candidate's import roots, so the helper imported the
+    candidate's modules beside the controller's and died at startup.
+    """
+    return [sys.executable, *(["-I"] if sys.flags.isolated else []), *arguments]
+
+
 def _detached_daemonize(
     state: Path, command: list[str], cwd: Path, env: dict[str, str]
 ) -> int:
@@ -126,12 +137,9 @@ def _detached_daemonize(
         payload_path,
         json.dumps({"argv": command, "cwd": str(cwd)}, indent=2),
     )
-    worker = [
-        sys.executable,
-        str(Path(__file__).resolve()),
-        "--detached-worker",
-        str(payload_path),
-    ]
+    worker = python_command(
+        str(Path(__file__).resolve()), "--detached-worker", str(payload_path)
+    )
     proc = _COMMANDS.start_owned(
         worker,
         cwd=str(cwd),

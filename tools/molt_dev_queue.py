@@ -20,7 +20,6 @@ import argparse
 import json
 import os
 import shutil
-import sys
 import tempfile
 import time
 from collections.abc import Callable, Sequence
@@ -31,6 +30,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from tools.molt_dev_controller import integration_controller, run_from_pinned_controller
+from tools.molt_dev_detached import python_command
 from tools.molt_dev_common import (
     EXIT_FAIL,
     EXIT_OK,
@@ -432,9 +432,8 @@ def _start_queue_runner(paths, repo: Path, args: argparse.Namespace) -> None:
             "--cwd",
             str(repo),
             "--",
-            sys.executable,
             # The driver itself: this module is a library, not an entry point.
-            str(Path(drv.__file__).resolve()),
+            *python_command(str(Path(drv.__file__).resolve())),
             "queue",
             "run",
             "--repo",

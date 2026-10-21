@@ -2967,10 +2967,16 @@ def test_land_waits_for_a_real_runner_through_the_pinned_controller(
     _git(work, "worktree", "add", "-q", "-b", "lane/queued", str(lane))
     tip = _commit_file(lane, "queued.txt", "queued\n", "queued work")
 
+    # Integrate's gates export the candidate's import roots, as here. `land`
+    # runs as main's `python -I` controller; the runner and supervisor it
+    # starts must keep that isolation, or they import the candidate's modules
+    # and die at startup while `land --wait` waits.
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join((str(REPO_ROOT / "src"), str(REPO_ROOT)))
     result = run_guarded_test_process(
         [sys.executable, str(SCRIPT_PATH), "land", "--wait", "--repo", str(lane)],
         cwd=REPO_ROOT,
-        env=ProcessEnvironment(os.environ),
+        env=ProcessEnvironment(env),
         timeout=600,
     )
 
