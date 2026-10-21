@@ -1,5 +1,5 @@
-"""Teeth for APPARATUS A10 -- the graph-memory recall engine + its two wired
-consumers (session_digest nearest-memories, findings_memo_lint suggestions).
+"""Teeth for APPARATUS A10 -- the graph-memory recall engine + its wired
+consumer (findings_memo_lint suggestions).
 
 M05: a PASS is a hypothesis until reproduced -- these exercise the real parsers
 on a controlled fixture corpus and assert the recall queries return the CORRECT
@@ -71,8 +71,8 @@ def _write_corpus(root: Path) -> Path:
         "# Gamma directive\n\nThe older gamma plan, now superseded.\n",
         encoding="utf-8",
     )
-    # A note whose keywords match the session_digest lane context (witness /
-    # build / apparatus) so the nearest-memories consumer surfaces something.
+    # A note whose keywords match a lane context (witness / build / apparatus)
+    # so a nearest-memories query surfaces something.
     (mem / "witness-note.md").write_text(
         "# Witness note\n\n"
         "The witness closure toward WASM numpy parity: frontend lowering seal "

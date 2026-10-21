@@ -5354,11 +5354,13 @@ pytest = [
 [[rule]]
 name = "apparatus-hooks"
 toolchains = ["python"]
-description = "Claude Code hook spine + landing gate + waiver grammar: pure-decision teeth + fail-open + gate-liveness canary."
+description = "Claude Code hook spine, its typed wiring and Stop legs, the landing gate and the waiver grammar: pure-decision teeth + fail-open + gate-liveness canary."
 globs = [
   ".claude/settings.json",
-  "tools/hooks/**/*.py",
-  "tools/hooks/run.sh",
+  "tools/hooks/**",
+  "tools/gen_claude_hooks.py",
+  "tools/triality_gate.py",
+  "tools/magnitude_dismissal_gate.py",
   ".githooks/molt-hook-launch.sh",
   "tools/molt_dev_queue.py",
   "tools/check_gate_flips.py",
@@ -5370,10 +5372,13 @@ globs = [
   "tests/tools/test_hooks_waivers.py",
   "tests/tools/test_check_gate_flips.py",
   "tests/tools/test_check_gate_liveness.py",
+  "tests/tools/test_triality_gate.py",
+  "tests/tools/test_magnitude_dismissal_gate.py",
 ]
 gates = [
   "python tools/check_gate_liveness.py --check",
   "python tools/check_gate_flips.py --check",
+  "python tools/gen_claude_hooks.py --check",
 ]
 pytest = [
   "tests/tools/test_hooks_bash_guard.py",
@@ -5383,6 +5388,8 @@ pytest = [
   "tests/tools/test_hooks_waivers.py",
   "tests/tools/test_check_gate_flips.py",
   "tests/tools/test_check_gate_liveness.py",
+  "tests/tools/test_triality_gate.py",
+  "tests/tools/test_magnitude_dismissal_gate.py",
 ]
 
 [[rule]]
@@ -5513,6 +5520,7 @@ globs = [
   "tests/tools/test_proof_queue_lane_maturity.py",
   "tests/tools/test_proof_queue_disk_capacity.py",
   "tests/tools/test_disk_guard.py",
+  "tests/tools/test_drift_harvest.py",
 ]
 gates = [
   "python tools/check_gate_liveness.py --check",
@@ -5525,6 +5533,7 @@ pytest = [
   "tests/tools/test_proof_queue_disk_capacity.py",
   "tests/tools/test_disk_guard.py",
   "tests/tools/test_check_gate_liveness.py",
+  "tests/tools/test_drift_harvest.py",
 ]
 
 # --- Static first-party from-import symbol resolution ---------------------
@@ -6279,6 +6288,24 @@ name = "landing_gate"
 state = "warn"
 strict_when = "the gate reads only this session's landing evidence and keeps a per-session window"
 rationale = "Unwired from the Stop hook (owner, 2026-10-21) until redesigned: it counted any session's landing-queue requests and results, and all sessions of a checkout shared one window marker, so it could neither attribute a landing nor block reliably."
+
+[[gate_flip]]
+name = "anti_recurrence_gate"
+state = "warn"
+strict_when = "the per-session window exists (HF-424) and the leg is block-once, as the triality and magnitude legs are"
+rationale = "Observe-only Stop leg (owner, 2026-10-21): it diffs CLAIMS.md over one session window per checkout, so another session's claims reach this one, and it has no block-once marker. Under warn its findings go to .molt/state/stop_gates_shadow.jsonl."
+
+[[gate_flip]]
+name = "triality_gate"
+state = "warn"
+strict_when = "the per-session window exists (HF-424) and a replay of recorded Stops shows no block caused by another session's commits"
+rationale = "Observe-only Stop leg (owner, 2026-10-21): it scans base..HEAD of the checkout through one marker per checkout, so another author's commit re-prompted an idle session (review of HF-426 reproduced this). Under warn its reasons go to .molt/state/stop_gates_shadow.jsonl."
+
+[[gate_flip]]
+name = "magnitude_dismissal_gate"
+state = "warn"
+strict_when = "the per-session window exists (HF-424) and a replay of recorded Stops shows no block caused by another session's commits"
+rationale = "Observe-only Stop leg (owner, 2026-10-21): the same per-checkout window as triality_gate. Under warn its reasons go to .molt/state/stop_gates_shadow.jsonl."
 
 [[gate_flip]]
 name = "session_digest"

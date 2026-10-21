@@ -1,9 +1,10 @@
 schema_version = 1
 
 # Each harm names the guard that catches it and the canary that proves the guard
-# can still fire. A hook-spine guard (tools.hooks.*) that is unwired or
-# observe-only names its open ledger row as `gap`; tools/check_gate_liveness.py
-# checks that claim against the live wiring in both directions.
+# can still fire. A hook-run guard (the tools.hooks package or a Stop leg) that
+# is unwired or observe-only names its open ledger row as `gap`;
+# tools/check_gate_liveness.py checks that claim against the typed wiring in
+# both directions.
 
 [[harm]]
 id = "agent-process-termination"
@@ -35,6 +36,7 @@ id = "uncaptured-bug-class-learning"
 harm = "A completed bug-class fix ships without anti-recurrence teeth or a durable lesson."
 guard = "tools.anti_recurrence_gate"
 canary = "anti_recurrence_gate.synthetic-uncaptured-bug-class-warned"
+gap = "HF-424"
 
 [[harm]]
 id = "session-learning-loss"

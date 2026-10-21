@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from tools.hooks import waivers  # noqa: E402
 import tools.hooks._common as common  # noqa: E402
 import tools.hooks.stop_gates as stop_gates  # noqa: E402
 import tools.triality_gate as tg  # noqa: E402
@@ -139,20 +140,26 @@ def test_clean_refactor_passes():
 # --- opt-out grammar ------------------------------------------------------
 
 
+def _opt_out(subjects):
+    return waivers.commit_opt_out(subjects, tg.WAIVER_GATE)
+
+
 def test_opt_out_with_reason_honored():
-    r = tg.opt_out_rationale(
-        ["fix: silent truncation [no-triality] mechanical revert, net lands next"]
+    r = _opt_out(
+        ["fix: silent truncation [skip-triality] mechanical revert, net lands next"]
     )
     assert r is not None and "mechanical revert" in r
 
 
 def test_bare_opt_out_token_not_honored():
-    assert tg.opt_out_rationale(["fix: x [no-triality]"]) is None
-    assert tg.opt_out_rationale(["fix: x [skip-drift]"]) is None
+    assert _opt_out(["fix: x [skip-triality]"]) is None
+    # The retired private aliases are no longer an escape valve.
+    assert _opt_out(["fix: x [no-triality] mechanical revert"]) is None
+    assert _opt_out(["fix: x [skip-drift] mechanical revert"]) is None
 
 
 def test_opt_out_placeholder_reason_not_honored():
-    assert tg.opt_out_rationale(["fix: x [no-triality] todo"]) is None
+    assert _opt_out(["fix: x [skip-triality] todo"]) is None
 
 
 # --- evaluate() end-to-end (loop-safe, block-once) ------------------------
@@ -223,7 +230,7 @@ def test_evaluate_opt_out_records_waiver(tmp_path, monkeypatch):
     _patch(
         monkeypatch,
         head="NEW",
-        subjects=["fix: silent truncation [no-triality] revert only, net next turn"],
+        subjects=["fix: silent truncation [skip-triality] revert only, net next turn"],
         files=["runtime/src/numbers.rs"],
     )
     assert tg.evaluate({"session_id": "s"}, tmp_path) is None
@@ -239,7 +246,9 @@ def test_stop_gates_fail_open_on_raising_triality(tmp_path, monkeypatch, capsys)
         raise RuntimeError("synthetic triality core failure")
 
     monkeypatch.setattr(tg, "evaluate", boom)
-    monkeypatch.setattr(stop_gates, "GATES", [("triality_gate", tg.evaluate)])
+    monkeypatch.setattr(
+        stop_gates, "LEGS", (stop_gates.StopLeg("triality_gate", tg.evaluate),)
+    )
     monkeypatch.setattr(
         stop_gates._common, "read_hook_input", lambda: {"cwd": str(tmp_path)}
     )

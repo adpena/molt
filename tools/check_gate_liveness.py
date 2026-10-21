@@ -12,9 +12,9 @@ Every canary calls a PURE ``decide()`` -- no subprocess, no environment -- so th
 liveness check is deterministic and fast.
 
 A canary proves a guard still CAN fire, not that it runs. For each harm that
-``tools/recurring_harms.toml`` assigns to a hook-spine guard (``tools.hooks.*``),
-the check also reads the live wiring: the hooks the ``.claude/settings.json``
-commands start, the ``stop_gates.GATES`` legs, and each guard's
+``tools/recurring_harms.toml`` assigns to a hook-run guard (the hook package
+or a Stop leg), the check also reads the typed wiring: ``wiring.HOOKS`` (which
+generates ``.claude/settings.json``), ``stop_gates.LEGS`` and each guard's
 ``[[gate_flip]]`` state. A wired guard whose flip (if any) is ``strict``
 enforces. One that does not must name its open ledger row as ``gap``; a gap on
 an enforcing guard is stale. Both mismatches fail.
@@ -24,10 +24,9 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
-import json
-import shlex
 import sys
 import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -51,6 +50,7 @@ from tools import advisory_classifier, disk_guard  # noqa: E402
 from tools import lane_maturity, powerplay_acceptance  # noqa: E402
 from tools import anti_recurrence_gate, apparatus_agent_safety  # noqa: E402
 from tools import encoding_gate  # noqa: E402
+from tools.check_gate_flips import FlipState  # noqa: E402
 from molt.target_python import (  # noqa: E402
     TargetPythonVersion,
     require_verified_subset_target,
@@ -145,9 +145,9 @@ def _canaries() -> list[Canary]:
             lambda: (
                 bash_guard.decide(
                     "git reset --hard HEAD",
-                    in_shared_checkout=True,
-                    queue_live=False,
-                    origin_is_https=False,
+                    facts=bash_guard.GuardFacts.fixed(
+                        shared=True, queue=False, https=False
+                    ),
                 ).block
             ),
         ),
@@ -157,9 +157,9 @@ def _canaries() -> list[Canary]:
             lambda: (
                 bash_guard.decide(
                     "git add -A",
-                    in_shared_checkout=False,
-                    queue_live=False,
-                    origin_is_https=False,
+                    facts=bash_guard.GuardFacts.fixed(
+                        shared=False, queue=False, https=False
+                    ),
                 ).block
             ),
         ),
@@ -169,9 +169,9 @@ def _canaries() -> list[Canary]:
             lambda: (
                 bash_guard.decide(
                     'git add foo.rs && git commit -m "x"',
-                    in_shared_checkout=False,
-                    queue_live=False,
-                    origin_is_https=False,
+                    facts=bash_guard.GuardFacts.fixed(
+                        shared=False, queue=False, https=False
+                    ),
                 ).block
             ),
         ),
@@ -181,9 +181,9 @@ def _canaries() -> list[Canary]:
             lambda: (
                 bash_guard.decide(
                     "cargo build --release",
-                    in_shared_checkout=False,
-                    queue_live=True,
-                    origin_is_https=False,
+                    facts=bash_guard.GuardFacts.fixed(
+                        shared=False, queue=True, https=False
+                    ),
                 ).block
             ),
         ),
@@ -193,9 +193,9 @@ def _canaries() -> list[Canary]:
             lambda: (
                 bash_guard.decide(
                     "git push origin main",
-                    in_shared_checkout=False,
-                    queue_live=False,
-                    origin_is_https=True,
+                    facts=bash_guard.GuardFacts.fixed(
+                        shared=False, queue=False, https=True
+                    ),
                 ).block
             ),
         ),
@@ -206,9 +206,9 @@ def _canaries() -> list[Canary]:
             lambda: (
                 not bash_guard.decide(
                     "MOLT_GUARD_OK=1 git reset --hard HEAD",
-                    in_shared_checkout=True,
-                    queue_live=False,
-                    origin_is_https=False,
+                    facts=bash_guard.GuardFacts.fixed(
+                        shared=True, queue=False, https=False
+                    ),
                 ).block
             ),
         ),
@@ -307,8 +307,13 @@ def _canaries() -> list[Canary]:
         Canary(
             "triality_gate",
             "bare-opt-out-token-not-honored",
-            # a [no-triality] with NO rationale must NOT opt out (fires as drift).
-            lambda: triality_gate.opt_out_rationale(["fix: x [no-triality]"]) is None,
+            # a [skip-triality] with NO rationale must NOT opt out (fires as drift).
+            lambda: (
+                waivers.commit_opt_out(
+                    ["fix: x [skip-triality]"], triality_gate.WAIVER_GATE
+                )
+                is None
+            ),
         ),
         # --- Wave 2, A6: magnitude-dismissal + verdict-scope gate ----------
         Canary(
@@ -573,28 +578,30 @@ def _canaries() -> list[Canary]:
     ]
 
 
-HOOK_GUARD_PREFIX = "tools.hooks."
+HOOK_PACKAGE = "tools.hooks"
 
 
 def hook_enforcement_problems(
     harms: list[dict],
     *,
+    judged: set[str],
     wired: set[str],
-    flip_states: dict[str, str],
+    flip_states: Mapping[str, FlipState],
     open_keys: set[str],
 ) -> list[str]:
-    """Mismatches between each hook-guarded harm's ``gap`` and the live wiring.
+    """Mismatches between each hook-run guard's ``gap`` and the live wiring.
 
-    *wired* holds the module names of the hooks that run; *flip_states* maps a
-    gate name to its ``[[gate_flip]]`` state; *open_keys* are the ledger's
-    open finding ids.
+    *judged* holds the guard modules a hook runs or could run (the hook
+    package and every Stop leg's module); *wired* those that run; a guard
+    enforces when it runs and its ``[[gate_flip]]`` (named by its module) is
+    ``strict`` or absent; *open_keys* are the ledger's open finding ids.
     """
     problems: list[str] = []
     for harm in harms:
         guard = str(harm["guard"])
-        if not guard.startswith(HOOK_GUARD_PREFIX):
+        if guard not in judged:
             continue
-        name = guard.removeprefix(HOOK_GUARD_PREFIX)
+        name = guard.rpartition(".")[2]
         enforcing = guard in wired and flip_states.get(name, "strict") == "strict"
         gap = harm.get("gap")
         if enforcing and gap is not None:
@@ -607,38 +614,35 @@ def hook_enforcement_problems(
     return problems
 
 
-def _wired_hook_modules() -> set[str]:
-    """The hook modules that run: each settings command's and each Stop leg's."""
-    from tools.hooks import stop_gates
+def hook_modules(harms: list[dict]) -> tuple[set[str], set[str]]:
+    """(judged, wired) from the typed wiring: ``wiring.HOOKS`` (which
+    generates .claude/settings.json) and ``stop_gates.LEGS``."""
+    from tools.hooks import stop_gates, wiring
 
-    settings = json.loads(
-        (ROOT / ".claude" / "settings.json").read_text(encoding="utf-8")
-    )
-    wired = {evaluate.__module__ for _name, evaluate in stop_gates.GATES}
-    for groups in settings["hooks"].values():
-        for group in groups:
-            for hook in group["hooks"]:
-                *_prefix, launcher, name = shlex.split(hook["command"])
-                if Path(launcher).name != "run.sh":
-                    raise ValueError(
-                        f"a settings hook must end in `run.sh <hook>`: {hook['command']!r}"
-                    )
-                wired.add(HOOK_GUARD_PREFIX + name)
-    return wired
+    legs = {leg.evaluate.__module__ for leg in stop_gates.LEGS}
+    wired = {hook.module for hook in wiring.HOOKS} | legs
+    package = {
+        str(harm["guard"])
+        for harm in harms
+        if str(harm["guard"]).rpartition(".")[0] == HOOK_PACKAGE
+    }
+    return package | legs, wired
 
 
 def _hook_enforcement_canaries() -> list[Canary]:
     from tools import finding_status
-    from tools.check_gate_flips import DEFAULT_CONFIG, load_flip_entries
+    from tools.check_gate_flips import DEFAULT_CONFIG, entry_state, load_flip_entries
 
     harms = tomllib.loads(
         (ROOT / "tools" / "recurring_harms.toml").read_text(encoding="utf-8")
     ).get("harm", [])
+    judged, wired = hook_modules(harms)
     problems = hook_enforcement_problems(
         harms,
-        wired=_wired_hook_modules(),
+        judged=judged,
+        wired=wired,
         flip_states={
-            str(entry["name"]): str(entry.get("state", "warn")).lower()
+            str(entry["name"]): entry_state(entry)
             for entry in load_flip_entries(DEFAULT_CONFIG)
         },
         open_keys=set(finding_status.read_ledger(ROOT).open_keys),

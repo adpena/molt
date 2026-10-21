@@ -47,13 +47,13 @@ def test_find_all_waivers_reports_validity():
     assert found["BASH_GUARD"] is False
 
 
-def test_skip_tokens_parsed():
-    assert w.parse_skip_tokens("fix things [skip-landing-gate] [skip-triality]") == {
-        "landing-gate",
-        "triality",
-    }
-    assert w.has_skip_token("wip [skip-bash-guard]", "bash_guard")
-    assert not w.has_skip_token("wip", "bash_guard")
+def test_commit_opt_out_requires_a_following_rationale_for_its_gate():
+    subjects = ["fix things [skip-landing-gate] reverted by hand", "wip"]
+    assert w.commit_opt_out(subjects, "landing_gate") == "reverted by hand"
+    assert w.commit_opt_out(subjects, "triality") is None
+    # Prose before the token is not a rationale; a placeholder is refused.
+    assert w.commit_opt_out(["a long reason [skip-bash-guard]"], "bash_guard") is None
+    assert w.commit_opt_out(["wip [skip-bash-guard] todo"], "bash_guard") is None
 
 
 def test_record_waiver_appends_ledger(tmp_path):

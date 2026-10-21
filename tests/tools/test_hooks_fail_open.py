@@ -93,7 +93,9 @@ def test_stop_gates_one_leg_raising_does_not_sink_others(monkeypatch, tmp_path):
         io.StringIO(json.dumps({"session_id": "s1", "cwd": str(tmp_path)})),
     )
     # A leg that raises must be caught (logged) and NOT block the stop.
-    monkeypatch.setattr(sg, "GATES", [("boomer", lambda data, root: _raise())])
+    monkeypatch.setattr(
+        sg, "LEGS", (sg.StopLeg("boomer", lambda data, root: _raise()),)
+    )
     assert sg.run() == 0
 
 
@@ -124,6 +126,54 @@ def test_queue_count_tells_an_idle_queue_from_an_unreadable_one(tmp_path, monkey
     # gate choose their own fail-open direction for None.
     db.write_bytes(b"not a database")
     assert common.proof_queue_active_count(tmp_path) is None
+
+
+@pytest.mark.parametrize("state", ["warn", "strict"])
+def test_a_stop_leg_blocks_only_under_strict_and_records_under_warn(
+    tmp_path, monkeypatch, capsys, state
+):
+    monkeypatch.setattr(sg._common, "repo_root", lambda cwd=None: tmp_path)
+    monkeypatch.setattr(
+        sg._common,
+        "read_hook_input",
+        lambda: {"cwd": str(tmp_path), "session_id": "s7"},
+    )
+    leg = sg.StopLeg("probe_leg", lambda data, root: "drifted")
+    monkeypatch.setattr(sg, "LEGS", (leg,))
+    monkeypatch.setattr(sg, "flip_state", lambda name: {"probe_leg": state}[name])
+    assert sg.run() == 0
+    out = capsys.readouterr().out
+    shadow = common.shadow_records(tmp_path, sg.SHADOW_NAME)
+    if state == "strict":
+        assert json.loads(out) == {"decision": "block", "reason": "[probe_leg] drifted"}
+        assert shadow == []
+    else:
+        assert out == ""
+        assert [(r["leg"], r["reason"], r["session_id"]) for r in shadow] == [
+            ("probe_leg", "drifted", "s7")
+        ]
+
+
+def test_a_stop_leg_without_a_flip_never_reengages(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(sg._common, "repo_root", lambda cwd=None: tmp_path)
+    monkeypatch.setattr(sg._common, "read_hook_input", lambda: {"cwd": str(tmp_path)})
+    monkeypatch.setattr(sg, "LEGS", (sg.StopLeg("unflipped", lambda d, r: "x"),))
+    monkeypatch.setattr(sg, "flip_state", lambda name: None)
+    assert sg.run() == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_shadow_records_rotate_past_their_bound(tmp_path, monkeypatch):
+    monkeypatch.setattr(common, "SHADOW_MAX_BYTES", 200)
+    for index in range(20):
+        common.record_shadow(tmp_path, "probe.jsonl", {"n": index})
+    records = common.shadow_records(tmp_path, "probe.jsonl")
+    numbers = [record["n"] for record in records]
+    # The newest records survive in order; older generations retire.
+    assert numbers == sorted(numbers) and numbers[-1] == 19 and len(numbers) < 20
+    assert all("recorded_at" in record for record in records)
+    current = common.state_dir(tmp_path) / "probe.jsonl"
+    assert current.stat().st_size <= 200 + 64
 
 
 # --- the settings commands themselves (the launcher) ----------------------
@@ -358,3 +408,44 @@ def test_launcher_refuses_an_unknown_hook(tmp_path, checkout_run_context):
     )
     assert completed.returncode == 1
     assert "no tools/hooks/no_such_hook.py" in completed.stderr
+
+
+@_NEEDS_POSIX_CHECKOUT
+def test_launcher_starts_python_exactly_for_a_prefilter_token(
+    tmp_path, checkout_run_context
+):
+    """run.sh's generated test and PREFILTER_TOKENS agree, in any case.
+
+    The checkout's interpreter records each start, so the oracle is whether
+    Python ran, not what the guard decided.
+    """
+    environment = tmp_path / "recording-env"
+    (environment / "bin").mkdir(parents=True)
+    starts = tmp_path / "starts"
+    python = environment / "bin" / "python"
+    python.write_text(
+        f"#!/bin/sh\necho started >> {shlex.quote(str(starts))}\n"
+        f'exec {shlex.quote(sys.executable)} "$@"\n',
+        encoding="utf-8",
+    )
+    python.chmod(0o755)
+    checkout = _hook_checkout(tmp_path, environment=environment)
+    (guard,) = _settings_hook_commands()["PreToolUse"]
+
+    def started_for(command: str) -> bool:
+        before = starts.read_text().count("started") if starts.exists() else 0
+        completed = _run_settings_command(
+            guard,
+            checkout,
+            tmp_path,
+            {"tool_name": "Bash", "tool_input": {"command": command}},
+            run_context=checkout_run_context,
+        )
+        assert completed.returncode == 0, completed.stderr
+        after = starts.read_text().count("started") if starts.exists() else 0
+        return after > before
+
+    for token in bg.PREFILTER_TOKENS:
+        for spelling in (token, token.upper(), token.capitalize()):
+            assert started_for(f"echo {spelling}"), spelling
+    assert not started_for("ls -la docs")

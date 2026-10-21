@@ -79,6 +79,14 @@ def evaluate(root: Path) -> list[Finding]:
     return inspect(claims_text, _common.git_window_files(root, base))
 
 
+def evaluate_stop(_data: dict, root: Path) -> str | None:
+    """The Stop leg: this window's findings as one reason, or None."""
+    findings = evaluate(root)
+    if not findings:
+        return None
+    return "; ".join(f"[{finding.lane}] {finding.message}" for finding in findings)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--claims", default="docs/agent/CLAIMS.md")

@@ -19,6 +19,7 @@ import tools.hooks.bash_guard as bg  # noqa: E402
 import tools.hooks.landing_gate as lg  # noqa: E402
 import tools.hooks.session_digest as sd  # noqa: E402
 import tools.hooks.stop_gates as stop_gates  # noqa: E402
+import tools.hooks.waivers as waivers  # noqa: E402
 
 
 def _run_digest(monkeypatch, payload, capsys):
@@ -39,6 +40,9 @@ def test_digest_points_at_the_authorities_and_states_the_hooks(
     tmp_path, monkeypatch, capsys
 ):
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+    # tmp_path must read as no checkout even when pytest's basetemp sits inside
+    # one: Git may not search above it.
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.parent))
     _quiet_queue_probes(monkeypatch, worktrees=dh.MAX_LIVE_WORKTREES + 1)
     code, out = _run_digest(
         monkeypatch, {"session_id": "s1", "cwd": str(tmp_path)}, capsys
@@ -52,10 +56,14 @@ def test_digest_points_at_the_authorities_and_states_the_hooks(
         f"WORKTREES: {dh.MAX_LIVE_WORKTREES + 1} live "
         f"(SPRAWL threshold {dh.MAX_LIVE_WORKTREES}); over the threshold" in out
     )
-    # The Stop line names exactly the wired legs; an unwired gate is absent.
-    wired = ", ".join(name for name, _evaluate in stop_gates.GATES)
-    assert f"Stop checks (each re-engages a turn at most once): {wired}.\n" in out
+    # The Stop line names exactly the wired legs and each one's live state; an
+    # unwired gate is absent.
+    legs = ", ".join(
+        f"{leg.name} ({stop_gates.enforcement_state(leg)})" for leg in stop_gates.LEGS
+    )
+    assert f"  Stop legs: {legs};" in out
     assert "landing_gate" not in out and "record-blocker" not in out
+    assert f"  Waivers: {waivers.grammar_summary()}.\n" in out
     # The digest restates no goal or claim board another file owns.
     assert "GOAL" not in out and "witness" not in out and "CLAIMS" not in out
     # tmp_path is no Git checkout: the queue section degrades, the rest stands.
@@ -100,6 +108,28 @@ def test_digest_states_the_guard_enforcement_it_reads(
     assert said in hooks and unsaid not in hooks
 
 
+def test_digest_reports_recent_would_be_blocks_by_rule_and_leg(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+    _quiet_queue_probes(monkeypatch)
+    for rule in ("https-push", "https-push", "git-add-sweep"):
+        common.record_shadow(tmp_path, bg.SHADOW_NAME, {"rule": rule})
+    common.record_shadow(tmp_path, stop_gates.SHADOW_NAME, {"leg": "triality_gate"})
+    # A record older than the window does not count.
+    common.append_jsonl(
+        common.state_dir(tmp_path) / bg.SHADOW_NAME,
+        {"recorded_at": "2020-01-01T00:00:00Z", "rule": "https-push"},
+    )
+    _code, out = _run_digest(
+        monkeypatch, {"session_id": "s1", "cwd": str(tmp_path)}, capsys
+    )
+    assert (
+        "bash_guard 3 (git-add-sweep 1, https-push 2); Stop legs 1 (triality_gate 1)."
+        in out
+    )
+
+
 def test_live_worktree_count_counts_what_the_sprawl_gate_counts(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -131,6 +161,22 @@ def test_digest_writes_landing_baseline(tmp_path, monkeypatch, capsys):
         (tmp_path / ".molt" / "state" / lg.MARKER_NAME).read_text(encoding="utf-8")
     )
     assert marker["session_id"] == "sX" and marker["start_head"] == "HEADSHA"
+
+
+@pytest.mark.parametrize(
+    ("source", "anchors"),
+    [("startup", True), ("clear", True), ("resume", False), ("compact", False)],
+)
+def test_digest_anchors_the_window_only_when_a_conversation_begins(
+    tmp_path, monkeypatch, capsys, source, anchors
+):
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+    _quiet_queue_probes(monkeypatch)
+    monkeypatch.setattr(sd._common, "git_head", lambda root: "HEADSHA")
+    payload = {"session_id": "sX", "cwd": str(tmp_path), "source": source}
+    _run_digest(monkeypatch, payload, capsys)
+    marker = tmp_path / ".molt" / "state" / lg.MARKER_NAME
+    assert marker.exists() is anchors
 
 
 def test_digest_fail_open_on_broken_section(tmp_path, monkeypatch, capsys):

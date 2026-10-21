@@ -9370,10 +9370,11 @@
       "local.apparatus-a11.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.5 tests/tools/test_claims_status.py tests/tools/test_check_sister_landed.py tests/tools/test_commit_serializer.py",
       "local.apparatus-a8-a12-disk-reclaim.0": "python tools/check_gate_liveness.py --check",
       "local.apparatus-a8-a12-disk-reclaim.1": "python tools/apparatus_agent_safety.py --check",
-      "local.apparatus-a8-a12-disk-reclaim.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_lane_maturity.py tests/tools/test_powerplay_acceptance.py tests/tools/test_proof_queue_lane_maturity.py tests/tools/test_proof_queue_disk_capacity.py tests/tools/test_disk_guard.py tests/tools/test_check_gate_liveness.py",
+      "local.apparatus-a8-a12-disk-reclaim.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_lane_maturity.py tests/tools/test_powerplay_acceptance.py tests/tools/test_proof_queue_lane_maturity.py tests/tools/test_proof_queue_disk_capacity.py tests/tools/test_disk_guard.py tests/tools/test_check_gate_liveness.py tests/tools/test_drift_harvest.py",
       "local.apparatus-hooks.0": "python tools/check_gate_liveness.py --check",
       "local.apparatus-hooks.1": "python tools/check_gate_flips.py --check",
-      "local.apparatus-hooks.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.5 tests/tools/test_hooks_bash_guard.py tests/tools/test_hooks_landing_gate.py tests/tools/test_hooks_session_digest.py tests/tools/test_hooks_fail_open.py tests/tools/test_hooks_waivers.py tests/tools/test_check_gate_flips.py tests/tools/test_check_gate_liveness.py",
+      "local.apparatus-hooks.2": "python tools/gen_claude_hooks.py --check",
+      "local.apparatus-hooks.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.5 tests/tools/test_hooks_bash_guard.py tests/tools/test_hooks_landing_gate.py tests/tools/test_hooks_session_digest.py tests/tools/test_hooks_fail_open.py tests/tools/test_hooks_waivers.py tests/tools/test_check_gate_flips.py tests/tools/test_check_gate_liveness.py tests/tools/test_triality_gate.py tests/tools/test_magnitude_dismissal_gate.py",
       "local.apparatus-learning-protection.0": "python tools/apparatus_agent_safety.py --check",
       "local.apparatus-learning-protection.1": "python tools/anti_recurrence_gate.py --check",
       "local.apparatus-learning-protection.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_apparatus_agent_safety.py tests/tools/test_anti_recurrence_gate.py tests/tools/test_hooks_session_learning.py tests/tools/test_check_gate_liveness.py tests/tools/test_memory_graph.py",
@@ -11093,17 +11094,21 @@
         "command_ids": [
           "local.apparatus-hooks.0",
           "local.apparatus-hooks.1",
+          "local.apparatus-hooks.2",
           "local.apparatus-hooks.pytest"
         ],
-        "description": "Claude Code hook spine + landing gate + waiver grammar: pure-decision teeth + fail-open + gate-liveness canary.",
+        "description": "Claude Code hook spine, its typed wiring and Stop legs, the landing gate and the waiver grammar: pure-decision teeth + fail-open + gate-liveness canary.",
         "gates": [
           "python tools/check_gate_liveness.py --check",
-          "python tools/check_gate_flips.py --check"
+          "python tools/check_gate_flips.py --check",
+          "python tools/gen_claude_hooks.py --check"
         ],
         "globs": [
           ".claude/settings.json",
-          "tools/hooks/**/*.py",
-          "tools/hooks/run.sh",
+          "tools/hooks/**",
+          "tools/gen_claude_hooks.py",
+          "tools/triality_gate.py",
+          "tools/magnitude_dismissal_gate.py",
           ".githooks/molt-hook-launch.sh",
           "tools/molt_dev_queue.py",
           "tools/check_gate_flips.py",
@@ -11114,7 +11119,9 @@
           "tests/tools/test_hooks_fail_open.py",
           "tests/tools/test_hooks_waivers.py",
           "tests/tools/test_check_gate_flips.py",
-          "tests/tools/test_check_gate_liveness.py"
+          "tests/tools/test_check_gate_liveness.py",
+          "tests/tools/test_triality_gate.py",
+          "tests/tools/test_magnitude_dismissal_gate.py"
         ],
         "name": "apparatus-hooks",
         "pytest": [
@@ -11124,7 +11131,9 @@
           "tests/tools/test_hooks_fail_open.py",
           "tests/tools/test_hooks_waivers.py",
           "tests/tools/test_check_gate_flips.py",
-          "tests/tools/test_check_gate_liveness.py"
+          "tests/tools/test_check_gate_liveness.py",
+          "tests/tools/test_triality_gate.py",
+          "tests/tools/test_magnitude_dismissal_gate.py"
         ],
         "toolchains": [
           "python"
@@ -11312,7 +11321,8 @@
           "tests/tools/test_powerplay_acceptance.py",
           "tests/tools/test_proof_queue_lane_maturity.py",
           "tests/tools/test_proof_queue_disk_capacity.py",
-          "tests/tools/test_disk_guard.py"
+          "tests/tools/test_disk_guard.py",
+          "tests/tools/test_drift_harvest.py"
         ],
         "name": "apparatus-a8-a12-disk-reclaim",
         "pytest": [
@@ -11321,7 +11331,8 @@
           "tests/tools/test_proof_queue_lane_maturity.py",
           "tests/tools/test_proof_queue_disk_capacity.py",
           "tests/tools/test_disk_guard.py",
-          "tests/tools/test_check_gate_liveness.py"
+          "tests/tools/test_check_gate_liveness.py",
+          "tests/tools/test_drift_harvest.py"
         ],
         "toolchains": [
           "python"
@@ -12353,6 +12364,9 @@
         "python"
       ],
       "local.apparatus-hooks.1": [
+        "python"
+      ],
+      "local.apparatus-hooks.2": [
         "python"
       ],
       "local.apparatus-hooks.pytest": [

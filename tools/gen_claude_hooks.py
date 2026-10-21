@@ -1,0 +1,42 @@
+#!/usr/bin/env python3
+"""Project the Claude Code hook wiring into the files that consume it.
+
+``tools/hooks/wiring.py`` declares the hooks and ``bash_guard.PREFILTER_TOKENS``
+the guard's tokens; this writes ``.claude/settings.json`` and
+``tools/hooks/prefilter.generated.sh`` from them.
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from tools.generator_io import generator_main  # noqa: E402
+from tools.hooks import wiring  # noqa: E402
+from tools.hooks.bash_guard import PREFILTER_TOKENS  # noqa: E402
+
+SETTINGS = ROOT / ".claude" / "settings.json"
+PREFILTER = ROOT / "tools" / "hooks" / "prefilter.generated.sh"
+
+
+def generated_outputs() -> dict[Path, str]:
+    return {
+        SETTINGS: wiring.settings_document(),
+        PREFILTER: wiring.prefilter_script(PREFILTER_TOKENS),
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    return generator_main(generated_outputs, argv, description=__doc__)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

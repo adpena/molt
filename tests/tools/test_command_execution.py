@@ -176,6 +176,8 @@ def test_read_only_git_classifier_excludes_mutations() -> None:
         ["git", "cherry", "origin/main", "lane/x"],
         ["git", "for-each-ref", "refs/heads/lane/"],
         ["git", "-C", "repo", "worktree", "list", "--porcelain"],
+        # The hooks read the push target's URL on each `git push` command.
+        ["git", "remote", "get-url", "origin"],
     ):
         assert command_execution._is_bounded_metadata_probe(read), read
     # The same families' mutating actions keep the guard.
@@ -184,6 +186,8 @@ def test_read_only_git_classifier_excludes_mutations() -> None:
         ["git", "worktree", "remove", "path"],
         ["git", "update-ref", "-d", "refs/heads/lane/x"],
         ["git", "worktree"],
+        ["git", "remote", "set-url", "origin", "url"],
+        ["git", "remote", "add", "x", "url"],
     ):
         assert not command_execution._is_bounded_metadata_probe(mutation), mutation
 

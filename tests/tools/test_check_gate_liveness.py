@@ -53,9 +53,11 @@ _HOOK_HARM = {"id": "h", "guard": "tools.hooks.guard", "canary": "guard.c"}
 
 
 def _problems(harm, *, wired=True, state="strict", open_keys=("HF-1",)):
+    judged, _wired = cgl.hook_modules([harm])
     return cgl.hook_enforcement_problems(
         [harm],
-        wired={"tools.hooks.guard"} if wired else set(),
+        judged=judged,
+        wired={str(harm["guard"])} if wired else set(),
         flip_states={"guard": state},
         open_keys=set(open_keys),
     )
@@ -86,10 +88,21 @@ def test_guards_outside_the_hook_spine_are_not_judged_by_hook_wiring():
     assert _problems(harm, wired=False) == []
 
 
-def test_live_wiring_reads_the_settings_hooks_and_the_stop_legs():
+def test_live_wiring_reads_the_declared_hooks_and_the_stop_legs():
     from tools.hooks import stop_gates
 
-    wired = cgl._wired_hook_modules()
+    harms = [{"guard": "tools.hooks.session_learning"}]
+    judged, wired = cgl.hook_modules(harms)
     assert {"tools.hooks.bash_guard", "tools.hooks.session_digest"} <= wired
-    assert {evaluate.__module__ for _name, evaluate in stop_gates.GATES} <= wired
+    legs = {leg.evaluate.__module__ for leg in stop_gates.LEGS}
+    # A Stop leg outside the hook package is judged too (anti-recurrence).
+    assert "tools.anti_recurrence_gate" in legs and legs <= judged and legs <= wired
+    assert "tools.hooks.session_learning" in judged
     assert "tools.hooks.session_learning" not in wired
+
+
+def test_settings_json_is_the_projection_of_the_declared_wiring():
+    from tools.hooks import wiring
+
+    settings = (cgl.ROOT / ".claude" / "settings.json").read_text(encoding="utf-8")
+    assert settings == wiring.settings_document()

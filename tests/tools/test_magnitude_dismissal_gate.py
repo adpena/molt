@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from tools.hooks import waivers  # noqa: E402
 import tools.hooks._common as common  # noqa: E402
 import tools.hooks.stop_gates as stop_gates  # noqa: E402
 import tools.magnitude_dismissal_gate as mg  # noqa: E402
@@ -72,8 +73,14 @@ def test_dismissal_with_measured_unrecoverability_allows():
 
 
 def test_window_opt_out_token_detected():
-    assert mg.mag_is_opted_out(["chore: shelve the weak lane [magnitude-ok]"]) is True
-    assert mg.mag_is_opted_out(["chore: shelve the weak lane"]) is False
+    def opted_out(subjects):
+        return waivers.commit_opt_out(subjects, mg.WAIVER_GATE) is not None
+
+    assert opted_out(["chore: shelve [skip-magnitude-dismissal] measured 0.4% of gap"])
+    assert not opted_out(["chore: shelve the weak lane"])
+    # A bare token and the retired private alias are refused.
+    assert not opted_out(["chore: shelve [skip-magnitude-dismissal]"])
+    assert not opted_out(["chore: shelve [magnitude-ok] measured 0.4% of gap"])
 
 
 def test_markdown_table_rows_are_not_a_false_positive():
@@ -272,7 +279,9 @@ def test_stop_gates_fail_open_on_raising_magnitude(tmp_path, monkeypatch, capsys
     def boom(data, root):
         raise RuntimeError("synthetic magnitude core failure")
 
-    monkeypatch.setattr(stop_gates, "GATES", [("magnitude_dismissal_gate", boom)])
+    monkeypatch.setattr(
+        stop_gates, "LEGS", (stop_gates.StopLeg("magnitude_dismissal_gate", boom),)
+    )
     monkeypatch.setattr(
         stop_gates._common, "read_hook_input", lambda: {"cwd": str(tmp_path)}
     )

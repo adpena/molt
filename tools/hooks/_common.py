@@ -434,6 +434,47 @@ def added_lines_from_diff(diff_text: str) -> list[str]:
 # --- loop-safe event-window marker (shared by the Wave-2 Stop legs) ---------
 
 
+# --- observe-only records ----------------------------------------------------
+
+SHADOW_MAX_BYTES = 4 * 1024 * 1024
+
+
+def record_shadow(root: Path, name: str, record: dict[str, Any]) -> None:
+    """Append one would-be block to ``.molt/state/<name>``: what a gate under
+    ``warn`` would have refused, with the session and the time.
+
+    Past ``SHADOW_MAX_BYTES`` the file rotates to ``<name>.1`` (one older
+    generation kept), so the log stays bounded.
+    """
+    path = state_dir(root) / name
+    try:
+        if path.stat().st_size > SHADOW_MAX_BYTES:
+            os.replace(path, path.with_name(path.name + ".1"))
+    except FileNotFoundError:
+        pass
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    append_jsonl(path, {"recorded_at": stamp, **record})
+
+
+def shadow_records(root: Path, name: str) -> list[dict[str, Any]]:
+    """Every observe-only record of ``name``, oldest first; torn lines skip."""
+    base = state_dir(root) / name
+    records: list[dict[str, Any]] = []
+    for path in (base.with_name(base.name + ".1"), base):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            continue
+        for line in text.splitlines():
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                records.append(value)
+    return records
+
+
 def read_window_marker(root: Path, name: str) -> dict[str, Any]:
     try:
         p = state_dir(root) / name

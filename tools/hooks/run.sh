@@ -22,16 +22,21 @@ if [ -z "$repo_root" ] || [ -z "$hook" ] || [ ! -f "$repo_root/tools/hooks/$hook
 fi
 shift
 if [ "$hook" = bash_guard ]; then
-    # bash_guard.PREFILTER_TOKENS: every rule needs git, cargo or build.
-    # This saves about 145 ms on each other Bash call. The test reads the raw
-    # payload, while the guard reads shell words, so an escaped spelling
-    # (c\argo) passes here unseen: bash_guard's gate_flip may not go strict
-    # until this filter is a proven over-approximation of its rules.
+    # Skip Python unless the payload holds a bash_guard.PREFILTER_TOKENS token
+    # (the generated test below): about 15 ms instead of 160 ms. It reads the
+    # whole payload, so a description or path holding a token pays the full
+    # cost; and it reads text while the guard reads shell words, so an escaped
+    # spelling (c\argo) passes unseen until HF-423's shell-word model owns both.
+    prefilter=$repo_root/tools/hooks/prefilter.generated.sh
+    # Sourcing a missing file is fatal in POSIX sh (status 2, which would
+    # block the tool call), so check it first.
+    if [ ! -f "$prefilter" ]; then
+        echo "molt hook bash_guard did not run: no $prefilter; regenerate: python3 tools/gen_claude_hooks.py --write" >&2
+        exit 1
+    fi
+    . "$prefilter"
     payload=$(cat)
-    case $payload in
-        *git* | *cargo* | *build*) ;;
-        *) exit 0 ;;
-    esac
+    molt_hook_prefilter "$payload" || exit 0
 fi
 cd "$repo_root" || exit 1
 launcher=$repo_root/.githooks/molt-hook-launch.sh

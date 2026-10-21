@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import io
 import sys
+import time
+from datetime import datetime
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -37,6 +39,9 @@ from tools.hooks import _common, landing_gate  # noqa: E402
 
 
 RECENT_LANDING_RESULTS = 3
+# SessionStart sources that begin a conversation; "resume" and "compact"
+# continue one. A payload without a source anchors, as before.
+ANCHORING_SOURCES = frozenset({"startup", "clear", None})
 
 
 def _section_start(out: io.StringIO) -> None:
@@ -90,26 +95,49 @@ def _section_worktrees(out: io.StringIO, root: Path) -> None:
     out.write(f"WORKTREES: {count} live (SPRAWL threshold {limit}){over}.\n")
 
 
-def _section_hooks(out: io.StringIO) -> None:
-    from tools.hooks import bash_guard, stop_gates
+SHADOW_WINDOW_DAYS = 7
+
+
+def _observed(root: Path, name: str, key: str) -> str:
+    """Would-be blocks an observe-only gate recorded in the window, by ``key``."""
+    cutoff = time.time() - SHADOW_WINDOW_DAYS * 86_400
+    counts: dict[str, int] = {}
+    for record in _common.shadow_records(root, name):
+        try:
+            stamp = datetime.fromisoformat(str(record["recorded_at"])).timestamp()
+        except (KeyError, ValueError):
+            continue
+        if stamp >= cutoff:
+            label = str(record.get(key, "?"))
+            counts[label] = counts.get(label, 0) + 1
+    if not counts:
+        return "0"
+    detail = ", ".join(f"{label} {count}" for label, count in sorted(counts.items()))
+    return f"{sum(counts.values())} ({detail})"
+
+
+def _section_hooks(out: io.StringIO, root: Path) -> None:
+    from tools.hooks import bash_guard, stop_gates, waivers
 
     if bash_guard.enforcement_state() == "strict":
         guard = "refuses"
         override = "`MOLT_GUARD_OK=1 <cmd>` overrides once, audited."
     else:
         guard = "records, without blocking,"
-        override = (
-            f"it logs each would-be block to {bash_guard.SHADOW_NAME} under "
-            ".molt/state until its gate_flip in tools/proof_plan.toml is strict."
-        )
+        override = "its gate_flip in tools/proof_plan.toml is warn."
+    legs = ", ".join(
+        f"{leg.name} ({stop_gates.enforcement_state(leg)})" for leg in stop_gates.LEGS
+    )
     out.write(
         f"HOOKS: bash_guard {guard} destructive git on the shared checkout, "
         "`git add`-then-commit sweeps, heavy builds that bypass a live proof "
         f"queue, and HTTPS pushes; {override}\n"
-        "  Stop checks (each re-engages a turn at most once): "
-        + ", ".join(name for name, _evaluate in stop_gates.GATES)
-        + ".\n"
-        "  Waivers: `# <GATE>_OK:<rationale>` (>=4 real chars) or [skip-<gate>].\n"
+        f"  Stop legs: {legs}; a strict leg re-engages a turn at most once, a "
+        "warn leg only records.\n"
+        f"  Observed would-be blocks, last {SHADOW_WINDOW_DAYS} days: bash_guard "
+        f"{_observed(root, bash_guard.SHADOW_NAME, 'rule')}; Stop legs "
+        f"{_observed(root, stop_gates.SHADOW_NAME, 'leg')}.\n"
+        f"  Waivers: {waivers.grammar_summary()}.\n"
     )
 
 
@@ -119,11 +147,13 @@ def run() -> int:
     root = _common.repo_root(cwd)
     session_id = str(data.get("session_id", ""))
 
-    # Anchor the session window the Stop legs diff against.
-    try:
-        landing_gate.write_session_baseline(root, session_id)
-    except Exception as exc:
-        _common.log_error("session_digest", exc, root)
+    # Anchor the session window the Stop legs diff against, once per
+    # conversation: a resumed or compacted session keeps its window.
+    if data.get("source") in ANCHORING_SOURCES:
+        try:
+            landing_gate.write_session_baseline(root, session_id)
+        except Exception as exc:
+            _common.log_error("session_digest", exc, root)
 
     out = io.StringIO()
     out.write("== molt session start ==\n")
@@ -132,7 +162,7 @@ def run() -> int:
         ("landing queue", lambda: _section_landing_queue(out, root)),
         ("proof queue", lambda: _section_proof_queue(out, root)),
         ("worktrees", lambda: _section_worktrees(out, root)),
-        ("hooks", lambda: _section_hooks(out)),
+        ("hooks", lambda: _section_hooks(out, root)),
     ):
         try:
             section()

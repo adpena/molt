@@ -58,7 +58,7 @@ from tools.command_execution import CommandExecutor  # type: ignore  # noqa: E40
 _COMMANDS = CommandExecutor.for_file(__file__)
 
 from tools.hooks import _common  # noqa: E402
-from tools.hooks.waivers import is_valid_rationale, record_waiver  # noqa: E402
+from tools.hooks.waivers import commit_opt_out, is_valid_rationale, record_waiver  # noqa: E402
 
 
 MARKER_NAME = "magnitude_dismissal_marker.json"
@@ -117,10 +117,8 @@ _LEGIT_NONDISMISSAL = re.compile(
 )
 # Per-line deliberate waiver; validity via the shared waivers classifier.
 _MAG_WAIVER = re.compile(r"#\s*MAGNITUDE_DISMISSAL_OK\s*:\s*(\S.*)")
-# Window-wide opt-out token.
-_MAG_SKIP = re.compile(
-    r"\[(magnitude-ok|skip-magnitude|skip-magnitude-dismissal)\]", re.IGNORECASE
-)
+# The commit-token gate id: `[skip-magnitude-dismissal] <rationale>`.
+WAIVER_GATE = "magnitude-dismissal"
 # Rule-discussion / quoting cues: a line ABOUT the class, not committing it.
 _MAG_DISCUSSION = re.compile(
     r"magnitude[-\s]?dismissal|relative[-\s]not[-\s]absolute|"
@@ -133,11 +131,6 @@ _MAG_DISCUSSION = re.compile(
 def _has_valid_mag_waiver(line: str) -> bool:
     m = _MAG_WAIVER.search(str(line or ""))
     return bool(m) and is_valid_rationale(m.group(1).strip())
-
-
-def mag_is_opted_out(subjects: list[str]) -> bool:
-    """Window-wide opt-out via [magnitude-ok]/[skip-magnitude(-dismissal)]."""
-    return any(_MAG_SKIP.search(str(s or "")) for s in (subjects or []))
 
 
 def _mag_line_exempt(passage: str, wide: str) -> bool:
@@ -393,7 +386,7 @@ def build_reason(msgs: list[str]) -> str:
             "delta / remaining-gap and state BOTH numbers before the dismissal "
             "stands (M46/M47 'don't re-chase' lines are verdict_scope:instance "
             "records -- they need the number). Deliberate exception: same-line "
-            "'# MAGNITUDE_DISMISSAL_OK:<reason>' or '[magnitude-ok]' in a commit. "
+            "'# MAGNITUDE_DISMISSAL_OK:<reason>' or '[skip-magnitude-dismissal] <reason>' in a commit. "
             "(Deterministic classifier; on-device semantic confirmation OWED -- the "
             "molt fleet has no local model, so this is the high-precision regex "
             "verdict, not a faked call.)"
@@ -430,12 +423,13 @@ def evaluate(data: dict, root: Path) -> str | None:
 
     subjects = _common.git_window_subjects(root, base)
 
-    if mag_is_opted_out(subjects):
+    rationale = commit_opt_out(subjects, WAIVER_GATE)
+    if rationale is not None:
         record_waiver(
             "magnitude_dismissal",
-            "window opt-out token",
+            rationale,
             source="commit-token",
-            context="[magnitude-ok] window opt-out",
+            context="[skip-magnitude-dismissal] window opt-out",
             root=root,
         )
         win.allow(head)
@@ -552,7 +546,7 @@ def _window_report(root: Path, n: int) -> int:
             if x.strip()
         ]
         files = _sh(["git", "show", "--name-only", "--format=", sha]).splitlines()
-        if mag_is_opted_out(subj):
+        if commit_opt_out(subj, WAIVER_GATE) is not None:
             continue
         doc_added: dict[str, list[str]] = {}
         for f in (x.strip() for x in files if x.strip()):
