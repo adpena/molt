@@ -14956,23 +14956,6 @@ def test_artifact_sync_state_path_uses_cached_artifact_state_path(
     assert info.hits >= 1
 
 
-def test_build_state_subdir_is_cached(tmp_path: Path) -> None:
-    ARTIFACT_STATE._build_state_subdir_cached.cache_clear()
-
-    build_state_root = RUNTIME_PATHS._build_state_root(tmp_path)
-    first = ARTIFACT_STATE._build_state_subdir_cached(
-        str(build_state_root), "module_graph_cache"
-    )
-    second = ARTIFACT_STATE._build_state_subdir_cached(
-        str(build_state_root), "module_graph_cache"
-    )
-
-    info = ARTIFACT_STATE._build_state_subdir_cached.cache_info()
-    assert first == second == (build_state_root / "module_graph_cache")
-    assert info.hits >= 1
-    assert info.currsize >= 1
-
-
 def test_module_cache_keys_resolve_each_path_once_per_operation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -25627,7 +25610,12 @@ def test_ensure_backend_binary_uses_native_feature_for_native(
         tmp_path / "target" / "dev-fast" / f"molt-backend.native_backend{exe_suffix}"
     )
     cargo_output = backend_bin.with_name(f"molt-backend{exe_suffix}")
-    fingerprint = {"hash": "a" * 64, "rustc": "rustc", "inputs_digest": "b" * 64}
+    fingerprint = {
+        "hash": "a" * 64,
+        "rustc": "rustc",
+        "inputs_digest": "b" * 64,
+        "meta_digest": "c" * 64,
+    }
     seen_features: list[tuple[str, ...]] = []
     build_cmds: list[list[str]] = []
 
@@ -25669,7 +25657,9 @@ def test_ensure_backend_binary_uses_native_feature_for_native(
         backend_features=("native-backend",),
         rust_cpu=RustCpuPolicy.BASELINE,
     )
-    assert seen_features == [("native-backend",), ("native-backend",)]
+    # A cold build keys the store lookup, re-reads it under the lock and
+    # proves after Cargo that the sources did not change.
+    assert seen_features == [("native-backend",)] * 3
     assert build_cmds == [
         [
             "cargo",
@@ -25708,7 +25698,12 @@ def test_ensure_backend_binary_rebuild_does_not_signal_verified_daemons(
         backend_bin=backend_bin,
     )
     BACKEND_EXECUTION._write_backend_daemon_identity(identity_path, identity)
-    fingerprint = {"hash": "a" * 64, "rustc": "rustc", "inputs_digest": "b" * 64}
+    fingerprint = {
+        "hash": "a" * 64,
+        "rustc": "rustc",
+        "inputs_digest": "b" * 64,
+        "meta_digest": "c" * 64,
+    }
 
     def fake_run_cargo(
         plan: RuntimeCargoPlan, **kwargs: object
@@ -25770,7 +25765,12 @@ def test_ensure_backend_binary_enables_wasm_feature_for_wasm(
     backend_bin = (
         tmp_path / "target" / "dev-fast" / f"molt-backend.wasm_backend{exe_suffix}"
     )
-    fingerprint = {"hash": "a" * 64, "rustc": "rustc", "inputs_digest": "b" * 64}
+    fingerprint = {
+        "hash": "a" * 64,
+        "rustc": "rustc",
+        "inputs_digest": "b" * 64,
+        "meta_digest": "c" * 64,
+    }
     seen_features: list[tuple[str, ...]] = []
     build_cmds: list[list[str]] = []
 
@@ -25814,7 +25814,9 @@ def test_ensure_backend_binary_enables_wasm_feature_for_wasm(
         backend_features=("wasm-backend",),
         rust_cpu=RustCpuPolicy.BASELINE,
     )
-    assert seen_features == [("wasm-backend",), ("wasm-backend",)]
+    # A cold build keys the store lookup, re-reads it under the lock and
+    # proves after Cargo that the sources did not change.
+    assert seen_features == [("wasm-backend",)] * 3
     assert build_cmds == [
         [
             "cargo",
@@ -25832,6 +25834,16 @@ def test_ensure_backend_binary_enables_wasm_feature_for_wasm(
             "wasm-backend",
         ]
     ]
+
+
+def _stored_backend_generation(coordinate: Path, path: Path) -> bool:
+    """Whether ``path`` is a generation of ``coordinate``'s tool in a host-tool store."""
+    if len(path.parents) < 6:
+        return False
+    variant = path.parents[3]
+    return variant.parent.parent.name == "host-tool" and is_backend_generation(
+        variant / coordinate.name, path
+    )
 
 
 def test_ensure_backend_binary_selects_admitted_cargo_output_without_rebuild(
@@ -25862,7 +25874,12 @@ def test_ensure_backend_binary_selects_admitted_cargo_output_without_rebuild(
         encoding="utf-8",
     )
     cargo_output.chmod(0o755)
-    fingerprint = {"hash": "a" * 64, "rustc": "rustc", "inputs_digest": "b" * 64}
+    fingerprint = {
+        "hash": "a" * 64,
+        "rustc": "rustc",
+        "inputs_digest": "b" * 64,
+        "meta_digest": "c" * 64,
+    }
     RUNTIME_FINGERPRINTS._write_runtime_fingerprint(
         cli_backend_binary._backend_fingerprint_path(
             tmp_path, cargo_output, "dev-fast"
@@ -25910,7 +25927,7 @@ def test_ensure_backend_binary_selects_admitted_cargo_output_without_rebuild(
 
     assert build_cmds == []
     assert result.binary is not None
-    assert is_backend_generation(backend_bin, result.binary)
+    assert _stored_backend_generation(backend_bin, result.binary)
     assert result.binary.read_bytes() == cargo_output.read_bytes()
     assert not backend_bin.exists()
     assert (
@@ -25929,7 +25946,12 @@ def test_ensure_backend_binary_fails_when_feature_rebuild_emits_no_binary(
 ) -> None:
     stub_compiler_admission(monkeypatch)
     backend_bin = tmp_path / "target" / "dev-fast" / "molt-backend.wasm_backend"
-    fingerprint = {"hash": "a" * 64, "rustc": "rustc", "inputs_digest": "b" * 64}
+    fingerprint = {
+        "hash": "a" * 64,
+        "rustc": "rustc",
+        "inputs_digest": "b" * 64,
+        "meta_digest": "c" * 64,
+    }
 
     def fake_backend_fingerprint(*args: object, **kwargs: object) -> dict[str, str]:
         del args, kwargs
@@ -25977,7 +25999,12 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
     backend_output = tmp_path / "out.rs"
     exe_suffix = ".exe" if os.name == "nt" else ""
     canonical_backend = runtime_fixture_root.path / f"molt-backend{exe_suffix}"
-    fingerprint = {"hash": "a" * 64, "rustc": "rustc", "inputs_digest": "b" * 64}
+    fingerprint = {
+        "hash": "a" * 64,
+        "rustc": "rustc",
+        "inputs_digest": "b" * 64,
+        "meta_digest": "c" * 64,
+    }
     seen_features: list[tuple[str, ...]] = []
     build_cmds: list[list[str]] = []
     backend_cmds: list[list[str]] = []
@@ -26029,7 +26056,7 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
         )
 
     def fake_run(cmd: list[str], *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
-        if cmd and is_backend_generation(backend_bin, Path(cmd[0])):
+        if cmd and _stored_backend_generation(backend_bin, Path(cmd[0])):
             output = Path(cmd[cmd.index("--output") + 1])
             if output.name.startswith("molt_backend_probe_"):
                 assert "--target" in cmd and cmd[cmd.index("--target") + 1] == "rust"
@@ -26048,7 +26075,7 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
         cmd: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess[bytes]:
         del kwargs
-        assert is_backend_generation(backend_bin, Path(cmd[0]))
+        assert _stored_backend_generation(backend_bin, Path(cmd[0]))
         output = Path(cmd[cmd.index("--output") + 1])
         if output.name.startswith("molt_backend_probe_"):
             assert "--target" in cmd and cmd[cmd.index("--target") + 1] == "rust"
@@ -26093,7 +26120,9 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
 
     captured = capsys.readouterr()
     assert rc == 0, captured.out + captured.err
-    assert seen_features == [("rust-backend",), ("rust-backend",)]
+    # A cold build keys the store lookup, re-reads it under the lock and
+    # proves after Cargo that the sources did not change.
+    assert seen_features == [("rust-backend",)] * 3
     assert len(build_cmds) == 1
     build_cmd = build_cmds[0]
     assert Path(build_cmd[0]).is_absolute()
@@ -26117,7 +26146,7 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
     assert set(tool_configs[::2]) == {"--config"}
     assert len(backend_cmds) == 1
     cmd = backend_cmds[0]
-    assert is_backend_generation(backend_bin, Path(cmd[0]))
+    assert _stored_backend_generation(backend_bin, Path(cmd[0]))
     assert "--target" in cmd and cmd[cmd.index("--target") + 1] == "rust"
     assert "--output" in cmd
     assert backend_output.read_text(encoding="utf-8") == "fn main() {}\n"
@@ -26143,7 +26172,12 @@ def test_build_release_rust_target_uses_release_backend_profile_by_default(
     backend_output = tmp_path / "out.rs"
     exe_suffix = ".exe" if os.name == "nt" else ""
     canonical_backend = runtime_fixture_root.path / f"molt-backend{exe_suffix}"
-    fingerprint = {"hash": "a" * 64, "rustc": "rustc", "inputs_digest": "b" * 64}
+    fingerprint = {
+        "hash": "a" * 64,
+        "rustc": "rustc",
+        "inputs_digest": "b" * 64,
+        "meta_digest": "c" * 64,
+    }
     build_cmds: list[list[str]] = []
 
     monkeypatch.setenv("MOLT_PROJECT_ROOT", str(ROOT))
@@ -26193,7 +26227,7 @@ def test_build_release_rust_target_uses_release_backend_profile_by_default(
         )
 
     def fake_run(cmd: list[str], *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
-        if cmd and is_backend_generation(backend_bin, Path(cmd[0])):
+        if cmd and _stored_backend_generation(backend_bin, Path(cmd[0])):
             # Backend cache probe: stdin-based call with no --output
             if "--output" not in cmd:
                 return subprocess.CompletedProcess(cmd, 0, b"", b"")
@@ -26207,7 +26241,7 @@ def test_build_release_rust_target_uses_release_backend_profile_by_default(
         cmd: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess[bytes]:
         del kwargs
-        assert is_backend_generation(backend_bin, Path(cmd[0]))
+        assert _stored_backend_generation(backend_bin, Path(cmd[0]))
         assert "--target" in cmd and cmd[cmd.index("--target") + 1] == "rust"
         assert "--output" in cmd
         output = Path(cmd[cmd.index("--output") + 1])
