@@ -1,11 +1,12 @@
 """Access contract of the Falcon-OCR Cloudflare Worker, run through its fetch handler.
 
-The worker serves the paid OCR API, so three access rules matter: CORS names
+The worker serves the paid OCR API, so four access rules matter: CORS names
 one configured origin and never the caller's, OCR endpoints accept only POST,
-and once a wallet is configured an OCR call from an API client or a foreign
-origin needs a valid x402 payment proof while ``/health`` stays free. Each test
-sends real requests to ``deploy/cloudflare/worker.js`` under Node with stub
-bindings and reads the responses.
+once a wallet is configured an OCR call from an API client or a foreign origin
+needs a valid x402 payment proof while ``/health`` stays free, and the public
+R2 assets answer GET and HEAD alike without payment. Each test sends real
+requests to ``deploy/cloudflare/worker.js`` under Node with stub bindings and
+reads the responses.
 """
 
 from __future__ import annotations
@@ -36,10 +37,15 @@ async function call(method, path, headers = {}, env = {}, body = undefined) {
     { RATE_LIMITER: rateLimiter, ...env },
     { waitUntil() {} },
   );
-  const text = await response.text();
+  const bytes = new Uint8Array(await response.arrayBuffer());
   let json = null;
-  try { json = JSON.parse(text); } catch {}
-  return { status: response.status, headers: Object.fromEntries(response.headers), json };
+  try { json = JSON.parse(new TextDecoder().decode(bytes)); } catch {}
+  return {
+    status: response.status,
+    headers: Object.fromEntries(response.headers),
+    json,
+    body: Array.from(bytes),
+  };
 }
 const results = {};
 """
@@ -155,3 +161,59 @@ def test_health_answers_without_payment() -> None:
     assert response["json"]["request_id"] == "rid-health"
     assert response["json"]["status"] == "loading"
     assert set(response["json"]["ocr_engines"]) == {"paddle-ocr", "falcon-ocr"}
+
+
+def test_public_assets_answer_get_and_head_alike() -> None:
+    results = _run_worker(
+        f"""
+        const objects = new Map([
+          ['models/falcon-ocr/falcon-ocr.wasm', new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0])],
+          ['models/falcon-ocr-int4/config.json', new TextEncoder().encode('{{"dim":768}}')],
+          ['browser/loader.js', new TextEncoder().encode('export {{}};')],
+        ]);
+        const weights = {{
+          async get(key) {{
+            const bytes = objects.get(key);
+            return bytes ? {{ size: bytes.length, body: new Blob([bytes]).stream() }} : null;
+          }},
+        }};
+        const env = {{ X402_WALLET_ADDRESS: '{WALLET}', WEIGHTS: weights }};
+        const paths = {{
+          wasm: '/wasm/falcon-ocr.wasm',
+          config: '/weights/falcon-ocr-int4/config.json',
+          browser: '/browser/loader.js',
+          missing: '/wasm/absent.wasm',
+          health: '/health',
+        }};
+        for (const [name, path] of Object.entries(paths)) {{
+          results[name + 'Get'] = await call('GET', path, {{ 'X-Request-ID': 'rid' }}, env);
+          results[name + 'Head'] = await call('HEAD', path, {{ 'X-Request-ID': 'rid' }}, env);
+        }}
+        """
+    )
+
+    expected = {
+        "wasm": ("application/wasm", "public, max-age=86400, immutable", 8),
+        "config": ("application/json", "public, max-age=86400, immutable", 11),
+        "browser": ("application/javascript", "public, max-age=3600", 10),
+    }
+    for name, (content_type, cache_control, length) in expected.items():
+        get, head = results[f"{name}Get"], results[f"{name}Head"]
+        assert get["status"] == 200, name
+        assert get["headers"]["content-type"] == content_type, name
+        assert get["headers"]["cache-control"] == cache_control, name
+        assert get["headers"]["content-length"] == str(length), name
+        assert len(get["body"]) == length, name
+        # RFC 9110, section 9.3.2: HEAD sends GET's status and headers, no body.
+        assert head["status"] == get["status"], name
+        assert head["headers"] == get["headers"], name
+        assert head["body"] == [], name
+    assert results["wasmGet"]["body"] == [0, 97, 115, 109, 1, 0, 0, 0]
+    assert results["missingGet"]["status"] == 404
+    assert results["missingGet"]["json"]["key"] == "models/falcon-ocr/absent.wasm"
+    assert results["missingHead"]["status"] == 404
+    assert results["missingHead"]["body"] == []
+    # HEAD covers every GET route, not only the assets.
+    assert results["healthHead"]["status"] == results["healthGet"]["status"]
+    assert results["healthGet"]["json"]["request_id"] == "rid"
+    assert results["healthHead"]["body"] == []

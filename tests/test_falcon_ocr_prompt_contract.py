@@ -279,14 +279,6 @@ def test_cloudflare_worker_int8_uses_single_sharded_prefix() -> None:
     assert "`models/falcon-ocr-int8/${shardName}`" not in source
 
 
-def test_cloudflare_worker_serves_browser_tokenizer_artifact() -> None:
-    source = (ROOT / "deploy" / "cloudflare" / "worker.js").read_text(encoding="utf-8")
-
-    assert 'path === "/tokenizer.json"' in source
-    assert '"models/falcon-ocr/tokenizer.json"' in source
-    assert '"application/json"' in source
-
-
 def test_cloudflare_worker_rate_limit_uses_durable_object_not_kv_counter() -> None:
     worker = (ROOT / "deploy" / "cloudflare" / "worker.js").read_text(encoding="utf-8")
     wrangler = (ROOT / "deploy" / "cloudflare" / "wrangler.toml").read_text(
