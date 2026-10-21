@@ -164,6 +164,11 @@ class OwnedInstallation:
     owner: str
     environment: ProcessEnvironment
     scope: InputScope = "repository"
+    # A repository-scoped install serves every worktree. It installs only
+    # sources identical to the published ref's, so an older or unlanded
+    # checkout cannot change what every other worktree runs.
+    sources: str | None = None
+    published_ref: str = "origin/main"
 
 
 CheckoutInput = LockedTree | OwnedInstallation
@@ -243,6 +248,7 @@ def checkout_input(
                 checkout=checkout,
                 owner=HOOK_INSTALLER,
                 environment=environment,
+                sources=".githooks",
             )
         case _:
             assert_never(name)
@@ -522,10 +528,30 @@ def _owned_state(spec: OwnedInstallation) -> InputState:
     raise _failure(spec.name, argv, spec.checkout, result)
 
 
+def _require_published_sources(spec: OwnedInstallation) -> None:
+    if spec.sources is None:
+        return
+    argv = ["git", "-C", str(spec.checkout), "diff", "--quiet", spec.published_ref]
+    argv += ["--", spec.sources]
+    result = _run(
+        spec.name, argv, cwd=spec.checkout, environment=spec.environment, guarded=False
+    )
+    if result.returncode == 0:
+        return
+    if result.returncode == 1:
+        raise ProvisioningError(
+            f"{spec.name}: {spec.checkout / spec.sources} differs from "
+            f"{spec.published_ref}; these hooks serve every worktree, so they "
+            f"install only from a checkout that matches {spec.published_ref}"
+        )
+    raise _failure(spec.name, argv, spec.checkout, result)
+
+
 def _provision_owned(spec: OwnedInstallation) -> bool:
     with _ProvisioningLock(spec):
         if _owned_state(spec) == "current":
             return False
+        _require_published_sources(spec)
         argv = _owner_argv(spec)
         result = _run(
             spec.name,

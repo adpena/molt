@@ -14,11 +14,14 @@ cited by its commit id. See docs/design/landing_queue.md, "Stable change ids".
 from __future__ import annotations
 
 import re
+import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from typing import Protocol
+
+from tools.molt_dev_common import DriverError
 
 CHANGE_REFERENCE = re.compile(rb"\bchange:(I[0-9a-f]{8,40})\b")
-_CHANGE_ID = re.compile(r"I[0-9a-f]{40}")
 # Citations resolve only in Markdown documents under docs/: code and tests may
 # hold citation-shaped text as data.
 CITING_ROOT = "docs/"
@@ -31,6 +34,116 @@ class Resolution:
     path: str
     token: str
     commit: str
+
+
+# The trailer that keeps one change's identity across rebases and amends
+# (Gerrit's commit-msg hook; docs/design/landing_queue.md, "Stable change ids").
+CHANGE_ID_TRAILER = "Change-Id"
+CHANGE_ID = re.compile(r"I[0-9a-f]{40}")
+
+
+def commit_change_ids(
+    run_git: Callable[[list[str]], str], revision_range: str, *, merges: bool = True
+) -> list[tuple[str, frozenset[str]]]:
+    """Each commit of the range, newest first, with its well-formed Change-Ids."""
+
+    output = run_git(
+        [
+            "log",
+            "-z",
+            *(() if merges else ("--no-merges",)),
+            f"--format=%H%x1f%(trailers:key={CHANGE_ID_TRAILER},valueonly,separator=%x1e)",
+            revision_range,
+        ]
+    )
+    commits: list[tuple[str, frozenset[str]]] = []
+    for entry in output.split("\0"):
+        entry = entry.strip("\n")
+        if not entry:
+            continue
+        sha, _, trailers = entry.partition("\x1f")
+        ids = frozenset(
+            value.strip()
+            for value in trailers.split("\x1e")
+            if CHANGE_ID.fullmatch(value.strip())
+        )
+        commits.append((sha.strip(), ids))
+    return commits
+
+
+class GitPlumbing(Protocol):
+    """The driver's fail-loud `git -C <repo>` runner (`molt_dev.Git`)."""
+
+    def _run(
+        self, args: list[str], *, check: bool = True, input_text: str | None = None
+    ) -> subprocess.CompletedProcess[str]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class LandingRepresentation:
+    """Which of a branch's commits an upstream already carries."""
+
+    merge_base: str | None
+    commits: tuple[str, ...]
+    unrepresented: tuple[str, ...]
+
+    @property
+    def landed(self) -> bool:
+        return not self.unrepresented
+
+
+def landing_representation(
+    git: GitPlumbing, tip: str, upstream: str
+) -> LandingRepresentation:
+    """The one landed predicate: every commit of `upstream..tip` is on upstream.
+
+    A queue replays a lane onto main and may amend its last commit, so a
+    landed tip need not be an ancestor of upstream. A commit is represented
+    when its ``Change-Id:`` trailer appears on an upstream commit (Gerrit's
+    rule), or when its patch-id matches one (``git cherry``'s rule). Both
+    searches cover only upstream's commits since the merge base. Merge commits
+    carry no patch of their own and are skipped, as ``git cherry`` skips them;
+    an empty commit needs a matching Change-Id or an empty upstream commit.
+
+    Cost: one ``log`` of ``upstream..tip``, which is empty when the tip is on
+    upstream. Otherwise also one ``merge-base``, one ``log`` of upstream since
+    the merge base when a lane commit carries a Change-Id, and one ``cherry``
+    when a commit has no matching Change-Id. A Change-Id is ``I`` and 40 hex
+    digits, the managed commit-msg hook's format.
+    """
+    commits = commit_change_ids(
+        lambda arguments: git._run(arguments).stdout, f"{upstream}..{tip}", merges=False
+    )
+    if not commits:
+        return LandingRepresentation(None, (), ())
+    shas = tuple(sha for sha, _ids in commits)
+    base = git._run(["merge-base", upstream, tip], check=False)
+    if base.returncode == 1:
+        return LandingRepresentation(None, shas, shas)  # Unrelated histories.
+    if base.returncode != 0:
+        raise DriverError(
+            f"git merge-base {upstream} {tip} failed (exit {base.returncode}): "
+            f"{base.stderr.strip()}"
+        )
+    merge_base = base.stdout.strip()
+    upstream_ids: frozenset[str] = frozenset()
+    if any(ids for _sha, ids in commits):
+        upstream_ids = frozenset(
+            change
+            for _commit, ids in commit_change_ids(
+                lambda arguments: git._run(arguments).stdout,
+                f"{merge_base}..{upstream}",
+            )
+            for change in ids
+        )
+    pending = [sha for sha, ids in commits if not ids & upstream_ids]
+    if pending:
+        cherry = git._run(["cherry", upstream, tip]).stdout
+        on_upstream = {
+            line[2:].strip() for line in cherry.splitlines() if line.startswith("- ")
+        }
+        pending = [sha for sha in pending if sha not in on_upstream]
+    return LandingRepresentation(merge_base, shas, tuple(pending))
 
 
 def citing_paths(touched: Sequence[str]) -> list[str]:
@@ -46,22 +159,10 @@ def change_ids(
 ) -> dict[str, str]:
     """Change-Id -> commit for every commit of the range that carries one."""
 
-    output = run_git(
-        [
-            "log",
-            "--format=%H%x00%(trailers:key=Change-Id,valueonly,separator=%x01)%x00",
-            revision_range,
-        ]
-    )
     owners: dict[str, list[str]] = {}
-    for record in output.split("\0\n"):
-        if not record.strip():
-            continue
-        commit, _, values = record.strip("\n").partition("\0")
-        for value in values.rstrip("\0").split("\x01"):
-            value = value.strip()
-            if _CHANGE_ID.fullmatch(value):
-                owners.setdefault(value, []).append(commit)
+    for commit, ids in commit_change_ids(run_git, revision_range):
+        for value in ids:
+            owners.setdefault(value, []).append(commit)
     duplicated = sorted(
         change for change, commits in owners.items() if len(commits) > 1
     )

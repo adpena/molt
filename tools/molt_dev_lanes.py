@@ -56,8 +56,8 @@ from tools.molt_dev_common import (
     _say,
     _step,
     _warn,
-    landing_representation,
 )
+from tools.molt_dev_change_ids import landing_representation
 from tools.release.git_source_snapshot import immutable_git_environment
 
 LANE_BRANCH_PREFIX = "lane/"

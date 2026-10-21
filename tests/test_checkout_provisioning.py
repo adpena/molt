@@ -465,3 +465,46 @@ def test_the_committed_acorn_policy_is_the_checkout_input() -> None:
     policy = next(policy for policy in policies if policy.name == "browser-acorn")
     assert policy.data["setup_command"] == cp.provisioning_command("browser-acorn")
     assert policy.data["package_lock"] in cp.locked_input_files("browser-acorn")
+
+
+# The stub reports current only after it ran: its marker is the oracle for
+# whether an install happened.
+_HOOK_INSTALLER_STUB = """\
+import sys
+from pathlib import Path
+marker = Path(__file__).resolve().parents[1] / ".git" / "stub-hooks-installed"
+if sys.argv[1:] == ["--check"]:
+    raise SystemExit(0 if marker.exists() else 1)
+marker.write_text("installed\\n", encoding="utf-8")
+"""
+
+
+def _hook_checkout(tmp_path: Path) -> Path:
+    origin = tmp_path / "origin.git"
+    _git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    work = tmp_path / "work"
+    _init_repo(work)
+    _commit_file(work, "tools/install_git_hooks.py", _HOOK_INSTALLER_STUB, "installer")
+    _commit_file(work, ".githooks/commit-msg", "#!/bin/sh\nexit 0\n", "hooks")
+    _git(work, "remote", "add", "origin", str(origin))
+    _git(work, "push", "-q", "origin", "HEAD:main")
+    _git(work, "fetch", "-q", "origin")
+    return work
+
+
+def test_shared_hooks_install_only_from_sources_matching_main(tmp_path: Path) -> None:
+    work = _hook_checkout(tmp_path)
+    marker = work / ".git" / "stub-hooks-installed"
+    environ = {"PATH": os.environ.get("PATH", "")}
+
+    # An unlanded hook change must not reach every other worktree.
+    (work / ".githooks" / "commit-msg").write_text(
+        "#!/bin/sh\nexit 1\n", encoding="utf-8"
+    )
+    with pytest.raises(cp.ProvisioningError, match="differs from origin/main"):
+        cp.ensure("git-hooks", work, environ)
+    assert not marker.exists()
+
+    _git(work, "checkout", "-q", "--", ".githooks")
+    assert cp.ensure("git-hooks", work, environ).provisioned
+    assert marker.exists()

@@ -37,7 +37,7 @@ The hazard inventory -> countermeasure map (the spec this file implements)
           the push command's exit code.
   3. Worktree cleanup loses work
        -> cleanup REFUSES when a commit of upstream..HEAD is not on upstream
-          by Change-Id or patch-id (molt_dev_common.landing_representation)
+          by Change-Id or patch-id (molt_dev_change_ids.landing_representation)
           OR tracked staged/unstaged changes exist
           (excluding a configurable ignore set, default the legacy and keyed wasm sha256 files).
           --force requires NAMING the sha being abandoned (so an abandon is
@@ -181,8 +181,8 @@ from tools.molt_dev_common import (  # noqa: E402
     _say,
     _step,
     _warn,
-    landing_representation,
 )
+from tools.molt_dev_change_ids import landing_representation  # noqa: E402
 
 from tools.git_identity import (  # noqa: E402
     changed_paths,
@@ -1623,10 +1623,24 @@ def cmd_land(args: argparse.Namespace) -> int:
         _ok(f"{git.short(head)} is already on {args.remote}/{args.branch}")
         return EXIT_OK
     paths = _queue_paths(repo)
-    request = enqueue(paths, head=head, worktree=repo, branch=git.symbolic_head())
+    branch = git.symbolic_head()
+    if args.retire and not (branch or "").startswith("lane/"):
+        raise DriverError(
+            "--retire needs a lane/<slug> branch (`molt_dev.py lane start`)"
+        )
+    request = enqueue(
+        paths, head=head, worktree=repo, branch=branch, retire=args.retire
+    )
     position = [item.id for item in pending(paths)].index(request.id) + 1
     _ok(f"queued {request.id} (position {position}); the runner lands it")
-    _start_queue_runner(paths, repo, args)
+    main_checkout = _main_worktree(git)
+    if main_checkout is None:
+        raise DriverError(
+            "cannot find the main worktree to run the landing runner from"
+        )
+    # The runner outlives every lane it retires, so it runs from the main
+    # worktree; it only fetches there.
+    _start_queue_runner(paths, main_checkout, args)
     if not args.wait:
         return EXIT_OK
     return _await_landing(paths, request.id)
@@ -1723,6 +1737,7 @@ def _land_one_batch(args: argparse.Namespace, git: Git, paths) -> None:
     if not candidate.included:
         queue.retire_batch_plan(paths, batch)
         return
+    _provision_landing_sandbox(sandbox.repo)
     integration = build_parser().parse_args(
         [
             "integrate",
@@ -1762,6 +1777,65 @@ def _land_one_batch(args: argparse.Namespace, git: Git, paths) -> None:
             detail=f"landed with {len(candidate.included)} lane(s)",
         )  # fmt: skip
     queue.retire_batch_plan(paths, batch)
+    _after_landing(sandbox.repo, candidate.included, args)
+
+
+def _provision_landing_sandbox(sandbox: Path) -> None:
+    """The sandbox's own environment and trees, built from the candidate's locks.
+
+    Repository-scoped inputs (the shared hooks) wait for the landing: they may
+    install only what main publishes.
+    """
+    from molt import checkout_provisioning as provisioning
+
+    specs = [
+        provisioning.checkout_input(name, sandbox)
+        for name in provisioning.CHECKOUT_INPUT_NAMES
+    ]
+    names = [
+        spec.name
+        for spec in specs
+        if spec.scope == "checkout" and provisioning.declares(spec)
+    ]
+    try:
+        provisioning.ensure_all(sandbox, names=names)
+    except provisioning.ProvisioningError as exc:
+        raise DriverError(f"landing sandbox provisioning failed: {exc}") from exc
+
+
+def _after_landing(sandbox: Path, landed, args: argparse.Namespace) -> None:
+    """Refresh the shared hooks from the published main; retire landed lanes.
+
+    The landing is already published: a failure here warns and keeps going.
+    """
+    from molt import checkout_provisioning as provisioning
+
+    try:
+        hooks = provisioning.checkout_input("git-hooks", sandbox)
+        if provisioning.declares(hooks):
+            provisioning.ensure_input(hooks)
+    except provisioning.ProvisioningError as exc:
+        _warn(f"managed hooks not refreshed after the landing: {exc}")
+    for request in landed:
+        if not request.retire or not (request.branch or "").startswith("lane/"):
+            continue
+        retire = build_parser().parse_args(
+            [
+                "lane",
+                "retire",
+                request.branch.removeprefix("lane/"),
+                "--repo",
+                str(sandbox),
+                "--remote",
+                args.remote,
+                "--branch",
+                args.branch,
+            ]
+        )
+        try:
+            retire.func(retire)
+        except DriverError as exc:
+            _warn(f"{request.id} landed; its lane was not retired: {exc}")
 
 
 def cmd_queue_run(args: argparse.Namespace) -> int:
@@ -2599,6 +2673,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--wait",
         action="store_true",
         help="wait for the result; exit 0 only when the commit landed",
+    )
+    p_land.add_argument(
+        "--retire",
+        action="store_true",
+        help="retire this lane (worktree, branches, record, state) once it lands",
     )
     p_land.set_defaults(func=cmd_land)
 

@@ -45,6 +45,8 @@ class LandingRequest:
     worktree: str
     branch: str | None
     enqueued_at: str
+    # Retire the lane (worktree, branches, record, state) once it lands.
+    retire: bool = False
 
     @classmethod
     def load(cls, path: Path) -> "LandingRequest":
@@ -57,6 +59,7 @@ class LandingRequest:
             worktree=str(data["worktree"]),
             branch=data["branch"],
             enqueued_at=str(data["enqueued_at"]),
+            retire=bool(data["retire"]),
         )
 
 
@@ -113,7 +116,12 @@ def _write_json(path: Path, data: object) -> None:
 
 
 def enqueue(
-    paths: QueuePaths, *, head: str, worktree: Path, branch: str | None
+    paths: QueuePaths,
+    *,
+    head: str,
+    worktree: Path,
+    branch: str | None,
+    retire: bool = False,
 ) -> LandingRequest:
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     request = LandingRequest(
@@ -122,6 +130,7 @@ def enqueue(
         worktree=str(worktree),
         branch=branch,
         enqueued_at=_now(),
+        retire=retire,
     )
     _write_json(
         paths.requests / f"{request.id}.json",
