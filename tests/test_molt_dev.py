@@ -3187,6 +3187,25 @@ def test_integrate_refuses_gate_source_or_head_drift(drv, origin_and_clone, muta
     )
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell quoting for adversarial gate")
+def test_integrate_block_refuses_a_gate_that_dirties_the_source(
+    drv, origin_and_clone, monkeypatch
+):
+    _, work = origin_and_clone
+    dirty = _integration_python(
+        "from pathlib import Path; Path('README.md').write_text('changed')"
+    )
+    _commit_integration_policy(work, [dirty, "echo clean"])
+    monkeypatch.setattr(drv, "concurrent_gate_limit", lambda: 2)
+    original = _git(work, "rev-parse", "origin/main").stdout.strip()
+    with pytest.raises(drv.DriverError, match="clean selected source"):
+        drv.cmd_integrate(_integrate_ns(drv, repo=str(work)))
+    assert (
+        _git(work, "ls-remote", "origin", "refs/heads/main").stdout.split()[0]
+        == original
+    )
+
+
 def test_integrate_uses_original_policy_despite_replace_ref(drv, origin_and_clone):
     _, work = origin_and_clone
     failing = _commit_integration_policy(work, ["exit 19"])

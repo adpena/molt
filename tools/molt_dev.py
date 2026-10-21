@@ -1060,10 +1060,12 @@ def _gate_runtime(
         status = git._run(list(clean_checkout_status_arguments(null_terminated=True)))
         return tuple(entry for entry in status.stdout.split("\0") if entry)
 
+    # A commit's tree never changes; only HEAD needs observing again.
+    tree = git.rev_parse(f"{selected_commit}^{{tree}}")
+
     def source_identity() -> dict[str, str]:
         if git.head_sha() != selected_commit:
             raise DriverError("integration source HEAD changed")
-        tree = git.rev_parse(f"{selected_commit}^{{tree}}")
         return {"commit": selected_commit, "tree": tree}
 
     return GateRuntime(
