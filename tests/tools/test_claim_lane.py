@@ -12,21 +12,28 @@ from pathlib import Path
 
 import pytest
 
-from tests.integration_driver_fixture import copy_driver_trees
-
 TOOLS = Path(__file__).resolve().parents[2] / "tools"
 CLAIM = TOOLS / "claim_lane.py"
 
 
 def _git(repo: Path, *args: str) -> str:
     return run_guarded_test_process(
-        ["git", *args], cwd=repo, check=True, capture_output=True, text=True
+        ["git", *args],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
     ).stdout.strip()
 
 
 def _run(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return run_guarded_test_process(
-        [sys.executable, str(CLAIM), *args], cwd=repo, capture_output=True, text=True
+        [sys.executable, str(CLAIM), *args],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
     )
 
 
@@ -41,7 +48,7 @@ def _claims_body(rows: str) -> str:
 
 @pytest.fixture(scope="module")
 def _seed(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """One origin and clone per module; a claim lands through main's driver."""
+    """Minimal committed claims history for real fetch/read/refusal checks."""
     root = tmp_path_factory.mktemp("claim-seed")
     bare = root / "remote.git"
     bare.mkdir()
@@ -52,31 +59,57 @@ def _seed(tmp_path_factory: pytest.TempPathFactory) -> Path:
     _git(w, "config", "user.email", "t@t")
     _git(w, "config", "user.name", "t")
     (w / "docs" / "agent" / "CLAIMS.md").write_text(_claims_body(""), encoding="utf-8")
-    copy_driver_trees(w)
-    (w / "tools/proof_plan.toml").write_text(
-        'always = ["echo claim-policy"]\n', encoding="utf-8"
-    )
     _git(w, "add", "-A")
     _git(w, "commit", "-q", "-m", "init")
     _git(w, "push", "-q", str(bare), "main")
     return root
 
 
-@pytest.fixture()
-def repo(tmp_path: Path, _seed: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+@pytest.fixture(scope="module")
+def _integration_seed(tmp_path_factory: pytest.TempPathFactory, _seed: Path) -> Path:
+    """Only landing tests need main's complete pinned controller and policy."""
+    from tests.integration_driver_fixture import copy_driver_trees
+
+    root = tmp_path_factory.mktemp("claim-integration-seed")
+    shutil.copytree(_seed / "remote.git", root / "remote.git")
+    shutil.copytree(_seed / "work", root / "work")
+    w = root / "work"
+    copy_driver_trees(w)
+    (w / "tools/proof_plan.toml").write_text(
+        'always = ["echo claim-policy"]\n', encoding="utf-8"
+    )
+    _git(w, "add", "-A")
+    _git(w, "commit", "-q", "-m", "pin integration controller")
+    _git(w, "push", "-q", str(root / "remote.git"), "main")
+    return root
+
+
+def _copy_repo(tmp_path: Path, seed: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     # These repositories run generic shell gates, not the caller's venv: the
     # session's dx environment names this checkout's managed env, which may
     # not exist, and integrate refuses an explicit selection that is broken.
     for key in ("MOLT_VENV", "UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV"):
         monkeypatch.delenv(key, raising=False)
     # Copy, never hardlink: each test mutates refs and objects.
-    shutil.copytree(_seed / "remote.git", tmp_path / "remote.git")
-    shutil.copytree(_seed / "work", tmp_path / "work")
+    shutil.copytree(seed / "remote.git", tmp_path / "remote.git")
+    shutil.copytree(seed / "work", tmp_path / "work")
     w = tmp_path / "work"
     _git(w, "remote", "add", "origin", str(tmp_path / "remote.git"))
     _git(w, "fetch", "-q", "origin")
     _git(w, "branch", "-q", "--set-upstream-to=origin/main", "main")
     return w
+
+
+@pytest.fixture()
+def repo(tmp_path: Path, _seed: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    return _copy_repo(tmp_path, _seed, monkeypatch)
+
+
+@pytest.fixture()
+def driver_repo(
+    tmp_path: Path, _integration_seed: Path, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    return _copy_repo(tmp_path, _integration_seed, monkeypatch)
 
 
 def _set_claims(repo: Path, rows: str) -> None:
@@ -110,12 +143,14 @@ def test_check_stale_claim_is_reclaimable(repo: Path) -> None:
     assert res.returncode == 0 and "STALE" in res.stdout
 
 
-def test_claim_free_lane_lands(repo: Path) -> None:
-    res = _run(repo, "L1", "--claim", "--agent", "me", "--note", "go")
+def test_claim_free_lane_lands(driver_repo: Path) -> None:
+    res = _run(driver_repo, "L1", "--claim", "--agent", "me", "--note", "go")
     assert res.returncode == 0, res.stdout
     assert "CLAIMED L1 as me" in res.stdout
-    _git(repo, "fetch", "origin", "--quiet")
-    assert "| L1 | me |" in _git(repo, "show", "origin/main:docs/agent/CLAIMS.md")
+    _git(driver_repo, "fetch", "origin", "--quiet")
+    assert "| L1 | me |" in _git(
+        driver_repo, "show", "origin/main:docs/agent/CLAIMS.md"
+    )
 
 
 def test_claim_held_lane_refused(repo: Path) -> None:
@@ -128,12 +163,21 @@ def test_claim_held_lane_refused(repo: Path) -> None:
     assert _git(repo, "rev-parse", "origin/main") == before  # nothing landed
 
 
-def test_append_progress_by_claimant_lands(repo: Path) -> None:
+def test_append_progress_by_claimant_lands(driver_repo: Path) -> None:
     now = dt.datetime.now(dt.timezone.utc)
-    _set_claims(repo, _row("L1", "me", now, "CLAIMED"))
-    res = _run(repo, "L1", "--append", "PROGRESS", "--agent", "me", "--note", "run-123")
+    _set_claims(driver_repo, _row("L1", "me", now, "CLAIMED"))
+    res = _run(
+        driver_repo,
+        "L1",
+        "--append",
+        "PROGRESS",
+        "--agent",
+        "me",
+        "--note",
+        "run-123",
+    )
     assert res.returncode == 0, res.stdout
-    assert "PROGRESS" in _git(repo, "show", "origin/main:docs/agent/CLAIMS.md")
+    assert "PROGRESS" in _git(driver_repo, "show", "origin/main:docs/agent/CLAIMS.md")
 
 
 def test_live_takeover_by_other_refused(repo: Path) -> None:
@@ -165,11 +209,19 @@ def test_append_refuses_a_note_that_breaks_the_table(repo: Path) -> None:
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="executable POSIX Git hook")
-def test_claim_race_between_precheck_and_integration_preserves_winner(repo: Path):
+def test_claim_race_between_precheck_and_integration_preserves_winner(
+    driver_repo: Path,
+):
     import shlex
 
-    other = repo.parent / "competitor"
-    _git(repo.parent, "clone", "-q", str(repo.parent / "remote.git"), str(other))
+    other = driver_repo.parent / "competitor"
+    _git(
+        driver_repo.parent,
+        "clone",
+        "-q",
+        str(driver_repo.parent / "remote.git"),
+        str(other),
+    )
     _git(other, "config", "user.email", "other@test")
     _git(other, "config", "user.name", "Other")
     (other / "docs/agent/CLAIMS.md").write_text(
@@ -180,7 +232,7 @@ def test_claim_race_between_precheck_and_integration_preserves_winner(repo: Path
     winner = _git(other, "rev-parse", "HEAD")
     # The real claim command has already read origin when its commit-msg hook
     # publishes the competing claim. Integrate must not rebase across it.
-    hook = repo / ".git/hooks/commit-msg"
+    hook = driver_repo / ".git/hooks/commit-msg"
     hook.write_text(
         "#!/bin/sh\n"
         + shlex.join(["git", "-C", str(other), "push", "origin", "main"])
@@ -188,28 +240,42 @@ def test_claim_race_between_precheck_and_integration_preserves_winner(repo: Path
         encoding="utf-8",
     )
     hook.chmod(0o755)
-    result = _run(repo, "L1", "--claim", "--agent", "loser")
+    result = _run(driver_repo, "L1", "--claim", "--agent", "loser")
     assert result.returncode != 0
     assert "expected upstream changed" in result.stderr
-    assert _git(repo, "ls-remote", "origin", "refs/heads/main").split()[0] == winner
-    assert "| L1 | loser |" in (repo / "docs/agent/CLAIMS.md").read_text(
+    assert (
+        _git(driver_repo, "ls-remote", "origin", "refs/heads/main").split()[0] == winner
+    )
+    assert "| L1 | loser |" in (driver_repo / "docs/agent/CLAIMS.md").read_text(
         encoding="utf-8"
     )
-    assert "| L1 | winner |" in _git(repo, "show", "origin/main:docs/agent/CLAIMS.md")
+    assert "| L1 | winner |" in _git(
+        driver_repo, "show", "origin/main:docs/agent/CLAIMS.md"
+    )
 
 
-def test_claim_runs_committed_policy_and_reports_gate_failure(repo: Path):
-    (repo / "tools/proof_plan.toml").write_text(
+def test_claim_runs_committed_policy_and_reports_gate_failure(driver_repo: Path):
+    (driver_repo / "tools/proof_plan.toml").write_text(
         'always = ["exit 17"]\n', encoding="utf-8"
     )
-    _git(repo, "commit", "-qm", "required gate", "--", "tools/proof_plan.toml")
-    _git(repo, "push", "origin", "main")
-    original = _git(repo, "rev-parse", "origin/main")
-    result = _run(repo, "L1", "--claim", "--agent", "me")
+    _git(
+        driver_repo,
+        "commit",
+        "-qm",
+        "required gate",
+        "--",
+        "tools/proof_plan.toml",
+    )
+    _git(driver_repo, "push", "origin", "main")
+    original = _git(driver_repo, "rev-parse", "origin/main")
+    result = _run(driver_repo, "L1", "--claim", "--agent", "me")
     assert result.returncode != 0
     assert "gate failed (exit 17)" in result.stderr
     assert "lost the claim race" not in result.stdout
-    assert _git(repo, "ls-remote", "origin", "refs/heads/main").split()[0] == original
+    assert (
+        _git(driver_repo, "ls-remote", "origin", "refs/heads/main").split()[0]
+        == original
+    )
 
 
 def test_claim_precheck_fetches_main_when_configured_fetch_excludes_it(repo: Path):
