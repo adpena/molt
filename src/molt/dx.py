@@ -1227,7 +1227,7 @@ def product_store_dir(project_root: Path, env: Mapping[str, str]) -> Path:
     Every checkout target and pinned session target in one shared ``target``
     directory (`project_cargo_target_base`) uses that directory's store, as
     every checkout of a user shares Go's build cache (``molt.cli.product_store``,
-    design 56 section 2.7). An explicit ``CARGO_TARGET_DIR`` outside it is
+    design 56 section 2.8). An explicit ``CARGO_TARGET_DIR`` outside it is
     operator-owned, so it keeps a store of its own. It creates nothing.
     """
 

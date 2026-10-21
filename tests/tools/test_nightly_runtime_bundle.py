@@ -70,6 +70,7 @@ def _published_nothing(consumer: Checkout) -> bool:
     return (
         not (consumer.root / "target").exists()
         and not consumer.runtime_store.root.exists()
+        and not consumer.stored_backend_variants()
     )
 
 

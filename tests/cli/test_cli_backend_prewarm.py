@@ -689,7 +689,7 @@ def test_prewarm_fails_closed_when_admission_publishes_no_receipt(
     assert len(cargo_calls) == 1
     assert payload["status"] == "error"
     [message] = payload["errors"]
-    assert "source/content receipt" in message
+    assert "no store receipt selecting" in message
     assert message in captured.err
 
 
@@ -762,31 +762,41 @@ def test_runtime_path_cache_tracks_session_changes(
 def test_same_content_backend_metadata_refresh_preserves_admission(
     tmp_path, monkeypatch, capsys
 ):
-    _isolated_molt_root(tmp_path, monkeypatch)
+    """New source timestamps refresh this checkout's memo, never the store.
+
+    The store receipt names the product, so it stays byte-identical; the
+    checkout's identity memo learns the new metadata, so the next build skips
+    hashing the sources again.
+    """
+    root = _isolated_molt_root(tmp_path, monkeypatch)
     cargo_calls, probe_calls = _fake_backend_toolchain(monkeypatch)
     assert _dispatch(["internal-backend-build", "--target", "native", "--json"]) == 0
     before = json.loads(capsys.readouterr().out)["data"]
+    receipt = Path(before["receipts"]["source_content"]["path"])
+    stored = receipt.read_bytes()
+    assert "inputs_digest" not in json.loads(stored)
+    memo = cli_backend_binary._backend_fingerprint_path(
+        root, Path(before["compiler"]["coordinate"]), "release"
+    )
     original = cli_backend_binary._backend_fingerprint
+    touched_digest = canonical_json_sha256("new timestamps same content")
 
     def touched(*args, **kwargs):
         fingerprint = original(*args, **kwargs)
-        fingerprint["inputs_digest"] = canonical_json_sha256(
-            "new timestamps same content"
-        )
+        fingerprint["inputs_digest"] = touched_digest
         return fingerprint
 
     monkeypatch.setattr(cli_backend_binary, "_backend_fingerprint", touched)
+    assert json.loads(memo.read_text(encoding="utf-8"))["inputs_digest"] != (
+        touched_digest
+    )
     assert _dispatch(["internal-backend-build", "--target", "native", "--json"]) == 0
     after = json.loads(capsys.readouterr().out)["data"]
     assert before["compiler"]["fingerprint"] == after["compiler"]["fingerprint"]
-    source = json.loads(
-        Path(after["receipts"]["source_content"]["path"]).read_text(encoding="utf-8")
-    )
-    assert source["inputs_digest"] == canonical_json_sha256(
-        "new timestamps same content"
-    )
-    assert (
-        source["inputs_digest"] != before["receipts"]["source_content"]["inputs_digest"]
+    assert Path(after["receipts"]["source_content"]["path"]) == receipt
+    assert receipt.read_bytes() == stored
+    assert json.loads(memo.read_text(encoding="utf-8"))["inputs_digest"] == (
+        touched_digest
     )
     assert len(cargo_calls) == 1
     assert len(probe_calls) == 1
@@ -809,4 +819,8 @@ def test_prewarm_rejects_compiler_bytes_changed_after_admission(
         cli_backend_compile, "_ensure_selected_backend_binary", replaced
     )
     assert _dispatch(["internal-backend-build", "--target", "native", "--json"]) == 2
-    assert "do not bind the compiler admission admitted" in capsys.readouterr().err
+    # The admitted bytes live in the product store; changed bytes there are a
+    # corrupt entry, which fails loud and names it.
+    assert "is corrupt: its executable differs from its receipt" in (
+        capsys.readouterr().err
+    )

@@ -409,6 +409,8 @@ def import_native_runtime_generation(
     refused before anything is published, and the republished closure must
     reproduce the receipt's generation digest. The closure lands in the
     variant of its recorded Cargo environment, which must match this one.
+    A variant this host already holds is returned as it is: a published
+    variant is never rewritten.
     """
     payload = _selection_payload(
         read_exact(
@@ -443,40 +445,54 @@ def import_native_runtime_generation(
     cargo_environment.verify(environment)
     coordinate = store.variant(build_identity.digest, cargo_environment) / runtime_name
     profile_dir = _cargo_profile_dir(cargo_profile)
-    generations = coordinate.parent / ".molt-native-generations"
-    generations.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(
-        prefix=".native-runtime-", dir=generations
-    ) as temp:
-        stage = Path(temp) / "members"
-        (stage / profile_dir).mkdir(parents=True)
-        for record in records:
-            name = portable_path_component(record.get("name"))
-            digest = record.get("sha256")
-            if not isinstance(digest, str):
-                raise ValueError("transported native runtime member digest is invalid")
-            _atomic_copy_file(
-                members[str(record["role"])],
-                stage / profile_dir / name,
-                expected_sha256=digest,
+    with store.single_flight(build_identity.digest, default_timeout_s=300.0):
+        for existing in native_runtime_store_generations(
+            store,
+            build_identity,
+            runtime_name=runtime_name,
+            cargo_profile=cargo_profile,
+            target_triple=target_triple,
+        ):
+            if existing.cargo_environment.digest == cargo_environment.digest:
+                # This host already holds the product; a published variant is
+                # never rewritten, so the transported copy is not needed.
+                return existing
+        generations = coordinate.parent / ".molt-native-generations"
+        generations.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(
+            prefix=".native-runtime-", dir=generations
+        ) as temp:
+            stage = Path(temp) / "members"
+            (stage / profile_dir).mkdir(parents=True)
+            for record in records:
+                name = portable_path_component(record.get("name"))
+                digest = record.get("sha256")
+                if not isinstance(digest, str):
+                    raise ValueError(
+                        "transported native runtime member digest is invalid"
+                    )
+                _atomic_copy_file(
+                    members[str(record["role"])],
+                    stage / profile_dir / name,
+                    expected_sha256=digest,
+                )
+            staged = _capture_generation(
+                stage / profile_dir / coordinate.name,
+                build_identity=build_identity,
+                cargo_profile=cargo_profile,
+                target_triple=target_triple,
+                expected_records=records,
             )
-        staged = _capture_generation(
-            stage / profile_dir / coordinate.name,
-            build_identity=build_identity,
-            cargo_profile=cargo_profile,
-            target_triple=target_triple,
-            expected_records=records,
-        )
-        staged.cargo_environment.verify(environment)
-        published = _select_staged_generation(
-            coordinate,
-            stage=stage,
-            staged=staged,
-            cargo_profile=cargo_profile,
-            target_triple=target_triple,
-            inputs_are_current=lambda: True,
-            expected_generation=payload["generation"],
-        )
+            staged.cargo_environment.verify(environment)
+            published = _select_staged_generation(
+                coordinate,
+                stage=stage,
+                staged=staged,
+                cargo_profile=cargo_profile,
+                target_triple=target_triple,
+                inputs_are_current=lambda: True,
+                expected_generation=payload["generation"],
+            )
     assert published is not None
     store.retain(build_identity.digest)
     return published
