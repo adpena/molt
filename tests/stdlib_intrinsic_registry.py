@@ -10,7 +10,8 @@ spec 0016 admits no intrinsic that exists only to make a module count.
 
 A probe that runs in a child interpreter calls :func:`install_registry` once;
 an in-process test uses :func:`intrinsic_registry`, which restores what it
-replaced.
+replaced. Source modules importing compiled sys record helpers explicitly call
+:func:`bind_struct_sequence_module`; the pytest host sys is never extended.
 """
 
 from __future__ import annotations
@@ -24,6 +25,11 @@ import os
 from pathlib import Path
 import sys
 from types import ModuleType
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tests.process_guard_common import ModuleView
 
 ROOT = Path(__file__).resolve().parents[1]
 RESOLVER = ROOT / "src" / "molt" / "stdlib" / "_intrinsics.py"
@@ -310,11 +316,11 @@ def struct_sequence_values(value: tuple) -> tuple:
     )
 
 
-def _publish_struct_sequence_helpers(behavior: Mapping[str, object]) -> None:
+def _struct_sequence_helpers(behavior: Mapping[str, object]) -> dict[str, object]:
     names = ("molt_structseq_type", "molt_structseq_new")
     supplied = tuple(name in behavior for name in names)
     if not any(supplied):
-        return
+        return {}
     if not all(supplied):
         raise ValueError(
             "struct sequence factory and value producer must be supplied together"
@@ -346,8 +352,39 @@ def _publish_struct_sequence_helpers(behavior: Mapping[str, object]) -> None:
             doc,
         )
 
-    sys._struct_sequence_type = publish
-    sys._struct_sequence_new = new
+    return {"_struct_sequence_type": publish, "_struct_sequence_new": new}
+
+
+def bind_struct_sequence_module(
+    module: ModuleType, behavior: Mapping[str, object]
+) -> ModuleView | None:
+    """Bind compiled sys helpers only to this host-executed source module.
+
+    The source imports helpers from sys, but CPython's sys has no such API.
+    Reuse ModuleView and this module's private builtins import boundary; neither
+    the process import hook nor sys.modules/sys attributes are replaced. Escaped
+    functions retain their module's view after registry teardown.
+    """
+    helpers = _struct_sequence_helpers(behavior)
+    if not helpers:
+        return None
+    from tests.process_guard_common import ModuleView
+
+    view = ModuleView(sys, **helpers)
+    namespace = module.__dict__.get("__builtins__", builtins)
+    namespace = dict(
+        vars(namespace) if isinstance(namespace, ModuleType) else namespace
+    )
+    original_import = namespace["__import__"]
+
+    def import_module(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "sys" and level == 0:
+            return view
+        return original_import(name, globals, locals, fromlist, level)
+
+    namespace["__import__"] = import_module
+    module.__dict__["__builtins__"] = namespace
+    return view
 
 
 def install_registry(
@@ -361,7 +398,6 @@ def install_registry(
     proves what a module does without them. Returns the installed resolver module.
     """
 
-    _publish_struct_sequence_helpers(behavior)
     resolver = _load_resolver()
     sys.modules["_intrinsics"] = resolver
     builtins._molt_intrinsics = {
@@ -383,10 +419,6 @@ def intrinsic_registry(
     missing = object()
     saved_module = sys.modules.get("_intrinsics", missing)
     saved = {name: getattr(builtins, name, missing) for name in _REGISTRY_BUILTINS}
-    saved_sys = {
-        name: getattr(sys, name, missing)
-        for name in ("_struct_sequence_type", "_struct_sequence_new")
-    }
     try:
         yield install_registry(behavior, with_capabilities=with_capabilities)
     finally:
@@ -400,9 +432,3 @@ def intrinsic_registry(
                     delattr(builtins, name)
             else:
                 setattr(builtins, name, value)
-        for name, value in saved_sys.items():
-            if value is missing:
-                if hasattr(sys, name):
-                    delattr(sys, name)
-            else:
-                setattr(sys, name, value)

@@ -39,7 +39,7 @@ def test_fresh_wasm_abi_generation_does_not_consume_its_python_projection(
     # generated module boundary. A source declaration must never import it.
     projection = tmp_path / "_wasm_abi_generated.py"
     if projection_state == "invalid":
-        projection.write_text("<<<<<<< invalid generated output\n")
+        projection.write_text("<<<<<<< invalid generated output\n", encoding="utf-8")
     result = run_guarded_test_process(
         [
             sys.executable,

@@ -16,6 +16,7 @@ import pytest
 from tests.process_guard_common import ModuleView
 from tests.stdlib_intrinsic_registry import (
     intrinsic_registry,
+    bind_struct_sequence_module,
     struct_sequence_intrinsics,
 )
 
@@ -118,7 +119,9 @@ def _load(monkeypatch, name, relative, hooks, behavior):
     if "molt_sys_version_info" in providers:
         selected_version = tuple(sys.version_info)
         providers["molt_sys_version_info"] = lambda: selected_version
-    with intrinsic_registry({**providers, **behavior}):
+    selected = {**providers, **behavior}
+    bind_struct_sequence_module(module, selected)
+    with intrinsic_registry(selected):
         spec.loader.exec_module(module)
     for key in list(sys.modules):
         if key.startswith(name + ".") and key not in previous_children:
