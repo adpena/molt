@@ -69,7 +69,11 @@ TOOLS_ROOT = REPO_ROOT / "tools"
 
 
 from tools import dirty_tree_policy, molt_dev  # noqa: E402
-from tools.molt_dev_common import _run_fast_captured_command  # noqa: E402
+from tools.molt_dev_common import (  # noqa: E402
+    CandidateFailure,
+    GateFailure,
+    _run_fast_captured_command,
+)
 
 SCRIPT_PATH = REPO_ROOT / "tools" / "molt_dev.py"
 COMMITTED_GATES = REPO_ROOT / "tools" / "proof_plan.toml"
@@ -1946,8 +1950,8 @@ gates = ["echo build-started > build-started.txt"]
         repo=str(work),
         no_push=True,
     )
-    # A failing gate halts integrate LOUDLY (DriverError) BEFORE push.
-    with pytest.raises(drv.DriverError) as exc:
+    # A failing gate halts integrate BEFORE push, as a candidate failure.
+    with pytest.raises(GateFailure) as exc:
         drv.cmd_integrate(ns)
     assert re.search(r"gate failed \(exit 3\) after \d+\.\d s: exit 3", str(exc.value))
     assert re.search(r"gates: 1 in \d+\.\d s; slowest:", str(exc.value))
@@ -2037,7 +2041,7 @@ def test_integrate_reports_the_first_failure_in_declared_order(
     ]
     _commit_integration_policy(work, gates)
     monkeypatch.setattr(drv, "concurrent_gate_limit", lambda: 2)
-    with pytest.raises(drv.DriverError, match=r"gate failed \(exit 5\)") as exc:
+    with pytest.raises(GateFailure, match=r"gate failed \(exit 5\)") as exc:
         drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
     # The second gate failed first in time; the first gate is reported, and the
     # third gate, after both failures, never starts.
@@ -2064,10 +2068,71 @@ def test_integrate_cancels_later_gates_after_an_earlier_failure(
     _commit_integration_policy(work, gates)
     monkeypatch.setattr(drv, "concurrent_gate_limit", lambda: 2)
     started = time.monotonic()
-    with pytest.raises(drv.DriverError, match=r"gate failed \(exit 4\)"):
+    with pytest.raises(GateFailure, match=r"gate failed \(exit 4\)"):
         drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
     assert time.monotonic() - started < 100
     assert not finished.exists()
+
+
+@pytest.mark.parametrize("cause", ["gate exit", "outside writer"])
+def test_gate_block_blames_the_candidate_only_for_a_gate_exit(drv, tmp_path, cause):
+    # The landing queue bisects on CandidateFailure. A gate's nonzero exit is
+    # one; a runner stop (here the executor sees an outside writer dirty the
+    # source and stops scheduling) must stay a plain DriverError.
+    from tools import molt_dev_gates
+
+    changes: list[tuple[str, ...]] = [()]
+    ran: list[object] = []
+
+    def run_captured_gate(command, repo, environment, cancelled):
+        ran.append(command)
+        if cause == "outside writer":
+            changes[0] = ("?? stray.txt",)
+            return molt_dev_gates.GateOutcome(0, "", "", None)
+        return molt_dev_gates.GateOutcome(3, "", "", None)
+
+    class Progress:
+        def emit(self, event, **details):
+            pass
+
+    environment = ProcessEnvironment(os.environ)
+    runtime = molt_dev_gates.GateRuntime(
+        repo=tmp_path,
+        environments={("python",): environment},
+        cargo_outputs={},
+        capacity_requirements={},
+        progress=Progress(),
+        check_source=lambda: None,
+        source_changes=lambda: changes[0],
+        source_identity=lambda: {"commit": "0" * 40, "tree": "1" * 40},
+        policy_text="",
+        executor_max_workers=None,
+        resource_limits={},
+        toolchains={},
+        receipt_path=tmp_path / "receipt.json",
+        run_gate=lambda *args: pytest.fail("no gate streams live"),
+        run_captured_gate=run_captured_gate,
+        observe_capacity=lambda *args, **kwargs: (),
+        say=lambda message: None,
+        ok=lambda message: None,
+    )
+    gates = [
+        drv.SelectedGate(
+            command=("gate", str(index)), toolchains=("python",), concurrent=True
+        )
+        for index in (1, 2)
+    ]
+    with pytest.raises(drv.DriverError) as exc:
+        molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 1)
+    if cause == "gate exit":
+        assert isinstance(exc.value, GateFailure)
+        assert "gate failed (exit 3)" in str(exc.value)
+    else:
+        assert not isinstance(exc.value, CandidateFailure)
+        assert "gate block stopped" in str(exc.value)
+        assert "stray.txt" in str(exc.value)
+    # One gate at a time: the second never starts after either cause.
+    assert ran == [("gate", "1")]
 
 
 def test_concurrent_gate_limit_comes_from_host_capacity(drv, monkeypatch):
@@ -3198,8 +3263,10 @@ def test_integrate_block_refuses_a_gate_that_dirties_the_source(
     _commit_integration_policy(work, [dirty, "echo clean"])
     monkeypatch.setattr(drv, "concurrent_gate_limit", lambda: 2)
     original = _git(work, "rev-parse", "origin/main").stdout.strip()
-    with pytest.raises(drv.DriverError, match="clean selected source"):
+    with pytest.raises(drv.DriverError, match="clean selected source") as exc:
         drv.cmd_integrate(_integrate_ns(drv, repo=str(work)))
+    # A dirtied source has no single culprit; the queue must not bisect on it.
+    assert not isinstance(exc.value, CandidateFailure)
     assert (
         _git(work, "ls-remote", "origin", "refs/heads/main").stdout.split()[0]
         == original

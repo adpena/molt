@@ -82,7 +82,9 @@ fetch  →  rebase  →  verify-commits  →  markers  →  gates  →  push  �
    `repository-policy` resource class and `molt.host_capacity` at one GiB per
    gate bound the block. Each gate's captured output prints in declared order,
    and the first failure in declared order is the one reported; gates declared
-   after it are skipped or cancelled. The block leaves an executor receipt with
+   after it are skipped or cancelled. A gate's nonzero exit raises
+   `GateFailure` (a `CandidateFailure`); a source refusal or a stop of the
+   executor itself stays a plain `DriverError`. The block leaves an executor receipt with
    each gate's duration, peak RSS and outcome at
    `<git common dir>/molt-integrate/receipts/<commit>.gates.json`. Rule, pytest
    and Cargo gates then run one at a time and stream live.

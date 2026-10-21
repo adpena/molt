@@ -53,6 +53,16 @@ class DriverError(Exception):
         self.code = code
 
 
+# The landing queue attributes a failure to a candidate only when the
+# candidate caused it; these name the outcomes it must tell apart.
+class CandidateFailure(DriverError):
+    """The candidate failed a check that its own commits decide."""
+
+
+class GateFailure(CandidateFailure):
+    """A selected gate failed on the candidate."""
+
+
 def _run_driver_command(
     cmd: list[str],
     *,
