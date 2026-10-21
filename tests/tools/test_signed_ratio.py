@@ -37,6 +37,7 @@ from molt import metric_ratios  # noqa: E402
 from tests.process_guard_common import ModuleView, run_guarded_test_process  # noqa: E402
 from tools import git_identity  # noqa: E402
 from tools.git_identity import repository_source_paths  # noqa: E402
+from tools import scan_records  # noqa: E402
 
 
 # --- signed_ratio: a degenerate time can never become a ratio ----------------
@@ -468,14 +469,14 @@ def test_ratio_gate_preserves_authority_exemption_before_reading(
 ) -> None:
     monkeypatch.setattr(crd, "REPO_ROOT", tmp_path)
     authority = tmp_path / "src/molt/metric_ratios.py"
-    original_read = Path.read_text
+    original_read = Path.read_bytes
 
-    def forbidden_read(path: Path, *args: object, **kwargs: object) -> str:
+    def forbidden_read(path: Path) -> bytes:
         if path == authority:
             pytest.fail("the canonical authority is exempt even when unreadable")
-        return original_read(path, *args, **kwargs)
+        return original_read(path)
 
-    monkeypatch.setattr(Path, "read_text", forbidden_read)
+    monkeypatch.setattr(Path, "read_bytes", forbidden_read)
     assert crd.scan_file(authority) == []
 
 
@@ -491,14 +492,14 @@ def test_ratio_gate_preserves_resolved_exemption_for_hits_and_read_errors(
 
     monkeypatch.setattr(crd, "_rel", resolved_authority)
     assert crd.scan_file(alias) == []
-    original_read = Path.read_text
+    original_read = Path.read_bytes
 
-    def unreadable(path: Path, *args: object, **kwargs: object) -> str:
+    def unreadable(path: Path) -> bytes:
         if path == alias:
             raise PermissionError("unreadable authority alias")
-        return original_read(path, *args, **kwargs)
+        return original_read(path)
 
-    monkeypatch.setattr(Path, "read_text", unreadable)
+    monkeypatch.setattr(Path, "read_bytes", unreadable)
     assert crd.scan_file(alias) == []
 
 
@@ -534,6 +535,79 @@ def test_ratio_gate_exemption_follows_physical_source(
     assert [(row["path"], row["op"]) for row in crd.scan_file(source)] == (
         [] if expected is None else [(expected, "/")]
     )
+
+
+def _ratio_records(cache: Path) -> scan_records.ScanRecords:
+    return scan_records.ScanRecords(
+        "check_ratio_direction",
+        owner=TOOLS_ROOT / "check_ratio_direction.py",
+        cache_root=cache,
+    )
+
+
+def _ratio_sources(root: Path) -> list[Path]:
+    root.mkdir()
+    sources = {
+        "both.py": "a = left_time / right_time\nb = x_ms * y_ms\n",
+        "nested.py": "c = (new_time - old_time) / old_time * scale_time\n",
+        "fstring.py": 'd = f"{fast_time / slow_time}"\n',
+        "clean.py": "e = sample_time / 1000\n",
+        "invalid.py": "def broken(:\n    left_time / right_time\n",
+        "copy.py": "a = left_time / right_time\nb = x_ms * y_ms\n",
+    }
+    for name, text in sources.items():
+        (root / name).write_text(text, encoding="utf-8")
+    # Undecodable bytes take the gate's replacement-decoding path.
+    (root / "bytes.py").write_bytes(b"# \xff\nz = a_time / b_time\n")
+    return sorted(root.iterdir())
+
+
+def _ratio_rows(paths: list[Path], records=None) -> list[tuple[str, int, str]]:
+    return [
+        (Path(row["path"]).name, row["line"], row["op"])
+        for path in paths
+        for row in crd.scan_file(path, records)
+    ]
+
+
+def test_ratio_records_replay_exactly_what_the_gate_computes(tmp_path: Path) -> None:
+    paths = _ratio_sources(tmp_path / "sources")
+    expected = _ratio_rows(paths)
+    assert expected == [
+        ("both.py", 1, "/"),
+        ("both.py", 2, "*"),
+        ("bytes.py", 2, "/"),
+        ("copy.py", 1, "/"),
+        ("copy.py", 2, "*"),
+        ("fstring.py", 1, "/"),
+        ("nested.py", 1, "*"),
+        ("nested.py", 1, "/"),
+    ]
+    cold = _ratio_records(tmp_path / "cache")
+    assert _ratio_rows(paths, cold) == expected
+    # Hits depend on bytes alone, so the identical copy shares one record.
+    assert (cold.hits, cold.misses) == (1, 6)
+    assert cold.publish() is True
+    warm = _ratio_records(tmp_path / "cache")
+    assert _ratio_rows(paths, warm) == expected
+    assert (warm.hits, warm.misses) == (7, 0)
+
+
+def test_ratio_records_catch_a_seeded_ratio_cold_and_warm(tmp_path: Path) -> None:
+    paths = _ratio_sources(tmp_path / "sources")
+    clean = tmp_path / "sources" / "clean.py"
+    before = _ratio_rows(paths)
+    for _ in range(2):
+        records = _ratio_records(tmp_path / "cache")
+        assert _ratio_rows(paths, records) == before
+        records.publish()
+    clean.write_text("e = sample_time / 1000\nf = g_time / h_time\n", encoding="utf-8")
+    for expected_misses in (1, 0):
+        records = _ratio_records(tmp_path / "cache")
+        rows = _ratio_rows(paths, records)
+        assert ("clean.py", 2, "/") in rows
+        assert records.misses == expected_misses
+        records.publish()
 
 
 # --- budget_utilization: a SEPARATE domain (zero spend is valid) -------------
@@ -752,12 +826,26 @@ def test_ratio_gate_by_path_binds_its_source_root_from_foreign_cwd(
 ) -> None:
     foreign = tmp_path / "unrelated working directory with spaces"
     foreign.mkdir()
-    result = run_guarded_test_process(
-        [sys.executable, str(REPO_ROOT / "tools/check_ratio_direction.py"), "--json"],
-        cwd=foreign,
-        check=True,
-        timeout=60,
-    )
-    report = json.loads(result.stdout)
+    cache = tmp_path / "cache"
+    env = {**os.environ, "MOLT_CACHE": str(cache)}
+    # The second command replays the first one's scan records.
+    outputs = [
+        run_guarded_test_process(
+            [
+                sys.executable,
+                str(REPO_ROOT / "tools/check_ratio_direction.py"),
+                "--json",
+            ],
+            cwd=foreign,
+            env=env,
+            check=True,
+            timeout=120,
+        ).stdout
+        for _ in range(2)
+    ]
+    assert outputs[0] == outputs[1]
+    published = cache / "repository-scan-records" / "check_ratio_direction"
+    assert len(list(published.iterdir())) == 1
+    report = json.loads(outputs[1])
     assert report["violations"] == []
     assert report["files_scanned"] > 0

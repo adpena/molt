@@ -51,6 +51,7 @@ import ast
 import json
 import sys
 from pathlib import Path
+import warnings
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -63,6 +64,12 @@ bind_repository_imports(__file__)
 
 from tools.command_execution import CommandExecutor  # noqa: E402
 from tools.git_identity import repository_source_paths  # noqa: E402
+from tools.scan_records import (  # noqa: E402
+    ScanRecords,
+    decoded_text,
+    open_scan_records,
+    scan_result,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -205,7 +212,31 @@ def _rel(path: Path) -> str:
         return path.name
 
 
-def scan_file(path: Path) -> list[dict]:
+def source_ratio_hits(data: bytes) -> list[tuple[int, str]]:
+    """The timing ratios in one source: a pure function of its bytes."""
+    try:
+        source = decoded_text(data, encoding="utf-8")
+    except UnicodeDecodeError:
+        source = data.decode("utf-8", errors="replace")
+    # Executable Div/Mult syntax requires these literal operator characters.
+    # Timing names cannot be preselected by raw suffix counts: the parser
+    # normalizes identifiers and decodes/concatenates constant string keys.
+    if "/" not in source and "*" not in source:
+        return []
+    try:
+        # Parser warnings concern the file's own owner, not this gate, and a
+        # replayed result must report exactly what a computed one reports.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", SyntaxWarning)
+            tree = ast.parse(source)
+    except SyntaxError:
+        # A file that does not parse is not our concern here (other gates catch
+        # it); it cannot contain a live time/time division we must flag.
+        return []
+    return _time_ratio_hits(tree)
+
+
+def scan_file(path: Path, records: ScanRecords | None = None) -> list[dict]:
     """Return a list of violation records for one file (empty == clean)."""
     if (
         any(path == REPO_ROOT / rel for rel in EXEMPT_RELATIVE)
@@ -213,28 +244,23 @@ def scan_file(path: Path) -> list[dict]:
     ):
         return []
     try:
-        try:
-            source = path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            source = path.read_bytes().decode("utf-8", errors="replace")
+        data = path.read_bytes()
     except OSError:
         # Preserve exempt aliases' read-error outcome. Readable aliases may now
         # be parsed, but physical exemption still precedes every diagnostic.
         if _rel(path) in EXEMPT_RELATIVE:
             return []
         raise
-    # Executable Div/Mult syntax requires these literal operator characters.
-    # Timing names cannot be preselected by raw suffix counts: the parser
-    # normalizes identifiers and decodes/concatenates constant string keys.
-    if "/" not in source and "*" not in source:
-        return []
-    try:
-        tree = ast.parse(source, filename=str(path))
-    except SyntaxError:
-        # A file that does not parse is not our concern here (other gates catch
-        # it); it cannot contain a live time/time division we must flag.
-        return []
-    hits = _time_ratio_hits(tree)
+    # The hits depend on the bytes alone, so records key them by content and
+    # identical files share one entry. Exemption stays a per-path decision.
+    hits = scan_result(
+        records,
+        "",
+        data,
+        lambda: source_ratio_hits(data),
+        encode=lambda found: [[line, op] for line, op in found],
+        decode=lambda stored: [(int(line), str(op)) for line, op in stored],
+    )
     if not hits:
         return []
     rel = _rel(path)
@@ -257,11 +283,11 @@ def scan_file(path: Path) -> list[dict]:
     ]
 
 
-def run() -> dict:
+def run(records: ScanRecords | None = None) -> dict:
     violations: list[dict] = []
     files = _iter_py_files()
     for path in files:
-        violations.extend(scan_file(path))
+        violations.extend(scan_file(path, records))
     return {
         "kind": "ratio_direction_drift",
         "files_scanned": len(files),
@@ -270,11 +296,14 @@ def run() -> dict:
     }
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, scan_records: bool = False) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--json", action="store_true", help="machine-readable report")
     ns = parser.parse_args(argv)
-    report = run()
+    with open_scan_records(
+        "check_ratio_direction", owner=__file__, enabled=scan_records
+    ) as records:
+        report = run(records)
 
     if ns.json:
         print(json.dumps(report, indent=2, sort_keys=True))
@@ -299,4 +328,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(scan_records=True))

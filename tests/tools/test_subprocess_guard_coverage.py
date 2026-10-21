@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -8,6 +9,7 @@ import pytest
 
 from tests.process_guard_common import run_guarded_test_process
 from tools import check_subprocess_guard_coverage
+from tools import scan_records
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -32,30 +34,47 @@ def test_current_repo_subprocess_guard_coverage_is_clean() -> None:
     assert REPO_ROOT / "packaging" in module.DEFAULT_TARGETS
 
 
-def test_copied_default_targets_still_scan_guard_text_files() -> None:
+def test_copied_default_targets_replay_the_computed_audit(tmp_path: Path) -> None:
     module = check_subprocess_guard_coverage
 
-    default_audit = module.audit_paths()
-    copied_audit = module.audit_paths(tuple(module.DEFAULT_TARGETS))
+    def records() -> scan_records.ScanRecords:
+        return scan_records.ScanRecords(
+            "check_subprocess_guard_coverage", owner=AUDIT_TOOL, cache_root=tmp_path
+        )
 
+    cold = records()
+    default_audit = module.audit_paths(records=cold)
+    assert cold.misses == default_audit.scanned_files - _text_file_count()
+    assert cold.publish() is True
+    # Copied defaults keep the default scope, and every Python result replays
+    # the real tree's raw calls, which the computed audit above produced.
+    warm = records()
+    copied_audit = module.audit_paths(tuple(module.DEFAULT_TARGETS), records=warm)
+
+    assert (warm.hits, warm.misses) == (cold.misses, 0)
+    assert copied_audit == default_audit
     assert copied_audit.ok
-    assert copied_audit.scanned_files == default_audit.scanned_files
-    assert copied_audit.allowlist_entries == default_audit.allowlist_entries
+    assert len(copied_audit.raw_calls) > 0
+
+
+def _text_file_count() -> int:
+    module = check_subprocess_guard_coverage
+    return len(
+        list(module._iter_text_files(module.DEFAULT_TEXT_TARGETS, root=REPO_ROOT))
+    )
 
 
 @pytest.fixture
 def cli_root(tmp_path: Path) -> Path:
-    # The actual script keeps its real allowance policy and derives REPO_ROOT
-    # from this isolated fixture. Fixture subprocess expressions are only parsed.
-    tool = tmp_path / "tools" / AUDIT_TOOL.name
-    tool.parent.mkdir()
-    tool.write_bytes(AUDIT_TOOL.read_bytes())
+    # The actual script keeps its real allowance policy and audits this isolated
+    # checkout through --root. Fixture subprocess expressions are only parsed.
+    (tmp_path / "tools").mkdir()
     return tmp_path
 
 
 def _run_audit_cli(root: Path, *args: str):
     return run_guarded_test_process(
-        [sys.executable, "-I", "-B", str(root / "tools" / AUDIT_TOOL.name), *args],
+        [sys.executable, "-I", "-B", str(AUDIT_TOOL), "--root", str(root), *args],
         cwd=root,
         capture_output=True,
         text=True,
@@ -181,6 +200,46 @@ def test_cli_selected_text_file_uses_existing_shell_audit(cli_root: Path) -> Non
     assert report["scanned_files"] == 1
     assert report["allowlist_entries"] == 0
     assert [call["method"] for call in report["unexpected"]] == ["shell.kill"]
+
+
+def test_cli_replays_records_and_still_fails_a_planted_call(
+    cli_root: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    cache = tmp_path_factory.mktemp("scan-records")
+    env = {**os.environ, "MOLT_CACHE": str(cache)}
+    source = cli_root / "tools" / "secret_guard.py"
+    source.write_text(
+        "import subprocess\ndef _run(cmd):\n    return subprocess.run(cmd)\n",
+        encoding="utf-8",
+    )
+
+    def audit() -> dict[str, object]:
+        result = run_guarded_test_process(
+            [sys.executable, "-I", "-B", str(AUDIT_TOOL), "--root", str(cli_root)]
+            + ["tools/secret_guard.py", "--json"],
+            cwd=cli_root,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
+        )
+        return json.loads(result.stdout)
+
+    assert audit()["ok"] is True
+    published = cache / "repository-scan-records" / "check_subprocess_guard_coverage"
+    assert len(list(published.iterdir())) == 1
+    assert audit()["ok"] is True  # replayed
+
+    source.write_text(
+        source.read_text(encoding="utf-8")
+        + "def unapproved():\n    subprocess.run([])\n",
+        encoding="utf-8",
+    )
+    for _ in range(2):  # computed, then replayed
+        report = audit()
+        assert report["ok"] is False
+        assert [call["qualname"] for call in report["unexpected"]] == ["unapproved"]
 
 
 def test_cli_default_scope_retains_global_stale_checks(cli_root: Path) -> None:
