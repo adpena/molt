@@ -37,6 +37,7 @@ from tools.molt_dev_controller import (
 )
 from tools.molt_dev_detached import python_command
 from molt import process_model
+from molt.file_locks import FileLockTimeout
 from tools.molt_dev_common import (
     _COMMANDS,
     EXIT_FAIL,
@@ -480,14 +481,46 @@ def cmd_land(args: argparse.Namespace) -> int:
     return _await_landing(paths, request.id)
 
 
+def _runner_lock_free(paths: QueuePaths) -> bool:
+    """No runner holds the runner lock. The probe takes it shared, so probes
+    from ``land``, ``land --wait`` and ``withdraw`` never read each other as a
+    runner; only a runner's or a withdrawal's exclusive hold does."""
+    drv = _driver()
+    probe = drv._try_acquire_file_lock(paths.runner_lock, shared=True)
+    if probe is None:
+        return False
+    drv._release_file_lock(probe)
+    return True
+
+
+#: A liveness probe holds the runner lock shared for an instant; a runner
+#: holds it for a whole batch. Waiting this long tells the two apart.
+RUNNER_LOCK_WAIT_S = 2.0
+
+
+def _take_runner_lock(paths: QueuePaths) -> Any:
+    """The runner lock held exclusively, or None while a runner holds it.
+
+    A bare try would read a probe's instant as a runner: a runner starting
+    between batches would exit with requests still queued, and a withdrawal
+    would refuse with no batch running.
+    """
+    try:
+        return _driver()._acquire_file_lock(
+            paths.runner_lock,
+            timeout_s=RUNNER_LOCK_WAIT_S,
+            timeout_message="a landing runner holds the runner lock",
+        )
+    except FileLockTimeout:
+        return None
+
+
 def _start_queue_runner(paths, repo: Path, args: argparse.Namespace) -> None:
     """Start a runner unless one holds the runner lock; the lock decides."""
     drv = _driver()
-    probe = drv._try_acquire_file_lock(paths.runner_lock)
-    if probe is None:
+    if not _runner_lock_free(paths):
         _ok("a landing runner is active; it takes this request")
         return
-    drv._release_file_lock(probe)
     # A unique name: a runner that is exiting never blocks the next one.
     name = "runner-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     detached = drv.build_parser().parse_args(
@@ -525,13 +558,10 @@ def _runner_exited_without(paths: QueuePaths, request_id: str) -> Path | None:
     that died before it wrote ``rc`` (killed, or dead at startup) finished
     too: the process its ``pid`` file names is no longer alive.
     """
-    drv = _driver()
     if not (paths.requests / f"{request_id}.json").is_file():
         return None
-    probe = drv._try_acquire_file_lock(paths.runner_lock)
-    if probe is None:
+    if not _runner_lock_free(paths):
         return None
-    drv._release_file_lock(probe)
     runners = sorted(paths.runners.iterdir()) if paths.runners.is_dir() else []
     if not runners:
         return None
@@ -752,7 +782,7 @@ def cmd_queue_run(args: argparse.Namespace) -> int:
 
     retire_old_records(paths, now=time.time())
     while True:
-        handle = drv._try_acquire_file_lock(paths.runner_lock)
+        handle = _take_runner_lock(paths)
         if handle is None:
             _ok("another landing runner is active")
             return EXIT_OK
@@ -798,7 +828,7 @@ def cmd_queue_withdraw(args: argparse.Namespace) -> int:
     drv = _driver()
     paths = queue_paths(Path(args.repo).resolve())
     paths.root.mkdir(parents=True, exist_ok=True)
-    handle = drv._try_acquire_file_lock(paths.runner_lock)
+    handle = _take_runner_lock(paths)
     if handle is None:
         _fail(
             "a landing batch is running; withdraw after it ends "
@@ -891,8 +921,11 @@ def add_queue_arguments(
     add_repo_arg(p_withdraw)
     add_remote_branch(p_withdraw)
     p_withdraw.add_argument(
-        "--candidate-controller", action="store_true", help=argparse.SUPPRESS
+        "--candidate-controller",
+        action="store_true",
+        help="run this checkout's driver instead of main's pinned controller",
     )
+    add_pinned_controller_arguments(p_withdraw)
     p_withdraw.add_argument(
         "request_ids", nargs="+", metavar="REQUEST_ID", help="ids that `land` printed"
     )

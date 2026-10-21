@@ -3394,7 +3394,11 @@ def test_queue_withdraw_closes_pending_requests_only_between_batches(
     # so withdraw starts one while requests remain. Record it; never spawn.
     started = []
     monkeypatch.setattr(
-        queue, "_start_queue_runner", lambda paths, *_rest: started.append(paths)
+        queue,
+        "_start_queue_runner",
+        lambda paths, repo, args: started.append(
+            (paths, repo, args.remote, args.branch)
+        ),
     )
     paths = queue.queue_paths(work)
     first, second, third = (
@@ -3414,7 +3418,7 @@ def test_queue_withdraw_closes_pending_requests_only_between_batches(
         return args.func(args)
 
     assert withdraw(second.id, second.id) == drv.EXIT_OK
-    assert started == [paths]
+    assert started == [(paths, work.resolve(), "origin", "main")]
     result = queue.read_result(paths, second.id)
     assert result["status"] == queue.LandingStatus.WITHDRAWN
     assert result["detail"] == "review found defects"
@@ -3428,6 +3432,7 @@ def test_queue_withdraw_closes_pending_requests_only_between_batches(
         withdraw(third.id, "no-such-request")
     assert queue.read_result(paths, third.id) is None
     # A runner holds the lock for each batch; nothing is withdrawn under it.
+    monkeypatch.setattr(queue, "RUNNER_LOCK_WAIT_S", 0.1)
     handle = drv._try_acquire_file_lock(paths.runner_lock)
     assert handle is not None
     try:
@@ -3439,6 +3444,82 @@ def test_queue_withdraw_closes_pending_requests_only_between_batches(
     started.clear()
     assert withdraw(first.id, third.id) == drv.EXIT_OK
     assert queue.pending(paths) == [] and started == []
+
+
+def test_runner_liveness_probes_never_read_each_other_as_a_runner(
+    drv, tmp_path, monkeypatch
+):
+    from tools import molt_dev_queue as queue
+
+    paths = queue.QueuePaths(tmp_path / "landing-queue")
+    paths.root.mkdir(parents=True)
+    spawned = []
+    monkeypatch.setattr(drv, "cmd_detached_run", lambda args: spawned.append(args))
+    args = drv.build_parser().parse_args(["queue", "run", "--repo", str(tmp_path)])
+    # A `land --wait` poller holds its probe: a runner still starts.
+    poller = drv._try_acquire_file_lock(paths.runner_lock, shared=True)
+    assert poller is not None
+    try:
+        queue._start_queue_runner(paths, tmp_path, args)
+    finally:
+        drv._release_file_lock(poller)
+    assert len(spawned) == 1
+    # A runner (or a withdrawal) holds it exclusively: none starts.
+    runner = drv._try_acquire_file_lock(paths.runner_lock)
+    assert runner is not None
+    try:
+        queue._start_queue_runner(paths, tmp_path, args)
+    finally:
+        drv._release_file_lock(runner)
+    assert len(spawned) == 1
+
+
+def test_a_probe_never_sends_a_runner_away(drv, tmp_path, monkeypatch):
+    import molt.file_locks as file_locks
+    from tools import molt_dev_queue as queue
+
+    paths = queue.QueuePaths(tmp_path / "landing-queue")
+    paths.root.mkdir(parents=True)
+    # A `land --wait` poller holds its shared probe as a runner starts, and
+    # lets go between the runner's polls.
+    probe = drv._try_acquire_file_lock(paths.runner_lock, shared=True)
+    assert probe is not None
+    real_try = file_locks._try_acquire_file_lock
+    attempts = []
+
+    def probe_ends_after_the_first_try(path, **kwargs):
+        handle = real_try(path, **kwargs)
+        attempts.append(handle is not None)
+        if len(attempts) == 1:
+            drv._release_file_lock(probe)
+        return handle
+
+    monkeypatch.setattr(
+        file_locks, "_try_acquire_file_lock", probe_ends_after_the_first_try
+    )
+    handle = queue._take_runner_lock(paths)
+    assert handle is not None and attempts == [False, True]
+    drv._release_file_lock(handle)
+    monkeypatch.setattr(file_locks, "_try_acquire_file_lock", real_try)
+    # A runner holds it for the whole wait: the next one stands aside.
+    monkeypatch.setattr(queue, "RUNNER_LOCK_WAIT_S", 0.1)
+    runner = drv._try_acquire_file_lock(paths.runner_lock)
+    assert runner is not None
+    try:
+        assert queue._take_runner_lock(paths) is None
+    finally:
+        drv._release_file_lock(runner)
+
+
+def test_withdraw_runs_from_the_pinned_controller(drv, tmp_path):
+    args = drv.build_parser().parse_args(
+        ["queue", "withdraw", "--repo", str(tmp_path), "x", "--reason", "why"]
+    )
+    assert drv.molt_dev_controller.runs_from_pinned_controller(args)
+    candidate = drv.build_parser().parse_args(
+        ["queue", "withdraw", "--candidate-controller", "x", "--reason", "why"]
+    )
+    assert not drv.molt_dev_controller.runs_from_pinned_controller(candidate)
 
 
 def test_queue_results_read_in_the_order_they_closed(tmp_path, monkeypatch):
@@ -3938,14 +4019,15 @@ def test_detached_run_prints_a_verify_command_that_finds_its_state(
     printed = capsys.readouterr().err  # status lines go to stderr
     from tools.molt_dev_detached import verify_command
 
-    argv = verify_command("hinted", str(state_root), 30)
-    assert "      " + shlex.join(argv) + "\n" in printed
-    assert argv[:2] == ["python3", "tools/molt_dev.py"]
-    verify = drv.build_parser().parse_args([*argv[2:], "--json"])
-    verify.min_age_s = 0.0
+    argv = verify_command("hinted", str(state_root), 0)
+    assert (
+        "      " + shlex.join(verify_command("hinted", str(state_root), 30)) in printed
+    )
     _wait_done(drv, capsys, "hinted", state_root)
-    rc, verdict = _verify_json(drv, capsys, verify)
-    assert (rc, verdict["status"], verdict["rc"]) == (drv.EXIT_OK, "done", 0)
+    # Run exactly what a person would paste, from an unrelated directory.
+    completed = run_guarded_test_process(argv, cwd=tmp_path, timeout=120)
+    assert completed.returncode == drv.EXIT_OK, completed.stderr
+    assert "no state" not in completed.stderr
 
 
 def test_detached_runner_never_forks_the_live_python_process(drv):

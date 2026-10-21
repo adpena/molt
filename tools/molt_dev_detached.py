@@ -91,8 +91,9 @@ def verify_command(name: str, state_dir: str | None, min_age_s: float) -> list[s
     """
     state_root = ["--state-dir", str(Path(state_dir).resolve())] if state_dir else []
     return [
-        "python3",
-        "tools/molt_dev.py",
+        # This interpreter and the driver by absolute path: a bare `python3`
+        # may be one that cannot run the driver (macOS ships 3.9).
+        *python_command(str(Path(__file__).resolve().with_name("molt_dev.py"))),
         "detached-verify",
         "--name",
         name,
