@@ -1230,26 +1230,80 @@ def test_consumer_finds_its_lease_whatever_state_root_it_sees(tmp_path):
         _finish(lease)
 
 
-def test_sweep_never_revives_a_generation_moved_away_under_it(tmp_path, monkeypatch):
-    """A remover moves a reclaimed generation between the walker's check and lock."""
-    lease, _ = _lease(tmp_path)
+@pytest.mark.parametrize("reader", ["sweep", "resolve"])
+@pytest.mark.parametrize(
+    "move_at",
+    [
+        "before-lock",
+        pytest.param(
+            "owner",
+            marks=pytest.mark.skipif(
+                os.name == "nt",
+                reason="Win32 holds the namespace through the open lock",
+            ),
+        ),
+        pytest.param(
+            "terminal",
+            marks=pytest.mark.skipif(
+                os.name == "nt",
+                reason="Win32 holds the namespace through the open lock",
+            ),
+        ),
+    ],
+)
+def test_sweep_never_revives_a_generation_moved_away_under_it(
+    tmp_path, monkeypatch, reader, move_at
+):
+    """Actual final namespace removal can race a POSIX locked receipt reader."""
+    lease, env = _lease(tmp_path)
     _finish(lease, success=False)
+    with scratch._locked(lease.generation):
+        assert (
+            scratch._reclaim_locked(lease.generation, scratch._owner(lease.generation))[
+                "state"
+            ]
+            == "reclaimed"
+        )
     removing = lease.generation.parent / "removing"
     removing.mkdir()
     identity = scratch._identity
+    read = scratch.read_exact
     moved = []
 
-    def concurrent_remover(path):
+    def move():
+        moved.append(lease.generation)
+        os.rename(lease.generation, removing / lease.generation.name)
+
+    def concurrent_identity(path):
         result = identity(path)
-        if path == lease.generation and not moved:
-            moved.append(path)
-            os.rename(lease.generation, removing / lease.generation.name)
+        if path == lease.generation and not moved and move_at == "before-lock":
+            move()
         return result
 
-    monkeypatch.setattr(scratch, "_identity", concurrent_remover)
-    result = scratch.reclaim_terminal_scratch(lease.generation.parent)
-    assert moved and result["errors"] == []
-    # The walker created neither the generation nor its lock again.
+    def concurrent_read(path, **kwargs):
+        if path == lease.generation / f"{move_at}.json" and not moved:
+            move()
+        return read(path, **kwargs)
+
+    monkeypatch.setattr(scratch, "_identity", concurrent_identity)
+    monkeypatch.setattr(scratch, "read_exact", concurrent_read)
+    if reader == "sweep":
+        result = scratch.reclaim_terminal_scratch(lease.generation.parent)
+        assert result["errors"] == []
+    else:
+        result = scratch.resolve_guard_scratch(
+            lease.generation,
+            guard_marker=Path(env["MOLT_MEMORY_GUARD_MARKER"]),
+            closure=None,
+        )
+        assert result == {
+            "generation": str(lease.generation),
+            "state": "absent",
+            "resolved": True,
+        }
+        assert scratch.reclaim_terminal_scratch(lease.generation.parent)["errors"] == []
+    assert moved
+    # Neither reader revives custody or reports completed removal as a crash.
     assert not lease.generation.exists()
     assert not scratch._index_path(lease.generation).exists()
 

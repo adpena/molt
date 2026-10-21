@@ -704,7 +704,15 @@ neighbours:
   before. An absent marker protects nothing that still runs. An empty one is
   unreadable: it stays protective, and the reconciliation report names the
   `tools/memory_guard_custody.py --release MARKER --apply` command.
-- A scratch reader holds the generation lock, so no writer is active. An
+- A scratch reader holds the generation lock, so no state writer is active.
+  Final receipt removal moves the whole reclaimed generation outside that
+  lock: POSIX permits this while a reader holds the old file open; Windows
+  defers the move. A missing receipt whose generation has also disappeared
+  therefore follows the existing completed-removal path in both the pending
+  sweep and dead-guard reconciliation. A missing receipt in a surviving
+  generation stays crash residue. This distinction adds one namespace probe
+  only after a missing-receipt error, with no normal-path syscall, lock,
+  retry, allocation or retained metadata. An
   absent or undecodable receipt, a generation without its lock file, or a
   payload out of step with its owner (a retained payload that is missing, a
   reclaimed one that survives, a move into the generation that a crash undid)
