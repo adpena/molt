@@ -96,6 +96,8 @@ import re
 import sys
 import tokenize
 import tomllib
+from typing import Any
+import warnings
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
@@ -104,13 +106,19 @@ if str(_REPO_ROOT) not in sys.path:
 from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
-from molt import host_capacity  # noqa: E402
+from molt import compiler_process, host_capacity  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 from tools._io_utf8 import force_utf8_stdio  # noqa: E402
 from tools import gen_environment_registry as _gen  # noqa: E402
+from tools.scan_records import (  # noqa: E402
+    ScanRecords,
+    decoded_text,
+    open_scan_records,
+    record_key,
+)
 from molt.environment_registry import (  # noqa: E402
     RUNTIME_FLAG_OWNER_ROOT,
     EnvironmentRegistry,
@@ -1016,15 +1024,25 @@ def _scan_python_file(job: tuple[str, bool, str]) -> _ModuleResult | None:
     """Worker entry: parse and scan one module (``rel``, ``enforced``, ``root``)."""
 
     rel, enforced, root = job
-    path = Path(root) / rel
+    return _python_source_result(rel, enforced, (Path(root) / rel).read_bytes())
+
+
+def _python_source_result(
+    rel: str, enforced: bool, data: bytes
+) -> _ModuleResult | None:
+    """One module's facts: a pure function of its bytes, path and enforcement."""
     try:
-        text = path.read_text(encoding="utf-8")
+        text = decoded_text(data, encoding="utf-8")
     except UnicodeDecodeError:
         return None
     if not WORTH_PARSING.search(text):
         return None
     try:
-        tree = ast.parse(text, filename=rel)
+        # Parser warnings concern the file's own owner, not this gate, and a
+        # replayed result must report exactly what a computed one reports.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", SyntaxWarning)
+            tree = ast.parse(text, filename=rel)
     except (SyntaxError, ValueError):
         return None
     scanner = _ModuleScanner(rel, tree, enforced=enforced)
@@ -2041,9 +2059,13 @@ def _enclosing_call(tokens: list[_Tok], target: int, limit: int) -> int | None:
 
 def _scan_rust_file(job: tuple[str, str]) -> _ModuleResult | None:
     rel, root = job
-    path = Path(root) / rel
+    return _rust_source_result(rel, (Path(root) / rel).read_bytes())
+
+
+def _rust_source_result(rel: str, data: bytes) -> _ModuleResult | None:
+    """One Rust file's facts: a pure function of its bytes and path."""
     try:
-        source = path.read_text(encoding="utf-8")
+        source = decoded_text(data, encoding="utf-8")
     except UnicodeDecodeError:
         return None
     if not WORTH_PARSING.search(source):
@@ -2582,7 +2604,173 @@ def _python_jobs(root: Path = ROOT) -> list[tuple[str, bool, str]]:
     return jobs
 
 
-def scan_repository(*, workers: int | None = None, root: Path = ROOT) -> Scan:
+# --------------------------------------------------------------------------
+# Scan records: per-file facts replayed by content (tools/scan_records.py)
+# --------------------------------------------------------------------------
+
+
+def _site_value(site: Site) -> list[object]:
+    return [
+        site.path,
+        site.line,
+        site.name,
+        site.access,
+        site.form,
+        site.language,
+        site.enforced,
+    ]
+
+
+def _site(value: list) -> Site:
+    path, line, name, access, form, language, enforced = value
+    return Site(path, line, name, access, form, language, enforced)
+
+
+def _module_value(result: _ModuleResult | None) -> object:
+    """A JSON snapshot taken before the parent's helper fixpoint mutates facts."""
+    if result is None:
+        return None
+    return {
+        "rel": result.rel,
+        "enforced": result.enforced,
+        "constants": result.constants,
+        "imports": {name: list(source) for name, source in result.imports.items()},
+        "functions": [
+            [
+                facts.name,
+                list(facts.params),
+                {param: sorted(keys) for param, keys in facts.key_params.items()},
+                sorted(facts.key_list_params),
+                sorted(facts.suffix_list_params),
+                [
+                    [
+                        edge.callee,
+                        edge.index,
+                        edge.keyword,
+                        edge.arg_param,
+                        edge.arg_loop_param,
+                    ]
+                    for edge in facts.edges
+                ],
+            ]
+            for facts in result.functions
+        ],
+        "sites": [_site_value(site) for site in result.sites],
+        "candidates": [
+            [
+                item.line,
+                item.text,
+                item.callee,
+                item.index,
+                item.keyword,
+                item.fallback_access,
+                item.fallback_form,
+                item.bare_suffix,
+            ]
+            for item in result.candidates
+        ],
+        "name_keys": [list(item) for item in result.name_keys],
+    }
+
+
+def _module_result(value: Any) -> _ModuleResult | None:
+    if value is None:
+        return None
+    return _ModuleResult(
+        rel=value["rel"],
+        enforced=value["enforced"],
+        constants=dict(value["constants"]),
+        imports={
+            name: (module, attr) for name, (module, attr) in value["imports"].items()
+        },
+        functions=[
+            _FunctionFacts(
+                name=name,
+                params=tuple(params),
+                key_params={param: set(keys) for param, keys in key_params.items()},
+                key_list_params=set(key_lists),
+                suffix_list_params=set(suffix_lists),
+                edges=[_CallEdge(*edge) for edge in edges],
+            )
+            for name, params, key_params, key_lists, suffix_lists, edges in value[
+                "functions"
+            ]
+        ],
+        sites=[_site(site) for site in value["sites"]],
+        candidates=[_Candidate(*item) for item in value["candidates"]],
+        name_keys=[
+            (line, local, access, form)
+            for line, local, access, form in value["name_keys"]
+        ],
+    )
+
+
+def _python_identity(rel: str, enforced: bool) -> str:
+    return f"python:{int(enforced)}:{rel}"
+
+
+def _rust_identity(rel: str) -> str:
+    return f"rust:{rel}"
+
+
+def _python_file_record(job: tuple[str, bool, str]) -> tuple[str, object]:
+    """Worker entry: one module's record key and value from one read."""
+    rel, enforced, root = job
+    data = (Path(root) / rel).read_bytes()
+    return record_key(_python_identity(rel, enforced), data), _module_value(
+        _python_source_result(rel, enforced, data)
+    )
+
+
+def _rust_file_record(job: tuple[str, str]) -> tuple[str, object]:
+    """Worker entry: one Rust file's record key and value from one read."""
+    rel, root = job
+    data = (Path(root) / rel).read_bytes()
+    return record_key(_rust_identity(rel), data), _module_value(
+        _rust_source_result(rel, data)
+    )
+
+
+def _recorded_results(
+    records: ScanRecords,
+    jobs: list,
+    identities: list[str],
+    root: Path,
+    worker,
+    pool: ProcessPoolExecutor | None,
+) -> list[_ModuleResult]:
+    """Replay unchanged files; compute the rest in their original order.
+
+    Each value is decoded for use, so a computed run and a replayed run hand
+    the parent's fixpoint the same fresh objects.
+    """
+    values: list[object] = [None] * len(jobs)
+    pending: list[int] = []
+    for index, (job, identity) in enumerate(zip(jobs, identities, strict=True)):
+        key = record_key(identity, (root / job[0]).read_bytes())
+        found, value = records.replay(key)
+        if found:
+            values[index] = value
+        else:
+            pending.append(index)
+    pending_jobs = [jobs[index] for index in pending]
+    computed = (
+        map(worker, pending_jobs)
+        if pool is None
+        else pool.map(worker, pending_jobs, chunksize=16)
+    )
+    for index, (key, value) in zip(pending, computed, strict=True):
+        records.record(key, value)
+        values[index] = value
+    return [result for result in map(_module_result, values) if result is not None]
+
+
+def scan_repository(
+    *,
+    workers: int | None = None,
+    root: Path = ROOT,
+    records: ScanRecords | None = None,
+) -> Scan:
     """Scan every root. Python and Rust files are parsed in a process pool."""
 
     jobs = _python_jobs(root)
@@ -2594,24 +2782,45 @@ def scan_repository(*, workers: int | None = None, root: Path = ROOT) -> Scan:
     worker_count = (
         workers if workers is not None else max(1, min(8, host_capacity.cpu_count()))
     )
-    results: list[_ModuleResult] = []
+
+    def module_results(pool: ProcessPoolExecutor | None) -> list[_ModuleResult]:
+        if records is not None:
+            return _recorded_results(
+                records,
+                jobs,
+                [_python_identity(rel, enforced) for rel, enforced, _ in jobs],
+                root,
+                _python_file_record,
+                pool,
+            ) + _recorded_results(
+                records,
+                rust_paths,
+                [_rust_identity(rel) for rel, _ in rust_paths],
+                root,
+                _rust_file_record,
+                pool,
+            )
+        if pool is None:
+            computed = [
+                *map(_scan_python_file, jobs),
+                *map(_scan_rust_file, rust_paths),
+            ]
+        else:
+            computed = [
+                *pool.map(_scan_python_file, jobs, chunksize=16),
+                *pool.map(_scan_rust_file, rust_paths, chunksize=16),
+            ]
+        return [result for result in computed if result is not None]
+
     if worker_count == 1:
-        results.extend(r for r in map(_scan_python_file, jobs) if r is not None)
-        results.extend(r for r in map(_scan_rust_file, rust_paths) if r is not None)
+        results = module_results(None)
         writer_violations = check_process_environment_writers(root)
     else:
-        from molt import compiler_process
-
         with ProcessPoolExecutor(
             max_workers=worker_count,
             mp_context=compiler_process.worker_context(),
         ) as pool:
-            for result in pool.map(_scan_python_file, jobs, chunksize=16):
-                if result is not None:
-                    results.append(result)
-            for result in pool.map(_scan_rust_file, rust_paths, chunksize=16):
-                if result is not None:
-                    results.append(result)
+            results = module_results(pool)
             writer_violations = check_process_environment_writers(root, executor=pool)
     sites, unresolved = _finish_results(results)
     for path, enforced in _text_paths(root):
@@ -2982,7 +3191,7 @@ def _load_registry() -> EnvironmentRegistry | None:
         return None
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, scan_records: bool = False) -> int:
     parser = argparse.ArgumentParser(description="Environment-registry gate.")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
@@ -3002,7 +3211,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    scan = scan_repository()
+    with open_scan_records(
+        "check_environment_registry", owner=__file__, enabled=scan_records
+    ) as records:
+        scan = scan_repository(records=records)
     if args.inventory:
         print(json.dumps(_inventory(scan), indent=2, sort_keys=True))
         return 0
@@ -3047,4 +3259,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(scan_records=True))
