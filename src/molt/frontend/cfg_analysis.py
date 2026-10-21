@@ -15,7 +15,7 @@ class OpLike(Protocol):
     args: list[Any]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class BasicBlock:
     id: int
     start: int
@@ -166,7 +166,7 @@ class CFGGraph:
     with the same control projection the same graph."""
 
     blocks: Sequence[BasicBlock]
-    index_to_block: Mapping[int, int]
+    op_blocks: tuple[int, ...]
     label_to_block: Mapping[str, int]
     block_entry_label: Mapping[int, str]
     control: ControlMaps
@@ -174,6 +174,14 @@ class CFGGraph:
     edge_kinds: Mapping[tuple[int, int], CFGEdgeKind]
     predecessors: Mapping[int, Sequence[int]]
     reachable: frozenset[int] | set[int]
+
+    def block_for_op(self, index: int) -> int | None:
+        """The block containing an operation, or None outside the op stream.
+
+        Operation identities are dense nonnegative indices. Negative indices
+        never use Python's sequence-from-the-end convention.
+        """
+        return self.op_blocks[index] if 0 <= index < len(self.op_blocks) else None
 
     # Dominance is derived on first use: most graphs a pass round builds are
     # never asked a dominance query. Shared CFGs retain one immutable tree.
@@ -231,9 +239,9 @@ def _collect_control_maps(kinds: Sequence[str]) -> ControlMaps:
 
 def _build_basic_blocks(
     kinds: Sequence[str], operands: Mapping[int, str | None]
-) -> tuple[list[BasicBlock], dict[int, int], dict[str, int], dict[int, str]]:
+) -> tuple[list[BasicBlock], tuple[int, ...], dict[str, int], dict[int, str]]:
     if not kinds:
-        return [], {}, {}, {}
+        return [], (), {}, {}
 
     leader_kinds = {
         "IF",
@@ -277,10 +285,9 @@ def _build_basic_blocks(
         )
         blocks.append(BasicBlock(id=block_idx, start=start, end=end))
 
-    index_to_block: dict[int, int] = {}
+    op_blocks: list[int] = []
     for block in blocks:
-        for idx in range(block.start, block.end):
-            index_to_block[idx] = block.id
+        op_blocks.extend([block.id] * (block.end - block.start))
 
     label_to_block: dict[str, int] = {}
     block_entry_label: dict[int, str] = {}
@@ -291,7 +298,7 @@ def _build_basic_blocks(
                 label_to_block[label] = block.id
                 block_entry_label[block.id] = label
 
-    return blocks, index_to_block, label_to_block, block_entry_label
+    return blocks, tuple(op_blocks), label_to_block, block_entry_label
 
 
 def _compute_successors(
@@ -299,7 +306,7 @@ def _compute_successors(
     kinds: Sequence[str],
     operands: Mapping[int, str | None],
     blocks: list[BasicBlock],
-    index_to_block: dict[int, int],
+    op_blocks: tuple[int, ...],
     label_to_block: dict[str, int],
     control: ControlMaps,
 ) -> tuple[dict[int, list[int]], dict[tuple[int, int], CFGEdgeKind]]:
@@ -315,9 +322,8 @@ def _compute_successors(
     for block in blocks:
         for idx in range(block.start, block.end):
             if kinds[idx] == "STATE_YIELD" and idx + 1 < len(kinds):
-                resume_block = index_to_block.get(idx + 1)
-                if resume_block is not None:
-                    state_yield_resume_blocks.append(resume_block)
+                resume_block = op_blocks[idx + 1]
+                state_yield_resume_blocks.append(resume_block)
     # Also collect STATE_LABEL blocks as resume targets (for async state machines).
     for block in blocks:
         if kinds[block.start] == "STATE_LABEL":
@@ -334,9 +340,9 @@ def _compute_successors(
         edge_bits[edge] = edge_bits.get(edge, 0) | kind
 
     def block_for_index(idx: int | None) -> int | None:
-        if idx is None:
+        if idx is None or not 0 <= idx < len(op_blocks):
             return None
-        return index_to_block.get(idx)
+        return op_blocks[idx]
 
     for block in blocks:
         block_id = block.id
@@ -523,14 +529,14 @@ def _cfg_for_projection(projection: _ControlProjection) -> CFGGraph:
     kinds, operand_items = projection
     operands = dict(operand_items)
     control = _collect_control_maps(kinds)
-    blocks, index_to_block, label_to_block, block_entry_label = _build_basic_blocks(
+    blocks, op_blocks, label_to_block, block_entry_label = _build_basic_blocks(
         kinds, operands
     )
     successors, edge_kinds = _compute_successors(
         kinds=kinds,
         operands=operands,
         blocks=blocks,
-        index_to_block=index_to_block,
+        op_blocks=op_blocks,
         label_to_block=label_to_block,
         control=control,
     )
@@ -538,7 +544,7 @@ def _cfg_for_projection(projection: _ControlProjection) -> CFGGraph:
     reachable = _reachable_blocks(successors)
     return CFGGraph(
         blocks=tuple(blocks),
-        index_to_block=MappingProxyType(index_to_block),
+        op_blocks=op_blocks,
         label_to_block=MappingProxyType(label_to_block),
         block_entry_label=MappingProxyType(block_entry_label),
         control=control,

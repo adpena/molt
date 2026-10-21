@@ -260,11 +260,9 @@ def _phi_result(left: object, right: object) -> dict[str, object]:
     ]
     cfg = CFGGraph(
         blocks=blocks,
-        index_to_block={
-            index: block.id
-            for block in blocks
-            for index in range(block.start, block.end)
-        },
+        op_blocks=tuple(
+            block.id for block in blocks for _index in range(block.start, block.end)
+        ),
         label_to_block={"join": 3},
         block_entry_label={3: "join"},
         control=build_cfg([]).control,
@@ -322,7 +320,7 @@ def test_region_markers_preserve_immutable_lattice_admission() -> None:
     ]
     cfg = build_cfg(ops)
     result = SimpleTIRGenerator()._compute_sccp(ops, cfg)
-    assert result.out_values[cfg.index_to_block[3]]["item"] is _SCCP_OVERDEFINED
+    assert result.out_values[cfg.op_blocks[3]]["item"] is _SCCP_OVERDEFINED
 
 
 def test_sccp_state_identity_handles_sentinels_and_key_presence() -> None:

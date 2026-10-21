@@ -343,7 +343,7 @@ def test_sccp_callback_kills_cached_type_fact_but_keeps_exact_scalar_observation
     gen._op_by_result = {op.result.name: op for op in ops if op.result.name != "none"}
     cfg = build_cfg(ops)
     sccp = gen._compute_sccp(ops, cfg)
-    state = sccp.out_values[cfg.index_to_block[len(ops) - 1]]
+    state = sccp.out_values[cfg.op_blocks[len(ops) - 1]]
     assert state["old"] == 1
     assert state["old_matches"] is True
     # A literal proves exactness; profiling guards cannot establish this fact.
@@ -381,7 +381,7 @@ def test_sccp_heap_facts_must_survive_every_join_predecessor() -> None:
     gen._op_by_result = {op.result.name: op for op in ops if op.result.name != "none"}
     cfg = build_cfg(ops)
     sccp = gen._compute_sccp(ops, cfg)
-    state = sccp.out_values[cfg.index_to_block[len(ops) - 1]]
+    state = sccp.out_values[cfg.op_blocks[len(ops) - 1]]
     assert state["current"] is _SCCP_OVERDEFINED
     assert "__tag__:obj" not in state
 
@@ -1804,7 +1804,7 @@ def test_sccp_retains_declared_handler_edges_without_textual_try_inference(
     result = SimpleTIRGenerator()._compute_sccp(ops, cfg)
     handler = cfg.label_to_block["99"]
     assert handler in result.executable_blocks
-    assert (cfg.index_to_block[0], handler) in result.executable_edges
+    assert (cfg.op_blocks[0], handler) in result.executable_edges
 
 
 def test_cfg_const_dedupe_keeps_check_exception_users_defined() -> None:
@@ -2200,8 +2200,8 @@ def test_frontend_return_terminators_close_reachability(kind: str) -> None:
         MoltOp("CONST", [99], MoltValue("unreachable")),
     ]
     cfg = build_cfg(ops)
-    assert cfg.index_to_block[2] not in cfg.reachable
-    assert not cfg.successors[cfg.index_to_block[1]]
+    assert cfg.op_blocks[2] not in cfg.reachable
+    assert not cfg.successors[cfg.op_blocks[1]]
     lowered = _lower_ops(ops)
     assert lowered[-1]["kind"] == kind
     assert all(op.get("value") != 99 for op in lowered)
@@ -2250,7 +2250,7 @@ def test_cfg_dominance_handles_deep_chain_without_recursive_traversal() -> None:
     ops = [MoltOp("LABEL", [index], MoltValue("none")) for index in range(8192)]
     ops.append(MoltOp("ret_void", [], MoltValue("none")))
     cfg = build_cfg(ops)
-    last = cfg.index_to_block[len(ops) - 1]
+    last = cfg.op_blocks[len(ops) - 1]
     assert cfg.reachable == set(range(len(cfg.blocks)))
     assert cfg.dominance.immediate_dominator(0) is None
     for block in range(1, len(cfg.blocks)):
@@ -2268,10 +2268,10 @@ def test_cfg_dominance_respects_resume_bypass() -> None:
         MoltOp("ret", [MoltValue("before_yield")], MoltValue("none")),
     ]
     cfg = build_cfg(ops)
-    switch = cfg.index_to_block[0]
-    definition = cfg.index_to_block[1]
-    yielding = cfg.index_to_block[2]
-    resume = cfg.index_to_block[3]
+    switch = cfg.op_blocks[0]
+    definition = cfg.op_blocks[1]
+    yielding = cfg.op_blocks[2]
+    resume = cfg.op_blocks[3]
     assert cfg.edge_kinds[switch, resume] & CFGEdgeKind.RESUME
     assert cfg.successors[yielding] == ()
     assert cfg.dominance.dominates(switch, resume)
@@ -2295,11 +2295,11 @@ def test_cfg_models_check_exception_target_edge() -> None:
         MoltOp(kind="ret", args=[MoltValue("x")], result=MoltValue("none")),
     ]
     cfg = build_cfg(ops)
-    check_block = cfg.index_to_block[1]
+    check_block = cfg.op_blocks[1]
     label_block = cfg.label_to_block["7"]
     assert label_block in cfg.successors.get(check_block, [])
     assert cfg.edge_kinds[check_block, label_block] & CFGEdgeKind.EXCEPTION
-    assert not cfg.dominance.dominates(cfg.index_to_block[2], label_block)
+    assert not cfg.dominance.dominates(cfg.op_blocks[2], label_block)
     _assert_dominance_matches_path_removal(
         [cfg.successors[block.id] for block in cfg.blocks], 0, cfg.dominance
     )
@@ -2325,7 +2325,7 @@ def test_cfg_tracks_path_local_try_closes_without_changing_if_structure() -> Non
     assert cfg.control.if_to_end == {1: 4}
     handler = cfg.label_to_block["11"]
     assert cfg.block_entry_label[handler] == "11"
-    assert handler in cfg.successors[cfg.index_to_block[0]]
+    assert handler in cfg.successors[cfg.op_blocks[0]]
 
 
 def test_structural_validator_preserves_alternative_region_closes_verbatim() -> None:
@@ -2394,7 +2394,7 @@ def test_cfg_precanonicalizer_aligns_phi_to_predecessor_shape() -> None:
     aligned, rewrites = gen._align_phi_args_to_cfg_predecessors(ops, cfg)
     phi = next(op for op in aligned if op.kind == "PHI")
     assert rewrites >= 1
-    assert len(phi.args) == len(cfg.predecessors[cfg.index_to_block[6]])
+    assert len(phi.args) == len(cfg.predecessors[cfg.op_blocks[6]])
 
 
 def test_cfg_precanonicalizer_threads_ladders_before_rounds() -> None:
@@ -2503,7 +2503,7 @@ def test_aggregate_construction_preserves_its_exception_edge(kind: str) -> None:
     ]
     cfg = build_cfg(ops)
     sccp = gen._compute_sccp(ops, cfg)
-    assert cfg.index_to_block[3] in sccp.executable_blocks
+    assert cfg.op_blocks[3] in sccp.executable_blocks
 
 
 @pytest.mark.parametrize(
@@ -2545,7 +2545,7 @@ def test_guard_mismatch_preserves_pending_exception_routing() -> None:
     cfg = build_cfg(ops)
     gen = SimpleTIRGenerator()
     sccp = gen._compute_sccp(ops, cfg)
-    assert cfg.index_to_block[4] in sccp.executable_blocks
+    assert cfg.op_blocks[4] in sccp.executable_blocks
     rewritten, _, _, check_threads = gen._rewrite_loop_edge_threading(
         ops,
         cfg=cfg,
@@ -5492,7 +5492,7 @@ def test_sccp_acyclic_diamonds_do_not_broadcast_forwarded_facts_backward(
     sccp = gen._compute_sccp(ops, cfg, max_iters_override=len(cfg.blocks))
     assert sccp.executable_blocks == cfg.reachable
     assert gen.midend_stats["sccp_iteration_cap_hits"] == 0
-    assert sccp.out_values[cfg.index_to_block[0]]["acc"] == 0
+    assert sccp.out_values[cfg.op_blocks[0]]["acc"] == 0
 
 
 def test_sccp_new_executable_edge_revisits_phi_with_equal_predecessor_states() -> None:
@@ -5529,11 +5529,9 @@ def test_sccp_new_executable_edge_revisits_phi_with_equal_predecessor_states() -
     ]
     cfg = CFGGraph(
         blocks=blocks,
-        index_to_block={
-            index: block.id
-            for block in blocks
-            for index in range(block.start, block.end)
-        },
+        op_blocks=tuple(
+            block.id for block in blocks for _index in range(block.start, block.end)
+        ),
         label_to_block={"delay": 2, "delayed_end": 3, "join": 4},
         block_entry_label={2: "delay", 3: "delayed_end", 4: "join"},
         control=build_cfg([]).control,
@@ -6334,7 +6332,7 @@ def test_runtime_guard_mismatch_continues_sccp_and_preserves_source_type() -> No
     gen = SimpleTIRGenerator()
     cfg = build_cfg(ops)
     sccp = gen._compute_sccp(ops, cfg)
-    after = sccp.out_values[cfg.index_to_block[3]]
+    after = sccp.out_values[cfg.op_blocks[3]]
     assert after["checked"] == 7
     assert after["later"] == 11
     _, canonical = gen._canonicalize_block_with_state(
@@ -6366,7 +6364,7 @@ def test_sccp_guard_tag_establishes_no_type_fact() -> None:
     gen._op_by_result = {op.result.name: op for op in ops if op.result.name != "none"}
     cfg = build_cfg(ops)
     sccp = gen._compute_sccp(ops, cfg)
-    state = sccp.out_values[cfg.index_to_block[len(ops) - 1]]
+    state = sccp.out_values[cfg.op_blocks[len(ops) - 1]]
     assert "__tag__:obj" not in state
     assert state["observed"] is _SCCP_OVERDEFINED
     assert state["matches"] is _SCCP_OVERDEFINED
@@ -6401,6 +6399,43 @@ def test_cfg_differs_when_a_label_operand_differs() -> None:
     assert to_nowhere.successors[1] == ()
 
 
+@pytest.mark.parametrize(
+    ("kinds", "expected"),
+    [
+        ((), ()),
+        (("CONST", "CONST", "ADD", "ret_void"), (0, 0, 0, 1)),
+        (
+            ("IF", "CONST", "CONST", "ELSE", "CONST", "END_IF", "ret_void"),
+            (0, 1, 1, 2, 3, 4, 5),
+        ),
+    ],
+)
+def test_cfg_dense_operation_blocks_keep_absent_indices_absent(
+    kinds: tuple[str, ...], expected: tuple[int, ...]
+) -> None:
+    # The expected partition is written independently of the CFG block builder.
+    ops = [MoltOp(kind, [], MoltValue("none")) for kind in kinds]
+    cfg = build_cfg(ops)
+
+    assert cfg.op_blocks == expected
+    assert tuple(cfg.block_for_op(index) for index in range(len(ops))) == expected
+    for index in (-len(ops) - 1, -1, len(ops), len(ops) + 1, 10**100):
+        assert cfg.block_for_op(index) is None
+
+
+def test_resume_liveness_rejects_indices_outside_the_operation_stream() -> None:
+    from molt.frontend.visitors.async_gen import _ResumeLiveness
+
+    live = _ResumeLiveness(
+        [MoltOp("ADD", [MoltValue("left"), MoltValue("right")], MoltValue("result"))]
+    )
+    assert live.live_into(0) == ["left", "right"]
+    for index in (-1, 1, 10**100):
+        with pytest.raises(KeyError) as failure:
+            live.live_into(index)
+        assert failure.value.args == (index,)
+
+
 def test_shared_cfg_cannot_be_mutated() -> None:
     cfg = build_cfg(_jump_label_ops(1, 1, constant=10))
 
@@ -6412,6 +6447,9 @@ def test_shared_cfg_cannot_be_mutated() -> None:
         cfg.label_to_block["1"] = 0  # type: ignore[index]
     with pytest.raises(AttributeError):
         cfg.reachable.add(3)  # type: ignore[attr-defined]
+    with pytest.raises(TypeError):
+        cfg.op_blocks[0] = 2  # type: ignore[index]
+    assert not hasattr(cfg.blocks[0], "__dict__")
 
 
 @pytest.mark.parametrize("seed", range(300))
@@ -6446,7 +6484,7 @@ def test_shared_cfg_computes_dominance_only_on_demand(tmp_path: Path) -> None:
     second = build_cfg(ops(2))
     assert second is first
     assert second.dominance is dominance
-    assert dominance.dominates(0, first.index_to_block[3])
+    assert dominance.dominates(0, first.op_blocks[3])
 
 
 def test_shared_cfg_keeps_exception_handler_identity() -> None:
@@ -6462,8 +6500,8 @@ def test_shared_cfg_keeps_exception_handler_identity() -> None:
 
     first, second = build_cfg(ops("first")), build_cfg(ops("second"))
     assert first is not second
-    start = first.index_to_block[0]
-    first_handler, second_handler = first.index_to_block[2], first.index_to_block[4]
+    start = first.op_blocks[0]
+    first_handler, second_handler = first.op_blocks[2], first.op_blocks[4]
     assert first.edge_kinds[start, first_handler] == CFGEdgeKind.EXCEPTION
     assert (start, second_handler) not in first.edge_kinds
     assert second.edge_kinds[start, second_handler] == CFGEdgeKind.EXCEPTION
@@ -6481,11 +6519,11 @@ def test_shared_cfg_keeps_resume_edge_kind() -> None:
 
     suspending, returning = build_cfg(ops("STATE_YIELD")), build_cfg(ops("ret_void"))
     assert suspending is not returning
-    target = suspending.index_to_block[2]
+    target = suspending.op_blocks[2]
     assert suspending.edge_kinds[0, target] == CFGEdgeKind.RESUME
     assert target in suspending.reachable
     assert target not in returning.reachable
-    assert (0, returning.index_to_block[2]) not in returning.edge_kinds
+    assert (0, returning.op_blocks[2]) not in returning.edge_kinds
 
 
 # --- Stateful polls keep every value a resume needs in the frame ------------
@@ -6588,14 +6626,10 @@ def _reloads_before_their_store(ops: list[MoltOp]) -> list[int]:
     """Reloads that the first activation reaches before storing their slot."""
     cfg = build_cfg(ops)
     switch_block = next(
-        cfg.index_to_block[idx]
-        for idx, op in enumerate(ops)
-        if op.kind == "STATE_SWITCH"
+        cfg.op_blocks[idx] for idx, op in enumerate(ops) if op.kind == "STATE_SWITCH"
     )
     label_blocks = {
-        cfg.index_to_block[idx]
-        for idx, op in enumerate(ops)
-        if op.kind == "STATE_LABEL"
+        cfg.op_blocks[idx] for idx, op in enumerate(ops) if op.kind == "STATE_LABEL"
     }
 
     def first_activation_edge(pred: int, block: int) -> bool:
@@ -6688,9 +6722,7 @@ def test_prologue_values_keep_the_first_activation_value() -> None:
     cfg = build_cfg(ops)
     from_resume: set[int] = set()
     pending = [
-        cfg.index_to_block[idx]
-        for idx, op in enumerate(ops)
-        if op.kind == "STATE_LABEL"
+        cfg.op_blocks[idx] for idx, op in enumerate(ops) if op.kind == "STATE_LABEL"
     ]
     while pending:
         block = pending.pop()
@@ -6700,4 +6732,4 @@ def test_prologue_values_keep_the_first_activation_value() -> None:
     for idx, op in enumerate(ops):
         if op.kind == "STORE_CLOSURE" and op.args[1] in baseline_slots:
             assert idx > switch, "a prologue store would save every activation"
-            assert cfg.index_to_block[idx] not in from_resume, idx
+            assert cfg.op_blocks[idx] not in from_resume, idx

@@ -292,7 +292,7 @@ class MidendDataflowMixin(GeneratorMixinBase):
                 failures.append((op_idx, op.kind, out_name))
                 continue
             definition_index[out_name] = op_idx
-            definition_block[out_name] = cfg.index_to_block[op_idx]
+            definition_block[out_name] = cfg.op_blocks[op_idx]
 
         # Collect which value names are consumed by GETATTR/CALL/LOOKUP ops
         # as default or sentinel arguments — these are the critical consumers
@@ -648,26 +648,23 @@ class MidendDataflowMixin(GeneratorMixinBase):
                     return value_lattice(source.name, known)
                 return _SCCP_OVERDEFINED
             if op.kind == "PHI" and op.args:
-                block_id = cfg.index_to_block.get(op_index)
-                if block_id is not None:
-                    block_preds = cfg.predecessors.get(block_id, [])
-                    if len(block_preds) == len(op.args):
-                        merged: Any = _SCCP_UNKNOWN
-                        seen_exec = False
-                        for arg, pred in zip(op.args, block_preds):
-                            if (pred, block_id) not in executable_edges:
-                                continue
-                            if not isinstance(arg, MoltValue):
-                                return _SCCP_OVERDEFINED
-                            seen_exec = True
-                            merged = merge_lattice(
-                                merged, value_lattice(arg.name, known)
-                            )
-                            if is_overdefined(merged):
-                                return _SCCP_OVERDEFINED
-                        if seen_exec:
-                            return merged
-                        return _SCCP_UNKNOWN
+                block_id = cfg.op_blocks[op_index]
+                block_preds = cfg.predecessors.get(block_id, [])
+                if len(block_preds) == len(op.args):
+                    merged: Any = _SCCP_UNKNOWN
+                    seen_exec = False
+                    for arg, pred in zip(op.args, block_preds):
+                        if (pred, block_id) not in executable_edges:
+                            continue
+                        if not isinstance(arg, MoltValue):
+                            return _SCCP_OVERDEFINED
+                        seen_exec = True
+                        merged = merge_lattice(merged, value_lattice(arg.name, known))
+                        if is_overdefined(merged):
+                            return _SCCP_OVERDEFINED
+                    if seen_exec:
+                        return merged
+                    return _SCCP_UNKNOWN
                 merged = _SCCP_UNKNOWN
                 for arg in op.args:
                     if not isinstance(arg, MoltValue):
@@ -1093,7 +1090,7 @@ class MidendDataflowMixin(GeneratorMixinBase):
                     back_succ = (
                         None
                         if loop_start_idx is None
-                        else cfg.index_to_block.get(loop_start_idx)
+                        else cfg.op_blocks[loop_start_idx]
                     )
                     if back_succ is not None:
                         exit_succ = next(

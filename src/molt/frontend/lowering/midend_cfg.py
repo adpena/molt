@@ -334,10 +334,8 @@ class MidendCFGMixin(GeneratorMixinBase):
 
         loop_remove_markers: set[int] = set()
         for loop_start, loop_end in control.loop_start_to_end.items():
-            end_block = cfg.index_to_block.get(loop_end)
-            start_block = cfg.index_to_block.get(loop_start)
-            if end_block is None or start_block is None:
-                continue
+            end_block = cfg.op_blocks[loop_end]
+            start_block = cfg.op_blocks[loop_start]
             if (end_block, start_block) in executable_edges:
                 continue
             # Keep loop markers whenever dynamic loop-control ops are present
@@ -399,81 +397,77 @@ class MidendCFGMixin(GeneratorMixinBase):
                 loop_marker_prunes += 1
                 continue
             if op.kind == "LOOP_END":
-                block_id = cfg.index_to_block.get(idx)
-                if block_id is not None:
-                    chosen = single_exec_succ_by_block.get(block_id)
-                    succs = cfg.successors.get(block_id, [])
-                    loop_start_idx = control.loop_end_to_start.get(idx)
-                    back_succ = (
-                        None
-                        if loop_start_idx is None
-                        else cfg.index_to_block.get(loop_start_idx)
+                block_id = cfg.op_blocks[idx]
+                chosen = single_exec_succ_by_block.get(block_id)
+                succs = cfg.successors.get(block_id, [])
+                loop_start_idx = control.loop_end_to_start.get(idx)
+                back_succ = (
+                    None if loop_start_idx is None else cfg.op_blocks[loop_start_idx]
+                )
+                if chosen is not None and len(succs) >= 2 and back_succ is not None:
+                    exit_succ = next(
+                        (succ for succ in succs if succ != back_succ), None
                     )
-                    if chosen is not None and len(succs) >= 2 and back_succ is not None:
-                        exit_succ = next(
-                            (succ for succ in succs if succ != back_succ), None
+                    if chosen == back_succ and exit_succ is not None:
+                        loop_rewrites += 1
+                        back_label = block_jump_label_arg.get(back_succ)
+                        if back_label is not None:
+                            out.append(
+                                MoltOp(
+                                    kind="JUMP",
+                                    args=[back_label],
+                                    result=MoltValue("none"),
+                                    metadata=op.metadata,
+                                )
+                            )
+                            continue
+                        out.append(
+                            MoltOp(
+                                kind="LOOP_CONTINUE",
+                                args=[],
+                                result=MoltValue("none"),
+                                metadata=op.metadata,
+                            )
                         )
-                        if chosen == back_succ and exit_succ is not None:
-                            loop_rewrites += 1
-                            back_label = block_jump_label_arg.get(back_succ)
-                            if back_label is not None:
-                                out.append(
-                                    MoltOp(
-                                        kind="JUMP",
-                                        args=[back_label],
-                                        result=MoltValue("none"),
-                                        metadata=op.metadata,
-                                    )
-                                )
-                                continue
+                        continue
+                    if chosen == exit_succ:
+                        loop_rewrites += 1
+                        exit_label = (
+                            None
+                            if exit_succ is None
+                            else block_jump_label_arg.get(exit_succ)
+                        )
+                        if exit_label is not None:
                             out.append(
                                 MoltOp(
-                                    kind="LOOP_CONTINUE",
-                                    args=[],
+                                    kind="JUMP",
+                                    args=[exit_label],
                                     result=MoltValue("none"),
                                     metadata=op.metadata,
                                 )
                             )
                             continue
-                        if chosen == exit_succ:
-                            loop_rewrites += 1
-                            exit_label = (
-                                None
-                                if exit_succ is None
-                                else block_jump_label_arg.get(exit_succ)
+                        out.append(
+                            MoltOp(
+                                kind="LOOP_BREAK",
+                                args=[],
+                                result=MoltValue("none"),
+                                metadata=op.metadata,
                             )
-                            if exit_label is not None:
-                                out.append(
-                                    MoltOp(
-                                        kind="JUMP",
-                                        args=[exit_label],
-                                        result=MoltValue("none"),
-                                        metadata=op.metadata,
-                                    )
-                                )
-                                continue
-                            out.append(
-                                MoltOp(
-                                    kind="LOOP_BREAK",
-                                    args=[],
-                                    result=MoltValue("none"),
-                                    metadata=op.metadata,
-                                )
-                            )
-                            continue
+                        )
+                        continue
             if op.kind in {"LOOP_BREAK_IF_TRUE", "LOOP_BREAK_IF_FALSE"}:
                 break_taken = loop_break_choice_by_index.get(idx)
                 if break_taken is None:
-                    block_id = cfg.index_to_block.get(idx)
-                    if block_id is not None:
-                        chosen = single_exec_succ_by_block.get(block_id)
-                        succs = cfg.successors.get(block_id, [])
-                        if chosen is not None and len(succs) >= 2:
-                            break_taken = chosen == succs[1]
+                    block_id = cfg.op_blocks[idx]
+                    chosen = single_exec_succ_by_block.get(block_id)
+                    succs = cfg.successors.get(block_id, [])
+                    if chosen is not None and len(succs) >= 2:
+                        break_taken = chosen == succs[1]
                 if break_taken is True:
                     loop_rewrites += 1
-                    block_id = cfg.index_to_block.get(idx)
-                    succs = [] if block_id is None else cfg.successors.get(block_id, [])
+                    block_id = cfg.op_blocks[idx]
+                    succs = cfg.successors.get(block_id, [])
                     break_succ = succs[1] if len(succs) >= 2 else None
                     break_label = (
                         None
