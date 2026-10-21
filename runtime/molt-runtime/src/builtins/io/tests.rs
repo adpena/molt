@@ -214,7 +214,18 @@ fn vfs_metadata_admission_and_call_budget() {
 fn native_stat_record_device_projection_tracks_python_version() {
     // Pinned posixmodule.c: 3.12 uses signed C long for st_rdev;
     // 3.13+ uses _PyLong_FromDev's unsigned view for this non-NODEV value.
-    for (minor, expected) in [(12, "-2"), (13, "18446744073709551614")] {
+    let unsigned_dev32 = std::mem::size_of::<libc::dev_t>() == 4 && libc::dev_t::MIN == 0;
+    let old = if unsigned_dev32 && std::mem::size_of::<libc::c_long>() == 8 {
+        "4294967294"
+    } else {
+        "-2"
+    };
+    let modern = if unsigned_dev32 {
+        "4294967294"
+    } else {
+        "18446744073709551614"
+    };
+    for (minor, expected) in [(12, old), (13, modern)] {
         let transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             transaction.with_target_python_minor(py, minor, || {
