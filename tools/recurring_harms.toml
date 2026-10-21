@@ -1,5 +1,10 @@
 schema_version = 1
 
+# Each harm names the guard that catches it and the canary that proves the guard
+# can still fire. A hook-spine guard (tools.hooks.*) that is unwired or
+# observe-only names its open ledger row as `gap`; tools/check_gate_liveness.py
+# checks that claim against the live wiring in both directions.
+
 [[harm]]
 id = "agent-process-termination"
 harm = "A guard, gate, or hook gains capability to terminate an agent process."
@@ -11,6 +16,7 @@ id = "destructive-git-shared-checkout"
 harm = "Destructive git mutates the shared canonical checkout."
 guard = "tools.hooks.bash_guard"
 canary = "bash_guard.destructive-git-on-shared-checkout"
+gap = "HF-423"
 
 [[harm]]
 id = "disk-fill"
@@ -35,3 +41,4 @@ id = "session-learning-loss"
 harm = "A session ends without persisting its landings, crux learning, and open frontier."
 guard = "tools.hooks.session_learning"
 canary = "session_learning.digest-carries-crux-and-frontier"
+gap = "HF-427"

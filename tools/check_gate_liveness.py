@@ -10,12 +10,22 @@ this tool fails (exit 1 under ``--check``).
 
 Every canary calls a PURE ``decide()`` -- no subprocess, no environment -- so the
 liveness check is deterministic and fast.
+
+A canary proves a guard still CAN fire, not that it runs. For each harm that
+``tools/recurring_harms.toml`` assigns to a hook-spine guard (``tools.hooks.*``),
+the check also reads the live wiring: the hooks the ``.claude/settings.json``
+commands start, the ``stop_gates.GATES`` legs, and each guard's
+``[[gate_flip]]`` state. A wired guard whose flip (if any) is ``strict``
+enforces. One that does not must name its open ledger row as ``gap``; a gap on
+an enforcing guard is stale. Both mismatches fail.
 """
 
 from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import json
+import shlex
 import sys
 import tomllib
 from dataclasses import dataclass
@@ -563,6 +573,82 @@ def _canaries() -> list[Canary]:
     ]
 
 
+HOOK_GUARD_PREFIX = "tools.hooks."
+
+
+def hook_enforcement_problems(
+    harms: list[dict],
+    *,
+    wired: set[str],
+    flip_states: dict[str, str],
+    open_keys: set[str],
+) -> list[str]:
+    """Mismatches between each hook-guarded harm's ``gap`` and the live wiring.
+
+    *wired* holds the module names of the hooks that run; *flip_states* maps a
+    gate name to its ``[[gate_flip]]`` state; *open_keys* are the ledger's
+    open finding ids.
+    """
+    problems: list[str] = []
+    for harm in harms:
+        guard = str(harm["guard"])
+        if not guard.startswith(HOOK_GUARD_PREFIX):
+            continue
+        name = guard.removeprefix(HOOK_GUARD_PREFIX)
+        enforcing = guard in wired and flip_states.get(name, "strict") == "strict"
+        gap = harm.get("gap")
+        if enforcing and gap is not None:
+            problems.append(f"{harm['id']}: {name} enforces, so gap {gap} is stale")
+        elif not enforcing and gap is None:
+            state = "unwired" if guard not in wired else "observe-only"
+            problems.append(f"{harm['id']}: {name} is {state} and names no gap row")
+        elif gap is not None and gap not in open_keys:
+            problems.append(f"{harm['id']}: gap {gap} is not an open ledger row")
+    return problems
+
+
+def _wired_hook_modules() -> set[str]:
+    """The hook modules that run: each settings command's and each Stop leg's."""
+    from tools.hooks import stop_gates
+
+    settings = json.loads(
+        (ROOT / ".claude" / "settings.json").read_text(encoding="utf-8")
+    )
+    wired = {evaluate.__module__ for _name, evaluate in stop_gates.GATES}
+    for groups in settings["hooks"].values():
+        for group in groups:
+            for hook in group["hooks"]:
+                *_prefix, launcher, name = shlex.split(hook["command"])
+                if Path(launcher).name != "run.sh":
+                    raise ValueError(
+                        f"a settings hook must end in `run.sh <hook>`: {hook['command']!r}"
+                    )
+                wired.add(HOOK_GUARD_PREFIX + name)
+    return wired
+
+
+def _hook_enforcement_canaries() -> list[Canary]:
+    from tools import finding_status
+    from tools.check_gate_flips import DEFAULT_CONFIG, load_flip_entries
+
+    harms = tomllib.loads(
+        (ROOT / "tools" / "recurring_harms.toml").read_text(encoding="utf-8")
+    ).get("harm", [])
+    problems = hook_enforcement_problems(
+        harms,
+        wired=_wired_hook_modules(),
+        flip_states={
+            str(entry["name"]): str(entry.get("state", "warn")).lower()
+            for entry in load_flip_entries(DEFAULT_CONFIG)
+        },
+        open_keys=set(finding_status.read_ledger(ROOT).open_keys),
+    )
+    return [
+        Canary("recurring_harms", f"enforcement:{problem}", lambda: False)
+        for problem in problems
+    ]
+
+
 def _registered_canaries() -> set[str]:
     try:
         payload = tomllib.loads(
@@ -583,6 +669,7 @@ def run() -> list[tuple[Canary, bool]]:
     missing = _registered_canaries() - _live_canary_keys(canaries)
     for name in sorted(missing):
         canaries.append(Canary("recurring_harms", f"missing:{name}", lambda: False))
+    canaries.extend(_hook_enforcement_canaries())
     for c in canaries:
         try:
             ok = bool(c.fires())

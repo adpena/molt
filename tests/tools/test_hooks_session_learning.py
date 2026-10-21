@@ -55,22 +55,40 @@ def test_record_writes_durable_digest_into_memory_corpus(tmp_path, monkeypatch):
     )
 
 
-def test_record_internal_failure_is_fail_open_at_stop_hook(tmp_path, monkeypatch):
+def test_stop_hook_never_runs_the_memory_writer(tmp_path, monkeypatch, capsys):
+    # Unwired (owner, 2026-10-21; HF-427): a Stop wrote a file into the user's
+    # Claude memory directory. A full Stop with a real transcript must not reach
+    # the writer or the memory directory, and blocks nothing.
     from tools.hooks import stop_gates
 
+    memory_dir = tmp_path / "memory"
+    memory_dir.mkdir()
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_text(
+        json.dumps({"text": "Crux: one authority.\nOpen frontier: migration."}) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        session_learning.memory_graph, "discover_memory_dir", lambda **_: memory_dir
+    )
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("a Stop reached the session-learning writer")
+
+    monkeypatch.setattr(session_learning, "record", refuse)
     monkeypatch.setattr(
         stop_gates._common,
         "read_hook_input",
-        lambda: {"cwd": str(tmp_path), "session_id": "s"},
+        lambda: {
+            "cwd": str(tmp_path),
+            "session_id": "s",
+            "transcript_path": str(transcript),
+        },
     )
     monkeypatch.setattr(stop_gates._common, "repo_root", lambda cwd=None: tmp_path)
-    monkeypatch.setattr(
-        stop_gates.session_learning,
-        "record",
-        lambda *args: (_ for _ in ()).throw(RuntimeError("boom")),
-    )
-    monkeypatch.setattr(stop_gates, "GATES", [])
     assert stop_gates.run() == 0
+    assert capsys.readouterr().out == ""
+    assert list(memory_dir.iterdir()) == []
 
 
 def test_session_learning_self_test_is_live():

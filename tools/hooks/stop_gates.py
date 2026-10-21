@@ -51,8 +51,9 @@ from tools import anti_recurrence_gate, triality_gate, magnitude_dismissal_gate 
 # The landing gate and the session-learning writer are not wired (owner,
 # 2026-10-21) until they are redesigned: the landing gate could not attribute
 # landing-queue activity to a session, and session learning wrote a file into
-# the user's Claude memory directory on most Stops. Their gate_flip entries in
-# tools/proof_plan.toml state what each needs before it returns.
+# the user's Claude memory directory on most Stops. The landing gate's
+# [[gate_flip]] in tools/proof_plan.toml states what it needs before it returns
+# (HF-424); HF-427 tracks the session-learning redesign.
 GATES = [
     ("triality_gate", triality_gate.evaluate),
     ("magnitude_dismissal_gate", magnitude_dismissal_gate.evaluate),
