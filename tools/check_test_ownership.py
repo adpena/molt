@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 import sys
 import tomllib
@@ -36,29 +37,40 @@ def test_files(root: Path) -> set[str]:
     return files
 
 
+def command_test_targets(argv: Sequence[object]) -> frozenset[str]:
+    """The whole test files and directories under tests/ that one argv names.
+
+    This is the one ownership rule: this gate and the proof queue's focused
+    pytest admission (HF-179) both read it.
+    """
+    return frozenset(
+        argument.rstrip("/")
+        for argument in argv
+        if isinstance(argument, str)
+        and argument.startswith("tests")
+        and "::" not in argument
+    )
+
+
+def owns(targets: frozenset[str] | set[str], path: str) -> bool:
+    """Whether ``targets`` name repository-relative ``path`` or a directory of it."""
+    return path in targets or bool(
+        {str(parent) for parent in PurePosixPath(path).parents} & targets
+    )
+
+
 def plan_targets(root: Path) -> set[str]:
     """Every whole file or directory under tests/ that a plan command names."""
     plan = tomllib.loads((root / "tools" / "proof_plan.toml").read_text("utf-8"))
-    targets = set()
+    targets: set[str] = set()
     for command in plan.get("command", []):
-        for argument in command.get("argv", []):
-            if (
-                isinstance(argument, str)
-                and argument.startswith("tests")
-                and "::" not in argument
-            ):
-                targets.add(argument.rstrip("/"))
+        targets.update(command_test_targets(command.get("argv", [])))
     return targets
 
 
 def unowned(root: Path) -> set[str]:
     targets = plan_targets(root)
-    result = set()
-    for file in test_files(root):
-        parents = {str(parent) for parent in PurePosixPath(file).parents}
-        if file not in targets and not parents & targets:
-            result.add(file)
-    return result
+    return {file for file in test_files(root) if not owns(targets, file)}
 
 
 def read_baseline(root: Path) -> set[str] | None:
