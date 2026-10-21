@@ -6788,12 +6788,30 @@ def test_run_guarded_terminates_a_group_member_orphaned_between_samples(
     before the reap while the group ID is still reserved, puts it under
     custody (HF-146). Without it the group keeps a live member and closure
     stays unproven.
+
+    The child starts the grandchild only after that launch sample. A child
+    that started it sooner, as a starved guard allowed at load 58-65, put it
+    under parentage custody in the launch sample instead, and the census
+    then had nothing new to admit (HF-368).
     """
     monkeypatch.setattr(memory_guard, "DEFAULT_FAST_START_POLL_INTERVAL_SEC", 60.0)
+    launch_sampled = tmp_path / "launch-sampled"
+    custody_sample = memory_guard.sample_processes_custody
+
+    def sample_then_release_the_child(interest):
+        samples = custody_sample(interest)
+        launch_sampled.touch()
+        return samples
+
+    monkeypatch.setattr(
+        memory_guard, "sample_processes_custody", sample_then_release_the_child
+    )
     pid_file = tmp_path / "grandchild.pid"
     marker = f"group-orphan-of-{tmp_path.name}"
     script = (
-        "import pathlib, subprocess, sys\n"
+        "import pathlib, subprocess, sys, time\n"
+        f"while not pathlib.Path({str(launch_sampled)!r}).exists():\n"
+        "    time.sleep(0.01)\n"
         "grandchild = subprocess.Popen(\n"
         f"    [sys.executable, '-c', 'import time; time.sleep(60)', {marker!r}],\n"
         ")\n"
@@ -6811,6 +6829,9 @@ def test_run_guarded_terminates_a_group_member_orphaned_between_samples(
 
         assert result.returncode == 0, result.stderr
         assert result.child_process is not None
+        # Only the launch sample ran; it preceded the grandchild's birth.
+        assert result.sampling_telemetry is not None
+        assert result.sampling_telemetry.attempts == 1
         assert result.child_process.pid in result.orphaned_process_groups
         assert result.descendants_closed is True
         assert result.temporary_artifacts is not None
