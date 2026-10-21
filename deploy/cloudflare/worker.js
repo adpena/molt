@@ -23,6 +23,7 @@
  * generated for debugging without exposing PII.
  */
 
+import { clientErrorResponse, decodeBase64Field, readJsonObject } from "./client_input.js";
 import { handleOcrRequest, handleTokensRequest, handleBatchOcr, handleStructuredOcr, handleDetailedOcr, handleTableOcr, handleTemplateExtractFast, handleInvoiceFill, normalizeOcrResultPayload, handlePaddleMoltInference, handleNemotronOcr } from "./ocr_api.js";
 import { verifyX402 } from "./x402.js";
 import { withMonitoring, categorizeError } from "./monitoring.js";
@@ -1613,11 +1614,13 @@ const worker = {
         let extractOptions = {};
 
         if (ct.includes("application/json")) {
-          const body = await request.json();
+          const parsed = await readJsonObject(request);
+          if ("error" in parsed) return clientErrorResponse(parsed, rid, cors);
+          const body = parsed.value;
           if (body.image && typeof body.image === "string") {
-            const raw = atob(body.image);
-            imageBytes = new Uint8Array(raw.length);
-            for (let i = 0; i < raw.length; i++) imageBytes[i] = raw.charCodeAt(i);
+            const decoded = decodeBase64Field(body.image, "image");
+            if ("error" in decoded) return clientErrorResponse(decoded, rid, cors);
+            imageBytes = decoded.bytes;
             extractOptions = {
               documentType: body.document_type || body.documentType || "invoice",
               preserveLogo: body.preserve_logo !== false,
@@ -2100,7 +2103,9 @@ const worker = {
           const gpuStatus = gpuInferenceStatus(env);
           if (gpuStatus.configured) {
             try {
-              const body = await request.clone().json();
+              const parsed = await readJsonObject(request.clone());
+              if ("error" in parsed) return clientErrorResponse(parsed, rid, cors);
+              const body = parsed.value;
               if (body.image && typeof body.image === "string") {
                 const gpuResult = await proxyToGPU(env, body.image, {
                   maxTokens: body.max_tokens || 512,
@@ -2198,7 +2203,9 @@ const worker = {
         // Forwards to an external GPU inference service for bfloat16-quality inference.
         if (path === "/ocr" && useBackend === "gpu") {
           try {
-            const body = await request.json();
+            const parsed = await readJsonObject(request);
+            if ("error" in parsed) return clientErrorResponse(parsed, rid, cors);
+            const body = parsed.value;
             if (!body.image || typeof body.image !== "string") {
               return new Response(
                 JSON.stringify({ error: "Missing 'image' field (base64 string)", request_id: rid }),
@@ -2283,7 +2290,9 @@ const worker = {
           }
 
           try {
-            const body = await request.json();
+            const parsed = await readJsonObject(request);
+            if ("error" in parsed) return clientErrorResponse(parsed, rid, cors);
+            const body = parsed.value;
             if (!body.image || typeof body.image !== "string") {
               return new Response(
                 JSON.stringify({ error: "Missing 'image' field (base64 string)", request_id: rid }),
@@ -2422,13 +2431,10 @@ const worker = {
             const clonedReq = request.clone();
             const ct = clonedReq.headers.get("Content-Type") || "";
             if (ct.includes("application/json")) {
-              const body = await clonedReq.json();
-              if (body.image && typeof body.image === "string") {
-                const raw = atob(body.image);
-                const bytes = new Uint8Array(raw.length);
-                for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
-                imageHash = await hashImageBytes(bytes);
-              }
+              // Best effort: a malformed body is answered by the OCR handler.
+              const parsed = await readJsonObject(clonedReq);
+              const decoded = "error" in parsed ? parsed : decodeBase64Field(parsed.value.image, "image");
+              if (!("error" in decoded)) imageHash = await hashImageBytes(decoded.bytes);
             } else if (ct.includes("multipart/form-data")) {
               const formData = await clonedReq.formData();
               const file = formData.get("image");
@@ -2731,16 +2737,12 @@ const worker = {
           let extractOptions = {};
 
           if (ct.includes("application/json")) {
-            const body = await request.json();
-            if (!body.image || typeof body.image !== "string") {
-              return new Response(
-                JSON.stringify({ error: "Missing 'image' field (base64 string)", request_id: rid }),
-                { status: 400, headers: { ...cors, "Content-Type": "application/json" } },
-              );
-            }
-            const raw = atob(body.image);
-            imageBytes = new Uint8Array(raw.length);
-            for (let i = 0; i < raw.length; i++) imageBytes[i] = raw.charCodeAt(i);
+            const parsed = await readJsonObject(request);
+            if ("error" in parsed) return clientErrorResponse(parsed, rid, cors);
+            const body = parsed.value;
+            const decoded = decodeBase64Field(body.image, "image");
+            if ("error" in decoded) return clientErrorResponse(decoded, rid, cors);
+            imageBytes = decoded.bytes;
             extractOptions = {
               documentType: body.document_type || body.documentType || "invoice",
               preserveLogo: body.preserve_logo !== false,

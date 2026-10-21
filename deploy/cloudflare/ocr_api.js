@@ -20,6 +20,7 @@
  */
 
 import { buildFalconOcrPromptIds } from "./tokenizer.js";
+import { clientErrorResponse, decodeBase64Field, readJsonObject } from "./client_input.js";
 
 const MAX_IMAGE_BYTES_DEFAULT = 10 * 1024 * 1024; // 10 MB
 
@@ -105,20 +106,17 @@ async function extractImage(request, env) {
   }
 
   if (contentType.includes("application/json")) {
-    const body = /** @type {{ image?: string, format?: string, max_tokens?: number, category?: string }} */ (await request.json());
-    if (!body.image || typeof body.image !== "string") {
-      return { error: "Missing 'image' field (base64 string) in JSON body", status: 400 };
-    }
-    const raw = atob(body.image);
-    if (raw.length > maxBytes) {
+    const parsed = await readJsonObject(request);
+    if ("error" in parsed) return parsed;
+    const body = /** @type {{ image?: string, format?: string, max_tokens?: number, category?: string }} */ (parsed.value);
+    const decoded = decodeBase64Field(body.image, "image");
+    if ("error" in decoded) return decoded;
+    const bytes = decoded.bytes;
+    if (bytes.length > maxBytes) {
       return {
-        error: `Image too large: ${raw.length} bytes (max ${maxBytes})`,
+        error: `Image too large: ${bytes.length} bytes (max ${maxBytes})`,
         status: 413,
       };
-    }
-    const bytes = new Uint8Array(raw.length);
-    for (let i = 0; i < raw.length; i++) {
-      bytes[i] = raw.charCodeAt(i);
     }
     const format = body.format || "image/jpeg";
     if (!SUPPORTED_CONTENT_TYPES.has(format)) {
@@ -822,13 +820,15 @@ export async function handleTokensRequest(request, backend, env, cors, rid, devi
     );
   }
 
+  const parsed = await readJsonObject(request);
+  if ("error" in parsed) return clientErrorResponse(parsed, rid, cors);
   const body = /** @type {{
     width: number,
     height: number,
     rgb: string,
     prompt_ids: number[],
     max_new_tokens?: number,
-  }} */ (await request.json());
+  }} */ (parsed.value);
 
   if (
     typeof body.width !== "number" ||
@@ -848,11 +848,9 @@ export async function handleTokensRequest(request, backend, env, cors, rid, devi
     );
   }
 
-  const rawRgb = atob(body.rgb);
-  const rgb = new Uint8Array(rawRgb.length);
-  for (let i = 0; i < rawRgb.length; i++) {
-    rgb[i] = rawRgb.charCodeAt(i);
-  }
+  const decodedRgb = decodeBase64Field(body.rgb, "rgb");
+  if ("error" in decodedRgb) return clientErrorResponse(decodedRgb, rid, cors);
+  const rgb = decodedRgb.bytes;
 
   const maxNewTokens = body.max_new_tokens || 512;
   const tokens = invokeOcrTokens(backend, body.width, body.height, rgb, body.prompt_ids, maxNewTokens);
@@ -1023,7 +1021,9 @@ export async function handleBatchOcr(request, backend, env, cors, rid, device = 
     );
   }
 
-  const body = /** @type {{ images?: string[], prompt?: string }} */ (await request.json());
+  const parsed = await readJsonObject(request);
+  if ("error" in parsed) return clientErrorResponse(parsed, rid, cors);
+  const body = /** @type {{ images?: string[], prompt?: string }} */ (parsed.value);
 
   if (!Array.isArray(body.images) || body.images.length === 0) {
     return new Response(
@@ -1060,42 +1060,26 @@ export async function handleBatchOcr(request, backend, env, cors, rid, device = 
     const imageStart = Date.now();
     const b64 = body.images[idx];
 
-    if (typeof b64 !== "string" || b64.length === 0) {
+    const decoded = decodeBase64Field(b64, `images[${idx}]`);
+    if ("error" in decoded) {
       results.push({
         text: "",
         tokens: [],
         time_ms: 0,
-        error: `Image at index ${idx}: invalid or empty base64 string`,
+        error: `Image at index ${idx}: ${decoded.error}`,
       });
       continue;
     }
+    const bytes = decoded.bytes;
 
-    let raw;
-    try {
-      raw = atob(b64);
-    } catch (_e) {
+    if (bytes.length > maxBytes) {
       results.push({
         text: "",
         tokens: [],
         time_ms: 0,
-        error: `Image at index ${idx}: invalid base64 encoding`,
+        error: `Image at index ${idx}: too large (${bytes.length} bytes, max ${maxBytes})`,
       });
       continue;
-    }
-
-    if (raw.length > maxBytes) {
-      results.push({
-        text: "",
-        tokens: [],
-        time_ms: 0,
-        error: `Image at index ${idx}: too large (${raw.length} bytes, max ${maxBytes})`,
-      });
-      continue;
-    }
-
-    const bytes = new Uint8Array(raw.length);
-    for (let i = 0; i < raw.length; i++) {
-      bytes[i] = raw.charCodeAt(i);
     }
 
     // Check per-image cache if cache operations are provided
@@ -1477,7 +1461,9 @@ export async function handleDetailedOcr(request, env, cors, rid) {
     );
   }
 
-  const body = await request.json();
+  const parsed = await readJsonObject(request);
+  if ("error" in parsed) return clientErrorResponse(parsed, rid, cors);
+  const body = parsed.value;
   const maxBytes = parseInt(env.MAX_IMAGE_BYTES || String(MAX_IMAGE_BYTES_DEFAULT), 10);
 
   // Multi-page: { "images": ["b64_1", "b64_2", ...] }
@@ -1503,28 +1489,18 @@ export async function handleDetailedOcr(request, env, cors, rid) {
   // Decode all images to bytes
   const pageBytes = [];
   for (let i = 0; i < imageList.length; i++) {
-    const b64 = imageList[i];
-    if (typeof b64 !== "string" || b64.length === 0) {
-      return new Response(
-        JSON.stringify({ error: `Page ${i}: invalid or empty base64`, request_id: rid }),
-        { status: 400, headers: { ...cors, "Content-Type": "application/json" } },
+    const decoded = decodeBase64Field(imageList[i], `images[${i}]`);
+    if ("error" in decoded) {
+      return clientErrorResponse({ error: `Page ${i}: ${decoded.error}`, status: decoded.status }, rid, cors);
+    }
+    const bytes = decoded.bytes;
+    if (bytes.length > maxBytes) {
+      return clientErrorResponse(
+        { error: `Page ${i}: exceeds max size (${bytes.length} > ${maxBytes})`, status: 413 },
+        rid,
+        cors,
       );
     }
-    let raw;
-    try { raw = atob(b64); } catch (_e) {
-      return new Response(
-        JSON.stringify({ error: `Page ${i}: invalid base64 encoding`, request_id: rid }),
-        { status: 400, headers: { ...cors, "Content-Type": "application/json" } },
-      );
-    }
-    if (raw.length > maxBytes) {
-      return new Response(
-        JSON.stringify({ error: `Page ${i}: exceeds max size (${raw.length} > ${maxBytes})`, request_id: rid }),
-        { status: 413, headers: { ...cors, "Content-Type": "application/json" } },
-      );
-    }
-    const bytes = new Uint8Array(raw.length);
-    for (let j = 0; j < raw.length; j++) bytes[j] = raw.charCodeAt(j);
     pageBytes.push(bytes);
   }
 
@@ -1980,7 +1956,9 @@ Only include sections actually present. Output ONLY JSON.
  * @returns {Promise<Response>}
  */
 export async function handleInvoiceFill(request, env, cors, rid) {
-  const body = await request.json();
+  const parsed = await readJsonObject(request);
+  if ("error" in parsed) return clientErrorResponse(parsed, rid, cors);
+  const body = parsed.value;
   const { utterance } = body;
 
   if (!utterance) {
