@@ -95,6 +95,26 @@ uv run --python 3.12 molt build examples/hello.py --profile dev
 
 `--release` is shorthand for `--profile release`.
 
+## Run From Memory (JIT Tier)
+
+In a source checkout on macOS arm64, `molt run --tier jit` skips object
+emission, the link and the executable. The `molt-jit` runner compiles the
+program into its own memory with the same code generator and runs it against
+the same runtime bytes as an AOT build:
+
+```bash
+uv run --python 3.12 molt run examples/hello.py --tier jit
+```
+
+The first run builds the runner and links the runtime image once. Each run
+compiles the whole program, the stdlib modules it imports included, so a
+program with a large stdlib closure can spend tens of seconds compiling per
+run; `aot` stays the default for that reason. The JIT tier never falls back
+to an AOT build: a construct it cannot run, such as a cross
+target or the LLVM backend, fails with a message that names it. Linux is
+unverified and Windows is unsupported; see
+[design/dev_jit_tier.md](design/dev_jit_tier.md).
+
 ## Compare Against CPython
 
 ```bash
