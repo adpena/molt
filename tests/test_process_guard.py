@@ -120,8 +120,10 @@ def test_guard_owner_never_adopts_a_foreign_loaded_guard(
     owner = process_guard._molt_repo_root()
     foreign = tmp_path / "compiler-inputs"
     (foreign / "tools").mkdir(parents=True)
-    (foreign / "pyproject.toml").write_text("[project]\nname='input'\n")
-    (foreign / "tools" / "harness_memory_guard.py").write_text("")
+    (foreign / "pyproject.toml").write_text(
+        "[project]\nname='input'\n", encoding="utf-8"
+    )
+    (foreign / "tools" / "harness_memory_guard.py").write_text("", encoding="utf-8")
     monkeypatch.setenv("MOLT_SOURCE_ROOT", str(foreign))
     loaded = SimpleNamespace(__file__=str(foreign / "tools/harness_memory_guard.py"))
     monkeypatch.setattr(tools, "harness_memory_guard", loaded)

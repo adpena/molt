@@ -1713,7 +1713,9 @@ def test_retirement_binds_complete_checkout_inventory_independent_of_caller_sele
     for root, (owner, kind) in roots.items():
         assert root.exists() is not removal_succeeds
         if not removal_succeeds:
-            assert json.loads((root / ".molt-state-owner.json").read_text()) == {
+            assert json.loads(
+                (root / ".molt-state-owner.json").read_text(encoding="utf-8")
+            ) == {
                 "schema": "molt.state-root-owner.v1",
                 "owner": owner,
                 "kind": kind,
@@ -5180,8 +5182,8 @@ def test_detached_ack_holds_idle_managed_roots_through_actual_child(tmp_path):
     try:
         ready = json.loads((state / "state-use-ready.json").read_text(encoding="utf-8"))
         assert ready["pid"] == pid
-        assert int((state / "pid").read_text()) == ready["pid"]
-        assert (state / "sid").read_text() == (
+        assert int((state / "pid").read_text(encoding="utf-8")) == ready["pid"]
+        assert (state / "sid").read_text(encoding="utf-8") == (
             f"windows-process-group:{pid}" if os.name == "nt" else str(pid)
         )
         deadline = time.monotonic() + 10
@@ -5367,10 +5369,14 @@ def test_detached_retry_preserves_unresolved_birth_and_requires_worker_dispositi
                 )
                 == detached.EXIT_OK
             )
-            ready = json.loads((state / "state-use-ready.json").read_text())
-            assert int((state / "pid").read_text()) == ready["pid"]
+            ready = json.loads(
+                (state / "state-use-ready.json").read_text(encoding="utf-8")
+            )
+            assert int((state / "pid").read_text(encoding="utf-8")) == ready["pid"]
             assert _wait_done(drv, capsys, "retry", state_root)["rc"] == 0
-            assert "replacement completed" in (state / "run.log").read_text()
+            assert "replacement completed" in (state / "run.log").read_text(
+                encoding="utf-8"
+            )
     finally:
         release.touch()
         for process in children:
@@ -5465,15 +5471,19 @@ def test_detached_terminal_publication_follows_actual_child_and_owner_cleanup(
             yield
         # A parseable terminal record authorizes another caller to replace the
         # directory. Observe its absence at the actual owner's final cleanup.
-        observations.append((marker.read_text(), (state / "rc").exists()))
+        observations.append(
+            (marker.read_text(encoding="utf-8"), (state / "rc").exists())
+        )
         if cleanup_fails:
             raise OSError("independent owner cleanup failure")
 
     monkeypatch.setattr(detached, "detached_command_use", closing_use)
     assert detached._detached_worker_main(payload) == 0
     assert observations == [("finished", False)]
-    assert (state / "rc").read_text() == ("126" if cleanup_fails else "0")
-    log = (state / "run.log").read_text()
+    assert (state / "rc").read_text(encoding="utf-8") == (
+        "126" if cleanup_fails else "0"
+    )
+    log = (state / "run.log").read_text(encoding="utf-8")
     assert ("independent owner cleanup failure" in log) is cleanup_fails
 
 
@@ -5672,7 +5682,7 @@ def test_detached_observed_pre_ack_death_publishes_failure_before_replacement(
             state, [sys.executable, "-c", "pass"], tmp_path, dict(os.environ)
         )
     assert len(children) == 1 and children[0].poll() == 17
-    assert (state / "pid").read_text() == str(children[0].pid)
-    assert (state / "rc").read_text() == "17"
+    assert (state / "pid").read_text(encoding="utf-8") == str(children[0].pid)
+    assert (state / "rc").read_text(encoding="utf-8") == "17"
     with detached._detached_launch_admission(state, replace=True):
         assert list(state.iterdir()) == []

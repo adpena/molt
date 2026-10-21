@@ -460,7 +460,9 @@ def test_the_committed_acorn_policy_is_the_checkout_input() -> None:
 
     from tools import proof_plan
 
-    data = tomllib.loads((REPO_ROOT / "tools/proof_plan.toml").read_text("utf-8"))
+    data = tomllib.loads(
+        (REPO_ROOT / "tools/proof_plan.toml").read_text("utf-8", encoding="utf-8")
+    )
     policies = proof_plan.load_toolchain_policies(
         data, root=REPO_ROOT, names=("browser-acorn",)
     )
@@ -517,8 +519,10 @@ def test_provisioning_guard_owner_is_distinct_from_content_and_compiler_inputs(
 ):
     foreign = tmp_path / "compiler-inputs"
     (foreign / "tools").mkdir(parents=True)
-    (foreign / "pyproject.toml").write_text("[project]\nname='input'\n")
-    (foreign / "tools/harness_memory_guard.py").write_text("")
+    (foreign / "pyproject.toml").write_text(
+        "[project]\nname='input'\n", encoding="utf-8"
+    )
+    (foreign / "tools/harness_memory_guard.py").write_text("", encoding="utf-8")
     monkeypatch.setenv("MOLT_SOURCE_ROOT", str(foreign))
     spec = dataclasses.replace(_tree(checkout), guard_source_root=REPO_ROOT)
     assert spec.environment["MOLT_SOURCE_ROOT"] == str(foreign)
