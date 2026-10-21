@@ -1292,8 +1292,9 @@ def test_python_path_and_cargo_hook_launches_share_native_environment_custody(tm
         " subprocess.run([executable, '-I', '-S', '-c', \"print('actual-child')\"], check=True)\n"
     )
     server = execution_custody.ChildCustodyEventServer("python", policy)
-    environment[execution_custody.CHILD_POLICY_ENV] = json.dumps(policy)
-    environment.update(server.environment())
+    environment = environment.updated(
+        {execution_custody.CHILD_POLICY_ENV: json.dumps(policy), **server.environment()}
+    )
     bootstrap = Path(execution_custody.__file__).with_name(
         "python_custody_bootstrap.py"
     )
