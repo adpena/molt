@@ -1,34 +1,28 @@
 #!/usr/bin/env python3
-"""Shared, fail-open infrastructure for the molt Claude Code hook spine.
+"""Shared, fail-open infrastructure for the molt Claude Code hooks.
 
-APPARATUS Wave 1 (docs/agent/APPARATUS_FROM_COMMA_LAB.md, A1). Every hook in
-``tools/hooks/`` is wired into ``.claude/settings.json`` and therefore runs on
-the operator's OWN sessions. The single non-negotiable invariant is:
-
-    A BUG IN A HOOK MUST NEVER BRICK A SESSION.
-
-So this module gives every hook the same spine:
+``tools/hooks/wiring.py`` declares the hooks and generates
+``.claude/settings.json``; each runs on the operator's own sessions. The one
+non-negotiable invariant: A BUG IN A HOOK MUST NEVER BRICK A SESSION. So this
+module gives every hook the same spine:
 
 * ``force_utf8()`` -- reuse the landed cp1252 backstop (M43) so a relayed byte
   never crashes a hook on Windows.
-* a PURE, unit-tested ``decide()``/``evaluate()`` surface per hook (defined in
-  the hook module, tested separately from the wrapper).
 * ``run_fail_open()`` -- the wrapper: ANY exception in the hook body is caught,
   logged to ``.molt/state/<hook>_errors.log`` with a loud-escalation threshold
-  (so fail-open is never silent), and the process exits 0 (ALLOW).
-* cross-platform (``msvcrt`` on Windows, ``fcntl`` on POSIX) locked append for
-  the append-only ledgers.
+  (so fail-open is never silent), and the process exits 0.
 
-Nothing here imports a third-party package -- hooks must run under any Python
-3.9+ interpreter (host ``python`` on the Windows box, or any fleet python),
-because the hook ``command`` in settings.json cannot depend on the molt venv.
+Every hook runs under the checkout's own interpreter: each settings command
+starts it through ``tools/hooks/run.sh``, which selects the uv environment's
+Python. Claude Code runs hook commands with the app's PATH, which need not
+carry ``python`` (the macOS desktop app has none).
 """
 
 from __future__ import annotations
 
 import json
 import os
-import subprocess
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -142,7 +136,7 @@ def log_error(hook_name: str, exc: BaseException, root: Path | None = None) -> N
         if count >= ERROR_ESCALATION_THRESHOLD:
             sys.stderr.write(
                 f"[molt-hook:{hook_name}] ALERT: {count} fail-open errors logged to "
-                f"{log_path} -- the {hook_name} guard may be silently inert. Investigate.\n"
+                f"{log_path} -- the {hook_name} hook keeps failing. Investigate.\n"
             )
         sys.stderr.flush()
     except Exception:
@@ -153,13 +147,13 @@ def log_error(hook_name: str, exc: BaseException, root: Path | None = None) -> N
 def run_fail_open(hook_name: str, body: Callable[[], int]) -> None:
     """Run ``body()`` and exit with its code; ANY exception -> log + exit 0.
 
-    This is THE fail-open guarantee. ``body`` may block (print JSON / exit 2) by
-    returning that intent, but if it raises, the session is never wedged.
+    This is THE fail-open guarantee: ``body`` returns its exit code or calls
+    ``sys.exit`` deliberately, and if it raises, the session is never wedged.
     """
     force_utf8()
     try:
         code = body()
-    except SystemExit as se:  # body may sys.exit deliberately (e.g. exit 2 block)
+    except SystemExit as se:  # a deliberate sys.exit passes through
         raise se
     except BaseException as exc:  # noqa: BLE001 - fail-open is the whole point
         log_error(hook_name, exc)
@@ -167,373 +161,15 @@ def run_fail_open(hook_name: str, body: Callable[[], int]) -> None:
     sys.exit(int(code) if isinstance(code, int) else 0)
 
 
-# --- cross-platform locked append ------------------------------------------
+def proof_queue_active_count(root: Path) -> int | None:
+    """Active proof_queue runs (queued, dispatched or running), or None.
 
-
-class _FileLock:
-    """A tiny advisory file lock: msvcrt on Windows, fcntl on POSIX.
-
-    Best-effort: if locking is unavailable the append still happens (a lost lock
-    is better than a wedged hook). Used only for low-contention append-only
-    ledgers, so a rare interleave is acceptable and never destructive.
+    Reads the queue's own state in-process (``state.active_run_count``). None
+    means the state could not be read; the digest reports it as unknown.
     """
+    from tools.proof_queue_pkg import state
 
-    def __init__(self, handle) -> None:  # noqa: ANN001 - file object
-        self._handle = handle
-        self._locked = False
-
-    def __enter__(self):  # noqa: ANN204
-        try:
-            if os.name == "nt":
-                import msvcrt
-
-                # Lock 1 byte at offset 0; enough for append serialization.
-                self._handle.seek(0)
-                msvcrt.locking(self._handle.fileno(), msvcrt.LK_LOCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(self._handle.fileno(), fcntl.LOCK_EX)
-            self._locked = True
-        except Exception:
-            self._locked = False
-        return self
-
-    def __exit__(self, *exc) -> None:  # noqa: ANN002
-        if not self._locked:
-            return
-        try:
-            if os.name == "nt":
-                import msvcrt
-
-                self._handle.seek(0)
-                msvcrt.locking(self._handle.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(self._handle.fileno(), fcntl.LOCK_UN)
-        except Exception:
-            pass
-
-
-def append_jsonl(path: Path, record: dict[str, Any]) -> None:
-    """Append one JSON record (with a ``ts`` if absent) under a file lock.
-
-    Never raises: an audit ledger that cannot be written must not brick a hook.
-    """
     try:
-        record = dict(record)
-        record.setdefault("ts", time.strftime("%Y-%m-%dT%H:%M:%S"))
-        path.parent.mkdir(parents=True, exist_ok=True)
-        line = json.dumps(record, ensure_ascii=True)
-        # Open in append+read so the lock can seek(0) on Windows.
-        with open(path, "a+", encoding="utf-8") as fh:
-            with _FileLock(fh):
-                fh.seek(0, os.SEEK_END)
-                fh.write(line + "\n")
-                fh.flush()
-    except Exception:
-        pass
-
-
-def read_jsonl(path: Path) -> list[dict[str, Any]]:
-    """Read a jsonl ledger, skipping malformed lines. Never raises."""
-    out: list[dict[str, Any]] = []
-    try:
-        if not path.exists():
-            return out
-        with open(path, "r", encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                    if isinstance(obj, dict):
-                        out.append(obj)
-                except Exception:
-                    continue
-    except Exception:
-        return out
-    return out
-
-
-# --- git helpers (all best-effort, short-timeout, never raise) --------------
-
-
-def _git(root: Path, *args: str, timeout: float = 5.0) -> subprocess.CompletedProcess:
-    # UTF-8 + replace (M43): commit subjects / diffs carry em-dashes and other
-    # non-cp1252 bytes; the platform codec would abort an otherwise-fine window
-    # read with UnicodeDecodeError on Windows. Decoding never raises here.
-    return _COMMANDS.run(
-        ["git", *args],
-        cwd=str(root),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout,
-    )
-
-
-def git_head(root: Path) -> str | None:
-    try:
-        r = _git(root, "rev-parse", "HEAD")
-        head = r.stdout.strip()
-        return head or None
-    except Exception:
+        return state.active_run_count(state.default_db_path(root, os.environ))
+    except (OSError, sqlite3.Error):
         return None
-
-
-def is_linked_worktree(root: Path) -> bool:
-    """True when ``root`` is a linked worktree (git-dir != common-dir) or a
-    temp-index plumbing session -- both are SAFE (never the shared checkout)."""
-    try:
-        if os.environ.get("GIT_INDEX_FILE"):
-            return True
-        gd = _git(root, "rev-parse", "--git-dir").stdout.strip()
-        cd = _git(root, "rev-parse", "--git-common-dir").stdout.strip()
-        if not gd or not cd:
-            return False
-        return os.path.abspath(os.path.join(str(root), gd)) != os.path.abspath(
-            os.path.join(str(root), cd)
-        )
-    except Exception:
-        return False
-
-
-def worktree_count(root: Path) -> int | None:
-    try:
-        r = _git(root, "worktree", "list", "--porcelain")
-        return sum(1 for line in r.stdout.splitlines() if line.startswith("worktree "))
-    except Exception:
-        return None
-
-
-def origin_is_https(root: Path) -> bool:
-    try:
-        r = _git(root, "remote", "get-url", "origin")
-        url = r.stdout.strip().lower()
-        return url.startswith("https://") or url.startswith("http://")
-    except Exception:
-        return False
-
-
-def proof_queue_active_count(root: Path, timeout: float = 5.0) -> int | None:
-    """Number of ACTIVE proof_queue rows, or None if undeterminable.
-
-    Parses ``python tools/proof_queue.py status`` (which has no ``--json`` mode)
-    -- its ``active:`` section lists ``- none`` when idle. None means "could not
-    tell"; callers decide the fail-open direction (the guard treats None as
-    not-live so it never blocks a build on uncertainty; the landing gate treats
-    None as in-flight so it never nags on uncertainty).
-    """
-    try:
-        r = _COMMANDS.run(
-            [sys.executable, "tools/proof_queue.py", "status"],
-            cwd=str(root),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-        )
-        if r.returncode != 0 or not r.stdout.strip():
-            return None
-        active: list[str] = []
-        in_active = False
-        for line in r.stdout.splitlines():
-            s = line.strip()
-            if not s:
-                continue
-            low = s.lower().rstrip(":")
-            if low == "active" and s.endswith(":"):
-                in_active = True
-                continue
-            if in_active:
-                if s.endswith(":") and not s.startswith("-"):
-                    break  # next section header (e.g. "recent:")
-                if s.startswith("-"):
-                    item = s[1:].strip()
-                    if item and item.lower() != "none":
-                        active.append(item)
-                else:
-                    break
-        return len(active)
-    except Exception:
-        return None
-
-
-# --- git commit-window helpers (shared by the Wave-2 Stop legs) -------------
-# Both Wave-2 gates (triality A3, magnitude-dismissal/verdict-scope A6) classify
-# the commit window ``base..HEAD``. These are the ONE window surface they share
-# (pact's "one window, many legs" discipline). All best-effort + never raise: an
-# unreadable window fails OPEN (empty), so a git hiccup can never wedge a Stop.
-
-
-def git_window_messages(root: Path, base: str | None) -> list[str]:
-    """Non-empty subject+body lines of every commit in ``base..HEAD``.
-
-    The high-signal, LOW-noise classification surface for the vocab legs: commit
-    messages, not raw diffs. (Scanning diffs for tokens like ``poison`` /
-    ``fail_closed`` / ``corruption`` would saturate on the codebase's own
-    identifiers -- exactly the over-fire the pact template warns against.)
-    """
-    if not base:
-        return []
-    try:
-        r = _git(root, "log", f"{base}..HEAD", "--format=%s%n%b")
-        if r.returncode != 0:
-            return []
-        return [ln for ln in r.stdout.splitlines() if ln.strip()]
-    except Exception:
-        return []
-
-
-def git_window_subjects(root: Path, base: str | None) -> list[str]:
-    """Subject lines ONLY (``%s``) of every commit in ``base..HEAD`` -- one per
-    commit. This is the surface the vocab legs (triality, magnitude on commit
-    messages) classify: commit BODIES defensively describe bug classes ("no
-    corruption", "avoids silent truncation", "trivial wrapper") and would flood
-    the deterministic classifier with false positives (measured on the live
-    window). Precision over recall -- the accepted, documented false-negative
-    bound (a fix whose subject hides the class is missed; its body is not read)."""
-    if not base:
-        return []
-    try:
-        r = _git(root, "log", f"{base}..HEAD", "--format=%s")
-        if r.returncode != 0:
-            return []
-        return [ln for ln in r.stdout.splitlines() if ln.strip()]
-    except Exception:
-        return []
-
-
-def git_window_files(root: Path, base: str | None) -> list[str]:
-    """Changed file paths across ``base..HEAD`` (repo-relative, forward slashes)."""
-    if not base:
-        return []
-    try:
-        r = _git(root, "diff", "--name-only", f"{base}..HEAD")
-        if r.returncode != 0:
-            return []
-        return [ln.strip() for ln in r.stdout.splitlines() if ln.strip()]
-    except Exception:
-        return []
-
-
-def git_window_diff(root: Path, base: str | None, path: str | None = None) -> str:
-    """Unified diff of ``base..HEAD`` (optionally restricted to one ``path``)."""
-    if not base:
-        return ""
-    try:
-        args = ["diff", f"{base}..HEAD"]
-        if path:
-            args += ["--", path]
-        r = _git(root, *args, timeout=8.0)
-        return r.stdout if r.returncode == 0 else ""
-    except Exception:
-        return ""
-
-
-def git_window_shas(root: Path, base: str | None) -> list[str]:
-    """Commit shas in ``base..HEAD`` (newest first). Empty on any failure."""
-    if not base:
-        return []
-    try:
-        r = _git(root, "log", f"{base}..HEAD", "--format=%H")
-        if r.returncode != 0:
-            return []
-        return [ln.strip() for ln in r.stdout.splitlines() if ln.strip()]
-    except Exception:
-        return []
-
-
-def added_lines_from_diff(diff_text: str) -> list[str]:
-    """The ADDED lines of a unified diff (leading ``+`` stripped; ``+++`` skipped).
-
-    Ported from the pact detectors verbatim -- the corpus for the prose legs
-    (magnitude-dismissal / verdict-scope) is the *added* text of ledger docs, so
-    appending one FEED to a long historical doc never re-scans old lines.
-    """
-    out: list[str] = []
-    for line in str(diff_text or "").splitlines():
-        if line.startswith("+") and not line.startswith("+++"):
-            out.append(line[1:])
-    return out
-
-
-# --- loop-safe event-window marker (shared by the Wave-2 Stop legs) ---------
-
-
-def read_window_marker(root: Path, name: str) -> dict[str, Any]:
-    try:
-        p = state_dir(root) / name
-        if p.exists():
-            data = json.loads(p.read_text(encoding="utf-8"))
-            return data if isinstance(data, dict) else {}
-    except Exception:
-        pass
-    return {}
-
-
-def write_window_marker(root: Path, name: str, marker: dict[str, Any]) -> None:
-    try:
-        marker = dict(marker)
-        marker["updated_ts"] = time.time()
-        (state_dir(root) / name).write_text(
-            json.dumps(marker, ensure_ascii=True), encoding="utf-8"
-        )
-    except Exception:
-        pass
-
-
-class EventWindow:
-    """Event-triggered, loop-safe commit-window tracker for one Stop leg.
-
-    Each Wave-2 leg owns its OWN marker file, so a bug in one leg's state can
-    never perturb another (independent fail-open, per the wave contract). The
-    protocol per Stop:
-
-    * ``base(head, stop_hook_active)`` -> the sha to scan ``base..HEAD``, or
-      ``None`` to stay silent. It is silent (and self-advances) on the first
-      run, when there are no new commits, or when this exact HEAD was already
-      nudged -- so the leg blocks AT MOST ONCE per HEAD state (never a wedge).
-    * on a clean window the caller calls ``allow(head)`` (advance past it);
-    * on drift the caller calls ``block(head)`` -- which HOLDS ``last_head`` at
-      the old base (so the fix lands in-window and clears the flag) while
-      recording ``last_block_head`` so the identical position is not re-blocked.
-    """
-
-    def __init__(self, root: Path, marker_name: str) -> None:
-        self.root = root
-        self.name = marker_name
-        self.marker = read_window_marker(root, marker_name)
-
-    def base(self, head: str | None, stop_hook_active: bool) -> str | None:
-        if not head:
-            return None
-        last_head = self.marker.get("last_head")
-        last_block = self.marker.get("last_block_head")
-        if not last_head:
-            self.allow(head)  # first run: initialize to HEAD, never block
-            return None
-        if stop_hook_active or (last_block and last_block == head):
-            self.allow(head)  # already nudged / mid-continuation: advance + hush
-            return None
-        if last_head == head:
-            return None  # no new commits since last stop
-        return str(last_head)
-
-    def allow(self, head: str) -> None:
-        write_window_marker(
-            self.root, self.name, {"last_head": head, "last_block_head": None}
-        )
-        self.marker = {"last_head": head, "last_block_head": None}
-
-    def block(self, head: str) -> None:
-        last_head = self.marker.get("last_head") or head
-        write_window_marker(
-            self.root, self.name, {"last_head": last_head, "last_block_head": head}
-        )
-        self.marker = {"last_head": last_head, "last_block_head": head}

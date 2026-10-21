@@ -38,14 +38,15 @@ Recall API (importable) + a CLI::
     python tools/memory_graph.py obsidian-export --out /tmp/mg
 
 Consumers wired so it is READ, not just built (the whole point of A10):
-  1. ``tools/hooks/session_digest.py`` -- surfaces the 3 nearest memories to the
-     current lane/goal context in the SessionStart digest (fail-open, <5s).
-  2. ``tools/findings_memo_lint.py``   -- when it flags a memo line missing a
-     ``finding_id``, it SUGGESTS candidate link targets from this graph.
+  * ``tools/findings_memo_lint.py`` -- when it flags a memo line missing a
+    ``finding_id``, it SUGGESTS candidate link targets from this graph.
+  * ``python tools/memory_graph.py nearest "<context>"`` -- ranks memories near
+    a lane context on demand. (The SessionStart digest no longer recalls
+    memories itself: it ranked against a fixed 2026-07 goal, and the harness
+    loads the memory index into every session.)
 
-Pure stdlib (``tomllib`` is optional/guarded) so the hook spine can import it
-under any Python 3.9+ without the molt venv. Never raises on load; the CLI is the
-only place that prints.
+Pure stdlib (``tomllib`` is optional/guarded), so its consumers import it
+cheaply. Never raises on load; the CLI is the only place that prints.
 """
 
 from __future__ import annotations
@@ -1023,33 +1024,6 @@ def build_graph(
         except Exception as exc:
             graph.warnings.append(f"gates-failed:{type(exc).__name__}")
     return graph.finalize()
-
-
-def nearest_memories(
-    context: str,
-    k: int = 3,
-    *,
-    memory_dir: Optional[Path] = None,
-    repo_root: Optional[Path] = None,
-    cwd: Optional[str] = None,
-) -> list[tuple[Node, float]]:
-    """Convenience for the SessionStart digest: build a memory-only graph (fast,
-    ~60 tiny files) and return the ``k`` nearest memories to ``context``.
-
-    Never raises: any failure yields ``[]`` so the digest still renders."""
-    try:
-        graph = build_graph(
-            memory_dir=memory_dir,
-            repo_root=repo_root,
-            cwd=cwd,
-            include_memory=True,
-            include_ledgers=False,
-            include_findings=False,
-            include_gates=False,
-        )
-        return graph.nearest(context, k=k)
-    except Exception:
-        return []
 
 
 # --- CLI -------------------------------------------------------------------

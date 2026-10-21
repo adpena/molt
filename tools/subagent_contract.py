@@ -161,13 +161,12 @@ MODEL_TIER = (
 )
 
 #: M63 -- triality: a real fix lands in all three legs together (a gate/registry + a
-#: memory/ledger row alongside the code). Align with the Wave-2 A3 triality drift gate.
+#: memory/ledger row alongside the code).
 TRIALITY_WIRING = (
     "TRIALITY WIRING (M63): a finding is 'known' only when it agrees across all three legs "
     "-- the code/DAG, the gate/registry that enforces it, and the memory/ledger row that "
     "records it. Land the gate (or registry ratchet) and the ledger/CLAIMS row in the SAME "
-    "commit batch as the code; a fix that moves only one leg is drift the A3 triality gate "
-    "is built to catch."
+    "commit batch as the code; a fix that moves only one leg is drift."
 )
 
 #: M22/M24 -- premise verification: before the first Write, prove no sister lane already

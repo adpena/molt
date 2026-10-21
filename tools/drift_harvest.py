@@ -61,6 +61,9 @@ from tools.command_execution import CommandExecutor  # noqa: E402
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 
+# The SPRAWL threshold (M67): the gate fails above this many live worktrees.
+MAX_LIVE_WORKTREES = 24
+
 
 # Worktrees that must never be pruned regardless of freshness.
 _PROTECTED_SUBSTRINGS = ("OneDrive", "recover-mainclean-20260707", "molt-cli")
@@ -74,32 +77,32 @@ def _contains_path(parent: Path, child: Path) -> bool:
     return True
 
 
-def _leave_prune_targets(targets: list[Path]) -> Path:
+def _leave_prune_targets(targets: list[Path], root: Path) -> Path:
     current = Path.cwd().resolve()
     if not any(_contains_path(target, current) for target in targets):
         return current
-    destination = REPO_ROOT.parent.resolve()
+    destination = root.parent.resolve()
     if any(_contains_path(target, destination) for target in targets):
         raise RuntimeError(
             "cannot prune a worktree containing the process cwd; rerun from "
-            f"outside the targets, for example: Set-Location {REPO_ROOT.parent}"
+            f"outside the targets, for example: Set-Location {root.parent}"
         )
     os.chdir(destination)
     return destination
 
 
-def _sweep_empty_orphan_worktree_dirs() -> list[Path]:
-    registered = {Path(row["path"]).resolve() for row in _worktrees()}
+def _sweep_empty_orphan_worktree_dirs(root: Path) -> list[Path]:
+    registered = {Path(row["path"]).resolve() for row in _worktrees(root)}
     removed: list[Path] = []
-    canonical_root = canonical_molt_root(REPO_ROOT)
-    roots = (canonical_root, (canonical_root / "worktrees").resolve())
-    for root in roots:
-        if not root.is_dir():
+    canonical_root = canonical_molt_root(root)
+    parents = (canonical_root, (canonical_root / "worktrees").resolve())
+    for parent in parents:
+        if not parent.is_dir():
             continue
-        for candidate in root.iterdir():
+        for candidate in parent.iterdir():
             if not candidate.is_dir() or candidate.resolve() in registered:
                 continue
-            if root == canonical_root and not candidate.name.startswith("wt-"):
+            if parent == canonical_root and not candidate.name.startswith("wt-"):
                 continue
             try:
                 candidate.rmdir()
@@ -109,18 +112,24 @@ def _sweep_empty_orphan_worktree_dirs() -> list[Path]:
     return removed
 
 
-def _git(args: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess:
+def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
+    # Every caller names the repository: a module default once let a test that
+    # rebound the global reach the real worktrees.
     return _COMMANDS.run(
         ["git", *args],
-        cwd=str(cwd or REPO_ROOT),
+        cwd=str(cwd),
         capture_output=True,
         text=True,
         encoding="utf-8",
     )
 
 
-def _worktrees() -> list[dict]:
-    out = _git(["worktree", "list", "--porcelain"]).stdout
+def _worktrees(root: Path) -> list[dict]:
+    listing = _git(["worktree", "list", "--porcelain"], cwd=root)
+    if listing.returncode != 0:
+        # An empty listing would pass the SPRAWL gate; fail loud instead.
+        raise RuntimeError(f"git worktree list failed: {listing.stderr.strip()}")
+    out = listing.stdout
     rows: list[dict] = []
     cur: dict = {}
     for line in out.splitlines():
@@ -141,9 +150,9 @@ def _worktrees() -> list[dict]:
     return rows
 
 
-def _unique_commit_count(ref: str) -> int:
+def _unique_commit_count(ref: str, root: Path) -> int:
     # git cherry marks commits not present upstream (by patch-id) with '+'.
-    out = _git(["cherry", "origin/main", ref]).stdout
+    out = _git(["cherry", "origin/main", ref], cwd=root).stdout
     return sum(1 for ln in out.splitlines() if ln.startswith("+"))
 
 
@@ -160,10 +169,10 @@ def _dirty_count(path: str) -> int:
     return len([ln for ln in r.stdout.splitlines() if ln.strip()])
 
 
-def _protected(path: str) -> bool:
-    # Every cleanup Git subprocess starts in REPO_ROOT. Keep that repository
+def _protected(path: str, root: Path) -> bool:
+    # Every cleanup Git subprocess starts in the judged repository. Keep it
     # alive even when its commits are old and already landed.
-    return _contains_path(Path(path), REPO_ROOT) or any(
+    return _contains_path(Path(path), root) or any(
         s in path for s in _PROTECTED_SUBSTRINGS
     )
 
@@ -172,10 +181,20 @@ def _worktree_exists(path: str) -> bool:
     return Path(path).is_dir()
 
 
-def classify(fresh_hours: float, now: float) -> list[dict]:
+def live_worktree_count(root: Path) -> int:
+    """Count what the SPRAWL gate counts: registered worktrees still on disk.
+
+    This reads one ``git worktree list``; it skips the per-worktree status and
+    patch-id probes that ``classify`` needs, so a session-start digest can
+    afford it.
+    """
+    return sum(1 for wt in _worktrees(root) if _worktree_exists(wt["path"]))
+
+
+def classify(fresh_hours: float, now: float, *, root: Path) -> list[dict]:
     cutoff = now - fresh_hours * 3600
     rows = []
-    for wt in _worktrees():
+    for wt in _worktrees(root):
         path = wt["path"]
         head = wt.get("head", "")
         ref = wt.get("branch") or head
@@ -200,14 +219,14 @@ def classify(fresh_hours: float, now: float) -> list[dict]:
         # so compute it lazily only for the SUPERSEDED-vs-SIGNAL decision. This keeps
         # the pre-push gate fast on a checkout of mostly-fresh worktrees without
         # changing any state assignment or prune/bundle behaviour.
-        if _protected(path):
+        if _protected(path, root):
             state, uniq = "PROTECTED", 0
         elif wt.get("locked"):
             state, uniq = "LOCKED", 0
         elif fresh:
             state, uniq = "FRESH", 0
         else:
-            uniq = _unique_commit_count(ref) if ref else 0
+            uniq = _unique_commit_count(ref, root) if ref else 0
             state = "SUPERSEDED" if uniq == 0 else "SIGNAL"
         rows.append(
             {
@@ -262,7 +281,7 @@ def gate(
     return violations
 
 
-def bundle_signal(rows: list[dict], bundle_path: Path) -> set[str]:
+def bundle_signal(rows: list[dict], bundle_path: Path, *, root: Path) -> set[str]:
     """Bundle every unique-commit worktree and return the set of worktree PATHS
     whose commits are now durably captured.
 
@@ -284,13 +303,13 @@ def bundle_signal(rows: list[dict], bundle_path: Path) -> set[str]:
             captured.add(r["path"])
         elif r.get("head"):
             synthetic = f"refs/harvest/{r['head']}"
-            if _git(["update-ref", synthetic, r["head"]]).returncode == 0:
+            if _git(["update-ref", synthetic, r["head"]], cwd=root).returncode == 0:
                 refs.append(synthetic)
                 captured.add(r["path"])
     if not refs:
         return captured
     bundle_path.parent.mkdir(parents=True, exist_ok=True)
-    res = _git(["bundle", "create", str(bundle_path), *sorted(set(refs))])
+    res = _git(["bundle", "create", str(bundle_path), *sorted(set(refs))], cwd=root)
     if res.returncode != 0:
         raise SystemExit(f"bundle failed: {res.stderr}")
     return captured
@@ -304,6 +323,11 @@ def main() -> int:
         if reconfigure is not None:
             reconfigure(errors="backslashreplace")
     ap = argparse.ArgumentParser()
+    ap.add_argument(
+        "--repo",
+        default=str(REPO_ROOT),
+        help="the repository whose worktrees to judge (default: this checkout)",
+    )
     ap.add_argument("--report", action="store_true")
     ap.add_argument("--prune", action="store_true")
     ap.add_argument("--include-signal", action="store_true")
@@ -315,7 +339,7 @@ def main() -> int:
         action="store_true",
         help="fail (exit 1) on drift: worktree sprawl or aged unlanded SIGNAL",
     )
-    ap.add_argument("--max-worktrees", type=int, default=24)
+    ap.add_argument("--max-worktrees", type=int, default=MAX_LIVE_WORKTREES)
     ap.add_argument("--max-signal-age-hours", type=float, default=72.0)
     ap.add_argument(
         "--no-fetch",
@@ -325,11 +349,12 @@ def main() -> int:
         "positive — never a missed prune)",
     )
     args = ap.parse_args()
+    root = Path(args.repo).resolve()
 
     if not args.no_fetch:
-        _git(["fetch", "origin", "--quiet"])
+        _git(["fetch", "origin", "--quiet"], cwd=root)
     now = args.now if args.now is not None else time.time()
-    rows = classify(args.fresh_hours, now)
+    rows = classify(args.fresh_hours, now, root=root)
 
     counts: dict[str, int] = {}
     for r in rows:
@@ -361,12 +386,12 @@ def main() -> int:
     if args.bundle or args.prune:
         # Signal custody follows the checkout family, never scratch/build env.
         # An explicit --bundle is an operator-chosen export destination.
-        default_root = canonical_molt_root(REPO_ROOT)
+        default_root = canonical_molt_root(root)
         bundle_path = Path(
             args.bundle
             or (default_root / BUNDLES_DIRNAME / f"drift-harvest-{int(now)}.bundle")
         )
-        captured = bundle_signal(rows, bundle_path)
+        captured = bundle_signal(rows, bundle_path, root=root)
         print(f"bundled {len(captured)} signal worktrees -> {bundle_path}")
 
     if not args.prune:
@@ -378,7 +403,7 @@ def main() -> int:
         if r["state"] == "SUPERSEDED"
         or (args.include_signal and r["state"] == "SIGNAL" and r["path"] in captured)
     ]
-    cleanup_cwd = _leave_prune_targets(prune_targets)
+    cleanup_cwd = _leave_prune_targets(prune_targets, root)
     print(f"cleanup cwd: {cleanup_cwd}")
 
     removed = 0
@@ -395,13 +420,13 @@ def main() -> int:
         if not prunable:
             continue
         reclaim_checkout_state = prepare_checkout_state_retirement(Path(r["path"]))
-        rm = _git(["worktree", "remove", r["path"]])
+        rm = _git(["worktree", "remove", r["path"]], cwd=root)
         if rm.returncode == 0:
             if reclaim_checkout_state is not None:
                 reclaim_checkout_state()
             removed += 1
             lane_maturity.complete_worktree_lanes_fail_open(
-                repo_root=REPO_ROOT, worktree=Path(r["path"])
+                repo_root=root, worktree=Path(r["path"])
             )
             if r["branch"]:
                 # Force-delete the branch ONLY if we can PROVE its work is safe: the
@@ -410,27 +435,28 @@ def main() -> int:
                 # this run's bundle. Otherwise fall back to `-d` (refuses unmerged).
                 on_main = (
                     _git(
-                        ["merge-base", "--is-ancestor", r["branch"], "origin/main"]
+                        ["merge-base", "--is-ancestor", r["branch"], "origin/main"],
+                        cwd=root,
                     ).returncode
                     == 0
                 )
                 flag = "-D" if (on_main or r["path"] in captured) else "-d"
-                if _git(["branch", flag, r["branch"]]).returncode == 0:
+                if _git(["branch", flag, r["branch"]], cwd=root).returncode == 0:
                     deleted += 1
-    _git(["worktree", "prune"])
-    swept = _sweep_empty_orphan_worktree_dirs()
+    _git(["worktree", "prune"], cwd=root)
+    swept = _sweep_empty_orphan_worktree_dirs(root)
     # Delete any remaining fully-merged branches (not checked out anywhere).
     merged = _git(
-        ["branch", "--merged", "origin/main", "--format=%(refname:short)"]
+        ["branch", "--merged", "origin/main", "--format=%(refname:short)"], cwd=root
     ).stdout
     for b in merged.splitlines():
         b = b.strip()
         if b and b != "main":
-            if _git(["branch", "-d", b]).returncode == 0:
+            if _git(["branch", "-d", b], cwd=root).returncode == 0:
                 deleted += 1
     print(f"pruned worktrees={removed} branches={deleted}")
     print(f"swept empty orphan worktree dirs={len(swept)}")
-    print(f"remaining worktrees: {len(_worktrees())}")
+    print(f"remaining worktrees: {len(_worktrees(root))}")
     return 0
 
 

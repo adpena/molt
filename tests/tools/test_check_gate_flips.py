@@ -120,3 +120,10 @@ def test_main_check_passes_when_all_strict(tmp_path):
 def test_committed_registry_is_clean():
     # The shipped proof_plan.toml gate_flip registry must not be in drift.
     assert cgf.main(["--config", str(cgf.DEFAULT_CONFIG), "--check"]) == 0
+
+
+def test_entry_state_is_the_one_typed_parser():
+    assert cgf.entry_state({"name": "a", "state": "strict"}) == "strict"
+    assert cgf.entry_state({"name": "b"}) == "warn"  # an entry defaults to warn
+    with pytest.raises(ValueError, match="'Strict' is not one of warn, strict"):
+        cgf.entry_state({"name": "c", "state": "Strict"})

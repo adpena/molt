@@ -11,13 +11,11 @@ an fcntl lock with named-files-only + an expected-content-sha per file
 (``fcntl`` -> ``msvcrt`` on Windows).
 
 It is the SAFE multi-agent commit primitive, and it is OPTIONAL / ADVISORY -- it
-does NOT replace ``tools/molt_dev.py integrate`` (the fast-forward push guard) or the live
-``bash_guard`` hook; it COMPLEMENTS them:
+does NOT replace ``tools/molt_dev.py integrate`` (the fast-forward push guard);
+it COMPLEMENTS it:
 
-  * ``bash_guard`` refuses a raw ``git add -A``/add-then-commit in a Bash tool
-    call (the live PreToolUse gate);
-  * this refuses ``-A`` / ``.`` / a flag / a glob at the commit API level too,
-    and adds the expected-content-sha guard the hook cannot see;
+  * this refuses ``-A`` / ``.`` / a flag / a glob at the commit API level, and
+    adds the expected-content-sha guard;
   * ``molt_dev integrate`` then pushes the resulting HEAD only if it is a clean fast-forward.
 
 Guarantees (each a pure, unit-tested surface + the locked commit that composes
@@ -119,8 +117,8 @@ class CommitResult:
 def validate_pathspec(files: list[str]) -> str | None:
     """Refuse a sweep / flag / glob; return a refusal reason, or None if OK.
 
-    NAMED FILES ONLY: this is the commit-API twin of the ``bash_guard`` refusal of
-    ``git add -A`` (M20). Every entry must be a concrete path.
+    NAMED FILES ONLY: it refuses a ``git add -A`` style sweep (M20). Every
+    entry must be a concrete path.
     """
     if not files:
         return "no files given: a serialized commit requires an explicit pathspec (M20)"

@@ -199,6 +199,7 @@ integration speedup.
 | `land` | Run the lane's static gates in the lane (the precheck), then queue this checkout's committed HEAD for the landing runner and return; start a runner unless one holds the runner lock. `--wait` exits 0 only when the commit landed. `--no-precheck` queues without the precheck. |
 | `queue run` | The runner (started by `land`): land queued commits in batches through `integrate`, bisecting failures. `--candidate-controller` for a controller repair. |
 | `queue status` | Pending requests, the bisection plan and recent results as JSON. `--recent N`. |
+| `queue withdraw` | Close pending requests without testing them: `queue withdraw <request-id>... --reason TEXT`. Runs from main's pinned controller (`--candidate-controller` for a controller repair). Refuses while a batch runs, withdraws nothing if any id is not pending, and starts a runner when requests remain. |
 | `secure-wip` | Commit **all** tracked modifications in one `WIP-RECOVERY` commit. `--dry-run`, `-m/--message`, `--ignore`, `--include-untracked`. |
 | `verify-push` | Confirm `origin/<branch>` contains a tip sha by fetch + ancestor. `--tip`, `--json`. |
 | `probe` | File size+mtime / pid liveness via python ops. `--file`, `--pid`, `--json`. |
@@ -317,6 +318,21 @@ it works, it drops inherited `MOLT_VENV`, `UV_PROJECT_ENVIRONMENT` and
 older than 30 days and finished runner logs beyond the newest 20 retire when a
 runner starts.
 
+Each result records one status from a closed set (`LandingStatus` in
+`tools/molt_dev_queue.py`): `landed`, `failed`, `conflict` or `withdrawn`.
+`queue withdraw <request-id>... --reason TEXT` closes pending requests without
+testing them and records the reason as the result's detail. It takes the
+runner lock, which a runner holds for each batch, so it never edits a batch
+under test; while a batch runs it refuses, and it withdraws nothing when any
+named id is not pending. A bisection plan drops a withdrawn id. It runs from
+main's pinned controller, as `land` does, because it writes queue state and
+starts the runner: a `land` that probed the lock while withdraw held it
+started none, so withdraw starts one when requests remain.
+
+Who is a runner: a runner (or a withdrawal) holds the runner lock exclusively.
+`land`, `land --wait` and `withdraw` probe it in shared mode
+(`_runner_lock_free`), so two probes never read each other as a runner.
+
 `land --wait` polls for the request's result. It fails, naming the runner's
 log, when the runner lock is free, the request is still queued and the newest
 runner has finished: its supervisor wrote `rc`, or the process its `pid` file
@@ -338,6 +354,11 @@ python3 tools/molt_dev.py detached-verify --name flip_sweep --min-age-s 30 --jso
 # → done, rc=N     read the artifacts; rc≠0 exits 1
 # → died-silent    the hazard-11 group-kill class, reported LOUDLY
 ```
+
+`detached-run` prints the exact verify command to run next: its own
+interpreter and the driver by absolute path, with the `--state-dir` it ran
+under (the landing queue's runners live under
+`.git/molt/landing-queue/runners`).
 
 Discovered 2026-06-06 (twice in one session): a backgrounded 807-test sweep
 died at harness detach with an **empty log** — block buffering ate every line —

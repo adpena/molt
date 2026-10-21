@@ -13,13 +13,8 @@ from typing import Iterable
 ROOT = Path(__file__).resolve().parents[1]
 SCAN_PATHS = (
     "tools/hooks/_common.py",
-    "tools/hooks/bash_guard.py",
-    "tools/hooks/landing_gate.py",
     "tools/hooks/session_digest.py",
-    "tools/hooks/session_learning.py",
-    "tools/hooks/stop_gates.py",
-    "tools/hooks/waivers.py",
-    "tools/anti_recurrence_gate.py",
+    "tools/hooks/wiring.py",
     "tools/apparatus_agent_safety.py",
     "tools/disk_guard.py",
 )

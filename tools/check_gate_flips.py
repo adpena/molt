@@ -12,7 +12,7 @@ any gate whose ``strict_when`` is MET but is still ``state = "warn"``.
   * ``live_count == 0`` / ``live_count <= N`` -- evaluated against a checked-in
     ``count_detector`` identifier. Detector identifiers resolve to fixed argv;
     repository data never becomes shell syntax.
-  * ``landed_functional`` / ``always`` -- lifecycle markers for gates that land
+  * ``landed_functional`` -- lifecycle marker for gates that land
     already-strict; nothing to flip.
   * anything else -- free text; reported as MANUAL REVIEW (never a hard fail).
 
@@ -31,12 +31,33 @@ import re
 import subprocess
 import sys
 import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal, get_args
 
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = ROOT / "tools" / "proof_plan.toml"
+
+FlipState = Literal["warn", "strict"]
+FLIP_STATES: tuple[FlipState, ...] = get_args(FlipState)
+
+
+def entry_state(entry: Mapping[str, object]) -> FlipState:
+    """The state one ``[[gate_flip]]`` entry declares: the one parser.
+
+    An entry without ``state`` is ``warn``; any other spelling is refused, so
+    a typo never silently enforces or silently relaxes a gate.
+    """
+    state = entry.get("state", "warn")
+    if state not in FLIP_STATES:
+        raise ValueError(
+            f"gate_flip {entry.get('name', '?')!r}: state {state!r} is not one of "
+            f"{', '.join(FLIP_STATES)}"
+        )
+    return state  # type: ignore[return-value]
+
 
 _COND_RE = re.compile(r"^live_count\s*(==|<=|<|>=|>)\s*(\d+)$")
 
@@ -97,7 +118,7 @@ class FlipVerdict:
 def _eval_condition(cond: str, live_count: int | None) -> bool | None:
     """True/False if the machine token is decidable, else None (manual)."""
     cond = cond.strip()
-    if cond in ("landed_functional", "always"):
+    if cond == "landed_functional":
         return None  # lifecycle marker, not a flip trigger
     m = _COND_RE.match(cond)
     if not m:
@@ -143,7 +164,7 @@ def _run_count_detector(detector_id: str, cwd: Path) -> int | None:
 def evaluate_flip(entry: dict, *, live_count: int | None = None) -> FlipVerdict:
     """Pure: classify one ``[[gate_flip]]`` entry given an optional live count."""
     name = str(entry.get("name", "?"))
-    state = str(entry.get("state", "warn")).lower()
+    state = entry_state(entry)
     strict_when = str(entry.get("strict_when", ""))
     if state == "strict":
         return FlipVerdict(name, state, strict_when, "ok-strict")
