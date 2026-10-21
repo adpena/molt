@@ -119,8 +119,8 @@ The only change is that the backend factory should instantiate
 
 3. **Verify the Worker:**
    ```bash
-   curl https://falcon-ocr.freeinvoicemaker.workers.dev/health
-   # Expected: {"status":"loading","model":"falcon-ocr","version":"0.1.0","device":"wasm"}
+   uv run --python 3.12 python tools/cloudflare_demo_endpoint_verify.py \
+     --base-url https://falcon-ocr.adpena.workers.dev --case-set falcon-ocr
    ```
 
 4. **Update enjoice config:**

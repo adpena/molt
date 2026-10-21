@@ -48,10 +48,12 @@ All checks must pass before deploying.
 This will:
 1. Build the WASM binary from the molt compiler
 2. Upload artifacts to R2
-3. Validate Worker JS syntax
-4. Deploy to `falcon-ocr-staging.freeinvoicemaker.workers.dev`
-5. Run health check
-6. Run smoke test
+3. Check that the Worker sources are present
+4. Deploy the Worker with wrangler
+5. Verify the deployed Worker at the URL wrangler prints: the `falcon-ocr`
+   case set of `tools/cloudflare_demo_endpoint_verify.py` checks health,
+   CORS, the browser fallback, the x402 payment demand and the public
+   assets, and a failing case fails the deploy
 
 ### Deploy to production
 
@@ -59,7 +61,7 @@ This will:
 ./deploy/scripts/deploy.sh production
 ```
 
-Same steps as staging, deploys to `falcon-ocr.freeinvoicemaker.workers.dev`.
+Same steps as staging, for the production Worker (`falcon-ocr.adpena.workers.dev`).
 
 ### Upload model weights separately
 
@@ -112,7 +114,15 @@ wrangler deploy --config deploy/cloudflare/wrangler.toml
 ### Manual health check
 
 ```bash
-curl -s https://falcon-ocr.freeinvoicemaker.workers.dev/health | python3 -m json.tool
+uv run --python 3.12 python tools/cloudflare_demo_endpoint_verify.py \
+  --base-url https://falcon-ocr.adpena.workers.dev --case-set falcon-ocr
+```
+
+The verifier is read-only and free: no case runs inference or pays. To read the
+health document itself:
+
+```bash
+curl -s https://falcon-ocr.adpena.workers.dev/health | python3 -m json.tool
 ```
 
 Expected response:
@@ -138,7 +148,7 @@ Status values:
 ### Load test
 
 ```bash
-./deploy/scripts/load_test.sh https://falcon-ocr.freeinvoicemaker.workers.dev 10 100
+./deploy/scripts/load_test.sh https://falcon-ocr.adpena.workers.dev 10 100
 ```
 
 ## Logs
@@ -192,7 +202,8 @@ No image content or user identifiers are ever logged.
 
 5. Verify:
    ```bash
-   curl -s https://falcon-ocr.freeinvoicemaker.workers.dev/health | python3 -m json.tool
+   uv run --python 3.12 python tools/cloudflare_demo_endpoint_verify.py \
+     --base-url https://falcon-ocr.adpena.workers.dev --case-set falcon-ocr
    ```
 
 ## Updating Worker Code
