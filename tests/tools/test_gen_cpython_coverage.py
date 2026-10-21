@@ -173,3 +173,82 @@ def test_audit_ignores_build_output_inside_a_source_root(
     assert [line for line in rendered.splitlines() if line.startswith("| `")] == [
         "| `scan/probe.py` | 1 | scattered-assumption | `3.15` |"
     ]
+
+
+# --- Scan records: tools/generators.py replays unchanged audit rows ---------
+
+from tools import generators, scan_records  # noqa: E402
+
+
+def _coverage_records(cache: Path) -> scan_records.ScanRecords:
+    return scan_records.ScanRecords(
+        "generator_gen_cpython_coverage",
+        owner=Path(gen_cpython_coverage.__file__),
+        cache_root=cache,
+    )
+
+
+def _rows(rendered: str) -> list[str]:
+    return [line for line in rendered.splitlines() if line.startswith("| `")]
+
+
+def test_audit_rows_replay_and_catch_a_seeded_assumption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _source_repository(tmp_path / "repo")
+    scan = repo / "scan"
+    scan.mkdir()
+    configured = scan / "configured.toml"
+    configured.write_text('version = "3.15"\n', encoding="utf-8")
+    # The same bytes outside the configuration are a scattered assumption.
+    (scan / "copy.toml").write_text('version = "3.15"\n', encoding="utf-8")
+    clean = scan / "clean.py"
+    clean.write_text("value = 1\n", encoding="utf-8")
+    monkeypatch.setattr(gen_cpython_coverage, "ROOT", repo)
+    monkeypatch.setattr(gen_cpython_coverage, "CONFIG", configured)
+    config = {"version_assumption_audit": {"source_roots": ["scan"]}}
+    cache = tmp_path / "cache"
+    expected = gen_cpython_coverage._audit(config)
+    assert _rows(expected) == [
+        "| `scan/configured.toml` | 1 | authority-routed | `3.15` |",
+        "| `scan/copy.toml` | 1 | scattered-assumption | `3.15` |",
+    ]
+    for expected_misses in (3, 0):
+        records = _coverage_records(cache)
+        assert gen_cpython_coverage._audit(config, records) == expected
+        assert records.misses == expected_misses
+        records.publish()
+
+    clean.write_text('value = "3.16"\n', encoding="utf-8")
+    for expected_misses in (1, 0):
+        records = _coverage_records(cache)
+        rows = _rows(gen_cpython_coverage._audit(config, records))
+        assert "| `scan/clean.py` | 1 | scattered-assumption | `3.16` |" in rows
+        assert records.misses == expected_misses
+        records.publish()
+
+
+def test_audit_rows_replay_the_real_tree(tmp_path: Path) -> None:
+    config = gen_cpython_coverage._load_config()
+    cold = _coverage_records(tmp_path)
+    computed = gen_cpython_coverage._audit(config, cold)
+    assert cold.publish() is True
+    warm = _coverage_records(tmp_path)
+    assert gen_cpython_coverage._audit(config, warm) == computed
+    assert (warm.hits, warm.misses) == (cold.misses + cold.hits, 0)
+    assert len(_rows(computed)) > 100
+
+
+def test_runner_opens_records_only_for_declaring_generators(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path))
+    with generators._generator_records(gen_cpython_coverage, enabled=True) as records:
+        assert records is not None
+        assert records.scanner == "generator_gen_cpython_coverage"
+    with generators._generator_records(gen_cpython_coverage, enabled=False) as records:
+        assert records is None
+    undeclared = type(gen_cpython_coverage)("undeclared_generator")
+    undeclared.generated_outputs = lambda: {}
+    with generators._generator_records(undeclared, enabled=True) as records:
+        assert records is None
