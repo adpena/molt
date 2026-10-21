@@ -66,6 +66,7 @@ from molt.llvm_toolchain import (
     verify_available_llvm_toolchain,
 )
 from molt.capability_policy import expand_capabilities, split_capability_tokens
+from molt.cli.run_tier import jit_program_started
 from molt.dx import scratch_dir
 from molt.target_python import TargetPythonVersion, _parse_target_python_version
 from molt.wasm_artifact import wasm_runtime_manifest_path
@@ -1180,14 +1181,31 @@ class JitAdapter:
                 detail="jit build produced no launch manifest",
                 fallback="jit build failed",
             )
-        return _guarded_run(
-            [runner, "--launch", str(launch), "--", str(launch)],
+        receipt = out_dir / "jit-start-receipt.json"
+        run = _guarded_run(
+            [
+                runner,
+                "--launch",
+                str(launch),
+                "--start-receipt",
+                str(receipt),
+                "--",
+                str(launch),
+            ],
             prefix="MOLT_COMPAT_JIT_RUN",
             env=env,
             budget=context.budget,
             backend=self.name,
             phase="run",
             cwd=str(_REPO_ROOT),
+        )
+        if jit_program_started(receipt):
+            return run
+        # The runner compiles the program before it starts it. A failure there
+        # is a failed build, as an AOT build that fails in code generation is.
+        return run.as_build_failure(
+            detail="molt-jit did not start the program",
+            fallback="jit compilation failed",
         )
 
 

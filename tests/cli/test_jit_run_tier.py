@@ -19,6 +19,7 @@ from molt.cli.build_output_layout import _resolve_build_output_layout
 from molt.cli.jit_pipeline import _unsupported_jit_construct, jit_program_path
 from molt.cli.native_launch_plan import NativeLaunchPlan
 from molt.cli.native_main_stub import _render_native_main_stub
+from molt.cli.run_tier import JIT_START_RECEIPT, jit_program_started
 from molt.cli.run_tier import (
     DEFAULT_RUN_TIER,
     JIT_LAUNCH_SUFFIX,
@@ -208,3 +209,14 @@ def test_runtime_image_refuses_a_cross_target(monkeypatch, tmp_path: Path) -> No
         cross = "aarch64-apple-darwin"
     with pytest.raises(RuntimeError, match="host target"):
         _runtime_image_plan(monkeypatch, tmp_path, target_triple=cross)
+
+
+def test_only_the_exact_start_receipt_proves_the_program_started(
+    tmp_path: Path,
+) -> None:
+    receipt = tmp_path / "started.json"
+    assert not jit_program_started(receipt)
+    receipt.write_text('{"schema":"molt.jit-start.v0"}\n', encoding="utf-8")
+    assert not jit_program_started(receipt)
+    receipt.write_text(JIT_START_RECEIPT, encoding="utf-8")
+    assert jit_program_started(receipt)

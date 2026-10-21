@@ -1020,6 +1020,70 @@ def test_twin_that_fails_to_build_alone_is_a_divergence() -> None:
     assert "native built but its exact twin jit did not" in detail
 
 
+def test_a_twin_build_that_timed_out_is_unknown_not_a_divergence() -> None:
+    # Under load the JIT tier can spend its run budget compiling; the timeout
+    # fails the file against CPython but proves nothing about either build.
+    per_backend = {
+        "native": _outcome("42\n"),
+        "jit": compat_backends.BackendResult(
+            None, "jit compilation timed out", 124, build_failed=True, timed_out=True
+        ),
+    }
+    assert (
+        molt_diff._cross_backend_divergence(
+            per_backend, stdout_mode="exact", stderr_mode="ignore"
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("started", [True, False])
+def test_jit_adapter_counts_a_runner_that_never_started_as_a_failed_build(
+    started, tmp_path, monkeypatch
+):
+    # The JIT tier compiles when it runs, so only the runner's start receipt
+    # tells a compile failure from the program's own exit status 125. This
+    # isolates the adapter boundary; the twin gate runs the real runner.
+    import json
+
+    from molt.cli import run_tier
+
+    context = compat_backends.BackendExecutionContext(
+        target_python=TargetPythonVersion(3, 12, 0),
+        build_profile="dev",
+        capabilities="",
+        environment={},
+        budget=compat_backends.ItemBudget(
+            compat_backends.TimeoutPolicy.from_environment({}), None
+        ),
+    )
+    launch = tmp_path / "case_molt.jit.json"
+    runs: list[list[str]] = []
+
+    def guarded(command, **kwargs):
+        if kwargs["prefix"] == "MOLT_COMPAT_JIT_BUILD":
+            assert command[command.index("--output") + 1] == str(launch)
+            launch.write_text("{}", encoding="utf-8")
+            payload = {"data": {"artifacts": {"runner": "/bin/molt-jit"}}}
+            return compat_backends.BackendResult(json.dumps(payload), "", 0)
+        assert kwargs["prefix"] == "MOLT_COMPAT_JIT_RUN"
+        runs.append(command)
+        receipt = Path(command[command.index("--start-receipt") + 1])
+        if started:
+            receipt.write_text(run_tier.JIT_START_RECEIPT, encoding="utf-8")
+        return compat_backends.BackendResult("partial\n", "molt-jit: refused\n", 125)
+
+    monkeypatch.setattr(compat_backends, "_guarded_run", guarded)
+    result = compat_backends.JitAdapter()._build_and_run_owned(
+        "case.py", context=context, out_dir=tmp_path
+    )
+    assert len(runs) == 1 and runs[0][-2:] == ["--", str(launch)]
+    assert result.returncode == 125
+    assert result.build_failed is not started
+    assert "molt-jit: refused" in result.stderr
+    assert (result.stdout == "partial\n") is started
+
+
 def test_twins_ignore_only_text_that_differs_between_runs_of_one_program() -> None:
     # Two runs of one AOT executable already differ in heap addresses (ASLR)
     # and in the OS thread id of a Rust panic; neither is a code-owner fact.

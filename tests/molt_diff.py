@@ -3455,7 +3455,13 @@ def _cross_backend_divergence(
         for second, second_outcome in per_backend.items():
             if first >= second or not compat_backends.exact_twins(first, second):
                 continue
-            if first_outcome.build_failed != second_outcome.build_failed:
+            # A timeout or a guard failure says nothing about the build; the
+            # CPython verdict already fails the file.
+            unknown = any(
+                outcome.timed_out or outcome.infrastructure_failure is not None
+                for outcome in (first_outcome, second_outcome)
+            )
+            if not unknown and first_outcome.build_failed != second_outcome.build_failed:
                 failed, built = (
                     (first, second) if first_outcome.build_failed else (second, first)
                 )
