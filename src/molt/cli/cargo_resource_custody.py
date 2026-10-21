@@ -16,19 +16,17 @@ from enum import Enum
 from pathlib import Path
 
 from molt import input_report as _input_report
-from molt.cache_eviction import resolve_budget
 from molt.cli.runtime_identity_schema import RUNTIME_ARTIFACT_METADATA_MAX_BYTES
 from molt.cli.wasm_link_args import runtime_link_response_arguments
-from molt.default_paths import _default_molt_cache, file_digest_cache_path
 from molt.exact_json import canonical_json_sha256
 from molt.file_hashing import DIGEST_RACY_WINDOW_NS
 from molt.platform_toolchain import DARWIN_SDK_SETTINGS
+from molt.toolchain_facts import host_file_digest_cache
 from molt.toolchain_identity import (
     ExecutableIdentity,
     StableRegularFileIdentity,
     capture_stable_regular_file,
     executable_content_path,
-    file_digest_cache,
     stable_native_executable_probe,
     verify_stable_regular_file_identity,
     verify_stable_regular_file_metadata,
@@ -353,11 +351,7 @@ class CargoResourceCustody:
     ) -> CargoResourceCustody:
         snapshots: dict[Path, StableRegularFileIdentity] = {}
         files: list[CargoFileCustody] = []
-        _max_gb, max_age_days = resolve_budget(None, None, os.environ)
-        digests = file_digest_cache(
-            file_digest_cache_path(_default_molt_cache()),
-            max_age_ns=max_age_days * 86_400 * 1_000_000_000,
-        )
+        digests = host_file_digest_cache()
         walks = tuple(_current_walk(root) for root in roots)
         selected = tuple(
             (entry.label, entry.entrypoint, entry.content)

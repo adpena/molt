@@ -42,7 +42,7 @@ from molt.rust_toolchain import (
     rust_component_version_matches,
     rust_toolchain_library_environment,
     resolve_rustup_proxy,
-    rustup_proxy_entrypoint,
+    rustup_proxy_selection,
     relative_rustc_tool_paths,
     rustc_host,
     rustc_printed_sysroot,
@@ -234,9 +234,9 @@ def select_clippy_component_paths(
         "cargo-clippy": str(component),
         "clippy-driver": str(driver_path),
     }
-    with rustup_proxy_entrypoint(launcher) as resolver:
-        if resolver is not None:
-            paths["clippy-rustup"] = str(resolver)
+    resolver = rustup_proxy_selection(launcher)
+    if resolver is not None:
+        paths["clippy-rustup"] = str(resolver.entrypoint)
     return paths
 
 
@@ -2265,11 +2265,10 @@ def _cargo_flag_context(
                 raise ValueError("documenter cfg differs from compiler witness")
             context["cfg_probes"].append(dict(row))
             return parse_rustc_target_metadata(row["stdout"], row["stderr"]).cfg
+        probe = _rust_probe_command(rustc, wrappers, label="proof Cargo cfg")
         with (
             tempfile.TemporaryDirectory(prefix="molt-rust-cfg-") as scratch,
-            _rust_probe_command(
-                rustc, wrappers, label="proof Cargo cfg"
-            ) as compiler_command,
+            probe.fenced() as compiler_command,
         ):
             root = Path(scratch)
             (root / "output").mkdir()
