@@ -85,7 +85,9 @@ not choose guest semantics.
   unresolved custody, so it protects disk reclamation, until one snapshot shows
   its child's group and every recorded orphaned group empty; its receipt lists
   those groups in `empty_process_groups`. Live evidence (a matching birth, or a
-  live member of the child's or an orphaned group) always protects. Inconclusive evidence (a present
+  live member of the child's or an orphaned group) always protects, except that a recorded orphaned
+  group is closed when the process that now holds its pid is younger than the time since the record's
+  last update less 300 s: a kernel never reuses a pid that still names a live group. Inconclusive evidence (a present
   pid without two comparable births, or a launch that never published its
   outcome) and unreadable records stay protective, and the report names each
   one with the exact command `memory_guard_custody.py --active-dir <dir>
