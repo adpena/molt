@@ -327,6 +327,20 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         expected_count=2,
     ),
     AllowedRawSubprocessUse(
+        "tests/test_molt_dev.py",
+        "test_land_wait_counts_every_runner_that_may_still_land",
+        "os.kill",
+        "kills the one detached supervisor this test started",
+        expected_count=1,
+    ),
+    AllowedRawSubprocessUse(
+        "tests/test_molt_dev.py",
+        "test_land_wait_counts_every_runner_that_may_still_land",
+        "os.killpg",
+        "its cleanup kills the group the test's own detached supervisor leads",
+        expected_count=1,
+    ),
+    AllowedRawSubprocessUse(
         "tests/test_child_clock_custody.py",
         "test_actual_posix_owned_signal_keeps_child_reserved_until_reap",
         "Popen",

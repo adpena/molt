@@ -3287,10 +3287,33 @@ def test_land_wait_fails_when_its_runner_exits_without_landing(tmp_path, monkeyp
     # A runner that has not finished may still be starting: keep waiting.
     assert queue._runner_exited_without(paths, request.id) is None
     (runner / "rc").write_text("1\n", encoding="utf-8")
-    monkeypatch.setattr(queue, "_AWAIT_POLL_S", 0.01)
+    monkeypatch.setattr(queue, "_AWAIT_POLL_MIN_S", 0.01)
+    monkeypatch.setattr(queue, "_AWAIT_POLL_MAX_S", 0.01)
 
     assert queue._await_landing(paths, request.id) == molt_dev.EXIT_FAIL
     assert queue._runner_exited_without(paths, request.id) == runner
+
+
+def test_land_wait_looks_again_at_a_doubling_interval(tmp_path, monkeypatch):
+    from tools import molt_dev_queue as queue
+    from tests.process_guard_common import install_module_view
+
+    paths = queue.QueuePaths(tmp_path / "landing-queue")
+    request = queue.enqueue(paths, head="1" * 40, worktree=tmp_path, branch=None)
+    waits: list[float] = []
+
+    def wait(seconds: float) -> None:
+        waits.append(seconds)
+        if len(waits) == 7:
+            queue.record_result(
+                paths, request, status="landed", detail="", landed="2" * 40
+            )
+
+    install_module_view(monkeypatch, "time", time, queue, sleep=wait)
+
+    assert queue._await_landing(paths, request.id) == molt_dev.EXIT_OK
+    # From 0.05 s, each wait doubles, up to one second.
+    assert waits == pytest.approx([0.05, 0.1, 0.2, 0.4, 0.8, 1.0, 1.0])
 
 
 # The command outlives no supervisor: it exits once its parent is gone.
@@ -3300,6 +3323,58 @@ _ORPHAN_EXITING_SLEEPER = (
     "while os.getppid() == parent:\n"
     "    time.sleep(0.05)\n"
 )
+
+
+@pytest.mark.skipif(
+    os.name != "posix", reason="an unreaped child (a zombie) is a POSIX state"
+)
+def test_land_wait_counts_every_runner_that_may_still_land(tmp_path):
+    """An older runner waiting for the lock may land the request after the
+    newest runner exits; a pid that another process now holds does not count.
+    """
+    import contextlib
+    import signal
+
+    from molt import process_model
+    from tools import molt_dev_queue as queue
+
+    paths = queue.QueuePaths(tmp_path / "landing-queue")
+    request = queue.enqueue(paths, head="1" * 40, worktree=tmp_path, branch=None)
+    # A stale record whose pid names a live process that is not its supervisor.
+    stale = paths.runners / "runner-0"
+    stale.mkdir(parents=True)
+    (stale / "pid").write_text(str(os.getpid()), encoding="utf-8")
+    # An older runner whose real detached supervisor is alive (waiting).
+    molt_dev.cmd_detached_run(
+        _dr_ns(
+            molt_dev,
+            "runner-1",
+            paths.runners,
+            [sys.executable, "-c", _ORPHAN_EXITING_SLEEPER],
+        )
+    )
+    supervisor = int((paths.runners / "runner-1" / "pid").read_text("utf-8"))
+    try:
+        # The newest runner has exited.
+        newest = paths.runners / "runner-2"
+        newest.mkdir()
+        (newest / "pid").write_text(str(os.getpid()), encoding="utf-8")
+        (newest / "rc").write_text("1\n", encoding="utf-8")
+
+        assert queue._runner_exited_without(paths, request.id) is None
+
+        os.kill(supervisor, signal.SIGKILL)  # This test owns exactly this child.
+        # The signal is delivered asynchronously; the kernel then lists an
+        # unreaped zombie, which counts as gone.
+        while process_model.pid_alive(supervisor):
+            time.sleep(0.01)
+        assert queue._runner_exited_without(paths, request.id) == newest
+    finally:
+        # Also on a failed assertion: the supervisor leads the group that
+        # holds its command, so neither outlives the test.
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(supervisor, signal.SIGKILL)
+        os.waitpid(supervisor, 0)
 
 
 @pytest.mark.skipif(
@@ -3339,7 +3414,8 @@ def test_land_wait_fails_when_its_runner_supervisor_dies_without_rc(
         time.sleep(seconds)
 
     install_module_view(monkeypatch, "time", time, queue, sleep=bounded_sleep)
-    monkeypatch.setattr(queue, "_AWAIT_POLL_S", 0.01)
+    monkeypatch.setattr(queue, "_AWAIT_POLL_MIN_S", 0.01)
+    monkeypatch.setattr(queue, "_AWAIT_POLL_MAX_S", 0.01)
 
     assert queue._await_landing(paths, request.id) == molt_dev.EXIT_FAIL
     assert not (runner / "rc").exists()

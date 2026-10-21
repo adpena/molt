@@ -333,12 +333,15 @@ Who is a runner: a runner (or a withdrawal) holds the runner lock exclusively.
 `land`, `land --wait` and `withdraw` probe it in shared mode
 (`_runner_lock_free`), so two probes never read each other as a runner.
 
-`land --wait` polls for the request's result. It fails, naming the runner's
-log, when the runner lock is free, the request is still queued and the newest
-runner has finished: its supervisor wrote `rc`, or the process its `pid` file
-names is no longer alive (`molt.process_model.pid_alive`; a supervisor that
+`land --wait` polls for the request's result, at 0.05 s doubling to 1 s. It
+fails, naming the newest runner's log, when the runner lock is free, the
+request is still queued and no runner may still land it. Every runner counts,
+since an older one can be waiting for the lock while a newer one has exited.
+A runner has finished when its supervisor wrote `rc`, or when the process its
+`pid` file names is gone or is not that supervisor (its argv names the
+runner's own `worker.json`, so a reused pid never counts); a supervisor that
 died before it wrote `rc` stays an unreaped zombie of `land`, which counts as
-dead).
+gone. Only the newest runner can still be starting without a `pid` file.
 
 ### The detached-run protocol (hazard 11)
 
