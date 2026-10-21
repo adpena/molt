@@ -404,8 +404,10 @@ def test_identity_reader_rejects_decode_and_recursive_json_without_escape(
     assert custody.read_backend_daemon_identity(path) is None
 
 
-# The product's daemon probes, run as an installed wheel runs them: `python -I`
-# with only the `molt` package importable, never the repository's `tools`.
+# The product's daemon probes, run as an installed wheel runs them: with the
+# `molt` package and the standard library importable, never the repository's
+# `tools`. `-I -S` drops the environment, the working directory and every site
+# directory (and the `.pth` files and `sitecustomize` they would load).
 _INSTALLED_DAEMON_PROBES = r"""
 import importlib.util
 import json
@@ -416,12 +418,7 @@ import time
 from pathlib import Path
 
 source_root, scratch = sys.argv[1], Path(sys.argv[2])
-# A wheel ships only `src`; drop any entry that would expose the checkout.
-sys.path[:] = [
-    entry
-    for entry in sys.path
-    if not (Path(entry or ".") / "tools" / "memory_guard.py").is_file()
-]
+assert "molt" not in sys.modules, "startup imported molt before the probe"
 sys.path.insert(0, source_root)
 assert importlib.util.find_spec("tools") is None, sys.path
 
@@ -500,6 +497,7 @@ def test_installed_daemon_probes_need_only_the_molt_package(tmp_path: Path) -> N
         [
             sys.executable,
             "-I",
+            "-S",
             "-c",
             _INSTALLED_DAEMON_PROBES,
             str(source_root),
@@ -513,7 +511,7 @@ def test_installed_daemon_probes_need_only_the_molt_package(tmp_path: Path) -> N
     report = json.loads(result.stdout)
     assert report["self_alive"] is True
     # Native argv keeps its boundaries: the multi-line program is one argument.
-    assert report["self_argv"][1:4] == ["-I", "-c", _INSTALLED_DAEMON_PROBES]
+    assert report["self_argv"][1:5] == ["-I", "-S", "-c", _INSTALLED_DAEMON_PROBES]
     assert report["self_argv"][-1] == str(tmp_path)
     assert type(report["self_birth"]) is int
     assert type(report["identity_birth"]) is int
