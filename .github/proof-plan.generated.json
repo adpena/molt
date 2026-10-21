@@ -555,6 +555,7 @@
         "tests/tools/test_provision_binaryen.py/**",
         "tests/tools/test_pytest_random_order_plugin.py/**",
         "tests/tools/test_pytest_truth_plugin.py/**",
+        "tests/tools/test_pytest_profile.py/**",
         "tests/tools/test_python_custody_bootstrap.py/**",
         "tests/tools/test_quint_trace_to_tests_memory_guard.py/**",
         "tests/tools/test_release_binary_compatibility.py/**",
@@ -3618,6 +3619,7 @@
         "tests/tools/test_provision_binaryen.py",
         "tests/tools/test_pytest_random_order_plugin.py",
         "tests/tools/test_pytest_truth_plugin.py",
+        "tests/tools/test_pytest_profile.py",
         "tests/tools/test_python_custody_bootstrap.py",
         "tests/tools/test_quint_trace_to_tests_memory_guard.py",
         "tests/tools/test_release_binary_compatibility.py",
@@ -9397,7 +9399,7 @@
       "local.guard-marker-custody.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/tools/test_memory_guard_custody.py tests/tools/test_guard_marker_consumers.py tests/tools/test_runtime_wasm_final_preflight.py tests/tools/test_disk_guard.py tests/tools/test_proof_queue_execution_receipt_details.py",
       "local.heap-kind-lifetime-authority.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_gen_heap_kinds.py",
       "local.host-capability-authority.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/test_gen_host_capabilities.py tests/test_capability_policy.py",
-      "local.host-capacity.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_host_capacity.py tests/test_pytest_capacity_plugin.py tests/cli/test_cli_frontend_parallel_authority.py tests/tools/test_ci_resource_env.py tests/test_memory_guard_tool.py",
+      "local.host-capacity.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_host_capacity.py tests/test_pytest_capacity_plugin.py tests/tools/test_pytest_profile.py tests/cli/test_cli_frontend_parallel_authority.py tests/tools/test_ci_resource_env.py tests/test_memory_guard_tool.py",
       "local.host-entrypoint-imports.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_import_file.py",
       "local.host-fact-test-isolation.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.5 tests/test_toolchain_facts.py::test_default_fact_store_cannot_pollute_the_host_namespace",
       "local.import-symbol-gate.0": "python tools/import_symbol_gate.py",
@@ -10571,11 +10573,13 @@
         "globs": [
           "src/molt/host_capacity.py",
           "src/molt/pytest_capacity_plugin.py",
+          "tools/pytest_profile.py",
           "tools/memory_guard.py",
           "tools/memory_guard_core/memory_limits.py",
           "tools/ci_resource_env.py",
           "tests/test_host_capacity.py",
           "tests/test_pytest_capacity_plugin.py",
+          "tests/tools/test_pytest_profile.py",
           "tests/cli/test_cli_frontend_parallel_authority.py",
           "tests/tools/test_ci_resource_env.py"
         ],
@@ -10583,6 +10587,7 @@
         "pytest": [
           "tests/test_host_capacity.py",
           "tests/test_pytest_capacity_plugin.py",
+          "tests/tools/test_pytest_profile.py",
           "tests/cli/test_cli_frontend_parallel_authority.py",
           "tests/tools/test_ci_resource_env.py",
           "tests/test_memory_guard_tool.py"
