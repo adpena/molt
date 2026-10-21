@@ -1837,6 +1837,7 @@ class RepoProcessMemorySentinel:
                 lease=self._daemon_suite_lease.record,
                 samples=samples,
                 acknowledge=False,
+                wait_for_lock=False,
             )
         else:
             adopted = suite_custody.transferable_groups(
@@ -1844,6 +1845,7 @@ class RepoProcessMemorySentinel:
                 project_root=self._repo_root,
                 samples=samples,
                 acknowledge=False,
+                wait_for_lock=False,
             )
         adopted_pids = {
             pid for _lease, _identity, members in adopted for pid in members
