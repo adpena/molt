@@ -34935,15 +34935,9 @@ def test_cli_cold_warm_production_bytes_and_cache_keys_ignore_hashseed(
         encoding="utf-8",
     )
 
-    def build(index: int, closure_rows: Path | None) -> tuple[object, ...]:
+    def build(index: int) -> tuple[object, ...]:
         parse_codec, workers, seed = _HASHSEED_BUILDS[index]
         cache = tmp_path / f"cache-{index}"
-        if closure_rows is not None:
-            # The compiler's own source closure is analyzed cold once, under the
-            # first seed: its rows are content-keyed and revalidated on every
-            # read, and test_compiler_source_closure_ignores_hashseed proves the
-            # analysis is seed-independent. Every other cache starts cold.
-            shutil.copytree(closure_rows, cache / "python_source_closure")
         # Each build owns its cache, Cargo target and output; they share only
         # the project's sources, so the builds after the first run together.
         script = f"""
@@ -34967,38 +34961,25 @@ print(json.dumps(_capture_hashseed_cli_builds(Path({str(project)!r}), Path({str(
         assert result["warm_hits"] > 0
         return (parse_codec, workers, seed, result["records"])
 
-    first = build(0, None)
-    closure_rows = tmp_path / "cache-0" / "python_source_closure"
-    assert any(closure_rows.glob("*.json"))
+    first = build(0)
     with ThreadPoolExecutor(max_workers=3) as executor:
-        rest = list(
-            executor.map(
-                lambda index: build(index, closure_rows),
-                range(1, len(_HASHSEED_BUILDS)),
-            )
-        )
+        rest = list(executor.map(build, range(1, len(_HASHSEED_BUILDS))))
     differing = [record[:3] for record in rest if record[3] != first[3]]
     assert not differing, f"builds differ from {first[:3]}: {differing}"
 
 
-def test_compiler_source_closure_ignores_hashseed(tmp_path: Path) -> None:
-    """The compiler's own source closure, analyzed cold, is seed-independent."""
+def test_frontend_semantic_fingerprint_ignores_hashseed(tmp_path: Path) -> None:
+    """The declared producer set and its digest are seed-independent."""
     results = []
     for seed in ("0", "12345"):
-        cache = tmp_path / f"closure-{seed}"
         script = f"""
 import json, os, sys
 from pathlib import Path
 sys.path[:0] = [{str(ROOT / "src")!r}, {str(ROOT)!r}]
-os.environ["MOLT_CACHE"] = {str(cache)!r}
+os.environ["MOLT_CACHE"] = {str(tmp_path / f"cache-{seed}")!r}
 from molt.cli import cache_fingerprints as fingerprints
-with fingerprints._source_tree_fingerprint_transaction():
-    inputs = fingerprints._frontend_semantic_tooling_sources(Path({str(ROOT)!r}))
-rows = [
-    json.loads(path.read_text(encoding="utf-8"))
-    for path in Path({str(cache)!r}, "python_source_closure").glob("*.json")
-]
-print(json.dumps({{"paths": [str(path) for path in inputs.paths], "rows": rows}}))
+snapshot = fingerprints._frontend_semantic_tooling_snapshot()
+print(json.dumps({{"paths": [str(path) for path in snapshot.source_paths], "fingerprint": snapshot.fingerprint}}))
 """
         completed = run_cli_test_process(
             [sys.executable, "-c", script],
@@ -35010,6 +34991,6 @@ print(json.dumps({{"paths": [str(path) for path in inputs.paths], "rows": rows}}
         )
         assert completed.returncode == 0, completed.stderr
         result = json.loads(completed.stdout)
-        assert result["rows"], "the cold analysis wrote no closure rows"
+        assert result["paths"], "the snapshot keyed no compiler source"
         results.append(result)
     assert results[0] == results[1]
