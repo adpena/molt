@@ -141,7 +141,9 @@ percentages. Required conformance and release matrix gates still apply.
   performance lanes, not noisy functional tests. Mark a test that takes 10 s
   or more in a warm `-n 4` run `@pytest.mark.long_pole`, so xdist starts it
   first and it cannot bound the run by starting last
-  ([host capacity](../../../design/host_capacity.md), "Longest first").
+  ([host capacity](../../../design/host_capacity.md), "Longest first"). A
+  build test passes `--rebuild` only when rebuild semantics are its contract;
+  other build tests use the shared build cache, whose keys own invalidation.
 
 During review, ask: which realistic defect would pass unnoticed, is the oracle
 independent, and does this add distinct signal beyond existing tests? Remove or
