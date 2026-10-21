@@ -48,3 +48,9 @@ name = "fuzz_ir_validate"
 path = "fuzz_targets/fuzz_ir_validate.rs"
 test = false
 doc = false
+
+# Cargo applies [patch] only in the workspace it resolves, so this standalone
+# workspace repeats the root Cargo.toml [patch.crates-io] entries for the
+# vendored crates it reaches; tools/check_cargo_locks.py checks them.
+[patch.crates-io]
+object = { path = "../vendor/rust/object" }
