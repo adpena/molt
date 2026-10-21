@@ -645,14 +645,7 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
     ),
     AllowedRawSubprocessUse(
         "tools/memory_guard_core/process_custody.py",
-        "_pid_exited_or_unobservable",
-        "os.kill",
-        "memory guard pid-existence probe with signal 0 after a scoped "
-        "termination attempt; not signal authority",
-    ),
-    AllowedRawSubprocessUse(
-        "tools/memory_guard_core/process_custody.py",
-        "_process_group_exited_or_unobservable",
+        "_process_group_exited_or_unobservable.absence",
         "os.killpg",
         "memory guard process-group existence probe with signal 0 after a "
         "scoped termination attempt; not signal authority",
