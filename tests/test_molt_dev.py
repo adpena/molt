@@ -52,6 +52,7 @@ import os
 import sys
 import sysconfig
 import subprocess
+import time
 import venv
 from pathlib import Path
 from tests.process_guard_common import (
@@ -1958,6 +1959,105 @@ gates = ["echo build-started > build-started.txt"]
     assert origin_main == seed  # still just the seed commit
 
 
+def _wait_for(marker: str, *, then: str) -> str:
+    """A gate that needs another gate to run beside it: serially it times out."""
+    return _integration_python(
+        "import pathlib, sys, time\n"
+        "deadline = time.monotonic() + 60\n"
+        f"while not pathlib.Path({marker!r}).exists():\n"
+        "    if time.monotonic() > deadline: sys.exit(9)\n"
+        "    time.sleep(0.05)\n" + then
+    )
+
+
+def test_integrate_always_gates_run_together_and_report_in_declared_order(
+    drv, origin_and_clone, monkeypatch, capfd
+):
+    _, work = origin_and_clone
+    marker = str(work.parent / "second-ran")
+    first = _wait_for(marker, then="print('first-gate-output')")
+    second = _integration_python(
+        f"import pathlib; pathlib.Path({marker!r}).touch(); print('second-gate-output')"
+    )
+    _commit_integration_policy(work, [first, second])
+    monkeypatch.setattr(drv, "concurrent_gate_limit", lambda: 2)
+    assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True)) == 0
+    output = capfd.readouterr()
+    # The first gate finished last, yet its output and events come first.
+    assert output.out.index("first-gate-output") < output.out.index(
+        "second-gate-output"
+    )
+    finished = [
+        json.loads(line)["gate_ordinal"]
+        for line in output.out.splitlines()
+        if line.startswith("{") and '"gate_finished"' in line
+    ]
+    assert finished == [1, 2]
+    assert "concurrent gates: 2 in" in output.err
+
+
+def test_integrate_reports_the_first_failure_in_declared_order(
+    drv, origin_and_clone, monkeypatch, capfd
+):
+    _, work = origin_and_clone
+    marker = str(work.parent / "second-failed")
+    third = work.parent / "third-started"
+    gates = [
+        _wait_for(marker, then="sys.exit(5)"),
+        _integration_python(
+            f"import pathlib, sys; pathlib.Path({marker!r}).touch(); sys.exit(6)"
+        ),
+        _integration_python(f"import pathlib; pathlib.Path({str(third)!r}).touch()"),
+    ]
+    _commit_integration_policy(work, gates)
+    monkeypatch.setattr(drv, "concurrent_gate_limit", lambda: 2)
+    with pytest.raises(drv.DriverError, match=r"gate failed \(exit 5\)") as exc:
+        drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
+    # The second gate failed first in time; the first gate is reported, and the
+    # third gate, after both failures, never starts.
+    assert "exit 6" not in str(exc.value)
+    assert not third.exists()
+    assert 'gate_ordinal": 3' not in capfd.readouterr().out
+
+
+def test_integrate_cancels_later_gates_after_an_earlier_failure(
+    drv, origin_and_clone, monkeypatch
+):
+    _, work = origin_and_clone
+    marker = str(work.parent / "second-started")
+    finished = work.parent / "second-finished"
+    gates = [
+        _wait_for(marker, then="sys.exit(4)"),
+        _integration_python(
+            "import pathlib, time\n"
+            f"pathlib.Path({marker!r}).touch()\n"
+            "time.sleep(120)\n"
+            f"pathlib.Path({str(finished)!r}).touch()"
+        ),
+    ]
+    _commit_integration_policy(work, gates)
+    monkeypatch.setattr(drv, "concurrent_gate_limit", lambda: 2)
+    started = time.monotonic()
+    with pytest.raises(drv.DriverError, match=r"gate failed \(exit 4\)"):
+        drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
+    assert time.monotonic() - started < 100
+    assert not finished.exists()
+
+
+def test_concurrent_gate_limit_comes_from_host_capacity(drv, monkeypatch):
+    from molt import host_capacity
+
+    calls = []
+
+    def worker_count(*, bytes_per_worker, headroom_bytes, cpus=None):
+        calls.append(bytes_per_worker)
+        return 3
+
+    monkeypatch.setattr(host_capacity, "worker_count", worker_count)
+    assert drv.concurrent_gate_limit() == 3
+    assert calls == [drv.CONCURRENT_GATE_BYTES]
+
+
 def test_integrate_gates_never_write_bytecode_into_the_checkout(
     drv, origin_and_clone, monkeypatch
 ):
@@ -2931,18 +3031,19 @@ def test_integrate_binds_the_fetched_upstream_for_every_change_gate(
         message += "\n\nCo-Authored-By: Claude <noreply@anthropic.com>"
     feature = _commit_file(work, "feature.rs", "fn feature() {}\n", message)
     upstream = "{integration_upstream_commit}"
+    # Always gates run concurrently, so each gate moves the selected tracking
+    # ref itself after fetch. A ref spelling passed instead of the captured
+    # commit would silently select no changes.
     imports = (
         "import sys, subprocess; from pathlib import Path; "
         f"sys.path[:0] = [{str(REPO_ROOT)!r}, {str(REPO_ROOT / 'src')!r}]; "
+        f"subprocess.run(['git', 'update-ref', 'refs/remotes/{remote}/main', 'HEAD'], check=True); "
     )
     selection_gate = (
         _integration_python(
             imports
             + "from tools import check_changed_clippy as clippy, check_rustfmt as rustfmt; "
             + "clippy.ROOT = rustfmt.ROOT = Path.cwd(); "
-            # Mutate the selected tracking ref after fetch. A ref spelling passed
-            # instead of the captured commit would silently select no changes.
-            + f"subprocess.run(['git', 'update-ref', 'refs/remotes/{remote}/main', 'HEAD'], check=True); "
             + "assert clippy.changed_paths('origin/main') == (); "
             + "assert rustfmt._changed_rust_paths('origin/main') == (); "
             + "assert set(clippy.changed_paths(sys.argv[1])) == {'feature.rs', 'tools/proof_plan.toml'}; "

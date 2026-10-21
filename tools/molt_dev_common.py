@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import subprocess
 import os
 import sys
@@ -129,21 +130,26 @@ def _run_fast_captured_command(
         return subprocess.CompletedProcess(cmd, 124, stdout, stderr)
 
 
-def _run_live_gate(
-    cmd: str | tuple[str, ...], *, repo: Path, env: ProcessEnvironment
-) -> int:
-    """Run shell syntax or structured argv live through memory custody."""
+def _gate_launch(
+    cmd: str | tuple[str, ...], env: ProcessEnvironment
+) -> tuple[list[str], ProcessEnvironment]:
     # A compound shell gate can launch Cargo in any arm. Its opaque shell argv
     # cannot trigger direct-Cargo admission, so normalize the inherited wrapper
     # environment before launching it, without parsing shell syntax.
     env, _policies = normalize_cargo_environment(env)
     if not isinstance(cmd, str):
-        argv = list(cmd)
-    elif os.name == "nt":
+        return list(cmd), env
+    if os.name == "nt":
         shell = env.get("COMSPEC") or "cmd.exe"
-        argv = [shell, "/d", "/s", "/c", cmd]
-    else:
-        argv = ["/bin/sh", "-c", cmd]
+        return [shell, "/d", "/s", "/c", cmd], env
+    return ["/bin/sh", "-c", cmd], env
+
+
+def _run_live_gate(
+    cmd: str | tuple[str, ...], *, repo: Path, env: ProcessEnvironment
+) -> int:
+    """Run shell syntax or structured argv live through memory custody."""
+    argv, env = _gate_launch(cmd, env)
     proc = harness_memory_guard.guarded_completed_process(
         argv,
         prefix="MOLT_TEST_SUITE",
@@ -154,3 +160,29 @@ def _run_live_gate(
         timeout=None,
     )
     return proc.returncode
+
+
+def _run_captured_gate(
+    cmd: str | tuple[str, ...],
+    *,
+    repo: Path,
+    env: ProcessEnvironment,
+    cancelled: Callable[[], bool],
+) -> tuple[int, str, str]:
+    """Run one gate beside others: capture its streams, honor cancellation.
+
+    The guard owns the child tree; ``cancelled`` lets the scheduler stop a gate
+    whose outcome no longer matters.
+    """
+    argv, env = _gate_launch(cmd, env)
+    proc = harness_memory_guard.guarded_completed_process(
+        argv,
+        prefix="MOLT_TEST_SUITE",
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=None,
+        cancellation_requested=cancelled,
+    )
+    return proc.returncode, proc.stdout or "", proc.stderr or ""
