@@ -90,6 +90,18 @@ sync_test = "tests/test_proof_plan.py"
 discovery_only = false
 
 [[generator]]
+tool = "tools/gen_claude_hooks.py"
+outputs = [".claude/settings.json"]
+source = "tools/hooks/wiring.py + tools/generator_io.py"
+check_mode = true
+toolchains = []
+check_command = "tools/gen_claude_hooks.py --check"
+idempotent = true
+sync_test = "tests/tools/test_hooks_fail_open.py"
+closed_domains = []
+discovery_only = false
+
+[[generator]]
 tool = "tools/update_status_blocks.py"
 outputs = ["docs/spec/STATUS.md"]
 # Only the GENERATED:compat-summary block is projected; the rest of STATUS.md

@@ -2585,7 +2585,7 @@ resource_class = "repository-policy"
 timeout_seconds = 600
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-n", "auto", "--molt-worker-memory-gb=0.5", "tests/test_agent_coordination.py", "tests/tools/test_anti_recurrence_gate.py", "tests/tools/test_apparatus_agent_safety.py", "tests/tools/test_check_commit_attribution.py", "tests/tools/test_check_gate_flips.py", "tests/tools/test_check_gate_liveness.py", "tests/tools/test_check_instruction_hierarchy.py", "tests/tools/test_check_sister_landed.py", "tests/tools/test_claim_lane.py", "tests/tools/test_claims_status.py", "tests/tools/test_commit_serializer.py", "tests/tools/test_custody_apparatus.py", "tests/tools/test_dirty_tree_landing_audit.py", "tests/tools/test_hooks_bash_guard.py", "tests/tools/test_hooks_fail_open.py", "tests/tools/test_hooks_landing_gate.py", "tests/tools/test_hooks_session_digest.py", "tests/tools/test_hooks_session_learning.py", "tests/tools/test_hooks_waivers.py", "tests/tools/test_install_git_hooks.py", "tests/tools/test_ledger_merge.py", "tests/tools/test_magnitude_dismissal_gate.py", "tests/tools/test_subagent_contract.py", "tests/tools/test_triality.py", "tests/tools/test_triality_gate.py"]
+argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-n", "auto", "--molt-worker-memory-gb=0.5", "tests/test_agent_coordination.py", "tests/tools/test_apparatus_agent_safety.py", "tests/tools/test_check_commit_attribution.py", "tests/tools/test_check_gate_flips.py", "tests/tools/test_check_gate_liveness.py", "tests/tools/test_check_instruction_hierarchy.py", "tests/tools/test_check_sister_landed.py", "tests/tools/test_claim_lane.py", "tests/tools/test_claims_status.py", "tests/tools/test_commit_serializer.py", "tests/tools/test_custody_apparatus.py", "tests/tools/test_dirty_tree_landing_audit.py", "tests/tools/test_hooks_fail_open.py", "tests/tools/test_hooks_session_digest.py", "tests/tools/test_install_git_hooks.py", "tests/tools/test_ledger_merge.py", "tests/tools/test_subagent_contract.py"]
 toolchains = ["python", "uv"]
 
 [[command]]
@@ -5319,12 +5319,11 @@ pytest = [
 [[rule]]
 name = "memory-graph"
 toolchains = ["python"]
-description = "A10 memory graph (typed recall over memory/*.md + POINTERS + ledgers + findings), integrity check, and the session_digest / memo-lint recall consumers: run the teeth + the warn-only integrity canary."
+description = "A10 memory graph (typed recall over memory/*.md + POINTERS + ledgers + findings), integrity check, and the memo-lint recall consumer: run the teeth + the warn-only integrity canary."
 globs = [
   "tools/memory_graph.py",
   "tools/check_memory_graph.py",
   "tools/findings_memo_lint.py",
-  "tools/hooks/session_digest.py",
   "tests/tools/test_memory_graph.py",
 ]
 gates = [
@@ -5418,21 +5417,21 @@ pytest = [
   "tests/tools/test_reproducible_build_truth.py",
 ]
 
-# --- APPARATUS Wave 1 hook spine (A1/A2/A9) ------------------------------
+# --- Claude Code hooks: the launcher and the session digest --------------
 [[rule]]
 name = "apparatus-hooks"
 toolchains = ["python"]
-description = "Claude Code hook spine + landing gate + waiver grammar: pure-decision teeth + fail-open + gate-liveness canary."
+description = "Claude Code hooks (the launcher and the session digest), their typed wiring, the gate-flip auditor and the gate-liveness canary."
 globs = [
   ".claude/settings.json",
-  "tools/hooks/**/*.py",
+  "tools/hooks/**",
+  "tools/gen_claude_hooks.py",
+  ".githooks/molt-hook-launch.sh",
+  "tools/molt_dev_queue.py",
   "tools/check_gate_flips.py",
   "tools/check_gate_liveness.py",
-  "tests/tools/test_hooks_bash_guard.py",
-  "tests/tools/test_hooks_landing_gate.py",
   "tests/tools/test_hooks_session_digest.py",
   "tests/tools/test_hooks_fail_open.py",
-  "tests/tools/test_hooks_waivers.py",
   "tests/tools/test_check_gate_flips.py",
   "tests/tools/test_check_gate_liveness.py",
 ]
@@ -5441,11 +5440,8 @@ gates = [
   "python tools/check_gate_flips.py --check",
 ]
 pytest = [
-  "tests/tools/test_hooks_bash_guard.py",
-  "tests/tools/test_hooks_landing_gate.py",
   "tests/tools/test_hooks_session_digest.py",
   "tests/tools/test_hooks_fail_open.py",
-  "tests/tools/test_hooks_waivers.py",
   "tests/tools/test_check_gate_flips.py",
   "tests/tools/test_check_gate_liveness.py",
 ]
@@ -5453,29 +5449,20 @@ pytest = [
 [[rule]]
 name = "apparatus-learning-protection"
 toolchains = ["python"]
-description = "Recurring-harm registry, no-agent-termination meta-gate, anti-recurrence advisory, and Stop-session learning persistence."
+description = "Recurring-harm registry, the no-agent-termination meta-gate, and the memory graph."
 globs = [
-  ".claude/settings.json",
   "tools/apparatus_agent_safety.py",
-  "tools/anti_recurrence_gate.py",
   "tools/recurring_harms.toml",
-  "tools/hooks/session_learning.py",
-  "tools/hooks/stop_gates.py",
   "tools/memory_graph.py",
   "tools/check_gate_liveness.py",
   "tests/tools/test_apparatus_agent_safety.py",
-  "tests/tools/test_anti_recurrence_gate.py",
-  "tests/tools/test_hooks_session_learning.py",
   "tests/tools/test_memory_graph.py",
 ]
 gates = [
   "python tools/apparatus_agent_safety.py --check",
-  "python tools/anti_recurrence_gate.py --check",
 ]
 pytest = [
   "tests/tools/test_apparatus_agent_safety.py",
-  "tests/tools/test_anti_recurrence_gate.py",
-  "tests/tools/test_hooks_session_learning.py",
   "tests/tools/test_check_gate_liveness.py",
   "tests/tools/test_memory_graph.py",
 ]
@@ -5578,6 +5565,7 @@ globs = [
   "tests/tools/test_proof_queue_lane_maturity.py",
   "tests/tools/test_proof_queue_disk_capacity.py",
   "tests/tools/test_disk_guard.py",
+  "tests/tools/test_drift_harvest.py",
 ]
 gates = [
   "python tools/check_gate_liveness.py --check",
@@ -5590,6 +5578,7 @@ pytest = [
   "tests/tools/test_proof_queue_disk_capacity.py",
   "tests/tools/test_disk_guard.py",
   "tests/tools/test_check_gate_liveness.py",
+  "tests/tools/test_drift_harvest.py",
 ]
 
 # --- Static first-party from-import symbol resolution ---------------------
@@ -6313,7 +6302,7 @@ contention_key = "python:r6-target-version-py314"
 timeout_seconds = 900
 
 # =========================================================================
-# GATE-LIFECYCLE REGISTRY (APPARATUS Wave 1, A9)
+# GATE-LIFECYCLE REGISTRY (APPARATUS A9)
 #
 # Uniform warn->strict lifecycle for molt gates, mirroring pact's discipline:
 # a gate lands WARN-ONLY with a NAMED, machine-checkable flip condition; a
@@ -6323,33 +6312,11 @@ timeout_seconds = 900
 #
 # `state`       : "warn" | "strict"
 # `strict_when` : machine token (`live_count == 0`, `live_count <= N`,
-#                 `landed_functional`, `always`) or free text (-> manual review)
+#                 `landed_functional`) or free text (-> manual review)
 # `count_detector`: optional checked-in detector ID producing `live_count`;
 #                   argv and output schema live in check_gate_flips.py
 # `rationale`   : why this state / flip condition
-#
-# The Wave-1 hooks land FUNCTIONAL (not warn-only): they are additive and
-# fail-open, so blocking-at-land is safe. They are recorded here as
-# `landed_functional` per A9 so the lifecycle is uniform and auditable.
 # =========================================================================
-
-[[gate_flip]]
-name = "bash_guard"
-state = "strict"
-strict_when = "landed_functional"
-rationale = "PreToolUse guard is additive + fail-open; blocking destructive-git/add-sweep/queue-bypass/https-push at land is safe and reversible via MOLT_GUARD_OK=1."
-
-[[gate_flip]]
-name = "landing_gate"
-state = "strict"
-strict_when = "landed_functional"
-rationale = "Stop-hook land-or-blocker nudge; exit-0 block-once + stop_hook_active make it a re-engage nudge, never a wedge, so it is safe at land."
-
-[[gate_flip]]
-name = "session_digest"
-state = "strict"
-strict_when = "always"
-rationale = "SessionStart digest never blocks (informational, exit 0 always); 'always' = no flip pending."
 
 [[gate_flip]]
 name = "gate_liveness_canary"

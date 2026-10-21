@@ -1,73 +1,63 @@
-# molt hook spine (APPARATUS Wave 1)
+# molt Claude Code hooks
 
-Mechanical enforcement of the standing directives, so drift is caught by tooling
-instead of operator reminders. Wired from `.claude/settings.json` to three
-Claude Code lifecycle points. Full design: `docs/agent/APPARATUS_FROM_COMMA_LAB.md`
-(sections A1, A2, A9); the standing directives are `memory/MEMORY.md` (M##).
+One hook runs: a digest of live facts at session start. No hook blocks,
+delays or re-engages work (owner, 2026-10-21: the hooks exist to speed work
+up, not to stop it).
 
-## The hooks
+## The hook
 
-| Event | Script | Job | Mechanizes |
-|---|---|---|---|
-| `SessionStart` | `session_digest.py` | <5s read-only digest (goal pointer, custody, drift debt, build-wall, standing directives) injected as context; writes the landing-gate window baseline | M01, M09, M67 |
-| `PreToolUse` (Bash) | `bash_guard.py` | refuses destructive-git-on-shared-checkout, `git add` sweeps, build-bypasses-live-queue, https-push | M17, M18, M20, M27, M19 |
-| `Stop` | `stop_gates.py` -> `session_learning.py` + gates | persists landings/cruxes/frontiers into the memory corpus, warns on uncaptured bug-class learning, then applies the land-or-blocker/triality/verdict gates | M12, M05, M22 |
+`wiring.py` declares each hook (event, matcher, script, timeout);
+`tools/gen_claude_hooks.py` projects it into `.claude/settings.json`, which
+Claude Code reads, and `generators.py check` keeps the two equal. Edit the
+declaration, never the settings file.
 
-Supporting: `_common.py` (fail-open wrapper, UTF-8 backstop, locked jsonl,
-git/queue helpers), `waivers.py` (A9 waiver grammar), `../check_gate_flips.py`
-(A9 warn->strict auditor), `../check_gate_liveness.py` (canary: each gate still
-fires on a known-bad fixture), and `../recurring_harms.toml` (one canonical
-harm -> guard -> live-canary registry).
+| Event | Script | Job |
+|---|---|---|
+| `SessionStart` | `session_digest.py` | digest of live facts injected as context: pointers to AGENTS.md, the coordination context and the v1.0 ledger; the landing queue; the proof queue; live worktrees against `drift_harvest`'s SPRAWL threshold |
 
-## Non-negotiable invariants
+The 2026-10-21 owner decision retired the Bash guard, the Stop legs
+(anti-recurrence, triality, magnitude-dismissal), the landing gate, session
+learning and the waiver grammar. Git history keeps them.
 
-- **FAIL-OPEN.** Any exception in a hook -> ALLOW / `exit 0`. The session is
-  never bricked. Errors are logged to `.molt/state/<hook>_errors.log` with a
-  loud-escalation threshold so fail-open is never silent. Proven by
-  `tests/tools/test_hooks_fail_open.py` (a raising `decide()` -> the wrapper
-  allows).
-- **Pure decision surface.** Every hook's `decide()` / `evaluate()` is a pure,
-  separately unit-tested function; the fail-open wrapper is thin.
-- **No process actuation.** `tools/apparatus_agent_safety.py --check` scans the
-  hook spine and apparatus guards for termination capability; read-only bounded
-  observations may use `subprocess.run`, but `Popen`, kill/terminate calls,
-  signals, and taskkill-style actuation are forbidden.
-- **Loop-safe + event-triggered.** The `Stop` block is a re-engage NUDGE
-  (exit 0), never a wedge: guarded by `stop_hook_active` + a persisted
-  `last_block_head` marker (blocks at most once per HEAD state), silent when no
-  potentially mutating activity. The landing leg parses actual assistant tool
-  records in a bounded transcript tail; read-only tools do not require a commit
-  or an invented blocker. SessionStart uses the same `READ_ONLY_TOOLS` set to
-  explain the requirement and scopes its landing directive to potentially
-  mutating work. Shell and unfamiliar tools still count, without
-  guessing intent from command text. Malformed/unavailable transcripts allow
-  continuation with a visible diagnostic. It **composes with** (does not replace) the autonomous
-  `/goal` Stop loop.
-- **Windows.** `msvcrt` locks (not `fcntl`); ASCII-safe, UTF-8-explicit
-  (reuses `tools/_io_utf8.force_utf8_stdio`, M43 cp1252 class). Stdlib-only, so
-  the hooks run under any Python 3.9+ (the `command` cannot depend on the venv).
+`_common.py` holds the fail-open wrapper, the UTF-8 backstop and the proof
+queue reader.
 
-## Escape valves (never binary)
+## Invariants
 
-- **bash_guard override:** prefix the command with `MOLT_GUARD_OK=1` once you
-  have verified it is safe. The override is audited to `.molt/state/waivers.jsonl`.
-- **landing_gate:** land a commit/proof, or record the real blocker:
-  `python tools/hooks/landing_gate.py --record-blocker "<reason>"`. A
-  `[report-only]` commit-subject token also satisfies the window.
-- **waiver grammar (A9):** inline `# <GATE>_OK:<rationale>` (>=4 real,
-  non-placeholder chars) or a `[skip-<gate>]` commit-subject token. Honored
-  waivers are appended to `.molt/state/waivers.jsonl`.
+- **Fail open.** Any exception in a hook exits 0. The error goes to
+  `.molt/state/<hook>_errors.log`; past an escalation threshold the hook also
+  prints it on stderr, so a failing hook is never silent. Proven by
+  `tests/tools/test_hooks_fail_open.py`.
+- **Writes.** The digest writes nothing into the tracked tree or the user's
+  Claude memory directory. Its own output is the error log. Its Git reads run
+  through the project's guarded command path, which keeps that path's
+  standard custody records (memory-guard locks and custody files under the
+  artifact root). `tools/apparatus_agent_safety.py --check` scans the hook
+  package for termination capability: bounded read-only `subprocess.run`
+  calls are allowed; `Popen`, kill/terminate calls, signals and
+  taskkill-style actuation are forbidden.
+- **Windows.** ASCII-safe, UTF-8-explicit output (reuses
+  `tools/_io_utf8.force_utf8_stdio`).
+- **Interpreter.** Every settings command runs `sh tools/hooks/run.sh <hook>`,
+  which starts Python the way the Git hooks do: it sources
+  `.githooks/molt-hook-launch.sh`, which selects the common checkout's
+  platform-native uv environment (`.venv/bin/python` or
+  `.venv/Scripts/python.exe`) and binds imports to the invoking worktree. A
+  linked worktree therefore needs no environment of its own. Claude Code's
+  PATH need not carry `python`; the hook path runs only `sh`, `git` and
+  `dirname`. A missing `run.sh`, launch script, environment or hook exits 1
+  and names the missing piece. Sourcing a missing file in POSIX `sh` exits 2,
+  so `run.sh` checks the launch script first. The POSIX cells are tested
+  (`tests/tools/test_hooks_fail_open.py`); the Windows cell (Git for Windows
+  `sh`) is unverified.
 
 ## Runtime state (`.molt/state/`, gitignored)
 
-`landing_gate_marker.json` (per-session window base + `last_block_head`),
-`blockers.jsonl`, `waivers.jsonl`, `<hook>_errors.log`. Per-machine /
-per-worktree; never committed.
+`<hook>_errors.log` only. Per-machine and per-worktree; never committed.
 
 ## Verified against the primary docs
 
-The settings.json shape, the `Stop` block contract
-(`{"decision":"block","reason":...}` on exit 0), the `PreToolUse` block via
-exit-2-with-stderr, the `SessionStart` stdout-as-context behavior, and the
-exit-code semantics were verified against `https://code.claude.com/docs/en/hooks`
-(2026-07-10).
+The settings.json shape, the `SessionStart` stdout-as-context behavior and
+the exit-code semantics were verified against
+`https://code.claude.com/docs/en/hooks` (2026-07-10; the 2026-10-21 review
+rechecked the exit codes and `CLAUDE_PROJECT_DIR`).

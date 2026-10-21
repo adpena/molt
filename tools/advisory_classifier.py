@@ -112,14 +112,6 @@ def poison_triage(text: str) -> str | None:
     )
 
 
-def magnitude_confirmation(text: str) -> str | None:
-    return classify(
-        text,
-        ("dismissal", "relative_significance", "unclear"),
-        purpose="magnitude_dismissal_confirmation",
-    )
-
-
 def finding_tag_suggestion(text: str) -> str | None:
     return classify(
         text,

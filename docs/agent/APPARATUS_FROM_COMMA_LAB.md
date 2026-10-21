@@ -1,6 +1,7 @@
 # APPARATUS FROM COMMA-LAB — harness engineering molt should adopt
 
 **Status (2026-07-11): COMPLETE.** All twelve adoption items now have executable authorities, teeth, and liveness coverage; A8 and A12 close the roadmap.
+**Update (2026-10-21):** the owner retired the blocking hooks (A1's Bash guard, the A2/A3/A6 Stop legs and A9's waiver grammar); `tools/hooks/README.md` states what runs today.
 **Sources studied (2026-07-10):**
 
 - GitHub `adpena/comma-lab` @ `1fbcc84ca` (2026-07-10), cloned and read in depth.
@@ -386,88 +387,56 @@ additive. All new hooks follow the pact invariants: fail-open + error-log +
 loud-escalation, pure unit-tested decision surface, event-triggered,
 loop-safe, uniform waiver grammar with mandatory rationale.
 
-### A1. The hook spine (`molt-src/.claude/settings.json` + 3 hook tools) — DO FIRST
+### A1. The hook spine (`molt-src/.claude/settings.json` + hook tools)
+
+**Status (2026-10-21): one hook.** The owner kept only the SessionStart
+digest: the hooks exist to speed work up, not to stop it. The
+Bash guard and the Stop legs (anti-recurrence, A3 and A6) were retired and
+deleted; Git history keeps them. In the weeks they ran they blocked or
+re-prompted sessions on checkout-wide facts that another session could
+change (a replay of 28,676 recorded session commands found 633 would-be
+blocks).
 
 **Build:**
-- `tools/hooks/session_digest.py` (SessionStart): a <5s read-only digest —
-  the goal pointer (witness-closure state toward pact-collab 100-yr green,
-  M01), CLAIMS/queue custody snapshot (`proof_queue.py status`, CLAIMS.md at
-  origin/main), worktree/drift debt (`drift_harvest.py` count, M67), build
-  wall-clock trend (M09), and the top standing directives. This is molt's
-  costate digest: the agent starts every session already knowing the state
-  it would otherwise be reminded of.
-- `tools/hooks/bash_guard.py` (PreToolUse, matcher Bash): pure
-  `decide(command, env)`; blocks (a) destructive git against the shared
-  checkout — `reset --hard`/`checkout --`/`clean -fd`/`stash drop` unless the
-  cwd provably differs from the shared root (M17/M18; lifts
-  `tools/git_guard.py` from convention to mechanical), (b) bare
-  `git add`-then-commit sweeps (require `git commit -- <pathspec>`, M20),
-  (c) raw heavy `cargo build`/`molt build` invocations that bypass
-  `proof_queue.py` when a queue is live (M27's <=1-2 builds; the pact
-  launch-guard class), (d) pushes to origin over https (M19). Override:
-  `MOLT_GUARD_OK=1` in-command + logged rationale.
-- `tools/hooks/stop_gates.py` (Stop): runs the A2 landing gate and A3 drift
-  detector below; prints `{"decision":"block","reason":...}` on violation.
+- `tools/hooks/session_digest.py` (SessionStart): a digest of live facts
+  that writes nothing into the tracked tree or the user's memory directory:
+  pointers to the authorities that own the rest
+  (`AGENTS.md`, `tools/agent_coordination.py context`, the v1.0 ledger), the
+  landing queue's pending requests and newest results, the proof queue's
+  active runs (read in-process from its SQLite state) and the live worktree
+  count against `drift_harvest`'s SPRAWL threshold (M67). It does not restate
+  a goal, a claim count, a build-wall sample or the standing directives:
+  those went stale (the July witness-closure goal) while their owning files
+  moved on.
+- The wiring is one typed declaration, `tools/hooks/wiring.py`, which
+  generates `.claude/settings.json`.
 
-**Mechanizes:** M12, M16, M17, M18, M19, M20, M27, M67, M01.
-**Composes with:** git_guard.py, proof_queue.py, drift_harvest.py,
-tree_drift_check.py. **Cost:** small (the pact hooks are direct templates;
-port decide() + tests). Note Windows: use `msvcrt`/lockfile in place of
-fcntl; keep every hook ASCII-safe and UTF-8-explicit (M43's cp1252 class).
+**Mechanizes:** M67.
+**Runs:** `.claude/settings.json` starts every hook through
+`tools/hooks/run.sh`, which sources `.githooks/molt-hook-launch.sh`, the
+launcher the Git hooks use: it selects the common checkout's platform-native
+uv environment and binds imports to the invoking worktree. Until 2026-10-21
+the commands called a bare `python`, which the Claude desktop app's PATH does
+not carry, so every hook failed with exit 127 there.
+**Composes with:** proof_queue.py, drift_harvest.py, the landing queue.
+Keep every hook ASCII-safe and UTF-8-explicit (M43's cp1252 class).
 
-### A2. Land-or-blocker Stop gate (M12 — the operator's #1 fury, mechanized)
+### A2. Land-or-blocker Stop gate (M12)
 
-**Build:** `tools/hooks/landing_gate.py`, invoked from stop_gates. Window =
-session-start HEAD marker .. current HEAD (per-worktree) + proof_queue rows +
-a blocker ledger (`.molt/state/blockers.jsonl`, new, append-only). If a turn
-produced potentially mutating assistant tool activity but the window shows NO landed commit, NO
-queue row in flight, and NO named-blocker entry, emit a block: "This turn
-reported without landing. Land a commit/proof/passing test via the queue, or
-record the real external blocker in blockers.jsonl, then stop." Escape:
-`[report-only]` commit-subject token or a blocker row — both logged.
-This is exactly pact's triality-detector *shape* (git-window marker,
-fail-open, block-JSON) pointed at molt's most-repeated directive.
-**Mechanizes:** M12 (land signal every turn; name real blockers), M05
-(a PASS is a hypothesis until reproduced — the gate asks for the artifact).
-Read-only reviews are complete outcomes: recognized inspection tools do not
-activate the landing requirement. SessionStart renders the gate's canonical
-`READ_ONLY_TOOLS` set and limits its directive to potentially mutating work.
-The bounded JSONL activity reader ignores
-quoted/result records and duplicate tool IDs; shells and unfamiliar tools remain
-potentially mutating. Transcript errors fail open with a visible diagnostic.
-**Composes with:** proof_queue.py (rows = evidence), molt_dev integrate landing flow.
+**Status (2026-10-21): retired and deleted.** The gate read checkout-wide
+facts (HEAD, the landing queue, one session-window marker per checkout), so
+it could not tell this session's landings from another session's, and it
+re-prompted sessions on that basis. The landing queue (`molt_dev.py land`)
+and the session digest now carry the landing signal; nothing blocks a turn.
 
-### A3. Molt triality drift detector (M63 made mechanical)
+### A3. Molt triality drift detector (M63)
 
-**Status (2026-07-11): COMPLETE.** The commit-window hook is complemented by
-`tools/triality.py` and `.molt/state/triality_registry.json`: a lesson is KNOWN
-only when DAG, DSL, and equations name the same invariant fingerprint. The seed
-set covers content-addressed custody, GLOBAL_BRIDGE serialization,
-configured-vs-effective attestation, and exhaustive-by-construction dispatch.
-
-Molt's three legs already exist in nascent form; name them and gate them:
-
-| pact leg | molt leg |
-|---|---|
-| DAG (FEED blocks + wikilinks) | `memory/MEMORY.md` + topic files + docs/agent ledgers (PROOF_QUEUE, CLAIMS, POISON/PANIC ledgers) |
-| DSL (witness_dsl registries) | generated-authority registries: `fc/op_family.rs` single-source dispatch (M39), op_kinds/repr_facts authorities (M54), `fail_closed_registry.toml`, `artifact_poison_registry.toml`, table authorities behind `check_table_drift.py` (M45) |
-| Equations (canonical laws + anchors) | gates + attested measurements: fail_closed_gate scans, parity/differential results, bench_evidence attestations (M10) |
-
-**Build:** `tools/triality_gate.py` (Stop-hook leg + CI mode):
-commit-window classifier —
-- a commit whose subject/diff matches bug-class vocabulary
-  (`fail.closed|poison|silent|wrong.answer|truncat|miscompile`) must touch a
-  gate, a registry, or a test (the "equations" leg) — else block with "you
-  fixed an instance; where is the class extinction?" (M16, M32-M45 pattern);
-- a perf-claim commit (`speedup|faster|[0-9.]+x|perf`) must touch
-  bench_evidence/PERF_AUTHORITY attestation (M10) — no unmeasured perf claims
-  land silently;
-- a finding-class commit (`landed|falsified|root.cause|discovered`) must touch
-  a memory topic file, a docs/agent ledger, or the A4 findings registry — the
-  lesson is recorded where the next session reads it.
-Escape valve `[no-triality]` + rationale; window-wide; logged.
-**Mechanizes:** M63, M05, M10, M16. **Composes with:** every existing gate
-(they become the "equations" leg the detector points commits at).
+**Status (2026-10-21): retired and deleted** with the other Stop legs
+(`tools/triality.py`, `tools/triality_gate.py`). It classified commit
+subjects with keyword vocabulary over a checkout-wide window, so it judged
+other sessions' commits. M63 stays a working rule: the subagent contract's
+`TRIALITY_WIRING` block asks a fix to land its gate or registry and its
+ledger row with the code.
 
 ### A4. Findings registry with empirical anchors (equations layer, molt-shaped)
 
@@ -500,9 +469,10 @@ PERF_AUTHORITY.md, check_perf_freshness.py.
 
 **Status (2026-07-11): COMPLETE.** `tools/advisory_classifier.py` provides the
 subprocess-isolated closed-enum contract, prompt-echo firewall, timeout/fail-open
-behavior, and append-only advisory event ledger. The fail-closed, magnitude, and
-findings consumers expose suggestion-only adapters; deterministic results remain
-authoritative.
+behavior, and append-only advisory event ledger. The fail-closed and findings
+consumers expose suggestion-only adapters; deterministic results remain
+authoritative. The magnitude-dismissal adapter went with the A6 gate on
+2026-10-21.
 
 Apple FM doesn't run on the molt fleet; the CONTRACT does (1.11's six rules).
 **Build:** `tools/advisory_classifier.py` — a thin driver that resolves a
@@ -516,7 +486,7 @@ consumers, each keeping its deterministic floor authoritative:
    borderline (rip-poison vs move-demo, M32/M33) get an advisory
    `poison|misplaced_valuable|benign` tag recorded in the gate report —
    tighten-only, never clears a deterministic hit.
-2. **Magnitude-dismissal confirm** (with A6).
+2. **Magnitude-dismissal confirm** (with A6; retired with it on 2026-10-21).
 3. **Findings auto-tagging**: propose `finding_id`/leg placement for new
    memos (advisory suggestion in the lint output, never auto-write).
 **Mechanizes:** M33 (poison vs misplaced distinction at scale), M05 (the
@@ -525,21 +495,9 @@ fail_closed_gate.py, artifact_poison_gate.py, A3/A4.
 
 ### A6. Magnitude-dismissal + verdict-scope guards
 
-**Build:** port `magnitude_dismissal_detector.py` nearly verbatim (its
-predicates are already pure + reusable): dismissing a lane/finding as
-"small / not worth it / noise / don't re-chase" in commits or docs requires
-(a) relative significance against the REMAINING gap to the standing goal
-(100-yr witness green; build-time floor M09; parity subset M02), or (b) a
-cited measurement of un-recoverability, or (c) `# MAGNITUDE_DISMISSAL_OK:<why>`.
-Add the verdict-scope ladder to molt's kill decisions:
-`verdict_scope: instance|formulation|family|paradigm` required on any
-KILLED/FALSIFIED/WONTFIX in docs/agent ledgers; family kills need >=2
-falsified formulations or a theorem; >=formulation kills need a queued
-reformulation. This mechanizes molt's recurring "fix the class not the
-instance" — and its dual, "don't kill the class on one instance's evidence."
-**Mechanizes:** M16, M46/M47's "DON'T re-chase" lines (those are
-verdict_scope:instance records!), M11 (objective evidence before
-reclaim/retire). **Composes with:** A3 (same Stop-hook window machinery).
+**Status (2026-10-21): retired and deleted** with the other Stop legs
+(`tools/magnitude_dismissal_gate.py`). The ledger rule against waiver
+closures (no finding closes as "measured, not worth it") carries the intent.
 
 ### A7. Dispatch prompts + subagent contract as code
 
@@ -575,23 +533,21 @@ had exactly this class: gates green atop a broken compiler, M42; configured
 != effective, M34 — this is the binding-vs-inert audit pointed at the gates
 themselves).
 **Mechanizes:** M34, M42, M71, M02, M15. **Composes with:** proof_queue
-DAG deps, build_health_gate, degrade_to_slow_gate, molt_dev_gates.toml.
+DAG deps, build_health_gate, degrade_to_slow_gate, the `[[gate_flip]]`
+registry in `tools/proof_plan.toml`.
 
-### A9. Warn->strict flip + uniform waiver grammar across existing gates
+### A9. Warn->strict flip across existing gates
 
 **Build:** a small convention + one audit tool. Every new molt gate lands
-warn-only with a NAMED flip condition recorded in `molt_dev_gates.toml`
-(`strict_when = "live_count == 0"`); `tools/check_gate_flips.py` reports
-gates whose flip condition is met but which are still warn-only (the ratchet
-that ratchets the ratchets). Standardize waivers everywhere:
-`# <GATE>_OK:<rationale>` same-line, placeholder-rejected, plus
-`[skip-<gate>]` commit tokens; all waivers appended to
-`.molt/state/waivers.jsonl` for audit. Molt's ratchets (dead_code_allow,
-fail_closed counts, god-file) already have the spirit; this makes the
-lifecycle and escape valves uniform so agents stop inventing ad-hoc
-overrides.
-**Mechanizes:** M32's ratchet discipline generalized; M43 (re-pin vs
-decompose becomes an audited waiver, not a silent re-pin).
+warn-only with a NAMED flip condition recorded as a `[[gate_flip]]` entry in
+`tools/proof_plan.toml` (`strict_when = "live_count == 0"`);
+`tools/check_gate_flips.py` reports gates whose flip condition is met but
+which are still warn-only (the ratchet that ratchets the ratchets). Molt's
+ratchets (dead_code_allow, fail_closed counts, god-file) already have the
+spirit; this makes the lifecycle uniform. The planned uniform waiver grammar
+(`tools/hooks/waivers.py`) was deleted on 2026-10-21 with its last
+consumers, the Bash guard and the Stop legs.
+**Mechanizes:** M32's ratchet discipline generalized.
 
 ### A10. Graph memory: make MEMORY.md readable by machine, not just writable
 
@@ -600,9 +556,10 @@ docs/agent ledgers for `[[wikilinks]]`, M## ids, finding_ids, tool paths;
 build the typed graph (nodes: memory/finding/tool/gate/lane/decision; edges:
 links/supersedes/produces/consumes/cites); expose recall queries
 (`neighbors M12`, `supersedes M52`, `what-consumes finding_x_v1`) and an
-Obsidian export. Then wire two consumers so it is READ, not just built:
-session_digest (A1) surfaces the 3 nearest memories to the current lane;
-the A4 lint suggests link targets. Directly fixes the goldfish class pact
+Obsidian export. Then wire consumers so it is READ, not just built: the A4
+lint suggests link targets. (The session digest showed the 3 nearest
+memories until 2026-10-21; the harness already loads the memory index, so
+the digest stopped restating it.) Directly fixes the goldfish class pact
 named ("apparatus WRITES better than it READS") — molt's MEMORY.md line
 about "a stale line once cost a 30-min detour" is the same bug.
 **Mechanizes:** the MEMORY.md/POINTERS.md system itself; M22 (post-compaction
@@ -653,7 +610,7 @@ off/log-only; durable event log; prompt-echo guard. Where molt should apply
 it first: (1) poison-vs-misplaced diff triage feeding fail_closed_gate /
 artifact_poison_gate reports (M32/M33 is a semantic judgment a regex can only
 approximate); (2) magnitude-dismissal semantic confirm on the deterministic
-pre-filter's candidates; (3) auto-tagging new findings/memos into the A3/A4
+pre-filter's candidates (retired with A6 on 2026-10-21); (3) auto-tagging new findings/memos into the A3/A4
 legs as suggestions. Backend options on molt hardware: a small local model
 via Ollama/llama.cpp on the NVMe box, or (if the operator prefers zero local
 inference) a cheapest-tier API call under the same contract — the contract,
@@ -690,4 +647,5 @@ classifier, A11 claims/serializer hardening, A12 PowerPlay acceptance.
 Every wave lands with tests for the pure decision surfaces (pact pattern:
 `decide()` is pure and unit-tested; the hook wrapper is fail-open) and its
 own gate-liveness fixture so the apparatus that catches drift cannot itself
-silently rot.
+silently rot. (Historical plan: the 2026-10-21 update in the header lists what
+was retired.)

@@ -11,7 +11,7 @@ import sqlite3
 import subprocess
 import time
 from contextlib import closing, contextmanager
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Literal, Sequence
 
@@ -1039,11 +1039,29 @@ def _log_path_for_run(conn: sqlite3.Connection, run_id: str) -> Path:
     return Path(row["log_path"])
 
 
-def _db_path(args: argparse.Namespace) -> Path:
-    if args.db:
-        return Path(args.db)
-    custody = checkout_custody(ROOT, os.environ)
+def default_db_path(root: Path, environ: Mapping[str, str]) -> Path:
+    """The queue database a checkout's ``proof_queue.py`` uses by default."""
+    custody = checkout_custody(root, environ)
     return custody.custody_root / "logs" / "proof_queue" / "proof_queue.sqlite3"
+
+
+def _db_path(args: argparse.Namespace) -> Path:
+    return Path(args.db) if args.db else default_db_path(ROOT, os.environ)
+
+
+def active_run_count(db: Path) -> int:
+    """Count the runs ``status`` lists as active; an absent database has none.
+
+    Hooks call this in-process: it reads one snapshot through the read-only
+    inspection, with no subprocess and no text to parse.
+    """
+    if not db.exists():
+        return 0
+    with _inspection(db) as conn:
+        (count,) = conn.execute(
+            f"SELECT COUNT(*) FROM proof_runs WHERE status IN ({ACTIVE_SQL_STATUSES})"
+        ).fetchone()
+    return int(count)
 
 
 def _logs_root(args: argparse.Namespace) -> Path:
