@@ -443,6 +443,7 @@ def _start_queue_runner(paths, repo: Path, args: argparse.Namespace) -> None:
             args.remote,
             "--branch",
             args.branch,
+            *(["--candidate-controller"] if args.candidate_controller else []),
         ]
     )
     drv.cmd_detached_run(detached)
@@ -719,6 +720,13 @@ def add_queue_arguments(
         action="store_true",
         help="retire this lane (worktree, branches, record, state) once it lands",
     )
+    p_land.add_argument(
+        "--candidate-controller",
+        action="store_true",
+        help="run this checkout's driver and runner instead of main's pinned "
+        "controller (repairs a broken controller)",
+    )
+    p_land.add_argument("--pinned-controller", help=argparse.SUPPRESS)
     p_land.set_defaults(func=cmd_land)
 
     p_queue = sub.add_parser("queue", help="the landing queue's runner and state")
