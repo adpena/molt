@@ -20,7 +20,6 @@ from .process_spawn import ProcessStateUse, native_popen_command
 
 
 CLI_MEMORY_GUARD_PREFIX = "MOLT_CLI"
-DEFAULT_UNGUARDED_PROBE_TIMEOUT_SECONDS = 30.0
 
 _MEMORY_GUARD_ENV_SUFFIXES = (
     "MEMORY_GUARD",
@@ -245,9 +244,12 @@ def run_completed_command(
     if memory_guard_prefix is None:
         if stdout_capture_path is not None or stderr_capture_path is not None:
             raise ValueError("evidence capture paths require guarded execution")
-        probe_timeout = (
-            DEFAULT_UNGUARDED_PROBE_TIMEOUT_SECONDS if timeout is None else timeout
-        )
+        # A probe has a deadline only when its caller sets one, as a guarded
+        # command does. A default deadline on a local read measures host load,
+        # not the probe: on 2026-10-21 two 5 ms Git reads exceeded theirs while
+        # the host stalled, and a landing failed. A probe never reads the
+        # caller's stdin, so an inherited terminal or pipe cannot hold it open.
+        probe_timeout = timeout
         with ProcessStateUse(
             _command_source_root(guard_source_root),
             os.environ if env is None else env,
@@ -257,7 +259,7 @@ def run_completed_command(
                 native_popen_command(command),
                 env=env.child_block() if env is not None else None,
                 cwd=cwd,
-                stdin=subprocess.PIPE if input is not None else None,
+                stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL,
                 stdout=subprocess.PIPE if capture_output else stdout,
                 stderr=subprocess.PIPE if capture_output else stderr,
                 text=text_mode,
