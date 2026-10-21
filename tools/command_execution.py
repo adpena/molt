@@ -75,9 +75,8 @@ _READ_ONLY_GIT_SUBCOMMANDS = frozenset(
         "status",
     }
 )
-# Subcommand families whose named action only reads. `remote get-url` reads
-# the remote's configured URL, with its insteadOf rewrites applied.
-_READ_ONLY_GIT_ACTIONS = frozenset({("worktree", "list"), ("remote", "get-url")})
+# Subcommand families whose named action only reads.
+_READ_ONLY_GIT_ACTIONS = frozenset({("worktree", "list")})
 # Global git options that only shape how a read proceeds. None of them can
 # name a hook, a pager, or a config value, so the subcommand after them keeps
 # its class. ``-c key=value`` stays outside this set: it can arm

@@ -14,12 +14,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import tools.drift_harvest as dh  # noqa: E402
-import tools.hooks._common as common  # noqa: E402
-import tools.hooks.bash_guard as bg  # noqa: E402
-import tools.hooks.landing_gate as lg  # noqa: E402
 import tools.hooks.session_digest as sd  # noqa: E402
-import tools.hooks.stop_gates as stop_gates  # noqa: E402
-import tools.hooks.waivers as waivers  # noqa: E402
 
 
 def _run_digest(monkeypatch, payload, capsys):
@@ -36,9 +31,7 @@ def _quiet_queue_probes(monkeypatch, worktrees=3):
     monkeypatch.setattr(dh, "live_worktree_count", lambda root: worktrees)
 
 
-def test_digest_points_at_the_authorities_and_states_the_hooks(
-    tmp_path, monkeypatch, capsys
-):
+def test_digest_points_at_the_authorities(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
     # tmp_path must read as no checkout even when pytest's basetemp sits inside
     # one: Git may not search above it.
@@ -56,14 +49,8 @@ def test_digest_points_at_the_authorities_and_states_the_hooks(
         f"WORKTREES: {dh.MAX_LIVE_WORKTREES + 1} live "
         f"(SPRAWL threshold {dh.MAX_LIVE_WORKTREES}); over the threshold" in out
     )
-    # The Stop line names exactly the wired legs and each one's live state; an
-    # unwired gate is absent.
-    legs = ", ".join(
-        f"{leg.name} ({stop_gates.enforcement_state(leg)})" for leg in stop_gates.LEGS
-    )
-    assert f"  Stop legs: {legs};" in out
-    assert "landing_gate" not in out and "record-blocker" not in out
-    assert f"  Waivers: {waivers.grammar_summary()}.\n" in out
+    # The digest states no hook machinery: the hooks are the launcher and this.
+    assert "HOOKS" not in out and "Stop" not in out and "bash_guard" not in out
     # The digest restates no goal or claim board another file owns.
     assert "GOAL" not in out and "witness" not in out and "CLAIMS" not in out
     # tmp_path is no Git checkout: the queue section degrades, the rest stands.
@@ -73,7 +60,7 @@ def test_digest_points_at_the_authorities_and_states_the_hooks(
 def test_digest_reports_the_landing_queue(tmp_path, monkeypatch, capsys):
     from tools import molt_dev_queue as queue
 
-    assert common._git(tmp_path, "init", "-q").returncode == 0
+    assert dh._COMMANDS.run(["git", "init", "-q"], cwd=str(tmp_path)).returncode == 0
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
     _quiet_queue_probes(monkeypatch)
     paths = queue.queue_paths(tmp_path)
@@ -86,48 +73,6 @@ def test_digest_reports_the_landing_queue(tmp_path, monkeypatch, capsys):
     assert code == 0
     assert "LANDING QUEUE: 1 pending (lane/two).\n" in out
     assert "  failed lane/one at " in out
-
-
-@pytest.mark.parametrize(
-    ("state", "said", "unsaid"),
-    [
-        ("warn", "bash_guard records, without blocking,", "MOLT_GUARD_OK"),
-        ("strict", "bash_guard refuses", bg.SHADOW_NAME),
-    ],
-)
-def test_digest_states_the_guard_enforcement_it_reads(
-    tmp_path, monkeypatch, capsys, state, said, unsaid
-):
-    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
-    _quiet_queue_probes(monkeypatch)
-    monkeypatch.setattr(bg, "enforcement_state", lambda: state)
-    _code, out = _run_digest(
-        monkeypatch, {"session_id": "s1", "cwd": str(tmp_path)}, capsys
-    )
-    hooks = out[out.index("HOOKS: ") :]
-    assert said in hooks and unsaid not in hooks
-
-
-def test_digest_reports_recent_would_be_blocks_by_rule_and_leg(
-    tmp_path, monkeypatch, capsys
-):
-    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
-    _quiet_queue_probes(monkeypatch)
-    for rule in ("https-push", "https-push", "git-add-sweep"):
-        common.record_shadow(tmp_path, bg.SHADOW_NAME, {"rule": rule})
-    common.record_shadow(tmp_path, stop_gates.SHADOW_NAME, {"leg": "triality_gate"})
-    # A record older than the window does not count.
-    common.append_jsonl(
-        common.state_dir(tmp_path) / bg.SHADOW_NAME,
-        {"recorded_at": "2020-01-01T00:00:00Z", "rule": "https-push"},
-    )
-    _code, out = _run_digest(
-        monkeypatch, {"session_id": "s1", "cwd": str(tmp_path)}, capsys
-    )
-    assert (
-        "bash_guard 3 (git-add-sweep 1, https-push 2); Stop legs 1 (triality_gate 1)."
-        in out
-    )
 
 
 def test_live_worktree_count_counts_what_the_sprawl_gate_counts(tmp_path):
@@ -152,33 +97,6 @@ def test_live_worktree_count_counts_what_the_sprawl_gate_counts(tmp_path):
         dh.live_worktree_count(broken)
 
 
-def test_digest_writes_landing_baseline(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
-    _quiet_queue_probes(monkeypatch)
-    monkeypatch.setattr(sd._common, "git_head", lambda root: "HEADSHA")
-    _run_digest(monkeypatch, {"session_id": "sX", "cwd": str(tmp_path)}, capsys)
-    marker = json.loads(
-        (tmp_path / ".molt" / "state" / lg.MARKER_NAME).read_text(encoding="utf-8")
-    )
-    assert marker["session_id"] == "sX" and marker["start_head"] == "HEADSHA"
-
-
-@pytest.mark.parametrize(
-    ("source", "anchors"),
-    [("startup", True), ("clear", True), ("resume", False), ("compact", False)],
-)
-def test_digest_anchors_the_window_only_when_a_conversation_begins(
-    tmp_path, monkeypatch, capsys, source, anchors
-):
-    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
-    _quiet_queue_probes(monkeypatch)
-    monkeypatch.setattr(sd._common, "git_head", lambda root: "HEADSHA")
-    payload = {"session_id": "sX", "cwd": str(tmp_path), "source": source}
-    _run_digest(monkeypatch, payload, capsys)
-    marker = tmp_path / ".molt" / "state" / lg.MARKER_NAME
-    assert marker.exists() is anchors
-
-
 def test_digest_fail_open_on_broken_section(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
 
@@ -193,6 +111,6 @@ def test_digest_fail_open_on_broken_section(tmp_path, monkeypatch, capsys):
     # A broken section must not sink the digest or the session.
     assert code == 0
     assert "(worktrees unavailable: RuntimeError)" in out
-    assert "HOOKS:" in out
+    assert "PROOF QUEUE: status undeterminable." in out  # the others still render
     log = tmp_path / ".molt" / "state" / "session_digest_errors.log"
     assert "worktree list exploded" in log.read_text(encoding="utf-8")

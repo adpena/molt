@@ -2585,7 +2585,7 @@ resource_class = "repository-policy"
 timeout_seconds = 600
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-n", "auto", "--molt-worker-memory-gb=0.5", "tests/test_agent_coordination.py", "tests/tools/test_anti_recurrence_gate.py", "tests/tools/test_apparatus_agent_safety.py", "tests/tools/test_check_commit_attribution.py", "tests/tools/test_check_gate_flips.py", "tests/tools/test_check_gate_liveness.py", "tests/tools/test_check_instruction_hierarchy.py", "tests/tools/test_check_sister_landed.py", "tests/tools/test_claim_lane.py", "tests/tools/test_claims_status.py", "tests/tools/test_commit_serializer.py", "tests/tools/test_custody_apparatus.py", "tests/tools/test_dirty_tree_landing_audit.py", "tests/tools/test_hooks_bash_guard.py", "tests/tools/test_hooks_fail_open.py", "tests/tools/test_hooks_landing_gate.py", "tests/tools/test_hooks_session_digest.py", "tests/tools/test_hooks_session_learning.py", "tests/tools/test_hooks_waivers.py", "tests/tools/test_install_git_hooks.py", "tests/tools/test_ledger_merge.py", "tests/tools/test_magnitude_dismissal_gate.py", "tests/tools/test_subagent_contract.py", "tests/tools/test_triality.py", "tests/tools/test_triality_gate.py"]
+argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-n", "auto", "--molt-worker-memory-gb=0.5", "tests/test_agent_coordination.py", "tests/tools/test_apparatus_agent_safety.py", "tests/tools/test_check_commit_attribution.py", "tests/tools/test_check_gate_flips.py", "tests/tools/test_check_gate_liveness.py", "tests/tools/test_check_instruction_hierarchy.py", "tests/tools/test_check_sister_landed.py", "tests/tools/test_claim_lane.py", "tests/tools/test_claims_status.py", "tests/tools/test_commit_serializer.py", "tests/tools/test_custody_apparatus.py", "tests/tools/test_dirty_tree_landing_audit.py", "tests/tools/test_hooks_fail_open.py", "tests/tools/test_hooks_session_digest.py", "tests/tools/test_install_git_hooks.py", "tests/tools/test_ledger_merge.py", "tests/tools/test_subagent_contract.py"]
 toolchains = ["python", "uv"]
 
 [[command]]
@@ -5350,74 +5350,52 @@ pytest = [
   "tests/tools/test_reproducible_build_truth.py",
 ]
 
-# --- APPARATUS Wave 1 hook spine (A1/A2/A9) ------------------------------
+# --- Claude Code hooks: the launcher and the session digest --------------
 [[rule]]
 name = "apparatus-hooks"
 toolchains = ["python"]
-description = "Claude Code hook spine, its typed wiring and Stop legs, the landing gate and the waiver grammar: pure-decision teeth + fail-open + gate-liveness canary."
+description = "Claude Code hooks (the launcher and the session digest), their typed wiring, the gate-flip auditor and the gate-liveness canary."
 globs = [
   ".claude/settings.json",
   "tools/hooks/**",
   "tools/gen_claude_hooks.py",
-  "tools/triality_gate.py",
-  "tools/magnitude_dismissal_gate.py",
   ".githooks/molt-hook-launch.sh",
   "tools/molt_dev_queue.py",
   "tools/check_gate_flips.py",
   "tools/check_gate_liveness.py",
-  "tests/tools/test_hooks_bash_guard.py",
-  "tests/tools/test_hooks_landing_gate.py",
   "tests/tools/test_hooks_session_digest.py",
   "tests/tools/test_hooks_fail_open.py",
-  "tests/tools/test_hooks_waivers.py",
   "tests/tools/test_check_gate_flips.py",
   "tests/tools/test_check_gate_liveness.py",
-  "tests/tools/test_triality_gate.py",
-  "tests/tools/test_magnitude_dismissal_gate.py",
 ]
 gates = [
   "python tools/check_gate_liveness.py --check",
   "python tools/check_gate_flips.py --check",
-  "python tools/gen_claude_hooks.py --check",
 ]
 pytest = [
-  "tests/tools/test_hooks_bash_guard.py",
-  "tests/tools/test_hooks_landing_gate.py",
   "tests/tools/test_hooks_session_digest.py",
   "tests/tools/test_hooks_fail_open.py",
-  "tests/tools/test_hooks_waivers.py",
   "tests/tools/test_check_gate_flips.py",
   "tests/tools/test_check_gate_liveness.py",
-  "tests/tools/test_triality_gate.py",
-  "tests/tools/test_magnitude_dismissal_gate.py",
 ]
 
 [[rule]]
 name = "apparatus-learning-protection"
 toolchains = ["python"]
-description = "Recurring-harm registry, no-agent-termination meta-gate, anti-recurrence advisory, and Stop-session learning persistence."
+description = "Recurring-harm registry, the no-agent-termination meta-gate, and the memory graph."
 globs = [
-  ".claude/settings.json",
   "tools/apparatus_agent_safety.py",
-  "tools/anti_recurrence_gate.py",
   "tools/recurring_harms.toml",
-  "tools/hooks/session_learning.py",
-  "tools/hooks/stop_gates.py",
   "tools/memory_graph.py",
   "tools/check_gate_liveness.py",
   "tests/tools/test_apparatus_agent_safety.py",
-  "tests/tools/test_anti_recurrence_gate.py",
-  "tests/tools/test_hooks_session_learning.py",
   "tests/tools/test_memory_graph.py",
 ]
 gates = [
   "python tools/apparatus_agent_safety.py --check",
-  "python tools/anti_recurrence_gate.py --check",
 ]
 pytest = [
   "tests/tools/test_apparatus_agent_safety.py",
-  "tests/tools/test_anti_recurrence_gate.py",
-  "tests/tools/test_hooks_session_learning.py",
   "tests/tools/test_check_gate_liveness.py",
   "tests/tools/test_memory_graph.py",
 ]
@@ -6257,7 +6235,7 @@ contention_key = "python:r6-target-version-py314"
 timeout_seconds = 900
 
 # =========================================================================
-# GATE-LIFECYCLE REGISTRY (APPARATUS Wave 1, A9)
+# GATE-LIFECYCLE REGISTRY (APPARATUS A9)
 #
 # Uniform warn->strict lifecycle for molt gates, mirroring pact's discipline:
 # a gate lands WARN-ONLY with a NAMED, machine-checkable flip condition; a
@@ -6267,51 +6245,11 @@ timeout_seconds = 900
 #
 # `state`       : "warn" | "strict"
 # `strict_when` : machine token (`live_count == 0`, `live_count <= N`,
-#                 `landed_functional`, `always`) or free text (-> manual review)
+#                 `landed_functional`) or free text (-> manual review)
 # `count_detector`: optional checked-in detector ID producing `live_count`;
 #                   argv and output schema live in check_gate_flips.py
 # `rationale`   : why this state / flip condition
-#
-# The Wave-1 hooks land FUNCTIONAL (not warn-only): they are additive and
-# fail-open, so blocking-at-land is safe. They are recorded here as
-# `landed_functional` per A9 so the lifecycle is uniform and auditable.
 # =========================================================================
-
-[[gate_flip]]
-name = "bash_guard"
-state = "warn"
-strict_when = "a replay of recorded session Bash commands shows zero false blocks"
-rationale = "Observe-only (owner, 2026-10-21): bash_guard runs on every Bash call and logs each decision it would block to .molt/state/bash_guard_shadow.jsonl, blocking nothing. Replayed over 28,676 recorded commands it would block 633: it judges the shared checkout by the session root, not the directory each command runs in; it splits command text on ; and | inside quotes and heredocs; and its HTTPS-push rule rests on a false premise (the token has the workflow scope). Strict waits for an effective-directory, quote- and heredoc-aware parser proven by that replay."
-
-[[gate_flip]]
-name = "landing_gate"
-state = "warn"
-strict_when = "the gate reads only this session's landing evidence and keeps a per-session window"
-rationale = "Unwired from the Stop hook (owner, 2026-10-21) until redesigned: it counted any session's landing-queue requests and results, and all sessions of a checkout shared one window marker, so it could neither attribute a landing nor block reliably."
-
-[[gate_flip]]
-name = "anti_recurrence_gate"
-state = "warn"
-strict_when = "the per-session window exists (HF-424) and the leg is block-once, as the triality and magnitude legs are"
-rationale = "Observe-only Stop leg (owner, 2026-10-21): it diffs CLAIMS.md over one session window per checkout, so another session's claims reach this one, and it has no block-once marker. Under warn its findings go to .molt/state/stop_gates_shadow.jsonl."
-
-[[gate_flip]]
-name = "triality_gate"
-state = "warn"
-strict_when = "the per-session window exists (HF-424) and a replay of recorded Stops shows no block caused by another session's commits"
-rationale = "Observe-only Stop leg (owner, 2026-10-21): it scans base..HEAD of the checkout through one marker per checkout, so another author's commit re-prompted an idle session (review of HF-426 reproduced this). Under warn its reasons go to .molt/state/stop_gates_shadow.jsonl."
-
-[[gate_flip]]
-name = "magnitude_dismissal_gate"
-state = "warn"
-strict_when = "the per-session window exists (HF-424) and a replay of recorded Stops shows no block caused by another session's commits"
-rationale = "Observe-only Stop leg (owner, 2026-10-21): the same per-checkout window as triality_gate. Under warn its reasons go to .molt/state/stop_gates_shadow.jsonl."
-
-[[gate_flip]]
-name = "session_digest"
-state = "strict"
-strict_when = "always"
-rationale = "SessionStart digest never blocks (informational, exit 0 always); 'always' = no flip pending."
 
 [[gate_flip]]
 name = "gate_liveness_canary"

@@ -12,7 +12,7 @@ any gate whose ``strict_when`` is MET but is still ``state = "warn"``.
   * ``live_count == 0`` / ``live_count <= N`` -- evaluated against a checked-in
     ``count_detector`` identifier. Detector identifiers resolve to fixed argv;
     repository data never becomes shell syntax.
-  * ``landed_functional`` / ``always`` -- lifecycle markers for gates that land
+  * ``landed_functional`` -- lifecycle marker for gates that land
     already-strict; nothing to flip.
   * anything else -- free text; reported as MANUAL REVIEW (never a hard fail).
 
@@ -57,18 +57,6 @@ def entry_state(entry: Mapping[str, object]) -> FlipState:
             f"{', '.join(FLIP_STATES)}"
         )
     return state  # type: ignore[return-value]
-
-
-def flip_state(name: str, *, config: Path = DEFAULT_CONFIG) -> FlipState | None:
-    """Gate *name*'s declared state, or None when it has no ``[[gate_flip]]``.
-
-    Every enforcement decision reads this; each caller states what a gate
-    with no entry means for it.
-    """
-    for entry in load_flip_entries(config):
-        if entry.get("name") == name:
-            return entry_state(entry)
-    return None
 
 
 _COND_RE = re.compile(r"^live_count\s*(==|<=|<|>=|>)\s*(\d+)$")
@@ -130,7 +118,7 @@ class FlipVerdict:
 def _eval_condition(cond: str, live_count: int | None) -> bool | None:
     """True/False if the machine token is decidable, else None (manual)."""
     cond = cond.strip()
-    if cond in ("landed_functional", "always"):
+    if cond == "landed_functional":
         return None  # lifecycle marker, not a flip trigger
     m = _COND_RE.match(cond)
     if not m:

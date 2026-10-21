@@ -91,8 +91,8 @@ discovery_only = false
 
 [[generator]]
 tool = "tools/gen_claude_hooks.py"
-outputs = [".claude/settings.json", "tools/hooks/prefilter.generated.sh"]
-source = "tools/hooks/wiring.py + tools/hooks/bash_guard.py PREFILTER_TOKENS + tools/generator_io.py"
+outputs = [".claude/settings.json"]
+source = "tools/hooks/wiring.py + tools/generator_io.py"
 check_mode = true
 toolchains = []
 check_command = "tools/gen_claude_hooks.py --check"

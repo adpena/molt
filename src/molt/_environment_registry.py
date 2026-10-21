@@ -4115,16 +4115,6 @@ _REGISTRY_JSON = r"""{
     },
     {
       "audience": "developer",
-      "default": "0",
-      "kind": "bool",
-      "name": "MOLT_GUARD_OK",
-      "output_neutral": false,
-      "owner": "tools/hooks/bash_guard.py",
-      "summary": "Override token for the PreToolUse bash guard; exactly 1, as an inline assignment on the command segment or in the environment, lets the guard allow a destructive-git, add-sweep, queue-bypass, or https-push command it would otherwise refuse, and any other value keeps the block.",
-      "values": []
-    },
-    {
-      "audience": "developer",
       "default": "incident",
       "kind": "enum",
       "name": "MOLT_GUARD_PROFILE",

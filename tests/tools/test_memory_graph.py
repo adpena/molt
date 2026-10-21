@@ -261,16 +261,16 @@ def test_obsidian_export_emits_wikilinks(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# Session-learning digests stay searchable memory
+# Memory subdirectories stay searchable memory
 # --------------------------------------------------------------------------
 
 
-def test_session_digest_subdirectory_is_searchable_memory(tmp_path):
+def test_memory_subdirectory_is_searchable_memory(tmp_path):
     mem = _write_corpus(tmp_path)
-    session_dir = mem / "session_digests"
-    session_dir.mkdir()
-    (session_dir / "20260711-s1.md").write_text(
-        "# Session learning s1\n\n## Crux learnings\n- forbidden checkout path policy\n",
+    notes_dir = mem / "notes"
+    notes_dir.mkdir()
+    (notes_dir / "20260711-s1.md").write_text(
+        "# Notes s1\n\n## Crux learnings\n- forbidden checkout path policy\n",
         encoding="utf-8",
     )
     graph = mg.build_graph(
@@ -282,7 +282,7 @@ def test_session_digest_subdirectory_is_searchable_memory(tmp_path):
         include_gates=False,
     )
     ranked = graph.nearest("forbidden checkout path policy", k=3)
-    assert any(node.id.startswith("memory:session_digests/") for node, _ in ranked)
+    assert any(node.id.startswith("memory:notes/") for node, _ in ranked)
 
 
 # --------------------------------------------------------------------------
