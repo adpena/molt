@@ -7069,6 +7069,11 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 1,
     },
     RuntimeCallableImportSpec {
+        runtime_name: "molt_function_set_fixed_builtin",
+        import: WasmRuntimeImport::FunctionSetFixedBuiltin,
+        arity: 2,
+    },
+    RuntimeCallableImportSpec {
         runtime_name: "molt_builtin_class_lookup",
         import: WasmRuntimeImport::BuiltinClassLookup,
         arity: 1,
@@ -14201,6 +14206,7 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_inspect_getasyncgenstate" => Some(WasmRuntimeImport::InspectGetasyncgenstate),
         "molt_inspect_getcoroutinestate" => Some(WasmRuntimeImport::InspectGetcoroutinestate),
         "molt_inspect_signature_data" => Some(WasmRuntimeImport::InspectSignatureData),
+        "molt_function_set_fixed_builtin" => Some(WasmRuntimeImport::FunctionSetFixedBuiltin),
         "molt_builtin_class_lookup" => Some(WasmRuntimeImport::BuiltinClassLookup),
         "molt_dataclasses_make_dataclass" => Some(WasmRuntimeImport::DataclassesMakeDataclass),
         "molt_dataclasses_is_dataclass" => Some(WasmRuntimeImport::DataclassesIsDataclass),

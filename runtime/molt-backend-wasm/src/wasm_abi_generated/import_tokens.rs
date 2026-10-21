@@ -1811,6 +1811,7 @@ pub(crate) enum WasmRuntimeImport {
     InspectGetasyncgenstate,
     InspectGetcoroutinestate,
     InspectSignatureData,
+    FunctionSetFixedBuiltin,
     BuiltinClassLookup,
     DataclassesMakeDataclass,
     DataclassesIsDataclass,

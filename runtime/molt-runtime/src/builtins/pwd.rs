@@ -29,6 +29,8 @@ mod native {
     use super::*;
     use crate::builtins::io_path_utils::{filesystem_decode, os_string_from_text};
     use crate::builtins::numbers::{index_from_object, int_bits_from_i64, integer_storage_bigint};
+    use crate::object::ops::protocol_type_name;
+    use crate::object::ops_format::{FormatError, FormatOutput, FormatWriter};
     use molt_runtime_core::OwnedRuntimeValue;
     use molt_runtime_platform::userdb::{self, Passwd};
     use num_traits::ToPrimitive;
@@ -92,7 +94,7 @@ mod native {
                 "TypeError",
                 &format!(
                     "uid should be integer, not {}",
-                    type_name(py, obj_from_bits(bits))
+                    protocol_type_name(py, bits, 200)
                 ),
             );
             return None;
@@ -129,14 +131,35 @@ mod native {
             })
         };
         let Some(converted) = converted else {
-            return Err(raise_exception::<u64>(
-                py,
-                "TypeError",
-                &format!(
-                    "getpwnam() argument must be str, not {}",
-                    type_name(py, obj_from_bits(bits))
-                ),
-            ));
+            let message = (|| {
+                let mut output = FormatWriter::new(py);
+                output.append_bytes(b"getpwnam() argument must be str, not ")?;
+                // Clinic uses %T in 3.13/3.14; 3.12 and 3.15 use the distinct
+                // _PyArg_BadArgument contract (native name precision and None).
+                let actual = if crate::object::ops_sys::runtime_target_at_least(py, 3, 13)
+                    && !crate::object::ops_sys::runtime_target_at_least(py, 3, 15)
+                {
+                    crate::object::ops_format::format_diagnostic_type_name_bytes(
+                        py,
+                        obj_from_bits(bits),
+                    )
+                } else if obj_from_bits(bits).is_none() {
+                    b"None".to_vec()
+                } else {
+                    protocol_type_name(py, bits, 50).into_bytes()
+                };
+                if exception_pending(py) {
+                    return Err(FormatError::Pending);
+                }
+                output.append_bytes(&actual)?;
+                output.finish().into_bytes_result(py)
+            })();
+            return Err(match message {
+                Ok(message) => {
+                    crate::builtins::exceptions::raise_exception_bytes(py, "TypeError", &message)
+                }
+                Err(error) => error.raise(py),
+            });
         };
         let mut bytes = converted?.into_encoded_bytes();
         if bytes.contains(&0) {
@@ -184,19 +207,21 @@ mod native {
         match result {
             Ok(Some(value)) => entry(py, class, value),
             Ok(None) => {
-                let representation = crate::molt_repr_from_obj(original);
-                let owner =
-                    unsafe { OwnedRuntimeValue::from_owned_bits(py.core_token(), representation) };
-                if exception_pending(py) {
-                    return MoltObject::none().bits();
+                let message = (|| {
+                    let mut output = FormatWriter::new(py);
+                    output.append_bytes(b"getpwnam(): name not found: ")?;
+                    output.append_output(
+                        FormatOutput::OwnedString(crate::molt_repr_from_obj(original)),
+                        false,
+                    )?;
+                    output.finish().into_bytes_result(py)
+                })();
+                match message {
+                    Ok(message) => {
+                        crate::builtins::exceptions::raise_exception_bytes(py, "KeyError", &message)
+                    }
+                    Err(error) => error.raise(py),
                 }
-                let representation =
-                    string_obj_to_owned(obj_from_bits(owner.bits())).expect("repr produces text");
-                raise_exception::<u64>(
-                    py,
-                    "KeyError",
-                    &format!("getpwnam(): name not found: {representation}"),
-                )
             }
             Err(_) => raise_exception::<u64>(py, "MemoryError", ""),
         }

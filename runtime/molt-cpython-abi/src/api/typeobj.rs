@@ -1468,8 +1468,8 @@ pub enum BuiltinSlotNamespacePolicy {
 }
 
 impl BuiltinSlotNamespacePolicy {
-    pub fn for_minor(minor: i64) -> Self {
-        if minor < 14 {
+    pub fn for_version(major: i64, minor: i64) -> Self {
+        if (major, minor) < (3, 14) {
             Self::ManualInheritance
         } else {
             Self::PairedInheritance
@@ -1675,9 +1675,11 @@ pub unsafe fn stage_builtin_slot_namespace(
 unsafe fn add_operators_to_dict(tp: *mut PyTypeObject) -> c_int {
     unsafe {
         let dict = (*tp).tp_dict;
-        let policy = BuiltinSlotNamespacePolicy::for_minor(
-            (crate::hooks::hooks_or_stubs().target_python_minor)()
-        );
+        let policy = if (crate::hooks::hooks_or_stubs().target_python_at_least)(3, 14) {
+            BuiltinSlotNamespacePolicy::PairedInheritance
+        } else {
+            BuiltinSlotNamespacePolicy::ManualInheritance
+        };
         // Static builtin slots survive runtime retirement; their dictionaries
         // do not. Rebuilding must not turn inherited slots into declarations.
         // Reuse the canonical teardown cohort, never all non-heap native types.
@@ -3601,7 +3603,7 @@ pub unsafe extern "C" fn PyMember_GetOne(
                 if v.is_null() {
                     if (*member).type_ == PY_T_OBJECT_EX {
                         let exception = (&raw mut crate::abi_types::PyExc_AttributeError).cast();
-                        if (crate::hooks::hooks_or_stubs().target_python_minor)() < 13 {
+                        if !(crate::hooks::hooks_or_stubs().target_python_at_least)(3, 13) {
                             crate::api::errors::PyErr_Format(
                                 exception,
                                 c"'%.200s' object has no attribute '%s'".as_ptr(),
@@ -3708,7 +3710,8 @@ pub unsafe extern "C" fn PyMember_SetOne(
         // CPython 3.12 published converter sentinels on these four wide signed
         // cases; 3.13+ checks conversion before publishing. Use target identity,
         // never the compiler host's Python version, for that observable split.
-        let writes_failed_sentinel = || (crate::hooks::hooks_or_stubs().target_python_minor)() < 13;
+        let writes_failed_sentinel =
+            || !(crate::hooks::hooks_or_stubs().target_python_at_least)(3, 13);
         match ty {
             PY_T_BOOL => {
                 let is_true = std::ptr::eq(
@@ -4424,7 +4427,7 @@ unsafe fn object_type_name(op: *mut PyObject) -> String {
     unsafe { object_type_name_with_precision(op, usize::MAX) }
 }
 
-/// CPython's %.Ns truncates raw tp_name bytes before UTF-8 replacement decoding.
+/// CPython's %.Ns truncates raw tp_name bytes before versioned UTF-8 decoding.
 pub unsafe fn object_type_name_with_precision(op: *mut PyObject, precision: usize) -> String {
     if op.is_null() {
         return "object".to_string();
@@ -4452,6 +4455,36 @@ pub unsafe fn type_name_with_precision(tp: *mut PyTypeObject, precision: usize) 
         }
         unsafe { std::slice::from_raw_parts(name.cast::<u8>(), length) }
     };
+    native_name_bytes_with_precision(bytes, precision)
+}
+
+/// Internal C-formatter view of the same target-owned UTF-8 precision policy.
+/// This is semantic version selection, not admission of a compiler target.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_capi_unicode_precision_drops_incomplete() -> bool {
+    unsafe { (crate::hooks::hooks_or_stubs().target_python_at_least)(3, 14) }
+}
+
+/// One byte-precision rule for native C names, shared by managed and C-API
+/// diagnostics. Python-produced text must never pass through this C-name decoder.
+pub fn native_name_bytes_with_precision(bytes: &[u8], precision: usize) -> String {
+    let mut bytes = &bytes[..bytes.len().min(precision)];
+    if molt_capi_unicode_precision_drops_incomplete() && bytes.len() == precision {
+        // CPython 3.14 introduced stateful UTF-8 replacement decoding at a precision
+        // boundary. Only an incomplete trailing prefix is omitted; malformed
+        // sequences in the middle still produce replacement characters.
+        let mut offset = 0;
+        while let Err(error) = std::str::from_utf8(&bytes[offset..]) {
+            offset += error.valid_up_to();
+            match error.error_len() {
+                Some(length) => offset += length,
+                None => {
+                    bytes = &bytes[..offset];
+                    break;
+                }
+            }
+        }
+    }
     String::from_utf8_lossy(bytes).into_owned()
 }
 

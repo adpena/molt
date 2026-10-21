@@ -26,6 +26,7 @@ enum StringifyMode {
 }
 
 thread_local! {
+    static FORMAT_TARGET_VERSION: std::cell::Cell<(i64, i64)> = const { std::cell::Cell::new((3, 12)) };
     static STRINGIFY_MODE: std::cell::Cell<StringifyMode> = const {
         std::cell::Cell::new(StringifyMode::Scalars)
     };
@@ -58,6 +59,10 @@ unsafe fn runtime_stringify(bits: u64, repr: bool) -> molt_cpython_abi::hooks::O
     }
 }
 
+unsafe extern "C" fn format_target_at_least(major: i64, minor: i64) -> bool {
+    FORMAT_TARGET_VERSION.with(std::cell::Cell::get) >= (major, minor)
+}
+
 unsafe extern "C" fn runtime_str(bits: u64) -> molt_cpython_abi::hooks::OwnedHandleResult {
     unsafe { runtime_stringify(bits, false) }
 }
@@ -82,6 +87,7 @@ unsafe extern "C" {
 fn install() -> support::AbiTestThreadStateTransaction {
     let mut hooks: RuntimeHooks = molt_cpython_abi::hooks::STUB_HOOKS;
     support::fake_runtime::wire(&mut hooks);
+    hooks.target_python_at_least = format_target_at_least;
     hooks.object_str = runtime_str;
     hooks.object_repr = runtime_repr;
     support::enter_runtime_class_abi_test(hooks)
@@ -432,38 +438,80 @@ fn unicode_formatter_handles_utf8_wide_unicode_and_v_fallbacks() {
 #[test]
 fn unicode_formatter_replacement_decoder_matches_terminal_and_middle_errors() {
     let _abi_test = install();
-    let incomplete = [0xe2_u8, 0x82, 0];
-    let out = unsafe {
-        molt_cpython_abi::api::errors::PyUnicode_FromFormat(
-            c"%s".as_ptr(),
-            incomplete.as_ptr().cast::<c_char>(),
-        )
-    };
-    assert!(!out.is_null());
-    assert_eq!(unsafe { read_native_str(out) }, "\u{fffd}".as_bytes());
-
-    let precision_cut = [0xe2_u8, 0x82, 0xac, 0];
-    let out = unsafe {
-        molt_cpython_abi::api::errors::PyUnicode_FromFormat(
-            c"%.2s".as_ptr(),
-            precision_cut.as_ptr().cast::<c_char>(),
-        )
-    };
-    assert!(!out.is_null());
-    assert_eq!(unsafe { read_native_str(out) }, b"");
-
-    let invalid_middle = [0xe2_u8, b'(', 0xa1, 0];
-    let out = unsafe {
-        molt_cpython_abi::api::errors::PyUnicode_FromFormat(
-            c"%s".as_ptr(),
-            invalid_middle.as_ptr().cast::<c_char>(),
-        )
-    };
-    assert!(!out.is_null());
-    assert_eq!(
-        unsafe { read_native_str(out) },
-        "\u{fffd}(\u{fffd}".as_bytes()
-    );
+    struct RestoreTarget((i64, i64));
+    impl Drop for RestoreTarget {
+        fn drop(&mut self) {
+            FORMAT_TARGET_VERSION.with(|value| value.set(self.0));
+        }
+    }
+    let _restore = RestoreTarget(FORMAT_TARGET_VERSION.with(std::cell::Cell::get));
+    // Literal byte oracles distinguish an incomplete precision boundary from
+    // an unbounded malformed tail and from invalid bytes inside the prefix.
+    for (version, drops_incomplete) in [
+        ((3, 12), false),
+        ((3, 13), false),
+        ((3, 14), true),
+        ((3, 15), true),
+        ((3, 16), true),
+        ((4, 0), true),
+    ] {
+        FORMAT_TARGET_VERSION.with(|value| value.set(version));
+        let cut: &[u8] = if !drops_incomplete {
+            "\u{fffd}".as_bytes()
+        } else {
+            b""
+        };
+        assert_eq!(
+            molt_cpython_abi::api::typeobj::native_name_bytes_with_precision(
+                &[0xe2, 0x82, 0xac],
+                2
+            )
+            .as_bytes(),
+            cut,
+        );
+        assert_eq!(
+            molt_cpython_abi::api::typeobj::native_name_bytes_with_precision(
+                &[0xe2, 0x82],
+                usize::MAX
+            ),
+            "\u{fffd}",
+        );
+        for (format, input, expected) in [
+            (c"%s", &[0xe2_u8, 0x82, 0][..], "\u{fffd}".as_bytes()),
+            (c"%.2s", &[0xe2, 0x82, 0xac, 0][..], cut),
+            (c"%.2s", &[0xe2, 0x82, 0][..], cut),
+            (c"%.3s", &[0xe2, 0x82, 0][..], "\u{fffd}".as_bytes()),
+            (
+                c"%s",
+                &[0xe2, b'(', 0xa1, 0][..],
+                "\u{fffd}(\u{fffd}".as_bytes(),
+            ),
+            (
+                c"%.4s",
+                &[0xff, b'x', 0xe2, 0x82, 0xac, 0][..],
+                if !drops_incomplete {
+                    "\u{fffd}x\u{fffd}".as_bytes()
+                } else {
+                    "\u{fffd}x".as_bytes()
+                },
+            ),
+        ] {
+            let out = unsafe {
+                molt_cpython_abi::api::refcount::OwnedPyObject::from_owned(
+                    molt_cpython_abi::api::errors::PyUnicode_FromFormat(
+                        format.as_ptr(),
+                        input.as_ptr().cast::<c_char>(),
+                    ),
+                )
+            };
+            assert!(!out.as_ptr().is_null());
+            assert_eq!(
+                unsafe { read_native_str(out.as_ptr()) },
+                expected,
+                "target {version:?}, {format:?}"
+            );
+        }
+    }
 }
 
 #[test]

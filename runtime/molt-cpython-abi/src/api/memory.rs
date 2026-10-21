@@ -628,7 +628,7 @@ pub unsafe extern "C" fn molt_list_dealloc(object: *mut PyObject) {
             (*list).ob_item,
             (*list).ob_base.ob_size,
         );
-        if (crate::hooks::hooks_or_stubs().target_python_minor)() >= 14 {
+        if (crate::hooks::hooks_or_stubs().target_python_at_least)(3, 14) {
             // CPython 3.14 list_dealloc releases GC storage directly; 3.12/13
             // dispatch the actual type's free slot. This is a target fact.
             (*list).ob_item = std::ptr::null_mut();

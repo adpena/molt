@@ -2800,7 +2800,7 @@ pub unsafe extern "C" fn PyComplex_RealAsDouble(op: *mut PyObject) -> c_double {
     if let Some(value) = unsafe { layout_complex_value(op) } {
         return value.real;
     }
-    if unsafe { (hooks_or_stubs().target_python_minor)() } >= 13 {
+    if unsafe { (hooks_or_stubs().target_python_at_least)(3, 13) } {
         return unsafe { PyComplex_AsCComplex(op) }.real;
     }
     unsafe { PyFloat_AsDouble(op) }
@@ -2814,7 +2814,7 @@ pub unsafe extern "C" fn PyComplex_ImagAsDouble(op: *mut PyObject) -> c_double {
     if let Some(value) = unsafe { layout_complex_value(op) } {
         return value.imag;
     }
-    if unsafe { (hooks_or_stubs().target_python_minor)() } >= 13 {
+    if unsafe { (hooks_or_stubs().target_python_at_least)(3, 13) } {
         let value = unsafe { PyComplex_AsCComplex(op) };
         return if !crate::api::errors::raised_error_pending() {
             value.imag

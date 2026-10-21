@@ -1,5 +1,6 @@
 use super::*;
 use crate::call::bind::test_support::*;
+use crate::call_function_obj_vec;
 use crate::object::builders::{alloc_list, alloc_tuple};
 
 #[test]
@@ -284,6 +285,352 @@ fn published_native_constructors_own_raw_admission_and_argument_custody() {
             dec_ref_bits(py, receiver);
             dec_ref_bits(py, key);
             assert!(!exception_pending(py));
+        }
+    });
+}
+
+/// Compare public call carriers against the fixed native convention, rather
+/// than mirroring its implementation. These labels are intentionally unrelated
+/// to any runtime builtin symbol or the eventual stdlib consumer.
+#[test]
+fn fixed_native_module_binding_preserves_direct_entry_and_public_errors() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let name = crate::attr_name_bits_from_bytes(py, b"declared_probe").unwrap();
+            let qualified = crate::attr_name_bits_from_bytes(py, b"declared_qualified").unwrap();
+            let module = crate::attr_name_bits_from_bytes(py, b"probe_module").unwrap();
+            let keyword = crate::attr_name_bits_from_bytes(py, b"value").unwrap();
+            for (arity, address) in [
+                (0, none_of_none as *const ()),
+                (1, none_of_one as *const ()),
+            ] {
+                let function = metadata_function(
+                    py,
+                    address,
+                    arity,
+                    &[
+                        (b"__name__", name),
+                        (b"__qualname__", qualified),
+                        (b"__module__", module),
+                    ],
+                    false,
+                );
+                let pointer = obj_from_bits(function).as_ptr().unwrap();
+                let original_entry = function_fn_ptr(pointer);
+                let original_version = crate::function_mutation_version(pointer);
+                let original_trampoline = function_trampoline_ptr(pointer);
+                crate::builtins::functions::molt_function_set_fixed_builtin(
+                    function,
+                    MoltObject::from_int(arity as i64).bits(),
+                );
+                assert!(!exception_pending(py));
+                assert_ne!(crate::function_mutation_version(pointer), original_version);
+                assert_eq!(
+                    object_class_bits(pointer),
+                    builtin_classes(py).builtin_function_or_method
+                );
+                assert_eq!(function_fn_ptr(pointer), original_entry);
+                assert_eq!(function_trampoline_ptr(pointer), original_trampoline);
+                assert!(!frame_binding::function_requires_binder_flag(pointer));
+                assert!(!frame_binding::function_raw_positional_call_needs_binding(
+                    py,
+                    pointer,
+                    arity as usize
+                ));
+                let positional = [MoltObject::from_int(17).bits(); 2];
+                let valid = call_function_obj_vec(py, function, &positional[..arity as usize]);
+                assert!(obj_from_bits(valid).is_none());
+                assert!(!exception_pending(py));
+                if arity == 0 {
+                    assert!(
+                        obj_from_bits(crate::call::function::call_function_obj0(py, function))
+                            .is_none()
+                    );
+                } else {
+                    assert!(
+                        obj_from_bits(crate::call::function::call_function_obj1(
+                            py,
+                            function,
+                            positional[0]
+                        ))
+                        .is_none()
+                    );
+                }
+                assert!(!exception_pending(py));
+                for supplied in 0..=2 {
+                    for has_keyword in [false, true] {
+                        if supplied == arity as usize && !has_keyword {
+                            continue;
+                        }
+                        let expected = if has_keyword {
+                            "probe_module.declared_qualified() takes no keyword arguments"
+                                .to_owned()
+                        } else if arity == 0 {
+                            format!(
+                                "probe_module.declared_qualified() takes no arguments ({supplied} given)"
+                            )
+                        } else {
+                            format!(
+                                "probe_module.declared_qualified() takes exactly one argument ({supplied} given)"
+                            )
+                        };
+                        // The bad trampoline is a bite check: rejected public
+                        // arguments must never enter executable transport.
+                        crate::object::layout::function_set_trampoline_ptr(pointer, 1);
+                        for form in [CallForm::Stack, CallForm::Expanded] {
+                            let builder = match form {
+                                CallForm::Stack => arguments::molt_callargs_new(
+                                    supplied as u64,
+                                    u64::from(has_keyword),
+                                ),
+                                CallForm::Expanded => arguments::molt_callargs_new_expanded(
+                                    supplied as u64,
+                                    u64::from(has_keyword),
+                                ),
+                            };
+                            for &value in &positional[..supplied] {
+                                arguments::molt_callargs_push_pos(builder, value);
+                            }
+                            if has_keyword {
+                                arguments::molt_callargs_push_kw(builder, keyword, positional[0]);
+                            }
+                            let result = molt_call_bind(function, builder);
+                            assert!(obj_from_bits(result).is_none());
+                            let error = crate::exception_last_bits_noinc(py)
+                                .expect("fixed argument rejection");
+                            assert_eq!(
+                                crate::format_exception_message(
+                                    py,
+                                    obj_from_bits(error).as_ptr().unwrap()
+                                ),
+                                expected
+                            );
+                            crate::molt_exception_clear();
+                        }
+                        if !has_keyword {
+                            call_function_obj_vec(py, function, &positional[..supplied]);
+                            let error = crate::exception_last_bits_noinc(py)
+                                .expect("raw fixed argument rejection");
+                            assert_eq!(
+                                crate::format_exception_message(
+                                    py,
+                                    obj_from_bits(error).as_ptr().unwrap()
+                                ),
+                                expected
+                            );
+                            crate::molt_exception_clear();
+                        }
+                        crate::object::layout::function_set_trampoline_ptr(
+                            pointer,
+                            original_trampoline,
+                        );
+                    }
+                }
+                // __module__ is the one writable native display field. It
+                // changes error display without changing convention or entry.
+                let key = crate::attr_name_bits_from_bytes(py, b"__module__").unwrap();
+                let builtins = crate::attr_name_bits_from_bytes(py, b"builtins").unwrap();
+                crate::molt_set_attr_name(function, key, builtins);
+                assert!(!exception_pending(py));
+                call_function_obj_vec(py, function, &positional[..2]);
+                let error = crate::exception_last_bits_noinc(py).unwrap();
+                assert!(
+                    crate::format_exception_message(py, obj_from_bits(error).as_ptr().unwrap())
+                        .starts_with("declared_qualified() takes ")
+                );
+                crate::molt_exception_clear();
+                for bits in [key, builtins, function] {
+                    dec_ref_bits(py, bits);
+                }
+            }
+            let alias = metadata_function(
+                py,
+                compiled_identity_returns_owned_arg as *const (),
+                1,
+                &[
+                    (b"__name__", name),
+                    (b"__qualname__", qualified),
+                    (b"__module__", module),
+                ],
+                false,
+            );
+            crate::builtins::functions::molt_function_set_fixed_builtin(
+                alias,
+                MoltObject::from_int(1).bits(),
+            );
+            assert!(!exception_pending(py));
+            let value_pointer = alloc_list(py, &[MoltObject::from_int(31).bits()]);
+            let value = MoltObject::from_ptr(value_pointer).bits();
+            for carrier in 0..3 {
+                let result = if carrier == 0 {
+                    call_function_obj_vec(py, alias, &[value])
+                } else {
+                    let builder = if carrier == 1 {
+                        arguments::molt_callargs_new(1, 0)
+                    } else {
+                        arguments::molt_callargs_new_expanded(1, 0)
+                    };
+                    arguments::molt_callargs_push_pos(builder, value);
+                    molt_call_bind(alias, builder)
+                };
+                assert!(!exception_pending(py));
+                assert_eq!(
+                    result, value,
+                    "a module convention never injects a receiver"
+                );
+                assert_eq!(
+                    (*header_from_obj_ptr(value_pointer)).ref_count_snapshot(),
+                    2
+                );
+                dec_ref_bits(py, result);
+                assert_eq!(
+                    (*header_from_obj_ptr(value_pointer)).ref_count_snapshot(),
+                    1
+                );
+            }
+            dec_ref_bits(py, value);
+            dec_ref_bits(py, alias);
+            for bits in [name, qualified, module, keyword] {
+                dec_ref_bits(py, bits);
+            }
+            assert!(!exception_pending(py));
+        }
+    });
+}
+
+#[test]
+fn fixed_native_promotion_rejects_invalid_declarations_atomically_and_seals_public_shape() {
+    use crate::object::function_metadata::FunctionMetadataField as Field;
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let qualified = crate::attr_name_bits_from_bytes(py, b"sealed_probe").unwrap();
+            let function = metadata_function(
+                py,
+                none_of_one as *const (),
+                1,
+                &[(b"__qualname__", qualified)],
+                false,
+            );
+            for metadata in [MoltObject::none().bits(), MoltObject::from_int(9).bits()] {
+                let invalid = metadata_function(
+                    py,
+                    none_of_one as *const (),
+                    1,
+                    &[(b"__qualname__", metadata)],
+                    false,
+                );
+                let invalid_pointer = obj_from_bits(invalid).as_ptr().unwrap();
+                let invalid_class = object_class_bits(invalid_pointer);
+                crate::builtins::functions::molt_function_set_fixed_builtin(
+                    invalid,
+                    MoltObject::from_int(1).bits(),
+                );
+                assert!(exception_pending(py));
+                assert_eq!(object_class_bits(invalid_pointer), invalid_class);
+                assert!(
+                    crate::builtins::functions::native_callable::fixed_builtin_convention(
+                        invalid_pointer
+                    )
+                    .is_none()
+                );
+                crate::molt_exception_clear();
+                dec_ref_bits(py, invalid);
+            }
+            let pointer = obj_from_bits(function).as_ptr().unwrap();
+            let original_class = object_class_bits(pointer);
+            let original_kind = Field::BindKind.load(pointer);
+            let original_entry = function_fn_ptr(pointer);
+            for count in [
+                MoltObject::from_int(-1).bits(),
+                MoltObject::from_int(2).bits(),
+                MoltObject::none().bits(),
+                MoltObject::from_int(0).bits(),
+            ] {
+                crate::builtins::functions::molt_function_set_fixed_builtin(function, count);
+                assert!(exception_pending(py));
+                assert_eq!(object_class_bits(pointer), original_class);
+                assert_eq!(Field::BindKind.load(pointer), original_kind);
+                assert_eq!(function_fn_ptr(pointer), original_entry);
+                crate::molt_exception_clear();
+            }
+            crate::raise_exception::<()>(py, "RuntimeError", "original pending failure");
+            let pending = crate::exception_last_bits_noinc(py).unwrap();
+            crate::builtins::functions::molt_function_set_fixed_builtin(
+                function,
+                MoltObject::from_int(1).bits(),
+            );
+            assert_eq!(crate::exception_last_bits_noinc(py), Some(pending));
+            assert_eq!(object_class_bits(pointer), original_class);
+            assert_eq!(Field::BindKind.load(pointer), original_kind);
+            crate::molt_exception_clear();
+            let two = metadata_function(
+                py,
+                none_of_two as *const (),
+                2,
+                &[(b"__qualname__", qualified)],
+                false,
+            );
+            let two_pointer = obj_from_bits(two).as_ptr().unwrap();
+            let two_class = object_class_bits(two_pointer);
+            let two_kind = Field::BindKind.load(two_pointer);
+            for count in 0..=1 {
+                crate::builtins::functions::molt_function_set_fixed_builtin(
+                    two,
+                    MoltObject::from_int(count).bits(),
+                );
+                assert!(exception_pending(py));
+                assert_eq!(object_class_bits(two_pointer), two_class);
+                assert_eq!(Field::BindKind.load(two_pointer), two_kind);
+                crate::molt_exception_clear();
+            }
+            let two_code = crate::builtins::functions::molt_function_get_code(two);
+            assert!(!exception_pending(py));
+            assert!(!obj_from_bits(two_code).is_none());
+            crate::builtins::functions::molt_function_set_fixed_builtin(
+                function,
+                MoltObject::from_int(1).bits(),
+            );
+            assert!(!exception_pending(py));
+            let fixed_kind = Field::BindKind.load(pointer);
+            let defaults =
+                MoltObject::from_ptr(alloc_tuple(py, &[MoltObject::from_int(9).bits()])).bits();
+            for (field, replacement) in [
+                (b"__code__".as_slice(), two_code),
+                (b"__defaults__".as_slice(), defaults),
+                (b"__molt_arg_names__".as_slice(), defaults),
+            ] {
+                let key = crate::attr_name_bits_from_bytes(py, field).unwrap();
+                crate::molt_set_attr_name(function, key, replacement);
+                let error = crate::exception_last_bits_noinc(py)
+                    .expect("native shape is not public mutable state");
+                assert!(crate::builtins::attr::exception_is_attribute_error(
+                    py, error
+                ));
+                crate::molt_exception_clear();
+                assert_eq!(function_arity(pointer), 1);
+                assert_eq!(function_fn_ptr(pointer), original_entry);
+                assert_eq!(Field::BindKind.load(pointer), fixed_kind);
+                dec_ref_bits(py, key);
+            }
+            assert!(
+                obj_from_bits(crate::call::function::call_function_obj1(
+                    py,
+                    function,
+                    MoltObject::from_int(3).bits()
+                ))
+                .is_none()
+            );
+            assert!(!exception_pending(py));
+            // Existing promotions retain their original interpretation and
+            // cannot silently rewrite an explicitly fixed convention.
+            crate::builtins::functions::molt_function_set_builtin(function);
+            assert!(!exception_pending(py));
+            assert_eq!(Field::BindKind.load(pointer), fixed_kind);
+            for bits in [defaults, two_code, two, function, qualified] {
+                dec_ref_bits(py, bits);
+            }
         }
     });
 }

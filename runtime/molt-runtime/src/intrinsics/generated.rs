@@ -8394,6 +8394,13 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         python_name: None,
     },
     IntrinsicSpec {
+        name: "molt_function_set_fixed_builtin",
+        symbol: "molt_function_set_fixed_builtin",
+        arity: 2,
+        defaults: &[],
+        python_name: None,
+    },
+    IntrinsicSpec {
         name: "molt_function_set_defaults",
         symbol: "molt_function_set_defaults",
         arity: 3,

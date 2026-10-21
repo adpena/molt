@@ -139,7 +139,7 @@ unsafe fn dispatch_native_deallocation(object: *mut PyObject) {
             return;
         };
         let gc = (*type_).tp_flags & crate::abi_types::Py_TPFLAGS_HAVE_GC != 0;
-        let modern = (crate::hooks::hooks_or_stubs().target_python_minor)() >= 14;
+        let modern = (crate::hooks::hooks_or_stubs().target_python_at_least)(3, 14);
         let participant = gc && (modern || legacy_deallocation_participant(object, dealloc));
         // Old local trashcans charge participating destructors. The modern
         // common entry also sees intervening non-GC native frames, but those

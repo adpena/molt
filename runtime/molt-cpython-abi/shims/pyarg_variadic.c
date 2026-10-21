@@ -12,6 +12,7 @@
 #include <limits.h>
 #include <math.h>
 #include <stdarg.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -55,6 +56,7 @@ void molt_capi_free(void *ptr) {
 }
 
 /* Forward declarations for Rust-implemented helpers. */
+extern bool molt_capi_unicode_precision_drops_incomplete(void);
 typedef ptrdiff_t Py_ssize_t;
 typedef struct _typeobject PyTypeObject;
 typedef struct _object {
@@ -1026,9 +1028,9 @@ static int molt_unicode_format_append_utf8_value(
     size_t offset = 0;
     Py_ssize_t characters = 0;
     int valid_prefix = 1;
-    if (precision_is_bytes && precision >= 0 && (size_t)precision < limit) {
+    if (precision_is_bytes && precision >= 0 && (size_t)precision <= limit) {
         limit = (size_t)precision;
-        truncate_incomplete = 1;
+        truncate_incomplete = molt_capi_unicode_precision_drops_incomplete();
     }
 
     /* Valid UTF-8 is overwhelmingly the common path. Scan once to establish
@@ -1074,7 +1076,7 @@ static int molt_unicode_format_append_utf8_value(
             /* CPython's replacement decoder treats one incomplete terminal
              * sequence as one decoding error, not one error per remaining
              * byte. Precision-created incomplete suffixes were handled above
-             * and are deliberately dropped instead. */
+             * and follow the target-owned stateful decoder policy. */
             codepoint = 0xfffd;
             used = limit - offset;
         }

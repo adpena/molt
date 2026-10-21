@@ -3064,8 +3064,8 @@ unsafe extern "C" fn hook_number_power(
     owned_result_from_pending(bits)
 }
 
-unsafe extern "C" fn hook_target_python_minor() -> i64 {
-    with_gil(|py| crate::object::ops_sys::runtime_target_minor(&py))
+unsafe extern "C" fn hook_target_python_at_least(major: i64, minor: i64) -> bool {
+    with_gil(|py| crate::object::ops_sys::runtime_target_at_least(&py, major, minor))
 }
 
 /// Dict copy/keys/values. `op` matches [`molt_cpython_abi::DictOp`]. Routes to
@@ -4804,6 +4804,7 @@ unsafe extern "C" fn hook_register_c_function(
                 self_bits: None,
                 cache: None,
                 text_signature: None,
+                fixed_convention: None,
             };
             let configured = crate::builtins::functions::native_callable::configure_native_callable(
                 &_py, func_ptr, spec,
@@ -5573,7 +5574,7 @@ pub fn register_cpython_hooks() -> bool {
                 number_binary_op: hook_number_binary_op,
                 number_unary_op: hook_number_unary_op,
                 number_power: hook_number_power,
-                target_python_minor: hook_target_python_minor,
+                target_python_at_least: hook_target_python_at_least,
                 dict_op: hook_dict_op,
                 set_op: hook_set_op,
                 set_new: hook_set_new,

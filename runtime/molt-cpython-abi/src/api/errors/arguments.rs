@@ -491,7 +491,9 @@ impl ArgumentLocation<'_> {
         let mut message = String::new();
         if let Some(offset) = suffix {
             let name = &format[offset + 1..];
-            message.push_str(&String::from_utf8_lossy(&name[..name.len().min(200)]));
+            message.push_str(&crate::api::typeobj::native_name_bytes_with_precision(
+                name, 200,
+            ));
             message.push_str("() ");
         }
         self.append_to(&mut message);
@@ -500,7 +502,9 @@ impl ArgumentLocation<'_> {
             .strip_prefix("argument ")
             .unwrap_or(detail)
             .as_bytes();
-        message.push_str(&String::from_utf8_lossy(&detail[..detail.len().min(256)]));
+        message.push_str(&crate::api::typeobj::native_name_bytes_with_precision(
+            detail, 256,
+        ));
         unsafe { set_parse_type_error(&message) };
     }
 }
@@ -674,7 +678,7 @@ unsafe fn convert_argument(
                 // Python 3.14 extends these two units to the index protocol.
                 // Earlier targets require an actual int (including subtypes).
                 let accepts_index =
-                    unsafe { (crate::hooks::hooks_or_stubs().target_python_minor)() } >= 14;
+                    unsafe { (crate::hooks::hooks_or_stubs().target_python_at_least)(3, 14) };
                 let admitted = if accepts_index {
                     unsafe { PyIndex_Check(argument) }
                 } else {
@@ -1265,7 +1269,7 @@ unsafe fn set_parse_converter_type_error(
         return;
     }
     if expected.first() == Some(&b'(') {
-        let detail = String::from_utf8_lossy(&expected[..expected.len().min(100)]);
+        let detail = crate::api::typeobj::native_name_bytes_with_precision(expected, 100);
         unsafe { location.type_error(format, &detail) };
         return;
     }
@@ -1276,8 +1280,8 @@ unsafe fn set_parse_converter_type_error(
     } else {
         unsafe { CStr::from_ptr((*actual_type).tp_name) }.to_bytes()
     };
-    let expected = String::from_utf8_lossy(&expected[..expected.len().min(50)]);
-    let actual = String::from_utf8_lossy(&actual[..actual.len().min(50)]);
+    let expected = crate::api::typeobj::native_name_bytes_with_precision(expected, 50);
+    let actual = crate::api::typeobj::native_name_bytes_with_precision(actual, 50);
     let message = format!("argument must be {expected}, not {actual}");
     unsafe { location.type_error(format, &message) };
 }

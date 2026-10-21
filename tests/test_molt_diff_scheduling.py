@@ -1148,6 +1148,50 @@ def test_item_reservation_uses_actual_mixed_backend_caps(monkeypatch):
     assert disabled.reservation(("llvm",)) is None
 
 
+@pytest.mark.parametrize("backend", ["native", "llvm"])
+def test_first_native_image_spends_only_its_existing_attempt_budget(
+    monkeypatch, backend
+):
+    backends = molt_diff.compat_backends
+    clock = SimpleNamespace(now=100.0)
+    monkeypatch.setattr(backends, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    policy = backends.TimeoutPolicy(
+        10.0, ((backend, 30.0, 10.0), ("wasm", 600.0, 60.0))
+    )
+    whole = backends.ItemBudget.start(policy, (backend, "wasm"))
+    assert whole.deadline == 810.0
+    attempt = whole.for_backend(backend)
+    assert attempt.deadline == 140.0
+    assert policy.reservation((backend,), cpython=False) == 40.0
+    clock.now = 125.0  # Availability and compilation already spent 25 seconds.
+    assert attempt.limit(policy.phase(backend, "first_run")) == 15.0
+    assert attempt.limit(policy.phase(backend, "run")) == 10.0
+    assert attempt.for_backend(backend) is attempt
+    assert whole.deadline == 810.0
+    assert backends.ItemBudget(policy, 130.0).for_backend(backend).deadline == 130.0
+    assert whole.for_backend(backend, build_only=True).deadline == 155.0
+    clock.now = 140.0
+    assert attempt.limit(policy.phase(backend, "first_run")) == 0.0
+
+
+@pytest.mark.parametrize(
+    "build,run,first_run",
+    [(None, 10.0, 10.0), (30.0, None, None), (None, None, None), (1e308, 1e308, 1e308)],
+)
+def test_first_native_image_preserves_unbounded_or_overflowing_phase_policy(
+    monkeypatch, build, run, first_run
+):
+    backends = molt_diff.compat_backends
+    monkeypatch.setattr(backends, "time", SimpleNamespace(monotonic=lambda: 100.0))
+    policy = backends.TimeoutPolicy(10.0, (("native", build, run),))
+    parent = backends.ItemBudget(policy, 107.0)
+    attempt = parent.for_backend("native")
+    assert attempt is parent
+    assert policy.phase("native", "first_run") == first_run
+    assert attempt.limit(policy.phase("native", "first_run")) == 7.0
+    assert policy.phase("native", "run") == run
+
+
 def test_delayed_worker_spends_dispatch_budget_before_any_case_side_effect(monkeypatch):
     backends = molt_diff.compat_backends
     clock = SimpleNamespace(now=100.0)
