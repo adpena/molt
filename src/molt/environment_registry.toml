@@ -1489,6 +1489,14 @@ owner = "runtime/molt-passes/src/tir/lower_to_simple/runner.rs"
 summary = "Exact function name for which TIR-to-SimpleIR lowering prints the reverse-postorder block visit order (LOWER_DEBUG_RPO) on stderr; unset prints nothing."
 
 [[variable]]
+name = "MOLT_DEBUG_MAIN_EXCEPTION"
+audience = "internal"
+kind = "bool"
+default = ""
+owner = "runtime/molt-jit/src/launch.rs"
+summary = "Any value other than empty or 0 makes a native program's launch print whether an exception is pending when its entry returns (molt main finish pending=0|1) on stderr; the JIT runner and the AOT main stub that src/molt/cli/native_main_stub.py renders read it once, after the program runs."
+
+[[variable]]
 name = "MOLT_DEBUG_MODULE_GET_ATTR"
 audience = "user"
 kind = "bool"
@@ -6258,6 +6266,16 @@ summary = "Guard scope for the codegen quality analysis."
 name = "MOLT_COLD_START"
 owner = "tools/cold_start_decompose.py"
 summary = "Guard scope for the cold-start decomposition profiler."
+
+[[stem]]
+name = "MOLT_COMPAT_JIT_BUILD"
+owner = "tools/compat/backends.py"
+summary = "Guard scope for compat-suite JIT-tier builds (molt build --emit jit)."
+
+[[stem]]
+name = "MOLT_COMPAT_JIT_RUN"
+owner = "tools/compat/backends.py"
+summary = "Guard scope for compat-suite JIT-tier runs (molt-jit)."
 
 [[stem]]
 name = "MOLT_COMPAT_LLVM_BUILD"
