@@ -58,7 +58,11 @@ with dx defaults: a managed ``UV_PROJECT_ENVIRONMENT`` and a ``UV_CACHE_DIR``
 on the artifact volume. The uv command therefore names its target tree and
 the caller's uv cache explicitly (``uv cache dir`` when the caller sets
 none). The tree is then the one ``uv run`` in that checkout selects, built by
-a same-volume clone (1.0 s) instead of a 136 MB copy (14 s to 37 s).
+a same-volume clone (1.0 s) instead of a 136 MB copy (14 s to 37 s). A
+caller's cache on another volume cannot be cloned or hardlinked from, so a
+tree there would copy; when dx's artifact-volume cache shares the tree's
+filesystem, the command names that cache instead (2026-10-21, loaded USB
+volume: a 137 MB environment took 1.85 s as a clone and 81.5 s as a copy).
 
 Cost: a current input costs one read of the stamp, one read of each lock
 file and one ``stat`` of the tree's sentinel file (0.07 ms for Acorn, 0.3 ms
@@ -142,6 +146,10 @@ class LockedTree:
     # arguments that print that choice. The guarded command receives them
     # explicitly, so the memory guard's dx defaults cannot redirect it.
     caller_choices: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    # Choices the tool clones or hardlinks from, so they must share the tree's
+    # filesystem; one on another volume yields to dx's artifact-volume default
+    # when that default shares it (module docstring).
+    same_volume_choices: tuple[str, ...] = ()
     # A variable in which a running tool names its own binary (`uv run` sets
     # UV); it outranks PATH.
     tool_variable: str | None = None
@@ -236,6 +244,7 @@ def checkout_input(
                 # The lane's own `uv run` reads the caller's cache (see the
                 # module docstring for the measured cost of dx's default).
                 caller_choices=(("UV_CACHE_DIR", ("cache", "dir")),),
+                same_volume_choices=("UV_CACHE_DIR",),
                 tool_variable="UV",
             )
         case "browser-acorn":
@@ -448,8 +457,43 @@ def _tool_version(spec: LockedTree, executable: str) -> str:
     return lines[0].strip()
 
 
+def _device_of(path: Path) -> int | None:
+    """The filesystem device of ``path``, or of its nearest existing ancestor."""
+    for candidate in (path, *path.parents):
+        try:
+            return os.stat(candidate).st_dev
+        except OSError:
+            continue
+    return None
+
+
+def _dx_choice(variable: str, spec: LockedTree) -> Path | None:
+    """The value dx gives ``variable`` when the caller leaves it unset.
+
+    dx owns the layout (for ``UV_CACHE_DIR``, the cache under its artifact
+    root, or a ``[tool.molt.dx.env]`` entry); this asks dx rather than repeat
+    its rule.
+    """
+    from molt.dx import DxConfigError, DxProject
+
+    try:
+        environment = DxProject(spec.checkout).canonical_env(
+            spec.environment.without((variable,)), create_dirs=False
+        )
+    except (DxConfigError, OSError, ValueError):
+        return None
+    value = environment.get(variable, "").strip()
+    return Path(value) if value else None
+
+
 def _with_caller_choices(spec: LockedTree, executable: str) -> ProcessEnvironment:
-    """Pin each choice the caller left to its tool, as the tool itself makes it."""
+    """Pin each choice the caller left to its tool, as the tool itself makes it.
+
+    A choice in ``same_volume_choices`` is a store the tool clones or
+    hardlinks from, so it must share the tree's filesystem; a value on another
+    volume yields to dx's artifact-volume default when that one shares it, and
+    stays otherwise (the tool then copies).
+    """
     pinned: dict[str, str] = {}
     for variable, arguments in spec.caller_choices:
         if spec.environment.get(variable, "").strip():
@@ -467,6 +511,18 @@ def _with_caller_choices(spec: LockedTree, executable: str) -> ProcessEnvironmen
         if result.returncode != 0 or len(lines) != 1:
             raise _failure(spec.name, argv, spec.checkout, result)
         pinned[variable] = lines[0].strip()
+    device = _device_of(spec.tree)
+    for variable in spec.same_volume_choices:
+        chosen = pinned.get(variable) or spec.environment.get(variable, "").strip()
+        if not chosen or device is None or _device_of(Path(chosen)) == device:
+            continue
+        alternative = _dx_choice(variable, spec)
+        if (
+            alternative is not None
+            and alternative.is_dir()
+            and _device_of(alternative) == device
+        ):
+            pinned[variable] = str(alternative)
     return spec.environment.updated(pinned) if pinned else spec.environment
 
 
