@@ -856,7 +856,7 @@ def run_guarded(
     no_output_timeout). It bounds a command by its progress, not by its
     total wall time, and it counts only time the guard watched: a host
     freeze that stops guard and child alike is not silence. The result
-    reports it as a timeout.
+    reports it as a timeout, with ``output_stall_s`` set.
     """
     if not command:
         raise ValueError("command is required")
@@ -2738,6 +2738,7 @@ def run_guarded(
             child_returncode=proc.returncode,
             infrastructure_failure=infrastructure_failure,
             worker_peaks=None if worker_peaks is None else worker_peaks.summary(),
+            output_stall_s=no_output_timeout if output_stalled else None,
         )
         state_closed = result.descendants_closed
         _update_active_guard_marker(

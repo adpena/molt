@@ -4083,3 +4083,64 @@ def test_sentinel_scan_imports_nothing_while_a_test_clears_molt(tmp_path, monkey
             monkeypatch.delitem(sys.modules, name)
     sentinel.scan_once()
     assert [name for name in sys.modules if name.split(".")[0] == "molt"] == []
+
+
+@pytest.mark.parametrize("entry", ["completed", "tempfiles"])
+def test_guard_boundary_bounds_a_git_transfer_whichever_tool_starts_it(
+    monkeypatch, tmp_path, entry
+) -> None:
+    """A transfer started straight through the harness gets the transfer bound.
+
+    bench_friends_custody and gen_stdlib_module_union call the harness
+    directly; HarnessExecutionContext and CommandExecutor reach it too. A
+    local peer that accepts and never answers holds `git ls-remote` until the
+    bound ends it: unattended, its output stays silent for the bound.
+    """
+    import socket
+
+    from tools import git_transfer
+
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind(("127.0.0.1", 0))
+    server.listen(4)
+    held: list[socket.socket] = []
+
+    def accept_and_say_nothing() -> None:
+        while True:
+            try:
+                conn, _ = server.accept()
+            except OSError:
+                return
+            held.append(conn)
+
+    threading.Thread(target=accept_and_say_nothing, daemon=True).start()
+    monkeypatch.setattr(git_transfer, "TRANSFER_STALL_SECONDS", 2)
+    monkeypatch.setattr(git_transfer, "prompt_reaches_a_person", lambda: False)
+    command = ["git", "ls-remote", f"http://127.0.0.1:{server.getsockname()[1]}/x.git"]
+    env = {
+        **os.environ,
+        "GIT_CONFIG_GLOBAL": str(tmp_path / "gitconfig"),
+        "GIT_CONFIG_NOSYSTEM": "1",
+    }
+    (tmp_path / "gitconfig").write_text("", encoding="utf-8")
+    try:
+        if entry == "completed":
+            result = harness_memory_guard.guarded_completed_process(
+                command, prefix="MOLT_PYTEST", env=env, cwd=tmp_path, timeout=120
+            )
+            returncode, stderr = result.returncode, result.stderr or ""
+            assert result.output_stall_s == 2 or "too slow" in stderr.lower()
+        else:
+            raw = harness_memory_guard.guarded_completed_process_to_tempfiles(
+                command, prefix="MOLT_PYTEST", env=env, cwd=tmp_path, timeout=120
+            )
+            returncode = raw.returncode
+            stderr = (raw.stderr or b"").decode("utf-8", "replace")
+    finally:
+        server.close()
+        for conn in held:
+            conn.close()
+    assert returncode != 0
+    # curl's low-speed limit and the guard's output bound are both 2 s here;
+    # either ends it. The 120 s deadline is a hang guard only.
+    assert "too slow" in stderr.lower() or "no output for 2.00s" in stderr
