@@ -317,8 +317,14 @@ class CommandExecutor:
             stderr=stderr,
             encoding=encoding,
             errors=errors,
+            # A read that writes evidence files is a recorded execution, not a
+            # bounded probe: `git cat-file --batch` spools every source blob.
             memory_guard_prefix=(
-                None if _is_bounded_metadata_probe(command) else self.prefix
+                None
+                if _is_bounded_metadata_probe(command)
+                and stdout_capture_path is None
+                and stderr_capture_path is None
+                else self.prefix
             ),
         )
 

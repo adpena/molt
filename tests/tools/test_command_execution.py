@@ -94,9 +94,18 @@ def test_executor_routes_only_bounded_metadata_to_direct_probe(monkeypatch) -> N
     executor.run(
         ["python", "tool.py"], capture_output=True, text=True, encoding="utf-8"
     )
+    # Evidence capture needs the guard even for a read-only Git command.
+    executor.run(
+        ["git", "cat-file", "--batch"],
+        input=b"",
+        capture_output=True,
+        stdout_capture_path=Path("blobs"),
+        stderr_capture_path=Path("stderr"),
+    )
 
     assert calls[0]["memory_guard_prefix"] is None
     assert calls[1]["memory_guard_prefix"] == executor.prefix
+    assert calls[2]["memory_guard_prefix"] == executor.prefix
 
 
 def test_executor_rejects_loaded_molt_from_another_repo(monkeypatch) -> None:
