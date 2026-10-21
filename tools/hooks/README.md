@@ -44,8 +44,14 @@ harm -> guard -> live-canary registry).
   continuation with a visible diagnostic. It **composes with** (does not replace) the autonomous
   `/goal` Stop loop.
 - **Windows.** `msvcrt` locks (not `fcntl`); ASCII-safe, UTF-8-explicit
-  (reuses `tools/_io_utf8.force_utf8_stdio`, M43 cp1252 class). Stdlib-only, so
-  the hooks run under any Python 3.9+ (the `command` cannot depend on the venv).
+  (reuses `tools/_io_utf8.force_utf8_stdio`, M43 cp1252 class).
+- **Interpreter.** Every settings command runs `sh tools/hooks/run.sh <hook>`,
+  which selects the interpreter of the checkout's uv environment by uv's rule
+  (`UV_PROJECT_ENVIRONMENT`, relative to the checkout unless absolute, else
+  `.venv`; `bin/python` or `Scripts/python.exe`). Claude Code's PATH need not
+  carry `python`, and the hooks import repository tools that need the
+  project's Python floor. A missing environment exits 1 with the `uv sync`
+  remedy: fail-open and visible, never 2 (which would block every Bash call).
 
 ## Escape valves (never binary)
 
