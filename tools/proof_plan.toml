@@ -5171,6 +5171,8 @@ globs = [
   "src/molt/toolchain_identity.py",
   "src/molt/toolchain_facts.py",
   "src/molt/rust_toolchain.py",
+  "tools/proof_queue_pkg/command_identity.py",
+  "tools/proof_queue_pkg/toolchain_capture.py",
   "runtime/build_support/*.rs",
   "runtime/*/build.rs",
   "tests/runtime_build_identity_helper.py",
@@ -5189,6 +5191,8 @@ globs = [
   "tests/cli/test_wasm_facts_tool.py",
   "tests/cli/test_runtime_family_authority.py",
   "tests/cli/test_cargo_execution_failure_authority.py",
+  "tests/test_toolchain_facts.py",
+  "tests/tools/test_tool_identity_reuse.py",
 ]
 gates = [
 ]
@@ -5208,6 +5212,16 @@ pytest_select = [
     "tests/cli/test_cargo_execution_failure_authority.py",
     "tests/test_toolchain_identity.py",
     "tests/test_runtime_build_python.py",
+    "tests/test_toolchain_facts.py",
+    "tests/tools/test_tool_identity_reuse.py",
+  ] },
+  # The rustup, clippy, fact-store and toolchain-selector cases of the capture
+  # suites: 66 of 638 tests, about 26 s (HF-433 replaces the name selection).
+  { k = "rustup or clippy or toolchain_fact or darwin or formatter or documenter or rust_proxy", targets = [
+    "tests/tools/test_toolchain_capture.py",
+    "tests/tools/test_cargo_bindgen_toolchain.py",
+    "tests/tools/test_proof_queue_execution_custody_p0.py",
+    "tests/test_platform_toolchain.py",
   ] },
 ]
 

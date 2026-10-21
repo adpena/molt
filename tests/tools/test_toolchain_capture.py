@@ -4300,7 +4300,7 @@ def _clippy_component_fixture(tmp_path, monkeypatch, *, proxy=False):
 
 @pytest.mark.parametrize("proxy", [False, True])
 def test_clippy_capture_owns_selected_plugin_and_sibling_driver(
-    tmp_path, monkeypatch, proxy
+    tmp_path, monkeypatch, proxy, isolated_molt_cache
 ):
     tools, env, version, _calls = _clippy_component_fixture(
         tmp_path, monkeypatch, proxy=proxy
@@ -4350,7 +4350,7 @@ def test_clippy_capture_owns_selected_plugin_and_sibling_driver(
     "failure", ["missing-driver", "empty-driver", "foreign-driver"]
 )
 def test_clippy_refuses_missing_or_foreign_driver_before_admission(
-    tmp_path, monkeypatch, failure
+    tmp_path, monkeypatch, failure, isolated_molt_cache
 ):
     tools, env, version, calls = _clippy_component_fixture(tmp_path, monkeypatch)
     if failure != "foreign-driver":
@@ -4374,7 +4374,7 @@ def test_clippy_refuses_missing_or_foreign_driver_before_admission(
 
 @pytest.mark.parametrize("matching", [False, True])
 def test_clippy_alias_requires_one_cross_platform_sibling_driver(
-    tmp_path, monkeypatch, matching
+    tmp_path, monkeypatch, matching, isolated_molt_cache
 ):
     tools, env, _version, _calls = _clippy_component_fixture(tmp_path, monkeypatch)
     aliases = tmp_path / "aliases"
