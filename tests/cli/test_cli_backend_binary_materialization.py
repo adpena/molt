@@ -753,6 +753,44 @@ def test_a_store_miss_hashes_this_checkouts_sources_once(
     assert memos[1]["inputs_digest"] == fingerprint["inputs_digest"]
 
 
+@pytest.mark.parametrize("cargo_timeout", [None, 7.0])
+def test_a_waiter_waits_as_long_as_the_compiler_build_it_waits_for(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cargo_timeout: float | None
+) -> None:
+    """The identity lock is bounded by the build's own Cargo timeout, if any."""
+    write_compiler_source(tmp_path)
+    stub_compiler_admission(monkeypatch)
+    monkeypatch.delenv("MOLT_BUILD_LOCK_TIMEOUT", raising=False)
+    backend_bin = tmp_path / "target" / "release-fast" / "molt-backend.native_backend"
+    original = ProductStore.single_flight
+    waits: list[float | None] = []
+
+    def single_flight(self, identity, *, default_timeout_s):
+        waits.append(default_timeout_s)
+        return original(self, identity, default_timeout_s=default_timeout_s)
+
+    monkeypatch.setattr(ProductStore, "single_flight", single_flight)
+    monkeypatch.setattr(
+        cli_backend_binary, "_backend_fingerprint", lambda *_a, **_k: _fingerprint()
+    )
+    monkeypatch.setattr(
+        cli_backend_binary,
+        "_run_resolved_cargo_plan",
+        lambda cmd, **_kwargs: subprocess.CompletedProcess(cmd, 101, "", "refused"),
+    )
+    result = cli_backend_binary._ensure_backend_binary(
+        backend_bin,
+        cargo_timeout=cargo_timeout,
+        json_output=True,
+        cargo_profile="release-fast",
+        project_root=tmp_path,
+        backend_features=("native-backend",),
+        rust_cpu=RustCpuPolicy.BASELINE,
+    )
+    assert not result and result.phase == "backend_cargo_build"
+    assert waits == [cargo_timeout]
+
+
 def test_ensure_backend_binary_returns_cargo_failure_detail(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

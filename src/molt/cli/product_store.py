@@ -176,7 +176,10 @@ class ProductStore:
 
         A second checkout with the same inputs waits here, then finds the
         entry the first one published. ``MOLT_BUILD_LOCK_TIMEOUT`` bounds the
-        wait as it bounds the per-checkout build lock.
+        wait as it bounds the per-checkout build lock; otherwise
+        ``default_timeout_s`` does, and None waits until the holder exits, as
+        Cargo's build-directory lock and Bazel's output-base lock do. The lock
+        is an OS file lock, so a dead holder never blocks a waiter.
         """
         from molt.cli.build_locks import BuildLockAcquisitionError
 

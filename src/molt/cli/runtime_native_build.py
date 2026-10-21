@@ -1191,11 +1191,10 @@ def _ensure_stored_native_runtime(plan: _NativeRuntimeBuildPlan) -> bool:
         return store_failure(exc)
     if generation is not None:
         return plan.accept(generation)
+    # A waiter waits as long as the build it waits for may run (design 56,
+    # section 2.8): the Cargo timeout, else until the builder exits.
     with plan.store.single_flight(
-        plan.build_identity.digest,
-        default_timeout_s=(
-            plan.cargo_timeout if plan.cargo_timeout is not None else 300.0
-        ),
+        plan.build_identity.digest, default_timeout_s=plan.cargo_timeout
     ):
         try:
             generation = admit_stored_native_runtime(plan)

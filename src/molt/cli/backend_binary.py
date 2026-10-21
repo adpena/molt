@@ -1016,12 +1016,9 @@ def _ensure_backend_binary(
         store = host_tool_store(project_root)
         try:
             held.enter_context(
-                store.single_flight(
-                    identity,
-                    default_timeout_s=(
-                        cargo_timeout if cargo_timeout is not None else 300.0
-                    ),
-                )
+                # A waiter waits as long as the build it waits for may run:
+                # the Cargo timeout, else until the builder exits.
+                store.single_flight(identity, default_timeout_s=cargo_timeout)
             )
         except BuildLockAcquisitionError as exc:
             return _backend_ensure_failure("backend_build_lock", str(exc))
