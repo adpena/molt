@@ -882,7 +882,9 @@ def test_batch_suite_trip_uses_submitted_request_custody_before_shutdown(
     monkeypatch.setattr(module, "_diff_memory_guard_trip_file", lambda: marker)
     monkeypatch.setenv(module._DIFF_MEMORY_GUARD_TRIP_FILE_ENV, str(marker))
     requests = []
+    submitted_environments = []
     shutdown = []
+    environment = {module._DIFF_MEMORY_GUARD_TRIP_FILE_ENV: str(marker)}
     child = module.memory_guard.GuardedChildProcess(
         11,
         11,
@@ -908,8 +910,10 @@ def test_batch_suite_trip_uses_submitted_request_custody_before_shutdown(
         ]
 
     class Client:
-        def request(self, op, *, params, timeout):
+        # Same keyword boundary as BatchCompileServerClient.request.
+        def request(self, op, *, params=None, env_overrides=None, timeout):
             requests.append(op)
+            submitted_environments.append(env_overrides)
             if case == "malformed":
                 marker.write_text("invalid JSON", encoding="utf-8")
             else:
@@ -940,7 +944,7 @@ def test_batch_suite_trip_uses_submitted_request_custody_before_shutdown(
         module, "_shutdown_batch_compile_server", lambda **k: shutdown.append(True)
     )
     result = module._run_batch_compile_build(
-        env={module._DIFF_MEMORY_GUARD_TRIP_FILE_ENV: str(marker)},
+        env=environment,
         file_path="fixture.py",
         output_root=tmp_path,
         output_binary=tmp_path / "fixture",
@@ -969,6 +973,7 @@ def test_batch_suite_trip_uses_submitted_request_custody_before_shutdown(
         else 1
     )
     assert requests == ["build"]
+    assert submitted_environments == [environment]
     assert shutdown == (
         [True] if case == "timeout" or protocol_death and case != "success" else []
     )
