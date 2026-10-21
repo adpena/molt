@@ -437,7 +437,7 @@ def test_local_gate_binding_keeps_raw_prerequisite_and_projection_identity() -> 
     assert bound == f"echo {upstream}..HEAD"
     assert [gate.command for gate in commands] == [raw]
     assert cfg.prerequisites == {"local.always.0": (raw, ())}
-    assert cfg.admit(["feature.rs"], matched, [raw]) is None
+    assert cfg.admit(["feature.rs"], matched, [raw]) == {}
     with pytest.raises(
         molt_dev.DriverError, match="lack declared prerequisite custody"
     ):
