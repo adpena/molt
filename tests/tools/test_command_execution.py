@@ -214,6 +214,17 @@ def test_read_only_git_classifier_sees_through_inert_global_options() -> None:
     )
 
 
+def test_git_version_report_is_a_probe_and_git_help_is_not() -> None:
+    # A guarded `git --version` cost 699 ms against 17 ms raw (2026-10-21).
+    assert command_execution._is_bounded_metadata_probe(["git", "--version"])
+    assert command_execution._is_bounded_metadata_probe(["git", "-C", "r", "version"])
+    # `git --help` opens a pager, and an override can arm one before a version.
+    assert not command_execution._is_bounded_metadata_probe(["git", "--help"])
+    assert not command_execution._is_bounded_metadata_probe(
+        ["git", "-c", "core.pager=./hook", "--version"]
+    )
+
+
 def test_owned_cargo_process_normalizes_wrapper_incremental_conflict(
     monkeypatch,
 ) -> None:
