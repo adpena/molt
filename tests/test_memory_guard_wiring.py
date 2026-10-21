@@ -492,7 +492,7 @@ def test_wiring_audit_locks_down_pytest_custody() -> None:
         "--noconftest",
         "--confcutdir",
         "PYTEST_ADDOPTS",
-        "PYTEST_DISABLE_PLUGIN_AUTOLOAD",
+        "--override-ini",
         "pyproject.toml",
         "sample_processes",
         "handoff_to_outer_guard",
@@ -1669,9 +1669,16 @@ def test_pytest_startup_rejects_hook_disabling_flags() -> None:
         (f"--confcutdir={REPO_ROOT.parent}",),
         ("-p", "no:molt.pytest_memory_guard_config_plugin"),
         ("-pno:molt.pytest_memory_guard_bootstrap",),
+        ("-qpno:molt.pytest_capacity_plugin",),
+        ("-o", "addopts="),
+        ("--override-ini=addopts=-p no:molt.pytest_capacity_plugin",),
+        ("-o", "addopts=--noconftest"),
+        (f"@{REPO_ROOT / 'pyproject.toml'}",),
     ):
         try:
-            pytest_memory_guard_bootstrap.validate_pytest_guardable_args(args)
+            pytest_memory_guard_bootstrap.validate_pytest_guardable_env(
+                {}, args=args, invocation_dir=REPO_ROOT
+            )
         except SystemExit:
             pass
         else:  # pragma: no cover
@@ -1682,9 +1689,13 @@ def test_pytest_startup_rejects_hook_disabling_pytest_addopts() -> None:
     for env in (
         {"PYTEST_ADDOPTS": "-p no:molt.pytest_memory_guard_config_plugin"},
         {"PYTEST_ADDOPTS": "-pno:molt.pytest_memory_guard_bootstrap"},
+        {"PYTEST_ADDOPTS": "-o addopts="},
+        {"PYTEST_ADDOPTS": f"@{REPO_ROOT / 'pyproject.toml'}"},
     ):
         try:
-            pytest_memory_guard_bootstrap.validate_pytest_guardable_env(env)
+            pytest_memory_guard_bootstrap.validate_pytest_guardable_env(
+                env, invocation_dir=REPO_ROOT
+            )
         except SystemExit:
             pass
         else:  # pragma: no cover
@@ -1702,31 +1713,184 @@ def test_pytest_startup_rejects_malformed_pytest_addopts() -> None:
         raise AssertionError("expected malformed PYTEST_ADDOPTS to be rejected")
 
 
-def test_pytest_autoload_disable_requires_explicit_guard_config_plugin() -> None:
-    pytest_memory_guard_bootstrap.validate_pytest_guardable_env(
-        {"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"}
-    )
-    try:
+def test_pytest_startup_requires_the_repo_config_and_its_custody_plugins(
+    tmp_path,
+) -> None:
+    # The custody plugins load through the repository addopts, so a run that
+    # keeps them passes whether plugin autoload is on or off; another
+    # configuration file is refused.
+    for environ in ({}, {"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"}):
         pytest_memory_guard_bootstrap.validate_pytest_guardable_env(
-            {"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"},
-            args=("-c", str(REPO_ROOT / "untrusted" / "pytest.ini")),
+            environ,
+            args=("tests/test_memory_guard_wiring.py",),
+            invocation_dir=REPO_ROOT,
         )
-    except SystemExit:
-        pass
-    else:  # pragma: no cover
-        raise AssertionError("expected unsafe autoload-disabled config to be rejected")
-    pytest_memory_guard_bootstrap.validate_pytest_guardable_env(
-        {"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"},
-        args=("-p", "molt.pytest_memory_guard_config_plugin"),
+    untrusted = tmp_path / "pytest.ini"
+    untrusted.write_text("[pytest]\n", encoding="utf-8")
+    for args in (("-c", str(untrusted)), (f"--config-file={untrusted}",)):
+        try:
+            pytest_memory_guard_bootstrap.validate_pytest_guardable_env(
+                {}, args=args, invocation_dir=REPO_ROOT
+            )
+        except SystemExit:
+            pass
+        else:  # pragma: no cover
+            raise AssertionError(
+                f"expected another pytest config to be rejected: {args}"
+            )
+
+
+def test_pytest_custody_leaves_plugin_imports_to_pytest(tmp_path: Path) -> None:
+    # The custody check runs in the pytest process before pytest starts. A
+    # plugin it imported there would precede pytest's assertion-rewrite hook,
+    # which could then not rewrite that plugin and would warn. The oracle is
+    # pytest itself under the real custody bootstrap, with that warning made
+    # an error, and plugin autoload on so the installed plugins load.
+    case = tmp_path / "test_custody_rewrite.py"
+    case.write_text("def test_runs():\n    assert True\n", encoding="utf-8")
+    command = [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-q",
+        "-W",
+        "error::pytest.PytestAssertRewriteWarning",
+        "-c",
+        str(REPO_ROOT / "pyproject.toml"),
+        str(case),
+    ]
+    environ = {
+        key: value
+        for key, value in os.environ.items()
+        if key
+        not in {
+            "PYTEST_ADDOPTS",
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD",
+            "PYTEST_XDIST_WORKER",
+            "PYTEST_XDIST_WORKER_COUNT",
+        }
+    }
+    env = memory_guard.test_custody_launch_env(command, environ=environ, cwd=REPO_ROOT)
+    result = memory_guard.run_guarded(
+        command,
+        env=env,
+        cwd=REPO_ROOT,
+        max_rss_kb=4 * 1024 * 1024,
+        poll_interval=0.05,
+        capture_output=True,
+        timeout=120,
     )
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert "1 passed" in result.stdout, result.stdout
+
+
+def test_pytest_custody_keeps_the_deleted_basetemp_out_of_sources(
+    tmp_path, monkeypatch
+) -> None:
+    # Review v4, finding 4. The oracle is pytest's own TempPathFactory: it
+    # deletes a given --basetemp before the run uses it.
+    from _pytest.tmpdir import TempPathFactory
+
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "work.py").write_text("uncommitted\n", encoding="utf-8")
+    TempPathFactory(victim, 0, "none", lambda *args: None, _ispytest=True).getbasetemp()
+    assert not (victim / "work.py").exists()
+    target = "tests/test_memory_guard_wiring.py"
+    # Scratch never lies in the checkout, so no basetemp may. pytest itself
+    # rejects "." (the working directory); custody reports that as a refusal,
+    # not a traceback.
+    # pytest takes the value as os.path.abspath gives it: "~/x" is
+    # <checkout>/~/x, and a link that leads into the checkout leads it there.
+    into_checkout = tmp_path / "into-checkout"
+    into_checkout.symlink_to(REPO_ROOT / "src", target_is_directory=True)
+    spellings = [
+        "src",
+        "tests/../src",
+        "tmp/pytest-custody-probe",
+        str(REPO_ROOT / "tools"),
+        ".",
+        "~/pytest-custody-probe",
+        str(into_checkout),
+        # A basetemp that holds the checkout deletes it with every sibling.
+        str(REPO_ROOT.parent),
+        str(REPO_ROOT.parent.parent),
+    ]
+    # A case-insensitive filesystem (macOS's default) names the checkout
+    # another way too; pytest would delete it under that name.
+    for variant in (
+        REPO_ROOT.parent / REPO_ROOT.name.swapcase() / "src",
+        REPO_ROOT.parent.parent / REPO_ROOT.parent.name.swapcase(),
+    ):
+        if variant.exists():
+            spellings.append(str(variant))
+    for basetemp in spellings:
+        with pytest.raises(SystemExit, match="basetemp"):
+            pytest_memory_guard_bootstrap.validate_pytest_guardable_env(
+                {}, args=("--basetemp", basetemp, target), invocation_dir=REPO_ROOT
+            )
+    # From outside the checkout pytest's own text check passes a parent; text
+    # alone still refuses it on a mount without stable inode numbers.
+    monkeypatch.chdir(tmp_path)
+    for identity in (True, False):
+        if not identity:
+            monkeypatch.setattr(
+                pytest_memory_guard_bootstrap, "_file_identity", lambda path: None
+            )
+        with pytest.raises(SystemExit, match="lies in or holds"):
+            pytest_memory_guard_bootstrap.validate_pytest_guardable_env(
+                {},
+                args=("--basetemp", str(REPO_ROOT.parent), str(REPO_ROOT / target)),
+                invocation_dir=tmp_path,
+            )
+    # A link in the checkout is itself the path pytest removes, wherever it leads.
+    checkout = tmp_path / "checkout"
+    (checkout / "tests").mkdir(parents=True)
+    (checkout / "outward").symlink_to(tmp_path / "outside", target_is_directory=True)
+    run = pytest_memory_guard_bootstrap.read_pytest_run(
+        ("--basetemp", "outward", "tests"),
+        environ={},
+        invocation_dir=checkout,
+        plugin_options=False,
+        repository_root=checkout,
+    )
+    assert any("--basetemp='outward'" in violation for violation in run.violations)
+    pytest_memory_guard_bootstrap.validate_pytest_guardable_env(
+        {},
+        args=(f"--basetemp={tmp_path / 'outside'}", target),
+        invocation_dir=REPO_ROOT,
+    )
+
+
+def test_in_process_pytest_main_meets_the_custody_check() -> None:
+    # Review v4. sys.argv never shows the list an in-process pytest.main()
+    # receives; the repository conftest reads pytest's own invocation
+    # arguments. The oracle is pytest's exit status. With --noconftest as well,
+    # no repository code runs inside that pytest, a gap the ledger names.
+    arguments = ["-o", "addopts=", "tests/tools/test_check_test_ownership.py"]
+    result = run_guarded_test_process(
+        [
+            sys.executable,
+            "-c",
+            f"import pytest; raise SystemExit(pytest.main({arguments!r}))",
+        ],
+        cwd=REPO_ROOT,
+        env={k: v for k, v in os.environ.items() if k != "PYTEST_ADDOPTS"},
+        timeout=120,
+    )
+    assert result.returncode == pytest.ExitCode.USAGE_ERROR, (
+        result.stdout,
+        result.stderr,
+    )
+    assert "replaces the addopts" in result.stdout + result.stderr
 
 
 def test_pytest_startup_allows_repo_confcutdir() -> None:
-    pytest_memory_guard_bootstrap.validate_pytest_guardable_args(
-        ("--confcutdir", str(REPO_ROOT))
+    pytest_memory_guard_bootstrap.validate_pytest_guardable_env(
+        {}, args=("--confcutdir", str(REPO_ROOT)), invocation_dir=REPO_ROOT
     )
-    pytest_memory_guard_bootstrap.validate_pytest_guardable_args(
-        (f"--confcutdir={REPO_ROOT / 'tests'}",)
+    pytest_memory_guard_bootstrap.validate_pytest_guardable_env(
+        {}, args=(f"--confcutdir={REPO_ROOT / 'tests'}",), invocation_dir=REPO_ROOT
     )
 
 

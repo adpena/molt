@@ -424,7 +424,7 @@ def test_ci_docs_gate_runs_perf_freshness_and_authority_tests() -> None:
     )
     assert (
         "tests/tools/test_perf_authority.py"
-        in commands["repository.docs-tests"]["argv"]
+        in commands["repository.docs-tests"]["pytest"]
     )
 
 

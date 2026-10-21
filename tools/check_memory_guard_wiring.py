@@ -458,7 +458,7 @@ PYTHON_GUARD_CONTRACTS: tuple[TokenContract, ...] = (
             "--noconftest",
             "--confcutdir",
             "PYTEST_ADDOPTS",
-            "PYTEST_DISABLE_PLUGIN_AUTOLOAD",
+            "--override-ini",
             "pyproject.toml",
             "sample_processes",
             "handoff_to_outer_guard",

@@ -4364,6 +4364,7 @@ def _validate_rust_compilation_selection(
     wasi_command_abi: WasiCAbiProjection | None = None,
 ):
     """Validate one compilation using its already admitted operation contract."""
+    from tools import proof_command_argv
     from tools.proof_queue_pkg import command_admission
 
     if (
@@ -4425,7 +4426,7 @@ def _validate_rust_compilation_selection(
         name = Path(value).name.lower()
         return (
             "python"
-            if command_admission._PYTHON_COMMAND.fullmatch(name)
+            if proof_command_argv._PYTHON_COMMAND.fullmatch(name)
             else name.removesuffix(".exe")
         )
 

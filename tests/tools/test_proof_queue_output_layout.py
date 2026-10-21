@@ -16,6 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 from molt import disk_capacity
+from tools import proof_command_argv
 from tools.proof_queue_pkg import supervisor_generation
 from tools.proof_queue_pkg import (
     cargo_cache_custody as cache,
@@ -1200,6 +1201,56 @@ def test_consumed_cargo_templates_are_admitted_complete_crate_shards(template, c
         policy._canonical_cargo_proof_command(cargo_args),
         cargo_output_lifetime="terminal-success",
     )
+
+
+def test_queue_help_prints_the_uv_contract_the_queue_admits(capsys) -> None:
+    # The quickstart taught `uv run --active --project . --python 3.12 pytest`,
+    # which queue policy refuses for lacking --no-sync and --no-config. The
+    # oracle is that policy: it admits every `uv run` launch the help prints.
+    for show in (
+        presentation._cmd_quickstart,
+        presentation._cmd_template,
+        presentation._cmd_cargo_template,
+    ):
+        show(argparse.Namespace())
+    output = capsys.readouterr().out.replace("\\\n", " ")
+    prefixes = []
+    for line in output.splitlines():
+        if line.startswith("command = "):
+            argv = json.loads(line.removeprefix("command = "))
+        else:
+            argv = shlex.split(line)
+        for index, token in enumerate(argv):
+            if token == "uv" and argv[index + 1 : index + 2] == ["run"]:
+                end = next(
+                    position
+                    for position in range(index, len(argv))
+                    if argv[position] in {"python", "pytest"}
+                )
+                prefixes.append(argv[index:end])
+    assert len(prefixes) == 9
+    for prefix in prefixes:
+        assert (
+            policy._proof_command_policy_error([*prefix, "python", "-c", "pass"])
+            is None
+        )
+
+
+def test_queue_uv_contract_follows_the_project_interpreter_pin(tmp_path) -> None:
+    # Review v4, finding 3. `uv run --python` selects the interpreter that
+    # .python-version pins; the default compile target is another fact.
+    (tmp_path / ".python-version").write_text("3.13.4\n", encoding="utf-8")
+    contract = proof_command_argv.uv_project_contract(tmp_path)
+    assert contract[contract.index("--python") + 1] == "3.13"
+    current = list(proof_command_argv.uv_project_contract(state.ROOT))
+    assert proof_command_argv.uv_project_contract_gaps(current, root=tmp_path) == [
+        "--python 3.13"
+    ]
+    pin = (state.ROOT / ".python-version").read_text(encoding="utf-8").split()[0]
+    assert current[current.index("--python") + 1] == ".".join(pin.split(".")[:2])
+    (tmp_path / ".python-version").write_text("pypy3.10\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="must pin one CPython"):
+        proof_command_argv.uv_project_contract(tmp_path)
 
 
 @pytest.mark.parametrize("units", [259, 260])
