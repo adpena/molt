@@ -19,6 +19,7 @@ bind_repository_imports(__file__)
 from tools.command_execution import CommandExecutor  # noqa: E402
 from tools.generator_io import generator_main  # noqa: E402
 from tools.git_identity import repository_source_paths  # noqa: E402
+from tools.scan_records import ScanRecords, decoded_text, scan_result  # noqa: E402
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 
@@ -230,34 +231,51 @@ def _audit_sources(bases: tuple[Path, ...]) -> list[Path]:
     ]
 
 
-def _audit(config: dict[str, object]) -> str:
+def _audit_row(text: str, configured: bool) -> list[object] | None:
+    """One audited file's lexical row: a pure function of its text."""
+    matches = VERSION_PATTERN.finditer(text)
+    first_match = next(matches, None)
+    if first_match is None:
+        return None
+    match_count = 1 + sum(1 for _match in matches)
+    routed = "TargetPythonVersion" in text or "target_python" in text or configured
+    operational = (
+        "uv run --python" in text
+        or "PYTHON_VERSION" in text
+        or "sys.version_info" in text
+    )
+    classification = (
+        "authority-routed"
+        if routed
+        else ("operational-tooling" if operational else "scattered-assumption")
+    )
+    return [match_count, classification, first_match.group(0)]
+
+
+def _audit(config: dict[str, object], records: ScanRecords | None = None) -> str:
     rows: list[tuple[str, int, str, str]] = []
     for path in _audit_sources(_audit_source_roots(config)):
-        text = path.read_text(encoding="utf-8", errors="replace")
-        matches = VERSION_PATTERN.finditer(text)
-        first_match = next(matches, None)
-        if first_match is None:
+        data = path.read_bytes()
+        configured = path == CONFIG
+        row = scan_result(
+            records,
+            f"audit-row:{configured}",
+            data,
+            lambda: _audit_row(
+                decoded_text(data, encoding="utf-8", errors="replace"), configured
+            ),
+            encode=lambda value: value,
+            decode=lambda value: value,
+        )
+        if row is None:
             continue
-        match_count = 1 + sum(1 for _match in matches)
-        routed = (
-            "TargetPythonVersion" in text or "target_python" in text or path == CONFIG
-        )
-        operational = (
-            "uv run --python" in text
-            or "PYTHON_VERSION" in text
-            or "sys.version_info" in text
-        )
-        classification = (
-            "authority-routed"
-            if routed
-            else ("operational-tooling" if operational else "scattered-assumption")
-        )
+        match_count, classification, first = row
         rows.append(
             (
                 path.relative_to(ROOT).as_posix(),
-                match_count,
-                classification,
-                first_match.group(0),
+                int(match_count),
+                str(classification),
+                str(first),
             )
         )
     totals = Counter(row[2] for row in rows)
@@ -289,17 +307,22 @@ def _audit(config: dict[str, object]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _outputs(config: dict[str, object] | None = None) -> dict[Path, str]:
+def _outputs(
+    config: dict[str, object] | None = None, records: ScanRecords | None = None
+) -> dict[Path, str]:
     resolved_config = _load_config() if config is None else config
     return {
         DOC: _render_doc(resolved_config),
-        AUDIT: _audit(resolved_config),
+        AUDIT: _audit(resolved_config, records),
     }
 
 
-def generated_outputs() -> dict[Path, str]:
-    """Each output path mapped to its exact generated text."""
-    return dict(_outputs())
+def generated_outputs(*, scan_records: ScanRecords | None = None) -> dict[Path, str]:
+    """Each output path mapped to its exact generated text.
+
+    ``tools/generators.py`` passes its scan records; per-file audit rows replay.
+    """
+    return dict(_outputs(records=scan_records))
 
 
 def main(argv: list[str] | None = None) -> int:

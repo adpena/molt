@@ -25,8 +25,9 @@ Usage:
 from __future__ import annotations
 
 import argparse
-from contextlib import ExitStack
+from contextlib import AbstractContextManager, ExitStack, nullcontext
 import importlib
+import inspect
 import os
 import sys
 import time
@@ -52,6 +53,7 @@ from molt.python_runtime_admission import BuildPythonAdmission  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402
 from tools.generator_io import display_path, stale_outputs, write_outputs  # noqa: E402
 from tools.import_file import tool_module_name  # noqa: E402
+from tools.scan_records import ScanRecords, open_scan_records  # noqa: E402
 from tools.proof_plan import (  # noqa: E402
     admit_toolchains,
     load_toolchain_policies,
@@ -158,7 +160,21 @@ def admit_generators(
     return fingerprints, bindings
 
 
-def main(argv: list[str] | None = None) -> int:
+def _generator_records(
+    module: ModuleType, *, enabled: bool
+) -> AbstractContextManager[ScanRecords | None]:
+    """Scan records for a generator whose ``generated_outputs`` declares them.
+
+    The runner is the command entry that owns them, as each scanner's CLI is.
+    """
+    accepts = "scan_records" in inspect.signature(module.generated_outputs).parameters
+    if not (enabled and accepts):
+        return nullcontext(None)
+    source = Path(module.__file__ or "")
+    return open_scan_records(f"generator_{source.stem}", owner=source, enabled=True)
+
+
+def main(argv: list[str] | None = None, *, scan_records: bool = False) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -236,11 +252,13 @@ def main(argv: list[str] | None = None) -> int:
                 tick = time.perf_counter()
                 module = load_generator(generator.tool)
                 bindings = runtime_bindings[generator.tool]
-                outputs = (
-                    module.generated_outputs(python_runtimes=bindings)
-                    if bindings
-                    else module.generated_outputs()
-                )
+                arguments: dict[str, Any] = {}
+                if bindings:
+                    arguments["python_runtimes"] = bindings
+                with _generator_records(module, enabled=scan_records) as records:
+                    if records is not None:
+                        arguments["scan_records"] = records
+                    outputs = module.generated_outputs(**arguments)
                 if args.action == "check":
                     stale = stale_outputs(outputs)
                     for path in stale:
@@ -266,4 +284,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(scan_records=True))
