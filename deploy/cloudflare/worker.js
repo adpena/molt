@@ -560,7 +560,7 @@ const PADDLE_TEST_HTML = `<!DOCTYPE html>
         async function checkEndpoint(url) {
             try {
                 const r = await fetch(url, { method: 'HEAD' });
-                return r.ok || r.status === 405;
+                return r.ok;
             } catch { return false; }
         }
         async function init() {
@@ -606,9 +606,10 @@ const MEMORY_PRESSURE_THRESHOLD_MB = 200;
 /**
  * Fetch an R2 object with a timeout.  Returns null (like R2 miss) on timeout.
  *
- * R2's `.get()` does not support AbortSignal, so we use Promise.race
- * against a timer.  On timeout the R2 request may still complete in the
- * background, but we proceed without waiting.
+ * R2's `.get()` does not support AbortSignal, so `withTimeout` races it
+ * against a timer that it clears when the read settles.  On timeout the R2
+ * request may still complete in the background, but we proceed without
+ * waiting.
  *
  * @param {R2Bucket} bucket
  * @param {string} key
@@ -617,16 +618,80 @@ const MEMORY_PRESSURE_THRESHOLD_MB = 200;
  */
 async function fetchR2WithTimeout(bucket, key, timeoutMs = R2_FETCH_TIMEOUT_MS) {
   if (!bucket) return null;
-  const TIMEOUT_SENTINEL = Symbol("timeout");
-  const result = await Promise.race([
-    bucket.get(key),
-    new Promise((resolve) => setTimeout(() => resolve(TIMEOUT_SENTINEL), timeoutMs)),
-  ]);
-  if (result === TIMEOUT_SENTINEL) {
+  try {
+    return await withTimeout(() => bucket.get(key), timeoutMs, `R2 fetch ${key}`);
+  } catch (err) {
+    if (!isOperationTimeoutError(err)) throw err;
     console.warn(`R2 fetch timeout after ${timeoutMs}ms: ${key}`);
     return null;
   }
-  return result;
+}
+
+const IMMUTABLE_ASSET_CACHE = "public, max-age=86400, immutable";
+const ASSET_CONTENT_TYPES = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "application/javascript",
+  ".json": "application/json",
+  ".txt": "text/plain; charset=utf-8",
+  ".wasm": "application/wasm",
+};
+
+/**
+ * Map a public asset path to its R2 key, default content type and cache policy.
+ * Returns null for any other path.
+ *
+ * @param {string} path
+ * @returns {{key: string, defaultType: string, cacheControl: string} | null}
+ */
+function r2AssetRoute(path) {
+  if (path.startsWith("/wasm/")) {
+    return { key: `models/falcon-ocr/${path.slice(6)}`, defaultType: "application/wasm", cacheControl: IMMUTABLE_ASSET_CACHE };
+  }
+  if (path.startsWith("/models/paddleocr/")) {
+    return { key: path.slice(1), defaultType: "application/octet-stream", cacheControl: IMMUTABLE_ASSET_CACHE };
+  }
+  if (path === "/tokenizer.json") {
+    return { key: "models/falcon-ocr/tokenizer.json", defaultType: "application/json", cacheControl: IMMUTABLE_ASSET_CACHE };
+  }
+  if (path.startsWith("/weights/")) {
+    return { key: `models/${path.slice(9)}`, defaultType: "application/octet-stream", cacheControl: IMMUTABLE_ASSET_CACHE };
+  }
+  // Browser code changes between deploys, so it is cached for an hour only.
+  if (path.startsWith("/browser/")) {
+    return { key: `browser/${path.slice(9)}`, defaultType: "application/javascript", cacheControl: "public, max-age=3600" };
+  }
+  return null;
+}
+
+/**
+ * Serve a public R2 asset. Inference runs in the browser, so assets need no
+ * x402 payment.
+ *
+ * @param {{key: string, defaultType: string, cacheControl: string}} asset
+ * @param {object} env
+ * @param {string} rid
+ * @param {object} cors
+ * @returns {Promise<Response>}
+ */
+async function serveR2Asset(asset, env, rid, cors) {
+  const obj = await fetchR2WithTimeout(env.WEIGHTS, asset.key);
+  if (!obj) {
+    return new Response(
+      JSON.stringify({ error: "Not found", key: asset.key, request_id: rid }),
+      { status: 404, headers: { ...cors, "Content-Type": "application/json" } },
+    );
+  }
+  const dot = asset.key.lastIndexOf(".");
+  const contentType = (dot >= 0 && ASSET_CONTENT_TYPES[asset.key.slice(dot)]) || asset.defaultType;
+  return new Response(obj.body, {
+    status: 200,
+    headers: {
+      ...cors,
+      "Content-Type": contentType,
+      "Cache-Control": asset.cacheControl,
+      "Content-Length": String(obj.size),
+    },
+  });
 }
 
 export class OperationTimeoutError extends Error {
@@ -1392,7 +1457,7 @@ export class RateLimiter {
   }
 }
 
-export default {
+const worker = {
   /**
    * @param {Request} request
    * @param {object} env
@@ -1400,6 +1465,11 @@ export default {
    * @returns {Promise<Response>}
    */
   async fetch(request, env, ctx) {
+    // HEAD is GET without a body (RFC 9110, section 9.3.2), on every GET route.
+    if (request.method === "HEAD") {
+      const response = await worker.fetch(new Request(request, { method: "GET" }), env, ctx);
+      return new Response(null, response);
+    }
     const rid = request.headers.get("X-Request-ID") || requestId();
     const cors = corsHeaders(env);
     const url = new URL(request.url);
@@ -1485,92 +1555,10 @@ export default {
       }
     }
 
-    // -----------------------------------------------------------------------
-    // Browser asset serving: WASM binary and model weights from R2.
-    // These are public-read, no x402 required — inference runs locally in the
-    // browser, not on this Worker. Immutable caching (weights don't change).
-    // -----------------------------------------------------------------------
-    if (request.method === "GET" && path.startsWith("/wasm/")) {
-      const key = `models/falcon-ocr/${path.slice(6)}`; // strip "/wasm/"
-      const obj = await fetchR2WithTimeout(env.WEIGHTS, key);
-      if (!obj) {
-        return new Response(
-          JSON.stringify({ error: "Not found", key, request_id: rid }),
-          { status: 404, headers: { ...cors, "Content-Type": "application/json" } },
-        );
-      }
-      const headers = {
-        ...cors,
-        "Content-Type": "application/wasm",
-        "Cache-Control": "public, max-age=86400, immutable",
-        "Content-Length": String(obj.size),
-      };
-      return new Response(obj.body, { status: 200, headers });
-    }
-
-    // PaddleOCR assets: WASM binary and i18n character dictionaries from R2.
-    // Public-read — inference runs client-side, not on this Worker.
-    if (request.method === "GET" && path.startsWith("/models/paddleocr/")) {
-      const key = path.slice(1); // strip leading "/" -> "models/paddleocr/..."
-      const obj = await fetchR2WithTimeout(env.WEIGHTS, key);
-      if (!obj) {
-        return new Response(
-          JSON.stringify({ error: "Not found", key, request_id: rid }),
-          { status: 404, headers: { ...cors, "Content-Type": "application/json" } },
-        );
-      }
-      let contentType = "application/octet-stream";
-      if (key.endsWith(".txt")) contentType = "text/plain; charset=utf-8";
-      else if (key.endsWith(".wasm")) contentType = "application/wasm";
-      else if (key.endsWith(".onnx")) contentType = "application/octet-stream";
-      const headers = {
-        ...cors,
-        "Content-Type": contentType,
-        "Cache-Control": "public, max-age=86400, immutable",
-        "Content-Length": String(obj.size),
-      };
-      return new Response(obj.body, { status: 200, headers });
-    }
-
-    if (request.method === "GET" && path === "/tokenizer.json") {
-      const key = "models/falcon-ocr/tokenizer.json";
-      const obj = await fetchR2WithTimeout(env.WEIGHTS, key);
-      if (!obj) {
-        return new Response(
-          JSON.stringify({ error: "Not found", key, request_id: rid }),
-          { status: 404, headers: { ...cors, "Content-Type": "application/json" } },
-        );
-      }
-      const headers = {
-        ...cors,
-        "Content-Type": "application/json",
-        "Cache-Control": "public, max-age=86400, immutable",
-        "Content-Length": String(obj.size),
-      };
-      return new Response(obj.body, { status: 200, headers });
-    }
-
-    if (request.method === "GET" && path.startsWith("/weights/")) {
-      const key = `models/${path.slice(9)}`; // strip "/weights/" -> "models/<variant>/..."
-      const obj = await fetchR2WithTimeout(env.WEIGHTS, key);
-      if (!obj) {
-        return new Response(
-          JSON.stringify({ error: "Not found", request_id: rid }),
-          { status: 404, headers: { ...cors, "Content-Type": "application/json" } },
-        );
-      }
-      // Determine content type from extension
-      let contentType = "application/octet-stream";
-      if (key.endsWith(".json")) contentType = "application/json";
-      else if (key.endsWith(".safetensors")) contentType = "application/octet-stream";
-
-      const headers = {
-        ...cors,
-        "Content-Type": contentType,
-        "Cache-Control": "public, max-age=86400, immutable",
-        "Content-Length": String(obj.size),
-      };
-      return new Response(obj.body, { status: 200, headers });
+    // Public assets: WASM binaries, model weights and dictionaries from R2.
+    if (request.method === "GET") {
+      const asset = r2AssetRoute(path);
+      if (asset) return serveR2Asset(asset, env, rid, cors);
     }
 
     // -----------------------------------------------------------------------
@@ -1607,24 +1595,6 @@ export default {
     if (request.method === "GET" && path === "/dashboard") {
       return new Response(DASHBOARD_HTML, {
         headers: { "Content-Type": "text/html; charset=utf-8", ...cors }
-      });
-    }
-
-    if (request.method === "GET" && path.startsWith("/browser/")) {
-      const key = `browser/${path.slice(9)}`;
-      const obj = await fetchR2WithTimeout(env.WEIGHTS, key);
-      if (!obj) {
-        return new Response(
-          JSON.stringify({ error: "Not found", key, request_id: rid }),
-          { status: 404, headers: { ...cors, "Content-Type": "application/json" } },
-        );
-      }
-      let contentType = "application/javascript";
-      if (key.endsWith(".html")) contentType = "text/html; charset=utf-8";
-      else if (key.endsWith(".wasm")) contentType = "application/wasm";
-      return new Response(obj.body, {
-        status: 200,
-        headers: { ...cors, "Content-Type": contentType, "Cache-Control": "public, max-age=3600" },
       });
     }
 
@@ -2875,6 +2845,8 @@ export default {
     await processQueueBatch(batch, env);
   },
 };
+
+export default worker;
 
 // Re-export the Durable Object class for Cloudflare's runtime.
 export { FalconOCRInference } from "./falcon-ocr-do.js";

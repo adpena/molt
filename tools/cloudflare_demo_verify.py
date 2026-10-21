@@ -12,6 +12,7 @@ import re
 import subprocess
 import sys
 import time
+import tomllib
 import urllib.error
 import urllib.request
 import uuid
@@ -35,19 +36,6 @@ from molt.wasm_artifact import (  # noqa: E402
 from tools import harness_memory_guard  # type: ignore  # noqa: E402
 
 _WORKER_URL_RE = re.compile(r"https://[^\s\"'<>]+\.workers\.dev[^\s\"'<>]*")
-_EXPECTED_PROBE_PATHS = (
-    "/",
-    "/fib/100",
-    "/primes/1000",
-    "/diamond/21",
-    "/mandelbrot",
-    "/fizzbuzz/30",
-    "/pi/100000",
-    "/generate/1",
-    "/bench",
-    "/sql?q=SELECT%20name%20FROM%20cities%20LIMIT%201",
-    "/demo",
-)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -443,143 +431,37 @@ def extract_live_url(output_text: str) -> str | None:
     return matches[-1]
 
 
-@dataclasses.dataclass(frozen=True)
-class LiveProbe:
-    path: str
-    expected_status: int = 200
-    expected_content_type_prefix: str | None = "text/"
-
-
-@dataclasses.dataclass(frozen=True)
-class LiveVerificationResult:
-    returncode: int
-    stdout: str
-    stderr: str
-    report_path: Path
-
-
-def _probe_url(base_url: str, path: str, timeout_s: float) -> tuple[int, str, str]:
-    url = base_url.rstrip("/") + path
-    request = urllib.request.Request(
-        url,
-        headers={"User-Agent": "molt-cloudflare-demo-verify/1.0"},
-    )
-    with urllib.request.urlopen(request, timeout=timeout_s) as response:
-        body = response.read().decode("utf-8", errors="replace")
-        content_type = response.headers.get("Content-Type", "")
-        return response.status, content_type, body
-
-
-def verify_live_endpoint(
-    *,
-    live_url: str,
-    bundle_root: Path,
-    project_root: Path,
-    json_output: bool,
-    verbose: bool,
-    run_id: str | None = None,
-    probes: list[LiveProbe] | None = None,
-    timeout_s: float = 30.0,
-) -> LiveVerificationResult:
-    session = run_id or uuid.uuid4().hex
-    log_root = _logs_root(project_root) / session
-    log_root.mkdir(parents=True, exist_ok=True)
-    probes = probes or [LiveProbe(path=path) for path in _EXPECTED_PROBE_PATHS]
-    report: list[dict[str, Any]] = []
-    errors: list[str] = []
-    start = time.perf_counter()
-    for probe in probes:
-        try:
-            status, content_type, body = _probe_url(live_url, probe.path, timeout_s)
-        except urllib.error.HTTPError as exc:
-            status = exc.code
-            content_type = exc.headers.get("Content-Type", "") if exc.headers else ""
-            body = exc.read().decode("utf-8", errors="replace")
-        except (
-            Exception
-        ) as exc:  # pragma: no cover - network failures are environment-specific
-            errors.append(f"{probe.path}: {exc}")
-            report.append(
-                {
-                    "path": probe.path,
-                    "error": str(exc),
-                }
-            )
-            continue
-
-        entry = {
-            "path": probe.path,
-            "status": status,
-            "content_type": content_type,
-            "body_prefix": body[:120],
-        }
-        report.append(entry)
-        if status != probe.expected_status:
-            errors.append(
-                f"{probe.path}: expected HTTP {probe.expected_status}, got {status}"
-            )
-        if probe.expected_content_type_prefix and not content_type.startswith(
-            probe.expected_content_type_prefix
-        ):
-            errors.append(
-                f"{probe.path}: expected content-type starting with "
-                f"{probe.expected_content_type_prefix!r}, got {content_type!r}"
-            )
-        if not body:
-            errors.append(f"{probe.path}: empty response body")
-        if body.startswith("\x00"):
-            errors.append(f"{probe.path}: body has a leading NUL byte")
-        if "1102" in body or "Error" == body.strip()[:5]:
-            errors.append(f"{probe.path}: body indicates a runtime error")
-
-    elapsed = time.perf_counter() - start
-    report_path = log_root / "live-verify.json"
-    _write_text(
-        report_path,
-        json.dumps(
-            {
-                "live_url": live_url,
-                "bundle_root": str(bundle_root),
-                "elapsed_s": round(elapsed, 3),
-                "probes": report,
-                "errors": errors,
-            },
-            indent=2,
-        )
-        + "\n",
-    )
-    stdout = "\n".join(
-        [
-            f"Verified {live_url} with {len(probes)} probes",
-            *([f"Errors: {len(errors)}"] if errors else ["Errors: 0"]),
-        ]
-    )
-    stderr = "\n".join(errors)
-    return LiveVerificationResult(
-        returncode=0 if not errors else 1,
-        stdout=stdout,
-        stderr=stderr,
-        report_path=report_path,
-    )
-
-
 class VerificationError(RuntimeError):
     """Raised when a demo endpoint verification check fails."""
 
 
 @dataclasses.dataclass(frozen=True)
 class EndpointCase:
+    """One endpoint check, run against the app source or a worker over HTTP.
+
+    The HTTP fields follow the probe model of Prometheus ``blackbox_exporter``:
+    a request (method, headers, body) and predicates on the status, headers and
+    body. ``expected_headers`` pairs a header name with a substring its value
+    must contain; an empty substring requires only that the header is present.
+    ``body_prefix`` marks a binary response: the verifier reads only that many
+    bytes and compares them instead of decoding text.
+    """
+
     name: str
     path: str
     query: str = ""
+    method: str = "GET"
+    request_headers: tuple[tuple[str, str], ...] = ()
     body: bytes | None = None
     source_exit_codes: tuple[int, ...] = (0,)
     source_contains: tuple[str, ...] = ()
     source_not_contains: tuple[str, ...] = ()
-    expected_status: int = 200
+    expected_statuses: tuple[int, ...] = (200,)
     expected_content_type_prefix: str | None = None
+    expected_headers: tuple[tuple[str, str], ...] = ()
     body_contains: tuple[str, ...] = ()
     body_not_contains: tuple[str, ...] = ()
+    body_prefix: bytes | None = None
 
     @property
     def target(self) -> str:
@@ -601,6 +483,7 @@ class CaseResult:
     stderr: str = ""
     body: str = ""
     reason: str | None = None
+    attempts: int = 1
 
 
 @dataclasses.dataclass(frozen=True)
@@ -612,6 +495,14 @@ class VerificationReport:
     tmp_root: Path | None = None
     transport: str = ""
     case_set: str = ""
+
+
+class MatrixFailed(VerificationError):
+    """Raised when a verified case set has failing cases; carries the report."""
+
+    def __init__(self, report: VerificationReport) -> None:
+        super().__init__("; ".join(report.failures))
+        self.report = report
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -649,6 +540,7 @@ def _write_demo_summary(artifact_root: Path, report: VerificationReport) -> None
                 "stderr_preview": case.stderr[:800],
                 "body_preview": case.body[:800],
                 "reason": case.reason,
+                "attempts": case.attempts,
             }
             for case in report.cases
         ],
@@ -842,6 +734,123 @@ def build_demo_fuzz_matrix() -> tuple[EndpointCase, ...]:
     )
 
 
+FALCON_OCR_WRANGLER_CONFIG = REPO_ROOT / "deploy" / "cloudflare" / "wrangler.toml"
+# A 1x1 PNG: the smallest image the OCR endpoint accepts.
+_TINY_PNG_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4"
+    "2mP8/58BAwAI/AL+hc2rNAAAAABJRU5ErkJggg=="
+)
+_WASM_MAGIC_V1 = b"\x00asm\x01\x00\x00\x00"
+
+
+def build_falcon_ocr_matrix(
+    wrangler_config: Path = FALCON_OCR_WRANGLER_CONFIG,
+) -> tuple[EndpointCase, ...]:
+    """Post-deploy contract of the Falcon-OCR worker (``deploy/cloudflare``).
+
+    Every case is read-only and free: none runs inference or pays. The browser
+    origin comes from the worker's own ``CORS_ORIGIN`` in ``wrangler_config``.
+    """
+    config = tomllib.loads(wrangler_config.read_text(encoding="utf-8"))
+    origin = config["vars"]["CORS_ORIGIN"]
+    browser = (("Origin", origin),)
+    allows_origin = (("Access-Control-Allow-Origin", origin),)
+    immutable = (("Cache-Control", "immutable"),)
+    asset = allows_origin + immutable + (("Content-Length", ""),)
+    ocr_body = json.dumps({"image": _TINY_PNG_B64}).encode("utf-8")
+    json_post = (("Content-Type", "application/json"),)
+    return (
+        # 503 while the experimental edge model loads; 500 means it failed.
+        EndpointCase(
+            name="health",
+            path="/health",
+            request_headers=browser,
+            expected_statuses=(200, 503),
+            expected_content_type_prefix="application/json",
+            expected_headers=allows_origin,
+            body_contains=('"request_id"', '"ocr_engines"'),
+        ),
+        EndpointCase(
+            name="ocr_preflight",
+            path="/ocr",
+            method="OPTIONS",
+            request_headers=browser + (("Access-Control-Request-Method", "POST"),),
+            expected_statuses=(204,),
+            expected_headers=allows_origin
+            + (("Access-Control-Allow-Headers", "X-Payment-402"),),
+        ),
+        # The browser runs PaddleOCR itself; the edge answers with the fallback.
+        EndpointCase(
+            name="ocr_browser_fallback",
+            path="/ocr",
+            method="POST",
+            request_headers=browser + json_post,
+            body=ocr_body,
+            expected_statuses=(503,),
+            expected_content_type_prefix="application/json",
+            expected_headers=allows_origin,
+            body_contains=('"fallback_url"', "/api/ocr/paddle", '"request_id"'),
+        ),
+        EndpointCase(
+            name="ocr_requires_payment",
+            path="/ocr",
+            method="POST",
+            request_headers=(("User-Agent", "FalconOCR-Client/1.0"),) + json_post,
+            body=ocr_body,
+            expected_statuses=(402,),
+            expected_headers=(("X-Payment-Recipient", ""),),
+            body_contains=('"payment_required"', '"request_id"'),
+        ),
+        EndpointCase(
+            name="falcon_wasm",
+            path="/wasm/falcon-ocr.wasm",
+            request_headers=browser,
+            expected_content_type_prefix="application/wasm",
+            expected_headers=asset,
+            body_prefix=_WASM_MAGIC_V1,
+        ),
+        EndpointCase(
+            name="falcon_wasm_head",
+            path="/wasm/falcon-ocr.wasm",
+            method="HEAD",
+            request_headers=browser,
+            expected_content_type_prefix="application/wasm",
+            expected_headers=asset,
+        ),
+        EndpointCase(
+            name="paddle_wasm",
+            path="/wasm/paddleocr.wasm",
+            request_headers=browser,
+            expected_content_type_prefix="application/wasm",
+            expected_headers=asset,
+            body_prefix=_WASM_MAGIC_V1,
+        ),
+        EndpointCase(
+            name="paddle_dictionary",
+            path="/models/paddleocr/dicts/en_ppocr_dict.txt",
+            request_headers=browser,
+            expected_content_type_prefix="text/plain",
+            expected_headers=asset,
+        ),
+        EndpointCase(
+            name="int4_config",
+            path="/weights/falcon-ocr-int4/config.json",
+            request_headers=browser,
+            expected_content_type_prefix="application/json",
+            expected_headers=asset,
+            body_contains=('"model_type": "falcon_ocr"',),
+        ),
+        EndpointCase(
+            name="int4_shard_index",
+            path="/weights/falcon-ocr-int4/model.safetensors.index.json",
+            request_headers=browser,
+            expected_content_type_prefix="application/json",
+            expected_headers=asset,
+            body_contains=('"weight_map"',),
+        ),
+    )
+
+
 def _run_source_case(entry: Path, case: EndpointCase) -> CaseResult:
     cmd = [sys.executable, str(entry.resolve()), case.path, case.query]
     env = harness_memory_guard.canonical_harness_env(None, repo_root=REPO_ROOT)
@@ -861,17 +870,13 @@ def _run_source_case(entry: Path, case: EndpointCase) -> CaseResult:
     stdout = assert_clean_text_body(completed.stdout)
     stderr = assert_clean_text_body(completed.stderr)
     if completed.returncode not in case.source_exit_codes:
-        raise VerificationError(
-            f"{case.name}: unexpected exit code {completed.returncode}"
-        )
+        raise VerificationError(f"unexpected exit code {completed.returncode}")
     for needle in case.source_contains:
         if needle not in stdout:
-            raise VerificationError(f"{case.name}: missing stdout sentinel {needle!r}")
+            raise VerificationError(f"missing stdout sentinel {needle!r}")
     for needle in case.source_not_contains:
         if needle in stdout or needle in stderr:
-            raise VerificationError(
-                f"{case.name}: unexpected sentinel {needle!r} in output"
-            )
+            raise VerificationError(f"unexpected sentinel {needle!r} in output")
     return CaseResult(
         name=case.name,
         target=case.target,
@@ -883,43 +888,67 @@ def _run_source_case(entry: Path, case: EndpointCase) -> CaseResult:
     )
 
 
-def _http_request(base_url: str, case: EndpointCase) -> tuple[int, str, str]:
+_HTTP_TIMEOUT_S = 15.0
+# Cloudflare answers the default ``Python-urllib`` user agent with 403.
+_HTTP_USER_AGENT = "molt-cloudflare-verify/1.0"
+
+
+def _http_request(base_url: str, case: EndpointCase) -> tuple[int, Any, bytes]:
     url = base_url.rstrip("/") + case.path
     if case.query:
         url = f"{url}?{case.query}"
-    req = urllib.request.Request(url, method="GET")
+    req = urllib.request.Request(
+        url,
+        data=case.body,
+        method=case.method,
+        headers={"User-Agent": _HTTP_USER_AGENT, **dict(case.request_headers)},
+    )
+    # A binary case reads only its prefix, so a large asset is never downloaded.
+    limit = len(case.body_prefix) if case.body_prefix is not None else None
     try:
-        with urllib.request.urlopen(req, timeout=15.0) as resp:
-            status = resp.status
-            content_type = resp.headers.get("Content-Type", "")
-            body_bytes = resp.read()
+        with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_S) as resp:
+            return resp.status, resp.headers, resp.read(limit)
     except urllib.error.HTTPError as exc:
-        status = exc.code
-        content_type = exc.headers.get("Content-Type", "") if exc.headers else ""
-        body_bytes = exc.read()
-    body = assert_clean_text_body(body_bytes)
-    return status, content_type, body
+        return exc.code, exc.headers, exc.read(limit)
+    except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+        raise VerificationError(f"{case.method} {case.target} failed: {exc}") from exc
 
 
 def _run_http_case(base_url: str, case: EndpointCase) -> CaseResult:
-    status, content_type, body = _http_request(base_url, case)
-    if status != case.expected_status:
-        raise VerificationError(
-            f"{case.name}: expected status {case.expected_status}, got {status}"
-        )
+    status, headers, raw = _http_request(base_url, case)
+    content_type = headers.get("Content-Type", "")
+    if status not in case.expected_statuses:
+        expected = " or ".join(str(code) for code in case.expected_statuses)
+        raise VerificationError(f"expected status {expected}, got {status}")
     if case.expected_content_type_prefix is not None and not content_type.startswith(
         case.expected_content_type_prefix
     ):
         raise VerificationError(
-            f"{case.name}: expected Content-Type prefix "
+            "expected Content-Type prefix "
             f"{case.expected_content_type_prefix!r}, got {content_type!r}"
         )
+    for name, needle in case.expected_headers:
+        value = headers.get(name)
+        if value is None or needle not in value:
+            raise VerificationError(
+                f"expected header {name} containing {needle!r}, got {value!r}"
+            )
+    if case.body_prefix is not None:
+        if not raw.startswith(case.body_prefix):
+            raise VerificationError(
+                f"expected body prefix {case.body_prefix!r}, got {raw!r}"
+            )
+        body = ""
+    else:
+        body = assert_clean_text_body(raw)
+        if "Error 1102" in body:
+            raise VerificationError("Cloudflare Error 1102: worker exceeded its limits")
     for needle in case.body_contains:
         if needle not in body:
-            raise VerificationError(f"{case.name}: missing body sentinel {needle!r}")
+            raise VerificationError(f"missing body sentinel {needle!r}")
     for needle in case.body_not_contains:
         if needle in body:
-            raise VerificationError(f"{case.name}: unexpected body sentinel {needle!r}")
+            raise VerificationError(f"unexpected body sentinel {needle!r}")
     return CaseResult(
         name=case.name,
         target=case.target,
@@ -938,25 +967,36 @@ def _verify_cases(
     artifact_root: Path,
     case_set: str,
     tmp_root: Path | None = None,
+    *,
+    attempts: int = 1,
+    retry_delay_s: float = 0.0,
 ) -> VerificationReport:
+    if attempts < 1:
+        raise ValueError(f"attempts must be at least 1, got {attempts}")
     case_results: list[CaseResult] = []
     failures: list[str] = []
     for case in cases:
-        try:
-            result = runner(case)
-        except VerificationError as exc:
-            failures.append(f"{case.name}: {exc}")
-            case_results.append(
-                CaseResult(
-                    name=case.name,
-                    target=case.target,
-                    transport=transport,
-                    ok=False,
-                    reason=str(exc),
+        for attempt in range(1, attempts + 1):
+            try:
+                result = runner(case)
+            except VerificationError as exc:
+                if attempt < attempts:
+                    time.sleep(retry_delay_s)
+                    continue
+                failures.append(f"{case.name}: {exc}")
+                case_results.append(
+                    CaseResult(
+                        name=case.name,
+                        target=case.target,
+                        transport=transport,
+                        ok=False,
+                        reason=str(exc),
+                        attempts=attempt,
+                    )
                 )
-            )
-            continue
-        case_results.append(result)
+            else:
+                case_results.append(dataclasses.replace(result, attempts=attempt))
+            break
     report = VerificationReport(
         ok=not failures,
         failures=failures,
@@ -968,7 +1008,7 @@ def _verify_cases(
     )
     _write_demo_summary(artifact_root, report)
     if failures:
-        raise VerificationError("; ".join(failures))
+        raise MatrixFailed(report)
     return report
 
 
@@ -993,34 +1033,36 @@ def verify_http_matrix(
     artifact_root: Path,
     tmp_root: Path | None = None,
     case_set: str = "custom",
+    attempts: int = 1,
+    retry_delay_s: float = 2.0,
 ) -> VerificationReport:
+    """Run ``cases`` against a worker; a failing case is retried ``attempts`` times.
+
+    Retries let a fresh deployment converge; each case reports its attempts.
+    """
+
     def runner(case: EndpointCase) -> CaseResult:
         return _run_http_case(base_url, case)
 
-    return _verify_cases("http", cases, runner, artifact_root, case_set, tmp_root)
+    return _verify_cases(
+        "http",
+        cases,
+        runner,
+        artifact_root,
+        case_set,
+        tmp_root,
+        attempts=attempts,
+        retry_delay_s=retry_delay_s,
+    )
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Validate Cloudflare demo artifacts.")
+    parser = argparse.ArgumentParser(description="Validate a Cloudflare demo bundle.")
     parser.add_argument("bundle_root", type=Path)
     parser.add_argument("--wrangler-config", type=Path, required=True)
-    parser.add_argument("--live-url")
     args = parser.parse_args()
     validate_bundle_contract(args.bundle_root, args.wrangler_config)
-    if args.live_url:
-        result = verify_live_endpoint(
-            live_url=args.live_url,
-            bundle_root=args.bundle_root,
-            project_root=args.bundle_root.parent.parent,
-            json_output=False,
-            verbose=False,
-        )
-        if result.returncode != 0:
-            print(result.stderr, file=sys.stderr)
-            return result.returncode
-        print(result.stdout)
-    else:
-        print("Cloudflare bundle contract validated.")
+    print("Cloudflare bundle contract validated.")
     return 0
 
 

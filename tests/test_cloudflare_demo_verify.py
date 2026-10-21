@@ -378,36 +378,3 @@ def test_run_wrangler_deploy_uses_no_bundle(
         "--minify",
     ]
     assert captured["cwd"] == bundle_root
-
-
-def test_verify_live_endpoint_writes_report_and_passes(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from tools import cloudflare_demo_verify as verify
-
-    responses = {
-        "/": (200, "text/plain; charset=utf-8", "ok root"),
-        "/fib/100": (200, "text/plain; charset=utf-8", "ok fib"),
-    }
-
-    def fake_probe(base_url: str, path: str, timeout_s: float):
-        return responses[path]
-
-    monkeypatch.setattr(verify, "_probe_url", fake_probe)
-
-    result = verify.verify_live_endpoint(
-        live_url="https://demo.workers.dev",
-        bundle_root=tmp_path / "bundle",
-        project_root=tmp_path,
-        json_output=False,
-        verbose=False,
-        run_id="session",
-        probes=[
-            verify.LiveProbe(path="/"),
-            verify.LiveProbe(path="/fib/100"),
-        ],
-    )
-
-    assert result.returncode == 0
-    assert result.report_path.exists()

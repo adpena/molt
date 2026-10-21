@@ -134,7 +134,7 @@ Remaining work:
 
 Validation:
 - `PYTHONPATH=src uv run --python 3.12 python3 -m pytest -q tests/test_wasm_importlib_machinery.py tests/test_wasm_link_validation.py tests/cli/test_cli_wasm_artifact_validation.py`
-- `python3 tools/cloudflare_demo_deploy_verify.py --live-base-url <worker-url> --artifact-root logs/cloudflare_demo_verify/live`
+- `python3 tools/cloudflare_demo_endpoint_verify.py --base-url <worker-url> --case-set matrix --attempts 3`
 - `PYTHONPATH=src uv run --python 3.12 python3 tools/bench_wasm.py --linked --output bench/results/wave_c_exit_gate.json`
 
 ## Tier 2 - starts once E2, E3, and E4 are green

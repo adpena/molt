@@ -13,7 +13,8 @@
 #   - WASM builds: MOLT_HERMETIC_MODULE_ROOTS=1 (skip venv scanning)
 #   - Post-build: wasm-strip + wasm-opt -Oz --enable-reference-types (6x size reduction)
 #   - R2 uploads: ALWAYS use --remote flag (without it, uploads go to local emulator)
-#   - Workers: use Workers AI for inference, NOT WASM (CPU limit blocks instantiation)
+#   - Workers: /ocr routes browsers to client-side PaddleOCR WASM; Workers AI
+#     serves /invoice/fill and /template/extract only (see worker.js)
 #   - Browser: use WASM for inference (offline, private, zero cost)
 #   - Import aliases: avoid 'from X import Y as Z' in WASM-compiled code (linker bug)
 
@@ -39,7 +40,7 @@ echo "================================================================"
 echo ""
 
 # Step 1: Build WASM binary
-echo "=== Step 1/6: Building WASM binary ==="
+echo "=== Step 1/5: Building WASM binary ==="
 mkdir -p "$BUILD_OUTPUT_DIR"
 python3 "$PROJECT_ROOT/tools/guarded_exec.py" --prefix MOLT_DEPLOY --cwd "$PROJECT_ROOT" -- \
   python3 -m molt build --module demos.tinygrad.wasm_driver --target wasm --output "$BUILD_OUTPUT_DIR" --rebuild
@@ -47,7 +48,7 @@ echo "WASM binary built at: $BUILD_OUTPUT_DIR"
 echo ""
 
 # Step 2: Upload artifacts to R2
-echo "=== Step 2/6: Uploading artifacts to R2 ==="
+echo "=== Step 2/5: Uploading artifacts to R2 ==="
 
 if [[ -f "$BUILD_OUTPUT_DIR/falcon-ocr.wasm" ]]; then
   wrangler r2 object put "$R2_BUCKET/models/falcon-ocr/falcon-ocr.wasm" \
@@ -80,7 +81,7 @@ fi
 echo ""
 
 # Step 3: Validate Worker source
-echo "=== Step 3/6: Validating Worker source ==="
+echo "=== Step 3/5: Validating Worker source ==="
 for js_file in worker.js ocr_api.js x402.js monitoring.js; do
   if [[ ! -f "$DEPLOY_DIR/$js_file" ]]; then
     echo "Error: $js_file not found at $DEPLOY_DIR/$js_file"
@@ -91,84 +92,25 @@ done
 echo ""
 
 # Step 4: Deploy Worker
-echo "=== Step 4/6: Deploying Worker ($ENVIRONMENT) ==="
+echo "=== Step 4/5: Deploying Worker ($ENVIRONMENT) ==="
 cd "$DEPLOY_DIR"
+DEPLOY_LOG="$(mktemp)"
+trap 'rm -f "$DEPLOY_LOG"' EXIT
 
 if [[ "$ENVIRONMENT" == "production" ]]; then
-  wrangler deploy --config wrangler.toml
+  wrangler deploy --config wrangler.toml 2>&1 | tee "$DEPLOY_LOG"
 else
-  wrangler deploy --config wrangler.toml --env staging
+  wrangler deploy --config wrangler.toml --env staging 2>&1 | tee "$DEPLOY_LOG"
 fi
 echo ""
 
-# Step 5: Health check
-echo "=== Step 5/6: Health check ==="
-if [[ "$ENVIRONMENT" == "production" ]]; then
-  WORKER_URL="https://falcon-ocr.freeinvoicemaker.workers.dev"
-else
-  WORKER_URL="https://falcon-ocr-staging.freeinvoicemaker.workers.dev"
-fi
-
-HEALTH_RESPONSE=$(curl -s -w "\n%{http_code}" "$WORKER_URL/health" 2>/dev/null || echo "FAILED")
-HTTP_CODE=$(echo "$HEALTH_RESPONSE" | tail -1)
-BODY=$(echo "$HEALTH_RESPONSE" | head -n -1)
-
-if [[ "$HTTP_CODE" == "200" ]]; then
-  echo "  Health check passed (HTTP 200)"
-  echo "  Response: $BODY"
-else
-  echo "  Warning: Health check returned HTTP $HTTP_CODE"
-  echo "  This may be normal on first deploy (cold start required)."
-  echo "  Response: $BODY"
-fi
-echo ""
-
-# Step 6: Smoke test
-echo "=== Step 6/6: Smoke test ==="
-# Create a minimal 16x16 white JPEG test image (base64)
-# This is a valid JPEG that the Worker can process
-TEST_IMAGE_B64=$(python3 -c "
-import base64, struct, io
-# Minimal valid 16x16 white JPEG
-data = bytes([
-    0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01,
-    0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0xFF, 0xDB, 0x00, 0x43,
-    0x00, 0x08, 0x06, 0x06, 0x07, 0x06, 0x05, 0x08, 0x07, 0x07, 0x07, 0x09,
-    0x09, 0x08, 0x0A, 0x0C, 0x14, 0x0D, 0x0C, 0x0B, 0x0B, 0x0C, 0x19, 0x12,
-    0x13, 0x0F, 0x14, 0x1D, 0x1A, 0x1F, 0x1E, 0x1D, 0x1A, 0x1C, 0x1C, 0x20,
-    0x24, 0x2E, 0x27, 0x20, 0x22, 0x2C, 0x23, 0x1C, 0x1C, 0x28, 0x37, 0x29,
-    0x2C, 0x30, 0x31, 0x34, 0x34, 0x34, 0x1F, 0x27, 0x39, 0x3D, 0x38, 0x32,
-    0x3C, 0x2E, 0x33, 0x34, 0x32, 0xFF, 0xD9,
-])
-print(base64.b64encode(data).decode())
-" 2>/dev/null || echo "")
-
-if [[ -n "$TEST_IMAGE_B64" ]]; then
-  SMOKE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$WORKER_URL/ocr" \
-    -H "Content-Type: application/json" \
-    -d "{\"image\": \"$TEST_IMAGE_B64\", \"format\": \"image/jpeg\"}" \
-    2>/dev/null || echo "FAILED")
-  SMOKE_CODE=$(echo "$SMOKE_RESPONSE" | tail -1)
-  SMOKE_BODY=$(echo "$SMOKE_RESPONSE" | head -n -1)
-
-  # 402 is expected (no payment header). 200 means dev mode.
-  if [[ "$SMOKE_CODE" == "402" ]]; then
-    echo "  Smoke test passed: got expected 402 Payment Required (x402 active)"
-  elif [[ "$SMOKE_CODE" == "200" ]]; then
-    echo "  Smoke test passed: got 200 OK (dev mode, no x402)"
-  elif [[ "$SMOKE_CODE" == "503" ]]; then
-    echo "  Smoke test partial: got 503 (model not loaded yet, fallback available)"
-    echo "  Response: $SMOKE_BODY"
-  else
-    echo "  Warning: Smoke test returned HTTP $SMOKE_CODE"
-    echo "  Response: $SMOKE_BODY"
-  fi
-else
-  echo "  Skipped: could not generate test image"
-fi
-
+# Step 5: Verify the deployed Worker at the URL wrangler printed. The
+# falcon-ocr case set checks health, CORS, the browser fallback, the x402
+# payment demand and the public assets; a failing case fails the deploy.
+echo "=== Step 5/5: Verifying the deployed Worker ==="
+python3 "$PROJECT_ROOT/tools/cloudflare_demo_endpoint_verify.py" \
+  --wrangler-log "$DEPLOY_LOG" --case-set falcon-ocr --attempts 5
 echo ""
 echo "================================================================"
 echo "  Deployment complete: $ENVIRONMENT"
-echo "  Worker URL: $WORKER_URL"
 echo "================================================================"

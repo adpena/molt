@@ -724,7 +724,7 @@ def test_pytest_startup_windows_handoff_interrupt_exits_cleanly(monkeypatch) -> 
 
 def test_repo_test_script_startup_reexecs_under_memory_guard(monkeypatch) -> None:
     captured: dict[str, object] = {}
-    script = REPO_ROOT / "tests" / "e2e" / "test_performance_guard.py"
+    script = REPO_ROOT / "tests" / "e2e" / "invoice_accuracy.py"
 
     def fake_execvpe(path, argv, env):
         captured["path"] = path
@@ -832,7 +832,7 @@ def test_repo_test_module_startup_reexecs_under_memory_guard(monkeypatch) -> Non
 
 def test_current_file_test_script_startup_uses_resolved_file(monkeypatch) -> None:
     captured: dict[str, object] = {}
-    script = REPO_ROOT / "tests" / "e2e" / "test_performance_guard.py"
+    script = REPO_ROOT / "tests" / "e2e" / "invoice_accuracy.py"
 
     def fake_execvpe(path, argv, env):
         captured["path"] = path
