@@ -24,14 +24,20 @@ def pin_runtime_build_python_environment(
 ) -> ProcessEnvironment:
     """Pin effective generator selection before its first identity capture.
 
-    Cargo launches build scripts from their crate directories. An absolute
-    lexical entrypoint keeps both explicit selectors and relative PATH roots
-    attached to the operation directory, preserving virtualenv aliases.
+    Cargo launches build scripts from their crate directories, so the
+    selection is absolute: explicit selectors and relative PATH roots stay
+    attached to the operation directory. It names the interpreter itself, not
+    a checkout's virtualenv alias of it. Build scripts run it isolated
+    (``-B -I -S``), so the alias adds nothing, and the value is a Cargo rerun
+    input recorded with every product: an alias would give each checkout its
+    own product store variant (design 56, section 2.8).
     """
     from molt.python_runtime_admission import resolve_build_python
 
     selected_environment = ProcessEnvironmentBuilder(environment)
-    entrypoint = resolve_build_python(selected_environment, cwd=cwd)
+    entrypoint = resolve_build_python(selected_environment, cwd=cwd).resolve(
+        strict=True
+    )
     selected = next(
         (
             name

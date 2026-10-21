@@ -92,8 +92,9 @@ def test_generator_selection_is_pinned_before_cargo_changes_cwd(
     monkeypatch.chdir(crate)
     pinned = pin_runtime_build_python_environment(environment, cwd=operation)
     key = "MOLT_BUILD_PYTHON" if channel == "default" else channel
-    assert pinned[key] == str(operation / "bin" / name)
-    assert resolve_build_python(pinned) == operation / "bin" / name
+    selected = (operation / "bin" / name).resolve(strict=True)
+    assert pinned[key] == str(selected)
+    assert resolve_build_python(pinned) == selected
     assert resolve_build_python(pinned).read_bytes() == b"selected"
     assert isinstance(pinned, ProcessEnvironment) and pinned.rule is rule
     assert dict(environment) == original
@@ -284,6 +285,35 @@ def test_real_build_python_selection_and_failure_diagnostics(
     assert "build-script-sentinel" in result.stderr
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows virtualenvs copy a launcher")
+def test_two_checkouts_aliasing_one_interpreter_pin_one_value(tmp_path: Path) -> None:
+    """A checkout's virtualenv alias never reaches Cargo's rerun inputs.
+
+    The value is recorded with every product, so per-checkout alias paths
+    would split the product store by checkout (design 56, section 2.8).
+    """
+    from molt.cli.runtime_build_python import pin_runtime_build_python_environment
+
+    interpreter = Path(getattr(sys, "_base_executable", sys.executable)).resolve(
+        strict=True
+    )
+    pinned = []
+    for checkout in ("lane-a", "lane-b"):
+        alias = tmp_path / checkout / ".venv" / "bin" / "python"
+        alias.parent.mkdir(parents=True)
+        try:
+            alias.symlink_to(interpreter)
+        except OSError:
+            pytest.skip("host cannot create executable symlinks")
+        environment = {"PATH": str(alias.parent), "MOLT_BUILD_PYTHON": str(alias)}
+        pinned.append(
+            pin_runtime_build_python_environment(environment, cwd=tmp_path / checkout)[
+                "MOLT_BUILD_PYTHON"
+            ]
+        )
+    assert pinned == [str(interpreter), str(interpreter)]
+
+
 def test_pinned_generator_runs_shared_rust_helper_from_another_crate_cwd(
     tmp_path: Path, unicode_generator: Path
 ) -> None:
@@ -312,7 +342,7 @@ def test_pinned_generator_runs_shared_rust_helper_from_another_crate_cwd(
             pytest.skip("host cannot create executable symlinks")
     environment = {**os.environ, "MOLT_BUILD_PYTHON": f"./{name.as_posix()}"}
     pinned = pin_runtime_build_python_environment(environment, cwd=operation)
-    assert pinned["MOLT_BUILD_PYTHON"] == str(operation / name)
+    assert pinned["MOLT_BUILD_PYTHON"] == str((operation / name).resolve(strict=True))
     result = run_rust_test_process(
         [str(unicode_generator), "probe"],
         cwd=str(crate),
