@@ -9,17 +9,14 @@ Validates:
 """
 
 import re
-from subprocess import TimeoutExpired
 from pathlib import Path
 
 import pytest
 
-from tests.process_guard_common import run_guarded_test_process
 
 DEPLOY_BROWSER = Path(__file__).resolve().parent.parent.parent / "deploy" / "browser"
 WEBGPU_ENGINE = DEPLOY_BROWSER / "webgpu-engine.js"
 WEBGPU_MATMUL = DEPLOY_BROWSER / "webgpu-matmul.js"
-WORKER_URL = "https://falcon-ocr.adpena.workers.dev"
 
 
 @pytest.fixture(scope="module")
@@ -139,90 +136,3 @@ class TestWebGPUMatmulPoC:
             "requestDevice" in webgpu_matmul_source
             or "requestAdapter" in webgpu_matmul_source
         )
-
-
-def _curl_available() -> bool:
-    """Check if curl is available on the system."""
-    try:
-        run_guarded_test_process(
-            ["curl", "--version"],
-            prefix="MOLT_E2E_TEST",
-            capture_output=True,
-            timeout=5,
-        )
-        return True
-    except (FileNotFoundError, TimeoutExpired):
-        return False
-
-
-class TestBrowserTestPageDeployment:
-    """Validate the test page is accessible from the deployed Worker."""
-
-    @pytest.mark.skipif(
-        not _curl_available(),
-        reason="curl not available",
-    )
-    def test_test_page_accessible(self):
-        """GET /test should return 200 with HTML content."""
-        result = run_guarded_test_process(
-            [
-                "curl",
-                "-s",
-                "-w",
-                "%{http_code}",
-                "-o",
-                "/dev/null",
-                f"{WORKER_URL}/test",
-            ],
-            prefix="MOLT_E2E_TEST",
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        assert result.stdout.strip() == "200", f"Expected 200, got {result.stdout}"
-
-    @pytest.mark.skipif(
-        not _curl_available(),
-        reason="curl not available",
-    )
-    def test_browser_js_accessible(self):
-        """GET /browser/compute-engine.js should return 200."""
-        result = run_guarded_test_process(
-            [
-                "curl",
-                "-s",
-                "-w",
-                "%{http_code}",
-                "-o",
-                "/dev/null",
-                f"{WORKER_URL}/browser/compute-engine.js",
-            ],
-            prefix="MOLT_E2E_TEST",
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        assert result.stdout.strip() == "200", f"Expected 200, got {result.stdout}"
-
-    @pytest.mark.skipif(
-        not _curl_available(),
-        reason="curl not available",
-    )
-    def test_webgpu_engine_js_accessible(self):
-        """GET /browser/webgpu-engine.js should return 200."""
-        result = run_guarded_test_process(
-            [
-                "curl",
-                "-s",
-                "-w",
-                "%{http_code}",
-                "-o",
-                "/dev/null",
-                f"{WORKER_URL}/browser/webgpu-engine.js",
-            ],
-            prefix="MOLT_E2E_TEST",
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        assert result.stdout.strip() == "200", f"Expected 200, got {result.stdout}"

@@ -1,7 +1,6 @@
 {
  "schema": 1,
  "unowned": [
-  "tests/e2e/test_browser_integration.py",
   "tests/e2e/test_falcon_ocr_real.py",
   "tests/e2e/test_falcon_ocr_targets.py",
   "tests/e2e/test_full_accuracy.py",
