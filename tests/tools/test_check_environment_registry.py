@@ -8,6 +8,7 @@ here; the proof plan runs the gate on it.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -22,6 +23,7 @@ if str(ROOT / "src") not in sys.path:
 
 from tools import check_environment_registry as C  # noqa: E402
 from molt.environment_registry import registry_from_payload  # noqa: E402
+from tools import scan_records  # noqa: E402
 
 
 def _write(root: Path, rel: str, text: str) -> None:
@@ -847,3 +849,82 @@ def test_parallel_scan_matches_serial_with_external_and_malformed_writers(
     assert any(
         s.name == "MOLT_ALPHA" and s.access == C.ACCESS_READ for s in parallel.sites
     )
+
+
+# --- Scan records (tools/scan_records.py) ------------------------------------
+
+
+def _registry_records(cache: Path) -> scan_records.ScanRecords:
+    return scan_records.ScanRecords(
+        "check_environment_registry", owner=C.__file__, cache_root=cache
+    )
+
+
+def _scanned_files(root: Path) -> int:
+    rust = C._iter_files(C.ENFORCED_RUST_ROOTS, frozenset({".rs"}), root)
+    return len(C._python_jobs(root)) + len(list(rust))
+
+
+def test_scan_records_replay_the_computed_scan(
+    tree: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    cache = tmp_path_factory.mktemp("scan-records")
+    computed = C.scan_repository(workers=1, root=tree)
+    # Helper roles resolve only through decoded function facts and candidates.
+    assert {"MOLT_BETA", "MOLT_HELPED", "MOLT_CHAIN_A"} <= {
+        site.name for site in computed.sites
+    }
+
+    cold = _registry_records(cache)
+    assert C.scan_repository(workers=1, root=tree, records=cold) == computed
+    assert (cold.hits, cold.misses) == (0, _scanned_files(tree))
+    assert cold.publish() is True
+    # The pool path replays every file and still runs writer analysis.
+    warm = _registry_records(cache)
+    assert C.scan_repository(workers=2, root=tree, records=warm) == computed
+    assert (warm.hits, warm.misses) == (cold.misses, 0)
+
+
+def test_scan_records_catch_a_seeded_access_cold_and_warm(
+    tree: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    cache = tmp_path_factory.mktemp("scan-records")
+    reader = tree / "src/molt/reader.py"
+    original = reader.read_text(encoding="utf-8")
+    before = C.scan_repository(workers=1, root=tree)
+    for _ in range(2):
+        records = _registry_records(cache)
+        assert C.scan_repository(workers=1, root=tree, records=records) == before
+        records.publish()
+
+    reader.write_text(
+        original + "\n\ndef seeded():\n    return os.environ.get('MOLT_SEEDED')\n",
+        encoding="utf-8",
+    )
+    for expected_misses in (1, 0):
+        records = _registry_records(cache)
+        scan = C.scan_repository(workers=1, root=tree, records=records)
+        assert [s.access for s in _sites(scan, "MOLT_SEEDED")] == [C.ACCESS_READ]
+        assert records.misses == expected_misses
+        records.publish()
+
+    reader.write_text(original, encoding="utf-8")
+    records = _registry_records(cache)
+    assert C.scan_repository(workers=1, root=tree, records=records) == before
+    assert records.misses == 0
+
+
+def test_command_records_replay_the_real_inventory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path))
+    outputs = []
+    for _ in range(2):  # computed, then replayed
+        assert C.main(["--inventory"], scan_records=True) == 0
+        outputs.append(capsys.readouterr().out)
+    published = tmp_path / "repository-scan-records" / "check_environment_registry"
+    assert len(list(published.iterdir())) == 1
+    assert outputs[0] == outputs[1]
+    assert len(json.loads(outputs[1])["names"]) > 100

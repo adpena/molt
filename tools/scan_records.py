@@ -196,16 +196,35 @@ class ScanRecords:
         if self.generation is None:
             return compute()
         key = record_key(identity, data)
-        record = self._used.get(key) or self._stored.get(key)
-        if record is not None:
-            self._used[key] = record
-            self._renew |= self._now - record[0] >= RECORD_RENEWAL_SECONDS
-            self.hits += 1
-            return decode(record[1])
+        found, value = self.replay(key)
+        if found:
+            return decode(value)
         result = compute()
-        self._used[key] = [self._now, encode(result)]
-        self.misses += 1
+        self.record(key, encode(result))
         return result
+
+    def replay(self, key: str) -> tuple[bool, Any]:
+        """The stored JSON value for one ``record_key``, if any."""
+        if self.generation is None:
+            return False, None
+        record = self._used.get(key) or self._stored.get(key)
+        if record is None:
+            return False, None
+        self._used[key] = record
+        self._renew |= self._now - record[0] >= RECORD_RENEWAL_SECONDS
+        self.hits += 1
+        return True, record[1]
+
+    def record(self, key: str, value: Any) -> None:
+        """Record one computed JSON value under the key of its exact inputs.
+
+        A worker that read the file itself computes ``key`` from those bytes,
+        so the key and the value always describe one file version.
+        """
+        if self.generation is None:
+            return
+        self._used[key] = [self._now, value]
+        self.misses += 1
 
     def publish(self) -> bool:
         """Publish computed and renewed records; True when a file was written."""
