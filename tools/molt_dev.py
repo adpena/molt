@@ -1131,6 +1131,9 @@ class _IntegrationProgress:
     source_commit: str | None = None
     upstream_commit: str | None = None
     gate_total: int = 0
+    # (amended, original) while resolved change citations are unpublished:
+    # a failed landing restores the original, so its citations stay stable.
+    unpublished_citation_amend: tuple[str, str] | None = None
     # Concurrent gates emit from their own threads; one line at a time.
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
@@ -1158,6 +1161,25 @@ class _IntegrationProgress:
         except OSError:
             # Diagnostics cannot replace a gate, custody or publication outcome.
             pass
+
+
+def _restore_unpublished_citations(repo: Path, progress: _IntegrationProgress) -> None:
+    """Return a failed landing's checkout to its unresolved change citations.
+
+    The resolved form names commit ids that the next rebase changes; the
+    `change:` form survives it. A landing that published keeps its amend.
+    """
+    if progress.unpublished_citation_amend is None:
+        return
+    amended, original = progress.unpublished_citation_amend
+    git = Git(repo)
+    if git.head_sha() != amended:
+        _warn(
+            f"left {git.short(git.head_sha())}; citations resolved in {git.short(amended)}"
+        )
+        return
+    git._run(["reset", "--quiet", "--keep", original])
+    _warn(f"landing failed: restored {git.short(original)} with its change citations")
 
 
 def cmd_integrate(args: argparse.Namespace) -> int:
@@ -1191,6 +1213,7 @@ def cmd_integrate(args: argparse.Namespace) -> int:
             _release_file_lock(handle)
     except BaseException as exc:
         error = exc
+        _restore_unpublished_citations(Path(args.repo).resolve(), progress)
         raise
     finally:
         if error is not None:
@@ -1344,6 +1367,7 @@ def _integrate_exclusive(
         )
 
     # --- step 3b: stable change ids -----------------------------------------
+    cited_commit = selected_commit
     selected_commit = molt_dev_change_ids.resolve_change_references(
         git,
         repo,
@@ -1352,6 +1376,8 @@ def _integrate_exclusive(
         dry=dry,
         assert_source=_assert_integration_source,
     )
+    if selected_commit != cited_commit:
+        progress.unpublished_citation_amend = (selected_commit, cited_commit)
     progress.source_commit = selected_commit
 
     # --- step 4: content markers (hazard 8) ---------------------------------
@@ -1525,6 +1551,7 @@ def _integrate_exclusive(
         f"confirmed: {upstream_ref} ({git.short(upstream_after)}) contains tip "
         f"{git.short(head_to_push)}"
     )
+    progress.unpublished_citation_amend = None
 
     # --- step 8: cleanup gate (hazard 3) ------------------------------------
     if args.cleanup_worktree:

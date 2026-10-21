@@ -1974,6 +1974,30 @@ def test_integrate_refuses_unresolved_change_citations_before_gates(
     assert _git(work, "ls-remote", "origin", "refs/heads/main").stdout == origin_before
 
 
+def test_failed_landing_restores_unresolved_change_citations(drv, origin_and_clone):
+    # The resolved form names commit ids the next rebase changes; a landing
+    # that does not publish must leave the change: form for the next attempt.
+    _, work = origin_and_clone
+    (work / "tools" / "proof_plan.toml").write_text(
+        'always = ["false"]\n', encoding="utf-8"
+    )
+    _git(work, "add", "--", "tools/proof_plan.toml")
+    _git(work, "commit", "-q", "--no-verify", "-m", "a failing gate")
+    _commit_with_change_id(work, "a.py", "a = 1\n", _FEATURE_CHANGE)
+    (work / "docs").mkdir()
+    citation = f"fixed in change:{_FEATURE_CHANGE[:9]}\n"
+    (work / "docs" / "ledger.md").write_text(citation, encoding="utf-8")
+    _git(work, "add", "--", "docs/ledger.md")
+    _git(work, "commit", "-q", "--no-verify", "-m", "ledger")
+    head = _git(work, "rev-parse", "HEAD").stdout.strip()
+
+    with pytest.raises(GateFailure):
+        drv.cmd_integrate(_integrate_ns(drv, repo=str(work)))
+
+    assert _git(work, "rev-parse", "HEAD").stdout.strip() == head
+    assert (work / "docs" / "ledger.md").read_text(encoding="utf-8") == citation
+
+
 def test_integrate_dry_run_reports_change_citations_without_amending(
     drv, origin_and_clone, capsys
 ):
