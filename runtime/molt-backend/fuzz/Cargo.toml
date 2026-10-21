@@ -34,3 +34,10 @@ doc = false
 name = "fuzz_tir_passes"
 path = "fuzz_targets/fuzz_tir_passes.rs"
 doc = false
+
+# Cargo applies [patch] only in the workspace it resolves, so this standalone
+# workspace repeats the root Cargo.toml [patch.crates-io] entries for the
+# vendored crates it reaches; tools/check_cargo_locks.py checks them.
+[patch.crates-io]
+cranelift-object = { path = "../../../vendor/rust/cranelift-object" }
+object = { path = "../../../vendor/rust/object" }

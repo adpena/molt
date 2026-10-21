@@ -29,6 +29,9 @@ doc = false
 [workspace]
 members = ["."]
 
-# The standalone fuzz workspace must use the same maintained stream provider.
+# Cargo applies [patch] only in the workspace it resolves, so this standalone
+# workspace repeats the root Cargo.toml [patch.crates-io] entries for the
+# vendored crates it reaches; tools/check_cargo_locks.py checks them.
 [patch.crates-io]
+object = { path = "../../../vendor/rust/object" }
 zlib-rs = { path = "../../../vendor/rust/zlib-rs" }
