@@ -220,10 +220,13 @@ def _audit_sources(bases: tuple[Path, ...]) -> list[Path]:
         )
         if path.suffix in AUDIT_SUFFIXES
     ]
+    # Each path's ancestors are built once. Path.is_relative_to rebuilds them
+    # for every (base, path) pair; set membership keeps its equality rule.
+    ancestors = {path: {path, *path.parents} for path in admitted}
     return [
         path
         for base in bases
-        for path in sorted(path for path in admitted if path.is_relative_to(base))
+        for path in sorted(path for path in admitted if base in ancestors[path])
     ]
 
 
