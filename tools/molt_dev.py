@@ -142,7 +142,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from molt.disk_capacity import DiskCapacityProbe
     from tools.proof_plan import PytestMemoryUnits
 
 # Bind both tools and molt before loading any repository module; an editable
@@ -198,6 +197,8 @@ from tools import venv_exec  # noqa: E402
 from tools.molt_dev_gates import (  # noqa: E402
     GateOutcome,
     GateRuntime,
+    admit_selected_output_capacity,
+    observe_gate_capacity,
     concurrent_gate_limit,
     display as _gate_display,
     gate_time_summary,
@@ -1026,6 +1027,22 @@ def _assert_integration_source(git: Git, commit: str) -> None:
         )
 
 
+def _gate_pycache_prefix(repo: Path, env: Mapping[str, str]) -> Path:
+    """The DX bytecode prefix (`molt dx env`), refused inside the checkout.
+
+    CPython validates each cached module by its source mtime and size. A
+    clean exclusive checkout only changes between gate runs, through Git
+    writes that set a new mtime.
+    """
+    from molt.dx import scratch_dir
+    from molt.path_custody import host_path_is_within
+
+    prefix = scratch_dir(repo, "pycache", env)
+    if host_path_is_within(prefix, repo):
+        raise DriverError(f"gate bytecode prefix is inside the checkout: {prefix}")
+    return prefix
+
+
 def _gate_runtime(
     git: Git,
     selected_commit: str,
@@ -1069,92 +1086,11 @@ def _gate_runtime(
         / f"{selected_commit}.gates.json",
         run_gate=lambda cmd, root, environment: run_gate(cmd, root, environment),
         run_captured_gate=lambda *args: run_captured_gate(*args),
-        observe_capacity=_observe_gate_capacity,
+        observe_capacity=observe_gate_capacity,
         say=_say,
         ok=_ok,
         failure=DriverError,
     )
-
-
-def _admit_selected_output_capacity(
-    outputs: dict[tuple[str, ...], tuple[Path, ...]],
-    environments: dict[tuple[str, ...], ProcessEnvironment],
-) -> dict[tuple[str, ...], int]:
-    """Check current volumes before any gate, without forecasting growth."""
-    from molt.disk_capacity import minimum_headroom_bytes, require_build_capacity
-
-    requirements = {}
-    observed: set[tuple[tuple[Path, ...], int]] = set()
-    for tools, paths in outputs.items():
-        environment = environments[tools]
-        required = minimum_headroom_bytes(environment)
-        requirements[tools] = required
-        key = (paths, required)
-        if key in observed:
-            continue
-        receipt = require_build_capacity(paths, env=environment)
-        observed.add(key)
-        _say(
-            "    selected output capacity: "
-            + json.dumps(
-                {
-                    **receipt.as_dict(),
-                    "scope": "current Cargo-capable selected outputs",
-                    "remaining_campaign_growth_bytes": None,
-                    "reserved_bytes": 0,
-                },
-                sort_keys=True,
-            )
-        )
-    if outputs:
-        _say("    remaining campaign growth unknown; capacity is not reserved")
-    return requirements
-
-
-def _observe_gate_capacity(
-    paths: tuple[Path, ...],
-    *,
-    required_bytes: int,
-    phase: str,
-    gate: str,
-    before: tuple[DiskCapacityProbe, ...] = (),
-) -> tuple[DiskCapacityProbe, ...]:
-    """Record interval observations; telemetry cannot change a gate verdict."""
-    from molt.disk_capacity import probe_capacity
-
-    try:
-        probes = tuple(
-            probe_capacity(path, required_bytes=required_bytes) for path in paths
-        )
-        previous = {probe.requested_path: probe.free_bytes for probe in before}
-        changes = {
-            str(probe.requested_path): (
-                probe.free_bytes - prior
-                if isinstance(prior := previous.get(probe.requested_path), int)
-                and isinstance(probe.free_bytes, int)
-                else None
-            )
-            for probe in probes
-        }
-        _say(
-            "    gate capacity: "
-            + json.dumps(
-                {
-                    "scope": "Cargo-capable gate interval; not exclusive allocation",
-                    "phase": phase,
-                    "gate": gate,
-                    "probes": [probe.as_dict() for probe in probes],
-                    "free_bytes_delta": changes if phase == "after" else {},
-                },
-                sort_keys=True,
-            )
-        )
-        return probes
-    except Exception as exc:
-        _warn(
-            f"gate capacity observation unavailable ({phase}): {type(exc).__name__}: {exc}"
-        )
-        return ()
 
 
 @dataclass
@@ -1427,8 +1363,12 @@ def _integrate_exclusive(
     env = immutable_git_environment(os.environ)
     # Gates are proof executions: bytecode a gate writes under src/ changes the
     # checkout's import topology while later gates read it (a fresh worktree's
-    # first landing failed that way).
+    # first landing failed that way). The canonical environment forbids writes;
+    # gates instead share the DX pycache prefix outside the checkout, so each
+    # module compiles once per source version rather than once per gate.
     env.update(CANONICAL_EXECUTION_ENV)
+    env.pop("PYTHONDONTWRITEBYTECODE", None)
+    env["PYTHONPYCACHEPREFIX"] = str(_gate_pycache_prefix(repo, env))
     env["MOLT_SESSION_ID"] = args.session_id
     env["PYTHONPATH"] = os.pathsep.join((str(repo / "src"), str(repo)))
     # Cargo gates build into the target Molt's own builds of this checkout use.
@@ -1443,7 +1383,7 @@ def _integrate_exclusive(
         environments = config.environments(gate_cmds, baseline=env)
         try:
             cargo_outputs = config.cargo_outputs(environments)
-            capacity_requirements = _admit_selected_output_capacity(
+            capacity_requirements = admit_selected_output_capacity(
                 cargo_outputs, environments
             )
         except (ValueError, OSError, KeyError) as exc:
