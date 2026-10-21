@@ -317,6 +317,7 @@ def transferable_groups(
     project_root: Path,
     samples: Mapping,
     acknowledge: bool = True,
+    wait_for_lock: bool = True,
 ):
     raw = environ.get(LEASE_ENV)
     if not raw:
@@ -335,6 +336,7 @@ def transferable_groups(
         require_live_leader=True,
         donor_environ=environ,
         acknowledge=acknowledge,
+        wait_for_lock=wait_for_lock,
     )
 
 
@@ -365,6 +367,13 @@ def acknowledge_started_daemon(
 ADOPTION_SCHEMA = "molt.backend_daemon.suite-adoption.v1"
 ADOPTION_INDEX_SCHEMA = "molt.backend_daemon.suite-adoption-index.v1"
 _ADOPTION_BYTES = 262144
+# A periodic observer gives up the adoption lock after this long and looks
+# again on its next poll. A custody decision (an acknowledgement, or a
+# command's export of its daemon when it exits) waits for the lock instead: a
+# holder publishes three small durable files, and under host I/O load that
+# took longer than this bound, so the guard of an exiting build killed the
+# shared daemon it had adopted (tests/cli/test_cli_build_identity.py,
+# 2026-10-21 landing).
 _ADOPTION_LOCK_S = 0.5
 _ADOPTION_NAME = re.compile(r"[1-9][0-9]*\.[1-9][0-9]*\.identity\.json")
 
@@ -481,7 +490,7 @@ def _adoption_identity_valid(identity, *, path: Path, lease: dict) -> bool:
     )
 
 
-def _adoption_transaction(path: Path, *, timeout_s: float = _ADOPTION_LOCK_S):
+def _adoption_transaction(path: Path, *, timeout_s: float | None = _ADOPTION_LOCK_S):
     return _acquire_file_lock(
         path.parent / "adoption-transaction.lock",
         timeout_s=timeout_s,
@@ -524,7 +533,14 @@ def _recover_adoption_index(path: Path, *, lease: dict, index: dict) -> list[str
     return errors
 
 
-def _record_adoption(path: Path, *, lease: dict, identity, members) -> bool:
+def _record_adoption(
+    path: Path,
+    *,
+    lease: dict,
+    identity,
+    members,
+    lock_timeout_s: float | None = None,
+) -> bool:
     """Durable receiver acknowledgement precedes command tracker export."""
     if not _adoption_identity_valid(identity, path=path, lease=lease):
         return False
@@ -545,7 +561,7 @@ def _record_adoption(path: Path, *, lease: dict, identity, members) -> bool:
     lock = None
     try:
         receipt.parent.mkdir(parents=True, exist_ok=True)
-        lock = _adoption_transaction(path)
+        lock = _adoption_transaction(path, timeout_s=lock_timeout_s)
         current = read_lease(path)
         if (
             current is None
@@ -638,7 +654,7 @@ def _custody_records(
     *,
     lease: dict,
     daemon_root: Path | None = None,
-    timeout_s: float = _ADOPTION_LOCK_S,
+    timeout_s: float | None = _ADOPTION_LOCK_S,
 ):
     records = {}
     errors = []
@@ -733,12 +749,21 @@ def registered_groups(
     require_live_leader: bool = False,
     donor_environ: Mapping[str, str] | None = None,
     acknowledge: bool = True,
+    wait_for_lock: bool = True,
 ):
-    """Receiving scope observes receipts independently of mutable daemon lookup."""
+    """Receiving scope observes receipts independently of mutable daemon lookup.
+
+    ``wait_for_lock`` is True for a custody decision, which waits for the
+    adoption lock however long a holder keeps it. A periodic observer passes
+    False and gives up after ``_ADOPTION_LOCK_S``; its next poll looks again.
+    """
     from molt.process_model import birth_fenced_descendants
 
+    lock_timeout_s = None if wait_for_lock else _ADOPTION_LOCK_S
     groups = []
-    records, errors = _custody_records(path, lease=lease, daemon_root=daemon_root)
+    records, errors = _custody_records(
+        path, lease=lease, daemon_root=daemon_root, timeout_s=lock_timeout_s
+    )
     if errors and acknowledge:
         return ()  # Corrupt custody evidence never grants a new export.
     for record, observed in records:
@@ -790,7 +815,11 @@ def registered_groups(
             if unresolved:
                 continue  # Unknown descendants cannot acquire export authority.
             if not _record_adoption(
-                path, lease=lease, identity=identity, members=members
+                path,
+                lease=lease,
+                identity=identity,
+                members=members,
+                lock_timeout_s=lock_timeout_s,
             ):
                 continue
         elif not require_live_leader:

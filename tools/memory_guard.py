@@ -1763,7 +1763,7 @@ def run_guarded(
         last_sample_cost_s = 0.0
         suite_custody_transfers = []
 
-        def transfer_receipted_daemon_instances(fresh) -> None:
+        def transfer_receipted_daemon_instances(fresh, *, decisive: bool) -> None:
             # Windows Job closure owns every assigned instance; never advertise
             # a lease export which Job completion would immediately terminate.
             if (
@@ -1774,8 +1774,16 @@ def run_guarded(
                 return
             from molt import backend_daemon_suite_custody as suite_custody
 
+            # A poll looks again on its next sample. The export before the
+            # guard signals the tree, and the one after the child exits, are
+            # the last looks: they wait for the adoption lock rather than
+            # signal a daemon the suite adopted.
             for lease, identity, members in suite_custody.transferable_groups(
-                child_env, project_root=ROOT, samples=fresh, acknowledge=False
+                child_env,
+                project_root=ROOT,
+                samples=fresh,
+                acknowledge=False,
+                wait_for_lock=decisive,
             ):
                 expected = {
                     pid: process_identity(sample) for pid, sample in members.items()
@@ -1804,6 +1812,7 @@ def run_guarded(
         def sample_tracked_tree(
             *,
             allow_transient_timeout: bool = False,
+            before_signal: bool = False,
         ) -> tuple[Mapping[int, ProcessSample], set[int]] | None:
             nonlocal guard_interrupted, last_sample_cost_s, latest_cargo_observations
             latest_cargo_observations = (
@@ -1877,7 +1886,8 @@ def run_guarded(
             )
             cargo_incremental_observations.update(latest_cargo_observations)
             record_sampling_cost(len(samples))
-            transfer_receipted_daemon_instances(samples)
+            # A snapshot that precedes a signal is the tree's last export.
+            transfer_receipted_daemon_instances(samples, decisive=before_signal)
             watched = tracker.update(samples)
             remembered_samples = samples
             remembered_watched = set(watched)
@@ -1980,6 +1990,11 @@ def run_guarded(
                 limit_at_violation=memory_limits_payload(current_limits),
                 elapsed_s=time.perf_counter() - start,
             )
+            # The poll's export gave up the adoption lock after its bound; the
+            # export before a signal waits for it, so the kill spares a daemon
+            # the suite adopted, as the timeout and cancellation kills do.
+            transfer_receipted_daemon_instances(samples, decisive=True)
+            watched = tracker.update(samples)
             terminate_owned_tree(
                 reason="rss_limit",
                 samples=samples,
@@ -2009,7 +2024,7 @@ def run_guarded(
             if cancelled:
                 progressed("cancellation_observed")
             if guard_signal is not None or cancelled:
-                signal_snapshot = sample_tracked_tree()
+                signal_snapshot = sample_tracked_tree(before_signal=True)
                 assert signal_snapshot is not None
                 samples, watched = signal_snapshot
                 if guard_interrupted:
@@ -2044,7 +2059,7 @@ def run_guarded(
                 break
             if timeout is not None and now - start >= timeout:
                 timed_out = True
-                timeout_snapshot = sample_tracked_tree()
+                timeout_snapshot = sample_tracked_tree(before_signal=True)
                 assert timeout_snapshot is not None
                 samples, watched = timeout_snapshot
                 if guard_interrupted:
@@ -2130,7 +2145,7 @@ def run_guarded(
                 try:
                     proc.wait(timeout=max(1.0, poll_interval * 4.0))
                 except subprocess.TimeoutExpired:
-                    post_loop_snapshot = sample_tracked_tree()
+                    post_loop_snapshot = sample_tracked_tree(before_signal=True)
                     assert post_loop_snapshot is not None
                     samples, watched = post_loop_snapshot
                     terminate_owned_tree(
@@ -2166,7 +2181,7 @@ def run_guarded(
                 and not _process_model.is_windows_process_model()
                 and child_env.get("MOLT_BACKEND_DAEMON_SUITE_LEASE")
             ):
-                transfer_receipted_daemon_instances(sampler())
+                transfer_receipted_daemon_instances(sampler(), decisive=True)
             if cleanup_orphans and not guard_interrupted:
                 try:
                     # One observation after the root's exit serves every
