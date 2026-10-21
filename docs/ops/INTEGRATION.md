@@ -257,9 +257,11 @@ main-worktree environment are used as they are.
 
 `land` checks that the checkout is clean, writes one request under
 `<git-common-dir>/molt/landing-queue/requests/` and returns; the request pins
-the commit, so later work on the branch does not join it. A runner starts
-through the detached-run protocol below, under a unique name; the runner's OS
-file lock, not the process table, decides which runner works.
+the commit, so later work on the branch does not join it. `land --retire`
+also retires the lane (`lane retire`) once it lands. A runner starts through
+the detached-run protocol below, under a unique name, from the main worktree,
+which outlives every lane it retires; the runner's OS file lock, not the
+process table, decides which runner works.
 
 The runner always runs main's pinned controller. Each batch takes the
 bisection plan's next group, else the oldest `MAX_BATCH` (8) requests:
@@ -268,11 +270,14 @@ bisection plan's next group, else the oldest `MAX_BATCH` (8) requests:
    (`<git-common-dir>/molt/landing-sandbox`) to main's tip and replay each
    lane's commits since its merge-base in queue order. A lane that does not
    apply leaves the batch with result `conflict`.
-2. Run `integrate` on the sandbox, waiting for the repository integration lock
+2. Provision the sandbox's declared checkout-scoped inputs (its uv
+   environment and the Acorn tree) through `molt.checkout_provisioning`.
+   Run `integrate` on the sandbox, waiting for the repository integration lock
    held by any other integrator. The union of the batch's selected gates runs
    once; change citations resolve across the batch.
 3. On success every lane in the batch records `landed` with the published
-   commit. A candidate failure (a gate, the committed gate policy or binding,
+   commit; the runner then refreshes the shared hooks from the published main
+   and retires the lanes that asked for it. A candidate failure (a gate, the committed gate policy or binding,
    a change citation) splits a batch of two or more into halves, first half
    next; a lone lane records `failed` with the reason. A moved main
    (`RebaseConflict`, `PublicationRace`) rebuilds the batch. Any other driver

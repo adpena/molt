@@ -21,7 +21,8 @@ from molt import checkout_provisioning as cp
 from molt.process_environment import ProcessEnvironment
 from tests.test_molt_dev import _commit_file, _git, _init_repo
 from tools import molt_dev, molt_dev_lanes as lanes
-from tools.molt_dev_common import DriverError, landing_representation
+from tools.molt_dev_change_ids import landing_representation
+from tools.molt_dev_common import DriverError
 
 CHANGE_A = "I" + "a1" * 20
 CHANGE_B = "I" + "b2" * 20
@@ -401,3 +402,32 @@ def test_lane_list_reports_each_lane(
     assert by_slug["done"]["dirty"] == []
     assert by_slug["done"]["record_status"] == "running"
     assert payload["repository_inputs"] == {"git-hooks": "current"}
+
+
+def test_queue_provisions_its_sandbox_and_retires_a_landed_lane(family: Path) -> None:
+    from tools import molt_dev_queue as queue
+
+    main = family / "molt-src"
+    _commit_file(main, "tools/proof_plan.toml", 'always = ["true"]\n', "policy")
+    _git(main, "push", "-q", "origin", "HEAD:main")
+    worktree = _start(family, "queued")
+    tip = _commit_file(worktree, "queued.txt", "queued\n", "queued work")
+    paths = molt_dev._queue_paths(main)
+    request = queue.enqueue(
+        paths, head=tip, worktree=worktree, branch="lane/queued", retire=True
+    )
+
+    args = molt_dev.build_parser().parse_args(
+        ["queue", "run", "--repo", str(main), "--candidate-controller"]
+    )
+    assert molt_dev.cmd_queue_run(args) == molt_dev.EXIT_OK
+
+    assert queue.read_result(paths, request.id)["status"] == "landed"
+    # The sandbox's declared inputs were built before its gates ran.
+    assert (paths.sandbox / "uv-environment-tree" / "ready").is_file()
+    assert (paths.sandbox / "browser-acorn-tree" / "ready").is_file()
+    _git(main, "fetch", "-q", "origin")
+    assert "queued.txt" in _git(main, "ls-tree", "--name-only", "origin/main").stdout
+    assert not worktree.exists()
+    assert _ref(main, "refs/heads/lane/queued") is None
+    assert _record(family, "queued")["status"] == "landed"
