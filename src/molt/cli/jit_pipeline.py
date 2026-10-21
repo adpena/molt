@@ -63,11 +63,17 @@ def jit_program_path(launch_manifest: Path) -> Path:
     return launch_manifest.with_name(stem + JIT_PROGRAM_SUFFIX)
 
 
+# The (os, arch) hosts where the JIT-AOT twin gate ran (HF-371). Any other
+# host fails here, before its unverified runtime image link and loader run.
+VERIFIED_JIT_HOSTS = frozenset({("macos", "aarch64")})
+
+
 def _unsupported_jit_construct(
     *,
     target: Target,
     codegen_backend: str,
     has_external_native_artifacts: bool,
+    host: NativeTargetSpec | None = None,
 ) -> str | None:
     """Name the first construct the JIT tier cannot run, or None."""
     if isinstance(target, NativeTargetSpec):
@@ -75,6 +81,12 @@ def _unsupported_jit_construct(
             return f"the cross target {target.triple} (the JIT tier runs on the host)"
     elif target is not TargetKind.NATIVE:
         return f"the {target.value} target (the JIT tier runs native host code)"
+    host = resolve_native_target_spec(None) if host is None else host
+    if (host.os, host.arch) not in VERIFIED_JIT_HOSTS:
+        return (
+            f"the {host.triple} host (the JIT tier is verified only on aarch64 "
+            "macOS; HF-371 tracks the other hosts)"
+        )
     if codegen_backend != "cranelift":
         return f"the {codegen_backend} code generator (the JIT tier uses Cranelift)"
     if has_external_native_artifacts:

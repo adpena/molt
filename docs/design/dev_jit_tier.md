@@ -193,9 +193,11 @@ cache for the edited functions.
   `com.apple.security.cs.allow-unsigned-executable-memory`; `allow-jit` alone is not
   enough, because the memory is not `MAP_JIT`. A signed or notarized runner would need a
   `MAP_JIT` `JITMemoryProvider` with write-protect toggling.
-- Linux x86_64/aarch64: unverified. The runtime image is a shared object linked with
-  `--whole-archive`, and the runner exports `molt_isolate_bootstrap` with
-  `--export-dynamic-symbol`.
+- Linux x86_64/aarch64: unverified, so refused. The runtime image would be a shared
+  object linked with `--whole-archive`, and the runner exports `molt_isolate_bootstrap`
+  with `--export-dynamic-symbol`. `VERIFIED_JIT_HOSTS` (`src/molt/cli/jit_pipeline.py`)
+  admits only the cells the twin gate ran; any other host, macOS x86_64 included, fails
+  before the build with a message that names it.
 - Windows x64: unsupported. The runner loads its runtime image with `dlopen`, and a DLL
   cannot bind a symbol from the executable without an import library.
 - WASM targets: not applicable.

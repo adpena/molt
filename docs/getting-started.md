@@ -111,8 +111,8 @@ compiles the whole program, the stdlib modules it imports included, so a
 program with a large stdlib closure can spend tens of seconds compiling per
 run; `aot` stays the default for that reason. The JIT tier never falls back
 to an AOT build: a construct it cannot run, such as a cross
-target or the LLVM backend, fails with a message that names it. Linux is
-unverified and Windows is unsupported; see
+target, the LLVM backend or a host other than aarch64 macOS, fails with a
+message that names it. Linux is unverified and Windows is unsupported; see
 [design/dev_jit_tier.md](design/dev_jit_tier.md).
 
 ## Compare Against CPython
