@@ -18,6 +18,14 @@ record's last update. A pid that is present without two comparable births is
 ambiguous. Neither a path, a timestamp, nor a parent's watched-PID list
 establishes process identity. Unreadable and ambiguous records stay protective, and the
 reconciliation report names each one with the command that resolves it.
+
+Records cross no durability barrier (HF-382). A process crash loses no
+page-cache write, so a dead producer's last record is complete. An OS crash
+kills every process a record names; it can leave a record absent, at an older
+generation, or (where a filesystem persists a rename before its data) empty.
+An absent record protects nothing that still runs. An older one is judged by
+the same snapshot rules as any record. An empty one is unreadable: it stays
+protective until an operator releases it with the named command.
 """
 
 from __future__ import annotations
@@ -42,6 +50,7 @@ from molt.file_locks import (
     _try_acquire_file_lock,
 )
 from molt.file_publication import (
+    PublicationDurability,
     atomic_write_bytes,
     canonical_file_leaf,
     namespace_move_exclusive,
@@ -91,6 +100,8 @@ AUTO_SWEEP_GROWTH = 16
 # retired. A guard never sweeps it; the operator migrates it once.
 AUTO_SWEEP_LIMIT = 1024
 _SWEEP_RECEIPT = "sweep.json"
+# Every record here is judged by the liveness it names (module docstring).
+_RECORDS = PublicationDurability.RECONSTRUCTIBLE
 _SWEEP_LOCK = "sweep.lock"
 RECONCILED_REASON = "recorded_custody_absent_or_reused"
 OPERATOR_REASON = "operator_attested"
@@ -575,7 +586,9 @@ def write_active_guard_marker(path: Path, payload: Mapping[str, object]) -> None
     """Exclusively publish one launch; leave every prior evidence record intact."""
     _parse_payload(path, dict(payload))
     with _marker_lock(path) as canonical:
-        atomic_write_bytes(canonical, encode_exact(payload), exclusive=True)
+        atomic_write_bytes(
+            canonical, encode_exact(payload), exclusive=True, durability=_RECORDS
+        )
 
 
 def update_active_guard_marker(
@@ -623,7 +636,7 @@ def update_active_guard_marker(
             or (launch == "failed" and previous_launch != "pending")
         ):
             raise ActiveCustodyError("producer update reverses child launch boundary")
-        atomic_write_bytes(canonical, encode_exact(payload))
+        atomic_write_bytes(canonical, encode_exact(payload), durability=_RECORDS)
     return True
 
 
@@ -933,7 +946,7 @@ def _publish_reconciliation(
                 },
             }
             _parse_payload(canonical, payload)
-            atomic_write_bytes(canonical, encode_exact(payload))
+            atomic_write_bytes(canonical, encode_exact(payload), durability=_RECORDS)
             published = read_marker_record(canonical)
     except (OSError, ValueError, RuntimeError) as exc:
         return (
@@ -1235,6 +1248,7 @@ def record_custody_sweep(report: ReconciliationReport) -> None:
             "remaining": report.remaining,
             "next_steps": report.next_steps(),
         },
+        durability=_RECORDS,
     )
 
 

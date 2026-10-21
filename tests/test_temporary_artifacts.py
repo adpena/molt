@@ -395,30 +395,29 @@ def test_pending_index_does_not_scan_historical_receipts(tmp_path, monkeypatch):
 def test_pending_publication_exposes_only_committed_locked_generations(
     tmp_path, monkeypatch
 ):
-    from molt import file_publication
-
     prior, _ = _lease(tmp_path)
     _finish(prior, success=False)
     active, _ = _lease(tmp_path, 2)
     root = active.generation.parent
-    publish = file_publication.durable_publish_exclusive
+    write = scratch.write_exact
+    move = scratch.namespace_move_exclusive
     checkpoints = []
     discovered = []
 
-    def publish_private(staged, destination):
-        if destination == active.generation / "pending.json":
-            assert staged.parent == active.generation
+    def write_private(path, value, **kwargs):
+        write(path, value, **kwargs)
+        if path == active.generation / "pending.json":
             result = scratch.reclaim_terminal_scratch(root)
             assert result["errors"] == []
             assert result["retained_count"] == 1
             assert result["protected_count"] == 0
             checkpoints.append("private-stage")
-        publish(staged, destination)
 
     def publish_index(staged, destination):
+        move(staged, destination)
+        if destination != scratch._index_path(active.generation):
+            return  # The reclaimed generation's own removal.
         assert staged == active.generation / "pending.json"
-        assert destination == scratch._index_path(active.generation)
-        publish(staged, destination)
         discovered.extend(destination.parent.iterdir())
         result = scratch.reclaim_terminal_scratch(root)
         assert result["errors"] == []
@@ -426,8 +425,8 @@ def test_pending_publication_exposes_only_committed_locked_generations(
         assert result["protected_count"] == 1
         checkpoints.append("published-with-owner-lock")
 
-    monkeypatch.setattr(file_publication, "durable_publish_exclusive", publish_private)
-    monkeypatch.setattr(scratch, "durable_publish_exclusive", publish_index)
+    monkeypatch.setattr(scratch, "write_exact", write_private)
+    monkeypatch.setattr(scratch, "namespace_move_exclusive", publish_index)
     result = _finish(active)
     assert result["retention"]["errors"] == []
     assert checkpoints == ["private-stage", "published-with-owner-lock"]
@@ -1292,10 +1291,11 @@ def test_receipt_removal_that_cannot_move_now_is_deferred_and_retried(
     assert not scratch._index_path(lease.generation).exists()
 
 
-def test_success_path_custody_bookkeeping_issues_no_fsync(tmp_path, monkeypatch):
-    """Receipts whose loss a crash cannot turn into lost custody stay cheap.
+def test_guard_scratch_custody_issues_no_fsync(tmp_path, monkeypatch):
+    """Scratch records describe processes, so none crosses a barrier (HF-382).
 
-    Hosted Linux disks pay milliseconds per fsync on every guarded launch.
+    An OS crash that drops one also killed every process it names; the
+    crash-residue tests below prove that each such state stays safe.
     """
     fsyncs = []
     real_fsync = os.fsync
@@ -1308,31 +1308,344 @@ def test_success_path_custody_bookkeeping_issues_no_fsync(tmp_path, monkeypatch)
         file_publication,
         fsync=lambda fd: fsyncs.append(fd) or real_fsync(fd),
     )
-    lease, env = _lease(tmp_path)
-    allocation = len(fsyncs)
-    receipt = lease.target / ".molt-scratch-target.json"
-    fsyncs.clear()
-    scratch._write_target_receipt(tmp_path, "0" * 32)
+    lease, _ = _lease(tmp_path)
     assert fsyncs == []
-    assert allocation > 0  # The owner record itself stays durable.
-    finished = len(fsyncs)
     result = _finish(lease)
     assert result["state"] == "reclaimed" and not lease.generation.exists()
-    durable_finish = len(fsyncs) - finished
-    # Removing the reclaimed receipts adds nothing to the durable finish.
-    remove = scratch._remove_reclaimed_generation
-    counted = []
+    failed, _ = _lease(tmp_path, 2)
+    assert _finish(failed, success=False)["state"] == "retained"
+    adopted, env = _lease(tmp_path, 3)
+    adopted.release()
+    assert scratch.resolve_guard_scratch(
+        adopted.generation,
+        guard_marker=Path(env["MOLT_MEMORY_GUARD_MARKER"]),
+        closure={"authority": "fixture", "closed": True},
+    )["resolved"]
+    swept = scratch.reclaim_terminal_scratch(
+        lease.generation.parent, retention=scratch.ScratchRetention(0, 0)
+    )
+    assert swept["errors"] == [] and len(swept["reclaimed"]) == 2
+    assert fsyncs == []
 
-    def counted_remove(generation):
-        before = len(fsyncs)
+
+def test_a_terminal_receipt_its_owner_never_committed_blocks_adoption_once(
+    tmp_path, monkeypatch
+):
+    """The finisher wrote its terminal receipt, then failed before its index.
+
+    A dead guard's reconciliation then met that receipt on every pass: its
+    adoption tried to publish a second terminal receipt and failed, so the
+    marker never resolved. It now verifies the receipt as the finisher's own,
+    blocks the generation once and keeps the payload.
+    """
+    lease, env = _lease(tmp_path)
+    (lease.target / "output").write_bytes(b"kept")
+
+    def fail_index(generation, digest):
+        raise OSError("fixture index publication failure")
+
+    monkeypatch.setattr(scratch, "_publish_index", fail_index)
+    with pytest.raises(OSError, match="index publication failure"):
+        _finish(lease)
+    monkeypatch.undo()
+    assert (lease.generation / "terminal.json").is_file()
+    assert _read(lease.generation / "owner.json")["state"] == "indeterminate"
+    outcomes = [
+        scratch.resolve_guard_scratch(
+            lease.generation, guard_marker=_marker_of(env), closure=_CLOSURE
+        )
+        for _ in range(2)
+    ]
+    assert [(item["state"], item["resolved"]) for item in outcomes] == [
+        ("blocked", True),
+        ("blocked", True),
+    ]
+    assert (lease.target / "output").read_bytes() == b"kept"
+    assert scratch.reclaim_terminal_scratch(lease.generation.parent)["errors"] == []
+
+
+# --- Crash residue (HF-382) -------------------------------------------------
+#
+# The records cross no durability barrier, so an OS crash can persist any
+# subset of the protocol's writes in any order, and a file whose rename
+# persisted before its data reads back empty or torn. The model rebuilds
+# every combination of the records a finisher writes, from the bytes the real
+# protocol wrote, and runs both post-crash readers on it: the pending sweep
+# and the reconciliation of the dead guard's marker. After an OS crash every
+# process of the run is dead, so the oracle is custody policy, not liveness:
+# nothing but the run's own payload is deleted, an interrupted deletion is
+# never retried, a payload without a valid terminal receipt is never deleted,
+# every surviving payload or generation is reported, and nothing is reported
+# twice (a repeated report fails every later guarded command with 125).
+
+_MODEL_TARGET = "pt-model000"
+_MODEL_NONCE = "c" * 32
+# Owner generations a finisher writes: leased, indeterminate (unproven
+# closure), retiring, retained, reclaiming, reclaimed. An undecodable record
+# is empty or "torn" (a prefix); readers take one path for both, so each
+# record carries one of them. An index stage is never read, only replaced.
+_MODEL_OWNERS = ("absent", "empty", "L", "I", "T", "R", "C", "D")
+_MODEL_TERMINALS = ("absent", "torn", "valid")
+_MODEL_INDEXES = ("absent", "stage", "final", "final-empty")
+_MODEL_PAYLOADS = ("target", "target-partial", "payload", "payload-partial", "gone")
+
+
+def _model_templates(root: Path, monkeypatch) -> tuple[dict[str, object], Path]:
+    """Capture every record the real protocol writes for one generation."""
+    allocate = scratch.new_temporary_directory
+
+    def fixed_target(parent, *, prefix="tmp"):
+        path = allocate(parent, prefix=prefix)
+        if prefix != "pt-":
+            return path
+        return path.rename(parent / _MODEL_TARGET)
+
+    writes: list[tuple[str, dict[str, object]]] = []
+    write = scratch.write_exact
+
+    def capture(path, value, **kwargs):
+        writes.append((Path(path).name, json.loads(json.dumps(value))))
+        write(path, value, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(scratch, "new_temporary_directory", fixed_target)
+        patch.setattr(scratch, "write_exact", capture)
+        lease, env = _lease(root)
+        _finish(lease)
+        shutil.rmtree(root)
+        lease, env = _lease(root)
+        _finish(lease, closed=False)
+        lease.release()
+    shutil.rmtree(root)
+    owners = [value for name, value in writes if name == "owner.json"]
+    states = [owner["state"] for owner in owners]
+    assert states == [
+        "leased",
+        "retiring",
+        "retained",
+        "reclaiming",
+        "reclaimed",
+        "leased",
+        "indeterminate",
+    ], states
+    (terminal,) = [value for name, value in writes if name == "terminal.json"]
+    (index,) = [value for name, value in writes if name == "pending.json"]
+    templates = dict(zip("LTRCD", owners[:5], strict=True))
+    templates["I"] = owners[6]
+    return {"owners": templates, "terminal": terminal, "index": index}, _marker_of(env)
+
+
+def _model_payload(directory: Path, *, partial: bool) -> None:
+    directory.mkdir()
+    scratch._write_target_receipt(directory, _MODEL_NONCE)
+    (directory / "a.bin").write_bytes(b"a" * 64)
+    (directory / "b.bin").write_bytes(b"b" * 64)
+    if partial:
+        # An interrupted deletion: some entries, the receipt among them, gone.
+        (directory / ".molt-scratch-target.json").unlink()
+        (directory / "a.bin").unlink()
+
+
+def _model_bytes(value: object, form: str) -> bytes:
+    data = scratch.encode_exact(value)
+    return {"empty": b"", "torn": data[: len(data) // 2]}.get(form, data)
+
+
+def _model_may_delete(owner: str, terminal: str, payload: str) -> bool:
+    """Deletion custody policy for one crash state; liveness is moot."""
+    if owner in {"T", "R"}:
+        # A terminal state deletes only the nested payload of a valid receipt.
+        return terminal == "valid" and payload in {"payload", "payload-partial"}
+    if owner in {"L", "I"}:
+        # Adoption deletes only the intact lease target it can identify.
+        return payload == "target"
+    # Reclaiming or reclaimed receipts show a deletion that already started;
+    # an unreadable owner grants nothing.
+    return False
+
+
+def _run_crash_state(
+    root: Path,
+    templates: dict[str, object],
+    marker: Path,
+    *,
+    owner: str,
+    terminal: str,
+    index: str,
+    payload: str,
+    lock: bool,
+    sweep_first: bool,
+) -> list[str]:
+    if root.exists():
+        shutil.rmtree(root)
+    scratch_root = root / "tmp" / "gs"
+    generation = scratch_root / f"{1:032x}"
+    generation.mkdir(parents=True)
+    if lock:
+        file_locks._release_file_lock(
+            file_locks._try_acquire_file_lock(generation / "lock")
+        )
+    foreign = root / "tmp" / "pt-foreign0"
+    foreign.mkdir()
+    (foreign / "keep").write_bytes(b"keep")
+    locations = {
+        "target": root / "tmp" / _MODEL_TARGET,
+        "payload": generation / "payload",
+    }
+    identity = {"device": 0, "inode": 1}
+    if payload != "gone":
+        directory = locations[payload.removesuffix("-partial")]
+        _model_payload(directory, partial=payload.endswith("-partial"))
+        identity = scratch._identity(directory)
+    receipt = {**templates["terminal"], "target_identity": identity}
+    digest = canonical_json_sha256(receipt)
+    owners = {
+        name: {
+            **value,
+            "target_identity": identity,
+            "target_receipt": _MODEL_NONCE,
+            **({"terminal_digest": digest} if "terminal_digest" in value else {}),
+        }
+        for name, value in templates["owners"].items()
+    }
+    if owner != "absent":
+        value = owners.get(owner, owners["L"])
+        (generation / "owner.json").write_bytes(_model_bytes(value, owner))
+    if terminal != "absent":
+        (generation / "terminal.json").write_bytes(_model_bytes(receipt, terminal))
+    if index != "absent":
+        path = (
+            generation / "pending.json"
+            if index.startswith("stage")
+            else scratch._index_path(generation)
+        )
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes(
+            _model_bytes(
+                {**templates["index"], "terminal_digest": digest},
+                index.removeprefix("stage").removeprefix("final").lstrip("-")
+                or "valid",
+            )
+        )
+
+    def survives() -> bool:
+        for path in (
+            *locations.values(),
+            scratch_root / "removing" / generation.name / "payload",
+        ):
+            try:
+                if scratch._identity(path) == identity:
+                    return True
+            except (OSError, ValueError):
+                continue
+        return False
+
+    problems: list[str] = []
+    sweep_reports: list[str] = []
+    resolved: list[dict[str, object]] = []
+
+    def sweep() -> None:
+        result = scratch.reclaim_terminal_scratch(
+            scratch_root, retention=scratch.ScratchRetention(0, 0)
+        )
+        sweep_reports.extend(str(error) for error in result["errors"])
+
+    def resolve() -> None:
+        # The marker retires once its scratch resolves; then no one asks.
+        if resolved and resolved[-1]["resolved"]:
+            return
+        result = scratch.resolve_guard_scratch(
+            generation, guard_marker=marker, closure=_CLOSURE
+        )
+        if result["state"] == "error":
+            problems.append(f"reconciliation failed: {result.get('error')}")
+        resolved.append(result)
+
+    # Three passes of both readers: every guard exit sweeps, and the next
+    # reconciliation retries an unresolved marker.
+    for _ in range(3):
         try:
-            return remove(generation)
-        finally:
-            counted.append(len(fsyncs) - before)
+            for step in (sweep, resolve) if sweep_first else (resolve, sweep):
+                step()
+        except Exception as error:  # Any escape is a defect of the reader.
+            problems.append(f"reader raised {type(error).__name__}: {error}")
+            return problems
+    if len(sweep_reports) > 1:
+        problems.append(f"the sweep reported more than once: {sweep_reports}")
+    if not resolved[-1]["resolved"]:
+        problems.append(f"the marker never resolves: {resolved[-1]}")
+    if payload != "gone" and not survives():
+        if not _model_may_delete(owner, terminal, payload):
+            problems.append("deleted a payload its receipts do not authorize")
+    reported = bool(sweep_reports) or any(
+        item["state"] == "blocked" or "error" in item for item in resolved
+    )
+    if payload != "gone" and survives() and not reported:
+        problems.append("payload survives without a report")
+    if os.path.lexists(generation) and not reported:
+        problems.append("generation survives without a report")
+    if not (foreign / "keep").is_file():
+        problems.append("deleted a directory outside the generation")
+    try:
+        written = _read(generation / "terminal.json")
+    except (OSError, ValueError):
+        written = None
+    if isinstance(written, dict) and written.get("source_target_absent") and survives():
+        problems.append("a terminal receipt calls a surviving payload absent")
+    return problems
 
-    monkeypatch.setattr(scratch, "_remove_reclaimed_generation", counted_remove)
-    second, _ = _lease(tmp_path, 2)
-    _finish(second)
-    assert counted == [0]
-    assert durable_finish > 0
-    assert receipt.exists() is False
+
+@pytest.mark.parametrize("sweep_first", [True, False], ids=["sweep", "resolve"])
+@pytest.mark.parametrize("owner", _MODEL_OWNERS)
+def test_every_crash_state_keeps_custody_and_reports_once(
+    tmp_path, monkeypatch, owner, sweep_first
+):
+    root = tmp_path / "m"
+    templates, marker = _model_templates(root, monkeypatch)
+    failures = []
+    for terminal in _MODEL_TERMINALS:
+        for index in _MODEL_INDEXES:
+            for payload in _MODEL_PAYLOADS:
+                for problem in _run_crash_state(
+                    root,
+                    templates,
+                    marker,
+                    owner=owner,
+                    terminal=terminal,
+                    index=index,
+                    payload=payload,
+                    lock=True,
+                    sweep_first=sweep_first,
+                ):
+                    failures.append(
+                        f"owner={owner} terminal={terminal} index={index} "
+                        f"payload={payload}: {problem}"
+                    )
+    assert failures == []
+
+
+@pytest.mark.parametrize("sweep_first", [True, False], ids=["sweep", "resolve"])
+def test_a_crash_that_drops_the_generation_lock_is_reported_once(
+    tmp_path, monkeypatch, sweep_first
+):
+    root = tmp_path / "m"
+    templates, marker = _model_templates(root, monkeypatch)
+    failures = []
+    for owner in ("absent", "L", "R", "D"):
+        for index in ("absent", "final"):
+            for payload in ("target", "payload", "gone"):
+                for problem in _run_crash_state(
+                    root,
+                    templates,
+                    marker,
+                    owner=owner,
+                    terminal="valid",
+                    index=index,
+                    payload=payload,
+                    lock=False,
+                    sweep_first=sweep_first,
+                ):
+                    failures.append(
+                        f"owner={owner} index={index} payload={payload}: {problem}"
+                    )
+    assert failures == []

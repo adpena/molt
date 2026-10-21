@@ -325,11 +325,11 @@ def test_owned_cleanup_and_quarantine_reject_ancestor_links(tmp_path: Path) -> N
     with pytest.raises(ValueError, match="link or junction"):
         file_publication.durable_remove_path(link / "evidence")
     with pytest.raises(ValueError, match="link or junction"):
-        file_publication.durable_namespace_publish_directory_exclusive(
+        file_publication.namespace_publish_directory_exclusive(
             link / "evidence", tmp_path / "quarantine"
         )
     with pytest.raises(ValueError, match="link or junction"):
-        file_publication.durable_namespace_publish_directory_exclusive(
+        file_publication.namespace_publish_directory_exclusive(
             evidence, link / "quarantine"
         )
     assert (evidence / "payload").read_bytes() == b"preserve"

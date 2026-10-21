@@ -15,6 +15,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import types
 from typing import Any
 
@@ -30,7 +31,7 @@ from tools.memory_guard_core import (
 from molt import process_model, windows_process_snapshot
 
 import tools.memory_guard as memory_guard
-from molt import host_capacity
+from molt import file_publication, host_capacity
 from molt.backend_daemon_suite_custody import LEASE_ENV
 import molt.dx as molt_dx
 from molt.custody_layout import out_of_tree_scratch_root
@@ -1050,6 +1051,36 @@ def _guarded_pass(state_root: Path) -> memory_guard.GuardResult:
         child_rlimit_kb=None,
         env={**os.environ, "MOLT_MEMORY_GUARD_STATE_ROOT": str(state_root)},
     )
+
+
+def test_a_guarded_run_issues_no_fsync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Guard custody records describe processes, so none crosses a barrier.
+
+    Each guarded launch paid 29 fsyncs (HF-382): 0.1 to 0.5 s on the
+    integrator Mac's external guard volume. An OS crash that loses a record
+    also killed every process the record names; the crash-residue tests of
+    the marker and scratch readers prove what each lost, empty or older
+    record does.
+    """
+    _use_real_scratch(monkeypatch)
+    flushes: list[str] = []
+    real_fsync = os.fsync
+
+    def counted(fd: int) -> None:
+        flushes.append("".join(traceback.format_stack(limit=6)))
+        real_fsync(fd)
+
+    # Every barrier of the guard's records goes through the publication
+    # authority; count it there, on this thread only (the session sentinel
+    # shares the process).
+    install_thread_module_view(monkeypatch, "os", os, file_publication, fsync=counted)
+    result = _guarded_pass(tmp_path / "state")
+    assert result.returncode == 0
+    assert result.temporary_artifacts is not None
+    assert result.temporary_artifacts["state"] == "reclaimed"
+    assert flushes == []
 
 
 def test_completed_guard_retires_its_marker_lock_and_scratch(

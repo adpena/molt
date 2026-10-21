@@ -134,21 +134,21 @@ def test_callable_projection_concurrent_creators_preserve_winner_generation(
             symbols, frozenset(), symbols, artifact_digest=identity.sha256
         ),
     )
-    publish = file_publication.durable_publish_exclusive
+    publish = file_publication._publish_exclusive
     winners = []
 
-    def interleave(staged, destination):
+    def interleave(staged, destination, **kwargs):
         # Both operations reach publication with an absent destination. B
         # completes and binds its generation before A attempts its publication.
-        monkeypatch.setattr(file_publication, "durable_publish_exclusive", publish)
+        monkeypatch.setattr(file_publication, "_publish_exclusive", publish)
         winner, failure = runtime_callable_symbols._runtime_callable_symbols_file(
             runtime_lib, identity=identity
         )
         assert failure is None and winner is not None
         winners.append(winner)
-        return publish(staged, destination)
+        return publish(staged, destination, **kwargs)
 
-    monkeypatch.setattr(file_publication, "durable_publish_exclusive", interleave)
+    monkeypatch.setattr(file_publication, "_publish_exclusive", interleave)
     loser, failure = runtime_callable_symbols._runtime_callable_symbols_file(
         runtime_lib, identity=identity
     )

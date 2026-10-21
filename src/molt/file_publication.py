@@ -279,19 +279,32 @@ def _macos_rename_exclusive(staged: Path, destination: Path) -> None:
         _raise_posix_rename_error(staged, destination)
 
 
-def _namespace_publish_leaf_exclusive_once(staged: Path, destination: Path) -> None:
-    """Atomically rename a leaf while refusing every destination collision."""
+def _namespace_publish_leaf_exclusive_once(
+    staged: Path,
+    destination: Path,
+    *,
+    durability: PublicationDurability = PublicationDurability.DURABLE,
+) -> None:
+    """Atomically rename a leaf while refusing every destination collision.
+
+    Only a durable rename requests Windows write-through. CPython's
+    ``os.rename`` is MoveFileExW without REPLACE_EXISTING, so it refuses a
+    rival without a barrier; POSIX has no barrier in the rename itself.
+    """
 
     if os.name == "nt":
-        windows_replace_write_through(
-            staged,
-            destination,
-            replace_once=lambda source, target: move_file_ex_write_through(
-                source,
-                target,
-                replace_existing=False,
-            ),
-        )
+        if durability is PublicationDurability.DURABLE:
+            windows_replace_write_through(
+                staged,
+                destination,
+                replace_once=lambda source, target: move_file_ex_write_through(
+                    source,
+                    target,
+                    replace_existing=False,
+                ),
+            )
+        else:
+            _windows_replace(staged, destination, replace_once=os.rename)
     elif sys.platform.startswith("linux"):
         _linux_rename_exclusive(staged, destination)
     elif sys.platform == "darwin":
@@ -310,7 +323,11 @@ def namespace_move_exclusive(source: Path, destination: Path) -> None:
     but power loss can roll it back, and the owner's next pass repeats it.
     Everything else uses the durable publication functions.
     """
-    _namespace_publish_leaf_exclusive_once(Path(source), Path(destination))
+    _namespace_publish_leaf_exclusive_once(
+        Path(source),
+        Path(destination),
+        durability=PublicationDurability.RECONSTRUCTIBLE,
+    )
 
 
 def _real_directory(path: Path, *, label: str) -> os.stat_result:
@@ -442,23 +459,32 @@ def durable_publish_directory_exclusive(staged: Path, destination: Path) -> None
     _sync_publication_parents_after_commit(source_parent, destination_parent)
 
 
-def durable_namespace_publish_directory_exclusive(
-    source: Path, destination: Path
+def namespace_publish_directory_exclusive(
+    source: Path,
+    destination: Path,
+    *,
+    durability: PublicationDurability = PublicationDurability.DURABLE,
 ) -> None:
     """Move an already-owned tree without following it or replacing a rival.
 
-    This namespace-only operation is for quarantine: damaged contents must be
-    preserved even when they cannot pass the staged-payload durability barrier.
-    Normal artifact publication must use durable_publish_directory_exclusive.
+    This namespace-only operation moves a tree whose contents it must not
+    interpret: quarantine preserves damaged contents that cannot pass the
+    staged-payload durability barrier, and guard scratch retires a payload.
+    A durable move then flushes both parent directories. A reconstructible
+    move keeps every custody check but adds no barrier: an OS crash can roll
+    it back, so its owner's records must name both outcomes. Normal artifact
+    publication must use durable_publish_directory_exclusive.
     """
 
+    _require_durability(durability)
     source = resolve_owned_path(source)
     destination = resolve_owned_path(destination)
-    _real_directory(source, label="quarantine source")
-    _real_directory(source.parent, label="quarantine source parent")
-    _real_directory(destination.parent, label="quarantine destination parent")
-    _namespace_publish_leaf_exclusive_once(source, destination)
-    _sync_publication_parents_after_commit(source.parent, destination.parent)
+    _real_directory(source, label="namespace move source")
+    _real_directory(source.parent, label="namespace move source parent")
+    _real_directory(destination.parent, label="namespace move destination parent")
+    _namespace_publish_leaf_exclusive_once(source, destination, durability=durability)
+    if durability is PublicationDurability.DURABLE:
+        _sync_publication_parents_after_commit(source.parent, destination.parent)
 
 
 class RetirementError(OSError):
@@ -690,16 +716,31 @@ def atomic_replace(
 def durable_publish_exclusive(staged: Path, destination: Path) -> None:
     """Publish one stable file generation without replacing an existing leaf."""
 
+    _publish_exclusive(staged, destination, durability=PublicationDurability.DURABLE)
+
+
+def _publish_exclusive(
+    staged: Path, destination: Path, *, durability: PublicationDurability
+) -> None:
+    """Publish one staged file; never replace a leaf that already exists.
+
+    Exclusivity is a property of the no-replace rename, not of a flush. A
+    reconstructible publication keeps the staged-file and destination custody
+    checks and skips both barriers: an OS crash may then lose the leaf or
+    expose it empty, so its owner must treat both like an absent record.
+    """
+
     staged = Path(staged)
     destination = Path(destination)
-    _validate_staged_file(staged, durability=PublicationDurability.DURABLE)
+    _validate_staged_file(staged, durability=durability)
     if destination.exists() or is_link_like(destination):
         raise FileExistsError(destination)
     # Link-then-unlink changes the visible inode's ctime after publication and
     # invalidates identities already captured by concurrent readers. Use the
     # same exclusive rename authority as directory/leaf publication.
-    _namespace_publish_leaf_exclusive_once(staged, destination)
-    _sync_publication_parents_after_commit(staged.parent, destination.parent)
+    _namespace_publish_leaf_exclusive_once(staged, destination, durability=durability)
+    if durability is PublicationDurability.DURABLE:
+        _sync_publication_parents_after_commit(staged.parent, destination.parent)
 
 
 def canonical_file_leaf(
@@ -803,17 +844,15 @@ def atomic_write_bytes(
 ) -> None:
     """Publish complete bytes atomically with the owner's durability policy.
 
-    Only an absent stage is harmless cleanup. A cleanup failure propagates,
-    or annotates an existing publication error without replacing that error.
+    ``exclusive`` refuses an existing leaf with a no-replace rename under
+    either durability. Only an absent stage is harmless cleanup. A cleanup
+    failure propagates, or annotates an existing publication error without
+    replacing that error.
     """
 
     _require_durability(durability)
-    if durability is PublicationDurability.RECONSTRUCTIBLE and (
-        exclusive or replace is not None
-    ):
-        raise ValueError(
-            "reconstructible publication requires ordinary atomic replacement"
-        )
+    if durability is PublicationDurability.RECONSTRUCTIBLE and replace is not None:
+        raise ValueError("a custom replacement must be durable")
     destination = canonical_file_leaf(path, create_parent=True)
     if exclusive and destination.exists():
         raise FileExistsError(destination)
@@ -831,7 +870,7 @@ def atomic_write_bytes(
                     raise OSError("short atomic publication write")
                 pending = pending[written:]
         if exclusive:
-            durable_publish_exclusive(staged, destination)
+            _publish_exclusive(staged, destination, durability=durability)
         elif durability is PublicationDurability.DURABLE:
             (replace or durable_replace)(staged, destination)
         else:

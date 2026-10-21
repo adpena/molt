@@ -510,12 +510,6 @@ def termination_wait_seconds(env: Mapping[str, str] | None = None) -> float:
     return DEFAULT_TERMINATION_WAIT_SEC
 
 
-def _write_json_atomic(path: Path, payload: Mapping[str, object]) -> None:
-    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp_path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
-    os.replace(tmp_path, path)
-
-
 def _write_active_guard_marker(
     pid: int,
     *,

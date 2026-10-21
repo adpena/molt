@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from molt.file_hashing import _sha256_bytes
-from molt.file_publication import atomic_write_bytes
+from molt.file_publication import PublicationDurability, atomic_write_bytes
 from molt.toolchain_identity import (
     StableRegularFileChangedError,
     StableRegularFileIdentity,
@@ -162,7 +162,20 @@ def encode_exact(
     ).encode("utf-8")
 
 
-def write_exact(path: Path, value: object, *, exclusive: bool = False) -> None:
-    """Crash-consistently publish exact JSON as one complete filesystem leaf."""
+def write_exact(
+    path: Path,
+    value: object,
+    *,
+    exclusive: bool = False,
+    durability: PublicationDurability = PublicationDurability.DURABLE,
+) -> None:
+    """Publish exact JSON as one complete leaf under the owner's durability.
 
-    atomic_write_bytes(path, encode_exact(value), exclusive=exclusive)
+    Readers never see a partial leaf. A durable leaf survives an OS crash; a
+    reconstructible one may then be absent or empty, which its reader must
+    treat like a missing record.
+    """
+
+    atomic_write_bytes(
+        path, encode_exact(value), exclusive=exclusive, durability=durability
+    )

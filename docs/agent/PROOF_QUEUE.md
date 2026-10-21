@@ -820,17 +820,24 @@ bytes. A disappeared entry is accepted only when verified terminal custody prove
 that generation was reclaimed, or when the generation directory itself is gone:
 only the reclaimed transition removes it. Missing retained-owner indexes and
 malformed entries remain failures, never existence-check retries or ignored
-corruption. A reclaimed generation holds no custody, so its receipts are removed:
+corruption; an undecodable entry is crash residue and blocks its generation
+once (below). A reclaimed generation holds no custody, so its receipts are removed:
 after the generation lock is released, the generation moves into `gs/removing/`
 and is deleted, and only then is its index dropped. The generation namespace
 holds only live, retained, blocked and unresolved work. If the move cannot run
 now (Windows refuses while a contender holds the lock file), the index stays and
-the next sweep removes it; the sweep reports it under `deferred`. The move and
-the deletion carry no durability barrier: a crash can only roll the move back,
-and a reclaimed generation with its index is removed again. The finisher
-removes its own reclaimed generation directly, and the target receipt is
-written without an fsync, because its loss only blocks adoption. Guard summaries
-keep the outcome and closure evidence. Guard summaries and command
+the next sweep removes it; the sweep reports it under `deferred`. The finisher
+removes its own reclaimed generation directly. No scratch record or move
+crosses a durability barrier (HF-382): each describes processes that an OS
+crash kills, so a guarded command issues no `fsync`. A crash can leave a
+record absent, empty or older than its neighbours, or undo a move whose
+receipt survives. Readers hold the generation lock, so such residue is never
+a live write: the generation becomes `blocked`, keeps its payload and is
+reported once, and a decodable record that names another generation stays
+fail-closed. Adoption treats an existing terminal receipt as the finisher's
+uncommitted retirement, and reconciliation republishes a missing index of a
+terminal owner. Design 56, section 2.7, holds the crash-state model. Guard
+summaries keep the outcome and closure evidence. Guard summaries and command
 profiles expose outcome, evidence path and finalization time; elapsed command
 time includes cleanup. `child_returncode` records the actual child result;
 `infrastructure_failure` records independent scratch-custody failures. Such a
