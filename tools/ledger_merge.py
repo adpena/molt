@@ -202,6 +202,8 @@ def _first_row_position(output: list[str], section: str) -> int:
 
 def _merge_file(base: Path, ours: Path, theirs: Path) -> int:
     """Git's own line merge, writing ``ours``; its status counts conflicts."""
+    # Stdlib only: Git starts this driver inside a merge, and a merge must not
+    # depend on the repository's tooling imports or its memory guard.
     completed = subprocess.run(
         [
             "git",
@@ -216,8 +218,12 @@ def _merge_file(base: Path, ours: Path, theirs: Path) -> int:
             str(base),
             str(theirs),
         ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
         check=False,
     )
+    sys.stderr.write(completed.stderr)
     return 1 if completed.returncode != 0 else 0
 
 

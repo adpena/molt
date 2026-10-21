@@ -265,6 +265,14 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "policy; runs before the project environment exists",
     ),
     AllowedRawSubprocessUse(
+        "tools/ledger_merge.py",
+        "_merge_file",
+        "run",
+        "Git merge driver: Git starts it inside a merge, and its text fallback "
+        "runs git merge-file once on the three files Git handed it; stdlib only, "
+        "so a merge never depends on the repository's tooling imports",
+    ),
+    AllowedRawSubprocessUse(
         "tools/proof_plan.py",
         "_run_git",
         "check_output",

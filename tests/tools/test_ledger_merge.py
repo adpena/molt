@@ -9,12 +9,12 @@ section, and a lane editing a row next to one that main moved.
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
+from tests.process_guard_common import run_guarded_test_process
 from tools import ledger_merge
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -147,9 +147,9 @@ def test_a_duplicated_row_key_falls_back_to_a_text_merge() -> None:
         _merge(base, _ledger(["HF-1", "HF-1"], ["HF-0"]), base)
 
 
-def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git", *args], cwd=repo, check=True, capture_output=True, text=True
+def _git(repo: Path, *args: str):
+    return run_guarded_test_process(
+        ["git", *args], cwd=str(repo), check=True, capture_output=True, text=True
     )
 
 
@@ -161,8 +161,10 @@ def _repo_with_driver(tmp_path: Path, base: str) -> Path:
     _git(repo, "config", "user.name", "Test")
     driver = f'"{sys.executable}" "{ROOT / "tools" / "ledger_merge.py"}" %O %A %B'
     _git(repo, "config", "merge.molt-ledger.driver", driver)
-    (repo / ".gitattributes").write_text("LEDGER.md merge=molt-ledger\n")
-    (repo / "LEDGER.md").write_text(base)
+    (repo / ".gitattributes").write_text(
+        "LEDGER.md merge=molt-ledger\n", encoding="utf-8"
+    )
+    (repo / "LEDGER.md").write_text(base, encoding="utf-8")
     _git(repo, "add", ".")
     _git(repo, "commit", "-q", "-m", "base")
     return repo
@@ -172,32 +174,43 @@ def test_a_cherry_pick_merges_two_rows_added_at_the_same_spot(tmp_path: Path) ->
     base = _ledger(["HF-1"], ["HF-0"])
     repo = _repo_with_driver(tmp_path, base)
     _git(repo, "switch", "-q", "-c", "lane")
-    (repo / "LEDGER.md").write_text(_ledger(["HF-11", "HF-1"], ["HF-0"]))
+    (repo / "LEDGER.md").write_text(
+        _ledger(["HF-11", "HF-1"], ["HF-0"]), encoding="utf-8"
+    )
     _git(repo, "commit", "-q", "-am", "lane opens HF-11")
     _git(repo, "switch", "-q", "main")
-    (repo / "LEDGER.md").write_text(_ledger(["HF-10", "HF-1"], ["HF-0"]))
+    (repo / "LEDGER.md").write_text(
+        _ledger(["HF-10", "HF-1"], ["HF-0"]), encoding="utf-8"
+    )
     _git(repo, "commit", "-q", "-am", "main opens HF-10")
 
     _git(repo, "cherry-pick", "lane")
 
-    assert _keys((repo / "LEDGER.md").read_text()) == ["HF-11", "HF-10", "HF-1", "HF-0"]
+    assert _keys((repo / "LEDGER.md").read_text(encoding="utf-8")) == [
+        "HF-11",
+        "HF-10",
+        "HF-1",
+        "HF-0",
+    ]
 
 
 def test_a_rebase_merges_a_row_move_beside_a_row_edit(tmp_path: Path) -> None:
     base = _ledger(["HF-1", "HF-2"], ["HF-0"])
     repo = _repo_with_driver(tmp_path, base)
     _git(repo, "switch", "-q", "-c", "lane")
-    (repo / "LEDGER.md").write_text(_row(base, "HF-1", "lane progress"))
+    (repo / "LEDGER.md").write_text(
+        _row(base, "HF-1", "lane progress"), encoding="utf-8"
+    )
     _git(repo, "commit", "-q", "-am", "lane records HF-1")
     _git(repo, "switch", "-q", "main")
     fixed = _row(_ledger(["HF-1"], ["HF-2", "HF-0"]), "HF-2", "fixed by main")
-    (repo / "LEDGER.md").write_text(fixed)
+    (repo / "LEDGER.md").write_text(fixed, encoding="utf-8")
     _git(repo, "commit", "-q", "-am", "main fixes HF-2")
     _git(repo, "switch", "-q", "lane")
 
     _git(repo, "rebase", "main")
 
-    text = (repo / "LEDGER.md").read_text()
+    text = (repo / "LEDGER.md").read_text(encoding="utf-8")
     assert _keys(text) == ["HF-1", "HF-2", "HF-0"]
     assert "| HF-1 | lane progress |" in text and "| HF-2 | fixed by main |" in text
 
@@ -206,15 +219,15 @@ def test_a_conflicting_row_stops_the_cherry_pick(tmp_path: Path) -> None:
     base = _ledger(["HF-1"], ["HF-0"])
     repo = _repo_with_driver(tmp_path, base)
     _git(repo, "switch", "-q", "-c", "lane")
-    (repo / "LEDGER.md").write_text(_row(base, "HF-1", "lane"))
+    (repo / "LEDGER.md").write_text(_row(base, "HF-1", "lane"), encoding="utf-8")
     _git(repo, "commit", "-q", "-am", "lane")
     _git(repo, "switch", "-q", "main")
-    (repo / "LEDGER.md").write_text(_row(base, "HF-1", "main"))
+    (repo / "LEDGER.md").write_text(_row(base, "HF-1", "main"), encoding="utf-8")
     _git(repo, "commit", "-q", "-am", "main")
 
-    picked = subprocess.run(
-        ["git", "cherry-pick", "lane"], cwd=repo, capture_output=True, text=True
+    picked = run_guarded_test_process(
+        ["git", "cherry-pick", "lane"], cwd=str(repo), capture_output=True, text=True
     )
 
     assert picked.returncode != 0
-    assert "<<<<<<< ours" in (repo / "LEDGER.md").read_text()
+    assert "<<<<<<< ours" in (repo / "LEDGER.md").read_text(encoding="utf-8")
