@@ -132,9 +132,11 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import tomllib
 from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -166,6 +168,7 @@ from tools.molt_dev_common import (  # noqa: E402
     _fail,
     _run_fast_captured_command,
     _ok,
+    _run_captured_gate,
     _run_driver_command,
     _run_driver_command_bytes,
     _run_live_gate,
@@ -192,7 +195,7 @@ from tools.molt_dev_detached import (  # noqa: E402
     cmd_detached_verify,
 )
 from tools.molt_dev_probe import probe_path, probe_pid  # noqa: E402
-from tools import venv_exec  # noqa: E402
+from tools import harness_memory_guard, venv_exec  # noqa: E402
 from tools.dirty_tree_policy import (  # noqa: E402
     DEFAULT_DIRTY_TREE_IGNORE_GLOBS as DEFAULT_IGNORE_GLOBS,
     is_ignored as _is_ignored,
@@ -416,6 +419,9 @@ class GateRule:
 class SelectedGate:
     command: str | tuple[str, ...]
     toolchains: tuple[str, ...]
+    # An always gate is a read-only whole-repository check; the leading run of
+    # them executes as one concurrent block (run_selected_gates).
+    concurrent: bool = False
 
 
 @dataclass
@@ -572,7 +578,12 @@ class GateConfig:
         def command_key(command: str | tuple[str, ...]) -> str:
             return command if isinstance(command, str) else shlex.join(command)
 
-        def add(command: str | tuple[str, ...], tools: tuple[str, ...]) -> None:
+        def add(
+            command: str | tuple[str, ...],
+            tools: tuple[str, ...],
+            *,
+            concurrent: bool = False,
+        ) -> None:
             key = command_key(command)
             if key in indices:
                 index = indices[key]
@@ -582,14 +593,14 @@ class GateConfig:
                 )
             else:
                 indices[key] = len(selected)
-                selected.append(SelectedGate(command, tools))
+                selected.append(SelectedGate(command, tools, concurrent))
 
         def tools(identifier: str) -> tuple[str, ...]:
             return self.prerequisites[identifier][1]
 
         if touched:
             for index, command in enumerate(self.always):
-                add(command, tools(f"local.always.{index}"))
+                add(command, tools(f"local.always.{index}"), concurrent=True)
         for rule in self.rules:
             if not any(_is_ignored(path, tuple(rule.globs)) for path in touched):
                 continue
@@ -849,6 +860,25 @@ def run_gate(cmd: str | tuple[str, ...], repo: Path, env: ProcessEnvironment) ->
     a substitute. Explicit invalid selections always fail before shell launch.
     """
     _say(f"    gate: {cmd if isinstance(cmd, str) else shlex.join(cmd)}")
+    cmd, env = _gate_environment(cmd, repo, env)
+    return _run_live_gate(cmd, repo=repo, env=env)
+
+
+def run_captured_gate(
+    cmd: str | tuple[str, ...],
+    repo: Path,
+    env: ProcessEnvironment,
+    cancelled: Callable[[], bool],
+) -> tuple[int, str, str]:
+    """Run one gate of a concurrent block: the same environment as ``run_gate``,
+    with captured streams and scheduler cancellation."""
+    cmd, env = _gate_environment(cmd, repo, env)
+    return _run_captured_gate(cmd, repo=repo, env=env, cancelled=cancelled)
+
+
+def _gate_environment(
+    cmd: str | tuple[str, ...], repo: Path, env: ProcessEnvironment
+) -> tuple[str | tuple[str, ...], ProcessEnvironment]:
     if isinstance(cmd, str):
         try:
             words = shlex.split(cmd, posix=os.name != "nt")
@@ -888,7 +918,7 @@ def run_gate(cmd: str | tuple[str, ...], repo: Path, env: ProcessEnvironment) ->
             )
         except venv_exec.VenvExecError as exc:
             raise DriverError(str(exc)) from exc
-    return _run_live_gate(cmd, repo=repo, env=env)
+    return cmd, env
 
 
 # --------------------------------------------------------------------------
@@ -981,6 +1011,257 @@ def gate_time_summary(gate_seconds: list[tuple[float, str]], *, top: int = 8) ->
     return "\n".join(lines)
 
 
+def _gate_display(command: str | tuple[str, ...]) -> str:
+    return command if isinstance(command, str) else shlex.join(command)
+
+
+def _gate_details(ordinal: int, gate: SelectedGate) -> dict[str, object]:
+    cmd = gate.command
+    return {
+        "gate_ordinal": ordinal,
+        "command": (
+            {"kind": "shell", "source": cmd}
+            if isinstance(cmd, str)
+            else {"kind": "argv", "argv": list(cmd)}
+        ),
+        "toolchains": list(gate.toolchains),
+    }
+
+
+def _gate_failure(rc: int | None, elapsed: float, display: str, gate_seconds) -> str:
+    return (
+        f"gate failed (exit {rc}) after {elapsed:.1f} s: {display}\n"
+        + gate_time_summary(gate_seconds)
+        + "\n    Integration halts before push; fix the gate and re-run."
+    )
+
+
+# The largest always gate's process tree peaks below 1 GiB (structural_audit
+# 0.69 GB, generators 0.50 GB on the 2026-10 tree), so a GiB per gate bounds a
+# concurrent block by memory as well as by CPUs.
+CONCURRENT_GATE_BYTES = 1 << 30
+
+
+def concurrent_gate_limit() -> int:
+    """Gates this host runs at once, from the host capacity authority."""
+    from molt import host_capacity
+
+    return host_capacity.worker_count(
+        bytes_per_worker=CONCURRENT_GATE_BYTES,
+        headroom_bytes=host_capacity.headroom_bytes(host_capacity.memory_capacity()),
+    )
+
+
+def run_selected_gates(
+    gates: list[SelectedGate],
+    *,
+    repo: Path,
+    environments: Mapping[tuple[str, ...], ProcessEnvironment],
+    cargo_outputs: Mapping[tuple[str, ...], tuple[Path, ...]],
+    capacity_requirements: Mapping[tuple[str, ...], int],
+    progress: _IntegrationProgress,
+    check_source: Callable[[], None],
+    gate_seconds: list[tuple[float, str]],
+) -> None:
+    """Run gates in declared order; the first failure in that order halts.
+
+    The leading run of concurrent gates without Cargo outputs executes as one
+    block; every later gate runs alone, streaming live.
+    """
+    block = 0
+    while (
+        block < len(gates)
+        and gates[block].concurrent
+        and not cargo_outputs.get(gates[block].toolchains)
+    ):
+        block += 1
+    if block < 2:
+        block = 0
+    else:
+        _run_concurrent_gates(
+            gates[:block],
+            repo=repo,
+            environments=environments,
+            progress=progress,
+            check_source=check_source,
+            gate_seconds=gate_seconds,
+        )
+    for ordinal, gate in enumerate(gates[block:], start=block + 1):
+        _run_serial_gate(
+            ordinal,
+            gate,
+            repo=repo,
+            environments=environments,
+            cargo_outputs=cargo_outputs,
+            capacity_requirements=capacity_requirements,
+            progress=progress,
+            check_source=check_source,
+            gate_seconds=gate_seconds,
+        )
+
+
+def _run_serial_gate(
+    ordinal: int,
+    gate: SelectedGate,
+    *,
+    repo: Path,
+    environments: Mapping[tuple[str, ...], ProcessEnvironment],
+    cargo_outputs: Mapping[tuple[str, ...], tuple[Path, ...]],
+    capacity_requirements: Mapping[tuple[str, ...], int],
+    progress: _IntegrationProgress,
+    check_source: Callable[[], None],
+    gate_seconds: list[tuple[float, str]],
+) -> None:
+    cmd = gate.command
+    display = _gate_display(cmd)
+    check_source()
+    paths = cargo_outputs.get(gate.toolchains, ())
+    before = (
+        _observe_gate_capacity(
+            paths,
+            required_bytes=capacity_requirements[gate.toolchains],
+            phase="before",
+            gate=display,
+        )
+        if paths
+        else ()
+    )
+    started = time.monotonic()
+    details = _gate_details(ordinal, gate)
+    progress.emit("gate_started", **details)
+    rc = None
+    try:
+        rc = run_gate(cmd, repo, environments[gate.toolchains])
+    finally:
+        elapsed = time.monotonic() - started
+        progress.emit(
+            "gate_finished",
+            **details,
+            returncode=rc,
+            duration_seconds=elapsed,
+        )
+        if paths:
+            _observe_gate_capacity(
+                paths,
+                required_bytes=capacity_requirements[gate.toolchains],
+                phase="after",
+                gate=display,
+                before=before,
+            )
+    gate_seconds.append((elapsed, display))
+    check_source()
+    if rc != 0:
+        raise DriverError(_gate_failure(rc, elapsed, display, gate_seconds))
+    _ok(f"gate passed in {elapsed:.1f} s: {display}")
+
+
+@dataclass
+class _ConcurrentGateRun:
+    returncode: int | None = None
+    stdout: str = ""
+    stderr: str = ""
+    elapsed: float = 0.0
+    error: BaseException | None = None
+
+
+def _run_concurrent_gates(
+    gates: list[SelectedGate],
+    *,
+    repo: Path,
+    environments: Mapping[tuple[str, ...], ProcessEnvironment],
+    progress: _IntegrationProgress,
+    check_source: Callable[[], None],
+    gate_seconds: list[tuple[float, str]],
+) -> None:
+    """Run read-only gates together and report them as if they ran in order.
+
+    Each gate's output prints in declared order. A gate that fails makes every
+    later gate moot: none of them starts, and running ones are cancelled. The
+    first failure in declared order is the one reported. One repository sentinel
+    watches the block instead of one per gate.
+    """
+    limit = min(len(gates), concurrent_gate_limit())
+    lock = threading.Lock()
+    first_failure = [len(gates) + 1]
+
+    def moot(ordinal: int) -> bool:
+        return ordinal > first_failure[0]
+
+    def fail(ordinal: int) -> None:
+        with lock:
+            first_failure[0] = min(first_failure[0], ordinal)
+
+    def execute(ordinal: int, gate: SelectedGate) -> _ConcurrentGateRun | None:
+        if moot(ordinal):
+            return None
+        progress.emit("gate_started", **_gate_details(ordinal, gate))
+        run = _ConcurrentGateRun()
+        started = time.monotonic()
+        try:
+            run.returncode, run.stdout, run.stderr = run_captured_gate(
+                gate.command,
+                repo,
+                environments[gate.toolchains],
+                lambda: moot(ordinal),
+            )
+        except BaseException as exc:  # reported, in order, by the caller
+            run.error = exc
+        run.elapsed = time.monotonic() - started
+        if run.error is not None or run.returncode != 0:
+            fail(ordinal)
+        return run
+
+    check_source()
+    baseline = environments[gates[0].toolchains]
+    block_started = time.monotonic()
+    with harness_memory_guard.repo_process_sentinel(
+        repo_root=repo,
+        artifact_root=harness_memory_guard._artifact_root_from_env(baseline),
+        label="integrate_gates",
+        limits=harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", baseline),
+        drain_on_exit=False,
+    ):
+        executor = ThreadPoolExecutor(max_workers=limit, thread_name_prefix="gate")
+        try:
+            futures = [
+                executor.submit(execute, ordinal, gate)
+                for ordinal, gate in enumerate(gates, start=1)
+            ]
+            for ordinal, (gate, future) in enumerate(zip(gates, futures), start=1):
+                run = future.result()
+                assert run is not None, "an earlier failure halts the report"
+                display = _gate_display(gate.command)
+                progress.emit(
+                    "gate_finished",
+                    **_gate_details(ordinal, gate),
+                    returncode=run.returncode,
+                    duration_seconds=run.elapsed,
+                )
+                _say(f"    gate: {display}")
+                sys.stdout.write(run.stdout)
+                sys.stdout.flush()
+                sys.stderr.write(run.stderr)
+                sys.stderr.flush()
+                gate_seconds.append((run.elapsed, display))
+                if run.error is not None:
+                    raise run.error
+                check_source()
+                if run.returncode != 0:
+                    raise DriverError(
+                        _gate_failure(
+                            run.returncode, run.elapsed, display, gate_seconds
+                        )
+                    )
+                _ok(f"gate passed in {run.elapsed:.1f} s: {display}")
+        finally:
+            fail(0)
+            executor.shutdown(wait=True, cancel_futures=True)
+    _say(
+        f"    concurrent gates: {len(gates)} in {time.monotonic() - block_started:.1f} s "
+        f"wall, at most {limit} at once"
+    )
+
+
 def _admit_selected_output_capacity(
     outputs: dict[tuple[str, ...], tuple[Path, ...]],
     environments: dict[tuple[str, ...], ProcessEnvironment],
@@ -1070,8 +1351,14 @@ class _IntegrationProgress:
     source_commit: str | None = None
     upstream_commit: str | None = None
     gate_total: int = 0
+    # Concurrent gates emit from their own threads; one line at a time.
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def emit(self, event: str, **details: object) -> None:
+        with self._lock:
+            self._emit(event, **details)
+
+    def _emit(self, event: str, **details: object) -> None:
         now = time.monotonic()
         payload = {
             "schema": "molt.integration-progress.v1",
@@ -1351,63 +1638,21 @@ def _integrate_exclusive(
             ) from exc
         _assert_integration_source(git, selected_commit)
     gate_seconds: list[tuple[float, str]] = []
-    for ordinal, gate in enumerate(gate_cmds, start=1):
-        cmd = gate.command
-        display = cmd if isinstance(cmd, str) else shlex.join(cmd)
-        _assert_integration_source(git, selected_commit)
-        if dry:
-            _say(f"    would-run gate: {display}")
-            continue
-        paths = cargo_outputs.get(gate.toolchains, ())
-        before = (
-            _observe_gate_capacity(
-                paths,
-                required_bytes=capacity_requirements[gate.toolchains],
-                phase="before",
-                gate=display,
-            )
-            if paths
-            else ()
+    if dry:
+        for gate in gate_cmds:
+            _assert_integration_source(git, selected_commit)
+            _say(f"    would-run gate: {_gate_display(gate.command)}")
+    else:
+        run_selected_gates(
+            gate_cmds,
+            repo=repo,
+            environments=environments,
+            cargo_outputs=cargo_outputs,
+            capacity_requirements=capacity_requirements,
+            progress=progress,
+            check_source=lambda: _assert_integration_source(git, selected_commit),
+            gate_seconds=gate_seconds,
         )
-        started = time.monotonic()
-        details = {
-            "gate_ordinal": ordinal,
-            "command": (
-                {"kind": "shell", "source": cmd}
-                if isinstance(cmd, str)
-                else {"kind": "argv", "argv": list(cmd)}
-            ),
-            "toolchains": list(gate.toolchains),
-        }
-        progress.emit("gate_started", **details)
-        rc = None
-        try:
-            rc = run_gate(cmd, repo, environments[gate.toolchains])
-        finally:
-            elapsed = time.monotonic() - started
-            progress.emit(
-                "gate_finished",
-                **details,
-                returncode=rc,
-                duration_seconds=elapsed,
-            )
-            if paths:
-                _observe_gate_capacity(
-                    paths,
-                    required_bytes=capacity_requirements[gate.toolchains],
-                    phase="after",
-                    gate=display,
-                    before=before,
-                )
-        gate_seconds.append((elapsed, display))
-        _assert_integration_source(git, selected_commit)
-        if rc != 0:
-            raise DriverError(
-                f"gate failed (exit {rc}) after {elapsed:.1f} s: {display}\n"
-                + gate_time_summary(gate_seconds)
-                + "\n    Integration halts before push; fix the gate and re-run."
-            )
-        _ok(f"gate passed in {elapsed:.1f} s: {display}")
     if gate_seconds:
         _say(gate_time_summary(gate_seconds))
 
