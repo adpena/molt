@@ -418,7 +418,7 @@ def _canaries() -> list[Canary]:
                     [
                         disk_guard.Candidate(
                             Path("/x/target/sessions/old"),
-                            "sessions",
+                            "session-target",
                             mtime=0.0,
                             size=5 * _GB,
                         )
@@ -440,7 +440,7 @@ def _canaries() -> list[Canary]:
                     [
                         disk_guard.Candidate(
                             Path("/x/target/sessions/old"),
-                            "sessions",
+                            "session-target",
                             mtime=0.0,
                             size=5 * _GB,
                         )
@@ -509,12 +509,15 @@ def _canaries() -> list[Canary]:
         ),
         Canary(
             "disk_guard",
-            "active-completed-lane-refused",
+            "locked-owner-retirement-refused",
             lambda: (
-                not disk_guard.decide_completed_lane_reclaim(
-                    disk_guard.Candidate(Path("/x/target/live"), "registered", 0.0),
-                    completed=True,
-                    active=True,
+                not disk_guard.decide_owner_reclaim(
+                    disk_guard.Candidate(
+                        Path("/x/target/checkouts/live"),
+                        "checkout-state",
+                        0.0,
+                        lock_held=True,
+                    )
                 )[0]
             ),
         ),

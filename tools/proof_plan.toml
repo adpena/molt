@@ -5451,7 +5451,7 @@ pytest = [
 [[rule]]
 name = "apparatus-a8-a12-disk-reclaim"
 toolchains = ["python"]
-description = "Lane maturity, Variant-II perf acceptance, and completed-lane target reclaim: teeth plus liveness."
+description = "Lane maturity, Variant-II perf acceptance, and disk-guard retention: teeth plus liveness."
 globs = [
   "tools/lane_maturity.py",
   "tools/powerplay_acceptance.py",
@@ -6332,10 +6332,10 @@ strict_when = "landed_functional"
 rationale = "A12 strict decision refuses proxy, dev-profile, single-run, regression, and missing-memory evidence; legacy artifact auditing is advisory-loud."
 
 [[gate_flip]]
-name = "completed_lane_disk_reclaim"
+name = "retired_checkout_disk_reclaim"
 state = "strict"
 strict_when = "landed_functional"
-rationale = "Completed-lane reclaim has pure active/lock/protection teeth, event-path integration, fail-open wrapper, and a liveness canary."
+rationale = "Worktree retirement reclaims the removed checkout's state at once; pure lock and protection teeth, a real-worktree event path, and a liveness canary keep it."
 
 [[command]]
 id = "portability.cargo-custody.linux"

@@ -347,24 +347,6 @@ def _running_under_pytest(env: Mapping[str, str] | None = None) -> bool:
     )
 
 
-def _maybe_register_lane_target(ext_root: Path, target_dir: Path) -> None:
-    """Best-effort: register an isolated per-lane target dir for TTL GC.
-
-    So a completed lane's isolated ``CARGO_TARGET_DIR`` is garbage-collected by
-    ``disk_guard --gc`` once it ages past the TTL, killing the accumulation at
-    the source (the orchestrator never has to ``rm`` by hand). Never raises;
-    gated by the same independent ``MOLT_DISABLE_DISK_GUARD`` flag.
-    """
-    try:
-        if _disk_guard_disabled() or _running_under_pytest():
-            return
-        disk_guard = _source_disk_guard()
-        if disk_guard is not None:
-            disk_guard.register_lane_target(target_dir, root=str(ext_root))
-    except Exception:
-        pass
-
-
 def _disk_guard_disabled() -> bool:
     return os.environ.get("MOLT_DISABLE_DISK_GUARD", "").strip().lower() in {
         "1",
@@ -1649,16 +1631,6 @@ class RunContext:
             ext_root, target_session_id, source_root=self.root
         )
         install_default("CARGO_TARGET_DIR", session_target)
-        if (
-            create_dirs
-            and target_session_id is not None
-            and env["CARGO_TARGET_DIR"] == str(session_target)
-        ):
-            # This is an ISOLATED per-lane target dir; register it so a completed
-            # lane's dir is TTL-garbage-collected without a manual rm (item 4).
-            # A caller's own target (explicit CARGO_TARGET_DIR) is never a lane:
-            # registering it would let the collector delete a persistent target.
-            _maybe_register_lane_target(Path(ext_root), session_target)
         install_default("MOLT_DIFF_CARGO_TARGET_DIR", env["CARGO_TARGET_DIR"])
         # Incremental ON by default (fast warm rebuilds against the persistent
         # per-checkout CARGO_TARGET_DIR above). _ensure_sccache_wrapper forces
@@ -1700,9 +1672,17 @@ class RunContext:
                 if value:
                     Path(value).expanduser().mkdir(parents=True, exist_ok=True)
             # Record this checkout as the owner and a user of its state under
-            # a shared root, then retire idle state at most once a day (HF-313).
-            from molt.checkout_state import stamp_checkout_state
+            # a shared root, and a pinned session as a user of the target it
+            # selects, then retire idle state at most once a day (HF-313).
+            from molt.checkout_state import (
+                record_checkout_target_use,
+                stamp_checkout_state,
+            )
 
+            if target_session_id is not None:
+                record_checkout_target_use(
+                    Path(env["CARGO_TARGET_DIR"]), checkout=self.root
+                )
             if stamp_checkout_state(self.root, env):
                 _maybe_collect_checkout_state(Path(ext_root), env)
         return ProcessEnvironment(env)

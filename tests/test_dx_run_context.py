@@ -173,24 +173,18 @@ def test_target_dir_stable_by_default_session_scoped_only_when_pinned(
     assert "MOLT_SESSION_ID_GENERATED" not in pinned
 
 
-def test_pinned_session_registers_only_its_own_target_for_collection(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # The disk guard deletes registered lane targets once idle past the TTL. A
-    # pinned session's isolated target is such a lane; a caller's explicit
-    # target (a checkout's persistent target, a leased proof generation) is not.
-    registered: list[Path] = []
-    monkeypatch.setattr(
-        dx,
-        "_maybe_register_lane_target",
-        lambda _ext_root, target: registered.append(target),
-    )
+def test_a_pinned_session_stamps_the_target_it_selects(tmp_path: Path) -> None:
+    # The disk guard retires a pinned session's target once it is idle past
+    # MOLT_SESSION_TARGET_IDLE_HOURS (HF-313), so selecting it records a use.
+    # A caller's explicit target outside the session layout is not stamped.
+    from molt.checkout_state import LAST_USE_STAMP
+
     ctx = RunContext(tmp_path, session_prefix="test")
     lane = ctx.canonical_env({"PATH": "/usr/bin", "MOLT_SESSION_ID": "shard-7"})
-    assert registered == [Path(lane["CARGO_TARGET_DIR"])]
-    assert registered[0] == tmp_path.resolve() / "target" / "sessions" / "shard-7"
+    session = tmp_path.resolve() / "target" / "sessions" / "shard-7"
+    assert Path(lane["CARGO_TARGET_DIR"]) == session
+    assert (session / LAST_USE_STAMP).is_file()
 
-    registered.clear()
     persistent = tmp_path / "persistent-target"
     explicit = ctx.canonical_env(
         {
@@ -200,7 +194,11 @@ def test_pinned_session_registers_only_its_own_target_for_collection(
         }
     )
     assert explicit["CARGO_TARGET_DIR"] == str(persistent.resolve())
-    assert registered == []
+    assert not (persistent / LAST_USE_STAMP).exists()
+
+    # A generated session selects the checkout's own target: no session.
+    ctx.canonical_env({"PATH": "/usr/bin"})
+    assert [path.name for path in session.parent.iterdir()] == ["shard-7"]
 
 
 def test_pinned_sessions_sharing_a_long_prefix_get_distinct_targets(

@@ -10,7 +10,8 @@ Proves (M05 -- a gate that cannot fail certifies nothing):
     module's executable code (no kill / Popen / signal / taskkill / subprocess);
   * reclamation is IDEMPOTENT (a second call above threshold is a no-op),
     and measurement failures remain visible to callers;
-  * per-lane GC collects a registered dir past its TTL but not one within it;
+  * the GC retires a pinned session's target once idle past its limit, and
+    checkout state by last use and owner, never under a held lock;
   * the self-test canaries are all LIVE (gate-liveness).
 """
 
@@ -95,7 +96,6 @@ def _cfg(**over) -> dg.GuardConfig:
         high_water_bytes=25 * _GB,
         target_bytes=40 * _GB,
         min_idle_s=15 * 60.0,
-        gc_ttl_s=6 * 3600.0,
         lane_globs=dg.DEFAULT_LANE_GLOBS,
     )
     base.update(over)
@@ -454,7 +454,9 @@ def test_live_guard_protects_its_worktree_but_terminal_marker_does_not(tmp_path)
     _, main, linked = _registered_worktree_scope(tmp_path)
     now = 2_000_000.0
     main_session = main / "target" / "sessions" / "main-old"
-    linked_session = linked / "target" / "sessions" / "linked-active"
+    # A guard keeps its worktree's hand-named lane target; a session target
+    # is a last-use root, which guard markers do not keep.
+    linked_session = linked / "target" / "codex-linked-active"
     sized = {
         main_session: _make_dir(
             main_session, size_bytes=5 * _GB, age_s=100_000, now=now
@@ -523,23 +525,6 @@ def test_incident_capsules_in_active_directory_do_not_claim_guard_custody(tmp_pa
     )
 
     assert dg._has_active_guard(tmp_path) is False
-
-
-def test_recent_registry_event_protects_old_target_from_pressure_reclaim(tmp_path):
-    now = 3_000_000.0
-    target = tmp_path / "target" / "codex-live"
-    _make_dir(target, size_bytes=100 * _GB, age_s=100_000, now=now)
-    dg.register_lane_target(target, root=tmp_path, env={}, now=now - 60)
-    result = dg.ensure_free(
-        root=tmp_path,
-        config=_cfg(),
-        free_bytes_fn=_SimulatedVolume(1 * _GB, {target: 100 * _GB}),
-        now_fn=lambda: now,
-        env={},
-    )
-    assert target.exists()
-    reasons = {Path(item["path"]): item["reason"] for item in result.skipped}
-    assert reasons[target.resolve()] == "live-lane"
 
 
 # --- 2c. a lock-held dir is never reclaimed (real held lock) ----------------
@@ -701,85 +686,7 @@ def test_idempotent_above_high_water_is_noop(tmp_path):
         assert d.exists()
 
 
-# --- 5. per-lane GC (registry-driven TTL collection) ------------------------
-
-
-def test_gc_collects_registered_dir_past_ttl(tmp_path):
-    now = 3_000_000.0
-    done = tmp_path / "target" / "codex-done"
-    live = tmp_path / "target" / "codex-live"
-    _make_dir(done, size_bytes=1 * _GB, age_s=100_000, now=now)
-    _make_dir(live, size_bytes=1 * _GB, age_s=100_000, now=now)
-
-    # Register both, but with different registration times.
-    dg.register_lane_target(done, root=str(tmp_path), env={}, now=now - 100_000)
-    dg.register_lane_target(live, root=str(tmp_path), env={}, now=now - 100)
-
-    result = dg.gc(
-        root=str(tmp_path),
-        config=_cfg(),
-        now_fn=lambda: now,
-        env={},
-    )
-    assert {Path(item["path"]) for item in result.reclaimed} == {done.resolve()}
-    assert not done.exists()  # past the 6h TTL -> collected
-    assert live.exists()  # registered 100s ago -> kept
-    # The collected entry is dropped from the registry (compaction).
-    registry = dg.read_registry(tmp_path.resolve())
-    remaining = {Path(rec["path"]).name for rec in registry.values()}
-    assert "codex-done" not in remaining
-    assert "codex-live" in remaining
-
-
-def test_gc_compacts_each_registered_worktree_registry(tmp_path):
-    _, main, linked = _registered_worktree_scope(tmp_path)
-    now = 3_000_000.0
-    main_done = main / "target" / "codex-main-done"
-    linked_done = linked / "target" / "codex-linked-done"
-    _make_dir(main_done, size_bytes=1, age_s=100_000, now=now)
-    _make_dir(linked_done, size_bytes=1, age_s=100_000, now=now)
-    dg.register_lane_target(main_done, root=main, env={}, now=now - 100_000)
-    dg.register_lane_target(linked_done, root=linked, env={}, now=now - 100_000)
-
-    result = dg.gc(root=main, config=_cfg(), now_fn=lambda: now, env={})
-
-    assert {Path(item["path"]) for item in result.reclaimed} == {
-        main_done.resolve(),
-        linked_done.resolve(),
-    }
-    assert dg.read_registry(main.resolve()) == {}
-    assert dg.read_registry(linked.resolve()) == {}
-
-
-def test_gc_preserves_registered_target_under_live_guard(tmp_path):
-    now = 3_000_000.0
-    target = tmp_path / "target" / "codex-guarded"
-    _make_dir(target, size_bytes=1, age_s=100_000, now=now)
-    dg.register_lane_target(target, root=tmp_path, env={}, now=now - 100_000)
-    markers = tmp_path / "tmp" / "memory_guard" / "active"
-    markers.mkdir(parents=True)
-    (markers / "guard-42-live.json").write_text(
-        '{"pid":42,"status":"child_running"}\n', encoding="utf-8"
-    )
-
-    result = dg.gc(root=tmp_path, config=_cfg(), now_fn=lambda: now, env={})
-
-    assert result.reclaimed == []
-    assert target.exists()
-    assert dg._norm(target) in dg.read_registry(tmp_path.resolve())
-
-
-def test_register_lane_target_is_latest_wins(tmp_path):
-    d = tmp_path / "target" / "codex-x"
-    d.mkdir(parents=True)
-    dg.register_lane_target(d, root=str(tmp_path), env={}, now=100.0)
-    dg.register_lane_target(d, root=str(tmp_path), env={}, now=200.0)
-    registry = dg.read_registry(tmp_path.resolve())
-    rec = registry[dg._norm(d)]
-    assert rec["registered_at"] == 200.0
-
-
-# --- 6. hard safety rail: refuse to delete shared/out-of-set dirs -----------
+# --- 5. hard safety rail: refuse to delete shared/out-of-set dirs -----------
 
 
 def test_assert_safe_refuses_shared_target_dirs(tmp_path):
@@ -808,7 +715,7 @@ def test_assert_safe_allows_reclaimable(tmp_path):
     dg.assert_safe_to_delete(sess, root, dg.DEFAULT_LANE_GLOBS)
 
 
-# --- 7. gate-liveness canary -------------------------------------------------
+# --- 6. gate-liveness canary -------------------------------------------------
 
 
 def test_selftest_canaries_all_live():
@@ -818,40 +725,18 @@ def test_selftest_canaries_all_live():
     assert len(results) >= 8
 
 
-def test_completed_lane_event_reclaims_registered_target(tmp_path):
-    target = tmp_path / "target" / "codex-finished"
-    target.mkdir(parents=True)
-    (target / "artifact.bin").write_bytes(b"x")
-    dg.register_lane_target(target, root=tmp_path, now=10.0)
-    result = dg.reclaim_completed_lane(target, root=tmp_path, env={})
-    assert result.reclaimed == [
-        {"path": str(target.resolve()), "kind": "completed-lane"}
-    ]
-    assert not target.exists()
-
-
-def test_completed_lane_event_never_reclaims_active_lane():
-    candidate = dg.Candidate(Path("/x/target/live"), "registered", 0.0)
-    assert dg.decide_completed_lane_reclaim(candidate, completed=True, active=True) == (
+def test_owner_retirement_skips_the_idle_window_never_a_lock_or_protection():
+    target = Path("/x/target/checkouts/alpha-0123456789ab")
+    used_now = dg.Candidate(target, "checkout-state", mtime=1_000_000.0)
+    assert dg.decide_owner_reclaim(used_now) == (True, "owner-retired")
+    locked = dg.Candidate(target, "checkout-state", mtime=0.0, lock_held=True)
+    assert dg.decide_owner_reclaim(locked) == (False, "lock-held")
+    # A protected session inside the target keeps the target.
+    running = target / "sessions" / "shard-7"
+    assert dg.decide_owner_reclaim(used_now, protected=[running]) == (
         False,
-        "lane-active",
+        "protected",
     )
-
-
-def test_completed_lane_event_respects_live_guard_marker(tmp_path):
-    target = tmp_path / "target" / "codex-active"
-    target.mkdir(parents=True)
-    markers = tmp_path / "tmp" / "memory_guard" / "active"
-    markers.mkdir(parents=True)
-    (markers / "guard-42-live.json").write_text(
-        '{"pid":42,"status":"child_running"}\n', encoding="utf-8"
-    )
-
-    result = dg.reclaim_completed_lane(target, root=tmp_path, env={})
-
-    assert result.reclaimed == []
-    assert result.skipped == [{"path": str(target.resolve()), "reason": "lane-active"}]
-    assert target.exists()
 
 
 @pytest.mark.parametrize("name", ["ordinary", "OneDrive - selected artifacts"])
@@ -892,61 +777,6 @@ def test_out_of_tree_markers_protect_a_checkout_that_is_its_own_root(
 
     assert not (clone / "tmp").exists()
     assert dg._has_active_guard(clone) is True
-
-
-def test_checkout_session_reclamation_requires_registration(tmp_path, monkeypatch):
-    root = tmp_path / "artifacts"
-    persistent = root / "target" / "checkouts" / "source-identity"
-    session = persistent / "sessions" / "completed"
-    session.mkdir(parents=True)
-    globs = dg.GuardConfig.from_env({}).lane_globs
-    assert dg._is_reclaimable(session, root, globs) is None
-    dg.register_lane_target(session, root=root, env={})
-    assert dg._is_reclaimable(session, root, globs, registered=True) == "sessions"
-    assert dg._is_reclaimable(persistent, root, globs) is None
-    reads = []
-    read_registry = dg.read_registry
-
-    def counted_registry(owner):
-        reads.append(owner)
-        return read_registry(owner)
-
-    monkeypatch.setattr(dg, "read_registry", counted_registry)
-    candidates = dg.discover_candidates(
-        root, dg.GuardConfig.from_env({}), roots=(root,), measure_sizes=False
-    )
-    assert [candidate.path for candidate in candidates] == [session]
-    assert reads == [root.resolve()]
-    result = dg.reclaim_completed_lane(session, root=root, env={}, apply=False)
-    assert session.exists()
-    assert result.mode == "dry-run"
-
-
-@pytest.mark.parametrize("operation", ["pressure", "gc", "completed"])
-def test_pinned_checkout_session_is_protected_without_target_alias(tmp_path, operation):
-    now = 3_000_000.0
-    target = (
-        tmp_path / "target" / "checkouts" / "source-identity" / "sessions" / "active"
-    )
-    _make_dir(target, size_bytes=1, age_s=100_000, now=now)
-    dg.register_lane_target(target, root=tmp_path, env={}, now=now - 100_000)
-    env = {"MOLT_SESSION_ID": "active"}
-    if operation == "pressure":
-        result = dg.ensure_free(
-            root=tmp_path,
-            config=_cfg(),
-            env=env,
-            now_fn=lambda: now,
-            free_bytes_fn=lambda: 1,
-        )
-    elif operation == "gc":
-        result = dg.gc(root=tmp_path, config=_cfg(), env=env, now_fn=lambda: now)
-    else:
-        result = dg.reclaim_completed_lane(target, root=tmp_path, env=env)
-    assert target.exists()
-    assert result.reclaimed == []
-    if operation != "gc":
-        assert any(row["reason"] == "protected" for row in result.skipped)
 
 
 # --- HF-313: checkout state retires by last use and by its removed owner ------
@@ -1093,13 +923,29 @@ def test_any_checkout_state_retires_once_unused_past_the_max_age(tmp_path):
     assert _reclaimed(_gc(ext, shorter, now)) == _resolved(young_roots.values())
 
 
-@pytest.mark.parametrize("raw", ["0", "-3", "soon", "nan", "inf"])
-def test_an_invalid_max_age_fails_the_collection(tmp_path, raw):
+@pytest.mark.parametrize(
+    "name", ["MOLT_CHECKOUT_STATE_MAX_AGE_DAYS", "MOLT_SESSION_TARGET_IDLE_HOURS"]
+)
+# 0.05 days and 0.05 hours both undercut the two-hour protection window.
+@pytest.mark.parametrize("raw", ["0", "-3", "soon", "nan", "inf", "0.05"])
+def test_an_invalid_idle_limit_fails_the_collection(tmp_path, name, raw):
+    ext, _projects, env = _checkout_family(tmp_path)
+    with pytest.raises(ValueError, match=name):
+        _gc(ext, {**env, name: raw}, 0.0)
+
+
+def test_an_idle_limit_may_equal_the_protection_window():
     from molt import checkout_state
 
-    ext, _projects, env = _checkout_family(tmp_path)
-    with pytest.raises(ValueError, match=checkout_state.MAX_AGE_ENV):
-        _gc(ext, {**env, checkout_state.MAX_AGE_ENV: raw}, 0.0)
+    limits = checkout_state.retention_limits(
+        {checkout_state.SESSION_IDLE_ENV: "2", checkout_state.MAX_AGE_ENV: "1"}
+    )
+    assert limits == checkout_state.RetentionLimits(
+        max_age_s=DAY, session_idle_s=checkout_state.PROTECTION_WINDOW_S
+    )
+    assert checkout_state.retention_limits({}) == checkout_state.RetentionLimits(
+        max_age_s=30 * DAY, session_idle_s=6 * HOUR
+    )
 
 
 def test_last_use_counts_a_write_that_left_the_stamp_old(tmp_path):
@@ -1143,6 +989,7 @@ def test_a_use_rewrites_the_stamp_at_most_once_per_resolution(tmp_path):
     stamp.unlink()
     checkout_state.record_checkout_target_use(session, checkout=tmp_path / "x")
     assert stamp.is_file(), "a pinned session's use marks its checkout target"
+    assert (session / checkout_state.LAST_USE_STAMP).is_file(), "and the session"
     # The root's name is not checkout x's component: no record binds it to x.
     assert not (root / checkout_state.OWNER_RECORD).exists()
 
@@ -1544,7 +1391,81 @@ def test_build_control_binds_only_to_the_target_that_names_it(tmp_path):
     assert str(other_roots["build-control"].resolve()) in reclaimed
 
 
-def test_a_lane_that_registers_a_checkout_target_never_retires_it(tmp_path):
+# --- HF-313: a pinned session's target retires by its own last use ----------
+
+LONG_SESSION = "agent-unit-agent-440e87baa421421f9c0d6f2e-67518"
+
+
+def _session(ext: Path, checkout: Path, session_id: str) -> tuple[Path, Path]:
+    """Materialize a pinned session's target and build control by their producers."""
+    from molt.build_state_layout import build_state_root
+
+    target = dx.cargo_target_dir_for_artifact_root(
+        ext, session_id, source_root=checkout
+    )
+    control = build_state_root(
+        project_root=checkout,
+        cargo_target=target,
+        environment={"MOLT_EXT_ROOT": str(ext)},
+    )
+    for root in (target, control):
+        root.mkdir(parents=True)
+        (root / "payload.bin").write_bytes(b"\0" * 64)
+    return target, control
+
+
+def _pressed(env: dict[str, str]) -> dict[str, str]:
+    """``env`` with a high-water mark above any real volume."""
+    from molt.disk_capacity import DISK_GUARD_HIGH_WATER_ENV
+
+    return {**env, DISK_GUARD_HIGH_WATER_ENV: "1000000000", dg.ENV_TARGET: "1000000001"}
+
+
+def test_producers_place_session_targets_where_the_guard_looks(tmp_path):
+    from molt import checkout_state
+
+    ext, projects, _env = _checkout_family(tmp_path)
+    checkout = projects / "alpha"
+    checkout.mkdir()
+    shared = [
+        dx.cargo_target_dir_for_artifact_root(ext, session, source_root=checkout)
+        for session in ("shard-7", LONG_SESSION)
+    ]
+    # A plain clone keeps its target, and its sessions, inside the checkout.
+    clone = dx.cargo_target_dir_for_artifact_root(
+        checkout, "shard-7", source_root=checkout
+    )
+    legacy = ext / "target" / "sessions" / "diff-59785"
+    for path in (*shared, clone, legacy):
+        path.mkdir(parents=True)
+    found = {path.resolve() for path in checkout_state.session_target_dirs(ext)}
+    assert found == {path.resolve() for path in (*shared, legacy)}
+    assert checkout_state.session_target_dirs(checkout) == [clone]
+    for path, root in [*((path, ext) for path in shared), (clone, checkout)]:
+        assert checkout_state.is_session_target(path, root)
+        assert dg._is_reclaimable(path, root, dg.DEFAULT_LANE_GLOBS) == (
+            "session-target"
+        )
+    holder = shared[0].parent.parent
+    foreign = [
+        holder / "sessions" / "a.b",
+        holder / "sessions" / ("x" * 33),
+        ext / "target" / "checkouts" / "notes" / "sessions" / "shard-7",
+        ext / "elsewhere" / "sessions" / "shard-7",
+    ]
+    for path in foreign:
+        path.mkdir(parents=True)
+    (holder / "sessions" / "linked").symlink_to(shared[1], target_is_directory=True)
+    for path in (*foreign, holder, holder / "sessions"):
+        assert not checkout_state.is_session_target(path, ext)
+        assert dg._is_reclaimable(path, ext, dg.DEFAULT_LANE_GLOBS) != (
+            "session-target"
+        )
+    after = {path.resolve() for path in checkout_state.session_target_dirs(ext)}
+    assert after == found
+
+
+def test_an_idle_session_target_retires_and_a_recent_one_stays(tmp_path):
     import time
 
     from molt import checkout_state
@@ -1553,14 +1474,249 @@ def test_a_lane_that_registers_a_checkout_target_never_retires_it(tmp_path):
     live = projects / "live"
     live.mkdir()
     roots = _checkout_state(ext, live)
+    idle, idle_control = _session(ext, live, "idle")
+    recent, recent_control = _session(ext, live, "recent")
+    legacy = ext / "target" / "sessions" / "legacy"
+    legacy.mkdir(parents=True)
     checkout_state.stamp_checkout_state(live, env)
-    target = roots["cargo-target"]
     now = time.time()
-    # lane_maturity registers whatever CARGO_TARGET_DIR names, here the
-    # checkout's persistent target, long enough ago for the lane TTL.
-    dg.register_lane_target(target, root=ext, env=env, now=now - 30 * HOUR)
-    _last_used(roots.values(), 3 * HOUR, now)
-    assert str(target.resolve()) not in _reclaimed(_gc(ext, env, now))
-    completed = dg.reclaim_completed_lane(target, root=ext, env=env)
-    assert {row["reason"] for row in completed.skipped} == {"checkout-state"}
-    assert target.is_dir()
+    _last_used(roots.values(), 1 * HOUR, now)
+    _last_used([idle, idle_control, legacy], 7 * HOUR, now)
+    _last_used([recent, recent_control], 5 * HOUR, now)
+
+    result = _gc(ext, env, now)
+
+    # The session goes, then its build control, whose owner it was.
+    assert _reclaimed(result) == _resolved([idle, idle_control, legacy])
+    assert {row["path"]: row["kind"] for row in result.reclaimed}[
+        str(idle.resolve())
+    ] == "session-target"
+    assert result.errors == []
+    assert all(path.is_dir() for path in (recent, recent_control, *roots.values()))
+    shorter = {**env, checkout_state.SESSION_IDLE_ENV: "4"}
+    assert _reclaimed(_gc(ext, shorter, now)) == _resolved([recent, recent_control])
+    assert all(path.is_dir() for path in roots.values())
+
+
+@pytest.mark.usefixtures("developer_host_context")
+def test_a_session_use_keeps_its_target_from_retiring(tmp_path, monkeypatch):
+    import time
+
+    from molt import checkout_state
+    from molt.cli import runtime_paths
+
+    ext, projects, env = _checkout_family(tmp_path)
+    checkout = projects / "alpha"
+    checkout.mkdir()
+    roots = _checkout_state(ext, checkout)
+    session, _control = _session(ext, checkout, "shard-7")
+    checkout_state.stamp_checkout_state(checkout, env)
+    stamp = session / checkout_state.LAST_USE_STAMP
+
+    def idle_for(hours: float) -> float:
+        now = time.time()
+        _last_used([*roots.values(), session], hours * HOUR, now)
+        assert now - checkout_state.checkout_state_last_use(session) >= hours * HOUR
+        return now
+
+    # The run context selects the session's target and records the use.
+    idle_for(7)
+    selected = dx.RunContext(checkout, session_prefix="t").canonical_env(
+        {
+            "PATH": "/usr/bin:/bin",
+            "MOLT_EXT_ROOT": str(ext),
+            "MOLT_SESSION_ID": "shard-7",
+        }
+    )
+    assert Path(selected["CARGO_TARGET_DIR"]) == session
+    assert time.time() - stamp.stat().st_mtime < 60
+    assert str(session.resolve()) not in _reclaimed(_gc(ext, env, time.time()))
+
+    # A CLI build that resolves the session's target records the use too.
+    idle_for(7)
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(session))
+    monkeypatch.setattr(runtime_paths, "_CARGO_TARGET_ROOTS", {})
+    assert runtime_paths._cargo_target_root(checkout) == session
+    assert time.time() - stamp.stat().st_mtime < 60
+    assert str(session.resolve()) not in _reclaimed(_gc(ext, env, time.time()))
+
+    # Without a use it retires.
+    now = idle_for(7)
+    assert str(session.resolve()) in _reclaimed(_gc(ext, env, now))
+
+
+def test_pressure_evicts_session_targets_by_last_use_outside_the_window(tmp_path):
+    import time
+
+    from molt import checkout_state
+    from molt.memory_guard_paths import active_guard_marker_dirs_of
+
+    ext, projects, env = _checkout_family(tmp_path)
+    live = projects / "live"
+    live.mkdir()
+    roots = _checkout_state(ext, live)
+    ages = {"older": 5 * HOUR, "old": 3 * HOUR, "recent": 1 * HOUR}
+    sessions = {name: _session(ext, live, name) for name in ages}
+    checkout_state.stamp_checkout_state(live, env)
+    # A guard elsewhere in the artifact root says nothing about these roots.
+    markers = active_guard_marker_dirs_of(ext)[0]
+    markers.mkdir(parents=True)
+    _guard_marker(markers, 4242, "child_running")
+    now = time.time()
+    targets = {name: pair[0] for name, pair in sessions.items()}
+    # Only the session targets are outside the protection window.
+    _last_used([*roots.values(), *(pair[1] for pair in sessions.values())], HOUR, now)
+    for name, age in ages.items():
+        _last_used([targets[name]], age, now)
+    # Every session is inside its idle limit, so the GC keeps them all.
+    assert _gc(ext, env, now).reclaimed == []
+    volume = _SimulatedVolume(
+        start_free=1 * _GB, sized={targets["older"]: 50 * _GB, targets["old"]: 50 * _GB}
+    )
+
+    def evict():
+        return dg.ensure_free(
+            root=ext, config=_cfg(), env=env, free_bytes_fn=volume, now_fn=lambda: now
+        )
+
+    assert _reclaimed(evict()) == {str(targets["older"].resolve())}
+    assert targets["old"].is_dir()
+    volume.start_free = -100 * _GB
+    pressed = evict()
+    assert str(targets["old"].resolve()) in _reclaimed(pressed)
+    assert targets["recent"].is_dir(), "a session used within the window survives"
+    reasons = {row["path"]: row["reason"] for row in pressed.skipped}
+    assert reasons[str(targets["recent"].resolve())] == (
+        "used within the protection window"
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX flock")
+@pytest.mark.parametrize(
+    "where,lock",
+    [
+        ("target", ".cargo-lock"),
+        ("target", "debug/.cargo-lock"),
+        ("target", "wasm32-wasip1/release/.cargo-lock"),
+        ("control", "build_locks/runtime.dev-fast.native.lock"),
+        ("control", "diff_run.lock"),
+        ("control", "backend_daemon/suite-leases/0123abcd/owner.lock"),
+    ],
+)
+def test_a_held_lock_keeps_a_session_target(tmp_path, where, lock):
+    import fcntl
+    import time
+
+    from molt import checkout_state
+
+    ext, projects, env = _checkout_family(tmp_path)
+    gone = projects / "gone"
+    gone.mkdir()
+    roots = _checkout_state(ext, gone)
+    session, control = _session(ext, gone, "shard-7")
+    checkout_state.stamp_checkout_state(gone, env)
+    gone.rmdir()
+    held = (session if where == "target" else control) / lock
+    held.parent.mkdir(parents=True, exist_ok=True)
+    held.write_bytes(b"")
+    now = time.time()
+    _last_used([*roots.values(), session, control], 60 * DAY, now)
+    target = roots["cargo-target"]
+    with open(held, "a+b") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        for result in (
+            _gc(ext, env, now),
+            dg.ensure_free(root=ext, config=_cfg(), env=_pressed(env), log=False),
+        ):
+            kept = {str(session.resolve()), str(target.resolve())}
+            assert not kept & _reclaimed(result)
+        # The checkout's retirement keeps the target that holds the session.
+        retired = dg.reclaim_checkout_state(gone, root=ext, env=env)
+        assert {row["path"]: row["reason"] for row in retired.skipped}[
+            str(target.resolve())
+        ] == "lock-held"
+        assert session.is_dir()
+        # Build control is a root of its own: only its own lock keeps it.
+        assert control.is_dir() is (where == "control")
+    released = _gc(ext, env, now)
+    assert str(target.resolve()) in _reclaimed(released)
+    # The session went with its target; the GC does not try it again.
+    assert released.errors == []
+    assert not session.exists() and not control.exists()
+
+
+def test_a_checkout_targets_retirement_takes_its_sessions_along(tmp_path):
+    import time
+
+    from molt import checkout_state
+
+    ext, projects, env = _checkout_family(tmp_path)
+    retired, orphan = projects / "retired", projects / "orphan"
+    retired.mkdir()
+    orphan.mkdir()
+    retired_roots = _checkout_state(ext, retired)
+    retired_session, retired_control = _session(ext, retired, "shard-7")
+    orphan_roots = _checkout_state(ext, orphan)
+    orphan_session, orphan_control = _session(ext, orphan, "shard-7")
+    checkout_state.stamp_checkout_state(retired, env)
+    checkout_state.stamp_checkout_state(orphan, env)
+    retired.rmdir()
+    orphan.rmdir()
+
+    # The owner's retirement takes a session used a moment ago.
+    result = dg.reclaim_checkout_state(retired, root=ext, env=env)
+    assert _reclaimed(result) == _resolved([*retired_roots.values(), retired_control])
+    assert not retired_session.exists() and not retired_control.exists()
+
+    # The GC retires an orphaned target with its session, inside the session's
+    # idle limit, and the session's build control after it.
+    now = time.time()
+    _last_used([*orphan_roots.values(), orphan_session, orphan_control], 3 * HOUR, now)
+    collected = _gc(ext, env, now)
+    assert _reclaimed(collected) == _resolved([*orphan_roots.values(), orphan_control])
+    assert collected.errors == []
+    assert not orphan_session.exists()
+
+
+@pytest.mark.parametrize("operation", ["gc", "pressure", "retire"])
+@pytest.mark.parametrize("marker", ["MOLT_SESSION_ID", "CARGO_TARGET_DIR"])
+def test_a_running_builds_session_target_is_never_reclaimed(
+    tmp_path, operation, marker
+):
+    import time
+
+    from molt import checkout_state
+
+    ext, projects, env = _checkout_family(tmp_path)
+    gone = projects / "gone"
+    gone.mkdir()
+    roots = _checkout_state(ext, gone)
+    session, control = _session(ext, gone, LONG_SESSION)
+    checkout_state.stamp_checkout_state(gone, env)
+    gone.rmdir()
+    now = time.time()
+    _last_used([*roots.values(), session, control], 60 * DAY, now)
+    running = {
+        **env,
+        marker: LONG_SESSION if marker == "MOLT_SESSION_ID" else str(session),
+    }
+    if operation == "gc":
+        result = _gc(ext, running, now)
+    elif operation == "pressure":
+        result = dg.ensure_free(
+            root=ext,
+            config=_cfg(),
+            env=running,
+            free_bytes_fn=lambda: 1,
+            now_fn=lambda: now,
+            log=False,
+        )
+    else:
+        result = dg.reclaim_checkout_state(gone, root=ext, env=running)
+    assert session.is_dir()
+    assert not {str(session.resolve()), str(roots["cargo-target"].resolve())} & (
+        _reclaimed(result)
+    )
+    if operation != "gc":
+        reasons = {row["path"]: row["reason"] for row in result.skipped}
+        assert reasons[str(roots["cargo-target"].resolve())] == "protected"

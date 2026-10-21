@@ -11201,7 +11201,7 @@
           "local.apparatus-a8-a12-disk-reclaim.1",
           "local.apparatus-a8-a12-disk-reclaim.pytest"
         ],
-        "description": "Lane maturity, Variant-II perf acceptance, and completed-lane target reclaim: teeth plus liveness.",
+        "description": "Lane maturity, Variant-II perf acceptance, and disk-guard retention: teeth plus liveness.",
         "gates": [
           "python tools/check_gate_liveness.py --check",
           "python tools/apparatus_agent_safety.py --check"

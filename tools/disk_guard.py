@@ -12,8 +12,8 @@ This guard is **provably agent-safe**: it imports no process API, spawns
 nothing, signals nothing, and kills nothing. The paired
 ``tests/tools/test_disk_guard.py::test_agent_safety_source_scan`` asserts this
 module's source contains zero process-actuation tokens (the same discipline as
-pact's ``test_no_actuation_capability``). Explicit disk reclamation is controlled
-by its own ``MOLT_DISABLE_DISK_GUARD`` flag (defaults OFF == guard ON).
+pact's ``test_no_actuation_capability``). ``MOLT_DISABLE_DISK_GUARD`` stops
+only the daily collection that ``molt.dx`` starts; an explicit invocation runs.
 
 DESIGN (deterministic + idempotent reclamation, separate from admission):
 
@@ -34,16 +34,18 @@ DESIGN (deterministic + idempotent reclamation, separate from admission):
   * The RECLAIMABLE set is EXPLICIT and narrow -- never "the largest dir under
     target" (that would nuke the shared ``target/debug`` / ``target/release`` /
     target-triple build that every lane shares). Only:
-        - registry-registered per-lane target dirs (see ``register_lane_target``);
-        - ``<root>/target/sessions/*``          (per-session witness targets);
+        - checkout state roots (``molt.checkout_state``), and pinned session
+          targets ``<target>/sessions/<session>`` below a checkout target or
+          ``<root>/target``; their last use decides when they retire;
         - ``<root>/target/<lane-glob>``         (``codex-*`` / ``lane-*`` / ``sess-*``);
         - Cargo-incremental quarantine dirs (``.molt_state/quarantine/...``);
         - flat legacy ``<root>/cargo-target-*``.
 
   * An ACTIVE directory is NEVER reclaimed. "Active" == modified within
     ``min_idle`` (a running build touches its target continuously), OR holds a
-    Cargo build lock, OR is the current ``MOLT_SESSION_ID`` target, OR is a
-    live-lane dir registered within the GC TTL.
+    Cargo or build-control lock, OR is the current ``MOLT_SESSION_ID`` target
+    or ``CARGO_TARGET_DIR``, OR is a last-use root used within the protection
+    window.
 
   * One invocation covers the canonical artifact root and every Git-registered
     worktree inside that scope. Registration is read directly from Git metadata
@@ -51,11 +53,11 @@ DESIGN (deterministic + idempotent reclamation, separate from admission):
     owning worktree, while unregistered sibling directories confer no deletion
     authority.
 
-  * ``gc()`` / ``--gc`` -- per-lane target-dir garbage collection at the SOURCE
-    of the accumulation. A lane registers its isolated ``CARGO_TARGET_DIR`` on
-    creation; the GC reclaims a registered dir once it is older than a TTL and
-    not lock-held / not freshly modified, so a completed lane's dir is collected
-    without the orchestrator ``rm``-ing anything by hand.
+  * ``gc()`` / ``--gc`` -- retirement by last use (design 56, section 2.6):
+    ``molt.checkout_state.checkout_state_decision`` selects checkout state
+    past its max age or with a removed owner, and pinned session targets idle
+    past their limit; the GC reclaims each one that no lock or protected path
+    keeps, so no one ``rm``-s a finished session's target by hand.
 
 Pure-stdlib (no third-party imports), so it runs under the host ``python`` a
 Claude Code hook invokes as well as the molt venv. Windows-first (``msvcrt``
@@ -72,7 +74,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Iterable, Mapping, Sequence
+from typing import Callable, Iterable, Literal, Mapping, Sequence
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
@@ -96,19 +98,22 @@ from molt.dx import (  # noqa: E402
     checkout_component,
     configured_artifact_root,
     session_artifact_component,
-    session_targets_dir,
 )
 from molt.checkout_state import (  # noqa: E402
     PROTECTION_WINDOW_S as CHECKOUT_STATE_WINDOW_S,
+    RetentionLimits,
     bound_checkout_owner,
     checkout_target_of,
     checkout_state_containers,
     checkout_state_decision,
     checkout_state_kind_of,
     checkout_state_last_use,
-    checkout_state_max_age_s,
+    is_session_target,
     newest_activity_mtime as _newest_activity_mtime,
     owner_is_absent,
+    retention_limits,
+    session_target_dirs,
+    target_build_control_dirs,
 )
 from molt.file_deletion import delete_path  # noqa: E402
 from molt.memory_guard_paths import active_guard_marker_dirs_of  # noqa: E402
@@ -123,16 +128,23 @@ _GB = 1024**3
 # --- thresholds (env-overridable; deterministic defaults) -------------------
 DEFAULT_TARGET_GB = 40.0  # reclaim until free reaches this
 DEFAULT_MIN_IDLE_MIN = 15.0  # never touch a dir modified within this
-DEFAULT_GC_TTL_HOURS = 6.0  # a registered lane dir older than this is GC-able
 DEFAULT_ENSURE_BUDGET_S = 20.0  # wall-clock ceiling on one ensure_free reclaim
 DEFAULT_LANE_GLOBS = ("codex-*", "lane-*", "sess-*")
 
 # Env keys. Reclamation policy is independent of process custody.
-ENV_DISABLE = "MOLT_DISABLE_DISK_GUARD"
 ENV_TARGET = "MOLT_DISK_GUARD_TARGET_GB"
 ENV_MIN_IDLE = "MOLT_DISK_GUARD_MIN_IDLE_MIN"
-ENV_TTL = "MOLT_DISK_GUARD_TTL_HOURS"
 ENV_LANE_GLOBS = "MOLT_DISK_GUARD_LANE_GLOBS"
+
+# The reclaimable classes (`_is_reclaimable`). The retention policy of
+# `molt.checkout_state` judges the last-use classes by their last use, so
+# pressure reclaim spares them within its protection window.
+CandidateKind = Literal[
+    "checkout-state", "session-target", "lane", "quarantine", "cargo-target"
+]
+_LAST_USE_KINDS: frozenset[CandidateKind] = frozenset(
+    {"checkout-state", "session-target"}
+)
 
 
 # Hard denylist: even if a classifier ever matched one of these under target/,
@@ -147,7 +159,6 @@ PROTECTED_TARGET_NAMES = frozenset(
         "package",
         "tmp",
         "sessions",  # the parent; we reclaim its CHILDREN, never itself
-        ".disk_guard",  # this guard's own registry/log home
         ".molt_state",  # cargo quarantine control parent
         ".rustc_info.json",
         "CACHEDIR.TAG",
@@ -160,9 +171,6 @@ PROTECTED_TARGET_NAMES = frozenset(
     }
 )
 
-# The guard's registry lives in the artifact root's Cargo target, whose
-# layout molt.dx owns (HF-145).
-REGISTRY_NAME = Path(".disk_guard") / "registry.jsonl"
 LOG_RELDIR = Path("logs") / "disk_guard"
 
 
@@ -190,15 +198,6 @@ def _env_float(env: Mapping[str, str], key: str, default: float) -> float:
     return val if val > 0 else default
 
 
-def _disabled(env: Mapping[str, str]) -> bool:
-    return str(env.get(ENV_DISABLE, "")).strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    )
-
-
 # --- config -----------------------------------------------------------------
 
 
@@ -207,7 +206,6 @@ class GuardConfig:
     high_water_bytes: int
     target_bytes: int
     min_idle_s: float
-    gc_ttl_s: float
     lane_globs: tuple[str, ...]
 
     @classmethod
@@ -232,7 +230,6 @@ class GuardConfig:
         # Target must be >= high-water or the loop can never satisfy itself.
         target_bytes = max(int(tgt * _GB), high_water_bytes)
         min_idle = _env_float(env, ENV_MIN_IDLE, DEFAULT_MIN_IDLE_MIN) * 60.0
-        ttl = _env_float(env, ENV_TTL, DEFAULT_GC_TTL_HOURS) * 3600.0
         raw_globs = str(env.get(ENV_LANE_GLOBS, "")).strip()
         globs = (
             tuple(g.strip() for g in raw_globs.split(",") if g.strip())
@@ -242,7 +239,6 @@ class GuardConfig:
             high_water_bytes=high_water_bytes,
             target_bytes=target_bytes,
             min_idle_s=min_idle,
-            gc_ttl_s=ttl,
             lane_globs=globs,
         )
 
@@ -255,11 +251,10 @@ class Candidate:
     """A reclaimable directory. All fields are facts, injected for testability."""
 
     path: Path
-    kind: str  # sessions | lane | cargo-target | quarantine | registered
+    kind: CandidateKind
     mtime: float  # newest activity signal (dir + immediate children)
     size: int = -1  # -1 == not measured
     lock_held: bool = False
-    registered_at: float | None = None
     owner_root: Path | None = None
     guard_active: bool = False
 
@@ -309,19 +304,18 @@ def plan_reclaim(
     now: float,
     min_idle_s: float,
     protected: Iterable[Path] = (),
-    live_lanes: Iterable[Path] = (),
 ) -> ReclaimPlan:
     """PURE: decide which candidates to reclaim. No I/O, fully unit-testable.
 
     Fires only when ``free_bytes < high_water_bytes`` (idempotent no-op above the
     threshold). When it fires it selects candidates in age order until the
     PROJECTED free reaches ``target_bytes``, skipping any that are ACTIVE:
-    modified within ``min_idle_s``, lock-held, protected, or a live-lane dir.
+    modified within ``min_idle_s``, lock-held, protected, or a last-use root
+    used within the protection window.
     The orchestrator re-reads REAL free space between deletes, so an inexact
     ``size`` only affects how many candidates are pre-selected, never safety.
     """
     protected_paths = tuple(Path(p) for p in protected)
-    live_set = {_norm(p) for p in live_lanes}
     plan = ReclaimPlan(
         triggered=free_bytes < high_water_bytes,
         free_bytes=free_bytes,
@@ -332,12 +326,8 @@ def plan_reclaim(
 
     running_free = free_bytes
     for c in sorted(candidates, key=_order_key):
-        norm = _norm(c.path)
         if _is_protected(c.path, protected_paths):
             plan.skipped.append((c, "protected"))
-            continue
-        if norm in live_set:
-            plan.skipped.append((c, "live-lane"))
             continue
         if c.lock_held:
             plan.skipped.append((c, "lock-held"))
@@ -348,7 +338,7 @@ def plan_reclaim(
         if c.age_s(now) < min_idle_s:
             plan.skipped.append((c, f"modified <{min_idle_s / 60:.0f}min ago"))
             continue
-        if c.kind == "checkout-state" and c.age_s(now) < CHECKOUT_STATE_WINDOW_S:
+        if c.kind in _LAST_USE_KINDS and c.age_s(now) < CHECKOUT_STATE_WINDOW_S:
             plan.skipped.append((c, "used within the protection window"))
             continue
         if running_free >= target_bytes:
@@ -359,39 +349,29 @@ def plan_reclaim(
     return plan
 
 
-def decide_completed_lane_reclaim(
-    candidate: Candidate,
-    *,
-    completed: bool,
-    active: bool,
-    protected: Iterable[Path] = (),
+def decide_owner_reclaim(
+    candidate: Candidate, *, protected: Iterable[Path] = ()
 ) -> tuple[bool, str]:
-    """PURE: completion bypasses TTL, never activity/lock/protection safety."""
-    if not completed:
-        return False, "lane-not-completed"
-    if active:
-        return False, "lane-active"
+    """PURE: an owner's retirement skips the idle window, never lock or protection."""
     if candidate.lock_held:
         return False, "lock-held"
     if _is_protected(candidate.path, tuple(Path(path) for path in protected)):
         return False, "protected"
-    return True, "completed-lane"
+    return True, "owner-retired"
 
 
 def gc_plan(
     candidates: Iterable[Candidate],
     *,
     now: float,
-    ttl_s: float,
     min_idle_s: float,
     protected: Iterable[Path] = (),
 ) -> list[Candidate]:
-    """PURE: registered lane dirs eligible for TTL garbage collection.
+    """PURE: the retirement candidates that no live use keeps, oldest first.
 
-    A registered dir is collected once it is older than ``ttl_s`` (by
-    registration time), is not lock-held, and has not been modified within
-    ``min_idle_s``. Age is measured from ``registered_at`` when known, else from
-    ``mtime`` -- so an un-timestamped legacy entry still ages out by activity.
+    The retention policy (`checkout_state_decision`) selected each one by its
+    last use; this keeps any that is protected, lock-held, or modified within
+    ``min_idle_s``.
     """
     protected_paths = tuple(Path(p) for p in protected)
     out: list[Candidate] = []
@@ -400,16 +380,8 @@ def gc_plan(
             continue
         if c.lock_held:
             continue
-        if c.guard_active:
-            continue
         if c.age_s(now) < min_idle_s:
             continue
-        # Checkout state carries its own retirement decision (last use and
-        # owner); it replaces the TTL, never the activity or lock checks.
-        if c.kind != "checkout-state":
-            anchor = c.registered_at if c.registered_at is not None else c.mtime
-            if (now - anchor) < ttl_s:
-                continue
         out.append(c)
     return out
 
@@ -527,8 +499,8 @@ def reclaim_roots(root: Path) -> tuple[Path, ...]:
 
 
 def _is_reclaimable(
-    path: Path, root: Path, lane_globs: Sequence[str], *, registered: bool = False
-) -> str | None:
+    path: Path, root: Path, lane_globs: Sequence[str]
+) -> CandidateKind | None:
     """Classify ``path`` as reclaimable, returning its kind, or None if not.
 
     This is the ALLOW-list authority: a path is reclaimable ONLY if it is one of
@@ -546,22 +518,13 @@ def _is_reclaimable(
     if rp.name in PROTECTED_TARGET_NAMES:
         return None
     parts = rp.relative_to(root).parts
-    sessions = _session_targets(root).relative_to(root).parts
     target = _target_root(root).relative_to(root).parts
-    # sessions/<child>
-    if len(parts) == len(sessions) + 1 and parts[: len(sessions)] == sessions:
-        return "sessions"
-    # Checkout-scoped pinned targets enter custody only through registration.
-    # Never adopt or sweep an unregistered directory, or a persistent target.
-    if (
-        len(parts) == 5
-        and parts[:2] == ("target", "checkouts")
-        and parts[3] == "sessions"
-        and registered
-    ):
-        return "sessions"
-    # A checkout's state root in its managed container under a component
-    # name (HF-313); `checkout_state_decision` decides when it retires.
+    # A pinned session's target, below a checkout target or the root's own
+    # target, and a checkout's state root in its managed container under a
+    # component name (HF-313); `checkout_state_decision` decides when each
+    # retires.
+    if is_session_target(rp, root):
+        return "session-target"
     if checkout_state_kind_of(rp, root) is not None:
         return "checkout-state"
     # cargo-incremental quarantine anywhere under a target tree
@@ -583,20 +546,13 @@ def _target_root(owner_root: Path) -> Path:
     return owner_root / "target"
 
 
-def _session_targets(owner_root: Path) -> Path:
-    """The directory holding the artifact root's pinned session targets."""
-    return session_targets_dir(_target_root(owner_root))
-
-
 def _fnmatch(name: str, pattern: str) -> bool:
     import fnmatch
 
     return fnmatch.fnmatchcase(name, pattern)
 
 
-def assert_safe_to_delete(
-    path: Path, root: Path, lane_globs: Sequence[str], *, registered: bool = False
-) -> None:
+def assert_safe_to_delete(path: Path, root: Path, lane_globs: Sequence[str]) -> None:
     """Raise unless ``path`` is provably a reclaimable artifact dir under root.
 
     The single choke point every delete passes through. It fails CLOSED: any
@@ -611,7 +567,7 @@ def assert_safe_to_delete(
         raise ValueError(f"disk_guard: refuse to delete outside root: {rp}")
     if len(rp.parts) <= len(root.parts):
         raise ValueError(f"disk_guard: refuse to delete at/above root depth: {rp}")
-    if _is_reclaimable(rp, root, lane_globs, registered=registered) is None:
+    if _is_reclaimable(rp, root, lane_globs) is None:
         raise ValueError(f"disk_guard: {rp} is not in the reclaimable allow-set")
 
 
@@ -640,13 +596,24 @@ def _lock_held(path: Path) -> bool:
     We probe by attempting a NON-BLOCKING lock ourselves; if the OS says the
     region is already locked, a live user owns the dir. This reads a lock -- it
     never touches any process. Absent/unlocked/unprobeable -> False (the idle
-    and TTL gates remain the primary liveness signal).
+    gate and last use remain the primary liveness signal).
     """
     for pattern in _LOCK_PATTERNS:
         for lock in path.glob(pattern):
             if lock.is_file() and not lock.is_symlink() and _region_locked(lock):
                 return True
     return False
+
+
+def _root_lock_held(path: Path, scope_roots: Sequence[Path]) -> bool:
+    """True if a live user holds a lock under ``path`` or in its build control.
+
+    A Cargo target's builds also lock the build control that it and each of
+    its pinned sessions own, which lives outside the target.
+    """
+    return _lock_held(path) or any(
+        _lock_held(control) for control in target_build_control_dirs(path, scope_roots)
+    )
 
 
 def _region_locked(lock: Path) -> bool:
@@ -716,120 +683,6 @@ def _dir_size(path: Path, deadline: float) -> int:
     return total
 
 
-# --- registry (per-lane GC source-of-truth) ---------------------------------
-
-
-class _FileLock:
-    """Advisory cross-platform lock (msvcrt/fcntl). Best-effort, never raises."""
-
-    def __init__(self, handle) -> None:
-        self._handle = handle
-        self._locked = False
-
-    def __enter__(self):
-        try:
-            if os.name == "nt":
-                import msvcrt
-
-                self._handle.seek(0)
-                msvcrt.locking(self._handle.fileno(), msvcrt.LK_LOCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(self._handle.fileno(), fcntl.LOCK_EX)
-            self._locked = True
-        except OSError:
-            self._locked = False
-        return self
-
-    def __exit__(self, *exc) -> None:
-        if not self._locked:
-            return
-        try:
-            if os.name == "nt":
-                import msvcrt
-
-                self._handle.seek(0)
-                msvcrt.locking(self._handle.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(self._handle.fileno(), fcntl.LOCK_UN)
-        except OSError:
-            pass
-
-
-def _registry_path(root: Path) -> Path:
-    return _target_root(root) / REGISTRY_NAME
-
-
-def register_lane_target(
-    path: str | os.PathLike[str],
-    *,
-    root: str | os.PathLike[str] | None = None,
-    env: Mapping[str, str] | None = None,
-    now: float | None = None,
-) -> Path:
-    """Register an isolated per-lane CARGO_TARGET_DIR for later TTL collection.
-
-    Append-only + locked. Idempotent per path: the LATEST record wins (the GC
-    reads the last event per path). Returns the registry file path. Never
-    raises on a best-effort append failure beyond surfacing the registry path.
-    """
-    env = os.environ if env is None else env
-    resolved_root = resolve_root(root, env=env)
-    reg = _registry_path(resolved_root)
-    now = time.time() if now is None else now
-    record = {
-        "path": str(Path(path).resolve()),
-        "registered_at": now,
-        "pid": os.getpid(),
-    }
-    reg.parent.mkdir(parents=True, exist_ok=True)
-    line = json.dumps(record, ensure_ascii=True)
-    with open(reg, "a+", encoding="utf-8") as fh:
-        with _FileLock(fh):
-            fh.seek(0, os.SEEK_END)
-            fh.write(line + "\n")
-            fh.flush()
-    return reg
-
-
-def read_registry(root: Path) -> dict[str, dict]:
-    """Latest event per path from the append-only registry. Never raises."""
-    reg = _registry_path(root)
-    latest: dict[str, dict] = {}
-    try:
-        text = reg.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return latest
-    for raw in text.splitlines():
-        raw = raw.strip()
-        if not raw:
-            continue
-        try:
-            rec = json.loads(raw)
-        except ValueError:
-            continue
-        if isinstance(rec, dict) and isinstance(rec.get("path"), str):
-            latest[_norm(Path(rec["path"]))] = rec
-    return latest
-
-
-def _rewrite_registry(root: Path, keep: Mapping[str, dict]) -> None:
-    """Rewrite the registry to only the ``keep`` records (post-GC compaction)."""
-    reg = _registry_path(root)
-    reg.parent.mkdir(parents=True, exist_ok=True)
-    tmp = reg.with_suffix(".jsonl.tmp")
-    lines = [
-        json.dumps(rec, ensure_ascii=True)
-        for rec in keep.values()
-        if isinstance(rec, dict)
-    ]
-    tmp.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
-    os.replace(tmp, reg)
-
-
 # --- discovery --------------------------------------------------------------
 
 
@@ -883,64 +736,41 @@ def discover_candidates(
     root = root.resolve()
     scan_roots = tuple(path.resolve() for path in (roots or reclaim_roots(root)))
     seen: set[str] = set()
-    by_norm: dict[str, Candidate] = {}
     candidates: list[Candidate] = []
     size_deadline = time.monotonic() + size_budget_s
 
     def add(
-        path: Path,
-        kind: str,
-        owner_root: Path,
-        *,
-        registered_at: float | None = None,
-        guard_active: bool = False,
+        path: Path, kind: CandidateKind, owner_root: Path, *, guard_active: bool
     ) -> None:
         norm = _norm(path)
-        if norm in seen:
-            existing = by_norm[norm]
-            if registered_at is not None:
-                existing.registered_at = registered_at
-            existing.guard_active = existing.guard_active or guard_active
+        if norm in seen or not path.is_dir():
             return
-        if not path.is_dir():
-            return
-        if (
-            _is_reclaimable(
-                path,
-                owner_root,
-                config.lane_globs,
-                registered=registered_at is not None,
-            )
-            is None
-        ):
+        if _is_reclaimable(path, owner_root, config.lane_globs) is None:
             return
         seen.add(norm)
         size = -1
         if measure_sizes:
             size = _dir_size(path, min(time.monotonic() + 20.0, size_deadline))
-        candidate = Candidate(
-            path=path,
-            kind=kind,
-            # Checkout state's last-use stamp is one of these children.
-            mtime=_newest_activity_mtime(path),
-            size=size,
-            lock_held=_lock_held(path),
-            registered_at=registered_at,
-            owner_root=owner_root,
-            # Guard markers elsewhere in the artifact root say nothing about
-            # checkout state; its last use and Cargo's lock do.
-            guard_active=False if kind == "checkout-state" else guard_active,
+        candidates.append(
+            Candidate(
+                path=path,
+                kind=kind,
+                # A last-use root's stamp is one of these children.
+                mtime=_newest_activity_mtime(path),
+                size=size,
+                lock_held=_root_lock_held(path, scan_roots),
+                owner_root=owner_root,
+                # Guard markers elsewhere in the artifact root say nothing
+                # about a last-use root; its last use and its locks do.
+                guard_active=guard_active and kind not in _LAST_USE_KINDS,
+            )
         )
-        candidates.append(candidate)
-        by_norm[norm] = candidate
 
     for owner_root in scan_roots:
-        registry = read_registry(owner_root)
         guard_active = _has_active_guard(owner_root)
-        # sessions/<child>
-        for child in _iter_dir(_session_targets(owner_root)):
-            if child.is_dir():
-                add(child, "sessions", owner_root, guard_active=guard_active)
+        # pinned session targets, evicted by last use under pressure
+        for child in session_target_dirs(owner_root):
+            add(child, "session-target", owner_root, guard_active=guard_active)
         # per-lane target dirs under target/
         for child in _iter_dir(_target_root(owner_root)):
             if (
@@ -957,20 +787,7 @@ def discover_candidates(
                 add(child, "cargo-target", owner_root, guard_active=guard_active)
         # checkout state roots, evicted by last use under pressure
         for child in _checkout_state_dirs(owner_root):
-            add(child, "checkout-state", owner_root, guard_active=False)
-        # Registry targets may already have been discovered by a static class.
-        for rec in registry.values():
-            p = Path(str(rec.get("path", "")))
-            reg_at = rec.get("registered_at")
-            add(
-                p,
-                "registered",
-                owner_root,
-                registered_at=(
-                    float(reg_at) if isinstance(reg_at, (int, float)) else None
-                ),
-                guard_active=guard_active,
-            )
+            add(child, "checkout-state", owner_root, guard_active=guard_active)
     return candidates
 
 
@@ -1101,17 +918,6 @@ def ensure_free(
         return result
 
     candidates = discover_candidates(resolved_root, cfg, roots=scope_roots)
-    protected = _protected_paths(
-        scope_roots,
-        env,
-        registered_targets=(c.path for c in candidates if c.registered_at is not None),
-    )
-    live_lanes = [
-        candidate.path
-        for candidate in candidates
-        if candidate.registered_at is not None
-        and (now - candidate.registered_at) < cfg.gc_ttl_s
-    ]
     plan = plan_reclaim(
         candidates,
         free_bytes=free_before,
@@ -1119,8 +925,7 @@ def ensure_free(
         target_bytes=target,
         now=now,
         min_idle_s=cfg.min_idle_s,
-        protected=protected,
-        live_lanes=live_lanes,
+        protected=_protected_paths(scope_roots, env),
     )
     for cand, why in plan.skipped:
         result.skipped.append(
@@ -1141,14 +946,11 @@ def ensure_free(
             result.errors.append(f"time budget {budget_s}s exceeded; stopping")
             break
         if apply:
+            if not cand.path.exists():
+                continue  # A session target went with its checkout target.
             owner_root = cand.owner_root or resolved_root
             try:
-                assert_safe_to_delete(
-                    cand.path,
-                    owner_root,
-                    cfg.lane_globs,
-                    registered=cand.registered_at is not None,
-                )
+                assert_safe_to_delete(cand.path, owner_root, cfg.lane_globs)
             except ValueError as exc:
                 result.errors.append(str(exc))
                 continue
@@ -1175,18 +977,19 @@ def gc(
     apply: bool = True,
     log: bool = True,
 ) -> ReclaimResult:
-    """Per-lane target-dir GC: reclaim registered dirs past their TTL.
+    """Retire every root that the retention policy selects (design 56, 2.6).
 
-    Kills the accumulation at the SOURCE (item 4): a completed lane's isolated
-    target dir is collected automatically once it ages past the TTL and is not
-    lock-held / freshly modified, so the orchestrator never ``rm``-s by hand.
+    `checkout_state_decision` selects checkout state past its max age or with
+    a removed owner, and pinned session targets idle past their limit; a held
+    lock or a protected path keeps a root. A second pass retires the build
+    control of the targets this pass reclaimed.
     """
     env = os.environ if env is None else env
     resolved_root = resolve_root(root, env=env)
     scope_roots = reclaim_roots(resolved_root)
     cfg = config or GuardConfig.from_env(env)
     now = now_fn()
-    max_age_s = checkout_state_max_age_s(env)
+    limits = retention_limits(env)
     free_fn = _default_free_fn(resolved_root)
     free_before = free_fn()
     result = ReclaimResult(
@@ -1197,72 +1000,29 @@ def gc(
         scope_roots=[str(path) for path in scope_roots],
         mode="apply" if apply else "dry-run",
     )
-    registries = {owner_root: read_registry(owner_root) for owner_root in scope_roots}
-    protected = _protected_paths(
-        scope_roots,
-        env,
-        registered_targets=(
-            Path(path) for registry in registries.values() for path in registry
-        ),
-    )
-
-    cands: list[Candidate] = []
-    for owner_root, registry in registries.items():
-        guard_active = _has_active_guard(owner_root)
-        for rec in registry.values():
-            p = Path(str(rec.get("path", "")))
-            if not p.is_dir():
-                continue
-            if _is_reclaimable(p, owner_root, cfg.lane_globs, registered=True) in (
-                None,
-                # Checkout state follows its own policy, even when a lane
-                # registered it as its target.
-                "checkout-state",
-            ):
-                # A registered path outside its owner's allow-set is forgotten
-                # during compaction but never deleted.
-                continue
-            reg_at = rec.get("registered_at")
-            cands.append(
-                Candidate(
-                    path=p,
-                    kind="registered",
-                    mtime=_newest_activity_mtime(p),
-                    lock_held=_lock_held(p),
-                    registered_at=(
-                        float(reg_at) if isinstance(reg_at, (int, float)) else None
-                    ),
-                    owner_root=owner_root,
-                    guard_active=guard_active,
-                )
-            )
-        cands.extend(
-            _checkout_state_candidates(owner_root, now=now, max_age_s=max_age_s)
-        )
-
+    protected = _protected_paths(scope_roots, env)
     collectable = gc_plan(
-        cands,
+        [
+            cand
+            for owner_root in scope_roots
+            for cand in _retention_candidates(
+                owner_root, scope_roots, now=now, limits=limits
+            )
+        ],
         now=now,
-        ttl_s=cfg.gc_ttl_s,
         min_idle_s=cfg.min_idle_s,
         protected=protected,
-    )
-    result.custody = _active_guard_custody(
-        cand.owner_root or resolved_root for cand in cands if cand.guard_active
     )
     collected_norms: set[str] = set()
 
     def reclaim(planned: list[Candidate]) -> None:
         for cand in planned:
             if apply:
+                if not cand.path.exists():
+                    continue  # A session target went with its checkout target.
                 owner_root = cand.owner_root or resolved_root
                 try:
-                    assert_safe_to_delete(
-                        cand.path,
-                        owner_root,
-                        cfg.lane_globs,
-                        registered=cand.registered_at is not None,
-                    )
+                    assert_safe_to_delete(cand.path, owner_root, cfg.lane_globs)
                 except ValueError as exc:
                     result.errors.append(str(exc))
                     continue
@@ -1293,115 +1053,24 @@ def gc(
                     [
                         cand
                         for owner_root in orphaning
-                        for cand in _checkout_state_candidates(
+                        for cand in _retention_candidates(
                             owner_root,
+                            scope_roots,
                             now=now,
-                            max_age_s=max_age_s,
+                            limits=limits,
                             build_control=True,
                         )
                     ],
                     now=now,
-                    ttl_s=cfg.gc_ttl_s,
                     min_idle_s=cfg.min_idle_s,
                     protected=protected,
                 )
                 if _norm(cand.path) not in collected_norms
             ]
         )
-
-    if apply:
-        # Compact every owner registry independently. Cross-worktree discovery
-        # must not collapse their append-only custody records into one file.
-        for owner_root, registry in registries.items():
-            keep = {
-                norm: rec
-                for norm, rec in registry.items()
-                if norm not in collected_norms
-                and Path(str(rec.get("path", ""))).is_dir()
-            }
-            if len(keep) != len(registry):
-                _rewrite_registry(owner_root, keep)
     result.free_after = free_fn()
     if log:
         _write_log(resolved_root, result)
-    return result
-
-
-def reclaim_completed_lane(
-    target: Path,
-    *,
-    root: str | os.PathLike[str] | None = None,
-    env: Mapping[str, str] | None = None,
-    apply: bool = True,
-) -> ReclaimResult:
-    """Immediately reclaim one completed registered lane target."""
-    env = os.environ if env is None else env
-    resolved_target = target.resolve()
-    inferred_root = root or (
-        resolved_target.parents[1]
-        if _target_root(resolved_target.parents[1]) == resolved_target.parent
-        else None
-    )
-    resolved_root = resolve_root(inferred_root, env=env)
-    scope_roots = reclaim_roots(resolved_root)
-    cfg = GuardConfig.from_env(env)
-    result = ReclaimResult(
-        root=str(resolved_root),
-        triggered=True,
-        free_before=0,
-        free_after=0,
-        scope_roots=[str(path) for path in scope_roots],
-        mode="apply" if apply else "dry-run",
-    )
-    target = target.resolve()
-    registry = read_registry(resolved_root)
-    candidate = Candidate(
-        path=target,
-        kind="registered",
-        mtime=_newest_activity_mtime(target) if target.is_dir() else 0.0,
-        lock_held=_lock_held(target) if target.is_dir() else False,
-        owner_root=resolved_root,
-        guard_active=_has_active_guard(resolved_root),
-    )
-    allowed, reason = decide_completed_lane_reclaim(
-        candidate,
-        completed=True,
-        active=candidate.guard_active,
-        protected=_protected_paths(
-            scope_roots, env, registered_targets=(Path(path) for path in registry)
-        ),
-    )
-    if (
-        allowed
-        and _is_reclaimable(target, resolved_root, cfg.lane_globs, registered=True)
-        == "checkout-state"
-    ):
-        # A lane may name a checkout's persistent target; its owner's removal
-        # retires it (`reclaim_checkout_state`), never a completed lane.
-        allowed, reason = False, "checkout-state"
-    if not allowed:
-        result.skipped.append({"path": str(target), "reason": reason})
-        if reason == "lane-active":
-            result.custody = _active_guard_custody((resolved_root,))
-        return result
-    if not target.is_dir():
-        return result
-    assert_safe_to_delete(
-        target, resolved_root, cfg.lane_globs, registered=_norm(target) in registry
-    )
-    if apply:
-        ok, error = delete_path(target)
-        if not ok:
-            result.errors.append(f"{target}: {error}")
-            return result
-    result.reclaimed.append({"path": str(target), "kind": "completed-lane"})
-    keep = {
-        key: value
-        for key, value in registry.items()
-        if _norm(Path(str(value.get("path", "")))) != _norm(target)
-    }
-    if apply and len(keep) != len(registry):
-        _rewrite_registry(resolved_root, keep)
     return result
 
 
@@ -1412,33 +1081,46 @@ def collect(
 ) -> list[ReclaimResult]:
     """The daily collection: retirement by policy, then reclaim under pressure.
 
-    The GC retires lane targets past their TTL and checkout state by last use
-    and owner. The pressure pass is a no-op above the high-water mark and
-    otherwise evicts the least recently used reclaimable roots until the free
-    target is met, as BuildKit keeps a minimum of free space.
+    The GC retires checkout state and pinned session targets by last use and
+    checkout state by owner. The pressure pass is a no-op above the high-water
+    mark and otherwise evicts the least recently used reclaimable roots until
+    the free target is met, as BuildKit keeps a minimum of free space.
     """
     return [gc(root=root, env=env), ensure_free(root=root, env=env)]
 
 
-def _checkout_state_candidates(
-    owner_root: Path, *, now: float, max_age_s: float, build_control: bool = False
+def _retention_candidates(
+    owner_root: Path,
+    scope_roots: Sequence[Path],
+    *,
+    now: float,
+    limits: RetentionLimits,
+    build_control: bool = False,
 ) -> list[Candidate]:
-    """Checkout state roots of ``owner_root`` that the retirement policy selects.
+    """The last-use roots of ``owner_root`` that the retention policy selects.
 
     With ``build_control`` it selects only build-control roots, for the pass
     that follows a GC's reclaimed targets.
     """
+    roots: list[tuple[Path, CandidateKind]] = [
+        (child, "checkout-state")
+        for child in _checkout_state_dirs(owner_root)
+        if not build_control or child.parent.name == "build-control"
+    ]
+    if not build_control:
+        roots.extend(
+            (child, "session-target") for child in session_target_dirs(owner_root)
+        )
     return [
         Candidate(
             path=child,
-            kind="checkout-state",
+            kind=kind,
             mtime=checkout_state_last_use(child),
-            lock_held=_lock_held(child),
+            lock_held=_root_lock_held(child, scope_roots),
             owner_root=owner_root,
         )
-        for child in _checkout_state_dirs(owner_root)
-        if (not build_control or child.parent.name == "build-control")
-        and checkout_state_decision(child, owner_root, now=now, max_age_s=max_age_s)
+        for child, kind in roots
+        if checkout_state_decision(child, owner_root, now=now, limits=limits)
         is not None
     ]
 
@@ -1455,8 +1137,10 @@ def reclaim_checkout_state(
     Each root's owner record must name ``checkout``, and the checkout must be
     absent; a build-control root goes with the checkout target (or pinned
     session) that owns it, once that target is gone or retired in this pass.
-    Retirement is the owner's explicit act, so it skips the protection window;
-    a held lock or a protected path still keeps a root.
+    The checkout target takes its pinned sessions along. Retirement is the
+    owner's explicit act, so it skips the protection window; a held lock, in
+    the target, its sessions or their build control, or a protected path
+    still keeps a root.
     """
     env = os.environ if env is None else env
     checkout = checkout.expanduser().resolve()
@@ -1471,14 +1155,7 @@ def reclaim_checkout_state(
         scope_roots=[str(path) for path in scope_roots],
         mode="apply" if apply else "dry-run",
     )
-    registries = {owner_root: read_registry(owner_root) for owner_root in scope_roots}
-    protected = _protected_paths(
-        scope_roots,
-        env,
-        registered_targets=(
-            Path(path) for registry in registries.values() for path in registry
-        ),
-    )
+    protected = _protected_paths(scope_roots, env)
     component = checkout_component(checkout)
     retired_targets: set[Path] = set()
     for owner_root in scope_roots:
@@ -1503,12 +1180,10 @@ def reclaim_checkout_state(
                 path=child.resolve(),
                 kind="checkout-state",
                 mtime=checkout_state_last_use(child),
-                lock_held=_lock_held(child),
+                lock_held=_root_lock_held(child, scope_roots),
                 owner_root=owner_root,
             )
-            allowed, reason = decide_completed_lane_reclaim(
-                candidate, completed=True, active=False, protected=protected
-            )
+            allowed, reason = decide_owner_reclaim(candidate, protected=protected)
             if not allowed:
                 result.skipped.append({"path": str(candidate.path), "reason": reason})
                 continue
@@ -1523,46 +1198,17 @@ def reclaim_checkout_state(
             )
             if owner.kind == "cargo-target":
                 retired_targets.add(candidate.path)
-    if apply and result.reclaimed:
-        # Session targets registered inside a reclaimed checkout target go too.
-        for owner_root, registry in registries.items():
-            keep = {
-                norm: rec
-                for norm, rec in registry.items()
-                if Path(str(rec.get("path", ""))).is_dir()
-            }
-            if len(keep) != len(registry):
-                _rewrite_registry(owner_root, keep)
     return result
 
 
-def reclaim_completed_lane_fail_open(
-    target: Path,
-    *,
-    root: str | os.PathLike[str] | None = None,
-    env: Mapping[str, str] | None = None,
-) -> ReclaimResult | None:
-    try:
-        return reclaim_completed_lane(target, root=root, env=env)
-    except Exception as exc:
-        print(
-            f"disk_guard completed-lane reclaim LOUD fail-open: {exc}", file=sys.stderr
-        )
-        return None
-
-
 def _protected_paths(
-    roots: Path | Sequence[Path],
-    env: Mapping[str, str],
-    *,
-    registered_targets: Iterable[Path],
+    roots: Path | Sequence[Path], env: Mapping[str, str]
 ) -> list[Path]:
     """Paths that must never be reclaimed even if they match the allow-set.
 
-    Protect explicit Cargo targets and the current session component. With no
-    target alias or source context, all matching registered checkout sessions
-    stay protected. Reuse the operation's registry snapshot; never scan or adopt
-    unknown checkout directories to infer a target.
+    Protect explicit Cargo targets, this interpreter's environment, and the
+    targets of the current pinned session: with no source context, every
+    session target that carries its component, in either layout, stays.
     """
     scan_roots = (roots,) if isinstance(roots, Path) else tuple(roots)
     protected: list[Path] = []
@@ -1570,12 +1216,10 @@ def _protected_paths(
     if session:
         component = session_artifact_component(session)
         protected.extend(
-            session_targets_dir(_target_root(root)) / component for root in scan_roots
-        )
-        protected.extend(
             target
-            for target in registered_targets
-            if target.name == component and target.parent.name == "sessions"
+            for root in scan_roots
+            for target in session_target_dirs(root)
+            if target.name == component
         )
     for name in ("CARGO_TARGET_DIR", "MOLT_DIFF_CARGO_TARGET_DIR"):
         raw = str(env.get(name, "")).strip()
@@ -1610,10 +1254,13 @@ def selftest() -> list[tuple[str, bool]]:
     now = 1_000_000.0
     min_idle = 900.0  # 15 min
     stale = Candidate(
-        Path("/x/target/sessions/old"), "sessions", mtime=now - 10_000, size=5 * _GB
+        Path("/x/target/sessions/old"),
+        "session-target",
+        mtime=now - 10_000,
+        size=5 * _GB,
     )
     fresh = Candidate(
-        Path("/x/target/sessions/live"), "sessions", mtime=now - 5, size=9 * _GB
+        Path("/x/target/sessions/live"), "session-target", mtime=now - 5, size=9 * _GB
     )
     locked = Candidate(
         Path("/x/target/codex-held"),
@@ -1673,10 +1320,16 @@ def selftest() -> list[tuple[str, bool]]:
 
     # 5) reclaim STOPS once the target is met (does not over-delete).
     small = Candidate(
-        Path("/x/target/sessions/a"), "sessions", mtime=now - 10_000, size=40 * _GB
+        Path("/x/target/sessions/a"),
+        "session-target",
+        mtime=now - 10_000,
+        size=40 * _GB,
     )
     extra = Candidate(
-        Path("/x/target/sessions/b"), "sessions", mtime=now - 9_000, size=40 * _GB
+        Path("/x/target/sessions/b"),
+        "session-target",
+        mtime=now - 9_000,
+        size=40 * _GB,
     )
     p5 = plan_reclaim(
         [small, extra],
@@ -1688,26 +1341,28 @@ def selftest() -> list[tuple[str, bool]]:
     )
     results.append(("stops-at-target", p5.selected == [small]))
 
-    # 6) GC collects a dir past TTL but not one within TTL.
-    old_reg = Candidate(
-        Path("/x/target/codex-done"),
-        "registered",
+    # 6) the GC retires an idle root, never a locked or protected one.
+    idle = Candidate(
+        Path("/x/target/sessions/idle"), "session-target", mtime=now - 100_000
+    )
+    held = Candidate(
+        Path("/x/target/sessions/held"),
+        "session-target",
         mtime=now - 100_000,
-        registered_at=now - 100_000,
+        lock_held=True,
     )
-    new_reg = Candidate(
-        Path("/x/target/codex-live"),
-        "registered",
-        mtime=now - 100,
-        registered_at=now - 100,
+    mine = Candidate(
+        Path("/x/target/sessions/mine"), "session-target", mtime=now - 100_000
     )
-    collect = gc_plan([old_reg, new_reg], now=now, ttl_s=6 * 3600, min_idle_s=min_idle)
-    results.append(("gc-collects-past-ttl-only", collect == [old_reg]))
+    collect = gc_plan(
+        [idle, held, mine], now=now, min_idle_s=min_idle, protected=[mine.path]
+    )
+    results.append(("gc-keeps-locked-and-protected-roots", collect == [idle]))
 
     # 7) a nonterminal memory guard is stronger than age or free-space pressure.
     guarded = Candidate(
-        Path("/x/target/sessions/guarded"),
-        "sessions",
+        Path("/x/target/codex-guarded"),
+        "lane",
         mtime=now - 100_000,
         size=100 * _GB,
         guard_active=True,
@@ -1722,13 +1377,12 @@ def selftest() -> list[tuple[str, bool]]:
     )
     results.append(("active-guard-never-reclaimed", guarded not in p7.selected))
 
-    # 8) a recently registered lane is protected by the shared live-lane set.
+    # 8) a last-use root used within the protection window survives pressure.
     recent = Candidate(
-        Path("/x/target/codex-recent"),
-        "registered",
-        mtime=now - 100_000,
+        Path("/x/target/sessions/recent"),
+        "session-target",
+        mtime=now - 3600,
         size=100 * _GB,
-        registered_at=now - 60,
     )
     p8 = plan_reclaim(
         [recent],
@@ -1737,9 +1391,8 @@ def selftest() -> list[tuple[str, bool]]:
         target_bytes=40 * _GB,
         now=now,
         min_idle_s=min_idle,
-        live_lanes=[recent.path],
     )
-    results.append(("recent-registration-never-reclaimed", recent not in p8.selected))
+    results.append(("recent-use-never-reclaimed", recent not in p8.selected))
 
     return results
 
@@ -1793,13 +1446,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--gc",
         action="store_true",
-        help="garbage-collect registered lane targets past their TTL and checkout "
-        "state roots by last use (MOLT_CHECKOUT_STATE_MAX_AGE_DAYS) or a removed owner",
-    )
-    ap.add_argument(
-        "--register",
-        metavar="PATH",
-        help="register an isolated per-lane CARGO_TARGET_DIR",
+        help="retire checkout state roots by last use "
+        "(MOLT_CHECKOUT_STATE_MAX_AGE_DAYS) or a removed owner, and pinned session "
+        "targets by last use (MOLT_SESSION_TARGET_IDLE_HOURS)",
     )
     ap.add_argument("--dry-run", action="store_true", help="report only; never delete")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
@@ -1821,11 +1470,6 @@ def main(argv: list[str] | None = None) -> int:
             print(f"\n{len(dead)} disk_guard canary/canaries FAILED to fire (M34/M42).")
             return 1
         print(f"\nAll {len(results)} disk_guard canaries live.")
-        return 0
-
-    if args.register:
-        reg = register_lane_target(args.register, root=args.root)
-        print(f"disk_guard: registered {Path(args.register).resolve()} -> {reg}")
         return 0
 
     config = GuardConfig.from_env(

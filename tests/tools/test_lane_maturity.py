@@ -80,3 +80,36 @@ def test_bad_git_metadata_refuses_registry_write_and_preserves_sources(tmp_path)
     assert manifest.read_bytes() == before
     assert not (linked / ".molt").exists()
     assert (linked / "tracked").read_text(encoding="utf-8") == "source\n"
+
+
+def test_completion_marks_the_record_and_retires_no_build_state(tmp_path):
+    # A record from before HF-313 still names its Cargo target. Completion
+    # once deleted it; the retention policy of molt.checkout_state and
+    # `molt_dev lane retire` own build state now.
+    target = tmp_path / "artifacts" / "target" / "codex-finished"
+    target.mkdir(parents=True)
+    (target / "artifact.bin").write_bytes(b"x")
+    lm.write_registry(
+        tmp_path,
+        {
+            "lane": {
+                "maturity": "L1",
+                "status": "active",
+                "worktree": str(tmp_path),
+                "cargo_target_dir": str(target),
+            }
+        },
+    )
+
+    assert lm.complete_worktree_lanes(repo_root=tmp_path, worktree=tmp_path) == ["lane"]
+    assert lm.read_registry(tmp_path)["lane"]["status"] == "completed"
+    assert (target / "artifact.bin").read_bytes() == b"x"
+    assert lm.complete_lane(repo_root=tmp_path, lane_id="absent") is False
+
+
+def test_admission_records_a_new_lane_without_its_target(tmp_path, monkeypatch):
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "target"))
+    assert lm.admission_check(
+        repo_root=tmp_path, lane_id="new", resource_family="python"
+    ).allow
+    assert "cargo_target_dir" not in lm.read_registry(tmp_path)["new"]
