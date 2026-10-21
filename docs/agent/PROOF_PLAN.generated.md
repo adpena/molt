@@ -17,7 +17,7 @@ Landing checks execute the generator and authority inputs captured from the exac
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 13 |
 | Hashed executable authority inputs | 1 | 379 |
-| Local path rules | 35 | 74 |
+| Local path rules | 35 | 81 |
 | Unique local commands | 73 | 75 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
@@ -122,17 +122,17 @@ Executable identities bind resolved path, version text, and the repository-relat
 | `posix-uname` | `executable` | — | `^.+$` | `.` | `host POSIX utility` | 1 |
 | `posix-file` | `executable` | — | `^file-[0-9]+\.` | `.` | `host file utility` | 1 |
 | `uv` | `executable` | — | `^uv 0\.13\.1\b` | `.` | `0.13.1` | 1 |
-| `node` | `executable` | — | `^v26\.11\.1$` | `.` | `26.11.1` | 3 |
+| `node` | `executable` | — | `^v26\.12\.1$` | `.` | `26.12.1` | 3 |
 | `target-pythons.3.12` | `executable` | — | `^Python 3\.12\.[0-9]+$` | `.` | `3.12` | 1 |
 | `target-pythons.3.13` | `executable` | — | `^Python 3\.13\.[0-9]+$` | `.` | `3.13` | 1 |
 | `target-pythons.3.14` | `executable` | — | `^Python 3\.14\.[0-9]+$` | `.` | `3.14` | 1 |
 | `target-pythons` | `group` | `target-pythons.3.12`, `target-pythons.3.13`, `target-pythons.3.14` | `selection only` | — | — | — |
 | `generators` | `group` | `target-pythons`, `rustfmt`, `browser-acorn` | `selection only` | — | — | — |
 | `browser-acorn` | `executable` | — | `^8\.19\.0$` | `tools/browser_asset_graph` | `8.19.0` | 1 |
-| `rustc` | `executable` | — | `^rustc 1\.99\.0\b` | `.` | `1.99.0` | 3 |
+| `rustc` | `executable` | — | `^rustc 1\.99\.1\b` | `.` | `1.99.1` | 3 |
 | `lune` | `executable` | — | `^lune 0\.10\.5$` | `.` | `0.10.5` | 2 |
 | `build-python` | `executable` | `compiler:build-python` | `^Python 3\.[0-9]+\.[0-9]+.*$` | `.` | `effective Cargo build Python` | 1 |
-| `cargo` | `executable` | — | `^cargo 1\.99\.0\b` | `.` | `1.99.0` | 3 |
+| `cargo` | `executable` | — | `^cargo 1\.99\.1\b` | `.` | `1.99.1` | 3 |
 | `git` | `executable` | — | `^git version 2\.` | `.` | `2.x` | 1 |
 | `rustfmt` | `executable` | — | `^rustfmt 1\.10\.0-stable\b` | `.` | `1.10.0` | 3 |
 | `clang` | `executable` | — | `clang version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
@@ -383,7 +383,14 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `host-capacity` | 9 | 0 |
 | `guard-marker-custody` | 10 | 0 |
 | `process-environment-consumers` | 9 | 0 |
-| `repository-scan-records` | 18 | 0 |
+| `repository-scan-records` | 4 | 0 |
+| `subprocess-guard-coverage` | 2 | 0 |
+| `environment-registry-audit` | 2 | 0 |
+| `cpython-coverage-generation` | 2 | 0 |
+| `unicode-width-scan-records` | 1 | 0 |
+| `structural-audit` | 7 | 0 |
+| `structural-audit-records` | 5 | 0 |
+| `generator-manifest` | 8 | 0 |
 | `backend-daemon-custody` | 11 | 0 |
 | `encoding-diagnostics` | 2 | 0 |
 | `runtime-cargo-input-custody` | 47 | 0 |
@@ -391,7 +398,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `table-drift` | 18 | 1 |
 | `findings-registry` | 4 | 0 |
 | `memory-graph` | 5 | 1 |
-| `ci-wiring` | 58 | 0 |
+| `ci-wiring` | 57 | 0 |
 | `apparatus-hooks` | 11 | 2 |
 | `apparatus-learning-protection` | 12 | 2 |
 | `timing-ratio-authority` | 2 | 0 |
