@@ -3597,6 +3597,121 @@ def test_queue_plan_survives_between_runners_and_drops_closed_requests(tmp_path)
     assert not paths.plan.exists()
 
 
+@pytest.mark.parametrize("recent", [0, 1, 3, 100])
+def test_queue_status_bounds_result_bodies_and_live_inventory(
+    drv, tmp_path, monkeypatch, capsys, recent
+):
+    import weakref
+
+    from tools import molt_dev_queue as queue
+
+    paths = queue.QueuePaths(tmp_path / "landing-queue")
+    waiting = queue.enqueue(paths, head="f" * 40, worktree=tmp_path, branch=None)
+    queue._write_plan(paths, [[waiting.id]])
+    paths.results.mkdir()
+    # Deliberately unordered inventory: output is the newest N in queue order.
+    records = {f"{index:03d}.json": {"result": index} for index in range(64)}
+    for index in range(64):
+        name = f"{index * 17 % 64:03d}.json"
+        (paths.results / name).write_text(json.dumps(records[name]), encoding="utf-8")
+    live = weakref.WeakSet()
+    max_live = 0
+    glob_calls = 0
+    reads = []
+
+    class ObservedResult:
+        def __init__(self, path):
+            self.path = path
+            self.name = path.name
+
+        def __lt__(self, other):
+            return self.name < other.name
+
+        def read_text(self, *, encoding):
+            reads.append(self.name)
+            return self.path.read_text(encoding=encoding)
+
+    class ObservedQueuePath(type(tmp_path)):
+        def glob(self, pattern):
+            nonlocal glob_calls
+            entries = super().glob(pattern)
+            if self != paths.results:
+                return entries
+            glob_calls += 1
+
+            def observed_entries():
+                nonlocal max_live
+                for path in entries:
+                    entry = ObservedResult(path)
+                    live.add(entry)
+                    max_live = max(max_live, len(live))
+                    yield entry
+
+            return observed_entries()
+
+    paths = queue.QueuePaths(ObservedQueuePath(paths.root))
+    monkeypatch.setattr(queue, "_queue_paths", lambda _repo: paths)
+    args = drv.build_parser().parse_args(
+        ["queue", "status", "--repo", str(tmp_path), "--recent", str(recent)]
+    )
+    assert args.func(args) == drv.EXIT_OK
+    report = json.loads(capsys.readouterr().out)
+    selected = sorted(records)[-recent:] if recent else []
+    assert report == {
+        "pending": [waiting.id],
+        "plan": [[waiting.id]],
+        "recent": [records[name] for name in selected],
+    }
+    assert reads == selected
+    assert glob_calls == (1 if recent else 0)
+    # Count selector-owned entries, not pathlib directory-iterator internals.
+    # The iterator may retain its current yield beside the bounded heap.
+    # A full-inventory sort retains all 64 wrappers and violates this bound.
+    assert max_live <= min(recent, len(records)) + 2
+
+
+@pytest.mark.parametrize("recent", ["-1", "-100"])
+def test_queue_status_rejects_negative_recent_before_queue_access(
+    drv, tmp_path, monkeypatch, capsys, recent
+):
+    from tools import molt_dev_queue as queue
+
+    def unexpected_queue_access(_repo):
+        pytest.fail("negative result count inspected the queue")
+
+    monkeypatch.setattr(queue, "_queue_paths", unexpected_queue_access)
+    assert (
+        drv.main(["queue", "status", "--repo", str(tmp_path), "--recent", recent])
+        == drv.EXIT_USAGE
+    )
+    output = capsys.readouterr()
+    assert "--recent must be non-negative" in output.err
+    assert output.out == ""
+
+
+def test_queue_status_preserves_selected_result_parse_errors(
+    drv, tmp_path, monkeypatch
+):
+    from tools import molt_dev_queue as queue
+
+    paths = queue.QueuePaths(tmp_path / "landing-queue")
+    paths.results.mkdir(parents=True)
+    (paths.results / "newest.json").write_text("not JSON", encoding="utf-8")
+    monkeypatch.setattr(queue, "_queue_paths", lambda _repo: paths)
+    args = drv.build_parser().parse_args(
+        ["queue", "status", "--repo", str(tmp_path), "--recent", "1"]
+    )
+    with pytest.raises(json.JSONDecodeError):
+        args.func(args)
+
+
+def test_queue_status_rejects_noninteger_recent(drv, capsys):
+    with pytest.raises(SystemExit) as error:
+        drv.build_parser().parse_args(["queue", "status", "--recent", "many"])
+    assert error.value.code == drv.EXIT_USAGE
+    assert "invalid int value" in capsys.readouterr().err
+
+
 def test_queue_retires_old_runner_logs_and_results_only(tmp_path):
     from tools import molt_dev_queue as queue
 
