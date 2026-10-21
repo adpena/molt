@@ -199,6 +199,7 @@ integration speedup.
 | `land` | Run the lane's static gates in the lane (the precheck), then queue this checkout's committed HEAD for the landing runner and return; start a runner unless one holds the runner lock. `--wait` exits 0 only when the commit landed. `--no-precheck` queues without the precheck. |
 | `queue run` | The runner (started by `land`): land queued commits in batches through `integrate`, bisecting failures. `--candidate-controller` for a controller repair. |
 | `queue status` | Pending requests, the bisection plan and recent results as JSON. `--recent N`. |
+| `queue withdraw` | Close pending requests without testing them: `queue withdraw <request-id>... --reason TEXT`. Refuses while a batch runs and withdraws nothing if any id is not pending. |
 | `secure-wip` | Commit **all** tracked modifications in one `WIP-RECOVERY` commit. `--dry-run`, `-m/--message`, `--ignore`, `--include-untracked`. |
 | `verify-push` | Confirm `origin/<branch>` contains a tip sha by fetch + ancestor. `--tip`, `--json`. |
 | `probe` | File size+mtime / pid liveness via python ops. `--file`, `--pid`, `--json`. |
@@ -316,6 +317,14 @@ it works, it drops inherited `MOLT_VENV`, `UV_PROJECT_ENVIRONMENT` and
 `VIRTUAL_ENV`: the sandbox's gates use the sandbox's environment. Results
 older than 30 days and finished runner logs beyond the newest 20 retire when a
 runner starts.
+
+Each result records one status from a closed set (`LandingStatus` in
+`tools/molt_dev_queue.py`): `landed`, `failed`, `conflict` or `withdrawn`.
+`queue withdraw <request-id>... --reason TEXT` closes pending requests without
+testing them and records the reason as the result's detail. It takes the
+runner lock, which a runner holds for each batch, so it never edits a batch
+under test; while a batch runs it refuses, and it withdraws nothing when any
+named id is not pending. A bisection plan drops a withdrawn id.
 
 `land --wait` polls for the request's result. It fails, naming the runner's
 log, when the runner lock is free, the request is still queued and the newest

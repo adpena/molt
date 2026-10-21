@@ -10,7 +10,10 @@ Per-worktree window = **session-start HEAD .. current HEAD** (a marker in
 ``.molt/state/landing_gate_marker.json``, written by ``session_digest`` at
 SessionStart and re-baselined defensively here). If a turn produced substantive
 potentially mutating tool activity but the window shows:
-  * NO landed commit, AND
+  * NO commit in the session's checkout, AND
+  * NO landing-queue request pending and none landed since the window opened
+    (``tools/molt_dev_queue.py``; lanes land through ``molt_dev.py land``, so
+    the session's own HEAD often never moves), AND
   * NO proof_queue row in flight, AND
   * NO named blocker in ``.molt/state/blockers.jsonl``,
 then it BLOCKS with a firm re-engage nudge (M12 + M05: a PASS is a hypothesis
@@ -31,6 +34,7 @@ from __future__ import annotations
 import json
 import sys
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -52,11 +56,12 @@ BLOCKERS_NAME = "blockers.jsonl"
 SUBSTANTIVE_TOOL_THRESHOLD = 2
 
 BLOCK_MESSAGE = (
-    "This turn reported without landing. Land a commit / proof / passing test via "
-    "the queue (tools/proof_queue.py, tools/molt_dev.py integrate), or record the real external "
-    'blocker (python tools/hooks/landing_gate.py --record-blocker "<reason>"), then '
-    "stop. Reporting/planning without landing is the standing M12 violation; a PASS "
-    "is a hypothesis until reproduced (M05)."
+    "This turn changed things, but nothing landed, is landing, or is blocked. Queue "
+    "the lane (`uv run --python 3.12 python tools/molt_dev.py land --repo <lane>`) "
+    "or a proof (tools/proof_queue.py), or record the real external blocker "
+    '(`uv run --python 3.12 python tools/hooks/landing_gate.py --record-blocker "<reason>"`), '
+    "then stop. Reporting/planning without landing is the standing M12 violation; a "
+    "PASS is a hypothesis until reproduced (M05)."
 )
 
 
@@ -67,19 +72,27 @@ def decide(
     *,
     substantive_activity: bool,
     window_has_commit: bool,
+    landing_progress: bool,
     queue_row_in_flight: bool,
     blocker_recorded: bool,
     report_only: bool,
 ) -> str | None:
     """Return the block reason, or None to allow. PURE + unit-tested.
 
-    A turn is allowed when it was not substantive, OR it landed a commit, OR it
-    has a queue row in flight, OR it named a blocker, OR it is marked
+    A turn is allowed when it was not substantive, OR it landed a commit, OR the
+    landing queue holds a pending or newly landed request, OR it has a proof
+    queue row in flight, OR it named a blocker, OR it is marked
     ``[report-only]``. Otherwise it reported without landing -> block.
     """
     if not substantive_activity:
         return None
-    if window_has_commit or queue_row_in_flight or blocker_recorded or report_only:
+    if (
+        window_has_commit
+        or landing_progress
+        or queue_row_in_flight
+        or blocker_recorded
+        or report_only
+    ):
         return None
     return BLOCK_MESSAGE
 
@@ -146,6 +159,30 @@ def _window_subjects(root: Path, start_head: str | None) -> str:
         return r.stdout if r.returncode == 0 else ""
     except Exception:
         return ""
+
+
+def _landing_progress(root: Path, start_ts: float) -> bool:
+    """True if a landing request is pending or one landed since ``start_ts``.
+
+    The landing queue lives in the Git common directory, so every worktree of
+    the checkout shares it, and it is read through its own module. Uncertainty
+    fails open (True), as every fact here does.
+    """
+    try:
+        from tools import molt_dev_queue as queue
+
+        paths = queue.queue_paths(root)
+        if queue.pending(paths):
+            return True
+        since = datetime.fromtimestamp(start_ts, UTC)
+        return any(
+            queue.LandingStatus(result["status"]) is queue.LandingStatus.LANDED
+            and datetime.fromisoformat(result["recorded_at"]) >= since
+            for result in queue.recorded_results(paths)
+        )
+    except Exception as exc:
+        _common.log_error("landing_gate.landing_queue", exc, root)
+        return True
 
 
 def _queue_row_in_flight(root: Path) -> bool:
@@ -262,12 +299,14 @@ def evaluate(data: dict, root: Path) -> str | None:
     window_commit = _window_has_commit(root, start_head)
     subjects = _window_subjects(root, start_head) if window_commit else ""
     report_only = "[report-only]" in subjects
+    landing = _landing_progress(root, float(start_ts))
     queue_flight = _queue_row_in_flight(root)
     blocker = _blocker_recorded(root, session_id, float(start_ts))
 
     reason = decide(
         substantive_activity=substantive,
         window_has_commit=window_commit,
+        landing_progress=landing,
         queue_row_in_flight=queue_flight,
         blocker_recorded=blocker,
         report_only=report_only,
