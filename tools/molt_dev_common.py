@@ -3,10 +3,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, MutableMapping
+from collections.abc import Callable
 import subprocess
 import os
-import shlex
 import sys
 from pathlib import Path
 
@@ -128,8 +127,9 @@ def _run_fast_captured_command(
     2026-10-21 the host stalled for 38 minutes and two 5 ms Git reads in a
     landing gate passed the old 60 s bound, which failed a 47-minute batch.
     Local plumbing now waits out a stall. A network transfer is bounded by its
-    progress instead (``bound_git_transfer``). A caller that must bound a
-    command passes ``timeout`` and receives exit 124 when it expires.
+    progress instead (tools/git_transfer.py, applied by CommandExecutor). A
+    caller that must bound a command passes ``timeout`` and receives exit 124
+    when it expires.
     """
     try:
         return _COMMANDS.run(
@@ -162,48 +162,6 @@ def _run_fast_captured_bytes(
 ) -> subprocess.CompletedProcess[bytes]:
     """``_run_fast_captured_command`` with byte-exact output (paths, archives)."""
     return _COMMANDS.run(cmd, cwd=cwd, env=env, capture_output=True, check=False)
-
-
-# A transfer that moves no byte for this long has a dead or wedged peer. A
-# live peer that is merely slow, or a host that is merely loaded, still moves
-# bytes; Cargo bounds its own downloads the same way (http.low-speed-limit).
-GIT_TRANSFER_STALL_SECONDS = 120
-# ssh asks the server for a reply every 15 s and gives up after 4 misses; an
-# unattended landing never prompts for a password or an unknown host key.
-GIT_SSH_PROGRESS_OPTIONS = (
-    "-o",
-    "BatchMode=yes",
-    "-o",
-    "ServerAliveInterval=15",
-    "-o",
-    "ServerAliveCountMax=4",
-)
-
-
-def bound_git_transfer(
-    env: MutableMapping[str, str], *, configured_ssh_command: str | None
-) -> None:
-    """Bound a Git network transfer by its progress, never by wall clock.
-
-    Neither transport ends a peer that holds the connection and sends
-    nothing: a silent HTTP peer kept `git ls-remote` waiting past 150 s, and
-    ssh's defaults wait about two hours on a kernel keepalive. HTTP aborts
-    below 1 byte/s over ``GIT_TRANSFER_STALL_SECONDS``; ssh gets server-alive
-    probes. A user's ssh options come first, so ssh keeps them; a command
-    that is not ssh itself (``GIT_SSH`` or a wrapper) is left as configured.
-    """
-    env["GIT_HTTP_LOW_SPEED_LIMIT"] = "1"
-    env["GIT_HTTP_LOW_SPEED_TIME"] = str(GIT_TRANSFER_STALL_SECONDS)
-    if env.get("GIT_SSH"):
-        return
-    command = env.get("GIT_SSH_COMMAND") or configured_ssh_command or "ssh"
-    try:
-        words = shlex.split(command)
-    except ValueError:
-        return
-    if not words or Path(words[0]).name.lower() not in {"ssh", "ssh.exe"}:
-        return
-    env["GIT_SSH_COMMAND"] = shlex.join([*words, *GIT_SSH_PROGRESS_OPTIONS])
 
 
 def _run_live_gate(

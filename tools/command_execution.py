@@ -31,6 +31,7 @@ from tools.import_file import (
     load_sibling_package_module_from_path,
 )
 
+from tools import git_transfer
 from tools.memory_guard_core.cli_contract import guardian_argv
 
 
@@ -85,6 +86,8 @@ _INERT_GIT_GLOBAL_OPTIONS = frozenset({"--no-optional-locks", "--no-pager"})
 _VERSION_FLAGS = frozenset({"--help", "--version", "-V", "-vV", "-version"})
 # Git's own version report. `git --help` stays guarded: it opens a pager.
 _GIT_VERSION_REQUESTS = frozenset({"--version", "version"})
+# `git config` reads (the transfer authority reads several keys at once).
+_GIT_CONFIG_READS = frozenset({"--get", "--get-all", "--get-regexp"})
 
 
 def _is_bounded_metadata_probe(command: Sequence[str]) -> bool:
@@ -108,7 +111,9 @@ def _is_bounded_metadata_probe(command: Sequence[str]) -> bool:
             return True
         if tuple(command[index : index + 2]) in _READ_ONLY_GIT_ACTIONS:
             return True
-        return subcommand == "config" and "--get" in command[index + 1 :]
+        return subcommand == "config" and any(
+            flag in _GIT_CONFIG_READS for flag in command[index + 1 :]
+        )
     return any(flag in _VERSION_FLAGS for flag in command[1:])
 
 
@@ -419,6 +424,12 @@ class CommandExecutor:
             raise ValueError("command argv must not be empty")
         if capture_output and (stdout is not None or stderr is not None):
             raise ValueError("capture_output cannot be combined with stdout or stderr")
+        no_output_timeout: float | None = None
+        transfer = git_transfer.git_transfer(command)
+        if transfer is not None:
+            command, env, no_output_timeout = self._bound_git_transfer(
+                command, transfer, cwd=cwd, env=env
+            )
         process_guard = _process_guard_authority(str(self.repo_root))
         if env is not None:
             from molt.process_environment import (
@@ -460,7 +471,43 @@ class CommandExecutor:
                 and stderr_capture_path is None
                 else self.prefix
             ),
+            no_output_timeout=no_output_timeout,
         )
+
+    def _bound_git_transfer(
+        self,
+        command: list[str],
+        transfer: git_transfer.GitTransfer,
+        *,
+        cwd: str | Path | None,
+        env: Mapping[str, str] | None,
+    ) -> tuple[list[str], Mapping[str, str], float | None]:
+        """Bound a Git transfer by its progress (tools/git_transfer.py)."""
+        from molt.process_environment import (
+            ProcessEnvironment,
+            ProcessEnvironmentBuilder,
+        )
+
+        query = self.run(
+            git_transfer.settings_query(transfer),
+            cwd=cwd,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        bounded = git_transfer.bound_transfer(
+            command,
+            transfer,
+            os.environ if env is None else env,
+            settings=git_transfer.parse_settings(query.stdout or ""),
+            attended=git_transfer.prompt_reaches_a_person(),
+            ssh_wrapper=self.repo_root / "tools" / "git_ssh_bound.sh",
+        )
+        bounded_env: Mapping[str, str] = bounded.env
+        if isinstance(env, (ProcessEnvironment, ProcessEnvironmentBuilder)):
+            bounded_env = ProcessEnvironment(bounded.env, rule=env.rule)
+        return bounded.argv, bounded_env, bounded.no_output_timeout
 
     def check_output(
         self,

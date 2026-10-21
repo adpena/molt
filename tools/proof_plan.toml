@@ -318,6 +318,8 @@ authority_inputs = [
   "tools/proof_supervisor/tests/required_environment.rs",
   "tools/check_subprocess_guard_coverage.py",
   "tools/command_execution.py",
+  "tools/git_transfer.py",
+  "tools/git_ssh_bound.sh",
   "tools/cargo_test_binary_runner.py",
   "tools/libtest_results.py",
   "tools/generator_manifest.toml",
