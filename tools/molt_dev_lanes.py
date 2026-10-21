@@ -36,7 +36,6 @@ import json
 import os
 from pathlib import Path
 import re
-import sys
 from types import ModuleType
 from typing import Any
 
@@ -666,7 +665,3 @@ def add_lane_arguments(
     add_repo_arg(listing)
     add_remote_branch(listing)
     listing.set_defaults(func=cmd_lane_list)
-
-
-if __name__ == "__main__":
-    sys.exit("run lane commands through tools/molt_dev.py lane")
