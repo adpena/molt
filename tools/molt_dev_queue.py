@@ -395,6 +395,16 @@ def cmd_land(args: argparse.Namespace) -> int:
         raise DriverError(
             "--retire needs a lane/<slug> branch (`molt_dev.py lane start`)"
         )
+    if not args.no_precheck:
+        from tools.molt_dev_precheck import precheck_landing
+
+        precheck_landing(
+            git,
+            repo,
+            head=head,
+            upstream=upstream,
+            session_id=os.environ.get("MOLT_SESSION_ID", "devtool"),
+        )
     request = enqueue(
         paths, head=head, worktree=repo, branch=branch, retire=args.retire
     )
@@ -750,6 +760,12 @@ def add_queue_arguments(
         action="store_true",
         help="run this checkout's driver and runner instead of main's pinned "
         "controller (repairs a broken controller)",
+    )
+    p_land.add_argument(
+        "--no-precheck",
+        action="store_true",
+        help="queue without first running the lane's static gates in the lane "
+        "(the batch still runs every gate)",
     )
     p_land.add_argument("--pinned-controller", help=argparse.SUPPRESS)
     p_land.set_defaults(func=cmd_land)

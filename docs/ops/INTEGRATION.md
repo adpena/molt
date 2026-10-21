@@ -174,7 +174,7 @@ integration speedup.
 | Subcommand | Purpose |
 |---|---|
 | `integrate` | controller → fetch → rebase → verify-commits → cite → markers → gates → push → confirm → cleanup. `--dry-run`, `--no-push`, `--cleanup-worktree`, `--marker`, `--extra-gate`, `--expected-upstream`, `--candidate-controller`, `--ignore` (cleanup only). |
-| `land` | Queue this checkout's committed HEAD for the landing runner and return; start a runner unless one holds the runner lock. `--wait` exits 0 only when the commit landed. |
+| `land` | Run the lane's static gates in the lane (the precheck), then queue this checkout's committed HEAD for the landing runner and return; start a runner unless one holds the runner lock. `--wait` exits 0 only when the commit landed. `--no-precheck` queues without the precheck. |
 | `queue run` | The runner (started by `land`): land queued commits in batches through `integrate`, bisecting failures. `--candidate-controller` for a controller repair. |
 | `queue status` | Pending requests, the bisection plan and recent results as JSON. `--recent N`. |
 | `secure-wip` | Commit **all** tracked modifications in one `WIP-RECOVERY` commit. `--dry-run`, `-m/--message`, `--ignore`, `--include-untracked`. |
@@ -255,7 +255,12 @@ main-worktree environment are used as they are.
 
 ### The landing queue (`land`, `queue run`)
 
-`land` checks that the checkout is clean, writes one request under
+`land` checks that the checkout is clean, then runs the precheck: the
+selected gates whose toolchains only read the candidate's files (linters,
+formatters, type checks, generators and policy audits; no pytest session and
+no Cargo build) run in the lane against its merge base with main, through the
+same selection, environment and executor as `integrate`. A failing gate stops
+`land` before it queues anything. It then writes one request under
 `<git-common-dir>/molt/landing-queue/requests/` and returns; the request pins
 the commit, so later work on the branch does not join it. `land --retire`
 also retires the lane (`lane retire`) once it lands. A runner starts through

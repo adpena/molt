@@ -217,9 +217,16 @@ One runner owns main. Agents enqueue and continue.
   groups up to a size limit with a build concurrency. bors-ng tests a batch
   and bisects a failed batch. Uber's SubmitQueue ("Keeping Master Green at
   Scale", EuroSys 2019) ranks speculative builds by their chance to land.
-- **Design.** `molt_dev.py land` checks the lane and writes one request under
-  `<git-common-dir>/molt/landing-queue/`, then returns. It starts the runner
-  if none holds the runner lock. `land` and the runner run from the pinned
+- **Design.** `molt_dev.py land` checks the lane, runs its precheck, and
+  writes one request under `<git-common-dir>/molt/landing-queue/`, then
+  returns. The precheck runs, in the lane, the selected gates that only read
+  the candidate's files (`SelectedGate.precheck`: toolchains within
+  `PRECHECK_TOOLCHAINS`, not a pytest session; `tools/molt_dev_precheck.py`),
+  so a lint, format, generator or policy failure costs that lane alone instead
+  of a batch bisection; GitHub's merge queue likewise admits only changes whose
+  required checks passed, and Zuul runs its check pipeline before its gate
+  pipeline. `--no-precheck` skips it; the batch still runs every gate. It
+  starts the runner if none holds the runner lock. `land` and the runner run from the pinned
   controller: a lane branched before a driver fix once queued itself with
   its own old driver, which started a runner that could not import `tools`.
   It builds a candidate in its own sandbox worktree: main's tip, then each
