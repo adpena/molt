@@ -9371,6 +9371,9 @@
       "local.performance-measurement.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 -m 'not slow' tests/test_node_runtime.py tests/test_bench_tool.py tests/test_bench_audit.py tests/test_bench_report.py tests/test_temporary_artifacts.py tests/tools/test_direct_run_process_custody.py tests/tools/test_cold_start_decompose.py tests/tools/test_perf_profile_selection.py tests/tools/test_perf_release_integrity.py tests/tools/test_perf_scoreboard.py tests/tools/test_perf_methodology.py tests/tools/test_perf_schema.py tests/tools/test_perf_history.py tests/tools/test_perf_board.py tests/tools/test_perf_authority.py",
       "local.phase-exit-manifest.0": "python tools/legacy_inventory.py --check",
       "local.phase-exit-manifest.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/tools/test_phase_exit_manifest.py tests/tools/test_legacy_inventory.py",
+      "local.process-environment-consumers.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_standalone_benchmark_memory_guard.py",
+      "local.process-environment-consumers.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 -k batch_suite_trip_uses_submitted_request_custody_before_shutdown tests/test_molt_diff_memory_guard.py",
+      "local.process-environment-consumers.pytest-select-1": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 -k 'base_env_forces_repo_roots or run_k6_uses_live_tree_guard or k6_failure_retains_full_diagnostic or scenario_routes_its_summary_through_k6 or main_wraps_scenarios_in_repo_sentinel or db_stub_finds_the_worker' tests/test_demo_bench_memory_guard.py",
       "local.public-contract.0": "python tools/public_contract_gate.py --check",
       "local.public-contract.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/tools/test_public_contract_gate.py",
       "local.python-effect-capability-authority.0": "cargo test --locked -p molt-ir --lib python_effects_generated",
@@ -10528,6 +10531,48 @@
         ],
         "toolchains": [
           "python"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.process-environment-consumers.pytest",
+          "local.process-environment-consumers.pytest-select-0",
+          "local.process-environment-consumers.pytest-select-1"
+        ],
+        "description": "Bench and harness consumers of process environments and the batch compile client.",
+        "gates": [],
+        "globs": [
+          "bench/**/*.py",
+          "tests/molt_diff.py",
+          "tools/batch_compile_client.py",
+          "tools/harness_memory_guard.py",
+          "src/molt/dx.py",
+          "src/molt/process_environment.py",
+          "tests/test_molt_diff_memory_guard.py",
+          "tests/test_demo_bench_memory_guard.py",
+          "tests/test_standalone_benchmark_memory_guard.py"
+        ],
+        "name": "process-environment-consumers",
+        "pytest": [
+          "tests/test_standalone_benchmark_memory_guard.py"
+        ],
+        "pytest_select": [
+          {
+            "k": "batch_suite_trip_uses_submitted_request_custody_before_shutdown",
+            "targets": [
+              "tests/test_molt_diff_memory_guard.py"
+            ]
+          },
+          {
+            "k": "base_env_forces_repo_roots or run_k6_uses_live_tree_guard or k6_failure_retains_full_diagnostic or scenario_routes_its_summary_through_k6 or main_wraps_scenarios_in_repo_sentinel or db_stub_finds_the_worker",
+            "targets": [
+              "tests/test_demo_bench_memory_guard.py"
+            ]
+          }
+        ],
+        "toolchains": [
+          "python",
+          "uv"
         ]
       },
       {
@@ -12420,6 +12465,18 @@
       ],
       "local.phase-exit-manifest.pytest": [
         "python"
+      ],
+      "local.process-environment-consumers.pytest": [
+        "python",
+        "uv"
+      ],
+      "local.process-environment-consumers.pytest-select-0": [
+        "python",
+        "uv"
+      ],
+      "local.process-environment-consumers.pytest-select-1": [
+        "python",
+        "uv"
       ],
       "local.public-contract.0": [
         "python"

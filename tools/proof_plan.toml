@@ -4909,6 +4909,32 @@ pytest = [
   "tests/tools/test_proof_queue_execution_receipt_details.py",
 ]
 
+# --- Process environment consumers -------------------------------------
+# The bench and harness scripts consume the immutable process environment and
+# the batch compile client; a producer change once left them red on main
+# because no landing rule ran their guard tests (HF-369).
+[[rule]]
+name = "process-environment-consumers"
+toolchains = ["python", "uv"]
+description = "Bench and harness consumers of process environments and the batch compile client."
+globs = [
+  "bench/**/*.py",
+  "tests/molt_diff.py",
+  "tools/batch_compile_client.py",
+  "tools/harness_memory_guard.py",
+  "src/molt/dx.py",
+  "src/molt/process_environment.py",
+  "tests/test_molt_diff_memory_guard.py",
+  "tests/test_demo_bench_memory_guard.py",
+  "tests/test_standalone_benchmark_memory_guard.py",
+]
+gates = []
+pytest = ["tests/test_standalone_benchmark_memory_guard.py"]
+pytest_select = [
+  { k = "batch_suite_trip_uses_submitted_request_custody_before_shutdown", targets = ["tests/test_molt_diff_memory_guard.py"] },
+  { k = "base_env_forces_repo_roots or run_k6_uses_live_tree_guard or k6_failure_retains_full_diagnostic or scenario_routes_its_summary_through_k6 or main_wraps_scenarios_in_repo_sentinel or db_stub_finds_the_worker", targets = ["tests/test_demo_bench_memory_guard.py"] },
+]
+
 # --- Backend daemon custody --------------------------------------------
 [[rule]]
 name = "backend-daemon-custody"

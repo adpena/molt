@@ -704,3 +704,17 @@ def test_k6_conflicting_rate_representations_fail_closed():
     assert demo_bench.check_regressions(artifact) == [
         "baseline: missing or invalid error_rate"
     ]
+
+
+def test_db_stub_finds_the_worker_where_its_build_writes_it(tmp_path):
+    spec = importlib.util.spec_from_file_location(
+        "db_stub_under_test", REPO_ROOT / "bench" / "scripts" / "run_db_stub.py"
+    )
+    assert spec is not None and spec.loader is not None
+    db_stub = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(db_stub)
+    target = tmp_path / "selected-target"
+    env = db_stub.ProcessEnvironment({"CARGO_TARGET_DIR": str(target)})
+    name = "molt-worker.exe" if os.name == "nt" else "molt-worker"
+    # Cargo writes the build under the selected target, not <checkout>/target.
+    assert db_stub._built_worker(env) == target / "debug" / name
