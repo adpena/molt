@@ -5030,6 +5030,15 @@ pytest = [
   "tests/test_runtime_build_python.py::test_unicode_width_facts_replay_keyed_by_the_admitted_runtime",
 ]
 
+# Default test custody protects every imported host-fact selector.
+[[rule]]
+name = "host-fact-test-isolation"
+toolchains = ["python"]
+description = "Private default host facts, process memo lifetime and explicit shared-store ownership."
+globs = ["tests/conftest.py", "tests/test_toolchain_facts.py"]
+gates = []
+pytest = ["tests/test_toolchain_facts.py::test_default_fact_store_cannot_pollute_the_host_namespace"]
+
 # --- Backend daemon custody --------------------------------------------
 [[rule]]
 name = "backend-daemon-custody"
