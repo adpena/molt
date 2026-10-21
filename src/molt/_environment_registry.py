@@ -531,6 +531,16 @@ _REGISTRY_JSON = r"""{
       "summary": "Guard scope for the cold-start decomposition profiler."
     },
     {
+      "name": "MOLT_COMPAT_JIT_BUILD",
+      "owner": "tools/compat/backends.py",
+      "summary": "Guard scope for compat-suite JIT-tier builds (molt build --emit jit)."
+    },
+    {
+      "name": "MOLT_COMPAT_JIT_RUN",
+      "owner": "tools/compat/backends.py",
+      "summary": "Guard scope for compat-suite JIT-tier runs (molt-jit)."
+    },
+    {
       "name": "MOLT_COMPAT_LLVM_BUILD",
       "owner": "tools/compat/backends.py",
       "summary": "Guard scope for compat-suite LLVM backend builds."
@@ -2639,6 +2649,16 @@ _REGISTRY_JSON = r"""{
       "output_neutral": false,
       "owner": "runtime/molt-passes/src/tir/lower_to_simple/runner.rs",
       "summary": "Exact function name for which TIR-to-SimpleIR lowering prints the reverse-postorder block visit order (LOWER_DEBUG_RPO) on stderr; unset prints nothing.",
+      "values": []
+    },
+    {
+      "audience": "internal",
+      "default": "",
+      "kind": "bool",
+      "name": "MOLT_DEBUG_MAIN_EXCEPTION",
+      "output_neutral": false,
+      "owner": "runtime/molt-jit/src/launch.rs",
+      "summary": "Any value other than empty or 0 makes a native program's launch print whether an exception is pending when its entry returns (molt main finish pending=0|1) on stderr; the JIT runner and the AOT main stub that src/molt/cli/native_main_stub.py renders read it once, after the program runs.",
       "values": []
     },
     {

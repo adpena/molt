@@ -966,6 +966,119 @@ def test_build_failed_backend_excluded_from_cross_check() -> None:
     )
 
 
+def test_exact_twins_compare_stderr_even_when_the_file_ignores_it() -> None:
+    # native and jit share frontend output, codegen and runtime bytes; only the
+    # code owner differs, so a stderr fork between them is a code-owner defect.
+    per_backend = {
+        "native": _outcome("42\n", stderr="Traceback: ValueError\n"),
+        "jit": _outcome("42\n", stderr="Traceback: KeyError\n"),
+    }
+    detail = molt_diff._cross_backend_divergence(
+        per_backend, stdout_mode="exact", stderr_mode="ignore"
+    )
+    assert detail is not None
+    assert "native != jit" in detail
+
+
+def test_non_twins_keep_the_file_stderr_law() -> None:
+    per_backend = {
+        "native": _outcome("42\n", stderr="native diagnostic\n"),
+        "wasm": _outcome("42\n", stderr="wasm diagnostic\n"),
+    }
+    assert (
+        molt_diff._cross_backend_divergence(
+            per_backend, stdout_mode="exact", stderr_mode="ignore"
+        )
+        is None
+    )
+
+
+def test_twins_agreeing_exactly_do_not_diverge() -> None:
+    per_backend = {
+        "native": _outcome("42\n", rc=3, stderr="same\n"),
+        "jit": _outcome("42\n", rc=3, stderr="same\n"),
+    }
+    assert (
+        molt_diff._cross_backend_divergence(
+            per_backend, stdout_mode="exact", stderr_mode="ignore"
+        )
+        is None
+    )
+
+
+def test_twin_that_fails_to_build_alone_is_a_divergence() -> None:
+    per_backend = {
+        "native": _outcome("42\n"),
+        "jit": compat_backends.BackendResult(
+            None, "jit build failed", 1, build_failed=True
+        ),
+    }
+    detail = molt_diff._cross_backend_divergence(
+        per_backend, stdout_mode="exact", stderr_mode="ignore"
+    )
+    assert detail is not None
+    assert "native built but its exact twin jit did not" in detail
+
+
+def test_twins_ignore_only_text_that_differs_between_runs_of_one_program() -> None:
+    # Two runs of one AOT executable already differ in heap addresses (ASLR)
+    # and in the OS thread id of a Rust panic; neither is a code-owner fact.
+    native = (
+        "Exception ignored in: <function C.__del__ at 0x5ce89121e18>\n"
+        "thread '<unnamed>' (352545897) panicked at src/a.rs:1:9:\n"
+    )
+    jit = (
+        "Exception ignored in: <function C.__del__ at 0x43cc4d22018>\n"
+        "thread '<unnamed>' (352576206) panicked at src/a.rs:1:9:\n"
+    )
+    agree = {
+        "native": _outcome("x\n", stderr=native),
+        "jit": _outcome("x\n", stderr=jit),
+    }
+    assert (
+        molt_diff._cross_backend_divergence(
+            agree, stdout_mode="exact", stderr_mode="ignore"
+        )
+        is None
+    )
+    moved = {
+        "native": _outcome("x\n", stderr=native),
+        "jit": _outcome("x\n", stderr=jit.replace("src/a.rs:1:9", "src/a.rs:2:9")),
+    }
+    assert molt_diff._cross_backend_divergence(
+        moved, stdout_mode="exact", stderr_mode="ignore"
+    )
+
+
+def test_twin_stable_text_rewrites_only_process_volatile_spans() -> None:
+    assert (
+        compat_backends.twin_stable_text(
+            "<object at 0xABCdef12> 0x10 thread 'main' (7) panicked"
+        )
+        == "<object at 0x...> 0x10 thread 'main' panicked"
+    )
+
+
+def test_jit_run_cap_covers_its_compilation() -> None:
+    policy = compat_backends.TimeoutPolicy.from_environment({})
+    assert policy.phase("jit", "run") == 600.0
+    assert policy.phase("llvm", "run") == 60.0
+
+
+def test_twins_compare_with_each_other_not_only_with_the_first_backend() -> None:
+    # wasm is listed first, so the twin pair is not the reference pair.
+    per_backend = {
+        "wasm": _outcome("42\n"),
+        "native": _outcome("42\n", stderr="a\n"),
+        "jit": _outcome("42\n", stderr="b\n"),
+    }
+    detail = molt_diff._cross_backend_divergence(
+        per_backend, stdout_mode="exact", stderr_mode="ignore"
+    )
+    assert detail is not None
+    assert "native != jit" in detail
+
+
 # ---------------------------------------------------------------------------
 # Full diff_test multi-backend path with a fake registry (no real build).
 # ---------------------------------------------------------------------------

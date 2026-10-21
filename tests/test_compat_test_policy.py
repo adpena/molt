@@ -272,7 +272,7 @@ def test_backend_selector_replaces_wasm_gate_without_semantic_loss(
     tmp_path: Path,
 ) -> None:
     no_wasm = test_policy.parse_metadata(
-        _source(tmp_path, "backends=llvm,luau,native", name="no_wasm.py")
+        _source(tmp_path, "backends=jit,llvm,luau,native", name="no_wasm.py")
     )
     only_wasm = test_policy.parse_metadata(
         _source(tmp_path, "backends=wasm", name="only_wasm.py")

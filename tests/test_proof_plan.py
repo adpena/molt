@@ -7792,6 +7792,8 @@ def test_differential_proofs_select_their_host_compiler_profile_explicitly() -> 
         "wasm.test.runtime-import-conformance": "dev",
         "runtime.public-consumers.native": "release",
         "runtime.public-consumers.wasm": "release",
+        # The JIT tier is a development tier: its twin gate runs the dev compiler.
+        "native.jit-aot-twins": "dev",
     }
     expected.update(
         (lane.id, "dev")

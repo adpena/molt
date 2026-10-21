@@ -3444,7 +3444,25 @@ def _cross_backend_divergence(
     used against CPython. Build-failed backends are excluded from this check
     (their CPython verdict already covers them); a divergence among the rest is a
     molt-internal backend fork and is always a FAIL.
+
+    Exact twins (``compat_backends.EXACT_TWIN_BACKENDS``) share everything but
+    the code owner, so they compare stderr exactly, after removing the text any
+    two runs of one program may differ in (``twin_stable_text``), and a build
+    that fails for only one twin is itself a divergence.
     """
+    mismatches: list[str] = []
+    for first, first_outcome in per_backend.items():
+        for second, second_outcome in per_backend.items():
+            if first >= second or not compat_backends.exact_twins(first, second):
+                continue
+            if first_outcome.build_failed != second_outcome.build_failed:
+                failed, built = (
+                    (first, second) if first_outcome.build_failed else (second, first)
+                )
+                mismatches.append(
+                    f"{built} built but its exact twin {failed} did not: "
+                    f"{per_backend[failed].stderr!r:.200}"
+                )
     ran = {
         name: outcome
         for name, outcome in per_backend.items()
@@ -3452,30 +3470,38 @@ def _cross_backend_divergence(
         and not outcome.timed_out
         and outcome.infrastructure_failure is None
     }
-    if len(ran) < 2:
+    if len(ran) < 2 and not mismatches:
         return None
     names = list(ran)
-    reference_name = names[0]
-    reference = ran[reference_name]
-    mismatches: list[str] = []
-    for name in names[1:]:
-        candidate = ran[name]
-        verdict = compat_comparison.compare_outputs(
-            compat_comparison.Outputs(
-                reference.stdout, reference.child_stderr or "", reference.returncode
-            ),
-            compat_comparison.Outputs(
-                candidate.stdout, candidate.child_stderr or "", candidate.returncode
-            ),
-            mode=stdout_mode,
-            stderr_mode=stderr_mode,
-        )
-        if not verdict.equal:
-            mismatches.append(
-                f"{reference_name} != {name} ({verdict.detail}); "
-                f"{reference_name} stdout={reference.stdout!r:.120} rc={reference.returncode}; "
-                f"{name} stdout={candidate.stdout!r:.120} rc={candidate.returncode}"
+    for index, reference_name in enumerate(names):
+        reference = ran[reference_name]
+        for name in names[index + 1 :]:
+            # Every backend is compared with the first; twins also with each other.
+            if index > 0 and not compat_backends.exact_twins(reference_name, name):
+                continue
+            candidate = ran[name]
+            twins = compat_backends.exact_twins(reference_name, name)
+            stable = compat_backends.twin_stable_text if twins else str
+            verdict = compat_comparison.compare_outputs(
+                compat_comparison.Outputs(
+                    stable(reference.stdout),
+                    stable(reference.child_stderr or ""),
+                    reference.returncode,
+                ),
+                compat_comparison.Outputs(
+                    stable(candidate.stdout),
+                    stable(candidate.child_stderr or ""),
+                    candidate.returncode,
+                ),
+                mode=stdout_mode,
+                stderr_mode="exact" if twins else stderr_mode,
             )
+            if not verdict.equal:
+                mismatches.append(
+                    f"{reference_name} != {name} ({verdict.detail}); "
+                    f"{reference_name} stdout={reference.stdout!r:.120} rc={reference.returncode}; "
+                    f"{name} stdout={candidate.stdout!r:.120} rc={candidate.returncode}"
+                )
     if not mismatches:
         return None
     return " | ".join(mismatches)

@@ -45,7 +45,7 @@ VERIFICATION_SCOPES = (
     CPYTHON_EQUIVALENCE_SCOPE,
     "dynamic_execution_policy",
 )
-ALL_BACKENDS = ("native", "llvm", "wasm", "luau")
+ALL_BACKENDS = ("native", "llvm", "wasm", "luau", "jit")
 PLATFORM_SELECTORS = ("freebsd", "linux", "macos", "posix", "windows")
 ARCHITECTURE_SELECTORS = ("aarch64", "arm64", "x86_64")
 STDOUT_MODES = ("exact", "pyperformance")
