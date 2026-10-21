@@ -3,7 +3,7 @@
   "description": "Extract text from images using Falcon-OCR (on-device ML via WebGPU/WASM). Optimized for invoices, receipts, and business documents.",
   "version": "0.1.0",
   "server": {
-    "url": "https://falcon-ocr.freeinvoicemaker.workers.dev",
+    "url": "https://falcon-ocr.adpena.workers.dev",
     "transport": "http"
   },
   "tools": [
@@ -57,7 +57,7 @@
           },
           "device": {
             "type": "string",
-            "enum": ["webgpu", "wasm"],
+            "enum": ["webgpu", "wasm", "cpu"],
             "description": "Compute device used for inference"
           }
         },
