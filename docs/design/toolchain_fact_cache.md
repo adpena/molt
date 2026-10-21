@@ -197,3 +197,15 @@ nothing, that a corrupt or foreign store is discarded and rewritten, that
 aged records are dropped and used ones refreshed, that parallel writers
 merge, and that every `ProbeKey` field changes the digest. A real-toolchain
 test resolves a Cargo plan in a fresh process view and asserts zero probes.
+
+## Test custody
+
+The pytest conftest isolates the default host fact namespace and its process
+memo for every test. It creates the private directory lazily on the first fact
+request, including requests through previously imported selector functions.
+Synthetic successful probe answers therefore cannot publish into the developer's
+shared store or satisfy another test. This does not redirect the session's
+`MOLT_CACHE` or discard real build-cache reuse. Tests of explicit shared-store
+ownership use `toolchain_fact_store(root)` or `ToolchainFactStore(root)` with a
+private root; child-process integrations use `isolated_molt_cache` to pass that
+private namespace in their environment.

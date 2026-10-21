@@ -1337,7 +1337,7 @@ def test_python_path_and_cargo_hook_launches_share_native_environment_custody(tm
     ],
 )
 def test_environment_rust_proxy_component_reaches_both_custody_consumers(
-    tmp_path, monkeypatch, selector, isolated_molt_cache
+    tmp_path, monkeypatch, selector
 ):
     import subprocess
     from molt import process_guard

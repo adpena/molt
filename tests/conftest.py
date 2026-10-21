@@ -179,6 +179,49 @@ def session_sentinel_paused(request: pytest.FixtureRequest) -> Iterator[None]:
         yield
 
 
+@pytest.fixture(autouse=True)
+def _isolate_host_toolchain_facts(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[None]:
+    """Fake probe answers never enter the developer's shared host store.
+
+    Redirect the defining selector, so consumers that imported it by value
+    share this namespace too. Allocate it only when a test asks for facts;
+    unrelated tests pay no directory creation. The memo has the same test
+    lifetime. Explicit ToolchainFactStore/toolchain_fact_store roots retain
+    their on-disk sharing contract; child integrations use isolated_molt_cache
+    to pass their chosen private namespace through the process environment.
+    """
+    from threading import Lock
+
+    from molt import toolchain_facts, toolchain_identity
+
+    digest_caches = toolchain_identity._FILE_DIGEST_CACHES
+    cache: Path | None = None
+    allocation_lock = Lock()
+
+    def private_cache() -> Path:
+        nonlocal cache
+        if cache is None:
+            with allocation_lock:
+                if cache is None:
+                    cache = tmp_path_factory.mktemp("toolchain-facts")
+        return cache
+
+    # A test may undo its own monkeypatches before a real probe. Its undo
+    # must not release the fixture's namespace or process-memo custody.
+    with pytest.MonkeyPatch.context() as isolation:
+        isolation.setattr(toolchain_facts, "_default_molt_cache", private_cache)
+        isolation.setattr(toolchain_facts, "_STORES", {})
+        try:
+            yield
+        finally:
+            # Probe-tool digests use the same namespace. Retire only this test's
+            # private memo entry; unrelated real build-cache entries stay warm.
+            if cache is not None:
+                digest_caches.pop(toolchain_facts.file_digest_cache_path(cache), None)
+
+
 @pytest.fixture
 def isolated_molt_cache(tmp_path_factory, monkeypatch) -> Path:
     """Disposable cache outside the test's compiler/project source tree.
