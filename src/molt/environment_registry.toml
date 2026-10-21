@@ -616,7 +616,7 @@ name = "MOLT_CACHE_MAX_AGE_DAYS"
 audience = "user"
 kind = "int"
 default = "30"
-owner = "src/molt/cache_eviction.py"
+owner = "src/molt/default_paths.py"
 summary = "Age in days after which cache retention evicts inactive entries, default 30. CLI builds (at most once a day), `molt cache prune` and proof-queue maintenance share this budget."
 
 [[variable]]
@@ -624,7 +624,7 @@ name = "MOLT_CACHE_MAX_GB"
 audience = "user"
 kind = "float"
 default = "30"
-owner = "src/molt/cache_eviction.py"
+owner = "src/molt/default_paths.py"
 summary = "Logical cache-entry size budget in GiB, default 30. CLI builds apply it at most once a day after they succeed, `molt cache prune` applies it on demand, and proof-queue maintenance after each closed payload; active entries, durable state and protected legacy native generations are retained."
 
 [[variable]]

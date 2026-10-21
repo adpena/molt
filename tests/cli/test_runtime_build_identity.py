@@ -44,6 +44,7 @@ from molt.llvm_toolchain import (
 )
 from molt.cli.runtime_cargo_plan import resolve_runtime_cargo_plan
 from molt.cli import runtime_cargo_plan as cargo_plans
+from molt.cli import rustc_probes
 from molt.cli import runtime_identity_schema as schema
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.python_runtime_identity import (
@@ -281,7 +282,7 @@ def identity_root(
         )
         return parse_rustc_target_metadata(stdout, stderr)
 
-    monkeypatch.setattr(cargo_plans, "_rust_target_metadata", target_metadata)
+    monkeypatch.setattr(rustc_probes, "rust_target_metadata", target_metadata)
     monkeypatch.setattr(cargo_plans, "_rust_resource_roots", lambda *args, **kwargs: ())
     monkeypatch.setattr(
         identity,
