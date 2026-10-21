@@ -4807,11 +4807,15 @@ globs = [
   "tests/tools/test_check_changed_clippy.py",
   "tests/test_cargo_workspace.py",
   "tests/test_molt_dev.py",
+  "tests/integration_driver_fixture.py",
+  "tools/claim_lane.py",
+  "tests/tools/test_claim_lane.py",
 ]
 gates = []
 pytest = [
   "tests/tools/test_setup_project_inputs.py",
   "tests/test_molt_dev.py",
+  "tests/tools/test_claim_lane.py",
   "tests/tools/test_rust_toolchain_contract.py",
   "tests/tools/test_check_rustfmt.py",
   "tests/tools/test_check_changed_clippy.py",
