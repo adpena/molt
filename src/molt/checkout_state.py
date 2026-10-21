@@ -69,7 +69,7 @@ _SESSIONS = "sessions"
 # refuse to delete it. These are the SHARED build outputs every lane depends on
 # and structural control dirs -- defense-in-depth beside the narrow allow-set.
 PROTECTED_TARGET_NAMES = frozenset(
-    os.path.normcase(name)
+    name.casefold()
     for name in {
         "debug",
         "release",
@@ -192,7 +192,7 @@ def target_use_artifact_root(root: Path) -> Path | None:
     This only names the external lifetime lock and last-use stamp. It confers
     no checkout ownership or deletion permission, including for shared outputs.
     """
-    if os.path.normcase(root.name) in PROTECTED_TARGET_NAMES:
+    if root.name.casefold() in PROTECTED_TARGET_NAMES:
         return None
     if os.path.normcase(root.parent.name) == "target":
         return root.parent.parent
