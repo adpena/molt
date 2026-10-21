@@ -176,6 +176,57 @@ def _rustup_home_inputs(rustup_home: Path) -> tuple[FileInput, ...]:
     )
 
 
+def _user_home(environment: Mapping[str, str], *, windows: bool) -> Path | None:
+    """The home directory rustup reads (the ``home`` crate): ``USERPROFILE``
+    on Windows and ``HOME`` elsewhere, when set and non-empty, else the
+    account's own record; None when there is none (rustup then reports)."""
+    value = environment.get("USERPROFILE" if windows else "HOME") or ""
+    if value:
+        return Path(value)
+    if windows:
+        # The crate asks the shell for the profile folder; Python's lookup is
+        # its nearest equivalent (unverified on Windows).
+        profile = os.path.expanduser("~")
+        return None if profile == "~" else Path(profile)
+    import pwd
+
+    try:
+        return Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except KeyError:
+        return None
+
+
+def rustup_home(
+    environment: Mapping[str, str], cwd: Path, *, windows: bool = os.name == "nt"
+) -> Path | None:
+    """The rustup home rustup itself selects (``home::rustup_home_with_cwd``):
+    ``RUSTUP_HOME`` when set and non-empty, joined to the working directory
+    when relative, else ``.rustup`` in the user's home directory; None when
+    there is no home."""
+    configured = environment.get("RUSTUP_HOME") or ""
+    if configured:
+        home = Path(configured)
+        return home if home.is_absolute() else cwd / home
+    user = _user_home(environment, windows=windows)
+    return None if user is None else user / ".rustup"
+
+
+def rustup_fallback_settings(
+    environment: Mapping[str, str], cwd: Path, *, windows: bool = os.name == "nt"
+) -> Path | None:
+    """The settings rustup falls back to on Unix for a default toolchain
+    (rustup-rs ``config.rs``): ``RUSTUP_OVERRIDE_UNIX_FALLBACK_SETTINGS``
+    (joined to the working directory when relative, as rustup opens it), else
+    ``/etc/rustup/settings.toml``. Windows reads none."""
+    if windows:
+        return None
+    configured = Path(
+        environment.get("RUSTUP_OVERRIDE_UNIX_FALLBACK_SETTINGS")
+        or "/etc/rustup/settings.toml"
+    )
+    return configured if configured.is_absolute() else cwd / configured
+
+
 def _printed_executable(stdout: str) -> Path | None:
     """The one absolute path a selector printed, while it names a file."""
     value = stdout.strip()
@@ -202,21 +253,30 @@ def resolve_rustup_proxy(
 
     environment = ProcessEnvironment(env)
     entrypoint = selection.entrypoint
+    # rustup walks its working directory upward: the physical path on POSIX
+    # (getcwd), the path as spelled on Windows (GetCurrentDirectoryW keeps a
+    # junction or substituted drive). Key both chains; one extra lstat per
+    # level of the spelled chain.
+    physical_root = Path(os.path.realpath(root))
+    directories = dict.fromkeys(
+        (physical_root, *physical_root.parents, root, *root.parents)
+    )
     toolchain_files = tuple(
         directory / name
-        for directory in (root, *root.parents)
+        for directory in directories
         for name in ("rust-toolchain.toml", "rust-toolchain")
     )
-    rustup_home = Path(
-        environment.get("RUSTUP_HOME") or Path(environment.get("HOME", "~")) / ".rustup"
-    ).expanduser()
+    home = rustup_home(environment, physical_root)
+    fallback = rustup_fallback_settings(environment, physical_root)
+    consulted = (*toolchain_files, *(() if fallback is None else (fallback,)))
     if input_report.active():
         # rustup selects by toolchain files from the root upward and by
         # its settings; the record must see each lookup.
         input_report.report_file(Path(entrypoint))
-        for file in toolchain_files:
+        for file in consulted:
             input_report.report_data_file(file)
-        input_report.report_data_file(rustup_home / "settings.toml")
+        if home is not None:
+            input_report.report_data_file(home / "settings.toml")
     argv = ("which", role)
     key = ProbeKey(
         "rustup-which",
@@ -225,8 +285,9 @@ def resolve_rustup_proxy(
         os.fspath(root),
         environment_inputs(environment, RUSTUP_PROBE_ENVIRONMENT),
         (
-            *(file_input(file) for file in toolchain_files),
-            *_rustup_home_inputs(rustup_home),
+            *(file_input(file) for file in consulted),
+            # No home: the environment inputs key its absence; rustup reports.
+            *(() if home is None else _rustup_home_inputs(home)),
         ),
     )
 
