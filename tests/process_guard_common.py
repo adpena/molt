@@ -71,6 +71,25 @@ def guard_custody_env() -> dict[str, str]:
     return {STATE_ROOT_ENV: os.environ[STATE_ROOT_ENV]}
 
 
+def keep_probe_commands_as_written(monkeypatch: Any) -> None:
+    """For a test that fakes the toolchain probe launch itself.
+
+    ``toolchain_probe.run_toolchain_probe`` finds a bare command in the probe's
+    own environment before launch (that behavior has its own test). A test
+    that fakes the launch compares commands as the policy spells them, so the
+    lookup keeps each command as written there.
+    """
+    from pathlib import Path
+
+    from molt import toolchain_identity
+
+    monkeypatch.setattr(
+        toolchain_identity,
+        "find_executable",
+        lambda command, *, environment, cwd=None: Path(command),
+    )
+
+
 def install_module_view(
     monkeypatch: Any, attribute: str, real: object, *modules: object, **overrides: Any
 ) -> ModuleView:

@@ -119,17 +119,31 @@ def load_generator(tool: str) -> ModuleType:
     return module
 
 
+@dataclass(frozen=True)
+class GeneratorAdmission:
+    """Admitted generator prerequisites, their runtime owners, and the
+    projection their tools need.
+
+    Generators run in the process that admits them and start their tools with
+    its environment, so the command that owns the process applies
+    ``environment`` to it (``os.environ.update``). Admission itself never
+    writes the process environment: a long-lived caller must not carry one
+    admission's selections into the next.
+    """
+
+    fingerprints: dict[str, dict[str, Any]]
+    bindings: dict[str, dict[str, tuple[dict[str, Any], BuildPythonAdmission]]]
+    environment: dict[str, str]
+
+
 def admit_generators(
     selected: list[Generator], *, root: Path, runtime_stack: ExitStack | None = None
-) -> tuple[
-    dict[str, dict[str, Any]],
-    dict[str, dict[str, tuple[dict[str, Any], BuildPythonAdmission]]],
-]:
+) -> GeneratorAdmission:
     """Reject all prerequisites before import; retain demanded runtime owners."""
     if runtime_stack is None:
         with ExitStack() as stack:
-            fingerprints, _ = admit_generators(selected, root=root, runtime_stack=stack)
-            return fingerprints, {}
+            admission = admit_generators(selected, root=root, runtime_stack=stack)
+            return GeneratorAdmission(admission.fingerprints, {}, admission.environment)
     names = tuple(dict.fromkeys(name for row in selected for name in row.toolchains))
     with (root / "tools/proof_plan.toml").open("rb") as handle:
         policies = load_toolchain_policies(tomllib.load(handle), root=root, names=names)
@@ -144,9 +158,15 @@ def admit_generators(
         for policy in policies
         if policy.python_identity_role == "runtime"
     }
-    fingerprints = admit_toolchains(
-        policies, names, owners=owners, python_admissions=admissions or None, root=root
-    ).fingerprints
+    admitted = admit_toolchains(
+        policies,
+        names,
+        environ=os.environ,
+        owners=owners,
+        python_admissions=admissions or None,
+        root=root,
+    )
+    fingerprints = admitted.fingerprints
     bindings: dict[str, dict[str, tuple[dict[str, Any], BuildPythonAdmission]]] = {
         row.tool: {} for row in selected
     }
@@ -157,7 +177,7 @@ def admit_generators(
                     fingerprints[policy.name]["python_runtime"],
                     admissions[policy.name],
                 )
-    return fingerprints, bindings
+    return GeneratorAdmission(fingerprints, bindings, admitted.environment)
 
 
 def _generator_records(
@@ -228,12 +248,15 @@ def main(argv: list[str] | None = None, *, scan_records: bool = False) -> int:
 
     with ExitStack() as runtime_stack:
         try:
-            _, runtime_bindings = admit_generators(
+            admission = admit_generators(
                 selected, root=ROOT, runtime_stack=runtime_stack
             )
         except (ValueError, OSError, KeyError) as exc:
             print(f"generator prerequisite admission failed: {exc}", file=sys.stderr)
             return 1
+        # This command owns its process; generators start their tools with it.
+        os.environ.update(admission.environment)
+        runtime_bindings = admission.bindings
 
         stale_count = 0
         started = time.perf_counter()

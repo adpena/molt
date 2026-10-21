@@ -22,6 +22,7 @@ from __future__ import annotations
 from tests.process_guard_common import (
     check_output_guarded_test_process,
     install_module_view,
+    keep_probe_commands_as_written,
     run_guarded_test_process,
 )
 
@@ -1174,7 +1175,7 @@ package_lock = "missing/lock"
     monkeypatch.setattr(
         proof_plan,
         "_version_fingerprint",
-        lambda _: pytest.fail("unselected tool probed"),
+        lambda _, **_kw: pytest.fail("unselected tool probed"),
     )
     rendered = []
     monkeypatch.setattr(
@@ -1219,7 +1220,7 @@ def test_generator_admission_projects_its_explicit_source_root(tmp_path, monkeyp
         return SimpleNamespace(executable=executable)
 
     monkeypatch.setattr(tool_releases, "discover_pinned_tool", discover)
-    monkeypatch.setenv("PATH", os.environ["PATH"])
+    before = dict(os.environ)
     (tmp_path / "tools").mkdir()
     (tmp_path / "tools/proof_plan.toml").write_text(
         """
@@ -1233,12 +1234,13 @@ version_pattern = '^selected-generator-tool$'
         encoding="utf-8",
     )
     rows = [generators.Generator("selected-generator", (), True, ("cat",))]
-    fingerprints, bindings = generators.admit_generators(rows, root=tmp_path)
+    admission = generators.admit_generators(rows, root=tmp_path)
     assert observed_roots == [tmp_path]
-    assert fingerprints["cat"]["version"] == "selected-generator-tool"
-    assert fingerprints["cat"]["path"] == str(executable)
-    assert bindings == {}
-    assert os.environ["PATH"].split(os.pathsep)[0] == str(provider)
+    assert admission.fingerprints["cat"]["version"] == "selected-generator-tool"
+    assert admission.fingerprints["cat"]["path"] == str(executable)
+    assert admission.bindings == {}
+    # The projection is the caller's to apply: admission wrote nothing here.
+    assert dict(os.environ) == before
 
 
 def test_generator_manifest_refuses_undeclared_prerequisites(tmp_path):
@@ -1258,6 +1260,8 @@ def test_all_missing_selected_unicode_providers_refuse_before_any_generator_impo
     tmp_path, monkeypatch, capsys, action
 ):
     import subprocess
+
+    keep_probe_commands_as_written(monkeypatch)
     from tools import generators, proof_plan, toolchain_probe
     from tests.tools.test_tool_identity_reuse import selected_runtime_fixture
 
@@ -1301,12 +1305,10 @@ python_versions = "supported-targets"
         return original_run(command, **kwargs)
 
     install_module_view(monkeypatch, "subprocess", subprocess, toolchain_probe, run=run)
-    install_module_view(
-        monkeypatch,
-        "shutil",
-        proof_plan.shutil,
+    monkeypatch.setattr(
         proof_plan,
-        which=lambda _requested: str(fixture.uv),
+        "find_executable",
+        lambda _command, *, environment, cwd=None: Path(str(fixture.uv)),
     )
     monkeypatch.setattr(generators, "ROOT", tmp_path)
     rows = [

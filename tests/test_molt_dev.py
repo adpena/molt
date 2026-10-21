@@ -3171,8 +3171,19 @@ def test_land_runs_static_gates_in_the_lane_before_queueing(
     _counting_policy(work, counter)
     head = _lane(work, "pre", {"a.py": "a = 1\n"})
     lane = work.parent / "lane-pre"
+    # The precheck admits under the gates' baseline, which alone sets this key.
+    monkeypatch.delenv("PYTHONPYCACHEPREFIX", raising=False)
+    admitted = []
+    admit_gates = drv.GateConfig.admit_gates
+
+    def recorded_admission(self, gates, *, environ):
+        admitted.append(environ)
+        return admit_gates(self, gates, environ=environ)
+
+    monkeypatch.setattr(drv.GateConfig, "admit_gates", recorded_admission)
 
     assert _land_without_runner(drv, monkeypatch, lane) == drv.EXIT_OK
+    assert admitted and all("PYTHONPYCACHEPREFIX" in env for env in admitted)
 
     assert counter.read_text(encoding="utf-8").splitlines() == ["run"]
     assert [item.head for item in queue.pending(queue._queue_paths(lane))] == [head]
@@ -4298,7 +4309,9 @@ def test_integrate_rejects_unknown_gate_binding_before_admission_or_spawn(
     _, work = origin_and_clone
     _commit_integration_policy(work, ["echo {integration_upstream_ref}"])
     monkeypatch.setattr(
-        drv.GateConfig, "admit", lambda *args: pytest.fail("invalid policy admitted")
+        drv.GateConfig,
+        "admit",
+        lambda *args, **kwargs: pytest.fail("invalid policy admitted"),
     )
     monkeypatch.setattr(drv, "run_gate", lambda *args: pytest.fail("invalid gate ran"))
     with pytest.raises(drv.DriverError, match="unknown local gate placeholder"):
@@ -4602,7 +4615,7 @@ version_pattern = '^ok$'
 """
     _commit_file(work, "tools/proof_plan.toml", policy, "selected prerequisites")
 
-    def probe(policy):
+    def probe(policy, *, environment):
         if policy.name == "one":
             raise OSError("first probe raised")
         return None
@@ -4638,7 +4651,7 @@ version_pattern = '.*'
     )
     # Tool installation/version projection is outside the capacity contract.
     # Selection, explicit capability, output resolution, and admission stay real.
-    monkeypatch.setattr(drv.GateConfig, "admit", lambda *args: None)
+    monkeypatch.setattr(drv.GateConfig, "admit", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         drv.GateConfig,
         "environments",
@@ -4819,17 +4832,23 @@ def test_integrate_admission_projects_the_selected_checkout_into_real_gate(
     # macOS system-image restrictions and multicall coreutils implementations.
     executable.symlink_to("/bin/cat")
     observed_roots = []
+    # Only the gates' baseline carries this key (gate_environment sets it), so
+    # admission under the process environment would be seen.
+    monkeypatch.delenv("PYTHONPYCACHEPREFIX", raising=False)
 
     def discover(name, root, *, environ, cwd):
         assert cwd is None
         assert name == "cat"
         assert root == work
+        assert "PYTHONPYCACHEPREFIX" in environ
         observed_roots.append(root)
         return SimpleNamespace(executable=executable)
 
     monkeypatch.setattr(tool_releases, "discover_pinned_tool", discover)
-    # Admission updates this process; retain fixture cleanup for that real write.
+    # Admission must not update this process; the restore only bounds a
+    # regression to this test.
     monkeypatch.setenv("PATH", os.environ["PATH"])
+    path_before = os.environ["PATH"]
     _commit_file(
         work, "tool-version.txt", "selected-checkout-tool\n", "owned tool version input"
     )
@@ -4856,8 +4875,10 @@ version_pattern = '^selected-checkout-tool$'
         drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
         == drv.EXIT_OK
     )
+    # The gate itself proved the projection: it ran the selected checkout's
+    # `cat`. The integrating process keeps its own PATH.
     assert observed_roots == [work, work]
-    assert os.environ["PATH"].split(os.pathsep)[0] == str(provider)
+    assert os.environ["PATH"] == path_before
 
 
 def test_selected_local_gate_does_not_materialize_unrelated_policy(
@@ -4890,12 +4911,14 @@ toolchains = ["unrelated"]
     commands = [gate.command for gate in commands]
     assert commands == ["echo selected"]
     monkeypatch.setattr(
-        proof_plan, "_version_fingerprint", lambda _: pytest.fail("unrelated probe ran")
+        proof_plan,
+        "_version_fingerprint",
+        lambda _, **_kw: pytest.fail("unrelated probe ran"),
     )
     # No selected gate declares a toolchain, so nothing is fingerprinted.
-    assert cfg.admit(["src/one.py"], matched, []) == {}
+    assert cfg.admit(["src/one.py"], matched, [], environ=os.environ) == {}
     with pytest.raises(drv.DriverError, match="lack declared prerequisite custody"):
-        cfg.admit(["src/one.py"], matched, ["unknown executable"])
+        cfg.admit(["src/one.py"], matched, ["unknown executable"], environ=os.environ)
 
 
 def test_integrate_missing_committer_refuses_before_rebase(
@@ -5000,7 +5023,7 @@ python_versions = "supported-targets"
     before_catalog = target_python.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
     observed = []
 
-    def probe(policy):
+    def probe(policy, *, environment):
         observed.append(policy.name)
         if policy.name == "uv":
             return {
@@ -5182,7 +5205,7 @@ toolchains = ["sdk"]
     monkeypatch.setattr(
         proof_plan,
         "_version_fingerprint",
-        lambda policy: {
+        lambda policy, **_kw: {
             "version": "ok",
             "launcher_sha256": "a" * 64,
             "executable_sha256": "b" * 64,

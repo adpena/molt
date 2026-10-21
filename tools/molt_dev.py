@@ -560,9 +560,15 @@ class GateConfig:
         )
 
     def admit(
-        self, touched: list[str], matched: list[GateRule], extra: list[str]
+        self,
+        touched: list[str],
+        matched: list[GateRule],
+        extra: list[str],
+        *,
+        environ: Mapping[str, str],
     ) -> dict[str, dict]:
-        """Admit the union once; execution projects each gate from its baseline.
+        """Admit the union once under ``environ``, the gates' baseline;
+        execution projects each gate from that same baseline.
 
         Returns the admitted toolchain fingerprints the gate receipt records.
         """
@@ -582,10 +588,13 @@ class GateConfig:
                 identifier: tools
                 for identifier, (command, tools) in self.prerequisites.items()
                 if identifier.rsplit(".", 1)[0] in selected_owners or command in extra
-            }
+            },
+            environ=environ,
         )
 
-    def admit_gates(self, gates: list[SelectedGate]) -> dict[str, dict]:
+    def admit_gates(
+        self, gates: list[SelectedGate], *, environ: Mapping[str, str]
+    ) -> dict[str, dict]:
         """Admit exactly the toolchains these gates declare (a landing precheck)."""
         owned: dict[str, tuple[str, ...]] = {}
         for gate in gates:
@@ -594,9 +603,11 @@ class GateConfig:
                 if isinstance(gate.command, tuple)
                 else gate.command
             ] = gate.toolchains
-        return self._admit_owned(owned)
+        return self._admit_owned(owned, environ=environ)
 
-    def _admit_owned(self, selected: Mapping[str, tuple[str, ...]]) -> dict[str, dict]:
+    def _admit_owned(
+        self, selected: Mapping[str, tuple[str, ...]], *, environ: Mapping[str, str]
+    ) -> dict[str, dict]:
         """Admit the union of each owner's toolchain closure once."""
         from tools.proof_plan import (
             admit_toolchains,
@@ -616,7 +627,11 @@ class GateConfig:
                 for name in toolchain_closure(policies, tools):
                     owners.setdefault(name, []).append(identifier)
             return admit_toolchains(
-                policies, tuple(owners), owners=owners, root=self.root
+                policies,
+                tuple(owners),
+                environ=environ,
+                owners=owners,
+                root=self.root,
             ).fingerprints
         except (ValueError, OSError, KeyError) as exc:
             raise DriverError(
@@ -1522,7 +1537,9 @@ def _integrate_exclusive(
     capacity_requirements: dict[tuple[str, ...], int] = {}
     if not dry:
         _assert_integration_source(git, selected_commit)
-        toolchains = config.admit(touched, matched_rules, list(args.extra_gate or []))
+        toolchains = config.admit(
+            touched, matched_rules, list(args.extra_gate or []), environ=env
+        )
         environments = config.environments(gate_cmds, baseline=env)
         try:
             cargo_outputs = config.cargo_outputs(environments)

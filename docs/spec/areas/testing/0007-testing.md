@@ -356,7 +356,14 @@ put the installed pinned providers first themselves (`admit_toolchains` in
 `tools/proof_plan.py`), so a developer shell with other versions first needs
 no preparation. A tool the version contract admits still passes when its
 pinned provider is not installed; a refusal names the install command, and
-nothing downloads.
+nothing downloads. Admission never writes the process environment: each
+caller passes the baseline it projects from (the driver its gate baseline,
+the proof runner its retained baseline), probes resolve their commands in
+the projected environment rather than the caller's, and each command runs
+under its own closure's projection of that baseline. A long-lived process,
+such as the landing queue runner, therefore admits every batch from the same
+launch environment. Only a one-shot command that owns its process, such as
+the generators check, applies the projection to itself.
 
 Execution proofs declare every required compiler, linker and guest host in the
 owning local and CI command. Missing tools must fail admission or the actual

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import os
 from pathlib import Path
 import subprocess
@@ -58,10 +59,29 @@ def run_toolchain_probe(
     cwd: Path,
     environment: Mapping[str, str],
 ) -> subprocess.CompletedProcess[str]:
-    """Require a successful bounded probe under the canonical cargo environment."""
+    """Require a successful bounded probe under the canonical cargo environment.
+
+    A bare ``argv[0]`` is found in the child's own environment (its PATH and
+    PATHEXT), never in this process: Windows' CreateProcess searches the
+    caller's PATH, not the child's, and admission does not write its
+    projection into the caller. An explicit path launches as given.
+    """
+    from molt.toolchain_identity import find_executable
+
     try:
+        child_environment = cargo_subprocess_environment(argv, environment)[0]
+        command = argv[0]
+        if not Path(command).is_absolute() and not any(
+            separator in command for separator in "/\\"
+        ):
+            found = find_executable(command, environment=child_environment, cwd=cwd)
+            if found is None:
+                raise FileNotFoundError(
+                    errno.ENOENT, "not on the probe environment's PATH", command
+                )
+            command = str(found)
         completed = subprocess.run(
-            argv,
+            [command, *argv[1:]],
             cwd=cwd,
             check=False,
             stdout=subprocess.PIPE,
@@ -70,7 +90,7 @@ def run_toolchain_probe(
             else subprocess.STDOUT,
             text=True,
             timeout=5,
-            env=cargo_subprocess_environment(argv, environment)[0],
+            env=child_environment,
             encoding="utf-8",
         )
     except subprocess.TimeoutExpired as exc:

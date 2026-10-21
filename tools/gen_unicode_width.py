@@ -148,7 +148,7 @@ def main(argv: list[str] | None = None) -> int:
         from tools.generators import admit_generators, manifest_generators
 
         with ExitStack() as stack:
-            _, bindings = admit_generators(
+            admission = admit_generators(
                 [
                     row
                     for row in manifest_generators(
@@ -159,8 +159,10 @@ def main(argv: list[str] | None = None) -> int:
                 root=ROOT,
                 runtime_stack=stack,
             )
+            # This command owns its process; the generator's tools start with it.
+            os.environ.update(admission.environment)
             return generated_outputs(
-                python_runtimes=bindings["tools/gen_unicode_width.py"]
+                python_runtimes=admission.bindings["tools/gen_unicode_width.py"]
             )
 
     return generator_main(admitted_outputs, argv, description=__doc__)
