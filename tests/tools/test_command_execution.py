@@ -160,6 +160,23 @@ def test_read_only_git_classifier_excludes_mutations() -> None:
     assert not command_execution._is_bounded_metadata_probe(
         ["git", "commit", "-m", "message"]
     )
+    # The lane and landing predicates read ancestry with these plumbing reads.
+    for read in (
+        ["git", "merge-base", "--is-ancestor", "a", "b"],
+        ["git", "rev-list", "--left-right", "--count", "a...b"],
+        ["git", "cherry", "origin/main", "lane/x"],
+        ["git", "for-each-ref", "refs/heads/lane/"],
+        ["git", "-C", "repo", "worktree", "list", "--porcelain"],
+    ):
+        assert command_execution._is_bounded_metadata_probe(read), read
+    # The same families' mutating actions keep the guard.
+    for mutation in (
+        ["git", "worktree", "add", "-b", "lane/x", "path"],
+        ["git", "worktree", "remove", "path"],
+        ["git", "update-ref", "-d", "refs/heads/lane/x"],
+        ["git", "worktree"],
+    ):
+        assert not command_execution._is_bounded_metadata_probe(mutation), mutation
 
 
 def test_read_only_git_classifier_sees_through_inert_global_options() -> None:
@@ -475,7 +492,10 @@ def test_interactive_guard_cancels_actual_child_tree_and_closes_streams(tmp_path
         "child = subprocess.Popen([sys.executable, '-c', "
         "'import time; time.sleep(60)'])\n"
         "pids = {'child': os.getpid(), 'grandchild': child.pid}\n"
-        "pathlib.Path(sys.argv[1]).write_text(json.dumps(pids), encoding='utf-8')\n"
+        # Publish atomically: the parent reads the file as soon as it exists.
+        "staged = sys.argv[1] + '.tmp'\n"
+        "pathlib.Path(staged).write_text(json.dumps(pids), encoding='utf-8')\n"
+        "os.replace(staged, sys.argv[1])\n"
         "print('interactive child ready', flush=True)\n"
         "time.sleep(60)\n",
         encoding="utf-8",
