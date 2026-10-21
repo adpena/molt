@@ -1753,6 +1753,9 @@ def cmd_queue_run(args: argparse.Namespace) -> int:
     # environment, never the venv selection of whoever started the runner.
     for key in ("MOLT_VENV", "UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV"):
         os.environ.pop(key, None)
+    from tools.molt_dev_queue import retire_old_records
+
+    retire_old_records(paths, now=time.time())
     while True:
         handle = _try_acquire_file_lock(paths.runner_lock)
         if handle is None:

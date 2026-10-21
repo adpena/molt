@@ -173,7 +173,10 @@ integration speedup.
 
 | Subcommand | Purpose |
 |---|---|
-| `integrate` | fetch → rebase → verify-commits → markers → gates → push → confirm → cleanup. `--dry-run`, `--no-push`, `--cleanup-worktree`, `--marker`, `--extra-gate`, `--expected-upstream`, `--ignore` (cleanup only). |
+| `integrate` | controller → fetch → rebase → verify-commits → cite → markers → gates → push → confirm → cleanup. `--dry-run`, `--no-push`, `--cleanup-worktree`, `--marker`, `--extra-gate`, `--expected-upstream`, `--candidate-controller`, `--ignore` (cleanup only). |
+| `land` | Queue this checkout's committed HEAD for the landing runner and return; start a runner unless one holds the runner lock. `--wait` exits 0 only when the commit landed. |
+| `queue run` | The runner (started by `land`): land queued commits in batches through `integrate`, bisecting failures. `--candidate-controller` for a controller repair. |
+| `queue status` | Pending requests, the bisection plan and recent results as JSON. `--recent N`. |
 | `secure-wip` | Commit **all** tracked modifications in one `WIP-RECOVERY` commit. `--dry-run`, `-m/--message`, `--ignore`, `--include-untracked`. |
 | `verify-push` | Confirm `origin/<branch>` contains a tip sha by fetch + ancestor. `--tip`, `--json`. |
 | `probe` | File size+mtime / pid liveness via python ops. `--file`, `--pid`, `--json`. |
@@ -181,6 +184,38 @@ integration speedup.
 | `detached-run` | Spawn a command as a `setsid` daemon with a state dir (hazard 11). `--name`, `--cwd`, `--env K=V`, `--replace`, `--state-dir`, `--json`, `-- cmd…`. The spawning tool call itself must run unsandboxed; verify in a *later* call. |
 | `detached-verify` | Prove the daemon outlived its spawning call: `running` / `done(rc)` / `died-silent`. `--name`, `--min-age-s`, `--state-dir`, `--json`. Exit 0 only for `running` past min-age or `done` rc 0. |
 | `cleanup` | Standalone hazard-3 worktree cleanup gate. `--ignore`, `--force SHA`. |
+
+### The landing queue (`land`, `queue run`)
+
+`land` checks that the checkout is clean, writes one request under
+`<git-common-dir>/molt/landing-queue/requests/` and returns; the request pins
+the commit, so later work on the branch does not join it. A runner starts
+through the detached-run protocol below, under a unique name; the runner's OS
+file lock, not the process table, decides which runner works.
+
+The runner always runs main's pinned controller. Each batch takes the
+bisection plan's next group, else the oldest `MAX_BATCH` (8) requests:
+
+1. Reset the queue's own sandbox worktree
+   (`<git-common-dir>/molt/landing-sandbox`) to main's tip and replay each
+   lane's commits since its merge-base in queue order. A lane that does not
+   apply leaves the batch with result `conflict`.
+2. Run `integrate` on the sandbox, waiting for the repository integration lock
+   held by any other integrator. The union of the batch's selected gates runs
+   once; change citations resolve across the batch.
+3. On success every lane in the batch records `landed` with the published
+   commit. A candidate failure (a gate, the committed gate policy or binding,
+   a change citation) splits a batch of two or more into halves, first half
+   next; a lone lane records `failed` with the reason. A moved main
+   (`RebaseConflict`, `PublicationRace`) rebuilds the batch. Any other driver
+   failure stops the runner with every request still queued.
+
+The runner lands one batch per process, then re-runs through the controller
+handoff, so each batch runs under the driver of the main it lands on. Before
+it works, it drops inherited `MOLT_VENV`, `UV_PROJECT_ENVIRONMENT` and
+`VIRTUAL_ENV`: the sandbox's gates use the sandbox's environment. Results
+older than 30 days and finished runner logs beyond the newest 20 retire when a
+runner starts.
 
 ### The detached-run protocol (hazard 11)
 
