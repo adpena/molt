@@ -409,6 +409,16 @@ The additional rule costs a small amount of selection work to avoid running
 unrelated cohorts. CI family selection and release acceptance retain their
 existing authorities. All of this work runs during development.
 
+Scan-record consumers follow the same boundary: a leaf scanner or its test
+selects its semantic owner, while shared record, gate-runner and generator
+sources select the consumer union. Structural-audit sources also select their
+record-replay and generator-manifest parser consumers. Editing a consumer test
+does not make that test a producer for unrelated scanner or CI controls; real
+CI and shared generator inputs retain their complete consumer closure. These
+are explicit data edges in the current local rules. Deriving local test
+selection from canonical test ownership and family inputs remains the HF-334
+obligation; this partition adds no second ownership parser or receipt cache.
+
 `tools/proof_plan.toml` owns gate commands and their prerequisites. Update the
 owning dependency rule there; the driver's tests assert that the committed
 manifest remains valid and selects the required consumers.
