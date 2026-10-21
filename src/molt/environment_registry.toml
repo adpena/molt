@@ -2640,14 +2640,6 @@ owner = "bench/scripts/run_stack.sh"
 summary = "bench/scripts/run_stack.sh sets it to 1 before it re-executes itself under tools/guarded_exec.py; the inner run reads it to skip the demo-run directory binding and the guard wrap, and tools/check_memory_guard_wiring.py requires the token in that script."
 
 [[variable]]
-name = "MOLT_GUARD_OK"
-audience = "developer"
-kind = "bool"
-default = "0"
-owner = "tools/hooks/bash_guard.py"
-summary = "Override token for the PreToolUse bash guard; exactly 1, as an inline assignment on the command segment or in the environment, lets the guard allow a destructive-git, add-sweep, queue-bypass, or https-push command it would otherwise refuse, and any other value keeps the block."
-
-[[variable]]
 name = "MOLT_GUARD_PROFILE"
 audience = "developer"
 kind = "enum"

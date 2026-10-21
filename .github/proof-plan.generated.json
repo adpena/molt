@@ -628,7 +628,6 @@
         "tests/test_artifact_poison_gate.py/**",
         "tests/tools/test_signed_ratio.py/**",
         "tests/test_agent_coordination.py/**",
-        "tests/tools/test_anti_recurrence_gate.py/**",
         "tests/tools/test_apparatus_agent_safety.py/**",
         "tests/tools/test_check_commit_attribution.py/**",
         "tests/tools/test_check_gate_flips.py/**",
@@ -640,18 +639,11 @@
         "tests/tools/test_commit_serializer.py/**",
         "tests/tools/test_custody_apparatus.py/**",
         "tests/tools/test_dirty_tree_landing_audit.py/**",
-        "tests/tools/test_hooks_bash_guard.py/**",
         "tests/tools/test_hooks_fail_open.py/**",
-        "tests/tools/test_hooks_landing_gate.py/**",
         "tests/tools/test_hooks_session_digest.py/**",
-        "tests/tools/test_hooks_session_learning.py/**",
-        "tests/tools/test_hooks_waivers.py/**",
         "tests/tools/test_install_git_hooks.py/**",
         "tests/tools/test_ledger_merge.py/**",
-        "tests/tools/test_magnitude_dismissal_gate.py/**",
-        "tests/tools/test_subagent_contract.py/**",
-        "tests/tools/test_triality.py/**",
-        "tests/tools/test_triality_gate.py/**"
+        "tests/tools/test_subagent_contract.py/**"
       ],
       "job": "docs-gates",
       "job_reserve_seconds": 120,
@@ -3735,7 +3727,6 @@
         "auto",
         "--molt-worker-memory-gb=0.5",
         "tests/test_agent_coordination.py",
-        "tests/tools/test_anti_recurrence_gate.py",
         "tests/tools/test_apparatus_agent_safety.py",
         "tests/tools/test_check_commit_attribution.py",
         "tests/tools/test_check_gate_flips.py",
@@ -3747,18 +3738,11 @@
         "tests/tools/test_commit_serializer.py",
         "tests/tools/test_custody_apparatus.py",
         "tests/tools/test_dirty_tree_landing_audit.py",
-        "tests/tools/test_hooks_bash_guard.py",
         "tests/tools/test_hooks_fail_open.py",
-        "tests/tools/test_hooks_landing_gate.py",
         "tests/tools/test_hooks_session_digest.py",
-        "tests/tools/test_hooks_session_learning.py",
-        "tests/tools/test_hooks_waivers.py",
         "tests/tools/test_install_git_hooks.py",
         "tests/tools/test_ledger_merge.py",
-        "tests/tools/test_magnitude_dismissal_gate.py",
-        "tests/tools/test_subagent_contract.py",
-        "tests/tools/test_triality.py",
-        "tests/tools/test_triality_gate.py"
+        "tests/tools/test_subagent_contract.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-repository-policy",
@@ -9373,11 +9357,9 @@
       "local.apparatus-a8-a12-disk-reclaim.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_lane_maturity.py tests/tools/test_powerplay_acceptance.py tests/tools/test_proof_queue_lane_maturity.py tests/tools/test_proof_queue_disk_capacity.py tests/tools/test_disk_guard.py tests/tools/test_check_gate_liveness.py tests/tools/test_drift_harvest.py",
       "local.apparatus-hooks.0": "python tools/check_gate_liveness.py --check",
       "local.apparatus-hooks.1": "python tools/check_gate_flips.py --check",
-      "local.apparatus-hooks.2": "python tools/gen_claude_hooks.py --check",
-      "local.apparatus-hooks.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.5 tests/tools/test_hooks_bash_guard.py tests/tools/test_hooks_landing_gate.py tests/tools/test_hooks_session_digest.py tests/tools/test_hooks_fail_open.py tests/tools/test_hooks_waivers.py tests/tools/test_check_gate_flips.py tests/tools/test_check_gate_liveness.py tests/tools/test_triality_gate.py tests/tools/test_magnitude_dismissal_gate.py",
+      "local.apparatus-hooks.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.5 tests/tools/test_hooks_session_digest.py tests/tools/test_hooks_fail_open.py tests/tools/test_check_gate_flips.py tests/tools/test_check_gate_liveness.py",
       "local.apparatus-learning-protection.0": "python tools/apparatus_agent_safety.py --check",
-      "local.apparatus-learning-protection.1": "python tools/anti_recurrence_gate.py --check",
-      "local.apparatus-learning-protection.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_apparatus_agent_safety.py tests/tools/test_anti_recurrence_gate.py tests/tools/test_hooks_session_learning.py tests/tools/test_check_gate_liveness.py tests/tools/test_memory_graph.py",
+      "local.apparatus-learning-protection.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_apparatus_agent_safety.py tests/tools/test_check_gate_liveness.py tests/tools/test_memory_graph.py",
       "local.backend-daemon-cache.0": "cargo test --locked --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor --bin molt-backend -- daemon backend_process::input::tests backend_process::cli_args::parse::tests --test-threads=1",
       "local.backend-daemon-cache.1": "cargo test --locked --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor --test daemon_server -- --test-threads=1",
       "local.backend-daemon-custody.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_backend_daemon_custody.py tests/test_backend_daemon_argv.py tests/test_backend_daemon_suite_custody.py tests/test_molt_diff_daemon_pruning.py tests/test_bench_individual_tool.py",
@@ -11094,46 +11076,32 @@
         "command_ids": [
           "local.apparatus-hooks.0",
           "local.apparatus-hooks.1",
-          "local.apparatus-hooks.2",
           "local.apparatus-hooks.pytest"
         ],
-        "description": "Claude Code hook spine, its typed wiring and Stop legs, the landing gate and the waiver grammar: pure-decision teeth + fail-open + gate-liveness canary.",
+        "description": "Claude Code hooks (the launcher and the session digest), their typed wiring, the gate-flip auditor and the gate-liveness canary.",
         "gates": [
           "python tools/check_gate_liveness.py --check",
-          "python tools/check_gate_flips.py --check",
-          "python tools/gen_claude_hooks.py --check"
+          "python tools/check_gate_flips.py --check"
         ],
         "globs": [
           ".claude/settings.json",
           "tools/hooks/**",
           "tools/gen_claude_hooks.py",
-          "tools/triality_gate.py",
-          "tools/magnitude_dismissal_gate.py",
           ".githooks/molt-hook-launch.sh",
           "tools/molt_dev_queue.py",
           "tools/check_gate_flips.py",
           "tools/check_gate_liveness.py",
-          "tests/tools/test_hooks_bash_guard.py",
-          "tests/tools/test_hooks_landing_gate.py",
           "tests/tools/test_hooks_session_digest.py",
           "tests/tools/test_hooks_fail_open.py",
-          "tests/tools/test_hooks_waivers.py",
           "tests/tools/test_check_gate_flips.py",
-          "tests/tools/test_check_gate_liveness.py",
-          "tests/tools/test_triality_gate.py",
-          "tests/tools/test_magnitude_dismissal_gate.py"
+          "tests/tools/test_check_gate_liveness.py"
         ],
         "name": "apparatus-hooks",
         "pytest": [
-          "tests/tools/test_hooks_bash_guard.py",
-          "tests/tools/test_hooks_landing_gate.py",
           "tests/tools/test_hooks_session_digest.py",
           "tests/tools/test_hooks_fail_open.py",
-          "tests/tools/test_hooks_waivers.py",
           "tests/tools/test_check_gate_flips.py",
-          "tests/tools/test_check_gate_liveness.py",
-          "tests/tools/test_triality_gate.py",
-          "tests/tools/test_magnitude_dismissal_gate.py"
+          "tests/tools/test_check_gate_liveness.py"
         ],
         "toolchains": [
           "python"
@@ -11142,33 +11110,23 @@
       {
         "command_ids": [
           "local.apparatus-learning-protection.0",
-          "local.apparatus-learning-protection.1",
           "local.apparatus-learning-protection.pytest"
         ],
-        "description": "Recurring-harm registry, no-agent-termination meta-gate, anti-recurrence advisory, and Stop-session learning persistence.",
+        "description": "Recurring-harm registry, the no-agent-termination meta-gate, and the memory graph.",
         "gates": [
-          "python tools/apparatus_agent_safety.py --check",
-          "python tools/anti_recurrence_gate.py --check"
+          "python tools/apparatus_agent_safety.py --check"
         ],
         "globs": [
-          ".claude/settings.json",
           "tools/apparatus_agent_safety.py",
-          "tools/anti_recurrence_gate.py",
           "tools/recurring_harms.toml",
-          "tools/hooks/session_learning.py",
-          "tools/hooks/stop_gates.py",
           "tools/memory_graph.py",
           "tools/check_gate_liveness.py",
           "tests/tools/test_apparatus_agent_safety.py",
-          "tests/tools/test_anti_recurrence_gate.py",
-          "tests/tools/test_hooks_session_learning.py",
           "tests/tools/test_memory_graph.py"
         ],
         "name": "apparatus-learning-protection",
         "pytest": [
           "tests/tools/test_apparatus_agent_safety.py",
-          "tests/tools/test_anti_recurrence_gate.py",
-          "tests/tools/test_hooks_session_learning.py",
           "tests/tools/test_check_gate_liveness.py",
           "tests/tools/test_memory_graph.py"
         ],
@@ -12366,16 +12324,10 @@
       "local.apparatus-hooks.1": [
         "python"
       ],
-      "local.apparatus-hooks.2": [
-        "python"
-      ],
       "local.apparatus-hooks.pytest": [
         "python"
       ],
       "local.apparatus-learning-protection.0": [
-        "python"
-      ],
-      "local.apparatus-learning-protection.1": [
         "python"
       ],
       "local.apparatus-learning-protection.pytest": [

@@ -770,7 +770,6 @@ def test_host_libraries_never_edit_sys_path_at_import() -> None:
         "tools/release/release_authority.py",
         "tools/release/verify_consumer.py",
         "tools/release/provision_execution_archives.py",
-        "tools/hooks/landing_gate.py",
         "tools/runtime_wasm_final_preflight.py",
     ],
 )

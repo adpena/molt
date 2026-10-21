@@ -1,23 +1,15 @@
 #!/usr/bin/env python3
-"""Gate-liveness canary for the apparatus itself (APPARATUS Wave 1; A8's P4 rule).
+"""Gate-liveness canary for the apparatus itself (A8's P4 rule).
 
 molt has repeatedly hit the "gate green atop a broken thing" class (M42), and
 the configured-!=-effective class (M34). A gate that can no longer FIRE certifies
-nothing. This tool is the binding-vs-inert audit pointed at the hook spine's OWN
-gates: it feeds each pure decision surface a KNOWN-BAD input and asserts the gate
-still fires. If any canary goes silent, the apparatus has silently rotted and
-this tool fails (exit 1 under ``--check``).
+nothing. This tool is the binding-vs-inert audit pointed at the apparatus's own
+gates: it feeds each gate's decision function a KNOWN-BAD input and asserts the
+gate still fires. If any canary goes silent, the apparatus has silently rotted
+and this tool fails (exit 1 under ``--check``).
 
-Every canary calls a PURE ``decide()`` -- no subprocess, no environment -- so the
-liveness check is deterministic and fast.
-
-A canary proves a guard still CAN fire, not that it runs. For each harm that
-``tools/recurring_harms.toml`` assigns to a hook-run guard (the hook package
-or a Stop leg), the check also reads the typed wiring: ``wiring.HOOKS`` (which
-generates ``.claude/settings.json``), ``stop_gates.LEGS`` and each guard's
-``[[gate_flip]]`` state. A wired guard whose flip (if any) is ``strict``
-enforces. One that does not must name its open ledger row as ``gap``; a gap on
-an enforcing guard is stale. Both mismatches fail.
+Every canary runs in process, with no subprocess, so the liveness check is
+deterministic and fast.
 """
 
 from __future__ import annotations
@@ -26,7 +18,6 @@ import argparse
 import datetime as _dt
 import sys
 import tomllib
-from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -42,15 +33,11 @@ bind_repository_imports(__file__)
 ROOT = Path(__file__).resolve().parents[1]
 
 
-from tools.hooks import bash_guard, landing_gate, session_learning  # noqa: E402
-from tools.hooks import waivers  # noqa: E402
-from tools import triality, triality_gate, magnitude_dismissal_gate  # noqa: E402
 from tools import claims_status, check_sister_landed, commit_serializer  # noqa: E402
 from tools import advisory_classifier, disk_guard  # noqa: E402
 from tools import lane_maturity, powerplay_acceptance  # noqa: E402
-from tools import anti_recurrence_gate, apparatus_agent_safety  # noqa: E402
+from tools import apparatus_agent_safety  # noqa: E402
 from tools import encoding_gate  # noqa: E402
-from tools.check_gate_flips import FlipState  # noqa: E402
 from molt.target_python import (  # noqa: E402
     TargetPythonVersion,
     require_verified_subset_target,
@@ -111,260 +98,6 @@ def _canaries() -> list[Canary]:
                     "source text", text="source text", schema=("benign",)
                 ).reason
                 == "prompt-echo"
-            ),
-        ),
-        Canary(
-            "triality",
-            "missing-equations-leg-fires",
-            lambda: (
-                not triality.decide(
-                    {
-                        "finding_id": "bad",
-                        "invariant": "one fact",
-                        "legs": {
-                            "dag": {
-                                "authority": "x",
-                                "fingerprint": triality.invariant_fingerprint(
-                                    "one fact"
-                                ),
-                            },
-                            "dsl": {
-                                "authority": "x",
-                                "fingerprint": triality.invariant_fingerprint(
-                                    "one fact"
-                                ),
-                            },
-                        },
-                    }
-                ).known
-            ),
-        ),
-        Canary(
-            "bash_guard",
-            "destructive-git-on-shared-checkout",
-            lambda: (
-                bash_guard.decide(
-                    "git reset --hard HEAD",
-                    facts=bash_guard.GuardFacts.fixed(
-                        shared=True, queue=False, https=False
-                    ),
-                ).block
-            ),
-        ),
-        Canary(
-            "bash_guard",
-            "git-add-sweep",
-            lambda: (
-                bash_guard.decide(
-                    "git add -A",
-                    facts=bash_guard.GuardFacts.fixed(
-                        shared=False, queue=False, https=False
-                    ),
-                ).block
-            ),
-        ),
-        Canary(
-            "bash_guard",
-            "add-then-commit-sweep",
-            lambda: (
-                bash_guard.decide(
-                    'git add foo.rs && git commit -m "x"',
-                    facts=bash_guard.GuardFacts.fixed(
-                        shared=False, queue=False, https=False
-                    ),
-                ).block
-            ),
-        ),
-        Canary(
-            "bash_guard",
-            "build-bypasses-live-queue",
-            lambda: (
-                bash_guard.decide(
-                    "cargo build --release",
-                    facts=bash_guard.GuardFacts.fixed(
-                        shared=False, queue=True, https=False
-                    ),
-                ).block
-            ),
-        ),
-        Canary(
-            "bash_guard",
-            "https-push-to-origin",
-            lambda: (
-                bash_guard.decide(
-                    "git push origin main",
-                    facts=bash_guard.GuardFacts.fixed(
-                        shared=False, queue=False, https=True
-                    ),
-                ).block
-            ),
-        ),
-        Canary(
-            "bash_guard",
-            "override-neutralizes-block",
-            # A known-GOOD counter-fixture: the override must turn a block OFF.
-            lambda: (
-                not bash_guard.decide(
-                    "MOLT_GUARD_OK=1 git reset --hard HEAD",
-                    facts=bash_guard.GuardFacts.fixed(
-                        shared=True, queue=False, https=False
-                    ),
-                ).block
-            ),
-        ),
-        Canary(
-            "landing_gate",
-            "report-without-landing",
-            lambda: (
-                landing_gate.decide(
-                    substantive_activity=True,
-                    window_has_commit=False,
-                    landing_progress=False,
-                    queue_row_in_flight=False,
-                    blocker_recorded=False,
-                    report_only=False,
-                )
-                is not None
-            ),
-        ),
-        Canary(
-            "landing_gate",
-            "landing-queue-progress-allows",
-            lambda: (
-                landing_gate.decide(
-                    substantive_activity=True,
-                    window_has_commit=False,
-                    landing_progress=True,
-                    queue_row_in_flight=False,
-                    blocker_recorded=False,
-                    report_only=False,
-                )
-                is None
-            ),
-        ),
-        Canary(
-            "landing_gate",
-            "landed-commit-allows",
-            lambda: (
-                landing_gate.decide(
-                    substantive_activity=True,
-                    window_has_commit=True,
-                    landing_progress=False,
-                    queue_row_in_flight=False,
-                    blocker_recorded=False,
-                    report_only=False,
-                )
-                is None
-            ),
-        ),
-        Canary(
-            "waivers",
-            "placeholder-rationale-rejected",
-            lambda: not waivers.is_valid_rationale("todo"),
-        ),
-        Canary(
-            "waivers",
-            "real-rationale-accepted",
-            lambda: waivers.is_valid_rationale(
-                "origin remote intentionally https for CI mirror"
-            ),
-        ),
-        # --- Wave 2, A3: triality drift gate -------------------------------
-        Canary(
-            "triality_gate",
-            "bug-fix-without-net-fires",
-            lambda: bool(
-                triality_gate.window_drift(
-                    ["fix(runtime): PyLong_AsLong silent truncation on >2**46"],
-                    ["runtime/molt-lang-cpython-abi/src/numbers.rs"],
-                )
-            ),
-        ),
-        Canary(
-            "triality_gate",
-            "bug-fix-with-test-allows",
-            # known-GOOD counter-fixture: a test in the window neutralizes the drift.
-            lambda: (
-                not triality_gate.window_drift(
-                    ["fix(runtime): silent truncation"],
-                    [
-                        "runtime/src/numbers.rs",
-                        "runtime/tests/test_long_conversions.rs",
-                    ],
-                )
-            ),
-        ),
-        Canary(
-            "triality_gate",
-            "perf-claim-without-bench-fires",
-            lambda: bool(
-                triality_gate.window_drift(
-                    ["perf(runtime): int-mul peel -- 1.65x CPython"],
-                    ["runtime/src/arith.rs"],
-                )
-            ),
-        ),
-        Canary(
-            "triality_gate",
-            "bare-opt-out-token-not-honored",
-            # a [skip-triality] with NO rationale must NOT opt out (fires as drift).
-            lambda: (
-                waivers.commit_opt_out(
-                    ["fix: x [skip-triality]"], triality_gate.WAIVER_GATE
-                )
-                is None
-            ),
-        ),
-        # --- Wave 2, A6: magnitude-dismissal + verdict-scope gate ----------
-        Canary(
-            "magnitude_dismissal_gate",
-            "absolute-dismissal-fires",
-            lambda: bool(
-                magnitude_dismissal_gate.classify_window(
-                    ["weak delta on the erasure lane; not worth chasing, deferring"],
-                    {},
-                )
-            ),
-        ),
-        Canary(
-            "magnitude_dismissal_gate",
-            "relative-significance-allows",
-            lambda: (
-                not magnitude_dismissal_gate.classify_window(
-                    [
-                        "erasure delta 0.012 is 18% of the remaining gap to green, keep it "
-                        "(relative significance)"
-                    ],
-                    {},
-                )
-            ),
-        ),
-        Canary(
-            "magnitude_dismissal_gate",
-            "unscoped-kill-fires",
-            lambda: bool(
-                magnitude_dismissal_gate.classify_window(
-                    [],
-                    {
-                        "docs/agent/POISON_ORPHAN_LEDGER.md": [
-                            "Lever-D is FALSIFIED, dropping it"
-                        ]
-                    },
-                )
-            ),
-        ),
-        Canary(
-            "magnitude_dismissal_gate",
-            "scoped-verdict-allows",
-            lambda: (
-                not magnitude_dismissal_gate.classify_window(
-                    [],
-                    {
-                        "docs/agent/POISON_ORPHAN_LEDGER.md": [
-                            "Lever-D FALSIFIED  verdict_scope: instance -- only the toy formulation"
-                        ]
-                    },
-                )
             ),
         ),
         # --- Wave 4, A11: claims terminal vocabulary + classifier ----------
@@ -565,91 +298,6 @@ def _canaries() -> list[Canary]:
                 encoding_gate.scan_source("open('x.txt', 'w')\n", "synthetic.py")
             ),
         ),
-        Canary(
-            "anti_recurrence_gate",
-            "synthetic-uncaptured-bug-class-warned",
-            anti_recurrence_gate.self_test,
-        ),
-        Canary(
-            "session_learning",
-            "digest-carries-crux-and-frontier",
-            session_learning.self_test,
-        ),
-    ]
-
-
-HOOK_PACKAGE = "tools.hooks"
-
-
-def hook_enforcement_problems(
-    harms: list[dict],
-    *,
-    judged: set[str],
-    wired: set[str],
-    flip_states: Mapping[str, FlipState],
-    open_keys: set[str],
-) -> list[str]:
-    """Mismatches between each hook-run guard's ``gap`` and the live wiring.
-
-    *judged* holds the guard modules a hook runs or could run (the hook
-    package and every Stop leg's module); *wired* those that run; a guard
-    enforces when it runs and its ``[[gate_flip]]`` (named by its module) is
-    ``strict`` or absent; *open_keys* are the ledger's open finding ids.
-    """
-    problems: list[str] = []
-    for harm in harms:
-        guard = str(harm["guard"])
-        if guard not in judged:
-            continue
-        name = guard.rpartition(".")[2]
-        enforcing = guard in wired and flip_states.get(name, "strict") == "strict"
-        gap = harm.get("gap")
-        if enforcing and gap is not None:
-            problems.append(f"{harm['id']}: {name} enforces, so gap {gap} is stale")
-        elif not enforcing and gap is None:
-            state = "unwired" if guard not in wired else "observe-only"
-            problems.append(f"{harm['id']}: {name} is {state} and names no gap row")
-        elif gap is not None and gap not in open_keys:
-            problems.append(f"{harm['id']}: gap {gap} is not an open ledger row")
-    return problems
-
-
-def hook_modules(harms: list[dict]) -> tuple[set[str], set[str]]:
-    """(judged, wired) from the typed wiring: ``wiring.HOOKS`` (which
-    generates .claude/settings.json) and ``stop_gates.LEGS``."""
-    from tools.hooks import stop_gates, wiring
-
-    legs = {leg.evaluate.__module__ for leg in stop_gates.LEGS}
-    wired = {hook.module for hook in wiring.HOOKS} | legs
-    package = {
-        str(harm["guard"])
-        for harm in harms
-        if str(harm["guard"]).rpartition(".")[0] == HOOK_PACKAGE
-    }
-    return package | legs, wired
-
-
-def _hook_enforcement_canaries() -> list[Canary]:
-    from tools import finding_status
-    from tools.check_gate_flips import DEFAULT_CONFIG, entry_state, load_flip_entries
-
-    harms = tomllib.loads(
-        (ROOT / "tools" / "recurring_harms.toml").read_text(encoding="utf-8")
-    ).get("harm", [])
-    judged, wired = hook_modules(harms)
-    problems = hook_enforcement_problems(
-        harms,
-        judged=judged,
-        wired=wired,
-        flip_states={
-            str(entry["name"]): entry_state(entry)
-            for entry in load_flip_entries(DEFAULT_CONFIG)
-        },
-        open_keys=set(finding_status.read_ledger(ROOT).open_keys),
-    )
-    return [
-        Canary("recurring_harms", f"enforcement:{problem}", lambda: False)
-        for problem in problems
     ]
 
 
@@ -673,7 +321,6 @@ def run() -> list[tuple[Canary, bool]]:
     missing = _registered_canaries() - _live_canary_keys(canaries)
     for name in sorted(missing):
         canaries.append(Canary("recurring_harms", f"missing:{name}", lambda: False))
-    canaries.extend(_hook_enforcement_canaries())
     for c in canaries:
         try:
             ok = bool(c.fires())

@@ -7,7 +7,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 ## Counts
 
 - `authority-routed` files: 63
-- `operational-tooling` files: 61
+- `operational-tooling` files: 59
 - `scattered-assumption` files: 342
 
 ## Files
@@ -427,8 +427,6 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `tools/gen_intrinsics.py` | 1 | scattered-assumption | `3.11` |
 | `tools/gen_unicode_width.py` | 2 | authority-routed | `sys.version_info` |
 | `tools/generator_manifest.toml` | 1 | authority-routed | `3.12` |
-| `tools/hooks/bash_guard.py` | 1 | operational-tooling | `3.12` |
-| `tools/hooks/landing_gate.py` | 2 | operational-tooling | `3.12` |
 | `tools/hooks/session_digest.py` | 2 | operational-tooling | `3.12` |
 | `tools/hosted_ci_env.py` | 1 | operational-tooling | `3.12` |
 | `tools/kdtree_3d.py` | 2 | scattered-assumption | `3.0` |
