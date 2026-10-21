@@ -1091,7 +1091,6 @@ def _gate_runtime(
         observe_capacity=observe_gate_capacity,
         say=_say,
         ok=_ok,
-        failure=DriverError,
     )
 
 

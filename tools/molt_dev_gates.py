@@ -1,7 +1,9 @@
 """Landing-gate execution for ``tools/molt_dev.py integrate``.
 
 Gates run in declared order and the first failure in that order halts the
-landing. The leading run of always gates (read-only whole-repository checks
+landing. A gate's nonzero exit raises ``GateFailure``, a ``CandidateFailure``
+the landing queue bisects on; a stop of the runner itself stays a plain
+``DriverError``. The leading run of always gates (read-only whole-repository checks
 without Cargo outputs) executes through the one proof executor
 (``tools/proof_executor.py``): its admission bounds the block by the plan's
 executor ceiling and the gates' resource class, both capped by
@@ -24,7 +26,7 @@ import time
 from typing import TYPE_CHECKING, Any, Protocol
 
 from tools import proof_executor, proof_receipts
-from tools.molt_dev_common import _say, _warn
+from tools.molt_dev_common import DriverError, GateFailure, _say, _warn
 
 if TYPE_CHECKING:
     from molt.disk_capacity import DiskCapacityProbe
@@ -79,7 +81,6 @@ class GateRuntime:
     observe_capacity: Callable[..., Any]
     say: Callable[[str], None]
     ok: Callable[[str], None]
-    failure: Callable[[str], BaseException]
 
 
 def display(command: str | tuple[str, ...]) -> str:
@@ -112,10 +113,12 @@ def gate_details(ordinal: int, gate: Gate) -> dict[str, object]:
     }
 
 
-def failure_message(
+def gate_failure(
     rc: int | None, elapsed: float, shown: str, gate_seconds: list[tuple[float, str]]
-) -> str:
-    return (
+) -> GateFailure:
+    """A selected gate exited nonzero: the candidate failed (the landing queue
+    bisects on this type). A fault of the runner itself stays a DriverError."""
+    return GateFailure(
         f"gate failed (exit {rc}) after {elapsed:.1f} s: {shown}\n"
         + gate_time_summary(gate_seconds)
         + "\n    Integration halts before push; fix the gate and re-run."
@@ -276,7 +279,7 @@ def _run_serial_gate(
     gate_seconds.append((elapsed, shown))
     runtime.check_source()
     if rc != 0:
-        raise runtime.failure(failure_message(rc, elapsed, shown, gate_seconds))
+        raise gate_failure(rc, elapsed, shown, gate_seconds)
     runtime.ok(f"gate passed in {elapsed:.1f} s: {shown}")
 
 
@@ -450,6 +453,14 @@ def _run_executor_block(
     wall = time.monotonic() - block_started
     receipt = json.loads(runtime.receipt_path.read_text(encoding="utf-8"))
     records = {record["id"]: record for record in receipt.get("commands", ())}
+
+    def stopped(where: str) -> DriverError:
+        # The runner, not the candidate, stopped the block.
+        errors = "; ".join(receipt.get("errors", ()) or ("no reason recorded",))
+        return DriverError(
+            f"gate block stopped {where}: {errors}; receipt {runtime.receipt_path}"
+        )
+
     for command in commands:
         outcome = state.outcomes.get(command.id)
         record = records.get(command.id, {})
@@ -461,6 +472,9 @@ def _run_executor_block(
             # Only a stop caused elsewhere cancels a gate; it never passed.
             runtime.say(f"    gate {status}: {shown}")
             continue
+        if outcome is None:
+            # Every earlier gate passed or was stopped, and this one never ran.
+            raise stopped(f"before {shown}")
         elapsed = float(record.get("duration_seconds") or 0.0)
         runtime.progress.emit(
             "gate_finished",
@@ -481,17 +495,13 @@ def _run_executor_block(
         # that changed it reports the canonical clean-source refusal.
         if record.get("source_tree_state_after") == "changed":
             runtime.check_source()
+        if status == "failure" and outcome.returncode != 0:
+            raise gate_failure(outcome.returncode, elapsed, shown, gate_seconds)
         if status != "success":
-            raise runtime.failure(
-                failure_message(record.get("returncode"), elapsed, shown, gate_seconds)
-            )
+            raise stopped(f"at {shown} ({status})")
         runtime.ok(f"gate passed in {elapsed:.1f} s: {shown}")
     if receipt.get("status") != "success":
-        raise runtime.failure(
-            "gate block stopped without a classified gate failure: "
-            + "; ".join(receipt.get("errors", ()) or ("no reason recorded",))
-            + f"; receipt {runtime.receipt_path}"
-        )
+        raise stopped("without a classified gate failure")
     runtime.say(
         f"    gate block: {len(commands)} gates in {wall:.1f} s wall through the "
         f"proof executor, at most {plan.executor_max_workers} at once; "
