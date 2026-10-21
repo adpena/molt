@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import os
 import sys
 import time
@@ -212,8 +213,9 @@ def test_guard_polls_read_the_tree_not_the_host_table(
     reason="this host reads the process table for custody",
 )
 def test_guard_kill_decides_protection_on_the_host_table(monkeypatch) -> None:
-    # Polls read custody rows; a kill re-reads the host table (samples=None)
-    # before it judges which groups it may signal.
+    # Polls read custody rows; a kill reads the host table before it judges
+    # which groups it may signal. The guard reads it before the enforcer
+    # check (HF-417), so the kill receives the table itself.
     kills: list[tuple[str, object]] = []
     original = memory_guard.terminate_watched_processes
 
@@ -240,7 +242,10 @@ def test_guard_kill_decides_protection_on_the_host_table(monkeypatch) -> None:
         result.sampling_telemetry.source
         == memory_guard._process_model.posix_custody_source()
     )
-    assert ("rss_limit", None) in kills
+    decision = [samples for reason, samples in kills if reason == "rss_limit"]
+    assert decision and isinstance(decision[0], Mapping)
+    # Wider than any poll's custody rows: the host table, not the tree.
+    assert len(decision[0]) > result.sampling_telemetry.max_process_rows
 
 
 @pytest.mark.skipif(not sys.platform.startswith("win"), reason="Windows Job telemetry")

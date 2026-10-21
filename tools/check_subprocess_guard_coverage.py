@@ -368,6 +368,19 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         expected_count=2,
     ),
     AllowedRawSubprocessUse(
+        "tests/test_child_clock_custody.py",
+        "_reserved_session_leader",
+        "Popen",
+        "the raw POSIX session leader is the custody subject of the enforcer's "
+        "observation-free group signal, which its ChildExecutionClock bounds",
+    ),
+    AllowedRawSubprocessUse(
+        "tests/test_child_clock_custody.py",
+        "_end_reserved_child",
+        "process.kill",
+        "kills only that unreaped custody subject, through its clock's lock",
+    ),
+    AllowedRawSubprocessUse(
         "tools/check_commit_attribution.py",
         "_git",
         "run",
