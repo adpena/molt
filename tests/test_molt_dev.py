@@ -2313,10 +2313,12 @@ def test_integrate_gates_never_write_bytecode_into_the_checkout(
     origin, work = origin_and_clone
     observed = work.parent / "bytecode.json"
     _commit_file(work, "src/probe_import.py", "VALUE = 1\n", "feat: probe")
+    # The gate runs the host `python3`; Python 3.15 removed module `__cached__`,
+    # so read the bytecode path from the module spec.
     probe = (
         "import json, sys; sys.path.insert(0, 'src'); import probe_import; "
         f"open({str(observed)!r}, 'w').write(json.dumps([sys.pycache_prefix, "
-        "sys.dont_write_bytecode, probe_import.__cached__]))"
+        "sys.dont_write_bytecode, probe_import.__spec__.cached]))"
     )
     _commit_file(
         work,
