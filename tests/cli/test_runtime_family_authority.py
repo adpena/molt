@@ -1940,7 +1940,7 @@ def test_cli_tool_selectors_are_pinned_after_original_overrides(
 
 
 def test_rustup_proxy_is_pinned_but_custom_compiler_is_preserved(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, isolated_molt_cache
 ) -> None:
     from molt import process_guard
 

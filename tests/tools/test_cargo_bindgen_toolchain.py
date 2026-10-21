@@ -873,7 +873,7 @@ def test_bindgen_formatter_is_an_optional_shared_executable_input(
 
 
 def test_bindgen_rustup_formatter_is_bound_to_actual_selected_binary(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, isolated_molt_cache
 ):
     from molt import process_guard
 
@@ -943,7 +943,7 @@ def test_missing_rustup_formatter_component_preserves_optional_vs_explicit_polic
 
 @pytest.mark.parametrize("lexical_rustup", [False, True])
 def test_rustup_formatter_alias_resolves_through_content_directory(
-    tmp_path, monkeypatch, lexical_rustup
+    tmp_path, monkeypatch, lexical_rustup, isolated_molt_cache
 ):
     from molt import process_guard
 
@@ -975,7 +975,7 @@ def test_rustup_formatter_alias_resolves_through_content_directory(
 
 @pytest.mark.parametrize("stdout", ["", "relative-rustfmt", "one\ntwo\n"])
 def test_optional_formatter_does_not_hide_malformed_successful_selector(
-    tmp_path, monkeypatch, stdout
+    tmp_path, monkeypatch, stdout, isolated_molt_cache
 ):
     from molt import process_guard
 
