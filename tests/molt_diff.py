@@ -3461,7 +3461,10 @@ def _cross_backend_divergence(
                 outcome.timed_out or outcome.infrastructure_failure is not None
                 for outcome in (first_outcome, second_outcome)
             )
-            if not unknown and first_outcome.build_failed != second_outcome.build_failed:
+            if (
+                not unknown
+                and first_outcome.build_failed != second_outcome.build_failed
+            ):
                 failed, built = (
                     (first, second) if first_outcome.build_failed else (second, first)
                 )
