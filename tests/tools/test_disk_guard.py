@@ -319,7 +319,7 @@ def test_registered_worktree_discovery_is_filesystem_only_and_scope_bounded(
             marks=pytest.mark.skipif(os.name == "nt", reason="Win32 forbids CR/LF"),
         ),
         pytest.param(
-            os.fsdecode(b"metadata-\xff"),
+            b"metadata-\xff",
             marks=pytest.mark.skipif(os.name == "nt", reason="POSIX filesystem bytes"),
         ),
     ],
@@ -329,6 +329,10 @@ def test_separate_git_registration_preserves_path_bytes_without_guessing_main(
 ):
     from tests.test_dx_run_context import _git
 
+    # Decode opaque POSIX bytes only after this case's platform admission.
+    # Windows still exercises the Unicode registration row above.
+    if isinstance(name, bytes):
+        name = os.fsdecode(name)
     original = tmp_path / "initial-metadata"
     scope, main, linked = _registered_worktree_scope(
         tmp_path, separate_git_dir=original
@@ -345,10 +349,16 @@ def test_separate_git_registration_preserves_path_bytes_without_guessing_main(
     for checkout in (main, linked):
         pointer = checkout / ".git"
         recorded = pointer.read_bytes()
-        assert recorded.count(os.fsencode(original)) == 1
-        pointer.write_bytes(
-            recorded.replace(os.fsencode(original), os.fsencode(common))
-        )
+        # Git's pointer format uses forward slashes on Windows too. Keep
+        # POSIX byte names through the filesystem codec rather than UTF-8.
+        original_git = os.fsencode(original.as_posix())
+        common_git = os.fsencode(common.as_posix())
+        assert recorded.count(original_git) == 1
+        # Git marks this file hidden on Windows. Update the existing file,
+        # preserving that attribute, instead of CREATE_ALWAYS through wb.
+        with pointer.open("r+b") as stream:
+            stream.write(recorded.replace(original_git, common_git))
+            stream.truncate()
     # Git validates the relocated records from ordinary checkout argv. This
     # also exercises POSIX bytes unsupported by the command-JSON transport.
     assert _git(main, "status", "--porcelain") == ""
@@ -450,52 +460,71 @@ def test_ensure_free_reclaims_across_registered_worktrees_only(tmp_path):
     assert linked.resolve() in {Path(path) for path in result.scope_roots}
 
 
-def test_live_guard_protects_its_worktree_but_terminal_marker_does_not(tmp_path):
+@pytest.mark.parametrize("operation", ["pressure", "gc"])
+@pytest.mark.parametrize("marker_starts", ["before-selection", "after-selection"])
+def test_live_guard_protects_its_worktree_but_terminal_marker_does_not(
+    tmp_path, monkeypatch, operation, marker_starts
+):
     _, main, linked = _registered_worktree_scope(tmp_path)
-    now = 2_000_000.0
+    now = 20_000_000.0
     main_session = main / "target" / "sessions" / "main-old"
-    # A guard keeps its worktree's hand-named lane target; a session target
-    # is a last-use root, which guard markers do not keep.
+    # Existing worktree marker protection stays on legacy lane targets. Managed
+    # sessions instead have their precise shared-use and last-use policy.
     linked_session = linked / "target" / "codex-linked-active"
     sized = {
         main_session: _make_dir(
-            main_session, size_bytes=5 * _GB, age_s=100_000, now=now
+            main_session, size_bytes=5 * _GB, age_s=40 * DAY, now=now
         ),
         linked_session: _make_dir(
-            linked_session, size_bytes=100 * _GB, age_s=100_000, now=now
+            linked_session, size_bytes=100 * _GB, age_s=40 * DAY, now=now
         ),
     }
     markers = linked / "tmp" / "memory_guard" / "active"
     markers.mkdir(parents=True)
-    _guard_marker(markers, 1, "child_running")
+    if marker_starts == "before-selection":
+        _guard_marker(markers, 1, "child_running")
+    else:
+        original = dg._delete_candidate
+        started = False
 
-    result = dg.ensure_free(
-        root=main,
-        config=_cfg(),
-        free_bytes_fn=_SimulatedVolume(1 * _GB, sized),
-        now_fn=lambda: now,
-        env={},
-    )
+        def start_marker(candidate, *args, **kwargs):
+            nonlocal started
+            if candidate.path == linked_session and not started:
+                started = True
+                assert not candidate.guard_active
+                _guard_marker(markers, 1, "child_running")
+            return original(candidate, *args, **kwargs)
+
+        monkeypatch.setattr(dg, "_delete_candidate", start_marker)
+
+    def collect():
+        if operation == "gc":
+            return dg.gc(
+                root=main, config=_cfg(), now_fn=lambda: now, env={}, log=False
+            )
+        return dg.ensure_free(
+            root=main,
+            config=_cfg(),
+            free_bytes_fn=_SimulatedVolume(1 * _GB, sized),
+            now_fn=lambda: now,
+            env={},
+            log=False,
+        )
+
+    result = collect()
     assert not main_session.exists()
     assert linked_session.exists()
-    reasons = {Path(item["path"]): item["reason"] for item in result.skipped}
-    assert reasons[linked_session.resolve()] == "active-guard"
-    # The result names the blocking record and the command that inspects it.
-    (custody,) = result.custody
-    assert custody["active_dir"] == str(markers)
-    assert custody["blocking_records"] == 1
-    assert str(markers / f"guard-1-{1:032x}.json") in custody["examples"][0]
-    assert "tools/memory_guard_custody.py --active-dir" in custody["next_step"]
-    assert result.to_dict()["custody"] == result.custody
-
+    if operation == "pressure" and marker_starts == "before-selection":
+        reasons = {Path(item["path"]): item["reason"] for item in result.skipped}
+        assert reasons[linked_session.resolve()] == "active-guard"
+        (custody,) = result.custody
+        assert custody["active_dir"] == str(markers)
+        assert custody["blocking_records"] == 1
+        assert str(markers / f"guard-1-{1:032x}.json") in custody["examples"][0]
+        assert "tools/memory_guard_custody.py --active-dir" in custody["next_step"]
+        assert result.to_dict()["custody"] == result.custody
     _guard_marker(markers, 1, "completed")
-    result = dg.ensure_free(
-        root=main,
-        config=_cfg(),
-        free_bytes_fn=_SimulatedVolume(1 * _GB, {linked_session: 100 * _GB}),
-        now_fn=lambda: now,
-        env={},
-    )
+    result = collect()
     assert not linked_session.exists()
     assert {Path(item["path"]) for item in result.reclaimed} == {
         linked_session.resolve()
@@ -826,11 +855,11 @@ def _checkout_family(tmp_path: Path) -> tuple[Path, Path, dict[str, str]]:
 
 
 def _last_used(roots, seconds_ago: float, now: float) -> None:
-    """Set every root's stamp and activity to ``seconds_ago`` before ``now``."""
+    """Age ordinary fixture-owned roots and their direct activity entries."""
     stamp = now - seconds_ago
     for root in roots:
         for path in (*root.iterdir(), root):
-            os.utime(path, (stamp, stamp), follow_symlinks=False)
+            os.utime(path, (stamp, stamp))
 
 
 def _gc(ext: Path, env: dict[str, str], now: float):
@@ -1351,6 +1380,10 @@ def test_a_held_lock_below_a_root_keeps_it(tmp_path, kind, lock):
     held.write_bytes(b"")
     now = time.time()
     _last_used(roots.values(), 60 * DAY, now)
+    if kind == "cargo-target" and lock.startswith("sessions/"):
+        # Keep the lock as the only live signal: creating its session above
+        # otherwise supplies genuine recent activity after the root was aged.
+        _last_used([root / "sessions" / "shard-7"], 60 * DAY, now)
     with open(held, "a+b") as handle:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         assert dg._lock_held(root)
@@ -1411,6 +1444,10 @@ def _session(ext: Path, checkout: Path, session_id: str) -> tuple[Path, Path]:
     for root in (target, control):
         root.mkdir(parents=True)
         (root / "payload.bin").write_bytes(b"\0" * 64)
+    from molt import checkout_state
+
+    checkout_state.record_checkout_target_use(target, checkout=checkout)
+    checkout_state.record_build_control_use(control, cargo_target=target)
     return target, control
 
 
@@ -1543,6 +1580,18 @@ def test_a_session_use_keeps_its_target_from_retiring(tmp_path, monkeypatch):
     # Without a use it retires.
     now = idle_for(7)
     assert str(session.resolve()) in _reclaimed(_gc(ext, env, now))
+
+    # Main's local target/sessions layout uses the same lifetime protocol.
+    local = ext / "target" / "sessions" / "local-reader"
+    local.mkdir(parents=True)
+    checkout_state.record_checkout_target_use(local, checkout=ext)
+    assert (local / checkout_state.LAST_USE_STAMP).is_file()
+    with checkout_state.checkout_state_use(((local, None),)):
+        _last_used([local], 40 * DAY, now)
+        assert str(local.resolve()) not in _reclaimed(_gc(ext, env, now))
+        assert local.is_dir()
+    _last_used([local], 40 * DAY, now)
+    assert str(local.resolve()) in _reclaimed(_gc(ext, env, now))
 
 
 def test_pressure_evicts_session_targets_by_last_use_outside_the_window(tmp_path):
@@ -1720,3 +1769,361 @@ def test_a_running_builds_session_target_is_never_reclaimed(
     if operation != "gc":
         reasons = {row["path"]: row["reason"] for row in result.skipped}
         assert reasons[str(roots["cargo-target"].resolve())] == "protected"
+
+
+def test_checkout_session_use_does_not_refresh_idle_siblings_or_controls(tmp_path):
+    import time
+    from molt import checkout_state
+
+    ext, projects, env = _checkout_family(tmp_path)
+    source = projects / "source"
+    source.mkdir()
+    parent = _checkout_state(ext, source)["cargo-target"]
+    chosen, chosen_control = _session(ext, source, "chosen")
+    idle, idle_control = _session(ext, source, "idle")
+    now = time.time()
+    _last_used([idle, idle_control, chosen, chosen_control, parent], 10 * DAY, now)
+    old = {
+        root: checkout_state.checkout_state_last_use(root)
+        for root in (idle, idle_control)
+    }
+    checkout_state.stamp_checkout_state(
+        source, {**env, "CARGO_TARGET_DIR": str(chosen)}
+    )
+    assert all(
+        checkout_state.checkout_state_last_use(root) == stamp
+        for root, stamp in old.items()
+    )
+    assert all(
+        checkout_state.checkout_state_last_use(root) > now - HOUR
+        for root in (parent, chosen, chosen_control)
+    )
+    assert checkout_state.bound_checkout_owner(chosen, ext).path == source.resolve()
+
+
+def test_nested_checkout_candidates_count_bytes_once_and_continue_pressure_plan(
+    tmp_path,
+):
+    parent = dg.Candidate(tmp_path / "parent", "sessions", 900, size=11)
+    child = dg.Candidate(parent.path / "child", "sessions", 800, size=10)
+    other = dg.Candidate(tmp_path / "other", "sessions", 950, size=10)
+    plan = dg.plan_reclaim(
+        [child, parent, other],
+        free_bytes=0,
+        high_water_bytes=20,
+        target_bytes=20,
+        now=1000,
+        min_idle_s=0,
+    )
+    assert [item.path for item in plan.selected] == [parent.path, other.path]
+    assert dg.gc_plan([child, parent], now=1000, min_idle_s=0) == [parent]
+
+
+def test_checkout_session_foreign_record_and_name_do_not_grant_orphan_custody(tmp_path):
+    import time
+    from molt import checkout_state
+
+    ext, projects, env = _checkout_family(tmp_path)
+    gone, other = projects / "gone", projects / "other"
+    gone.mkdir()
+    other.mkdir()
+    child, control = _session(ext, gone, "valid")
+    foreign, _ = _session(ext, other, "foreign")
+    (child / checkout_state.OWNER_RECORD).write_bytes(
+        (foreign / checkout_state.OWNER_RECORD).read_bytes()
+    )
+    invalid = child.parent / ("a" * 33)
+    invalid.mkdir()
+    gone.rmdir()
+    other.rmdir()
+    now = time.time()
+    _last_used([child, control, invalid], 3 * HOUR, now)
+    assert checkout_state.bound_checkout_owner(child, ext) is None
+    assert checkout_state.checkout_state_kind_of(invalid, ext) is None
+    _gc(ext, env, now)
+    assert child.is_dir() and invalid.is_dir()
+
+
+@pytest.mark.parametrize("operation", ["gc", "pressure", "retirement"])
+@pytest.mark.parametrize("selected", ["session", "control", "uv-environment"])
+def test_managed_shared_use_retains_idle_root_through_actual_operation(
+    tmp_path, operation, selected
+):
+    import time
+    from molt import checkout_state
+
+    ext, projects, env = _checkout_family(tmp_path)
+    source = projects / "gone"
+    source.mkdir()
+    roots = _checkout_state(ext, source)
+    checkout_state.stamp_checkout_state(source, env)
+    child, control = _session(ext, source, "long-reader")
+    chosen = {
+        "session": child,
+        "control": control,
+        "uv-environment": roots["uv-environment"],
+    }[selected]
+    owner = checkout_state.bound_checkout_owner(chosen, ext)
+    now = time.time()
+    with checkout_state.checkout_state_use(((chosen, owner),)):
+        source.rmdir()
+        # No activity heartbeat or two-hour grace can explain the retention.
+        _last_used([*roots.values(), child, control], 40 * DAY, now)
+        if operation == "gc":
+            result = _gc(ext, env, now)
+        elif operation == "pressure":
+            result = dg.ensure_free(
+                root=ext,
+                env=env,
+                config=_cfg(),
+                now_fn=lambda: now,
+                free_bytes_fn=lambda: 1,
+                log=False,
+            )
+        else:
+            result = dg.reclaim_checkout_state(source, root=ext, env=env)
+        assert chosen.is_dir()
+        assert str(chosen.resolve()) not in _reclaimed(result)
+        if selected in ("session", "control"):
+            assert roots["cargo-target"].is_dir()
+    # Ordinary eviction is allowed again once use ends and policy ages it.
+    _last_used(
+        [root for root in (*roots.values(), child, control) if root.exists()],
+        40 * DAY,
+        now,
+    )
+    reclaimed = {Path(path) for path in _reclaimed(_gc(ext, env, now))}
+    assert not chosen.exists()
+    assert any(path == chosen or path in chosen.parents for path in reclaimed)
+
+
+@pytest.mark.parametrize("operation", ["gc", "pressure"])
+@pytest.mark.parametrize(
+    "relative,globs",
+    [
+        ("target/lane-quiet", ("lane-*",)),
+        ("target/custom-quiet", ("custom-*",)),
+        ("cargo-target-quiet", ("lane-*",)),
+    ],
+)
+def test_explicit_legacy_target_lifetime_and_timed_retention(
+    tmp_path, relative, globs, operation
+):
+    import subprocess
+    import time
+    from molt import checkout_state
+    from molt.process_spawn import ProcessStateUse
+
+    ext, _projects, collector_env = _checkout_family(tmp_path)
+    selected = ext / relative
+    foreign = ext / "target" / "unselected-foreign"
+    protected = ext / "target" / "debug"
+    for path in (selected, foreign, protected):
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "artifact").write_bytes(b"preserved")
+    cfg = _cfg(lane_globs=globs)
+    # The command does not know the independent collector's custom glob policy.
+    command_env = {
+        **os.environ,
+        "CARGO_TARGET_DIR": str(selected),
+        "MOLT_EXT_ROOT": str(ext),
+    }
+    command_env.pop(dg.ENV_LANE_GLOBS, None)
+
+    def collect(now):
+        if operation == "gc":
+            return dg.gc(
+                root=ext, env=collector_env, config=cfg, now_fn=lambda: now, log=False
+            )
+        return dg.ensure_free(
+            root=ext,
+            env=collector_env,
+            config=cfg,
+            now_fn=lambda: now,
+            free_bytes_fn=lambda: 1,
+            log=False,
+        )
+
+    with ProcessStateUse(ROOT, command_env, ROOT) as owner:
+        with subprocess.Popen(
+            [sys.executable, "-I", "-S", "-c", "import sys;sys.stdin.buffer.read(1)"],
+            stdin=subprocess.PIPE,
+        ) as child:
+            owner.process = child
+            assert child.poll() is None
+            now = time.time()
+            _last_used([selected, foreign, protected], 40 * DAY, now)
+            assert str(selected.resolve()) not in _reclaimed(collect(now))
+            assert selected.is_dir()
+            child.communicate(b"x", timeout=10)
+            assert child.returncode == 0
+    assert not (selected / checkout_state.OWNER_RECORD).exists()
+    # Completion refreshes use; exclusive admission must see that fresh fact.
+    assert str(selected.resolve()) not in _reclaimed(collect(time.time()))
+    now = time.time()
+    _last_used([selected, foreign, protected], 40 * DAY, now)
+    assert str(selected.resolve()) in _reclaimed(collect(now))
+    assert not selected.exists()
+    assert (foreign / "artifact").read_bytes() == b"preserved"
+    assert (protected / "artifact").read_bytes() == b"preserved"
+
+
+@pytest.mark.parametrize("primary", [None, "body-failure"])
+def test_checkout_completion_preserves_primary_error_and_releases_use(
+    tmp_path, monkeypatch, primary
+):
+    from molt import checkout_state
+
+    selected = tmp_path / "target" / "lane-publication"
+    selected.mkdir(parents=True)
+    original = checkout_state._record_checkout_state_use
+    calls = 0
+    failure = OSError("completion disk full")
+    body_error = ValueError("independent body failure")
+
+    def publish(root):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise failure
+        original(root)
+
+    monkeypatch.setattr(checkout_state, "_record_checkout_state_use", publish)
+    with pytest.raises(ValueError if primary else OSError) as caught:
+        with checkout_state.checkout_state_use(((selected, None),)):
+            if primary:
+                raise body_error
+    assert caught.value is (body_error if primary else failure)
+    if primary:
+        assert any("completion disk full" in note for note in body_error.__notes__)
+    with checkout_state.checkout_state_retirement(selected) as available:
+        assert available
+
+
+@pytest.mark.parametrize("new_use", ["stamp", "held-lock"])
+def test_gc_revalidates_live_use_after_policy_selection(tmp_path, monkeypatch, new_use):
+    import time
+    from molt import checkout_state, file_locks
+
+    ext, projects, env = _checkout_family(tmp_path)
+    source = projects / "source"
+    source.mkdir()
+    child, control = _session(ext, source, "started-after-selection")
+    parent = child.parent.parent
+    now = time.time()
+    _last_used([child, parent, control], 40 * DAY, now)
+    original = dg._retention_candidates
+    handles = []
+    planned = False
+
+    def after_policy(*args, **kwargs):
+        nonlocal planned
+        candidates = original(*args, **kwargs)
+        if candidates and not kwargs.get("build_control") and not planned:
+            planned = True
+            assert any(c.path == parent and not c.lock_held for c in candidates)
+            if new_use == "stamp":
+                checkout_state.record_checkout_state_use(child, now=now)
+            else:
+                handles.append(
+                    file_locks._acquire_file_lock(
+                        child / "debug" / ".cargo-lock",
+                        timeout_s=1,
+                        timeout_message="busy fixture",
+                    )
+                )
+        return candidates
+
+    monkeypatch.setattr(dg, "_retention_candidates", after_policy)
+    try:
+        result = _gc(ext, env, now)
+        assert planned and parent.is_dir() and child.is_dir()
+        assert not _reclaimed(result) & _resolved([parent, child])
+    finally:
+        for handle in handles:
+            file_locks._release_file_lock(handle)
+
+
+def test_retirement_finishes_before_later_user_recreates_root(tmp_path):
+    import time
+    from molt import checkout_state
+
+    ext, projects, env = _checkout_family(tmp_path)
+    source = projects / "source"
+    source.mkdir()
+    child, control = _session(ext, source, "later-user")
+    parent = child.parent.parent
+    now = time.time()
+    _last_used([child, parent, control], 40 * DAY, now)
+    assert str(parent.resolve()) in _reclaimed(_gc(ext, env, now))
+    assert not child.exists()
+    with checkout_state.checkout_state_use(
+        ((child, checkout_state.CheckoutOwner(source, "cargo-target")),)
+    ):
+        child.mkdir(parents=True)
+        (child / "new.bin").write_bytes(b"new user")
+    assert checkout_state.bound_checkout_owner(child, ext).path == source.resolve()
+    assert (child / "new.bin").read_bytes() == b"new user"
+
+
+@pytest.mark.skipif(
+    os.name != "nt", reason="actual Windows missing-component case aliases"
+)
+def test_managed_case_alias_use_contends_before_root_materialization(tmp_path):
+    from molt.checkout_state import (
+        CheckoutOwner,
+        checkout_state_use,
+        checkout_state_retirement,
+    )
+    from molt.dx import checkout_component
+
+    checkout = tmp_path / "project"
+    checkout.mkdir()
+    artifact = tmp_path / "artifacts"
+    artifact.mkdir()
+    parent = artifact / "target" / "checkouts" / checkout_component(checkout)
+    session = parent / "sessions" / "reader"
+    alias = Path(str(session).swapcase())
+    assert not session.exists()
+    with checkout_state_use(((alias, CheckoutOwner(checkout, "cargo-target")),)):
+        alias.mkdir(parents=True)
+        for root in (parent, session):
+            with checkout_state_retirement(root) as admitted:
+                assert not admitted
+    for root in (parent, session):
+        with checkout_state_retirement(root) as admitted:
+            assert admitted
+
+
+@pytest.mark.parametrize(
+    "relative,retained",
+    [
+        ("target/custom-scope", True),
+        ("cargo-target-scope", True),
+        ("target/.molt_state", False),
+        ("target/debug", False),
+        ("target/checkouts", False),
+        ("target/.disk_guard", False),
+        ("target/DEBUG", os.name != "nt"),
+        ("target/.MOLT_STATE", os.name != "nt"),
+        ("target/CACHEDIR.TAG", False),
+        ("arbitrary/caller-output", False),
+    ],
+)
+def test_structural_use_scope_never_adopts_an_owner_or_deletion_permission(
+    tmp_path, relative, retained
+):
+    from molt import checkout_state
+
+    selected = tmp_path / relative
+    selected.mkdir(parents=True)
+    (selected / "payload").write_bytes(b"caller data")
+    with checkout_state.checkout_state_use(((selected, None),)):
+        assert (selected / checkout_state.LAST_USE_STAMP).exists() is retained
+        with checkout_state.checkout_state_retirement(selected) as available:
+            assert available is not retained
+    assert (tmp_path / "target/.disk_guard/checkout-state-locks").exists() is retained
+    assert not (selected / checkout_state.OWNER_RECORD).exists()
+    assert (selected / "payload").read_bytes() == b"caller data"
+    if not retained:
+        assert dg._is_reclaimable(selected, tmp_path, ("*",)) is None

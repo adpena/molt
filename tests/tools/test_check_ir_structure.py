@@ -629,3 +629,162 @@ def test_verifier_build_refused_below_the_capacity_floor_starts_no_cargo(
     with pytest.raises(FileNotFoundError):  # the recording Cargo builds nothing
         rust_ir_verifier.verifier_binary(env=env)
     assert launched == [["cargo", "build", "-p", "molt-ir", "--bin", "molt-ir-verify"]]
+
+
+@pytest.mark.parametrize("failure", [None, "launch", "reader", "cleanup"])
+def test_verifier_owns_managed_state_through_child_exit(
+    tmp_path, monkeypatch, failure
+) -> None:
+    import os
+    import gc
+    import weakref
+    from types import SimpleNamespace
+    import tools.rust_ir_verifier as verifier_module
+    from molt.build_state_layout import build_state_root
+    from molt.checkout_state import checkout_state_retirement
+    from molt.dx import checkout_component
+    from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
+
+    artifact = tmp_path / "artifacts"
+    parent = (
+        artifact / "target" / "checkouts" / checkout_component(verifier_module.ROOT)
+    )
+    target = parent / "sessions" / "verifier-lifetime"
+    target.mkdir(parents=True)
+    env = ProcessEnvironmentBuilder(os.environ)
+    for key in (
+        "MOLT_DIFF_CARGO_TARGET_DIR",
+        "UV_PROJECT_ENVIRONMENT",
+        "MOLT_BUILD_STATE_DIR",
+    ):
+        env.pop(key, None)
+    env.update({"MOLT_EXT_ROOT": str(artifact), "CARGO_TARGET_DIR": str(target)})
+    environment = ProcessEnvironment(env)
+    control = build_state_root(
+        project_root=verifier_module.ROOT,
+        cargo_target=target,
+        environment=environment,
+    )
+    protected = (parent, target, control)
+    processes = []
+    terminators = []
+    verifier_refs = []
+    start = verifier_module._COMMANDS.start_owned
+
+    def observe_start(*args, **kwargs):
+        # The binary lookup/build-to-spawn boundary must already be pinned.
+        for path in protected:
+            with checkout_state_retirement(path) as admitted:
+                assert not admitted
+        process = start(*args, **kwargs)
+        processes.append(process)
+        if failure == "cleanup":
+            terminators.append(process.terminate)
+
+            def fail_terminate():
+                raise OSError("termination fault")
+
+            monkeypatch.setattr(process, "terminate", fail_terminate)
+        return process
+
+    monkeypatch.setattr(
+        verifier_module, "_COMMANDS", SimpleNamespace(start_owned=observe_start)
+    )
+    if failure in {"reader", "cleanup"}:
+        from tests.process_guard_common import install_module_view
+
+        class FailingReader(verifier_module.threading.Thread):
+            def __init__(self, *args, **kwargs):
+                verifier_refs.append(weakref.ref(kwargs["target"].__self__))
+                super().__init__(*args, **kwargs)
+
+            def start(self):
+                raise RuntimeError("reader start failed")
+
+        install_module_view(
+            monkeypatch,
+            "threading",
+            verifier_module.threading,
+            verifier_module,
+            Thread=FailingReader,
+        )
+    command = (
+        [str(tmp_path / "missing-verifier")]
+        if failure == "launch"
+        else [sys.executable, "-I", "-S", "-c", "import sys; sys.stdin.buffer.read()"]
+    )
+    if failure is not None:
+        try:
+            with pytest.raises(
+                FileNotFoundError
+                if failure == "launch"
+                else OSError
+                if failure == "cleanup"
+                else RuntimeError,
+                match=None
+                if failure == "launch"
+                else "termination fault"
+                if failure == "cleanup"
+                else "reader start failed",
+            ):
+                RustIrVerifier(command=command, env=environment)
+            if failure == "cleanup":
+                # No exception/traceback or test-owned strong verifier remains.
+                # Its existing cleanup owner must survive GC with a live child.
+                gc.collect()
+                assert verifier_refs[0]() is not None
+                assert processes[0].poll() is None
+                for path in protected:
+                    with checkout_state_retirement(path) as admitted:
+                        assert not admitted
+            else:
+                assert all(process.poll() is not None for process in processes)
+        finally:
+            if failure == "cleanup" and processes:
+                monkeypatch.setattr(processes[0], "terminate", terminators[0])
+                owner = verifier_refs[0]()
+                if owner is not None:
+                    owner.close(graceful=False)
+                elif processes[0].poll() is None:
+                    terminators[0]()
+                    processes[0].wait(timeout=5)
+    else:
+        verifier = RustIrVerifier(command=command, env=environment)
+        try:
+            assert processes[0].poll() is None
+            for path in protected:
+                with checkout_state_retirement(path) as admitted:
+                    assert not admitted
+        finally:
+            verifier.close()
+        verifier.close()  # Existing repeated-close owner remains idempotent.
+        assert processes[0].poll() is not None
+    for path in protected:
+        with checkout_state_retirement(path) as admitted:
+            assert admitted
+
+
+def test_verifier_rebuilds_after_completed_target_retirement(tmp_path, monkeypatch):
+    import tools.rust_ir_verifier as verifier_module
+
+    binary = tmp_path / "debug" / verifier_module._BINARY_NAME
+    builds = []
+
+    class Commands:
+        def run(self, command, **kwargs):
+            builds.append(tuple(command))
+            binary.parent.mkdir(parents=True, exist_ok=True)
+            binary.write_bytes(b"compiled output")
+
+    monkeypatch.setattr(verifier_module, "_COMMANDS", Commands())
+    monkeypatch.setattr(verifier_module, "_BINARY_READY", set())
+    monkeypatch.setattr(
+        verifier_module, "require_cargo_build_capacity", lambda *a, **k: None
+    )
+    environment = {"CARGO_TARGET_DIR": str(tmp_path)}
+    assert verifier_module.verifier_binary(env=environment) == binary
+    assert verifier_module.verifier_binary(env=environment) == binary
+    assert len(builds) == 1
+    binary.unlink()  # Simulate retirement after its preceding user completed.
+    assert verifier_module.verifier_binary(env=environment) == binary
+    assert len(builds) == 2

@@ -222,3 +222,207 @@ def test_batch_compile_client_owns_guard_context_by_default(
     assert popen_kwargs["start_new_session"] is True
     assert any(key == "force_close" for key, _ in events)
     assert ("sentinel_exit", None) in events
+
+
+def _managed_batch_environment(tmp_path, rule=NameRule.EXACT):
+    import os
+    from molt.dx import checkout_component
+    from molt.build_state_layout import build_state_root
+
+    checkout = tmp_path / "project"
+    checkout.mkdir()
+    artifact = tmp_path / "artifacts"
+    parent = artifact / "target" / "checkouts" / checkout_component(checkout)
+    session = parent / "sessions" / "reader"
+    key = "cargo_target_dir" if rule is NameRule.WINDOWS else "CARGO_TARGET_DIR"
+    environment = ProcessEnvironment(
+        {**os.environ, key: str(session), "MOLT_EXT_ROOT": str(artifact)}, rule=rule
+    )
+    control = build_state_root(
+        project_root=checkout, cargo_target=session, environment=environment
+    )
+    script = tmp_path / "server.py"
+    script.write_text(
+        "import json,sys\n"
+        "for line in sys.stdin:\n"
+        " request=json.loads(line)\n"
+        " print(json.dumps({'id':request['id'],'ok':True}),flush=True)\n"
+        " if request['op']=='shutdown': break\n",
+        encoding="utf-8",
+    )
+    return checkout, environment, (parent, session, control), script
+
+
+def _assert_batch_retirement(roots, available):
+    from molt.checkout_state import checkout_state_retirement
+
+    for root in roots:
+        with checkout_state_retirement(root) as admitted:
+            assert admitted is available, root
+
+
+@pytest.mark.parametrize("rule", list(NameRule))
+def test_persistent_batch_child_holds_actual_roots_until_closed(tmp_path, rule):
+    import sys
+
+    checkout, environment, roots, script = _managed_batch_environment(tmp_path, rule)
+    client = BatchCompileServerClient(
+        [sys.executable, str(script)],
+        cwd=checkout,
+        env=environment,
+        memory_guard_prefix=None,
+    )
+    try:
+        _assert_batch_retirement(roots, False)
+        assert client.request("ping", timeout=5)["ok"]
+        _assert_batch_retirement(roots, False)
+    finally:
+        client.close(timeout=5)
+    assert client._proc.poll() is not None
+    _assert_batch_retirement(roots, True)
+
+
+def test_batch_lifetime_uses_compiler_source_independently_of_server_cwd(
+    tmp_path, monkeypatch
+):
+    import sys
+    from pathlib import Path
+    from molt import checkout_state
+    from molt.build_state_layout import build_state_root
+
+    checkout, environment, roots, script = _managed_batch_environment(tmp_path)
+    compiler = tmp_path / "compiler-source"
+    compiler.mkdir()
+    environment = ProcessEnvironment(
+        {key: value for key, value in environment.items() if key != "MOLT_EXT_ROOT"}
+    )
+    assert "MOLT_EXT_ROOT" not in environment
+    monkeypatch.setattr(batch_compile_client, "compiler_source_root", lambda: compiler)
+    original = checkout_state.checkout_state_command_roots
+    captured = []
+
+    def observe(source_root, child_environment, *, cwd):
+        assert source_root == compiler and cwd == checkout
+        selected = original(source_root, child_environment, cwd=cwd)
+        target = Path(child_environment["CARGO_TARGET_DIR"])
+        assert (
+            build_state_root(
+                project_root=compiler,
+                cargo_target=target,
+                environment=child_environment,
+            ),
+            checkout_state.CheckoutOwner(target, "build-control"),
+        ) in selected
+        captured.append(selected)
+        return selected
+
+    monkeypatch.setattr(checkout_state, "checkout_state_command_roots", observe)
+    client = BatchCompileServerClient(
+        [sys.executable, str(script)],
+        cwd=checkout,
+        env=environment,
+        memory_guard_prefix=None,
+    )
+    try:
+        assert captured and client.request("ping", timeout=5)["ok"]
+        _assert_batch_retirement(roots[:2], False)
+    finally:
+        client.close(timeout=5)
+    _assert_batch_retirement(roots[:2], True)
+
+
+def test_batch_spawn_failure_releases_prebirth_use(tmp_path, monkeypatch):
+    checkout, environment, roots, script = _managed_batch_environment(tmp_path)
+
+    def refuse(*args, **kwargs):
+        _assert_batch_retirement(roots, False)
+        raise FileNotFoundError("independent batch launch refusal")
+
+    install_module_view(
+        monkeypatch, "subprocess", subprocess, batch_compile_client, Popen=refuse
+    )
+    with pytest.raises(FileNotFoundError, match="independent batch launch refusal"):
+        BatchCompileServerClient(
+            ["unused"], cwd=checkout, env=environment, memory_guard_prefix=None
+        )
+    _assert_batch_retirement(roots, True)
+
+
+def test_batch_reader_start_failure_and_failed_cleanup_survive_gc(
+    tmp_path, monkeypatch
+):
+    import gc
+    import sys
+    import weakref
+
+    checkout, environment, roots, script = _managed_batch_environment(tmp_path)
+    processes = []
+    original_popen = subprocess.Popen
+
+    def capture(*args, **kwargs):
+        process = original_popen(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    class FailingReader(threading.Thread):
+        def start(self):
+            raise RuntimeError("independent batch reader start failure")
+
+    install_module_view(
+        monkeypatch, "subprocess", subprocess, batch_compile_client, Popen=capture
+    )
+    install_module_view(
+        monkeypatch, "threading", threading, batch_compile_client, Thread=FailingReader
+    )
+    reference = None
+    try:
+        with pytest.raises(
+            RuntimeError, match="independent batch reader start failure"
+        ) as caught:
+            BatchCompileServerClient(
+                [sys.executable, str(script)],
+                cwd=checkout,
+                env=environment,
+                memory_guard_prefix=None,
+                force_close=lambda process: None,
+            )
+        reference = weakref.ref(caught.value.batch_client)
+        del caught
+        gc.collect()
+        assert reference() is not None
+        assert len(processes) == 1 and processes[0].poll() is None
+        _assert_batch_retirement(roots, False)
+    finally:
+        client = reference() if reference is not None else None
+        if client is not None:
+            client._force_close = None
+            client.close(force=True, timeout=5)
+        else:
+            for process in processes:
+                process.terminate()
+                process.wait(timeout=5)
+    _assert_batch_retirement(roots, True)
+    del client
+    gc.collect()
+    assert reference() is None
+
+
+def test_batch_failed_force_close_retains_use_until_observed_death(tmp_path):
+    import sys
+
+    checkout, environment, roots, script = _managed_batch_environment(tmp_path)
+    client = BatchCompileServerClient(
+        [sys.executable, str(script)],
+        cwd=checkout,
+        env=environment,
+        memory_guard_prefix=None,
+        force_close=lambda process: None,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="child closure unresolved"):
+            client.close(force=True)
+        _assert_batch_retirement(roots, False)
+    finally:
+        client._force_close = None
+        client.close(force=True, timeout=5)
+    _assert_batch_retirement(roots, True)

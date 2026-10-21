@@ -29,10 +29,15 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from tools.molt_dev_controller import integration_controller, run_from_pinned_controller
+from tools.molt_dev_controller import (
+    add_pinned_controller_arguments,
+    integration_controller,
+    run_from_pinned_controller,
+)
 from tools.molt_dev_detached import python_command
 from molt import process_model
 from tools.molt_dev_common import (
+    _COMMANDS,
     EXIT_FAIL,
     EXIT_OK,
     CandidateFailure,
@@ -498,7 +503,10 @@ def _supervisor_died(state: Path) -> bool:
         pid = int((state / "pid").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
-    return not process_model.pid_alive(pid)
+    try:
+        return not process_model.pid_alive(pid)
+    except OSError:
+        return False  # Unknown does not establish supervisor death.
 
 
 def _await_landing(paths, request_id: str) -> int:
@@ -621,7 +629,9 @@ def _provision_landing_sandbox(sandbox: Path) -> None:
     from molt import checkout_provisioning as provisioning
 
     specs = [
-        provisioning.checkout_input(name, sandbox)
+        provisioning.checkout_input(
+            name, sandbox, guard_source_root=_COMMANDS.repo_root
+        )
         for name in provisioning.CHECKOUT_INPUT_NAMES
     ]
     names = [
@@ -630,7 +640,9 @@ def _provision_landing_sandbox(sandbox: Path) -> None:
         if spec.scope == "checkout" and provisioning.declares(spec)
     ]
     try:
-        provisioning.ensure_all(sandbox, names=names)
+        provisioning.ensure_all(
+            sandbox, names=names, guard_source_root=_COMMANDS.repo_root
+        )
     except provisioning.ProvisioningError as exc:
         raise DriverError(f"landing sandbox provisioning failed: {exc}") from exc
 
@@ -644,7 +656,9 @@ def _after_landing(sandbox: Path, landed, args: argparse.Namespace) -> None:
     from molt import checkout_provisioning as provisioning
 
     try:
-        hooks = provisioning.checkout_input("git-hooks", sandbox)
+        hooks = provisioning.checkout_input(
+            "git-hooks", sandbox, guard_source_root=_COMMANDS.repo_root
+        )
         if provisioning.declares(hooks):
             provisioning.ensure_input(hooks)
     except provisioning.ProvisioningError as exc:
@@ -782,7 +796,7 @@ def add_queue_arguments(
         action="store_true",
         help="run this checkout's driver instead of main's pinned controller",
     )
-    p_run.add_argument("--pinned-controller", help=argparse.SUPPRESS)
+    add_pinned_controller_arguments(p_run)
     p_run.set_defaults(func=cmd_queue_run)
     p_status = queue_sub.add_parser("status", help="pending requests and results")
     add_repo_arg(p_status)

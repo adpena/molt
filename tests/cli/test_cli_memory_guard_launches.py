@@ -372,10 +372,14 @@ def test_backend_daemon_spawn_uses_guard_context_and_sentinel(
         return FakeProc()
 
     monkeypatch.setattr(
-        BACKEND_EXECUTION, "_load_cli_harness_memory_guard", lambda cwd: FakeHarness()
+        BACKEND_EXECUTION,
+        "_load_cli_harness_memory_guard",
+        lambda cwd, *, guard_source_root=None: FakeHarness(),
     )
     monkeypatch.setattr(
-        COMMAND_RUNTIME, "_load_cli_harness_memory_guard", lambda cwd: FakeHarness()
+        COMMAND_RUNTIME,
+        "_load_cli_harness_memory_guard",
+        lambda cwd, *, guard_source_root=None: FakeHarness(),
     )
     install_module_view(
         monkeypatch, "subprocess", subprocess, BACKEND_EXECUTION, Popen=fake_popen
@@ -475,7 +479,9 @@ def test_backend_daemon_request_uses_request_scoped_sentinel(
             return len(payload)
 
     monkeypatch.setattr(
-        BACKEND_EXECUTION, "_load_cli_harness_memory_guard", lambda cwd: FakeHarness()
+        BACKEND_EXECUTION,
+        "_load_cli_harness_memory_guard",
+        lambda cwd, *, guard_source_root=None: FakeHarness(),
     )
     monkeypatch.setattr(BACKEND_EXECUTION.socket, "AF_UNIX", 1, raising=False)
     monkeypatch.setattr(

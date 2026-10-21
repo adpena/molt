@@ -447,10 +447,13 @@ files inside each root:
   checkout path whose component the root's name carries, or, for build
   control, the Cargo target whose address names the root.
 - `.molt-last-use`, a stamp that every use refreshes at most once an hour
-  (`record_checkout_state_use`): `RunContext.canonical_env` for every root of
-  its checkout, and a CLI build process, once, for the checkout target and the
-  build-control root it selects. A root's last use is its newest activity mtime (the root and its
-  immediate children, the stamp among them), so a use that writes nothing
+  (`record_checkout_state_use`): `RunContext.canonical_env` records common
+  checkout state and the selected target and build control; a CLI build process
+  records its selected target and build control once. A pinned session records
+  both itself and its enclosing checkout target, without refreshing idle sibling
+  sessions or their build controls. A root's last use is its newest activity
+  mtime (the root and its immediate children, the stamp among them), and a
+  checkout target also includes its managed sessions' activity. A use that writes nothing
   still counts, and roots that predate this design age out like any other;
   nothing guesses their owner.
 
@@ -510,6 +513,114 @@ Worktree retirement (`integrate --cleanup-worktree` and `lane retire`)
 retires the worktree's daemons, removes it, and then reclaims its roots at
 once, without the idle window: it is the explicit owner action, as `bazel
 clean --expunge` is. A failed removal keeps the roots.
+
+Before removing a worktree, the canonical
+retirement consumer binds its complete known inventory from
+`checkout_state_roots`, including pinned sessions and their build controls.
+It uses one captured process environment to bind and reclaim that inventory;
+the caller's selected Cargo target, uv environment, build control and session
+may belong to another checkout. Ordinary command use remains selection-scoped.
+Integration, standalone cleanup, lane retirement and drift pruning share this
+retirement preparation and reclaim boundary. Managed pinned sessions below
+`target/checkouts/<checkout-component>/sessions/<session-component>` use this
+same exclusive retirement protocol and their canonical session-idle limit,
+including explicitly selected sessions and sessions that predate registration.
+The session-idle clock is the existing `RetentionLimits` authority. Recent child activity and held child locks protect an enclosing
+target; candidate selection counts nested byte trees once.
+
+Run capsules obtain their target from `RunContext.canonical_env` or
+`development_artifact_env` (`create_dirs=False` when merely preparing a capsule),
+then retain that resolved environment for the command. They may pin
+`MOLT_SESSION_ID` when isolation is intentional; they do not assemble a target
+path themselves. A command using an explicitly selected managed session still
+records its owner and last use. Arbitrary caller-selected targets outside the
+managed layout retain their caller's lifetime/custody, as do owned temporary
+release/differential output roots. The disk guard's existing legacy allow-set
+(`target/<configured lane glob>` and top-level `cargo-target-*`) remains explicit:
+those targets now take the same last-use stamp and retire under the existing
+30-day max-age limit, or under pressure outside the protection window. They
+have no checkout owner, so retirement cannot guess which checkout owns them.
+Every selected direct `target/<component>` and top-level `cargo-target-*` holds
+its exact external lifetime lock independently of the command's glob policy;
+a collector with different globs therefore cannot race that use. Structural
+lock admission grants no deletion permission: the one disk-guard allow-set and
+hard denylist still protect foreign paths and shared output names.
+Shared toolchains, compilation caches and retained proof evidence have their
+own existing owners and are not checkout-state roots.
+
+Repository command execution carries its source owner explicitly from
+`CommandExecutor.repo_root`, already admitted by `import_file`, through
+`ProcessStateUse`, guard loading and `HarnessExecutionContext`. Compiler inputs
+selected by `MOLT_SOURCE_ROOT` remain unchanged caller input; they cannot redirect
+the executing tool's control plane. Direct compiler callers retain the default
+compiler-source admission, including installed-source refusal when guard tools
+are absent. A loaded foreign guard or dependency is always rejected. One command
+resolves the owner once, validates its two source markers once in the loader,
+and checks the three loaded guard module identities; it adds no inventory scan
+or guard reload. The Windows controller binds this same owner before changing
+its physical cwd, while the worker restores the original logical cwd. Checkout
+provisioning carries the same optional execution owner in its existing input
+specifications and through every guarded provisioner and bounded probe; the
+owner is excluded from content/action digests. Standalone provisioning retains
+its compiler-source default. Unguarded metadata probes need only the installed
+Molt package and never require source-only guard tools.
+
+Managed use-publication and retirement share the same external file-lock
+transaction. Each operation admits a finite set of canonical root coordinates,
+including managed target ancestry and selected build control. Shared use holds
+survive for the actual owned command or persistent worker lifetime; retirement
+requires exclusive admission and revalidates path identity, owner and policy
+before deletion. Stamp refresh remains hourly and does not replace this lifetime
+hold. Independent shared readers coexist; retirement cannot pass a live reader.
+
+The exact structural use envelope also covers caller-selected direct
+`target/<component>` and top-level `cargo-target-*`, even outside the current
+collector's configured root. This is deliberate: an independently authorized
+collector must see the same exact target lock. Shared/protected output names
+use the one hard denylist and receive no stamp or lifetime metadata; ordinary
+outside-layout paths remain untouched. Admission costs one finite external
+lock per selected root/dependency and an hourly stamp check, independent of
+artifact bytes or sibling count. Structural use never adopts checkout ownership
+or expands a collector's deletion allow-set.
+
+POSIX exec transfers these finite reader descriptors to the actual command.
+Inheriting descendants conservatively retain state, including a long-lived
+daemon that inherits a descriptor. Preserving exec's identity, signals and exit
+status accepts that retention; arbitrary daemon independence would require an
+additional supervisor. External interlock files deliberately survive payload
+retirement: they are global coordination metadata, O(distinct root identities)
+small files with no per-operation growth. Unlinking a held lock would split inode
+admission between existing waiters and new openers; sweeping them needs a separate
+generation-safe protocol and is outside payload retirement.
+
+
+Child handoff must prove that the intended child has acquired its own hold before
+the parent releases its hold. An unproved startup or descendant closure retains
+custody instead of treating an exception, process wrapper collection or a stale
+marker as proof of death. Managed subprocess, guard, daemon, timer, pytest and
+queue consumers use that same owner; they do not add a second retention clock.
+Finite root admission performs bounded path and lock work per operation, with
+no process spawn or compiled-application cost. Raw Cargo or arbitrary external
+users outside managed command custody do not acquire this guarantee implicitly.
+
+Detached name admission serializes observation, explicit replacement and startup
+under one OS lock outside the replaceable directory. The nonce-bound startup
+acknowledgement identifies the actual worker, which may differ from a Windows
+interpreter launcher. Missing acknowledgement or unknown process state cannot
+authorize replacement. Windows liveness uses the shared query-only process
+handle and a zero-time wait, including for a process whose exit code is 259;
+signal zero is only a POSIX query. Query and handle-close errors preserve unknown
+state. Terminal `rc` publication follows command closure, resource cleanup and
+crash-log closure, with no subsequent worker writes into the replaceable state.
+
+This adapts [Go's cache lifetime contract](https://go.dev/src/cmd/go/internal/cache/cache.go),
+which keeps a retrieved output available until the cache owner closes, to
+Molt's actual managed-resource holds. It also applies SQLite's
+[explicit commit-point discipline](https://www.sqlite.org/atomiccommit.html)
+to terminal publication. Molt does not need database durability or a new journal
+for disposable build state: incomplete startup remains inspectable and refuses
+replacement. These mechanisms run in development tooling and add no work to
+compiled applications.
 
 This policy replaced an append-only registry of lane targets in
 `target/.disk_guard/registry.jsonl`, which retired a registered directory

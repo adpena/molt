@@ -188,7 +188,9 @@ def scan_sources(
         raise RuntimeError("node is required to validate the browser ECMAScript graph")
     try:
         # The parser tree comes from its lock file on demand, as `uv run` syncs.
-        checkout_provisioning.ensure("browser-acorn", ROOT)
+        checkout_provisioning.ensure(
+            "browser-acorn", ROOT, guard_source_root=_COMMANDS.repo_root
+        )
     except checkout_provisioning.ProvisioningError as exc:
         raise RuntimeError(f"Acorn parser is not provisioned: {exc}") from exc
     if not SCANNER.is_file():

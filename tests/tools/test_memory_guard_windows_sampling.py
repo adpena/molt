@@ -15,7 +15,7 @@ from molt.process_environment import ProcessEnvironment
 from tools import memory_guard
 from tools.memory_guard_core import process_custody
 
-from molt import process_model, windows_process_snapshot
+from molt import process_model, windows_process_snapshot, windows_process_api
 
 import molt.pytest_memory_guard_bootstrap as pytest_memory_guard_bootstrap
 from tests.process_guard_common import (
@@ -580,13 +580,20 @@ def _install_windows_liveness(monkeypatch, api, *, last_error: int = 0) -> None:
         name="nt",
         kill=lambda *_: pytest.fail("pid_alive signaled a Windows process"),
     )
-    monkeypatch.setattr(windows_process_snapshot, "process_query_api", lambda: api)
+    install_module_view(monkeypatch, "sys", sys, windows_process_api, platform="win32")
+    monkeypatch.setattr(windows_process_api, "process_query_api", lambda: api)
+    monkeypatch.setattr(
+        ctypes,
+        "WinError",
+        lambda code: OSError(code, "native query failure"),
+        raising=False,
+    )
     monkeypatch.setattr(ctypes, "get_last_error", lambda: last_error, raising=False)
 
 
 @pytest.mark.parametrize(
     ("wait_result", "alive"),
-    [(0x102, True), (0, False), (0xFFFFFFFF, True)],
+    [(0x102, True), (0, False), (0xFFFFFFFF, None)],
 )
 def test_windows_pid_alive_waits_on_the_process_object(
     monkeypatch, wait_result: int, alive: bool
@@ -596,15 +603,21 @@ def test_windows_pid_alive_waits_on_the_process_object(
     api = _WindowsLivenessApi(handle=77, wait_result=wait_result)
     _install_windows_liveness(monkeypatch, api)
 
-    assert process_model.pid_alive(4242) is alive
+    if alive is None:
+        with pytest.raises(OSError):
+            process_model.pid_alive(4242)
+    else:
+        assert process_model.pid_alive(4242) is alive
     assert api.calls == [
-        ("open", 0x1000 | 0x00100000, False, 4242),
+        ("open", 0x00100000, False, 4242),
         ("wait", 77, 0),
         ("close", 77),
     ]
 
 
-@pytest.mark.parametrize(("last_error", "alive"), [(5, True), (87, False)])
+@pytest.mark.parametrize(
+    ("last_error", "alive"), [(5, None), (87, False), (6, None), (0, None)]
+)
 def test_windows_pid_alive_without_a_handle_reads_the_open_error(
     monkeypatch, last_error: int, alive: bool
 ) -> None:
@@ -613,7 +626,11 @@ def test_windows_pid_alive_without_a_handle_reads_the_open_error(
     api = _WindowsLivenessApi(handle=0)
     _install_windows_liveness(monkeypatch, api, last_error=last_error)
 
-    assert process_model.pid_alive(4242) is alive
+    if alive is None:
+        with pytest.raises(OSError):
+            process_model.pid_alive(4242)
+    else:
+        assert process_model.pid_alive(4242) is alive
     assert [call[0] for call in api.calls] == ["open"]
 
 

@@ -147,19 +147,26 @@ def test_file_lock_serializes_when_platform_lock_is_process_reentrant(
     held_before,
 ) -> None:
     """The in-process authority must not depend on OS same-process semantics."""
-    monkeypatch.setattr(build_locks, "_try_lock_file_handle", lambda _handle: True)
-    lock_path = tmp_path / "shared.lock"
-
-    first = build_locks._try_acquire_file_lock(lock_path)
-    assert first is not None
-    assert build_locks._try_acquire_file_lock(lock_path) is None
-
-    build_locks._release_file_lock(first)
-    second = build_locks._try_acquire_file_lock(lock_path)
-    assert second is not None
-    build_locks._release_file_lock(second)
-
-    assert _HeldLocks.now().registry == held_before.registry
+    unrelated = build_locks._try_acquire_file_lock(tmp_path / "unrelated.lock")
+    assert unrelated is not None
+    try:
+        monkeypatch.setattr(build_locks, "_try_lock_file_handle", lambda _handle: True)
+        lock_path = tmp_path / "shared.lock"
+        first = build_locks._try_acquire_file_lock(lock_path)
+        assert first is not None
+        assert build_locks._try_acquire_file_lock(lock_path) is None
+        build_locks._release_file_lock(first)
+        second = build_locks._try_acquire_file_lock(lock_path)
+        assert second is not None
+        build_locks._release_file_lock(second)
+        assert build_locks._file_lock_is_owned(unrelated)
+        assert build_locks._try_acquire_file_lock(tmp_path / "unrelated.lock") is None
+        assert str(lock_path.resolve()) not in _HeldLocks.now().registry
+    finally:
+        build_locks._release_file_lock(unrelated)
+    # Other process-owned operations (the suite sentinel among them) may end
+    # concurrently. They cannot explain a newly leaked lock from this test.
+    assert _HeldLocks.now().registry <= held_before.registry
 
 
 def test_file_lock_releases_registry_reservation_when_platform_is_contended(
@@ -824,3 +831,74 @@ def test_observing_existing_lock_preserves_bytes_inode_and_mtime(tmp_path):
     )
     assert path.read_bytes() == b"existing ownership state"
     assert build_locks._IN_PROCESS_LOCK_REGISTRY == baseline
+
+
+def test_shared_readers_contend_with_exclusive_in_one_process(tmp_path, held_before):
+    path = tmp_path / "readers.lock"
+    first = build_locks._try_acquire_file_lock(path, shared=True)
+    second = build_locks._try_acquire_file_lock(path, shared=True)
+    assert first is not None and second is not None
+    try:
+        assert build_locks._try_acquire_file_lock(path) is None
+        build_locks._release_file_lock(first)
+        assert build_locks._try_acquire_file_lock(path) is None
+    finally:
+        build_locks._release_file_lock(first)
+        build_locks._release_file_lock(second)
+    writer = build_locks._try_acquire_file_lock(path)
+    assert writer is not None
+    try:
+        assert build_locks._try_acquire_file_lock(path, shared=True) is None
+    finally:
+        build_locks._release_file_lock(writer)
+    assert path.read_bytes() == b""
+    assert _HeldLocks.now() == held_before
+
+
+def test_shared_handle_does_not_authorize_exclusive_owned_operation(
+    tmp_path, held_before
+):
+    path = tmp_path / "readers.lock"
+    handle = build_locks._try_acquire_file_lock(path, shared=True)
+    assert handle is not None
+    try:
+        with pytest.raises(ValueError, match="exact live ownership"):
+            with build_locks._file_lock_owned_operation(
+                handle, expected_lock_path=path
+            ):
+                pytest.fail("a reader must never authorize a cache mutation")
+        with build_locks._file_lock_owned_operation(
+            handle, expected_lock_path=path, shared=True
+        ):
+            assert build_locks._file_lock_is_owned(handle)
+    finally:
+        build_locks._release_file_lock(handle)
+    assert _HeldLocks.now() == held_before
+
+
+def test_shared_readers_and_writer_contend_across_processes(tmp_path, held_before):
+    path = tmp_path / "readers.lock"
+    holder = build_locks._try_acquire_file_lock(path, shared=True)
+    assert holder is not None
+    try:
+        completed = run_custody_subject_process(
+            [
+                sys.executable,
+                "-c",
+                "from pathlib import Path; import sys; "
+                "from molt import file_locks as f; p=Path(sys.argv[1]); "
+                "reader=f._try_acquire_file_lock(p, shared=True); assert reader is not None; "
+                "assert f._try_acquire_file_lock(p) is None; "
+                "f._release_file_lock(reader); print('reader-admitted-writer-refused')",
+                str(path),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        assert completed.returncode == 0, completed.stderr
+        assert completed.stdout.strip() == "reader-admitted-writer-refused"
+    finally:
+        build_locks._release_file_lock(holder)
+    assert _HeldLocks.now() == held_before

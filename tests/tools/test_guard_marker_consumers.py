@@ -114,3 +114,45 @@ def test_preflight_unreadable_marker_directory_remains_a_conflict(
     conflicts = preflight._active_build_guards((marker.parent,), live_pids=frozenset())
     assert len(conflicts) == 1
     assert "unreadable custody" in conflicts[0]["error"]
+
+
+@pytest.mark.parametrize("registration_fails", [False, True])
+def test_pytest_config_owns_only_actual_managed_scratch_lifetime(
+    tmp_path, monkeypatch, registration_fails
+):
+    from molt.checkout_state import (
+        checkout_scratch_state_dir,
+        checkout_state_retirement,
+    )
+
+    checkout = tmp_path / "project"
+    checkout.mkdir()
+    artifact = tmp_path / "artifacts"
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact))
+    monkeypatch.setattr(bootstrap, "ROOT", checkout)
+    cache = checkout_scratch_state_dir("pytest-cache", checkout, os.environ)
+    home = checkout_scratch_state_dir("hypothesis-home", checkout, os.environ)
+    from _pytest.config import get_config
+
+    config = get_config()
+    config.parse(["-o", f"cache_dir={cache}", str(checkout)])
+    if registration_fails:
+
+        def refuse(cleanup):
+            raise RuntimeError("independent cleanup registration failure")
+
+        monkeypatch.setattr(config, "add_cleanup", refuse)
+    try:
+        if registration_fails:
+            with pytest.raises(RuntimeError, match="independent cleanup registration"):
+                bootstrap._hold_pytest_checkout_state(config, ())
+        else:
+            bootstrap._hold_pytest_checkout_state(config, ())
+        for root in (cache, home):
+            with checkout_state_retirement(root) as admitted:
+                assert admitted is registration_fails
+    finally:
+        config._ensure_unconfigure()
+    for root in (cache, home):
+        with checkout_state_retirement(root) as admitted:
+            assert admitted

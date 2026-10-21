@@ -197,6 +197,11 @@ def session_artifact_component(session_id: str) -> str:
     return f"{prefix}-{digest[:_SESSION_COMPONENT_DIGEST_CHARS]}"
 
 
+def is_session_artifact_component(component: str) -> bool:
+    """Whether a directory name is in the canonical session component domain."""
+    return _SESSION_COMPONENT_SAFE.fullmatch(component) is not None
+
+
 def generated_session_id(env: Mapping[str, str]) -> bool:
     return env.get("MOLT_SESSION_ID_GENERATED", "").strip().lower() in TRUE_VALUES
 
@@ -1670,7 +1675,10 @@ class RunContext:
             for key in root_keys:
                 value = env.get(key)
                 if value:
-                    Path(value).expanduser().mkdir(parents=True, exist_ok=True)
+                    from molt.checkout_state import checkout_state_use
+
+                    with checkout_state_use(((Path(value).expanduser(), None),)):
+                        Path(value).expanduser().mkdir(parents=True, exist_ok=True)
             # Record this checkout as the owner and a user of its state under
             # a shared root, and a pinned session as a user of the target it
             # selects, then retire idle state at most once a day (HF-313).

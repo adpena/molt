@@ -6528,7 +6528,9 @@ def test_proof_queue_exec_rejects_invalid_memory_guard_poll_before_detach(
     logs = tmp_path / "runs"
     launched: list[str] = []
 
-    def fake_launch(args: object, *, run_id: str, timeout: float) -> tuple[int, Path]:
+    def fake_launch(
+        args: object, *, run_id: str, timeout: float, on_birth=None
+    ) -> tuple[int, Path]:
         del args, timeout
         launched.append(run_id)
         return 4242, tmp_path / "runner.log"
@@ -9496,7 +9498,9 @@ def test_proof_queue_run_id_can_detach_existing_queued_row(
         )
     launched: dict[str, object] = {}
 
-    def fake_launch(args: object, *, run_id: str, timeout: float) -> tuple[int, Path]:
+    def fake_launch(
+        args: object, *, run_id: str, timeout: float, on_birth=None
+    ) -> tuple[int, Path]:
         launched["run_id"] = run_id
         launched["timeout"] = timeout
         return 12345, logs / f"{run_id}.runner.log"
@@ -9561,7 +9565,9 @@ def test_proof_queue_run_detach_respects_queue_size_and_contention_keys(
         )
     launched: list[str] = []
 
-    def fake_launch(args: object, *, run_id: str, timeout: float) -> tuple[int, Path]:
+    def fake_launch(
+        args: object, *, run_id: str, timeout: float, on_birth=None
+    ) -> tuple[int, Path]:
         del args, timeout
         launched.append(run_id)
         return 12345, logs / f"{run_id}.runner.log"
@@ -9621,7 +9627,9 @@ def test_proof_queue_run_detach_serializes_compiler_build_resource_mutex(
         )
     launched: list[str] = []
 
-    def fake_launch(args: object, *, run_id: str, timeout: float) -> tuple[int, Path]:
+    def fake_launch(
+        args: object, *, run_id: str, timeout: float, on_birth=None
+    ) -> tuple[int, Path]:
         del args, timeout
         launched.append(run_id)
         return 12345, logs / f"{run_id}.runner.log"
@@ -9678,7 +9686,9 @@ def test_proof_queue_run_jobs_alias_limits_detached_rows(
         )
     launched: list[str] = []
 
-    def fake_launch(args: object, *, run_id: str, timeout: float) -> tuple[int, Path]:
+    def fake_launch(
+        args: object, *, run_id: str, timeout: float, on_birth=None
+    ) -> tuple[int, Path]:
         del args, timeout
         launched.append(run_id)
         return 12345, logs / f"{run_id}.runner.log"
@@ -9752,7 +9762,9 @@ def test_proof_queue_run_detach_counts_existing_active_rows(
         )
     launched: list[str] = []
 
-    def fake_launch(args: object, *, run_id: str, timeout: float) -> tuple[int, Path]:
+    def fake_launch(
+        args: object, *, run_id: str, timeout: float, on_birth=None
+    ) -> tuple[int, Path]:
         del args, timeout
         launched.append(run_id)
         return 12345, logs / f"{run_id}.runner.log"
@@ -10090,7 +10102,9 @@ def test_proof_queue_named_lane_can_detach_runner(
         ),
     )
 
-    def fake_launch(args: object, *, run_id: str, timeout: float) -> tuple[int, Path]:
+    def fake_launch(
+        args: object, *, run_id: str, timeout: float, on_birth=None
+    ) -> tuple[int, Path]:
         del args
         launched["run_id"] = run_id
         launched["timeout"] = timeout
@@ -10131,7 +10145,9 @@ def test_proof_queue_exec_detach_requires_submission_note(
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
 
-    def fail_launch(args: object, *, run_id: str, timeout: float) -> tuple[int, Path]:
+    def fail_launch(
+        args: object, *, run_id: str, timeout: float, on_birth=None
+    ) -> tuple[int, Path]:
         del args, run_id, timeout
         raise AssertionError("note-less detached row must not launch")
 
@@ -10179,7 +10195,9 @@ def test_proof_queue_named_lane_can_queue_without_runner(
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"
 
-    def fail_launch(args: object, *, run_id: str, timeout: float) -> tuple[int, Path]:
+    def fail_launch(
+        args: object, *, run_id: str, timeout: float, on_birth=None
+    ) -> tuple[int, Path]:
         del args, run_id, timeout
         raise AssertionError("--queue-only must not launch a detached runner")
 
@@ -10302,8 +10320,17 @@ def test_proof_queue_windows_launchers_hide_console(
     class FakePopen:
         pid = 12345
 
-        def __init__(self, _command: list[str], **kwargs: object) -> None:
+        def __init__(self, command: list[str], **kwargs: object) -> None:
             captured.append(kwargs)
+            # Model the real child's exact startup acknowledgement, rather
+            # than treating an allocated launcher PID as readiness.
+            ready, token = command[3:5]
+            Path(ready).write_text(
+                json.dumps(
+                    {"schema_version": 1, "pid": self.pid + 1, "use_token": token}
+                ),
+                encoding="utf-8",
+            )
 
     monkeypatch.setattr(custody, "_queue_process_spawn_is_windows", lambda: True)
     # Custody hands its own subprocess module to the process-spawn helpers.
@@ -10338,8 +10365,15 @@ def test_proof_queue_posix_detached_runner_uses_new_session(
     class FakePopen:
         pid = 12345
 
-        def __init__(self, _command: list[str], **kwargs: object) -> None:
+        def __init__(self, command: list[str], **kwargs: object) -> None:
             captured.append(kwargs)
+            # Model the real child's exact startup acknowledgement, rather
+            # than treating an allocated launcher PID as readiness.
+            ready, token = command[3:5]
+            Path(ready).write_text(
+                json.dumps({"schema_version": 1, "pid": self.pid, "use_token": token}),
+                encoding="utf-8",
+            )
 
     monkeypatch.setattr(custody, "_queue_process_spawn_is_windows", lambda: False)
     monkeypatch.setattr(custody, "Popen", FakePopen)
@@ -10356,6 +10390,228 @@ def test_proof_queue_posix_detached_runner_uses_new_session(
     assert captured[0]["start_new_session"] is True
     assert "creationflags" not in captured[0]
     assert custody._queued_command_process_kwargs() == {}
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        "ready",
+        "wrong_nonce",
+        "invalid_pid",
+        "bool_pid",
+        "null_ack",
+        "extra_key",
+        "read_error",
+        "early_exit",
+        "spawn_error",
+    ],
+)
+def test_proof_queue_detached_use_survives_startup_and_failed_observation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    import atexit
+    import gc
+    import weakref
+    from molt.build_state_layout import build_state_root
+    from molt.checkout_state import checkout_state_retirement
+    from molt.dx import checkout_component
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    artifact = tmp_path / "artifacts"
+    parent = artifact / "target" / "checkouts" / checkout_component(checkout)
+    session = parent / "sessions" / "reader"
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(session))
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact))
+    environment = dict(os.environ)
+    control = build_state_root(
+        project_root=state.ROOT, cargo_target=session, environment=environment
+    )
+    roots = (parent, session, control)
+
+    def assert_retirement(available: bool) -> None:
+        for root in roots:
+            with checkout_state_retirement(root) as admitted:
+                assert admitted is available, root
+
+    release = tmp_path / "release"
+    worker = tmp_path / "worker.py"
+    worker.write_text(
+        "import json,os,pathlib,sys,time\n"
+        "from contextlib import ExitStack\n"
+        "from tools.command_execution import detached_command_use\n"
+        "root,ready,token,mode,release=map(str,sys.argv[1:])\n"
+        "ready=pathlib.Path(ready); release=pathlib.Path(release)\n"
+        "if mode=='early_exit': raise SystemExit(2)\n"
+        "with ExitStack() as use:\n"
+        " if mode=='ready':\n"
+        "  use.enter_context(detached_command_use(pathlib.Path(root),dict(os.environ),cwd=pathlib.Path.cwd(),ready_path=ready,use_token=token))\n"
+        " elif mode=='read_error': ready.mkdir()\n"
+        " else:\n"
+        "  ack={'schema_version':1,'pid':(0 if mode=='invalid_pid' else True if mode=='bool_pid' else os.getpid()),'use_token':('0'*32 if mode=='wrong_nonce' else token)}\n"
+        "  if mode=='extra_key': ack['extra']=1\n"
+        "  ready.write_text(json.dumps(None if mode=='null_ack' else ack),encoding='utf-8')\n"
+        " deadline=time.monotonic()+15\n"
+        " while not release.exists() and time.monotonic()<deadline: time.sleep(.01)\n"
+        " assert release.exists(), 'worker release deadline'\n",
+        encoding="utf-8",
+    )
+    process = None
+    real_popen = subprocess.Popen
+
+    def launch(command: list[str], **kwargs):
+        nonlocal process
+        # This independent contention check precedes the actual child birth.
+        assert_retirement(False)
+        if outcome == "spawn_error":
+            raise FileNotFoundError("controlled failed launch")
+        ready, token = command[3:5]
+        process = real_popen(
+            [
+                sys.executable,
+                str(worker),
+                str(state.ROOT),
+                ready,
+                token,
+                outcome,
+                str(release),
+            ],
+            **kwargs,
+        )
+        return process
+
+    monkeypatch.setattr(custody, "Popen", launch)
+    args = SimpleNamespace(repo_root=checkout, logs_root=tmp_path / "logs")
+    handoff_ref = None
+    conn = None
+    if outcome == "early_exit":
+        conn = state._connect(tmp_path / "queue.sqlite3")
+        args.queue_size = 1
+        scheduling._insert_run(
+            conn,
+            run_id="use",
+            logical_id="startup-failure",
+            reason="observe actual pre-ACK worker death",
+            command=[sys.executable, "-c", "pass"],
+            cwd=checkout,
+            resource_family="python",
+            contention_key="python:startup-failure",
+            scopes=[],
+            git_snapshot={"available": False},
+            log_path=tmp_path / "run.log",
+            summary_json=tmp_path / "run.memory_guard.json",
+        )
+    try:
+        if outcome == "ready":
+            pid, _log = custody._launch_detached_runner(args, run_id="use", timeout=10)
+            assert process is not None and pid == process.pid
+            assert_retirement(False)
+        else:
+            with pytest.raises((RuntimeError, OSError)) as caught:
+                if conn is not None:
+                    runner._dispatch_detached_runner(
+                        args, conn, run_id="use", timeout=10
+                    )
+                else:
+                    custody._launch_detached_runner(args, run_id="use", timeout=10)
+            if conn is not None:
+                row = state._row_by_run_id(conn, "use")
+                assert row is not None
+                if os.name == "posix":
+                    assert row["status"] == "failed" and row["returncode"] == 2
+                    assert row["guard_pid"] == process.pid
+                    assert row["finished_at"] is not None
+                else:
+                    assert row["status"] == "dispatched"
+            if outcome in {
+                "wrong_nonce",
+                "invalid_pid",
+                "bool_pid",
+                "null_ack",
+                "extra_key",
+                "read_error",
+            }:
+                handoff_ref = weakref.ref(caught.value.state_owner)
+                assert caught.value.owned_process is process
+                del caught
+                gc.collect()
+                assert handoff_ref() is not None
+                assert process is not None and process.poll() is None
+                assert_retirement(False)
+            else:
+                assert_retirement(True)
+    finally:
+        release.touch()
+        if process is not None:
+            process.wait(timeout=10)
+        if handoff_ref is not None:
+            owner = handoff_ref()
+            assert owner is not None
+            atexit.unregister(owner._close_at_exit)
+            owner._close_at_exit()
+    assert_retirement(True)
+    if conn is not None:
+        conn.close()
+
+
+def test_detached_owner_registration_failure_releases_prebirth_use(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import atexit
+    from molt.checkout_state import checkout_state_retirement
+    from molt.dx import checkout_component
+    from tools import command_execution
+    from molt import process_spawn
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    parent = (
+        tmp_path / "artifacts" / "target" / "checkouts" / checkout_component(checkout)
+    )
+    environment = {**os.environ, "CARGO_TARGET_DIR": str(parent)}
+    entered = []
+
+    def refuse_registration(callback):
+        with checkout_state_retirement(parent) as admitted:
+            assert admitted is False
+        entered.append(callback)
+        raise RuntimeError("controlled registration failure")
+
+    install_module_view(
+        monkeypatch, "atexit", atexit, process_spawn, register=refuse_registration
+    )
+    with pytest.raises(RuntimeError, match="controlled registration failure"):
+        with command_execution.DetachedStateHandoff(
+            state.ROOT, environment, checkout, tmp_path / "ready.json"
+        ):
+            pytest.fail("child launch must remain unreachable")
+    assert len(entered) == 1
+    with checkout_state_retirement(parent) as admitted:
+        assert admitted is True
+
+
+def test_proof_queue_script_acquires_use_before_cli_dispatch(tmp_path: Path) -> None:
+    ready = tmp_path / "ready.json"
+    token = "4" * 32
+    completed = run_custody_subject_process(
+        [
+            sys.executable,
+            str(state.ROOT / "tools" / "proof_queue.py"),
+            "--detached-state-use",
+            str(ready),
+            token,
+            "--help",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "Submit, run, and inspect Molt proof lanes" in completed.stdout
+    payload = json.loads(ready.read_text(encoding="utf-8"))
+    assert payload["use_token"] == token
+    assert type(payload["pid"]) is int and payload["pid"] > 0
 
 
 def test_proof_queue_rejects_uv_run_without_active_project_python(
@@ -10514,7 +10770,9 @@ def test_proof_queue_cargo_lane_records_guarded_uv_envelope(
     logs = tmp_path / "runs"
     launched: dict[str, object] = {}
 
-    def fake_launch(args: object, *, run_id: str, timeout: float) -> tuple[int, Path]:
+    def fake_launch(
+        args: object, *, run_id: str, timeout: float, on_birth=None
+    ) -> tuple[int, Path]:
         del args
         launched["run_id"] = run_id
         launched["timeout"] = timeout
@@ -10782,7 +11040,9 @@ def test_proof_queue_cargo_lane_rejects_cold_single_lib_test(
     logs = tmp_path / "runs"
     launched: list[str] = []
 
-    def fake_launch(args: object, *, run_id: str, timeout: float) -> tuple[int, Path]:
+    def fake_launch(
+        args: object, *, run_id: str, timeout: float, on_birth=None
+    ) -> tuple[int, Path]:
         del args, timeout
         launched.append(run_id)
         return 4242, tmp_path / "runner.log"
@@ -10837,7 +11097,9 @@ def test_proof_queue_cargo_lane_allows_explicit_warm_single_test(
     logs = tmp_path / "runs"
     launched: dict[str, object] = {}
 
-    def fake_launch(args: object, *, run_id: str, timeout: float) -> tuple[int, Path]:
+    def fake_launch(
+        args: object, *, run_id: str, timeout: float, on_birth=None
+    ) -> tuple[int, Path]:
         del args
         launched["run_id"] = run_id
         launched["timeout"] = timeout
@@ -17320,6 +17582,20 @@ def test_prune_stale_reclaims_running_row_when_guard_pid_reused(
     assert row["returncode"] == custody.PROOF_QUEUE_STALE_EXIT_CODE
 
 
+@pytest.mark.parametrize(
+    "identity,expected", [(None, True), ("same", True), ("other", False)]
+)
+def test_guard_unknown_query_preserves_independent_identity_evidence(
+    monkeypatch, identity, expected
+):
+    def unknown(_pid):
+        raise PermissionError("native process query denied")
+
+    monkeypatch.setattr(process_model, "pid_alive", unknown)
+    monkeypatch.setattr(custody, "_process_identity", lambda _pid: identity)
+    assert custody._guard_process_live(1234, "same") is expected
+
+
 def test_prune_stale_reclaims_running_row_past_age_ceiling(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -19933,3 +20209,126 @@ def test_proof_queue_notebook_retains_explicit_diagnostics_after_payload_split(
     text = path.read_text(encoding="utf-8")
     assert '"diagnostics": [' in text
     assert '"signal_id": "proof-dependency-blocked"' in text
+
+
+@pytest.mark.parametrize("birth_status", [None, "dispatched", "running", "failed"])
+def test_detached_handoff_error_preserves_actual_child_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, birth_status: str | None
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+    run_id = "handoff-error"
+    conn = state._connect(db)
+    scheduling._insert_run(
+        conn,
+        run_id=run_id,
+        logical_id=run_id,
+        reason="separate launch failure from a born runner's execution outcome",
+        command=[sys.executable, "-I", "-S", "-c", "raise SystemExit(0)"],
+        cwd=state.ROOT,
+        resource_family="python",
+        contention_key=f"python:{run_id}",
+        scopes=[],
+        git_snapshot={"available": False},
+        log_path=logs / f"{run_id}.log",
+        summary_json=logs / f"{run_id}.memory_guard.json",
+    )
+    failure = RuntimeError("independent handoff acknowledgement error")
+    children: list[subprocess.Popen[bytes]] = []
+    expected: dict[str, object] = {}
+    launches = 0
+
+    def launch(
+        args: object, *, run_id: str, timeout: float, on_birth=None
+    ) -> tuple[int, Path]:
+        nonlocal launches
+        del args, timeout
+        launches += 1
+        claimed = state._row_by_run_id(conn, run_id)
+        assert claimed is not None and claimed["status"] == "dispatched"
+        if birth_status is not None:
+            # The live-dispatched case deliberately has no observed closure.
+            # Other cases let the actual child publish its row before the
+            # parent's acknowledgement error, including an already closed
+            # child whose real failure must retain its original return code.
+            code = (
+                "import sys; sys.stdin.buffer.read(1)"
+                if birth_status == "dispatched"
+                else (
+                    "import sqlite3,sys; "
+                    "conn=sqlite3.connect(sys.argv[1]); "
+                    "conn.execute('UPDATE proof_runs SET status=?,returncode=?,"
+                    "finished_at=?,elapsed_s=? WHERE run_id=?',"
+                    "(sys.argv[3],17 if sys.argv[3]=='failed' else None,"
+                    "'child-finished' if sys.argv[3]=='failed' else None,"
+                    "1.25 if sys.argv[3]=='failed' else None,sys.argv[2])); "
+                    "conn.commit(); conn.close(); "
+                    "raise SystemExit(17 if sys.argv[3]=='failed' else 0)"
+                )
+            )
+            process = subprocess.Popen(
+                [sys.executable, "-I", "-S", "-c", code, str(db), run_id, birth_status],
+                cwd=tmp_path,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            children.append(process)
+            on_birth(process)
+            setattr(failure, "owned_process", process)
+            if birth_status != "dispatched":
+                stdout, stderr = process.communicate(timeout=5)
+                assert process.returncode == (17 if birth_status == "failed" else 0), (
+                    stdout,
+                    stderr,
+                )
+        row = state._row_by_run_id(conn, run_id)
+        assert row is not None
+        expected.update(dict(row))
+        raise failure
+
+    monkeypatch.setattr(custody, "_launch_detached_runner", launch)
+    args = argparse.Namespace(queue_size=1)
+    try:
+        with pytest.raises(RuntimeError, match="handoff acknowledgement") as caught:
+            runner._dispatch_detached_runner(args, conn, run_id=run_id, timeout=5.0)
+        assert caught.value is failure
+        row = state._row_by_run_id(conn, run_id)
+        assert row is not None
+        if birth_status is None:
+            assert row["status"] == "failed"
+            assert row["returncode"] == 2
+            assert row["finished_at"] is not None
+            assert row["elapsed_s"] == 0.0
+        else:
+            assert dict(row) == expected
+            assert row["status"] == birth_status
+            if birth_status == "dispatched":
+                assert children[0].poll() is None
+            elif birth_status == "failed":
+                assert row["returncode"] == 17
+                assert row["finished_at"] == "child-finished"
+                assert row["elapsed_s"] == 1.25
+        # A claimed or terminal row cannot repeat the same run-id handshake.
+        # Fresh reruns own new rows/IDs; the fixed per-run ready path is not
+        # reused through the queue's admitted dispatch transition.
+        after_failure = dict(row)
+        assert (
+            runner._dispatch_detached_runner(args, conn, run_id=run_id, timeout=5.0)
+            is None
+        )
+        assert launches == 1
+        unchanged = state._row_by_run_id(conn, run_id)
+        assert unchanged is not None and dict(unchanged) == after_failure
+    finally:
+        for process in children:
+            try:
+                process.communicate(
+                    input=b"x" if process.poll() is None else None, timeout=5
+                )
+            except BaseException:
+                if process.poll() is None:
+                    process.kill()
+                process.wait(timeout=5)
+                raise
+        conn.close()

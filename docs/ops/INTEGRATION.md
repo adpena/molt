@@ -50,6 +50,28 @@ controller  →  fetch  →  rebase  →  verify-commits  →  cite  →  marker
    progress event names its `controller`. The four most recently used
    controllers stay; an older one retires after a day without use.
 
+   On Windows, the waiting Molt launcher and selected venv redirector start in
+   the surviving controller cache. The pinned worker validates its physical
+   controller identity, then consumes the captured original working directory
+   before resolving command inputs. Repository arguments, relative environment
+   paths and tool lookup keep their caller meaning. POSIX retains its exec
+   handoff. The existing descendant guard binds its source before moving the
+   launcher, passes the original environment without DX normalization, and
+   admits managed state relative to the captured logical directory. Its
+   Windows Job owns the redirector and worker through proven closure; killing
+   or observing only the redirector cannot release their state. These are
+   development process rules and add no work to emitted programs.
+   A new Windows producer with an older pinned main that does not
+   accept this private context refuses; it never retries through candidate code.
+   Land the complete handoff through the unchanged POSIX controller before
+   qualifying that coherent main on Windows.
+
+   External launchers such as `uv run` can still hold their own Windows startup
+   directory until the worker exits. Start worktree retirement from a surviving
+   checkout and pass the target with `--repo`. Molt does not move or terminate
+   external ancestors: if any still hold the target, failed Git removal keeps
+   its state and reports the refusal.
+
 1. **fetch** — require clean source, then `git fetch origin main`; pin the full
    upstream identity. `--expected-upstream <full-commit>` additionally requires
    that exact tip and prohibits rebase, preserving ownership-claim atomicity.

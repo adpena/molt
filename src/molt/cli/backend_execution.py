@@ -599,7 +599,11 @@ def _sweep_orphaned_backend_daemon_locks(
                 _remove_backend_daemon_identity(identity_file)
                 cleaned += 1
                 continue
-            if process_model.pid_alive(identity.pid):
+            try:
+                alive = process_model.pid_alive(identity.pid)
+            except OSError:
+                continue  # Preserve an identity whose process state is unknown.
+            if alive:
                 if _backend_daemon_identity_process_matches(identity):
                     continue
                 _remove_backend_daemon_identity(identity_file)

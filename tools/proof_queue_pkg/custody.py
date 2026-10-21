@@ -11,9 +11,11 @@ import subprocess
 from subprocess import Popen, TimeoutExpired
 import sys
 from pathlib import Path
+from collections.abc import Callable
 from typing import TextIO
 
 from tools import harness_memory_guard, memory_guard
+from tools.command_execution import DetachedStateHandoff
 from molt.process_spawn import (
     ProcessGroupKwargs,
     detached_process_group_kwargs,
@@ -155,40 +157,78 @@ def _global_arg_pairs(args: argparse.Namespace) -> list[str]:
 
 
 def _launch_detached_runner(
-    args: argparse.Namespace, *, run_id: str, timeout: float
+    args: argparse.Namespace,
+    *,
+    run_id: str,
+    timeout: float,
+    on_birth: Callable[[Popen[str]], None] | None = None,
 ) -> tuple[int, Path]:
     logs_root = state._logs_root(args)
     logs_root.mkdir(parents=True, exist_ok=True)
     runner_log = logs_root / f"{run_id}.runner.log"
-    command = [
-        sys.executable,
-        str(state.ROOT / "tools" / "proof_queue.py"),
-        *_global_arg_pairs(args),
-        "run",
-        "--run-id",
-        run_id,
-        "--limit",
-        "1",
-        "--timeout",
-        str(timeout),
-    ]
-    popen_kwargs = detached_process_group_kwargs(
-        windows=_queue_process_spawn_is_windows(),
-        subprocess_module=subprocess,
-    )
-    with runner_log.open("w", encoding="utf-8") as log:
-        print(f"proof_queue detached runner for {run_id}", file=log, flush=True)
-        print(f"command={shlex.join(command)}", file=log, flush=True)
-        proc = Popen(
-            command,
-            cwd=state._repo_root(args),
-            stdin=subprocess.DEVNULL,
-            text=True,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            **popen_kwargs,
-        )
-    return proc.pid, runner_log
+    cwd = state._repo_root(args)
+    environment = dict(os.environ)
+    ready_path = runner_log.with_suffix(".state-use-ready.json").resolve()
+    handoff = DetachedStateHandoff(state.ROOT, environment, cwd, ready_path)
+    try:
+        with handoff:
+            command = [
+                sys.executable,
+                str(state.ROOT / "tools" / "proof_queue.py"),
+                "--detached-state-use",
+                str(ready_path),
+                handoff.use_token,
+                *_global_arg_pairs(args),
+                "run",
+                "--run-id",
+                run_id,
+                "--limit",
+                "1",
+                "--timeout",
+                str(timeout),
+            ]
+            popen_kwargs = detached_process_group_kwargs(
+                windows=_queue_process_spawn_is_windows(),
+                subprocess_module=subprocess,
+            )
+            with runner_log.open("w", encoding="utf-8") as log:
+                print(f"proof_queue detached runner for {run_id}", file=log, flush=True)
+                print(f"command={shlex.join(command)}", file=log, flush=True)
+                handoff.process = Popen(
+                    command,
+                    cwd=cwd,
+                    env=environment,
+                    stdin=subprocess.DEVNULL,
+                    text=True,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    **popen_kwargs,
+                )
+                print(f"launcher_pid={handoff.process.pid}", file=log, flush=True)
+                if on_birth is not None:
+                    on_birth(handoff.process)
+            handoff.wait_ready()
+            return handoff.process.pid, runner_log
+    except BaseException as error:
+        if handoff.process is not None:
+            # Birth is a separate fact from readiness or observed death. The
+            # scheduler must leave post-birth disposition to its existing
+            # runner/pruning authority, even if this observation failed.
+            setattr(error, "owned_process", handoff.process)
+            if (
+                not _queue_process_spawn_is_windows()
+                and handoff.worker_pid is None
+                and handoff.process.returncode is not None
+            ):
+                # POSIX launches the interpreter directly: observed launcher
+                # exit is this unacknowledged worker's actual startup failure.
+                setattr(
+                    error, "detached_startup_returncode", handoff.process.returncode
+                )
+            error.add_note(
+                f"detached runner launcher={handoff.process.pid}; handoff={ready_path}"
+            )
+        raise
 
 
 def _queue_process_spawn_is_windows() -> bool:
@@ -316,8 +356,8 @@ def _process_identity(pid: int) -> str | None:
 def _guard_process_live(pid: int | None, recorded_identity: str | None) -> bool:
     """True only when the guard PID is alive AND still the recorded process.
 
-    ``process_model.pid_alive`` is a bare liveness probe: it treats a process
-    that refuses this caller as alive, and, critically, reports True for
+    ``process_model.pid_alive`` is a bare liveness probe: refusal is unknown,
+    and, critically, a successful query reports True for
     whatever unrelated process now owns a recycled PID. When an identity was
     recorded at launch we require the live process to still match it, so a
     recycled PID no longer looks like a live guard. When no identity was recorded (older row, or identity
@@ -327,8 +367,13 @@ def _guard_process_live(pid: int | None, recorded_identity: str | None) -> bool:
     if pid is None:
         return False
     pid = int(pid)
-    if not process_model.pid_alive(pid):
+    if pid <= 0:
         return False
+    try:
+        if not process_model.pid_alive(pid):
+            return False
+    except OSError:
+        pass  # Unknown liveness still permits an independent identity check.
     if not recorded_identity:
         return True
     current_identity = _process_identity(pid)

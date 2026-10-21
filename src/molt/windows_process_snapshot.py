@@ -334,39 +334,6 @@ def windows_process_handle_started_at_ns(handle: object) -> int | None:
     )
 
 
-_WINDOWS_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-_WINDOWS_SYNCHRONIZE = 0x00100000
-_WINDOWS_ERROR_ACCESS_DENIED = 5
-_WINDOWS_WAIT_OBJECT_0 = 0
-
-
-def windows_pid_alive(pid: int) -> bool:
-    """Whether the Windows process ``pid`` has not exited.
-
-    The process object is signaled once the process exits, while open handles
-    still keep it, so a zero-timeout wait reads exit exactly; an exit code of
-    ``STILL_ACTIVE`` (259) cannot, since a process may exit with 259. A
-    process that refuses this caller a handle exists, so it is alive.
-    """
-
-    if os.name != "nt" or type(pid) is not int or not 0 < pid <= 0xFFFFFFFF:
-        return False
-    import ctypes
-
-    api = process_query_api()
-    handle = api.OpenProcess(
-        _WINDOWS_PROCESS_QUERY_LIMITED_INFORMATION | _WINDOWS_SYNCHRONIZE,
-        False,
-        pid,
-    )
-    if not handle:
-        return ctypes.get_last_error() == _WINDOWS_ERROR_ACCESS_DENIED
-    try:
-        return api.WaitForSingleObject(handle, 0) != _WINDOWS_WAIT_OBJECT_0
-    finally:
-        api.CloseHandle(handle)
-
-
 def windows_current_process_started_at_ns() -> int | None:
     """Read this process's creation identity from its kernel pseudo-handle."""
 

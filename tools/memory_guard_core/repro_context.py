@@ -482,7 +482,7 @@ def repro_context_payload(
     is_host_control_plane_process: Callable[[ProcessSample], bool],
     protected_process_group_ids: Callable[
         [Mapping[int, ProcessSample]],
-        set[int],
+        AbcSet[int],
     ],
     max_process_rss_kb: int | None = None,
     max_total_rss_kb: int | None = None,

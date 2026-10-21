@@ -21,10 +21,10 @@ Usage
 
 Environment
 -----------
-  CARGO_TARGET_DIR   Honored if set; otherwise an isolated `<repo>/target`
-                     sibling is NOT forced — cargo's default is used. Set it to
-                     a fast off-OneDrive volume (e.g. C:/Molt/cargo-target-XXX)
-                     for best incremental times.
+  CARGO_TARGET_DIR   Honored if set; otherwise Cargo's default is used. Prepare
+                     development runs with `molt dx env` so the canonical DX
+                     resolver selects the persistent target, or a managed
+                     session target when MOLT_SESSION_ID is pinned.
 
 Exit status
 -----------

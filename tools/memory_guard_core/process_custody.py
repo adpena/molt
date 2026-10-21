@@ -1061,7 +1061,10 @@ def _observation_reports_absence(
         return False
     deadline = time.monotonic() + grace
     while True:
-        verdict = observe()
+        try:
+            verdict = observe()
+        except OSError:
+            return False  # Unknown never establishes absence.
         if verdict is not False:
             return bool(verdict)
         remaining = deadline - time.monotonic()

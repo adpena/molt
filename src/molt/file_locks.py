@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Generator
 import contextlib
 from dataclasses import dataclass, field
+from functools import lru_cache
 import errno
 import _thread
 import os
@@ -32,6 +33,8 @@ class _FileLockHandle:
     released: bool = False
     operation_owners: dict[int, int] = field(default_factory=dict, repr=False)
     release_requested: bool = False
+    shared: bool = False
+    lock: _HandleLock | None = None
 
 
 # subprocess.Popen forks this process only on POSIX; Windows spawns. The fork
@@ -268,6 +271,7 @@ class _MsvcrtLocking(Protocol):
 
 class _FcntlFlock(Protocol):
     LOCK_EX: int
+    LOCK_SH: int
     LOCK_NB: int
     LOCK_UN: int
 
@@ -293,11 +297,67 @@ def _windows_handle_lock(msvcrt: _MsvcrtLocking) -> _HandleLock:
     )
 
 
-def _posix_handle_lock(fcntl: _FcntlFlock) -> _HandleLock:
+def _posix_handle_lock(fcntl: _FcntlFlock, *, shared: bool = False) -> _HandleLock:
     return _HandleLock(
-        acquire_nonblocking=lambda fd: fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB),
+        acquire_nonblocking=lambda fd: fcntl.flock(
+            fd, (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | fcntl.LOCK_NB
+        ),
         release=lambda fd: fcntl.flock(fd, fcntl.LOCK_UN),
     )
+
+
+def _windows_shared_handle_lock() -> _HandleLock:
+    """A real Windows reader lock on the same byte as exclusive CRT locks."""
+    if sys.platform != "win32":
+        raise RuntimeError("Windows shared locking requires a Windows host")
+    import ctypes
+    from ctypes import wintypes
+    import msvcrt
+
+    class Overlapped(ctypes.Structure):
+        _fields_ = [
+            ("Internal", ctypes.c_size_t),
+            ("InternalHigh", ctypes.c_size_t),
+            ("Offset", wintypes.DWORD),
+            ("OffsetHigh", wintypes.DWORD),
+            ("hEvent", wintypes.HANDLE),
+        ]
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.LockFileEx.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.POINTER(Overlapped),
+    ]
+    kernel.LockFileEx.restype = wintypes.BOOL
+    kernel.UnlockFileEx.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.POINTER(Overlapped),
+    ]
+    kernel.UnlockFileEx.restype = wintypes.BOOL
+
+    def acquire(fd: int) -> None:
+        overlap = Overlapped()
+        # FAIL_IMMEDIATELY; no EXCLUSIVE_LOCK flag admits concurrent readers.
+        if not kernel.LockFileEx(
+            msvcrt.get_osfhandle(fd), 0x1, 0, 1, 0, ctypes.byref(overlap)
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    def release(fd: int) -> None:
+        overlap = Overlapped()
+        if not kernel.UnlockFileEx(
+            msvcrt.get_osfhandle(fd), 0, 1, 0, ctypes.byref(overlap)
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    return _HandleLock(acquire_nonblocking=acquire, release=release)
 
 
 # Selected once at import. A test drives another host's path by building its
@@ -307,10 +367,19 @@ if os.name == "nt":
     import msvcrt
 
     _HOST_HANDLE_LOCK = _windows_handle_lock(msvcrt)
+    _HOST_SHARED_HANDLE_LOCK_FACTORY = _windows_shared_handle_lock
 else:
     import fcntl
 
     _HOST_HANDLE_LOCK = _posix_handle_lock(fcntl)
+
+    def _HOST_SHARED_HANDLE_LOCK_FACTORY() -> _HandleLock:
+        return _posix_handle_lock(fcntl, shared=True)
+
+
+@lru_cache(maxsize=1)
+def _shared_handle_lock() -> _HandleLock:
+    return _HOST_SHARED_HANDLE_LOCK_FACTORY()
 
 
 def _try_lock_file_handle(handle: BinaryIO) -> bool:
@@ -328,10 +397,10 @@ def _try_lock_handle_with(handle: BinaryIO, lock: _HandleLock) -> bool:
     return True
 
 
-def _unlock_file_handle(handle: BinaryIO) -> None:
+def _unlock_file_handle(handle: BinaryIO, lock: _HandleLock | None = None) -> None:
     with contextlib.suppress(OSError):
         handle.seek(0)
-        _HOST_HANDLE_LOCK.release(handle.fileno())
+        (lock or _HOST_HANDLE_LOCK).release(handle.fileno())
 
 
 @contextlib.contextmanager
@@ -385,43 +454,63 @@ def _exclusive_record_file(
 
 
 def _try_acquire_file_lock(
-    lock_path: Path, *, create: bool = True
+    lock_path: Path, *, create: bool = True, shared: bool = False
 ) -> _FileLockHandle | None:
     with _file_lock_descriptor_action():
-        return _try_acquire_file_lock_unserialized(lock_path, create=create)
+        return _try_acquire_file_lock_unserialized(
+            lock_path, create=create, shared=shared
+        )
 
 
 def _try_acquire_file_lock_unserialized(
-    lock_path: Path, *, create: bool = True
+    lock_path: Path, *, create: bool = True, shared: bool = False
 ) -> _FileLockHandle | None:
     registry_key, entry = _in_process_lock_reserve(lock_path)
-    if not entry.mutex.acquire(blocking=False):
+    if not shared and not entry.mutex.acquire(blocking=False):
         _in_process_lock_drop(registry_key, entry)
         return None
     try:
         opener = _open_file_lock_handle if create else _open_existing_file_lock_handle
         file_handle = opener(lock_path)
     except BaseException:
-        entry.mutex.release()
+        if not shared:
+            entry.mutex.release()
         _in_process_lock_drop(registry_key, entry)
         raise
+    handle = None
     try:
-        if not _try_lock_file_handle(file_handle):
+        lock = _shared_handle_lock() if shared else None
+        locked = (
+            _try_lock_handle_with(file_handle, lock)
+            if lock is not None
+            else _try_lock_file_handle(file_handle)
+        )
+        if not locked:
             file_handle.close()
-            entry.mutex.release()
+            if not shared:
+                entry.mutex.release()
             _in_process_lock_drop(registry_key, entry)
             return None
         handle = _FileLockHandle(
             file=file_handle,
             registry_key=registry_key,
             entry=entry,
+            shared=shared,
+            lock=lock,
         )
         with _FILE_LOCK_LIFECYCLE_CONDITION:
             _LIVE_FILE_LOCK_HANDLES[id(handle)] = handle
+        # Shared handles rely on the actual per-open OS reader lock, including
+        # in one process; they never acquire or transfer the exclusive mutex.
         return handle
     except BaseException:
+        if handle is not None:
+            with _FILE_LOCK_LIFECYCLE_CONDITION:
+                _LIVE_FILE_LOCK_HANDLES.pop(id(handle), None)
+                handle.released = True
         file_handle.close()
-        entry.mutex.release()
+        if not shared:
+            entry.mutex.release()
         _in_process_lock_drop(registry_key, entry)
         raise
 
@@ -432,10 +521,15 @@ def _acquire_file_lock(
     timeout_s: float | None,
     timeout_message: str,
     poll_s: float = 0.05,
+    shared: bool = False,
 ) -> _FileLockHandle:
     deadline = time.monotonic() + timeout_s if timeout_s is not None else None
     while True:
-        handle = _try_acquire_file_lock(lock_path)
+        handle = (
+            _try_acquire_file_lock(lock_path, shared=True)
+            if shared
+            else _try_acquire_file_lock(lock_path)
+        )
         if handle is not None:
             return handle
         if deadline is not None and time.monotonic() >= deadline:
@@ -456,7 +550,9 @@ def _file_lock_is_owned(handle: _FileLockHandle) -> bool:
 
 
 @contextlib.contextmanager
-def _file_lock_owned_operation(handle: _FileLockHandle, *, expected_lock_path: Path):
+def _file_lock_owned_operation(
+    handle: _FileLockHandle, *, expected_lock_path: Path, shared: bool = False
+):
     """Pin exact custody across I/O without holding the global lifecycle mutex.
 
     Revocation waits for this reservation; a callback on its owning thread
@@ -468,6 +564,7 @@ def _file_lock_owned_operation(handle: _FileLockHandle, *, expected_lock_path: P
     with _FILE_LOCK_LIFECYCLE_CONDITION:
         if (
             handle.owner_process_id != os.getpid()
+            or handle.shared != shared
             or handle.released
             or handle.file.closed
             or (handle.release_requested and thread_id not in handle.operation_owners)
@@ -532,13 +629,17 @@ def _release_file_lock(handle: _FileLockHandle) -> None:
             _RELEASING_FILE_LOCK_HANDLES[id(handle)] = handle
         try:
             if not handle.file.closed:
-                _unlock_file_handle(handle.file)
+                if handle.shared:
+                    _unlock_file_handle(handle.file, handle.lock)
+                else:
+                    _unlock_file_handle(handle.file)
         finally:
             try:
                 handle.file.close()
             finally:
                 try:
-                    handle.entry.mutex.release()
+                    if not handle.shared:
+                        handle.entry.mutex.release()
                     _in_process_lock_drop(handle.registry_key, handle.entry)
                 finally:
                     with _FILE_LOCK_LIFECYCLE_CONDITION:

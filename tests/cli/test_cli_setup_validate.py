@@ -418,7 +418,7 @@ def test_cli_run_command_uses_memory_guard_prefix(
 
     _patch_memory_guard_loader(
         monkeypatch,
-        lambda cwd: _fake_cli_harness(calls),
+        lambda cwd, *, guard_source_root=None: _fake_cli_harness(calls),
     )
     install_module_view(
         monkeypatch, "subprocess", subprocess, COMMAND_RUNTIME, run=fail_raw_run
@@ -460,7 +460,9 @@ def test_cli_timed_command_uses_memory_guard_elapsed(
 
     _patch_memory_guard_loader(
         monkeypatch,
-        lambda cwd: _fake_cli_harness(calls, result_factory=result_factory),
+        lambda cwd, *, guard_source_root=None: _fake_cli_harness(
+            calls, result_factory=result_factory
+        ),
     )
     install_module_view(
         monkeypatch, "subprocess", subprocess, COMMAND_RUNTIME, run=fail_raw_run
@@ -492,7 +494,7 @@ def test_cli_guard_preserves_operator_limits_for_sanitized_env(
     monkeypatch.setenv("MOLT_CLI_MAX_PROCESS_RSS_GB", "0.05")
     _patch_memory_guard_loader(
         monkeypatch,
-        lambda cwd: _fake_cli_harness(
+        lambda cwd, *, guard_source_root=None: _fake_cli_harness(
             calls,
             result_factory=lambda cmd: subprocess.CompletedProcess(cmd, 0, "", ""),
         ),
@@ -545,7 +547,9 @@ def test_cli_cargo_build_helper_uses_default_memory_guard(
     )
     _patch_memory_guard_loader(
         monkeypatch,
-        lambda cwd: _fake_cli_harness(calls, result_factory=result_factory),
+        lambda cwd, *, guard_source_root=None: _fake_cli_harness(
+            calls, result_factory=result_factory
+        ),
     )
 
     result = CARGO_EXECUTION._run_cargo_with_sccache_retry(
@@ -629,7 +633,9 @@ def test_cli_wrapper_build_uses_default_memory_guard(
 
     _patch_memory_guard_loader(
         monkeypatch,
-        lambda cwd: _fake_cli_harness(calls, result_factory=result_factory),
+        lambda cwd, *, guard_source_root=None: _fake_cli_harness(
+            calls, result_factory=result_factory
+        ),
     )
     install_module_view(
         monkeypatch, "subprocess", subprocess, COMMAND_RUNTIME, run=fail_raw_run
@@ -1068,7 +1074,7 @@ def test_cli_validate_uses_family_memory_guard_prefixes(
     )
     _patch_memory_guard_loader(
         monkeypatch,
-        lambda cwd: _fake_cli_harness(
+        lambda cwd, *, guard_source_root=None: _fake_cli_harness(
             calls,
             result_factory=lambda cmd: subprocess.CompletedProcess(cmd, 0, "", ""),
         ),
@@ -1161,7 +1167,7 @@ def test_cli_validate_defaults_execution_summary_to_logs(
     )
     _patch_memory_guard_loader(
         monkeypatch,
-        lambda cwd: _fake_cli_harness(
+        lambda cwd, *, guard_source_root=None: _fake_cli_harness(
             calls,
             result_factory=lambda cmd: subprocess.CompletedProcess(cmd, 0, "", ""),
         ),

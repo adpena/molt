@@ -2301,3 +2301,45 @@ def test_external_capacity_setting_preserves_default_zero_and_fractional_bytes(
         == external.resolve()
     )
     assert observed == [expected]
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_capsule_selected_session_records_only_its_canonical_checkout_state(
+    tmp_path, monkeypatch, explicit
+):
+    from molt import checkout_state
+
+    _clear_run_context_env(monkeypatch)
+    source = tmp_path / "source"
+    source.mkdir()
+    ext = tmp_path / "artifacts"
+    base = {
+        "MOLT_EXT_ROOT": str(ext),
+        "MOLT_SESSION_ID": "perf/shared",
+        "MOLT_USE_SCCACHE": "0",
+    }
+    selected = dx.cargo_target_dir_for_environment(ext, base, source_root=source)
+    if explicit:
+        base["CARGO_TARGET_DIR"] = str(selected)
+    # Capsule creation projects the same authority without materializing state.
+    capsule = development_artifact_env(source, base, create_dirs=False)
+    assert Path(capsule["CARGO_TARGET_DIR"]) == selected
+    assert not selected.exists()
+    actual = RunContext(source).canonical_env(capsule, create_dirs=True)
+    assert Path(actual["CARGO_TARGET_DIR"]) == selected
+    assert checkout_state.bound_checkout_owner(selected, ext).path == source.resolve()
+    assert (
+        checkout_state.bound_checkout_owner(selected.parent.parent, ext).path
+        == source.resolve()
+    )
+    assert (selected / checkout_state.LAST_USE_STAMP).is_file()
+    assert (selected.parent.parent / checkout_state.LAST_USE_STAMP).is_file()
+    assert not (ext / "target" / ".disk_guard" / "registry.jsonl").exists(), (
+        "managed sessions have no second TTL owner"
+    )
+    foreign = tmp_path / "caller-owned-output"
+    RunContext(source).canonical_env(
+        {**base, "CARGO_TARGET_DIR": str(foreign)}, create_dirs=True
+    )
+    assert foreign.is_dir()
+    assert not (foreign / checkout_state.OWNER_RECORD).exists()

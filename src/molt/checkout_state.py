@@ -17,17 +17,21 @@ shorter idle limit (`is_session_target`).
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Generator, Iterable, Mapping
+from contextlib import contextmanager, ExitStack
 from dataclasses import dataclass
 import os
 from pathlib import Path
 import re
 import time
 from types import MappingProxyType
-from typing import Literal, get_args
+from typing import TYPE_CHECKING, Literal, get_args
 
-from molt.custody_layout import SCRATCH_DIRNAME
-from molt.exact_json import ExactJsonError, read_exact, write_exact
+if TYPE_CHECKING:
+    from .file_locks import _FileLockHandle
+
+from .custody_layout import SCRATCH_DIRNAME
+from .exact_json import ExactJsonError, read_exact, write_exact
 
 OWNER_RECORD = ".molt-state-owner.json"
 SCHEMA = "molt.state-root-owner.v1"
@@ -60,6 +64,34 @@ _ADDRESS = re.compile(r"[0-9a-f]{64}")
 # in the `molt.dx.session_targets_dir` of a target.
 _SESSION = re.compile(r"[A-Za-z0-9_-]{1,32}")
 _SESSIONS = "sessions"
+
+# Hard denylist: even if a classifier ever matched one of these under target/,
+# refuse to delete it. These are the SHARED build outputs every lane depends on
+# and structural control dirs -- defense-in-depth beside the narrow allow-set.
+PROTECTED_TARGET_NAMES = frozenset(
+    os.path.normcase(name)
+    for name in {
+        "debug",
+        "release",
+        "release-output",
+        "doc",
+        "package",
+        "tmp",
+        "checkouts",  # managed payload container, never a legacy lane
+        ".disk_guard",  # stable external interlocks, never payload
+        "sessions",  # the parent; we reclaim its CHILDREN, never itself
+        ".molt_state",  # cargo quarantine control parent
+        ".rustc_info.json",
+        "CACHEDIR.TAG",
+        ".fingerprint",
+        "wasm32-wasip1",
+        "wasm32-unknown-unknown",
+        "x86_64-unknown-linux-gnu",
+        "x86_64-pc-windows-msvc",
+        "aarch64-apple-darwin",
+    }
+)
+
 
 CheckoutStateKind = Literal[
     "cargo-target",
@@ -106,6 +138,7 @@ class CheckoutStateRoot:
 
 def _name_key(kind: CheckoutStateKind, name: str) -> str | None:
     """The owner key a root's name carries, or None for a foreign name."""
+    name = os.path.normcase(name)
     if kind == "build-control":
         return name if _ADDRESS.fullmatch(name) else None
     if kind == "uv-environment":
@@ -118,22 +151,312 @@ def _name_key(kind: CheckoutStateKind, name: str) -> str | None:
 def _owner_key(kind: CheckoutStateKind, owner: Path) -> str:
     """The key that owner ``owner`` gives the name of a root of ``kind``."""
     if kind == "build-control":
-        from molt.build_state_layout import build_state_address
+        from .build_state_layout import build_state_address
 
         return build_state_address(owner)
-    from molt.dx import checkout_component
+    from .dx import checkout_component
 
-    return checkout_component(owner)
+    return os.path.normcase(checkout_component(owner))
 
 
-def _binds(kind: CheckoutStateKind, name: str, owner: Path) -> bool:
-    key = _name_key(kind, name)
+def _root_key(kind: CheckoutStateKind, root: Path) -> str | None:
+    if kind == "cargo-target" and os.path.normcase(root.parent.name) == "sessions":
+        from .dx import is_session_artifact_component
+
+        if not is_session_artifact_component(root.name):
+            return None
+        return _name_key(kind, root.parent.parent.name)
+    return _name_key(kind, root.name)
+
+
+def _binds(kind: CheckoutStateKind, root: Path, owner: Path) -> bool:
+    key = _root_key(kind, root)
     if key is None:
         return False
     try:
         return key == _owner_key(kind, owner)
     except ValueError:
         return False  # An owner path through a link names no owned root.
+
+
+@dataclass(frozen=True, slots=True)
+class _ManagedStateRoot:
+    root: Path
+    artifact: Path
+    kind: CheckoutStateKind
+
+
+def target_use_artifact_root(root: Path) -> Path | None:
+    """The finite structural target placement, independent of deletion globs.
+
+    This only names the external lifetime lock and last-use stamp. It confers
+    no checkout ownership or deletion permission, including for shared outputs.
+    """
+    if os.path.normcase(root.name) in PROTECTED_TARGET_NAMES:
+        return None
+    if os.path.normcase(root.parent.name) == "target":
+        return root.parent.parent
+    if os.path.normcase(root.name).startswith("cargo-target-"):
+        return root.parent
+    return None
+
+
+def legacy_target_kind_of(
+    root: Path, artifact: Path, lane_globs: Iterable[str]
+) -> Literal["lane", "cargo-target"] | None:
+    """The existing legacy deletion layouts, with caller-owned glob policy."""
+    import fnmatch
+
+    if target_use_artifact_root(root) != artifact:
+        return None
+    if os.path.normcase(root.name).startswith("cargo-target-"):
+        return "cargo-target"
+    if any(fnmatch.fnmatchcase(root.name, pattern) for pattern in lane_globs):
+        return "lane"
+    return None
+
+
+def _managed_coordinate(root: Path) -> _ManagedStateRoot | None:
+    """Bind existing placement with the canonical no-link custody identity."""
+    root = root.expanduser().absolute()
+    names = tuple(os.path.normcase(part) for part in root.parts)
+    containers = (
+        *CHECKOUT_STATE_CONTAINERS.values(),
+        ("target", "checkouts", "*", "sessions"),
+        ("target", "sessions"),
+    )
+    possible = target_use_artifact_root(root) is not None or any(
+        len(names) > len(container)
+        and all(
+            expected == "*" or observed == os.path.normcase(expected)
+            for observed, expected in zip(names[-len(container) - 1 : -1], container)
+        )
+        for container in containers
+    )
+    if not possible:
+        return None  # No filesystem probe for an unrelated caller-owned root.
+    from .file_publication import resolve_owned_path
+
+    root = resolve_owned_path(root)
+    if os.path.normcase(root.parent.name) == "sessions" and len(root.parents) > 2:
+        artifact = root.parents[2]
+        if is_session_target(root, artifact):
+            return _ManagedStateRoot(root, artifact, "cargo-target")
+    if os.path.normcase(root.parent.name) == "sessions" and len(root.parents) > 4:
+        artifact = root.parents[4]
+        if checkout_state_kind_of(root, artifact) == "cargo-target":
+            return _ManagedStateRoot(root, artifact, "cargo-target")
+    for kind, container in CHECKOUT_STATE_CONTAINERS.items():
+        if len(root.parents) <= len(container):
+            continue
+        artifact = root.parents[len(container)]
+        if checkout_state_kind_of(root, artifact) == kind:
+            return _ManagedStateRoot(root, artifact, kind)
+    artifact = target_use_artifact_root(root)
+    if artifact is not None:
+        return _ManagedStateRoot(root, artifact, "cargo-target")
+    return None
+
+
+def _state_lock_plan(
+    selections: Iterable[tuple[Path | _ManagedStateRoot, CheckoutOwner | None]],
+) -> tuple[
+    tuple[tuple[_ManagedStateRoot, CheckoutOwner | None], ...], dict[Path, Path]
+]:
+    """Bind each finite coordinate and external lock once for one admission.
+
+    This plan is never cached across operations. Publication revalidates after
+    acquisition and at completion, including a reader delayed by retirement.
+    """
+    from .build_state_layout import build_state_address
+
+    coordinates: dict[Path, _ManagedStateRoot | None] = {}
+    locks: dict[Path, Path] = {}
+    bound = []
+
+    def qualify(path: Path) -> _ManagedStateRoot | None:
+        if path not in coordinates:
+            coordinates[path] = _managed_coordinate(path)
+        return coordinates[path]
+
+    for selected, owner in selections:
+        coordinate = (
+            selected if isinstance(selected, _ManagedStateRoot) else qualify(selected)
+        )
+        if coordinate is None:
+            continue
+        root = coordinate.root
+        coordinates[root] = coordinate
+        bound.append((coordinate, owner))
+        dependency = root
+        if coordinate.kind == "build-control":
+            known_owner = owner or bound_checkout_owner(root, coordinate.artifact)
+            if known_owner is not None and known_owner.kind == "build-control":
+                dependency = known_owner.path
+        paths = [root]
+        if dependency != root:
+            paths.insert(0, dependency)
+        if os.path.normcase(dependency.parent.name) == "sessions":
+            paths.insert(0, dependency.parent.parent)
+        for path in paths:
+            known = qualify(path)
+            if known is not None and known.root not in locks:
+                locks[known.root] = (
+                    known.artifact
+                    / "target"
+                    / ".disk_guard"
+                    / "checkout-state-locks"
+                    / (build_state_address(known.root) + ".lock")
+                )
+    return tuple(bound), locks
+
+
+def _publish_checkout_use(
+    coordinate: _ManagedStateRoot, owner: CheckoutOwner | None
+) -> None:
+    root = coordinate.root
+    if coordinate.kind == "uv-environment" and not (root / "pyvenv.cfg").is_file():
+        return  # uv owns creation of its environment before our control files.
+    if owner is not None:
+        _record_checkout_owner(root, owner=owner.path, kind=owner.kind)
+    _record_checkout_state_use(root)
+
+
+@contextmanager
+def checkout_state_use(
+    roots: Iterable[tuple[Path, CheckoutOwner | None]],
+    *,
+    publish: bool = True,
+) -> Generator[tuple[_FileLockHandle, ...], None, None]:
+    """Hold shared use for this operation, including root materialization.
+
+    The caller owns the lifetime. Resolving an environment alone does not hold
+    a lease; command/build/exec owners retain these ordinary OS lock handles.
+    """
+    selections, locks = _state_lock_plan(roots)
+    if not locks:
+        yield ()
+        return
+    from .file_locks import _acquire_file_lock, _release_file_lock
+
+    with ExitStack() as stack:
+        handles = []
+        for root, lock in sorted(
+            locks.items(), key=lambda item: (len(item[0].parts), str(item[0]))
+        ):
+            handle = _acquire_file_lock(
+                lock,
+                shared=True,
+                timeout_s=None,
+                timeout_message=f"checkout state stayed in retirement: {root}",
+            )
+            stack.callback(_release_file_lock, handle)
+            handles.append(handle)
+
+        def publish_use() -> None:
+            for coordinate, owner in selections:
+                if _managed_coordinate(coordinate.root) != coordinate:
+                    raise ValueError(
+                        f"checkout state coordinate changed: {coordinate.root}"
+                    )
+                if publish:
+                    _publish_checkout_use(coordinate, owner)
+
+        publish_use()
+        try:
+            yield tuple(handles)
+        except BaseException as error:
+            try:
+                publish_use()
+            except BaseException as publication_error:
+                error.add_note(
+                    f"checkout state completion publication failed: {publication_error!r}"
+                )
+            raise
+        else:
+            # Completion is a fresh boundary, not reuse of the initial path
+            # observation, even when a user outlives the protection window.
+            publish_use()
+
+
+@contextmanager
+def checkout_state_retirement(
+    root: Path,
+) -> Generator[bool, None, None]:
+    """Try exclusive mutation; every live managed reader keeps its lineage."""
+    from .file_locks import _try_acquire_file_lock, _release_file_lock
+
+    coordinate = _managed_coordinate(root)
+    owner = (
+        None
+        if coordinate is None
+        else bound_checkout_owner(coordinate.root, coordinate.artifact)
+    )
+    if coordinate is not None:
+        root = coordinate.root
+    with ExitStack() as stack:
+        _, locks = _state_lock_plan(((coordinate or root, owner),))
+        for lock in locks.values():
+            handle = _try_acquire_file_lock(lock)
+            if handle is None:
+                yield False
+                return
+            stack.callback(_release_file_lock, handle)
+        if (
+            coordinate is not None
+            and bound_checkout_owner(coordinate.root, coordinate.artifact) != owner
+        ):
+            # A control's changed owner must never redirect its dependency
+            # while retirement holds the previous owner's lock chain.
+            yield False
+            return
+        yield True
+
+
+def checkout_state_command_roots(
+    source_root: Path,
+    environment: Mapping[str, str],
+    *,
+    cwd: str | os.PathLike[str] | None = None,
+) -> tuple[tuple[Path, CheckoutOwner | None], ...]:
+    """Finite actual selections of a command, with no sibling discovery."""
+    from .build_state_layout import build_state_root
+
+    roots: dict[Path, CheckoutOwner | None] = {}
+    working = Path.cwd() if cwd is None else Path(cwd).absolute()
+    for key in (
+        "CARGO_TARGET_DIR",
+        "MOLT_DIFF_CARGO_TARGET_DIR",
+        "UV_PROJECT_ENVIRONMENT",
+        "MOLT_BUILD_STATE_DIR",
+    ):
+        raw = environment.get(key, "").strip()
+        if raw:
+            path = Path(raw).expanduser()
+            if not path.is_absolute():
+                path = working / path
+            roots[path.absolute()] = None
+    import sys
+
+    roots[Path(sys.prefix).absolute()] = None
+    raw_target = environment.get("CARGO_TARGET_DIR", "").strip()
+    if raw_target:
+        target = Path(raw_target).expanduser()
+        if not target.is_absolute():
+            target = working / target
+        target = target.absolute()
+        explicit_control = environment.get("MOLT_BUILD_STATE_DIR", "").strip()
+        if explicit_control:
+            control = Path(explicit_control).expanduser()
+            if not control.is_absolute():
+                control = working / control
+            control = control.absolute()
+        else:
+            control = build_state_root(
+                project_root=source_root, cargo_target=target, environment=environment
+            )
+        roots[control] = CheckoutOwner(target, "build-control")
+    return tuple(roots.items())
 
 
 def checkout_scratch_state_dir(
@@ -147,7 +470,7 @@ def checkout_scratch_state_dir(
     follows the selected scratch storage, so with memory scratch it lives
     outside the artifact root and dies with that storage.
     """
-    from molt.dx import checkout_component, control_state_dir, scratch_dir
+    from .dx import checkout_component, control_state_dir, scratch_dir
 
     purpose = "/".join(
         (*CHECKOUT_STATE_CONTAINERS[kind][1:], checkout_component(source_root))
@@ -159,6 +482,13 @@ def checkout_scratch_state_dir(
 
 def checkout_state_kind_at(parts: tuple[str, ...]) -> CheckoutStateKind | None:
     """The kind of checkout state root at ``parts`` below an artifact root."""
+    parts = tuple(os.path.normcase(part) for part in parts)
+    if (
+        len(parts) == 5
+        and parts[:2] == ("target", "checkouts")
+        and parts[3] == "sessions"
+    ):
+        return "cargo-target"
     for kind, container in CHECKOUT_STATE_CONTAINERS.items():
         if len(parts) == len(container) + 1 and parts[:-1] == container:
             return kind
@@ -172,17 +502,24 @@ def checkout_state_kind_of(root: Path, artifact_root: Path) -> CheckoutStateKind
     except ValueError:
         return None
     kind = checkout_state_kind_at(parts)
-    if kind is None or _name_key(kind, root.name) is None:
+    if kind is None or _root_key(kind, root) is None:
         return None
     return kind
 
 
 def checkout_state_containers(artifact_root: Path) -> tuple[Path, ...]:
     """Every container of checkout state roots under ``artifact_root``."""
-    return tuple(
+    containers = [
         artifact_root.joinpath(*container)
         for container in dict.fromkeys(CHECKOUT_STATE_CONTAINERS.values())
+    ]
+    targets = artifact_root.joinpath(*CHECKOUT_STATE_CONTAINERS["cargo-target"])
+    containers.extend(
+        target / "sessions"
+        for target in _directories(targets)
+        if _name_key("cargo-target", target.name) is not None
     )
+    return tuple(containers)
 
 
 def _directories(parent: Path) -> list[Path]:
@@ -277,21 +614,20 @@ def checkout_state_roots(
     pinned sessions below it. A plain clone keeps its target inside the
     checkout and its scratch in the host temporary folder, so it has none.
     """
-    from molt.build_state_layout import build_state_address
-    from molt.dx import artifact_root, cargo_target_dir_for_artifact_root
+    from .build_state_layout import build_state_address
+    from .dx import artifact_root, cargo_target_dir_for_artifact_root
 
     source = source_root.expanduser().resolve()
     artifact = artifact_root(source, environment)
     if artifact == source or source in artifact.parents:
         return ()
     roots: list[CheckoutStateRoot] = []
+    target = cargo_target_dir_for_artifact_root(artifact, None, source_root=source)
+    sessions = _directories(target / "sessions")
     for kind, container in CHECKOUT_STATE_CONTAINERS.items():
         parent = artifact.joinpath(*container)
         if kind == "build-control":
-            target = cargo_target_dir_for_artifact_root(
-                artifact, None, source_root=source
-            )
-            for owner in (target, *_directories(target / _SESSIONS)):
+            for owner in (target, *sessions):
                 path = parent / build_state_address(owner)
                 if path.is_dir() and not path.is_symlink():
                     roots.append(CheckoutStateRoot(path, kind, owner))
@@ -299,14 +635,14 @@ def checkout_state_roots(
         candidates = (
             _directories(parent)
             if kind == "uv-environment"
+            else [target, *sessions]
+            if kind == "cargo-target"
             else [parent / _owner_key(kind, source)]
         )
         roots.extend(
             CheckoutStateRoot(path, kind, source)
             for path in candidates
-            if path.is_dir()
-            and not path.is_symlink()
-            and _binds(kind, path.name, source)
+            if path.is_dir() and not path.is_symlink() and _binds(kind, path, source)
         )
     return tuple(roots)
 
@@ -319,17 +655,47 @@ def stamp_checkout_state(
     A uv environment is stamped only once uv created it, so no file of ours
     precedes ``pyvenv.cfg``. Returns the roots it stamped.
     """
+    from .dx import (
+        artifact_root,
+        cargo_target_dir_for_environment,
+        project_cargo_target_dir,
+    )
+
+    # Stamping belongs to the development context. Without an explicit target,
+    # use that context's selector, not the CLI's in-project default.
+    selected = (
+        project_cargo_target_dir(source_root, environment)
+        if environment.get("CARGO_TARGET_DIR", "").strip()
+        else cargo_target_dir_for_environment(
+            artifact_root(source_root, environment),
+            environment,
+            source_root=source_root,
+        )
+    )
+    targets = {selected}
+    if os.path.normcase(selected.parent.name) == "sessions":
+        targets.add(selected.parent.parent)
+    if target_use_artifact_root(selected) is not None:
+        record_checkout_target_use(selected, checkout=source_root)
     stamped: list[CheckoutStateRoot] = []
     for root in checkout_state_roots(source_root, environment):
+        if root.kind == "cargo-target" and root.path not in targets:
+            continue
+        if root.kind == "build-control" and root.owner != selected:
+            continue
         if root.kind == "uv-environment" and not (root.path / "pyvenv.cfg").is_file():
             continue
-        record_checkout_owner(root.path, owner=root.owner, kind=root.kind)
-        record_checkout_state_use(root.path)
-        stamped.append(root)
+        with checkout_state_use(((root.path, CheckoutOwner(root.owner, root.kind)),)):
+            stamped.append(root)
     return tuple(stamped)
 
 
 def record_checkout_state_use(root: Path, *, now: float | None = None) -> None:
+    with checkout_state_use(((root, None),), publish=False):
+        _record_checkout_state_use(root, now=now)
+
+
+def _record_checkout_state_use(root: Path, *, now: float | None = None) -> None:
     """Mark ``root`` used now; a stamp newer than the resolution stays as is.
 
     The common case is one ``stat``. A missing root stays missing.
@@ -384,7 +750,23 @@ def checkout_state_last_use(root: Path) -> float:
     made before stamps existed ages out by its own activity, as Cargo adopts
     untracked entries instead of guessing their owner.
     """
-    return newest_activity_mtime(root)
+    newest = newest_activity_mtime(root)
+    if os.path.normcase(root.parent.name) == "checkouts" and _name_key(
+        "cargo-target", root.name
+    ):
+        # A nested session may write without touching its parent directory.
+        # Its recent activity must also keep that enclosing target alive.
+        newest = max(
+            (
+                newest,
+                *(
+                    newest_activity_mtime(path)
+                    for path in _directories(root / "sessions")
+                    if _root_key("cargo-target", path) is not None
+                ),
+            )
+        )
+    return newest
 
 
 def record_checkout_target_use(target: Path, *, checkout: Path) -> None:
@@ -396,16 +778,29 @@ def record_checkout_target_use(target: Path, *, checkout: Path) -> None:
     other target is not checkout state. The common case costs one ``stat``
     per stamp and one for the owner record.
     """
-    parent = target.parent
-    if parent.name == _SESSIONS:
-        holder = parent.parent
-        if holder.name == "target" or holder.parent.name == "checkouts":
-            if _SESSION.fullmatch(target.name):
-                record_checkout_state_use(target)
-            target, parent = holder, holder.parent
-    if parent.name == "checkouts" and parent.parent.name == "target":
-        record_checkout_owner(target, owner=checkout, kind="cargo-target")
-        record_checkout_state_use(target)
+    targets = [target]
+    # Explicit structural targets retain their use without adopting an owner.
+    if target_use_artifact_root(target) is not None:
+        with checkout_state_use(((target, None),)):
+            pass
+    if os.path.normcase(target.parent.name) == "sessions":
+        # Main's local session layout has no checkout owner, but its use and
+        # retirement still share the same managed lifetime lock.
+        if os.path.normcase(target.parent.parent.name) == "target":
+            with checkout_state_use(((target, None),)):
+                pass
+        targets.append(target.parent.parent)
+    for root in targets:
+        if (
+            os.path.normcase(root.parent.name) == "checkouts"
+            and os.path.normcase(root.parent.parent.name) == "target"
+        ) or (
+            os.path.normcase(root.parent.name) == "sessions"
+            and os.path.normcase(root.parent.parent.parent.name) == "checkouts"
+            and os.path.normcase(root.parent.parent.parent.parent.name) == "target"
+        ):
+            with checkout_state_use(((root, CheckoutOwner(checkout, "cargo-target")),)):
+                pass
 
 
 def record_build_control_use(control: Path, *, cargo_target: Path) -> None:
@@ -415,8 +810,10 @@ def record_build_control_use(control: Path, *, cargo_target: Path) -> None:
     explicit ``MOLT_BUILD_STATE_DIR`` or a target-local ``.molt_state`` is not.
     """
     if control.parent.name == "build-control" and _ADDRESS.fullmatch(control.name):
-        record_checkout_owner(control, owner=cargo_target, kind="build-control")
-        record_checkout_state_use(control)
+        with checkout_state_use(
+            ((control, CheckoutOwner(cargo_target, "build-control")),)
+        ):
+            pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -481,9 +878,14 @@ def checkout_state_decision(
     if is_session_target(root, artifact_root):
         idle = now - checkout_state_last_use(root)
         return "session-idle" if idle >= limits.session_idle_s else None
-    if checkout_state_kind_of(root, artifact_root) is None:
+    if (
+        checkout_state_kind_of(root, artifact_root) is None
+        and target_use_artifact_root(root) != artifact_root
+    ):
         return None
     idle = now - checkout_state_last_use(root)
+    if idle < PROTECTION_WINDOW_S:
+        return None
     if idle >= limits.max_age_s:
         return "max-age"
     if idle >= PROTECTION_WINDOW_S and orphaned_checkout_state(root, artifact_root):
@@ -512,6 +914,11 @@ def claim_checkout_state_gc(artifact_root: Path) -> None:
 
 
 def record_checkout_owner(root: Path, *, owner: Path, kind: CheckoutStateKind) -> None:
+    with checkout_state_use(((root, CheckoutOwner(owner, kind)),), publish=False):
+        _record_checkout_owner(root, owner=owner, kind=kind)
+
+
+def _record_checkout_owner(root: Path, *, owner: Path, kind: CheckoutStateKind) -> None:
     """Publish ``root``'s owner once; an existing record stays unchanged.
 
     A record that would not bind to ``root``'s name is never written.
@@ -520,7 +927,7 @@ def record_checkout_owner(root: Path, *, owner: Path, kind: CheckoutStateKind) -
     if record.is_file() or not root.is_dir():
         return
     owner = owner.expanduser().resolve()
-    if not _binds(kind, root.name, owner):
+    if not _binds(kind, root, owner):
         return
     try:
         write_exact(
@@ -593,7 +1000,7 @@ def bound_checkout_owner(root: Path, artifact_root: Path) -> CheckoutOwner | Non
     if (
         owner is None
         or owner.kind != checkout_state_kind_at(parts)
-        or not _binds(owner.kind, root.name, owner.path)
+        or not _binds(owner.kind, root, owner.path)
     ):
         return None
     return owner
@@ -613,8 +1020,11 @@ def checkout_target_of(owner: CheckoutOwner) -> Path | None:
     if owner.kind != "build-control":
         return None
     target = owner.path
-    if target.parent.name == _SESSIONS:
+    if os.path.normcase(target.parent.name) == "sessions":
         target = target.parent.parent
-    if target.parent.name == "checkouts" and target.parent.parent.name == "target":
+    if (
+        os.path.normcase(target.parent.name) == "checkouts"
+        and os.path.normcase(target.parent.parent.name) == "target"
+    ):
         return target
     return None

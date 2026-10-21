@@ -154,13 +154,26 @@ def prepare_checkout_state_retirement(checkout: Path) -> Callable[[], None] | No
     `tools/disk_guard.py --gc`.
     """
     import molt.build_state_layout  # noqa: F401 - the owner-key rule loads lazily
-    from molt.checkout_state import stamp_checkout_state
+    from molt.checkout_state import (
+        CheckoutOwner,
+        checkout_state_roots,
+        checkout_state_use,
+    )
+    from molt.process_environment import ProcessEnvironment
     from molt.dx import DxConfigError, artifact_root
     from tools import disk_guard
 
     try:
-        stamp_checkout_state(checkout, os.environ)
-        state_root = artifact_root(checkout, os.environ)
+        environment = ProcessEnvironment(os.environ)
+        state_root = artifact_root(checkout, environment)
+        # Retirement owns this checkout's complete known inventory. A normal
+        # command stamps only its selected target; the caller may legitimately
+        # be running from a different checkout or using a different session.
+        roots = checkout_state_roots(checkout, environment)
+        with checkout_state_use(
+            (root.path, CheckoutOwner(root.owner, root.kind)) for root in roots
+        ):
+            pass
     except (OSError, ValueError, DxConfigError) as exc:
         _warn(f"state roots of {checkout} were not stamped ({exc}); they stay")
         return None
@@ -169,7 +182,9 @@ def prepare_checkout_state_retirement(checkout: Path) -> Callable[[], None] | No
         # A root the guard defers (a held lock or a protected path) stays for
         # a later `tools/disk_guard.py --gc`; a failure never fails cleanup.
         try:
-            result = disk_guard.reclaim_checkout_state(checkout, root=state_root)
+            result = disk_guard.reclaim_checkout_state(
+                checkout, root=state_root, env=environment
+            )
         except (OSError, ValueError) as exc:
             _warn(f"state roots of {checkout} were not reclaimed ({exc}); they stay")
             return

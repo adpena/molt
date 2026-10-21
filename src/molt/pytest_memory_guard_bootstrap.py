@@ -9,7 +9,10 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path, WindowsPath
 import sys
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    from pytest import Config
 
 
 from molt._host_exit import process_returncode_for_direct_os_exit
@@ -997,6 +1000,33 @@ def ensure_pytest_memory_guard(
     raise RuntimeError("failed to re-exec pytest under tools/memory_guard.py")
 
 
+def _hold_pytest_checkout_state(config: Config, args: Sequence[str]) -> None:
+    """The existing pytest Config cleanup owns its actual selected state."""
+    from contextlib import ExitStack
+    from molt.checkout_state import (
+        CheckoutOwner,
+        checkout_scratch_state_dir,
+        checkout_state_use,
+    )
+
+    selections = []
+    if not _pytest_args_disable_cacheprovider(args):
+        from _pytest.cacheprovider import Cache
+
+        selections.append((Cache.cache_dir_from_config(config, _ispytest=True), None))
+    home = checkout_scratch_state_dir("hypothesis-home", ROOT, os.environ)
+    selections.append((home, CheckoutOwner(ROOT, "hypothesis-home")))
+    stack = ExitStack()
+    try:
+        stack.enter_context(checkout_state_use(selections))
+        # Config's existing LIFO cleanup runs even when later plugin setup or
+        # collection fails. No process-global touched-root cache is introduced.
+        config.add_cleanup(stack.close)
+    except BaseException:
+        stack.close()
+        raise
+
+
 def pytest_load_initial_conftests(
     early_config: object, parser: object, args: list[str]
 ) -> None:
@@ -1007,6 +1037,7 @@ def pytest_load_initial_conftests(
     install_windows_pytest_tempdir_mode_patch()
     install_pytest_cache_dir_config(early_config, args)
     install_pytest_cache_dir_arg(args)
+    _hold_pytest_checkout_state(cast("Config", early_config), args)
 
 
 # The current-test record lock: molt.file_locks' self-contained record lock

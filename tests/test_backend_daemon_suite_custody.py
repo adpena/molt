@@ -567,15 +567,19 @@ def test_guardian_loads_owner_custody_from_a_guest_project_root(tmp_path):
     os.name != "posix", reason="POSIX backend daemon and pass_fds custody"
 )
 def test_owned_suite_guardian_closes_on_eof_without_backend_build(tmp_path):
-    root = Path(__file__).resolve().parents[1]
-    env = dict(os.environ)
-    env["CARGO_TARGET_DIR"] = str(tmp_path / "target")
-    env["PYTHONPATH"] = str(root / "src") + os.pathsep + str(root)
+    root, env, managed_roots = _managed_suite_environment(tmp_path)
     active = suite.SuiteDaemonLease.start(project_root=root, environ=env)
     assert active is not None
+    _assert_suite_retirement(managed_roots, False)
+    ready = json.loads(
+        (active.path.parent / "state-use-ready.json").read_text(encoding="utf-8")
+    )
+    assert ready["token"] == active.record["token"]
+    assert ready["guardian_pid"] == active.guardian.pid
     assert not os.get_inheritable(active.write_fd)
     active.close()
     assert active.guardian.poll() == 0
+    _assert_suite_retirement(managed_roots, True)
     closed_record = suite.read_lease(active.path)
     assert closed_record is not None
     assert closed_record["state"] == "closed"
@@ -1859,3 +1863,115 @@ def test_verified_busy_or_ready_reuse_requires_receiver_ack(
         is accepted
     )
     assert observed == [(env, {"project_root": tmp_path, "daemon_pid": owned.pid})]
+
+
+def _managed_suite_environment(tmp_path):
+    from molt.dx import checkout_component
+    from molt.build_state_layout import build_state_root
+
+    root = Path(__file__).resolve().parents[1]
+    artifact = tmp_path / "artifacts"
+    parent = artifact / "target" / "checkouts" / checkout_component(root)
+    session = parent / "sessions" / "reader"
+    environment = {
+        **os.environ,
+        "CARGO_TARGET_DIR": str(session),
+        "MOLT_EXT_ROOT": str(artifact),
+        "PYTHONPATH": str(root / "src") + os.pathsep + str(root),
+    }
+    environment.pop("MOLT_BUILD_STATE_DIR", None)
+    control = build_state_root(
+        project_root=root, cargo_target=session, environment=environment
+    )
+    return root, environment, (parent, session, control)
+
+
+def _assert_suite_retirement(roots, available):
+    from molt.checkout_state import checkout_state_retirement
+
+    for root in roots:
+        with checkout_state_retirement(root) as admitted:
+            assert admitted is available, root
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX EOF guardian")
+def test_suite_failed_wait_retains_existing_owner_through_gc(tmp_path, monkeypatch):
+    import gc
+    import subprocess
+    import weakref
+
+    root, environment, roots = _managed_suite_environment(tmp_path)
+    active = suite.SuiteDaemonLease.start(project_root=root, environ=environment)
+    assert active is not None
+    original_wait = active.guardian.wait
+    args = active.guardian.args
+
+    def refuse(timeout=None):
+        raise subprocess.TimeoutExpired(args, timeout)
+
+    monkeypatch.setattr(active.guardian, "wait", refuse)
+    reference = weakref.ref(active)
+    try:
+        with pytest.raises(subprocess.TimeoutExpired):
+            active.close(timeout=0.01)
+        del active
+        gc.collect()
+        assert reference() is not None
+        _assert_suite_retirement(roots, False)
+    finally:
+        survivor = reference()
+        assert survivor is not None
+        monkeypatch.setattr(survivor.guardian, "wait", original_wait)
+        survivor.close(timeout=5)
+    _assert_suite_retirement(roots, True)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX EOF guardian")
+def test_suite_spawn_refusal_releases_prebirth_state_use(tmp_path, monkeypatch):
+    import subprocess
+
+    root, environment, roots = _managed_suite_environment(tmp_path)
+
+    def refuse(*args, **kwargs):
+        _assert_suite_retirement(roots, False)
+        raise FileNotFoundError("independent suite launch refusal")
+
+    install_module_view(monkeypatch, "subprocess", subprocess, suite, Popen=refuse)
+    with pytest.raises(FileNotFoundError, match="independent suite launch refusal"):
+        suite.SuiteDaemonLease.start(project_root=root, environ=environment)
+    _assert_suite_retirement(roots, True)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX EOF guardian")
+def test_suite_state_ack_admits_real_cold_import_beyond_birth_budget(
+    tmp_path, monkeypatch
+):
+    import time
+
+    root, environment, roots = _managed_suite_environment(tmp_path)
+    delay = tmp_path / "sitecustomize.py"
+    delay.write_text(
+        "import sys,time\n"
+        "class DelayGuardImport:\n"
+        " def find_spec(self,fullname,path=None,target=None):\n"
+        "  if fullname=='tools.memory_guard':\n"
+        "   sys.meta_path.remove(self);time.sleep(2.2)\n"
+        "sys.meta_path.insert(0,DelayGuardImport())\n",
+        encoding="utf-8",
+    )
+    original = suite._guardian_import_path
+    monkeypatch.setattr(
+        suite,
+        "_guardian_import_path",
+        lambda inherited: str(tmp_path) + os.pathsep + original(inherited),
+    )
+    started = time.monotonic()
+    lease = suite.SuiteDaemonLease.start(project_root=root, environ=environment)
+    try:
+        assert lease is not None and time.monotonic() - started >= 2.2
+        assert lease.guardian.poll() is None
+        _assert_suite_retirement(roots, False)
+    finally:
+        if lease is not None:
+            lease.close(timeout=7)
+    _assert_suite_retirement(roots, True)

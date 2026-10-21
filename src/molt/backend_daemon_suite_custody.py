@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Generator, Mapping, MutableMapping
 from dataclasses import dataclass
+import atexit
 import contextlib
 import hashlib
 import os
@@ -28,6 +29,8 @@ from molt.file_locks import (
     _try_acquire_file_lock,
     _release_file_lock,
 )
+
+from molt.process_spawn import PROCESS_STATE_HANDOFF_TIMEOUT_S
 
 LEASE_ENV = "MOLT_BACKEND_DAEMON_SUITE_LEASE"
 SCHEMA = "molt.backend_daemon.suite-lease.v2"
@@ -112,13 +115,26 @@ if hasattr(os, "register_at_fork"):
 def _source_digest() -> str:
     value = hashlib.sha256()
     # This binds custody implementation files, not loaded compiler images.
-    from molt import exact_json, file_deletion, file_locks, file_publication
+    from molt import (
+        build_state_layout,
+        checkout_state,
+        custody_layout,
+        dx,
+        exact_json,
+        file_deletion,
+        file_locks,
+        file_publication,
+    )
     from molt import process_model
 
     for source in (
         Path(__file__),
         Path(daemon.__file__),
         Path(file_locks.__file__),
+        Path(checkout_state.__file__),
+        Path(build_state_layout.__file__),
+        Path(custody_layout.__file__),
+        Path(dx.__file__),
         Path(exact_json.__file__),
         Path(file_publication.__file__),
         Path(temporary_artifacts.__file__),
@@ -863,6 +879,7 @@ class SuiteDaemonLease:
     lock: _FileLockHandle | None
     write_fd: int
     guardian: subprocess.Popen
+    state_use: contextlib.ExitStack | None = None
 
     @classmethod
     def start(cls, *, project_root: Path, environ: Mapping[str, str]):
@@ -878,122 +895,176 @@ class SuiteDaemonLease:
         )
         if interpreter_sha256 is None:
             raise RuntimeError("suite daemon guardian interpreter digest unavailable")
-        token = uuid.uuid4().hex
-        daemon_root = daemon.backend_daemon_root_from_env(
-            environ, project_root=project_root
-        )
-        directory = (daemon_root / "suite-leases" / token).resolve()
-        directory.mkdir(parents=True)
-        # Fork serialization covers lock acquisition as well as pipe admission:
-        # otherwise a concurrent fork could inherit the lock before registration.
-        with _lease_descriptor_mutation():
-            lock = _try_acquire_file_lock(directory / "owner.lock")
-            if lock is None:
-                raise RuntimeError("new suite daemon lease was already held")
-            read_fd = write_fd = -1
-            try:
-                read_fd, write_fd = os.pipe()
-                _LEASE_PIPE_FDS.update((read_fd, write_fd))
-                os.set_inheritable(write_fd, False)
-            except BaseException:
-                for fd in (read_fd, write_fd):
-                    if fd >= 0:
-                        _LEASE_PIPE_FDS.discard(fd)
-                        with contextlib.suppress(OSError):
-                            os.close(fd)
-                _release_file_lock(lock)
-                raise
-        guardian = None
-        scratch = None
-        try:
-            path = directory / "lease.json"
-            scratch = _allocate_scratch(directory)
-            env = _without_command_scratch(environ)
-            # The guardian owns this new lease, never an outer suite's lease.
-            env.pop(LEASE_ENV, None)
-            env["PYTHONPATH"] = _guardian_import_path(env.get("PYTHONPATH"))
-            with (directory / "guardian.log").open("ab") as log:
-                guardian = subprocess.Popen(
-                    [
-                        sys.executable,
-                        "-m",
-                        "molt.backend_daemon_suite_custody",
-                        "--watch",
-                        str(path),
-                        "--read-fd",
-                        str(read_fd),
-                    ],
-                    cwd=project_root,
-                    env=env,
-                    pass_fds=(read_fd,),
-                    close_fds=True,
-                    start_new_session=True,
-                    stdout=log,
-                    stderr=subprocess.STDOUT,
-                )
-            with _lease_descriptor_mutation():
-                _LEASE_PIPE_FDS.discard(read_fd)
-                os.close(read_fd)
-                read_fd = -1
-            deadline = time.perf_counter() + 2.0
-            guardian_birth = None
-            while guardian_birth is None and time.perf_counter() < deadline:
-                if guardian.poll() is not None:
-                    raise RuntimeError(
-                        "suite daemon guardian exited before lease admission"
-                    )
-                guardian_birth = daemon.process_started_at_ns(guardian.pid)
-                if guardian_birth is None:
-                    time.sleep(0.01)
-            if guardian_birth is None:
-                raise RuntimeError(
-                    "suite daemon guardian birth could not be established"
-                )
-            record = {
-                "schema": SCHEMA,
-                "token": token,
-                "state": "active",
-                "owner_pid": os.getpid(),
-                "owner_started_at_ns": owner_birth,
-                "guardian_pid": guardian.pid,
-                "guardian_started_at_ns": guardian_birth,
-                "project_root": str(project_root.resolve()),
-                "daemon_root": str(daemon_root.resolve()),
-                "source_digest": _source_digest(),
-                "interpreter": str(Path(sys.executable).resolve()),
-                "interpreter_sha256": interpreter_sha256,
-                "scratch": scratch,
-            }
-            write_exact(
-                path.parent / "adoption-index.json", _new_adoption_index(record)
+        from molt.checkout_state import checkout_state_command_roots, checkout_state_use
+
+        state_use = contextlib.ExitStack()
+        state_use.enter_context(
+            checkout_state_use(
+                checkout_state_command_roots(project_root, environ, cwd=project_root)
             )
-            write_exact(path, record)
-            return cls(path, record, lock, write_fd, guardian)
-        except BaseException as error:
+        )
+        atexit.register(state_use.close)
+        guardian = None
+        transferred = False
+        try:
+            token = uuid.uuid4().hex
+            daemon_root = daemon.backend_daemon_root_from_env(
+                environ, project_root=project_root
+            )
+            directory = (daemon_root / "suite-leases" / token).resolve()
+            directory.mkdir(parents=True)
+            # Fork serialization covers lock acquisition as well as pipe admission:
+            # otherwise a concurrent fork could inherit the lock before registration.
             with _lease_descriptor_mutation():
-                _LEASE_PIPE_FDS.discard(write_fd)
-                os.close(write_fd)
-                if read_fd != -1:
+                lock = _try_acquire_file_lock(directory / "owner.lock")
+                if lock is None:
+                    raise RuntimeError("new suite daemon lease was already held")
+                read_fd = write_fd = -1
+                try:
+                    read_fd, write_fd = os.pipe()
+                    _LEASE_PIPE_FDS.update((read_fd, write_fd))
+                    os.set_inheritable(write_fd, False)
+                except BaseException:
+                    for fd in (read_fd, write_fd):
+                        if fd >= 0:
+                            _LEASE_PIPE_FDS.discard(fd)
+                            with contextlib.suppress(OSError):
+                                os.close(fd)
+                    _release_file_lock(lock)
+                    raise
+            guardian = None
+            scratch = None
+            try:
+                path = directory / "lease.json"
+                scratch = _allocate_scratch(directory)
+                env = _without_command_scratch(environ)
+                # The guardian owns this new lease, never an outer suite's lease.
+                env.pop(LEASE_ENV, None)
+                env["PYTHONPATH"] = _guardian_import_path(env.get("PYTHONPATH"))
+                with (directory / "guardian.log").open("ab") as log:
+                    guardian = subprocess.Popen(
+                        [
+                            sys.executable,
+                            "-m",
+                            "molt.backend_daemon_suite_custody",
+                            "--watch",
+                            str(path),
+                            "--read-fd",
+                            str(read_fd),
+                        ],
+                        cwd=project_root,
+                        env=env,
+                        pass_fds=(read_fd,),
+                        close_fds=True,
+                        start_new_session=True,
+                        stdout=log,
+                        stderr=subprocess.STDOUT,
+                    )
+                with _lease_descriptor_mutation():
                     _LEASE_PIPE_FDS.discard(read_fd)
                     os.close(read_fd)
-            if guardian is not None:
-                with contextlib.suppress(subprocess.TimeoutExpired):
-                    guardian.wait(timeout=2.0)
-                if guardian.poll() is None:
-                    guardian.kill()
-                    guardian.wait(timeout=2.0)
-            if scratch is not None:
-                # start() never returned this lease to a daemon producer, and
-                # its sole launched child is now stopped. No transfer exists.
-                outcome = _finish_scratch(path, {"scratch": scratch}, closed=True)
-                if outcome["state"] == "blocked":
-                    error.add_note(f"unpublished suite scratch preserved: {outcome}")
-            _release_file_lock(lock)
-            raise
+                    read_fd = -1
+                deadline = time.perf_counter() + 2.0
+                guardian_birth = None
+                while guardian_birth is None and time.perf_counter() < deadline:
+                    if guardian.poll() is not None:
+                        raise RuntimeError(
+                            "suite daemon guardian exited before lease admission"
+                        )
+                    guardian_birth = daemon.process_started_at_ns(guardian.pid)
+                    if guardian_birth is None:
+                        time.sleep(0.01)
+                if guardian_birth is None:
+                    raise RuntimeError(
+                        "suite daemon guardian birth could not be established"
+                    )
+                record = {
+                    "schema": SCHEMA,
+                    "token": token,
+                    "state": "active",
+                    "owner_pid": os.getpid(),
+                    "owner_started_at_ns": owner_birth,
+                    "guardian_pid": guardian.pid,
+                    "guardian_started_at_ns": guardian_birth,
+                    "project_root": str(project_root.resolve()),
+                    "daemon_root": str(daemon_root.resolve()),
+                    "source_digest": _source_digest(),
+                    "interpreter": str(Path(sys.executable).resolve()),
+                    "interpreter_sha256": interpreter_sha256,
+                    "scratch": scratch,
+                }
+                write_exact(
+                    path.parent / "adoption-index.json", _new_adoption_index(record)
+                )
+                write_exact(path, record)
+                deadline = time.perf_counter() + PROCESS_STATE_HANDOFF_TIMEOUT_S
+                expected_ready = {
+                    "schema_version": 1,
+                    "token": token,
+                    "guardian_pid": guardian.pid,
+                    "source_digest": record["source_digest"],
+                }
+                while True:
+                    ready_path = directory / "state-use-ready.json"
+                    try:
+                        ready_path.lstat()
+                    except FileNotFoundError:
+                        ready = None
+                    else:
+                        ready = read_exact(
+                            ready_path,
+                            max_bytes=16384,
+                            label="suite use acknowledgement",
+                        )
+                    if ready is not None:
+                        if ready != expected_ready:
+                            raise RuntimeError(
+                                "suite guardian use acknowledgement differs"
+                            )
+                        break
+                    if guardian.poll() is not None or time.perf_counter() >= deadline:
+                        raise RuntimeError(
+                            "suite guardian use acknowledgement unavailable"
+                        )
+                    time.sleep(0.01)
+                owned = cls(path, record, lock, write_fd, guardian, state_use)
+                atexit.register(owned.close)
+                atexit.unregister(state_use.close)
+                transferred = True
+                return owned
+            except BaseException as error:
+                with _lease_descriptor_mutation():
+                    _LEASE_PIPE_FDS.discard(write_fd)
+                    os.close(write_fd)
+                    if read_fd != -1:
+                        _LEASE_PIPE_FDS.discard(read_fd)
+                        os.close(read_fd)
+                if guardian is not None:
+                    with contextlib.suppress(subprocess.TimeoutExpired):
+                        guardian.wait(timeout=2.0)
+                    if guardian.poll() is None:
+                        guardian.kill()
+                        guardian.wait(timeout=2.0)
+                if scratch is not None:
+                    # start() never returned this lease to a daemon producer, and
+                    # its sole launched child is now stopped. No transfer exists.
+                    outcome = _finish_scratch(path, {"scratch": scratch}, closed=True)
+                    if outcome["state"] == "blocked":
+                        error.add_note(
+                            f"unpublished suite scratch preserved: {outcome}"
+                        )
+                _release_file_lock(lock)
+                raise
+        finally:
+            if not transferred and (guardian is None or guardian.poll() is not None):
+                atexit.unregister(state_use.close)
+                state_use.close()
 
     def close(self, *, timeout: float = _LEASE_CLOSE_TIMEOUT_S):
         # An inherited Python lease object never acquires the parent's custody.
-        if self.record["owner_pid"] != os.getpid() or self.lock is None:
+        if self.record["owner_pid"] != os.getpid() or (
+            self.lock is None and self.state_use is None
+        ):
             return
         try:
             self.record["state"] = "closing"
@@ -1010,6 +1081,10 @@ class SuiteDaemonLease:
                 )
             self.record["state"] = "closed"
             write_exact(self.path, self.record)
+            if self.state_use is not None:
+                self.state_use.close()
+                self.state_use = None
+            atexit.unregister(self.close)
         finally:
             with _lease_descriptor_mutation():
                 # Canonical file_locks owns inherited lock copies through drain.
@@ -1017,8 +1092,9 @@ class SuiteDaemonLease:
                     _LEASE_PIPE_FDS.discard(self.write_fd)
                     os.close(self.write_fd)
                     self.write_fd = -1
-                _release_file_lock(self.lock)
-                self.lock = None
+                if self.lock is not None:
+                    _release_file_lock(self.lock)
+                    self.lock = None
 
 
 @contextlib.contextmanager
@@ -1316,18 +1392,47 @@ def main():
     parser.add_argument("--watch", type=Path, required=True)
     parser.add_argument("--read-fd", type=int, required=True)
     args = parser.parse_args()
-    # Load the shared drain authority before waiting for owner death.
+    from molt.checkout_state import checkout_state_command_roots, checkout_state_use
+
+    deadline = time.perf_counter() + 2.0
+    lease = read_lease(args.watch)
+    while lease is None and time.perf_counter() < deadline:
+        time.sleep(0.01)
+        lease = read_lease(args.watch)
+    if lease is None or lease["guardian_pid"] != os.getpid():
+        raise RuntimeError("suite guardian has no admitted owner record")
+    project_root = Path(lease["project_root"])
+    state_use = contextlib.ExitStack()
+    state_use.enter_context(
+        checkout_state_use(
+            checkout_state_command_roots(project_root, os.environ, cwd=project_root)
+        )
+    )
+    atexit.register(state_use.close)
+    # Load the actual drain authority before accepting transfer. The parent
+    # retains its readers until this exact PID/token/source acknowledgement.
     from tools import memory_guard as _memory_guard
 
     del _memory_guard
+    write_exact(
+        args.watch.parent / "state-use-ready.json",
+        {
+            "schema_version": 1,
+            "token": lease["token"],
+            "guardian_pid": os.getpid(),
+            "source_digest": lease["source_digest"],
+        },
+    )
     try:
-        # The suite alone holds the write end. Non-inheritable write custody
-        # makes normal closure and hard controller death the same EOF boundary.
         while os.read(args.read_fd, 1):
             pass
     finally:
         os.close(args.read_fd)
-    return 0 if drain_lease(args.watch) else 1
+    closed = drain_lease(args.watch)
+    if closed:
+        atexit.unregister(state_use.close)
+        state_use.close()
+    return 0 if closed else 1
 
 
 if __name__ == "__main__":

@@ -78,12 +78,13 @@ def family(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     _git(main, "config", "user.email", "dev@molt.test")
     _git(main, "config", "user.name", "Molt Dev")
 
-    def fixture_input(name, checkout, environ=None):
+    def fixture_input(name, checkout, environ=None, *, guard_source_root=None):
         checkout = Path(checkout).resolve()
         environment = ProcessEnvironment(os.environ if environ is None else environ)
         if name == "git-hooks":
             return cp.OwnedInstallation(
                 name=name,
+                guard_source_root=guard_source_root,
                 checkout=checkout,
                 owner="tools/install_git_hooks.py",
                 environment=environment,
@@ -91,6 +92,7 @@ def family(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         python = Path(sys.executable)
         return cp.LockedTree(
             name=name,
+            guard_source_root=guard_source_root,
             checkout=checkout,
             lock_files=("fixture.lock",),
             tree=checkout / f"{name}-tree",

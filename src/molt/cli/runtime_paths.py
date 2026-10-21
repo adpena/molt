@@ -13,7 +13,10 @@ from molt.cli.config_resolution import (
     RUNTIME_STDLIB_PROFILE_TIERS,
     RuntimeStdlibProfile,
 )
-from molt.cli.build_output_layout import _wasm_runtime_root_from_env
+from molt.cli.build_output_layout import (
+    _wasm_runtime_root_from_env,
+    _claim_checkout_state,
+)
 from molt.default_paths import configured_artifact_root_text
 from molt.dx import project_cargo_target_dir
 
@@ -136,6 +139,7 @@ def _cargo_target_root(project_root: Path) -> Path:
     if cached is not None and all(
         os.environ.get(name) == value for name, value in cached[0]
     ):
+        _claim_checkout_state(cached[1])
         return cached[1]
     environment = _RecordingEnvironment(os.environ)
     target = project_cargo_target_dir(project_root, environment)
@@ -143,6 +147,7 @@ def _cargo_target_root(project_root: Path) -> Path:
         _CARGO_TARGET_ROOTS[key] = (environment.observed(), target)
     # A build that selects a checkout target uses it (HF-313); the memo makes
     # this one stat per process.
+    _claim_checkout_state(target)
     record_checkout_target_use(target, checkout=Path(project_root))
     return target
 
@@ -171,12 +176,14 @@ def _build_state_root_cached(
 
 
 def _build_state_root(project_root: Path) -> Path:
-    return _build_state_root_cached(
+    root = _build_state_root_cached(
         os.fspath(project_root),
         os.environ.get("MOLT_BUILD_STATE_DIR"),
         os.fspath(_cargo_target_root(project_root)),
         configured_artifact_root_text(os.environ),
     )
+    _claim_checkout_state(root, cargo_target=_cargo_target_root(project_root))
+    return root
 
 
 @functools.lru_cache(maxsize=256)

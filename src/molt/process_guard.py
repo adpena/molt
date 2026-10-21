@@ -8,15 +8,15 @@ import os
 import shlex
 import subprocess
 import sys
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from .cargo_execution_policy import cargo_subprocess_environment
 from .process_environment import NameRule as NameRule
 from .process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
 from .source_root import compiler_source_root
-from .process_spawn import native_popen_command
+from .process_spawn import ProcessStateUse, native_popen_command
 
 
 CLI_MEMORY_GUARD_PREFIX = "MOLT_CLI"
@@ -41,7 +41,11 @@ _MEMORY_GUARD_ENV_SUFFIXES = (
     "MEM_RESERVE_GB",
 )
 
-GuardLoader = Callable[[Path | None], Any]
+
+class GuardLoader(Protocol):
+    def __call__(
+        self, cwd: Path | None, *, guard_source_root: Path | None = None
+    ) -> Any: ...
 
 
 class GuardInfrastructureError(subprocess.SubprocessError):
@@ -109,8 +113,16 @@ def raise_for_guard_outcome(
         raise GuardInfrastructureError(command, result)
 
 
-def _molt_repo_root() -> Path:
-    root = compiler_source_root()
+def _command_source_root(guard_source_root: Path | None = None) -> Path:
+    if guard_source_root is not None and not guard_source_root.is_absolute():
+        raise ValueError("guard source owner must be an absolute path")
+    return (
+        compiler_source_root() if guard_source_root is None else guard_source_root
+    ).resolve()
+
+
+def _molt_repo_root(guard_source_root: Path | None = None) -> Path:
+    root = _command_source_root(guard_source_root)
     if (
         not (root / "pyproject.toml").is_file()
         or not (root / "tools" / "harness_memory_guard.py").is_file()
@@ -122,9 +134,11 @@ def _molt_repo_root() -> Path:
     return root
 
 
-def load_harness_memory_guard(cwd: Path | None) -> Any:
+def load_harness_memory_guard(
+    cwd: Path | None, *, guard_source_root: Path | None = None
+) -> Any:
     del cwd  # A command directory cannot authorize a different guard module.
-    root = _molt_repo_root()
+    root = _molt_repo_root(guard_source_root)
     # Tools import as `tools.<module>` (HF-F217); `tools/` itself never joins
     # sys.path, where tools/profile.py would shadow the stdlib `profile`.
     if str(root) not in sys.path:
@@ -212,6 +226,7 @@ def run_completed_command(
     errors: str | None = None,
     progress_label: str | None = None,
     guard_loader: GuardLoader = load_harness_memory_guard,
+    guard_source_root: Path | None = None,
 ) -> subprocess.CompletedProcess[Any]:
     if isinstance(cmd, (str, bytes)):
         raise TypeError("command must be typed argv, not shell text")
@@ -233,22 +248,73 @@ def run_completed_command(
         probe_timeout = (
             DEFAULT_UNGUARDED_PROBE_TIMEOUT_SECONDS if timeout is None else timeout
         )
-        result = subprocess.run(
-            native_popen_command(command),
-            env=env.child_block() if env is not None else None,
-            cwd=cwd,
-            input=input,
-            capture_output=capture_output,
-            text=text_mode,
-            timeout=probe_timeout,
-            check=check,
-            stdout=stdout,
-            stderr=stderr,
-            encoding=encoding,
-            errors=errors,
-        )
-        result.args = command
-        return result
+        with ProcessStateUse(
+            _command_source_root(guard_source_root),
+            os.environ if env is None else env,
+            cwd,
+        ) as state_owner:
+            process = subprocess.Popen(
+                native_popen_command(command),
+                env=env.child_block() if env is not None else None,
+                cwd=cwd,
+                stdin=subprocess.PIPE if input is not None else None,
+                stdout=subprocess.PIPE if capture_output else stdout,
+                stderr=subprocess.PIPE if capture_output else stderr,
+                text=text_mode,
+                encoding=encoding,
+                errors=errors,
+            )
+            state_owner.process = process
+            error: BaseException | None = None
+            try:
+                try:
+                    output, diagnostic = process.communicate(
+                        input, timeout=probe_timeout
+                    )
+                except subprocess.TimeoutExpired as failure:
+                    try:
+                        process.kill()
+                        if os.name == "nt":
+                            failure.stdout, failure.stderr = process.communicate()
+                        else:
+                            process.wait()
+                    except BaseException as cleanup_error:
+                        failure.add_note(
+                            f"timed-out child cleanup failed: {cleanup_error!r}"
+                        )
+                    raise
+                except BaseException as failure:
+                    try:
+                        process.kill()
+                    except BaseException as cleanup_error:
+                        failure.add_note(f"child kill failed: {cleanup_error!r}")
+                    raise
+                returncode = process.poll()
+                if returncode is None:
+                    raise RuntimeError("completed probe has no observed exit status")
+                if check and returncode:
+                    raise subprocess.CalledProcessError(
+                        returncode, process.args, output=output, stderr=diagnostic
+                    )
+                return subprocess.CompletedProcess(
+                    command, returncode, output, diagnostic
+                )
+            except BaseException as failure:
+                error = failure
+                raise
+            finally:
+                # Match Popen's native stream/interrupt/wait policy, while
+                # keeping an earlier error if that physical cleanup fails.
+                try:
+                    process.__exit__(
+                        type(error) if error is not None else None,
+                        error,
+                        error.__traceback__ if error is not None else None,
+                    )
+                except BaseException as cleanup_error:
+                    if error is None:
+                        raise
+                    error.add_note(f"child context cleanup failed: {cleanup_error!r}")
     if stderr == subprocess.STDOUT:
         raise ValueError(
             "guarded completed commands preserve stdout/stderr separately; "
@@ -256,7 +322,10 @@ def run_completed_command(
         )
     guard_env = with_memory_guard_env(env, memory_guard_prefix)
     cwd_path = None if cwd is None else Path(cwd)
-    harness_memory_guard = guard_loader(cwd_path)
+    # Repository tools carry the owner admitted by import_file. Compiler input
+    # selection remains caller input, and cannot redirect that control plane.
+    owner_root = _command_source_root(guard_source_root)
+    harness_memory_guard = guard_loader(cwd_path, guard_source_root=owner_root)
     if guard_env is not None:
         guard_env = harness_memory_guard.ProcessEnvironment(
             guard_env,
@@ -268,7 +337,7 @@ def run_completed_command(
         # The command's working directory is not its Molt source authority:
         # standalone Cargo workspaces and staged packages execute below or
         # outside the checkout while retaining this loaded guard's owner.
-        repo_root=_molt_repo_root(),
+        repo_root=owner_root,
     )
     capture_streams = capture_output or stdout is not None or stderr is not None
     result = guard_context.run(

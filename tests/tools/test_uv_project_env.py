@@ -146,14 +146,19 @@ def test_parse_command_strips_separator() -> None:
 def test_forward_command_waits_for_child_on_windows(monkeypatch, cwd) -> None:
     calls = []
 
-    def fake_run(command, *, cwd, env, check):  # type: ignore[no-untyped-def]
-        assert check is False
+    def fake_popen(command, *, cwd, env):
+        from types import SimpleNamespace
+
         calls.append((command, cwd, env))
-        return subprocess.CompletedProcess(command, 7)
+        return SimpleNamespace(
+            communicate=lambda: (None, None),
+            poll=lambda: 7,
+            __exit__=lambda *_args: None,
+        )
 
     install_module_os_view(monkeypatch, process_spawn, name="nt")
     install_module_view(
-        monkeypatch, "subprocess", subprocess, process_spawn, run=fake_run
+        monkeypatch, "subprocess", subprocess, process_spawn, Popen=fake_popen
     )
 
     assert (
@@ -187,3 +192,211 @@ def test_uv_project_env_real_command_exit_status_propagates(
         timeout=60,
     )
     assert result.returncode == status, result.stderr
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX exec descriptor transfer")
+def test_forward_exec_failure_restores_and_releases_managed_reader(
+    tmp_path, monkeypatch
+):
+    from molt import checkout_state, dx, file_locks
+    from molt.build_state_layout import build_state_root
+    from molt.source_root import compiler_source_root
+
+    source = compiler_source_root()
+    artifact = tmp_path / "artifacts"
+    target = dx.cargo_target_dir_for_artifact_root(
+        artifact, "reader", source_root=source
+    )
+    target.mkdir(parents=True)
+    environment = {"MOLT_EXT_ROOT": str(artifact), "CARGO_TARGET_DIR": str(target)}
+    control = build_state_root(
+        project_root=source, cargo_target=target, environment=environment
+    )
+    # The command cwd contains the artifact root, so it cannot stand in for
+    # compiler source when selecting the target's actual control owner.
+    assert control.is_relative_to(artifact)
+    captured = []
+    released = []
+    original_release = file_locks._release_file_lock
+    before = set(file_locks._LIVE_FILE_LOCK_HANDLES)
+
+    def failed_exec(*args):
+        handles = tuple(file_locks._LIVE_FILE_LOCK_HANDLES.values())
+        captured.extend(handle for handle in handles if id(handle) not in before)
+        assert captured and all(
+            os.get_inheritable(handle.file.fileno()) for handle in captured
+        )
+        for root in (target, control):
+            with checkout_state.checkout_state_retirement(root) as allowed:
+                assert allowed is False
+        raise FileNotFoundError("deliberate failed exec")
+
+    def checked_release(handle):
+        if handle in captured:
+            released.append(handle.file.fileno())
+            assert os.get_inheritable(handle.file.fileno()) is False
+        original_release(handle)
+
+    install_module_view(monkeypatch, "os", os, process_spawn, execvpe=failed_exec)
+    monkeypatch.setattr(file_locks, "_release_file_lock", checked_release)
+    with pytest.raises(FileNotFoundError, match="deliberate failed exec"):
+        process_spawn.forward_command(
+            ["missing-subject"], cwd=tmp_path, env=environment
+        )
+    assert len(released) == len(captured)
+    assert all(handle.file.closed for handle in captured)
+    for root in (target, control):
+        with checkout_state.checkout_state_retirement(root) as allowed:
+            assert allowed is True
+
+
+@pytest.mark.skipif(
+    os.name == "nt", reason="POSIX actual exec; Windows has waiting parent"
+)
+def test_forwarded_exec_retains_native_reader_without_a_python_registry(tmp_path):
+    from molt import dx
+
+    source = tmp_path / "source"
+    source.mkdir()
+    target = dx.cargo_target_dir_for_artifact_root(
+        tmp_path / "artifacts", "reader", source_root=source
+    )
+    target.mkdir(parents=True)
+    after_exec = (
+        "from pathlib import Path; import sys; from molt import file_locks as f; "
+        "from molt.checkout_state import checkout_state_retirement; "
+        "assert not f._LIVE_FILE_LOCK_HANDLES; "
+        "context=checkout_state_retirement(Path(sys.argv[1])); "
+        "assert context.__enter__() is False; context.__exit__(None,None,None); "
+        "print('exec-reader-kept-without-registry')"
+    )
+    before_exec = (
+        "import os,sys; from molt.process_spawn import forward_command; "
+        "env=dict(os.environ); env['CARGO_TARGET_DIR']=sys.argv[1]; "
+        "forward_command([sys.executable,'-B','-S','-c',sys.argv[2],sys.argv[1]],env=env)"
+    )
+    result = run_guarded_test_process(
+        [sys.executable, "-B", "-S", "-c", before_exec, str(target), after_exec],
+        cwd=ROOT,
+        env=os.environ.copy(),
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "exec-reader-kept-without-registry"
+
+
+@pytest.mark.parametrize("failure", [None, "spawn", "wait"])
+def test_windows_forward_retains_actual_child_use_after_failed_cleanup_and_gc(
+    tmp_path, monkeypatch, failure
+):
+    import gc
+    import weakref
+    from molt import checkout_state
+    from molt.build_state_layout import build_state_root
+    from molt.source_root import compiler_source_root
+
+    source = compiler_source_root()
+    artifact = tmp_path / "artifact"
+    target = dx.cargo_target_dir_for_artifact_root(
+        artifact, "reader", source_root=source
+    )
+    target.mkdir(parents=True)
+    environment = {
+        **os.environ,
+        "MOLT_EXT_ROOT": str(artifact),
+        "CARGO_TARGET_DIR": str(target),
+    }
+    control = build_state_root(
+        project_root=source, cargo_target=target, environment=environment
+    )
+    assert control.is_relative_to(artifact)
+    owners = []
+    children = []
+    methods = []
+    register = process_spawn.atexit.register
+    popen = subprocess.Popen
+
+    def registered(callback):
+        owners.append(weakref.ref(callback.__self__))
+        return register(callback)
+
+    def start(command, **kwargs):
+        assert owners[0]().source_root == source
+        for root in (target, control):
+            with checkout_state.checkout_state_retirement(root) as admitted:
+                assert not admitted  # held before Popen can create a process
+        if failure == "spawn":
+            raise FileNotFoundError("independent spawn refusal")
+        process = popen(command, **kwargs)
+        children.append(process)
+        methods.append((process.kill, process.wait))
+        if failure == "wait":
+
+            def fail_communicate(*args, **kwargs):
+                raise RuntimeError("original forwarding failure")
+
+            def fail_cleanup(*args, **kwargs):
+                raise OSError("unobserved forwarding cleanup")
+
+            process.communicate = fail_communicate
+            process.kill = fail_cleanup
+            process.wait = fail_cleanup
+        return process
+
+    install_module_os_view(monkeypatch, process_spawn, name="nt")
+    install_module_view(
+        monkeypatch, "subprocess", subprocess, process_spawn, Popen=start
+    )
+    install_module_view(
+        monkeypatch, "atexit", process_spawn.atexit, process_spawn, register=registered
+    )
+    command = [
+        sys.executable,
+        "-I",
+        "-S",
+        "-c",
+        "import time; time.sleep(30)" if failure == "wait" else "raise SystemExit(7)",
+    ]
+    try:
+        if failure is None:
+            assert (
+                process_spawn.forward_command(command, cwd=tmp_path, env=environment)
+                == 7
+            )
+        else:
+            expected = FileNotFoundError if failure == "spawn" else RuntimeError
+            with pytest.raises(
+                expected,
+                match="independent spawn refusal"
+                if failure == "spawn"
+                else "original forwarding failure",
+            ) as caught:
+                process_spawn.forward_command(command, cwd=tmp_path, env=environment)
+            if failure == "wait":
+                assert caught.value.owned_process is children[0]
+                assert caught.value.state_owner is owners[0]()
+                assert not caught.value.state_owner.released
+            del caught
+        gc.collect()
+        if failure == "wait":
+            assert owners[0]() is not None
+            assert children[0].poll() is None
+            for root in (target, control):
+                with checkout_state.checkout_state_retirement(root) as admitted:
+                    assert not admitted
+        else:
+            assert owners[0]() is None
+            for root in (target, control):
+                with checkout_state.checkout_state_retirement(root) as admitted:
+                    assert admitted
+    finally:
+        for process, (kill, wait) in zip(children, methods):
+            process.wait = wait
+            if process.poll() is None:
+                kill()
+            wait(timeout=5)
+        if owners and (owner := owners[0]()) is not None:
+            owner._close_at_exit()
+    for root in (target, control):
+        with checkout_state.checkout_state_retirement(root) as admitted:
+            assert admitted

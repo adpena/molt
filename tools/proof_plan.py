@@ -3586,7 +3586,9 @@ def _provision_checkout_inputs(
     from molt import checkout_provisioning
 
     try:
-        checkout_provisioning.ensure_all(root, names=inputs)
+        checkout_provisioning.ensure_all(
+            root, names=inputs, guard_source_root=_COMMANDS.repo_root
+        )
     except checkout_provisioning.ProvisioningError as exc:
         return f"checkout input provisioning failed: {exc}"
     return None

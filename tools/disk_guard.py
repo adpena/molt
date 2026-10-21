@@ -72,7 +72,7 @@ import os
 import shutil
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Iterable, Literal, Mapping, Sequence
 
@@ -102,6 +102,7 @@ from molt.dx import (  # noqa: E402
 from molt.checkout_state import (  # noqa: E402
     PROTECTION_WINDOW_S as CHECKOUT_STATE_WINDOW_S,
     RetentionLimits,
+    PROTECTED_TARGET_NAMES,
     bound_checkout_owner,
     checkout_target_of,
     checkout_state_containers,
@@ -109,6 +110,7 @@ from molt.checkout_state import (  # noqa: E402
     checkout_state_kind_of,
     checkout_state_last_use,
     is_session_target,
+    legacy_target_kind_of,
     newest_activity_mtime as _newest_activity_mtime,
     owner_is_absent,
     retention_limits,
@@ -143,33 +145,9 @@ CandidateKind = Literal[
     "checkout-state", "session-target", "lane", "quarantine", "cargo-target"
 ]
 _LAST_USE_KINDS: frozenset[CandidateKind] = frozenset(
-    {"checkout-state", "session-target"}
+    {"checkout-state", "session-target", "lane", "cargo-target"}
 )
 
-
-# Hard denylist: even if a classifier ever matched one of these under target/,
-# refuse to delete it. These are the SHARED build outputs every lane depends on
-# and structural control dirs -- defense-in-depth beside the narrow allow-set.
-PROTECTED_TARGET_NAMES = frozenset(
-    {
-        "debug",
-        "release",
-        "release-output",
-        "doc",
-        "package",
-        "tmp",
-        "sessions",  # the parent; we reclaim its CHILDREN, never itself
-        ".molt_state",  # cargo quarantine control parent
-        ".rustc_info.json",
-        "CACHEDIR.TAG",
-        ".fingerprint",
-        "wasm32-wasip1",
-        "wasm32-unknown-unknown",
-        "x86_64-unknown-linux-gnu",
-        "x86_64-pc-windows-msvc",
-        "aarch64-apple-darwin",
-    }
-)
 
 LOG_RELDIR = Path("logs") / "disk_guard"
 
@@ -325,6 +303,8 @@ def plan_reclaim(
         return plan
 
     running_free = free_bytes
+    selected_paths: set[Path] = set()
+    selected_bytes_below: dict[Path, int] = {}
     for c in sorted(candidates, key=_order_key):
         if _is_protected(c.path, protected_paths):
             plan.skipped.append((c, "protected"))
@@ -341,12 +321,33 @@ def plan_reclaim(
         if c.kind in _LAST_USE_KINDS and c.age_s(now) < CHECKOUT_STATE_WINDOW_S:
             plan.skipped.append((c, "used within the protection window"))
             continue
+        key = Path(_norm(c.path))
+        if any(parent in selected_paths for parent in key.parents):
+            plan.skipped.append((c, "covered by selected parent"))
+            continue
         if running_free >= target_bytes:
             plan.skipped.append((c, "target already met"))
             continue
         plan.selected.append(c)
-        running_free += max(0, c.size)
+        selected_paths.add(key)
+        # Replacing selected children with their enclosing root must not count
+        # the same bytes twice, or stop a dry-run plan before its free target.
+        delta = max(0, c.size) - selected_bytes_below.get(key, 0)
+        running_free += delta
+        for parent in key.parents:
+            selected_bytes_below[parent] = selected_bytes_below.get(parent, 0) + delta
+    plan.selected = _without_covered_candidates(plan.selected)
     return plan
+
+
+def _without_covered_candidates(candidates: list[Candidate]) -> list[Candidate]:
+    """Select each byte tree once when both a target and a session qualify."""
+    paths = {Path(_norm(candidate.path)) for candidate in candidates}
+    return [
+        candidate
+        for candidate in candidates
+        if not any(parent in paths for parent in Path(_norm(candidate.path)).parents)
+    ]
 
 
 def decide_owner_reclaim(
@@ -378,12 +379,12 @@ def gc_plan(
     for c in sorted(candidates, key=_order_key):
         if _is_protected(c.path, protected_paths):
             continue
-        if c.lock_held:
+        if c.lock_held or c.guard_active:
             continue
         if c.age_s(now) < min_idle_s:
             continue
         out.append(c)
-    return out
+    return _without_covered_candidates(out)
 
 
 def _norm(p: Path) -> str:
@@ -515,10 +516,9 @@ def _is_reclaimable(
     root = root.resolve()
     if root not in rp.parents:
         return None
-    if rp.name in PROTECTED_TARGET_NAMES:
+    if os.path.normcase(rp.name) in PROTECTED_TARGET_NAMES:
         return None
     parts = rp.relative_to(root).parts
-    target = _target_root(root).relative_to(root).parts
     # A pinned session's target, below a checkout target or the root's own
     # target, and a checkout's state root in its managed container under a
     # component name (HF-313); `checkout_state_decision` decides when each
@@ -530,26 +530,12 @@ def _is_reclaimable(
     # cargo-incremental quarantine anywhere under a target tree
     if ".molt_state" in parts and "quarantine" in parts:
         return "quarantine"
-    # flat legacy cargo-target-* at the artifact-root top level
-    if len(parts) == 1 and parts[0].startswith("cargo-target-"):
-        return "cargo-target"
-    # per-lane isolated target dir directly under <root>/target/
-    if len(parts) == len(target) + 1 and parts[: len(target)] == target:
-        name = parts[-1]
-        if any(_fnmatch(name, g) for g in lane_globs):
-            return "lane"
-    return None
+    return legacy_target_kind_of(rp, root, lane_globs)
 
 
 def _target_root(owner_root: Path) -> Path:
     """The artifact target container, including persistent checkout targets."""
     return owner_root / "target"
-
-
-def _fnmatch(name: str, pattern: str) -> bool:
-    import fnmatch
-
-    return fnmatch.fnmatchcase(name, pattern)
 
 
 def assert_safe_to_delete(path: Path, root: Path, lane_globs: Sequence[str]) -> None:
@@ -569,6 +555,55 @@ def assert_safe_to_delete(path: Path, root: Path, lane_globs: Sequence[str]) -> 
         raise ValueError(f"disk_guard: refuse to delete at/above root depth: {rp}")
     if _is_reclaimable(rp, root, lane_globs) is None:
         raise ValueError(f"disk_guard: {rp} is not in the reclaimable allow-set")
+
+
+def _delete_candidate(
+    candidate: Candidate,
+    owner_root: Path,
+    config: GuardConfig,
+    *,
+    scope_roots: Sequence[Path],
+    now_fn: Callable[[], float],
+    eligible: Callable[[Candidate, float], str | None],
+) -> tuple[bool, str | None, str | None]:
+    """Reobserve under exclusive mutation, then use the existing delete owner.
+
+    Ordinary cached candidates remain selection hints. Cooperating managed
+    readers hold the same external lock; raw Cargo's profile locks are an
+    additional conservative observation, not universal start serialization.
+    """
+    from molt.checkout_state import checkout_state_retirement
+
+    with checkout_state_retirement(candidate.path) as exclusive:
+        if not exclusive:
+            return False, None, "state-in-use"
+        try:
+            assert_safe_to_delete(
+                candidate.path,
+                owner_root,
+                config.lane_globs,
+            )
+        except ValueError as error:
+            return False, str(error), None
+        current = replace(
+            candidate,
+            mtime=(
+                checkout_state_last_use(candidate.path)
+                if candidate.kind in _LAST_USE_KINDS
+                else _newest_activity_mtime(candidate.path)
+            ),
+            lock_held=_root_lock_held(candidate.path, scope_roots),
+            guard_active=(
+                _has_active_guard(owner_root)
+                if candidate.kind in {"lane", "cargo-target", "quarantine"}
+                else False
+            ),
+        )
+        reason = eligible(current, now_fn())
+        if reason is not None:
+            return False, None, reason
+        ok, error = delete_path(current.path)
+        return ok, None if ok else error, None
 
 
 # --- I/O helpers (stat / lock probe / size) ---------------------------------
@@ -762,7 +797,8 @@ def discover_candidates(
                 owner_root=owner_root,
                 # Guard markers elsewhere in the artifact root say nothing
                 # about a last-use root; its last use and its locks do.
-                guard_active=guard_active and kind not in _LAST_USE_KINDS,
+                guard_active=guard_active
+                and kind not in {"checkout-state", "session-target"},
             )
         )
 
@@ -949,14 +985,34 @@ def ensure_free(
             if not cand.path.exists():
                 continue  # A session target went with its checkout target.
             owner_root = cand.owner_root or resolved_root
-            try:
-                assert_safe_to_delete(cand.path, owner_root, cfg.lane_globs)
-            except ValueError as exc:
-                result.errors.append(str(exc))
-                continue
-            ok, err = delete_path(cand.path)
+
+            def still_pressure_eligible(
+                current: Candidate, current_now: float
+            ) -> str | None:
+                checked = plan_reclaim(
+                    [current],
+                    free_bytes=0,
+                    high_water_bytes=1,
+                    target_bytes=1,
+                    now=current_now,
+                    min_idle_s=cfg.min_idle_s,
+                    protected=_protected_paths(scope_roots, env),
+                )
+                return None if checked.selected else checked.skipped[0][1]
+
+            ok, error, skipped = _delete_candidate(
+                cand,
+                owner_root,
+                cfg,
+                scope_roots=scope_roots,
+                now_fn=now_fn,
+                eligible=still_pressure_eligible,
+            )
+            if skipped is not None:
+                result.skipped.append({"path": str(cand.path), "reason": skipped})
+            if error is not None:
+                result.errors.append(f"{cand.path}: {error}")
             if not ok:
-                result.errors.append(f"{cand.path}: {err}")
                 continue
         result.reclaimed.append(
             {"path": str(cand.path), "kind": cand.kind, "est_bytes": max(0, cand.size)}
@@ -1006,7 +1062,7 @@ def gc(
             cand
             for owner_root in scope_roots
             for cand in _retention_candidates(
-                owner_root, scope_roots, now=now, limits=limits
+                owner_root, scope_roots, now=now, limits=limits, config=cfg
             )
         ],
         now=now,
@@ -1021,14 +1077,45 @@ def gc(
                 if not cand.path.exists():
                     continue  # A session target went with its checkout target.
                 owner_root = cand.owner_root or resolved_root
-                try:
-                    assert_safe_to_delete(cand.path, owner_root, cfg.lane_globs)
-                except ValueError as exc:
-                    result.errors.append(str(exc))
-                    continue
-                ok, err = delete_path(cand.path)
+
+                def still_gc_eligible(
+                    current: Candidate, current_now: float
+                ) -> str | None:
+                    if (
+                        current.kind in _LAST_USE_KINDS
+                        and checkout_state_decision(
+                            current.path,
+                            owner_root,
+                            now=current_now,
+                            limits=limits,
+                        )
+                        is None
+                    ):
+                        return "checkout-state-policy-changed"
+                    return (
+                        None
+                        if gc_plan(
+                            [current],
+                            now=current_now,
+                            min_idle_s=cfg.min_idle_s,
+                            protected=_protected_paths(scope_roots, env),
+                        )
+                        else "activity-or-protection-changed"
+                    )
+
+                ok, error, skipped = _delete_candidate(
+                    cand,
+                    owner_root,
+                    cfg,
+                    scope_roots=scope_roots,
+                    now_fn=now_fn,
+                    eligible=still_gc_eligible,
+                )
+                if skipped is not None:
+                    result.skipped.append({"path": str(cand.path), "reason": skipped})
+                if error is not None:
+                    result.errors.append(f"{cand.path}: {error}")
                 if not ok:
-                    result.errors.append(f"{cand.path}: {err}")
                     continue
             collected_norms.add(_norm(cand.path))
             result.reclaimed.append({"path": str(cand.path), "kind": cand.kind})
@@ -1059,6 +1146,7 @@ def gc(
                             now=now,
                             limits=limits,
                             build_control=True,
+                            config=cfg,
                         )
                     ],
                     now=now,
@@ -1095,6 +1183,7 @@ def _retention_candidates(
     *,
     now: float,
     limits: RetentionLimits,
+    config: GuardConfig,
     build_control: bool = False,
 ) -> list[Candidate]:
     """The last-use roots of ``owner_root`` that the retention policy selects.
@@ -1105,16 +1194,33 @@ def _retention_candidates(
     roots: list[tuple[Path, CandidateKind]] = [
         (child, "checkout-state")
         for child in _checkout_state_dirs(owner_root)
-        if not build_control or child.parent.name == "build-control"
+        if not is_session_target(child, owner_root)
+        and (not build_control or child.parent.name == "build-control")
     ]
     if not build_control:
         roots.extend(
             (child, "session-target") for child in session_target_dirs(owner_root)
         )
+        # Keep one layout/glob authority for both pressure and timed retention.
+        for parent in (owner_root, _target_root(owner_root)):
+            try:
+                children = tuple(parent.iterdir())
+            except OSError:
+                continue
+            for child in children:
+                kind = _is_reclaimable(child, owner_root, config.lane_globs)
+                if kind in {"lane", "cargo-target"} and child.is_dir():
+                    roots.append((child, kind))
+    legacy_guard_active = (
+        _has_active_guard(owner_root)
+        if any(kind in {"lane", "cargo-target"} for _, kind in roots)
+        else False
+    )
     return [
         Candidate(
             path=child,
             kind=kind,
+            guard_active=legacy_guard_active and kind in {"lane", "cargo-target"},
             mtime=checkout_state_last_use(child),
             lock_held=_root_lock_held(child, scope_roots),
             owner_root=owner_root,
@@ -1156,14 +1262,17 @@ def reclaim_checkout_state(
         mode="apply" if apply else "dry-run",
     )
     protected = _protected_paths(scope_roots, env)
-    component = checkout_component(checkout)
-    retired_targets: set[Path] = set()
-    for owner_root in scope_roots:
-        # Build control follows its target, so the targets go first.
-        children = sorted(
+    roots_by_owner = {
+        owner_root: sorted(
             _checkout_state_dirs(owner_root),
             key=lambda child: child.parent.name == "build-control",
         )
+        for owner_root in scope_roots
+    }
+    component = checkout_component(checkout)
+    retired_targets: set[Path] = set()
+    for owner_root, children in roots_by_owner.items():
+        # Build control follows its target, so the targets go first.
         for child in children:
             owner = bound_checkout_owner(child.resolve(), owner_root.resolve())
             if owner is None:
@@ -1189,9 +1298,43 @@ def reclaim_checkout_state(
                 continue
             assert_safe_to_delete(candidate.path, owner_root, cfg.lane_globs)
             if apply:
-                ok, error = delete_path(candidate.path)
-                if not ok:
+
+                def still_retired(current: Candidate, current_now: float) -> str | None:
+                    del current_now
+                    current_owner = bound_checkout_owner(current.path, owner_root)
+                    if current_owner is None or current_owner != owner:
+                        return "checkout-owner-changed"
+                    current_target = checkout_target_of(current_owner)
+                    if current_target is None:
+                        if current_owner.path != checkout or not owner_is_absent(
+                            current_owner
+                        ):
+                            return "checkout-owner-live"
+                    elif current_target.name != component or not (
+                        current_target in retired_targets
+                        or owner_is_absent(current_owner)
+                    ):
+                        return "checkout-target-live"
+                    allowed, reason = decide_owner_reclaim(
+                        current, protected=_protected_paths(scope_roots, env)
+                    )
+                    return None if allowed else reason
+
+                ok, error, skipped = _delete_candidate(
+                    candidate,
+                    owner_root,
+                    cfg,
+                    scope_roots=scope_roots,
+                    now_fn=time.time,
+                    eligible=still_retired,
+                )
+                if skipped is not None:
+                    result.skipped.append(
+                        {"path": str(candidate.path), "reason": skipped}
+                    )
+                if error is not None:
                     result.errors.append(f"{candidate.path}: {error}")
+                if not ok:
                     continue
             result.reclaimed.append(
                 {"path": str(candidate.path), "kind": "checkout-state"}

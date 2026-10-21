@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import sys
 import time
 from pathlib import Path
 
@@ -25,8 +26,14 @@ def probe_path(path: Path) -> dict:
 
 
 def probe_pid(pid: int) -> dict:
-    """The `probe --pid` record: liveness from the process model, never `ps`.
-
-    An exited, unreaped child (a zombie) is not alive.
-    """
-    return {"pid": pid, "alive": process_model.pid_alive(pid)}
+    """Query a positive PID without signaling; unknown never proves absence."""
+    alive: bool | None = None
+    detail = ""
+    maximum = 0xFFFFFFFF if sys.platform == "win32" else 0x7FFFFFFF
+    if type(pid) is not int or not 0 < pid <= maximum:
+        return {"pid": pid, "alive": None, "detail": "invalid positive process ID"}
+    try:
+        alive = process_model.pid_alive(pid)
+    except OSError as exc:
+        detail = str(exc)
+    return {"pid": pid, "alive": alive, "detail": detail}

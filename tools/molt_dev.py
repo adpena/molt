@@ -163,6 +163,7 @@ from molt import python_interpreter  # noqa: E402
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder  # noqa: E402
 
 from tools.molt_dev_common import (  # noqa: E402
+    _COMMANDS,
     DEFAULT_REPO,
     EXIT_FAIL,
     EXIT_OK,
@@ -198,7 +199,6 @@ from molt.file_locks import (  # noqa: E402
 from molt.dx import project_cargo_target_dir  # noqa: E402
 
 from tools.molt_dev_detached import (  # noqa: E402
-    DETACHED_STATE_ROOT,
     cmd_detached_run,
     cmd_detached_verify,
 )
@@ -920,7 +920,9 @@ def _resolve_repo_venv(repo: Path, env: Mapping[str, str]) -> Path | None:
     ):
         from molt import checkout_provisioning
 
-        project = checkout_provisioning.checkout_input("uv-environment", repo, env)
+        project = checkout_provisioning.checkout_input(
+            "uv-environment", repo, env, guard_source_root=_COMMANDS.repo_root
+        )
         if checkout_provisioning.declares(project):
             try:
                 checkout_provisioning.ensure_input(project)
@@ -1772,7 +1774,10 @@ def cmd_probe(args: argparse.Namespace) -> int:
     else:
         for r in results:
             if "pid" in r:
-                _say(f"    pid {r['pid']}: alive={r['alive']}")
+                _say(
+                    f"    pid {r['pid']}: alive={'unknown' if r['alive'] is None else r['alive']}"
+                    + (f" ({r['detail']})" if r["detail"] else "")
+                )
             elif r.get("exists"):
                 _say(
                     f"    {r['path']}: size={r['size']} mtime={r['mtime_iso']} "
@@ -1780,10 +1785,10 @@ def cmd_probe(args: argparse.Namespace) -> int:
                 )
             else:
                 _say(f"    {r['path']}: MISSING")
-    # Exit non-zero if any probed file is missing or any pid is dead, so the
+    # Exit non-zero if any probed file is missing or any pid is dead/unknown, so the
     # subcommand is usable as a CI/health assertion.
     bad = any(
-        ("pid" in r and not r["alive"]) or ("exists" in r and not r["exists"])
+        ("pid" in r and r["alive"] is not True) or ("exists" in r and not r["exists"])
         for r in results
     )
     return EXIT_FAIL if bad else EXIT_OK
@@ -2010,7 +2015,11 @@ def cmd_difftest(args: argparse.Namespace) -> int:
     )
 
     failures: list[str] = []
-    out_dir = Path(args.out_dir)
+    out_dir = (
+        Path(tempfile.gettempdir()) / "molt_difftest"
+        if args.out_dir is None
+        else Path(args.out_dir)
+    )
     if not out_dir.is_absolute():
         out_dir = root / out_dir
     for target in args.target:
@@ -2179,7 +2188,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     # Set only by the pinned-controller handoff; names the controller this
     # process must be (molt_dev_controller.verify_pinned_controller).
-    p_int.add_argument("--pinned-controller", help=argparse.SUPPRESS)
+    molt_dev_controller.add_pinned_controller_arguments(p_int)
     # Set only by the landing queue's runner (tools/molt_dev_queue.py).
     p_int.add_argument("--wait-for-lock", action="store_true", help=argparse.SUPPRESS)
     p_int.add_argument(
@@ -2284,7 +2293,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_dr.add_argument("--name", required=True, help="daemon name (state-dir key)")
     p_dr.add_argument(
         "--state-dir",
-        help=f"state root override (default: {DETACHED_STATE_ROOT}/<name>)",
+        help="state root override (default: system temp/molt_dev_detached/<name>)",
     )
     p_dr.add_argument("--cwd", help="working directory for the command")
     p_dr.add_argument(
@@ -2320,7 +2329,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_dv.add_argument("--name", required=True, help="daemon name (state-dir key)")
     p_dv.add_argument(
         "--state-dir",
-        help=f"state root override (default: {DETACHED_STATE_ROOT}/<name>)",
+        help="state root override (default: system temp/molt_dev_detached/<name>)",
     )
     p_dv.add_argument(
         "--min-age-s",
@@ -2400,7 +2409,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_df.add_argument(
         "--out-dir",
-        default=str(Path(tempfile.gettempdir()) / "molt_difftest"),
+        default=None,
         help="where to write the built binaries",
     )
     p_df.add_argument(
@@ -2442,6 +2451,7 @@ def main(argv: list[str]) -> int:
     ap = build_parser()
     args = ap.parse_args(argv)
     try:
+        molt_dev_controller.resume_controller_cwd(args, driver_file=__file__)
         if molt_dev_controller.runs_from_pinned_controller(args):
             return molt_dev_controller.run_from_pinned_controller(args, argv)
         return args.func(args)
