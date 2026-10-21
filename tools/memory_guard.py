@@ -2710,20 +2710,6 @@ def _bounded_process_sample_payload(
     )
 
 
-def _host_control_plane_payload(
-    samples: Mapping[int, ProcessSample],
-    *,
-    max_samples: int = 32,
-) -> dict[str, object] | None:
-    return _repro_context._host_control_plane_payload(
-        samples,
-        sample_pgid=_sample_pgid,
-        is_host_control_plane_process=is_host_control_plane_process,
-        protected_process_group_ids=_current_protected_process_group_ids,
-        max_samples=max_samples,
-    )
-
-
 def _process_lineage_payload(
     samples: Mapping[int, ProcessSample],
     *,

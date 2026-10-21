@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Set as AbcSet
 import json
 import heapq
 import stat
@@ -12,7 +13,7 @@ from molt.memory_guard_paths import (
     pytest_custody_path_is_canonical,
     pytest_guard_summary_dir,
 )
-from tools.memory_guard_core.process_model import ProcessSample
+from tools.memory_guard_core.process_model import ProcessSample, ancestor_pids
 
 
 REPRO_ENV_KEYS = {
@@ -137,28 +138,47 @@ def _bounded_process_sample_payload(
 def _host_control_plane_payload(
     samples: Mapping[int, ProcessSample],
     *,
+    scope_pids: Collection[int],
     sample_pgid: Callable[[ProcessSample], int],
     is_host_control_plane_process: Callable[[ProcessSample], bool],
     protected_process_group_ids: Callable[
         [Mapping[int, ProcessSample]],
-        set[int],
+        AbcSet[int],
     ],
     max_samples: int = 32,
 ) -> dict[str, object] | None:
-    host_pgids = {
-        sample_pgid(sample)
-        for sample in samples.values()
-        if is_host_control_plane_process(sample)
+    """Report host control-plane facts for the groups this guard's custody visits.
+
+    The scope is the process groups of the guard's ancestry and of the
+    incident process's ancestry. A custody decision about this guard reads
+    those groups and no others, so the report classifies only their members.
+    Classifying every host row bound argv for each of thousands of unrelated
+    processes, and the guard paid that cost before its first poll and twice
+    more before its terminal summary (HF-368).
+    """
+    scope_pgids = {
+        sample_pgid(samples[pid])
+        for scope_pid in scope_pids
+        for pid in ancestor_pids(samples, scope_pid)
+        if pid in samples
     }
-    protected_pgids = protected_process_group_ids(samples)
-    if not host_pgids and not protected_pgids:
-        return None
-    host_samples = [
+    members = [
         sample
         for sample in sorted(samples.values(), key=lambda item: item.pid)
-        if sample_pgid(sample) in host_pgids
+        if sample_pgid(sample) in scope_pgids
     ]
+    host_pgids = {
+        sample_pgid(sample)
+        for sample in members
+        if is_host_control_plane_process(sample)
+    }
+    protected = protected_process_group_ids(samples)
+    protected_pgids = {pgid for pgid in scope_pgids if pgid in protected}
+    if not host_pgids and not protected_pgids:
+        return None
+    host_samples = [sample for sample in members if sample_pgid(sample) in host_pgids]
     payload: dict[str, object] = {
+        "scope_pgids": sorted(scope_pgids),
         "protected_pgids": sorted(protected_pgids),
         "host_pgids": sorted(host_pgids),
         "samples": [
@@ -536,6 +556,7 @@ def repro_context_payload(
     }
     host_control_plane = _host_control_plane_payload(
         samples,
+        scope_pids=(pid,) if incident_pid is None else (pid, incident_pid),
         sample_pgid=sample_pgid,
         is_host_control_plane_process=is_host_control_plane_process,
         protected_process_group_ids=protected_process_group_ids,

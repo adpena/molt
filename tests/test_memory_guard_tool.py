@@ -7753,6 +7753,58 @@ def test_repro_context_includes_bounded_host_control_plane(
     assert len(host["samples"][0]["command"]) < len(long_command)
 
 
+def test_repro_census_binds_argv_only_for_the_guards_groups(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """HF-368: a report pays for the guard's groups, never the host's rows."""
+    bound: list[int] = []
+
+    def native(pid: int, ppid: int, pgid: int, command: str) -> object:
+        def bind() -> tuple[str, tuple[str, ...], str]:
+            bound.append(pid)
+            return command, tuple(command.split()), "full"
+
+        return process_model.native_process_sample(
+            pid=pid,
+            ppid=ppid,
+            rss_kb=1,
+            pgid=pgid,
+            elapsed_sec=1,
+            started_at_ns=pid,
+            bind_command=bind,
+        )
+
+    codex = "/Applications/Codex.app/Contents/MacOS/Codex"
+    samples = {
+        10: native(10, 1, 10, codex),
+        11: native(11, 10, 10, "/opt/molt/target/release-fast/molt-backend"),
+        999: native(999, 10, 999, "python tools/memory_guard.py"),
+        1000: native(1000, 999, 1000, "python -c pass"),
+        # Unrelated host rows: another control-plane app and an ordinary
+        # process. Neither lies on the guard's or the incident's ancestry.
+        500: native(500, 1, 500, "/Applications/Claude.app/Contents/MacOS/Claude"),
+        501: native(501, 1, 501, "/usr/sbin/unrelated-daemon"),
+    }
+    monkeypatch.setattr(memory_guard, "sample_processes", lambda: samples)
+    _fake_guard(monkeypatch, "os", os, getpid=lambda: 999, getppid=lambda: 10)
+    monkeypatch.setattr(memory_guard, "_safe_getpgrp", lambda: 999)
+
+    repro = memory_guard.repro_context_payload(
+        command=[sys.executable, "-m", "pytest"],
+        cwd=tmp_path,
+        environ={},
+        incident_pid=1000,
+    )
+
+    host = repro["host_control_plane"]
+    assert host["scope_pgids"] == [10, 999, 1000]
+    assert host["host_pgids"] == [10]
+    assert 500 not in host["protected_pgids"]
+    assert [sample["pid"] for sample in host["samples"]] == [10, 11]
+    assert not {500, 501} & set(bound)
+    assert {10, 1000} <= set(bound)
+
+
 def test_main_rejects_unsafe_threshold(capsys: pytest.CaptureFixture[str]) -> None:
     rc = memory_guard.main(["--max-rss-gb", "112", "--", sys.executable, "-c", "pass"])
 
