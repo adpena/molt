@@ -154,12 +154,15 @@ def _compile_and_run(source: str) -> subprocess.CompletedProcess[str]:
                     f"Build stderr: {build_result.stderr}"
                 )
 
-        # Run
+        # Run. This is the first launch of a new image: macOS holds its exec
+        # until the Gatekeeper assessment ends, which took the whole former
+        # 30 s bound under a loaded suite (HF-304). The first launch shares
+        # the build's budget (docs/spec/areas/testing/0007-testing.md).
         run_result = run_cli_test_process(
             [binary],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=_BUILD_TIMEOUT_SECONDS,
             env=_base_env(),
         )
 
