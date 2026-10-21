@@ -52,16 +52,24 @@ def _process_guard_authority(repo_root: str) -> Any:
 
 _READ_ONLY_GIT_SUBCOMMANDS = frozenset(
     {
+        "cat-file",
         "check-attr",
+        "cherry",
         "diff",
+        "for-each-ref",
         "grep",
         "log",
         "ls-files",
+        "merge-base",
+        "rev-list",
         "rev-parse",
         "show",
+        "show-ref",
         "status",
     }
 )
+# Subcommand families whose named action only reads.
+_READ_ONLY_GIT_ACTIONS = frozenset({("worktree", "list")})
 # Global git options that only shape how a read proceeds. None of them can
 # name a hook, a pager, or a config value, so the subcommand after them keeps
 # its class. ``-c key=value`` stays outside this set: it can arm
@@ -88,6 +96,8 @@ def _is_bounded_metadata_probe(command: Sequence[str]) -> bool:
             return False
         subcommand = command[index]
         if subcommand in _READ_ONLY_GIT_SUBCOMMANDS:
+            return True
+        if tuple(command[index : index + 2]) in _READ_ONLY_GIT_ACTIONS:
             return True
         return subcommand == "config" and "--get" in command[index + 1 :]
     return any(flag in _VERSION_FLAGS for flag in command[1:])
