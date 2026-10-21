@@ -303,7 +303,7 @@ def _detached_launch_admission(state: Path, *, replace: bool) -> Generator[None]
 
 
 def cmd_detached_run(args: argparse.Namespace) -> int:
-    command = list(args.command or [])
+    command = list(args.argv or [])
     if command and command[0] == "--":
         command = command[1:]
     if not command:
