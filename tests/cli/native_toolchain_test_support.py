@@ -20,7 +20,9 @@ from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.backend_executable_names import backend_executable_name
 from molt.cli import backend_binary
 from molt.cli import native_toolchain_transfer as transfer
+from molt.cli import runtime_native_build
 from molt.cli import runtime_native_generation as generations
+from molt.cli.product_store import ProductStore
 from molt.cli.backend_compile import _BackendSelection
 from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
 from molt.exact_json import canonical_json_sha256
@@ -100,23 +102,41 @@ class Checkout:
             lambda *_args, **_kwargs: backend_fingerprint(self.backend_seed),
         )
 
+    @property
+    def runtime_store(self) -> ProductStore:
+        """The product store this checkout's builds use (after ``activate``)."""
+        return runtime_native_build.native_runtime_store(self.root)
+
+    def stored_runtimes(self, seed: str | None = None) -> tuple:
+        """The admitted store generations of this checkout's runtime identity."""
+        return generations.native_runtime_store_generations(
+            self.runtime_store,
+            runtime_identity(self.runtime_seed if seed is None else seed),
+            runtime_name=self.selection.runtime_lib.name,
+            cargo_profile=RUNTIME_PROFILE,
+            target_triple=None,
+        )
+
     def build(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Leave what ``molt build`` admits: a runtime generation and a backend."""
+        """Leave what ``molt build`` admits: a stored runtime and a backend."""
         self.activate(monkeypatch)
         selection = self.selection
         scratch = selection.runtime_lib.with_name("cargo-output.a")
         scratch.parent.mkdir(parents=True, exist_ok=True)
         write_test_static_archive(scratch, payload=self.runtime_seed.encode())
+        identity = runtime_identity(self.runtime_seed)
+        environment = runtime_cargo_environment_inputs()
         assert generations.publish_native_runtime_generation(
-            selection.runtime_lib,
+            self.runtime_store.variant(identity.digest, environment)
+            / selection.runtime_lib.name,
             source_archive=scratch,
             cargo_stdout="",
             cargo_stderr="note: native-static-libs: -lc\n",
             cargo_profile=RUNTIME_PROFILE,
             target_triple=None,
-            build_identity=runtime_identity(self.runtime_seed),
+            build_identity=identity,
             inputs_are_current=lambda: True,
-            cargo_environment=runtime_cargo_environment_inputs(),
+            cargo_environment=environment,
         )
         backend = selection.backend.binary
         publish_backend(

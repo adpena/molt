@@ -1218,6 +1218,31 @@ def project_cargo_target_base(project_root: Path, env: Mapping[str, str]) -> Pat
     return project
 
 
+PRODUCT_STORE_DIRNAME = ".molt-products"
+
+
+def product_store_dir(project_root: Path, env: Mapping[str, str]) -> Path:
+    """Return the store of Rust build products a build of ``project_root`` uses.
+
+    Every checkout target and pinned session target in one shared ``target``
+    directory (`project_cargo_target_base`) uses that directory's store, as
+    every checkout of a user shares Go's build cache (``molt.cli.product_store``,
+    design 56 section 2.7). An explicit ``CARGO_TARGET_DIR`` outside it is
+    operator-owned, so it keeps a store of its own. It creates nothing.
+    """
+
+    project = Path(project_root)
+    shared = project_cargo_target_base(project, env) / "target"
+    raw = env.get("CARGO_TARGET_DIR", "").strip()
+    if raw:
+        target = Path(raw).expanduser()
+        if not target.is_absolute():
+            target = Path.cwd() / target
+        if not host_path_is_within(target, shared):
+            return target.absolute() / PRODUCT_STORE_DIRNAME
+    return shared / PRODUCT_STORE_DIRNAME
+
+
 @dataclass(frozen=True, slots=True)
 class ScratchStorage:
     """Where run scratch lives: disk, or an operator's memory-backed root."""

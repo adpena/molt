@@ -16,13 +16,11 @@ import pytest
 
 from molt.cli import backend_binary
 from molt.cli import native_toolchain_transfer as transfer
-from molt.cli import runtime_native_build
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from tests.cli.backend_generation_test_support import selected_backend
 from tests.cli.native_toolchain_test_support import (
     BACKEND_FEATURES,
     BACKEND_PROFILE,
-    RUNTIME_PROFILE,
     checkout,
     runtime_identity,
 )
@@ -119,16 +117,11 @@ def test_imported_toolchain_is_admitted_by_the_next_build_without_cargo(
     transfer.import_native_toolchain(consumer.selection, files)
 
     selection = consumer.selection
-    candidates = runtime_native_build._native_runtime_generation_candidates(
-        selection.runtime_lib,
-        project_root=consumer.root,
-        cargo_profile=RUNTIME_PROFILE,
-        target_triple=None,
-    )
+    candidates = consumer.stored_runtimes()
     assert [generation.build_identity for generation in candidates] == [
         runtime_identity()
     ]
-    assert candidates[0].runtime_lib.is_relative_to(consumer.root / "target")
+    assert candidates[0].runtime_lib.is_relative_to(consumer.runtime_store.root)
     _forbid_cargo(monkeypatch)
     result = backend_binary._ensure_backend_binary(
         selection.backend.binary,
@@ -157,12 +150,9 @@ def test_import_refuses_a_runtime_built_from_other_inputs(
     with pytest.raises(transfer.NativeToolchainTransferError, match="other inputs"):
         transfer.import_native_toolchain(consumer.selection, files)
 
-    assert not runtime_native_build._native_runtime_generation_candidates(
-        consumer.selection.runtime_lib,
-        project_root=consumer.root,
-        cargo_profile=RUNTIME_PROFILE,
-        target_triple=None,
-    )
+    # Neither the consumer's identity nor the exported one gained an entry.
+    assert not consumer.stored_runtimes()
+    assert not consumer.stored_runtimes("runtime")
     assert not (consumer.root / "target" / BACKEND_PROFILE).exists()
 
 
@@ -210,6 +200,7 @@ def test_import_requires_the_exact_file_set(
     with pytest.raises(transfer.NativeToolchainTransferError, match=change):
         transfer.import_native_toolchain(consumer.selection, files)
     assert not (consumer.root / "target").exists()
+    assert not consumer.runtime_store.root.exists()
 
 
 def test_export_requires_an_admitted_runtime(
@@ -219,12 +210,13 @@ def test_export_requires_an_admitted_runtime(
     producer.activate(monkeypatch)
 
     with pytest.raises(
-        transfer.NativeToolchainTransferError, match="no admitted generation"
+        transfer.NativeToolchainTransferError,
+        match="is stored for this checkout's inputs",
     ):
         transfer.export_native_toolchain(producer.selection)
 
 
-def test_export_names_a_generation_built_from_other_inputs(
+def test_export_refuses_a_runtime_stored_only_for_other_inputs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     producer = checkout(tmp_path, monkeypatch, "producer")
@@ -234,9 +226,11 @@ def test_export_names_a_generation_built_from_other_inputs(
 
     with pytest.raises(
         transfer.NativeToolchainTransferError,
-        match="generation built from other inputs",
+        match="is stored for this checkout's inputs",
     ):
         transfer.export_native_toolchain(producer.selection)
+    # The generation of the earlier inputs stays in the store under its own key.
+    assert producer.stored_runtimes("runtime")
 
 
 def test_export_requires_a_backend_admitted_for_this_checkout(

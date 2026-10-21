@@ -29,6 +29,7 @@ import molt.wasm_artifact as wasm_artifact
 from molt.cli import backend_binary as cli_backend_binary
 from molt.cli import runtime_native_build as RUNTIME_NATIVE_BUILD
 from molt.cli.models import _RuntimeArtifactState
+from molt.cli.product_store import ProductStore
 from molt.cli.runtime_native_generation import publish_native_runtime_generation
 from molt.cli import runtime_wasm_build as RUNTIME_WASM_BUILD
 from molt.cli import runtime_wasm_build_support as RUNTIME_WASM_BUILD_SUPPORT
@@ -933,22 +934,27 @@ def test_ensure_backend_binary_hydrates_from_canonical_target(
     assert not isolated_backend.exists()
 
 
-def test_canonical_native_generation_keeps_portable_dependency_custody(
+def test_stored_native_generation_keeps_portable_dependency_custody(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    """A stored generation outlives the build tree that produced it."""
     target_triple = "x86_64-unknown-linux-gnu"
     project_root = tmp_path
-    canonical_target = project_root / "target"
+    store = ProductStore(tmp_path / "store" / "native-runtime")
+    monkeypatch.setattr(
+        RUNTIME_NATIVE_BUILD, "native_runtime_store", lambda _root: store
+    )
+    producer_target = project_root / "producer-target"
     isolated_target = project_root / "isolated-target"
-    canonical_runtime = (
-        canonical_target / target_triple / "dev-fast" / "libmolt_runtime.a"
+    producer_runtime = (
+        producer_target / target_triple / "dev-fast" / "libmolt_runtime.a"
     )
     isolated_runtime = (
         isolated_target / target_triple / "dev-fast" / "libmolt_runtime.a"
     )
-    canonical_runtime.parent.mkdir(parents=True)
-    canonical_runtime.write_bytes(_FAKE_STATICLIB)
+    producer_runtime.parent.mkdir(parents=True)
+    producer_runtime.write_bytes(_FAKE_STATICLIB)
     build_identity = native_runtime_staticlib_identity(
         cargo_profile="dev-fast",
         target_triple=target_triple,
@@ -971,19 +977,21 @@ def test_canonical_native_generation_keeps_portable_dependency_custody(
             "out_dir": str(out_dir),
         }
     )
+    environment = runtime_cargo_environment_inputs()
     generation = publish_native_runtime_generation(
-        canonical_runtime,
-        source_archive=canonical_runtime,
+        store.variant(build_identity.digest, environment) / producer_runtime.name,
+        source_archive=producer_runtime,
         cargo_stdout=cargo_stdout,
         cargo_stderr="note: native-static-libs: -lportable\n",
         cargo_profile="dev-fast",
         target_triple=target_triple,
         build_identity=build_identity,
         inputs_are_current=lambda: True,
-        cargo_environment=runtime_cargo_environment_inputs(),
+        cargo_environment=environment,
     )
     assert generation is not None
     shutil.rmtree(producer)
+    shutil.rmtree(producer_target)
 
     monkeypatch.setenv("CARGO_TARGET_DIR", str(isolated_target))
     monkeypatch.setattr(

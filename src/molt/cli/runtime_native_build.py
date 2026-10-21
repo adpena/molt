@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Collection, Mapping, Sequence
 
 from molt.cargo_execution_policy import source_build_disabled_reason
-from molt.cli.artifact_state import _build_state_root, _canonical_target_root
+from molt.cli.artifact_state import _build_state_root
 from molt.cli.atomic_io import (
     _atomic_write_json,
 )
@@ -79,13 +79,13 @@ from molt.cli.runtime_features import (
     runtime_cargo_feature_for_profile,
     runtime_fingerprint_features_for_profile,
 )
+from molt.cli.product_store import ProductStore, ProductStoreError
 from molt.cli.runtime_native_generation import (
     NativeRuntimeGeneration,
+    native_runtime_store_generations,
     publish_native_runtime_generation,
-    read_native_runtime_generation,
 )
 from molt.cli.runtime_paths import (
-    _cargo_profile_dir,
     _cargo_target_root,
     _runtime_cargo_scratch_lib_path,
 )
@@ -666,7 +666,7 @@ class _NativeRuntimeBuildPlan:
     cargo_plan: RuntimeCargoPlan
     fingerprint_features: tuple[str, ...]
     build_identity: RuntimeBuildIdentity
-    candidates: tuple[NativeRuntimeGeneration, ...]
+    store: ProductStore
     build_python_admission: BuildPythonAdmission | None = None
 
     @property
@@ -802,57 +802,41 @@ class _NativeRuntimeBuildPlan:
         return True
 
 
-def canonical_native_runtime_coordinate(
-    runtime_lib: Path,
-    *,
-    project_root: Path,
-    cargo_profile: str,
-    target_triple: str | None,
-) -> Path:
-    """The canonical target's coordinate for ``runtime_lib``; every session reads it."""
-    canonical = _canonical_target_root(project_root)
-    if target_triple:
-        canonical /= target_triple
-    return canonical / _cargo_profile_dir(cargo_profile) / runtime_lib.name
+def native_runtime_store(project_root: Path) -> ProductStore:
+    """The product store a native runtime build of ``project_root`` uses."""
+    return ProductStore.of("native-runtime", project_root)
 
 
-def native_runtime_generation_coordinates(
-    runtime_lib: Path,
-    *,
-    project_root: Path,
-    cargo_profile: str,
-    target_triple: str | None,
-) -> tuple[Path, ...]:
-    """The selection coordinates a build consults, in order."""
-    canonical = canonical_native_runtime_coordinate(
-        runtime_lib,
-        project_root=project_root,
-        cargo_profile=cargo_profile,
-        target_triple=target_triple,
-    )
-    return tuple(dict.fromkeys((runtime_lib, canonical)))
+def admit_stored_native_runtime(
+    plan: _NativeRuntimeBuildPlan,
+) -> NativeRuntimeGeneration | None:
+    """The stored generation built from this plan's inputs and environment.
 
-
-def _native_runtime_generation_candidates(
-    runtime_lib: Path,
-    *,
-    project_root: Path,
-    cargo_profile: str,
-    target_triple: str | None,
-) -> tuple[NativeRuntimeGeneration, ...]:
-    candidates = []
-    for coordinate in native_runtime_generation_coordinates(
-        runtime_lib,
-        project_root=project_root,
-        cargo_profile=cargo_profile,
-        target_triple=target_triple,
-    ):
-        generation = read_native_runtime_generation(
-            coordinate, cargo_profile=cargo_profile, target_triple=target_triple
+    The entry is renewed before it is read, so no eviction races the read. A
+    variant built under another observed Cargo environment is not this one. A
+    corrupt variant raises ``ProductStoreError``.
+    """
+    started = time.perf_counter()
+    try:
+        plan.store.record_use(plan.build_identity.digest)
+        generations = native_runtime_store_generations(
+            plan.store,
+            plan.build_identity,
+            runtime_name=plan.runtime_lib.name,
+            cargo_profile=plan.cargo_profile,
+            target_triple=plan.target_triple,
         )
-        if generation is not None:
-            candidates.append(generation)
-    return tuple(candidates)
+    finally:
+        _record_runtime_build_stage_ms(
+            plan.stage_timings_ms, "runtime_lib_generation_read", started
+        )
+    for generation in generations:
+        try:
+            generation.cargo_environment.verify(plan.cargo_plan.environment)
+        except ValueError:
+            continue
+        return generation
+    return None
 
 
 def _prepare_native_runtime_build(
@@ -868,7 +852,6 @@ def _prepare_native_runtime_build(
     rust_cpu: RustCpuPolicy,
     stage_timings_ms: dict[str, float] | None,
     runtime_state: _RuntimeArtifactState | None,
-    read_generations: bool = True,
     build_python_admission: BuildPythonAdmission | None = None,
 ) -> _NativeRuntimeBuildPlan | None:
     if runtime_state is not None:
@@ -923,21 +906,7 @@ def _prepare_native_runtime_build(
             summary=summary,
         )
         return None
-    started = time.perf_counter()
-    candidates = (
-        _native_runtime_generation_candidates(
-            runtime_lib,
-            project_root=project_root,
-            cargo_profile=cargo_profile,
-            target_triple=target_triple,
-        )
-        if read_generations
-        else ()
-    )
-    _record_runtime_build_stage_ms(
-        stage_timings_ms, "runtime_lib_generation_read", started
-    )
-    # Candidate bytes are admitted first. This fresh capture is their current
+    # This fresh capture keys the store and is every stored generation's
     # expectation, never an expectation copied from a stored receipt.
     started = time.perf_counter()
     try:
@@ -979,8 +948,8 @@ def _prepare_native_runtime_build(
         cargo_plan=cargo_plan,
         fingerprint_features=fingerprint_features,
         build_identity=build_identity,
+        store=native_runtime_store(project_root),
         build_python_admission=build_python_admission,
-        candidates=candidates,
     )
 
 
@@ -1032,7 +1001,6 @@ def current_native_runtime_build_inputs(
         rust_cpu=rust_cpu,
         stage_timings_ms=None,
         runtime_state=None,
-        read_generations=False,
         build_python_admission=build_python_admission,
     )
     if plan is None:
@@ -1108,8 +1076,9 @@ def _publish_native_runtime_build(
     assert reads is not None
     try:
         reads.environment.verify(plan.cargo_plan.environment)
+        identity = plan.build_identity.digest
         generation = publish_native_runtime_generation(
-            plan.runtime_lib,
+            plan.store.variant(identity, reads.environment) / plan.runtime_lib.name,
             source_archive=_runtime_cargo_scratch_lib_path(
                 plan.runtime_lib, plan.target_triple
             ),
@@ -1123,6 +1092,8 @@ def _publish_native_runtime_build(
                 stage="generation-publication-identity-stability"
             ),
         )
+        if generation is not None:
+            plan.store.retain(identity)
     except (
         OSError,
         ValueError,
@@ -1194,6 +1165,45 @@ def _build_native_runtime_under_lock(plan: _NativeRuntimeBuildPlan) -> bool:
         )
 
     return _publish_native_runtime_build(plan, build)
+
+
+def _ensure_stored_native_runtime(plan: _NativeRuntimeBuildPlan) -> bool:
+    """Accept this plan's stored product, or build and publish it once.
+
+    A miss takes the identity's build lock, so a concurrent checkout with the
+    same inputs waits and then finds what this one publishes; the store is read
+    again under the lock for the same reason. A corrupt entry fails the build.
+    """
+
+    def store_failure(exc: Exception) -> bool:
+        return _record_native_runtime_failure(
+            plan.runtime_state,
+            project_root=plan.project_root,
+            stage="product-store",
+            summary=f"Native runtime product store: {exc}",
+            command=plan.cmd,
+            emit_diagnostic=not plan.json_output,
+        )
+
+    try:
+        generation = admit_stored_native_runtime(plan)
+    except (ProductStoreError, OSError) as exc:
+        return store_failure(exc)
+    if generation is not None:
+        return plan.accept(generation)
+    with plan.store.single_flight(
+        plan.build_identity.digest,
+        default_timeout_s=(
+            plan.cargo_timeout if plan.cargo_timeout is not None else 300.0
+        ),
+    ):
+        try:
+            generation = admit_stored_native_runtime(plan)
+        except (ProductStoreError, OSError) as exc:
+            return store_failure(exc)
+        if generation is not None:
+            return plan.accept(generation)
+        return _build_native_runtime_under_lock(plan)
 
 
 def _admit_installed_native_runtime(
@@ -1309,20 +1319,10 @@ def _ensure_runtime_lib(
             if plan is None:
                 build_python_admission.record_failure()
                 return False
-            for generation in plan.candidates:
-                if generation.build_identity == plan.build_identity:
-                    try:
-                        generation.cargo_environment.verify(plan.cargo_plan.environment)
-                    except ValueError:
-                        continue
-                    accepted = plan.accept(generation)
-                    if not accepted:
-                        build_python_admission.record_failure()
-                    return accepted
-            built = _build_native_runtime_under_lock(plan)
-            if not built:
+            ok = _ensure_stored_native_runtime(plan)
+            if not ok:
                 build_python_admission.record_failure()
-            return built
+            return ok
     except BuildLockAcquisitionError as exc:
         _record_runtime_build_stage_ms(
             stage_timings_ms, "runtime_lib_build_lock", lock_start
