@@ -3279,20 +3279,65 @@ def test_land_wait_fails_when_its_runner_exits_without_landing(tmp_path, monkeyp
     assert queue._runner_exited_without(paths, request.id) == runner
 
 
-# The command outlives no supervisor: it exits once its parent is gone.
+# Resolve the launcher's recorded supervisor, never the possibly adopted PPID.
+# Explicit release and a bounded lifetime also close failed test assertions.
 _ORPHAN_EXITING_SLEEPER = (
-    "import os, time\n"
-    "parent = os.getppid()\n"
-    "while os.getppid() == parent:\n"
-    "    time.sleep(0.05)\n"
+    "import os, sys, time\n"
+    "from pathlib import Path\n"
+    "pid_path = Path(sys.argv[1])\n"
+    "state = pid_path.parent\n"
+    "release = state / 'command-release'\n"
+    "deadline = time.monotonic() + 30\n"
+    "(state / 'command-pid').write_text(str(os.getpid()), encoding='utf-8')\n"
+    "try:\n"
+    "    while not pid_path.exists() and not release.exists():\n"
+    "        assert time.monotonic() < deadline, 'supervisor pid publication deadline'\n"
+    "        time.sleep(0.01)\n"
+    "    if not release.exists():\n"
+    "        supervisor = int(pid_path.read_text(encoding='utf-8'))\n"
+    "        while os.getppid() == supervisor and not release.exists():\n"
+    "            assert time.monotonic() < deadline, 'test command release deadline'\n"
+    "            time.sleep(0.01)\n"
+    "finally:\n"
+    "    (state / 'command-done').touch()\n"
 )
+
+
+@pytest.mark.parametrize("adoptive_parent", [1, 4321])
+def test_orphan_sleeper_exits_when_started_after_reparenting(tmp_path, adoptive_parent):
+    import builtins
+    from tests.process_guard_common import ModuleView
+
+    # The detached launcher already recorded the original supervisor, but the
+    # command's first Python instruction runs after adoption by init/a subreaper.
+    (tmp_path / "pid").write_text("9999", encoding="utf-8")
+
+    def unexpected_sleep(_seconds):
+        raise AssertionError("late-start command waited on its adoptive parent")
+
+    imports = {
+        "os": ModuleView(os, getppid=lambda: adoptive_parent),
+        "sys": ModuleView(sys, argv=["-c", str(tmp_path / "pid")]),
+        "time": ModuleView(time, sleep=unexpected_sleep),
+    }
+
+    def selected_import(name, *args, **kwargs):
+        if name in imports:
+            return imports[name]
+        return builtins.__import__(name, *args, **kwargs)
+
+    exec(
+        _ORPHAN_EXITING_SLEEPER,
+        {"__builtins__": {**vars(builtins), "__import__": selected_import}},
+    )
 
 
 @pytest.mark.skipif(
     os.name != "posix", reason="an unreaped child (a zombie) is a POSIX state"
 )
+@pytest.mark.parametrize("failure_stage", [None, "before-kill", "after-kill"])
 def test_land_wait_fails_when_its_runner_supervisor_dies_without_rc(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, failure_stage
 ):
     import signal
 
@@ -3302,37 +3347,68 @@ def test_land_wait_fails_when_its_runner_supervisor_dies_without_rc(
     paths = queue.QueuePaths(tmp_path / "landing-queue")
     request = queue.enqueue(paths, head="1" * 40, worktree=tmp_path, branch=None)
     # A real detached supervisor, started by this process as `land` starts it.
+    runner = paths.runners / "runner-1"
     molt_dev.cmd_detached_run(
         _dr_ns(
             molt_dev,
             "runner-1",
             paths.runners,
-            [sys.executable, "-c", _ORPHAN_EXITING_SLEEPER],
+            [sys.executable, "-c", _ORPHAN_EXITING_SLEEPER, str(runner / "pid")],
         )
     )
-    runner = paths.runners / "runner-1"
     supervisor = int((runner / "pid").read_text(encoding="utf-8"))
-    # A live supervisor without rc may still land the request: keep waiting.
-    assert queue._runner_exited_without(paths, request.id) is None
+    injected = AssertionError("injected test failure")
+    observed_failure = None
+    try:
+        # Observe the actual command, rather than assuming the supervisor has
+        # exec'd it when its own readiness record becomes available.
+        deadline = time.monotonic() + 30
+        while not (runner / "command-pid").exists():
+            assert time.monotonic() < deadline, "test command did not start"
+            time.sleep(0.01)
+        # A live supervisor without rc may still land the request: keep waiting.
+        assert queue._runner_exited_without(paths, request.id) is None
+        if failure_stage == "before-kill":
+            raise injected
 
-    # Dead before it wrote rc. It stays this process's unreaped child, as the
-    # supervisor stays `land`'s, so `kill(pid, 0)` still finds it.
-    os.kill(supervisor, signal.SIGKILL)
-    deadline = time.monotonic() + 30
+        # Dead before it wrote rc. It stays this process's unreaped child, as the
+        # supervisor stays `land`'s, so `kill(pid, 0)` still finds it.
+        os.kill(supervisor, signal.SIGKILL)
+        if failure_stage == "after-kill":
+            raise injected
+        deadline = time.monotonic() + 30
 
-    def bounded_sleep(seconds: float) -> None:
-        assert time.monotonic() < deadline, "land --wait waits on a dead runner"
-        time.sleep(seconds)
+        def bounded_sleep(seconds: float) -> None:
+            assert time.monotonic() < deadline, "land --wait waits on a dead runner"
+            time.sleep(seconds)
 
-    install_module_view(monkeypatch, "time", time, queue, sleep=bounded_sleep)
-    monkeypatch.setattr(queue, "_AWAIT_POLL_S", 0.01)
+        install_module_view(monkeypatch, "time", time, queue, sleep=bounded_sleep)
+        monkeypatch.setattr(queue, "_AWAIT_POLL_S", 0.01)
 
-    assert queue._await_landing(paths, request.id) == molt_dev.EXIT_FAIL
-    assert not (runner / "rc").exists()
-    assert queue._runner_exited_without(paths, request.id) == runner
-    # The kernel still lists the supervisor: the wait saw a zombie, unreaped.
-    os.kill(supervisor, 0)
-    os.waitpid(supervisor, 0)
+        assert queue._await_landing(paths, request.id) == molt_dev.EXIT_FAIL
+        assert not (runner / "rc").exists()
+        assert queue._runner_exited_without(paths, request.id) == runner
+        # The kernel still lists the supervisor: the wait saw a zombie, unreaped.
+        os.kill(supervisor, 0)
+    except AssertionError as error:
+        assert failure_stage is not None and error is injected
+        observed_failure = error
+    finally:
+        from molt.process_model import pid_alive
+
+        (runner / "command-release").touch()
+        deadline = time.monotonic() + 30
+        while not (runner / "command-done").exists():
+            assert time.monotonic() < deadline, "test command did not release"
+            time.sleep(0.01)
+        command = int((runner / "command-pid").read_text(encoding="utf-8"))
+        while pid_alive(command):
+            assert time.monotonic() < deadline, "test command did not exit"
+            time.sleep(0.01)
+        while os.waitpid(supervisor, os.WNOHANG)[0] == 0:
+            assert time.monotonic() < deadline, "test supervisor did not exit"
+            time.sleep(0.01)
+    assert (observed_failure is injected) == (failure_stage is not None)
 
 
 def test_queue_plan_survives_between_runners_and_drops_closed_requests(tmp_path):
