@@ -117,6 +117,104 @@ def test_worker_memory_unit_requires_a_positive_finite_byte_count(unit):
         pytest_capacity_plugin._worker_bytes(config)
 
 
+def _run_order(tmp_path: Path, *options: str) -> dict[str, list[str]]:
+    """Run 40 short tests, then 4 marked long poles; return each worker's order."""
+    project = tmp_path / "order-project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\naddopts = ""\n', encoding="utf-8"
+    )
+    record = tmp_path / "order-record"
+    record.mkdir()
+    (project / "test_order.py").write_text(
+        "import os, pathlib, pytest\n"
+        "def _record(name):\n"
+        "    worker = os.environ.get('PYTEST_XDIST_WORKER', 'serial')\n"
+        f"    path = pathlib.Path({str(record)!r}) / worker\n"
+        "    with path.open('a', encoding='utf-8') as handle:\n"
+        "        handle.write(name + '\\n')\n"
+        "@pytest.mark.parametrize('index', range(40))\n"
+        "def test_short(index):\n"
+        "    _record(f'short-{index}')\n"
+        "@pytest.mark.long_pole\n"
+        "@pytest.mark.parametrize('index', range(4))\n"
+        "def test_long(index):\n"
+        "    _record(f'long-{index}')\n",
+        encoding="utf-8",
+    )
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = os.pathsep.join([str(ROOT / "src"), str(ROOT)])
+    # The child is its own session, not this run's xdist worker.
+    for key in (
+        "PYTEST_ADDOPTS",
+        "PYTEST_XDIST_WORKER",
+        "PYTEST_XDIST_WORKER_COUNT",
+        "PYTEST_XDIST_TESTRUNUID",
+    ):
+        environment.pop(key, None)
+    result = run_guarded_test_process(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            # The plugin registers the marker; strict markers prove it.
+            "--strict-markers",
+            "-p",
+            "molt.pytest_capacity_plugin",
+            "-p",
+            "no:cacheprovider",
+            *options,
+            str(project / "test_order.py"),
+        ],
+        cwd=project,
+        env=environment,
+        timeout=180.0,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    return {
+        path.name: path.read_text(encoding="utf-8").split()
+        for path in sorted(record.iterdir())
+    }
+
+
+def test_long_poles_start_first_on_every_worker_two_tests_at_a_time(
+    tmp_path: Path,
+) -> None:
+    runs = _run_order(tmp_path, "-n", "2")
+    assert sorted(runs) == ["gw0", "gw1"]
+    assert sorted(name for names in runs.values() for name in names) == sorted(
+        [f"short-{index}" for index in range(40)]
+        + [f"long-{index}" for index in range(4)]
+    )
+    for names in runs.values():
+        # Each worker runs its share of the long poles before any short test.
+        kinds = [name.split("-")[0] for name in names]
+        assert kinds == sorted(kinds), names
+    # xdist's default first step would hand all four poles to one worker.
+    assert all(
+        any(name.startswith("long-") for name in names) for names in runs.values()
+    )
+
+
+def test_an_explicit_schedule_chunk_still_wins(tmp_path: Path) -> None:
+    runs = _run_order(tmp_path, "-n", "2", "--maxschedchunk=44")
+    holders = [
+        worker
+        for worker, names in runs.items()
+        if any(name.startswith("long-") for name in names)
+    ]
+    assert len(holders) == 1, runs
+
+
+def test_a_serial_run_keeps_the_collection_order(tmp_path: Path) -> None:
+    runs = _run_order(tmp_path)
+    assert runs == {
+        "serial": [f"short-{index}" for index in range(40)]
+        + [f"long-{index}" for index in range(4)]
+    }
+
+
 @pytest.mark.parametrize(
     ("total", "expected"),
     [

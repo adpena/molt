@@ -488,6 +488,7 @@ def test_module_getattr_demands_lazy_returned_class(
             assert len(parses) == len(set(parses))
 
 
+@pytest.mark.long_pole
 @pytest.mark.parametrize(
     ("source", "required", "excluded"),
     [

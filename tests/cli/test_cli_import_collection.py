@@ -980,6 +980,7 @@ def test_generated_importer_does_not_require_import_support_modules(
     assert calls == ["demo_math"]
 
 
+@pytest.mark.long_pole
 @pytest.mark.parametrize("target", ["native", "wasm"])
 def test_prepare_entry_module_graph_adds_runtime_import_support_once(
     tmp_path: Path,
@@ -1744,6 +1745,7 @@ def test_materialize_import_plan_adds_reachable_native_support_source_closure(
     assert "nativepkg.ndimage._ni_label" in import_plan.known_modules
 
 
+@pytest.mark.long_pole
 @_source_tree_fingerprint_transaction()
 def test_materialize_import_plan_closes_cross_package_native_support_source(
     native_archives: NativeArchiveFixtureCatalog,
@@ -2290,6 +2292,7 @@ def test_materialize_import_plan_adds_capsule_provider_runtime_import_closure(
     assert "def dtype_error" in internal_source
 
 
+@pytest.mark.long_pole
 @pytest.mark.parametrize("mixed_package_state", [False, True])
 @_source_tree_fingerprint_transaction()
 def test_materialize_import_plan_compiles_native_runtime_package_import_init(
@@ -2983,6 +2986,7 @@ def test_materialize_import_plan_rejects_manifest_mutation_after_plan_validation
     assert "Rebuild the native artifact plan before module discovery" in message
 
 
+@pytest.mark.long_pole
 @_source_tree_fingerprint_transaction()
 def test_native_support_source_stdlib_imports_join_compile_closure(
     native_archives: NativeArchiveFixtureCatalog,
@@ -11702,6 +11706,7 @@ def test_molt_os_module_init_retains_reentrant_type_checking_branch() -> None:
     assert "typing" in imports
 
 
+@pytest.mark.long_pole
 def test_discover_with_core_modules_includes_asyncio_ssl_dependency(
     tmp_path: Path,
 ) -> None:
@@ -11957,6 +11962,7 @@ def test_collect_static_source_execution_preserves_loader_name_and_path(
     assert completed.source_executions == (("loaded_name", target.resolve()),)
 
 
+@pytest.mark.long_pole
 def test_discover_module_graph_admits_static_loader_source_under_execution_name(
     tmp_path: Path,
 ) -> None:
@@ -13904,6 +13910,7 @@ def test_shared_module_resolution_cache_resolves_relative_paths(
     assert calls == first_calls
 
 
+@pytest.mark.long_pole
 def test_shared_module_resolution_cache_reuses_graph_import_scans(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -18835,6 +18842,7 @@ def test_module_lowering_context_digest_ignores_type_facts_metadata_noise(
     assert digest_a == digest_b
 
 
+@pytest.mark.long_pole
 def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -19007,6 +19015,7 @@ def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
     assert any(item.get("reused_ms", 0.0) >= 0.0 for item in cache_hit_items)
 
 
+@pytest.mark.long_pole
 def test_parallel_build_reuses_dependent_cache_after_stable_interface_change(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -19166,6 +19175,7 @@ def test_parallel_build_reuses_dependent_cache_after_stable_interface_change(
     assert worker_modes_by_module["main"] == "parallel_cache_hit"
 
 
+@pytest.mark.long_pole
 def test_parallel_build_allows_scoped_type_facts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -26857,6 +26867,7 @@ def test_run_wrapper_build_manifest_tracks_args_and_source_hash(
     assert len(seen_cmds) == 3
 
 
+@pytest.mark.long_pole
 def test_run_wrapper_build_manifest_tracks_imported_source_hash(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -27045,6 +27056,7 @@ def test_run_wrapper_build_manifest_caches_module_entries(
     assert len(seen_cmds) == 2
 
 
+@pytest.mark.long_pole
 @pytest.mark.parametrize("changed_source", ["entry", "dependency"])
 @pytest.mark.parametrize("prior_receipt", [False, True], ids=["empty", "existing"])
 def test_run_wrapper_build_rejects_child_time_source_mutation(
@@ -34892,6 +34904,7 @@ def _capture_hashseed_cli_builds(
     }
 
 
+@pytest.mark.long_pole
 def test_programs_share_the_lowered_form_of_every_imported_module(
     tmp_path: Path,
 ) -> None:
@@ -34932,6 +34945,7 @@ _HASHSEED_BUILDS = (
 )
 
 
+@pytest.mark.long_pole
 def test_cli_cold_warm_production_bytes_and_cache_keys_ignore_hashseed(
     tmp_path: Path,
 ) -> None:

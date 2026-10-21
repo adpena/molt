@@ -87,7 +87,25 @@ An independent audit (2026-10-17) found more:
    receipt with each gate's duration and peak RSS.
 5. **Longest first.** The executor orders ready commands by their last
    recorded duration, and a test that alone bounds its suite is split so
-   workers can share it.
+   workers can share it. Inside one pytest run, a test marked
+   `@pytest.mark.long_pole` (measured 10 s or more in a warm `-n 4` run)
+   starts before every unmarked test, and xdist's load scheduler sends at
+   most two tests at a time (`molt.pytest_capacity_plugin`). This is
+   Graham's longest-processing-time rule: a long test that starts last
+   otherwise bounds the run, and xdist's default first step of a quarter of
+   each worker's share would hand every pole to one worker. Unmarked tests
+   keep their collection order, so a worker still sets up each module's
+   fixtures once; an explicit `--maxschedchunk` still wins and a serial run
+   keeps its order. The marks are declared, not recorded per run: a CI
+   runner, a new lane and the proof queue start with empty pytest caches,
+   and each must get the same order. On macOS arm64 at `-n 4`, two warm
+   runs of the whole CLI suite (8,404 tests) each way, beside other agents'
+   load: the busiest worker ran 11.5% and 13.6% more test time than the mean
+   worker before, and 1.4% after; wall time over a quarter of the summed test
+   time fell from 1.22 and 1.25 to 1.11 and 1.16 (577 s to 467 s wall in the
+   first pair). A replay of xdist's scheduler over the measured durations,
+   with the final marks, gives the busiest worker 474 s against 529 s in the
+   first warm run and 763 s against 934 s in a new lane's cold first run.
 6. **One host-wide token pool for CPU, per-peer slices for memory.**
    Concurrent tools on one host (landings, other agents' builds, nested
    Cargo) take CPU tokens from one GNU make jobserver, so idle peers return

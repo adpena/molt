@@ -416,6 +416,7 @@ fn main() {
     return project, header, runs, environment
 
 
+@pytest.mark.long_pole
 @pytest.mark.parametrize(
     "explicit_target", [False, True], ids=["native", "explicit-host"]
 )
