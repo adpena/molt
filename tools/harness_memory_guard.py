@@ -1106,6 +1106,7 @@ def guarded_completed_process(
     running_summary_json: str | None = None,
     running_summary_environ: Mapping[str, str] | None = None,
     sampling_scope: str = "global",
+    no_output_timeout: float | None = None,
 ) -> GuardedCompletedProcess:
     env = memory_guard.test_custody_launch_env(command, environ=env, cwd=cwd)
     env, _cargo_policies = cargo_subprocess_environment(command, env)
@@ -1173,6 +1174,7 @@ def guarded_completed_process(
             running_summary_json=running_summary_json,
             running_summary_environ=running_summary_environ,
             running_summary_max_global_rss_kb=resolved_limits.max_global_rss_kb,
+            no_output_timeout=no_output_timeout,
         )
     stderr: str | bytes = guarded.stderr or ("" if text else b"")
     incident_at = _utc_timestamp()
@@ -2407,6 +2409,7 @@ class HarnessExecutionContext:
         running_summary_json: str | None = None,
         running_summary_environ: Mapping[str, str] | None = None,
         sampling_scope: str = "global",
+        no_output_timeout: float | None = None,
     ) -> GuardedCompletedProcess:
         command_env = (
             self.env
@@ -2447,6 +2450,7 @@ class HarnessExecutionContext:
             running_summary_json=running_summary_json,
             running_summary_environ=running_summary_environ,
             sampling_scope=sampling_scope,
+            no_output_timeout=no_output_timeout,
         )
 
     def process_group_kwargs(self) -> ProcessGroupKwargs:
