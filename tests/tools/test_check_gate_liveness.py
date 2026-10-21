@@ -47,3 +47,49 @@ def test_main_check_fails_when_a_gate_rots(monkeypatch):
     # Simulate bash_guard.decide silently going inert (always allows).
     monkeypatch.setattr(bg, "decide", lambda *a, **k: bg.Decision(block=False))
     assert cgl.main(["--check"]) == 1
+
+
+_HOOK_HARM = {"id": "h", "guard": "tools.hooks.guard", "canary": "guard.c"}
+
+
+def _problems(harm, *, wired=True, state="strict", open_keys=("HF-1",)):
+    return cgl.hook_enforcement_problems(
+        [harm],
+        wired={"tools.hooks.guard"} if wired else set(),
+        flip_states={"guard": state},
+        open_keys=set(open_keys),
+    )
+
+
+def test_an_enforcing_hook_guard_needs_no_gap_and_refuses_a_stale_one():
+    assert _problems(_HOOK_HARM) == []
+    assert _problems({**_HOOK_HARM, "gap": "HF-1"}) == [
+        "h: guard enforces, so gap HF-1 is stale"
+    ]
+
+
+def test_an_unenforced_hook_guard_must_name_an_open_gap_row():
+    assert _problems(_HOOK_HARM, wired=False) == [
+        "h: guard is unwired and names no gap row"
+    ]
+    assert _problems(_HOOK_HARM, state="warn") == [
+        "h: guard is observe-only and names no gap row"
+    ]
+    assert _problems({**_HOOK_HARM, "gap": "HF-1"}, state="warn") == []
+    assert _problems({**_HOOK_HARM, "gap": "HF-2"}, wired=False) == [
+        "h: gap HF-2 is not an open ledger row"
+    ]
+
+
+def test_guards_outside_the_hook_spine_are_not_judged_by_hook_wiring():
+    harm = {"id": "h", "guard": "tools.disk_guard", "canary": "disk_guard.c"}
+    assert _problems(harm, wired=False) == []
+
+
+def test_live_wiring_reads_the_settings_hooks_and_the_stop_legs():
+    from tools.hooks import stop_gates
+
+    wired = cgl._wired_hook_modules()
+    assert {"tools.hooks.bash_guard", "tools.hooks.session_digest"} <= wired
+    assert {evaluate.__module__ for _name, evaluate in stop_gates.GATES} <= wired
+    assert "tools.hooks.session_learning" not in wired

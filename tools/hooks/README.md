@@ -16,9 +16,11 @@ Claude Code lifecycle points. Full design: `docs/agent/APPARATUS_FROM_COMMA_LAB.
 `landing_gate.py` (A2) and `session_learning.py` are not wired (owner,
 2026-10-21). The landing gate could not attribute landing activity to a
 session, and session learning wrote into the user's memory directory on most
-Stops. Their `[[gate_flip]]` entries in `tools/proof_plan.toml` state what each
-needs before it returns; HF-424 tracks the per-session window the landing gate
-needs.
+Stops. The landing gate's `[[gate_flip]]` in `tools/proof_plan.toml` states
+what it needs before it returns, and HF-424 tracks the per-session window it
+needs; HF-427 tracks the session-learning redesign. `tools/recurring_harms.toml`
+names those rows as the `gap` of each harm whose hook guard does not enforce,
+and `tools/check_gate_liveness.py` checks that claim against the live wiring.
 
 Supporting: `_common.py` (fail-open wrapper, UTF-8 backstop, locked jsonl,
 git/queue helpers), `waivers.py` (A9 waiver grammar), `../check_gate_flips.py`
