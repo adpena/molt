@@ -343,6 +343,30 @@ runner's own `worker.json`, so a reused pid never counts); a supervisor that
 died before it wrote `rc` stays an unreaped zombie of `land`, which counts as
 gone. Only the newest runner can still be starting without a `pid` file.
 
+### Git network transfers
+
+Local Git plumbing has no wall-clock deadline: a deadline on a 5 ms read
+measures the host, and on 2026-10-21 one failed a 47-minute batch during a
+38-minute stall. A transfer (`fetch`, `push`, `pull`, `clone`, `ls-remote`,
+`remote update`, `submodule update`) is bounded by its progress instead, in
+one place for every tool that runs Git through `CommandExecutor`
+(`tools/git_transfer.py`):
+
+- HTTP aborts below 1 byte/s for 120 s; a tighter `GIT_HTTP_LOW_SPEED_*` or
+  `http.lowSpeed*` stays.
+- ssh runs through `tools/git_ssh_bound.sh`, which adds `ConnectTimeout`
+  (the connect and the banner exchange) and server-alive probes only where
+  the connection's own setting (`ssh -G`) is unset or looser. The user's ssh
+  command stays as written, in Git's precedence: `GIT_SSH_COMMAND`,
+  `core.sshCommand`, then `GIT_SSH`. Another client (plink, a wrapper) is left
+  as configured and unbounded.
+- With no terminal to reach a person (the landing runner, an agent's shell),
+  a transfer never prompts: askpass programs are blanked, Git's terminal
+  prompt and Git Credential Manager's interaction are off, ssh runs in
+  BatchMode, and the command ends after 120 s without output (fetch, push,
+  pull and clone report progress). An interactive `lane start` or `integrate`
+  keeps its prompts.
+
 ### The detached-run protocol (hazard 11)
 
 ```bash

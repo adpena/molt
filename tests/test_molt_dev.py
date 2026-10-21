@@ -4822,100 +4822,177 @@ def test_landing_local_git_reads_carry_no_wall_clock_deadline(
     assert {deadline for _, deadline in reads} == {None}
 
 
-def test_git_transfer_ends_a_silent_peer_by_progress_not_wall_clock(
-    drv, origin_and_clone, monkeypatch
-):
-    import socket
-    import threading
+class _SilentPeer:
+    """A local TCP peer that accepts and never answers: a wedged remote the
+    kernel keeps alive, which TCP keepalive never ends."""
 
-    from tools import molt_dev_common
+    def __init__(self) -> None:
+        import socket
+        import threading
 
-    _, work = origin_and_clone
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.bind(("127.0.0.1", 0))
-    server.listen(4)
-    held: list[socket.socket] = []
+        self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server.bind(("127.0.0.1", 0))
+        self.server.listen(4)
+        self.port = self.server.getsockname()[1]
+        self.held: list[socket.socket] = []
+        threading.Thread(target=self._serve, daemon=True).start()
 
-    def accept_and_say_nothing() -> None:
-        # Accept, read the request, never answer: a wedged peer the kernel
-        # still keeps alive, which TCP keepalive never ends.
+    def _serve(self) -> None:
         while True:
             try:
-                conn, _ = server.accept()
+                conn, _ = self.server.accept()
             except OSError:
                 return
-            held.append(conn)
+            self.held.append(conn)
             try:
                 conn.recv(65536)
             except OSError:
                 pass
 
-    threading.Thread(target=accept_and_say_nothing, daemon=True).start()
-    monkeypatch.setattr(molt_dev_common, "GIT_TRANSFER_STALL_SECONDS", 2)
-    deadlines = _record_process_deadlines(monkeypatch)
-    url = f"http://127.0.0.1:{server.getsockname()[1]}/silent.git"
+    def close(self) -> None:
+        self.server.close()
+        for conn in self.held:
+            conn.close()
+
+
+class _Unauthorized:
+    """A local HTTP remote that asks every request for credentials."""
+
+    def __init__(self) -> None:
+        import http.server
+        import threading
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802 - the stdlib's name
+                self.send_response(401)
+                self.send_header("WWW-Authenticate", 'Basic realm="molt"')
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, *_args) -> None:
+                pass
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.server.server_port}/private.git"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+
+
+def _transfer_in_thread(drv, work, args):
+    """Run a driver transfer on a thread; a hang guard only bounds the test."""
+    import threading
+
     outcome: dict[str, object] = {}
     transfer = threading.Thread(
-        target=lambda: outcome.update(
-            proc=drv.Git(work)._run(["ls-remote", url], check=False)
-        )
+        target=lambda: outcome.update(proc=drv.Git(work)._run(args, check=False))
+    )
+    transfer.start()
+    transfer.join(120)  # A hang guard only; the bounds end it within seconds.
+    assert not transfer.is_alive(), "the transfer outlived its progress bound"
+    return outcome["proc"]
+
+
+@pytest.fixture
+def isolated_git_identity(monkeypatch, tmp_path):
+    """Keep the developer's own Git configuration out of transfer tests."""
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "gitconfig"))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    (tmp_path / "gitconfig").write_text("", encoding="utf-8")
+    return tmp_path / "gitconfig"
+
+
+@pytest.mark.parametrize("scheme", ["http", "ssh"])
+def test_git_transfer_ends_a_silent_peer_by_progress_not_wall_clock(
+    drv, origin_and_clone, monkeypatch, isolated_git_identity, scheme
+):
+    """A peer that never answers ends by lack of progress, with no deadline.
+
+    HTTP: curl's low-speed limit. ssh: ConnectTimeout, which covers the
+    banner exchange; server-alive probes start only after it. The transfer
+    is attended here, so only the transport's own bound can end it.
+    """
+    from tools import git_transfer
+
+    if scheme == "ssh" and shutil.which("ssh") is None:
+        pytest.skip("needs an OpenSSH client")
+    _, work = origin_and_clone
+    peer = _SilentPeer()
+    monkeypatch.setattr(git_transfer, "TRANSFER_STALL_SECONDS", 2)
+    monkeypatch.setattr(git_transfer, "prompt_reaches_a_person", lambda: True)
+    deadlines = _record_process_deadlines(monkeypatch)
+    url = (
+        f"http://127.0.0.1:{peer.port}/silent.git"
+        if scheme == "http"
+        else f"ssh://git@127.0.0.1:{peer.port}/silent.git"
     )
     try:
-        transfer.start()
-        transfer.join(120)  # A hang guard only; the stall ends it in ~2 s.
-        assert not transfer.is_alive(), "a silent peer held the transfer"
+        proc = _transfer_in_thread(drv, work, ["ls-remote", url])
     finally:
-        server.close()
-        for conn in held:
-            conn.close()
-    proc = outcome["proc"]
+        peer.close()
     assert proc.returncode != 0
-    assert "too slow" in proc.stderr.lower()
+    if scheme == "http":
+        assert "too slow" in proc.stderr.lower()
+    else:
+        assert "timed out during banner exchange" in proc.stderr.lower()
     transfer_deadlines = [deadline for argv, deadline in deadlines if url in argv]
     assert transfer_deadlines and set(transfer_deadlines) == {None}
 
 
-@pytest.mark.parametrize(
-    ("environment", "configured", "expected"),
-    [
-        (
-            {},
-            None,
-            "ssh -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=4",
-        ),
-        (
-            {"GIT_SSH_COMMAND": "ssh -i /k -o ServerAliveInterval=5"},
-            "ssh -i /other",
-            "ssh -i /k -o ServerAliveInterval=5 -o BatchMode=yes "
-            "-o ServerAliveInterval=15 -o ServerAliveCountMax=4",
-        ),
-        (
-            {},
-            "/usr/bin/ssh -F /cfg",
-            "/usr/bin/ssh -F /cfg -o BatchMode=yes -o ServerAliveInterval=15 "
-            "-o ServerAliveCountMax=4",
-        ),
-        (
-            {"GIT_SSH_COMMAND": "/opt/ssh-wrapper --flag"},
-            None,
-            "/opt/ssh-wrapper --flag",
-        ),
-        ({"GIT_SSH": "/opt/plink"}, None, None),
-    ],
-)
-def test_git_transfer_bounds_keep_the_users_transport(
-    environment, configured, expected
+def test_unattended_git_transfer_never_runs_an_inherited_askpass(
+    drv, origin_and_clone, monkeypatch, isolated_git_identity, tmp_path
 ):
-    from tools import molt_dev_common
+    from tools import git_transfer
 
-    env = dict(environment)
-    molt_dev_common.bound_git_transfer(env, configured_ssh_command=configured)
-    assert env["GIT_HTTP_LOW_SPEED_LIMIT"] == "1"
-    assert env["GIT_HTTP_LOW_SPEED_TIME"] == str(
-        molt_dev_common.GIT_TRANSFER_STALL_SECONDS
+    _, work = origin_and_clone
+    asked = tmp_path / "asked"
+    askpass = tmp_path / "askpass.sh"
+    # Stands in for a desktop prompt nobody answers.
+    askpass.write_text(
+        f'#!/bin/sh\necho "$1" >> {shlex.quote(str(asked))}\nexec sleep 3600\n',
+        encoding="utf-8",
     )
-    # ssh keeps the first value of an option, so a user's own option wins.
-    assert env.get("GIT_SSH_COMMAND") == expected
+    askpass.chmod(0o755)
+    monkeypatch.setenv("GIT_ASKPASS", str(askpass))
+    monkeypatch.setenv("SSH_ASKPASS", str(askpass))
+    monkeypatch.setattr(git_transfer, "prompt_reaches_a_person", lambda: False)
+    remote = _Unauthorized()
+    try:
+        proc = _transfer_in_thread(drv, work, ["ls-remote", remote.url])
+    finally:
+        remote.close()
+    assert proc.returncode not in (0, 124)
+    assert not asked.exists(), asked.read_text(encoding="utf-8")
+
+
+def test_unattended_git_transfer_ends_a_credential_helper_that_waits(
+    drv, origin_and_clone, monkeypatch, isolated_git_identity, tmp_path
+):
+    """A helper that waits (a keychain prompt nobody sees) ends on silence."""
+    from tools import git_transfer
+
+    _, work = origin_and_clone
+    marker = f"waiting-helper-of-{tmp_path.name}"
+    helper = tmp_path / "helper.py"
+    helper.write_text(HUNG_CHILD_SOURCE, encoding="utf-8")
+    isolated_git_identity.write_text(
+        "[credential]\n\thelper = "
+        f"!{shlex.quote(sys.executable)} {shlex.quote(str(helper))} {marker}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(git_transfer, "TRANSFER_STALL_SECONDS", 2)
+    monkeypatch.setattr(git_transfer, "prompt_reaches_a_person", lambda: False)
+    remote = _Unauthorized()
+    try:
+        proc = _transfer_in_thread(drv, work, ["ls-remote", remote.url])
+    finally:
+        remote.close()
+        stop_test_processes_carrying(marker)
+    assert proc.returncode == 124
+    assert "no output for 2.00s" in proc.stderr
+    assert not processes_carrying(marker)
 
 
 def test_integrate_classifies_raw_paths_without_git_quote_escaping(

@@ -175,7 +175,6 @@ from tools.molt_dev_common import (  # noqa: E402
     _fail,
     _run_fast_captured_bytes,
     _run_fast_captured_command,
-    bound_git_transfer,
     _ok,
     _run_captured_gate,
     _run_driver_command,
@@ -246,10 +245,6 @@ WIP_MARKER = "WIP-RECOVERY"
 # --------------------------------------------------------------------------
 
 
-# Subcommands that talk to a remote: progress bounds them (bound_git_transfer).
-_GIT_TRANSFER_SUBCOMMANDS = frozenset({"fetch", "push", "ls-remote", "pull", "clone"})
-
-
 @dataclass
 class Git:
     """A thin, fail-loud wrapper over `git -C <repo>` plumbing.
@@ -270,11 +265,6 @@ class Git:
     ) -> subprocess.CompletedProcess[str]:
         env = immutable_git_environment(os.environ)
         env["GIT_TERMINAL_PROMPT"] = "0"
-        if args and args[0] in _GIT_TRANSFER_SUBCOMMANDS:
-            configured = self._run(
-                ["config", "--get", "core.sshCommand"], check=False
-            ).stdout.strip()
-            bound_git_transfer(env, configured_ssh_command=configured or None)
         proc = _run_fast_captured_command(
             ["git", "-C", str(self.repo), *args],
             env=ProcessEnvironment(env),
