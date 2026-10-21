@@ -177,43 +177,39 @@ def test_resolver_rejects_escaping_and_broken_symlinks(tmp_path):
     assert resolver.source_for_module("broken") is None
 
 
-def test_semantic_fingerprint_reads_python_once_without_git_and_keeps_assets(
+def test_semantic_fingerprint_reads_each_keyed_file_once_without_git(
     tmp_path, monkeypatch
 ):
     frontend = tmp_path / "src/molt/frontend"
     seed = _write(frontend / "entry.py", "from molt import shared\n")
-    helper = _write(tmp_path / "src/molt/shared.py", "VALUE = 1\n")
+    producer = _write(tmp_path / "src/molt/target_python.py", "VALUE = 1\n")
     asset = _write(frontend / "layout.json", '{"value": 1}\n')
+    # Not a declared frontend input: never read, never keyed.
+    undeclared = _write(tmp_path / "src/molt/shared.py", "VALUE = 1\n")
     reads = Counter()
-    read_bytes = Path.read_bytes
     hash_file = fingerprints._sha256_file
 
-    def read(path):
-        reads[path] += 1
-        return read_bytes(path)
-
-    def hash_unread_source(path):
-        assert path not in (seed, helper), (
-            "captured Python must not be rehashed from disk"
-        )
+    def counted(path):
         reads[path] += 1
         return hash_file(path)
 
     def redundant_git_query(*args):
         raise AssertionError("captured semantic identity must not query Git")
 
-    monkeypatch.setattr(Path, "read_bytes", read)
-    monkeypatch.setattr(fingerprints, "_sha256_file", hash_unread_source)
+    monkeypatch.setattr(fingerprints, "_sha256_file", counted)
     monkeypatch.setattr(fingerprints, "_compiler_root", lambda: tmp_path)
     monkeypatch.setattr(
         fingerprints, "_compiler_clean_pathspec_source_state", redundant_git_query
     )
     before = fingerprints._frontend_semantic_tooling_fingerprint()
-    assert reads[seed] == reads[helper] == reads[asset] == 1
+    assert reads[seed] == reads[producer] == reads[asset] == 1
     asset.write_text('{"value": 2}\n', encoding="utf-8")
     after = fingerprints._frontend_semantic_tooling_fingerprint()
     assert after != before
-    assert reads[seed] == reads[helper] == reads[asset] == 2
+    assert reads[seed] == reads[producer] == reads[asset] == 2
+    undeclared.write_text("VALUE = 2\n", encoding="utf-8")
+    assert fingerprints._frontend_semantic_tooling_fingerprint() == after
+    assert reads[undeclared] == 0
 
 
 def test_captured_hashes_survive_changed_disk_bytes_through_fingerprint(
@@ -286,19 +282,3 @@ def test_inventory_receipt_captures_bytes_once_without_parsing_covered_owners(
     )
     with pytest.raises(ValueError, match="cannot parse local Python source"):
         graph.local_python_import_closure(tmp_path, (seed,))
-
-
-def test_inventory_topology_participates_in_semantic_fingerprint(tmp_path, monkeypatch):
-    seed = _write(
-        tmp_path / "src/molt/frontend/entry.py",
-        "__package__ = unknown\nfrom . import child\n",
-    )
-    monkeypatch.setattr(fingerprints, "_compiler_root", lambda: tmp_path)
-    first = fingerprints._frontend_semantic_tooling_snapshot()
-    (tmp_path / "src/molt/new_namespace").mkdir()
-    second = fingerprints._frontend_semantic_tooling_snapshot()
-    assert (
-        seed.parent in first.source_paths
-    )  # Frontend sources share a directory owner.
-    assert first.source_paths == second.source_paths
-    assert first.fingerprint != second.fingerprint

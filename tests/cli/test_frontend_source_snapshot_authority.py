@@ -158,7 +158,7 @@ def compiler_sources(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     root = tmp_path / "compiler"
     driver = root / "src" / "molt" / "cli" / "module_source.py"
     driver.parent.mkdir(parents=True)
-    driver.write_text("import molt.cli.helper\n", encoding="utf-8")
+    driver.write_text("VALUE = 1\n", encoding="utf-8")
 
     def compiler_root() -> Path:
         return root
@@ -200,7 +200,7 @@ def _count_semantic_work(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
     return counts
 
 
-def test_semantic_snapshot_precedes_closure_and_digest_work(
+def test_semantic_snapshot_precedes_source_and_digest_work(
     monkeypatch: pytest.MonkeyPatch, compiler_sources: Path
 ) -> None:
     counts = _count_semantic_work(monkeypatch)
@@ -219,10 +219,11 @@ def test_semantic_snapshot_precedes_closure_and_digest_work(
 
 
 @pytest.mark.parametrize("change", ["same_stat_bytes", "missing_module"])
-def test_next_operation_recaptures_semantic_bytes_and_topology(
+def test_next_operation_recaptures_semantic_bytes_and_new_sources(
     change: str, compiler_sources: Path
 ) -> None:
-    helper = compiler_sources.with_name("helper.py")
+    # A declared producer (cli/module_graph.py), not an undeclared helper.
+    helper = compiler_sources.with_name("module_graph.py")
     if change == "same_stat_bytes":
         helper.write_text("VALUE = 1\n", encoding="utf-8")
     with fingerprints._source_tree_fingerprint_transaction():
@@ -304,27 +305,27 @@ def test_installed_semantic_snapshot_uses_admitted_release_without_graph(
             fingerprints._frontend_semantic_tooling_snapshot()
 
 
-def test_next_operation_rejects_seed_ownership_retarget(
+def test_next_operation_keys_a_symlinked_producer_by_its_target_bytes(
     compiler_sources: Path, tmp_path: Path
 ) -> None:
     owned = compiler_sources.with_name("owned.py")
     owned.write_text("VALUE = 1\n", encoding="utf-8")
     outside = tmp_path / "outside.py"
-    outside.write_text("VALUE = 1\n", encoding="utf-8")
-    alias = compiler_sources.with_name("module_alias.py")
+    outside.write_text("VALUE = 2\n", encoding="utf-8")
+    # A declared producer that Python imports through a link.
+    alias = compiler_sources.with_name("module_graph.py")
     try:
         alias.symlink_to(owned)
     except OSError as exc:
         pytest.skip(f"file symlinks unavailable: {exc}")
     with fingerprints._source_tree_fingerprint_transaction():
         before = fingerprints._frontend_semantic_tooling_snapshot()
-    assert owned.resolve() in before.source_paths
+    assert alias in before.source_paths
     alias.unlink()
     alias.symlink_to(outside)
-    with pytest.raises(ValueError, match="outside project root"):
-        with fingerprints._source_tree_fingerprint_transaction():
-            fingerprints._frontend_semantic_tooling_snapshot()
-    assert fingerprints._SOURCE_TREE_FINGERPRINT_TRANSACTION.get() is None
+    with fingerprints._source_tree_fingerprint_transaction():
+        retargeted = fingerprints._frontend_semantic_tooling_snapshot()
+    assert retargeted.fingerprint != before.fingerprint
     alias.unlink()
     alias.symlink_to(owned)
     with fingerprints._source_tree_fingerprint_transaction():
@@ -756,12 +757,14 @@ def test_direct_operation_failure_preserves_outer_and_releases_owned_transaction
     assert source_closure._GRAPH_TRANSACTION.get() is None
 
     # A standalone decorated operation owns and releases both contexts even
-    # when publication fails. A subsequent operation must see changed topology.
+    # when publication fails. A subsequent operation must see a new producer.
     with pytest.raises(OSError, match="publication interrupted"):
         write()
     assert fingerprints._SOURCE_TREE_FINGERPRINT_TRANSACTION.get() is None
     assert source_closure._GRAPH_TRANSACTION.get() is None
-    compiler_sources.with_name("helper.py").write_text("VALUE = 1\n", encoding="utf-8")
+    compiler_sources.with_name("module_graph.py").write_text(
+        "VALUE = 1\n", encoding="utf-8"
+    )
     with pytest.raises(OSError, match="publication interrupted"):
         write()
     assert fingerprints._SOURCE_TREE_FINGERPRINT_TRANSACTION.get() is None

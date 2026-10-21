@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import enum
 import functools
 import hashlib
 import json
@@ -23,14 +24,7 @@ from molt.file_hashing import (
     _source_fingerprint_files,
 )
 from molt.host_tool_products import HostToolProduct
-from molt.cli.python_import_resolution import (
-    PythonImportPolicy,
-)
-from molt.cli.python_source_closure import (
-    LocalPythonSourceClosure,
-    local_python_import_closure,
-    local_python_import_graph_transaction,
-)
+from molt.cli.python_source_closure import local_python_import_graph_transaction
 
 
 if TYPE_CHECKING:
@@ -121,108 +115,153 @@ def _frontend_tooling_source_paths(project_root: Path) -> list[Path]:
     return list(_frontend_tooling_source_paths_cached(os.fspath(project_root)))
 
 
-# Molt-owned frontend source files that are shared by *every* frontend phase
-# (import scan, analysis, lowering) yet live outside cli/ and frontend/.
-#
-#   * ``_intrinsic_symbols.py`` -- generated intrinsic signatures consumed by
-#     frontend lowering, required-feature selection and runtime export policy.
-#     Keep the shared declaration identity and total ABI arity in every phase's
-#     fingerprint, including processes that loaded the Python module earlier.
-#   * ``_runtime_feature_gates.py`` -- generated feature-gate table. It is
-#     consumed on the link/required-features path rather than proven on the
-#     ast->TIR path, but it is a ``feature-gate`` authority and is retained
-#     conservatively (a rarely-edited generated table; keeping it costs no
-#     realistic cold-starts while removing any miscompile ambiguity).
-_FRONTEND_AUX_SOURCE_RELPATHS: tuple[str, ...] = (
-    "type_facts.py",
-    "capabilities.py",
-    "capability_manifest.py",
-    "capability_policy.py",
-    "_host_capabilities_generated.py",
-    "compat.py",
-    "_wasm_runtime_exports.py",
-    "_intrinsic_symbols.py",
-    "_runtime_feature_gates.py",
-    # Hardware descriptor origin is compared with these compiler-owned bodies.
-    # Installed releases already bind them in the source-wide identity.
-    "gpu/__init__.py",
-    "stdlib/struct.py",
-)
+class _FrontendInputRole(enum.Enum):
+    """Why a compiler source that frontend code imports is in or out of the key.
 
-
-# Roots of the frontend lowering computation. Reachability starts here and
-# follows module-level ``molt`` imports. If a literal-relative anchor becomes
-# unknown, every admitted local owner can execute before a suffix fails; the
-# shared closure then captures the complete ``molt`` source domain.
-#
-#   * ``frontend/`` -- the whole Python->TIR frontend (visitors, sema, lowering),
-#     kept wholesale because its subpackages import one another.
-#   * ``compiler_analysis/`` -- the compiler analysis package (static-truth,
-#     native-support slicing, backend-IR / TIR fact-graph helpers). ``frontend/``
-#     imports its lowering-facing submodules directly and it is a self-contained
-#     analysis package (its only external ``molt`` import is *into* ``frontend/``),
-#     so it is kept wholesale as a lowering root -- keeping the IR/TIR-adjacent
-#     helpers in scope rather than relying on a package-``__init__`` re-export
-#     edge that the refined resolver (below) no longer follows.
-#   * ``cli/frontend_*.py`` and ``cli/module_*.py`` -- the CLI-level frontend /
-#     module-graph drivers that invoke and cache the frontend (frontend pipeline,
-#     workers, module resolution / graph / source / cache authorities).
-#
-# These are a structural naming rule, not a hand-maintained membership list: a new
-# ``frontend_*`` / ``module_*`` driver is picked up automatically, and a new
-# backend/link/cargo file is excluded when no reachable edge or unknown-relative
-# coverage obligation includes it. Coverage deliberately broadens invalidation.
-_LOWERING_SCOPE_SEED_CLI_PREFIXES: tuple[str, ...] = ("frontend_", "module_")
-
-
-_FRONTEND_LOWERING_IMPORT_POLICY = PythonImportPolicy(
-    module_level_only=True,
-    include_parent_packages=False,
-    # Persisted lowering results require complete eager dependency identity.
-    # Deferred bodies stay outside this projection. Unknown literal-relative
-    # anchors require full local byte coverage; nonliteral names still require
-    # the existing exact dynamic contract rather than partial candidates.
-    fail_on_nonliteral_dynamic_import=True,
-    allowed_prefix="molt",
-    purpose="source_dependency",
-    unknown_relative_sources="local_inventory",
-)
-
-
-def _lowering_scope_seed_paths(project_root: Path) -> tuple[Path, ...]:
-    molt_root = _compiler_python_source_root(project_root) / "molt"
-    frontend_root = molt_root / "frontend"
-    compiler_analysis_root = molt_root / "compiler_analysis"
-    cli_root = molt_root / "cli"
-    paths: list[Path] = []
-    if frontend_root.exists():
-        paths.append(frontend_root)
-    if compiler_analysis_root.exists():
-        paths.append(compiler_analysis_root)
-    if cli_root.exists():
-        for source in cli_root.glob("*.py"):
-            if source.name.startswith(_LOWERING_SCOPE_SEED_CLI_PREFIXES):
-                paths.append(source)
-    paths.extend(molt_root / relpath for relpath in _FRONTEND_AUX_SOURCE_RELPATHS)
-    return tuple(dict.fromkeys(path for path in paths if path.exists()))
-
-
-def _lowering_scope_source_closure(project_root: Path) -> LocalPythonSourceClosure:
-    """Lowering's policy projection of the shared byte-keyed dependency graph.
-
-    Whole frontend/analysis packages, frontend/module drivers and shared semantic
-    inputs remain seeds. Grouped fromlist requests prefer actual named submodules
-    without importing package aggregates. New edges/topology are discovered on
-    every build; only the explicit build transaction may reuse a whole closure.
-    Unknown literal-relative anchors widen source coverage to all admitted local
-    owners, including sources that can execute before the import fails.
+    The frontend semantic fingerprint keys every persisted frontend record:
+    module analysis, module lowering, import scans and intrinsic facts. It
+    commits to the code that maps a record's keyed inputs to its content, and
+    to nothing else (docs/design/frontend_semantic_fingerprint.md).
     """
-    return local_python_import_closure(
-        project_root,
-        _lowering_scope_seed_paths(project_root),
-        policy=_FRONTEND_LOWERING_IMPORT_POLICY,
-        search_roots=(_compiler_python_source_root(project_root),),
-    )
+
+    # In the key. Its code computes, encodes or decodes the content of a
+    # frontend record, or computes an input to one that the record key does
+    # not carry as a value.
+    PRODUCER = "producer"
+    # In the key. A compiler-owned guest source whose bytes the GPU
+    # descriptor-origin check compares with lowered metadata.
+    REFERENCE = "reference"
+    # Out. A package ``__init__`` that runs because a submodule is imported.
+    # It imports no Molt module and binds no value that a producer reads.
+    PACKAGE = "package"
+    # Out. Computes which record to read: fingerprints, digests and input
+    # custody. Never what a record holds.
+    IDENTITY = "identity"
+    # Out. Moves opaque record bytes: atomic publication, the record store and
+    # its size bound. A record format change bumps that record's schema.
+    STORAGE = "storage"
+    # Out. Diagnostics, progress, timings, input reports and failure text.
+    # None of it is stored in a record.
+    REPORTING = "reporting"
+    # Out. Request types, admission and refusal, and host, process, path and
+    # toolchain facts around the frontend. A value from it that reaches a
+    # frontend computation is a field of that record's key: target Python,
+    # parse codec, type-hint policy, stdlib allowlist, known and direct-call
+    # modules, native exports or the namespace premise.
+    BUILD_ENVIRONMENT = "build_environment"
+
+    @property
+    def keyed(self) -> bool:
+        return self in (_FrontendInputRole.PRODUCER, _FrontendInputRole.REFERENCE)
+
+
+_P = _FrontendInputRole.PRODUCER
+_BUILD = _FrontendInputRole.BUILD_ENVIRONMENT
+
+# Every compiler source that a frontend producer imports, with its role. Paths
+# are relative to ``src/molt``; a directory entry covers its whole tree, data
+# files included. tests/cli/test_cli_lowering_cache_tooling_scope.py fails when
+# a producer imports an undeclared module, a declared path is missing, or a
+# non-producer entry has no producer importer. A new dependency is classified
+# when it is written, as rustc classifies every option [TRACKED] or
+# [UNTRACKED]. Keep a module in the key when its role is in doubt: a key that
+# is too narrow reuses a stale lowering.
+_FRONTEND_COMPILER_INPUTS: Mapping[str, _FrontendInputRole] = MappingProxyType(
+    {
+        # The Python-to-TIR frontend and the analyses it runs, kept whole.
+        "frontend": _P,
+        "compiler_analysis": _P,
+        # Drivers that compute, scan, encode and validate frontend records.
+        "cli/frontend_execution.py": _P,
+        "cli/frontend_integration.py": _P,
+        "cli/frontend_parallel.py": _P,
+        "cli/frontend_pipeline.py": _P,
+        "cli/frontend_worker.py": _P,
+        "cli/module_cache.py": _P,
+        "cli/module_dependencies.py": _P,
+        "cli/module_graph.py": _P,
+        "cli/module_graph_cache.py": _P,
+        "cli/module_graph_discovery.py": _P,
+        "cli/module_import_scanner.py": _P,
+        "cli/module_registry.py": _P,
+        "cli/module_resolution.py": _P,
+        "cli/module_source.py": _P,
+        "cli/module_stdlib_policy.py": _P,
+        "cli/python_import_resolution.py": _P,
+        "cli/python_import_topology.py": _P,
+        "cli/models.py": _P,
+        # Defaults (stdlib profile names) that drivers read as constants.
+        "cli/config_resolution.py": _P,
+        # Record codecs: JSON values, class identities, lowering records.
+        "cli/cache_keys.py": _P,
+        "cli/function_records.py": _P,
+        "cli/function_references.py": _P,
+        # Generated tables and semantic helpers that lowering reads.
+        "_intrinsic_symbols.py": _P,
+        "_wasm_abi_generated.py": _P,
+        "compat.py": _P,
+        "exact_json.py": _P,
+        "native_callable_abi.py": _P,
+        "native_callable_exports.py": _P,
+        "opcode_literal_payloads.py": _P,
+        "python_module_names.py": _P,
+        "python_private_names.py": _P,
+        "stdlib_intrinsic_policy.py": _P,
+        "target_python.py": _P,
+        "type_facts.py": _P,
+        # Target facts behind graph decisions such as is_wasm_target.
+        "compilation_target.py": _P,
+        "llvm_linker_roles.py": _P,
+        "native_target.py": _P,
+        "native_target_shape.py": _P,
+        # GPU_PYTHON_BODY_REFERENCES in frontend/lowering/gpu_kernel_descriptor.py.
+        "gpu/__init__.py": _FrontendInputRole.REFERENCE,
+        "stdlib/struct.py": _FrontendInputRole.REFERENCE,
+        "__init__.py": _FrontendInputRole.PACKAGE,
+        "cli/__init__.py": _FrontendInputRole.PACKAGE,
+        "cli/cache_fingerprints.py": _FrontendInputRole.IDENTITY,
+        "cli/source_extension_input_custody.py": _FrontendInputRole.IDENTITY,
+        "file_hashing.py": _FrontendInputRole.IDENTITY,
+        "toolchain_identity.py": _FrontendInputRole.IDENTITY,
+        "cli/atomic_io.py": _FrontendInputRole.STORAGE,
+        "cli/json_cache.py": _FrontendInputRole.STORAGE,
+        "cli/source_record_store.py": _FrontendInputRole.STORAGE,
+        "file_publication.py": _FrontendInputRole.STORAGE,
+        "cli/binary_image_analysis.py": _FrontendInputRole.REPORTING,
+        "cli/build_diagnostics.py": _FrontendInputRole.REPORTING,
+        "cli/output.py": _FrontendInputRole.REPORTING,
+        "cli/progress.py": _FrontendInputRole.REPORTING,
+        "dx.py": _FrontendInputRole.REPORTING,
+        "input_report.py": _FrontendInputRole.REPORTING,
+        "backend_environment.py": _BUILD,
+        "backend_executable_names.py": _BUILD,
+        "browser_asset_closure.py": _BUILD,
+        "capability_policy.py": _BUILD,
+        "cli/build_output_layout.py": _BUILD,
+        "cli/build_request.py": _BUILD,
+        # Builds the import admission policy from the environment. Discovery
+        # applies it live (its rules live in cli/models.py); records see its
+        # effects only as the keyed premise and context module sets.
+        "cli/external_native.py": _BUILD,
+        "cli/installed_runtime.py": _BUILD,
+        "cli/project_roots.py": _BUILD,
+        "cli/rust_cpu_policy.py": _BUILD,
+        "cli/typecheck.py": _BUILD,
+        "cli/wasm_toolchain.py": _BUILD,
+        "compiler_process.py": _BUILD,
+        "default_paths.py": _BUILD,
+        "host_capacity.py": _BUILD,
+        "source_root.py": _BUILD,
+        "verified_subset.py": _BUILD,
+    }
+)
+del _P, _BUILD
+
+_FRONTEND_REFERENCE_SOURCES: tuple[str, ...] = tuple(
+    relative
+    for relative, role in _FRONTEND_COMPILER_INPUTS.items()
+    if role is _FrontendInputRole.REFERENCE
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,7 +270,6 @@ class _SourceFingerprintInputs:
 
     paths: tuple[Path, ...]
     source_sha256: Mapping[Path, str] = field(default_factory=dict)
-    topology_digest: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -244,48 +282,26 @@ class _SourceFingerprintInputs:
 
 
 def _frontend_semantic_tooling_sources(project_root: Path) -> _SourceFingerprintInputs:
-    """Source paths the persisted per-module *frontend* caches must key on.
+    """The keyed entries of ``_FRONTEND_COMPILER_INPUTS`` and their digests.
 
-    Derived structurally by import reachability (see
-    ``_lowering_scope_source_closure``): the whole ``frontend/`` tree plus
-    every ``molt``-owned file reachable from the frontend/module drivers by
-    module-level import, plus the shared aux semantic files. No hand-maintained
-    denylist: known requests remain reachability-scoped. An unknown literal
-    relative anchor requires complete local-owner coverage and consequently
-    includes backend/link/cargo, guest stdlib and GPU Python sources as bytes.
-    This is an invalidation cost, not a claim that these sources execute on the
-    host or a grant of guest import metadata. New files and namespace topology
-    are recaptured on the next operation.
-
-    The bias is strictly toward inclusion -- every file on the frontend import
-    path is hashed, so a spurious cold-start is the worst outcome; a stale
-    lowering (miscompile) cannot arise from under-scoping here. ``frontend/`` is
-    returned as a directory (its subpackages import one another and are kept
-    whole); reachable files under it are therefore skipped from the per-file list
-    to avoid hashing them twice.
+    Each keyed file is read once. Nothing is parsed or analyzed: a fresh
+    process pays one read and one SHA-256 per file. A keyed path that is absent
+    is left out, so a source that appears later changes the key.
     """
-    molt_root = _compiler_python_source_root(project_root) / "molt"
-    frontend_root = (molt_root / "frontend").resolve()
-    closure = _lowering_scope_source_closure(project_root)
-    paths: list[Path] = [frontend_root]
-    for source in closure.paths:
-        if frontend_root == source or frontend_root in source.parents:
+    molt_root = (_compiler_python_source_root(project_root) / "molt").resolve()
+    paths: list[Path] = []
+    source_sha256: dict[Path, str] = {}
+    for relative, role in _FRONTEND_COMPILER_INPUTS.items():
+        if not role.keyed:
             continue
-        paths.append(source)
-    # Force-include the shared aux semantic files even if a future refactor drops
-    # them from the import closure -- they are load-bearing frontend inputs.
-    source_sha256 = dict(closure.source_sha256)
-    for relpath in _FRONTEND_AUX_SOURCE_RELPATHS:
-        source = molt_root / relpath
-        # Existing aux sources have already been admitted and captured by the
-        # closure. Only absent or aliased lexical paths still need resolving.
-        selected = source if source in closure.source_sha256 else source.resolve()
-        paths.append(selected)
-        if selected not in source_sha256:
-            source_sha256[selected] = _file_content_signature(selected)
-    return _SourceFingerprintInputs(
-        tuple(sorted(set(paths))), source_sha256, closure.topology_digest
-    )
+        path = molt_root / relative
+        files = _source_fingerprint_files(path)
+        if not files:
+            continue
+        paths.append(path)
+        for item in files:
+            source_sha256[item] = _file_content_signature(item)
+    return _SourceFingerprintInputs(tuple(sorted(paths)), source_sha256)
 
 
 # Per-process cache of source-tree content digests. The key includes a
@@ -317,7 +333,7 @@ class _FrontendSemanticSourceSnapshot:
     def reference_source(self, relative_path: str) -> PythonSourceSnapshot:
         from molt.cli.module_source import PythonSourceSnapshot
 
-        if relative_path not in _FRONTEND_AUX_SOURCE_RELPATHS:
+        if relative_path not in _FRONTEND_REFERENCE_SOURCES:
             raise ValueError("reference source is outside frontend semantic inputs")
         captured = self.reference_sources.get(relative_path)
         if captured is None:
@@ -524,10 +540,6 @@ def _source_tree_cache_fingerprint(
     extra_fingerprint_inputs: str,
 ) -> str:
     path_keys = tuple(str(path) for path in inputs.paths)
-    if inputs.topology_digest:
-        extra_fingerprint_inputs += (
-            f"\nlocal-python-topology:{inputs.topology_digest}\n"
-        )
     root = root.resolve()
     transaction = _SOURCE_TREE_FINGERPRINT_TRANSACTION.get()
     transaction_key = (
@@ -662,22 +674,19 @@ def _cache_tooling_fingerprint() -> str:
 
 
 def _frontend_semantic_tooling_fingerprint() -> str:
-    """Tooling fingerprint for the per-module frontend caches.
+    """Tooling fingerprint for the persisted frontend records.
 
-    Identical in construction to ``_cache_tooling_fingerprint`` but over the
-    lowering-relevant scope only (see ``_frontend_semantic_tooling_sources``),
-    so known import graphs exclude unrelated backend/link/daemon/cargo/toolchain
-    edits. Unknown relative anchors require broader local coverage. The distinct
-    ``scope`` tag keeps this digest namespace-separated from the broad
-    ``frontend-tooling`` fingerprint.
+    It digests the keyed entries of ``_FRONTEND_COMPILER_INPUTS``, so an edit
+    to toolchain, publication, diagnostics or backend code leaves every record
+    valid. The distinct ``scope`` tag keeps this digest namespace-separated
+    from the broad ``frontend-tooling`` fingerprint.
     """
     return _frontend_semantic_tooling_snapshot().fingerprint
 
 
 def _frontend_semantic_tooling_snapshot() -> _FrontendSemanticSourceSnapshot:
-    # Look up the operation snapshot BEFORE walking seeds, resolving the import
-    # closure or canonicalizing every fingerprint path. The lower-level digest
-    # memo is too late to eliminate those repeated filesystem operations.
+    # Look up the operation snapshot before reading any source: one operation
+    # reads each keyed file once.
     root = _compiler_root()
     transaction = _SOURCE_TREE_FINGERPRINT_TRANSACTION.get()
     if transaction is not None:
@@ -689,7 +698,7 @@ def _frontend_semantic_tooling_snapshot() -> _FrontendSemanticSourceSnapshot:
     installed = installed_compiler_admission(root)
     if installed is not None:
         # The admitted release already commits to every shipped input. Reuse
-        # that generation authority without walking its mutable-source graph.
+        # that generation authority without reading its sources again.
         # Domain separation is for this cache consumer, not runtime metadata.
         snapshot = _FrontendSemanticSourceSnapshot(
             root=root,
@@ -699,8 +708,7 @@ def _frontend_semantic_tooling_snapshot() -> _FrontendSemanticSourceSnapshot:
                     entry["path"][len("src/molt/") :]: entry["sha256"]
                     for entry in installed.compiler.files
                     if entry["path"].startswith("src/molt/")
-                    and entry["path"][len("src/molt/") :]
-                    in _FRONTEND_AUX_SOURCE_RELPATHS
+                    and entry["path"][len("src/molt/") :] in _FRONTEND_REFERENCE_SOURCES
                 }
             ),
             fingerprint=_compute_source_tree_content_digest(
@@ -709,28 +717,27 @@ def _frontend_semantic_tooling_snapshot() -> _FrontendSemanticSourceSnapshot:
         )
     else:
         inputs = _frontend_semantic_tooling_sources(root)
+        molt_root = (_compiler_python_source_root(root) / "molt").resolve()
+        # The captured digests are the identity; Git state never enters it.
         snapshot = _FrontendSemanticSourceSnapshot(
             root=root,
             source_paths=inputs.paths,
             reference_sha256=MappingProxyType(
                 {
                     relative: inputs.source_sha256.get(
-                        _compiler_python_source_root(root) / "molt" / relative
+                        molt_root / relative, "unreadable"
                     )
-                    or inputs.source_sha256.get(
-                        (
-                            _compiler_python_source_root(root) / "molt" / relative
-                        ).resolve(),
-                        "unreadable",
-                    )
-                    for relative in _FRONTEND_AUX_SOURCE_RELPATHS
+                    for relative in _FRONTEND_REFERENCE_SOURCES
                 }
             ),
-            fingerprint=_source_tree_cache_fingerprint(
-                root=root,
-                inputs=inputs,
-                scope="frontend-semantic-tooling",
-                extra_fingerprint_inputs="",
+            fingerprint=_compute_source_tree_content_digest(
+                _source_tree_content_signature(
+                    root.resolve(),
+                    tuple(str(path) for path in inputs.paths),
+                    inputs.source_sha256,
+                ),
+                "frontend-semantic-tooling",
+                "",
             ),
         )
     if transaction is not None:

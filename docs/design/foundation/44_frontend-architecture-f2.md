@@ -868,18 +868,19 @@ The *cross-process* contract (the JSON wire kind) is explicit and now registry-g
 
 ## Tooling dependency graph authority
 
-Frontend semantic fingerprints and executable-tool input discovery share
-`cli/python_source_closure.py`'s policy-keyed source graph. Lowering supplies its
-frontend/analysis directories, frontend/module-driver naming rule, shared semantic
-seeds, and module-level `molt` policy. Executable tooling retains full lexical
-imports, deferred dynamic aliases, parent-package execution and checked dynamic
-import manifests. These are projections of one graph, not separate scanners.
+Executable-tool input discovery uses `cli/python_source_closure.py`'s
+policy-keyed source graph: full lexical imports, deferred dynamic aliases,
+parent-package execution and checked dynamic import manifests. The frontend
+semantic fingerprint does not walk this graph. It hashes a declared producer
+set (`_FRONTEND_COMPILER_INPUTS`), whose completeness tests check against every
+import a producer can run ([frontend_semantic_fingerprint.md](../frontend_semantic_fingerprint.md)).
 
 `python_import_resolution.py` captures each source once: the same bytes determine
 its digest and PEP 263-aware AST. Grouped import requests retain owner/fromlist
-alternatives until live filesystem resolution. Lowering prefers an existing named
-submodule over the package aggregate; each unresolved member independently falls
-back to its owner. Executable tooling additionally includes the package ancestors.
+alternatives until live filesystem resolution. A policy without package
+ancestors prefers an existing named submodule over the package aggregate; each
+unresolved member independently falls back to its owner. Executable tooling
+additionally includes the package ancestors.
 Absolute statement candidates demand no binding analysis. Relative package state
 and dynamic-call identity still come from the canonical binding/import-flow facts;
 this optimization does not invent a lexical alias or metadata-purity classifier.
