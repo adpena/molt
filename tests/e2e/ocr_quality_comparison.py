@@ -9,8 +9,7 @@ Requirements:
     pip3 install Pillow paddleocr  (paddleocr is optional; test degrades gracefully)
 
 Usage:
-    python3 -m pytest tests/e2e/test_ocr_quality_comparison.py -v
-    python3 tests/e2e/test_ocr_quality_comparison.py  # standalone report generation
+    python3 tests/e2e/ocr_quality_comparison.py  # report generation against the live worker
 """
 
 from __future__ import annotations

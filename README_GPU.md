@@ -174,8 +174,7 @@ Returns: model status, backend availability, cache state, analytics summary (req
 ### Run accuracy benchmark
 
 ```bash
-cd tests/e2e
-python -m pytest test_invoice_accuracy.py -v
+python tests/e2e/invoice_accuracy.py  # needs Pillow and the live worker
 ```
 
 Generates `docs/benchmarks/invoice_accuracy.md` with per-field accuracy results.

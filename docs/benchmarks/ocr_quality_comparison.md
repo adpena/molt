@@ -18,7 +18,7 @@ Field extraction = substring match (case-insensitive) for vendor, invoice number
 
 ## Results
 
-Run `python3 tests/e2e/test_ocr_quality_comparison.py` to generate live results.
+Run `python3 tests/e2e/ocr_quality_comparison.py` to generate live results.
 
 | Test | Engine | Char Accuracy | Vendor | Invoice # | Total | Latency (ms) | Available |
 |------|--------|--------------|--------|-----------|-------|--------------|-----------|
@@ -31,4 +31,4 @@ Run `python3 tests/e2e/test_ocr_quality_comparison.py` to generate live results.
   - POST JSON: `{"image": "<base64_png>"}`
 - PaddleOCR: `pip3 install paddleocr` (requires paddlepaddle). If not installed, results show N/A.
 - Images generated at runtime with Pillow; no external image assets needed.
-- To run: `python3 tests/e2e/test_ocr_quality_comparison.py`
+- To run: `python3 tests/e2e/ocr_quality_comparison.py`
