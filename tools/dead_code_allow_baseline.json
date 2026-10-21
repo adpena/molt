@@ -1,5 +1,5 @@
 {
-  "baseline_total": 67,
+  "baseline_total": 68,
   "entries": [
     {
       "id": "runtime/build_support/unicode_tables.rs::allow_dead_code::inner",
@@ -20,6 +20,11 @@
       "id": "runtime/build_support/variadic_exports.rs::allow_dead_code::fn:render_rust_anchors",
       "owner": "runtime-authority-closure",
       "waiver": "build-support source included by the molt-runtime and molt-cpython-abi build scripts through #[path]; each script uses a subset"
+    },
+    {
+      "id": "runtime/molt-backend/src/main_tests/daemon_environment_isolation.rs::allow_dead_code::mod:cargo_test_artifacts",
+      "owner": "runtime-authority-closure",
+      "waiver": "shared test-support source runtime/test_support/cargo_test_artifacts.rs, included into several crates; each uses a subset"
     },
     {
       "id": "runtime/molt-backend-mlir/src/lower.rs::allow_dead_code::fn:lower_to_llvm_dialect_stepwise",
