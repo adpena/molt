@@ -1676,7 +1676,6 @@ def test_retirement_binds_complete_checkout_inventory_independent_of_caller_sele
         )
         assert rc == (drv.EXIT_OK if removal_succeeds else drv.EXIT_FAIL)
     else:
-        monkeypatch.setattr(drift_harvest, "REPO_ROOT", main)
         real = drift_harvest._git
 
         def remove(args, **kwargs):
@@ -1690,6 +1689,10 @@ def test_retirement_binds_complete_checkout_inventory_independent_of_caller_sele
             "argv",
             [
                 "drift_harvest.py",
+                # The repository is named on the command line; rebinding the
+                # module's global once let this prune the real worktree list.
+                "--repo",
+                str(main),
                 "--prune",
                 "--no-fetch",
                 "--fresh-hours",
