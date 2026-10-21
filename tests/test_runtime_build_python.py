@@ -328,3 +328,58 @@ def test_pinned_generator_runs_shared_rust_helper_from_another_crate_cwd(
     assert poisoned.returncode != 0
     assert "flags 1 1 1" not in poisoned.stdout
     assert "unexpected fixture mode: -B" in poisoned.stderr
+
+
+def test_unicode_width_facts_replay_keyed_by_the_admitted_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tools import gen_unicode_width, scan_records
+
+    versions = gen_unicode_width.SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
+    queried: list[str] = []
+
+    def query(version, selected, admission):
+        queried.append(version)
+        return {
+            "python": version,
+            "unicode": "15.0.0",
+            "ranges": [[0, 0x10FFFF, "N"]],
+        }
+
+    def runtimes(digest: str):
+        return {
+            version: (
+                {
+                    "runtime": {"runtime_closure_sha256": digest + version},
+                    "launch_argv": ["python" + version, "-I", "-S", "-B"],
+                },
+                None,
+            )
+            for version in versions
+        }
+
+    def records():
+        return scan_records.ScanRecords(
+            "generator_gen_unicode_width",
+            owner=Path(gen_unicode_width.__file__),
+            cache_root=tmp_path,
+        )
+
+    monkeypatch.setattr(gen_unicode_width, "_query", query)
+    computed = gen_unicode_width.render(python_runtimes=runtimes("a"))
+    assert queried == list(versions)
+    cold = records()
+    assert gen_unicode_width.render(python_runtimes=runtimes("a"), records=cold) == (
+        computed
+    )
+    assert cold.publish() is True
+    queried.clear()
+    warm = records()
+    assert gen_unicode_width.render(python_runtimes=runtimes("a"), records=warm) == (
+        computed
+    )
+    assert queried == [] and warm.misses == 0
+    # Another runtime closure is another key: its facts are queried again.
+    changed = records()
+    gen_unicode_width.render(python_runtimes=runtimes("b"), records=changed)
+    assert queried == list(versions)

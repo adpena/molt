@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import stringprep
+import unicodedata
 from pathlib import Path
 
 import sys
@@ -17,6 +20,7 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 bind_repository_imports(__file__)
 
 from tools.generator_io import generator_main, rustfmt_source  # noqa: E402
+from tools.scan_records import ScanRecords, scan_result  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "runtime/molt-runtime-stringprep/src/tables.rs"
@@ -127,9 +131,24 @@ def render() -> str:
     return "".join(lines)
 
 
-def generated_outputs() -> dict[Path, str]:
-    """Each output path mapped to its exact generated text."""
-    return {OUT: rustfmt_source(render(), label="stringprep tables")}
+def _oracle_identity() -> str:
+    """The oracle the tables read: CPython's stringprep source and Unicode data.
+
+    The interpreter build is in every scan-record generation already.
+    """
+    source = Path(stringprep.__file__).read_bytes()
+    return json.dumps([unicodedata.unidata_version, hashlib.sha256(source).hexdigest()])
+
+
+def generated_outputs(*, scan_records: ScanRecords | None = None) -> dict[Path, str]:
+    """Each output path mapped to its exact generated text.
+
+    ``tools/generators.py`` passes scan records; an unchanged oracle replays.
+    """
+    tables = scan_result(
+        scan_records, _oracle_identity(), b"", render, encode=str, decode=str
+    )
+    return {OUT: rustfmt_source(tables, label="stringprep tables")}
 
 
 def main(argv: list[str] | None = None) -> int:
