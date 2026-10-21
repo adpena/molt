@@ -30,6 +30,9 @@ def copy_driver_trees(target: Path) -> None:
             "--exclude-standard",
             "--",
             *CONTROLLER_PATHS,
+            # The fixture is a checkout that provisions itself (uv sync
+            # writes src/molt.egg-info): it keeps the repository's ignores.
+            ".gitignore",
         ],
         cwd=REPO_ROOT,
     )
