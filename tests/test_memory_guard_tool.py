@@ -10331,16 +10331,17 @@ def test_run_guarded_output_bound_restarts_with_each_new_byte(
 ) -> None:
     """Moving output keeps a command alive however long it runs.
 
-    The guard's clock advances a quarter of the bound with each poll. Each
-    poll waits until the child has printed the line the previous poll
-    released, so a new line lands within every two polls (half the bound),
-    while the run spans three bounds. A bound measured from the first byte,
-    or never restarted, ends it.
+    Silence accrues by the guard's planned poll wait, 0.02 s here. The child
+    prints a line every three polls, and each poll waits until the child has
+    printed the line due before it, so at most five polls (0.1 s) pass
+    between two observed lines, under the 0.15 s bound. The run holds about
+    two silent polls per line, 24 in all (about 0.5 s), so a count that is
+    not reset by new output passes the bound, however loaded the host.
     """
     polls = tmp_path / "polls"
     lines = tmp_path / "lines"
     done = tmp_path / "done"
-    bound = 100.0
+    bound = 0.15
     real_custody = memory_guard.sample_processes_custody
     count = [0]
 
@@ -10356,8 +10357,8 @@ def test_run_guarded_output_bound_restarts_with_each_new_byte(
         os.replace(partial, path)
 
     def paced_custody(*args, **kwargs):
-        # Poll k follows the child's line k - 1.
-        while published(lines) < count[0] and not done.exists():
+        # Poll k follows the child's line k // 3 - 1.
+        while published(lines) < count[0] // 3 and not done.exists():
             time.sleep(0.005)
         samples = real_custody(*args, **kwargs)
         count[0] += 1
@@ -10367,13 +10368,6 @@ def test_run_guarded_output_bound_restarts_with_each_new_byte(
     monkeypatch.setattr(memory_guard, "sample_processes_custody", paced_custody)
     # The handshake inside the sampler is not sampling cost to pace by.
     monkeypatch.setattr(memory_guard, "SAMPLE_COST_PACING_FACTOR", 0.0)
-    install_module_view(
-        monkeypatch,
-        "time",
-        time,
-        memory_guard,
-        perf_counter=lambda: time.perf_counter() + count[0] * bound / 4,
-    )
     child = (
         "import os, pathlib, sys, time\n"
         "polls, lines, done = map(pathlib.Path, sys.argv[1:4])\n"
@@ -10383,7 +10377,7 @@ def test_run_guarded_output_bound_restarts_with_each_new_byte(
         "    except FileNotFoundError:\n"
         "        return 0\n"
         "for line in range(12):\n"
-        "    while published(polls) < line + 1:\n"
+        "    while published(polls) < 3 * line + 1:\n"
         "        time.sleep(0.005)\n"
         "    print(line, flush=True)\n"
         "    lines.with_suffix('.partial').write_text(str(line + 1))\n"
@@ -10401,3 +10395,85 @@ def test_run_guarded_output_bound_restarts_with_each_new_byte(
     assert result.timed_out is False, result.stderr
     assert result.returncode == 0
     assert result.stdout.split() == [str(line) for line in range(12)]
+
+
+def test_run_guarded_output_bound_ignores_time_the_guard_did_not_watch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A host freeze stops the guard and its child alike: it is no silence.
+
+    The child prints, then waits while the host "freezes": the guard's clock
+    leaps ten bounds between two polls and no output arrives. Once the guard
+    has looked across the leap, the child resumes and prints again. A bound
+    that counts the leap ends the command (exit 124); one that counts only
+    the time the guard watched lets it finish. Events order every step.
+    """
+    frozen = tmp_path / "frozen"
+    resume = tmp_path / "resume"
+    bound = 30.0
+    leap = [0.0]
+    polls = [0]
+    polled = threading.Condition()
+    finished = threading.Event()
+    real_custody = memory_guard.sample_processes_custody
+
+    def counted_custody(*args, **kwargs):
+        samples = real_custody(*args, **kwargs)
+        with polled:
+            polls[0] += 1
+            polled.notify_all()
+        return samples
+
+    def after_polls(count: int) -> bool:
+        with polled:
+            target = polls[0] + count
+            while polls[0] < target:
+                if finished.is_set():
+                    return False
+                polled.wait(0.05)
+        return True
+
+    def freeze_the_host() -> None:
+        while not frozen.exists():
+            if finished.wait(0.005):
+                return
+        # The guard has seen the first line; then its clock leaps while the
+        # child is silent, and it looks across the leap before the thaw.
+        if after_polls(2):
+            leap[0] += 10 * bound
+            if after_polls(2):
+                resume.touch()
+
+    monkeypatch.setattr(memory_guard, "sample_processes_custody", counted_custody)
+    install_module_view(
+        monkeypatch,
+        "time",
+        time,
+        memory_guard,
+        perf_counter=lambda: time.perf_counter() + leap[0],
+    )
+    child = (
+        "import pathlib, sys, time\n"
+        "print('before', flush=True)\n"
+        "pathlib.Path(sys.argv[1]).touch()\n"
+        "while not pathlib.Path(sys.argv[2]).exists():\n"
+        "    time.sleep(0.005)\n"
+        "print('after', flush=True)\n"
+    )
+    thaw = threading.Thread(target=freeze_the_host)
+    thaw.start()
+    try:
+        result = memory_guard.run_guarded(
+            [sys.executable, "-c", child, str(frozen), str(resume)],
+            max_rss_kb=1_000_000,
+            poll_interval=0.02,
+            no_output_timeout=bound,
+        )
+    finally:
+        finished.set()
+        resume.touch()  # A child left waiting ends.
+        thaw.join(120)  # A hang guard only.
+
+    assert result.timed_out is False, result.stderr
+    assert result.returncode == 0
+    assert result.stdout.split() == ["before", "after"]
