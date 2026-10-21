@@ -575,3 +575,42 @@ def test_falcon_ocr_manifest_fixture_matches_browser_driver_boundary() -> None:
         "init": "main_molt__init",
         "ocrTokens": "main_molt__ocr_tokens",
     }
+
+
+def test_wasm_manifest_declares_the_driver_exports_and_signatures() -> None:
+    """The manifest the Worker and browser loader read matches the driver.
+
+    ``demos/tinygrad/wasm_driver.py`` is the Python module Molt compiles to
+    falcon-ocr.wasm; ``wasm_manifest.json`` declares its exports. The driver's
+    syntax tree, not its text, gives each public function's parameters and
+    annotations.
+    """
+    import ast
+
+    driver = ast.parse(
+        (ROOT / "demos/tinygrad/wasm_driver.py").read_text(encoding="utf-8")
+    )
+    functions = {
+        node.name: node
+        for node in driver.body
+        if isinstance(node, ast.FunctionDef) and not node.name.startswith("_")
+    }
+    manifest = json.loads(
+        (ROOT / "demos/tinygrad/wasm_manifest.json").read_text(encoding="utf-8")
+    )
+    exports = manifest["exports"]
+    # The manifest spells two types for JavaScript callers.
+    spelled = {"str": "string", "None": "void"}
+
+    def manifest_type(annotation: ast.expr | None) -> str:
+        assert annotation is not None, "every exported parameter is annotated"
+        text = ast.unparse(annotation)
+        return spelled.get(text, text)
+
+    assert set(functions) == set(exports)
+    for name, function in functions.items():
+        declared = exports[name]
+        assert [(p["name"], p["type"]) for p in declared["params"]] == [
+            (arg.arg, manifest_type(arg.annotation)) for arg in function.args.args
+        ], name
+        assert declared["returns"] == manifest_type(function.returns), name
