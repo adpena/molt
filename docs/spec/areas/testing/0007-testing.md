@@ -109,6 +109,20 @@ percentages. Required conformance and release matrix gates still apply.
   timing assumptions. Preserve minimized fuzz/differential inputs, seed and
   applicable target coordinates in existing replay evidence. Normalize only
   differences the contract allows; do not normalize away semantic mismatches.
+- **Order events, not time.** A test must not depend on a wall-clock race: a
+  host that stalls (38 minutes on 2026-10-21) fails every timing assumption
+  at once. Order steps with a handshake (a file, a pipe, a sampler callback),
+  and assert outcomes, not elapsed bounds. A child that stands in for a hung
+  process runs `HUNG_CHILD_SOURCE` (`tests/process_guard_common.py`): it waits
+  for an event nobody sets, so only its owner's kill ends it, never a sleep
+  that a stalled owner outlasts. The trade: a regressed kill then hangs the
+  test instead of failing it, so the test depends on an outer deadline.
+  Proof-plan families run under a family timeout; a plain local pytest run
+  has none and waits until the operator stops it. Each such test stops the
+  children its subject may leave in a `finally` with
+  `stop_test_processes_carrying(marker)`, which finds them by an argv marker
+  in the process table, so a call that raises before a pid is known leaks
+  nothing.
 - **Make fixtures and claims portable.** Cover Windows, macOS and Linux,
   applicable architectures, CPython versions, native/WASM, and claimed
   backends/profiles through the canonical matrices. Distinguish the host running

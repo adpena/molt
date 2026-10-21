@@ -14,6 +14,7 @@ import time
 
 import pytest
 from tests.process_guard_common import (
+    HUNG_CHILD_SOURCE,
     close_owned_test_process,
     run_guarded_test_process,
     start_owned_test_process,
@@ -31,15 +32,14 @@ pytestmark = pytest.mark.skipif(
 # grandchild and record its pid, then idle. If the grandchild inherits the job,
 # closing the job kills both — proving race-free capture.
 _CHILD = (
-    "import subprocess,sys,time;"
-    "gc=subprocess.Popen([sys.executable,'-c','import time;time.sleep(120)']);"
-    "open(sys.argv[1],'w').write(str(gc.pid));sys.stdout.flush();"
-    "time.sleep(120)"
+    "import subprocess,sys;"
+    f"gc=subprocess.Popen([sys.executable,'-c',{HUNG_CHILD_SOURCE!r}]);"
+    "open(sys.argv[1],'w').write(str(gc.pid));sys.stdout.flush()\n" + HUNG_CHILD_SOURCE
 )
 
 _EXITING_CHILD = (
     "import subprocess,sys;"
-    "gc=subprocess.Popen([sys.executable,'-c','import time;time.sleep(120)']);"
+    f"gc=subprocess.Popen([sys.executable,'-c',{HUNG_CHILD_SOURCE!r}]);"
     "open(sys.argv[1],'w').write(str(gc.pid))"
 )
 

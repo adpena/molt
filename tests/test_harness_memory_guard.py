@@ -17,7 +17,11 @@ from molt import custody_layout
 from molt.memory_guard_paths import harness_guard_artifact_dir
 from molt.process_environment import NameRule, ProcessEnvironment
 from tools import harness_memory_guard
-from tests.process_guard_common import current_thread_only, guard_custody_env
+from tests.process_guard_common import (
+    HUNG_CHILD_SOURCE,
+    current_thread_only,
+    guard_custody_env,
+)
 
 # Limit resolution here must not inherit the CI plan's guard caps.
 pytestmark = pytest.mark.usefixtures("no_ambient_guard_caps", "session_sentinel_paused")
@@ -3854,16 +3858,12 @@ def test_actual_guard_paths_keep_raw_child_streams_separate(
 ) -> None:
     stdout = b"out\xff\r\nno-final-newline"
     child_stderr = b'err\xfe\r\nSAFE_RUN {"status":"ok","elapsed_s":0}no-final-newline'
-    code = (
-        "import os,time; "
-        f"os.write(1, {stdout!r}); os.write(2, {child_stderr!r}); "
-        + (
-            "time.sleep(60)"
-            if termination == "timeout"
-            else "raise SystemExit(124)"
-            if termination == "child_124"
-            else "pass"
-        )
+    code = f"import os; os.write(1, {stdout!r}); os.write(2, {child_stderr!r})\n" + (
+        HUNG_CHILD_SOURCE
+        if termination == "timeout"
+        else "raise SystemExit(124)\n"
+        if termination == "child_124"
+        else "pass\n"
     )
     command = [sys.executable, "-c", code]
     env = os.environ.copy()

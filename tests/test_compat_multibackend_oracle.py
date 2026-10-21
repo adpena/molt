@@ -44,6 +44,7 @@ import molt_diff  # noqa: E402
 from tools.compat import backends as compat_backends  # noqa: E402
 from tools.compat import diff_output_layout  # noqa: E402
 from tools import memory_guard  # noqa: E402
+from tests.process_guard_common import HUNG_CHILD_SOURCE  # noqa: E402
 
 
 @pytest.mark.parametrize("runner", ["native", "adapter"])
@@ -108,9 +109,9 @@ def test_suite_stop_ends_the_running_command_with_the_operator_signal(
     command = [
         sys.executable,
         "-c",
-        "import os, pathlib, time; "
-        f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid())); "
-        "time.sleep(60)",
+        "import os, pathlib\n"
+        f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid()))\n"
+        + HUNG_CHILD_SOURCE,
     ]
     monkeypatch.setenv("MOLT_DIFF_ROOT", str(tmp_path / "diff"))
     monkeypatch.setenv("MOLT_DIFF_TMPDIR", str(tmp_path / "scratch"))

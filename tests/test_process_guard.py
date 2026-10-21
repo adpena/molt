@@ -7,7 +7,7 @@ import pytest
 
 from molt import process_guard
 from molt.process_environment import NameRule, ProcessEnvironment
-from tests.process_guard_common import install_module_view
+from tests.process_guard_common import HUNG_CHILD_SOURCE, install_module_view
 
 
 @pytest.mark.parametrize("rule", list(NameRule))
@@ -519,7 +519,7 @@ def test_unguarded_probe_retains_live_use_and_original_error_through_gc(
         "-I",
         "-S",
         "-c",
-        "import time; time.sleep(30)"
+        HUNG_CHILD_SOURCE
         if failure == "wait"
         else "import sys; value=sys.stdin.read(); print(value,end=''); sys.stderr.buffer.write(b'diagnostic\\n'); raise SystemExit(7)",
     ]
@@ -615,7 +615,7 @@ def test_unguarded_probe_actual_timeout_keeps_partial_output(tmp_path):
         "-I",
         "-S",
         "-c",
-        "import time; print('before-timeout',flush=True); time.sleep(30)",
+        "print('before-timeout',flush=True)\n" + HUNG_CHILD_SOURCE,
     ]
     with pytest.raises(subprocess.TimeoutExpired) as caught:
         process_guard.run_completed_command(

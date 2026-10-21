@@ -57,9 +57,12 @@ import time
 import venv
 from pathlib import Path
 from tests.process_guard_common import (
+    HUNG_CHILD_SOURCE,
     install_module_os_view,
     install_module_view,
+    processes_carrying,
     run_guarded_test_process,
+    stop_test_processes_carrying,
 )
 
 import pytest
@@ -2307,12 +2310,14 @@ gates = ["echo build-started > build-started.txt"]
 
 
 def _wait_for(marker: str, *, then: str) -> str:
-    """A gate that needs another gate to run beside it: serially it times out."""
+    """A gate that needs another gate to run beside it.
+
+    Serially it waits forever, and the session's own deadline ends the test:
+    a wall-clock bound here failed it on a loaded host.
+    """
     return _integration_python(
         "import pathlib, sys, time\n"
-        "deadline = time.monotonic() + 60\n"
         f"while not pathlib.Path({marker!r}).exists():\n"
-        "    if time.monotonic() > deadline: sys.exit(9)\n"
         "    time.sleep(0.05)\n" + then
     )
 
@@ -2367,14 +2372,12 @@ def test_integrate_reports_the_first_failure_in_declared_order(
         "receipt = pathlib.Path(git('rev-parse', '--path-format=absolute', "
         "'--git-common-dir')) / 'molt-integrate' / 'receipts' / "
         "(git('rev-parse', 'HEAD') + '.gates.json')\n"
-        "deadline = time.monotonic() + 60\n"
         "while True:\n"
         "    try:\n"
         "        rows = json.loads(receipt.read_text())['commands']\n"
         "    except (OSError, ValueError, KeyError):\n"
         "        rows = []\n"
         "    if any(r['id'] == 'local.always.3' for r in rows): sys.exit(5)\n"
-        "    if time.monotonic() > deadline: sys.exit(9)\n"
         "    time.sleep(0.05)\n"
     )
     gates = [
@@ -2397,24 +2400,26 @@ def test_integrate_cancels_later_gates_after_an_earlier_failure(
     drv, origin_and_clone, monkeypatch
 ):
     _, work = origin_and_clone
-    marker = str(work.parent / "second-started")
-    finished = work.parent / "second-finished"
-    gates = [
-        _wait_for(marker, then="sys.exit(4)"),
-        _integration_python(
-            "import pathlib, time\n"
-            f"pathlib.Path({marker!r}).touch()\n"
-            "time.sleep(120)\n"
-            f"pathlib.Path({str(finished)!r}).touch()"
-        ),
-    ]
-    _commit_integration_policy(work, gates)
+    started = str(work.parent / "second-started")
+    marker = f"hung-gate-of-{work.parent.name}"
+    # The second gate never ends by itself: only its cancellation ends it.
+    hung = shlex.join(
+        [
+            sys.executable,
+            "-c",
+            f"import pathlib\npathlib.Path({started!r}).touch()\n" + HUNG_CHILD_SOURCE,
+            marker,
+        ]
+    )
+    _commit_integration_policy(work, [_wait_for(started, then="sys.exit(4)"), hung])
     monkeypatch.setattr(drv, "concurrent_gate_limit", lambda: 2)
-    started = time.monotonic()
-    with pytest.raises(GateFailure, match=r"gate failed \(exit 4\)"):
-        drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
-    assert time.monotonic() - started < 100
-    assert not finished.exists()
+    try:
+        with pytest.raises(GateFailure, match=r"gate failed \(exit 4\)"):
+            drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
+        still_running = processes_carrying(marker)
+    finally:
+        stop_test_processes_carrying(marker)
+    assert still_running == [], "the cancelled gate still runs"
 
 
 @pytest.mark.parametrize("cause", ["gate exit", "outside writer"])
@@ -5679,9 +5684,7 @@ def test_detached_invalid_ack_retains_parent_use_after_exception_gc(
 
     def child(self, command, **kwargs):
         nonlocal process
-        process = start(
-            [sys.executable, "-c", "import time; time.sleep(30)"], env=environment
-        )
+        process = start([sys.executable, "-c", HUNG_CHILD_SOURCE], env=environment)
         return process
 
     monkeypatch.setattr(type(detached._COMMANDS), "start_owned", child)
@@ -5699,7 +5702,7 @@ def test_detached_invalid_ack_retains_parent_use_after_exception_gc(
     finally:
         assert process is not None
         process.terminate()
-        process.wait(timeout=5)
+        process.wait()
         atexit.unregister(handoff._close_at_exit)
         handoff._close_at_exit()
     _assert_detached_retirement_binding(roots, True)

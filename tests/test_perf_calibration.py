@@ -6,11 +6,15 @@ GetProcessMemoryInfo path that fixes the native board's "RSS=0" gap.
 """
 
 import sys
-import time
 from types import SimpleNamespace
 
 import pytest
 
+from tests.process_guard_common import (
+    HUNG_CHILD_SOURCE,
+    processes_carrying,
+    stop_test_processes_carrying,
+)
 from tools import perf_calibration as pc
 
 
@@ -61,11 +65,9 @@ def test_run_and_measure_captures_output_and_peak():
 
 
 def test_run_and_measure_timeout():
-    m = pc.run_and_measure(
-        [sys.executable, "-c", "import time; time.sleep(10)"], timeout=0.5
-    )
+    # The child never exits by itself, so only the deadline ends it.
+    m = pc.run_and_measure([sys.executable, "-c", HUNG_CHILD_SOURCE], timeout=0.5)
     assert m.timed_out
-    assert m.elapsed_s < 5  # killed well before the 10s sleep
 
 
 def test_run_and_measure_preserves_infrastructure_outcome(monkeypatch):
@@ -117,7 +119,7 @@ def test_run_and_measure_closes_child_when_spawn_observer_fails():
 
     with pytest.raises(RuntimeError, match="observer rejected child"):
         pc.run_and_measure(
-            [sys.executable, "-c", "import time; time.sleep(10)"],
+            [sys.executable, "-c", HUNG_CHILD_SOURCE],
             on_spawn=reject_spawn,
         )
     assert observed_pids
@@ -165,30 +167,29 @@ def test_run_and_measure_reaps_nested_child_after_root_exit(tmp_path, monkeypatc
     # Windows Job membership. This hook grants no custody and changes no sample.
     # POSIX cleanup intentionally cannot claim an unseen reparented PGID peer.
     monkeypatch.setattr(guard.ProcessTreeTracker, "update", observe_custody)
+    marker = f"nested-of-{tmp_path.name}"
     child_source = (
         "import pathlib, subprocess, sys, time\n"
-        "p=subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+        f"p=subprocess.Popen([sys.executable, '-c', {HUNG_CHILD_SOURCE!r}, {marker!r}])\n"
         f"pathlib.Path({str(pid_path)!r}).write_text(str(p.pid), encoding='utf-8')\n"
         f"release=pathlib.Path({str(release_path)!r})\n"
-        "deadline=time.monotonic()+5.0\n"
-        "while not release.exists():\n"
-        "    if time.monotonic() >= deadline:\n"
-        "        raise RuntimeError('guard did not observe nested child custody')\n"
+        "while not release.exists():  # Released once custody admits the pair.\n"
         "    time.sleep(0.005)\n"
     )
 
-    measurement = pc.run_and_measure(
-        [sys.executable, "-c", child_source], on_spawn=spawned_pids.append
-    )
+    try:
+        measurement = pc.run_and_measure(
+            [sys.executable, "-c", child_source], on_spawn=spawned_pids.append
+        )
 
-    assert measurement.returncode == 0
-    nested_pid = int(pid_path.read_text(encoding="utf-8"))
-    assert observed_nested_pids == {nested_pid}
-    deadline = time.monotonic() + 5.0
-    while nested_pid in pc.harness_memory_guard.memory_guard.sample_processes():
-        if time.monotonic() >= deadline:
-            pytest.fail(f"nested process {nested_pid} survived benchmark custody")
-        time.sleep(0.05)
+        assert measurement.returncode == 0
+        nested_pid = int(pid_path.read_text(encoding="utf-8"))
+        assert observed_nested_pids == {nested_pid}
+        # Closure observed its exit: it runs nothing now.
+        assert nested_pid not in processes_carrying(marker)
+    finally:
+        # The nested child never exits by itself; stop it if custody did not.
+        stop_test_processes_carrying(marker)
 
 
 def test_adaptive_samples_converges_on_stable_signal():

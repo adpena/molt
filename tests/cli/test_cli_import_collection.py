@@ -179,7 +179,12 @@ from tests.wasm_object_fixtures import (
 from tests.wasm_object_fixtures import (
     wasm_exporting_i64_unary_symbols as _wasm_exporting_i64_unary_symbols,
 )
-from tests.process_guard_common import current_thread_only, install_module_view
+from tests.process_guard_common import (
+    HUNG_CHILD_SOURCE,
+    current_thread_only,
+    install_module_view,
+    stop_test_processes_carrying,
+)
 from tests.source_record_test_support import replace_source_record, source_records
 from molt.cli import build_locks as cli_build_locks
 from molt.cli import env_paths as cli_env_paths
@@ -4312,7 +4317,7 @@ def test_run_subprocess_captured_to_tempfiles_does_not_block_on_inherited_pipes(
     parent.write_text(
         "import pathlib, subprocess, sys\n"
         "child = subprocess.Popen(\n"
-        f"    [sys.executable, '-c', 'import time; time.sleep(60.0)', {marker!r}],\n"
+        f"    [sys.executable, '-c', {HUNG_CHILD_SOURCE!r}, {marker!r}],\n"
         "    stdout=sys.stdout,\n"
         "    stderr=sys.stderr,\n"
         ")\n"
@@ -4325,20 +4330,24 @@ def test_run_subprocess_captured_to_tempfiles_does_not_block_on_inherited_pipes(
     # before the child exits. A loaded host can take seconds to start and
     # census the processes, so the oracle is the timeout, not a wall bound.
     timeout = 30.0
-    start = time.perf_counter()
-    result = COMMAND_RUNTIME._run_subprocess_captured_to_tempfiles(
-        [sys.executable, str(parent)],
-        timeout=timeout,
-    )
-    elapsed = time.perf_counter() - start
-    child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+    try:
+        start = time.perf_counter()
+        result = COMMAND_RUNTIME._run_subprocess_captured_to_tempfiles(
+            [sys.executable, str(parent)],
+            timeout=timeout,
+        )
+        elapsed = time.perf_counter() - start
+        child_pid = int(child_pid_file.read_text(encoding="utf-8"))
 
-    assert result.returncode == 0
-    assert "parent-done" in cli_output.subprocess_output_text(result.stdout)
-    assert elapsed < timeout
-    assert result.descendants_closed is True
-    argv = process_command_argv(child_pid)
-    assert argv is None or marker not in argv
+        assert result.returncode == 0
+        assert "parent-done" in cli_output.subprocess_output_text(result.stdout)
+        assert elapsed < timeout
+        assert result.descendants_closed is True
+        argv = process_command_argv(child_pid)
+        assert argv is None or marker not in argv
+    finally:
+        # The child never exits by itself; stop it if the guard did not.
+        stop_test_processes_carrying(marker)
 
 
 def test_build_module_lowering_metadata_precomputes_module_flags(

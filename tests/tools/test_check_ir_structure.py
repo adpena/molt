@@ -17,6 +17,7 @@ from tools.rust_ir_verifier import (
     process_local_verifier_pid,
 )
 from tools.verify_ir_suite import _load_pool_policy
+from tests.process_guard_common import HUNG_CHILD_SOURCE
 
 
 def _function_diagnostics(
@@ -569,7 +570,8 @@ def test_ir_worker_defaults_come_from_calibrated_policy() -> None:
 
 
 def test_verifier_request_deadline_closes_a_wedged_owned_child() -> None:
-    script = "import sys,time\nfor line in sys.stdin:\n    time.sleep(30)\n"
+    # The child reads one request, then never answers until its owner kills it.
+    script = "import sys\nsys.stdin.readline()\n" + HUNG_CHILD_SOURCE
     verifier = RustIrVerifier(
         command=[sys.executable, "-u", "-c", script],
         request_timeout_seconds=0.05,

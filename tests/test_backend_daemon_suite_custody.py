@@ -674,7 +674,6 @@ def test_guardian_failure_still_runs_bounded_suite_fallback(tmp_path, monkeypatc
 @pytest.mark.skipif(os.name != "posix", reason="real fork ownership requires POSIX")
 def test_fork_child_does_not_keep_suite_eof_alive(tmp_path):
     import signal
-    import time
 
     root = Path(__file__).resolve().parents[1]
     env = dict(os.environ)
@@ -682,14 +681,23 @@ def test_fork_child_does_not_keep_suite_eof_alive(tmp_path):
     env["PYTHONPATH"] = str(root / "src") + os.pathsep + str(root)
     active = suite.SuiteDaemonLease.start(project_root=root, environ=env)
     assert active is not None
+    # The child lives until the test's SIGTERM, whatever handler pytest
+    # installed: it takes the default action before the signal can arrive.
+    mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})
     child = getattr(os, "fork")()
     if child == 0:
-        # Close inherited Python object too: this must be inert, never unlock.
-        active.close()
-        time.sleep(10)
-        os._exit(0)
+        try:
+            signal.signal(signal.SIGTERM, signal.SIG_DFL)
+            signal.pthread_sigmask(signal.SIG_SETMASK, mask)
+            # Close inherited Python object too: this must be inert, never unlock.
+            active.close()
+            while True:
+                signal.pause()
+        finally:
+            os._exit(1)
+    signal.pthread_sigmask(signal.SIG_SETMASK, mask)
     try:
-        active.close(timeout=3)
+        active.close()
         assert active.guardian.returncode == 0
         assert os.waitpid(child, getattr(os, "WNOHANG")) == (0, 0)
     finally:
