@@ -482,13 +482,12 @@ separate from host graph and binding-fact validation.
   Policy identity and graph schema separate this coverage from candidate-only
   and semantic queries, including warm-cache use. Coverage cannot authorize
   execution metadata, intrinsic status, or a guest host-Python fallback.
-  Development lowering fingerprints remain narrow when every anchor is known.
-  Unknown relative anchors conservatively widen invalidation to the complete
-  admitted local domain, including backend, guest stdlib and GPU Python bytes
-  under `molt`. This incurs fresh topology enumeration and content capture; no
-  speedup is implied. Installed semantic snapshots instead consume the existing
-  admitted whole compiler-generation identity, with a distinct frontend semantic
-  cache namespace, and avoid the development import graph. Verified generation
+  The frontend semantic fingerprint does not use this graph. It hashes the
+  declared producer set `_FRONTEND_COMPILER_INPUTS`
+  ([design](../../../../design/frontend_semantic_fingerprint.md)); tests check
+  that set against every import a producer can run. Installed semantic
+  snapshots consume the admitted whole compiler-generation identity, with a
+  distinct frontend semantic cache namespace. Verified generation
   identity proves tooling inputs, never mutable runtime package metadata.
   Namespace method identity transports possible `__setitem__`/`__delitem__`
   alternatives even when globals lookup or a replaceable activation can return
