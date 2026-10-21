@@ -3924,6 +3924,27 @@ def test_detached_run_completes_and_records_rc(drv, tmp_path, capsys):
     assert verdict["status"] == "done" and verdict["rc"] == 0
 
 
+def test_detached_run_prints_a_verify_command_that_finds_its_state(
+    drv, tmp_path, capsys
+):
+    # The landing queue starts its runners under --state-dir; the printed
+    # next step once omitted it and looked in the system temp directory.
+    state_root = tmp_path / "runners"
+    command = [sys.executable, "-c", "pass"]
+    assert drv.cmd_detached_run(_dr_ns(drv, "hinted", state_root, command)) == 0
+    printed = capsys.readouterr().err  # status lines go to stderr
+    from tools.molt_dev_detached import verify_command
+
+    argv = verify_command("hinted", str(state_root), 30)
+    assert "      " + shlex.join(argv) + "\n" in printed
+    assert argv[:2] == ["python3", "tools/molt_dev.py"]
+    verify = drv.build_parser().parse_args([*argv[2:], "--json"])
+    verify.min_age_s = 0.0
+    _wait_done(drv, capsys, "hinted", state_root)
+    rc, verdict = _verify_json(drv, capsys, verify)
+    assert (rc, verdict["status"], verdict["rc"]) == (drv.EXIT_OK, "done", 0)
+
+
 def test_detached_runner_never_forks_the_live_python_process(drv):
     """Detachment stays safe under memory-guard and free-threaded callers."""
     source = (
