@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -525,11 +527,25 @@ def test_retirement_restores_foreign_hook_and_allows_real_push(tmp_path, foreign
         foreign_mode = preserved.stat().st_mode
     before = target.read_bytes()
     assert (
-        ig.install(check=True, uninstall=False, repo_root=repo, hooks=(PRE_PUSH,)) == 1
+        ig.install(
+            check=True,
+            uninstall=False,
+            repo_root=repo,
+            hooks=(PRE_PUSH,),
+            merge_drivers=(),
+        )
+        == 1
     )
     assert target.read_bytes() == before
     assert (
-        ig.install(check=False, uninstall=False, repo_root=repo, hooks=(PRE_PUSH,)) == 0
+        ig.install(
+            check=False,
+            uninstall=False,
+            repo_root=repo,
+            hooks=(PRE_PUSH,),
+            merge_drivers=(),
+        )
+        == 0
     )
     if foreign:
         assert target.read_bytes() == foreign_bytes
@@ -538,10 +554,24 @@ def test_retirement_restores_foreign_hook_and_allows_real_push(tmp_path, foreign
     else:
         assert not target.exists()
     assert (
-        ig.install(check=False, uninstall=False, repo_root=repo, hooks=(PRE_PUSH,)) == 0
+        ig.install(
+            check=False,
+            uninstall=False,
+            repo_root=repo,
+            hooks=(PRE_PUSH,),
+            merge_drivers=(),
+        )
+        == 0
     )
     assert (
-        ig.install(check=True, uninstall=False, repo_root=repo, hooks=(PRE_PUSH,)) == 0
+        ig.install(
+            check=True,
+            uninstall=False,
+            repo_root=repo,
+            hooks=(PRE_PUSH,),
+            merge_drivers=(),
+        )
+        == 0
     )
     assert not PRE_PUSH.source.exists()
 
@@ -599,10 +629,17 @@ def test_retirement_preserves_independent_foreign_and_orphaned_local(
     if active_foreign:
         target.write_bytes(current)
     assert ig.install(
-        check=True, uninstall=False, repo_root=repo, hooks=(PRE_PUSH,)
+        check=True, uninstall=False, repo_root=repo, hooks=(PRE_PUSH,), merge_drivers=()
     ) == (0 if active_foreign else 1)
     assert (
-        ig.install(check=False, uninstall=False, repo_root=repo, hooks=(PRE_PUSH,)) == 0
+        ig.install(
+            check=False,
+            uninstall=False,
+            repo_root=repo,
+            hooks=(PRE_PUSH,),
+            merge_drivers=(),
+        )
+        == 0
     )
     assert target.read_bytes() == (current if active_foreign else saved)
     if active_foreign:
@@ -638,17 +675,36 @@ def test_retirement_from_linked_worktree_uses_common_hook_directory(tmp_path):
     hook = repo / ".git" / "hooks" / "pre-push"
     _write_executable(hook, "#!/bin/sh\n# molt-drift-gate-hook v1\nexit 98\n")
     assert (
-        ig.install(check=True, uninstall=False, repo_root=linked, hooks=(PRE_PUSH,))
+        ig.install(
+            check=True,
+            uninstall=False,
+            repo_root=linked,
+            hooks=(PRE_PUSH,),
+            merge_drivers=(),
+        )
         == 1
     )
     assert hook.exists()
     assert (
-        ig.install(check=False, uninstall=False, repo_root=linked, hooks=(PRE_PUSH,))
+        ig.install(
+            check=False,
+            uninstall=False,
+            repo_root=linked,
+            hooks=(PRE_PUSH,),
+            merge_drivers=(),
+        )
         == 0
     )
     assert not hook.exists()
     assert (
-        ig.install(check=True, uninstall=False, repo_root=repo, hooks=(PRE_PUSH,)) == 0
+        ig.install(
+            check=True,
+            uninstall=False,
+            repo_root=repo,
+            hooks=(PRE_PUSH,),
+            merge_drivers=(),
+        )
+        == 0
     )
 
 
@@ -667,3 +723,131 @@ def test_active_hook_does_not_overwrite_conflicting_foreign_backup(
     assert ig.install(check=False, uninstall=False, repo_root=repo) == 2
     assert target.read_bytes() == b"#!/bin/sh\necho current\n"
     assert preserved.read_bytes() == b"#!/bin/sh\necho earlier\n"
+
+
+LEDGER_DRIVER = next(d for d in ig.MERGE_DRIVERS if d.name == "molt-ledger")
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _git_out(repo: Path, *args: str) -> str:
+    completed = run_guarded_test_process(
+        ["git", "-C", str(repo), *args], capture_output=True, text=True
+    )
+    return completed.stdout.strip() if completed.returncode == 0 else ""
+
+
+def test_install_registers_the_ledger_merge_driver_and_uninstall_removes_it(
+    tmp_path, monkeypatch
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git_init(repo)
+    monkeypatch.setattr(ig, "HOOKS_SOURCE_DIR", _fake_sources(tmp_path))
+    driver_key = "merge.molt-ledger.driver"
+
+    assert ig.install(check=False, uninstall=False, repo_root=repo) == 0
+    assert (
+        _git_out(repo, "config", "--get", driver_key)
+        == (LEDGER_DRIVER.settings[driver_key])
+    )
+    assert _git_out(repo, "config", "--get", "merge.molt-ledger.name") == (
+        "Molt ledger rows by finding ID"
+    )
+    # A stale command is reported by --check and replaced by install.
+    run_guarded_test_process(
+        ["git", "-C", str(repo), "config", driver_key, "old-driver %A"], check=True
+    )
+    assert ig.install(check=True, uninstall=False, repo_root=repo) == 1
+    assert ig.install(check=False, uninstall=False, repo_root=repo) == 0
+    assert ig.install(check=True, uninstall=False, repo_root=repo) == 0
+    assert ig.install(check=False, uninstall=True, repo_root=repo) == 0
+    assert _git_out(repo, "config", "--get", driver_key) == ""
+
+
+def _ledger(rows: list[str]) -> str:
+    table = "".join(f"| {row} | x |\n" for row in rows)
+    return f"# Ledger\n\n## Open\n\n| ID | Finding |\n|----|---------|\n{table}"
+
+
+def _ledger_repo(tmp_path: Path, monkeypatch, *, with_driver: bool) -> Path:
+    """A repository that installs the shipped driver, wrapper and launcher."""
+    if os.name == "nt" or shutil.which("uv") is None:
+        pytest.skip("the shipped launcher test needs POSIX sh and uv")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git_init(repo)
+    for key, value in (("user.name", "Molt Dev"), ("user.email", "dev@molt.test")):
+        run_guarded_test_process(
+            ["git", "-C", str(repo), "config", key, value], check=True
+        )
+    for name in ("molt-hook-launch.sh", "molt-ledger-merge"):
+        _write_executable(
+            repo / ".githooks" / name,
+            (HOOKS_DIR / name).read_text(encoding="utf-8"),
+        )
+    if with_driver:
+        (repo / "tools").mkdir()
+        shutil.copy(REPO_ROOT / "tools" / "ledger_merge.py", repo / "tools")
+    # The repository is its own common checkout; its environment is this one.
+    (repo / ".venv" / "bin").mkdir(parents=True)
+    (repo / ".venv" / "bin" / "python").symlink_to(Path(sys.executable))
+    (repo / ".gitignore").write_text(".venv/\n", encoding="utf-8")
+    (repo / ".gitattributes").write_text(
+        "LEDGER.md merge=molt-ledger\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(ig, "HOOKS_SOURCE_DIR", _fake_sources(tmp_path))
+    assert ig.install(check=False, uninstall=False, repo_root=repo) == 0
+    (repo / "LEDGER.md").write_text(_ledger(["HF-1"]), encoding="utf-8")
+    run_guarded_test_process(["git", "-C", str(repo), "add", "-A"], check=True)
+    run_guarded_test_process(
+        ["git", "-C", str(repo), "commit", "-q", "--no-verify", "-m", "base"],
+        check=True,
+    )
+    for branch, row in (("lane", "HF-11"), ("main", "HF-10")):
+        if branch == "lane":
+            run_guarded_test_process(
+                ["git", "-C", str(repo), "switch", "-q", "-c", "lane"], check=True
+            )
+        else:
+            run_guarded_test_process(
+                ["git", "-C", str(repo), "switch", "-q", "-"], check=True
+            )
+        (repo / "LEDGER.md").write_text(_ledger([row, "HF-1"]), encoding="utf-8")
+        run_guarded_test_process(
+            ["git", "-C", str(repo), "commit", "-q", "--no-verify", "-am", row],
+            check=True,
+        )
+    return repo
+
+
+def test_the_installed_ledger_driver_merges_rows_in_a_real_cherry_pick(
+    tmp_path, monkeypatch
+):
+    repo = _ledger_repo(tmp_path, monkeypatch, with_driver=True)
+
+    picked = run_guarded_test_process(
+        ["git", "-C", str(repo), "cherry-pick", "lane"], capture_output=True, text=True
+    )
+
+    assert picked.returncode == 0, picked.stderr
+    rows = [
+        line.split("|")[1].strip()
+        for line in (repo / "LEDGER.md").read_text(encoding="utf-8").splitlines()
+        if line.startswith("| HF-")
+    ]
+    assert rows == ["HF-11", "HF-10", "HF-1"]
+
+
+def test_the_ledger_wrapper_merges_as_text_without_the_driver(tmp_path, monkeypatch):
+    repo = _ledger_repo(tmp_path, monkeypatch, with_driver=False)
+
+    picked = run_guarded_test_process(
+        ["git", "-C", str(repo), "cherry-pick", "lane"], capture_output=True, text=True
+    )
+
+    # Git's own text merge: a conflict with standard markers keeps both rows.
+    assert picked.returncode != 0
+    text = (repo / "LEDGER.md").read_text(encoding="utf-8")
+    assert "<<<<<<< ours" in text and ">>>>>>> theirs" in text
+    assert "| HF-10 |" in text and "| HF-11 |" in text
+    assert "merging as text" in picked.stderr

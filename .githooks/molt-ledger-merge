@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# molt-ledger-merge-driver v1  (managed by tools/install_git_hooks.py — do not rename this marker)
+# Git merge driver for the v1.0 ledger (.gitattributes: merge=molt-ledger).
+# tools/ledger_merge.py merges findings rows by their ID, so two lanes that add
+# or edit different rows never conflict. Git calls it as: BASE OURS THEIRS.
+# If the driver cannot start, Git's own text merge runs instead, so a broken
+# setup still writes standard conflict markers rather than one side alone.
+set -uo pipefail
+
+base="$1" ours="$2" theirs="$3"
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || repo_root=""
+driver="$repo_root/tools/ledger_merge.py"
+launch="$repo_root/.githooks/molt-hook-launch.sh"
+if [ -z "$repo_root" ] || [ ! -f "$driver" ] || [ ! -f "$launch" ]; then
+  echo "molt-ledger-merge: tools/ledger_merge.py is not in this checkout; merging as text" >&2
+  exec git merge-file -L ours -L base -L theirs "$ours" "$base" "$theirs"
+fi
+# shellcheck source=molt-hook-launch.sh
+if ! . "$launch"; then
+  echo "molt-ledger-merge: the hook launcher failed; merging as text" >&2
+  exec git merge-file -L ours -L base -L theirs "$ours" "$base" "$theirs"
+fi
+# The launcher answers 1 when uv or the environment is missing, as the driver
+# answers a conflict; check them first so 1 always means a marked conflict.
+if ! command -v uv >/dev/null 2>&1 || [ ! -x "$vpy" ]; then
+  echo "molt-ledger-merge: uv or the common checkout's environment is missing; merging as text" >&2
+  exec git merge-file -L ours -L base -L theirs "$ours" "$base" "$theirs"
+fi
+molt_hook_uv_python molt-ledger-merge "$driver" "$base" "$ours" "$theirs"
+status=$?
+# 0 is clean and 1 is a conflict the driver marked; anything else means it
+# could not run, so Git's text merge decides.
+if [ "$status" -gt 1 ]; then
+  echo "molt-ledger-merge: the driver failed (exit $status); merging as text" >&2
+  exec git merge-file -L ours -L base -L theirs "$ours" "$base" "$theirs"
+fi
+exit "$status"

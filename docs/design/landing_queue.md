@@ -241,6 +241,27 @@ One runner owns main. Agents enqueue and continue.
   candidate chain runs one batch at a time on this Mac; parallel speculation
   needs the farm's cells (Migration item 3).
 
+### 6. Ledger rows merge by ID
+
+- **Problem.** Most lanes end with a ledger commit, and two lanes that each
+  add a row at the top of one section conflict as lines. On 2026-10-21 the
+  queue left two of three lanes out of a batch for exactly that, and each
+  needed a manual rebase.
+- **Prior art.** Git's merge drivers (`gitattributes(5)`): Debian's
+  `dpkg-mergechangelogs` merges changelog entries by version, and lock-file
+  drivers merge packages by name rather than by line.
+- **Design.** `.gitattributes` names `merge=molt-ledger` for
+  `docs/agent/V1_HANDOFF_FINDINGS.md`. `tools/install_git_hooks.py` registers
+  the driver in the common Git config, so checkout provisioning installs it
+  for every worktree and the queue's sandbox. `tools/ledger_merge.py` keys
+  each findings row by its first cell: a row one side changed or moved takes
+  that side's version, a row one side added goes after its predecessor there,
+  a row one side deleted stays deleted, and a row both sides changed is a
+  conflict. Prose that both sides changed falls back to `git merge-file`, as
+  does a checkout without the driver.
+- **Cost.** One parse of the three 1.1 MB versions per merged ledger: 70 to
+  80 ms through `uv run --no-project --offline`, measured 2026-10-21.
+
 ## Costs
 
 - A candidate that selects every family runs the whole pre-push tier. On

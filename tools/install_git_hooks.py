@@ -9,6 +9,12 @@ so it fires in the checkout AND every linked worktree:
 
 The attribution hook starts Python through ``.githooks/molt-hook-launch.sh``.
 
+It also registers the managed merge drivers in the common Git config, which
+every worktree shares:
+  * ``molt-ledger`` — merges docs/agent/V1_HANDOFF_FINDINGS.md by finding ID
+                      (``.gitattributes`` names it; ``.githooks/molt-ledger-merge``
+                      runs ``tools/ledger_merge.py``).
+
 Why not ``core.hooksPath=.githooks``? That would ALSO enable ``.githooks/pre-commit``
 (a project type-check with pre-existing diagnostics), which would block every
 commit for every agent. So this installer wires ONLY the managed hooks, straight
@@ -72,6 +78,33 @@ HOOKS: tuple[ManagedHook, ...] = (
     ManagedHook("pre-push", "molt-drift-gate-hook", "retired drift gate", retired=True),
     ManagedHook(
         "commit-msg", "molt-commit-attribution-hook", "commit attribution policy"
+    ),
+)
+
+
+@dataclass(frozen=True)
+class ManagedMergeDriver:
+    name: str
+    description: str
+    script: str
+
+    @property
+    def settings(self) -> dict[str, str]:
+        # Git runs a driver through the shell; the script finds its own
+        # worktree, so one shared config entry serves every worktree.
+        return {
+            f"merge.{self.name}.name": self.description,
+            f"merge.{self.name}.driver": (
+                f'sh "$(git rev-parse --show-toplevel)/{self.script}" %O %A %B'
+            ),
+        }
+
+
+MERGE_DRIVERS: tuple[ManagedMergeDriver, ...] = (
+    ManagedMergeDriver(
+        "molt-ledger",
+        "Molt ledger rows by finding ID",
+        ".githooks/molt-ledger-merge",
     ),
 )
 
@@ -236,17 +269,83 @@ def _install_hook(
     return 0
 
 
+def _git_config_get(key: str, repo_root: Path) -> str | None:
+    completed = _COMMANDS.run(
+        ["git", "config", "--get", key],
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    return completed.stdout.rstrip("\n") if completed.returncode == 0 else None
+
+
+def _install_merge_driver(
+    driver: ManagedMergeDriver, *, check: bool, uninstall: bool, repo_root: Path
+) -> int:
+    current = {key: _git_config_get(key, repo_root) for key in driver.settings}
+    if uninstall:
+        for key, value in current.items():
+            if value is not None:
+                _COMMANDS.run(
+                    ["git", "config", "--unset", key],
+                    cwd=str(repo_root),
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                )
+        print(f"merge driver {driver.name}: removed")
+        return 0
+    if current == driver.settings:
+        print(f"merge driver {driver.name}: up to date")
+        return 0
+    if check:
+        state = "MISSING" if all(v is None for v in current.values()) else "OUTDATED"
+        print(
+            f"merge driver {driver.name}: {state} — run: python tools/install_git_hooks.py"
+        )
+        return 1
+    for key, value in driver.settings.items():
+        _COMMANDS.run(
+            ["git", "config", key, value],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
+        )
+    print(f"installed merge driver {driver.name} ({driver.description})")
+    return 0
+
+
 def install(
     *,
     check: bool,
     uninstall: bool,
     repo_root: Path = REPO_ROOT,
     hooks: tuple[ManagedHook, ...] = HOOKS,
+    merge_drivers: tuple[ManagedMergeDriver, ...] = MERGE_DRIVERS,
 ) -> int:
-    """Install, check, or uninstall every managed hook; return the worst status."""
+    """Install, check, or uninstall every managed hook and merge driver.
+
+    Returns the worst status.
+    """
     return max(
-        _install_hook(hook, check=check, uninstall=uninstall, repo_root=repo_root)
-        for hook in hooks
+        [
+            *(
+                _install_hook(
+                    hook, check=check, uninstall=uninstall, repo_root=repo_root
+                )
+                for hook in hooks
+            ),
+            *(
+                _install_merge_driver(
+                    driver, check=check, uninstall=uninstall, repo_root=repo_root
+                )
+                for driver in merge_drivers
+            ),
+        ],
+        default=0,
     )
 
 
