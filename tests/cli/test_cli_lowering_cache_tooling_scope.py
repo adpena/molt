@@ -1,45 +1,385 @@
-"""Frontend fingerprints retain reachability scope when anchors are known.
+"""The frontend semantic fingerprint keys exactly the declared producer code.
 
-The persisted analysis / lowering / import-graph caches key on a *frontend
-tooling* fingerprint. Historically that fingerprint hashed the entire
-``src/molt/cli`` tree, so touching an unrelated backend/link/daemon/cargo file
-(which provably cannot change what a module lowers to) invalidated the lowering
-cache and forced a needless cold re-lower of every witness module.
+``_FRONTEND_COMPILER_INPUTS`` in molt.cli.cache_fingerprints declares every
+compiler source that a frontend producer imports, and why it is in or out of
+the key (docs/design/frontend_semantic_fingerprint.md). These tests prove that:
 
-These tests pin the fix: the lowering-scoped fingerprint
-(:func:`_frontend_semantic_tooling_fingerprint`) is *invariant* under an edit to
-a post-lowering CLI module, while it still changes for any edit that could
-genuinely affect lowering (a ``frontend/`` file or a frontend-driver CLI file).
-The scope is derived structurally by module-level import reachability from the
-frontend/module drivers -- no hand-maintained denylist -- so a post-lowering file
-is out of scope when no lowering-reachable module imports it and no unknown
-literal-relative anchor requires complete local owner coverage. Such coverage
-deliberately broadens invalidation rather than assuming loader metadata. The
-broad :func:`_cache_tooling_fingerprint` -- the input the caches used before the
-fix -- is asserted to *still change* on the unrelated edit, so the tests have
-teeth: without the scoping the cache keys would move.
+* the declaration is closed: every import that producer code can execute names
+  a declared module (a static walk over every scope), and every import that a
+  real lowering executes names one too (a fresh process records each import
+  statement);
+* an edit to any non-keyed entry leaves the key unchanged, and an edit to any
+  keyed entry changes it;
+* the key covers what changes output: a producer edit that changes the IR of a
+  fixed program changes the key, while infrastructure edits change neither;
+* the build-environment values that excluded modules compute reach a lowering
+  record only through its key.
 """
 
 from __future__ import annotations
-from tests.process_guard_common import run_guarded_test_process
 
+import ast
 import importlib
+import importlib.util
+import json
 import os
-from dataclasses import replace
+import shutil
+import sys
 from pathlib import Path
 
 import pytest
 
+from tests.process_guard_common import run_guarded_test_process
+
 CF = importlib.import_module("molt.cli.cache_fingerprints")
 MC = importlib.import_module("molt.cli.module_cache")
+MS = importlib.import_module("molt.cli.module_source")
+
+ROLE = CF._FrontendInputRole
+INPUTS = CF._FRONTEND_COMPILER_INPUTS
+# The loaded compiler's own ``src/molt``; the declaration names paths under it.
+MOLT = Path(CF.__file__).resolve().parents[1]
+ROOT = MOLT.parents[1]
 
 
-_AUX_FILES = CF._FRONTEND_AUX_SOURCE_RELPATHS
-# One provably post-lowering CLI module (not reachable from any lowering seed) and
-# one frontend-driver CLI module (a ``frontend_*`` seed) that must keep
-# invalidating the caches.
-_ORTHOGONAL_CLI = "link_pipeline.py"
-_NON_ORTHOGONAL_CLI = "frontend_pipeline.py"
+def _module_files() -> dict[str, Path]:
+    """Every importable ``molt`` module of the loaded compiler, by name."""
+    modules: dict[str, Path] = {}
+    for path in MOLT.rglob("*.py"):
+        if "__pycache__" in path.parts:
+            continue
+        parts = path.relative_to(MOLT.parent).with_suffix("").parts
+        if parts[-1] == "__init__":
+            parts = parts[:-1]
+        modules[".".join(parts)] = path
+    return modules
+
+
+def _declared_role(path: Path) -> ROLE | None:
+    relative = path.relative_to(MOLT).as_posix()
+    role = INPUTS.get(relative)
+    if role is not None:
+        return role
+    for entry, entry_role in INPUTS.items():
+        if (MOLT / entry).is_dir() and relative.startswith(f"{entry}/"):
+            return entry_role
+    return None
+
+
+def _is_type_checking(test: ast.expr) -> bool:
+    return (isinstance(test, ast.Name) and test.id == "TYPE_CHECKING") or (
+        isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
+    )
+
+
+_DYNAMIC_IMPORT_CALLS = frozenset(
+    {
+        "__import__",
+        "import_module",
+        "spec_from_file_location",
+        "spec_from_loader",
+        "run_module",
+        "run_path",
+    }
+)
+_IMPORT_MODULES = frozenset({"builtins", "importlib", "importlib.util", "runpy"})
+_IMPORT_ANCHORS = frozenset({"__package__", "__spec__", "__path__", "__name__"})
+
+
+def _is_dynamic_import_call(func: ast.expr) -> bool:
+    """``__import__(...)``, ``importlib.import_module(...)`` and their kin.
+
+    A bare name counts (``from importlib import import_module``); an attribute
+    counts only on an import machinery module, not on any object's method.
+    """
+    if isinstance(func, ast.Name):
+        return func.id in _DYNAMIC_IMPORT_CALLS
+    return (
+        isinstance(func, ast.Attribute)
+        and func.attr in _DYNAMIC_IMPORT_CALLS
+        and ast.unparse(func.value) in _IMPORT_MODULES
+    )
+
+
+def _static_imports(
+    path: Path, module: str, modules: dict[str, Path]
+) -> tuple[set[str], list[str]]:
+    """Modules that ``path`` can import when it runs, and dynamic-import sites.
+
+    Every scope counts: a deferred import runs when its function does. Only
+    ``if TYPE_CHECKING:`` bodies are skipped, since they never execute. An
+    import also runs each parent package, so parents count as imports.
+    """
+    tree = ast.parse(path.read_bytes(), filename=str(path))
+    package = module if path.name == "__init__.py" else module.rpartition(".")[0]
+    found: set[str] = set()
+    dynamic: list[str] = []
+
+    def add(name: str) -> None:
+        parts = name.split(".")
+        for length in range(1, len(parts) + 1):
+            candidate = ".".join(parts[:length])
+            if candidate in modules:
+                found.add(candidate)
+
+    def visit(node: ast.AST) -> None:
+        if isinstance(node, ast.If) and _is_type_checking(node.test):
+            for child in node.orelse:
+                visit(child)
+            return
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "molt" or alias.name.startswith("molt."):
+                    add(alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            base = (
+                importlib.util.resolve_name(
+                    "." * node.level + (node.module or ""), package
+                )
+                if node.level
+                else node.module or ""
+            )
+            if base == "molt" or base.startswith("molt."):
+                add(base)
+                for alias in node.names:
+                    if f"{base}.{alias.name}" in modules:
+                        add(f"{base}.{alias.name}")
+        elif isinstance(node, ast.Call) and _is_dynamic_import_call(node.func):
+            dynamic.append(f"{path.name}:{node.lineno} {ast.unparse(node.func)}()")
+        elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                if isinstance(target, ast.Name) and target.id in _IMPORT_ANCHORS:
+                    dynamic.append(f"{path.name}:{node.lineno} {target.id} =")
+        for child in ast.iter_child_nodes(node):
+            visit(child)
+
+    visit(tree)
+    found.discard(module)
+    return found, dynamic
+
+
+def test_every_import_a_producer_can_run_is_declared() -> None:
+    modules = _module_files()
+    producers = {
+        name: path
+        for name, path in modules.items()
+        if _declared_role(path) is ROLE.PRODUCER
+    }
+    assert "molt.frontend" in producers and "molt.cli.module_cache" in producers
+    undeclared: dict[str, list[str]] = {}
+    dynamic: list[str] = []
+    imported: set[str] = set()
+    for name, path in sorted(producers.items()):
+        targets, sites = _static_imports(path, name, modules)
+        dynamic.extend(sites)
+        imported |= targets
+        for target in sorted(targets):
+            if _declared_role(modules[target]) is None:
+                undeclared.setdefault(target, []).append(name)
+    assert not undeclared, (
+        "frontend producers import modules that _FRONTEND_COMPILER_INPUTS does "
+        f"not classify (importer lists): {undeclared}"
+    )
+    # A computed module name or a rebound anchor escapes this walk; the
+    # declaration is only closed while producers import by literal name.
+    assert not dynamic, f"producers import by computed name: {dynamic}"
+    missing = sorted(entry for entry in INPUTS if not (MOLT / entry).exists())
+    assert not missing, f"declared compiler inputs do not exist: {missing}"
+    imported_paths = {modules[name].relative_to(MOLT).as_posix() for name in imported}
+    unused = sorted(
+        entry
+        for entry, role in INPUTS.items()
+        if role is not ROLE.PRODUCER
+        and role is not ROLE.REFERENCE
+        and entry not in imported_paths
+    )
+    assert not unused, f"no producer imports these declared entries: {unused}"
+
+
+def test_reference_sources_are_the_gpu_descriptor_references() -> None:
+    from molt.frontend.lowering.gpu_kernel_descriptor import (
+        GPU_PYTHON_BODY_REFERENCES,
+    )
+
+    assert set(CF._FRONTEND_REFERENCE_SOURCES) == {
+        relative for relative, _ in GPU_PYTHON_BODY_REFERENCES.values()
+    }
+
+
+# Each import statement the lowering executes, recorded by the importing module.
+_RUNTIME_PROBE = r"""
+import builtins, importlib.util, json, os, sys
+
+edges, reads = set(), set()
+real_import = builtins.__import__
+
+
+def molt_frame_name(frame):
+    while frame is not None:
+        name = frame.f_globals.get("__name__", "")
+        if name == "molt" or name.startswith("molt."):
+            return name
+        frame = frame.f_back
+    return None
+
+
+def recording_import(name, globals=None, locals=None, fromlist=(), level=0):
+    module = real_import(name, globals, locals, fromlist, level)
+    importer = (globals or {}).get("__name__", "")
+    if importer == "molt" or importer.startswith("molt."):
+        package = globals.get("__package__") or importer.rpartition(".")[0]
+        absolute = importlib.util.resolve_name("." * level + name, package) if level else name
+        if absolute != "molt" and not absolute.startswith("molt."):
+            return module
+        parts = absolute.split(".")
+        for length in range(1, len(parts) + 1):
+            edges.add((importer, ".".join(parts[:length])))
+        for item in fromlist or ():
+            if f"{absolute}.{item}" in sys.modules:
+                edges.add((importer, f"{absolute}.{item}"))
+    return module
+
+
+def audit(event, args):
+    # Data a producer reads: an "open" for reading that is not module source.
+    if event != "open" or not args or not isinstance(args[0], (str, os.PathLike)):
+        return
+    mode = args[1] if len(args) > 1 else None
+    flags = args[2] if len(args) > 2 else 0
+    if isinstance(mode, str):
+        writes = any(char in mode for char in "wax+")
+    else:
+        writes = bool(flags & (os.O_WRONLY | os.O_RDWR))
+    path = os.fspath(args[0])
+    if writes or path.endswith((".py", ".pyc")):
+        return
+    reader = molt_frame_name(sys._getframe(1))
+    if reader is not None:
+        reads.add((reader, path))
+
+
+builtins.__import__ = recording_import
+sys.addaudithook(audit)
+from molt.frontend import compile_to_tir
+
+ir = compile_to_tir(sys.stdin.read(), parse_codec="json")
+print(json.dumps({
+    "functions": len(ir["functions"]),
+    "edges": sorted(edges),
+    "reads": sorted(reads),
+    "loaded": sorted(name for name in sys.modules if name.startswith("molt.")),
+}))
+"""
+
+_PROGRAM = """import json
+from dataclasses import dataclass
+
+
+class Account:
+    def __init__(self, owner, balance=0):
+        self.__owner = owner
+        self.balance = balance
+
+    @property
+    def owner(self):
+        return self.__owner
+
+
+@dataclass
+class Point:
+    x: int
+    y: int = 0
+
+
+def squares(limit):
+    for item in range(limit):
+        yield item * item
+
+
+async def countdown(limit):
+    while limit:
+        yield limit
+        limit -= 1
+
+
+def main():
+    account = Account("ada", 3)
+    even = {index: value for index, value in enumerate(squares(4)) if value % 2 == 0}
+    try:
+        with open(__file__) as handle:
+            first = handle.readline()
+    except OSError as exc:
+        first = str(exc)
+    match account.balance:
+        case 3:
+            label = "three"
+        case _:
+            label = "other"
+    total = sum(value for value in even.values())
+    print(json.dumps({"owner": account.owner}), Point(total), f"{total:>4}", label, first)
+
+
+main()
+"""
+
+
+def _compiler_process_env() -> dict[str, str]:
+    env = dict(os.environ)
+    env.pop("MOLT_SOURCE_ROOT", None)
+    env.pop("PYTHONPATH", None)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    return env
+
+
+def _run_with_compiler(src_root: Path, script: str, stdin: str = "") -> dict:
+    """Run ``script`` in a fresh interpreter that imports only ``src_root``.
+
+    ``-I -S`` keeps the checkout's site hook from importing another ``molt``.
+    ``-I`` also ignores PYTHONDONTWRITEBYTECODE, so the bootstrap turns bytecode
+    writes off: the probe must never write into the compiler tree it reads.
+    """
+    bootstrap = (
+        "import sys; sys.dont_write_bytecode = True; "
+        f"sys.path.insert(0, {str(src_root)!r})\n" + script
+    )
+    completed = run_guarded_test_process(
+        [sys.executable, "-I", "-S", "-c", bootstrap],
+        input=stdin,
+        env=_compiler_process_env(),
+        timeout=300,
+    )
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(completed.stdout)
+
+
+def test_every_import_the_lowering_runs_is_declared() -> None:
+    result = _run_with_compiler(MOLT.parent, _RUNTIME_PROBE, _PROGRAM)
+    modules = _module_files()
+    # Non-vacuous: the probe lowered the program through non-frontend producers.
+    assert result["functions"] >= 5
+    importers = {importer for importer, _ in result["edges"]}
+    assert {"molt.frontend", "molt.python_private_names"} <= set(result["loaded"])
+    assert "molt.frontend" in importers
+    undeclared = sorted(
+        (importer, target)
+        for importer, target in result["edges"]
+        if _declared_role(modules[importer]) is ROLE.PRODUCER
+        and _declared_role(modules[target]) is None
+    )
+    assert not undeclared, f"the lowering imports undeclared modules: {undeclared}"
+    keyed_roots = [MOLT / entry for entry, role in INPUTS.items() if role.keyed]
+    unkeyed_reads = sorted(
+        (reader, path)
+        for reader, path in result["reads"]
+        if _declared_role(modules[reader]) is ROLE.PRODUCER
+        and not any(
+            Path(path).resolve() == root.resolve()
+            or Path(path).resolve().is_relative_to(root.resolve())
+            for root in keyed_roots
+        )
+    )
+    assert not unkeyed_reads, f"producers read data outside the key: {unkeyed_reads}"
 
 
 def _write(path: Path, text: str) -> None:
@@ -47,283 +387,211 @@ def _write(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def _build_fake_molt_tree(root: Path) -> Path:
-    """Minimal ``src/molt`` tree exercising both scoped and broad fingerprints."""
-    molt = root / "src" / "molt"
-    cli = molt / "cli"
-    # A representative slice of cli/*.py: orthogonal (denylisted) files plus
-    # frontend-relevant ones. The broad fingerprint hashes the whole cli dir;
-    # the scoped fingerprint drops the orthogonal names.
-    _write(cli / _ORTHOGONAL_CLI, "# post-lowering linking\nMARKER = 1\n")
-    _write(cli / "backend_execution.py", "# post-lowering backend\nMARKER = 1\n")
-    _write(cli / "native_toolchain.py", "# toolchain provisioning\nMARKER = 1\n")
-    _write(cli / _NON_ORTHOGONAL_CLI, "# frontend driver\nMARKER = 1\n")
-    _write(cli / "module_cache.py", "# per-module cache authority\nMARKER = 1\n")
-    _write(cli / "module_resolution.py", "# import resolution\nMARKER = 1\n")
-    # frontend/ tree: subpackages import each other, so it is kept whole.
-    _write(molt / "frontend" / "__init__.py", "MARKER = 1\n")
-    _write(molt / "frontend" / "lowering" / "core.py", "MARKER = 1\n")
-    _write(molt / "frontend" / "sema" / "__init__.py", "MARKER = 1\n")
-    _write(molt / "frontend" / "visitors" / "expressions.py", "MARKER = 1\n")
-    for rel in _AUX_FILES:
-        _write(molt / rel, "MARKER = 1\n")
-    return molt
-
-
 @pytest.fixture
-def fake_tree(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-    molt = _build_fake_molt_tree(tmp_path)
+def declared_tree(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """A compiler root that holds one small file per declared entry."""
+    molt = tmp_path / "src" / "molt"
+    for entry in INPUTS:
+        target = molt / entry
+        if (MOLT / entry).is_dir():
+            target = target / "__init__.py"
+        _write(target, "MARKER = 1\n")
+    _write(molt / "cli" / "link_pipeline.py", "MARKER = 1\n")
     monkeypatch.setattr(CF, "_compiler_root", lambda: tmp_path)
-    # Only the broad static path helper is root-cached. Dependency discovery
-    # observes current bytes/topology without manual invalidation.
-    CF._frontend_tooling_source_paths_cached.cache_clear()
     CF._SOURCE_TREE_CONTENT_DIGEST_CACHE.clear()
     return molt
 
 
-def _recompute() -> tuple[str, str]:
-    CF._SOURCE_TREE_CONTENT_DIGEST_CACHE.clear()
-    return (
-        CF._frontend_semantic_tooling_fingerprint(),
-        CF._cache_tooling_fingerprint(),
-    )
+def _edit(path: Path) -> None:
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write("MARKER = 2  # edited\n")
 
 
-def test_orthogonal_cli_edit_does_not_change_scoped_fingerprint(
-    fake_tree: Path,
+def test_unkeyed_edits_keep_the_key_and_keyed_edits_change_it(
+    declared_tree: Path,
 ) -> None:
-    scoped_before, broad_before = _recompute()
+    def key() -> str:
+        return CF._frontend_semantic_tooling_fingerprint()
 
-    # Unrelated edit: a post-lowering / linking CLI module.
-    (fake_tree / "cli" / _ORTHOGONAL_CLI).write_text(
-        "# post-lowering linking (edited)\nMARKER = 2\n",
-        encoding="utf-8",
-    )
-    scoped_after, broad_after = _recompute()
-
-    # The fix: the lowering-scoped fingerprint is unchanged -> the persisted
-    # lowering result is reused, not cold-started.
-    assert scoped_after == scoped_before
-    # Teeth: the broad fingerprint -- what the caches keyed on before the fix --
-    # *does* change, proving the unrelated edit used to invalidate the cache.
-    assert broad_after != broad_before
-
-
-def test_frontend_edit_still_changes_scoped_fingerprint(fake_tree: Path) -> None:
-    scoped_before, _ = _recompute()
-
-    # A genuine lowering-relevant edit inside frontend/.
-    (fake_tree / "frontend" / "lowering" / "core.py").write_text(
-        "MARKER = 2\n", encoding="utf-8"
-    )
-    scoped_after, _ = _recompute()
-
-    assert scoped_after != scoped_before
-
-
-def test_non_orthogonal_cli_edit_still_changes_scoped_fingerprint(
-    fake_tree: Path,
-) -> None:
-    scoped_before, _ = _recompute()
-
-    # A non-orthogonal CLI module (a frontend driver) must still invalidate.
-    (fake_tree / "cli" / _NON_ORTHOGONAL_CLI).write_text(
-        "# frontend driver (edited)\nMARKER = 2\n", encoding="utf-8"
-    )
-    scoped_after, _ = _recompute()
-
-    assert scoped_after != scoped_before
+    baseline = key()
+    kept: list[str] = []
+    for entry, role in INPUTS.items():
+        if role.keyed:
+            continue
+        _edit(declared_tree / entry)
+        if key() != baseline:
+            kept.append(entry)
+    # An undeclared module (here a link-stage driver) is not a lowering input.
+    _edit(declared_tree / "cli" / "link_pipeline.py")
+    assert key() == baseline
+    assert not kept, f"non-keyed edits changed the frontend key: {kept}"
+    previous = baseline
+    for entry, role in INPUTS.items():
+        if not role.keyed:
+            continue
+        target = declared_tree / entry
+        _edit(target / "__init__.py" if target.is_dir() else target)
+        current = key()
+        assert current != previous, f"editing keyed input {entry} kept the key"
+        previous = current
+    # A new file inside a keyed package is new producer code.
+    _write(declared_tree / "frontend" / "lowering" / "added.py", "VALUE = 1\n")
+    assert key() != previous
 
 
-def test_module_analysis_record_key_tracks_scoped_tooling_identity(
-    fake_tree: Path,
-) -> None:
-    """The real per-module cache key (module_cache authority) is wired to the
-    scoped fingerprint: an orthogonal CLI edit leaves it stable.
-
-    This fails if the wiring reverts to the broad fingerprint (which moves on the
-    same edit, per the teeth assertion below), so it guards the fix end-to-end.
-    """
-    module_path = fake_tree / "frontend" / "lowering" / "core.py"
+def test_module_analysis_record_key_uses_the_declared_key(declared_tree: Path) -> None:
+    module_path = declared_tree.parents[1] / "program.py"
+    module_path.write_text("VALUE = 1\n", encoding="utf-8")
 
     def analysis_key() -> str:
-        CF._SOURCE_TREE_CONTENT_DIGEST_CACHE.clear()
         return MC._module_analysis_record_key(
             module_path,
-            module_name="pkg.mod",
+            module_name="program",
             is_package=False,
             import_scan_mode="full",
             target_python=MC._DEFAULT_TARGET_PYTHON_VERSION,
         )
 
-    key_before = analysis_key()
-    broad_before = CF._cache_tooling_fingerprint()
-
-    (fake_tree / "cli" / _ORTHOGONAL_CLI).write_text(
-        "# post-lowering linking (edited)\nMARKER = 9\n",
-        encoding="utf-8",
-    )
-
-    key_after = analysis_key()
-    CF._SOURCE_TREE_CONTENT_DIGEST_CACHE.clear()
-    broad_after = CF._cache_tooling_fingerprint()
-
-    assert key_after == key_before
-    # Teeth: had the key kept using the broad fingerprint it would have moved.
-    assert broad_after != broad_before
-    (fake_tree / "cli" / _NON_ORTHOGONAL_CLI).write_text(
-        "# frontend driver (edited)\nMARKER = 7\n", encoding="utf-8"
-    )
-    assert analysis_key() != key_after
+    before = analysis_key()
+    _edit(declared_tree / "toolchain_identity.py")
+    _edit(declared_tree / "cli" / "build_diagnostics.py")
+    assert analysis_key() == before
+    _edit(declared_tree / "cli" / "frontend_pipeline.py")
+    assert analysis_key() != before
 
 
-def test_frontend_drivers_and_explicit_local_coverage_scope() -> None:
-    """Drivers always participate; broad coverage is explicit in the receipt."""
-    root = CF._compiler_root()
-    inputs = CF._frontend_semantic_tooling_sources(root)
-    # Restrict to ``cli/`` basenames: other packages may legitimately reuse a
-    # basename (e.g. ``compiler_analysis/backend_ir.py`` is frontend-analysis IR,
-    # unrelated to the post-lowering ``cli/backend_ir.py``).
-    scoped = {path.name for path in inputs.paths if path.parent.name == "cli"}
-
-    frontend_drivers = {
-        "frontend_execution.py",
-        "frontend_pipeline.py",
-        "frontend_parallel.py",
-        "frontend_worker.py",
-        "frontend_integration.py",
-        "module_cache.py",
-        "module_graph.py",
-        "module_graph_cache.py",
-        "module_graph_discovery.py",
-        "module_import_scanner.py",
-        "module_resolution.py",
-        "module_source.py",
-        "module_dependencies.py",
-        "module_registry.py",
-        "module_stdlib_policy.py",
-        "cache_fingerprints.py",
-        "models.py",
-    }
-    assert root / "src" / "molt" / "target_python.py" in (
-        CF._frontend_semantic_tooling_sources(root).paths
-    )
-    for owner in ("python_import_scan.py", "python_source_demands.py"):
-        assert root / "src" / "molt" / "compiler_analysis" / owner in inputs.paths
-    missing_drivers = sorted(frontend_drivers - scoped)
-    assert not missing_drivers, (
-        f"frontend drivers fell out of the lowering scope: {missing_drivers}"
-    )
-
-    post_lowering = {
-        "backend_cache.py",
-        "backend_execution.py",
-        "backend_pipeline.py",
-        "backend_ir.py",
-        "cargo_execution.py",
-        "cargo_profiles.py",
-        "installed_runtime.py",
-        "link_pipeline.py",
-        "mlir_backend.py",
-        "native_binary.py",
-        "native_link_command.py",
-        "native_toolchain.py",
-        "runtime_build.py",
-        "runtime_native_build.py",
-        "runtime_wasm_build.py",
-        "runtime_wasm_build_policy.py",
-        "runtime_wasm_build_spec.py",
-        "runtime_wasm_build_support.py",
-        "runtime_wasm_pair_build.py",
-        "wasm.py",
-        "wasm_toolchain.py",
-        "toolchain_validation.py",
-        "setup_readiness.py",
-    }
-    assert not inputs.topology_digest
-    assert not post_lowering & scoped
-
-
-def test_reachability_follows_driver_imports_but_not_backend() -> None:
-    """Reachability genuinely follows a driver's module-level import into a
-    non-seed cli helper, while a file nothing imports stays out of scope.
-
-    Builds a fake tree where a ``module_*`` seed imports a plain ``cli`` helper,
-    which in turn imports another; both must be pulled into scope. An unrelated
-    ``backend_*`` helper that no in-scope file imports must stay excluded. This
-    exercises the import-following mechanism the denylist never had.
-    """
-    from molt.temporary_artifacts import OwnedTemporaryDirectory
-
-    with OwnedTemporaryDirectory() as tmp:
-        root = Path(tmp)
-        molt = root / "src" / "molt"
-        cli = molt / "cli"
-        _write(molt / "frontend" / "__init__.py", "MARKER = 1\n")
-        for rel in _AUX_FILES:
-            _write(molt / rel, "MARKER = 1\n")
-        # seed -> helper_a -> helper_b (all must be in scope)
-        _write(
-            cli / "module_resolution.py",
-            "from molt.cli.helper_a import thing\nMARKER = 1\n",
-        )
-        _write(
-            cli / "helper_a.py",
-            "from molt.cli.helper_b import other\nMARKER = 1\n",
-        )
-        _write(cli / "helper_b.py", "other = 1\nthing = 1\n")
-        # backend helper that nothing in scope imports
-        _write(cli / "backend_orphan.py", "MARKER = 1\n")
-
-        reached = {path.name for path in CF._lowering_scope_source_closure(root).paths}
-
-    assert "module_resolution.py" in reached  # seed
-    assert "helper_a.py" in reached  # imported by seed
-    assert "helper_b.py" in reached  # imported transitively
-    assert "backend_orphan.py" not in reached  # unreferenced -> excluded
-
-
-def test_scoped_fingerprint_differs_from_broad_on_real_tree() -> None:
-    """On the real source tree the scoped and broad fingerprints are distinct --
-    distinct consumer domains remain distinct even when local coverage expands
-    the semantic input set."""
+def test_semantic_fingerprint_differs_from_broad_on_real_tree() -> None:
     assert (
         CF._frontend_semantic_tooling_fingerprint() != CF._cache_tooling_fingerprint()
     )
 
 
-def test_admission_policy_files_stay_in_scope() -> None:
-    """external_native.py MUST remain in the lowering fingerprint: frontend_pipeline
-    imports its `_resolve_import_admission_policy`, which feeds `direct_call_modules`
-    (a lowering-affecting input). Excluding it would risk STALE lowering. This guards
-    the correctness carve-out from silently reopening."""
-    from pathlib import Path
+_KEY_AND_IR_PROBE = r"""
+import hashlib, json, sys
+from molt.cli import cache_fingerprints
+from molt.frontend import compile_to_tir
 
-    from molt.cli import cache_fingerprints as cf
+ir = compile_to_tir(sys.stdin.read(), parse_codec="json")
+print(json.dumps({
+    "root": str(cache_fingerprints._compiler_root()),
+    "key": cache_fingerprints._frontend_semantic_tooling_fingerprint(),
+    "ir": hashlib.sha256(json.dumps(ir, sort_keys=True, default=str).encode()).hexdigest(),
+}))
+"""
 
-    root = Path(cf.__file__).resolve().parents[3]
-    inputs = cf._frontend_semantic_tooling_sources(root)
-    names = {p.name for p in inputs.paths}
-    assert "external_native.py" in names, (
-        "external_native.py fell out of the lowering fingerprint scope -> stale-lowering risk"
+
+def test_key_changes_whenever_a_compiler_edit_changes_lowered_ir(
+    tmp_path: Path,
+) -> None:
+    """Independent oracle: lower one program with an edited copy of the compiler."""
+    copy = tmp_path / "compiler"
+    # The guest stdlib (7.5 MB) is not lowered here; keep only its reference.
+    shutil.copytree(
+        MOLT,
+        copy / "src" / "molt",
+        ignore=lambda directory, names: [
+            name
+            for name in names
+            if name == "__pycache__" or (Path(directory) == MOLT and name == "stdlib")
+        ],
     )
-    for name in ("link_pipeline.py", "backend_cache.py"):
-        assert (name in names) is bool(inputs.topology_digest)
+    (copy / "src/molt/stdlib").mkdir()
+    shutil.copy2(MOLT / "stdlib" / "struct.py", copy / "src/molt/stdlib/struct.py")
+
+    def lower() -> dict:
+        result = _run_with_compiler(copy / "src", _KEY_AND_IR_PROBE, _PROGRAM)
+        assert Path(result["root"]).resolve() == copy.resolve()
+        return result
+
+    original = lower()
+    # The key is content-addressed: the copy keys exactly as the checkout does.
+    assert original["key"] == CF._frontend_semantic_tooling_fingerprint()
+    for entry in (
+        "toolchain_identity.py",
+        "file_publication.py",
+        "input_report.py",
+        "cli/build_diagnostics.py",
+        "cli/external_native.py",
+        "cli/cache_fingerprints.py",
+    ):
+        assert INPUTS[entry].keyed is False
+        with (copy / "src/molt" / entry).open("a", encoding="utf-8") as handle:
+            handle.write("\nEDITED_FOR_KEY_ORACLE = 1\n")
+    infrastructure = lower()
+    assert infrastructure == original
+    # A producer outside frontend/: CPython's private-name mangling rule.
+    mangling = copy / "src/molt/python_private_names.py"
+    source = mangling.read_text(encoding="utf-8")
+    rule = 'return f"_{private}{name}" if private else name'
+    assert source.count(rule) == 1
+    mangling.write_text(
+        source.replace(rule, 'return f"_{private}_{name}" if private else name'),
+        encoding="utf-8",
+    )
+    producer = lower()
+    assert producer["ir"] != original["ir"], "the producer edit did not change IR"
+    assert producer["key"] != original["key"], "IR changed but the key did not"
+
+
+def _lowering_context(module_path: Path, **changes: object) -> str | None:
+    options: dict[str, object] = {
+        "source_lease": MS._ModuleSourceLease.path_backed(module_path),
+        "logical_source_path": str(module_path),
+        "module_execution_kind": "imported",
+        "known_classes_snapshot": {},
+        "parse_codec": "json",
+        "type_hint_policy": "ignore",
+        "type_facts": None,
+        "enable_phi": True,
+        "known_modules": {"main", "alpha"},
+        "direct_call_modules": set(),
+        "stdlib_allowlist": set(),
+        "known_func_defaults": {},
+        "known_func_kinds": {},
+        "native_callable_exports": None,
+        "module_deps": {"main": {"alpha"}, "alpha": set()},
+        "module_is_namespace": False,
+        "module_chunking": False,
+        "module_chunk_max_ops": 0,
+        "optimization_profile": "dev",
+        "pgo_hot_function_names": (),
+    }
+    options.update(changes)
+    return MC._module_lowering_context_digest_for_module("main", module_path, **options)
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        # cli/external_native.py: import admission and direct calls.
+        ("direct_call_modules", {"alpha"}),
+        ("known_modules", {"main"}),
+        # cli/module_stdlib_policy.py reads the stdlib matrix document.
+        ("stdlib_allowlist", {"json"}),
+        # cli/build_request.py request fields.
+        ("parse_codec", "msgpack"),
+        ("type_hint_policy", "trust"),
+        ("optimization_profile", "release"),
+    ],
+)
+def test_build_environment_values_reach_lowering_only_through_its_key(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    module_path = tmp_path / "main.py"
+    module_path.write_text("import alpha\nprint(alpha)\n", encoding="utf-8")
+    baseline = _lowering_context(module_path)
+    assert baseline is not None
+    assert _lowering_context(module_path, **{field: value}) != baseline
 
 
 def test_import_molt_cli_does_not_load_backend() -> None:
     """``import molt.cli`` must not pull the backend / native-link / cargo layer.
 
-    The reachability-derived lowering scope is only sound if the runtime import
-    graph matches the static one: the frontend/module drivers reach ``molt.cli``
-    (its ``__init__``), so ``__init__`` importing the backend eagerly would both
-    load it on every frontend import *and* drag it back into the fingerprint
-    scope. Runs in a fresh subprocess so the assertion is not polluted by modules
-    an earlier test already imported.
+    The frontend imports ``molt.cli`` (its ``__init__``) as a parent package, so
+    an eager backend import there would load the backend on every frontend
+    import. Runs in a fresh subprocess so modules an earlier test imported do
+    not hide the failure.
     """
-    import sys
-
-    root = Path(cf_module_file()).resolve().parents[3]
     probe = (
         "import sys, molt.cli\n"
         "backend = sorted(\n"
@@ -349,7 +617,7 @@ def test_import_molt_cli_does_not_load_backend() -> None:
         "assert molt.cli.backend_binary is backend_binary\n"
         "print('OK')\n"
     )
-    env = {**os.environ, "PYTHONPATH": str(root / "src")}
+    env = {**os.environ, "PYTHONPATH": str(ROOT / "src")}
     result = run_guarded_test_process(
         [sys.executable, "-c", probe],
         capture_output=True,
@@ -361,51 +629,8 @@ def test_import_molt_cli_does_not_load_backend() -> None:
     )
 
 
-def cf_module_file() -> str:
-    from molt.cli import cache_fingerprints as cf
-
-    return cf.__file__
-
-
-# ---------------------------------------------------------------------------
-# The cli/__init__ command-layer over-scope fix.
-#
-# ``frontend_pipeline`` / ``module_resolution`` import sibling ``cli`` submodules
-# via the package (``from molt.cli import frontend_execution``). The resolver used
-# to treat that as a dependency on ``molt.cli`` (the package ``__init__``) and then
-# followed ``cli/__init__``'s ~80 module-level imports -- dragging the whole
-# command / extension-seal / build-locks / daemon / package-registry orchestration
-# layer into the lowering fingerprint. Because every landing edits one of those
-# orchestration files, the persisted per-module lowering cache cold-started on
-# every run (attested 0/152 hits on the numpy witness). The fix attributes a
-# ``from PKG import SUBMOD`` edge to the submodule it names, not the package
-# aggregate, so the command layer is neither a seed nor reachable from one; the
-# genuinely lowering-facing ``compiler_analysis/`` package is seeded explicitly
-# and the generated intrinsic / feature-gate tables are force-included, so nothing
-# on the ast->TIR path is dropped (safety over speed -- a spurious cold-start is
-# the worst case, never a stale lowering; M35).
-# ---------------------------------------------------------------------------
-
-
-def _scope_relpaths(root: Path) -> set[str]:
-    """POSIX relpaths (from ``src/molt``) of every file in the semantic scope."""
-    molt_root = (Path(root) / "src" / "molt").resolve()
-    rels: set[str] = set()
-    for path in CF._frontend_semantic_tooling_sources(Path(root)).paths:
-        p = Path(path).resolve()
-        if p.is_dir():
-            for f in p.rglob("*.py"):
-                rels.add(f.resolve().relative_to(molt_root).as_posix())
-        else:
-            rels.add(p.relative_to(molt_root).as_posix())
-    return rels
-
-
-# Files every landing edits that provably run only after a module is lowered
-# (command dispatch, extension sealing, build locking, the backend daemon, debug
-# tooling). None appear on the ast->TIR path, so all must be OUT of scope.
-# ``file_locks.py`` is not listed: ``cli/module_cache.py`` imports
-# ``cache_eviction.py``, which imports it at module level.
+# Files that run only after a module is lowered (command dispatch, extension
+# sealing, build locking, the backend daemon, debug tooling).
 _COMMAND_LAYER_OUT = (
     "cli/__init__.py",
     "cli/build_locks.py",
@@ -420,291 +645,27 @@ _COMMAND_LAYER_OUT = (
     "debug/reduce.py",
     "debug/ir.py",
 )
-# IR / TIR analysis and generated intrinsic / feature-gate tables: kept IN unless
-# proven irrelevant. ``compiler_analysis`` is the frontend analysis package;
-# ``_intrinsic_symbols`` feeds the aux ``_wasm_runtime_exports`` input; the feature
-# -gate table is retained conservatively.
-_LOWERING_RELEVANT_IN = (
-    "compiler_analysis/backend_ir.py",
-    "compiler_analysis/tir_fact_graph.py",
-    "compiler_analysis/static_truth.py",
-    "compiler_analysis/python_builtin_shapes.py",
-    "compiler_analysis/python_binding_facts.py",
-    "compiler_analysis/python_value_identity.py",
-    "compiler_analysis/python_binding_flow.py",
-    "compiler_analysis/native_support_slice.py",
-    "compiler_analysis/hashing.py",
-    "compiler_analysis/schema.py",
-    "compiler_analysis/validation.py",
-    "_intrinsic_symbols.py",
-    "_runtime_feature_gates.py",
-    "_wasm_runtime_exports.py",
-    "_wasm_abi_generated.py",
-    "type_facts.py",
-    "target_python.py",
-    "cli/native_symbol_inspection.py",
-    "cli/wasm_link_inputs.py",
-    "cli/compiler_target.py",
-    "cli/source_build_environment_schema.py",
-    "compat.py",
-)
-
-
-def test_command_layer_matches_coverage_and_analysis_and_intrinsics_are_kept() -> None:
-    """Complete coverage includes all owners; narrow graphs exclude orchestration."""
-    root = CF._compiler_root()
-    inputs = CF._frontend_semantic_tooling_sources(root)
-    # HF-226: the real tree resolves every relative anchor, so the scope is
-    # the import graph, not the whole source tree.
-    assert not inputs.topology_digest
-    rels = _scope_relpaths(root)
-    leaked = [rel for rel in _COMMAND_LAYER_OUT if rel in rels]
-    assert not leaked, f"command-layer files entered the lowering scope: {leaked}"
-
-    dropped = [rel for rel in _LOWERING_RELEVANT_IN if rel not in rels]
-    assert not dropped, (
-        f"lowering-relevant files fell OUT of scope -> stale-lowering risk (M35): "
-        f"{dropped}"
-    )
-
-
-def _build_leak_tree(root: Path) -> Path:
-    """Fake ``src/molt`` where a frontend driver imports a cli submodule via the
-    package and ``cli/__init__`` module-level-imports a command-only module."""
-    molt = root / "src" / "molt"
-    cli = molt / "cli"
-    # A ``frontend_*`` seed importing a sibling submodule *through the package* --
-    # the exact edge that used to drag ``cli/__init__``'s command surface in.
-    _write(
-        cli / "frontend_pipeline.py",
-        "from molt.cli import frontend_execution as _fe\nMARKER = 1\n",
-    )
-    _write(cli / "frontend_execution.py", "MARKER = 1\n")
-    # cli/__init__ eagerly imports a command-only orchestration module.
-    _write(
-        cli / "__init__.py",
-        "from molt.cli.orchestration_only import run as _run\nMARKER = 1\n",
-    )
-    _write(cli / "orchestration_only.py", "def run():\n    return 1\n")
-    _write(molt / "frontend" / "__init__.py", "MARKER = 1\n")
-    for rel in _AUX_FILES:
-        _write(molt / rel, "MARKER = 1\n")
-    return molt
-
-
-def test_cli_package_init_command_layer_leak_is_cut(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Direction 1 (orchestration edit -> cache HIT): importing a cli submodule via
-    the package no longer pulls ``cli/__init__`` or its command-only imports into
-    the scope, so editing such a file leaves the scoped fingerprint byte-identical
-    (the persisted lowering is reused). The broad fingerprint still moves, proving
-    the edit really did land under ``cli/`` (teeth)."""
-    molt = _build_leak_tree(tmp_path)
-    monkeypatch.setattr(CF, "_compiler_root", lambda: tmp_path)
-    CF._frontend_tooling_source_paths_cached.cache_clear()
-    CF._SOURCE_TREE_CONTENT_DIGEST_CACHE.clear()
-
-    molt_root = (tmp_path / "src" / "molt").resolve()
-    reached = {
-        Path(p).resolve().relative_to(molt_root).as_posix()
-        for p in CF._lowering_scope_source_closure(tmp_path).paths
-    }
-    assert "cli/frontend_execution.py" in reached  # the named submodule is in scope
-    assert "cli/__init__.py" not in reached  # the package aggregate is NOT dragged
-    assert "cli/orchestration_only.py" not in reached  # nor its command-only import
-
-    scoped_before = CF._frontend_semantic_tooling_fingerprint()
-    broad_before = CF._cache_tooling_fingerprint()
-
-    (molt / "cli" / "orchestration_only.py").write_text(
-        "def run():\n    return 999\n", encoding="utf-8"
-    )
-    CF._SOURCE_TREE_CONTENT_DIGEST_CACHE.clear()
-
-    scoped_after = CF._frontend_semantic_tooling_fingerprint()
-    broad_after = CF._cache_tooling_fingerprint()
-
-    assert scoped_after == scoped_before, (
-        "editing a command-only cli module changed the lowering fingerprint -> "
-        "the leak is not cut and numpy's cache would cold-start"
-    )
-    assert broad_after != broad_before, (
-        "broad fingerprint did not move -> the test edit did not land, no teeth"
-    )
-
-
-def test_lowering_graph_reresolves_new_named_submodule_without_cache_clear(
-    tmp_path: Path,
-) -> None:
-    molt = _build_leak_tree(tmp_path)
-    seed = molt / "cli" / "frontend_pipeline.py"
-    seed.write_text("from molt.cli import newly_added\n", encoding="utf-8")
-    before = set(CF._lowering_scope_source_closure(tmp_path).paths)
-    assert molt / "cli" / "__init__.py" in before
-    added = molt / "cli" / "newly_added.py"
-    added.write_text("VALUE = 1\n", encoding="utf-8")
-    after = set(CF._lowering_scope_source_closure(tmp_path).paths)
-    assert added in after
-    assert molt / "cli" / "__init__.py" not in after
-    assert molt / "cli" / "orchestration_only.py" not in after
-
-
-@pytest.mark.parametrize("malformed", [False, True])
-def test_lowering_graph_does_not_swallow_transitive_source_errors(
-    tmp_path: Path, malformed: bool
-) -> None:
-    molt = _build_leak_tree(tmp_path)
-    helper = molt / "cli" / "frontend_execution.py"
-    helper.write_text(
-        "if :\n" if malformed else "__package__ = 1\nfrom .child import item\n",
-        encoding="utf-8",
-    )
-    with pytest.raises(ValueError) as exc:
-        CF._lowering_scope_source_closure(tmp_path).paths
-    assert str(helper) in str(exc.value)
-
-
-@pytest.mark.parametrize("warm", [False, True])
-@pytest.mark.parametrize(
-    "source, covered",
-    [
-        ("__package__ = unknown\nfrom .child import item\n", True),
-        # A namespace handed on can be rewritten by the next call.
-        ("register(globals())\nload()\nfrom .child import item\n", True),
-        ("__import__(unknown)\n", False),
-    ],
-)
-def test_lowering_complete_identity_covers_relative_but_checks_dynamic_obligations(
-    tmp_path: Path, isolated_molt_cache: Path, source: str, covered: bool, warm: bool
-) -> None:
-    molt = _build_leak_tree(tmp_path)
-    helper = molt / "cli" / "frontend_execution.py"
-    helper.write_text(source, encoding="utf-8")
-    _write(molt / "cli" / "child.py", "item = 1\n")
-    if warm:
-        # A permissive source query may cache candidates and diagnostics, but
-        # the complete lowering consumer cannot inherit its acceptance policy.
-        candidate_policy = replace(
-            CF._FRONTEND_LOWERING_IMPORT_POLICY,
-            fail_on_nonliteral_dynamic_import=False,
-            unknown_relative_sources="require_known",
-        )
-        candidate = CF.local_python_import_closure(
-            tmp_path,
-            CF._lowering_scope_seed_paths(tmp_path),
-            policy=candidate_policy,
-            search_roots=(tmp_path / "src",),
-        )
-        assert helper in candidate.paths
-    if covered:
-        receipt = CF._lowering_scope_source_closure(tmp_path)
-        assert receipt.topology_digest
-        assert molt / "cli/orchestration_only.py" in receipt.paths
-    else:
-        with pytest.raises(ValueError) as exc:
-            CF._lowering_scope_source_closure(tmp_path)
-        assert str(helper) in str(exc.value)
-
-
-@pytest.mark.parametrize(
-    "separator", ["import os\n", "load()\n", "for item in items:\n    use(item)\n"]
-)
-def test_lowering_relative_import_after_a_callback_keeps_its_anchor(
-    tmp_path: Path, isolated_molt_cache: Path, separator: str
-) -> None:
-    # HF-226: no code in the graph writes the helper's metadata, so a callback
-    # cannot move its relative anchor; no whole-tree coverage is needed.
-    molt = _build_leak_tree(tmp_path)
-    helper = molt / "cli" / "frontend_execution.py"
-    helper.write_text(f"{separator}from .child import item\n", encoding="utf-8")
-    _write(molt / "cli" / "child.py", "item = 1\n")
-    receipt = CF._lowering_scope_source_closure(tmp_path)
-    assert not receipt.topology_digest
-    assert molt / "cli" / "child.py" in receipt.paths
-    assert molt / "cli/orchestration_only.py" not in receipt.paths
-
-
-@pytest.mark.parametrize(
-    "statement", ["from .child import item", "__import__(unknown)"]
-)
-def test_closed_lowering_policy_still_excludes_deferred_requests(
-    tmp_path: Path, isolated_molt_cache: Path, statement: str
-) -> None:
-    molt = _build_leak_tree(tmp_path)
-    helper = molt / "cli" / "frontend_execution.py"
-    helper.write_text(f"def deferred():\n    {statement}\n", encoding="utf-8")
-    child = molt / "cli" / "child.py"
-    _write(child, "item = 1\n")
-    for _ in range(2):
-        paths = set(CF._lowering_scope_source_closure(tmp_path).paths)
-        assert helper in paths
-        assert child not in paths
-
-
-def _build_analysis_tree(root: Path) -> Path:
-    """Fake ``src/molt`` with a ``compiler_analysis`` package and the aux files."""
-    molt = root / "src" / "molt"
-    _write(molt / "frontend" / "__init__.py", "MARKER = 1\n")
-    _write(molt / "cli" / "frontend_pipeline.py", "MARKER = 1\n")
-    _write(
-        molt / "compiler_analysis" / "__init__.py",
-        "from molt.compiler_analysis.backend_ir import thing\nMARKER = 1\n",
-    )
-    _write(molt / "compiler_analysis" / "backend_ir.py", "thing = 1\n")
-    for rel in _AUX_FILES:
-        _write(molt / rel, "MARKER = 1\n")
-    return molt
-
-
-@pytest.mark.parametrize(
-    "edit_relpath",
-    ["compiler_analysis/backend_ir.py", "_intrinsic_symbols.py"],
-)
-def test_kept_analysis_and_intrinsic_edits_still_invalidate(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, edit_relpath: str
-) -> None:
-    """Direction 2 (lowering-relevant edit -> cache MISS): the kept
-    ``compiler_analysis`` IR/TIR package and the force-included generated intrinsic
-    table are genuinely in scope -- editing either moves the scoped fingerprint, so
-    a real semantic change invalidates the persisted lowering rather than silently
-    reusing a stale one (M35)."""
-    molt = _build_analysis_tree(tmp_path)
-    monkeypatch.setattr(CF, "_compiler_root", lambda: tmp_path)
-    CF._frontend_tooling_source_paths_cached.cache_clear()
-    CF._SOURCE_TREE_CONTENT_DIGEST_CACHE.clear()
-
-    molt_root = (tmp_path / "src" / "molt").resolve()
-    reached = {
-        Path(p).resolve().relative_to(molt_root).as_posix()
-        for p in CF._lowering_scope_source_closure(tmp_path).paths
-    }
-    assert "compiler_analysis/backend_ir.py" in reached  # analysis package seeded
-
-    scoped_before = CF._frontend_semantic_tooling_fingerprint()
-    target = molt / Path(edit_relpath)
-    target.write_text("thing = 2\nMARKER = 2\n", encoding="utf-8")
-    CF._SOURCE_TREE_CONTENT_DIGEST_CACHE.clear()
-    scoped_after = CF._frontend_semantic_tooling_fingerprint()
-
-    assert scoped_after != scoped_before, (
-        f"editing kept lowering-relevant file {edit_relpath!r} did NOT invalidate "
-        f"the scoped fingerprint -> stale-lowering risk"
-    )
 
 
 def test_installed_admission_contract_has_no_eager_producer_dependencies() -> None:
+    from molt.cli.python_import_resolution import PythonImportPolicy
     from molt.cli.python_source_closure import local_python_import_closure
 
-    root = CF._compiler_root()
-    contract = root / "src/molt/cli/installed_runtime_contract.py"
+    contract = ROOT / "src/molt/cli/installed_runtime_contract.py"
     closure = local_python_import_closure(
-        root,
+        ROOT,
         (contract,),
-        policy=CF._FRONTEND_LOWERING_IMPORT_POLICY,
-        search_roots=(root / "src",),
+        policy=PythonImportPolicy(
+            module_level_only=True,
+            include_parent_packages=False,
+            fail_on_nonliteral_dynamic_import=True,
+            allowed_prefix="molt",
+            purpose="source_dependency",
+            unknown_relative_sources="local_inventory",
+        ),
+        search_roots=(ROOT / "src",),
     )
-    rels = {path.relative_to(root / "src/molt").as_posix() for path in closure.paths}
+    rels = {path.relative_to(ROOT / "src/molt").as_posix() for path in closure.paths}
     assert "cli/installed_runtime_contract.py" in rels
     assert "cli/runtime_identity_schema.py" in rels
     assert not set(_COMMAND_LAYER_OUT) & rels

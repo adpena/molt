@@ -980,6 +980,26 @@ def test_source_tree_cache_fingerprint_uses_clean_pathspec_state(
     assert seen_path_keys == [(str(tracked.resolve()),)]
 
 
+def _module_level_closure(project_root: Path, seed: Path):
+    """A module-level ``molt`` dependency graph, as source-closure consumers use."""
+    from molt.cli.python_import_resolution import PythonImportPolicy
+    from molt.cli.python_source_closure import local_python_import_closure
+
+    return local_python_import_closure(
+        project_root,
+        (seed,),
+        policy=PythonImportPolicy(
+            module_level_only=True,
+            include_parent_packages=False,
+            fail_on_nonliteral_dynamic_import=True,
+            allowed_prefix="molt",
+            purpose="source_dependency",
+            unknown_relative_sources="local_inventory",
+        ),
+        search_roots=(project_root / "src",),
+    )
+
+
 def test_lowering_dependency_graph_reuses_analysis_but_rechecks_source_bytes(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1000,24 +1020,15 @@ def test_lowering_dependency_graph_reuses_analysis_but_rechecks_source_bytes(
 
     monkeypatch.setattr(graph, "analyze_local_imports", record)
     expected = {source, first}
-    assert (
-        set(CACHE_FINGERPRINTS._lowering_scope_source_closure(tmp_path).paths)
-        == expected
-    )
+    assert set(_module_level_closure(tmp_path, source).paths) == expected
     assert set(analyzed) == expected
     analyzed.clear()
-    assert (
-        set(CACHE_FINGERPRINTS._lowering_scope_source_closure(tmp_path).paths)
-        == expected
-    )
+    assert set(_module_level_closure(tmp_path, source).paths) == expected
     assert analyzed == []
     before = source.stat()
     source.write_text("import molt.cli.other\n", encoding="utf-8")
     os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns))
-    assert set(CACHE_FINGERPRINTS._lowering_scope_source_closure(tmp_path).paths) == {
-        source,
-        second,
-    }
+    assert set(_module_level_closure(tmp_path, source).paths) == {source, second}
     assert set(analyzed) == {source, second}
 
 
@@ -1039,31 +1050,20 @@ def test_lowering_dependency_graph_reuse_ends_with_build_transaction(
 
     monkeypatch.setattr(graph.LocalPythonModuleResolver, "capture_source", record)
     with CACHE_FINGERPRINTS._source_tree_fingerprint_transaction():
-        assert CACHE_FINGERPRINTS._lowering_scope_source_closure(tmp_path).paths == (
-            source,
-        )
+        assert _module_level_closure(tmp_path, source).paths == (source,)
         with CACHE_FINGERPRINTS._source_tree_fingerprint_transaction():
-            assert CACHE_FINGERPRINTS._lowering_scope_source_closure(
-                tmp_path
-            ).paths == (source,)
+            assert _module_level_closure(tmp_path, source).paths == (source,)
     assert captured == [source]
     helper.write_text("VALUE = 1\n", encoding="utf-8")
     captured.clear()
     with CACHE_FINGERPRINTS._source_tree_fingerprint_transaction():
-        assert set(
-            CACHE_FINGERPRINTS._lowering_scope_source_closure(tmp_path).paths
-        ) == {
-            source,
-            helper,
-        }
+        assert set(_module_level_closure(tmp_path, source).paths) == {source, helper}
     assert set(captured) == {source, helper}
 
 
 def test_installed_python_layout_drives_both_fingerprint_scopes(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    import molt.cli.python_source_closure as graph
-
     site_packages = tmp_path / "site-packages"
     package = site_packages / "molt"
     frontend = package / "frontend"
@@ -1081,13 +1081,7 @@ def test_installed_python_layout_drives_both_fingerprint_scopes(
         "_compiler_clean_pathspec_source_state",
         lambda *args: None,
     )
-
-    def read_only_install(*args, **kwargs):
-        raise PermissionError("installed package tree is read-only")
-
-    monkeypatch.setattr(graph, "_atomic_write_text", read_only_install)
     assert COMPILER_METADATA._compiler_python_source_root(tmp_path) == site_packages
-    assert target in CACHE_FINGERPRINTS._lowering_scope_source_closure(tmp_path).paths
     assert package / "cli" in CACHE_FINGERPRINTS._frontend_tooling_source_paths(
         tmp_path
     )

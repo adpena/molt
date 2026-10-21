@@ -1325,10 +1325,12 @@ def test_a_hit_refreshes_its_record_for_trimming(tmp_path: Path) -> None:
 
 
 def test_the_recorder_stays_outside_the_frontend_fingerprint() -> None:
-    # Every frontend cache key commits to the sources lowering code imports.
-    # Readers import only the reporting leaf, so a change to the recorder never
-    # invalidates lowered modules.
+    # Frontend cache keys commit to the declared producer sources. Readers
+    # import only the reporting leaf, which the declaration classifies as
+    # reporting, so neither it nor the recorder invalidates lowered modules.
     from molt.cli.cache_fingerprints import (
+        _FRONTEND_COMPILER_INPUTS,
+        _FrontendInputRole,
         _compiler_root,
         _frontend_semantic_tooling_sources,
     )
@@ -1336,8 +1338,9 @@ def test_the_recorder_stays_outside_the_frontend_fingerprint() -> None:
     names = {
         path.name for path in _frontend_semantic_tooling_sources(_compiler_root()).paths
     }
-    assert "input_report.py" in names
-    assert "build_record.py" not in names
+    assert _FRONTEND_COMPILER_INPUTS["input_report.py"] is _FrontendInputRole.REPORTING
+    assert "build_record.py" not in _FRONTEND_COMPILER_INPUTS
+    assert not {"input_report.py", "build_record.py"} & names
 
 
 def _execute_cached_fixture(source: Path) -> int:

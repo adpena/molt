@@ -63,11 +63,12 @@ the debug map names object files under the output directory).
 
 **Two modules.** `molt.input_report` is the reporting side: the token and
 probe primitives, the audit hook, worker logs and the `report_*` functions.
-Lowering code imports it, so it is part of the frontend's semantic
-fingerprint; it is a leaf that imports no other Molt module, and a test keeps
-the recorder out of that fingerprint. `molt.build_record` is the recorder: the
-ledger, the key, the record, the check and trimming. Only `molt build`
-imports it.
+Lowering code imports it; the frontend semantic fingerprint
+([frontend_semantic_fingerprint.md](frontend_semantic_fingerprint.md))
+classifies it as reporting, so it stays outside that key. It is a leaf that
+imports no other Molt module, and a test keeps it and the recorder out of the
+key. `molt.build_record` is the recorder: the ledger, the key, the record, the
+check and trimming. Only `molt build` imports it.
 
 **Python startup.** [CPython's site hook](https://github.com/python/cpython/blob/v3.12.15/Lib/site.py)
 runs before the user command. Molt's existing hook classifies test invocations
