@@ -255,7 +255,7 @@ def test_postcommit_parent_fsync_failure_warns_without_false_rollback(
         publish = (
             file_publication.durable_publish_directory_exclusive
             if kind == "directory"
-            else file_publication.durable_namespace_publish_directory_exclusive
+            else file_publication.namespace_publish_directory_exclusive
         )
     failed_parents: list[Path] = []
     real_fsync = file_publication.fsync_directory
@@ -375,11 +375,11 @@ def test_quarantine_does_not_inspect_corrupt_payloads_or_replace_rival(
         raise AssertionError("quarantine must not inspect damaged bytes")
 
     monkeypatch.setattr(file_publication, "_flush_staged_directory_tree", reject_flush)
-    file_publication.durable_namespace_publish_directory_exclusive(source, target)
+    file_publication.namespace_publish_directory_exclusive(source, target)
     assert (target / "evidence").read_bytes() == b"broken"
     source.mkdir()
     with pytest.raises(FileExistsError):
-        file_publication.durable_namespace_publish_directory_exclusive(source, target)
+        file_publication.namespace_publish_directory_exclusive(source, target)
     assert source.exists()
 
 

@@ -13,7 +13,7 @@ from typing import Any
 
 from molt.exact_json import loads_exact, write_exact
 from molt.file_publication import (
-    durable_namespace_publish_directory_exclusive,
+    namespace_publish_directory_exclusive,
     durable_publish_directory_exclusive,
     durable_remove_path,
     reclaim_retired_paths,
@@ -240,7 +240,7 @@ def _quarantine_tree(source: Path, quarantine: Path) -> None:
         raise SourcePackageSealVerificationError(
             f"publication quarantine already exists: {quarantine}"
         )
-    durable_namespace_publish_directory_exclusive(source, quarantine)
+    namespace_publish_directory_exclusive(source, quarantine)
 
 
 def _abort_and_restore_source_extension_publication(

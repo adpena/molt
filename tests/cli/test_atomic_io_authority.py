@@ -264,6 +264,66 @@ def test_reconstructible_publication_is_complete_without_durability_barriers(
     assert not list(tmp_path.glob(".molt-*.tmp"))
 
 
+def test_reconstructible_exclusive_publication_refuses_a_rival_without_barriers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exclusive create is a no-replace rename; its atomicity needs no flush."""
+
+    flushes: list[int] = []
+    install_module_view(monkeypatch, "os", os, file_publication, fsync=flushes.append)
+    policy = file_publication.PublicationDurability.RECONSTRUCTIBLE
+    destination = tmp_path / "record.json"
+    file_publication.atomic_write_bytes(
+        destination, b"first", exclusive=True, durability=policy
+    )
+    with pytest.raises(FileExistsError):
+        file_publication.atomic_write_bytes(
+            destination, b"rival", exclusive=True, durability=policy
+        )
+    assert destination.read_bytes() == b"first"
+    assert flushes == []
+    assert not list(tmp_path.glob(".molt-*.tmp"))
+    # The durable spelling of the same publication still flushes the stage,
+    # and on POSIX its directory.
+    file_publication.atomic_write_bytes(tmp_path / "durable.json", b"x", exclusive=True)
+    assert len(flushes) == (2 if os.name == "posix" else 1)
+
+
+def test_windows_reconstructible_exclusive_rename_skips_write_through(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    renames: list[tuple[Path, Path]] = []
+
+    def windows_rename(source: Path, target: Path) -> None:
+        # MoveFileExW without REPLACE_EXISTING refuses a rival.
+        if os.path.lexists(target):
+            raise FileExistsError(target)
+        renames.append((Path(source), Path(target)))
+        os.rename(source, target)
+
+    install_module_view(
+        monkeypatch, "os", os, file_publication, name="nt", rename=windows_rename
+    )
+    monkeypatch.setattr(
+        file_publication,
+        "windows_replace_write_through",
+        lambda *_args, **_kwargs: pytest.fail("reconstructible rename wrote through"),
+    )
+    policy = file_publication.PublicationDurability.RECONSTRUCTIBLE
+    destination = tmp_path / "record.json"
+    file_publication.atomic_write_bytes(
+        destination, b"first", exclusive=True, durability=policy
+    )
+    with pytest.raises(FileExistsError):
+        file_publication.atomic_write_bytes(
+            destination, b"rival", exclusive=True, durability=policy
+        )
+    moved = tmp_path / "moved"
+    file_publication.namespace_move_exclusive(destination, moved)
+    assert moved.read_bytes() == b"first"
+    assert [target for _source, target in renames] == [destination, moved]
+
+
 def test_windows_reconstructible_replace_uses_atomic_replace_without_write_through(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -355,7 +415,7 @@ def test_reconstructible_readonly_stage_needs_no_write_permission(
     assert not destination.stat().st_mode & stat.S_IWRITE
 
 
-@pytest.mark.parametrize("invalid", ["unknown", "exclusive", "callback"])
+@pytest.mark.parametrize("invalid", ["unknown", "callback"])
 def test_invalid_publication_policy_fails_before_filesystem_effects(
     tmp_path: Path, invalid: str
 ) -> None:
@@ -363,8 +423,6 @@ def test_invalid_publication_policy_fails_before_filesystem_effects(
     options = {"durability": file_publication.PublicationDurability.RECONSTRUCTIBLE}
     if invalid == "unknown":
         options["durability"] = "reconstructible"
-    elif invalid == "exclusive":
-        options["exclusive"] = True
     else:
         options["replace"] = lambda *_args: None
     with pytest.raises(ValueError):
@@ -490,7 +548,7 @@ def test_atomic_write_cleanup_failure_preserves_primary_error(
     original_unlink = Path.unlink
     monkeypatch.setattr(file_publication, "staged_file_path", lambda destination: stage)
 
-    def fail_publish(*args):
+    def fail_publish(*args, **kwargs):
         raise primary
 
     def fail_cleanup(path, *args, **kwargs):
@@ -499,7 +557,7 @@ def test_atomic_write_cleanup_failure_preserves_primary_error(
         return original_unlink(path, *args, **kwargs)
 
     monkeypatch.setattr(file_publication, "durable_replace", fail_publish)
-    monkeypatch.setattr(file_publication, "durable_publish_exclusive", fail_publish)
+    monkeypatch.setattr(file_publication, "_publish_exclusive", fail_publish)
     monkeypatch.setattr(Path, "unlink", fail_cleanup)
     with pytest.raises(primary_type) as caught:
         file_publication.atomic_write_bytes(

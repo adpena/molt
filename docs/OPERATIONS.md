@@ -892,6 +892,11 @@ outputs durable by default. `RECONSTRUCTIBLE` is an explicit owner choice, with
 the same staging, complete-write, close, custody, atomic replacement and cleanup
 protocol. It skips file/directory flushes and Windows write-through, without
 unlinking an old entry first or copying across filesystems after a failed rename.
+An exclusive publication (`atomic_write_bytes(exclusive=True)`) keeps its
+no-replace rename under either policy. Memory-guard markers and guard scratch
+records use `RECONSTRUCTIBLE` too: they describe processes that an OS crash
+kills, and their readers treat a lost, empty or older record as crash residue
+(design 56, section 2.7).
 This follows [CPython's bytecode cache publication](https://github.com/python/cpython/blob/v3.15.0/Lib/importlib/_bootstrap_external.py#L183-L202),
 which writes a private file and replaces it atomically without a flush barrier.
 It changes compiler/development I/O only; emitted programs do no cache validation.

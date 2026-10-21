@@ -1448,10 +1448,13 @@ def test_a_real_orphaned_group_protects_until_its_last_member_exits(tmp_path):
     assert group in receipt["empty_process_groups"]
 
 
-def test_retirement_issues_no_fsync(tmp_path, monkeypatch):
-    """A crash that rolls the move back leaves a terminal record to retire again."""
+def test_marker_publications_issue_no_fsync(tmp_path, monkeypatch):
+    """Every marker record is judged by the liveness it names (HF-382).
+
+    A crash that rolls a retirement back leaves a terminal record to retire
+    again; the crash-residue test above covers each lost or empty write.
+    """
     active = _active(tmp_path)
-    marker = _marker(active, status="completed")
     fsyncs = []
     real_fsync = os.fsync
     # Only file publication issues fsync on these paths; count it there
@@ -1463,9 +1466,79 @@ def test_retirement_issues_no_fsync(tmp_path, monkeypatch):
         file_publication,
         fsync=lambda fd: fsyncs.append(fd) or real_fsync(fd),
     )
-    assert custody.retire_active_guard_marker(marker, _payload(marker)["token"])
-    assert fsyncs == []
+    marker = _marker(active, status="guard_starting", child=False)
+    token = _payload(marker)["token"]
+    assert custody.update_active_guard_marker(
+        marker, token, status="completed", descendants_closed=True
+    )
+    assert custody.retire_active_guard_marker(marker, token)
     assert not marker.exists()
+    stale = _marker(active, pid=11)
+    report = custody.reconcile_active_guard_markers(active, _snapshot(), apply=True)
+    assert report.terminalized == 1 and not stale.exists()
+    custody.record_custody_sweep(report)
+    assert fsyncs == []
+
+
+@pytest.mark.parametrize(
+    "residue",
+    ["absent", "empty", "launch_prepared", "spawn_pending", "child_running"],
+)
+def test_a_crash_that_drops_marker_writes_resolves_or_names_its_release(
+    tmp_path, residue
+):
+    """Markers cross no barrier (HF-382); each crash residue stays safe.
+
+    The producer's real publications run first. Then the marker is rewritten
+    as an OS crash can leave it: the exclusive create lost (only its stage
+    persisted), the rename persisted before its data, or a later update lost.
+    After the crash no process of the run lives, so the snapshot holds none.
+    """
+    active = _active(tmp_path)
+    marker = _marker(active, status="guard_starting", child=False)
+    token = _payload(marker)["token"]
+    versions = {"guard_starting": marker.read_bytes()}
+    for status, fields in (
+        ("launch_prepared", {}),
+        ("spawn_pending", {"child_launch_state": "pending"}),
+        ("child_running", {"child_process": {"pid": 20, "started_at_ns": 200}}),
+        ("completed", {"descendants_closed": True}),
+    ):
+        assert custody.update_active_guard_marker(
+            marker, token, status=status, **fields
+        )
+        versions[status] = marker.read_bytes()
+    if residue == "absent":
+        marker.unlink()
+        stage = file_publication.staged_file_path(marker)
+        stage.write_bytes(versions["guard_starting"])
+    else:
+        marker.write_bytes(b"" if residue == "empty" else versions[residue])
+    after_reboot = _snapshot(_sample(pid=999, birth=1))
+    report = custody.reconcile_active_guard_markers(active, after_reboot, apply=True)
+    if residue == "absent":
+        # Nothing that still runs is unprotected; a stage is not a record.
+        assert report.decisions == ()
+        assert not custody.has_active_guard_marker(active)
+        return
+    (decision,) = report.decisions
+    if residue in {"launch_prepared", "child_running"}:
+        # An older generation is judged by the same snapshot as any record.
+        assert decision.reason == custody.RECONCILED_REASON
+        assert decision.retired_to == str(_retired(tmp_path) / marker.name)
+        assert not custody.has_active_guard_marker(active)
+        return
+    # An unreadable record, or a launch whose child was never recorded, stays
+    # protective, and the report names the one command that releases it.
+    assert decision.disposition == "preserve"
+    assert custody.has_active_guard_marker(active)
+    (step,) = report.next_steps()
+    assert f"--release {marker} --apply" in step
+    released = custody.reconcile_active_guard_markers(
+        active, after_reboot, apply=True, release=[marker]
+    )
+    assert released.retired == 1
+    assert not custody.has_active_guard_marker(active)
 
 
 def test_exit_sweep_gate_grows_with_the_records_that_stay(tmp_path, monkeypatch):

@@ -521,6 +521,107 @@ completion reclaim duplicated worktree retirement. Hand-named targets under
 `target/` (`MOLT_DISK_GUARD_LANE_GLOBS`) and flat `cargo-target-*` directories
 carry no stamp, so they are reclaimed only under disk pressure.
 
+### 2.7 Process-lifetime records cross no durability barrier (HF-382)
+
+Every guarded command wrote its custody records durably: 29 `fsync` calls for
+one guarded `true`. Ten came from the active guard marker
+(`tools/memory_guard_core/active_custody.py`: one exclusive create and four
+updates, each a staged-file `fsync` and a parent-directory `fsync`), nineteen
+from guard scratch (`molt.temporary_artifacts`: the owner, terminal and index
+records and the payload move). Measured on the integrator Mac on 2026-10-21,
+with the guard state root on its external USB APFS volume and a load average
+near 16: a guarded `true` took 483 ms against 278 ms with `os.fsync` stubbed
+out (median of 20, p90 1,138 ms against 335 ms). A staged file's `fsync` cost
+about 9 ms there; a directory's cost 0.1 ms.
+
+These records describe processes. A marker names a guard, its child and their
+groups; a scratch owner names the guard that leases its payload. A process
+crash loses no page-cache write, so a dead producer's last record is complete.
+An OS crash or power loss kills every process a record names, so no live
+process loses custody when a record is lost. Leading systems keep such state
+the same way:
+
+- systemd places runtime state in `/run`, "a tmpfs file system ... flushed on
+  boot" ([UAPI.9](https://uapi-group.org/specifications/specs/linux_file_system_hierarchy/)):
+  a reboot discards it, so nothing reads it across a crash.
+- Bazel's client holds an `fcntl` lock on the output base and writes its owner
+  (`pid=...`) into the lock file without `fsync`, for people to read, not for
+  parsing ([blaze_util_posix.cc](https://github.com/bazelbuild/bazel/blob/master/src/main/cpp/blaze_util_posix.cc)).
+  Its action cache journals every 3 s, checks its own integrity, and moves a
+  corrupt cache aside to start empty
+  ([CompactPersistentActionCache.java](https://github.com/bazelbuild/bazel/blob/master/src/main/java/com/google/devtools/build/lib/actions/cache/CompactPersistentActionCache.java)).
+- Cargo's locks are `flock` and `LockFileEx` locks, released with their file
+  handle ([flock.rs](https://doc.rust-lang.org/nightly/nightly-rustc/src/cargo/util/flock.rs.html)):
+  the kernel, not a durable record, proves the holder dead.
+- SQLite in WAL mode with `synchronous=NORMAL` "might roll back following a
+  power loss or system crash" but stays consistent, and "transactions are
+  durable across application crashes"
+  ([PRAGMA synchronous](https://www.sqlite.org/pragma.html#pragma_synchronous)).
+
+Two facts bound what a barrier would buy. On macOS, `fsync` moves data to the
+drive but not to stable media: "if the drive loses power or the OS crashes,
+the application may find that only some or none of their data was written"
+([fsync(2)](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/fsync.2.html)),
+so the old DURABLE records were never durable against power loss there. And
+an ordering barrier is no cheaper: on the external volume `F_BARRIERFSYNC`
+cost 25 to 58 ms and `F_FULLFSYNC` 27 to 41 ms per call against 0.3 to 1.7 ms
+for `fsync` (median of 30, two rounds). A directory `fsync` per operation
+instead of per file saves nothing, because the file flush is the cost.
+
+So the marker and scratch records use `PublicationDurability.RECONSTRUCTIBLE`.
+`atomic_write_bytes(exclusive=True)` and `write_exact` accept it: exclusive
+create is a no-replace rename whose atomicity needs no flush, and it keeps
+every custody check. `namespace_publish_directory_exclusive` takes the same
+parameter for the payload move. The one exclusive-rename authority requests
+Windows write-through only for a durable rename; a reconstructible one, and
+`namespace_move_exclusive`, use `os.rename` (MoveFileExW without
+REPLACE_EXISTING), which refuses a rival without a barrier. A guarded run now issues no `fsync`
+(`tests/test_memory_guard_tool.py::test_a_guarded_run_issues_no_fsync`).
+
+Without a barrier, an OS crash can persist the writes of different files in
+any order (no cross-file ordering is promised on APFS or ext4), and a file
+whose rename persisted before its data reads back empty: ext4 forces the data
+of a replacing rename before the rename commits (`auto_da_alloc`), not that
+of a new name ([ext4](https://docs.kernel.org/admin-guide/ext4.html)). Each
+reader therefore meets a record absent, empty or torn, or older than its
+neighbours:
+
+- A marker reader judges any readable generation by one process snapshot, as
+  before. An absent marker protects nothing that still runs. An empty one is
+  unreadable: it stays protective, and the reconciliation report names the
+  `tools/memory_guard_custody.py --release MARKER --apply` command.
+- A scratch reader holds the generation lock, so no writer is active. An
+  absent or undecodable receipt, a generation without its lock file, or a
+  payload out of step with its owner (a retained payload that is missing, a
+  reclaimed one that survives, a move into the generation that a crash undid)
+  is crash residue: the generation becomes `blocked`, keeps its payload, and
+  is reported once. A repeated report would fail every later guarded command
+  with status 125. A decodable record that names another token, target or
+  digest is never residue and stays fail-closed. Adoption of a dead guard's
+  lease treats an existing terminal receipt as the finisher's uncommitted
+  retirement, which also fixes a defect that the durable protocol had: a
+  finisher that failed between its terminal receipt and its index left a
+  marker that never resolved. Reconciliation republishes a missing index of a
+  retiring, retained or reclaiming owner, because the index is a projection.
+
+`tests/test_temporary_artifacts.py::test_every_crash_state_keeps_custody_and_reports_once`
+rebuilds 1,920 such states from the bytes the real protocol wrote (every owner
+generation or an absent or empty one, a terminal receipt absent, torn or
+valid, the index absent, staged or published, the payload at its target, in
+its generation, partly deleted or gone, the lock present or not) and runs the
+pending sweep and the marker reconciliation three times in both orders. Its
+oracle is custody policy: only the run's own payload is deleted, never after
+its receipts show a deletion started, never without a valid terminal receipt;
+every surviving payload or generation is reported; the sweep reports at most
+once. The previous readers violate it in 1,826 of the 1,920 states (they
+relied on write order); removing any one of the eleven reader rules by
+mutation fails it.
+
+The records that keep `DURABLE` describe state that outlives the processes: a
+Cargo-incremental quarantine receipt names a directory that survives the run,
+and artifact, cache-entry and release publications are outputs other
+processes trust. Neither runs on a successful guarded command.
+
 ## 3. The structural facts/mechanisms to build (each tied to the class it retires)
 
 ### FACT-A: The recompile-blast-radius ratchet (retires DX-1)
