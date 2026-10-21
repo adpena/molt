@@ -2083,10 +2083,10 @@ pub unsafe extern "C" fn PyStructSequence_GetItem(
         }
         return ptr::null_mut();
     }
-    if let Some(bits) = GLOBAL_BRIDGE.molt_handle_for_pyobj(object) {
-        if let Some(item) = GLOBAL_BRIDGE.tuple_view_item_pointer(bits.bits(), index as usize) {
-            return item;
-        }
+    if let Some(bits) = GLOBAL_BRIDGE.molt_handle_for_pyobj(object)
+        && let Some(item) = GLOBAL_BRIDGE.tuple_view_item_pointer(bits.bits(), index as usize)
+    {
+        return item;
     }
     unsafe {
         crate::api::errors::PyErr_BadInternalCall();

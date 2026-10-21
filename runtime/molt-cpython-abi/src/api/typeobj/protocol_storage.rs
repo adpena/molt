@@ -1,5 +1,6 @@
 //! Compact runtime types own all protocol destinations. Physical ownership is
 //! declared once; readiness and mutation fill slots from SLOT_WRAPPER_DEFS.
+use crate::ErrorIndicatorSet;
 use crate::abi_types::*;
 use std::cell::UnsafeCell;
 
@@ -15,6 +16,12 @@ pub struct TypeProtocolTables {
 // The process owners outlive their exported compact type objects. Managed
 // compact allocations keep this exact storage inside their existing owner.
 unsafe impl Sync for TypeProtocolTables {}
+
+impl Default for TypeProtocolTables {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl TypeProtocolTables {
     pub const fn new() -> Self {
@@ -62,7 +69,7 @@ pub struct StructSequenceTypeProjection {
 
 impl StructSequenceTypeProjection {
     /// Missing is an ordinary type; Error preserves actual projection failure.
-    pub unsafe fn prepare(bits: u64) -> Result<Option<Self>, ()> {
+    pub unsafe fn prepare(bits: u64) -> Result<Option<Self>, ErrorIndicatorSet> {
         use crate::api::{errors, numbers, sequences, strings};
         use crate::hooks::{DecodedHandleResult, TypeMetadataField, hooks_or_stubs};
         unsafe {
@@ -71,14 +78,14 @@ impl StructSequenceTypeProjection {
                     .decode()
                 {
                     DecodedHandleResult::Missing => return Ok(None),
-                    DecodedHandleResult::Error => return Err(()),
+                    DecodedHandleResult::Error => return Err(ErrorIndicatorSet),
                     DecodedHandleResult::Ok(bits) => bits,
                 };
             let spec = crate::api::refcount::OwnedPyObject::from_owned(
                 crate::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(spec_bits),
             );
             if spec.as_ptr().is_null() {
-                return Err(());
+                return Err(ErrorIndicatorSet);
             }
             let names = sequences::PyTuple_GetItem(spec.as_ptr(), 0);
             let docs = sequences::PyTuple_GetItem(spec.as_ptr(), 1);
@@ -86,12 +93,12 @@ impl StructSequenceTypeProjection {
             let count = sequences::PyTuple_Size(names);
             if visible < 0 || count < visible || sequences::PyTuple_Size(docs) != count {
                 errors::PyErr_BadInternalCall();
-                return Err(());
+                return Err(ErrorIndicatorSet);
             }
             let mut members = Vec::new();
             if members.try_reserve_exact(count as usize + 1).is_err() {
                 errors::PyErr_NoMemory();
-                return Err(());
+                return Err(ErrorIndicatorSet);
             }
             for index in 0..count {
                 let name = sequences::PyTuple_GetItem(names, index);
@@ -100,7 +107,7 @@ impl StructSequenceTypeProjection {
                 }
                 let name = strings::PyUnicode_AsUTF8(name);
                 if name.is_null() {
-                    return Err(());
+                    return Err(ErrorIndicatorSet);
                 }
                 let doc = sequences::PyTuple_GetItem(docs, index);
                 let doc = if std::ptr::eq(doc, &raw mut Py_None) {
@@ -109,7 +116,7 @@ impl StructSequenceTypeProjection {
                     strings::PyUnicode_AsUTF8(doc)
                 };
                 if !errors::PyErr_Occurred().is_null() {
-                    return Err(());
+                    return Err(ErrorIndicatorSet);
                 }
                 let Some(offset) = (index as usize)
                     .checked_mul(std::mem::size_of::<*mut PyObject>())
@@ -119,7 +126,7 @@ impl StructSequenceTypeProjection {
                     .and_then(|bytes| Py_ssize_t::try_from(bytes).ok())
                 else {
                     errors::PyErr_NoMemory();
-                    return Err(());
+                    return Err(ErrorIndicatorSet);
                 };
                 members.push(PyMemberDef {
                     name,
@@ -142,7 +149,7 @@ impl StructSequenceTypeProjection {
                 .and_then(|bytes| Py_ssize_t::try_from(bytes).ok())
             else {
                 errors::PyErr_NoMemory();
-                return Err(());
+                return Err(ErrorIndicatorSet);
             };
             Ok(Some(Self {
                 _spec: spec,
@@ -191,12 +198,12 @@ pub struct ExternalStaticType {
     metadata: StructSequenceTypeProjection,
 }
 impl ExternalStaticType {
-    pub unsafe fn prepare(bits: u64) -> Result<Box<Self>, ()> {
+    pub unsafe fn prepare(bits: u64) -> Result<Box<Self>, ErrorIndicatorSet> {
         let Some(metadata) = (unsafe { StructSequenceTypeProjection::prepare(bits)? }) else {
             unsafe {
                 crate::api::errors::PyErr_BadInternalCall();
             }
-            return Err(());
+            return Err(ErrorIndicatorSet);
         };
         let layout = std::alloc::Layout::new::<Self>();
         let pointer = unsafe { std::alloc::alloc(layout).cast::<Self>() };
@@ -204,7 +211,7 @@ impl ExternalStaticType {
             unsafe {
                 crate::api::errors::PyErr_NoMemory();
             }
-            return Err(());
+            return Err(ErrorIndicatorSet);
         }
         unsafe {
             pointer.write(Self {
