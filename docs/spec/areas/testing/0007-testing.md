@@ -136,7 +136,11 @@ percentages. Required conformance and release matrix gates still apply.
   one private cache; they do not depend on another test's or developer's state.
 - **Budget the execution, not the coverage.** Use the smallest fixture and
   dependency closure that preserves the invariant. Profile slow setup/build/run
-  stages before optimizing. Reuse immutable fixture inputs without sharing
+  stages before optimizing: `python -m pytest -p tools.pytest_profile
+  --molt-profile=run.json ...` records every phase's wall, CPU, child CPU,
+  spawns and waiting, and `python tools/pytest_profile.py report run.json`
+  shows what bounds the run (the busiest worker, the exit tail, the tests that
+  wait). Reuse immutable fixture inputs without sharing
   mutable state across tests; batch integration builds and keep them out of the
   fast unit loop. Real Cargo fixtures use actual filesystem measurements with
   invocation-owned headroom appropriate to their dependency graph; modeled
