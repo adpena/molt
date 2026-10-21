@@ -1024,8 +1024,11 @@ def test_guarded_exec_spelling_in_payload_data_does_not_delegate(command) -> Non
     envelope = command_admission.envelope_for_command(command)
     assert envelope["guarded_exec"] is None
     assert envelope["delegated"] is None
+    # A focused pytest proof (HF-179) and a registered Node program may start
+    # their declared toolchains; every other unregistered payload is a leaf.
+    focused = (envelope["typed_command"] or {}).get("family") == "focused-pytest"
     assert envelope["process_closure"]["descendants"] == (
-        "declared-toolchains" if command[0] == "node" else "forbidden"
+        "declared-toolchains" if command[0] == "node" or focused else "forbidden"
     )
 
 
