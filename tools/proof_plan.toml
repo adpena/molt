@@ -4936,6 +4936,34 @@ pytest_select = [
   { k = "base_env_forces_repo_roots or run_k6_uses_live_tree_guard or k6_failure_retains_full_diagnostic or scenario_routes_its_summary_through_k6 or main_wraps_scenarios_in_repo_sentinel or db_stub_finds_the_worker", targets = ["tests/test_demo_bench_memory_guard.py"] },
 ]
 
+# --- Repository scan records -------------------------------------------
+# Per-file results that four always gates replay when a file's bytes and the
+# scanner's code are unchanged (HF-35).
+[[rule]]
+name = "repository-scan-records"
+toolchains = ["python"]
+description = "Content-keyed per-file scan records and the gates that replay them."
+globs = [
+  "tools/scan_records.py",
+  "tools/check_ratio_direction.py",
+  "tools/encoding_gate.py",
+  "tools/check_subprocess_guard_coverage.py",
+  "tools/check_environment_registry.py",
+  "tools/gen_cpython_coverage.py",
+  "tests/tools/test_encoding_gate.py",
+  "tests/tools/test_signed_ratio.py",
+  "tests/tools/test_subprocess_guard_coverage.py",
+  "tests/tools/test_check_environment_registry.py",
+]
+gates = []
+pytest = [
+  "tests/tools/test_encoding_gate.py",
+  "tests/tools/test_signed_ratio.py",
+  "tests/tools/test_subprocess_guard_coverage.py",
+  "tests/tools/test_check_environment_registry.py",
+  "tests/tools/test_gen_cpython_coverage.py",
+]
+
 # --- Backend daemon custody --------------------------------------------
 [[rule]]
 name = "backend-daemon-custody"
