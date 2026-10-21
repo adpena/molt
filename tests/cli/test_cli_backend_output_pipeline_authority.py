@@ -240,7 +240,7 @@ def terminal_build(
         output_layout=layout,
         backend_output_destination=destination,
         validate_inputs=_ModuleSourceCatalog({}).validate,
-        compiled_source_paths=_ModuleSourceCatalog({}).source_paths(),
+        compiled_source_paths=_ModuleSourceCatalog({}).source_paths(()),
         prepared_backend_setup=SimpleNamespace(
             backend="native",
             cache_setup=cache_setup,

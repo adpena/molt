@@ -16,6 +16,7 @@ from molt._wasm_abi_generated import wasm_runtime_callable_arity
 from molt.compat import CompatibilityError
 from molt.compiler_analysis.python_binding_flow import analyze_python_source_bindings
 from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator, compile_to_tir
+from molt.logical_source_paths import toolchain_logical_path
 from molt.frontend._types import (
     BUILTIN_FUNC_SPECS,
     OBJECT_CLASS,
@@ -5229,7 +5230,7 @@ def test_tensor_view_helpers_use_internal_fast_wrap_helpers(
 
 def test_internal_module_intrinsic_alias_import_calls_live_binding() -> None:
     gen = SimpleTIRGenerator(
-        source_path="src/molt/stdlib/abc.py",
+        source_path=toolchain_logical_path(("stdlib", "abc.py")),
         module_name="abc",
         stdlib_allowlist={"abc", "_abc"},
         known_modules={"abc", "_abc"},

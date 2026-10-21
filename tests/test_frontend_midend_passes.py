@@ -35,6 +35,7 @@ from molt.frontend.lowering.op_kinds_generated import (
     SIMPLEIR_RUNTIME_SYMBOL_REQUIREMENTS,
 )
 from molt.type_facts import collect_type_facts_from_paths
+from molt.logical_source_paths import toolchain_logical_path
 
 
 def _lower_ops(ops: list[MoltOp]) -> list[dict]:
@@ -5626,7 +5627,7 @@ def test_midend_policy_matrix_resolves_profile_and_tier() -> None:
     stdlib_gen = SimpleTIRGenerator(
         optimization_profile="release",
         module_name="_collections_abc",
-        source_path="src/molt/stdlib/_collections_abc.py",
+        source_path=toolchain_logical_path(("stdlib", "_collections_abc.py")),
     )
     stdlib_ops = [
         MoltOp(kind="CONST", args=[idx], result=MoltValue(f"v{idx}"))

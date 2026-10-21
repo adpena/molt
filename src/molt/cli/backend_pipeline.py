@@ -154,9 +154,11 @@ def _run_backend_pipeline(
             _fail(native_artifact_custody_error, json_output, command="build")
         )
     backend_ir_start = time.perf_counter()
+    logical_source_path_by_module = prepared_frontend_run_ticket.frontend_layer_execution_context.module_graph_metadata.logical_source_path_by_module
     prepared_backend_ir, prepared_backend_ir_error = _backend_ir._prepare_backend_ir(
         entry_module=resolved_build_entry.entry_module,
         module_graph=module_graph,
+        logical_source_path_by_module=logical_source_path_by_module,
         known_modules=known_modules,
         stdlib_allowlist=stdlib_allowlist,
         integration_state=integration_state,
@@ -471,7 +473,9 @@ def _run_backend_pipeline(
             output_layout=output_layout,
             validate_inputs=prepared_frontend_pipeline_bundle.module_source_catalog.validate,
             compiled_source_paths=(
-                prepared_frontend_pipeline_bundle.module_source_catalog.source_paths()
+                prepared_frontend_pipeline_bundle.module_source_catalog.source_paths(
+                    logical_source_path_by_module.values()
+                )
             ),
             backend_output_destination=backend_output_destination,
             prepared_backend_setup=prepared_backend_setup,

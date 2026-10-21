@@ -146,6 +146,9 @@ def _run_build_pipeline(
             _backend_ir._prepare_backend_ir(
                 entry_module=resolved_build_entry.entry_module,
                 module_graph=module_graph,
+                logical_source_path_by_module=(
+                    prepared_frontend_run_ticket.frontend_layer_execution_context.module_graph_metadata.logical_source_path_by_module
+                ),
                 known_modules=known_modules,
                 stdlib_allowlist=stdlib_allowlist,
                 integration_state=integration_state,

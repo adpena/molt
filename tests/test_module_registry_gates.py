@@ -386,6 +386,9 @@ def _prepare_binary_ir(
         validate_inputs=lambda: None,
         entry_module="demo",
         module_graph=module_graph,
+        logical_source_path_by_module={
+            name: str(path) for name, path in module_graph.items()
+        },
         known_modules=set(module_graph),
         stdlib_allowlist=set(module_graph),
         integration_state=integration_state,

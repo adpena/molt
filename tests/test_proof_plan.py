@@ -7532,6 +7532,7 @@ def test_native_c_obligation_is_declared_only_for_confirmed_c_builders():
                 "native.integration.capability-manifest",
                 "native.integration.cli-smoke",
                 "native.integration.metamorphic",
+                "nightly.determinism.checkout-independence",
                 "nightly.determinism.compiler-prewarm",
                 "nightly.determinism.runtime",
                 "nightly.shards.prepare",

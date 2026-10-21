@@ -454,6 +454,7 @@ def _build_module_registry(
     *,
     entry_module: str,
     module_graph: Mapping[str, Path],
+    logical_source_path_by_module: Mapping[str, str],
     module_order: Sequence[str],
     runtime_import_dispatch_roots: Collection[str],
     native_module_init_specs: Sequence[_ExternalNativeModuleInitSpec],
@@ -498,7 +499,8 @@ def _build_module_registry(
                     SimpleTIRGenerator.module_init_symbol(name) if has_init else ""
                 ),
                 is_package=module_graph[name].name == "__init__.py",
-                origin=str(module_graph[name].resolve()),
+                # The origin is the module's own reported path (HF-372).
+                origin=logical_source_path_by_module[name],
             )
         )
     generated = set(generated_native_init_modules)
@@ -548,7 +550,7 @@ def _build_module_registry(
                 # compiles the entry module with __main__ semantics); there is
                 # no separate trampoline init on the registry lane.
                 init_symbol=SimpleTIRGenerator.module_init_symbol(entry_module),
-                origin=str(module_graph[entry_module].resolve()),
+                origin=logical_source_path_by_module[entry_module],
             )
         )
     return build_module_registry(entries)
@@ -2081,6 +2083,7 @@ def _prepare_backend_ir(
     *,
     entry_module: str,
     module_graph: Mapping[str, Path],
+    logical_source_path_by_module: Mapping[str, str],
     known_modules: Collection[str],
     stdlib_allowlist: Collection[str],
     integration_state: _FrontendIntegrationState,
@@ -2285,6 +2288,7 @@ def _prepare_backend_ir(
             module_registry = _build_module_registry(
                 entry_module=entry_module,
                 module_graph=module_graph,
+                logical_source_path_by_module=logical_source_path_by_module,
                 module_order=module_order,
                 runtime_import_dispatch_roots=native_runtime_import_dispatch_roots,
                 native_module_init_specs=native_module_init_specs,
