@@ -446,7 +446,10 @@ def test_backend_fingerprint_recomputes_when_rustflags_change(
     write_compiler_lock(project_root)
 
     monkeypatch.setattr(
-        cli_backend_binary, "_backend_source_paths", lambda *_args: (), raising=True
+        cli_backend_binary,
+        "_backend_source_paths",
+        lambda *_args, product: (),
+        raising=True,
     )
     monkeypatch.setattr(
         cli_backend_binary,

@@ -119,7 +119,7 @@ def test_factgraph_cli_dispatches_typed_backend_request(
     request = build_request.fact_graph_request
     assert build_request.file_path == str(source)
     assert build_request.module is None
-    assert build_request.target == "native"
+    assert build_request.target == admit_target("native")
     assert build_request.profile == "release"
     assert build_request.cache is False
     assert build_request.json_output is True
@@ -165,7 +165,7 @@ def test_factgraph_cli_dispatches_module_entry(tmp_path: Path, monkeypatch) -> N
     request = build_request.fact_graph_request
     assert build_request.file_path is None
     assert build_request.module == "pkg.app"
-    assert build_request.target == "native"
+    assert build_request.target == admit_target("native")
     assert build_request.profile == "release"
     assert build_request.build_config is not None
     assert isinstance(request, FactGraphRequest)
