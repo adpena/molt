@@ -2951,6 +2951,110 @@ def test_queue_rebuilds_a_batch_when_main_moves_under_it(
     assert len(runs.splitlines()) == 2
 
 
+def test_land_precheck_selects_only_gates_that_read_the_candidate(drv):
+    # The committed policy, for a frontend source and a runtime source.
+    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    gates, _rules = cfg.select(
+        [
+            "src/molt/cli/backend_compile.py",
+            "runtime/molt-runtime/src/builtins/exceptions.rs",
+        ]
+    )
+    shown = {drv._gate_display(gate.command): gate for gate in gates}
+    pre = {name for name, gate in shown.items() if gate.precheck}
+
+    def runs_pytest(gate) -> bool:
+        return "pytest" in _gate_args(gate.command)
+
+    # Every always gate and the frontend type check read files only.
+    assert {drv._gate_display(command) for command in cfg.always} <= pre
+    assert "python -m ty check src" in pre
+    # A pytest session, a Cargo build or a compiled-program gate waits for the
+    # queue's batch, and every gate that the precheck skips is one of those.
+    for name, gate in shown.items():
+        builds = "cargo" in gate.toolchains
+        if runs_pytest(gate) or builds:
+            assert name not in pre, name
+        else:
+            assert name in pre or not set(gate.toolchains) <= {
+                "python",
+                "uv",
+                "git",
+                "generators",
+                "rustfmt",
+            }, name
+    assert any(runs_pytest(gate) for gate in shown.values())
+    assert any("cargo" in gate.toolchains for gate in shown.values())
+
+
+def _land_without_runner(drv, monkeypatch, lane: Path, *extra: str) -> int:
+    """`land` in process; the detached runner it would start is not needed."""
+    from tools import molt_dev_queue as queue
+
+    started: list[Path] = []
+    monkeypatch.setattr(
+        queue, "_start_queue_runner", lambda paths, repo, args: started.append(repo)
+    )
+    args = drv.build_parser().parse_args(
+        ["land", "--repo", str(lane), "--candidate-controller", *extra]
+    )
+    return args.func(args)
+
+
+def test_land_runs_static_gates_in_the_lane_before_queueing(
+    drv, origin_and_clone, tmp_path, monkeypatch
+):
+    from tools import molt_dev_queue as queue
+
+    _, work = origin_and_clone
+    counter = tmp_path / "gate-runs.txt"
+    _counting_policy(work, counter)
+    head = _lane(work, "pre", {"a.py": "a = 1\n"})
+    lane = work.parent / "lane-pre"
+
+    assert _land_without_runner(drv, monkeypatch, lane) == drv.EXIT_OK
+
+    assert counter.read_text(encoding="utf-8").splitlines() == ["run"]
+    assert [item.head for item in queue.pending(queue._queue_paths(lane))] == [head]
+
+
+def test_land_queues_nothing_when_a_static_gate_fails_in_the_lane(
+    drv, origin_and_clone, tmp_path, monkeypatch
+):
+    from tools import molt_dev_queue as queue
+
+    _, work = origin_and_clone
+    counter = tmp_path / "gate-runs.txt"
+    _counting_policy(work, counter, check="test ! -e broken.txt")
+    _lane(work, "broken", {"broken.txt": "the gate refuses this file\n"})
+    lane = work.parent / "lane-broken"
+
+    with pytest.raises(drv.CandidateFailure):
+        _land_without_runner(drv, monkeypatch, lane)
+
+    assert counter.read_text(encoding="utf-8").splitlines() == ["run"]
+    assert queue.pending(queue._queue_paths(lane)) == []
+
+
+def test_land_no_precheck_queues_without_running_gates(
+    drv, origin_and_clone, tmp_path, monkeypatch
+):
+    from tools import molt_dev_queue as queue
+
+    _, work = origin_and_clone
+    counter = tmp_path / "gate-runs.txt"
+    _counting_policy(work, counter, check="false")
+    head = _lane(work, "skip", {"b.py": "b = 2\n"})
+    lane = work.parent / "lane-skip"
+
+    assert _land_without_runner(drv, monkeypatch, lane, "--no-precheck") == (
+        drv.EXIT_OK
+    )
+
+    assert not counter.exists()
+    assert [item.head for item in queue.pending(queue._queue_paths(lane))] == [head]
+
+
 def test_land_waits_for_a_real_runner_through_the_pinned_controller(
     origin_and_clone, tmp_path
 ):

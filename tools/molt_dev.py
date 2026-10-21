@@ -435,6 +435,14 @@ class GateRule:
     )
 
 
+# The toolchains of a gate that only reads the candidate's files: linters,
+# formatters, type checkers, generators and policy audits. `land` runs those
+# gates in the lane before it queues the lane (molt_dev_precheck); a gate that
+# builds with Cargo, runs compiled programs or is a pytest session waits for the
+# queue's batch, which runs every selected gate once.
+PRECHECK_TOOLCHAINS = frozenset({"generators", "git", "python", "rustfmt", "uv"})
+
+
 @dataclass(frozen=True)
 class SelectedGate:
     command: str | tuple[str, ...]
@@ -442,6 +450,13 @@ class SelectedGate:
     # An always gate is a read-only whole-repository check; the leading run of
     # them executes as one concurrent block (run_selected_gates).
     concurrent: bool = False
+    # The merged pytest session or one pytest_select cohort.
+    pytest: bool = False
+
+    @property
+    def precheck(self) -> bool:
+        """Whether `land` runs this gate in the lane before queueing it."""
+        return not self.pytest and frozenset(self.toolchains) <= PRECHECK_TOOLCHAINS
 
 
 @dataclass
@@ -551,12 +566,6 @@ class GateConfig:
 
         Returns the admitted toolchain fingerprints the gate receipt records.
         """
-        from tools.proof_plan import (
-            admit_toolchains,
-            load_toolchain_policies,
-            toolchain_closure,
-        )
-
         selected_owners = {f"local.{rule.name}" for rule in matched}
         if touched:
             selected_owners.add("local.always")
@@ -568,11 +577,33 @@ class GateConfig:
                 "extra gates lack declared prerequisite custody; declare them in "
                 "proof_plan.toml before selection: " + ", ".join(unknown)
             )
-        selected = {
-            identifier: tools
-            for identifier, (command, tools) in self.prerequisites.items()
-            if identifier.rsplit(".", 1)[0] in selected_owners or command in extra
-        }
+        return self._admit_owned(
+            {
+                identifier: tools
+                for identifier, (command, tools) in self.prerequisites.items()
+                if identifier.rsplit(".", 1)[0] in selected_owners or command in extra
+            }
+        )
+
+    def admit_gates(self, gates: list[SelectedGate]) -> dict[str, dict]:
+        """Admit exactly the toolchains these gates declare (a landing precheck)."""
+        owned: dict[str, tuple[str, ...]] = {}
+        for gate in gates:
+            owned[
+                shlex.join(gate.command)
+                if isinstance(gate.command, tuple)
+                else gate.command
+            ] = gate.toolchains
+        return self._admit_owned(owned)
+
+    def _admit_owned(self, selected: Mapping[str, tuple[str, ...]]) -> dict[str, dict]:
+        """Admit the union of each owner's toolchain closure once."""
+        from tools.proof_plan import (
+            admit_toolchains,
+            load_toolchain_policies,
+            toolchain_closure,
+        )
+
         try:
             names = tuple(
                 dict.fromkeys(name for tools in selected.values() for name in tools)
@@ -620,17 +651,20 @@ class GateConfig:
             tools: tuple[str, ...],
             *,
             concurrent: bool = False,
+            pytest: bool = False,
         ) -> None:
             key = command_key(command)
             if key in indices:
                 index = indices[key]
                 prior = selected[index]
                 selected[index] = replace(
-                    prior, toolchains=tuple(dict.fromkeys((*prior.toolchains, *tools)))
+                    prior,
+                    toolchains=tuple(dict.fromkeys((*prior.toolchains, *tools))),
+                    pytest=prior.pytest or pytest,
                 )
             else:
                 indices[key] = len(selected)
-                selected.append(SelectedGate(command, tools, concurrent))
+                selected.append(SelectedGate(command, tools, concurrent, pytest))
 
         def tools(identifier: str) -> tuple[str, ...]:
             return self.prerequisites[identifier][1]
@@ -657,6 +691,7 @@ class GateConfig:
                 add(
                     command,
                     tools(f"{owner}.pytest-select-{index}"),
+                    pytest=True,
                 )
             for target in rule.pytest:
                 if target not in seen_pytest:
@@ -684,7 +719,7 @@ class GateConfig:
             )
             pytest_commands.add(command_key(command))
             size = len(selected)
-            add(command, tuple(pytest_tools))
+            add(command, tuple(pytest_tools), pytest=True)
             if len(selected) != size:
                 selected.insert(pytest_index, selected.pop())
         # Run declared source/metadata and compilation controls before Python
@@ -1084,6 +1119,7 @@ def _gate_runtime(
     capacity_requirements: dict[tuple[str, ...], int],
     progress: _IntegrationProgress,
     toolchains: dict[str, dict],
+    receipt_kind: str = "gates",
 ) -> GateRuntime:
     def source_changes() -> tuple[str, ...]:
         status = git._run(list(clean_checkout_status_arguments(null_terminated=True)))
@@ -1114,7 +1150,7 @@ def _gate_runtime(
         # worktrees, never inside a working tree.
         receipt_path=_integration_lock_path(repo).with_name("molt-integrate")
         / "receipts"
-        / f"{selected_commit}.gates.json",
+        / f"{selected_commit}.{receipt_kind}.json",
         run_gate=lambda cmd, root, environment: run_gate(cmd, root, environment),
         run_captured_gate=lambda *args: run_captured_gate(*args),
         observe_capacity=observe_gate_capacity,
@@ -1181,6 +1217,69 @@ def _restore_unpublished_citations(repo: Path, progress: _IntegrationProgress) -
         return
     git._run(["reset", "--quiet", "--keep", original])
     _warn(f"landing failed: restored {git.short(original)} with its change citations")
+
+
+def select_landing_gates(
+    git: Git,
+    repo: Path,
+    commit: str,
+    upstream: str,
+    *,
+    extra: list[str],
+) -> tuple[str, GateConfig, list[str], list[SelectedGate], list[GateRule]]:
+    """The policy, touched paths and bound gates of ``commit`` over ``upstream``.
+
+    Policy comes from the same immutable commit whose clean source executes it.
+    """
+    policy = git._run(["show", f"{commit}:tools/{GATES_CONFIG_NAME}"]).stdout
+    try:
+        config = GateConfig.parse(
+            policy, f"{commit}:tools/{GATES_CONFIG_NAME}", root=repo
+        )
+    except DriverError as exc:
+        # The selected commit's own gate policy is invalid.
+        raise CandidateFailure(str(exc), code=exc.code) from exc
+    touched = changed_paths(
+        upstream, commit, run_git=lambda arguments: git._run(arguments).stdout
+    )
+    gates, matched_rules = config.select(touched, extra=extra)
+    from tools.proof_plan import bind_local_gate_command
+
+    try:
+        gates = [
+            replace(
+                gate,
+                command=bind_local_gate_command(gate.command, upstream_commit=upstream),
+            )
+            for gate in gates
+        ]
+    except ValueError as exc:
+        raise CandidateFailure(
+            f"invalid local gate binding; executed=0: {exc}"
+        ) from exc
+    return policy, config, touched, gates, matched_rules
+
+
+def gate_environment(repo: Path, *, session_id: str) -> ProcessEnvironmentBuilder:
+    """The one baseline environment every landing gate projects from."""
+    from tools.proof_queue_pkg.command_identity import CANONICAL_EXECUTION_ENV
+
+    env = immutable_git_environment(os.environ)
+    # Gates are proof executions: bytecode a gate writes under src/ changes the
+    # checkout's import topology while later gates read it (a fresh worktree's
+    # first landing failed that way). The canonical environment forbids writes;
+    # gates instead share the DX pycache prefix outside the checkout, so each
+    # module compiles once per source version rather than once per gate.
+    env.update(CANONICAL_EXECUTION_ENV)
+    env.pop("PYTHONDONTWRITEBYTECODE", None)
+    env["PYTHONPYCACHEPREFIX"] = str(_gate_pycache_prefix(repo, env))
+    env["MOLT_SESSION_ID"] = session_id
+    env["PYTHONPATH"] = os.pathsep.join((str(repo / "src"), str(repo)))
+    # Cargo gates build into the target Molt's own builds of this checkout use.
+    # Bare Cargo would compile cold into the worktree's ./target, which the
+    # worktree cleanup then deletes, so every landing paid a full build.
+    env.setdefault("CARGO_TARGET_DIR", str(project_cargo_target_dir(repo, env)))
+    return env
 
 
 def cmd_integrate(args: argparse.Namespace) -> int:
@@ -1402,39 +1501,13 @@ def _integrate_exclusive(
             )
 
     # --- step 5: gates (hazard 10) ------------------------------------------
-    gate_cmds: list[SelectedGate] = []
-    matched_rules: list[GateRule] = []
-    # Policy comes from the same immutable commit whose clean source executes it.
-    policy = git._run(["show", f"{selected_commit}:tools/{GATES_CONFIG_NAME}"]).stdout
-    try:
-        config = GateConfig.parse(
-            policy, f"{selected_commit}:tools/{GATES_CONFIG_NAME}", root=repo
-        )
-    except DriverError as exc:
-        # The selected commit's own gate policy is invalid.
-        raise CandidateFailure(str(exc), code=exc.code) from exc
-    touched = changed_paths(
-        upstream_before,
+    policy, config, touched, gate_cmds, matched_rules = select_landing_gates(
+        git,
+        repo,
         selected_commit,
-        run_git=lambda arguments: git._run(arguments).stdout,
+        upstream_before,
+        extra=list(args.extra_gate or []),
     )
-    gate_cmds, matched_rules = config.select(touched, extra=list(args.extra_gate or []))
-    from tools.proof_plan import bind_local_gate_command
-
-    try:
-        gate_cmds = [
-            replace(
-                gate,
-                command=bind_local_gate_command(
-                    gate.command, upstream_commit=upstream_before
-                ),
-            )
-            for gate in gate_cmds
-        ]
-    except ValueError as exc:
-        raise CandidateFailure(
-            f"invalid local gate binding; executed=0: {exc}"
-        ) from exc
     progress.source_commit = selected_commit
     progress.gate_total = len(gate_cmds)
     progress.emit("candidate_selected")
@@ -1442,23 +1515,7 @@ def _integrate_exclusive(
         f"gates ({len(gate_cmds)} selected for {len(touched)} touched path(s); "
         f"matched rules: {', '.join(r.name for r in matched_rules) or 'none'})"
     )
-    from tools.proof_queue_pkg.command_identity import CANONICAL_EXECUTION_ENV
-
-    env = immutable_git_environment(os.environ)
-    # Gates are proof executions: bytecode a gate writes under src/ changes the
-    # checkout's import topology while later gates read it (a fresh worktree's
-    # first landing failed that way). The canonical environment forbids writes;
-    # gates instead share the DX pycache prefix outside the checkout, so each
-    # module compiles once per source version rather than once per gate.
-    env.update(CANONICAL_EXECUTION_ENV)
-    env.pop("PYTHONDONTWRITEBYTECODE", None)
-    env["PYTHONPYCACHEPREFIX"] = str(_gate_pycache_prefix(repo, env))
-    env["MOLT_SESSION_ID"] = args.session_id
-    env["PYTHONPATH"] = os.pathsep.join((str(repo / "src"), str(repo)))
-    # Cargo gates build into the target Molt's own builds of this checkout use.
-    # Bare Cargo would compile cold into the worktree's ./target, which the
-    # worktree cleanup then deletes, so every landing paid a full build.
-    env.setdefault("CARGO_TARGET_DIR", str(project_cargo_target_dir(repo, env)))
+    env = gate_environment(repo, session_id=args.session_id)
     cargo_outputs: dict[tuple[str, ...], tuple[Path, ...]] = {}
     capacity_requirements: dict[tuple[str, ...], int] = {}
     if not dry:
