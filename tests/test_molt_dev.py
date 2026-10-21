@@ -3720,19 +3720,20 @@ def _integrate_ns(drv, **overrides):
 
 
 def _dr_ns(drv, name, state_root, command, *, cwd=None, env=None, replace=False):
-    import argparse
-
-    return argparse.Namespace(
-        name=name,
-        state_dir=str(state_root),
-        cwd=cwd,
-        env=env,
-        replace=replace,
-        verify_min_age_hint=30,
-        json=False,
-        command="detached-run",
-        argv=["--", *command],
-    )
+    options = [
+        "detached-run",
+        "--name",
+        name,
+        "--state-dir",
+        str(state_root),
+    ]
+    if cwd is not None:
+        options.extend(("--cwd", str(cwd)))
+    for value in env or ():
+        options.extend(("--env", value))
+    if replace:
+        options.append("--replace")
+    return drv.build_parser().parse_args([*options, "--", *command])
 
 
 def _dv_ns(drv, name, state_root, *, min_age_s=0.0, as_json=True):
@@ -3774,6 +3775,19 @@ def _verify_json(drv, capsys, ns) -> tuple[int, dict]:
     return rc, _json.loads(payload)
 
 
+def test_subcommand_identity_destinations_never_alias_payloads(drv):
+    import argparse
+
+    def check(parser, identities):
+        for action in parser._actions:
+            assert action.dest not in identities, (parser.prog, action.dest)
+            if isinstance(action, argparse._SubParsersAction):
+                for child in action.choices.values():
+                    check(child, identities | {action.dest})
+
+    check(drv.build_parser(), set())
+
+
 def test_detached_run_completes_and_records_rc(drv, tmp_path, capsys):
     state_root = tmp_path / "detached"
     # Exercise the complete dispatcher, not only the detached handler: payload
@@ -3791,7 +3805,9 @@ def test_detached_run_completes_and_records_rc(drv, tmp_path, capsys):
     ]
     parsed = drv.build_parser().parse_args(argv)
     assert parsed.command == "detached-run"
-    assert parsed.argv == argv[5:]
+    payload = parsed.argv[1:] if parsed.argv[:1] == ["--"] else parsed.argv
+    assert payload == argv[6:]
+    assert not molt_dev.molt_dev_controller.runs_from_pinned_controller(parsed)
     rc = drv.main(argv)
     assert rc == drv.EXIT_OK
     state = state_root / "ok-run"
