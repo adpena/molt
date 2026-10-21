@@ -201,6 +201,8 @@ _FRONTEND_COMPILER_INPUTS: Mapping[str, _FrontendInputRole] = MappingProxyType(
         "_wasm_abi_generated.py": _P,
         "compat.py": _P,
         "exact_json.py": _P,
+        # The path every emitted module location reports (HF-372).
+        "logical_source_paths.py": _P,
         "native_callable_abi.py": _P,
         "native_callable_exports.py": _P,
         "opcode_literal_payloads.py": _P,

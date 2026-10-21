@@ -9,7 +9,7 @@ import json
 import os
 import sys
 import tokenize
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, TYPE_CHECKING
@@ -256,14 +256,22 @@ class _ModuleSourceCatalog:
     def read_source(self, module_name: str, module_path: Path) -> str:
         return self.lease_for(module_name, module_path).read()
 
-    def source_paths(self) -> tuple[str, ...]:
-        """The files the program's modules were compiled from, sorted."""
+    def source_paths(self, reported_paths: Collection[str]) -> tuple[str, ...]:
+        """The compiled files that a traceback frame can name, sorted.
+
+        A frame names its module's logical source path. A toolchain-owned or
+        generated module reports a fixed virtual path, never its file
+        (``molt.logical_source_paths``), so only files that some module reports
+        as its own path are listed.
+        """
+        reported = frozenset(reported_paths)
         return tuple(
             sorted(
                 {
-                    os.fspath(lease.path)
+                    path
                     for lease in self.leases.values()
                     if lease.inline_source is None
+                    and (path := os.fspath(lease.path)) in reported
                 }
             )
         )

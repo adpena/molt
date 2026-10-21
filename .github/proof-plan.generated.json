@@ -1623,6 +1623,46 @@
         "uv",
         "run",
         "python3",
+        "-m",
+        "pytest",
+        "-q",
+        "-s",
+        "-m",
+        "slow",
+        "tests/cli/test_checkout_independent_objects.py"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cargo_build_python": true,
+      "cargo_native_units": {
+        "target": [
+          "c",
+          "c++"
+        ]
+      },
+      "cell": "linux-x86_64-py312-native-dev",
+      "dependencies": [
+        "nightly.determinism.compiler-prewarm"
+      ],
+      "family": "nightly_determinism",
+      "id": "nightly.determinism.checkout-independence",
+      "resource_class": "scheduled-suite",
+      "tiers": [
+        "scheduled"
+      ],
+      "timeout_seconds": 2400,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo",
+        "clang"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
         "tools/verify_ir_suite.py",
         "--dir",
         "tests/differential/basic",
@@ -5557,6 +5597,7 @@
         "tests/cli/test_cli_cache_fingerprint.py",
         "tests/cli/test_function_records.py",
         "tests/cli/test_compiler_source_root.py",
+        "tests/cli/test_logical_source_paths.py",
         "tests/cli/test_cli_runtime_tk_feature_plumbing.py",
         "tests/cli/test_llvm_wasi_tools.py",
         "tests/cli/test_cli_compiler_metadata_pathspec_state.py",
@@ -5720,6 +5761,7 @@
         "tests/cli/test_cli_cache_fingerprint.py",
         "tests/cli/test_function_records.py",
         "tests/cli/test_compiler_source_root.py",
+        "tests/cli/test_logical_source_paths.py",
         "tests/cli/test_cli_runtime_tk_feature_plumbing.py",
         "tests/cli/test_llvm_wasi_tools.py",
         "tests/cli/test_cli_compiler_metadata_pathspec_state.py",
@@ -9171,7 +9213,7 @@
         "required_job_seconds": 5700,
         "resource_capacity_floor_seconds": {
           "compiler-build-resource": 1200,
-          "scheduled-suite": 1500
+          "scheduled-suite": 2100
         }
       },
       "nightly_differential": {

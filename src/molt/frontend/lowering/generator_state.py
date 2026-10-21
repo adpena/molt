@@ -30,6 +30,7 @@ from molt.frontend._types import (
     TypeHint,
 )
 from molt.frontend.lowering.class_resolution import ClassDefinitionIndex
+from molt.logical_source_paths import is_stdlib_logical_path
 from molt.frontend.sema import SemaResult
 from molt.compiler_analysis.python_function_kind import FunctionKind
 from molt.native_callable_exports import (
@@ -413,13 +414,11 @@ class GeneratorStateMixin(GeneratorMixinBase):
         self.in_annotation = False
         self._reset_type_hint_scope_state(reset_bytearray_len=True)
         self.global_elem_hints: dict[str, TypeHint] = {}
-        self.stdlib_hint_trust = False
-        if source_path:
-            normalized_path = source_path.replace("\\", "/")
-            if "/src/molt/stdlib/" in normalized_path or normalized_path.startswith(
-                "src/molt/stdlib/"
-            ):
-                self.stdlib_hint_trust = True
+        # A bundled stdlib module is identified by its logical source path,
+        # which only the CLI's toolchain-root mapping assigns (HF-372).
+        self.stdlib_hint_trust = source_path is not None and is_stdlib_logical_path(
+            source_path
+        )
         self._source_is_stdlib_module = self.stdlib_hint_trust
         self.target_sys_platform = target_sys_platform
         self.global_dict_key_hints: dict[str, TypeHint] = {}

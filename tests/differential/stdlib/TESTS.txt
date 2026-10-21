@@ -1482,6 +1482,7 @@ tests/differential/stdlib/module_protocol_pkg/child_warning_error.py
 tests/differential/stdlib/module_protocol_pkg/exports.py
 tests/differential/stdlib/module_protocol_pkg/fallback.py
 tests/differential/stdlib/module_protocol_pkg/import_raise.py
+tests/differential/stdlib/module_source_paths.py
 tests/differential/stdlib/multiprocessing_basic_spawn.py
 tests/differential/stdlib/multiprocessing_codec_fastpath_transport.py
 tests/differential/stdlib/multiprocessing_pipe_basic.py

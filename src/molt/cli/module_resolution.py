@@ -29,6 +29,7 @@ from molt.target_python import (
     _parse_source_for_target,
 )
 from molt.cli.project_roots import _is_path_within
+from molt.logical_source_paths import ToolchainPackageRoot
 
 _ModuleRootAliases = tuple[tuple[str, Path], ...]
 _ResolutionContext = tuple[tuple[Path, ...], Path, frozenset[str]]
@@ -957,3 +958,8 @@ def _is_runtime_owned_module_path(module_path: Path) -> bool:
     return any(
         _is_path_within(module_path, root) for root in _runtime_owned_module_roots()
     )
+
+
+def _toolchain_package_root() -> ToolchainPackageRoot:
+    """The selected compiler's ``molt`` package directory, resolved once."""
+    return ToolchainPackageRoot(_stdlib_root_path().resolve().parent)

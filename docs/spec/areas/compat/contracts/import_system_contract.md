@@ -175,6 +175,14 @@ Every module must expose:
 - `__spec__` with loader metadata,
 - `__dict__` for module attributes.
 
+`__file__`, `__spec__.origin`, a package's `__path__` and every `co_filename`
+report the module's logical source path. A program module reports the absolute
+file it was compiled from, as CPython does. A bundled stdlib or other
+toolchain-owned module reports its place in the compiler's `molt` package, for
+example `/__molt__/stdlib/json/__init__.py`, never the checkout or install that
+built the program
+([build-path independence](../../core/0025_REPRODUCIBLE_AND_DETERMINISTIC_MODE.md#23-build-path-independence)).
+
 Modules may be:
 - compiled Molt modules,
 - standard library shims,

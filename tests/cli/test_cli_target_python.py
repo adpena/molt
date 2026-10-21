@@ -436,6 +436,7 @@ def test_backend_ir_bootstraps_target_python_without_sys_import(tmp_path: Path) 
         validate_inputs=lambda: None,
         entry_module="__main__",
         module_graph={"__main__": source_path},
+        logical_source_path_by_module={"__main__": str(source_path)},
         known_modules={"__main__"},
         stdlib_allowlist=set(),
         integration_state=integration_state,

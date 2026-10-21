@@ -303,6 +303,9 @@ def test_module_initializers_solely_own_code_and_globals_publication(
         validate_inputs=lambda: None,
         entry_module=entry_module,
         module_graph=module_graph,
+        logical_source_path_by_module={
+            name: str(path) for name, path in module_graph.items()
+        },
         known_modules=set(modules),
         stdlib_allowlist=set(),
         integration_state=state,

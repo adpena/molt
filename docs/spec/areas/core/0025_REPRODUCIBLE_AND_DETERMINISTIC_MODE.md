@@ -40,6 +40,98 @@ Qualify these properties with the existing
 These are development and release checks, with no added work in the end-user
 binary. Evidence establishes only the exercised cells; see section 5.1.
 
+### 2.3 Build-path independence
+
+The location of the compiler's sources is not a build input. The same compiler
+sources build the same objects from any checkout, worktree or installed
+distribution (HF-372). Before this rule, every native object embedded the
+checkout path of each stdlib module it compiled, for example
+`/Users/x/Molt/worktrees/jitp1/src/molt/stdlib/sys.py`. The same source built in
+two worktrees gave 12 of 12 different objects, so no cache or identity check
+could match them across checkouts.
+
+One authority, `src/molt/logical_source_paths.py`, gives each module its
+logical source path: the one path that its compiled code reports. The CLI
+assigns it once per module graph.
+
+| Module | Reported path | Model |
+| --- | --- | --- |
+| Program module | the absolute file it was compiled from | CPython: `__main__.__file__` is absolute since 3.9, and imported modules report the file the path finder found |
+| Toolchain-owned module: a file of the compiler's own `molt` package (the bundled stdlib, `molt.gpu`, `molt.lib`, `molt`) | `/__molt__/<path in the package>`, for example `/__molt__/stdlib/json/__init__.py` | rustc's std paths `/rustc/<commit>/library/...`; Go `-trimpath` |
+| Generated module (namespace stub, generated importer) | `/__molt_generated__/<name>.py` | the same rule, for modules without a source file |
+
+Every emitted module location is a projection of that path: `__file__`,
+`__spec__.origin`, the package `__path__`, the module and function
+`co_filename`, `FunctionIR.source_file` (cache keys, stdlib batch grouping,
+fact-graph source sites), deferred compile warnings, the module registry origin
+(`runpy`), and the traceback source registry in the native entry stub. That
+registry lists only files that some module reports as its own path. Stdlib
+type-hint trust and the stdlib midend policy select on the logical stdlib
+prefix, not on a path spelling.
+
+How other toolchains solve it:
+
+- rustc `--remap-path-prefix=FROM=TO` rewrites paths in debug info, diagnostics
+  and `file!()`. Rust's release toolchains remap the std sources to
+  `/rustc/<commit-hash>` (bootstrap `rust.remap-debuginfo`); a debugger maps
+  that prefix back to the installed `rust-src` component with
+  `set substitute-path`
+  ([rustc book](https://doc.rust-lang.org/rustc/command-line-arguments.html#--remap-path-prefix-remap-source-names-in-output)).
+  Cargo's `trim-paths` ([RFC 3127](https://rust-lang.github.io/rfcs/3127-trim-paths.html))
+  makes workspace paths relative, names dependencies `<name>-<version>` and
+  separates the object scope from the diagnostics scope.
+- GCC and Clang `-ffile-prefix-map=OLD=NEW` covers `__FILE__` and DWARF
+  (`-fmacro-prefix-map` and `-fdebug-prefix-map`); MSVC needs `/pathmap` with
+  `/experimental:deterministic` (HF-363).
+- Go `-trimpath` records `module@version/file.go` for modules and the import
+  path for the standard library ([cmd/go](https://pkg.go.dev/cmd/go#hdr-Compile_packages_and_dependencies)).
+- CPython gives a frozen module `co_filename` `<frozen NAME>` and computes its
+  `__file__` at startup from `sys._stdlib_dir` (3.11+). Its tracebacks show no
+  source line for such a frame (3.12 to 3.14); 3.14's `linecache` can map a
+  frozen filename back through `module_globals["__file__"]`. A cached code
+  object gets the real import location through `_imp._fix_co_filename`.
+
+Molt's choices, and why:
+
+- The stdlib keeps a path-shaped name, not `<frozen NAME>`. Molt compiles every
+  stdlib module ahead of time, not only CPython's frozen set. One rule keeps
+  `co_filename == __file__ == __spec__.origin`, as for CPython's non-frozen
+  stdlib, keeps basenames and package-relative tails, and keeps
+  `os.path.dirname(__file__)` meaningful.
+- The prefix carries no version. The build already records the compiler
+  identity, and every stdlib object key binds it, so a version in every path
+  would add bytes and no information. Map a path back by replacing `/__molt__/`
+  with `<compiler source root>/src/molt/`.
+- A program module keeps its absolute path for CPython parity and for
+  `Path(__file__).parent` data lookups. A program inside a checkout, such as the
+  differential corpus, therefore still builds checkout-specific program
+  objects; its stdlib objects are identical. Relocatable program objects, with
+  the path bound at link time as `_fix_co_filename` binds it at import, are not
+  implemented.
+- A traceback frame or compile warning of a toolchain module shows no source
+  line, as CPython shows none for a frozen module's frame. A shipped program
+  must not read files from the machine that built it. For the same reason,
+  `importlib.resources` cannot reach a toolchain package's files through its
+  `__file__`; serving them needs the compiled image to carry them.
+- The native backend emits no DWARF or CodeView yet. When it does, its file
+  names must come from these logical paths. The Rust runtime and backend builds
+  remap their own source paths separately in release packaging
+  (`tools/release/native_build.py`, HF-363). A development backend executable
+  still embeds its Cargo target directory, which names the checkout, through
+  the generated sources of `cranelift-codegen`. Two checkouts therefore run
+  different backend files that emit identical objects, and a cache key that
+  binds the backend file's digest (native stdlib constituent objects) still
+  differs between them.
+
+Cost: one `Path.parts` prefix comparison per module per module graph, with no
+system call; the compiler package root resolves once per graph. The entry stub
+no longer embeds a string for each stdlib file.
+
+Proof: `tests/cli/test_logical_source_paths.py` checks every projection from two
+compiler checkouts; `tests/differential/stdlib/module_source_paths.py` checks the
+CPython-visible shape; `tests/cli/test_checkout_independent_objects.py` builds the
+same programs from two compiler checkouts and compares the native object bytes.
+
 ---
 
 ## 3. Runtime Determinism

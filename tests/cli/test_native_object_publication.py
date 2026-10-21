@@ -368,7 +368,12 @@ def test_native_object_publication_is_one_admitted_transaction(
     bundle = NS(
         module_source_catalog=source_catalog,
         prepared_frontend_run_ticket=NS(
-            frontend_layer_execution_context=NS(module_graph_metadata=None)
+            frontend_layer_execution_context=NS(
+                # A program module reports the file it was compiled from.
+                module_graph_metadata=NS(
+                    logical_source_path_by_module={"app": str(source)}
+                )
+            )
         ),
         module_graph={},
         runtime_import_dispatch_roots=set(),

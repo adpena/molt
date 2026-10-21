@@ -68,6 +68,15 @@ def _module_matches(module_filter: str | None, source_path: Path | None) -> bool
     return any(candidate in {source_text, stem, name} for candidate in candidates)
 
 
+def _reported_source_path(source_path: Path | None) -> str:
+    """The path a build would emit for ``source_path``, as in production."""
+    if source_path is None:
+        return "<stdin>"
+    from molt.cli.module_resolution import _toolchain_package_root
+
+    return _toolchain_package_root().logical_source_path(source_path.resolve())
+
+
 def _compile_snapshot(
     source: str,
     *,
@@ -76,7 +85,7 @@ def _compile_snapshot(
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
     filename = str(source_path) if source_path is not None else "<stdin>"
     tree = ast.parse(source, filename=filename)
-    generator = SimpleTIRGenerator(source_path=filename)
+    generator = SimpleTIRGenerator(source_path=_reported_source_path(source_path))
     generator.visit(tree)
     ir_json = generator.to_json(midend_stage=midend_stage)
     return (

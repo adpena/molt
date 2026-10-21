@@ -34,6 +34,7 @@ import cProfile  # noqa: E402
 import pstats  # noqa: E402
 
 
+from molt.cli.module_resolution import _toolchain_package_root  # noqa: E402
 from molt.frontend import SimpleTIRGenerator  # noqa: E402
 from molt.target_python import (  # noqa: E402
     _DEFAULT_TARGET_PYTHON_VERSION,
@@ -406,7 +407,8 @@ def profile_one(
         gen = SimpleTIRGenerator(
             optimization_profile=optimization_profile,
             module_name=_module_name_for_path(path),
-            source_path=str(path),
+            # The path a build emits, so a stdlib module gets its build policy.
+            source_path=_toolchain_package_root().logical_source_path(path.resolve()),
             target_python=target_python,
         )
         visit_start = time.perf_counter()

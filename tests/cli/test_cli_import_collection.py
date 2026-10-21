@@ -3804,6 +3804,9 @@ def test_backend_ir_isolate_import_is_bounded_by_runtime_dispatch_roots(
     prepared, error = BACKEND_IR._prepare_backend_ir(
         entry_module="demo",
         module_graph=module_graph,
+        logical_source_path_by_module={
+            name: str(path) for name, path in module_graph.items()
+        },
         known_modules=set(module_graph),
         stdlib_allowlist=set(module_graph),
         integration_state=integration_state,
@@ -3880,6 +3883,9 @@ def test_backend_ir_isolate_import_roots_runtime_support_closure(
     prepared, error = BACKEND_IR._prepare_backend_ir(
         entry_module="demo",
         module_graph=module_graph,
+        logical_source_path_by_module={
+            name: str(path) for name, path in module_graph.items()
+        },
         known_modules=set(module_graph),
         stdlib_allowlist=set(module_graph),
         integration_state=integration_state,
@@ -3995,6 +4001,9 @@ def test_backend_ir_isolate_import_initializes_static_native_artifacts(
     prepared, error = BACKEND_IR._prepare_backend_ir(
         entry_module="demo",
         module_graph=module_graph,
+        logical_source_path_by_module={
+            name: str(path) for name, path in module_graph.items()
+        },
         known_modules=set(module_graph) | native_artifact_plan.native_module_names(),
         stdlib_allowlist=set(module_graph),
         integration_state=integration_state,
@@ -9754,6 +9763,7 @@ def test_entry_source_identity_survives_json_and_explicit_main_registry_alias() 
     registry = BACKEND_IR._build_module_registry(
         entry_module="application",
         module_graph={"application": Path("/virtual/application.py")},
+        logical_source_path_by_module={"application": "/virtual/application.py"},
         module_order=["application"],
         runtime_import_dispatch_roots=(),
         native_module_init_specs=(),
@@ -9762,6 +9772,7 @@ def test_entry_source_identity_survives_json_and_explicit_main_registry_alias() 
     )
     rows = {row.name: row for row in registry.rows}
     assert rows["__main__"].init_symbol == rows["application"].init_symbol
+    assert rows["__main__"].origin == rows["application"].origin
 
 
 @pytest.mark.parametrize("registry_lane", [False, True])

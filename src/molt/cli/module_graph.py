@@ -38,6 +38,7 @@ from molt.cli.models import (
     _RuntimeImportScanCustody,
 )
 from molt.cli.output import CliFailure as _CliFailure
+from molt.logical_source_paths import generated_module_logical_path
 from molt.cli.output import fail as _fail
 from molt.cli.source_extension_input_custody import (
     resolve_source_extension_manifest_input,
@@ -209,13 +210,6 @@ def _write_namespace_module(name: str, paths: list[str], output_dir: Path) -> Pa
     return _write_generated_module_source(name, "\n".join(lines), output_dir)
 
 
-def _logical_generated_module_path(module_name: str) -> str:
-    safe = re.sub(r"[^0-9A-Za-z_]+", "_", module_name).strip("_")
-    if not safe:
-        safe = "module"
-    return f"/__molt_generated__/{safe}.py"
-
-
 def _collect_package_parents(
     module_graph: dict[str, Path],
     roots: list[Path],
@@ -277,10 +271,15 @@ def _build_module_lowering_metadata(
     module_is_package_by_module: dict[str, bool] = {}
     module_execution_kind_by_module: dict[str, ModuleExecutionKind] = {}
     namespace_modules = set(namespace_module_names)
+    toolchain_root = _module_resolution._toolchain_package_root()
     for module_name in sorted(module_graph):
         module_path = module_graph[module_name]
-        logical_source_path_by_module[module_name] = generated_module_source_paths.get(
-            module_name, str(module_path)
+        # The one path the module's compiled code reports (HF-372).
+        generated_path = generated_module_source_paths.get(module_name)
+        logical_source_path_by_module[module_name] = (
+            generated_path
+            if generated_path is not None
+            else toolchain_root.logical_source_path(module_path)
         )
         module_is_namespace_by_module[module_name] = module_name in namespace_modules
         module_is_package_by_module[module_name] = module_path.name == "__init__.py"
@@ -509,10 +508,10 @@ def _augment_support_modules(
             )
             _graph_discovery._record_module_reason(module_reasons, name, reason)
     generated_module_source_paths = {
-        name: _logical_generated_module_path(name) for name in namespace_sources
+        name: generated_module_logical_path(name) for name in namespace_sources
     }
     if needs_generated_importer and importer_name in module_graph:
-        generated_module_source_paths[importer_name] = _logical_generated_module_path(
+        generated_module_source_paths[importer_name] = generated_module_logical_path(
             importer_name
         )
     return _SupportModuleAugmentation(
