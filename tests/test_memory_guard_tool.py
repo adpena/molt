@@ -9994,3 +9994,314 @@ def test_windows_exit_observation_queries_without_signaling(
         assert queries[-1] == 0.04
     else:
         assert queries
+
+
+# Enforcement does not wait on observation (HF-417). On 2026-10-21 a guard
+# blocked 38 minutes in a host-wide read and signalled its 300 s deadline at
+# 2,270 s. These tests stall each observation that stood on the enforcement
+# path and require the child's own process group to be signalled anyway.
+
+# A child that ends only when its process group is signalled.
+_ENFORCED_CHILD = "import threading\nthreading.Event().wait()\n"
+
+
+def _wait_until(predicate: Callable[[], bool], bound_s: float) -> bool:
+    """Poll ``predicate``; ``bound_s`` is a hang guard, never the oracle."""
+    deadline = time.monotonic() + bound_s
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
+
+
+class _GuardThread:
+    """Run ``run_guarded`` on a thread; optionally stall its own samples."""
+
+    def __init__(
+        self, command: list[str], *, stall_samples: bool = False, **kwargs: Any
+    ) -> None:
+        self.release = threading.Event()
+        self.guard_samples = 0
+        self.spawned: list[int] = []
+        self.outcome: dict[str, Any] = {}
+        if stall_samples:
+            kwargs["sampler"] = self._stalled_sampler
+        self.thread = threading.Thread(
+            target=self._run, args=(command,), kwargs=kwargs, name="hf417-guard"
+        )
+
+    def _stalled_sampler(self) -> Mapping[int, memory_guard.ProcessSample]:
+        # The guard's first sample is its launch baseline; each later one on
+        # the guard thread stalls until the test releases it. The reaper's
+        # exit census runs on its own thread and is not stalled.
+        if threading.current_thread() is self.thread:
+            self.guard_samples += 1
+            if self.guard_samples > 1:
+                self.release.wait(600)
+        return memory_guard.sample_processes()
+
+    def _run(self, command: list[str], **kwargs: Any) -> None:
+        try:
+            self.outcome["result"] = memory_guard.run_guarded(
+                command, on_spawn=self.spawned.append, **kwargs
+            )
+        except BaseException as exc:
+            self.outcome["error"] = exc
+
+    def start(self) -> int:
+        self.thread.start()
+        assert _wait_until(lambda: bool(self.spawned), 120)
+        return self.spawned[0]
+
+    def finish(self) -> memory_guard.GuardResult:
+        self.release.set()
+        self.thread.join(600)
+        assert not self.thread.is_alive()
+        if "error" in self.outcome:
+            raise self.outcome["error"]
+        return self.outcome["result"]
+
+
+def _root_signalled(pid: int) -> Callable[[], bool]:
+    # The reaper reaps the signalled root; a reaped or zombie child is absent.
+    return lambda: pid not in memory_guard.sample_processes()
+
+
+def _enforcer_reports(
+    result: memory_guard.GuardResult, reason: str
+) -> list[memory_guard.GuardTerminationReport]:
+    # The enforcer observes nothing, so its reports watch no sampled pid.
+    return [
+        report
+        for report in result.termination_reports
+        if report.reason == reason and report.watched_pids == ()
+    ]
+
+
+@pytest.mark.skipif(
+    os.name != "posix", reason="the POSIX enforcer signals the child's own group"
+)
+def test_deadline_holds_while_the_guard_thread_is_blocked_sampling() -> None:
+    guard = _GuardThread(
+        [sys.executable, "-c", _ENFORCED_CHILD],
+        max_rss_kb=4_000_000,
+        poll_interval=0.02,
+        timeout=0.5,
+        stall_samples=True,
+    )
+    try:
+        pid = guard.start()
+        bound = 0.5 + memory_guard.ENFORCEMENT_SLACK_SEC + 120
+        assert _wait_until(_root_signalled(pid), bound)
+        # The guard thread was still blocked in its second sample.
+        assert guard.guard_samples >= 2 and not guard.release.is_set()
+    finally:
+        result = guard.finish()
+    assert result.timed_out
+    assert result.returncode == memory_guard.TIMEOUT_RETURN_CODE
+    # The run loop deferred to the enforcer's strike: one report, no stale
+    # second signal.
+    assert [report.reason for report in result.termination_reports] == ["timeout"]
+    (report,) = _enforcer_reports(result, "timeout")
+    actions = [
+        (action.target_kind, action.target_id, action.signal_name, action.result)
+        for action in report.actions
+    ]
+    # SIGTERM to the root's own group; SIGKILL follows only a root that
+    # outlived the grace; the run loop observed the group's exit afterwards.
+    assert actions[0] == ("process_group", pid, "SIGTERM", "sent")
+    assert actions[-1] == ("process_group", pid, None, "exited")
+    assert {action[2] for action in actions[1:-1]} <= {"SIGKILL"}
+    assert result.descendants_closed
+
+
+@pytest.mark.skipif(
+    os.name != "posix", reason="the POSIX enforcer signals the child's own group"
+)
+def test_owner_cancellation_holds_while_the_guard_thread_is_blocked_sampling() -> None:
+    cancel = threading.Event()
+    guard = _GuardThread(
+        [sys.executable, "-c", _ENFORCED_CHILD],
+        max_rss_kb=4_000_000,
+        poll_interval=0.02,
+        cancellation_requested=cancel.is_set,
+        stall_samples=True,
+    )
+    try:
+        pid = guard.start()
+        assert _wait_until(lambda: guard.guard_samples >= 2, 120)
+        cancel.set()
+        bound = memory_guard.ENFORCEMENT_SLACK_SEC + 120
+        assert _wait_until(_root_signalled(pid), bound)
+        assert not guard.release.is_set()
+    finally:
+        result = guard.finish()
+    assert result.cancelled
+    assert not result.timed_out
+    assert [report.reason for report in result.termination_reports] == [
+        "owner_cancellation"
+    ]
+    assert _enforcer_reports(result, "owner_cancellation")
+    assert result.descendants_closed
+
+
+@pytest.mark.skipif(
+    os.name != "posix", reason="the POSIX enforcer signals the child's own group"
+)
+def test_memory_trip_holds_while_the_kill_waits_on_the_host_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if not process_model.posix_custody_reads_partial_rows():
+        pytest.skip("this host's polls read the whole table; no separate kill read")
+    holder: dict[str, Any] = {}
+    entered = threading.Event()
+    real_table = memory_guard.sample_processes
+
+    def stalled_table() -> Mapping[int, memory_guard.ProcessSample]:
+        # Polls read custody rows; the kill's protection decision reads the
+        # host table. Stall that read on the guard thread.
+        guard = holder.get("guard")
+        if guard is not None and threading.current_thread() is guard.thread:
+            entered.set()
+            guard.release.wait(600)
+        return real_table()
+
+    # The guard's host sampler is this function, so its polls stay custody
+    # reads and only its whole-table reads stall.
+    monkeypatch.setattr(memory_guard, "sample_processes", stalled_table)
+    guard = _GuardThread(
+        [sys.executable, "-c", _ENFORCED_CHILD],
+        max_rss_kb=1,
+        poll_interval=0.02,
+        sampler=stalled_table,
+    )
+    holder["guard"] = guard
+    try:
+        pid = guard.start()
+        assert entered.wait(120)
+        bound = memory_guard.ENFORCEMENT_SLACK_SEC + 120
+        assert _wait_until(_root_signalled(pid), bound)
+        assert not guard.release.is_set()
+    finally:
+        result = guard.finish()
+    assert result.violation is not None
+    assert result.returncode == memory_guard.GUARD_RETURN_CODE
+    # The run loop deferred to the enforcer's strike.
+    assert [report.reason for report in result.termination_reports] == ["rss_limit"]
+    assert _enforcer_reports(result, "rss_limit")
+    assert result.descendants_closed
+
+
+@pytest.mark.skipif(
+    os.name != "posix", reason="the POSIX enforcer signals the child's own group"
+)
+def test_deadline_holds_while_the_running_summary_reads_the_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    guard = _GuardThread(
+        [sys.executable, "-c", _ENFORCED_CHILD],
+        max_rss_kb=4_000_000,
+        poll_interval=0.02,
+        timeout=0.5,
+        running_summary_json=str(tmp_path / "summary.json"),
+    )
+    entered = threading.Event()
+    real_repro = memory_guard.repro_context_payload
+
+    def stalled_repro(**kwargs: Any) -> dict[str, object]:
+        # Every process's command line on the host: the read that stalled.
+        entered.set()
+        guard.release.wait(600)
+        return real_repro(**kwargs)
+
+    monkeypatch.setattr(memory_guard, "repro_context_payload", stalled_repro)
+    try:
+        pid = guard.start()
+        assert entered.wait(120)
+        assert _wait_until(_root_signalled(pid), 120)
+        assert not guard.release.is_set()
+    finally:
+        result = guard.finish()
+    assert result.timed_out
+    assert result.returncode == memory_guard.TIMEOUT_RETURN_CODE
+
+
+def test_enforcer_signals_only_what_the_run_loop_has_not_delivered() -> None:
+    calls: list[tuple[str, float]] = []
+    signalled = threading.Event()
+
+    def signal_root(reason: str, grace: float):
+        calls.append((reason, grace))
+        signalled.set()
+        return True, None
+
+    # A delivered reason is never enforced; the long slack rules out a race.
+    idle = process_custody.OwnedTreeEnforcer(
+        signal_root, slack=600.0, deadline=time.perf_counter(), deadline_grace=0.25
+    )
+    idle.request("rss_limit", grace=0.25)
+    idle.delivered("rss_limit")
+    idle.delivered("timeout")
+    assert idle.stop() == ((), ())
+    assert calls == []
+
+    # An undelivered request is enforced once, no sooner than the slack.
+    busy = process_custody.OwnedTreeEnforcer(signal_root, slack=0.05)
+    requested_at = time.perf_counter()
+    busy.request("owner_cancellation", grace=0.0)
+    busy.request("owner_cancellation", grace=0.0)
+    assert signalled.wait(120)
+    assert time.perf_counter() - requested_at >= 0.05
+    assert busy.stop() == (("owner_cancellation",), ())
+    assert calls == [("owner_cancellation", 0.0)]
+
+    # A run loop about to signal defers to a strike already made, and a
+    # strike not yet made waits another slack behind the loop's own signal.
+    calls.clear()
+    signalled.clear()
+    struck = process_custody.OwnedTreeEnforcer(signal_root, slack=0.05)
+    struck.request("rss_limit", grace=0.25)
+    assert _wait_until(lambda: calls == [("rss_limit", 0.25)], 120)
+    assert struck.begin("rss_limit") is False
+    assert struck.stop() == (("rss_limit",), ())
+    calls.clear()
+    signalled.clear()
+    behind = process_custody.OwnedTreeEnforcer(signal_root, slack=600.0)
+    behind.request("timeout", grace=0.25)
+    assert behind.begin("timeout") is True
+    behind.delivered("timeout")
+    assert behind.stop() == ((), ())
+    assert calls == []
+
+    # The deadline is due at deadline + slack, with its own grace.
+    calls.clear()
+    signalled.clear()
+    deadline = process_custody.OwnedTreeEnforcer(
+        signal_root,
+        slack=0.05,
+        deadline=time.perf_counter() + 0.05,
+        deadline_grace=0.25,
+    )
+    assert signalled.wait(120)
+    assert deadline.stop() == (("timeout",), ())
+    assert calls == [("timeout", 0.25)]
+
+    # A root already reaped is not signalled, so nothing counts as enforced.
+    attempted = threading.Event()
+
+    def reaped_root(_reason: str, _grace: float):
+        attempted.set()
+        return False, None
+
+    reaped = process_custody.OwnedTreeEnforcer(reaped_root, slack=0.0)
+    reaped.request("rss_limit", grace=0.25)
+    assert attempted.wait(120)
+    assert reaped.stop() == ((), ())
+
+    # Without an identity-safe signal the enforcer is inert.
+    inert = process_custody.OwnedTreeEnforcer(
+        None, slack=0.0, deadline=time.perf_counter()
+    )
+    inert.request("rss_limit", grace=0.25)
+    assert inert.stop() == ((), ())

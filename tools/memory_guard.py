@@ -37,6 +37,12 @@ DEFAULT_POLL_INTERVAL_SEC = 0.10
 DEFAULT_FAST_START_POLL_INTERVAL_SEC = 0.02
 DEFAULT_FAST_START_DURATION_SEC = 2.0
 DEFAULT_TERMINATION_WAIT_SEC = 2.0
+# How long the enforcer thread lets the run loop deliver a deadline, memory
+# trip or cancellation before it signals the child's own process group itself
+# (HF-417). A healthy loop delivered a timeout 0.10-0.41 s after its deadline
+# at host load 120 (2026-10-21), so the enforcer stays idle unless the loop
+# is stalled; the slack bounds the guard's own lateness, not the child.
+ENFORCEMENT_SLACK_SEC = 2.0
 DEFAULT_INCIDENT_SUMMARY_KEEP = 32
 # When one full process-table sample costs more than the configured poll
 # interval (Windows full-table snapshots under build load), polling
@@ -237,6 +243,10 @@ from tools.memory_guard_core.process_custody import (  # noqa: E402
     GuardedChildProcess as GuardedChildProcess,
     GuardedLaunch as GuardedLaunch,
     MAX_TERMINATION_PID_FANOUT as MAX_TERMINATION_PID_FANOUT,
+    OwnedTreeEnforcer as OwnedTreeEnforcer,
+    OwnerCancellationWatch as OwnerCancellationWatch,
+    completed_enforcement_report as completed_enforcement_report,
+    owned_root_group_signal as owned_root_group_signal,
     ProcessIdentity as ProcessIdentity,
     ProcessSample as ProcessSample,
     ProcessTreeTracker as ProcessTreeTracker,
@@ -931,6 +941,9 @@ def run_guarded(
     launch: GuardedLaunch | None = None
     child_process: GuardedChildProcess | None = None
     tracker: ProcessTreeTracker | None = None
+    enforcer: OwnedTreeEnforcer | None = None
+    cancellation_watch: OwnerCancellationWatch | None = None
+    summary_publisher: _reporting.RunningSummaryPublisher | None = None
     termination_reports: list[GuardTerminationReport] = []
     scratch_lease: _temporary_artifacts.GuardScratchLease | None = None
     temporary_artifacts: dict[str, object] | None = None
@@ -1207,6 +1220,32 @@ def run_guarded(
                 if resumed_at is None:
                     raise RuntimeError("Windows child resume clock is unavailable")
                 child_clock.started = resumed_at
+        # Enforcement that observes nothing starts before any observation: a
+        # stalled sample, marker write or host-wide repro read below can no
+        # longer delay the deadline or a cancellation (HF-417).
+        enforcer = OwnedTreeEnforcer(
+            owned_root_group_signal(
+                proc,
+                child_clock,
+                child_process,
+                terminate_job=(
+                    None
+                    if guard_job is None
+                    else partial(_win_job.terminate_job, guard_job)
+                ),
+            ),
+            slack=ENFORCEMENT_SLACK_SEC,
+            deadline=None if timeout is None else start + timeout,
+            deadline_grace=0.25,
+            # The deadline's own clock, which tests may replace.
+            clock=time.perf_counter,
+        )
+        if cancellation_requested is not None:
+            cancellation_watch = OwnerCancellationWatch(
+                cancellation_requested,
+                interval=poll_interval,
+                on_request=partial(enforcer.request, "owner_cancellation", grace=0.0),
+            )
         sampling_source = (
             "windows_full_process_table"
             if _process_model.is_windows_process_model()
@@ -1349,24 +1388,28 @@ def run_guarded(
             tracker.known_identities[proc.pid] = ProcessIdentity(root_started_at_ns)
         child_process = replace(child_process, started_at_ns=root_started_at_ns)
         if running_summary_json is not None:
+            # The startup report publishes here; the summary's host-wide repro
+            # block is read and written off this thread (HF-417).
+            summary_publisher = _reporting.RunningSummaryPublisher(
+                running_summary_json,
+                child_process=child_process,
+                repro_context_provider=repro_context_payload,
+                command=command,
+                cwd=cwd,
+                environ=(
+                    running_summary_environ
+                    if running_summary_environ is not None
+                    else child_env
+                ),
+                max_rss_kb=max_rss_kb,
+                max_total_rss_kb=max_total_rss_kb,
+                max_global_rss_kb=running_summary_max_global_rss_kb,
+                child_rlimit_kb=child_rlimit_kb,
+                timeout_s=timeout,
+                poll_interval_s=poll_interval,
+            )
             try:
-                _write_running_summary_json(
-                    running_summary_json,
-                    command=command,
-                    cwd=cwd,
-                    environ=(
-                        running_summary_environ
-                        if running_summary_environ is not None
-                        else child_env
-                    ),
-                    max_rss_kb=max_rss_kb,
-                    max_total_rss_kb=max_total_rss_kb,
-                    max_global_rss_kb=running_summary_max_global_rss_kb,
-                    child_rlimit_kb=child_rlimit_kb,
-                    timeout_s=timeout,
-                    poll_interval_s=poll_interval,
-                    child_process=child_process,
-                )
+                summary_publisher.start()
             except OSError as exc:
                 print(
                     f"memory_guard: failed to refresh running summary JSON: {exc}",
@@ -1414,7 +1457,12 @@ def run_guarded(
                 # before the child was resumed.  Do not duplicate that authority
                 # with PID-table termination, whose identities can race process
                 # exit and wrapper descendants.
+                if enforcer is not None:
+                    # Job termination observes nothing; it is idempotent.
+                    enforcer.begin(reason)
                 _win_job.terminate_job(guard_job)
+                if enforcer is not None:
+                    enforcer.delivered(reason)
                 _win_job.wait_until_empty(guard_job, timeout=termination_wait_s)
                 after = _win_job.job_accounting(guard_job)
                 if interruption_inventory is not None:
@@ -1430,16 +1478,24 @@ def run_guarded(
                 interruption_inventory = CargoInterruptionInventory(
                     "native interruption inventory lacks a process-birth fence"
                 )
+            # The protection decision reads the host table when polls read
+            # partial rows. That read can stall, so it comes before the check
+            # that defers to the enforcer, which may have signalled meanwhile.
+            decision_samples = (
+                sampler() if decide_on_host_table and custody_rows_partial else samples
+            )
+            if enforcer is not None and not enforcer.begin(reason):
+                # The enforcer signalled the root group while this loop was
+                # stalled. Its strike ends in the reap; the closure after the
+                # loop observes what remains.
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    proc.wait(timeout=termination_wait_s)
+                return
             termination_reports.append(
                 _validated_termination_report(
                     terminate_watched_processes(
                         proc.pid,
-                        # None reads the host table for the protection decision.
-                        samples=(
-                            None
-                            if decide_on_host_table and custody_rows_partial
-                            else samples
-                        ),
+                        samples=decision_samples,
                         watched=watched,
                         grace=grace,
                         reason=reason,
@@ -1450,6 +1506,8 @@ def run_guarded(
                     caller="terminate_watched_processes",
                 )
             )
+            if enforcer is not None:
+                enforcer.delivered(reason)
 
         stdin_thread: threading.Thread | None = None
         if input is not None and proc.stdin is not None:
@@ -1969,6 +2027,10 @@ def run_guarded(
                     )
                 return False
             limit_at_violation = current_limits
+            # Evidence writes and the kill's host-table read follow; the
+            # enforcer signals the root group if they stall past the slack.
+            if enforcer is not None:
+                enforcer.request("rss_limit", grace=0.25)
             _record_sample(
                 root_pid=proc.pid,
                 peak=observed_peak,
@@ -2020,7 +2082,9 @@ def run_guarded(
                 child_exited = True
                 break
             now = time.perf_counter()
-            cancelled = cancellation_requested is not None and cancellation_requested()
+            cancelled = (
+                cancellation_watch is not None and cancellation_watch.requested()
+            )
             if cancelled:
                 progressed("cancellation_observed")
             if guard_signal is not None or cancelled:
@@ -2102,6 +2166,16 @@ def run_guarded(
                 assert keepalive_interval is not None
                 next_keepalive = now + keepalive_interval
             snapshot = sample_tracked_tree(allow_transient_timeout=True)
+        # The run loop has delivered or the child has exited: the rest is
+        # observation, which a backstop must not race.
+        if cancellation_watch is not None:
+            cancellation_watch.stop()
+        assert enforcer is not None
+        enforced_reasons, enforcer_reports = enforcer.stop()
+        if "timeout" in enforced_reasons:
+            timed_out = True
+        if "owner_cancellation" in enforced_reasons:
+            cancelled = True
         if child_exited and violation is None:
             child_exit_usage = _take_child_exit_usage(proc)
         if violation is None and child_exit_usage is not None:
@@ -2360,6 +2434,17 @@ def run_guarded(
                 "unobserved during those intervals. See sampling_telemetry in "
                 "the summary JSON.\n",
                 text=text,
+            )
+        for enforcement in enforcer_reports:
+            termination_reports.append(
+                completed_enforcement_report(
+                    enforcement,
+                    identities=tracker.custody_identities(
+                        set(tracker.known_pids or ())
+                    ),
+                    sampler=sampler,
+                    grace=termination_wait_s,
+                )
             )
         progressed("descendant_closure_started")
         descendants_closed, scratch_closure_evidence = (
@@ -2623,6 +2708,9 @@ def run_guarded(
                 else _exit_signal_payload(128 + result.guard_signal)
             ),
         )
+        if summary_publisher is not None:
+            # No running summary may follow the terminal one the caller writes.
+            summary_publisher.retire()
         return result
     except BaseException as exc:
         caught_exception = exc
@@ -2639,6 +2727,15 @@ def run_guarded(
         )
         raise
     finally:
+        if cancellation_watch is not None:
+            cancellation_watch.stop()
+        if enforcer is not None:
+            enforcer.stop()
+        if summary_publisher is not None:
+            # The normal path re-raised a writer failure; here an exception
+            # is already propagating.
+            with contextlib.suppress(BaseException):
+                summary_publisher.retire()
         # The finalizer reads the published exit only. poll() re-raises a
         # reaper failure, which would abort the remaining custody cleanup.
         if proc is not None and proc.returncode is None:
