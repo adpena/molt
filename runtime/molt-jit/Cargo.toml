@@ -1,0 +1,26 @@
+[package]
+name = "molt-jit"
+version = "0.1.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+description = "Development runner: compile a Molt program into process memory and run it (HF-371)"
+build = "build.rs"
+
+[[bin]]
+name = "molt-jit"
+path = "src/main.rs"
+
+[dependencies]
+libc = "0.2"
+molt-artifact-publish = { path = "../molt-artifact-publish" }
+molt-backend-native = { path = "../molt-backend-native", default-features = false, features = ["jit"] }
+molt-ir = { path = "../molt-ir" }
+molt-runtime-core = { path = "../molt-runtime-core" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { workspace = true }
+sha2 = "0.11"
+
+[dev-dependencies]
+molt-codegen-abi = { path = "../molt-codegen-abi" }

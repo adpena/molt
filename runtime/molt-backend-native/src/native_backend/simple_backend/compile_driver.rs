@@ -63,7 +63,17 @@ impl SimpleBackend {
         ir: SimpleIR,
         backend: NativeCodegenBackend,
     ) -> Result<CompileOutput, molt_ir::ir_schema::FunctionOpShapeDiagnostic> {
-        molt_ir::ir_schema::validate_simple_ir_op_shapes(&ir)?;
+        self.admit_program(&ir)?;
+        Ok(self.compile_selected(ir, backend))
+    }
+
+    /// Admit a program's op shapes and program-slot custody before any pass
+    /// runs. Every code owner admits the same way.
+    pub(in crate::native_backend::simple_backend) fn admit_program(
+        &self,
+        ir: &SimpleIR,
+    ) -> Result<(), molt_ir::ir_schema::FunctionOpShapeDiagnostic> {
+        molt_ir::ir_schema::validate_simple_ir_op_shapes(ir)?;
         if let Some(bindings) = self.code_slots.as_ref() {
             bindings.validate_functions(&ir.functions)?;
         }
@@ -73,48 +83,15 @@ impl SimpleBackend {
         {
             molt_ir::ir::validate_module_slots(self.module_registry.as_ref(), &ir.functions)?;
         }
-        Ok(self.compile_selected(ir, backend))
+        Ok(())
     }
 
     fn compile_selected(mut self, ir: SimpleIR, backend: NativeCodegenBackend) -> CompileOutput {
         let use_llvm = backend.uses_llvm();
-        let timing = env_setting(BackendEnv::MOLT_BACKEND_TIMING)
-            .as_deref()
-            .map(parse_truthy_env)
-            .unwrap_or(false);
+        let timing = backend_timing_enabled();
         let compile_start = std::time::Instant::now();
         let mut ir = ir;
-        // Validate declarations already present on input before any pass can
-        // rewrite their callers. The post-preparation validation below also
-        // covers declarations created by shared-stdlib externalization.
-        crate::ir::validate_extern_call_abis(&ir).unwrap_or_else(|error| panic!("native {error}"));
-        let prepared = self.prepare_program_for_codegen(&mut ir, use_llvm, timing, &compile_start);
-        let emit_resolver_here = prepared.emit_resolver_here;
-        assert!(
-            (self.code_slots.is_none() && self.module_registry.is_none()) || emit_resolver_here,
-            "program-slot definitions require the application metadata owner"
-        );
-        let app_callable_manifest = prepared.app_callable_manifest;
-        let source_callables = prepared.source_callables;
-        let final_functions = prepared.final_functions;
-        let final_ir = final_functions
-            .as_ref()
-            .map_or(&ir, NativeFinalFunctions::ir);
-        // Extern bodies are discarded by both native backends. Capture and
-        // validate their complete target-neutral ABI first so no backend can
-        // reconstruct a declaration from a caller after the authority is gone.
-        let extern_function_signatures = collect_extern_function_signatures(&final_ir.functions);
-        crate::ir::validate_extern_call_abis(final_ir)
-            .unwrap_or_else(|error| panic!("native {error}"));
-        if let Some(module_context) = self.module_context.as_ref() {
-            module_context
-                .validate_function_linkage_abis(&final_ir.functions)
-                .unwrap_or_else(|error| panic!("invalid native module context: {error}"));
-        }
-        // Capture each function's entry custody while its extern declaration
-        // is still present; `func_new` lowering reads it.
-        self.function_entry_custody =
-            merge_function_entry_custody(self.module_context.as_ref(), &final_ir.functions);
+        let program = self.prepare_native_codegen(&mut ir, use_llvm, timing, &compile_start);
         //  LLVM backend dispatch
         // When MOLT_BACKEND=llvm and the llvm feature is compiled in, route
         // through the LLVM backend instead of Cranelift.  Each function is
@@ -123,6 +100,9 @@ impl SimpleBackend {
         #[cfg(feature = "llvm")]
         if use_llvm {
             use crate::llvm_backend::{LlvmBackend, MoltOptLevel};
+
+            let emit_resolver_here = program.emit_resolver_here;
+            let app_callable_manifest = &program.app_callable_manifest;
 
             let context = inkwell::context::Context::create();
             let mut llvm = LlvmBackend::new(&context, "molt_module");
@@ -403,6 +383,87 @@ impl SimpleBackend {
 
             return CompileOutput { bytes };
         }
+        let (func_count, total_ops) = self.emit_cranelift_program(program, timing);
+
+        let emit_start = std::time::Instant::now();
+        let SimpleBackend { module, .. } = self;
+        let product = finalize_native_object(module.into_object().finish());
+        let bytes = product.emit().unwrap();
+        if timing {
+            let emit_elapsed = emit_start.elapsed();
+            let total_elapsed = compile_start.elapsed();
+            eprintln!("MOLT_BACKEND_TIMING: object emit took {emit_elapsed:.2?}");
+            eprintln!(
+                "MOLT_BACKEND_TIMING: total backend compile: {total_elapsed:.2?} \
+                 ({func_count} functions, {total_ops} ops, {} bytes)",
+                bytes.len()
+            );
+        }
+        CompileOutput { bytes }
+    }
+
+    /// Run the shared program preparation for one native compilation and
+    /// capture the facts codegen consumes after source bodies retire.
+    pub(in crate::native_backend::simple_backend) fn prepare_native_codegen(
+        &mut self,
+        ir: &mut SimpleIR,
+        use_llvm: bool,
+        timing: bool,
+        compile_start: &std::time::Instant,
+    ) -> NativeCodegenProgram {
+        // Validate declarations already present on input before any pass can
+        // rewrite their callers. The post-preparation validation below also
+        // covers declarations created by shared-stdlib externalization.
+        crate::ir::validate_extern_call_abis(ir).unwrap_or_else(|error| panic!("native {error}"));
+        let prepared = self.prepare_program_for_codegen(ir, use_llvm, timing, compile_start);
+        let emit_resolver_here = prepared.emit_resolver_here;
+        assert!(
+            (self.code_slots.is_none() && self.module_registry.is_none()) || emit_resolver_here,
+            "program-slot definitions require the application metadata owner"
+        );
+        let final_functions = prepared.final_functions;
+        let final_ir = final_functions
+            .as_ref()
+            .map_or(&*ir, NativeFinalFunctions::ir);
+        // Extern bodies are discarded by both native backends. Capture and
+        // validate their complete target-neutral ABI first so no backend can
+        // reconstruct a declaration from a caller after the authority is gone.
+        let extern_function_signatures = collect_extern_function_signatures(&final_ir.functions);
+        crate::ir::validate_extern_call_abis(final_ir)
+            .unwrap_or_else(|error| panic!("native {error}"));
+        if let Some(module_context) = self.module_context.as_ref() {
+            module_context
+                .validate_function_linkage_abis(&final_ir.functions)
+                .unwrap_or_else(|error| panic!("invalid native module context: {error}"));
+        }
+        // Capture each function's entry custody while its extern declaration
+        // is still present; `func_new` lowering reads it.
+        self.function_entry_custody =
+            merge_function_entry_custody(self.module_context.as_ref(), &final_ir.functions);
+        NativeCodegenProgram {
+            emit_resolver_here,
+            app_callable_manifest: prepared.app_callable_manifest,
+            source_callables: prepared.source_callables,
+            final_functions,
+            extern_function_signatures,
+        }
+    }
+
+    /// Lower every final function into the code owner, then emit the program
+    /// metadata (app resolver, module registry, program slots) and the
+    /// generated-object ABI anchor. Returns (functions, source ops).
+    pub(in crate::native_backend::simple_backend) fn emit_cranelift_program(
+        &mut self,
+        program: NativeCodegenProgram,
+        timing: bool,
+    ) -> (usize, usize) {
+        let NativeCodegenProgram {
+            emit_resolver_here,
+            app_callable_manifest,
+            source_callables,
+            final_functions,
+            extern_function_signatures,
+        } = program;
         // Analyze the exact post-lifetime/post-partition bodies codegen emits.
         // Shared batch context predates worker finalization and carries no leaf
         // claims. External targets retain guards without a final-body proof.
@@ -652,21 +713,24 @@ impl SimpleBackend {
         }
 
         emit_generated_object_abi_anchor(&mut self.module);
-
-        let emit_start = std::time::Instant::now();
-        let SimpleBackend { module, .. } = self;
-        let product = finalize_native_object(module.finish());
-        let bytes = product.emit().unwrap();
-        if timing {
-            let emit_elapsed = emit_start.elapsed();
-            let total_elapsed = compile_start.elapsed();
-            eprintln!("MOLT_BACKEND_TIMING: object emit took {emit_elapsed:.2?}");
-            eprintln!(
-                "MOLT_BACKEND_TIMING: total backend compile: {total_elapsed:.2?} \
-                 ({func_count} functions, {total_ops} ops, {} bytes)",
-                bytes.len()
-            );
-        }
-        CompileOutput { bytes }
+        (func_count, total_ops)
     }
+}
+
+/// The facts one native compilation carries from program preparation into
+/// codegen, for every code owner.
+pub(in crate::native_backend::simple_backend) struct NativeCodegenProgram {
+    emit_resolver_here: bool,
+    app_callable_manifest: BTreeSet<String>,
+    source_callables: molt_tir::trampolines::CallableMetadata,
+    final_functions: Option<NativeFinalFunctions>,
+    extern_function_signatures: ExternFunctionSignatures,
+}
+
+/// `MOLT_BACKEND_TIMING` admission, shared by every code owner.
+pub(in crate::native_backend::simple_backend) fn backend_timing_enabled() -> bool {
+    env_setting(BackendEnv::MOLT_BACKEND_TIMING)
+        .as_deref()
+        .map(parse_truthy_env)
+        .unwrap_or(false)
 }

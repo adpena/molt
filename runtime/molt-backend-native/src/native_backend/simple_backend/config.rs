@@ -46,8 +46,28 @@ impl SimpleBackend {
     }
 
     pub fn new_with_target(target: Option<&str>) -> Self {
+        let isa = Self::native_isa(target, CodePlacement::Object);
+        let mut builder = ObjectBuilder::new(
+            isa,
+            "molt_output",
+            cranelift_module::default_libcall_names(),
+        )
+        .unwrap();
+        // Emit each function into its own object section so the linker can
+        // discard unreferenced runtime functions via -dead_strip / --gc-sections.
+        builder.per_function_section(true);
+        Self::with_code_owner(CodeOwner::Object(Box::new(ObjectModule::new(builder))))
+    }
+
+    /// The one native ISA constructor. Every code owner shares the target,
+    /// CPU and optimization policy; only the relocation model follows where
+    /// the code lives (`CodePlacement`).
+    pub(in crate::native_backend::simple_backend) fn native_isa(
+        target: Option<&str>,
+        placement: CodePlacement,
+    ) -> isa::OwnedTargetIsa {
         // Select the ISA once; relocation and architecture policy must use the
-        // same parsed target as object emission, including cross compilation.
+        // same parsed target as code emission, including cross compilation.
         let portable = crate::native_codegen_portable();
         let isa_builder = configured_native_isa_builder(target, portable);
         let triple = isa_builder.triple();
@@ -56,15 +76,13 @@ impl SimpleBackend {
             target_lexicon::Architecture::Aarch64(_)
         );
         let mut flag_builder = settings::builder();
-        // Cranelift PIC uses ELF/Mach-O GOT relocations. COFF instead uses
-        // native symbol relocations, which the PE linker/loader can relocate.
         flag_builder
             .set(
                 "is_pic",
-                if triple.binary_format == target_lexicon::BinaryFormat::Coff {
-                    "false"
-                } else {
+                if placement.is_pic(triple) {
                     "true"
+                } else {
+                    "false"
                 },
             )
             .unwrap();
@@ -139,10 +157,18 @@ impl SimpleBackend {
         // Emit CFG metadata in machine code output  enables downstream tools
         // and profilers to reconstruct control-flow graphs from compiled objects.
         flag_builder.set("machine_code_cfg_info", "true").unwrap();
-        // Use colocated libcalls: our generated code and runtime libcalls live
-        // in the same link unit  colocated calls skip GOT/PLT indirection and
-        // use direct PC-relative calls instead.
-        flag_builder.set("use_colocated_libcalls", "true").unwrap();
+        // Colocated libcalls skip GOT/PLT indirection when generated code and
+        // libcalls share one link unit; `CodePlacement` owns the choice.
+        flag_builder
+            .set(
+                "use_colocated_libcalls",
+                if placement.colocated_libcalls() {
+                    "true"
+                } else {
+                    "false"
+                },
+            )
+            .unwrap();
         // Frame pointers: always preserve on aarch64 to ensure correct stack
         // frame layout for large functions (>16KB frames).  Cranelift 0.128 can
         // generate incorrect SP-relative accesses on aarch64 when frame pointers
@@ -191,21 +217,13 @@ impl SimpleBackend {
                 },
             )
             .unwrap();
-        let isa = isa_builder
+        isa_builder
             .finish(settings::Flags::new(flag_builder))
-            .unwrap();
-        let mut builder = ObjectBuilder::new(
-            isa,
-            "molt_output",
-            cranelift_module::default_libcall_names(),
-        )
-        .unwrap();
-        // Emit each function into its own object section so the linker can
-        // discard unreferenced runtime functions via -dead_strip / --gc-sections.
-        builder.per_function_section(true);
-        let module = ObjectModule::new(builder);
-        let ctx = module.make_context();
+            .unwrap()
+    }
 
+    pub(in crate::native_backend::simple_backend) fn with_code_owner(module: CodeOwner) -> Self {
+        let ctx = module.make_context();
         Self {
             module,
             ctx,

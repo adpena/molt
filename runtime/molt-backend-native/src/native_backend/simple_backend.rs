@@ -45,7 +45,13 @@ mod program_pipeline;
 mod program_slots;
 #[cfg(any(test, feature = "llvm"))]
 pub(crate) use program_pipeline::preprocess_backend_tir_input;
+mod code_owner;
+pub(crate) use code_owner::{CodeOwner, CodePlacement};
 mod compile_driver;
+#[cfg(feature = "jit")]
+mod jit;
+#[cfg(feature = "jit")]
+pub use jit::{JitCompileError, JitEntryPoints, JitProgram, JitSymbolLookup, probe_jit_execution};
 mod trampolines;
 
 /// Output of a native compilation pass.
@@ -62,7 +68,7 @@ pub struct CompileOutput {
 
 #[cfg(feature = "native-backend")]
 pub struct SimpleBackend {
-    pub(crate) module: ObjectModule,
+    pub(crate) module: CodeOwner,
     pub(crate) ctx: Context,
     // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
     pub(crate) trampoline_ids: BTreeMap<TrampolineKey, cranelift_module::FuncId>,
