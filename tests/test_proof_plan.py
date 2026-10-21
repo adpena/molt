@@ -7914,6 +7914,9 @@ def test_sdk_compiler_selector_uses_requested_working_directory(tmp_path, monkey
     from types import SimpleNamespace
 
     policy = next(item for item in PLAN.toolchain_policies if item.name == "llvm-sdk")
+    # A landing controller's own tree is not the candidate that pins the SDK.
+    candidate = tmp_path / "candidate"
+    policy = replace(policy, root=candidate)
     requested = tmp_path / "requested-cwd"
     env = {"LLVM_CONFIG_PATH": "external/llvm-config"}
     calls = []
@@ -7927,7 +7930,7 @@ def test_sdk_compiler_selector_uses_requested_working_directory(tmp_path, monkey
         proof_plan.compiler_tool_path(policy, environment=env, cwd=requested)
         == requested / "external/llvm-config"
     )
-    assert calls == [(proof_plan.ROOT, env, requested)]
+    assert calls == [(candidate, env, requested)]
 
 
 def test_shard_jobs_enforce_their_declared_budget() -> None:
