@@ -226,16 +226,27 @@ def read_result(paths: QueuePaths, request_id: str) -> dict | None:
 
 
 def recorded_results(paths: QueuePaths, *, limit: int | None = None) -> list[dict]:
-    """Closed requests in queue order (oldest first), the newest ``limit``."""
+    """Closed requests in the order their results were recorded (oldest
+    first), the newest ``limit``. A request's id orders it by enqueue time,
+    which is not when it closed: a bisected batch closes out of queue order.
+    The id breaks a tie between two results recorded in one clock tick."""
 
     if not paths.results.is_dir():
         return []
-    files = sorted(
-        path for path in paths.results.glob("*.json") if not path.name.startswith(".")
+    results = sorted(
+        (
+            json.loads(path.read_text(encoding="utf-8"))
+            for path in paths.results.glob("*.json")
+            if not path.name.startswith(".")
+        ),
+        key=lambda result: (
+            datetime.fromisoformat(result["recorded_at"]),
+            result["request"]["id"],
+        ),
     )
     if limit is not None:
-        files = files[-limit:] if limit else []
-    return [json.loads(path.read_text(encoding="utf-8")) for path in files]
+        results = results[-limit:] if limit else []
+    return results
 
 
 def withdraw(paths: QueuePaths, request_id: str, *, reason: str) -> LandingRequest:
@@ -795,15 +806,25 @@ def cmd_queue_withdraw(args: argparse.Namespace) -> int:
         )
         return EXIT_FAIL
     try:
+        request_ids = list(dict.fromkeys(args.request_ids))
         queued = {request.id for request in pending(paths)}
-        unknown = [item for item in args.request_ids if item not in queued]
+        unknown = [item for item in request_ids if item not in queued]
         if unknown:
             raise DriverError("not pending landing requests: " + ", ".join(unknown))
-        for request_id in args.request_ids:
+        for request_id in request_ids:
             request = withdraw(paths, request_id, reason=args.reason)
             _ok(f"withdrew {request.id} ({request.branch or request.head[:12]})")
     finally:
         drv._release_file_lock(handle)
+    # A `land` that probed the lock while this command held it started no
+    # runner; start one for any request still queued, as `land` would.
+    if pending(paths):
+        main_checkout = drv._main_worktree(drv.Git(Path(args.repo).resolve()))
+        if main_checkout is None:
+            raise DriverError(
+                "cannot find the main worktree to run the landing runner from"
+            )
+        _start_queue_runner(paths, main_checkout, args)
     return EXIT_OK
 
 
@@ -868,6 +889,10 @@ def add_queue_arguments(
         "withdraw", help="close pending requests without testing them"
     )
     add_repo_arg(p_withdraw)
+    add_remote_branch(p_withdraw)
+    p_withdraw.add_argument(
+        "--candidate-controller", action="store_true", help=argparse.SUPPRESS
+    )
     p_withdraw.add_argument(
         "request_ids", nargs="+", metavar="REQUEST_ID", help="ids that `land` printed"
     )
