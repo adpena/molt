@@ -14,7 +14,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import threading
 import json
 from pathlib import Path
 
@@ -25,8 +24,9 @@ from tests.cli.process_guard import run_cli_test_process
 
 
 ROOT = Path(__file__).resolve().parents[2]
-_WARM_NATIVE_BUILD_LOCK = threading.Lock()
-_WARM_NATIVE_BUILD_READY = False
+# Later builds reuse the runtime and backend the first build made current.
+_TOOLCHAIN_BUILT = False
+_BUILD_TIMEOUT_SECONDS = 120
 
 # ---------------------------------------------------------------------------
 # Helpers (mirrors test_cli_smoke.py conventions)
@@ -83,10 +83,10 @@ def _compile_and_run(source: str) -> subprocess.CompletedProcess[str]:
     """Compile *source* with molt and run the resulting binary.
 
     Returns the CompletedProcess from running the compiled binary (not the
-    build step).  Raises ``pytest.skip`` if the build itself fails for
-    infrastructure reasons.
+    build step). Fails the test if the build fails. The build uses the shared
+    build cache: these tests check what the binary prints, not rebuilds.
     """
-    _ensure_native_build_warm()
+    global _TOOLCHAIN_BUILT
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = _resolve_macos_tmp(tmpdir)
@@ -109,11 +109,16 @@ def _compile_and_run(source: str) -> subprocess.CompletedProcess[str]:
                 out_dir,
                 src_file,
                 "--json",
-                "--rebuild",
             ],
             capture_output=True,
             text=True,
-            timeout=120,
+            # The first build in this process may build the runtime and the
+            # backend from source; the rest must finish within the bound.
+            timeout=(
+                _BUILD_TIMEOUT_SECONDS
+                if _TOOLCHAIN_BUILT
+                else default_nested_process_timeout_seconds("build")
+            ),
             cwd=ROOT,
             env=_base_env(),
         )
@@ -123,6 +128,7 @@ def _compile_and_run(source: str) -> subprocess.CompletedProcess[str]:
                 f"molt build failed (exit {build_result.returncode}): "
                 f"{build_result.stderr[-2000:]}"
             )
+        _TOOLCHAIN_BUILT = True
 
         try:
             payload = json.loads(build_result.stdout)
@@ -158,46 +164,6 @@ def _compile_and_run(source: str) -> subprocess.CompletedProcess[str]:
         )
 
         return run_result
-
-
-def _ensure_native_build_warm() -> None:
-    global _WARM_NATIVE_BUILD_READY
-    if _WARM_NATIVE_BUILD_READY:
-        return
-    with _WARM_NATIVE_BUILD_LOCK:
-        if _WARM_NATIVE_BUILD_READY:
-            return
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmpdir = _resolve_macos_tmp(tmpdir)
-            src_file = os.path.join(tmpdir, "warm_input.py")
-            out_dir = os.path.join(tmpdir, "warm_out")
-            with open(src_file, "w", encoding="utf-8") as f:
-                f.write("print(1)\n")
-            warm_result = run_cli_test_process(
-                [
-                    _python_executable(),
-                    "-m",
-                    "molt",
-                    "build",
-                    "--target",
-                    "native",
-                    "--output",
-                    out_dir,
-                    src_file,
-                    "--rebuild",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=default_nested_process_timeout_seconds("build"),
-                cwd=ROOT,
-                env=_base_env(),
-            )
-            if warm_result.returncode != 0:
-                pytest.fail(
-                    f"molt native warmup build failed (exit "
-                    f"{warm_result.returncode}): {warm_result.stderr[-2000:]}"
-                )
-            _WARM_NATIVE_BUILD_READY = True
 
 
 # ---------------------------------------------------------------------------
