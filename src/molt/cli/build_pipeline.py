@@ -11,6 +11,7 @@ from molt.cli import backend_ir as _backend_ir
 from molt.cli import backend_ir_analysis_cache as _backend_ir_analysis_cache
 from molt.cli import backend_pipeline as _backend_pipeline
 from molt.cli import frontend_pipeline as _frontend_pipeline
+from molt.cli import jit_pipeline as _jit_pipeline
 from molt.cli import progress as _progress
 from molt.cli.build_request import FactGraphRequest
 from molt.backend_daemon_paths import (
@@ -120,6 +121,30 @@ def _run_build_pipeline(
     if native_artifact_custody_error is not None:
         return return_after_build_diagnostics(
             _fail(native_artifact_custody_error, json_output, command="build")
+        )
+    if output_layout.emit_mode == "jit":
+        if fact_graph_request is not None:
+            return return_after_build_diagnostics(
+                _fail(
+                    "factgraph does not support the JIT tier",
+                    json_output,
+                    command="factgraph",
+                )
+            )
+        return return_after_build_diagnostics(
+            _jit_pipeline._run_jit_pipeline(
+                prepared_build_preamble=prepared_build_preamble,
+                prepared_build_roots=prepared_build_roots,
+                prepared_build_config=prepared_build_config,
+                resolved_build_entry=resolved_build_entry,
+                prepared_frontend_pipeline_bundle=prepared_frontend_pipeline_bundle,
+                profile=profile,
+                json_output=json_output,
+                target=target,
+                deterministic=deterministic,
+                trusted=trusted,
+                stdlib_profile=stdlib_profile,
+            )
         )
     if fact_graph_request is not None and output_layout.is_mlir_emit:
         return return_after_build_diagnostics(

@@ -21,7 +21,9 @@ from molt.compilation_target import (
 
 ParseCodec = Literal["msgpack", "cbor", "json"]
 BuildProfile = Literal["dev", "release"]
-EmitMode = Literal["bin", "obj", "wasm"]
+# "jit" publishes a launch manifest for the development JIT runner
+# (molt-jit) instead of an executable; `molt run --tier jit` selects it.
+EmitMode = Literal["bin", "obj", "wasm", "jit"]
 
 
 @dataclass(frozen=True, slots=True)

@@ -422,15 +422,25 @@ def _resolve_build_output_layout(
     if (
         not is_transpile
         and not is_mlir_emit
-        and emit_mode not in {"bin", "obj", "wasm"}
+        and emit_mode not in {"bin", "obj", "wasm", "jit"}
     ):
         raise ValueError(f"Invalid emit mode: {emit_mode}")
     if is_wasm and emit_mode != "wasm":
         raise ValueError(f"Invalid emit mode for wasm target: {emit_mode}")
     if not is_wasm and not is_transpile and not is_mlir_emit and emit_mode == "wasm":
         raise ValueError("emit=wasm requires --target wasm")
+    if emit == "jit" and (is_wasm or is_transpile or is_mlir_emit):
+        raise ValueError("emit=jit requires the native target")
+    if emit_mode == "jit" and (linked or split_runtime):
+        raise ValueError("emit=jit publishes no linked or split artifact")
 
-    artifact_suffix = _backend_artifact_suffix(target=target, emit_mode=emit_mode)
+    # A JIT launch manifest is no backend artifact: the runner compiles the
+    # program's IR in its own memory.
+    artifact_suffix = (
+        ""
+        if emit_mode == "jit"
+        else _backend_artifact_suffix(target=target, emit_mode=emit_mode)
+    )
     output_binary: Path | None = None
     linked_output_path: Path | None = None
     if is_mlir_emit:
@@ -476,6 +486,15 @@ def _resolve_build_output_layout(
                     out_dir=out_dir_path,
                     project_root=project_root,
                 )
+    elif emit_mode == "jit":
+        from molt.cli.run_tier import JIT_LAUNCH_SUFFIX
+
+        output_artifact = _resolve_output_path(
+            output,
+            bin_root / f"{output_base}_molt{JIT_LAUNCH_SUFFIX}",
+            out_dir=out_dir_path,
+            project_root=project_root,
+        )
     else:
         output_obj = artifacts_root / f"output{artifact_suffix}"
         if emit_mode == "obj":

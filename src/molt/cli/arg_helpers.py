@@ -74,6 +74,13 @@ def _build_args_has_capabilities_flag(args: list[str]) -> bool:
     return False
 
 
+def _build_args_emit(args: list[str]) -> str | None:
+    """The ``--emit`` value build arguments request, if any."""
+    from molt.cli.build_request_resolution import parse_build_arguments
+
+    return parse_build_arguments(args).emit
+
+
 def _build_args_has_profile_flag(args: list[str]) -> bool:
     from molt.cli.build_request_resolution import parse_build_arguments
 
