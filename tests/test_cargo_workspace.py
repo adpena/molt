@@ -6,6 +6,7 @@ import pytest
 
 from molt.cargo_workspace import (
     LocalCargoDependency,
+    require_cargo_workspace_root,
     workspace_manifest_facts,
     workspace_member_manifests,
     workspace_member_packages,
@@ -117,6 +118,91 @@ def test_consumers_share_exact_root_membership() -> None:
     members = {manifest.parent.name for manifest in manifests}
     assert {"molt-runtime-core", "molt-cext-discovery", "molt-wasm-facts"} <= members
     assert not members & {"molt-backend-mlir", "molt-cpython-abi-test-support"}
+
+
+def test_independent_lock_roots_have_explicit_workspace_boundaries() -> None:
+    from tools.dependency_manifests import cargo_workspace_dirs
+
+    root = Path(__file__).resolve().parents[1]
+    for directory in cargo_workspace_dirs(root):
+        require_cargo_workspace_root(root / directory / "Cargo.toml")
+
+
+@pytest.mark.parametrize("boundary", [False, True])
+def test_browser_metadata_stops_at_its_root_inside_an_enclosing_workspace(
+    tmp_path: Path, boundary: bool
+) -> None:
+    import json
+    import os
+
+    from molt import process_guard
+
+    root = Path(__file__).resolve().parents[1]
+    enclosing = tmp_path / "outer"
+    enclosing.mkdir()
+    (enclosing / "Cargo.toml").write_text("[workspace]\nmembers=[]\n", encoding="utf-8")
+    (enclosing / "rust-toolchain.toml").write_bytes(
+        (root / "rust-toolchain.toml").read_bytes()
+    )
+    checkout = enclosing / ".git" / "molt" / "landing-sandbox"
+    crate = checkout / "deploy" / "browser" / "simd-ops-rs"
+    (crate / "src").mkdir(parents=True)
+    (checkout / "Cargo.toml").write_text(
+        '[workspace]\nmembers=[]\nexclude=["deploy/browser/simd-ops-rs"]\n',
+        encoding="utf-8",
+    )
+    original = root / "deploy" / "browser" / "simd-ops-rs"
+    source = (original / "Cargo.toml").read_text(encoding="utf-8")
+    assert source.startswith("[workspace]\n\n")
+    manifest = crate / "Cargo.toml"
+    manifest.write_text(
+        source if boundary else source.removeprefix("[workspace]\n\n"),
+        encoding="utf-8",
+    )
+    lock = (original / "Cargo.lock").read_bytes()
+    (crate / "Cargo.lock").write_bytes(lock)
+    (crate / "src" / "lib.rs").write_text("", encoding="utf-8")
+    before = {path: path.read_bytes() for path in (manifest, crate / "Cargo.lock")}
+    result = process_guard.run_completed_command(
+        [
+            "cargo",
+            "metadata",
+            "--locked",
+            "--offline",
+            "--no-deps",
+            "--format-version",
+            "1",
+            "--manifest-path",
+            str(manifest),
+        ],
+        cwd=crate,
+        env={**os.environ, "RUSTUP_AUTO_INSTALL": "0"},
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        check=False,
+        memory_guard_prefix="MOLT_TEST_CARGO_WORKSPACE",
+    )
+    assert {path: path.read_bytes() for path in before} == before
+    if not boundary:
+        assert result.returncode != 0
+        assert "current package believes it's in a workspace" in result.stderr
+        assert str(enclosing / "Cargo.toml") in result.stderr
+        with pytest.raises(ValueError, match="explicit \\[workspace\\]"):
+            require_cargo_workspace_root(manifest)
+        return
+    assert result.returncode == 0, result.stderr
+    metadata = json.loads(result.stdout)
+    assert Path(metadata["workspace_root"]).resolve() == crate.resolve()
+    assert len(metadata["workspace_members"]) == 1
+    package = next(
+        p for p in metadata["packages"] if p["id"] in metadata["workspace_members"]
+    )
+    assert package["name"] == "simd-ops"
+    assert Path(package["manifest_path"]).resolve() == manifest.resolve()
+    assert not (enclosing / "Cargo.lock").exists()
+    assert not (checkout / "Cargo.lock").exists()
 
 
 def test_lock_validation_rejects_bad_membership_before_cache_or_cargo(

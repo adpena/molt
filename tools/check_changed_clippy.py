@@ -49,6 +49,7 @@ from molt.cargo_execution_policy import (  # noqa: E402
     load_ci_cargo_policy,
 )
 from molt.cargo_workspace import (  # noqa: E402
+    require_cargo_workspace_root,
     workspace_manifest_facts,
     workspace_member_packages,
 )
@@ -338,6 +339,16 @@ def main(argv: list[str] | None = None) -> int:
     if not selected:
         print("changed-clippy: no Cargo package reached; nothing to lint")
         return 0
+    try:
+        # Admit every selected project before compiling any of them. A later
+        # standalone failure must not follow a full workspace clippy build.
+        for command, _reason in selected:
+            require_cargo_workspace_root(
+                ROOT / str(command.data.get("cwd", ".")) / "Cargo.toml"
+            )
+    except ValueError as exc:
+        print(f"changed-clippy: {exc}", file=sys.stderr)
+        return 1
     for command, reason in selected:
         print(f"changed-clippy: {command.id} ({reason})")
     if args.dry_run:

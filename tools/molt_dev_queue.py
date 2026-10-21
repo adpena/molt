@@ -27,6 +27,7 @@ from types import ModuleType
 from typing import Any
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from heapq import nlargest
 from pathlib import Path
 
 from tools.molt_dev_controller import (
@@ -40,6 +41,7 @@ from tools.molt_dev_common import (
     _COMMANDS,
     EXIT_FAIL,
     EXIT_OK,
+    EXIT_USAGE,
     CandidateFailure,
     DriverError,
     PublicationRace,
@@ -724,6 +726,8 @@ def cmd_queue_run(args: argparse.Namespace) -> int:
 
 def cmd_queue_status(args: argparse.Namespace) -> int:
 
+    if args.recent < 0:
+        raise DriverError("--recent must be non-negative", code=EXIT_USAGE)
     paths = _queue_paths(Path(args.repo).resolve())
     requests = pending(paths)
     plan = (
@@ -732,8 +736,13 @@ def cmd_queue_status(args: argparse.Namespace) -> int:
         else []
     )
     results = (
-        sorted(paths.results.glob("*.json"))[-args.recent :]
-        if paths.results.is_dir()
+        sorted(
+            nlargest(
+                args.recent, paths.results.glob("*.json"), key=lambda path: path.name
+            ),
+            key=lambda path: path.name,
+        )
+        if args.recent > 0 and paths.results.is_dir()
         else []
     )
     report = {
@@ -800,5 +809,10 @@ def add_queue_arguments(
     p_run.set_defaults(func=cmd_queue_run)
     p_status = queue_sub.add_parser("status", help="pending requests and results")
     add_repo_arg(p_status)
-    p_status.add_argument("--recent", type=int, default=10, help="results to show")
+    p_status.add_argument(
+        "--recent",
+        type=int,
+        default=10,
+        help="newest results to show (0 omits history)",
+    )
     p_status.set_defaults(func=cmd_queue_status)

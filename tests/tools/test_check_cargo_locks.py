@@ -42,6 +42,10 @@ def test_every_tracked_lockfile_resolves_locked(monkeypatch, tmp_path) -> None:
 def test_a_stale_lockfile_is_reported_with_its_cause(monkeypatch, tmp_path) -> None:
     # A root that vendors nothing, so only the stale check runs.
     (tmp_path / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
+    for directory in ("fuzz", "runtime/x"):
+        manifest = tmp_path / directory / "Cargo.toml"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text("[workspace]\n", encoding="utf-8")
     _fake_cargo(monkeypatch, stale={"fuzz"})
     assert check_cargo_locks.stale_lockfiles(tmp_path) == [
         "fuzz/Cargo.lock: error: cannot update the lock file because --locked was passed"
@@ -53,6 +57,26 @@ def _write(path: Path, text: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
     return path
+
+
+def test_missing_workspace_boundary_fails_before_any_cargo_resolution(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    _write(tmp_path / "Cargo.toml", "[workspace]\nmembers=[]\n")
+    lock = _write(tmp_path / "standalone/Cargo.lock", "version=4\n")
+    _write(tmp_path / "standalone/Cargo.toml", '[package]\nname="standalone"\n')
+    monkeypatch.setattr(check_cargo_locks, "tracked_lockfiles", lambda _root: [lock])
+
+    def no_cargo(*_args, **_kwargs):
+        raise AssertionError("Cargo must not resolve an unbounded project")
+
+    monkeypatch.setattr(
+        check_cargo_locks.process_guard,
+        "run_completed_command",
+        no_cargo,
+    )
+    assert check_cargo_locks.main(["--root", str(tmp_path)]) == 1
+    assert "explicit [workspace]" in capsys.readouterr().err
 
 
 def _vendored_repo(tmp_path: Path, workspace_patch: str, locked: str) -> Path:
