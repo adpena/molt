@@ -13,6 +13,7 @@ from tools import memory_guard
 from tools.memory_guard_core import process_custody
 from molt import process_model
 from tests.process_guard_common import (
+    HUNG_CHILD_SOURCE,
     install_thread_module_view,
 )
 
@@ -407,8 +408,11 @@ def test_identity_reader_rejects_decode_and_recursive_json_without_escape(
 # The product's daemon probes, run as an installed wheel runs them: with the
 # `molt` package and the standard library importable, never the repository's
 # `tools`. `-I -S` drops the environment, the working directory and every site
-# directory (and the `.pth` files and `sitecustomize` they would load).
-_INSTALLED_DAEMON_PROBES = r"""
+# directory (and the `.pth` files and `sitecustomize` they would load). The
+# probe cannot import the tests package, so the hung daemon's source is spliced
+# in as a literal.
+_INSTALLED_DAEMON_PROBES = (
+    r"""
 import importlib.util
 import json
 import os
@@ -431,7 +435,9 @@ daemon = subprocess.Popen(
     [
         str(backend_bin),
         "-c",
-        "import time; time.sleep(60)",
+        """
+    + repr(HUNG_CHILD_SOURCE)
+    + r""",
         "--daemon",
         "--socket",
         str(socket_path),
@@ -481,6 +487,7 @@ print(
     )
 )
 """
+)
 
 
 @pytest.mark.skipif(

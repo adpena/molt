@@ -6,6 +6,7 @@ import sys
 
 import pytest
 from tests.process_guard_common import (
+    HUNG_CHILD_SOURCE,
     install_module_os_view,
     install_module_view,
     run_guarded_test_process,
@@ -355,7 +356,7 @@ def test_windows_forward_retains_actual_child_use_after_failed_cleanup_and_gc(
         "-I",
         "-S",
         "-c",
-        "import time; time.sleep(30)" if failure == "wait" else "raise SystemExit(7)",
+        HUNG_CHILD_SOURCE if failure == "wait" else "raise SystemExit(7)",
     ]
     try:
         if failure is None:

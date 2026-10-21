@@ -19,6 +19,7 @@ from molt import process_model, windows_process_snapshot, windows_process_api
 
 import molt.pytest_memory_guard_bootstrap as pytest_memory_guard_bootstrap
 from tests.process_guard_common import (
+    HUNG_CHILD_SOURCE,
     ModuleView,
     close_owned_test_process,
     install_module_os_view,
@@ -496,9 +497,7 @@ def test_windows_snapshot_reuses_one_immutable_api_binding() -> None:
 
 
 def test_pid_alive_reads_live_and_absent_processes() -> None:
-    child = start_owned_test_process(
-        [sys.executable, "-c", "import time; time.sleep(60)"]
-    )
+    child = start_owned_test_process([sys.executable, "-c", HUNG_CHILD_SOURCE])
     try:
         assert process_model.pid_alive(child.pid)
         assert process_model.pid_alive(os.getpid())

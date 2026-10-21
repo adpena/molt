@@ -57,6 +57,58 @@ class ModuleView:
         self._hidden.add(attr)
 
 
+# Python source for a child that stands in for a hung command: it ends only
+# when its owner kills it. A finite sleep races the deadline under test. When
+# the host stalls the owner past the sleep, the child exits 0 first and the
+# owner reports success; a regrtest shard test with a 5 s deadline and a 60 s
+# sleep failed so on 2026-10-21, while its guard waited out a 38-minute stall.
+HUNG_CHILD_SOURCE = "import threading\nthreading.Event().wait()\n"
+
+
+def _carries(argv: Sequence[str] | None, marker: str) -> bool:
+    return argv is not None and any(marker in part for part in argv)
+
+
+def processes_carrying(marker: str) -> list[int]:
+    """Live processes whose argv carries ``marker``, from the host table.
+
+    A test that learns a hung descendant's pid only after the call under test
+    returns cannot clean it up when that call raises; the marker finds it.
+    """
+
+    from molt import process_model
+    from tools import memory_guard
+
+    return sorted(
+        pid
+        for pid in memory_guard.sample_processes()
+        if pid != os.getpid()
+        and _carries(process_model.process_command_argv(pid), marker)
+    )
+
+
+def stop_test_processes_carrying(marker: str) -> None:
+    """Stop every live process whose argv carries ``marker``.
+
+    A ``HUNG_CHILD_SOURCE`` descendant that the test does not own as a
+    ``Popen`` never exits by itself; when the code under test leaves it
+    running, the test stops it here. The marker and the birth time gate each
+    signal, so a reused PID never receives it.
+    """
+
+    from molt import process_model
+    from tools import memory_guard
+
+    for pid in processes_carrying(marker):
+        born = process_model.process_started_at_ns(pid)
+        if born is not None and _carries(
+            process_model.process_command_argv(pid), marker
+        ):
+            memory_guard.terminate_verified_pid(
+                pid, memory_guard.ProcessIdentity(born), grace=1.0
+            )
+
+
 def guard_custody_env() -> dict[str, str]:
     """Guard custody that a deliberately minimal child environment must carry.
 

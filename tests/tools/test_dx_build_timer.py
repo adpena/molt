@@ -145,7 +145,7 @@ def test_run_can_reuse_outer_memory_guard_for_molt_build_phases(
 
 @pytest.mark.parametrize("failure", [None, "launch", "stream", "cleanup"])
 def test_outer_timer_holds_selected_state_until_child_cleanup(
-    tmp_path, monkeypatch, failure
+    tmp_path, monkeypatch, request, failure
 ):
     import gc
     import subprocess
@@ -154,7 +154,7 @@ def test_outer_timer_holds_selected_state_until_child_cleanup(
     from molt.checkout_state import checkout_state_retirement
     from molt.dx import checkout_component
     from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
-    from tests.process_guard_common import install_module_view
+    from tests.process_guard_common import HUNG_CHILD_SOURCE, install_module_view
 
     module = dx_build_timer
     artifact = tmp_path / "artifacts"
@@ -177,6 +177,17 @@ def test_outer_timer_holds_selected_state_until_child_cleanup(
     commands = module._COMMANDS
     processes = []
     owner_refs = []
+
+    def stop_survivors() -> None:
+        # The child never exits by itself: stop one the cleanup under test left.
+        for process in processes:
+            if process.poll() is None:
+                try:
+                    commands.wait_owned(process, timeout=0.1, terminate_timeout=5.0)
+                except subprocess.TimeoutExpired:
+                    pass
+
+    request.addfinalizer(stop_survivors)
     if failure == "cleanup":
         real_atexit = module.atexit
 
@@ -223,7 +234,7 @@ def test_outer_timer_holds_selected_state_until_child_cleanup(
             "-I",
             "-S",
             "-c",
-            "import time; time.sleep(30)" if failure is not None else "print('timed')",
+            HUNG_CHILD_SOURCE if failure is not None else "print('timed')",
         ]
     )
     try:

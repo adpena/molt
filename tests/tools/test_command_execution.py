@@ -14,7 +14,11 @@ from molt.process_environment import (
     ProcessEnvironment,
     ProcessEnvironmentBuilder,
 )
-from tests.process_guard_common import install_module_view, run_custody_subject_process
+from tests.process_guard_common import (
+    HUNG_CHILD_SOURCE,
+    install_module_view,
+    run_custody_subject_process,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -548,17 +552,15 @@ def test_interactive_guard_cancels_actual_child_tree_and_closes_streams(tmp_path
     pidfile = tmp_path / "children.json"
     child_script = tmp_path / "interactive_child.py"
     child_script.write_text(
-        "import json,os,pathlib,subprocess,sys,time\n"
+        "import json,os,pathlib,subprocess,sys\n"
         "assert sys.stdin.readline() == 'start\\n'\n"
-        "child = subprocess.Popen([sys.executable, '-c', "
-        "'import time; time.sleep(60)'])\n"
+        f"child = subprocess.Popen([sys.executable, '-c', {HUNG_CHILD_SOURCE!r}])\n"
         "pids = {'child': os.getpid(), 'grandchild': child.pid}\n"
         # Publish atomically: the parent reads the file as soon as it exists.
         "staged = sys.argv[1] + '.tmp'\n"
         "pathlib.Path(staged).write_text(json.dumps(pids), encoding='utf-8')\n"
         "os.replace(staged, sys.argv[1])\n"
-        "print('interactive child ready', flush=True)\n"
-        "time.sleep(60)\n",
+        "print('interactive child ready', flush=True)\n" + HUNG_CHILD_SOURCE,
         encoding="utf-8",
     )
     env, managed_roots = _managed_command_roots(tmp_path)
@@ -675,9 +677,9 @@ def test_harness_owner_survives_observation_expiry_and_admits_eventual_closure(
         [
             sys.executable,
             "-c",
-            "import os,pathlib,time; "
-            f"pathlib.Path({str(child_ready)!r}).write_text(str(os.getpid()), encoding='utf-8'); "
-            "time.sleep(30)",
+            "import os,pathlib\n"
+            f"pathlib.Path({str(child_ready)!r}).write_text(str(os.getpid()), encoding='utf-8')\n"
+            + HUNG_CHILD_SOURCE,
         ],
         cwd=ROOT,
         env={**os.environ, "MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path / "state")},
@@ -820,9 +822,9 @@ def test_harness_owner_observes_a_guard_slower_than_one_window(tmp_path, monkeyp
         [
             sys.executable,
             "-c",
-            "import os,pathlib,time; "
-            f"pathlib.Path({str(child_ready)!r}).write_text(str(os.getpid()), encoding='utf-8'); "
-            "time.sleep(30)",
+            "import os,pathlib\n"
+            f"pathlib.Path({str(child_ready)!r}).write_text(str(os.getpid()), encoding='utf-8')\n"
+            + HUNG_CHILD_SOURCE,
         ],
         cwd=ROOT,
         env={**os.environ, "MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path / "state")},
@@ -962,7 +964,7 @@ def test_guard_resource_owner_survives_gc_after_unresolved_wait(
     )
     executor = command_execution.CommandExecutor(prefix="MOLT_TEST", repo_root=ROOT)
     process = executor.start_owned(
-        [sys.executable, "-c", "import time; time.sleep(30)"], env=environment
+        [sys.executable, "-c", HUNG_CHILD_SOURCE], env=environment
     )
     guard_process = (
         executor.start_owned([sys.executable, "-I", "-S", "-c", "pass"])

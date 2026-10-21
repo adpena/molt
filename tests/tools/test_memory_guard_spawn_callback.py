@@ -9,7 +9,7 @@ import time
 import pytest
 
 from tools import memory_guard
-from tests.process_guard_common import run_in_fresh_guard_observer
+from tests.process_guard_common import HUNG_CHILD_SOURCE, run_in_fresh_guard_observer
 
 
 def _run(command: list[str], *, on_spawn=None):
@@ -57,7 +57,7 @@ def test_on_spawn_failure_reaps_the_owned_child_tree() -> None:
 
     with pytest.raises(RuntimeError, match="forced callback failure"):
         _run(
-            [sys.executable, "-c", "import time; time.sleep(60)"],
+            [sys.executable, "-c", HUNG_CHILD_SOURCE],
             on_spawn=fail_after_custody,
         )
 
@@ -77,7 +77,7 @@ def test_run_guarded_does_not_return_with_live_job_descendants(tmp_path) -> None
     pidfile = tmp_path / "grandchild.pid"
     child = (
         "import pathlib,subprocess,sys;"
-        "gc=subprocess.Popen([sys.executable,'-c','import time;time.sleep(120)']);"
+        f"gc=subprocess.Popen([sys.executable,'-c',{HUNG_CHILD_SOURCE!r}]);"
         "pathlib.Path(sys.argv[1]).write_text(str(gc.pid),encoding='utf-8')"
     )
 
@@ -192,7 +192,7 @@ def test_guard_kill_decides_protection_on_the_host_table(monkeypatch) -> None:
         [
             sys.executable,
             "-c",
-            "import time; x=bytearray(200_000_000); time.sleep(10)",
+            "x=bytearray(200_000_000)\n" + HUNG_CHILD_SOURCE,
         ],
         max_rss_kb=64 * 1024,
         poll_interval=0.01,
@@ -261,7 +261,7 @@ def test_windows_job_sampling_tolerates_proven_member_exit_churn() -> None:
 def test_owner_cancellation_uses_guard_custody_and_proves_child_closure(tmp_path):
     cancellation = tmp_path / "cancel"
     result = memory_guard.run_guarded(
-        [sys.executable, "-c", "import time; time.sleep(60)"],
+        [sys.executable, "-c", HUNG_CHILD_SOURCE],
         max_rss_kb=512 * 1024,
         max_total_rss_kb=768 * 1024,
         poll_interval=0.02,

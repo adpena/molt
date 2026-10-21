@@ -36,14 +36,17 @@ from molt.backend_daemon_suite_custody import LEASE_ENV
 import molt.dx as molt_dx
 from molt.custody_layout import out_of_tree_scratch_root
 from tests.process_guard_common import (
+    HUNG_CHILD_SOURCE,
     check_output_guarded_test_process,
     current_thread_only,
     guard_custody_env,
     install_module_os_view,
     install_module_view,
     install_thread_module_view,
+    processes_carrying,
     run_in_fresh_guard_observer,
     start_owned_test_process,
+    stop_test_processes_carrying,
 )
 from molt.memory_guard_paths import (
     active_guard_marker_dir,
@@ -4178,7 +4181,8 @@ def test_run_guarded_external_evidence_contract_rejects_ambiguous_paths(
         )
 
 
-_SIGTERM_CHILD = """
+_SIGTERM_CHILD = (
+    """
 import pathlib, signal, sys, time
 receipt, ready, mode = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), sys.argv[3]
 pathlib.Path(sys.argv[4]).write_text(str(__import__("os").getpid()))
@@ -4188,8 +4192,9 @@ def drain(signum, frame):
     sys.exit(3)
 signal.signal(signal.SIGTERM, drain if mode == "drain" else signal.SIG_IGN)
 ready.write_text("ready")
-time.sleep(60)
 """
+    + HUNG_CHILD_SOURCE
+)
 
 
 def _signal_guard_parent(tmp_path: Path, mode: str) -> tuple[int, float, Path, int]:
@@ -4261,7 +4266,7 @@ def test_run_guarded_interrupt_during_sampling_terminates_child_tree(
 
     monkeypatch.setattr(memory_guard._win_job, "create_kill_on_close_job", lambda: None)
     result = memory_guard.run_guarded(
-        [sys.executable, "-c", "import time; time.sleep(30)"],
+        [sys.executable, "-c", HUNG_CHILD_SOURCE],
         max_rss_kb=1_000_000,
         poll_interval=0.01,
         sampler=interrupting_sampler,
@@ -6388,7 +6393,7 @@ def test_run_command_timeout_reports_post_baseline_repo_orphan_cleanup(
     monkeypatch.setattr(memory_guard._win_job, "create_kill_on_close_job", lambda: None)
 
     result = memory_guard.run_guarded(
-        [sys.executable, "-c", "import time; time.sleep(10)"],
+        [sys.executable, "-c", HUNG_CHILD_SOURCE],
         max_rss_kb=1_000_000,
         poll_interval=0.01,
         timeout=0.01,
@@ -6526,7 +6531,7 @@ def test_run_command_ignores_samples_without_root_pid() -> None:
 
 def test_run_command_returns_guard_code_on_real_low_limit() -> None:
     result = memory_guard.run_guarded(
-        [sys.executable, "-c", "import time; time.sleep(10)"],
+        [sys.executable, "-c", HUNG_CHILD_SOURCE],
         max_rss_kb=1,
         poll_interval=0.01,
     )
@@ -6537,15 +6542,10 @@ def test_run_command_returns_guard_code_on_real_low_limit() -> None:
 
 
 def test_run_command_fast_start_poll_catches_allocator_before_slow_poll() -> None:
-    # The allocation outlives the 5 s slow poll by far, and exit rusage cannot
-    # report it before 10 s. Only a live sample taken in the fast-start window
-    # can trip the limit before the slow poll interval elapses.
-    script = (
-        "import time; "
-        "buf = bytearray(192 * 1024 * 1024); "
-        "time.sleep(10.0); "
-        "print(len(buf))"
-    )
+    # The child holds the allocation until the guard kills it, so exit rusage
+    # never reports it. Only a live sample taken in the fast-start window can
+    # trip the limit before the slow poll interval elapses.
+    script = "buf = bytearray(192 * 1024 * 1024)\n" + HUNG_CHILD_SOURCE
 
     result = memory_guard.run_guarded(
         [sys.executable, "-c", script],
@@ -6586,7 +6586,7 @@ def test_run_command_rusage_catches_short_lived_allocator_spike() -> None:
 
 def test_run_command_returns_timeout_code_when_wall_clock_expires() -> None:
     result = memory_guard.run_guarded(
-        [sys.executable, "-c", "import time; time.sleep(10)"],
+        [sys.executable, "-c", HUNG_CHILD_SOURCE],
         max_rss_kb=1_000_000,
         poll_interval=0.01,
         timeout=0.01,
@@ -6810,49 +6810,44 @@ def _wait_for_pid_file(path: Path, *, timeout_s: float = 10.0) -> int:
     raise AssertionError(f"no pid published at {path}")
 
 
-def _is_test_grandchild(pid: int, marker: str) -> bool:
-    """True while ``pid`` runs the argv this test gave its grandchild."""
-    argv = memory_guard._process_model.process_command_argv(pid)
-    return argv is not None and marker in argv
-
-
-def _test_grandchild_gone(pid: int, marker: str, *, timeout_s: float = 5.0) -> bool:
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        if not _is_test_grandchild(pid, marker):
-            return True
-        time.sleep(0.02)
-    return False
-
-
-def _kill_test_grandchild(pid: int, marker: str) -> None:
-    """Stop an escaped test grandchild only while it still runs our argv."""
-    born = memory_guard._process_model.process_started_at_ns(pid)
-    if born is not None and _is_test_grandchild(pid, marker):
-        memory_guard.terminate_verified_pid(
-            pid, memory_guard.ProcessIdentity(born), grace=1.0
-        )
-
-
 @pytest.mark.skipif(os.name != "posix", reason="POSIX sampled orphan custody")
 def test_run_guarded_terminates_a_new_session_grandchild_left_after_exit(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     """The grandchild escapes the child's group and outlives the child.
 
     Only the guard's tracked custody can find it after the child exits: it is
     reparented, in its own session, and named by no group the guard created.
+    The child exits only once a poll has sampled the grandchild under it; a
+    fixed half-second wait let a starved guard miss it.
     """
     pid_file = tmp_path / "grandchild.pid"
+    sampled = tmp_path / "grandchild-sampled"
     marker = f"grandchild-of-{tmp_path.name}"
+    custody_sample = memory_guard.sample_processes_custody
+
+    def sample_then_release_the_child(interest):
+        samples = custody_sample(interest)
+        published = pid_file.read_text(encoding="utf-8") if pid_file.exists() else ""
+        if published and int(published) in samples:
+            sampled.touch()
+        return samples
+
+    monkeypatch.setattr(
+        memory_guard, "sample_processes_custody", sample_then_release_the_child
+    )
     script = (
-        "import pathlib, subprocess, sys, time\n"
+        "import os, pathlib, subprocess, sys, time\n"
         "grandchild = subprocess.Popen(\n"
-        f"    [sys.executable, '-c', 'import time; time.sleep(60)', {marker!r}],\n"
+        f"    [sys.executable, '-c', {HUNG_CHILD_SOURCE!r}, {marker!r}],\n"
         "    start_new_session=True,\n"
         ")\n"
-        f"pathlib.Path({str(pid_file)!r}).write_text(str(grandchild.pid))\n"
-        "time.sleep(0.5)\n"
+        f"partial = pathlib.Path({str(pid_file) + '.partial'!r})\n"
+        "partial.write_text(str(grandchild.pid))\n"
+        f"os.replace(partial, {str(pid_file)!r})\n"
+        f"while not pathlib.Path({str(sampled)!r}).exists():\n"
+        "    time.sleep(0.01)\n"
     )
     grandchild_pid: int | None = None
     try:
@@ -6860,17 +6855,17 @@ def test_run_guarded_terminates_a_new_session_grandchild_left_after_exit(
             [sys.executable, "-c", script],
             max_rss_kb=1_000_000,
             poll_interval=0.05,
-            timeout=30.0,
         )
         grandchild_pid = _wait_for_pid_file(pid_file)
 
         assert result.returncode == 0
         assert grandchild_pid in result.orphaned_process_groups
         assert result.descendants_closed is True
-        assert _test_grandchild_gone(grandchild_pid, marker)
+        # Closure observed its exit: it runs nothing now.
+        assert grandchild_pid not in processes_carrying(marker)
     finally:
-        if grandchild_pid is not None:
-            _kill_test_grandchild(grandchild_pid, marker)
+        # Found by its marker: run_guarded may raise before the pid is known.
+        stop_test_processes_carrying(marker)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX process-group census")
@@ -6911,7 +6906,7 @@ def test_run_guarded_terminates_a_group_member_orphaned_between_samples(
         f"while not pathlib.Path({str(launch_sampled)!r}).exists():\n"
         "    time.sleep(0.01)\n"
         "grandchild = subprocess.Popen(\n"
-        f"    [sys.executable, '-c', 'import time; time.sleep(60)', {marker!r}],\n"
+        f"    [sys.executable, '-c', {HUNG_CHILD_SOURCE!r}, {marker!r}],\n"
         ")\n"
         f"pathlib.Path({str(pid_file)!r}).write_text(str(grandchild.pid))\n"
     )
@@ -6935,10 +6930,11 @@ def test_run_guarded_terminates_a_group_member_orphaned_between_samples(
         assert result.temporary_artifacts is not None
         census = result.temporary_artifacts["closure"]["root_exit_census"]
         assert census == {"admitted_pids": [grandchild_pid]}
-        assert _test_grandchild_gone(grandchild_pid, marker)
+        # Closure observed its exit: it runs nothing now.
+        assert grandchild_pid not in processes_carrying(marker)
     finally:
-        if grandchild_pid is not None:
-            _kill_test_grandchild(grandchild_pid, marker)
+        # Found by its marker: run_guarded may raise before the pid is known.
+        stop_test_processes_carrying(marker)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX owned-child reap")
@@ -6960,7 +6956,7 @@ def test_timeout_closure_survives_a_late_reap_of_the_killed_child(
     # The view confines the late reap to the clock under test.
     install_module_view(monkeypatch, "os", os, process_custody, wait4=late_wait4)
     result = memory_guard.run_guarded(
-        [sys.executable, "-c", "import time; time.sleep(60)"],
+        [sys.executable, "-c", HUNG_CHILD_SOURCE],
         max_rss_kb=1_000_000,
         poll_interval=0.05,
         timeout=0.5,
@@ -6986,15 +6982,15 @@ def test_run_guarded_enforces_tree_rss_across_a_new_session_grandchild(
     allocate = (
         "buf = bytearray(120 * 1024 * 1024); buf[::4096] = b'x' * len(buf[::4096])"
     )
+    held = f"{allocate}\n{HUNG_CHILD_SOURCE}"
     script = (
-        "import pathlib, subprocess, sys, time\n"
+        "import pathlib, subprocess, sys\n"
         "grandchild = subprocess.Popen(\n"
-        f"    [sys.executable, '-c', {f'{allocate}; import time; time.sleep(60)'!r}, {marker!r}],\n"
+        f"    [sys.executable, '-c', {held!r}, {marker!r}],\n"
         "    start_new_session=True,\n"
         ")\n"
         f"pathlib.Path({str(pid_file)!r}).write_text(str(grandchild.pid))\n"
-        f"{allocate}\n"
-        "time.sleep(60)\n"
+        f"{held}"
     )
     grandchild_pid: int | None = None
     try:
@@ -7012,10 +7008,11 @@ def test_run_guarded_enforces_tree_rss_across_a_new_session_grandchild(
         assert result.violation is not None
         assert result.violation.scope == "process_tree"
         assert result.violation.rss_kb > 180 * 1024
-        assert _test_grandchild_gone(grandchild_pid, marker)
+        # Closure observed its exit: it runs nothing now.
+        assert grandchild_pid not in processes_carrying(marker)
     finally:
-        if grandchild_pid is not None:
-            _kill_test_grandchild(grandchild_pid, marker)
+        # Found by its marker: run_guarded may raise before the pid is known.
+        stop_test_processes_carrying(marker)
 
 
 @pytest.mark.parametrize("tracked_cleanup_signalled", [False, True])
@@ -7131,7 +7128,7 @@ def test_main_enforces_timeout_and_writes_summary(
             "--",
             sys.executable,
             "-c",
-            "import time; time.sleep(10)",
+            HUNG_CHILD_SOURCE,
         ]
     )
 
@@ -7170,11 +7167,8 @@ def test_main_writes_summary_when_guard_parent_receives_sigterm(
             "--",
             sys.executable,
             "-c",
-            (
-                "import os, signal, time; "
-                "os.kill(os.getppid(), signal.SIGTERM); "
-                "time.sleep(10)"
-            ),
+            "import os, signal\nos.kill(os.getppid(), signal.SIGTERM)\n"
+            + HUNG_CHILD_SOURCE,
         ]
     )
 
