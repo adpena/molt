@@ -20,7 +20,7 @@ REMAINDER = ["ordinary::parallel_case", support.TRAP, support.TRAP_CHILD, suppor
 @pytest.fixture
 def selected_cargo(monkeypatch, tmp_path):
     from molt.cli.runtime_cargo_plan import _tool_path
-    from molt.rust_toolchain import rustup_proxy_entrypoint
+    from molt.rust_toolchain import rustup_proxy_selection
 
     suffix = ".exe" if os.name == "nt" else ""
     selected = tmp_path / "selected toolchain with spaces" / f"cargo{suffix}"
@@ -39,8 +39,8 @@ def selected_cargo(monkeypatch, tmp_path):
     # Prove that a bare selector would choose a real proxy identity, not the
     # queue-published physical Cargo. No compiler or proxy process is executed.
     assert _tool_path("cargo", root=tmp_path, env=os.environ, role="cargo") == proxy
-    with rustup_proxy_entrypoint(proxy) as entrypoint:
-        assert entrypoint == rustup
+    selection = rustup_proxy_selection(proxy)
+    assert selection is not None and selection.entrypoint == rustup
     return str(selected)
 
 
