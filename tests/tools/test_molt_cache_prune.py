@@ -150,16 +150,15 @@ def test_pruner_breaks_equal_mtime_ties_by_normalized_key_path(tmp_path: Path) -
 
 
 def test_budget_comes_from_flags_then_projected_env_then_canonical_defaults() -> None:
-    module = _load_molt_cache_prune()
     from molt import default_paths
 
-    assert module.resolve_budget(None, None, {}) == (
+    assert default_paths.resolve_budget(None, None, {}) == (
         float(default_paths.DEFAULT_MOLT_CACHE_MAX_GB),
         int(default_paths.DEFAULT_MOLT_CACHE_MAX_AGE_DAYS),
     )
     projected = {"MOLT_CACHE_MAX_GB": "7.5", "MOLT_CACHE_MAX_AGE_DAYS": "3"}
-    assert module.resolve_budget(None, None, projected) == (7.5, 3)
-    assert module.resolve_budget(2.0, 1, projected) == (2.0, 1)
+    assert default_paths.resolve_budget(None, None, projected) == (7.5, 3)
+    assert default_paths.resolve_budget(2.0, 1, projected) == (2.0, 1)
 
 
 def test_pruner_never_evicts_the_selected_home_or_bin(

@@ -97,12 +97,8 @@ def cache_prune(
     """Apply the cache budget now: the documented, unthrottled user entry point."""
     import os
 
-    from molt.cache_eviction import (
-        _default_cache_root,
-        _prune,
-        prune_report_lines,
-        resolve_budget,
-    )
+    from molt.cache_eviction import _default_cache_root, _prune, prune_report_lines
+    from molt.default_paths import resolve_budget
 
     root = (
         Path(cache_dir).expanduser().resolve() if cache_dir else _default_cache_root()
