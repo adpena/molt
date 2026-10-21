@@ -242,7 +242,9 @@ def test_shared_type_shell_projection_tracks_each_physical_owner(name: str) -> N
     assert "MOLT_TYPE_LAYOUT_GENERATED_H" in changed
 
 
-def test_shared_type_shell_layout_is_the_public_and_linked_allocation_contract() -> None:
+def test_shared_type_shell_layout_is_the_public_and_linked_allocation_contract() -> (
+    None
+):
     gen = gen_cpython_abi_layout
     outputs = gen.generated_outputs()
     shared = outputs[gen.TYPE_LAYOUT_H]
