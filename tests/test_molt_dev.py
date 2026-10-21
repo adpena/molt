@@ -1469,6 +1469,62 @@ def test_cleanup_retires_the_checkouts_state_with_it(
     assert sibling_target.is_dir() and sibling_uv.is_dir()
 
 
+def test_cleanup_imports_nothing_after_it_removes_the_worktree(
+    origin_and_clone, tmp_path
+):
+    """Integration runs from the checkout it removes, so retirement must import
+    every module it needs before `git worktree remove`: afterwards a lazy import
+    finds no source. A fresh process with an import guard models that."""
+    origin, _work = origin_and_clone
+    wt = _worktree_off(origin, tmp_path, "wt_import_order")
+    ext = tmp_path / "artifacts"
+    ext.mkdir()
+    target, uv_environment = _shared_checkout_state(ext, wt)
+    code = f"""
+import sys
+from pathlib import Path
+sys.path[:0] = [{str(REPO_ROOT / "src")!r}, {str(REPO_ROOT)!r}]
+from tools import molt_dev as drv
+
+
+class RefuseAfterRemoval:
+    armed = False
+
+    def find_spec(self, name, path=None, target=None):
+        if self.armed and name.split(".")[0] in ("molt", "tools"):
+            raise ImportError(f"imported {{name}} after the worktree was removed")
+        return None
+
+
+guard = RefuseAfterRemoval()
+sys.meta_path.insert(0, guard)
+real = drv._run_fast_captured_command
+
+
+def run(command, **kwargs):
+    result = real(command, **kwargs)
+    if command[3:5] == ["worktree", "remove"]:
+        guard.armed = True
+    return result
+
+
+drv._run_fast_captured_command = run
+wt = Path(sys.argv[1])
+sys.exit(drv._cleanup_worktree(
+    drv.Git(wt), wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=None
+))
+"""
+    completed = run_guarded_test_process(
+        [sys.executable, "-c", code, str(wt)],
+        cwd=tmp_path,
+        env={**os.environ, "MOLT_EXT_ROOT": str(ext)},
+        timeout=180,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert not wt.exists()
+    assert not target.exists() and not uv_environment.exists()
+
+
 def test_failed_worktree_removal_keeps_the_checkouts_state(
     drv, origin_and_clone, tmp_path, monkeypatch
 ):

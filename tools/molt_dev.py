@@ -134,7 +134,7 @@ import sys
 import tempfile
 import time
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1750,7 +1750,7 @@ def _cleanup_worktree(
         return EXIT_FAIL
     _retire_checkout_daemons(repo)
     checkout = repo.resolve()
-    state_root = _stamp_checkout_state(checkout)
+    reclaim_checkout_state = _prepare_checkout_state_retirement(checkout)
     remove_args = ["worktree", "remove"]
     # `git worktree remove` refuses (without --force) on ANY modified/untracked
     # file, including the ignored-set churn (e.g. legacy/keyed wasm sha sidecars) our OWN
@@ -1777,48 +1777,48 @@ def _cleanup_worktree(
         )
         return EXIT_FAIL
     _ok(f"removed worktree {repo}")
-    if state_root is not None:
-        _reclaim_checkout_state(checkout, state_root)
+    if reclaim_checkout_state is not None:
+        reclaim_checkout_state()
     return EXIT_OK
 
 
-def _stamp_checkout_state(checkout: Path) -> Path | None:
-    """Bind a retiring checkout's state roots to it while it still exists.
+def _prepare_checkout_state_retirement(checkout: Path) -> Callable[[], None] | None:
+    """Stamp a retiring checkout's state roots and bind their reclaim, now.
 
-    Returns the artifact root that holds them, or None when it cannot be
-    resolved; the roots then stay for `tools/disk_guard.py --gc`.
+    Integration runs from the checkout it removes, so everything the reclaim
+    needs is imported here, while that checkout still exists: after `git
+    worktree remove` this process can import nothing from it. Returns None
+    when the artifact root cannot be resolved; the roots then stay for
+    `tools/disk_guard.py --gc`.
     """
+    import molt.build_state_layout  # noqa: F401 - the owner-key rule loads lazily
     from molt.checkout_state import stamp_checkout_state
     from molt.dx import DxConfigError, artifact_root
+    from tools import disk_guard
 
     try:
         stamp_checkout_state(checkout, os.environ)
-        return artifact_root(checkout, os.environ)
+        state_root = artifact_root(checkout, os.environ)
     except (OSError, ValueError, DxConfigError) as exc:
         _warn(f"state roots of {checkout} were not stamped ({exc}); they stay")
         return None
 
+    def reclaim() -> None:
+        # A root the guard defers (a held lock or a protected path) stays for
+        # a later `tools/disk_guard.py --gc`; a failure never fails cleanup.
+        try:
+            result = disk_guard.reclaim_checkout_state(checkout, root=state_root)
+        except (OSError, ValueError) as exc:
+            _warn(f"state roots of {checkout} were not reclaimed ({exc}); they stay")
+            return
+        for item in result.reclaimed:
+            _ok(f"reclaimed {item['kind']} {item['path']}")
+        for item in result.skipped:
+            _warn(f"kept {item['path']} ({item['reason']}); disk_guard --gc retries it")
+        for error in result.errors:
+            _warn(f"state root not reclaimed: {error}")
 
-def _reclaim_checkout_state(checkout: Path, state_root: Path) -> None:
-    """Reclaim the removed checkout's state roots through the disk guard.
-
-    A root that the guard defers, for a live guard, a held lock or a protected
-    path, stays for a later `tools/disk_guard.py --gc`. A failure never fails
-    the cleanup.
-    """
-    from tools import disk_guard
-
-    try:
-        result = disk_guard.reclaim_checkout_state(checkout, root=state_root)
-    except (OSError, ValueError) as exc:
-        _warn(f"state roots of {checkout} were not reclaimed ({exc}); they stay")
-        return
-    for item in result.reclaimed:
-        _ok(f"reclaimed {item['kind']} {item['path']}")
-    for item in result.skipped:
-        _warn(f"kept {item['path']} ({item['reason']}); disk_guard --gc retries it")
-    for error in result.errors:
-        _warn(f"state root not reclaimed: {error}")
+    return reclaim
 
 
 def _retire_checkout_daemons(repo: Path) -> None:
