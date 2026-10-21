@@ -122,8 +122,8 @@ The code that decides whether a change lands is never the change.
   changes from untrusted projects speculatively, but a change to a trusted
   config project takes effect only after it merges. bors and the GitHub merge
   queue run as services, not from the pull request.
-- **Design.** `integrate` and the queue runner fetch first. Then they run the
-  driver from main's tip: `git archive <tip>` of `tools`, `src/molt`,
+- **Design.** `integrate`, `land` and the queue runner fetch first. Then
+  they run the driver from main's tip: `git archive <tip>` of `tools`, `src/molt`,
   `pyproject.toml`, `uv.lock` and `.python-version` extracts into
   `<git-common-dir>/molt/controllers/<key>`, where the key is the digest of
   those tree and blob ids. `uv sync --frozen --no-dev` builds the
@@ -219,7 +219,9 @@ One runner owns main. Agents enqueue and continue.
   Scale", EuroSys 2019) ranks speculative builds by their chance to land.
 - **Design.** `molt_dev.py land` checks the lane and writes one request under
   `<git-common-dir>/molt/landing-queue/`, then returns. It starts the runner
-  if none holds the runner lock. The runner runs from the pinned controller.
+  if none holds the runner lock. `land` and the runner run from the pinned
+  controller: a lane branched before a driver fix once queued itself with
+  its own old driver, which started a runner that could not import `tools`.
   It builds a candidate in its own sandbox worktree: main's tip, then each
   ready lane in queue order. A lane that conflicts leaves the batch with a
   report. The runner resolves change ids, takes the repository integration

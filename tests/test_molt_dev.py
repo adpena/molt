@@ -2580,18 +2580,14 @@ def _publish_controller_stub(work: Path, role: str) -> str:
     return tip
 
 
-def _land_through_real_driver(work: Path, report: Path) -> tuple[int, dict]:
+def _land_through_real_driver(
+    work: Path, report: Path, command: tuple[str, ...] = ("integrate", "--no-push")
+) -> tuple[int, dict]:
     env = dict(os.environ)
     env["MOLT_TEST_CONTROLLER_REPORT"] = str(report)
+    name, *options = command
     result = run_guarded_test_process(
-        [
-            sys.executable,
-            str(SCRIPT_PATH),
-            "integrate",
-            "--repo",
-            str(work),
-            "--no-push",
-        ],
+        [sys.executable, str(SCRIPT_PATH), name, "--repo", str(work), *options],
         cwd=REPO_ROOT,
         env=ProcessEnvironment(env),
         timeout=60,
@@ -2600,16 +2596,24 @@ def _land_through_real_driver(work: Path, report: Path) -> tuple[int, dict]:
     return result.returncode, json.loads(report.read_text(encoding="utf-8"))
 
 
-def test_integrate_runs_main_pinned_controller_not_the_candidate(
-    origin_and_clone, tmp_path
+@pytest.mark.parametrize(
+    "command",
+    [("integrate", "--no-push"), ("land", "--wait")],
+    ids=["integrate", "land"],
+)
+def test_landing_commands_run_main_pinned_controller_not_the_candidate(
+    origin_and_clone, tmp_path, command
 ):
     _, work = origin_and_clone
     main_tip = _publish_controller_stub(work, "main")
-    # The candidate changes the driver; its version must not run its own landing.
+    # The candidate changes the driver; its version must not run its own
+    # landing, nor write its queue request and start its runner.
     _commit_file(
         work, "tools/molt_dev.py", _CONTROLLER_STUB.format(role="candidate"), "edit"
     )
-    returncode, report = _land_through_real_driver(work, tmp_path / "report.json")
+    returncode, report = _land_through_real_driver(
+        work, tmp_path / "report.json", command
+    )
 
     assert report["role"] == "main"
     assert returncode == 41, "exec hands the landing's exit status through"
@@ -2620,10 +2624,10 @@ def test_integrate_runs_main_pinned_controller_not_the_candidate(
     # It runs in the environment built from main's lock, not the caller's.
     assert Path(report["prefix"]).resolve() == (root / ".venv").resolve()
     assert report["argv"] == [
-        "integrate",
+        command[0],
         "--repo",
         str(work),
-        "--no-push",
+        *command[1:],
         "--repo",
         str(work.resolve()),
         "--pinned-controller",
