@@ -389,13 +389,14 @@ loop-safe, uniform waiver grammar with mandatory rationale.
 ### A1. The hook spine (`molt-src/.claude/settings.json` + 3 hook tools) — DO FIRST
 
 **Build:**
-- `tools/hooks/session_digest.py` (SessionStart): a <5s read-only digest —
-  the goal pointer (witness-closure state toward pact-collab 100-yr green,
-  M01), CLAIMS/queue custody snapshot (`proof_queue.py status`, CLAIMS.md at
-  origin/main), worktree/drift debt (`drift_harvest.py` count, M67), build
-  wall-clock trend (M09), and the top standing directives. This is molt's
-  costate digest: the agent starts every session already knowing the state
-  it would otherwise be reminded of.
+- `tools/hooks/session_digest.py` (SessionStart): a read-only digest of live
+  facts (about 1.2 s): pointers to the authorities that own the rest
+  (`AGENTS.md`, `tools/agent_coordination.py context`, the v1.0 ledger), the
+  landing queue's pending requests and newest results, proof_queue rows,
+  worktree drift (M67), and what the hooks enforce. As of 2026-10-21 it no
+  longer restates a goal, a claim count, a build-wall sample or the standing
+  directives: those had gone stale (the July witness-closure goal) while
+  their owning files moved on.
 - `tools/hooks/bash_guard.py` (PreToolUse, matcher Bash): pure
   `decide(command, env)`; blocks (a) destructive git against the shared
   checkout — `reset --hard`/`checkout --`/`clean -fd`/`stash drop` unless the
@@ -410,6 +411,11 @@ loop-safe, uniform waiver grammar with mandatory rationale.
   detector below; prints `{"decision":"block","reason":...}` on violation.
 
 **Mechanizes:** M12, M16, M17, M18, M19, M20, M27, M67, M01.
+**Runs:** `.claude/settings.json` starts every hook through
+`tools/hooks/run.sh`, which selects the interpreter of the checkout's uv
+environment (uv's `UV_PROJECT_ENVIRONMENT` rule, else `.venv`). Until
+2026-10-21 the commands called a bare `python`, which the Claude desktop
+app's PATH does not carry, so every hook failed with exit 127 there.
 **Composes with:** git_guard.py, proof_queue.py, drift_harvest.py,
 tree_drift_check.py. **Cost:** small (the pact hooks are direct templates;
 port decide() + tests). Note Windows: use `msvcrt`/lockfile in place of
@@ -418,12 +424,12 @@ fcntl; keep every hook ASCII-safe and UTF-8-explicit (M43's cp1252 class).
 ### A2. Land-or-blocker Stop gate (M12 — the operator's #1 fury, mechanized)
 
 **Build:** `tools/hooks/landing_gate.py`, invoked from stop_gates. Window =
-session-start HEAD marker .. current HEAD (per-worktree) + proof_queue rows +
+session-start HEAD marker .. current HEAD (per-worktree) + the landing queue
+(a pending request, or one landed since the window opened) + proof_queue rows +
 a blocker ledger (`.molt/state/blockers.jsonl`, new, append-only). If a turn
 produced potentially mutating assistant tool activity but the window shows NO landed commit, NO
-queue row in flight, and NO named-blocker entry, emit a block: "This turn
-reported without landing. Land a commit/proof/passing test via the queue, or
-record the real external blocker in blockers.jsonl, then stop." Escape:
+landing-queue progress, NO queue row in flight, and NO named-blocker entry,
+emit a block that names `molt_dev.py land` and the blocker command. Escape:
 `[report-only]` commit-subject token or a blocker row — both logged.
 This is exactly pact's triality-detector *shape* (git-window marker,
 fail-open, block-JSON) pointed at molt's most-repeated directive.

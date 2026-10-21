@@ -116,8 +116,9 @@ def test_error_log_loud_escalation_after_threshold(tmp_path, monkeypatch, capsys
 # --- the settings commands themselves (the launcher) ----------------------
 
 _POSIX_SH = shutil.which("sh")
+_GIT = shutil.which("git")
 _NEEDS_POSIX_CHECKOUT = pytest.mark.skipif(
-    _POSIX_SH is None or os.name == "nt",
+    _POSIX_SH is None or _GIT is None or os.name == "nt",
     reason="builds a symlinked checkout and runs hook commands through a POSIX sh",
 )
 _HTTPS_PUSH = {
@@ -135,9 +136,16 @@ def _settings_hook_commands() -> dict[str, list[str]]:
 
 
 def _hook_checkout(tmp_path: Path, *, environment: Path | None) -> Path:
-    """A project dir with this checkout's tools and its own hook state."""
+    """A Git project dir with this checkout's tools and its own hook state."""
     checkout = tmp_path / "checkout"
     checkout.mkdir()
+    initialized = _COMMANDS.run(
+        [_GIT, "init", "-q", str(checkout)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert initialized.returncode == 0, initialized.stderr
     (checkout / "tools").symlink_to(ROOT / "tools", target_is_directory=True)
     if environment is not None:
         (checkout / ".venv").symlink_to(environment, target_is_directory=True)
@@ -151,7 +159,7 @@ def _run_settings_command(
     payload: dict,
     uv_project_environment: str | None = None,
 ):
-    """Run one settings command as Claude Code does, with only `sh` on PATH.
+    """Run one settings command as Claude Code does: `sh` and `git` on PATH.
 
     The desktop app's PATH has no ``python``. The test harness injects its own
     ``UV_PROJECT_ENVIRONMENT`` into every child, so the child shell states the
@@ -159,8 +167,9 @@ def _run_settings_command(
     """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
-    if not (bin_dir / "sh").exists():
-        (bin_dir / "sh").symlink_to(_POSIX_SH)
+    for name, tool in (("sh", _POSIX_SH), ("git", _GIT)):
+        if not (bin_dir / name).exists():
+            (bin_dir / name).symlink_to(tool)
     prelude = (
         "unset UV_PROJECT_ENVIRONMENT"
         if uv_project_environment is None

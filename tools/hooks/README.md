@@ -9,7 +9,7 @@ Claude Code lifecycle points. Full design: `docs/agent/APPARATUS_FROM_COMMA_LAB.
 
 | Event | Script | Job | Mechanizes |
 |---|---|---|---|
-| `SessionStart` | `session_digest.py` | <5s read-only digest (goal pointer, custody, drift debt, build-wall, standing directives) injected as context; writes the landing-gate window baseline | M01, M09, M67 |
+| `SessionStart` | `session_digest.py` | read-only digest of live facts (pointers to AGENTS.md, the coordination context and the v1.0 ledger; landing queue; proof queue; worktree drift; what the hooks enforce) injected as context; writes the landing-gate window baseline | M67 |
 | `PreToolUse` (Bash) | `bash_guard.py` | refuses destructive-git-on-shared-checkout, `git add` sweeps, build-bypasses-live-queue, https-push | M17, M18, M20, M27, M19 |
 | `Stop` | `stop_gates.py` -> `session_learning.py` + gates | persists landings/cruxes/frontiers into the memory corpus, warns on uncaptured bug-class learning, then applies the land-or-blocker/triality/verdict gates | M12, M05, M22 |
 
