@@ -41,6 +41,11 @@ def test_wasm_bench_compile_uses_memory_guard(monkeypatch, tmp_path: Path) -> No
         fake_guarded_completed_process,
     )
 
+    # The compile forces an unlinked module; other compile defaults yield to
+    # an ambient selection.
+    monkeypatch.setenv("MOLT_WASM_LINKED", "1")
+    monkeypatch.setenv("MOLT_BACKEND_DAEMON", "1")
+    monkeypatch.delenv("MOLT_MIDEND_DISABLE", raising=False)
     source = tmp_path / "bench.py"
     source.write_text("print(1)\n", encoding="utf-8")
     out_dir = tmp_path / "out"
@@ -53,6 +58,10 @@ def test_wasm_bench_compile_uses_memory_guard(monkeypatch, tmp_path: Path) -> No
     assert calls[0]["prefix"] == "MOLT_BENCH"
     assert calls[0]["limits"] is limits
     assert calls[0]["command"][:4] == [sys.executable, "-m", "molt.cli", "build"]
+    env = calls[0]["env"]
+    assert env["MOLT_WASM_LINKED"] == "0"
+    assert env["MOLT_BACKEND_DAEMON"] == "1"
+    assert env["MOLT_MIDEND_DISABLE"] == "1"
 
 
 def test_wasm_bench_main_installs_repo_sentinel(monkeypatch, tmp_path: Path) -> None:
@@ -125,6 +134,9 @@ def test_luau_benchmark_compile_uses_guard_and_canonical_tmp(
         fake_guarded_completed_process,
     )
 
+    # The benchmark compile disables any ambient compiler wrapper and imports
+    # only this checkout's sources.
+    monkeypatch.setenv("RUSTC_WRAPPER", "ambient-wrapper")
     source = tmp_path / "bench_luau.py"
     source.write_text("print(1)\n", encoding="utf-8")
     limits = module.harness_memory_guard.limits_from_env("MOLT_BENCH", {})
@@ -142,6 +154,8 @@ def test_luau_benchmark_compile_uses_guard_and_canonical_tmp(
     assert calls[0]["prefix"] == "MOLT_BENCH"
     assert calls[0]["limits"] is limits
     assert calls[0]["command"][:5] == ["uv", "run", "python", "-m", "molt.cli"]
+    assert calls[0]["env"]["RUSTC_WRAPPER"] == ""
+    assert calls[0]["env"]["PYTHONPATH"] == str(REPO_ROOT / "src")
 
 
 def test_luau_benchmark_main_installs_repo_sentinel(

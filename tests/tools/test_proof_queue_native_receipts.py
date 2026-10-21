@@ -157,11 +157,11 @@ def test_rust_link_capture_owns_workspace_inside_owner_selected_scratch(
         required = supervisor_custody.required_execution_environment(
             binary=binary, mode="declared-tree", cwd=tmp_path, env=env
         )
-        execution_env = supervisor_custody.bind_required_environment(env, required)
         # Compilation produces data only. Do not grant the object directory
         # executable-image authority that could conceal a missing helper.
-        execution_env.pop("CARGO_TARGET_DIR", None)
-        execution_env.pop(supervisor_custody.PROOF_SCRATCH_ROOT_ENV, None)
+        execution_env = supervisor_custody.bind_required_environment(
+            env, required
+        ).without(("CARGO_TARGET_DIR", supervisor_custody.PROOF_SCRATCH_ROOT_ENV))
         for admit_frontend in (True, False):
             label = "admitted" if admit_frontend else "missing-frontend"
             output = tmp_path / f"{label}.o"

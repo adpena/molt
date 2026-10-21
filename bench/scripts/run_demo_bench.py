@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TextIO
@@ -31,6 +32,10 @@ bind_repository_imports(__file__)
 
 from tools import harness_memory_guard  # noqa: E402
 from molt.dx import scratch_dir  # noqa: E402
+from molt.process_environment import (  # noqa: E402
+    ProcessEnvironment,
+    ProcessEnvironmentBuilder,
+)
 from tools.git_identity import (  # noqa: E402
     clean_checkout_status_arguments,
     is_git_object_id,
@@ -51,7 +56,7 @@ _RUN_ID = re.compile(r"[a-z0-9][a-z0-9-]{7,127}")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 
 
-def base_env(env: dict[str, str] | None = None) -> dict[str, str]:
+def base_env(env: Mapping[str, str] | None = None) -> ProcessEnvironment:
     run_env = os.environ.copy()
     overrides = env or {}
     if env:
@@ -69,7 +74,7 @@ def base_env(env: dict[str, str] | None = None) -> dict[str, str]:
 
 
 def bench_memory_limits(
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> harness_memory_guard.HarnessMemoryLimits:
     return harness_memory_guard.limits_from_env(BENCH_MEMORY_PREFIX, base_env(env))
 
@@ -174,7 +179,7 @@ def collect_tool_versions() -> dict[str, str]:
     return versions
 
 
-def extract_proc_matchers(env: dict[str, str]) -> dict[str, dict[str, object]]:
+def extract_proc_matchers(env: Mapping[str, str]) -> dict[str, dict[str, object]]:
     def parse_env_pid(value: str | None) -> int | None:
         if not value:
             return None
@@ -341,11 +346,12 @@ def tail_lines(path: Path, limit: int = 20) -> list[str]:
 
 
 def run_k6(
-    script: Path, env: dict[str, str]
+    script: Path, env: Mapping[str, str]
 ) -> tuple[dict[str, Any], dict[str, dict[str, float]]]:
-    env = base_env(env)
+    env = ProcessEnvironmentBuilder(base_env(env))
     env.setdefault("K6_SUMMARY_TREND_STATS", "med,p(95),p(99),p(99.9)")
     env.setdefault("K6_LOG_LEVEL", "error")
+    env = ProcessEnvironment(env)
     cmd = [
         "k6",
         "run",
@@ -736,10 +742,9 @@ def check_cli(target: Path) -> None:
     print(SCOPE_NOTE)
 
 
-def run_scenario(name: str, script: str, env: dict[str, str]) -> BenchResult:
+def run_scenario(name: str, script: str, env: Mapping[str, str]) -> BenchResult:
     summary_path = RESULTS_DIR / f"k6_{name}_summary.json"
-    env = dict(env)
-    env["K6_SUMMARY_EXPORT"] = str(summary_path)
+    env = ProcessEnvironment(env).updated({"K6_SUMMARY_EXPORT": str(summary_path)})
     summary, proc_metrics = run_k6(ROOT / script, env)
     result = parse_k6_summary(name, summary)
     result.raw["summary_path"] = str(summary_path)

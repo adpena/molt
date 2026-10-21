@@ -19,6 +19,7 @@ import json
 import shlex
 import sys
 import time
+from collections.abc import Mapping
 from pathlib import Path
 
 BENCH_DIR = Path(__file__).parent
@@ -41,6 +42,7 @@ from molt.dx import scratch_dir  # noqa: E402
 TMP_ROOT = scratch_dir(REPO_ROOT, "bench/luau")
 from tools import perf_authority  # noqa: E402
 from molt.dx import development_artifact_env  # noqa: E402
+from molt.process_environment import ProcessEnvironment  # noqa: E402
 
 BENCHMARKS = [
     "bench_fibonacci.py",
@@ -65,21 +67,19 @@ BENCHMARKS = [
 ]
 
 
-def _base_env() -> dict[str, str]:
-    env = development_artifact_env(
+def _base_env() -> ProcessEnvironment:
+    return development_artifact_env(
         REPO_ROOT,
         os.environ,
         session_prefix="bench-luau",
         session_id=os.environ.get("MOLT_SESSION_ID") or f"bench-luau-{os.getpid()}",
         create_dirs=True,
-    )
-    env.update(
+    ).updated(
         {
             "RUSTC_WRAPPER": "",
             "PYTHONPATH": str(REPO_ROOT / "src"),
         }
     )
-    return env
 
 
 def _command_parts(command: str) -> list[str]:
@@ -89,7 +89,7 @@ def _command_parts(command: str) -> list[str]:
 def _run_guarded(
     cmd: list[str],
     *,
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str] | None = None,
     timeout: float | None = 120,
     limits: harness_memory_guard.HarnessMemoryLimits | None = None,
 ) -> harness_memory_guard.GuardedCompletedProcess:

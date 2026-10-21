@@ -15,14 +15,23 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
 
+from molt.process_environment import (  # noqa: E402
+    ProcessEnvironment,
+    ProcessEnvironmentBuilder,
+)
 from tools import harness_memory_guard  # noqa: E402
 
 
 def main() -> int:
-    env = harness_memory_guard.canonical_harness_env(os.environ, repo_root=ROOT)
-    env["PYTHONPATH"] = f"{ROOT / 'src'}:{ROOT / 'demo' / 'django_app'}"
+    env = ProcessEnvironmentBuilder(
+        harness_memory_guard.canonical_harness_env(os.environ, repo_root=ROOT)
+    )
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(ROOT / "src"), str(ROOT / "demo" / "django_app")]
+    )
     env["DJANGO_SETTINGS_MODULE"] = "demoapp.settings"
-    env["MOLT_WORKER_WIRE"] = env.get("MOLT_WORKER_WIRE", "msgpack")
+    env.setdefault("MOLT_WORKER_WIRE", "msgpack")
+    env = ProcessEnvironment(env)
     context = harness_memory_guard.HarnessExecutionContext.from_env(
         "MOLT_BENCH",
         env,
@@ -42,8 +51,12 @@ def main() -> int:
         if build.returncode != 0:
             return build.returncode
         worker_bin = ROOT / "target" / "debug" / "molt-worker"
-    env["MOLT_WORKER_CMD"] = (
-        f"{worker_bin} --stdio --exports {exports} --compiled-exports {exports}"
+    env = env.updated(
+        {
+            "MOLT_WORKER_CMD": (
+                f"{worker_bin} --stdio --exports {exports} --compiled-exports {exports}"
+            )
+        }
     )
 
     probe = (
