@@ -19,7 +19,7 @@ import pytest
 from molt import checkout_provisioning as cp
 from molt.process_environment import ProcessEnvironment
 from tests.process_guard_common import run_guarded_test_process
-from tests.test_molt_dev import _commit_file, _git, _init_repo
+from tests.test_molt_dev import _commit_file, _git, _init_repo, kept_gate_stdout
 from tools.molt_dev_common import _run_fast_captured_command
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -483,7 +483,7 @@ def test_integrate_child_builds_a_missing_inherited_uv_environment(
         timeout=300,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert f"gate-prefix={managed.resolve()}" in result.stdout
+    assert kept_gate_stdout(result.stdout) == [f"gate-prefix={managed.resolve()}\n"]
     assert (managed / "pyvenv.cfg").is_file()
     assert (managed / cp.STAMP_NAME).is_file()
 

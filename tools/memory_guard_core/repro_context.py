@@ -579,3 +579,44 @@ def repro_context_payload(
 
 def repro_context_line(payload: Mapping[str, object]) -> str:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+#: Argv words a repro summary shows before it elides the rest.
+SUMMARY_ARGV_WORDS = 4
+#: A repro record that could not be built; small by construction.
+REPRO_ERROR_SCHEMA = "molt.guard-repro-error.v1"
+
+
+def argv_head(command: Sequence[str]) -> str:
+    """A command's first `SUMMARY_ARGV_WORDS` words, then `...` if it has more."""
+    head = " ".join(command[:SUMMARY_ARGV_WORDS])
+    return head + " ..." if len(command) > SUMMARY_ARGV_WORDS else head
+
+
+def repro_context_text(payload: Mapping[str, object], *, record: str | None) -> str:
+    """What a stream shows of a repro record.
+
+    A written record is named in one line. Without one, or for a repro error
+    (which is the reason itself and small), the record prints whole, so
+    nothing is lost.
+    """
+    if record is None or payload.get("schema") == REPRO_ERROR_SCHEMA:
+        return repro_context_line(payload)
+    return repro_context_summary(payload, record=record)
+
+
+def repro_context_summary(payload: Mapping[str, object], *, record: str) -> str:
+    """One line naming where the full repro record lives.
+
+    The record holds the environment, limits, host and process lineage; this
+    line names it with the command head and the running test, so a caller's
+    stream stays short and the evidence stays whole.
+    """
+    raw = payload.get("command")
+    head = argv_head([str(part) for part in raw] if isinstance(raw, list) else [])
+    pytest = payload.get("pytest")
+    test = pytest.get("current_test") if isinstance(pytest, Mapping) else None
+    words = [f"record={record}", f"command={head}"]
+    if test:
+        words.append(f"test={test}")
+    return " ".join(words)
