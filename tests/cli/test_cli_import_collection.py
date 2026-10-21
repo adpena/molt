@@ -12234,7 +12234,9 @@ def _backend_ir_json_export_fixture() -> dict[Any, Any]:
             }
             for index in range(3)
         ],
-        "profile": {"hash": "abc", 1: [1.5, float("inf"), None, True]},
+        "profile": {"hash": "abc", "samples": [1.5, float("inf"), None, True]},
+        # Integer keys sort and encode as strings, as CPython's json does.
+        "by_line": {2: "second", 1: "first"},
         "mixed": [b"\x01", (2, 3), {"members": {"b", "a"}}, [], " "],
         "const_bytes": b"\x00\xff",
         "const_complex": complex(1.0, -2.0),
@@ -12247,10 +12249,26 @@ def _backend_ir_json_export_fixture() -> dict[Any, Any]:
 
 
 def _prior_backend_ir_json_export_text(ir: Mapping[str, Any]) -> str:
-    # Independent JSON export oracle: CPython's Python encoder.
+    # Independent JSON export oracle: CPython's Python encoder, with the
+    # canonical sorted keys that cache records require.
     buffer = io.StringIO()
-    json.dump(ir, buffer, separators=(",", ":"), default=CACHE_KEYS._json_ir_default)
+    json.dump(
+        ir,
+        buffer,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=CACHE_KEYS._json_ir_default,
+    )
     return buffer.getvalue()
+
+
+def test_backend_ir_json_export_refuses_mixed_key_types() -> None:
+    # Sorted keys have no order between int and str: refuse, never guess.
+    ir = {"profile": {"hash": "abc", 1: []}}
+    with pytest.raises(TypeError):
+        CACHE_KEYS._write_backend_ir_text(io.StringIO(), ir)
+    with pytest.raises(TypeError):
+        CACHE_KEYS._backend_ir_text(ir)
 
 
 def test_backend_ir_json_export_bytes_match_compact_json() -> None:

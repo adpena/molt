@@ -8,6 +8,7 @@ import pytest
 
 import molt.cli as cli
 from molt.cli import mlir_backend
+from molt.process_environment import ProcessEnvironment
 import shutil
 from tests.process_guard_common import install_module_view
 
@@ -145,7 +146,9 @@ def test_ensure_mlir_backend_builds_once_with_canonical_environment(
     ]
     kwargs = captured["kwargs"]
     assert isinstance(kwargs, dict)
-    assert kwargs["env"] == {
+    # The build carries the canonical environment with its platform name rule.
+    assert isinstance(kwargs["env"], ProcessEnvironment)
+    assert dict(kwargs["env"]) == {
         "RUSTC_WRAPPER": "/usr/bin/sccache",
         "CARGO_INCREMENTAL": "0",
         "MOLT_LLVM_PREFIX": "C:/LLVM",

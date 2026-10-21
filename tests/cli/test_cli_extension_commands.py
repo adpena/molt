@@ -135,7 +135,7 @@ def _stub_metadata_build_machine(monkeypatch: pytest.MonkeyPatch):
         "resolve_source_extension_target_plan",
         lambda requested: (
             host_plan
-            if requested == "native"
+            if requested == admit_target("native")
             else pytest.fail("unexpected host request")
         ),
     )

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from molt.compilation_target import admit_target
+from molt.compilation_target import admit_target, target_name
 
 import inspect
 from dataclasses import replace
@@ -262,7 +262,7 @@ def terminal_build(
         resolved_modules=frozenset(),
         build_diagnostics_payload=snapshot,
         pipeline_stage_ms={},
-        target="native",
+        target=admit_target("native"),
         deterministic=False,
         trusted=False,
         verbose=False,
@@ -345,7 +345,7 @@ def _terminal_payload(case, capsys):
         "guest_profile": "dev",
         "runtime_profile": "dev-fast",
         "compiler_profile": "release",
-        "target": case.args["target"],
+        "target": target_name(case.args["target"]),
     }
     return message, diagnostics
 
@@ -500,7 +500,7 @@ def test_wasm_terminal_snapshot_follows_requested_snapshot_header(
     terminal_build, tmp_path, monkeypatch, capsys, header, header_error
 ):
     case = terminal_build
-    case.args["target"] = "wasm"
+    case.args["target"] = admit_target("wasm")
     case.args["prepared_backend_setup"].backend = "wasm"
     case.args["snapshot"] = header
     case.args["output_layout"] = replace(case.args["output_layout"], is_wasm=True)
@@ -574,7 +574,7 @@ def test_wasm_inspection_admission_is_lazy_and_failure_preserves_diagnostics(
     terminal_build, monkeypatch, capsys, linked, split
 ):
     case = terminal_build
-    case.args["target"] = "wasm"
+    case.args["target"] = admit_target("wasm")
     case.args["output_layout"] = replace(
         case.args["output_layout"], is_wasm=True, linked=linked, split_runtime=split
     )
@@ -625,7 +625,7 @@ def test_disabled_terminal_diagnostics_do_not_read_artifacts_or_probe_identity(
     if target == "native" and failure:
         case.failure = "link"
     if target == "wasm":
-        case.args["target"] = "wasm"
+        case.args["target"] = admit_target("wasm")
         case.args["prepared_backend_setup"].backend = "wasm"
         case.args["output_layout"] = replace(case.args["output_layout"], is_wasm=True)
         monkeypatch.setattr(
@@ -1044,7 +1044,7 @@ def test_reporting_failure_prevents_success_and_retains_published_artifact(
         )
     else:
         artifact = tmp_path / "app.wasm"
-        case.args["target"] = "wasm"
+        case.args["target"] = admit_target("wasm")
         case.args["prepared_backend_setup"].backend = "wasm"
         case.args["output_layout"] = replace(case.args["output_layout"], is_wasm=True)
 
@@ -1141,7 +1141,7 @@ def test_wasm_terminal_diagnostics_report_resolved_runtime_profile(
     case = terminal_build
     monkeypatch.delenv("MOLT_WASM_CARGO_PROFILE", raising=False)
     monkeypatch.delenv("MOLT_RUNTIME_BUILD_PROFILE", raising=False)
-    case.args["target"] = "wasm"
+    case.args["target"] = admit_target("wasm")
     case.args["prepared_backend_setup"].backend = "wasm"
     case.args["profile"] = "release"
     case.args["output_layout"] = replace(case.args["output_layout"], is_wasm=True)

@@ -1100,7 +1100,7 @@ def test_backend_fingerprint_reuses_stored_hash_when_inputs_unchanged(
     monkeypatch.setattr(
         cli_backend_binary,
         "_backend_source_paths",
-        lambda _project_root, _features=(): [source],
+        lambda _project_root, _features=(), *, product: [source],
         raising=True,
     )
 
@@ -1147,7 +1147,7 @@ def test_backend_fingerprint_reuses_clean_source_state_without_metadata_scan(
     monkeypatch.setattr(
         cli_backend_binary,
         "_backend_source_paths",
-        lambda _project_root, _features=(): [source],
+        lambda _project_root, _features=(), *, product: [source],
         raising=True,
     )
     monkeypatch.setattr(
