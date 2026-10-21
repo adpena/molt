@@ -16,16 +16,41 @@ batches and bisection".
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import shutil
+import sys
 import tempfile
+import time
 from collections.abc import Callable, Sequence
+from types import ModuleType
+from typing import Any
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from tools.molt_dev_common import DriverError
+from tools.molt_dev_controller import integration_controller, run_from_pinned_controller
+from tools.molt_dev_common import (
+    EXIT_FAIL,
+    EXIT_OK,
+    CandidateFailure,
+    DriverError,
+    PublicationRace,
+    RebaseConflict,
+    _fail,
+    _ok,
+    _step,
+    _warn,
+)
+
+
+def _driver() -> ModuleType:
+    """The canonical driver; imported late because it imports this module."""
+    from tools import molt_dev
+
+    return molt_dev
+
 
 REQUEST_SCHEMA = "molt.landing-request.v1"
 RESULT_SCHEMA = "molt.landing-result.v1"
@@ -334,3 +359,353 @@ def retire_old_records(paths: QueuePaths, *, now: float) -> None:
         for result in paths.results.glob("*.json"):
             if now - result.stat().st_mtime > RESULT_DAYS * 86400:
                 result.unlink()
+
+
+# --------------------------------------------------------------------------
+# Commands: land, queue run, queue status
+# --------------------------------------------------------------------------
+
+
+def _queue_paths(repo: Path):
+
+    drv = _driver()
+    common_dir = drv._git_common_directory(repo)
+    if common_dir is None:
+        raise DriverError("cannot resolve the Git common directory for the queue")
+    return QueuePaths.of(common_dir)
+
+
+def cmd_land(args: argparse.Namespace) -> int:
+
+    drv = _driver()
+    repo = Path(args.repo).resolve()
+    git = drv.Git(repo)
+    head = drv.require_git_object_id(git.head_sha(), label="landing source")
+    drv._assert_integration_source(git, head)
+    git.fetch(args.remote, args.branch)
+    upstream = git.rev_parse(f"{args.remote}/{args.branch}")
+    if git.is_ancestor(head, upstream):
+        _ok(f"{git.short(head)} is already on {args.remote}/{args.branch}")
+        return EXIT_OK
+    paths = _queue_paths(repo)
+    branch = git.symbolic_head()
+    if args.retire and not (branch or "").startswith("lane/"):
+        raise DriverError(
+            "--retire needs a lane/<slug> branch (`molt_dev.py lane start`)"
+        )
+    request = enqueue(
+        paths, head=head, worktree=repo, branch=branch, retire=args.retire
+    )
+    position = [item.id for item in pending(paths)].index(request.id) + 1
+    _ok(f"queued {request.id} (position {position}); the runner lands it")
+    main_checkout = drv._main_worktree(git)
+    if main_checkout is None:
+        raise DriverError(
+            "cannot find the main worktree to run the landing runner from"
+        )
+    # The runner outlives every lane it retires, so it runs from the main
+    # worktree; it only fetches there.
+    _start_queue_runner(paths, main_checkout, args)
+    if not args.wait:
+        return EXIT_OK
+    return _await_landing(paths, request.id)
+
+
+def _start_queue_runner(paths, repo: Path, args: argparse.Namespace) -> None:
+    """Start a runner unless one holds the runner lock; the lock decides."""
+    drv = _driver()
+    probe = drv._try_acquire_file_lock(paths.runner_lock)
+    if probe is None:
+        _ok("a landing runner is active; it takes this request")
+        return
+    drv._release_file_lock(probe)
+    # A unique name: a runner that is exiting never blocks the next one.
+    name = "runner-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    detached = drv.build_parser().parse_args(
+        [
+            "detached-run",
+            "--name",
+            name,
+            "--state-dir",
+            str(paths.runners),
+            "--cwd",
+            str(repo),
+            "--",
+            sys.executable,
+            str(Path(__file__).resolve()),
+            "queue",
+            "run",
+            "--repo",
+            str(repo),
+            "--remote",
+            args.remote,
+            "--branch",
+            args.branch,
+        ]
+    )
+    drv.cmd_detached_run(detached)
+
+
+def _await_landing(paths, request_id: str) -> int:
+
+    while (result := read_result(paths, request_id)) is None:
+        time.sleep(10)
+    status = result["status"]
+    if status == "landed":
+        _ok(f"{request_id} landed in {result['landed'][:12]}")
+        return EXIT_OK
+    _fail(f"{request_id} {status}: {result['detail']}")
+    return EXIT_FAIL
+
+
+def _sandbox_git(paths, git, upstream: str):
+    """The queue's own worktree; created once, so its build state stays warm."""
+    drv = _driver()
+    sandbox = paths.sandbox
+    if not (sandbox / ".git").exists():
+        paths.sandbox.parent.mkdir(parents=True, exist_ok=True)
+        git._run(["worktree", "add", "--detach", "--quiet", str(sandbox), upstream])
+    listed = git._run(["worktree", "list", "--porcelain", "-z"]).stdout.split("\0")
+    if f"worktree {sandbox.resolve()}" not in listed:
+        raise DriverError(f"{sandbox} is not a worktree of this repository")
+    return drv.Git(sandbox.resolve())
+
+
+def _land_one_batch(args: argparse.Namespace, git, paths) -> None:
+
+    drv = _driver()
+    git.fetch(args.remote, args.branch)
+    upstream = drv.require_git_object_id(
+        git.rev_parse(f"{args.remote}/{args.branch}"), label="queue upstream"
+    )
+    ready = pending(paths)
+    for request in ready:
+        if git.is_ancestor(request.head, upstream):
+            record_result(
+                paths, request, status="landed", landed=upstream,
+                detail="already on main when the runner took it",
+            )  # fmt: skip
+    ready = pending(paths)
+    if not ready:
+        return
+    batch = next_batch(paths, ready)
+    sandbox = _sandbox_git(paths, git, upstream)
+
+    def run_git(arguments):
+        proc = sandbox._run(list(arguments), check=False)
+        return GitResult(proc.returncode, proc.stdout, proc.stderr)
+
+    _step(f"landing batch of {len(batch)} on {git.short(upstream)}")
+    candidate = build_candidate(run_git, upstream, batch)
+    for request, reason in candidate.conflicted:
+        record_result(paths, request, status="conflict", detail=reason)
+        _warn(f"{request.id} {reason}")
+    if not candidate.included:
+        retire_batch_plan(paths, batch)
+        return
+    _provision_landing_sandbox(sandbox.repo)
+    integration = drv.build_parser().parse_args(
+        [
+            "integrate",
+            "--repo",
+            str(sandbox.repo),
+            "--remote",
+            args.remote,
+            "--branch",
+            args.branch,
+            "--wait-for-lock",
+            *(
+                ["--pinned-controller", args.pinned_controller]
+                if args.pinned_controller
+                else ["--candidate-controller"]
+            ),
+        ]
+    )
+    try:
+        drv.cmd_integrate(integration)
+    except (RebaseConflict, PublicationRace) as exc:
+        # main moved under the batch; the next runner rebuilds it on the new tip.
+        _warn(f"main moved; rebuilding the batch: {exc}")
+        return
+    except CandidateFailure as exc:
+        if len(candidate.included) > 1:
+            _warn(f"batch of {len(candidate.included)} failed; bisecting")
+            bisect(paths, batch, candidate.included)
+            return
+        (request,) = candidate.included
+        record_result(paths, request, status="failed", detail=str(exc))
+        retire_batch_plan(paths, batch)
+        return
+    landed = drv.require_git_object_id(sandbox.head_sha(), label="landed batch")
+    for request in candidate.included:
+        record_result(
+            paths, request, status="landed", landed=landed,
+            detail=f"landed with {len(candidate.included)} lane(s)",
+        )  # fmt: skip
+    retire_batch_plan(paths, batch)
+    _after_landing(sandbox.repo, candidate.included, args)
+
+
+def _provision_landing_sandbox(sandbox: Path) -> None:
+    """The sandbox's own environment and trees, built from the candidate's locks.
+
+    Repository-scoped inputs (the shared hooks) wait for the landing: they may
+    install only what main publishes.
+    """
+    from molt import checkout_provisioning as provisioning
+
+    specs = [
+        provisioning.checkout_input(name, sandbox)
+        for name in provisioning.CHECKOUT_INPUT_NAMES
+    ]
+    names = [
+        spec.name
+        for spec in specs
+        if spec.scope == "checkout" and provisioning.declares(spec)
+    ]
+    try:
+        provisioning.ensure_all(sandbox, names=names)
+    except provisioning.ProvisioningError as exc:
+        raise DriverError(f"landing sandbox provisioning failed: {exc}") from exc
+
+
+def _after_landing(sandbox: Path, landed, args: argparse.Namespace) -> None:
+    """Refresh the shared hooks from the published main; retire landed lanes.
+
+    The landing is already published: a failure here warns and keeps going.
+    """
+    drv = _driver()
+    from molt import checkout_provisioning as provisioning
+
+    try:
+        hooks = provisioning.checkout_input("git-hooks", sandbox)
+        if provisioning.declares(hooks):
+            provisioning.ensure_input(hooks)
+    except provisioning.ProvisioningError as exc:
+        _warn(f"managed hooks not refreshed after the landing: {exc}")
+    for request in landed:
+        if not request.retire or not (request.branch or "").startswith("lane/"):
+            continue
+        retire = drv.build_parser().parse_args(
+            [
+                "lane",
+                "retire",
+                request.branch.removeprefix("lane/"),
+                "--repo",
+                str(sandbox),
+                "--remote",
+                args.remote,
+                "--branch",
+                args.branch,
+            ]
+        )
+        try:
+            retire.func(retire)
+        except DriverError as exc:
+            _warn(f"{request.id} landed; its lane was not retired: {exc}")
+
+
+def cmd_queue_run(args: argparse.Namespace) -> int:
+
+    drv = _driver()
+    repo = Path(args.repo).resolve()
+    git = drv.Git(repo)
+    paths = _queue_paths(repo)
+    paths.root.mkdir(parents=True, exist_ok=True)
+    controller = integration_controller(args)
+    # The runner serves every lane: the sandbox's gates use the sandbox's own
+    # environment, never the venv selection of whoever started the runner.
+    for key in ("MOLT_VENV", "UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV"):
+        os.environ.pop(key, None)
+
+    retire_old_records(paths, now=time.time())
+    while True:
+        handle = drv._try_acquire_file_lock(paths.runner_lock)
+        if handle is None:
+            _ok("another landing runner is active")
+            return EXIT_OK
+        try:
+            _step(f"landing runner ({controller})")
+            _land_one_batch(args, git, paths)
+        finally:
+            drv._release_file_lock(handle)
+        # Checked after the release: a request that arrives later starts its
+        # own runner, so none waits on a runner that is about to exit.
+        if not pending(paths):
+            _ok("landing queue is empty")
+            return EXIT_OK
+        if args.pinned_controller is not None:
+            # Each batch runs under the driver of the main it lands on.
+            return run_from_pinned_controller(
+                args,
+                ["queue", "run", "--remote", args.remote, "--branch", args.branch],
+            )
+
+
+def cmd_queue_status(args: argparse.Namespace) -> int:
+
+    paths = _queue_paths(Path(args.repo).resolve())
+    requests = pending(paths)
+    plan = (
+        json.loads(paths.plan.read_text(encoding="utf-8"))["groups"]
+        if paths.plan.is_file()
+        else []
+    )
+    results = (
+        sorted(paths.results.glob("*.json"))[-args.recent :]
+        if paths.results.is_dir()
+        else []
+    )
+    report = {
+        "pending": [request.id for request in requests],
+        "plan": plan,
+        "recent": [json.loads(path.read_text(encoding="utf-8")) for path in results],
+    }
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return EXIT_OK
+
+
+def add_queue_arguments(
+    sub: Any,
+    *,
+    add_repo_arg: Callable[[argparse.ArgumentParser], None],
+    add_remote_branch: Callable[[argparse.ArgumentParser], None],
+) -> None:
+    """The ``land`` and ``queue run|status`` subcommands."""
+    # land / queue (docs/design/landing_queue.md)
+    p_land = sub.add_parser(
+        "land",
+        help="queue this checkout's commit for the landing runner and return",
+    )
+    add_repo_arg(p_land)
+    add_remote_branch(p_land)
+    p_land.add_argument(
+        "--wait",
+        action="store_true",
+        help="wait for the result; exit 0 only when the commit landed",
+    )
+    p_land.add_argument(
+        "--retire",
+        action="store_true",
+        help="retire this lane (worktree, branches, record, state) once it lands",
+    )
+    p_land.set_defaults(func=cmd_land)
+
+    p_queue = sub.add_parser("queue", help="the landing queue's runner and state")
+    queue_sub = p_queue.add_subparsers(dest="queue_command", required=True)
+    p_run = queue_sub.add_parser(
+        "run", help="land queued commits in batches; `land` starts it"
+    )
+    add_repo_arg(p_run)
+    add_remote_branch(p_run)
+    p_run.add_argument(
+        "--candidate-controller",
+        action="store_true",
+        help="run this checkout's driver instead of main's pinned controller",
+    )
+    p_run.add_argument("--pinned-controller", help=argparse.SUPPRESS)
+    p_run.set_defaults(func=cmd_queue_run)
+    p_status = queue_sub.add_parser("status", help="pending requests and results")
+    add_repo_arg(p_status)
+    p_status.add_argument("--recent", type=int, default=10, help="results to show")
+    p_status.set_defaults(func=cmd_queue_status)

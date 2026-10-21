@@ -207,7 +207,7 @@ worktree. A slug is 1 to 64 lower-case letters, digits, `.`, `_` or `-`.
   existing branch, an existing path and an active record. A provisioning
   failure keeps the lane and prints the command that finishes it.
 - **`lane retire <slug>`** fetches, then accepts the lane only when it is
-  landed. *Landed* is one predicate, `molt_dev_common.landing_representation`:
+  landed. *Landed* is one predicate, `molt_dev_change_ids.landing_representation`:
   every non-merge commit of `origin/main..lane/<slug>` is on `origin/main`
   since the merge base, by its `Change-Id:` trailer or by its patch-id
   (`git cherry`). A tip that is an ancestor of `origin/main` is the trivial

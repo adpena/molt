@@ -250,7 +250,7 @@ def test_lane_retire_removes_a_landed_lane_completely(family: Path) -> None:
     worktree = _start(family, "landed")
     tip = _commit_file(worktree, "landed.txt", "landed\n", "landed work")
     _git(worktree, "push", "-q", "origin", "HEAD:main", "HEAD:refs/heads/lane/landed")
-    artifacts = Path(os.environ["MOLT_EXT_ROOT"])
+    artifacts = family.parent / "artifacts"  # the fixture's MOLT_EXT_ROOT
     state = dx.stable_uv_project_env_dir(
         artifacts, purpose="dx", python="3.12", source_root=worktree
     )
@@ -412,7 +412,7 @@ def test_queue_provisions_its_sandbox_and_retires_a_landed_lane(family: Path) ->
     _git(main, "push", "-q", "origin", "HEAD:main")
     worktree = _start(family, "queued")
     tip = _commit_file(worktree, "queued.txt", "queued\n", "queued work")
-    paths = molt_dev._queue_paths(main)
+    paths = queue._queue_paths(main)
     request = queue.enqueue(
         paths, head=tip, worktree=worktree, branch="lane/queued", retire=True
     )
@@ -420,7 +420,7 @@ def test_queue_provisions_its_sandbox_and_retires_a_landed_lane(family: Path) ->
     args = molt_dev.build_parser().parse_args(
         ["queue", "run", "--repo", str(main), "--candidate-controller"]
     )
-    assert molt_dev.cmd_queue_run(args) == molt_dev.EXIT_OK
+    assert args.func(args) == molt_dev.EXIT_OK
 
     assert queue.read_result(paths, request.id)["status"] == "landed"
     # The sandbox's declared inputs were built before its gates ran.
