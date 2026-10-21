@@ -20,7 +20,6 @@ import math
 import platform
 import re
 import shlex
-import shutil
 from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path, PurePosixPath
 import subprocess
@@ -55,6 +54,7 @@ from molt import host_capacity  # noqa: E402
 from molt.portable_paths import portable_relative_path  # noqa: E402
 from molt.process_guard import run_completed_command  # noqa: E402
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder  # noqa: E402
+from molt.toolchain_identity import find_executable  # noqa: E402
 from tools.git_identity import (  # noqa: E402
     changed_paths,
     clean_checkout_status_arguments,
@@ -3222,9 +3222,24 @@ def validate_selected_python_fingerprint(
         raise ValueError(f"{policy.name}: Python runtime fingerprint digest is invalid")
 
 
+def _find_tool(requested: str, environment: Mapping[str, str], cwd: Path) -> str | None:
+    """The executable ``requested`` names under ``environment`` alone."""
+    found = find_executable(requested, environment=environment, cwd=cwd)
+    return None if found is None else str(found)
+
+
 def _version_fingerprint(
-    policy: ToolchainPolicy, *, python_admission: BuildPythonAdmission | None = None
+    policy: ToolchainPolicy,
+    *,
+    environment: Mapping[str, str],
+    python_admission: BuildPythonAdmission | None = None,
 ) -> dict[str, Any] | None:
+    """Identify the tool ``policy`` selects under ``environment``.
+
+    Every lookup reads ``environment`` (its PATH and PATHEXT through
+    ``find_executable``), never the process environment, so a long-lived
+    caller's earlier admissions cannot steer a later one.
+    """
     if policy.identity_kind != "executable":
         raise ValueError(
             f"{policy.name}: {policy.identity_kind} toolchain identity "
@@ -3234,7 +3249,7 @@ def _version_fingerprint(
     requested = sys.executable if executable == "{python}" else executable
     probe_cwd, probe_directory = _toolchain_probe_cwd(policy)
     compiler_path = compiler_tool_path(
-        policy, environment=os.environ, cwd=probe_directory
+        policy, environment=environment, cwd=probe_directory
     )
     sdk_role = policy.data.get("wasi_sdk_tool")
     if compiler_path is not None:
@@ -3245,7 +3260,7 @@ def _version_fingerprint(
         try:
             path = str(
                 resolve_wasi_sdk_tool(
-                    policy.root, sdk_role or "wasm-ld", environ=dict(os.environ)
+                    policy.root, sdk_role or "wasm-ld", environ=dict(environment)
                 )
             )
         except LlvmToolchainConfigError as exc:
@@ -3259,17 +3274,17 @@ def _version_fingerprint(
             cargo_selected_value(
                 {},
                 {},
-                os.environ,
+                environment,
                 ("build", "rustc"),
                 ("RUSTC", "CARGO_BUILD_RUSTC"),
                 requested,
             )
             if policy.name == "rustc"
-            else os.environ.get("CARGO", requested)
+            else environment.get("CARGO", requested)
         )
-        path = shutil.which(requested)
+        path = _find_tool(requested, environment, probe_directory)
     else:
-        path = shutil.which(requested)
+        path = _find_tool(requested, environment, probe_directory)
     if path is None:
         return None
     command_path = Path(path).absolute()
@@ -3287,7 +3302,7 @@ def _version_fingerprint(
         from molt.llvm_toolchain import capture_wasi_sdk_selection
         from molt.wasi_sdk_identity import capture_wasi_sdk_tool_files
 
-        sdk_closure = capture_wasi_sdk_selection(root=policy.root, env=os.environ)
+        sdk_closure = capture_wasi_sdk_selection(root=policy.root, env=environment)
         images = capture_wasi_sdk_tool_files(sdk_closure)
         launcher = next(
             (row for row in images if row["path"] == str(command_path)), None
@@ -3307,7 +3322,7 @@ def _version_fingerprint(
         from molt.rust_toolchain import resolve_rustup_proxy
 
         content_path = resolve_rustup_proxy(
-            command_path, role=policy.name, root=probe_directory, env=os.environ
+            command_path, role=policy.name, root=probe_directory, env=environment
         )
     elif isinstance(content_path_command, list):
         resolved = toolchain_probe.run_toolchain_probe(
@@ -3315,7 +3330,7 @@ def _version_fingerprint(
             content_path_command,
             stage="content resolver",
             cwd=probe_directory,
-            environment=os.environ,
+            environment=environment,
         )
         try:
             content_path = toolchain_probe.resolve_single_file_path(
@@ -3348,7 +3363,7 @@ def _version_fingerprint(
         version_argv,
         stage="version query",
         cwd=probe_directory,
-        environment=os.environ,
+        environment=environment,
     )
     version = completed.stdout.strip()
     sdk_digest = ""
@@ -3376,7 +3391,7 @@ def _version_fingerprint(
         from molt.llvm_toolchain import llvm_verification_selection
 
         selected = llvm_verification_selection(
-            root=policy.root, cwd=probe_directory, env=os.environ
+            root=policy.root, cwd=probe_directory, env=environment
         )
         images = [
             {
@@ -3396,7 +3411,7 @@ def _version_fingerprint(
         ).hexdigest()
     if policy.python_identity_role == "runtime":
         selected = capture_selected_python_runtime(
-            policy, content_path, environment=os.environ, admission=python_admission
+            policy, content_path, environment=environment, admission=python_admission
         )
         validate_selected_python_runtime(policy, selected)
         identity["python_runtime"] = selected
@@ -3528,19 +3543,22 @@ def admit_toolchains(
     policies: Iterable[ToolchainPolicy],
     names: tuple[str, ...],
     *,
+    environ: Mapping[str, str],
     owners: Mapping[str, Iterable[str]] | None = None,
     python_admissions: Mapping[str, BuildPythonAdmission] | None = None,
     root: Path,
 ) -> AdmittedToolchains:
-    """Put the installed pinned providers first in this process's environment,
-    then admit each selected tool by its version contract, as CI's setup
-    actions do.
+    """Put the installed pinned providers first in ``environ``, then admit each
+    selected tool by its version contract, as CI's setup actions do.
 
     Every executor admits its toolchains here, so no shell needs projecting
-    by hand. Probes read the aggregate projection in ``os.environ``. Execution
-    callers preserve their pre-admission environment and project each command's
-    declared tool closure from that baseline, so unrelated commands do not
-    inherit another command's compiler or target selection.
+    by hand. Admission never changes the process environment: its probes read
+    ``environ`` plus the projection of the whole selection, and the result
+    carries that projection. A long-lived process (the landing queue runner)
+    therefore admits batch after batch from the same launch environment. Each
+    command then runs under its own declared closure's projection of the same
+    baseline, so no command inherits another command's compiler or target
+    selection.
     A tool the contract admits on PATH still passes when its pinned provider
     is not installed; a refusal names what to install. A selected tool that a
     checkout input supplies (``checkout_input``) is provisioned from its lock
@@ -3548,12 +3566,18 @@ def admit_toolchains(
     """
     policies = tuple(policies)
     names = toolchain_closure(policies, names)
-    projection = project_toolchains(policies, names, environ=os.environ, root=root)
-    os.environ.update(projection.delta)
-    provisioning_error = _provision_checkout_inputs(policies, names, root=root)
+    projection = project_toolchains(policies, names, environ=environ, root=root)
+    environment = MappingProxyType({**environ, **projection.delta})
+    provisioning_error = _provision_checkout_inputs(
+        policies, names, root=root, environment=environment
+    )
     try:
         fingerprints = toolchain_fingerprints(
-            policies, names, owners=owners, python_admissions=python_admissions
+            policies,
+            names,
+            environment=environment,
+            owners=owners,
+            python_admissions=python_admissions,
         )
     except ValueError as exc:
         details = [str(exc)]
@@ -3570,9 +3594,14 @@ def admit_toolchains(
 
 
 def _provision_checkout_inputs(
-    policies: Iterable[ToolchainPolicy], names: tuple[str, ...], *, root: Path
+    policies: Iterable[ToolchainPolicy],
+    names: tuple[str, ...],
+    *,
+    root: Path,
+    environment: Mapping[str, str],
 ) -> str | None:
-    """Ensure each selected checkout input; the failure text, or None."""
+    """Ensure each selected checkout input under ``environment``; the failure
+    text, or None."""
     selected = set(names)
     inputs = tuple(
         dict.fromkeys(
@@ -3587,7 +3616,10 @@ def _provision_checkout_inputs(
 
     try:
         checkout_provisioning.ensure_all(
-            root, names=inputs, guard_source_root=_COMMANDS.repo_root
+            root,
+            environment,
+            names=inputs,
+            guard_source_root=_COMMANDS.repo_root,
         )
     except checkout_provisioning.ProvisioningError as exc:
         return f"checkout input provisioning failed: {exc}"
@@ -3598,10 +3630,12 @@ def toolchain_fingerprints(
     toolchain_policies: Iterable[ToolchainPolicy],
     names: tuple[str, ...],
     *,
+    environment: Mapping[str, str],
     owners: Mapping[str, Iterable[str]] | None = None,
     python_admissions: Mapping[str, BuildPythonAdmission] | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """Admit all selected images before work, preserving every probe failure."""
+    """Admit all selected images under ``environment`` before work, preserving
+    every probe failure."""
     policies = {policy.name: policy for policy in toolchain_policies}
     names = toolchain_closure(policies.values(), names)
     fingerprints: dict[str, dict[str, Any]] = {}
@@ -3653,10 +3687,12 @@ def toolchain_fingerprints(
             try:
                 results[name] = (
                     _version_fingerprint(
-                        policies[name], python_admission=python_admissions[name]
+                        policies[name],
+                        environment=environment,
+                        python_admission=python_admissions[name],
                     )
                     if python_admissions is not None and name in python_admissions
-                    else _version_fingerprint(policies[name]),
+                    else _version_fingerprint(policies[name], environment=environment),
                     None,
                 )
             except Exception as exc:
@@ -4232,11 +4268,11 @@ def execute_commands(
     ) -> dict[str, dict[str, Any]]:
         policies = tuple(policies)
         fingerprints = admit_toolchains(
-            policies, names, root=plan.path.parent.parent
+            policies, names, environ=baseline, root=plan.path.parent.parent
         ).fingerprints
         # Admission reports every selected prerequisite before any execution.
-        # Its process-wide union serves probes, never a child's target policy.
-        # Reuse one immutable projection per distinct declared closure.
+        # Its union projection serves only its own probes, never a child's
+        # target policy. Reuse one immutable projection per declared closure.
         for closure in dict.fromkeys(closures.values()):
             if closure not in environments:
                 projection = project_toolchains(
