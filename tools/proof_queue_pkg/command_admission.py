@@ -9,7 +9,7 @@ import functools
 import os
 from pathlib import Path
 import re
-from typing import Literal, Mapping, Sequence, cast
+from typing import Any, Literal, Mapping, Sequence, cast
 
 from molt.compilation_target import target_name
 from molt.compilation_target import admit_target
@@ -442,6 +442,11 @@ def _command_entrypoint(
     if _basename(payload[0]) in {"uv", "uv.exe"}:
         _prefix, payload = _uv_prefix_and_payload(payload)
     first = _basename(payload[0])
+    console_module = _PYTHON_CONSOLE_MODULES.get(first)
+    if console_module is not None:
+        # A Python console script is its module: `pytest` and `python -m pytest`
+        # run one program, so they share one registered entrypoint (HF-179).
+        return ("python-module", console_module.casefold())
     python_index: int | None = None
     if _PYTHON_COMMAND.fullmatch(first):
         python_index = 1
@@ -534,7 +539,10 @@ def _proof_command_registry() -> dict[str, object]:
         if argv and _basename(argv[0]) in {"uv", "uv.exe"}:
             _prefix, payload = _uv_prefix_and_payload(argv)
             payload_name = _basename(payload[0])
-            if not _PYTHON_COMMAND.fullmatch(payload_name):
+            if (
+                not _PYTHON_COMMAND.fullmatch(payload_name)
+                and payload_name not in _PYTHON_CONSOLE_MODULES
+            ):
                 console_tools.setdefault(payload_name, set()).update(command.toolchains)
         if command.binds_source_commit:
             # Only the plan executor can bind the verified checkout commit, so
@@ -720,7 +728,11 @@ def _command_registration(
     # proof-plan command owns its declared toolchains. An argv that differs
     # from every registered command must not silently degrade into a leaf
     # with children forbidden; name every authority the near-match discards.
-    lane_near_matches = named_entrypoints.get(entrypoint)
+    focused = (
+        typed_python is not None and typed_python.get("family") == "focused-pytest"
+    )
+    # A focused pytest proof admits its owners' toolchains, so it discards none.
+    lane_near_matches = None if focused else named_entrypoints.get(entrypoint)
     plan_near_matches = registered_entrypoints.get(entrypoint)
     discarded = [
         *(lane_near_matches if isinstance(lane_near_matches, list) else ()),
@@ -747,6 +759,23 @@ def _command_registration(
 
     if has_python:
         add("python")
+        if focused:
+            assert typed_python is not None
+            if has_uv:
+                add("uv")
+            for name in cast(Sequence[str], typed_python["toolchains"]):
+                add(name)
+            return (
+                "typed-python-family",
+                _toolchain_dependency_closure(toolchains),
+                [],
+                {
+                    unit: list(languages)
+                    for unit, languages in cast(
+                        Mapping[str, Sequence[str]], typed_python["cargo_native_units"]
+                    ).items()
+                },
+            )
         if typed_python is not None:
             add("source-extension")
             return (
@@ -1819,12 +1848,122 @@ def _locked_python_environment_root(executable: str) -> Path:
     return environment_root
 
 
+@functools.lru_cache(maxsize=1)
+def _pytest_option_parser() -> Any:
+    """pytest's own argument parser with its builtin and installed plugins.
+
+    Only pytest knows which of its options take a value, so its parser, not a
+    second option table, tells test selections from option values. Conftest
+    files are never imported here; an option they add is unknown to this
+    parser, and its value then reads as a positional that names no file.
+    """
+    try:
+        # pytest exposes no public parser constructor; get_config is the entry
+        # its own plugin bootstrap uses.
+        from _pytest.config import get_config
+    except ImportError as exc:  # pragma: no cover - the queue's environment has it
+        raise ValueError(
+            "focused pytest admission needs pytest in the admitting environment"
+        ) from exc
+    config = get_config()
+    config.pluginmanager.load_setuptools_entrypoints("pytest11")
+    return config._parser
+
+
+def _pytest_selections(arguments: Sequence[str]) -> tuple[str, ...]:
+    """The repository-relative test paths an ad hoc pytest argv selects."""
+    namespace, _unknown = _pytest_option_parser().parse_known_and_unknown_args(
+        [str(value) for value in arguments]
+    )
+    if getattr(namespace, "pyargs", False):
+        raise ValueError(
+            "a focused pytest proof selects test paths; --pyargs names modules "
+            "whose owning proof cells cannot be resolved"
+        )
+    selections: list[str] = []
+    root = _REPO_ROOT.resolve()
+    for raw in getattr(namespace, "file_or_dir", None) or ():
+        path_part = str(raw).split("::", 1)[0]
+        candidate = Path(path_part)
+        resolved = (
+            candidate if candidate.is_absolute() else root / candidate
+        ).resolve()
+        if not resolved.exists():
+            # pytest reports a missing path itself; an unknown plugin option's
+            # value lands here too and names nothing.
+            continue
+        try:
+            relative = resolved.relative_to(root).as_posix()
+        except ValueError:
+            raise ValueError(
+                f"focused pytest selection {raw!r} is outside the checkout"
+            ) from None
+        if relative not in selections:
+            selections.append(relative)
+    return tuple(selections)
+
+
+def _focused_pytest_family(invocation: PythonInvocation) -> dict[str, object]:
+    """Admit an ad hoc pytest run with the authority of its files' owners.
+
+    pytest is one program however it is spelled (``uv run pytest``,
+    ``python -m pytest``, a wrapper). A run that is not an exact plan command
+    is a focused proof: each test path it selects must be owned by a proof-plan
+    command (``tools/check_test_ownership.py``'s rule), and the run admits the
+    union of those owners' toolchains and native units, so it discards no
+    authority an owner declares (HF-179). Its receipt never stands in for an
+    owner's proof.
+    """
+    from tools.check_test_ownership import command_test_targets, owns
+
+    selections = _pytest_selections(invocation.arguments)
+    if not selections:
+        raise ValueError(
+            "a focused pytest proof must name the test files or directories it "
+            "runs; the whole suite runs through its registered proof-plan commands"
+        )
+    plan = _proof_command_registry()["plan"]
+    assert isinstance(plan, proof_plan.ProofPlan)
+    targets = {
+        command.id: command_test_targets(command.argv) for command in plan.commands
+    }
+    owners: list[proof_plan.ProofCommand] = []
+    for selection in selections:
+        owning = [
+            command for command in plan.commands if owns(targets[command.id], selection)
+        ]
+        if not owning:
+            raise ValueError(
+                f"{selection} has no owning proof-plan command; join it to a proof "
+                "cell (tools/check_test_ownership.py) before proving it in the queue"
+            )
+        owners.extend(command for command in owning if command not in owners)
+    toolchains: dict[str, None] = {}
+    native_units: dict[str, dict[str, None]] = {}
+    for command in owners:
+        toolchains.update(dict.fromkeys(command.toolchains))
+        for unit, languages in proof_plan.cargo_native_units(command.data).items():
+            native_units.setdefault(unit, {}).update(dict.fromkeys(languages))
+    return {
+        "family": "focused-pytest",
+        "selections": list(selections),
+        "owners": [command.id for command in owners],
+        "toolchains": list(toolchains),
+        "cargo_native_units": {
+            unit: [language for language in ("c", "c++") if language in languages]
+            for unit, languages in native_units.items()
+        },
+    }
+
+
 def _typed_python_command_family(
     argv: Sequence[str],
     python: Mapping[str, object],
     invocation: PythonInvocation,
 ) -> dict[str, object] | None:
     """Admit prepared payloads through their existing plan/CLI authorities."""
+    if invocation.mode == "module" and str(invocation.target) == "pytest":
+        return _focused_pytest_family(invocation)
     if invocation.mode == "script":
         if (
             python.get("kind") != "direct"

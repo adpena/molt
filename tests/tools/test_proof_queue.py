@@ -1029,6 +1029,145 @@ def test_guarded_exec_spelling_in_payload_data_does_not_delegate(command) -> Non
     )
 
 
+_FOCUSED_TEST = "tests/tools/test_proof_queue.py"
+_FOCUSED_NODE = (
+    f"{_FOCUSED_TEST}::test_uv_console_script_binds_to_exact_project_interpreter_prefix"
+)
+_UV_ACTIVE = [
+    "uv",
+    "run",
+    "--active",
+    "--project",
+    ".",
+    "--python",
+    "3.12",
+    "--no-sync",
+    "--no-config",
+]
+
+
+def _commands_naming(path: str) -> set[str]:
+    """Independent oracle: plan commands whose argv names ``path`` or a parent."""
+    names = {path, *(str(parent) for parent in Path(path).parents if parent.parts)}
+    return {
+        command.id
+        for command in proof_plan.ProofPlan.load().commands
+        if any(
+            str(argument).rstrip("/") in names
+            for argument in command.argv
+            if "::" not in str(argument)
+        )
+    }
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        [*_UV_ACTIVE, "pytest"],
+        [*_UV_ACTIVE, "python", "-m", "pytest"],
+        ["python", "-m", "pytest"],
+        ["python", "tools/venv_exec.py", "--", "python", "-m", "pytest"],
+    ],
+    ids=["uv-console", "uv-module", "direct-module", "wrapped-module"],
+)
+def test_focused_pytest_admission_is_one_rule_for_every_spelling(spelling) -> None:
+    # HF-179: pytest is one program however it is launched. An ad hoc run is a
+    # focused proof admitted with every toolchain of the commands that own the
+    # files it selects, and it never counts as one of those commands' proofs.
+    envelope = command_admission.envelope_for_command([*spelling, _FOCUSED_NODE, "-q"])
+    owners = _commands_naming(_FOCUSED_TEST)
+    plan = proof_plan.ProofPlan.load()
+
+    assert owners
+    assert envelope["typed_command"]["family"] == "focused-pytest"
+    assert envelope["typed_command"]["selections"] == [_FOCUSED_TEST]
+    assert set(envelope["typed_command"]["owners"]) == owners
+    assert envelope["proof_plan_command_ids"] == []
+    assert envelope["process_closure"]["descendants"] == "declared-toolchains"
+    for command in plan.commands:
+        if command.id in owners:
+            assert set(plan.required_toolchains(command)) <= set(envelope["toolchains"])
+
+
+def test_focused_pytest_option_values_are_never_selections() -> None:
+    # pytest's own parser decides which options take a value: the config file,
+    # keyword, plugin, temporary root and worker values are not test paths.
+    envelope = command_admission.envelope_for_command(
+        [
+            *_UV_ACTIVE,
+            "pytest",
+            "-c",
+            "pyproject.toml",
+            "-k",
+            "tools",
+            "-p",
+            "no:cacheprovider",
+            "--basetemp",
+            "tools",
+            "-n",
+            "2",
+            "--molt-worker-memory-gb",
+            "2.5",
+            _FOCUSED_TEST,
+        ]
+    )
+    assert envelope["typed_command"]["selections"] == [_FOCUSED_TEST]
+
+
+@pytest.mark.parametrize(
+    "arguments,message",
+    [
+        (["-q"], "must name the test files"),
+        (["--pyargs", "tools"], "--pyargs"),
+        (["tests"], "tests has no owning proof-plan command"),
+    ],
+    ids=["no-selection", "pyargs", "whole-tree"],
+)
+def test_focused_pytest_refuses_what_no_owner_declares(arguments, message) -> None:
+    with pytest.raises(ValueError, match=re.escape(message)):
+        command_admission.envelope_for_command(
+            [*_UV_ACTIVE, "python", "-m", "pytest", *arguments]
+        )
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [["uv", "run", "pip-audit"], ["uv", "run", "python", "-m", "pip_audit"]],
+    ids=["console", "module"],
+)
+def test_console_script_near_match_keeps_the_registered_authority(spelling) -> None:
+    # `uv run pip-audit` is registered (security.python.audit). A console
+    # script is its module, so an altered spelling of either form is the same
+    # near-match, never a generic Python run without the command's authority.
+    with pytest.raises(ValueError, match="near-match would discard"):
+        command_admission.envelope_for_command([*spelling, "--strict"])
+
+
+def test_focused_pytest_refuses_a_file_that_no_command_owns(monkeypatch) -> None:
+    import copy
+    import dataclasses
+
+    owners = _commands_naming(_FOCUSED_TEST)
+    registry = copy.copy(command_admission._proof_command_registry())
+    plan = registry["plan"]
+    registry["plan"] = dataclasses.replace(
+        plan,
+        commands=tuple(
+            command for command in plan.commands if command.id not in owners
+        ),
+    )
+    monkeypatch.setattr(command_admission, "_proof_command_registry", lambda: registry)
+    with pytest.raises(ValueError, match=f"{_FOCUSED_TEST} has no owning proof-plan"):
+        command_admission.envelope_for_command([*_UV_ACTIVE, "pytest", _FOCUSED_NODE])
+
+
+def test_focused_pytest_refuses_a_selection_outside_the_checkout(tmp_path) -> None:
+    outside = tmp_path / "test_outside.py"
+    outside.write_text("def test_x():\n    pass\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="outside the checkout"):
+        command_admission.envelope_for_command(["python", "-m", "pytest", str(outside)])
+
+
 def test_uv_console_script_binds_to_exact_project_interpreter_prefix() -> None:
     command = [
         "uv",
@@ -1161,10 +1300,13 @@ def test_exact_wasm_e2e_commands_own_declared_child_toolchains(
         "toolchains": _admitted_plan_toolchains(plan, command),
     }
 
-    with pytest.raises(
-        ValueError, match="near-match would discard toolchain authority"
-    ):
-        command_admission.envelope_for_command([*command.argv, "--tb=short"])
+    # An altered argv is a focused proof: it keeps every toolchain the exact
+    # command declares, and its receipt never stands in for the command's.
+    focused = command_admission.envelope_for_command([*command.argv, "--tb=short"])
+    assert focused["proof_plan_command_ids"] == []
+    assert command_id in focused["typed_command"]["owners"]
+    assert set(_admitted_plan_toolchains(plan, command)) <= set(focused["toolchains"])
+    assert focused["process_closure"]["descendants"] == "declared-toolchains"
 
 
 @pytest.mark.parametrize(

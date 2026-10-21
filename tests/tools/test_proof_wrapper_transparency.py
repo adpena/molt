@@ -264,9 +264,10 @@ def test_wrapped_pytest_runs_selected_venv_under_real_audit_and_requires_counts(
         str(Path(__file__).resolve().parents[2] / "pyproject.toml"),
         str(payload),
     ]
-    # Pytest is a registered spawning entrypoint. Admit only this fixture's
-    # exact row; the real registry must still reject altered pytest commands.
-    with pytest.raises(ValueError, match="near-match.*toolchain authority"):
+    # An ad hoc pytest run is admitted only for owned repository tests; this
+    # payload lives outside the checkout, so only this fixture's exact row
+    # admits it, and an altered command is still refused.
+    with pytest.raises(ValueError, match="outside the checkout"):
         command_admission.envelope_for_command(submitted)
     registry = copy.deepcopy(command_admission._proof_command_registry())
     registry["exact"][tuple(submitted)] = {
@@ -278,7 +279,7 @@ def test_wrapped_pytest_runs_selected_venv_under_real_audit_and_requires_counts(
     envelope = command_admission.envelope_for_command(submitted)
     assert envelope["kind"] == "proof-plan"
     assert envelope["proof_plan_command_ids"] == ["fixture.wrapper-pytest"]
-    with pytest.raises(ValueError, match="near-match.*toolchain authority"):
+    with pytest.raises(ValueError, match="outside the checkout"):
         command_admission.envelope_for_command([*submitted, "-x"])
     assert envelope["submitted_argv"] == submitted
     assert command_admission.command_proof_kind(envelope) == "test-execution"
@@ -477,10 +478,14 @@ def test_repository_wrapper_component_aliases_keep_inner_authority(spelling):
     )
     assert envelope["argv"] == ["python", "-m", "json.tool"]
     assert envelope["proof_plan_command_ids"] == []
-    with pytest.raises(ValueError, match="near-match.*toolchain authority"):
-        command_admission.envelope_for_command(
-            ["python", spelling, "--", "python", "-m", "pytest", "tests"]
-        )
+    # The wrapped pytest run meets the same admission as the bare one: no
+    # single proof-plan command owns the whole tests tree.
+    for command in (
+        ["python", spelling, "--", "python", "-m", "pytest", "tests"],
+        ["python", "-m", "pytest", "tests"],
+    ):
+        with pytest.raises(ValueError, match="tests has no owning proof-plan command"):
+            command_admission.envelope_for_command(command)
 
 
 @pytest.mark.parametrize("seed", [None, "0", "123", "random"])
