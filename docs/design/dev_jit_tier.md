@@ -63,6 +63,37 @@ builds every function into a `cranelift_module` module; only the module type dif
    available for the target; `molt build` stays AOT. The runner is a native-host feature:
    WASM already runs under wasmtime, which is a JIT.
 
+## Incremental patching
+
+Zig plans in-place binary patching for sub-millisecond rebuilds, and the Wild linker aims at
+incremental linking; neither ships it yet. Molt can get the development-loop effect earlier,
+because the JIT tier already calls functions through stubs:
+
+1. **Stable function identity.** The frontend gives each lowered function an exact-byte body
+   digest (`molt.cli.function_records.function_body_digest`); unchanged source keeps it.
+2. **Reused machine code.** Cranelift's incremental compilation cache
+   (`Context::compile_with_cache`, keyed by `compute_cache_key` over the function, with
+   `serialize_compiled` and `try_finish_recompile`) returns an unchanged function's code
+   without compiling it. Wasmtime exposes it, and Zed cut extension compile time by up to a
+   further 41% with it
+   ([incremental_cache](https://docs.wasmtime.dev/api/cranelift_codegen/incremental_cache/index.html),
+   [Zed](https://git.secluded.site/zed/commit/4ece4a635fb7f525aaafc5fd4f3926f04e4172a8)).
+   Cranelift calls it experimental, so it enters behind a differential gate. The AOT backend
+   can use the same cache, which shortens every build, not only JIT runs.
+3. **Patched calls.** A persistent development session (`molt run --watch`) keeps the runner
+   and its compiled code. After an edit it recompiles only functions whose digest changed,
+   points their call-table entries at the new code, and runs the program again from its entry.
+   Program state starts fresh: this is fast relaunch, not live update of a running program's
+   objects (`importlib.reload` semantics are a separate, later question).
+4. **Patched development executables.** No shipped tool patches executables in place yet
+   (Zig plans it; Wild aims at incremental linking: [wild](https://github.com/davidlattimore/wild);
+   MSVC's `/INCREMENTAL` uses jump thunks). Molt owns its code generator, runtime and link
+   plan, so it builds its own: a development executable lays out each function in a slot
+   with slack and calls through a thunk table; an edit rewrites the changed slots and
+   thunks in place and appends overflow, with the function digests as the identity. Release
+   executables keep the ordinary link. This phase follows the JIT tier, which proves the
+   function-level identity and the differential gate first.
+
 ## Costs
 
 - Removed per edit-run: object emission, the runtime-archive link, output publication,
@@ -95,6 +126,10 @@ builds every function into a `cranelift_module` module; only the module type dif
 
 ## Dependencies and decisions
 
-- `cranelift-jit` at the version that matches `cranelift-codegen` 0.133.1 is not in the
-  local Cargo registry; adding it needs one download, which the owner approves.
-- Step 1 can start before that download.
+- Molt uses the latest release of every dependency. The native backend is on Cranelift
+  0.133.3 and wasmtime 49.0.3 brings Cranelift 0.136.3; the current release is Cranelift
+  0.137.0 and wasmtime 50.0.0 (2026-10-20). The JIT tier starts with one upgrade of the
+  whole stack to that release: the native backend, the maintained `cranelift-object` patch
+  (re-applied, or retired if upstream now carries the AArch64 COFF relocation mapping),
+  wasmtime and `cranelift-jit` at the same version. The owner approved the downloads.
+- Step 1 (generic module) does not depend on the upgrade.
