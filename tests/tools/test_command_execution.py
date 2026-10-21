@@ -14,7 +14,7 @@ from molt.process_environment import (
     ProcessEnvironment,
     ProcessEnvironmentBuilder,
 )
-from tests.process_guard_common import install_module_view
+from tests.process_guard_common import install_module_view, run_custody_subject_process
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -1077,6 +1077,8 @@ def test_guardian_isolates_startup_without_changing_workload_environment(
         " result=executor.wait_owned(owned,timeout=5)\n"
         " assert result==0,(result,error)\n"
         " assert owned.terminal\n"
+        " assert owned.guard_pid not in (None,os.getpid())\n"
+        " assert str(owned.guard_pid)!=os.environ.get('MOLT_MEMORY_GUARD_PID')\n"
         " print(output,end='')\n"
         "finally:\n"
         " if not owned.terminal:\n"
@@ -1090,7 +1092,10 @@ def test_guardian_isolates_startup_without_changing_workload_environment(
         "MOLT_EXT_ROOT": str(tmp_path / "artifacts"),
         "MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path / "guard-state"),
     }
-    completed = subprocess.run(
+    # This exact interpreter/bootstrap is the custody subject. The shared
+    # finite-deadline owner must not wrap it in another guardian and obscure
+    # the inner start_guarded boundary exercised by the source-bound parent.
+    completed = run_custody_subject_process(
         [str(context.env_exec_cmd), "-I", "-S", str(parent)],
         cwd=tmp_path,
         env=environment,
