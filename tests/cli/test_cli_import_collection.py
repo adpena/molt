@@ -183,6 +183,7 @@ from tests.process_guard_common import (
     HUNG_CHILD_SOURCE,
     current_thread_only,
     install_module_view,
+    hung_child_marker,
     stop_test_processes_carrying,
 )
 from tests.source_record_test_support import replace_source_record, source_records
@@ -4311,7 +4312,7 @@ def test_run_subprocess_captured_to_tempfiles_does_not_block_on_inherited_pipes(
     """
     from molt.process_model import process_command_argv
 
-    marker = f"inherited-pipes-{tmp_path.name}"
+    marker = hung_child_marker()
     child_pid_file = tmp_path / "sleeper.pid"
     parent = tmp_path / "parent.py"
     parent.write_text(

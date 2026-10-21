@@ -60,6 +60,7 @@ from tests.process_guard_common import (
     HUNG_CHILD_SOURCE,
     install_module_os_view,
     install_module_view,
+    hung_child_marker,
     processes_carrying,
     run_guarded_test_process,
     stop_test_processes_carrying,
@@ -2445,7 +2446,7 @@ def test_integrate_cancels_later_gates_after_an_earlier_failure(
 ):
     _, work = origin_and_clone
     started = str(work.parent / "second-started")
-    marker = f"hung-gate-of-{work.parent.name}"
+    marker = hung_child_marker()
     # The second gate never ends by itself: only its cancellation ends it.
     hung = shlex.join(
         [
@@ -4974,7 +4975,7 @@ def test_unattended_git_transfer_ends_a_credential_helper_that_waits(
     from tools import git_transfer
 
     _, work = origin_and_clone
-    marker = f"waiting-helper-of-{tmp_path.name}"
+    marker = hung_child_marker()
     helper = tmp_path / "helper.py"
     helper.write_text(HUNG_CHILD_SOURCE, encoding="utf-8")
     isolated_git_identity.write_text(

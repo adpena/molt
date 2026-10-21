@@ -1,13 +1,22 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
 
 from molt import process_guard
 from molt.process_environment import NameRule, ProcessEnvironment
-from tests.process_guard_common import HUNG_CHILD_SOURCE, install_module_view
+from tests.process_guard_common import (
+    HUNG_CHILD_SOURCE,
+    close_owned_test_process,
+    hung_child_marker,
+    install_module_view,
+    processes_carrying,
+    start_owned_test_process,
+    stop_test_processes_carrying,
+)
 
 
 @pytest.mark.parametrize("rule", list(NameRule))
@@ -662,3 +671,34 @@ def test_unguarded_check_error_preserves_native_popen_args(monkeypatch):
         caught.value.stdout,
         caught.value.stderr,
     ) == (physical, 7, "output", "diagnostic")
+
+
+def test_hung_child_cleanup_stops_only_what_carries_its_own_marker() -> None:
+    """The cleanup's victims carry the test's fresh marker as a whole argument.
+
+    A process whose argv merely contains the text, as a shell's command line
+    can, is not the test's, and neither is one with another test's marker.
+    """
+    marker = hung_child_marker()
+    other = hung_child_marker()
+    assert marker != other
+    with pytest.raises(ValueError):
+        processes_carrying("hung-gate-of-test_integrate_cancels_later_g0")
+    carrying = start_owned_test_process(
+        [sys.executable, "-c", HUNG_CHILD_SOURCE, marker]
+    )
+    mentioning = start_owned_test_process(
+        [sys.executable, "-c", f"# {marker}\n" + HUNG_CHILD_SOURCE]
+    )
+    foreign = start_owned_test_process([sys.executable, "-c", HUNG_CHILD_SOURCE, other])
+    try:
+        assert processes_carrying(marker) == [carrying.pid]
+
+        stop_test_processes_carrying(marker)
+
+        assert carrying.wait() != 0
+        assert mentioning.poll() is None and foreign.poll() is None
+        assert processes_carrying(marker) == []
+    finally:
+        for process in (carrying, mentioning, foreign):
+            close_owned_test_process(process)

@@ -12,6 +12,7 @@ import pytest
 
 from tests.process_guard_common import (
     HUNG_CHILD_SOURCE,
+    hung_child_marker,
     processes_carrying,
     stop_test_processes_carrying,
 )
@@ -167,7 +168,7 @@ def test_run_and_measure_reaps_nested_child_after_root_exit(tmp_path, monkeypatc
     # Windows Job membership. This hook grants no custody and changes no sample.
     # POSIX cleanup intentionally cannot claim an unseen reparented PGID peer.
     monkeypatch.setattr(guard.ProcessTreeTracker, "update", observe_custody)
-    marker = f"nested-of-{tmp_path.name}"
+    marker = hung_child_marker()
     child_source = (
         "import pathlib, subprocess, sys, time\n"
         f"p=subprocess.Popen([sys.executable, '-c', {HUNG_CHILD_SOURCE!r}, {marker!r}])\n"

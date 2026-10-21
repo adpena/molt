@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import functools
 import os
+import re
+import uuid
 import json
 import subprocess
 import sys
@@ -65,30 +67,54 @@ class ModuleView:
 HUNG_CHILD_SOURCE = "import threading\nthreading.Event().wait()\n"
 
 
-def _carries(argv: Sequence[str] | None, marker: str) -> bool:
-    return argv is not None and any(marker in part for part in argv)
+_HUNG_CHILD_MARKER = re.compile(r"molt-hung-child-[0-9a-f]{32}")
+
+
+def hung_child_marker() -> str:
+    """A token for one test's hung children to carry as an argv element.
+
+    It is a fresh uuid, so no other process carries it: not a child of another
+    session that runs the same test, and not a shell whose command line merely
+    mentions the text. Carrying it is the cleanup's proof that the test
+    started the process.
+    """
+
+    return f"molt-hung-child-{uuid.uuid4().hex}"
 
 
 def processes_carrying(marker: str) -> list[int]:
-    """Live processes whose argv carries ``marker``, from the host table.
+    """Live processes that carry ``marker`` as a whole argv element.
 
-    A test that learns a hung descendant's pid only after the call under test
+    Only processes born after this test process are read: a hung child the
+    code under test left behind may have been reparented, so it is no longer
+    a descendant, but it is never older than the test that started it. A test
+    that learns a hung descendant's pid only after the call under test
     returns cannot clean it up when that call raises; the marker finds it.
     """
 
+    if not _HUNG_CHILD_MARKER.fullmatch(marker):
+        raise ValueError(f"cleanup markers come from hung_child_marker(): {marker!r}")
     from molt import process_model
     from tools import memory_guard
 
-    return sorted(
-        pid
-        for pid in memory_guard.sample_processes()
-        if pid != os.getpid()
-        and _carries(process_model.process_command_argv(pid), marker)
-    )
+    samples = memory_guard.sample_processes()
+    own = samples.get(os.getpid())
+    own_birth = None if own is None else own.started_at_ns
+    found = []
+    for pid, sample in samples.items():
+        if pid == os.getpid():
+            continue
+        born = sample.started_at_ns
+        if own_birth is not None and born is not None and born < own_birth:
+            continue
+        argv = process_model.process_command_argv(pid)
+        if argv is not None and marker in argv:
+            found.append(pid)
+    return sorted(found)
 
 
 def stop_test_processes_carrying(marker: str) -> None:
-    """Stop every live process whose argv carries ``marker``.
+    """Stop every live process that carries ``marker`` (``processes_carrying``).
 
     A ``HUNG_CHILD_SOURCE`` descendant that the test does not own as a
     ``Popen`` never exits by itself; when the code under test leaves it
@@ -101,9 +127,8 @@ def stop_test_processes_carrying(marker: str) -> None:
 
     for pid in processes_carrying(marker):
         born = process_model.process_started_at_ns(pid)
-        if born is not None and _carries(
-            process_model.process_command_argv(pid), marker
-        ):
+        argv = process_model.process_command_argv(pid)
+        if born is not None and argv is not None and marker in argv:
             memory_guard.terminate_verified_pid(
                 pid, memory_guard.ProcessIdentity(born), grace=1.0
             )

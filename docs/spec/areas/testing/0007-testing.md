@@ -118,11 +118,13 @@ percentages. Required conformance and release matrix gates still apply.
   that a stalled owner outlasts. The trade: a regressed kill then hangs the
   test instead of failing it, so the test depends on an outer deadline.
   Proof-plan families run under a family timeout; a plain local pytest run
-  has none and waits until the operator stops it. Each such test stops the
-  children its subject may leave in a `finally` with
-  `stop_test_processes_carrying(marker)`, which finds them by an argv marker
-  in the process table, so a call that raises before a pid is known leaks
-  nothing.
+  has none and waits until the operator stops it. Each such test gives its
+  hung children a fresh `hung_child_marker()` as an argv element and stops
+  the ones its subject may leave in a `finally` with
+  `stop_test_processes_carrying(marker)`. That finds only processes that
+  carry the marker as a whole argument and were born after the test process,
+  so a call that raises before a pid is known leaks nothing, and no other
+  session's child or other process is touched.
 - **Make fixtures and claims portable.** Cover Windows, macOS and Linux,
   applicable architectures, CPython versions, native/WASM, and claimed
   backends/profiles through the canonical matrices. Distinguish the host running
