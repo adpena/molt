@@ -20212,7 +20212,20 @@ def test_proof_queue_notebook_retains_explicit_diagnostics_after_payload_split(
 
 
 @pytest.mark.parametrize(
-    "birth_status", [None, "dispatched", "running", "failed", "racing-running"]
+    "birth_status",
+    [
+        None,
+        "dispatched",
+        "running",
+        "failed",
+        pytest.param(
+            "racing-running",
+            marks=pytest.mark.skipif(
+                os.name == "nt",
+                reason="POSIX birth publication; Windows redirector is not the worker",
+            ),
+        ),
+    ],
 )
 def test_detached_handoff_error_preserves_actual_child_row(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, birth_status: str | None
