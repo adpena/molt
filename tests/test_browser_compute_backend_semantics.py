@@ -75,6 +75,27 @@ def test_forced_simd_reports_all_missing_capabilities_without_retry() -> None:
         assert name in result["message"]
 
 
+def test_forced_simd_selects_a_module_with_every_capability() -> None:
+    result = _run_compute_engine_script("""
+        const { ComputeEngine, WasmSimdEngine } = await import('./deploy/browser/compute-engine.js');
+        const memory = new WebAssembly.Memory({ initial: 1 });
+        const exports = {
+            memory,
+            __heap_base: new WebAssembly.Global({ value: 'i32', mutable: false }, 1024),
+        };
+        for (const name of WasmSimdEngine.requiredExports()) exports[name] = () => {};
+        const urls = [];
+        globalThis.fetch = async url => {
+            urls.push(url);
+            return { ok: true, arrayBuffer: async () => new Uint8Array([0,97,115,109,1,0,0,0]).buffer };
+        };
+        WebAssembly.instantiate = async () => ({ instance: { exports } });
+        const engine = await ComputeEngine.create({forceBackend:'wasm-simd', wasmUrl:'test://complete'});
+        process.stdout.write(JSON.stringify({ backend: engine.backendName, urls }));
+    """)
+    assert result == {"backend": "wasm-simd", "urls": ["test://complete"]}
+
+
 def test_automatic_backend_selection_has_one_scalar_fallback_owner() -> None:
     result = _run_compute_engine_script("""
         const { ComputeEngine } = await import('./deploy/browser/compute-engine.js');
