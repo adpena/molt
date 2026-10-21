@@ -1099,6 +1099,7 @@ class _IntegrationProgress:
     """Advisory stdout events; absent terminal output never establishes success."""
 
     started: float = field(default_factory=time.monotonic)
+    controller: str | None = None
     source_commit: str | None = None
     upstream_commit: str | None = None
     gate_total: int = 0
@@ -1115,6 +1116,7 @@ class _IntegrationProgress:
             "schema": "molt.integration-progress.v1",
             "event": event,
             "advisory": True,
+            "controller": self.controller,
             "source_commit": self.source_commit,
             "upstream_commit": self.upstream_commit,
             "gate_total": self.gate_total,
@@ -1130,11 +1132,27 @@ class _IntegrationProgress:
             pass
 
 
+def _integration_controller(args: argparse.Namespace) -> str:
+    """Which driver runs this landing; a pinned claim must match this process."""
+    if args.pinned_controller is None:
+        return "candidate"
+    from tools.molt_dev_controller import verify_pinned_controller
+
+    common_dir = _git_common_directory(Path(args.repo).resolve())
+    if common_dir is None:
+        raise DriverError("cannot resolve the Git common directory for integration")
+    verify_pinned_controller(
+        args.pinned_controller, driver_file=__file__, common_dir=common_dir
+    )
+    return f"pinned:{args.pinned_controller}"
+
+
 def cmd_integrate(args: argparse.Namespace) -> int:
     progress = _IntegrationProgress()
     returncode = None
     error: BaseException | None = None
     try:
+        progress.controller = _integration_controller(args)
         if args.dry_run:
             returncode = _integrate_exclusive(args, progress=progress)
             return returncode
@@ -2205,6 +2223,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="require this full upstream commit; refuse rebase for ownership claims",
     )
     p_int.add_argument(
+        "--candidate-controller",
+        action="store_true",
+        help="run this checkout's own driver instead of main's pinned controller; "
+        "only to repair a broken controller on main (the progress stream records it)",
+    )
+    # Set only by the pinned-controller handoff; names the controller this
+    # process must be (molt_dev_controller.verify_pinned_controller).
+    p_int.add_argument("--pinned-controller", help=argparse.SUPPRESS)
+    p_int.add_argument(
         "--marker",
         action="append",
         help="content marker: 'exists:<path>' or 'contains:<path>::<needle>' "
@@ -2450,10 +2477,31 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
+def _integrate_from_pinned_controller(args: argparse.Namespace, argv: list[str]) -> int:
+    """Fetch, then hand the landing to main's driver (docs/design/landing_queue.md)."""
+    from tools.molt_dev_controller import pinned_controller, run_controller
+
+    repo = Path(args.repo).resolve()
+    common_dir = _git_common_directory(repo)
+    if common_dir is None:
+        raise DriverError("cannot resolve the Git common directory for integration")
+    git = Git(repo)
+    git.fetch(args.remote, args.branch)
+    tip = require_git_object_id(
+        git.rev_parse(f"{args.remote}/{args.branch}"), label="controller commit"
+    )
+    controller = pinned_controller(repo, common_dir, tip)
+    return run_controller(controller, argv, repo=repo)
+
+
 def main(argv: list[str]) -> int:
     ap = build_parser()
     args = ap.parse_args(argv)
     try:
+        if args.command == "integrate" and not (
+            args.dry_run or args.candidate_controller or args.pinned_controller
+        ):
+            return _integrate_from_pinned_controller(args, argv)
         return args.func(args)
     except (DriverError, ValueError) as exc:
         _say("")
