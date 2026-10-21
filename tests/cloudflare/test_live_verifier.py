@@ -245,6 +245,27 @@ def test_binary_case_reads_only_its_prefix_and_head_checks_headers(
     assert [request["method"] for request in seen] == ["GET", "HEAD"]
 
 
+def test_an_empty_prefix_checks_headers_and_reads_no_body(
+    worker, tmp_path: Path
+) -> None:
+    base_url, _ = worker
+    # The asset's body is binary (NUL bytes) and 1 MB; a text read would fail.
+    report = _verify(
+        base_url,
+        tmp_path,
+        EndpointCase(
+            name="shard",
+            path="/asset.wasm",
+            expected_content_type_prefix="application/wasm",
+            expected_headers=(("Cache-Control", "immutable"),),
+            body_prefix=b"",
+        ),
+    )
+    [result] = report.cases
+    assert result.ok
+    assert result.body == ""
+
+
 def test_sends_the_case_method_headers_and_body(worker, tmp_path: Path) -> None:
     base_url, seen = worker
     _verify(

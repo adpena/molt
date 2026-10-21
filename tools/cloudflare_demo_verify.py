@@ -444,7 +444,8 @@ class EndpointCase:
     body. ``expected_headers`` pairs a header name with a substring its value
     must contain; an empty substring requires only that the header is present.
     ``body_prefix`` marks a binary response: the verifier reads only that many
-    bytes and compares them instead of decoding text.
+    bytes and compares them instead of decoding text; an empty prefix reads
+    none, for an asset checked by its headers alone.
     """
 
     name: str
@@ -741,6 +742,8 @@ _TINY_PNG_B64 = (
     "2mP8/58BAwAI/AL+hc2rNAAAAABJRU5ErkJggg=="
 )
 _WASM_MAGIC_V1 = b"\x00asm\x01\x00\x00\x00"
+# The INT4 weights the browser downloads, in Hugging Face shard naming.
+_INT4_SHARDS = 5
 
 
 def build_falcon_ocr_matrix(
@@ -755,8 +758,12 @@ def build_falcon_ocr_matrix(
     origin = config["vars"]["CORS_ORIGIN"]
     browser = (("Origin", origin),)
     allows_origin = (("Access-Control-Allow-Origin", origin),)
-    immutable = (("Cache-Control", "immutable"),)
+    immutable = (("Cache-Control", "public"), ("Cache-Control", "immutable"))
     asset = allows_origin + immutable + (("Content-Length", ""),)
+    shards = tuple(
+        f"model-{index:05d}-of-{_INT4_SHARDS:05d}.safetensors"
+        for index in range(1, _INT4_SHARDS + 1)
+    )
     ocr_body = json.dumps({"image": _TINY_PNG_B64}).encode("utf-8")
     json_post = (("Content-Type", "application/json"),)
     return (
@@ -777,7 +784,10 @@ def build_falcon_ocr_matrix(
             request_headers=browser + (("Access-Control-Request-Method", "POST"),),
             expected_statuses=(204,),
             expected_headers=allows_origin
-            + (("Access-Control-Allow-Headers", "X-Payment-402"),),
+            + (
+                ("Access-Control-Allow-Methods", "GET"),
+                ("Access-Control-Allow-Headers", "X-Payment-402"),
+            ),
         ),
         # The browser runs PaddleOCR itself; the edge answers with the fallback.
         EndpointCase(
@@ -846,7 +856,39 @@ def build_falcon_ocr_matrix(
             request_headers=browser,
             expected_content_type_prefix="application/json",
             expected_headers=asset,
-            body_contains=('"weight_map"',),
+            body_contains=('"weight_map"', f'"num_shards": {_INT4_SHARDS}')
+            + tuple(f'"{shard}"' for shard in shards),
+        ),
+        # The shards are 25-31 MB each: an empty prefix reads no body bytes.
+        *(
+            EndpointCase(
+                name=f"int4_shard_{index}",
+                path=f"/weights/falcon-ocr-int4/{shard}",
+                request_headers=browser,
+                expected_content_type_prefix="application/octet-stream",
+                expected_headers=asset,
+                body_prefix=b"",
+            )
+            for index, shard in enumerate(shards, start=1)
+        ),
+        EndpointCase(
+            name="browser_test_page",
+            path="/test",
+            request_headers=browser,
+            expected_content_type_prefix="text/html",
+            body_contains=("<html", "</html>"),
+        ),
+        *(
+            EndpointCase(
+                name=f"browser_{engine.replace('-', '_')}",
+                path=f"/browser/{engine}.js",
+                request_headers=browser,
+                expected_content_type_prefix="application/javascript",
+                # Browser code changes per deploy, so it is cached for an hour.
+                expected_headers=(("Cache-Control", "max-age=3600"),),
+                body_contains=("export ",),
+            )
+            for engine in ("compute-engine", "webgpu-engine")
         ),
     )
 
