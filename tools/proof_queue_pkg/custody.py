@@ -16,6 +16,7 @@ from typing import TextIO
 
 from tools import harness_memory_guard, memory_guard
 from tools.command_execution import DetachedStateHandoff
+from tools.memory_guard_core.cli_contract import guardian_argv
 from molt.process_spawn import (
     ProcessGroupKwargs,
     detached_process_group_kwargs,
@@ -106,9 +107,7 @@ def _memory_guard_command(
     timeout: float,
     limits: harness_memory_guard.HarnessMemoryLimits,
 ) -> list[str]:
-    result = [
-        sys.executable,
-        str(state.ROOT / "tools" / "memory_guard.py"),
+    result = guardian_argv(sys.executable, state.ROOT / "tools" / "memory_guard.py") + [
         "--max-rss-gb",
         str(limits.max_process_rss_gb),
         "--max-total-rss-gb",
@@ -172,9 +171,9 @@ def _launch_detached_runner(
     handoff = DetachedStateHandoff(state.ROOT, environment, cwd, ready_path)
     try:
         with handoff:
-            command = [
-                sys.executable,
-                str(state.ROOT / "tools" / "proof_queue.py"),
+            command = guardian_argv(
+                sys.executable, state.ROOT / "tools" / "proof_queue.py"
+            ) + [
                 "--detached-state-use",
                 str(ready_path),
                 handoff.use_token,

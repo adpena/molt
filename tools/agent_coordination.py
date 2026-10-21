@@ -35,6 +35,7 @@ from molt import process_guard  # noqa: E402
 from molt.dx import DX_ENV_KEYS, development_artifact_env, render_env  # noqa: E402
 from molt.portable_paths import portable_path_component, portable_relative_path  # noqa: E402
 from tools import check_instruction_hierarchy, claims_status  # noqa: E402
+from tools.memory_guard_core.cli_contract import guardian_argv  # noqa: E402
 
 LOG_ROOT = Path("logs/agents")
 COORDINATION_RECORD_GLOB = "*/coordination.json"
@@ -2125,7 +2126,7 @@ def codex_stall_launch_command(
     if args.no_memory_guard:
         return list(command)
     memory_guard = args.repo_root.resolve() / "tools" / "memory_guard.py"
-    wrapped = [sys.executable, str(memory_guard)]
+    wrapped = guardian_argv(sys.executable, memory_guard)
     if args.memory_guard_max_rss_gb is not None:
         wrapped.extend(["--max-rss-gb", str(args.memory_guard_max_rss_gb)])
     if args.memory_guard_max_total_rss_gb is not None:

@@ -183,15 +183,24 @@ def worker_env(
     return ProcessEnvironment(result)
 
 
+def guardian_argv(python_executable: str, script_path: str | Path) -> list[str]:
+    """Start the source-bound guardian before any workload Python startup code.
+
+    Guardians require only the standard library and bind their repository from
+    their own file. Isolate their interpreter from PYTHON* startup settings and
+    site/.pth hooks; leave the process environment and workload argv intact for
+    the guarded child, whose startup policy is its caller's choice.
+    """
+    return [python_executable, "-I", "-S", str(script_path)]
+
+
 def worker_argv(
     args: argparse.Namespace,
     *,
     python_executable: str,
     script_path: Path,
 ) -> list[str]:
-    result = [
-        python_executable,
-        str(script_path),
+    result = guardian_argv(python_executable, script_path) + [
         "--poll-interval",
         str(args.poll_interval),
     ]

@@ -28,6 +28,7 @@ from molt.exact_json import (
 )
 from tools.command_execution import CommandExecutor
 from tools.memory_guard_core import repro_context as guard_repro_context
+from tools.memory_guard_core.cli_contract import guardian_argv
 from tools.memory_guard_core.process_custody import GuardInfrastructureFailure
 from tools.memory_guard import INFRASTRUCTURE_RETURN_CODE
 from molt.memory_guard_paths import pytest_guard_summary_dir
@@ -1759,9 +1760,10 @@ def _run_one(
             memory_limits = custody._proof_queue_memory_limits(env_overrides)
             poll_interval = str(memory_limits.poll_interval)
             env[custody.MEMORY_GUARD_POLL_SEC_ENV] = poll_interval
-            guarded_command = [
+            guarded_command = guardian_argv(
                 sys.executable,
-                str(state.ROOT / "tools" / "proof_queue_pkg" / "guarded_execution.py"),
+                state.ROOT / "tools" / "proof_queue_pkg" / "guarded_execution.py",
+            ) + [
                 "--request",
                 str(request_path),
             ]
