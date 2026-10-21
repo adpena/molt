@@ -6472,6 +6472,12 @@ def test_proof_queue_memory_guard_defaults_reach_exact_command(
         limits=limits,
     )
 
+    assert command[:4] == [
+        sys.executable,
+        "-I",
+        "-S",
+        str(state.ROOT / "tools" / "memory_guard.py"),
+    ]
     assert limits == custody.harness_memory_guard.HarnessMemoryLimits(
         enabled=True,
         max_process_rss_gb=12.0,
@@ -10324,7 +10330,14 @@ def test_proof_queue_windows_launchers_hide_console(
             captured.append(kwargs)
             # Model the real child's exact startup acknowledgement, rather
             # than treating an allocated launcher PID as readiness.
-            ready, token = command[3:5]
+            assert command[:4] == [
+                sys.executable,
+                "-I",
+                "-S",
+                str(state.ROOT / "tools" / "proof_queue.py"),
+            ]
+            option = command.index("--detached-state-use")
+            ready, token = command[option + 1 : option + 3]
             Path(ready).write_text(
                 json.dumps(
                     {"schema_version": 1, "pid": self.pid + 1, "use_token": token}
@@ -10369,7 +10382,14 @@ def test_proof_queue_posix_detached_runner_uses_new_session(
             captured.append(kwargs)
             # Model the real child's exact startup acknowledgement, rather
             # than treating an allocated launcher PID as readiness.
-            ready, token = command[3:5]
+            assert command[:4] == [
+                sys.executable,
+                "-I",
+                "-S",
+                str(state.ROOT / "tools" / "proof_queue.py"),
+            ]
+            option = command.index("--detached-state-use")
+            ready, token = command[option + 1 : option + 3]
             Path(ready).write_text(
                 json.dumps({"schema_version": 1, "pid": self.pid, "use_token": token}),
                 encoding="utf-8",
@@ -10439,8 +10459,11 @@ def test_proof_queue_detached_use_survives_startup_and_failed_observation(
     worker.write_text(
         "import json,os,pathlib,sys,time\n"
         "from contextlib import ExitStack\n"
-        "from tools.command_execution import detached_command_use\n"
         "root,ready,token,mode,release=map(str,sys.argv[1:])\n"
+        "sys.path.insert(0,root)\n"
+        "from tools.import_file import bind_repository_imports\n"
+        "bind_repository_imports(pathlib.Path(root)/'tools/proof_queue.py')\n"
+        "from tools.command_execution import detached_command_use\n"
         "ready=pathlib.Path(ready); release=pathlib.Path(release)\n"
         "if mode=='early_exit': raise SystemExit(2)\n"
         "with ExitStack() as use:\n"
@@ -10465,10 +10488,17 @@ def test_proof_queue_detached_use_survives_startup_and_failed_observation(
         assert_retirement(False)
         if outcome == "spawn_error":
             raise FileNotFoundError("controlled failed launch")
-        ready, token = command[3:5]
+        assert command[:4] == [
+            sys.executable,
+            "-I",
+            "-S",
+            str(state.ROOT / "tools" / "proof_queue.py"),
+        ]
+        option = command.index("--detached-state-use")
+        ready, token = command[option + 1 : option + 3]
         process = real_popen(
             [
-                sys.executable,
+                *command[:3],
                 str(worker),
                 str(state.ROOT),
                 ready,

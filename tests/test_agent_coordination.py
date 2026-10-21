@@ -997,7 +997,12 @@ def test_codex_stall_launch_uses_memory_guard_by_default(tmp_path: Path) -> None
         ["python", "-c", "pass"],
     )
 
-    assert launch[:2] == [sys.executable, str(tmp_path / "tools" / "memory_guard.py")]
+    assert launch[:4] == [
+        sys.executable,
+        "-I",
+        "-S",
+        str(tmp_path / "tools" / "memory_guard.py"),
+    ]
     assert launch[-4:] == ["--", "python", "-c", "pass"]
 
 

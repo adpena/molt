@@ -663,8 +663,9 @@ def test_harness_owner_survives_observation_expiry_and_admits_eventual_closure(
     start = command_execution.CommandExecutor.start_owned
 
     def held_start(self, args, **kwargs):
-        assert Path(args[1]).name == "guarded_exec.py"
-        return start(self, [args[0], str(wrapper), *args[2:]], **kwargs)
+        assert args[1:3] == ["-I", "-S"]
+        assert Path(args[3]).name == "guarded_exec.py"
+        return start(self, [*args[:3], str(wrapper), *args[4:]], **kwargs)
 
     monkeypatch.setattr(command_execution.CommandExecutor, "start_owned", held_start)
     executor = command_execution.CommandExecutor(prefix="MOLT_TEST", repo_root=ROOT)
@@ -805,8 +806,9 @@ def test_harness_owner_observes_a_guard_slower_than_one_window(tmp_path, monkeyp
     start = command_execution.CommandExecutor.start_owned
 
     def progressing_start(self, args, **kwargs):
-        assert Path(args[1]).name == "guarded_exec.py"
-        return start(self, [args[0], str(wrapper), *args[2:]], **kwargs)
+        assert args[1:3] == ["-I", "-S"]
+        assert Path(args[3]).name == "guarded_exec.py"
+        return start(self, [*args[:3], str(wrapper), *args[4:]], **kwargs)
 
     monkeypatch.setattr(
         command_execution.CommandExecutor, "start_owned", progressing_start
@@ -1020,3 +1022,92 @@ def test_guard_launch_failure_releases_prelaunch_managed_use(tmp_path, monkeypat
     with pytest.raises(FileNotFoundError, match="independent launch refusal"):
         executor.start_guarded([sys.executable, "-c", "pass"], env=environment)
     _assert_retirement_binding(roots, True)
+
+
+@pytest.mark.parametrize("harness", [False, True])
+def test_guardian_isolates_startup_without_changing_workload_environment(
+    tmp_path: Path, harness: bool
+) -> None:
+    """A foreign editable installation must affect only the selected workload."""
+    import json
+    import venv
+
+    virtual = tmp_path / "foreign-venv"
+    builder = venv.EnvBuilder(with_pip=False)
+    builder.create(virtual)
+    context = builder.ensure_directories(virtual)
+    foreign_source = tmp_path / "foreign-source"
+    (foreign_source / "molt").mkdir(parents=True)
+    (foreign_source / "molt" / "__init__.py").write_text("", encoding="utf-8")
+    # -S alone still admits PYTHONPATH before the guardian's source binder.
+    # This stdlib dependency is not used by the deliberately simple workload.
+    (foreign_source / "argparse.py").write_text(
+        "raise RuntimeError('guardian consumed workload PYTHONPATH')\n",
+        encoding="utf-8",
+    )
+    startup_log = tmp_path / "startup.jsonl"
+    (foreign_source / "sitecustomize.py").write_text(
+        "import json,os,pathlib,molt\n"
+        f"with pathlib.Path({str(startup_log)!r}).open('a', encoding='utf-8') as output:\n"
+        " output.write(json.dumps({'pid':os.getpid(),'molt':molt.__file__})+'\\n')\n",
+        encoding="utf-8",
+    )
+    (Path(context.lib_path) / "foreign-editable.pth").write_text(
+        str(foreign_source) + "\n", encoding="utf-8"
+    )
+    workload = (
+        "import json,os,sys,molt; "
+        "print(json.dumps({'pid':os.getpid(),'molt':molt.__file__,"
+        "'pythonpath':os.environ.get('PYTHONPATH'),'isolated':sys.flags.isolated,"
+        "'no_site':sys.flags.no_site}))"
+    )
+    parent = tmp_path / "source_bound_parent.py"
+    parent.write_text(
+        "import json,os,subprocess,sys\n"
+        "from pathlib import Path\n"
+        f"sys.path.insert(0,{str(ROOT)!r})\n"
+        "from tools.import_file import bind_repository_imports\n"
+        f"bind_repository_imports({str(ROOT / 'tools' / 'command_execution.py')!r})\n"
+        "from tools.command_execution import CommandExecutor\n"
+        f"executor=CommandExecutor(prefix='MOLT_TEST',repo_root=Path({str(ROOT)!r}))\n"
+        f"owned=executor.start_guarded([sys.executable,'-c',{workload!r}],"
+        f"env=os.environ,harness={harness!r},timeout=20,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,encoding='utf-8')\n"
+        "try:\n"
+        " output,error=owned.process.communicate(timeout=30)\n"
+        " result=executor.wait_owned(owned,timeout=5)\n"
+        " assert result==0,(result,error)\n"
+        " assert owned.terminal\n"
+        " print(output,end='')\n"
+        "finally:\n"
+        " if not owned.terminal:\n"
+        "  owned.request_cancel()\n"
+        "  executor.wait_owned(owned,timeout=10)\n",
+        encoding="utf-8",
+    )
+    environment = {
+        **os.environ,
+        "PYTHONPATH": str(foreign_source),
+        "MOLT_EXT_ROOT": str(tmp_path / "artifacts"),
+        "MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path / "guard-state"),
+    }
+    completed = subprocess.run(
+        [str(context.env_exec_cmd), "-I", "-S", str(parent)],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=45,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    observed = json.loads(completed.stdout)
+    assert Path(observed["molt"]) == foreign_source / "molt" / "__init__.py"
+    assert observed["pythonpath"] == str(foreign_source)
+    assert observed["isolated"] == observed["no_site"] == 0
+    # The normal workload executes site/.pth startup once. The guardian must
+    # not execute it first and accidentally bind the foreign package.
+    assert [
+        json.loads(line)
+        for line in startup_log.read_text(encoding="utf-8").splitlines()
+    ] == [{"pid": observed["pid"], "molt": observed["molt"]}]

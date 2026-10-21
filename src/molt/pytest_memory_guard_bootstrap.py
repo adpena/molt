@@ -685,15 +685,14 @@ def outer_guard_argv(
     environ: Mapping[str, str] | None = None,
 ) -> list[str]:
     from tools import harness_memory_guard
+    from tools.memory_guard_core.cli_contract import guardian_argv
 
     pytest_args = tuple(args or ())
     limits = harness_memory_guard.limits_from_env("MOLT_PYTEST", environ)
     summary_path = _pytest_custody_artifact_path(
         ROOT, "pytest", "outer-guard", environ=environ
     )
-    return [
-        sys.executable,
-        str(SOURCE_ROOT / "tools" / "memory_guard.py"),
+    return guardian_argv(sys.executable, SOURCE_ROOT / "tools" / "memory_guard.py") + [
         "--max-rss-gb",
         str(limits.max_process_rss_gb),
         "--max-total-rss-gb",
@@ -766,15 +765,14 @@ def repo_test_module_outer_guard_argv(
     environ: Mapping[str, str] | None = None,
 ) -> list[str]:
     from tools import harness_memory_guard
+    from tools.memory_guard_core.cli_contract import guardian_argv
 
     module_args = tuple(args or ())
     limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", environ)
     summary_path = _pytest_custody_artifact_path(
         ROOT, "test-module", "outer-guard", environ=environ
     )
-    return [
-        sys.executable,
-        str(SOURCE_ROOT / "tools" / "memory_guard.py"),
+    return guardian_argv(sys.executable, SOURCE_ROOT / "tools" / "memory_guard.py") + [
         "--max-rss-gb",
         str(limits.max_process_rss_gb),
         "--max-total-rss-gb",
@@ -826,15 +824,14 @@ def repo_test_script_outer_guard_argv(
     environ: Mapping[str, str] | None = None,
 ) -> list[str]:
     from tools import harness_memory_guard
+    from tools.memory_guard_core.cli_contract import guardian_argv
 
     script_args = tuple(args or ())
     limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", environ)
     summary_path = _pytest_custody_artifact_path(
         ROOT, "test-script", "outer-guard", environ=environ
     )
-    return [
-        sys.executable,
-        str(SOURCE_ROOT / "tools" / "memory_guard.py"),
+    return guardian_argv(sys.executable, SOURCE_ROOT / "tools" / "memory_guard.py") + [
         "--max-rss-gb",
         str(limits.max_process_rss_gb),
         "--max-total-rss-gb",

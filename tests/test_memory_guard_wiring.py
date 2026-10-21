@@ -599,7 +599,12 @@ def test_pytest_startup_reexecs_direct_pytest_under_memory_guard(monkeypatch) ->
 
     argv = captured["argv"]
     assert isinstance(argv, list)
-    assert argv[:2] == [sys.executable, str(REPO_ROOT / "tools" / "memory_guard.py")]
+    assert argv[:4] == [
+        sys.executable,
+        "-I",
+        "-S",
+        str(REPO_ROOT / "tools" / "memory_guard.py"),
+    ]
     assert "--summary-json" in argv
     assert argv[-5:] == [sys.executable, "-m", "pytest", "tests/test_one.py", "-q"]
     env = captured["env"]
@@ -676,7 +681,12 @@ def test_pytest_startup_windows_handoff_waits_for_guard_child(monkeypatch) -> No
 
     argv = captured["argv"]
     assert isinstance(argv, list)
-    assert argv[:2] == [sys.executable, str(REPO_ROOT / "tools" / "memory_guard.py")]
+    assert argv[:4] == [
+        sys.executable,
+        "-I",
+        "-S",
+        str(REPO_ROOT / "tools" / "memory_guard.py"),
+    ]
     assert argv[-5:] == [sys.executable, "-m", "pytest", "tests/test_one.py", "-q"]
     env = captured["env"]
     assert isinstance(env, dict)
@@ -763,7 +773,12 @@ def test_repo_test_script_startup_reexecs_under_memory_guard(monkeypatch) -> Non
 
     argv = captured["argv"]
     assert isinstance(argv, list)
-    assert argv[:2] == [sys.executable, str(REPO_ROOT / "tools" / "memory_guard.py")]
+    assert argv[:4] == [
+        sys.executable,
+        "-I",
+        "-S",
+        str(REPO_ROOT / "tools" / "memory_guard.py"),
+    ]
     assert "--summary-json" in argv
     assert argv[-3:] == [sys.executable, str(script), "--flag"]
     env = captured["env"]
@@ -818,7 +833,12 @@ def test_repo_test_module_startup_reexecs_under_memory_guard(monkeypatch) -> Non
 
     argv = captured["argv"]
     assert isinstance(argv, list)
-    assert argv[:2] == [sys.executable, str(REPO_ROOT / "tools" / "memory_guard.py")]
+    assert argv[:4] == [
+        sys.executable,
+        "-I",
+        "-S",
+        str(REPO_ROOT / "tools" / "memory_guard.py"),
+    ]
     assert argv[-4:] == [
         sys.executable,
         "-m",
@@ -872,7 +892,12 @@ def test_current_file_test_script_startup_uses_resolved_file(monkeypatch) -> Non
 
     argv = captured["argv"]
     assert isinstance(argv, list)
-    assert argv[:2] == [sys.executable, str(REPO_ROOT / "tools" / "memory_guard.py")]
+    assert argv[:4] == [
+        sys.executable,
+        "-I",
+        "-S",
+        str(REPO_ROOT / "tools" / "memory_guard.py"),
+    ]
     assert argv[-3:] == [sys.executable, str(script), "--flag"]
 
 

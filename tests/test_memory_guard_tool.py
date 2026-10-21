@@ -8583,6 +8583,12 @@ def test_main_reexec_preserves_stream_and_sample_rotation_options(
         assert exc.value.code == 74
     worker_argv = captured["argv"]
     assert isinstance(worker_argv, list)
+    assert worker_argv[:4] == [
+        sys.executable,
+        "-I",
+        "-S",
+        str(Path(memory_guard.__file__).resolve()),
+    ]
     assert "--samples-jsonl" in worker_argv
     assert str(samples_path) in worker_argv
     assert "--samples-max-mb" in worker_argv
