@@ -7074,7 +7074,9 @@ def test_cli_process_exit_preserves_autonomous_guard_and_eventual_closure(tmp_pa
         "p._source_identity=lambda:{'commit':'a'*40,'tree':'b'*40}\n"
         "start=CommandExecutor.start_owned\n"
         "def held_start(self,args,**kwargs):\n"
-        f" return start(self,[args[0],{str(worker)!r},*args[2:]],**kwargs)\n"
+        " assert args[1:3] == ['-I','-S']\n"
+        " assert Path(args[3]).name == 'guarded_exec.py'\n"
+        f" return start(self,[*args[:3],{str(worker)!r},*args[4:]],**kwargs)\n"
         "CommandExecutor.start_owned=held_start\n"
         f"raise SystemExit(p.main(['--run-family','synthetic','--receipt',{str(receipt)!r}]))\n",
         encoding="utf-8",
