@@ -244,21 +244,89 @@ share the input analysis while preserving each check's ownership and diagnostic
 contract. Parsed-tree scaling controls distinguish traversal cost from parsing,
 filesystem access, process startup and the complete gate.
 
-**Remaining cost.** `generators.py check` (16 s quiet) re-renders 33 generators;
-the largest re-scans every audited source with one regular expression
-(`gen_cpython_coverage`) or starts every target CPython (`gen_unicode_width`,
-`gen_stringprep_tables`). Its renders need keyed inputs, declared or runtime
-identities, before they can be replayed. The coverage generator now builds each
-audited path's ancestors once instead of per source root (0.54 to 0.22 s CPU);
-its regular expression scan costs about 2.2 s of CPU, and 3,620 of its 4,417
-files contain none of the pattern's literals. `structural_audit` (13.6 s) and
-`check_generator_manifest` (3.5 s) hold per-file probes that are the next scan
-record consumers. Every gate also compiles its imports from source, because the
-canonical execution environment sets `PYTHONDONTWRITEBYTECODE` and checkouts hold
-no bytecode; a cache outside the checkout would remove 0.02 to 0.35 s per small
-gate and about 1.7 s of compilation from `generators.py check`. The integrate
-driver runs independent gates serially. The live release ledger records accepted
-scope and outstanding audit-cost work.
+**Second round: one scheduler, shared bytecode and more consumers.** After the
+first round, `integrate` still ran the 24 always gates in sequence, so a landing
+paid their sum. The always gates now run as one block through the proof
+executor (`tools/proof_executor.py`), the scheduler `docs/design/host_capacity.md`
+names; `tools/molt_dev_gates.py` owns gate execution. The executor's admission
+bounds the block: the plan's `executor_max_workers` and the `repository-policy`
+resource class, each capped by `molt.host_capacity` at one GiB per gate (the
+largest gate tree peaks at 0.69 GB). Each gate's streams print in declared
+order. A gate failure and a moot gate are partition-scoped, so the executor never
+cancels a gate declared before the failure, and the first failure in declared
+order is the one reported. Later gates are skipped or cancelled through the
+guard. Each landing leaves an executor receipt with every gate's duration, peak
+RSS and outcome beside the integration lock in the Git common directory. Rule
+gates, pytest batches and Cargo gates still run alone and stream live.
+
+`CANONICAL_EXECUTION_ENV` forbids bytecode writes so a gate cannot change the
+checkout's import topology, so every gate compiled `tools/`, `src/molt` and the
+stdlib from source. Integrate keeps that canonical environment for the proof
+queue and gives its gates the DX pycache prefix (`molt.dx.scratch_dir`,
+`"pycache"`) with writes allowed. Bytecode stays outside the checkout. CPython
+validates each cached module by source mtime and size; an exclusive clean
+checkout changes only between gate runs, through Git writes with new mtimes.
+
+`structural_audit` routes its six per-file probes through scan records: debt
+markers, Python and Rust stub surfaces, both compatibility inventories (keyed by
+the proved flag they read), process-wide test patches, build-failure skips and
+scratch-authority sites (keyed by language and test-module role). A release
+receipt never replays. `tools/generators.py`, the command that renders every
+generator, passes scan records to a generator whose `generated_outputs` declares
+them: the coverage audit rows (keyed by file and the configuration flag), each
+target runtime's East_Asian_Width facts (keyed by its admitted runtime closure
+digest and launch argv) and the stringprep tables (keyed by the Unicode data
+version and the stringprep source digest). A first-party module imported after
+records open is recorded by checkout path and content digest, and a replaying
+run checks the same content in its own checkout first.
+
+Measured on this Mac, alternating three rounds of the round-one tip (serial,
+`02b9f5d7e`) against the second-round tip (the integrate block), at a competing
+load average of 13 to 20:
+
+| | Wall (s) | CPU (s) | Peak RSS |
+|---|---|---|---|
+| Round-one tip, serial | 57.5 (50.6 to 74.2) | 80.9 | 0.69 GB (largest process) |
+| Second round, executor block | 18.9 (15.6 to 20.4) | 67.8 | 3.1 GB (process tree) |
+
+Single steps, each alternating three rounds: the executor block alone took the
+serial 66 s to 33 s wall at unchanged CPU (about 105 s at load 20 to 40); the
+bytecode prefix then cut the block's CPU from 96.2 to 88.5 s and its wall from
+23.2 to 21.4 s (medians, load 15 to 19). Standalone and warm, `structural_audit`
+takes 13.1 s computed and 4.5 s replayed, and `generators.py check` renders in
+8.0 s instead of 12.9 s. Base gate code run on the second-round tree, a cold run
+and a warm run print byte-identical output for all 24 gates; 898 of 900
+structural findings are identical and the other two sit in
+`tools/structural_audit.py` itself.
+
+**Remaining cost.** The block's floor is `generators.py check` (about 12 s in
+the block, 8 s of rendering): `gen_protocol` imports the whole frontend and runs
+ruff twice, and process start, toolchain admission and target-runtime identity
+capture take about 4 s. `structural_audit` (7 to 8 s in the block) still
+projects every Rust file in a worker pool for the probes that are not records
+yet (semantic fallthroughs, lowering gaps, duplicate authorities, kitchen-sink
+regions). The executor observes the source with `git status` before each
+scheduling wave and after each completion. The plan's ceiling of four commands
+keeps the slowest gates waiting behind quick ones; longest-first ordering from
+receipt durations is the design's next step.
+
+**Gate replay is a design gap.** Reusing a passing gate's result needs its
+complete admitted inputs, command, environment and tools (HF-334). The receipt
+records the source tree, the plan authority, the os, architecture and Python
+version and the declared toolchain fingerprints. It does not record the gate
+environment, and local always gates declare no input paths: their only complete
+in-tree identity is the whole source tree. Several always gates also read tools
+outside their declared toolchains (`python`, `git`, `generators`):
+`check_rust_toolchain` reads rustup state, `build_graph_audit` runs
+`cargo metadata` over the Cargo registry, and the ruff gates use the
+environment's ruff. A pure scanner's content-level reuse check reads and hashes
+every input, which is what its warm scan-record path already costs. A
+millisecond reuse therefore needs the plan to declare, per command, input paths
+whose Git tree ids key the receipt, a complete toolchain list, and an
+environment digest in the receipt identity. Those declarations belong in
+`tools/proof_plan.toml`. Pytest commands stay excluded (HF-263).
+
+The live release ledger records accepted scope and outstanding audit-cost work.
 
 ### 2.3 Policy projections and execution freshness
 

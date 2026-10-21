@@ -23,7 +23,9 @@ Measured on macOS arm64 (18 CPUs, 128 GiB), 2026-10-17:
   resource classes, cancellation and receipts that record each command's
   duration and peak RSS. Landing gates (`tools/molt_dev.py integrate`) run in
   a second, sequential loop, so their times add up: one landing spent 404 s in
-  clippy, 411 s in runtime tests and 190 s in pytest, 1,103 s in all.
+  clippy, 411 s in runtime tests and 190 s in pytest, 1,103 s in all. The
+  always gates now run as one executor block (HF-35); the rule, pytest and
+  Cargo gates still run in that loop.
 - More workers do not shorten a suite whose slowest test is its floor.
   `tests/test_molt_dev.py` and `tests/test_proof_plan.py` take 67 s at
   `-n 4`, 65 s at `-n 8` and 62 s at `-n 12`; one test,
@@ -222,7 +224,10 @@ root. Volume choice still requires measurement per machine.
 2. Split the tests that alone bound a suite's wall time.
 3. Landing gates through the proof executor, with declared timeouts and
    resource classes, longest first; the first step of the
-   [landing queue](landing_queue.md).
+   [landing queue](landing_queue.md). The always gates run as one block
+   in the `repository-policy` class, bounded by `executor_max_workers` and
+   one GiB per gate from this authority, and leave a receipt. Declared
+   timeouts, longest-first order and the rule, pytest and Cargo gates remain.
 4. The host-wide jobserver.
 5. Qualify the canonical shared source-record lifetime and retention costs;
    measure volume placement before changing it.
