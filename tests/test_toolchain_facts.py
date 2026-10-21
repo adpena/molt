@@ -19,6 +19,8 @@ from pathlib import Path
 
 import pytest
 
+from tools.check_rust_toolchain import RUST_EDITION
+
 from molt import platform_toolchain, process_guard, rust_toolchain
 from molt import toolchain_facts as facts
 from molt.cli import native_link_tool_identity as link_tools
@@ -886,7 +888,7 @@ def test_a_warm_toolchain_resolves_a_cargo_plan_without_probe_processes(
     project = tmp_path / "crate"
     (project / "src").mkdir(parents=True)
     (project / "Cargo.toml").write_text(
-        '[package]\nname = "probe"\nversion = "0.1.0"\nedition = "2021"\n',
+        f'[package]\nname = "probe"\nversion = "0.1.0"\nedition = "{RUST_EDITION}"\n',
         encoding="utf-8",
     )
     (project / "src" / "main.rs").write_text("fn main() {}\n", encoding="utf-8")
