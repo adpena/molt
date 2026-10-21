@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from tools import proof_plan, venv_exec
+from tools import proof_command_argv, proof_plan, venv_exec
 from tools.proof_queue_pkg import command_admission
 
 
@@ -44,9 +44,10 @@ from tools.proof_queue_pkg import command_admission
 )
 def test_unrelated_wrapped_payload_is_admitted_without_wrapper_row(wrapper, payload):
     command = [*wrapper, "--venv", ".venv", "--", *payload]
-    assert command_admission._command_entrypoint(
-        command
-    ) == command_admission._command_entrypoint(payload)
+    root = command_admission._REPO_ROOT
+    assert proof_command_argv._command_entrypoint(
+        command, root=root
+    ) == proof_command_argv._command_entrypoint(payload, root=root)
     envelope = command_admission.envelope_for_command(command)
     assert envelope["kind"] != "rejected"
     assert envelope["argv"] == payload
@@ -72,7 +73,9 @@ def test_unrelated_wrapped_payload_is_admitted_without_wrapper_row(wrapper, payl
 )
 def test_cli_aliases_cannot_discard_registered_build_authority(target, wrapper):
     command = [*wrapper, "python", "-B", *target, "build", "unregistered.py"]
-    assert command_admission._command_entrypoint(command) == (
+    assert proof_command_argv._command_entrypoint(
+        command, root=command_admission._REPO_ROOT
+    ) == (
         "python-cli-command",
         "molt.cli:build",
     )

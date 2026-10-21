@@ -1096,7 +1096,16 @@ in estimated purgeable capacity is not evidence that Molt reclaimed bytes.
 Registered proof entrypoints require an exact registered argv, regardless of how
 many variants exist. A transport or payload near-match cannot become a Python
 leaf and lose its declared child tools. Parameterized commands require their
-existing typed family authority.
+existing typed family authority. pytest is the one such family (HF-179): every
+spelling of it (`uv run pytest`, `python -m pytest`, a typed wrapper) is one
+entrypoint, and an argv that is not an exact plan row is a focused proof. Its
+selections are what pytest itself selects in the plan's checkout, read by
+`tools/proof_command_argv.py` with pytest's own parser and configuration
+(`addopts`, `-c`, `-o`). Each selection needs a proof-plan command or named
+lane that selects it, a directory holding it, or a node in it. The proof admits
+the union of the toolchains, native units and one `cargo_build_python` role of
+every row whose targets lie on, above or inside a selection, so it discards no
+authority those rows declare. It never stands in for a row's receipt.
 
 ### Native C/C++ processes in development proofs
 

@@ -539,7 +539,7 @@ class GateConfig:
         if not isinstance(always, list) or not all(isinstance(g, str) for g in always):
             raise DriverError("gate manifest `always` must be a list of str")
         try:
-            memory_units = PytestMemoryUnits(data.get("command", ()))
+            memory_units = PytestMemoryUnits(data.get("command", ()), root=root)
             commands = local_gate_commands(data, memory_units=memory_units)
         except ValueError as exc:
             raise DriverError(f"invalid local gate policy: {exc}") from exc

@@ -38,6 +38,33 @@ def test_files_named_by_path_or_directory_are_owned_but_a_node_is_not(
     assert ownership.unowned(root) == {"tests/test_b.py", "tests/test_d.py"}
 
 
+def test_only_a_file_that_pytest_selects_has_an_owner(tmp_path: Path) -> None:
+    # pytest's own parser reads each command (HF-179). pytest runs neither a
+    # file it is told to --ignore nor one named only as a --deselect value,
+    # and a tool that is not pytest runs no pytest file, though all three
+    # spell a tests/ path.
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "proof_plan.toml").write_text(
+        '[[command]]\nid = "unit"\nargv = ["uv", "run", "pytest", "--ignore", '
+        '"tests/test_ignored.py", "--deselect", "tests/test_deselected.py", '
+        '"tests/test_a.py"]\n'
+        '[[command]]\nid = "tool"\nargv = ["python", "tools/runner.py", '
+        '"tests/test_operand.py"]\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "tests").mkdir()
+    for name in ("a", "ignored", "deselected", "operand"):
+        (tmp_path / "tests" / f"test_{name}.py").write_text(
+            "def test_ok():\n    pass\n", encoding="utf-8"
+        )
+
+    assert ownership.unowned(tmp_path) == {
+        "tests/test_ignored.py",
+        "tests/test_deselected.py",
+        "tests/test_operand.py",
+    }
+
+
 def test_a_new_unowned_file_fails_and_cannot_be_baselined(tmp_path: Path) -> None:
     root = _repo(tmp_path, argv=["tests/test_a.py"], tests=["tests/test_a.py"])
     assert ownership.main(["--root", str(root), "--update"]) == 0

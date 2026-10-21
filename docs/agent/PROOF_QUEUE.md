@@ -1244,13 +1244,20 @@ changing one selector cannot downgrade its Cargo, Node, Quint, Lean, or other
 declared closure to generic Python custody. A Python console script is its
 module: `uv run pytest` and `python -m pytest` (directly, through `uv run` or
 a wrapper) are one entrypoint, so every spelling meets the same rule. A pytest
-argv that is not an exact plan command is a focused proof (HF-179): pytest's
-own parser finds the test paths it selects, each must be owned by a proof-plan
-command under `tools/check_test_ownership.py`'s rule, and the proof admits the
-union of those owners' toolchains and native units with their child processes.
-A focused proof that names no test path, uses `--pyargs`, selects a path
-outside the checkout or a file no command owns is refused, and its receipt
-never stands in for an owner's. There is no untyped or empty-toolchain executable lane:
+argv that is not an exact plan command is a focused proof (HF-179).
+`tools/proof_command_argv.py` reads it as pytest does in the plan's checkout:
+pytest's own parser reads the argv and the `addopts` of the configuration
+pytest selects there, with `-o`/`--override-ini` applied, so
+`-o addopts=tests/x.py` selects `tests/x.py`. Each selected path needs a
+proof-plan command or named lane that selects it, a directory holding it, or a
+node in it. The proof admits the toolchains and native units of every row
+whose targets lie on, above or inside a selection, with their child processes,
+and the one `cargo_build_python` role those rows declare; owners that disagree
+on that role are refused. A focused proof that names no test path, uses
+`--pyargs`, or selects a path outside the checkout or one no row owns is
+refused, and its receipt never stands in for an owner's. The same module is the
+one reading of a plan row's test targets for CI selection, pytest memory units
+and `tools/check_test_ownership.py`. There is no untyped or empty-toolchain executable lane:
 unknown binaries reject before execution. Opaque shells, unmodeled `uv`
 options, ambiguous console scripts, and noncanonical Rust wrappers are also
 rejected before execution. The same recursive parser recognizes

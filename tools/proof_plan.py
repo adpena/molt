@@ -595,7 +595,9 @@ class PytestMemoryUnits:
     no finer memory measurement is inferred from a -k or -m expression.
     """
 
-    def __init__(self, commands: Iterable[Mapping[str, Any]]) -> None:
+    def __init__(self, commands: Iterable[Mapping[str, Any]], *, root: Path) -> None:
+        from tools.proof_command_argv import command_pytest_targets
+
         self._root = _PytestMemoryNode()
         option = "--molt-worker-memory-gb"
         for command in commands:
@@ -618,14 +620,13 @@ class PytestMemoryUnits:
                     )
             if unit is None:
                 continue
-            # The plan's existing ownership relation is its canonical tests/
-            # argv paths. Do not inspect the filesystem or collect pytest.
-            for target in argv:
-                if target != "tests" and not target.startswith("tests/"):
-                    continue
+            # pytest's own parser names the command's targets (HF-179): an
+            # option value such as a --deselect node owns no envelope. No test
+            # is collected.
+            for target in command_pytest_targets(argv, root=root) or ():
                 node = self._root
                 node.maximum_gb = max(node.maximum_gb, unit)
-                for component in _pytest_target_parts(target):
+                for component in _pytest_target_parts(str(target)):
                     child = node.children.get(component)
                     if child is None:
                         child = node.children[component] = _PytestMemoryNode()
@@ -854,25 +855,61 @@ class Selection:
     fail_closed_reason: str | None = None
 
 
+_REPOSITORY_SOURCE_ROOTS = ("examples", "formal", "src", "tests", "tools")
+
+
+def argv_repository_paths(argv: Iterable[object]) -> tuple[str, ...]:
+    """The repository paths that an argv names, read from their spelling.
+
+    A token names a path when its text before any ``::`` is a source root or
+    lies under one. This reads the argv of any tool, so it cannot tell an
+    operand from an option value; a pytest command's test targets come from
+    ``command_pytest_targets`` instead. Plan validation (each path must exist)
+    and the test inputs of commands that do not run pytest read this rule.
+    """
+    prefixes = tuple(f"{root}/" for root in _REPOSITORY_SOURCE_ROOTS)
+    paths: dict[str, None] = {}
+    for part in argv:
+        if not isinstance(part, str):
+            continue
+        path = part.split("::", 1)[0].rstrip("/")
+        if path in _REPOSITORY_SOURCE_ROOTS or path.startswith(prefixes):
+            paths[path] = None
+    return tuple(paths)
+
+
 def _resolve_ci_command_test_inputs(
-    families: tuple[ProofFamily, ...], commands: tuple[ProofCommand, ...]
+    families: tuple[ProofFamily, ...],
+    commands: tuple[ProofCommand, ...],
+    *,
+    root: Path,
 ) -> None:
     """Project validated command targets into their change-selected owners.
 
-    A literal ``tests`` target owns itself and its descendants, whether it is
-    a file or directory. The existing ``path/**`` matcher expresses that
+    A pytest command's targets are what pytest's own parser selects
+    (``command_pytest_targets``, HF-179): an option value is never one, and a
+    node id selects its file. A command that does not run pytest has no pytest
+    targets; the ``tests`` paths its argv names (``argv_repository_paths``) are
+    its test inputs. A literal target owns itself and its descendants, whether
+    it is a file or directory. The existing ``path/**`` matcher expresses that
     without stat calls, collection, extension guesses or glob interpretation
     of a target's spelling. Scheduled families have no changed-path owner.
     Resolve once at load time; selection and generated projections read the
     same family data. Work is linear in declared argv, inputs and path parts.
+    ``root`` is the plan's checkout.
     """
+    from tools.proof_command_argv import command_pytest_targets
+
     targets: dict[str, dict[str, None]] = {family.name: {} for family in families}
     for command in commands:
         owner = targets.get(command.family)
         if owner is None:
             continue
-        for argument in command.argv:
-            path = argument.split("::", 1)[0].rstrip("/")
+        pytest_targets = command_pytest_targets(command.argv, root=root)
+        if pytest_targets is not None:
+            owner.update(dict.fromkeys(target.path for target in pytest_targets))
+            continue
+        for path in argv_repository_paths(command.argv):
             if path == "tests" or path.startswith("tests/"):
                 owner[path] = None
 
@@ -1112,10 +1149,13 @@ class ProofPlan:
             always=tuple(data.get("always", [])),
             always_toolchains=tuple(data.get("always_toolchains", [])),
         )
-        errors = plan.validate()
+        from tools.proof_command_argv import checkout_pytest_configuration_errors
+
+        root = path.parent.parent
+        errors = [*plan.validate(), *checkout_pytest_configuration_errors(root)]
         if errors:
             raise ValueError("invalid proof plan:\n- " + "\n- ".join(errors))
-        _resolve_ci_command_test_inputs(plan.families, plan.commands)
+        _resolve_ci_command_test_inputs(plan.families, plan.commands, root=root)
         return plan
 
     def named_lane(self, lane_id: str) -> NamedLane:
@@ -2193,14 +2233,8 @@ class ProofPlan:
                         f"{command.id}: timeout_budget requires the cargo toolchain"
                     )
             if isinstance(argv, list) and all(isinstance(part, str) for part in argv):
-                for part in argv:
-                    candidate = part.split("::", 1)[0]
-                    if (
-                        candidate.startswith(
-                            ("examples/", "formal/", "src/", "tests/", "tools/")
-                        )
-                        and not (ROOT / candidate).exists()
-                    ):
+                for candidate in argv_repository_paths(argv):
+                    if not (ROOT / candidate).exists():
                         errors.append(
                             f"{command.id}: repository input does not exist: {candidate!r}"
                         )

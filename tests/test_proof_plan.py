@@ -30,6 +30,7 @@ from molt.python_environment_identity import python_capture_authority_paths
 from tools import (
     check_subprocess_guard_coverage,
     gen_proof_plan,
+    proof_command_argv,
     proof_plan,
     proof_receipts,
     toolchain_probe,
@@ -417,7 +418,9 @@ def test_local_change_gates_use_one_captured_integration_upstream() -> None:
         command
         for command, _tools in proof_plan.local_gate_commands(
             {"always": PLAN.always, "rule": PLAN.local_rules},
-            memory_units=proof_plan.PytestMemoryUnits(c.data for c in PLAN.commands),
+            memory_units=proof_plan.PytestMemoryUnits(
+                (c.data for c in PLAN.commands), root=proof_plan.ROOT
+            ),
         ).values()
     }
     assert expected <= commands
@@ -474,7 +477,8 @@ def test_local_gate_binding_has_a_closed_template_contract(command) -> None:
 
     with pytest.raises(ValueError, match="placeholder"):
         proof_plan.local_gate_commands(
-            {"always": [command]}, memory_units=proof_plan.PytestMemoryUnits(())
+            {"always": [command]},
+            memory_units=proof_plan.PytestMemoryUnits((), root=proof_plan.ROOT),
         )
     with pytest.raises(molt_dev.DriverError, match="placeholder"):
         molt_dev.GateConfig.parse(
@@ -526,7 +530,8 @@ def test_local_pytest_targets_are_existing_test_paths(target, message) -> None:
 def test_local_pytest_targets_project_one_command_per_rule() -> None:
     rule = next(rule for rule in PLAN.local_rules if rule.get("pytest"))
     commands = proof_plan.local_gate_commands(
-        {"rule": [rule]}, memory_units=proof_plan.PytestMemoryUnits(())
+        {"rule": [rule]},
+        memory_units=proof_plan.PytestMemoryUnits((), root=proof_plan.ROOT),
     )
     command, tools = commands[f"local.{rule['name']}.pytest"]
     assert shlex.split(command) == [
@@ -565,7 +570,8 @@ def test_local_pytest_selections_name_one_selection_and_tests(entry, message) ->
 def test_local_pytest_selections_size_workers_per_host() -> None:
     rule = next(rule for rule in PLAN.local_rules if rule.get("pytest_select"))
     commands = proof_plan.local_gate_commands(
-        {"rule": [rule]}, memory_units=proof_plan.PytestMemoryUnits(())
+        {"rule": [rule]},
+        memory_units=proof_plan.PytestMemoryUnits((), root=proof_plan.ROOT),
     )
     for index, entry in enumerate(rule["pytest_select"]):
         (key,) = set(entry) - {"targets"}
@@ -652,7 +658,7 @@ def test_local_pytest_units_preserve_path_and_node_ownership_boundaries() -> Non
             ]
         },
     ]
-    units = proof_plan.PytestMemoryUnits(iter(commands))
+    units = proof_plan.PytestMemoryUnits(iter(commands), root=proof_plan.ROOT)
     cases = [
         (["tests/light/child.py::test_one"], 0.5),
         (["tests/lightly/child.py"], 2.5),
@@ -675,6 +681,47 @@ def test_local_pytest_units_preserve_path_and_node_ownership_boundaries() -> Non
         assert units.memory_gb(iter(targets)) == expected
 
 
+def test_pytest_memory_units_belong_to_the_tests_a_command_runs() -> None:
+    # pytest's own parser names a command's targets (HF-179). The command runs
+    # neither its --deselect node nor its --ignore path, and a tool that is not
+    # pytest runs no test, so none of them carries the measured envelope.
+    units = proof_plan.PytestMemoryUnits(
+        [
+            {
+                "argv": [
+                    "python",
+                    "-m",
+                    "pytest",
+                    "--molt-worker-memory-gb=6",
+                    "tests/heavy.py",
+                    "--deselect",
+                    "tests/light.py::test_skipped",
+                    "--ignore",
+                    "tests/ignored.py",
+                ]
+            },
+            {
+                "argv": [
+                    "python",
+                    "tools/runner.py",
+                    "--molt-worker-memory-gb=6",
+                    "tests/operand.py",
+                ]
+            },
+        ],
+        root=proof_plan.ROOT,
+    )
+    default = proof_plan.host_capacity.DEFAULT_PYTEST_WORKER_MEMORY_GB
+    assert default != 6
+    assert units.memory_gb(["tests/heavy.py"]) == 6
+    for target in (
+        "tests/light.py::test_skipped",
+        "tests/ignored.py",
+        "tests/operand.py",
+    ):
+        assert units.memory_gb([target]) == default, target
+
+
 def test_local_pytest_cohort_keeps_literal_selection_and_parameter_argv() -> None:
     target = "tests/nodes.py::test_literal[x::y & 'quotes' {value} [nested]]"
     units = proof_plan.PytestMemoryUnits(
@@ -688,7 +735,8 @@ def test_local_pytest_cohort_keeps_literal_selection_and_parameter_argv() -> Non
                     "tests/nodes.py",
                 ]
             }
-        ]
+        ],
+        root=proof_plan.ROOT,
     )
     argv = proof_plan.local_pytest_argv(
         iter([target]), ("-k", "literal or 'other'"), memory_units=units
@@ -725,7 +773,8 @@ def test_local_pytest_unit_projection_does_not_round_down_its_envelope() -> None
                     "tests/precise.py",
                 ]
             }
-        ]
+        ],
+        root=proof_plan.ROOT,
     )
     argv = proof_plan.local_pytest_argv(["tests/precise.py"], memory_units=units)
     assert "--molt-worker-memory-gb=1.0000004" in argv
@@ -3659,7 +3708,9 @@ def test_command_target_subtrees_are_literal_and_resolved_without_scanning(
         scope.setattr(
             proof_plan, "Path", lambda *_a, **_k: pytest.fail("no path probes")
         )
-        proof_plan._resolve_ci_command_test_inputs((family,), commands)
+        proof_plan._resolve_ci_command_test_inputs(
+            (family,), commands, root=proof_plan.ROOT
+        )
     assert family.inputs == (
         "src/dependency.py",
         "tests/additional*.py",
@@ -3687,6 +3738,82 @@ def test_command_target_subtrees_are_literal_and_resolved_without_scanning(
         "tests/unknown.py",
     ):
         assert not plan.select([path]).selected
+
+
+def test_ci_test_inputs_are_pytest_targets_or_the_paths_other_tools_name() -> None:
+    # A pytest command's inputs are what pytest's own parser selects (HF-179):
+    # a node selects its file, and an --ignore value selects nothing. A tool
+    # that is not pytest has no pytest targets; the tests paths it names are
+    # its inputs, whether operands or option values.
+    family = proof_plan.ProofFamily("owner", {"inputs": [], "dependencies": []})
+    commands = (
+        proof_plan.ProofCommand(
+            "unit",
+            {
+                "family": "owner",
+                "argv": [
+                    "python",
+                    "-m",
+                    "pytest",
+                    "--ignore",
+                    "tests/ignored.py",
+                    "tests/selected.py::test_kept",
+                ],
+            },
+        ),
+        proof_plan.ProofCommand(
+            "tool",
+            {
+                "family": "owner",
+                "argv": ["python", "tools/runner.py", "--dir", "tests/cases"],
+            },
+        ),
+    )
+    proof_plan._resolve_ci_command_test_inputs(
+        (family,), commands, root=proof_plan.ROOT
+    )
+    assert family.inputs == ("tests/selected.py/**", "tests/cases/**")
+
+
+def test_plan_rows_read_without_addopts_need_addopts_that_select_nothing(
+    monkeypatch, tmp_path
+) -> None:
+    # command_pytest_targets reads a plan row's own argv; that is what pytest
+    # selects only while the checkout's addopts add no target and no --pyargs.
+    assert (
+        proof_command_argv.checkout_pytest_configuration_errors(proof_plan.ROOT) == []
+    )
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_extra.py").write_text(
+        "def test_extra():\n    pass\n", encoding="utf-8"
+    )
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        '[tool.pytest.ini_options]\naddopts = "-q tests/test_extra.py"\n',
+        encoding="utf-8",
+    )
+    assert proof_command_argv.checkout_pytest_configuration_errors(tmp_path) == [
+        f"pytest addopts in {tmp_path} must not select tests; tests/test_extra.py does"
+    ]
+    pyproject.write_text(
+        '[tool.pytest.ini_options]\naddopts = ["--pyargs"]\n', encoding="utf-8"
+    )
+    assert proof_command_argv.checkout_pytest_configuration_errors(tmp_path) == [
+        f"pytest addopts in {tmp_path} must not use --pyargs"
+    ]
+    # Plan loading applies the premise to the plan's own checkout.
+    seen: list[Path] = []
+
+    def premise(root: Path) -> list[str]:
+        seen.append(root)
+        return ["premise checked"]
+
+    monkeypatch.setattr(
+        proof_command_argv, "checkout_pytest_configuration_errors", premise
+    )
+    with pytest.raises(ValueError, match="premise checked"):
+        proof_plan.ProofPlan.load()
+    assert seen == [proof_plan.DEFAULT_MANIFEST.parent.parent]
 
 
 def test_command_directory_ownership_and_dependency_globs_select_ci() -> None:
