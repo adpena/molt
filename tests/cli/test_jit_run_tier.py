@@ -115,12 +115,16 @@ def test_jit_emit_requires_the_native_target(tmp_path: Path, target: str) -> Non
         _layout(tmp_path, target=admit_target(target), emit="jit")
 
 
+_VERIFIED_HOST = resolve_native_target_spec("aarch64-apple-darwin")
+
+
 def test_jit_names_every_construct_it_cannot_run() -> None:
     assert (
         _unsupported_jit_construct(
             target=TargetKind.NATIVE,
             codegen_backend="cranelift",
             has_external_native_artifacts=False,
+            host=_VERIFIED_HOST,
         )
         is None
     )
@@ -130,6 +134,7 @@ def test_jit_names_every_construct_it_cannot_run() -> None:
             target=cross,
             codegen_backend="cranelift",
             has_external_native_artifacts=False,
+            host=_VERIFIED_HOST,
         )
         assert reason is not None and "x86_64-unknown-linux-gnu" in reason
     assert "llvm" in (
@@ -137,6 +142,7 @@ def test_jit_names_every_construct_it_cannot_run() -> None:
             target=TargetKind.NATIVE,
             codegen_backend="llvm",
             has_external_native_artifacts=False,
+            host=_VERIFIED_HOST,
         )
         or ""
     )
@@ -145,6 +151,7 @@ def test_jit_names_every_construct_it_cannot_run() -> None:
             target=TargetKind.NATIVE,
             codegen_backend="cranelift",
             has_external_native_artifacts=True,
+            host=_VERIFIED_HOST,
         )
         or ""
     )
@@ -153,9 +160,31 @@ def test_jit_names_every_construct_it_cannot_run() -> None:
             target=TargetKind.WASM,
             codegen_backend="cranelift",
             has_external_native_artifacts=False,
+            host=_VERIFIED_HOST,
         )
         or ""
     )
+
+
+@pytest.mark.parametrize(
+    "triple",
+    [
+        "x86_64-apple-darwin",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu",
+        "x86_64-pc-windows-msvc",
+    ],
+)
+def test_jit_refuses_every_host_outside_the_verified_cell(triple: str) -> None:
+    # Only aarch64 macOS ran the JIT-AOT twin gate; another host must fail
+    # before it links and loads an unverified runtime image.
+    reason = _unsupported_jit_construct(
+        target=TargetKind.NATIVE,
+        codegen_backend="cranelift",
+        has_external_native_artifacts=False,
+        host=resolve_native_target_spec(triple),
+    )
+    assert reason is not None and triple in reason and "HF-371" in reason
 
 
 def _runtime_image_plan(monkeypatch, tmp_path: Path, *, target_triple: str | None):
