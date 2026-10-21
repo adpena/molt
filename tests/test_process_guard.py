@@ -197,15 +197,17 @@ def test_typed_argv_boundary_rejects_shell_text() -> None:
 
 def test_bounded_unguarded_probe_preserves_subprocess_contract(monkeypatch) -> None:
     calls: list[tuple[list[str], dict[str, object]]] = []
+    waits: list[tuple[object, float | None]] = []
 
     def fake_popen(command: list[str], **kwargs: object):
         calls.append((command, kwargs))
+
+        def communicate(input_text, *, timeout):
+            waits.append((input_text, timeout))
+            return "head\n", ""
+
         return SimpleNamespace(
-            communicate=lambda _input, *, timeout: (
-                ("head\n", "")
-                if timeout == 30.0
-                else pytest.fail("probe timeout changed")
-            ),
+            communicate=communicate,
             poll=lambda: 0,
             __exit__=lambda *_args: None,
         )
@@ -227,6 +229,21 @@ def test_bounded_unguarded_probe_preserves_subprocess_contract(monkeypatch) -> N
     assert "shell" not in calls[0][1]
     assert calls[0][1]["stdout"] == subprocess.PIPE
     assert calls[0][1]["stderr"] == subprocess.PIPE
+    # No default deadline: a local read waits out a host stall. The probe
+    # reads no inherited stdin, so nothing but the probe itself can hold it.
+    assert waits[0] == (None, None)
+    assert calls[0][1]["stdin"] is subprocess.DEVNULL
+
+    process_guard.run_completed_command(
+        ["git", "patch-id", "--stable"],
+        memory_guard_prefix=None,
+        input="diff\n",
+        timeout=7.5,
+        capture_output=True,
+    )
+    # A caller's input and deadline pass through unchanged.
+    assert calls[1][1]["stdin"] is subprocess.PIPE
+    assert waits[1] == ("diff\n", 7.5)
 
 
 @pytest.mark.parametrize(

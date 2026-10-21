@@ -124,6 +124,33 @@ def _record_driver_git_commands(drv, monkeypatch):
     return commands
 
 
+def _record_process_deadlines(monkeypatch):
+    """Record each command's deadline where driver commands reach a process.
+
+    Every executor is a CommandExecutor, and the driver's guarded commands go
+    through harness_memory_guard; a module that bound its executor at import
+    is still recorded.
+    """
+    from tools import command_execution, harness_memory_guard
+
+    deadlines: list[tuple[tuple[str, ...], float | None]] = []
+    real_run = command_execution.CommandExecutor.run
+
+    def run(self, args, **kwargs):
+        deadlines.append((tuple(str(part) for part in args), kwargs.get("timeout")))
+        return real_run(self, args, **kwargs)
+
+    real_guarded = harness_memory_guard.guarded_completed_process
+
+    def guarded(cmd, **kwargs):
+        deadlines.append((tuple(str(part) for part in cmd), kwargs.get("timeout")))
+        return real_guarded(cmd, **kwargs)
+
+    monkeypatch.setattr(command_execution.CommandExecutor, "run", run)
+    monkeypatch.setattr(harness_memory_guard, "guarded_completed_process", guarded)
+    return deadlines
+
+
 def _assert_no_patch_diff_work(commands):
     assert not any(args[0] == "patch-id" for args in commands)
     assert not any(args[0] == "diff-tree" and "-p" in args for args in commands)
@@ -4707,9 +4734,15 @@ def test_integrate_clean_rebase_runs_committed_policy(
     upstream = _commit_file(other, "other.py", "other = 1\n", "upstream")
     _git(other, "push", "origin", "main")
     commands = _record_driver_git_commands(drv, monkeypatch)
+    deadlines = _record_process_deadlines(monkeypatch)
     assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work))) == drv.EXIT_OK
     selected = _git(work, "rev-parse", "HEAD").stdout.strip()
     assert selected != source
+    # A landing's Git plumbing waits out a host stall: a deadline on a 5 ms
+    # read failed this test when the host stalled (2026-10-21 landing batch).
+    git_deadlines = [deadline for argv, deadline in deadlines if argv[0] == "git"]
+    assert len(git_deadlines) >= len(commands) > 0
+    assert set(git_deadlines) == {None}
     replay = next(index for index, args in enumerate(commands) if args[0] == "rebase")
     assert ["diff-tree", "-p", "--no-color", source] in commands[:replay]
     assert ["diff-tree", "-p", "--no-color", selected] in commands[replay + 1 :]
@@ -4732,6 +4765,120 @@ def test_integrate_clean_rebase_runs_committed_policy(
     output = capsys.readouterr()
     assert "empty diffs (no patch-id, not patch-tracked)" in output.out + output.err
     assert empty[:9] in output.out + output.err
+
+
+def test_landing_local_git_reads_carry_no_wall_clock_deadline(
+    drv, origin_and_clone, monkeypatch
+):
+    from tools import molt_dev_controller
+
+    _, work = origin_and_clone
+    deadlines = _record_process_deadlines(monkeypatch)
+    head = drv.Git(work).rev_parse("HEAD")
+    assert drv._git_common_directory(work) is not None
+    assert molt_dev_controller._git_bytes(work, "rev-parse", "HEAD").strip() == (
+        head.encode("ascii")
+    )
+    reads = [(argv, deadline) for argv, deadline in deadlines if argv[0] == "git"]
+    assert {argv[-1] for argv, _ in reads} >= {"HEAD", "--git-common-dir"}
+    assert len(reads) >= 3
+    assert {deadline for _, deadline in reads} == {None}
+
+
+def test_git_transfer_ends_a_silent_peer_by_progress_not_wall_clock(
+    drv, origin_and_clone, monkeypatch
+):
+    import socket
+    import threading
+
+    from tools import molt_dev_common
+
+    _, work = origin_and_clone
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind(("127.0.0.1", 0))
+    server.listen(4)
+    held: list[socket.socket] = []
+
+    def accept_and_say_nothing() -> None:
+        # Accept, read the request, never answer: a wedged peer the kernel
+        # still keeps alive, which TCP keepalive never ends.
+        while True:
+            try:
+                conn, _ = server.accept()
+            except OSError:
+                return
+            held.append(conn)
+            try:
+                conn.recv(65536)
+            except OSError:
+                pass
+
+    threading.Thread(target=accept_and_say_nothing, daemon=True).start()
+    monkeypatch.setattr(molt_dev_common, "GIT_TRANSFER_STALL_SECONDS", 2)
+    deadlines = _record_process_deadlines(monkeypatch)
+    url = f"http://127.0.0.1:{server.getsockname()[1]}/silent.git"
+    outcome: dict[str, object] = {}
+    transfer = threading.Thread(
+        target=lambda: outcome.update(
+            proc=drv.Git(work)._run(["ls-remote", url], check=False)
+        )
+    )
+    try:
+        transfer.start()
+        transfer.join(120)  # A hang guard only; the stall ends it in ~2 s.
+        assert not transfer.is_alive(), "a silent peer held the transfer"
+    finally:
+        server.close()
+        for conn in held:
+            conn.close()
+    proc = outcome["proc"]
+    assert proc.returncode != 0
+    assert "too slow" in proc.stderr.lower()
+    transfer_deadlines = [deadline for argv, deadline in deadlines if url in argv]
+    assert transfer_deadlines and set(transfer_deadlines) == {None}
+
+
+@pytest.mark.parametrize(
+    ("environment", "configured", "expected"),
+    [
+        (
+            {},
+            None,
+            "ssh -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=4",
+        ),
+        (
+            {"GIT_SSH_COMMAND": "ssh -i /k -o ServerAliveInterval=5"},
+            "ssh -i /other",
+            "ssh -i /k -o ServerAliveInterval=5 -o BatchMode=yes "
+            "-o ServerAliveInterval=15 -o ServerAliveCountMax=4",
+        ),
+        (
+            {},
+            "/usr/bin/ssh -F /cfg",
+            "/usr/bin/ssh -F /cfg -o BatchMode=yes -o ServerAliveInterval=15 "
+            "-o ServerAliveCountMax=4",
+        ),
+        (
+            {"GIT_SSH_COMMAND": "/opt/ssh-wrapper --flag"},
+            None,
+            "/opt/ssh-wrapper --flag",
+        ),
+        ({"GIT_SSH": "/opt/plink"}, None, None),
+    ],
+)
+def test_git_transfer_bounds_keep_the_users_transport(
+    environment, configured, expected
+):
+    from tools import molt_dev_common
+
+    env = dict(environment)
+    molt_dev_common.bound_git_transfer(env, configured_ssh_command=configured)
+    assert env["GIT_HTTP_LOW_SPEED_LIMIT"] == "1"
+    assert env["GIT_HTTP_LOW_SPEED_TIME"] == str(
+        molt_dev_common.GIT_TRANSFER_STALL_SECONDS
+    )
+    # ssh keeps the first value of an option, so a user's own option wins.
+    assert env.get("GIT_SSH_COMMAND") == expected
 
 
 def test_integrate_classifies_raw_paths_without_git_quote_escaping(
