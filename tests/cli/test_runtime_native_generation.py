@@ -254,6 +254,7 @@ def native_build(tmp_path, runtime_fixture_root, monkeypatch):
         modules=(),
         coordinate=None,
         rust_cpu=RustCpuPolicy.BASELINE,
+        cargo_timeout=1,
     ):
         current.coordinate = (
             coordinate or tmp_path / "cargo" / "dev-fast" / f"runtime.{profile}.a"
@@ -266,7 +267,7 @@ def native_build(tmp_path, runtime_fixture_root, monkeypatch):
             True,
             "dev-fast",
             tmp_path,
-            1,
+            cargo_timeout,
             stdlib_profile=profile,
             extra_runtime_features=features,
             resolved_modules=modules,
@@ -529,6 +530,29 @@ def test_a_build_that_waited_for_the_lock_reuses_what_the_holder_published(
     assert ok and contended
     assert len(native_build.cargo_runs) == 1
     assert state.runtime_lib.is_relative_to(native_build.store.root)
+
+
+@pytest.mark.parametrize("cargo_timeout", [None, 7.0])
+def test_a_waiter_waits_as_long_as_the_build_it_waits_for(
+    native_build, monkeypatch, cargo_timeout
+):
+    """The identity lock is bounded by the build's own Cargo timeout, if any.
+
+    A waiter behind another checkout's cold build must not give up before that
+    build may finish; with no Cargo timeout it waits until the holder exits.
+    """
+    monkeypatch.delenv("MOLT_BUILD_LOCK_TIMEOUT", raising=False)
+    original = ProductStore.single_flight
+    waits = []
+
+    def single_flight(self, identity, *, default_timeout_s):
+        waits.append(default_timeout_s)
+        return original(self, identity, default_timeout_s=default_timeout_s)
+
+    monkeypatch.setattr(ProductStore, "single_flight", single_flight)
+    ok, _state, _timings = native_build.run(cargo_timeout=cargo_timeout)
+    assert ok and len(native_build.cargo_runs) == 1
+    assert waits == [cargo_timeout]
 
 
 @pytest.mark.parametrize("corruption", ["archive", "manifest", "receipt"])

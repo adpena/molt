@@ -862,9 +862,13 @@ tests that place their target in a temporary directory.
   identity memo, so a later build of that checkout skips hashing its sources.
 - One builder per input: a miss takes the entry's lock (`single_flight`) and
   reads the store again under it, so a second checkout with the same inputs
-  waits and then reuses the first one's publication. CPU admission across
-  builds stays with `molt.host_capacity` ([host capacity](../host_capacity.md),
-  design item 6).
+  waits and then reuses the first one's publication. The waiter waits as long
+  as the build it waits for may run: the build's Cargo timeout, else until
+  the holder exits, as Cargo's build-directory lock and Bazel's output-base
+  lock wait (`MOLT_BUILD_LOCK_TIMEOUT` still bounds it). A fixed 300 s wait
+  would fail a waiter behind a cold release backend build, which took 267 s
+  of Cargo at load 20 on this host. CPU admission across builds stays with
+  `molt.host_capacity` ([host capacity](../host_capacity.md), design item 6).
 - Retention follows last use, as Go's does: an admission renews its entry in
   the store's ledger before reading it, and each publication evicts entries no
   build used for 5 days. The native runtime's per-target generations had no
