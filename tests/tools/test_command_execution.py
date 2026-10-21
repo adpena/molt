@@ -308,8 +308,10 @@ def test_bound_executor_retains_source_owner_with_foreign_compiler_inputs(
 
     foreign = tmp_path / "compiler-inputs"
     (foreign / "tools").mkdir(parents=True)
-    (foreign / "pyproject.toml").write_text("[project]\nname='input'\n")
-    (foreign / "tools" / "harness_memory_guard.py").write_text("")
+    (foreign / "pyproject.toml").write_text(
+        "[project]\nname='input'\n", encoding="utf-8"
+    )
+    (foreign / "tools" / "harness_memory_guard.py").write_text("", encoding="utf-8")
     monkeypatch.setenv("MOLT_SOURCE_ROOT", str(foreign))
     captured = {}
     if guarded:
@@ -334,8 +336,15 @@ def test_bound_executor_retains_source_owner_with_foreign_compiler_inputs(
 
         monkeypatch.setattr(authority.ProcessStateUse, "__enter__", enter)
         command = ["git", "rev-parse", "--show-toplevel"]
-    result = command_execution.CommandExecutor(prefix="MOLT_TEST", repo_root=ROOT).run(
-        command, env=dict(os.environ), cwd=ROOT, capture_output=True, text=True
+    result = command_execution.CommandExecutor(
+        prefix="MOLT_TEST", repo_root=ROOT, encoding="utf-8"
+    ).run(
+        command,
+        env=dict(os.environ),
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
     )
     assert result.returncode == 0
     assert captured == {"owner": ROOT, "input": str(foreign)}
