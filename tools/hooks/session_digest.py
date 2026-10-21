@@ -11,11 +11,12 @@ memory index itself. It reports:
   * where to start (those authorities);
   * the landing queue: pending requests and the newest results;
   * the proof queue's active rows;
-  * the worktree count against the drift threshold;
-  * what the hooks refuse and how to satisfy the Stop landing gate.
+  * the live worktree count against the drift gate's SPRAWL threshold;
+  * what the hooks enforce, read from their live wiring.
 
-It also anchors the Stop landing gate's window for this session. Every
-section is guarded, and the whole digest runs under the fail-open wrapper.
+It also anchors the session window (the HEAD at session start) that the Stop
+legs diff against; ``landing_gate`` owns that marker. Every section is
+guarded, and the whole digest runs under the fail-open wrapper.
 """
 
 from __future__ import annotations
@@ -35,7 +36,6 @@ bind_repository_imports(__file__)
 from tools.hooks import _common, landing_gate  # noqa: E402
 
 
-WORKTREE_DEBT_THRESHOLD = 24  # M67: keep the worktree count low.
 RECENT_LANDING_RESULTS = 3
 
 
@@ -69,7 +69,7 @@ def _section_landing_queue(out: io.StringIO, root: Path) -> None:
 
 
 def _section_proof_queue(out: io.StringIO, root: Path) -> None:
-    count = _common.proof_queue_active_count(root, timeout=3.5)
+    count = _common.proof_queue_active_count(root)
     if count is None:
         out.write("PROOF QUEUE: status undeterminable.\n")
     else:
@@ -77,32 +77,37 @@ def _section_proof_queue(out: io.StringIO, root: Path) -> None:
 
 
 def _section_worktrees(out: io.StringIO, root: Path) -> None:
-    count = _common.worktree_count(root)
-    if count is None:
-        out.write("WORKTREES: count unavailable.\n")
-        return
+    from tools import drift_harvest
+
+    count = drift_harvest.live_worktree_count(root)
+    limit = drift_harvest.MAX_LIVE_WORKTREES
     over = (
         "; over the threshold: `uv run --python 3.12 python tools/drift_harvest.py "
         "--report`, then retire landed lanes"
-        if count > WORKTREE_DEBT_THRESHOLD
+        if count > limit
         else ""
     )
-    out.write(f"WORKTREES: {count} (threshold {WORKTREE_DEBT_THRESHOLD}){over}.\n")
+    out.write(f"WORKTREES: {count} live (SPRAWL threshold {limit}){over}.\n")
 
 
 def _section_hooks(out: io.StringIO) -> None:
+    from tools.hooks import bash_guard, stop_gates
+
+    if bash_guard.enforcement_state() == "strict":
+        guard = "refuses"
+        override = "`MOLT_GUARD_OK=1 <cmd>` overrides once, audited."
+    else:
+        guard = "records, without blocking,"
+        override = (
+            f"it logs each would-be block to {bash_guard.SHADOW_NAME} under "
+            ".molt/state until its gate_flip in tools/proof_plan.toml is strict."
+        )
     out.write(
-        "HOOKS: bash_guard refuses destructive git on the shared checkout, "
+        f"HOOKS: bash_guard {guard} destructive git on the shared checkout, "
         "`git add`-then-commit sweeps, heavy builds that bypass a live proof "
-        "queue, and HTTPS pushes; `MOLT_GUARD_OK=1 <cmd>` overrides once, "
-        "audited.\n"
-        "  Stop landing gate: potentially mutating work lands "
-        "(`uv run --python 3.12 python tools/molt_dev.py land --repo <lane>`), "
-        "is in flight, or names a blocker "
-        "(`uv run --python 3.12 python tools/hooks/landing_gate.py "
-        '--record-blocker "<reason>"`). Read-only reviews are complete '
-        "outcomes; read-only tools: "
-        + ", ".join(sorted(landing_gate.READ_ONLY_TOOLS))
+        f"queue, and HTTPS pushes; {override}\n"
+        "  Stop checks (each re-engages a turn at most once): "
+        + ", ".join(name for name, _evaluate in stop_gates.GATES)
         + ".\n"
         "  Waivers: `# <GATE>_OK:<rationale>` (>=4 real chars) or [skip-<gate>].\n"
     )
@@ -114,7 +119,7 @@ def run() -> int:
     root = _common.repo_root(cwd)
     session_id = str(data.get("session_id", ""))
 
-    # Anchor the Stop landing gate's window for this session.
+    # Anchor the session window the Stop legs diff against.
     try:
         landing_gate.write_session_baseline(root, session_id)
     except Exception as exc:

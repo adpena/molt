@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import time
@@ -305,14 +306,6 @@ def is_linked_worktree(root: Path) -> bool:
         return False
 
 
-def worktree_count(root: Path) -> int | None:
-    try:
-        r = _git(root, "worktree", "list", "--porcelain")
-        return sum(1 for line in r.stdout.splitlines() if line.startswith("worktree "))
-    except Exception:
-        return None
-
-
 def origin_is_https(root: Path) -> bool:
     try:
         r = _git(root, "remote", "get-url", "origin")
@@ -322,48 +315,20 @@ def origin_is_https(root: Path) -> bool:
         return False
 
 
-def proof_queue_active_count(root: Path, timeout: float = 5.0) -> int | None:
-    """Number of ACTIVE proof_queue rows, or None if undeterminable.
+def proof_queue_active_count(root: Path) -> int | None:
+    """Active proof_queue runs (queued, dispatched or running), or None.
 
-    Parses ``python tools/proof_queue.py status`` (which has no ``--json`` mode)
-    -- its ``active:`` section lists ``- none`` when idle. None means "could not
-    tell"; callers decide the fail-open direction (the guard treats None as
-    not-live so it never blocks a build on uncertainty; the landing gate treats
-    None as in-flight so it never nags on uncertainty).
+    Reads the queue's own state in-process (``state.active_run_count``). None
+    means the state could not be read; callers decide the fail-open direction
+    (the guard treats None as not-live so it never blocks a build on
+    uncertainty; the landing gate treats None as in-flight so it never nags on
+    uncertainty).
     """
+    from tools.proof_queue_pkg import state
+
     try:
-        r = _COMMANDS.run(
-            [sys.executable, "tools/proof_queue.py", "status"],
-            cwd=str(root),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-        )
-        if r.returncode != 0 or not r.stdout.strip():
-            return None
-        active: list[str] = []
-        in_active = False
-        for line in r.stdout.splitlines():
-            s = line.strip()
-            if not s:
-                continue
-            low = s.lower().rstrip(":")
-            if low == "active" and s.endswith(":"):
-                in_active = True
-                continue
-            if in_active:
-                if s.endswith(":") and not s.startswith("-"):
-                    break  # next section header (e.g. "recent:")
-                if s.startswith("-"):
-                    item = s[1:].strip()
-                    if item and item.lower() != "none":
-                        active.append(item)
-                else:
-                    break
-        return len(active)
-    except Exception:
+        return state.active_run_count(state.default_db_path(root, os.environ))
+    except (OSError, sqlite3.Error):
         return None
 
 

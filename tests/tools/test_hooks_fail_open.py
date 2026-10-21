@@ -113,12 +113,26 @@ def test_error_log_loud_escalation_after_threshold(tmp_path, monkeypatch, capsys
     assert "ALERT" in err  # escalates loudly once the threshold is crossed
 
 
+def test_queue_count_tells_an_idle_queue_from_an_unreadable_one(tmp_path, monkeypatch):
+    from tools.proof_queue_pkg import state
+
+    db = tmp_path / "proof_queue.sqlite3"
+    monkeypatch.setattr(state, "default_db_path", lambda root, environ: db)
+    # No queue has run here: nothing is active.
+    assert common.proof_queue_active_count(tmp_path) == 0
+    # Unreadable state is unknown, never "idle": the guard and the landing
+    # gate choose their own fail-open direction for None.
+    db.write_bytes(b"not a database")
+    assert common.proof_queue_active_count(tmp_path) is None
+
+
 # --- the settings commands themselves (the launcher) ----------------------
 
-_POSIX_SH = shutil.which("sh")
-_GIT = shutil.which("git")
+# The hook path runs exactly these utilities: the shell, Git, `cat` for the
+# bash_guard prefilter and `dirname` in .githooks/molt-hook-launch.sh.
+_HOOK_UTILITIES = {name: shutil.which(name) for name in ("sh", "git", "cat", "dirname")}
 _NEEDS_POSIX_CHECKOUT = pytest.mark.skipif(
-    _POSIX_SH is None or _GIT is None or os.name == "nt",
+    None in _HOOK_UTILITIES.values() or os.name == "nt",
     reason="builds a symlinked checkout and runs hook commands through a POSIX sh",
 )
 _HTTPS_PUSH = {
@@ -135,18 +149,37 @@ def _settings_hook_commands() -> dict[str, list[str]]:
     }
 
 
-def _hook_checkout(tmp_path: Path, *, environment: Path | None) -> Path:
-    """A Git project dir with this checkout's tools and its own hook state."""
-    checkout = tmp_path / "checkout"
-    checkout.mkdir()
-    initialized = _COMMANDS.run(
-        [_GIT, "init", "-q", str(checkout)],
+def _git(*args: str, cwd: Path) -> None:
+    completed = _COMMANDS.run(
+        [
+            _HOOK_UTILITIES["git"],
+            "-c",
+            "user.name=hook-test",
+            "-c",
+            "user.email=hook-test@example.invalid",
+            *args,
+        ],
+        cwd=str(cwd),
         capture_output=True,
         text=True,
         encoding="utf-8",
     )
-    assert initialized.returncode == 0, initialized.stderr
-    (checkout / "tools").symlink_to(ROOT / "tools", target_is_directory=True)
+    assert completed.returncode == 0, completed.stderr
+
+
+def _hook_checkout(tmp_path: Path, *, environment: Path | None) -> Path:
+    """A committed Git checkout that projects this checkout's hook sources.
+
+    The projection is committed, so a linked worktree of it has the same
+    sources and no environment of its own.
+    """
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    _git("init", "-q", cwd=checkout)
+    for name in ("tools", "src", ".githooks"):
+        (checkout / name).symlink_to(ROOT / name, target_is_directory=True)
+    _git("add", "--", "tools", "src", ".githooks", cwd=checkout)
+    _git("commit", "-q", "-m", "hook sources", cwd=checkout)
     if environment is not None:
         (checkout / ".venv").symlink_to(environment, target_is_directory=True)
     return checkout
@@ -154,97 +187,174 @@ def _hook_checkout(tmp_path: Path, *, environment: Path | None) -> Path:
 
 def _run_settings_command(
     command: str,
-    checkout: Path,
+    project: Path,
     tmp_path: Path,
     payload: dict,
-    uv_project_environment: str | None = None,
+    *,
+    run_context: dict[str, str],
+    prelude: str = "",
 ):
-    """Run one settings command as Claude Code does: `sh` and `git` on PATH.
+    """Run one settings command as Claude Code does, on a PATH without Python.
 
-    The desktop app's PATH has no ``python``. The test harness injects its own
-    ``UV_PROJECT_ENVIRONMENT`` into every child, so the child shell states the
-    app's value (normally unset) before it runs the command verbatim.
+    The desktop app's PATH has no ``python``; this PATH holds only the
+    utilities the hook path runs. The hooks run the checkout's own tools, so
+    the child gets the session's run context (``checkout_run_context``):
+    without it those tools keep their state in the checkout's ``target/``.
     """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
-    for name, tool in (("sh", _POSIX_SH), ("git", _GIT)):
+    for name, tool in _HOOK_UTILITIES.items():
         if not (bin_dir / name).exists():
             (bin_dir / name).symlink_to(tool)
-    prelude = (
-        "unset UV_PROJECT_ENVIRONMENT"
-        if uv_project_environment is None
-        else f"UV_PROJECT_ENVIRONMENT={shlex.quote(uv_project_environment)}; "
-        "export UV_PROJECT_ENVIRONMENT"
-    )
     return _COMMANDS.run(
-        [_POSIX_SH, "-c", f"{prelude}\n{command}"],
-        input=json.dumps({"session_id": "launcher", "cwd": str(checkout), **payload}),
+        [_HOOK_UTILITIES["sh"], "-c", f"{prelude}\n{command}"],
+        input=json.dumps({"session_id": "launcher", "cwd": str(project), **payload}),
         capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
         timeout=120,
         env={
+            **run_context,
             "PATH": str(bin_dir),
             "HOME": str(tmp_path),
-            "CLAUDE_PROJECT_DIR": str(checkout),
+            "CLAUDE_PROJECT_DIR": str(project),
+            "GIT_CEILING_DIRECTORIES": str(tmp_path),
         },
     )
 
 
+def _shadow_rules(project: Path) -> list[str]:
+    shadow = project / ".molt" / "state" / bg.SHADOW_NAME
+    if not shadow.exists():
+        return []
+    lines = shadow.read_text(encoding="utf-8").splitlines()
+    return [json.loads(line)["rule"] for line in lines]
+
+
 @_NEEDS_POSIX_CHECKOUT
-def test_settings_hooks_run_without_python_on_path(tmp_path):
+def test_settings_hooks_run_without_python_on_path(tmp_path, checkout_run_context):
     """Each settings command runs its hook under the project's interpreter.
 
     The desktop app's PATH has no ``python``, and every hook failed with exit
-    127 there. Only the guard itself can refuse an HTTPS push with exit 2, so
-    the refusal proves the command ran the hook, not just a shell.
+    127 there. bash_guard observes, so its shadow record proves the command
+    ran the guard itself, not just a shell; the digest header proves the same
+    for SessionStart.
     """
     commands = _settings_hook_commands()
     assert set(commands) == {"SessionStart", "PreToolUse", "Stop"}
     assert all(len(event) == 1 for event in commands.values())
     checkout = _hook_checkout(tmp_path, environment=Path(sys.prefix))
     (guard,) = commands["PreToolUse"]
-    refused = _run_settings_command(guard, checkout, tmp_path, _HTTPS_PUSH)
-    assert refused.returncode == 2, refused.stderr
-    assert "BLOCKED (https-push)" in refused.stderr
+    observed = _run_settings_command(
+        guard, checkout, tmp_path, _HTTPS_PUSH, run_context=checkout_run_context
+    )
+    assert (observed.returncode, observed.stderr) == (0, "")
+    assert _shadow_rules(checkout) == ["https-push"]
     allowed = _run_settings_command(
         guard,
         checkout,
         tmp_path,
         {"tool_name": "Bash", "tool_input": {"command": "git status"}},
+        run_context=checkout_run_context,
     )
     assert (allowed.returncode, allowed.stderr) == (0, "")
-    for event in ("SessionStart", "Stop"):
-        (command,) = commands[event]
-        completed = _run_settings_command(
-            command, checkout, tmp_path, {"stop_hook_active": True}
-        )
-        assert (completed.returncode, completed.stderr) == (0, ""), event
+    assert _shadow_rules(checkout) == ["https-push"]
+    (digest,) = commands["SessionStart"]
+    started = _run_settings_command(
+        digest, checkout, tmp_path, {}, run_context=checkout_run_context
+    )
+    assert (started.returncode, started.stderr) == (0, "")
+    assert started.stdout.startswith("== molt session start ==\n")
+    (stop,) = commands["Stop"]
+    stopped = _run_settings_command(
+        stop,
+        checkout,
+        tmp_path,
+        {"stop_hook_active": True},
+        run_context=checkout_run_context,
+    )
+    assert (stopped.returncode, stopped.stdout, stopped.stderr) == (0, "", "")
 
 
 @_NEEDS_POSIX_CHECKOUT
-def test_launcher_follows_uv_environment_selection(tmp_path):
-    """UV_PROJECT_ENVIRONMENT selects the interpreter, as it selects uv's."""
-    checkout = _hook_checkout(tmp_path, environment=None)
+def test_linked_worktree_hooks_run_under_the_common_checkout_environment(
+    tmp_path, checkout_run_context
+):
+    """A linked worktree has no .venv: the hook uses the common checkout's.
+
+    ``UV_PROJECT_ENVIRONMENT`` names a directory with no interpreter, so a
+    launcher that followed it, or the worktree's own .venv, would fail.
+    """
+    checkout = _hook_checkout(tmp_path, environment=Path(sys.prefix))
+    linked = tmp_path / "linked"
+    _git("worktree", "add", "-q", str(linked), cwd=checkout)
+    assert not (linked / ".venv").exists()
     (guard,) = _settings_hook_commands()["PreToolUse"]
-    refused = _run_settings_command(
-        guard, checkout, tmp_path, _HTTPS_PUSH, uv_project_environment=sys.prefix
+    decoy = tmp_path / "no-interpreter"
+    decoy.mkdir()
+    observed = _run_settings_command(
+        guard,
+        linked,
+        tmp_path,
+        _HTTPS_PUSH,
+        prelude=f"UV_PROJECT_ENVIRONMENT={shlex.quote(str(decoy))}; "
+        "export UV_PROJECT_ENVIRONMENT",
+        run_context=checkout_run_context,
     )
-    assert refused.returncode == 2, refused.stderr
-    (checkout / "env").symlink_to(Path(sys.prefix), target_is_directory=True)
-    relative = _run_settings_command(
-        guard, checkout, tmp_path, _HTTPS_PUSH, uv_project_environment="env"
-    )
-    assert relative.returncode == 2, relative.stderr
+    assert (observed.returncode, observed.stderr) == (0, "")
+    assert _shadow_rules(linked) == ["https-push"]
 
 
 @_NEEDS_POSIX_CHECKOUT
-def test_launcher_fails_open_without_an_environment(tmp_path):
+def test_launcher_fails_open_without_an_environment(tmp_path, checkout_run_context):
     """A hook that cannot start must not block the tool call: exit 2 would."""
     checkout = _hook_checkout(tmp_path, environment=None)
     (guard,) = _settings_hook_commands()["PreToolUse"]
-    completed = _run_settings_command(guard, checkout, tmp_path, _HTTPS_PUSH)
+    completed = _run_settings_command(
+        guard, checkout, tmp_path, _HTTPS_PUSH, run_context=checkout_run_context
+    )
     assert completed.returncode == 1
     assert "molt hook bash_guard did not run" in completed.stderr
     assert "uv sync" in completed.stderr
+
+
+@_NEEDS_POSIX_CHECKOUT
+def test_launcher_fails_open_outside_a_git_checkout(tmp_path, checkout_run_context):
+    project = tmp_path / "plain"
+    project.mkdir()
+    (project / "tools").symlink_to(ROOT / "tools", target_is_directory=True)
+    (project / ".githooks").symlink_to(ROOT / ".githooks", target_is_directory=True)
+    (guard,) = _settings_hook_commands()["PreToolUse"]
+    completed = _run_settings_command(
+        guard, project, tmp_path, _HTTPS_PUSH, run_context=checkout_run_context
+    )
+    assert completed.returncode == 1
+    assert "is not a Git checkout" in completed.stderr
+
+
+@_NEEDS_POSIX_CHECKOUT
+@pytest.mark.parametrize("event", ["SessionStart", "PreToolUse", "Stop"])
+def test_settings_commands_fail_open_without_the_launcher(
+    tmp_path, event, checkout_run_context
+):
+    # A project dir without tools/hooks/run.sh: `sh` on a missing file is 127,
+    # and a PreToolUse hook must never exit 2.
+    project = tmp_path / "bare"
+    project.mkdir()
+    (command,) = _settings_hook_commands()[event]
+    completed = _run_settings_command(
+        command, project, tmp_path, _HTTPS_PUSH, run_context=checkout_run_context
+    )
+    assert completed.returncode == 1
+
+
+@_NEEDS_POSIX_CHECKOUT
+def test_launcher_refuses_an_unknown_hook(tmp_path, checkout_run_context):
+    checkout = _hook_checkout(tmp_path, environment=Path(sys.prefix))
+    command = 'sh "${CLAUDE_PROJECT_DIR}/tools/hooks/run.sh" no_such_hook'
+    completed = _run_settings_command(
+        command, checkout, tmp_path, _HTTPS_PUSH, run_context=checkout_run_context
+    )
+    assert completed.returncode == 1
+    assert "no tools/hooks/no_such_hook.py" in completed.stderr

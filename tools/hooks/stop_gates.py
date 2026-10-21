@@ -7,10 +7,10 @@ gates; the FIRST that returns a block reason is emitted as
 block contract (code.claude.com/docs/en/hooks): a Stop block re-engages the
 agent with an actionable nudge and NEVER wedges the session.
 
-Wave 1 wires exactly one leg: the A2 landing gate. The ``GATES`` list is the
-clean seam for Wave 2's triality drift detector (A3) and magnitude-dismissal
-detector (A6) -- each a ``(name, evaluate)`` pair with the same
-``evaluate(data, root) -> str | None`` shape.
+The legs are the triality drift detector (A3) and the magnitude-dismissal
+detector (A6), each a ``(name, evaluate)`` pair with the same
+``evaluate(data, root) -> str | None`` shape. The A2 landing gate and the
+session-learning writer are unwired until they are redesigned (see ``GATES``).
 
 LOOP-SAFETY / COMPOSITION:
   * honors ``stop_hook_active`` (defensive ``.get``): if the harness is already
@@ -36,7 +36,7 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
 
-from tools.hooks import _common, landing_gate, session_learning  # noqa: E402
+from tools.hooks import _common  # noqa: E402
 from tools import anti_recurrence_gate, triality_gate, magnitude_dismissal_gate  # noqa: E402
 
 
@@ -48,8 +48,12 @@ from tools import anti_recurrence_gate, triality_gate, magnitude_dismissal_gate 
 #   * triality_gate (A3)             -- keep the DAG/DSL/equations legs in sync (M63)
 #   * magnitude_dismissal_gate (A6)  -- no absolute-magnitude dismissal / unscoped
 #                                       verdict (M46/M47, M11, M16)
+# The landing gate and the session-learning writer are not wired (owner,
+# 2026-10-21) until they are redesigned: the landing gate could not attribute
+# landing-queue activity to a session, and session learning wrote a file into
+# the user's Claude memory directory on most Stops. Their gate_flip entries in
+# tools/proof_plan.toml state what each needs before it returns.
 GATES = [
-    ("landing_gate", landing_gate.evaluate),
     ("triality_gate", triality_gate.evaluate),
     ("magnitude_dismissal_gate", magnitude_dismissal_gate.evaluate),
 ]
@@ -65,11 +69,6 @@ def run() -> int:
 
     cwd = data.get("cwd")
     root = _common.repo_root(cwd)
-
-    try:
-        session_learning.record(data, root)
-    except Exception as exc:
-        _common.log_error("stop_gates.session_learning", exc, root)
 
     try:
         for finding in anti_recurrence_gate.evaluate(root):

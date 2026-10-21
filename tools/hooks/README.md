@@ -9,9 +9,16 @@ Claude Code lifecycle points. Full design: `docs/agent/APPARATUS_FROM_COMMA_LAB.
 
 | Event | Script | Job | Mechanizes |
 |---|---|---|---|
-| `SessionStart` | `session_digest.py` | read-only digest of live facts (pointers to AGENTS.md, the coordination context and the v1.0 ledger; landing queue; proof queue; worktree drift; what the hooks enforce) injected as context; writes the landing-gate window baseline | M67 |
-| `PreToolUse` (Bash) | `bash_guard.py` | refuses destructive-git-on-shared-checkout, `git add` sweeps, build-bypasses-live-queue, https-push | M17, M18, M20, M27, M19 |
-| `Stop` | `stop_gates.py` -> `session_learning.py` + gates | persists landings/cruxes/frontiers into the memory corpus, warns on uncaptured bug-class learning, then applies the land-or-blocker/triality/verdict gates | M12, M05, M22 |
+| `SessionStart` | `session_digest.py` | read-only digest of live facts (pointers to AGENTS.md, the coordination context and the v1.0 ledger; landing queue; proof queue; live worktrees against `drift_harvest`'s SPRAWL threshold; what the hooks enforce, read from their wiring) injected as context; anchors the session window | M67 |
+| `PreToolUse` (Bash) | `bash_guard.py` | judges destructive-git-on-shared-checkout, `git add` sweeps, build-bypasses-live-queue and https-push; observe-only until its gate_flip is strict (below) | M17, M18, M20, M27, M19 |
+| `Stop` | `stop_gates.py` | warns on uncaptured bug-class learning (advisory), then applies the triality and verdict-scope gates | M05, M22 |
+
+`landing_gate.py` (A2) and `session_learning.py` are not wired (owner,
+2026-10-21). The landing gate could not attribute landing activity to a
+session, and session learning wrote into the user's memory directory on most
+Stops. Their `[[gate_flip]]` entries in `tools/proof_plan.toml` state what each
+needs before it returns; HF-424 tracks the per-session window the landing gate
+needs.
 
 Supporting: `_common.py` (fail-open wrapper, UTF-8 backstop, locked jsonl,
 git/queue helpers), `waivers.py` (A9 waiver grammar), `../check_gate_flips.py`
@@ -33,45 +40,52 @@ harm -> guard -> live-canary registry).
   observations may use `subprocess.run`, but `Popen`, kill/terminate calls,
   signals, and taskkill-style actuation are forbidden.
 - **Loop-safe + event-triggered.** The `Stop` block is a re-engage NUDGE
-  (exit 0), never a wedge: guarded by `stop_hook_active` + a persisted
-  `last_block_head` marker (blocks at most once per HEAD state), silent when no
-  potentially mutating activity. The landing leg parses actual assistant tool
-  records in a bounded transcript tail; read-only tools do not require a commit
-  or an invented blocker. SessionStart uses the same `READ_ONLY_TOOLS` set to
-  explain the requirement and scopes its landing directive to potentially
-  mutating work. Shell and unfamiliar tools still count, without
-  guessing intent from command text. Malformed/unavailable transcripts allow
-  continuation with a visible diagnostic. It **composes with** (does not replace) the autonomous
-  `/goal` Stop loop.
+  (exit 0), never a wedge: guarded by `stop_hook_active` and by each leg's own
+  `EventWindow` marker (blocks at most once per HEAD state), silent when no
+  commit in the window touches its subject. It **composes with** (does not
+  replace) the autonomous `/goal` Stop loop.
+- **Observe before enforce.** `bash_guard` reads its `[[gate_flip]]` state in
+  `tools/proof_plan.toml` (`bash_guard.enforcement_state`). Under `warn` it
+  refuses nothing: it appends each would-be block to
+  `.molt/state/bash_guard_shadow.jsonl` and exits 0. Under `strict` it exits 2
+  with the reason. A missing or unreadable entry means `warn`. Its strict
+  condition is a replay of recorded session commands with zero false blocks.
+- **Prefilter.** `run.sh` and `bash_guard.run` skip the guard when the payload
+  or command holds none of `bash_guard.PREFILTER_TOKENS` (git, cargo, build);
+  this saves about 145 ms on each other Bash call. The filters read text and
+  the guard reads shell words, so an escaped spelling (`c\argo b`) passes
+  unseen (HF-423, pinned by a strict xfail test). The guard may not go strict
+  until one shell-word model owns both.
 - **Windows.** `msvcrt` locks (not `fcntl`); ASCII-safe, UTF-8-explicit
   (reuses `tools/_io_utf8.force_utf8_stdio`, M43 cp1252 class).
 - **Interpreter.** Every settings command runs `sh tools/hooks/run.sh <hook>`,
-  which selects the interpreter of the checkout's uv environment by uv's rule
-  (`UV_PROJECT_ENVIRONMENT`, relative to the checkout unless absolute, else
-  `.venv`; `bin/python` or `Scripts/python.exe`). Claude Code's PATH need not
-  carry `python`, and the hooks import repository tools that need the
-  project's Python floor. A missing environment exits 1 with the `uv sync`
-  remedy: fail-open and visible, never 2 (which would block every Bash call).
+  which starts Python the way the Git hooks do: it sources
+  `.githooks/molt-hook-launch.sh`, which selects the common checkout's
+  platform-native uv environment (`.venv/bin/python` or
+  `.venv/Scripts/python.exe`) and binds imports to the invoking worktree. A
+  linked worktree therefore needs no environment of its own. Claude Code's
+  PATH need not carry `python`; the hook path runs only `sh`, `git`, `cat` and
+  `dirname`. A missing launcher, environment or hook exits 1 with the remedy:
+  fail-open and visible, never 2 (which would block every Bash call). The
+  POSIX cells are tested (`tests/tools/test_hooks_fail_open.py`); the Windows
+  cell (Git for Windows `sh`) is unverified.
 
 ## Escape valves (never binary)
 
-- **bash_guard override:** prefix the command with `MOLT_GUARD_OK=1` once you
-  have verified it is safe. The override is audited to `.molt/state/waivers.jsonl`.
-- **landing_gate:** land the lane
-  (`uv run --python 3.12 python tools/molt_dev.py land --repo <lane>`) or a
-  proof, or record the real blocker:
-  `uv run --python 3.12 python tools/hooks/landing_gate.py --record-blocker "<reason>"`.
-  A pending landing-queue request, a request landed since the window opened,
-  or a `[report-only]` commit-subject token also satisfies the window.
+- **bash_guard override:** under `strict`, prefix the command with
+  `MOLT_GUARD_OK=1` once you have verified it is safe. The override is audited
+  to `.molt/state/waivers.jsonl`.
 - **waiver grammar (A9):** inline `# <GATE>_OK:<rationale>` (>=4 real,
   non-placeholder chars) or a `[skip-<gate>]` commit-subject token. Honored
   waivers are appended to `.molt/state/waivers.jsonl`.
 
 ## Runtime state (`.molt/state/`, gitignored)
 
-`landing_gate_marker.json` (per-session window base + `last_block_head`),
-`blockers.jsonl`, `waivers.jsonl`, `<hook>_errors.log`. Per-machine /
-per-worktree; never committed.
+`landing_gate_marker.json` (the session window: the HEAD at session start,
+which the anti-recurrence advisory diffs against; one file per checkout, so
+concurrent sessions share it: HF-424), `bash_guard_shadow.jsonl`,
+`waivers.jsonl`, each Stop leg's `*_marker.json`, `<hook>_errors.log`.
+Per-machine / per-worktree; never committed.
 
 ## Verified against the primary docs
 

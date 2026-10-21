@@ -391,9 +391,9 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `rust-toolchain` | 11 | 1 |
 | `table-drift` | 18 | 1 |
 | `findings-registry` | 4 | 0 |
-| `memory-graph` | 5 | 1 |
+| `memory-graph` | 4 | 1 |
 | `ci-wiring` | 58 | 0 |
-| `apparatus-hooks` | 12 | 2 |
+| `apparatus-hooks` | 14 | 2 |
 | `apparatus-learning-protection` | 12 | 2 |
 | `timing-ratio-authority` | 2 | 0 |
 | `performance-measurement` | 28 | 1 |

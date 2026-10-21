@@ -5251,12 +5251,11 @@ pytest = [
 [[rule]]
 name = "memory-graph"
 toolchains = ["python"]
-description = "A10 memory graph (typed recall over memory/*.md + POINTERS + ledgers + findings), integrity check, and the session_digest / memo-lint recall consumers: run the teeth + the warn-only integrity canary."
+description = "A10 memory graph (typed recall over memory/*.md + POINTERS + ledgers + findings), integrity check, and the memo-lint recall consumer: run the teeth + the warn-only integrity canary."
 globs = [
   "tools/memory_graph.py",
   "tools/check_memory_graph.py",
   "tools/findings_memo_lint.py",
-  "tools/hooks/session_digest.py",
   "tests/tools/test_memory_graph.py",
 ]
 gates = [
@@ -5360,6 +5359,8 @@ globs = [
   ".claude/settings.json",
   "tools/hooks/**/*.py",
   "tools/hooks/run.sh",
+  ".githooks/molt-hook-launch.sh",
+  "tools/molt_dev_queue.py",
   "tools/check_gate_flips.py",
   "tools/check_gate_liveness.py",
   "tests/tools/test_hooks_bash_guard.py",
@@ -6269,15 +6270,15 @@ timeout_seconds = 900
 
 [[gate_flip]]
 name = "bash_guard"
-state = "strict"
-strict_when = "landed_functional"
-rationale = "PreToolUse guard is additive + fail-open; blocking destructive-git/add-sweep/queue-bypass/https-push at land is safe and reversible via MOLT_GUARD_OK=1."
+state = "warn"
+strict_when = "a replay of recorded session Bash commands shows zero false blocks"
+rationale = "Observe-only (owner, 2026-10-21): bash_guard runs on every Bash call and logs each decision it would block to .molt/state/bash_guard_shadow.jsonl, blocking nothing. Replayed over 28,676 recorded commands it would block 633: it judges the shared checkout by the session root, not the directory each command runs in; it splits command text on ; and | inside quotes and heredocs; and its HTTPS-push rule rests on a false premise (the token has the workflow scope). Strict waits for an effective-directory, quote- and heredoc-aware parser proven by that replay."
 
 [[gate_flip]]
 name = "landing_gate"
-state = "strict"
-strict_when = "landed_functional"
-rationale = "Stop-hook land-or-blocker nudge; exit-0 block-once + stop_hook_active make it a re-engage nudge, never a wedge, so it is safe at land."
+state = "warn"
+strict_when = "the gate reads only this session's landing evidence and keeps a per-session window"
+rationale = "Unwired from the Stop hook (owner, 2026-10-21) until redesigned: it counted any session's landing-queue requests and results, and all sessions of a checkout shared one window marker, so it could neither attribute a landing nor block reliably."
 
 [[gate_flip]]
 name = "session_digest"

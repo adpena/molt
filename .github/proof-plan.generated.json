@@ -10982,7 +10982,7 @@
           "local.memory-graph.0",
           "local.memory-graph.pytest"
         ],
-        "description": "A10 memory graph (typed recall over memory/*.md + POINTERS + ledgers + findings), integrity check, and the session_digest / memo-lint recall consumers: run the teeth + the warn-only integrity canary.",
+        "description": "A10 memory graph (typed recall over memory/*.md + POINTERS + ledgers + findings), integrity check, and the memo-lint recall consumer: run the teeth + the warn-only integrity canary.",
         "gates": [
           "python tools/check_memory_graph.py --check"
         ],
@@ -10990,7 +10990,6 @@
           "tools/memory_graph.py",
           "tools/check_memory_graph.py",
           "tools/findings_memo_lint.py",
-          "tools/hooks/session_digest.py",
           "tests/tools/test_memory_graph.py"
         ],
         "name": "memory-graph",
@@ -11105,6 +11104,8 @@
           ".claude/settings.json",
           "tools/hooks/**/*.py",
           "tools/hooks/run.sh",
+          ".githooks/molt-hook-launch.sh",
+          "tools/molt_dev_queue.py",
           "tools/check_gate_flips.py",
           "tools/check_gate_liveness.py",
           "tests/tools/test_hooks_bash_guard.py",

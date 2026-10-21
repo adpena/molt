@@ -13,9 +13,12 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import tools.drift_harvest as dh  # noqa: E402
 import tools.hooks._common as common  # noqa: E402
+import tools.hooks.bash_guard as bg  # noqa: E402
 import tools.hooks.landing_gate as lg  # noqa: E402
 import tools.hooks.session_digest as sd  # noqa: E402
+import tools.hooks.stop_gates as stop_gates  # noqa: E402
 
 
 def _run_digest(monkeypatch, payload, capsys):
@@ -27,18 +30,16 @@ def _run_digest(monkeypatch, payload, capsys):
 
 
 def _quiet_queue_probes(monkeypatch, worktrees=3):
-    # Avoid a real proof_queue subprocess: force undeterminable quickly.
-    monkeypatch.setattr(
-        sd._common, "proof_queue_active_count", lambda root, timeout=3.5: None
-    )
-    monkeypatch.setattr(sd._common, "worktree_count", lambda root: worktrees)
+    # The queue state is unreadable: the section must say so.
+    monkeypatch.setattr(sd._common, "proof_queue_active_count", lambda root: None)
+    monkeypatch.setattr(dh, "live_worktree_count", lambda root: worktrees)
 
 
 def test_digest_points_at_the_authorities_and_states_the_hooks(
     tmp_path, monkeypatch, capsys
 ):
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
-    _quiet_queue_probes(monkeypatch, worktrees=30)
+    _quiet_queue_probes(monkeypatch, worktrees=dh.MAX_LIVE_WORKTREES + 1)
     code, out = _run_digest(
         monkeypatch, {"session_id": "s1", "cwd": str(tmp_path)}, capsys
     )
@@ -47,10 +48,14 @@ def test_digest_points_at_the_authorities_and_states_the_hooks(
     assert "AGENTS.md" in out and "tools/agent_coordination.py context" in out
     assert "docs/agent/V1_HANDOFF_FINDINGS.md" in out
     assert "PROOF QUEUE: status undeterminable." in out
-    assert "WORKTREES: 30 (threshold 24); over the threshold" in out
-    assert "tools/molt_dev.py land --repo <lane>" in out
-    assert "Read-only reviews are complete outcomes" in out
-    assert ", ".join(sorted(lg.READ_ONLY_TOOLS)) in out
+    assert (
+        f"WORKTREES: {dh.MAX_LIVE_WORKTREES + 1} live "
+        f"(SPRAWL threshold {dh.MAX_LIVE_WORKTREES}); over the threshold" in out
+    )
+    # The Stop line names exactly the wired legs; an unwired gate is absent.
+    wired = ", ".join(name for name, _evaluate in stop_gates.GATES)
+    assert f"Stop checks (each re-engages a turn at most once): {wired}.\n" in out
+    assert "landing_gate" not in out and "record-blocker" not in out
     # The digest restates no goal or claim board another file owns.
     assert "GOAL" not in out and "witness" not in out and "CLAIMS" not in out
     # tmp_path is no Git checkout: the queue section degrades, the rest stands.
@@ -75,6 +80,48 @@ def test_digest_reports_the_landing_queue(tmp_path, monkeypatch, capsys):
     assert "  failed lane/one at " in out
 
 
+@pytest.mark.parametrize(
+    ("state", "said", "unsaid"),
+    [
+        ("warn", "bash_guard records, without blocking,", "MOLT_GUARD_OK"),
+        ("strict", "bash_guard refuses", bg.SHADOW_NAME),
+    ],
+)
+def test_digest_states_the_guard_enforcement_it_reads(
+    tmp_path, monkeypatch, capsys, state, said, unsaid
+):
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+    _quiet_queue_probes(monkeypatch)
+    monkeypatch.setattr(bg, "enforcement_state", lambda: state)
+    _code, out = _run_digest(
+        monkeypatch, {"session_id": "s1", "cwd": str(tmp_path)}, capsys
+    )
+    hooks = out[out.index("HOOKS: ") :]
+    assert said in hooks and unsaid not in hooks
+
+
+def test_live_worktree_count_counts_what_the_sprawl_gate_counts(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+    for argv in (
+        ["init", "-q"],
+        ["commit", "-q", "--allow-empty", "-m", "base"],
+        ["worktree", "add", "-q", str(tmp_path / "kept")],
+        ["worktree", "add", "-q", str(tmp_path / "gone")],
+    ):
+        assert dh._COMMANDS.run([*git, *argv], cwd=str(repo)).returncode == 0
+    (tmp_path / "gone").rename(tmp_path / "moved-away")
+    # main + kept are live; the registration whose directory left is STALE.
+    assert dh.live_worktree_count(repo) == 2
+    # A failed listing is an error, never an empty (passing) count.
+    broken = tmp_path / "broken"
+    broken.mkdir()
+    (broken / ".git").write_text("gitdir: ./no-such-gitdir\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="git worktree list failed"):
+        dh.live_worktree_count(broken)
+
+
 def test_digest_writes_landing_baseline(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
     _quiet_queue_probes(monkeypatch)
@@ -93,7 +140,7 @@ def test_digest_fail_open_on_broken_section(tmp_path, monkeypatch, capsys):
         raise RuntimeError("worktree list exploded")
 
     _quiet_queue_probes(monkeypatch)
-    monkeypatch.setattr(sd._common, "worktree_count", boom)
+    monkeypatch.setattr(dh, "live_worktree_count", boom)
     code, out = _run_digest(
         monkeypatch, {"session_id": "s1", "cwd": str(tmp_path)}, capsys
     )
