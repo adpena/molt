@@ -11,11 +11,13 @@ nothing about use. This module owns where that state lives
 and the retirement policy (`checkout_state_decision`) that `tools/disk_guard.py`
 applies. The policy follows Go's build-cache trim and Cargo's global-cache GC:
 retire by last use, and soon after the owner is gone (design 56, section 2.6).
+A pinned session's Cargo target is a root of the same policy with its own,
+shorter idle limit (`is_session_target`).
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 import os
 from pathlib import Path
@@ -42,6 +44,11 @@ PROTECTION_WINDOW_S = 2 * USE_RESOLUTION_S
 MAX_AGE_ENV = "MOLT_CHECKOUT_STATE_MAX_AGE_DAYS"
 # Cargo's default for data it can recreate locally.
 DEFAULT_MAX_AGE_DAYS = 30.0
+# A pinned session's target holds isolated work (a benchmark, a test shard),
+# not a checkout's lasting build, so it retires after a short idle time: the
+# 6 hours that the disk guard's lane registry applied.
+SESSION_IDLE_ENV = "MOLT_SESSION_TARGET_IDLE_HOURS"
+DEFAULT_SESSION_IDLE_HOURS = 6.0
 # The automatic GC runs at most once per interval per artifact root.
 GC_INTERVAL_S = 24 * 3600.0
 GC_STAMP = ("target", ".molt-checkout-state-gc")
@@ -49,6 +56,10 @@ GC_STAMP = ("target", ".molt-checkout-state-gc")
 _COMPONENT = re.compile(r"[A-Za-z0-9_.-]{1,24}-[0-9a-f]{12}")
 # `molt.build_state_layout.build_state_address`: a SHA-256 digest.
 _ADDRESS = re.compile(r"[0-9a-f]{64}")
+# `molt.dx.session_artifact_component`: 1 to 32 letters, digits, `-` or `_`,
+# in the `molt.dx.session_targets_dir` of a target.
+_SESSION = re.compile(r"[A-Za-z0-9_-]{1,32}")
+_SESSIONS = "sessions"
 
 CheckoutStateKind = Literal[
     "cargo-target",
@@ -186,6 +197,77 @@ def _directories(parent: Path) -> list[Path]:
         return []
 
 
+def is_session_target(root: Path, artifact_root: Path) -> bool:
+    """Whether ``root`` is a pinned session's Cargo target under ``artifact_root``.
+
+    A session target is ``<target>/sessions/<session>``, where ``<target>``
+    is a checkout target (``target/checkouts/<component>``) or the root's own
+    ``target``, as a plain clone keeps it. The place and the session name
+    decide; nothing records a session's owner, because its target retires
+    with it.
+    """
+    try:
+        parts = root.relative_to(artifact_root).parts
+    except ValueError:
+        return False
+    if len(parts) < 3 or parts[-2] != _SESSIONS or not _SESSION.fullmatch(parts[-1]):
+        return False
+    holder = parts[:-2]
+    return holder == ("target",) or (
+        checkout_state_kind_at(holder) == "cargo-target"
+        and _name_key("cargo-target", holder[-1]) is not None
+    )
+
+
+def session_target_dirs(artifact_root: Path) -> list[Path]:
+    """Every pinned session's target under ``artifact_root``; links excluded."""
+    target = artifact_root / "target"
+    holders = [
+        target,
+        *(
+            child
+            for child in _directories(
+                artifact_root.joinpath(*CHECKOUT_STATE_CONTAINERS["cargo-target"])
+            )
+            if _name_key("cargo-target", child.name) is not None
+        ),
+    ]
+    return [
+        session
+        for holder in holders
+        for session in _directories(holder / _SESSIONS)
+        if _SESSION.fullmatch(session.name)
+    ]
+
+
+def target_build_control_dirs(
+    target: Path, artifact_roots: Iterable[Path]
+) -> list[Path]:
+    """The build-control roots that a Cargo target and its pinned sessions own.
+
+    `molt.build_state_layout.build_state_root` places a target's build
+    control in the shared container of the build's artifact root, under the
+    target's address, or in the target's own ``.molt_state`` without an
+    artifact root. A reader cannot tell which root a build used, so this
+    names the address under each of ``artifact_roots``. Only existing
+    directories are returned; a target reached through a link owns none.
+    """
+    from molt.build_state_layout import build_state_address
+
+    controls: list[Path] = []
+    for owner in (target, *_directories(target / _SESSIONS)):
+        try:
+            address = build_state_address(owner)
+        except ValueError:
+            continue
+        controls.append(owner / ".molt_state")
+        controls.extend(
+            root.joinpath(*CHECKOUT_STATE_CONTAINERS["build-control"], address)
+            for root in artifact_roots
+        )
+    return [path for path in dict.fromkeys(controls) if path.is_dir()]
+
+
 def checkout_state_roots(
     source_root: Path, environment: Mapping[str, str]
 ) -> tuple[CheckoutStateRoot, ...]:
@@ -209,7 +291,7 @@ def checkout_state_roots(
             target = cargo_target_dir_for_artifact_root(
                 artifact, None, source_root=source
             )
-            for owner in (target, *_directories(target / "sessions")):
+            for owner in (target, *_directories(target / _SESSIONS)):
                 path = parent / build_state_address(owner)
                 if path.is_dir() and not path.is_symlink():
                     roots.append(CheckoutStateRoot(path, kind, owner))
@@ -306,14 +388,21 @@ def checkout_state_last_use(root: Path) -> float:
 
 
 def record_checkout_target_use(target: Path, *, checkout: Path) -> None:
-    """Mark checkout target ``target`` of ``checkout`` used, and bind its owner.
+    """Mark Cargo target ``target`` of ``checkout`` used, and bind its owner.
 
-    ``target`` is a checkout target (``target/checkouts/<component>``) or a
-    pinned session below one; any other target is not checkout state.
+    A pinned session's target (``<target>/sessions/<session>``) is a root of
+    its own: its use stamps it, then the target that holds it. Only a checkout
+    target (``target/checkouts/<component>``) takes an owner record; any
+    other target is not checkout state. The common case costs one ``stat``
+    per stamp and one for the owner record.
     """
     parent = target.parent
-    if parent.name == "sessions":
-        target, parent = parent.parent, parent.parent.parent
+    if parent.name == _SESSIONS:
+        holder = parent.parent
+        if holder.name == "target" or holder.parent.name == "checkouts":
+            if _SESSION.fullmatch(target.name):
+                record_checkout_state_use(target)
+            target, parent = holder, holder.parent
     if parent.name == "checkouts" and parent.parent.name == "target":
         record_checkout_owner(target, owner=checkout, kind="cargo-target")
         record_checkout_state_use(target)
@@ -330,37 +419,72 @@ def record_build_control_use(control: Path, *, cargo_target: Path) -> None:
         record_checkout_state_use(control)
 
 
-def checkout_state_max_age_s(environment: Mapping[str, str]) -> float:
-    """The idle time after which any checkout state root is retired."""
-    raw = environment.get(MAX_AGE_ENV, "").strip()
+@dataclass(frozen=True, slots=True)
+class RetentionLimits:
+    """How long a root may stay unused before the GC retires it."""
+
+    max_age_s: float
+    session_idle_s: float
+
+
+def retention_limits(environment: Mapping[str, str]) -> RetentionLimits:
+    """The idle limits ``environment`` declares; an invalid one raises ValueError."""
+    return RetentionLimits(
+        max_age_s=_idle_limit_s(
+            environment, MAX_AGE_ENV, DEFAULT_MAX_AGE_DAYS, 86400.0, "days"
+        ),
+        session_idle_s=_idle_limit_s(
+            environment, SESSION_IDLE_ENV, DEFAULT_SESSION_IDLE_HOURS, 3600.0, "hours"
+        ),
+    )
+
+
+def _idle_limit_s(
+    environment: Mapping[str, str],
+    name: str,
+    default: float,
+    unit_s: float,
+    unit: str,
+) -> float:
+    """An idle limit in seconds. It may not undercut the protection window."""
+    raw = environment.get(name, "").strip()
     if not raw:
-        return DEFAULT_MAX_AGE_DAYS * 86400.0
+        return default * unit_s
     try:
-        days = float(raw)
+        limit_s = float(raw) * unit_s
     except ValueError:
-        days = -1.0
-    if not days > 0 or days != days or days == float("inf"):
-        raise ValueError(f"{MAX_AGE_ENV} must be a positive number of days: {raw!r}")
-    return days * 86400.0
+        limit_s = float("nan")
+    # NaN fails both comparisons.
+    if not PROTECTION_WINDOW_S <= limit_s < float("inf"):
+        raise ValueError(
+            f"{name} must be a number of {unit} that covers the "
+            f"{PROTECTION_WINDOW_S / 3600:g}-hour protection window: {raw!r}"
+        )
+    return limit_s
 
 
-CheckoutStateReason = Literal["owner-gone", "max-age"]
+RetentionReason = Literal["owner-gone", "max-age", "session-idle"]
 
 
 def checkout_state_decision(
-    root: Path, artifact_root: Path, *, now: float, max_age_s: float
-) -> CheckoutStateReason | None:
+    root: Path, artifact_root: Path, *, now: float, limits: RetentionLimits
+) -> RetentionReason | None:
     """Why the GC may retire ``root`` now, or None to keep it.
 
-    ``root`` must sit in a checkout state container of ``artifact_root`` under
-    an owner-key name. Past ``max_age_s`` of idleness it retires whoever owns
-    it; past the protection window it retires once its recorded owner is gone.
-    Liveness checks (locks, protected paths) are the caller's.
+    ``root`` is a pinned session's target (`is_session_target`), or sits in a
+    checkout state container of ``artifact_root`` under an owner-key name. A
+    session target retires once idle past ``limits.session_idle_s``. Any
+    other root retires past ``limits.max_age_s`` of idleness whoever owns it,
+    and past the protection window once its recorded owner is gone. Liveness
+    checks (locks, protected paths) are the caller's.
     """
+    if is_session_target(root, artifact_root):
+        idle = now - checkout_state_last_use(root)
+        return "session-idle" if idle >= limits.session_idle_s else None
     if checkout_state_kind_of(root, artifact_root) is None:
         return None
     idle = now - checkout_state_last_use(root)
-    if idle >= max_age_s:
+    if idle >= limits.max_age_s:
         return "max-age"
     if idle >= PROTECTION_WINDOW_S and orphaned_checkout_state(root, artifact_root):
         return "owner-gone"
@@ -435,12 +559,21 @@ def owner_is_absent(owner: CheckoutOwner) -> bool:
     """True only when the owner path is gone and its parent is present.
 
     A missing parent may be an unmounted volume or an offline share, which is
-    not proof that the owner was deleted.
+    not proof that the owner was deleted. A pinned session's target goes with
+    the checkout target that holds it, so that target's absence proves the
+    session's.
     """
+    if _path_is_absent(owner.path):
+        return True
+    holder = checkout_target_of(owner)
+    return holder is not None and holder != owner.path and _path_is_absent(holder)
+
+
+def _path_is_absent(path: Path) -> bool:
     try:
-        owner.path.lstat()
+        path.lstat()
     except FileNotFoundError:
-        return owner.path.parent.is_dir()
+        return path.parent.is_dir()
     except OSError:
         return False
     return False
@@ -480,7 +613,7 @@ def checkout_target_of(owner: CheckoutOwner) -> Path | None:
     if owner.kind != "build-control":
         return None
     target = owner.path
-    if target.parent.name == "sessions":
+    if target.parent.name == _SESSIONS:
         target = target.parent.parent
     if target.parent.name == "checkouts" and target.parent.parent.name == "target":
         return target

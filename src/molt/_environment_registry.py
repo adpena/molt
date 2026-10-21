@@ -232,6 +232,13 @@ _REGISTRY_JSON = r"""{
       "retired": "2026-10-06"
     },
     {
+      "name": "MOLT_DISK_GUARD_TTL_HOURS",
+      "note": "",
+      "rejected_by": [],
+      "replacement": "MOLT_SESSION_TARGET_IDLE_HOURS",
+      "retired": "2026-10-21"
+    },
+    {
       "name": "MOLT_DROP_STAGE_AUDIT",
       "note": "",
       "rejected_by": [],
@@ -1708,7 +1715,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_CHECKOUT_STATE_MAX_AGE_DAYS",
       "output_neutral": false,
       "owner": "src/molt/checkout_state.py",
-      "summary": "Days a checkout's state root under a shared artifact root (its Cargo target, uv environments, pytest cache, Hypothesis home and its targets' build control) may stay unused before the disk guard retires it, default 30, Cargo's limit for locally recreatable data; a root whose recorded owner is gone retires once unused for two hours. A positive number; anything else fails the collection.",
+      "summary": "Days a checkout's state root under a shared artifact root (its Cargo target, uv environments, pytest cache, Hypothesis home and its targets' build control) may stay unused before the disk guard retires it, default 30, Cargo's limit for locally recreatable data; a root whose recorded owner is gone retires once unused for two hours. A number of days that covers the two-hour protection window; anything else fails the collection.",
       "values": []
     },
     {
@@ -3543,7 +3550,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_DISABLE_DISK_GUARD",
       "output_neutral": false,
       "owner": "src/molt/dx.py",
-      "summary": "Turns off the artifact-root disk guard; 1, true, yes or on stops tools/disk_guard.py reclaiming space, and stops src/molt/dx.py registering per-lane Cargo target directories for TTL garbage collection and running the daily checkout state collection, default off.",
+      "summary": "Turns off the artifact-root disk guard; 1, true, yes or on stops src/molt/dx.py running the daily retention collection of tools/disk_guard.py, default off.",
       "values": []
     },
     {
@@ -3663,7 +3670,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_DISK_GUARD_LANE_GLOBS",
       "output_neutral": false,
       "owner": "tools/disk_guard.py",
-      "summary": "Comma-separated directory-name globs that identify per-lane artifact directories the disk guard may garbage-collect; default codex-*,lane-*,sess-*.",
+      "summary": "Comma-separated directory-name globs that identify hand-named per-lane Cargo targets directly under the artifact root's target/, which the disk guard may reclaim under disk pressure, oldest first; default codex-*,lane-*,sess-*.",
       "values": []
     },
     {
@@ -3684,16 +3691,6 @@ _REGISTRY_JSON = r"""{
       "output_neutral": false,
       "owner": "tools/disk_guard.py",
       "summary": "Free-space target in GB the disk guard reclaims toward, raised to the high-water threshold when lower; non-numeric or non-positive values use 40.",
-      "values": []
-    },
-    {
-      "audience": "developer",
-      "default": "6",
-      "kind": "float",
-      "name": "MOLT_DISK_GUARD_TTL_HOURS",
-      "output_neutral": false,
-      "owner": "tools/disk_guard.py",
-      "summary": "Age in hours after which a registered lane directory becomes eligible for disk-guard garbage collection; non-numeric or non-positive values use 6.",
       "values": []
     },
     {
@@ -5884,6 +5881,16 @@ _REGISTRY_JSON = r"""{
       "output_neutral": false,
       "owner": "tools/throughput_env.sh",
       "summary": "Prefix for the generated MOLT_SESSION_ID (<prefix>-<pid>) that the bench, parity and throughput shell scripts pass as --session-prefix to tools/run_context_env.py; unset lets each script use its own name (bench, demo-stack, parity, throughput).",
+      "values": []
+    },
+    {
+      "audience": "user",
+      "default": "6",
+      "kind": "float",
+      "name": "MOLT_SESSION_TARGET_IDLE_HOURS",
+      "output_neutral": false,
+      "owner": "src/molt/checkout_state.py",
+      "summary": "Hours a pinned session's Cargo target (<target>/sessions/<session>) may stay unused before the disk guard retires it, default 6; a held Cargo or build-control lock, CARGO_TARGET_DIR and the current MOLT_SESSION_ID always keep it. A number of hours of at least the two-hour protection window; anything else fails the collection.",
       "values": []
     },
     {

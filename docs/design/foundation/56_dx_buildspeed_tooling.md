@@ -454,37 +454,72 @@ files inside each root:
   still counts, and roots that predate this design age out like any other;
   nothing guesses their owner.
 
+A pinned session's Cargo target, `<target>/sessions/<session>` below a checkout
+target or a plain clone's own `target` (`molt.dx.session_scoped_target_dir`),
+is a root of the same policy (`is_session_target`). Its place and its session
+name identify it; it needs no owner record, because the target that holds it
+owns it. The place that selects it stamps it: `RunContext.canonical_env` for a
+pinned `MOLT_SESSION_ID`, and a CLI build's target resolution
+(`record_checkout_target_use`, which stamps the session and then the target
+that holds it). The session stamp adds one `stat` to that once-per-process
+path. Measured on the integrator Mac (APFS, 2026-10-21, median of 7 x 20,000
+calls with fresh stamps): a bare `os.stat` costs 1.1 us, the session stamp 4.1-4.5 us
+with its path handling, and a pinned session's whole target use 14-15 us
+against 9.5-10 us for a checkout target.
+
 One policy decides retirement (`checkout_state_decision`); `tools/disk_guard.py`
 applies it through `assert_safe_to_delete` and `molt.file_deletion`:
 
 - A root idle past `MOLT_CHECKOUT_STATE_MAX_AGE_DAYS` (default 30, Cargo's
   limit for locally recreatable data) is reclaimed whether its owner exists or
   not; rebuilding it is the accepted cost.
+- A pinned session's target idle past `MOLT_SESSION_TARGET_IDLE_HOURS`
+  (default 6) is reclaimed. A session pins isolated work (a benchmark, a
+  test shard, a differential run), not a checkout's lasting build. The
+  6 hours are the limit that the disk guard's lane registry applied; no
+  measurement has given a reason to change it.
 - A root whose recorded owner is gone, while the owner's parent exists, is
   reclaimed once idle past the protection window (2 hours, above the stamp's
-  1-hour resolution). A missing parent may be an unmounted volume.
+  1-hour resolution). A missing parent may be an unmounted volume. A
+  session's build control is orphaned once its session is gone, also when
+  the session went with its checkout target.
+- No idle limit may undercut the protection window; a smaller declared value
+  fails the collection.
 - Under disk pressure, roots idle past the window are evicted oldest first
-  until the free-space target is met.
+  until the free-space target is met, session targets among them.
 - A held lock keeps a root: Cargo's per-profile `.cargo-lock` (Cargo locks
   `<target>/<profile>` and `<target>/<triple>/<profile>`, and a pinned session
   builds below its checkout target, never at the target root, which the
   guard's earlier probe read), build control's build and diff
-  locks, and a backend daemon suite's owner lock. An explicit
-  `CARGO_TARGET_DIR` and the running interpreter's own environment keep a root
-  too. These are facts about live use; guard markers elsewhere in the artifact
-  root are not.
+  locks, and a backend daemon suite's owner lock. A Cargo target is also kept
+  by a lock in the build control that it or a session inside it owns, so a
+  checkout target never retires under its sessions' builds. An explicit
+  `CARGO_TARGET_DIR`, every session target named by the current
+  `MOLT_SESSION_ID`, and the running interpreter's own environment keep a
+  root too. These are facts about live use; guard markers elsewhere in the
+  artifact root are not.
 - Build control follows its target: one GC retires the build control of the
   targets it reclaimed, and worktree retirement reclaims the build control of
-  the removed checkout's target and sessions with them.
+  the removed checkout's target and sessions with them. A checkout target's
+  retirement takes its session targets along.
 
 The disk guard applies the policy at most once a day from
 `RunContext.canonical_env` (a stamp at `target/.molt-checkout-state-gc`, so the
 common case costs one `stat`), and on demand with `tools/disk_guard.py --gc`.
-Worktree retirement (`integrate --cleanup-worktree`) retires the worktree's
-daemons, removes it, and then reclaims its roots at once, without the idle
-window: it is the explicit owner action, as `bazel clean --expunge` is. A
-failed removal keeps the roots. Pinned session targets keep their registry TTL
-for now; folding them into this policy is the remaining step.
+Worktree retirement (`integrate --cleanup-worktree` and `lane retire`)
+retires the worktree's daemons, removes it, and then reclaims its roots at
+once, without the idle window: it is the explicit owner action, as `bazel
+clean --expunge` is. A failed removal keeps the roots.
+
+This policy replaced an append-only registry of lane targets in
+`target/.disk_guard/registry.jsonl`, which retired a registered directory
+6 hours after its latest registration and at once on lane completion. A
+registration measured nothing about use, and nothing registered a session
+target pinned under pytest: on 2026-10-21 none of the 14 session targets under
+the integrator Mac's `~/Molt/target/checkouts` was in the registry. Its
+completion reclaim duplicated worktree retirement. Hand-named targets under
+`target/` (`MOLT_DISK_GUARD_LANE_GLOBS`) and flat `cargo-target-*` directories
+carry no stamp, so they are reclaimed only under disk pressure.
 
 ## 3. The structural facts/mechanisms to build (each tied to the class it retires)
 

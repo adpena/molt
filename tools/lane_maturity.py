@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Minimal lane-maturity authority for proof admission and lane completion."""
+"""Minimal lane-maturity authority for proof admission and lane completion.
+
+The maturity records live in ``.molt/state/lane_registry.json``. They hold no
+build-state custody: completing a lane marks its record and retires nothing.
+"""
 
 from __future__ import annotations
 
@@ -145,10 +149,8 @@ def admission_check(
     resource_family: str,
     cross_lane: bool = False,
     promotion: bool = False,
-    env: Mapping[str, str] | None = None,
 ) -> Decision:
     """Fail-open wrapper: registry faults are loud but never block proof work."""
-    env = os.environ if env is None else env
     try:
         records = read_registry(repo_root)
         record = records.get(lane_id)
@@ -159,21 +161,8 @@ def admission_check(
                 "worktree": str(repo_root.resolve()),
                 "updated_at": time.time(),
             }
-            target = env.get("CARGO_TARGET_DIR")
-            if target:
-                record["cargo_target_dir"] = str(Path(target).resolve())
             records[lane_id] = record
             write_registry(repo_root, records)
-            if target:
-                from tools import disk_guard
-
-                target_path = Path(target).resolve()
-                artifact_root = (
-                    target_path.parents[1]
-                    if target_path.parent.name == "target"
-                    else None
-                )
-                disk_guard.register_lane_target(target_path, root=artifact_root)
         return decide(
             maturity=str(record.get("maturity", "L0")),
             resource_family=resource_family,
@@ -185,29 +174,24 @@ def admission_check(
         return Decision(True, "unknown", "unknown", "registry unavailable; fail-open")
 
 
-def complete_lane(
-    *, repo_root: Path, lane_id: str, artifact_root: Path | None = None
-) -> object | None:
+def complete_lane(*, repo_root: Path, lane_id: str) -> bool:
+    """Mark ``lane_id`` completed; False when it has no record.
+
+    Completion retires no build state: the retention policy of
+    `molt.checkout_state` retires a lane's targets by last use, and `molt_dev
+    lane retire` reclaims its checkout's state with the worktree.
+    """
     records = read_registry(repo_root)
     record = records.get(lane_id)
     if record is None:
-        return None
+        return False
     record["status"] = "completed"
     record["completed_at"] = time.time()
     write_registry(repo_root, records)
-    target = record.get("cargo_target_dir")
-    if not target:
-        return None
-    from tools import disk_guard
-
-    return disk_guard.reclaim_completed_lane_fail_open(
-        Path(str(target)), root=artifact_root
-    )
+    return True
 
 
-def complete_worktree_lanes(
-    *, repo_root: Path, worktree: Path, artifact_root: Path | None = None
-) -> list[str]:
+def complete_worktree_lanes(*, repo_root: Path, worktree: Path) -> list[str]:
     records = read_registry(repo_root)
     wanted = os.path.normcase(str(worktree.resolve()))
     matched = [
@@ -217,17 +201,13 @@ def complete_worktree_lanes(
         and rec.get("status") == "active"
     ]
     for lane in matched:
-        complete_lane(repo_root=repo_root, lane_id=lane, artifact_root=artifact_root)
+        complete_lane(repo_root=repo_root, lane_id=lane)
     return matched
 
 
-def complete_worktree_lanes_fail_open(
-    *, repo_root: Path, worktree: Path, artifact_root: Path | None = None
-) -> list[str]:
+def complete_worktree_lanes_fail_open(*, repo_root: Path, worktree: Path) -> list[str]:
     try:
-        return complete_worktree_lanes(
-            repo_root=repo_root, worktree=worktree, artifact_root=artifact_root
-        )
+        return complete_worktree_lanes(repo_root=repo_root, worktree=worktree)
     except Exception as exc:
         print(f"lane_maturity completion LOUD fail-open: {exc}", file=sys.stderr)
         return []
