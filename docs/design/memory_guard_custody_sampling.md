@@ -178,10 +178,20 @@ before it signals. A loop that resumes after a strike does not signal again
 from stale rows; it waits for the reap, and the closure after the loop adds
 the observed exit to the enforcer's report.
 
-An owner's cancellation callable may do I/O, so `OwnerCancellationWatch`
-polls it on a thread of its own and latches the first request for the loop
-and the enforcer. The kill's host-table read now comes before `begin`, so a
-stall there defers to the enforcer instead of signalling from stale rows. The
+An owner's cancellation callable may do I/O, so a `StopRequestWatch` polls
+it on a thread of its own and latches the first request for the loop and the
+enforcer; a second watch hands an operator's signal to the enforcer. The
+kill's host-table read now comes before `begin`, so a stall there defers to
+the enforcer instead of signalling from stale rows.
+
+Under a suite daemon lease, the export before a signal waits for the
+adoption lock without a ceiling (it decides whether a daemon the suite
+adopted survives). On the memory-trip, operator-signal, cancellation,
+deadline and post-loop paths the enforcer is requested before that export,
+and it stays armed until the post-loop path is done, so the root's group is
+signalled within the slack however long the export waits. The trade:
+descendants in other process groups, which are the daemons that export
+decides about, run until the export returns. The
 running summary publishes its startup report on the guard thread and writes
 its host-wide repro block from a daemon thread (`RunningSummaryPublisher`),
 retired before the guard returns so it never replaces the terminal summary.

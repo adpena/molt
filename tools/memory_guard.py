@@ -244,7 +244,7 @@ from tools.memory_guard_core.process_custody import (  # noqa: E402
     GuardedLaunch as GuardedLaunch,
     MAX_TERMINATION_PID_FANOUT as MAX_TERMINATION_PID_FANOUT,
     OwnedTreeEnforcer as OwnedTreeEnforcer,
-    OwnerCancellationWatch as OwnerCancellationWatch,
+    StopRequestWatch as StopRequestWatch,
     completed_enforcement_report as completed_enforcement_report,
     owned_root_group_signal as owned_root_group_signal,
     ProcessIdentity as ProcessIdentity,
@@ -952,7 +952,8 @@ def run_guarded(
     child_process: GuardedChildProcess | None = None
     tracker: ProcessTreeTracker | None = None
     enforcer: OwnedTreeEnforcer | None = None
-    cancellation_watch: OwnerCancellationWatch | None = None
+    cancellation_watch: StopRequestWatch | None = None
+    signal_watch: StopRequestWatch | None = None
     summary_publisher: _reporting.RunningSummaryPublisher | None = None
     termination_reports: list[GuardTerminationReport] = []
     scratch_lease: _temporary_artifacts.GuardScratchLease | None = None
@@ -1251,10 +1252,23 @@ def run_guarded(
             clock=time.perf_counter,
         )
         if cancellation_requested is not None:
-            cancellation_watch = OwnerCancellationWatch(
+            cancellation_watch = StopRequestWatch(
                 cancellation_requested,
                 interval=poll_interval,
                 on_request=partial(enforcer.request, "owner_cancellation", grace=0.0),
+                name="molt-guard-cancellation",
+            )
+        if installed_signal_handlers:
+            # The handler only records the signal; the loop signals the tree
+            # after its export, which may wait for the adoption lock. The
+            # enforcer bounds that wait for the root group.
+            signal_watch = StopRequestWatch(
+                lambda: guard_signal is not None,
+                interval=poll_interval,
+                on_request=partial(
+                    enforcer.request, "guard_signal", grace=OPERATOR_SIGNAL_GRACE_S
+                ),
+                name="molt-guard-signal",
             )
         sampling_source = (
             "windows_full_process_table"
@@ -2200,16 +2214,13 @@ def run_guarded(
                 assert keepalive_interval is not None
                 next_keepalive = now + keepalive_interval
             snapshot = sample_tracked_tree(allow_transient_timeout=True)
-        # The run loop has delivered or the child has exited: the rest is
-        # observation, which a backstop must not race.
+        # The run loop has delivered or the child has exited. The enforcer
+        # stays armed until no signal of the root remains to deliver.
         if cancellation_watch is not None:
             cancellation_watch.stop()
+        if signal_watch is not None:
+            signal_watch.stop()
         assert enforcer is not None
-        enforced_reasons, enforcer_reports = enforcer.stop()
-        if "timeout" in enforced_reasons:
-            timed_out = True
-        if "owner_cancellation" in enforced_reasons:
-            cancelled = True
         if child_exited and violation is None:
             child_exit_usage = _take_child_exit_usage(proc)
         if violation is None and child_exit_usage is not None:
@@ -2253,6 +2264,10 @@ def run_guarded(
                 try:
                     proc.wait(timeout=max(1.0, poll_interval * 4.0))
                 except subprocess.TimeoutExpired:
+                    # The export below may wait for the adoption lock; the
+                    # enforcer signals the root group if it waits past the
+                    # slack.
+                    enforcer.request("post_loop_unreaped_child", grace=0.0)
                     post_loop_snapshot = sample_tracked_tree(before_signal=True)
                     assert post_loop_snapshot is not None
                     samples, watched = post_loop_snapshot
@@ -2273,6 +2288,13 @@ def run_guarded(
                         terminate_direct_child_handle(
                             reason=("post_loop_unreaped_child_direct_child_handle")
                         )
+            # Every signal of the root is delivered: the rest is observation,
+            # which a backstop must not race.
+            enforced_reasons, enforcer_reports = enforcer.stop()
+            if "timeout" in enforced_reasons:
+                timed_out = True
+            if "owner_cancellation" in enforced_reasons:
+                cancelled = True
             exit_census, exit_census_error = take_child_exit_census(proc)
             if exit_census is not None and not guard_interrupted:
                 # A child orphaned between two samples is reparented at its
@@ -2767,6 +2789,8 @@ def run_guarded(
     finally:
         if cancellation_watch is not None:
             cancellation_watch.stop()
+        if signal_watch is not None:
+            signal_watch.stop()
         if enforcer is not None:
             enforcer.stop()
         if summary_publisher is not None:

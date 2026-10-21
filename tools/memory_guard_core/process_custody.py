@@ -1128,11 +1128,13 @@ def completed_enforcement_report(
     )
 
 
-class OwnerCancellationWatch:
-    """Poll an owner's cancellation callable on a thread of its own (HF-417).
+class StopRequestWatch:
+    """Poll a stop request on a thread of its own (HF-417).
 
-    The callable may do I/O (a cancel file's existence) and the run loop may
-    be blocked observing the host; neither waits for the other. The first
+    An owner's cancellation callable may do I/O (a cancel file's existence),
+    and an operator's signal is only recorded by a handler that runs Python
+    on the guard thread. The run loop may be blocked observing the host or
+    waiting for the adoption lock; neither waits for the other. The first
     request is latched for the run loop and handed to the enforcer.
     """
 
@@ -1142,6 +1144,7 @@ class OwnerCancellationWatch:
         *,
         interval: float,
         on_request: Callable[[], None],
+        name: str,
     ) -> None:
         self._requested = requested
         self._interval = interval
@@ -1149,13 +1152,11 @@ class OwnerCancellationWatch:
         self._stopped = threading.Event()
         self._latched = threading.Event()
         self._error: BaseException | None = None
-        self._thread = threading.Thread(
-            target=self._run, name="molt-guard-cancellation", daemon=True
-        )
+        self._thread = threading.Thread(target=self._run, name=name, daemon=True)
         self._thread.start()
 
     def requested(self) -> bool:
-        """Whether the owner asked to cancel; re-raises the callable's error."""
+        """Whether the stop was requested; re-raises the callable's error."""
         if self._error is not None:
             raise self._error
         return self._latched.is_set()
