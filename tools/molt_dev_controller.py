@@ -23,9 +23,11 @@ import sys
 import tarfile
 import tempfile
 import time
+import argparse
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType
 
 from molt.process_environment import ProcessEnvironment
 from tools.git_identity import require_git_object_id
@@ -197,6 +199,7 @@ def _sync_environment(root: Path) -> None:
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=_SYNC_TIMEOUT_S,
     )
     if proc.returncode != 0:
@@ -241,3 +244,47 @@ def run_controller(controller: Controller, argv: Sequence[str], *, repo: Path) -
         os.execv(interpreter, command)
     # Windows has no exec: the driver waits on the controller, as a launcher does.
     return _COMMANDS.run(command, cwd=Path.cwd(), env=os.environ).returncode
+
+
+def _driver() -> ModuleType:
+    """The canonical driver; imported late because it imports this module."""
+    from tools import molt_dev
+
+    return molt_dev
+
+
+def integration_controller(args: argparse.Namespace) -> str:
+    """Which driver runs this landing; a pinned claim must match this process."""
+    drv = _driver()
+    if args.pinned_controller is None:
+        return "candidate"
+    common_dir = drv._git_common_directory(Path(args.repo).resolve())
+    if common_dir is None:
+        raise DriverError("cannot resolve the Git common directory for integration")
+    verify_pinned_controller(
+        args.pinned_controller, driver_file=drv.__file__, common_dir=common_dir
+    )
+    return f"pinned:{args.pinned_controller}"
+
+
+def run_from_pinned_controller(args: argparse.Namespace, argv: list[str]) -> int:
+    """Fetch, then hand the command to main's driver (docs/design/landing_queue.md)."""
+    drv = _driver()
+    repo = Path(args.repo).resolve()
+    common_dir = drv._git_common_directory(repo)
+    if common_dir is None:
+        raise DriverError("cannot resolve the Git common directory for integration")
+    git = drv.Git(repo)
+    git.fetch(args.remote, args.branch)
+    tip = drv.require_git_object_id(
+        git.rev_parse(f"{args.remote}/{args.branch}"), label="controller commit"
+    )
+    controller = pinned_controller(repo, common_dir, tip)
+    return run_controller(controller, argv, repo=repo)
+
+
+def runs_from_pinned_controller(args: argparse.Namespace) -> bool:
+    """A landing and the queue runner run main's driver, never the candidate's."""
+    pinned = args.command == "integrate" and not args.dry_run
+    pinned = pinned or (args.command == "queue" and args.queue_command == "run")
+    return pinned and not (args.candidate_controller or args.pinned_controller)

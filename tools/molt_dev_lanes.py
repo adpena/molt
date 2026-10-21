@@ -15,7 +15,7 @@ docs/design/landing_queue.md, "Orchestrator-owned lanes". A lane is the branch
   commit is on main by Change-Id or patch-id). With ``--abandon`` it accepts
   an unlanded lane after it writes and verifies a Git bundle in
   ``<custody root>/drift-bundles``, where ``tools/drift_harvest.py`` keeps its
-  bundles. It removes the worktree through ``_cleanup_worktree``, which also
+  bundles. It removes the worktree through ``molt_dev_retire.cleanup_worktree``, which also
   retires the checkout's daemons and reclaims its checkout state (HF-313).
   Then it deletes the remote and the local branch and closes the record. It
   refuses a dirty worktree, and it refuses to retire the checkout that runs
@@ -57,6 +57,7 @@ from tools.molt_dev_common import (
     _step,
     _warn,
 )
+from tools import molt_dev_retire
 from tools.molt_dev_change_ids import landing_representation
 from tools.release.git_source_snapshot import immutable_git_environment
 
@@ -407,7 +408,7 @@ def cmd_lane_retire(args: argparse.Namespace) -> int:
 
     if worktree is not None:
         _step(f"remove worktree {worktree}")
-        rc = driver._cleanup_worktree(
+        rc = molt_dev_retire.cleanup_worktree(
             driver.Git(worktree),
             worktree,
             upstream,

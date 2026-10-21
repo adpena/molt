@@ -168,7 +168,6 @@ from tools.molt_dev_common import (  # noqa: E402
     EXIT_USAGE,
     CandidateFailure,
     DriverError,
-    GateFailure,
     PublicationRace,
     RebaseConflict,
     _fail,
@@ -182,7 +181,7 @@ from tools.molt_dev_common import (  # noqa: E402
     _step,
     _warn,
 )
-from tools.molt_dev_change_ids import landing_representation  # noqa: E402
+from tools import molt_dev_change_ids, molt_dev_controller, molt_dev_retire  # noqa: E402
 
 from tools.git_identity import (  # noqa: E402
     changed_paths,
@@ -204,6 +203,7 @@ from tools.molt_dev_detached import (  # noqa: E402
 )
 from tools.molt_dev_probe import probe_path, probe_pid  # noqa: E402
 from tools.molt_dev_lanes import add_lane_arguments  # noqa: E402
+from tools.molt_dev_queue import add_queue_arguments  # noqa: E402
 from tools import venv_exec  # noqa: E402
 from tools.molt_dev_gates import (  # noqa: E402
     GateOutcome,
@@ -1071,53 +1071,6 @@ def _gate_pycache_prefix(repo: Path, env: Mapping[str, str]) -> Path:
     return prefix
 
 
-def _resolve_change_references(
-    git: Git, repo: Path, upstream: str, selected_commit: str, *, dry: bool
-) -> str:
-    """Rewrite the landing's change citations and amend its last commit."""
-    from tools import molt_dev_change_ids as change_ids
-
-    def run_git(arguments: list[str]) -> str:
-        return git._run(arguments).stdout
-
-    touched = changed_paths(upstream, selected_commit, run_git=run_git)
-    documents = {
-        path: (repo / path).read_bytes()
-        for path in change_ids.citing_paths(touched)
-        if (repo / path).is_file()
-    }
-    if not any(change_ids.CHANGE_REFERENCE.search(text) for text in documents.values()):
-        return selected_commit
-    _step("resolve change citations")
-    try:
-        rewritten, resolutions = change_ids.resolve(
-            documents,
-            change_ids.change_ids(run_git, f"{upstream}..{selected_commit}"),
-            tip=selected_commit,
-            abbreviate=lambda commit: git._run(
-                ["rev-parse", f"--short={change_ids.SHORT_ID_LENGTH}", commit]
-            ).stdout.strip(),
-        )
-    except ValueError as exc:
-        raise CandidateFailure(f"{exc}\nexecuted=0") from exc
-    for resolution in resolutions:
-        _ok(f"{resolution.path}: change:{resolution.token} -> {resolution.commit}")
-    if dry:
-        _say("    would amend the last commit with the resolved citations")
-        return selected_commit
-    for path, content in rewritten.items():
-        (repo / path).write_bytes(content)
-    git._run(["add", "--", *rewritten])
-    # The message is unchanged and already passed its commit-msg hook.
-    git._run(["commit", "--amend", "--no-edit", "--no-verify", "--quiet"])
-    amended = require_git_object_id(git.head_sha(), label="resolved integration commit")
-    _assert_integration_source(git, amended)
-    _ok(f"amended {git.short(selected_commit)} -> {git.short(amended)}")
-    return amended
-
-
-
-
 def _gate_runtime(
     git: Git,
     selected_commit: str,
@@ -1207,27 +1160,12 @@ class _IntegrationProgress:
             pass
 
 
-def _integration_controller(args: argparse.Namespace) -> str:
-    """Which driver runs this landing; a pinned claim must match this process."""
-    if args.pinned_controller is None:
-        return "candidate"
-    from tools.molt_dev_controller import verify_pinned_controller
-
-    common_dir = _git_common_directory(Path(args.repo).resolve())
-    if common_dir is None:
-        raise DriverError("cannot resolve the Git common directory for integration")
-    verify_pinned_controller(
-        args.pinned_controller, driver_file=__file__, common_dir=common_dir
-    )
-    return f"pinned:{args.pinned_controller}"
-
-
 def cmd_integrate(args: argparse.Namespace) -> int:
     progress = _IntegrationProgress()
     returncode = None
     error: BaseException | None = None
     try:
-        progress.controller = _integration_controller(args)
+        progress.controller = molt_dev_controller.integration_controller(args)
         if args.dry_run:
             returncode = _integrate_exclusive(args, progress=progress)
             return returncode
@@ -1406,8 +1344,13 @@ def _integrate_exclusive(
         )
 
     # --- step 3b: stable change ids -----------------------------------------
-    selected_commit = _resolve_change_references(
-        git, repo, upstream_before, selected_commit, dry=dry
+    selected_commit = molt_dev_change_ids.resolve_change_references(
+        git,
+        repo,
+        upstream_before,
+        selected_commit,
+        dry=dry,
+        assert_source=_assert_integration_source,
     )
     progress.source_commit = selected_commit
 
@@ -1586,317 +1529,15 @@ def _integrate_exclusive(
     # --- step 8: cleanup gate (hazard 3) ------------------------------------
     if args.cleanup_worktree:
         _step("cleanup gate (refuses on unpushed/dirty)")
-        rc = _cleanup_worktree(git, repo, upstream_ref, ignore_globs, force_sha=None)
+        rc = molt_dev_retire.cleanup_worktree(
+            git, repo, upstream_ref, ignore_globs, force_sha=None
+        )
         if rc != 0:
             return rc
     else:
         _ok("cleanup not requested (--cleanup-worktree to remove this worktree)")
 
     _ok("integrate complete: pushed + confirmed.")
-    return EXIT_OK
-
-
-# --------------------------------------------------------------------------
-# Subcommands: land, queue run, queue status (docs/design/landing_queue.md)
-# --------------------------------------------------------------------------
-
-
-def _queue_paths(repo: Path):
-    from tools.molt_dev_queue import QueuePaths
-
-    common_dir = _git_common_directory(repo)
-    if common_dir is None:
-        raise DriverError("cannot resolve the Git common directory for the queue")
-    return QueuePaths.of(common_dir)
-
-
-def cmd_land(args: argparse.Namespace) -> int:
-    from tools.molt_dev_queue import enqueue, pending
-
-    repo = Path(args.repo).resolve()
-    git = Git(repo)
-    head = require_git_object_id(git.head_sha(), label="landing source")
-    _assert_integration_source(git, head)
-    git.fetch(args.remote, args.branch)
-    upstream = git.rev_parse(f"{args.remote}/{args.branch}")
-    if git.is_ancestor(head, upstream):
-        _ok(f"{git.short(head)} is already on {args.remote}/{args.branch}")
-        return EXIT_OK
-    paths = _queue_paths(repo)
-    branch = git.symbolic_head()
-    if args.retire and not (branch or "").startswith("lane/"):
-        raise DriverError(
-            "--retire needs a lane/<slug> branch (`molt_dev.py lane start`)"
-        )
-    request = enqueue(
-        paths, head=head, worktree=repo, branch=branch, retire=args.retire
-    )
-    position = [item.id for item in pending(paths)].index(request.id) + 1
-    _ok(f"queued {request.id} (position {position}); the runner lands it")
-    main_checkout = _main_worktree(git)
-    if main_checkout is None:
-        raise DriverError(
-            "cannot find the main worktree to run the landing runner from"
-        )
-    # The runner outlives every lane it retires, so it runs from the main
-    # worktree; it only fetches there.
-    _start_queue_runner(paths, main_checkout, args)
-    if not args.wait:
-        return EXIT_OK
-    return _await_landing(paths, request.id)
-
-
-def _start_queue_runner(paths, repo: Path, args: argparse.Namespace) -> None:
-    """Start a runner unless one holds the runner lock; the lock decides."""
-    probe = _try_acquire_file_lock(paths.runner_lock)
-    if probe is None:
-        _ok("a landing runner is active; it takes this request")
-        return
-    _release_file_lock(probe)
-    # A unique name: a runner that is exiting never blocks the next one.
-    name = "runner-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
-    detached = build_parser().parse_args(
-        [
-            "detached-run",
-            "--name",
-            name,
-            "--state-dir",
-            str(paths.runners),
-            "--cwd",
-            str(repo),
-            "--",
-            sys.executable,
-            str(Path(__file__).resolve()),
-            "queue",
-            "run",
-            "--repo",
-            str(repo),
-            "--remote",
-            args.remote,
-            "--branch",
-            args.branch,
-        ]
-    )
-    cmd_detached_run(detached)
-
-
-def _await_landing(paths, request_id: str) -> int:
-    from tools.molt_dev_queue import read_result
-
-    while (result := read_result(paths, request_id)) is None:
-        time.sleep(10)
-    status = result["status"]
-    if status == "landed":
-        _ok(f"{request_id} landed in {result['landed'][:12]}")
-        return EXIT_OK
-    _fail(f"{request_id} {status}: {result['detail']}")
-    return EXIT_FAIL
-
-
-def _sandbox_git(paths, git: Git, upstream: str) -> Git:
-    """The queue's own worktree; created once, so its build state stays warm."""
-    sandbox = paths.sandbox
-    if not (sandbox / ".git").exists():
-        paths.sandbox.parent.mkdir(parents=True, exist_ok=True)
-        git._run(["worktree", "add", "--detach", "--quiet", str(sandbox), upstream])
-    listed = git._run(["worktree", "list", "--porcelain", "-z"]).stdout.split("\0")
-    if f"worktree {sandbox.resolve()}" not in listed:
-        raise DriverError(f"{sandbox} is not a worktree of this repository")
-    return Git(sandbox.resolve())
-
-
-def _land_one_batch(args: argparse.Namespace, git: Git, paths) -> None:
-    from tools import molt_dev_queue as queue
-
-    git.fetch(args.remote, args.branch)
-    upstream = require_git_object_id(
-        git.rev_parse(f"{args.remote}/{args.branch}"), label="queue upstream"
-    )
-    ready = queue.pending(paths)
-    for request in ready:
-        if git.is_ancestor(request.head, upstream):
-            queue.record_result(
-                paths, request, status="landed", landed=upstream,
-                detail="already on main when the runner took it",
-            )  # fmt: skip
-    ready = queue.pending(paths)
-    if not ready:
-        return
-    batch = queue.next_batch(paths, ready)
-    sandbox = _sandbox_git(paths, git, upstream)
-
-    def run_git(arguments):
-        proc = sandbox._run(list(arguments), check=False)
-        return queue.GitResult(proc.returncode, proc.stdout, proc.stderr)
-
-    _step(f"landing batch of {len(batch)} on {git.short(upstream)}")
-    candidate = queue.build_candidate(run_git, upstream, batch)
-    for request, reason in candidate.conflicted:
-        queue.record_result(paths, request, status="conflict", detail=reason)
-        _warn(f"{request.id} {reason}")
-    if not candidate.included:
-        queue.retire_batch_plan(paths, batch)
-        return
-    _provision_landing_sandbox(sandbox.repo)
-    integration = build_parser().parse_args(
-        [
-            "integrate",
-            "--repo",
-            str(sandbox.repo),
-            "--remote",
-            args.remote,
-            "--branch",
-            args.branch,
-            "--wait-for-lock",
-            *(
-                ["--pinned-controller", args.pinned_controller]
-                if args.pinned_controller
-                else ["--candidate-controller"]
-            ),
-        ]
-    )
-    try:
-        cmd_integrate(integration)
-    except (RebaseConflict, PublicationRace) as exc:
-        # main moved under the batch; the next runner rebuilds it on the new tip.
-        _warn(f"main moved; rebuilding the batch: {exc}")
-        return
-    except CandidateFailure as exc:
-        if len(candidate.included) > 1:
-            _warn(f"batch of {len(candidate.included)} failed; bisecting")
-            queue.bisect(paths, batch, candidate.included)
-            return
-        (request,) = candidate.included
-        queue.record_result(paths, request, status="failed", detail=str(exc))
-        queue.retire_batch_plan(paths, batch)
-        return
-    landed = require_git_object_id(sandbox.head_sha(), label="landed batch")
-    for request in candidate.included:
-        queue.record_result(
-            paths, request, status="landed", landed=landed,
-            detail=f"landed with {len(candidate.included)} lane(s)",
-        )  # fmt: skip
-    queue.retire_batch_plan(paths, batch)
-    _after_landing(sandbox.repo, candidate.included, args)
-
-
-def _provision_landing_sandbox(sandbox: Path) -> None:
-    """The sandbox's own environment and trees, built from the candidate's locks.
-
-    Repository-scoped inputs (the shared hooks) wait for the landing: they may
-    install only what main publishes.
-    """
-    from molt import checkout_provisioning as provisioning
-
-    specs = [
-        provisioning.checkout_input(name, sandbox)
-        for name in provisioning.CHECKOUT_INPUT_NAMES
-    ]
-    names = [
-        spec.name
-        for spec in specs
-        if spec.scope == "checkout" and provisioning.declares(spec)
-    ]
-    try:
-        provisioning.ensure_all(sandbox, names=names)
-    except provisioning.ProvisioningError as exc:
-        raise DriverError(f"landing sandbox provisioning failed: {exc}") from exc
-
-
-def _after_landing(sandbox: Path, landed, args: argparse.Namespace) -> None:
-    """Refresh the shared hooks from the published main; retire landed lanes.
-
-    The landing is already published: a failure here warns and keeps going.
-    """
-    from molt import checkout_provisioning as provisioning
-
-    try:
-        hooks = provisioning.checkout_input("git-hooks", sandbox)
-        if provisioning.declares(hooks):
-            provisioning.ensure_input(hooks)
-    except provisioning.ProvisioningError as exc:
-        _warn(f"managed hooks not refreshed after the landing: {exc}")
-    for request in landed:
-        if not request.retire or not (request.branch or "").startswith("lane/"):
-            continue
-        retire = build_parser().parse_args(
-            [
-                "lane",
-                "retire",
-                request.branch.removeprefix("lane/"),
-                "--repo",
-                str(sandbox),
-                "--remote",
-                args.remote,
-                "--branch",
-                args.branch,
-            ]
-        )
-        try:
-            retire.func(retire)
-        except DriverError as exc:
-            _warn(f"{request.id} landed; its lane was not retired: {exc}")
-
-
-def cmd_queue_run(args: argparse.Namespace) -> int:
-    from tools.molt_dev_queue import pending
-
-    repo = Path(args.repo).resolve()
-    git = Git(repo)
-    paths = _queue_paths(repo)
-    paths.root.mkdir(parents=True, exist_ok=True)
-    controller = _integration_controller(args)
-    # The runner serves every lane: the sandbox's gates use the sandbox's own
-    # environment, never the venv selection of whoever started the runner.
-    for key in ("MOLT_VENV", "UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV"):
-        os.environ.pop(key, None)
-    from tools.molt_dev_queue import retire_old_records
-
-    retire_old_records(paths, now=time.time())
-    while True:
-        handle = _try_acquire_file_lock(paths.runner_lock)
-        if handle is None:
-            _ok("another landing runner is active")
-            return EXIT_OK
-        try:
-            _step(f"landing runner ({controller})")
-            _land_one_batch(args, git, paths)
-        finally:
-            _release_file_lock(handle)
-        # Checked after the release: a request that arrives later starts its
-        # own runner, so none waits on a runner that is about to exit.
-        if not pending(paths):
-            _ok("landing queue is empty")
-            return EXIT_OK
-        if args.pinned_controller is not None:
-            # Each batch runs under the driver of the main it lands on.
-            return _run_from_pinned_controller(
-                args,
-                ["queue", "run", "--remote", args.remote, "--branch", args.branch],
-            )
-
-
-def cmd_queue_status(args: argparse.Namespace) -> int:
-    from tools.molt_dev_queue import pending
-
-    paths = _queue_paths(Path(args.repo).resolve())
-    requests = pending(paths)
-    plan = (
-        json.loads(paths.plan.read_text(encoding="utf-8"))["groups"]
-        if paths.plan.is_file()
-        else []
-    )
-    results = (
-        sorted(paths.results.glob("*.json"))[-args.recent :]
-        if paths.results.is_dir()
-        else []
-    )
-    report = {
-        "pending": [request.id for request in requests],
-        "plan": plan,
-        "recent": [json.loads(path.read_text(encoding="utf-8")) for path in results],
-    }
-    print(json.dumps(report, indent=2, sort_keys=True))
     return EXIT_OK
 
 
@@ -2107,168 +1748,6 @@ def cmd_python_oracle(args: argparse.Namespace) -> int:
 # Worktree cleanup (hazard 3) — used by integrate and as no standalone (the
 # refusal logic is shared so a force-abandon is always auditable)
 # --------------------------------------------------------------------------
-
-
-def _cleanup_worktree(
-    git: Git,
-    repo: Path,
-    upstream_ref: str,
-    ignore_globs: tuple[str, ...],
-    *,
-    force_sha: str | None,
-) -> int:
-    """Remove the worktree at `repo` ONLY when safe (hazard 3).
-
-    REFUSES when:
-      * a commit of upstream_ref..HEAD is not on upstream by Change-Id or
-        patch-id (`landing_representation`), OR
-      * tracked staged/unstaged (non-ignored) changes exist.
-    --force (force_sha set) overrides BOTH, but only when force_sha names the
-    exact HEAD being abandoned (so an abandon is deliberate + auditable).
-    """
-    head = git.head_sha()
-    unpushed = list(landing_representation(git, head, upstream_ref).unrepresented)
-    dirty = _tracked_dirty(git, ignore_globs)
-
-    if unpushed or dirty:
-        reasons: list[str] = []
-        if unpushed:
-            reasons.append(
-                f"{len(unpushed)} commit(s) not on {upstream_ref}: "
-                + ", ".join(git.short(s) for s in unpushed)
-            )
-        if dirty:
-            reasons.append(
-                f"{len(dirty)} tracked change(s): "
-                + ", ".join(f"{xy} {p}" for xy, p in dirty)
-            )
-        if force_sha is None:
-            _fail(
-                "REFUSING worktree cleanup (hazard 3): "
-                + "; ".join(reasons)
-                + f". HEAD={git.short(head)}. To abandon anyway, pass "
-                f"--force {git.short(head)} (naming the sha makes the abandon "
-                "deliberate)."
-            )
-            return EXIT_FAIL
-        if git.rev_parse(force_sha) != head:
-            _fail(
-                f"--force {force_sha} does not match HEAD {git.short(head)}; "
-                "refusing (the force target must name the exact abandoned sha)."
-            )
-            return EXIT_FAIL
-        _warn(
-            f"--force: abandoning worktree at HEAD {git.short(head)} despite: "
-            + "; ".join(reasons)
-        )
-
-    # Safe (or force-confirmed): remove the worktree via git (so the admin
-    # bookkeeping in the main repo's .git/worktrees is updated too).
-    main_repo = _main_worktree(git)
-    if main_repo is None:
-        _fail(
-            "could not determine the main worktree to run `git worktree remove` "
-            "from; refusing to delete files directly."
-        )
-        return EXIT_FAIL
-    if main_repo.resolve() == repo.resolve():
-        _fail("refusing to remove the MAIN worktree; this targets disposable worktrees")
-        return EXIT_FAIL
-    _retire_checkout_daemons(repo)
-    checkout = repo.resolve()
-    # A landing runs `integrate --repo .` from the checkout it removes. Step
-    # out first: after the removal, anything that resolves against this
-    # process's working directory (`Path.cwd()`) would find it deleted.
-    if Path(os.getcwd()).resolve().is_relative_to(checkout):
-        os.chdir(main_repo)
-    reclaim_checkout_state = _prepare_checkout_state_retirement(checkout)
-    remove_args = ["worktree", "remove"]
-    # `git worktree remove` refuses (without --force) on ANY modified/untracked
-    # file, including the ignored-set churn (e.g. legacy/keyed wasm sha sidecars) our OWN
-    # safety policy already cleared. Our policy is the authority: if we got here
-    # with residual churn that is purely ignored/untracked, OR the operator
-    # passed --force, tell git to proceed. We never reach here with non-ignored
-    # tracked changes (those are refused above), so this --force can only be
-    # waving through churn we already deemed safe.
-    has_residual_churn = bool(git.status_porcelain())
-    if force_sha is not None or has_residual_churn:
-        remove_args.append("--force")
-    remove_args.append(str(repo))
-    proc = _run_fast_captured_command(
-        ["git", "-C", str(main_repo), *remove_args],
-        # Git for Windows may retain the launch cwd in its executable shim.
-        # Both that cwd and Git's -C must outlive the worktree being removed.
-        cwd=main_repo,
-        timeout=120.0,
-    )
-    if proc.returncode != 0:
-        _fail(
-            f"git worktree remove failed (exit {proc.returncode}): "
-            f"{proc.stderr.strip()}"
-        )
-        return EXIT_FAIL
-    _ok(f"removed worktree {repo}")
-    if reclaim_checkout_state is not None:
-        reclaim_checkout_state()
-    return EXIT_OK
-
-
-def _prepare_checkout_state_retirement(checkout: Path) -> Callable[[], None] | None:
-    """Stamp a retiring checkout's state roots and bind their reclaim, now.
-
-    Integration runs from the checkout it removes, so everything the reclaim
-    needs is imported here, while that checkout still exists: after `git
-    worktree remove` this process can import nothing from it. Returns None
-    when the artifact root cannot be resolved; the roots then stay for
-    `tools/disk_guard.py --gc`.
-    """
-    import molt.build_state_layout  # noqa: F401 - the owner-key rule loads lazily
-    from molt.checkout_state import stamp_checkout_state
-    from molt.dx import DxConfigError, artifact_root
-    from tools import disk_guard
-
-    try:
-        stamp_checkout_state(checkout, os.environ)
-        state_root = artifact_root(checkout, os.environ)
-    except (OSError, ValueError, DxConfigError) as exc:
-        _warn(f"state roots of {checkout} were not stamped ({exc}); they stay")
-        return None
-
-    def reclaim() -> None:
-        # A root the guard defers (a held lock or a protected path) stays for
-        # a later `tools/disk_guard.py --gc`; a failure never fails cleanup.
-        try:
-            result = disk_guard.reclaim_checkout_state(checkout, root=state_root)
-        except (OSError, ValueError) as exc:
-            _warn(f"state roots of {checkout} were not reclaimed ({exc}); they stay")
-            return
-        for item in result.reclaimed:
-            _ok(f"reclaimed {item['kind']} {item['path']}")
-        for item in result.skipped:
-            _warn(f"kept {item['path']} ({item['reason']}); disk_guard --gc retries it")
-        for error in result.errors:
-            _warn(f"state root not reclaimed: {error}")
-
-    return reclaim
-
-
-def _retire_checkout_daemons(repo: Path) -> None:
-    """Retire the backend daemons of a checkout about to be removed.
-
-    They would otherwise hold their memory until their idle timeout. A failure
-    leaves them to that timeout and does not block the cleanup.
-    """
-    from molt.cli.backend_execution import retire_project_backend_daemons
-
-    try:
-        pids = retire_project_backend_daemons(repo, os.environ)
-    except (OSError, ValueError) as exc:
-        _warn(
-            f"backend daemons of {repo} were not retired ({exc}); they retire when idle"
-        )
-        return
-    if pids:
-        _ok(f"retired {len(pids)} backend daemon(s) of {repo}: pids {list(pids)}")
 
 
 def _main_worktree(git: Git) -> Path | None:
@@ -2565,19 +2044,6 @@ def cmd_fix(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_cleanup(args: argparse.Namespace) -> int:
-    repo = Path(args.repo).resolve()
-    git = Git(repo)
-    upstream_ref = f"{args.remote}/{args.branch}"
-    ignore_globs = tuple(DEFAULT_IGNORE_GLOBS) + tuple(args.ignore or ())
-    _step(f"cleanup worktree {repo} (upstream {upstream_ref})")
-    # Refresh upstream so the unpushed check is honest.
-    git.fetch(args.remote, args.branch)
-    return _cleanup_worktree(
-        git, repo, upstream_ref, ignore_globs, force_sha=args.force
-    )
-
-
 # --------------------------------------------------------------------------
 # Argument parsing
 # --------------------------------------------------------------------------
@@ -2662,43 +2128,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_int.set_defaults(func=cmd_integrate)
 
-    # land / queue (docs/design/landing_queue.md)
-    p_land = sub.add_parser(
-        "land",
-        help="queue this checkout's commit for the landing runner and return",
+    add_queue_arguments(
+        sub, add_repo_arg=_add_repo_arg, add_remote_branch=_add_remote_branch
     )
-    _add_repo_arg(p_land)
-    _add_remote_branch(p_land)
-    p_land.add_argument(
-        "--wait",
-        action="store_true",
-        help="wait for the result; exit 0 only when the commit landed",
-    )
-    p_land.add_argument(
-        "--retire",
-        action="store_true",
-        help="retire this lane (worktree, branches, record, state) once it lands",
-    )
-    p_land.set_defaults(func=cmd_land)
-
-    p_queue = sub.add_parser("queue", help="the landing queue's runner and state")
-    queue_sub = p_queue.add_subparsers(dest="queue_command", required=True)
-    p_run = queue_sub.add_parser(
-        "run", help="land queued commits in batches; `land` starts it"
-    )
-    _add_repo_arg(p_run)
-    _add_remote_branch(p_run)
-    p_run.add_argument(
-        "--candidate-controller",
-        action="store_true",
-        help="run this checkout's driver instead of main's pinned controller",
-    )
-    p_run.add_argument("--pinned-controller", help=argparse.SUPPRESS)
-    p_run.set_defaults(func=cmd_queue_run)
-    p_status = queue_sub.add_parser("status", help="pending requests and results")
-    _add_repo_arg(p_status)
-    p_status.add_argument("--recent", type=int, default=10, help="results to show")
-    p_status.set_defaults(func=cmd_queue_status)
 
     # secure-wip
     p_wip = sub.add_parser(
@@ -2831,7 +2263,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="SHA",
         help="abandon despite unpushed/dirty; MUST name the HEAD sha being abandoned",
     )
-    p_cl.set_defaults(func=cmd_cleanup)
+    p_cl.set_defaults(func=molt_dev_retire.cmd_cleanup)
 
     # lane: orchestrator-owned lane worktrees (tools/molt_dev_lanes.py)
     p_ln = sub.add_parser("lane", help="start, retire or list lane/<slug> worktrees")
@@ -2924,36 +2356,12 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
-def _run_from_pinned_controller(args: argparse.Namespace, argv: list[str]) -> int:
-    """Fetch, then hand the command to main's driver (docs/design/landing_queue.md)."""
-    from tools.molt_dev_controller import pinned_controller, run_controller
-
-    repo = Path(args.repo).resolve()
-    common_dir = _git_common_directory(repo)
-    if common_dir is None:
-        raise DriverError("cannot resolve the Git common directory for integration")
-    git = Git(repo)
-    git.fetch(args.remote, args.branch)
-    tip = require_git_object_id(
-        git.rev_parse(f"{args.remote}/{args.branch}"), label="controller commit"
-    )
-    controller = pinned_controller(repo, common_dir, tip)
-    return run_controller(controller, argv, repo=repo)
-
-
-def _runs_from_pinned_controller(args: argparse.Namespace) -> bool:
-    """A landing and the queue runner run main's driver, never the candidate's."""
-    pinned = args.command == "integrate" and not args.dry_run
-    pinned = pinned or (args.command == "queue" and args.queue_command == "run")
-    return pinned and not (args.candidate_controller or args.pinned_controller)
-
-
 def main(argv: list[str]) -> int:
     ap = build_parser()
     args = ap.parse_args(argv)
     try:
-        if _runs_from_pinned_controller(args):
-            return _run_from_pinned_controller(args, argv)
+        if molt_dev_controller.runs_from_pinned_controller(args):
+            return molt_dev_controller.run_from_pinned_controller(args, argv)
         return args.func(args)
     except (DriverError, ValueError) as exc:
         _say("")

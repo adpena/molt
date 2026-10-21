@@ -68,7 +68,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 TOOLS_ROOT = REPO_ROOT / "tools"
 
 
-from tools import dirty_tree_policy, molt_dev  # noqa: E402
+from tools import dirty_tree_policy, molt_dev, molt_dev_retire  # noqa: E402
 from tools.molt_dev_common import (  # noqa: E402
     CandidateFailure,
     GateFailure,
@@ -1404,7 +1404,7 @@ def test_cleanup_allows_clean_pushed(drv, origin_and_clone, tmp_path, monkeypatc
 
     monkeypatch.setattr(executor_type, "run", check_removal_cwd)
     # No commits beyond origin/main, no dirty tree -> cleanup proceeds.
-    rc = drv._cleanup_worktree(
+    rc = molt_dev_retire.cleanup_worktree(
         drv.Git(wt), wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=None
     )
     assert rc == drv.EXIT_OK
@@ -1433,7 +1433,7 @@ def test_cleanup_retires_the_checkout_daemons_before_removing_it(
         return (4321,)
 
     monkeypatch.setattr(backend_execution, "retire_project_backend_daemons", retire)
-    rc = drv._cleanup_worktree(
+    rc = molt_dev_retire.cleanup_worktree(
         drv.Git(wt), wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=None
     )
     assert rc == drv.EXIT_OK
@@ -1466,7 +1466,7 @@ def test_cleanup_retires_the_checkouts_state_with_it(
     monkeypatch.setenv("MOLT_EXT_ROOT", str(ext))
     target, uv_environment = _shared_checkout_state(ext, wt)
     sibling_target, sibling_uv = _shared_checkout_state(ext, tmp_path / "mainclone")
-    rc = drv._cleanup_worktree(
+    rc = molt_dev_retire.cleanup_worktree(
         drv.Git(wt), wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=None
     )
     assert rc == drv.EXIT_OK
@@ -1494,6 +1494,7 @@ import sys
 from pathlib import Path
 sys.path[:0] = [{str(REPO_ROOT / "src")!r}, {str(REPO_ROOT)!r}]
 from tools import molt_dev as drv
+from tools import molt_dev_retire
 
 
 class RefuseAfterRemoval:
@@ -1507,7 +1508,7 @@ class RefuseAfterRemoval:
 
 guard = RefuseAfterRemoval()
 sys.meta_path.insert(0, guard)
-real = drv._run_fast_captured_command
+real = molt_dev_retire._run_fast_captured_command
 
 
 def run(command, **kwargs):
@@ -1517,9 +1518,9 @@ def run(command, **kwargs):
     return result
 
 
-drv._run_fast_captured_command = run
+molt_dev_retire._run_fast_captured_command = run
 wt = Path(sys.argv[1])
-sys.exit(drv._cleanup_worktree(
+sys.exit(molt_dev_retire.cleanup_worktree(
     drv.Git(wt), wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=None
 ))
 """
@@ -1546,15 +1547,15 @@ def test_failed_worktree_removal_keeps_the_checkouts_state(
     ext.mkdir()
     monkeypatch.setenv("MOLT_EXT_ROOT", str(ext))
     target, uv_environment = _shared_checkout_state(ext, wt)
-    real = drv._run_fast_captured_command
+    real = molt_dev_retire._run_fast_captured_command
 
     def refuse_removal(command, **kwargs):
         if command[3:5] == ["worktree", "remove"]:
             return subprocess.CompletedProcess(command, 1, "", "locked")
         return real(command, **kwargs)
 
-    monkeypatch.setattr(drv, "_run_fast_captured_command", refuse_removal)
-    rc = drv._cleanup_worktree(
+    monkeypatch.setattr(molt_dev_retire, "_run_fast_captured_command", refuse_removal)
+    rc = molt_dev_retire.cleanup_worktree(
         drv.Git(wt), wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=None
     )
     assert rc == drv.EXIT_FAIL
@@ -1569,7 +1570,7 @@ def test_cleanup_refuses_unpushed(drv, origin_and_clone, tmp_path):
     wt = _worktree_off(origin, tmp_path, "wt_unpushed")
     _commit_file(wt, "local.py", "n = 1\n", "feat: unpushed local")
     git = drv.Git(wt)
-    rc = drv._cleanup_worktree(
+    rc = molt_dev_retire.cleanup_worktree(
         git, wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=None
     )
     assert rc == drv.EXIT_FAIL
@@ -1581,7 +1582,7 @@ def test_cleanup_refuses_dirty_tracked(drv, origin_and_clone, tmp_path):
     wt = _worktree_off(origin, tmp_path, "wt_dirty")
     # Modify a TRACKED file without committing -> dirty -> refuse.
     (wt / "README.md").write_text("seed\nlocal edit\n", encoding="utf-8")
-    rc = drv._cleanup_worktree(
+    rc = molt_dev_retire.cleanup_worktree(
         drv.Git(wt), wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=None
     )
     assert rc == drv.EXIT_FAIL
@@ -1599,7 +1600,7 @@ def test_cleanup_refuses_runtime_generation_churn(drv, origin_and_clone, tmp_pat
     generation.parent.mkdir(parents=True, exist_ok=True)
     generation.write_text("{}\n", encoding="utf-8")
     _git(wt, "add", "--", RUNTIME_GENERATION_MANIFEST)
-    rc = drv._cleanup_worktree(
+    rc = molt_dev_retire.cleanup_worktree(
         drv.Git(wt), wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=None
     )
     assert rc == drv.EXIT_FAIL
@@ -1613,13 +1614,13 @@ def test_cleanup_force_requires_matching_sha(drv, origin_and_clone, tmp_path):
     git = drv.Git(wt)
     head = git.head_sha()
     # Wrong force sha -> refused.
-    rc_wrong = drv._cleanup_worktree(
+    rc_wrong = molt_dev_retire.cleanup_worktree(
         git, wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha="0" * 40
     )
     assert rc_wrong == drv.EXIT_FAIL
     assert wt.exists()
     # Correct force sha (the real HEAD) -> abandon proceeds.
-    rc_right = drv._cleanup_worktree(
+    rc_right = molt_dev_retire.cleanup_worktree(
         git, wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=head
     )
     assert rc_right == drv.EXIT_OK
@@ -1633,7 +1634,7 @@ def test_cleanup_refuses_main_worktree(drv, origin_and_clone, tmp_path):
     _git(tmp_path, "clone", "-q", str(origin), str(main_clone))
     _git(main_clone, "config", "user.email", "d@molt.test")
     _git(main_clone, "config", "user.name", "D")
-    rc = drv._cleanup_worktree(
+    rc = molt_dev_retire.cleanup_worktree(
         drv.Git(main_clone),
         main_clone,
         "origin/main",
@@ -2798,7 +2799,7 @@ def _lane(work: Path, name: str, files: dict[str, str]) -> str:
 def _enqueue(drv, work: Path, *heads: str):
     from tools import molt_dev_queue as queue
 
-    paths = drv._queue_paths(work)
+    paths = queue._queue_paths(work)
     return paths, [
         queue.enqueue(paths, head=head, worktree=work, branch=None) for head in heads
     ]
@@ -2808,7 +2809,7 @@ def _run_queue(drv, work: Path) -> int:
     args = drv.build_parser().parse_args(
         ["queue", "run", "--repo", str(work), "--candidate-controller"]
     )
-    return drv.cmd_queue_run(args)
+    return args.func(args)
 
 
 def _statuses(paths, requests) -> list[str]:
@@ -2915,7 +2916,8 @@ def test_queue_rebuilds_a_batch_when_main_moves_under_it(
 
     assert _statuses(paths, requests) == ["landed"]
     assert {"a.py", "moved.txt"} <= _origin_tree(work)
-    assert len((tmp_path / "gate-runs.txt").read_text().splitlines()) == 2
+    runs = (tmp_path / "gate-runs.txt").read_text(encoding="utf-8")
+    assert len(runs.splitlines()) == 2
 
 
 def test_queue_plan_survives_between_runners_and_drops_closed_requests(tmp_path):
@@ -3057,7 +3059,7 @@ def test_integrate_lock_covers_fetch_gates_push_confirmation_and_cleanup(
     monkeypatch.setattr(drv, "run_gate", gate)
     # Cleanup's own destructive/dirty-tree contract has separate real-worktree
     # tests above; this seam asserts the integration lock remains held at entry.
-    monkeypatch.setattr(drv, "_cleanup_worktree", cleanup)
+    monkeypatch.setattr(molt_dev_retire, "cleanup_worktree", cleanup)
     assert (
         drv.cmd_integrate(_integrate_ns(drv, repo=str(work), cleanup_worktree=True))
         == drv.EXIT_OK

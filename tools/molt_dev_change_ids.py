@@ -17,9 +17,11 @@ import re
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
-from tools.molt_dev_common import DriverError
+from tools.git_identity import changed_paths, require_git_object_id
+from tools.molt_dev_common import CandidateFailure, DriverError, _ok, _say, _step
 
 CHANGE_REFERENCE = re.compile(rb"\bchange:(I[0-9a-f]{8,40})\b")
 # Citations resolve only in Markdown documents under docs/: code and tests may
@@ -77,6 +79,10 @@ class GitPlumbing(Protocol):
     def _run(
         self, args: list[str], *, check: bool = True, input_text: str | None = None
     ) -> subprocess.CompletedProcess[str]: ...
+
+    def head_sha(self) -> str: ...
+
+    def short(self, sha: str) -> str: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,3 +227,53 @@ def resolve(
             + "\n  ".join(errors)
         )
     return rewritten, resolutions
+
+
+def resolve_change_references(
+    git: GitPlumbing,
+    repo: Path,
+    upstream: str,
+    selected_commit: str,
+    *,
+    dry: bool,
+    assert_source: Callable[[GitPlumbing, str], None],
+) -> str:
+    """Rewrite the landing's change citations and amend its last commit."""
+
+    def run_git(arguments: list[str]) -> str:
+        return git._run(arguments).stdout
+
+    touched = changed_paths(upstream, selected_commit, run_git=run_git)
+    documents = {
+        path: (repo / path).read_bytes()
+        for path in citing_paths(touched)
+        if (repo / path).is_file()
+    }
+    if not any(CHANGE_REFERENCE.search(text) for text in documents.values()):
+        return selected_commit
+    _step("resolve change citations")
+    try:
+        rewritten, resolutions = resolve(
+            documents,
+            change_ids(run_git, f"{upstream}..{selected_commit}"),
+            tip=selected_commit,
+            abbreviate=lambda commit: git._run(
+                ["rev-parse", f"--short={SHORT_ID_LENGTH}", commit]
+            ).stdout.strip(),
+        )
+    except ValueError as exc:
+        raise CandidateFailure(f"{exc}\nexecuted=0") from exc
+    for resolution in resolutions:
+        _ok(f"{resolution.path}: change:{resolution.token} -> {resolution.commit}")
+    if dry:
+        _say("    would amend the last commit with the resolved citations")
+        return selected_commit
+    for path, content in rewritten.items():
+        (repo / path).write_bytes(content)
+    git._run(["add", "--", *rewritten])
+    # The message is unchanged and already passed its commit-msg hook.
+    git._run(["commit", "--amend", "--no-edit", "--no-verify", "--quiet"])
+    amended = require_git_object_id(git.head_sha(), label="resolved integration commit")
+    assert_source(git, amended)
+    _ok(f"amended {git.short(selected_commit)} -> {git.short(amended)}")
+    return amended
