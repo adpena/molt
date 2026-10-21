@@ -183,6 +183,11 @@ llvm-sys = {{ version = "{llvm_sys_version}", optional = true }}
 inkwell = {{ version = "0.9", features = [{inkwell_features}], optional = true }}
 """.lstrip(),
     )
+    # A checkout that pins LLVM also declares the release it selects.
+    _write(
+        root / "config/llvm_toolchain_releases.toml",
+        (ROOT / "config/llvm_toolchain_releases.toml").read_text(encoding="utf-8"),
+    )
 
 
 def test_required_llvm_backend_pin_matches_current_manifest() -> None:
@@ -2818,3 +2823,34 @@ def test_expired_llvm_link_probe_does_not_allocate_scratch(monkeypatch):
         llvm_toolchain._compile_link_probe(
             Path("sdk"), Path("clang++"), Path("lld"), (), probe_timeout=expired
         )
+
+
+def test_backend_pin_reads_its_release_from_the_pinning_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A landing runs main's driver against a candidate checkout: the pin and
+    # the release it selects both come from that candidate, not this tree.
+    source = Path(llvm_toolchain.__file__).resolve().parents[2]
+    for relative in (
+        "runtime/molt-backend/Cargo.toml",
+        "runtime/molt-backend-native/Cargo.toml",
+        "config/llvm_toolchain_releases.toml",
+    ):
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((source / relative).read_bytes())
+    read: list[Path] = []
+    cached = llvm_toolchain._load_llvm_releases_cached
+
+    def spy(path: str, revision: object) -> object:
+        read.append(Path(path))
+        return cached(path, revision)
+
+    monkeypatch.setattr(llvm_toolchain, "_load_llvm_releases_cached", spy)
+    pin = llvm_toolchain.required_llvm_backend_pin(tmp_path)
+
+    assert pin is not None
+    assert (
+        pin.default_release == llvm_toolchain.load_llvm_releases(source).default_release
+    )
+    assert read[0] == (tmp_path / "config" / "llvm_toolchain_releases.toml").resolve()
