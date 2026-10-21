@@ -2956,6 +2956,108 @@ def test_the_keepalive_label_names_only_the_gate_commands_first_words(drv, monke
     assert seen == ["gate python tools/a.py --one --two ...", "gate cargo test"]
 
 
+def test_gates_overlap_across_classes_and_cargo_gates_stay_serial(drv, tmp_path):
+    # Read-only checks run first; then the heavy gates share one executor: a
+    # pytest session and a Cargo gate overlap, Cargo gates (one shared target)
+    # never overlap each other, and each gate gets the memory slice its pytest
+    # -n auto sizes within.
+    import threading
+
+    from molt import host_capacity
+    from tools import molt_dev_gates
+
+    lock = threading.Lock()
+    active: dict[str, int] = {}
+    peak: dict[str, int] = {}
+    overlap = {"cargo_and_pytest": False}
+    slices: list[str | None] = []
+
+    def run_captured_gate(command, repo, environment, cancelled, streams=None):
+        name = command[0]
+        with lock:
+            active[name] = active.get(name, 0) + 1
+            peak[name] = max(peak.get(name, 0), active[name])
+            if active.get("cargo", 0) and active.get("pytest", 0):
+                overlap["cargo_and_pytest"] = True
+            slices.append(environment.get(host_capacity.MEMORY_SLICE_ENV))
+        time.sleep(0.3)
+        with lock:
+            active[name] -= 1
+        return molt_dev_gates.GateOutcome(0, "", "", None)
+
+    class Progress:
+        def emit(self, event, **details):
+            pass
+
+    # The base environment carries no slice (a guard running this test may
+    # export one); the executor must add its own.
+    environment = ProcessEnvironment(os.environ).without(
+        (host_capacity.MEMORY_SLICE_ENV,)
+    )
+    gates = [
+        drv.SelectedGate(
+            command=("static", "1"), toolchains=("python",), concurrent=True
+        ),
+        drv.SelectedGate(
+            command=("static", "2"), toolchains=("python",), concurrent=True
+        ),
+        drv.SelectedGate(command=("cargo", "a"), toolchains=("python", "cargo")),
+        drv.SelectedGate(command=("pytest", "a"), toolchains=("python",), pytest=True),
+        drv.SelectedGate(command=("cargo", "b"), toolchains=("python", "cargo")),
+        drv.SelectedGate(command=("pytest", "b"), toolchains=("python",), pytest=True),
+    ]
+    runtime = molt_dev_gates.GateRuntime(
+        repo=tmp_path,
+        environments={gate.toolchains: environment for gate in gates},
+        cargo_outputs={},
+        capacity_requirements={},
+        progress=Progress(),
+        check_source=lambda: None,
+        source_changes=lambda: (),
+        source_identity=lambda: {"commit": "0" * 40, "tree": "1" * 40},
+        policy_text="",
+        executor_max_workers=4,
+        resource_limits={
+            "repository-policy": 4,
+            "python-tests": 2,
+            "compiler-build-resource": 1,
+        },
+        toolchains={},
+        receipt_path=tmp_path / "receipt.json",
+        output_dir=tmp_path / "receipt.d" / "run",
+        run_captured_gate=run_captured_gate,
+        observe_capacity=lambda *args, **kwargs: (),
+        say=lambda message: None,
+        ok=lambda message: None,
+    )
+    seconds: list[tuple[float, str]] = []
+    molt_dev_gates.run_selected_gates(gates, runtime, seconds, host_limit=lambda: 4)
+
+    assert overlap["cargo_and_pytest"]
+    assert peak["cargo"] == 1
+    assert peak["pytest"] == 2
+    assert [shown for _elapsed, shown in seconds] == [
+        molt_dev_gates.display(gate.command) for gate in gates
+    ]
+    # The read-only checks ran (and passed) before any heavy gate started.
+    light = json.loads((tmp_path / "receipt.json").read_text(encoding="utf-8"))
+    heavy = json.loads((tmp_path / "receipt.heavy.json").read_text(encoding="utf-8"))
+    assert [row["id"] for row in light["commands"]] == [
+        "local.always.1",
+        "local.always.2",
+    ]
+    assert [row["id"] for row in heavy["commands"]] == [
+        "local.gate.3",
+        "local.gate.4",
+        "local.gate.5",
+        "local.gate.6",
+    ]
+    # Each block exports one slice to its gates: the read-only block's two
+    # gates first, then the heavy block's four.
+    assert len(slices) == len(gates) and all(int(value) > 0 for value in slices)
+    assert len(set(slices[:2])) == 1 and len(set(slices[2:])) == 1
+
+
 def test_concurrent_gate_limit_comes_from_host_capacity(drv, monkeypatch):
     from molt import host_capacity
     from tools import molt_dev_gates
