@@ -10,7 +10,7 @@ Engines tested:
 2. PaddleOCR via tinygrad (local, once graph execution is complete)
 
 Usage:
-    python3 tests/e2e/test_e2e_quality.py
+    python3 tests/e2e/ocr_engine_quality.py
 """
 
 from __future__ import annotations

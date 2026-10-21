@@ -10,7 +10,6 @@ import os
 import sys
 import types
 
-import numpy as np
 import pytest
 
 from tests.helpers.paddleocr_paths import (
@@ -18,6 +17,10 @@ from tests.helpers.paddleocr_paths import (
     require_paddleocr_artifact,
 )
 from tests.helpers.tinygrad_stdlib_loader import tinygrad_stdlib_context
+
+# numpy is not in the default environment; this backlog file needs a cell
+# that provisions it (HF-73).
+np = pytest.importorskip("numpy")
 
 
 DETECTOR_CANDIDATES = (
