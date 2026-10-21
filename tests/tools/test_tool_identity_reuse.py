@@ -857,7 +857,7 @@ def test_native_build_reuse_revalidates_actual_selection_and_images(
 
 @pytest.mark.parametrize("role", ["cargo", "rustc"])
 def test_rust_reuse_resolves_current_component_before_cache_without_phase_reprobe(
-    tmp_path, monkeypatch, role
+    tmp_path, monkeypatch, role, isolated_molt_cache
 ):
     from molt import process_guard, rust_toolchain
     from tests.tools.test_toolchain_capture import _native_build_capture_fixture
@@ -897,6 +897,8 @@ def test_rust_reuse_resolves_current_component_before_cache_without_phase_reprob
         command_identity, "_tool_configuration_identities", lambda *args, **kwargs: []
     )
     envelope = command_admission.envelope_for_command(command)
+    # rustup reads its home; a private one keeps the host's out of the key.
+    environment = {**environment, "RUSTUP_HOME": str(tmp_path / "rustup-home")}
     environment = (
         {**environment, "CARGO": str(tools["cargo"])}
         if role == "rustc"
@@ -930,10 +932,16 @@ def test_rust_reuse_resolves_current_component_before_cache_without_phase_reprob
     phases = len(phase_calls)
     second, hit = capture()
     assert hit[0]["state"] == "hit" and second == first
-    assert len(resolutions) == 2 and len(versions) == 1 and len(phase_calls) == phases
+    # Every input rustup reads is unchanged, so the host fact store answers
+    # `rustup which` (HF-357): no probe, no version run, no phase.
+    assert len(resolutions) == 1 and len(versions) == 1 and len(phase_calls) == phases
     replacement = tmp_path / (role + "-replacement" + suffix)
     replacement.write_bytes(b"independent newly selected Rust component")
     replacement.chmod(0o755)
+    # An override appears at the probe root, so rustup selects anew.
+    (tmp_path / "rust-toolchain.toml").write_text(
+        '[toolchain]\nchannel = "replacement"\n', encoding="utf-8"
+    )
     selected[0] = replacement
     third, changed = capture()
     assert (
@@ -943,7 +951,7 @@ def test_rust_reuse_resolves_current_component_before_cache_without_phase_reprob
     assert first["launcher_sha256"] == third["launcher_sha256"]
     assert third["content_path"] == str(replacement.resolve(strict=True))
     assert first["executable_sha256"] != third["executable_sha256"]
-    assert len(resolutions) == 3 and len(versions) == 2
+    assert len(resolutions) == 2 and len(versions) == 2
     # Explicit physical tools do not invoke rustup, including a warm capture.
     for _ in range(2):
         assert (
@@ -952,7 +960,7 @@ def test_rust_reuse_resolves_current_component_before_cache_without_phase_reprob
             )
             == replacement
         )
-    assert len(resolutions) == 3
+    assert len(resolutions) == 2
 
 
 @pytest.mark.parametrize("primary", [False, True])
@@ -1056,7 +1064,7 @@ def test_registered_tool_identity_uses_bound_payload_before_dependency_selectors
 
 @pytest.mark.parametrize("owner", ["python", "cargo", "delegated-cargo"])
 def test_python_rustc_metadata_dependency_has_independent_reuse_identity(
-    tmp_path, monkeypatch, owner
+    tmp_path, monkeypatch, owner, isolated_molt_cache
 ):
     from molt import process_guard
     from tools.proof_queue_pkg import toolchain_capture
@@ -1117,7 +1125,12 @@ def test_python_rustc_metadata_dependency_has_independent_reuse_identity(
     if owner == "delegated-cargo":
         command = [sys.executable, "tools/guarded_exec.py", "--", *command]
     envelope = command_admission.envelope_for_command(command)
-    environment = {"RUSTC": str(primary), "PATH": str(path_bin)}
+    environment = {
+        "RUSTC": str(primary),
+        "PATH": str(path_bin),
+        # rustup reads its home; a private one keeps the host's out of the key.
+        "RUSTUP_HOME": str(tmp_path / "rustup-home"),
+    }
 
     def capture():
         telemetry = []
@@ -1154,6 +1167,11 @@ def test_python_rustc_metadata_dependency_has_independent_reuse_identity(
         }
         if owner == "python"
         else set()
+    )
+    # An override appears at the probe root, so rustup selects anew; with
+    # every rustup input unchanged the fact store would answer (HF-357).
+    (tmp_path / "rust-toolchain.toml").write_text(
+        '[toolchain]\nchannel = "second"\n', encoding="utf-8"
     )
     selected[0] = second
     changed, event = capture()

@@ -5343,7 +5343,11 @@ def test_guarded_rust_capture_failure_preserves_primary_error_and_durable_detail
 @pytest.mark.parametrize("retarget", [False, True])
 @pytest.mark.usefixtures("admitted_build_capacity")
 def test_rustup_role_content_resolution_tracks_physical_component_before_reuse(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, role: str, retarget: bool
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    role: str,
+    retarget: bool,
+    isolated_molt_cache,
 ) -> None:
     from molt import process_guard, rust_toolchain
 
