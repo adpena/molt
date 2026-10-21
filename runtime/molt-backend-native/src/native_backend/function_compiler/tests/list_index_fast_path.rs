@@ -44,7 +44,7 @@ fn with_list_storage_state(
         let mut state = ListIndexFastPathState::new(&roots);
         check(&mut builder, &mut state, &roots, release);
         builder.ins().return_(&[]);
-        builder.finalize();
+        builder.finalize(crate::test_support::host_frontend_config());
     }
     verify_function(&function, &settings::Flags::new(settings::builder()))
         .unwrap_or_else(|errors| panic!("{errors}\n{}", function.display()));

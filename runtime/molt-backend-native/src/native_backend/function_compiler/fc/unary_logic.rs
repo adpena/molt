@@ -127,11 +127,11 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 bool_raw_value(&mut *builder, vars, representation_plan, &args[0])
             {
                 // Raw bool: not(x) = bool(x == 0). Skip runtime call.
-                let is_zero = builder.ins().icmp_imm(IntCC::Equal, raw_val, 0);
+                let is_zero = builder.ins().icmp_imm_s(IntCC::Equal, raw_val, 0);
                 let result = box_bool_value(&mut *builder, is_zero, nbc);
                 // The result of `not` is also a bool — store raw shadow.
-                let negated = builder.ins().bxor_imm(raw_val, 1);
-                let negated_masked = builder.ins().band_imm(negated, 1);
+                let negated = builder.ins().bxor_imm_u(raw_val, 1);
+                let negated_masked = builder.ins().band_imm_u(negated, 1);
                 not_raw = Some(negated_masked);
                 result
             } else if op_prefers_bool_lane(op) {
@@ -149,8 +149,8 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 .expect("Value not found");
                 let one = builder.ins().iconst(types::I64, 1);
                 let bit0 = builder.ins().band(*val, one);
-                let is_zero = builder.ins().icmp_imm(IntCC::Equal, bit0, 0);
-                not_raw = Some(builder.ins().bxor_imm(bit0, 1));
+                let is_zero = builder.ins().icmp_imm_s(IntCC::Equal, bit0, 0);
+                not_raw = Some(builder.ins().bxor_imm_u(bit0, 1));
                 box_bool_value(&mut *builder, is_zero, nbc)
             } else {
                 let callee = SimpleBackend::import_func_id_split(
@@ -662,7 +662,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 // Raw bool from proven list_bool getitem or const_bool.
                 // bool(x) where x is already raw 0/1 — just re-box.
                 // Propagate the raw shadow directly (already 0/1).
-                let is_nonzero = builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0);
+                let is_nonzero = builder.ins().icmp_imm_s(IntCC::NotEqual, raw_val, 0);
                 (
                     box_bool_value(&mut *builder, is_nonzero, nbc),
                     Some(raw_val),
@@ -725,7 +725,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 .expect("Value not found");
                 let one = builder.ins().iconst(types::I64, 1);
                 let bit0 = builder.ins().band(*val, one);
-                let is_nonzero = builder.ins().icmp_imm(IntCC::NotEqual, bit0, 0);
+                let is_nonzero = builder.ins().icmp_imm_s(IntCC::NotEqual, bit0, 0);
                 (box_bool_value(&mut *builder, is_nonzero, nbc), Some(bit0))
             } else {
                 let callee = SimpleBackend::import_func_id_split(
@@ -749,7 +749,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 .expect("Value not found");
                 let call = builder.ins().call(local_callee, &[*val]);
                 let truthy = builder.inst_results(call)[0];
-                let cond = builder.ins().icmp_imm(IntCC::NotEqual, truthy, 0);
+                let cond = builder.ins().icmp_imm_s(IntCC::NotEqual, truthy, 0);
                 (box_bool_value(&mut *builder, cond, nbc), Some(truthy))
             };
             if let Some(ref out__) = op.out {
@@ -805,17 +805,17 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 bool_raw_value(&mut *builder, vars, representation_plan, &args[0])
             {
                 // Raw bool from proven list_bool getitem or const_bool.
-                builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
+                builder.ins().icmp_imm_s(IntCC::NotEqual, raw_val, 0)
             } else if op_prefers_int_lane(op) {
                 // Known int: inline unbox + compare, no function call.
                 let raw_val = int_raw_value(&mut *builder, vars, representation_plan, &args[0])
                     .unwrap_or_else(|| unbox_int(&mut *builder, *lhs, nbc));
-                builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
+                builder.ins().icmp_imm_s(IntCC::NotEqual, raw_val, 0)
             } else if op_prefers_bool_lane(op) {
                 // Known bool: extract bit 0.
                 let one = builder.ins().iconst(types::I64, 1);
                 let bit0 = builder.ins().band(*lhs, one);
-                builder.ins().icmp_imm(IntCC::NotEqual, bit0, 0)
+                builder.ins().icmp_imm_s(IntCC::NotEqual, bit0, 0)
             } else {
                 // Unknown type: GIL-wrapped truthy check.
                 let truthy = SimpleBackend::import_func_id_split(
@@ -828,7 +828,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 let truthy_ref = module.declare_func_in_func(truthy, builder.func);
                 let lhs_call = builder.ins().call(truthy_ref, &[*lhs]);
                 let lhs_val = builder.inst_results(lhs_call)[0];
-                builder.ins().icmp_imm(IntCC::NotEqual, lhs_val, 0)
+                builder.ins().icmp_imm_s(IntCC::NotEqual, lhs_val, 0)
             };
             let res = builder.ins().select(cond, *rhs, *lhs);
             if let Some(out__) = op.out.as_deref() {
@@ -886,17 +886,17 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 bool_raw_value(&mut *builder, vars, representation_plan, &args[0])
             {
                 // Raw bool from proven list_bool getitem or const_bool.
-                builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
+                builder.ins().icmp_imm_s(IntCC::NotEqual, raw_val, 0)
             } else if op_prefers_int_lane(op) {
                 // Known int: inline unbox + compare, no function call.
                 let raw_val = int_raw_value(&mut *builder, vars, representation_plan, &args[0])
                     .unwrap_or_else(|| unbox_int(&mut *builder, *lhs, nbc));
-                builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
+                builder.ins().icmp_imm_s(IntCC::NotEqual, raw_val, 0)
             } else if op_prefers_bool_lane(op) {
                 // Known bool: extract bit 0.
                 let one = builder.ins().iconst(types::I64, 1);
                 let bit0 = builder.ins().band(*lhs, one);
-                builder.ins().icmp_imm(IntCC::NotEqual, bit0, 0)
+                builder.ins().icmp_imm_s(IntCC::NotEqual, bit0, 0)
             } else {
                 // Unknown type: GIL-wrapped truthy check.
                 let truthy = SimpleBackend::import_func_id_split(
@@ -909,7 +909,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 let truthy_ref = module.declare_func_in_func(truthy, builder.func);
                 let lhs_call = builder.ins().call(truthy_ref, &[*lhs]);
                 let lhs_val = builder.inst_results(lhs_call)[0];
-                builder.ins().icmp_imm(IntCC::NotEqual, lhs_val, 0)
+                builder.ins().icmp_imm_s(IntCC::NotEqual, lhs_val, 0)
             };
             let res = builder.ins().select(cond, *lhs, *rhs);
             if let Some(out__) = op.out.as_deref() {

@@ -58,20 +58,21 @@ pub(in crate::native_backend::function_compiler) fn def_inline_int_value(
 #[inline]
 pub(in crate::native_backend::function_compiler) fn emit_exception_pending_condition(
     builder: &mut FunctionBuilder<'_>,
+    pointer_type: types::Type,
     local_exc_pending_fast: FuncRef,
     exc_flag_ptr_slot: Option<cranelift_codegen::ir::StackSlot>,
 ) -> Value {
     if let Some(slot) = exc_flag_ptr_slot {
-        let flag_ptr = builder.ins().stack_load(types::I64, slot, 0);
+        let flag_ptr = builder.ins().stack_load(pointer_type, types::I64, slot, 0);
         let pending_byte = builder
             .ins()
             .load(types::I8, MemFlagsData::trusted(), flag_ptr, 0);
-        return builder.ins().icmp_imm(IntCC::NotEqual, pending_byte, 0);
+        return builder.ins().icmp_imm_s(IntCC::NotEqual, pending_byte, 0);
     }
 
     let call = builder.ins().call(local_exc_pending_fast, &[]);
     let pending = builder.inst_results(call)[0];
-    builder.ins().icmp_imm(IntCC::NotEqual, pending, 0)
+    builder.ins().icmp_imm_s(IntCC::NotEqual, pending, 0)
 }
 
 #[cfg(feature = "native-backend")]
@@ -86,7 +87,7 @@ pub(in crate::native_backend::function_compiler) fn def_bool_result(
     raw_bool: Option<Value>,
 ) {
     if representation_plan.is_bool_unboxed(out) {
-        let raw_bool = raw_bool.unwrap_or_else(|| builder.ins().band_imm(boxed_result, 1));
+        let raw_bool = raw_bool.unwrap_or_else(|| builder.ins().band_imm_u(boxed_result, 1));
         def_var_named(builder, vars, out, raw_bool);
     } else {
         def_var_named(builder, vars, out, boxed_result);
@@ -290,7 +291,7 @@ pub(in crate::native_backend::function_compiler) fn box_raw_bool_value(
     raw_bool: Value,
     nbc: &crate::NanBoxConsts,
 ) -> Value {
-    let cond = builder.ins().icmp_imm(IntCC::NotEqual, raw_bool, 0);
+    let cond = builder.ins().icmp_imm_s(IntCC::NotEqual, raw_bool, 0);
     box_bool_value(builder, cond, nbc)
 }
 
@@ -340,7 +341,7 @@ impl ConditionalListBoolShadow {
     ) -> Self {
         // Runtime fallback (notably negative indexing) returns a boxed value
         // even for list_bool. Match the fast path's layout-dependent payload.
-        let raw_bit = builder.ins().band_imm(boxed, 1);
+        let raw_bit = builder.ins().band_imm_u(boxed, 1);
         let payload = builder.ins().select(is_bool, raw_bit, boxed);
         Self { is_bool, payload }
     }
@@ -367,7 +368,7 @@ pub(in crate::native_backend::function_compiler) fn emit_conditional_list_bool_t
 
     switch_to_block_materialized(builder, raw_bool_block);
     seal_block_once(builder, sealed_blocks, raw_bool_block);
-    let raw_truthy = builder.ins().icmp_imm(IntCC::NotEqual, shadow.payload, 0);
+    let raw_truthy = builder.ins().icmp_imm_s(IntCC::NotEqual, shadow.payload, 0);
     let merge_args = merge_args_with_live_through(raw_truthy, live_through);
     jump_block(builder, truthy_merge, &merge_args);
 
@@ -460,7 +461,7 @@ pub(in crate::native_backend::function_compiler) fn def_var_from_boxed_transport
             float_value_from_boxed_extended(module, import_ids, builder, import_refs, boxed);
         def_var_named(builder, vars, name, raw_f64);
     } else if representation_plan.is_bool_unboxed(name) {
-        let raw_bool = builder.ins().band_imm(boxed, 1);
+        let raw_bool = builder.ins().band_imm_u(boxed, 1);
         def_var_named(builder, vars, name, raw_bool);
     } else if representation_plan.is_inline_safe_int_name(name) {
         let raw_i64 = unbox_int_or_bool(builder, boxed, nbc);
@@ -596,6 +597,7 @@ impl CapturedScalarTransport {
 
     pub(super) fn read_local(
         builder: &mut FunctionBuilder<'_>,
+        pointer_type: types::Type,
         vars: &BTreeMap<String, Variable>,
         representation_plan: &ScalarRepresentationPlan,
         slots: &BTreeMap<String, cranelift_codegen::ir::StackSlot>,
@@ -608,9 +610,12 @@ impl CapturedScalarTransport {
             } else {
                 MergeRebindStorageKind::BoxedI64
             };
-            let value = builder
-                .ins()
-                .stack_load(merge_rebind_storage_clif_type(storage), slot, 0);
+            let value = builder.ins().stack_load(
+                pointer_type,
+                merge_rebind_storage_clif_type(storage),
+                slot,
+                0,
+            );
             Self {
                 inline_safe_int: storage == MergeRebindStorageKind::RawI64
                     && representation_plan.is_inline_safe_int_name(name),
@@ -725,7 +730,7 @@ impl CapturedScalarTransport {
                 float_value_from_boxed_extended(module, import_ids, builder, import_refs, boxed)
             }
             MergeRebindStorageKind::RawI64 => unbox_int_or_bool(builder, boxed, nbc),
-            MergeRebindStorageKind::RawBool => builder.ins().band_imm(boxed, 1),
+            MergeRebindStorageKind::RawBool => builder.ins().band_imm_u(boxed, 1),
         }
     }
 }

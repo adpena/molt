@@ -82,7 +82,7 @@ pub(in crate::native_backend::function_compiler) fn handle_callargs_op(
             // A loaded pair owns its nullable receiver. Move only real Python
             // values into the builder; its retaining push must finish before
             // the original credit ends, including when that push raises.
-            let present = builder.ins().icmp_imm(
+            let present = builder.ins().icmp_imm_s(
                 IntCC::NotEqual,
                 receiver_word,
                 molt_codegen_abi::loaded_method_null_bits(),

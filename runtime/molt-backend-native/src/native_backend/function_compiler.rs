@@ -247,6 +247,10 @@ impl SimpleBackend {
             .iter()
             .map(|p| p.value_type)
             .collect();
+        // One target query per function: `finalize` takes the frontend config, and
+        // stack-slot loads/stores address the frame with the target pointer type.
+        let frontend_config = self.module.target_config();
+        let pointer_type = frontend_config.pointer_type();
         let mut builder = FunctionBuilder::new(&mut self.ctx.func, &mut builder_ctx);
 
         let mut vars: BTreeMap<String, Variable> = BTreeMap::new();
@@ -422,7 +426,7 @@ impl SimpleBackend {
                     3,
                 ));
                 let zero = builder.ins().iconst(types::I64, 0);
-                builder.ins().stack_store(zero, slot, 0);
+                builder.ins().stack_store(pointer_type, zero, slot, 0);
                 slot_backed_join_slots.insert(name.clone(), slot);
             }
         }
@@ -657,7 +661,7 @@ impl SimpleBackend {
         if let (Some(slot), Some(flag_fn_ref)) = (exc_flag_ptr_slot, exc_pending_flag_ptr_fn) {
             let call = builder.ins().call(flag_fn_ref, &[]);
             let active_ptr = builder.inst_results(call)[0];
-            builder.ins().stack_store(active_ptr, slot, 0);
+            builder.ins().stack_store(pointer_type, active_ptr, slot, 0);
         }
 
         // ── Entry-block variable initialization ──────────────────────────
@@ -832,8 +836,12 @@ impl SimpleBackend {
         // they are physical memory, not SSA values. By allocating all
         // immutable heap literal anchors before the entry block is sealed,
         // their object pointers are valid for the entire function lifetime.
-        let (literal_hoists, literal_materialization) =
-            fc::const_literals::prepare_heap_literals(&func_ir, &mut builder, representation_plan);
+        let (literal_hoists, literal_materialization) = fc::const_literals::prepare_heap_literals(
+            &func_ir,
+            &mut builder,
+            pointer_type,
+            representation_plan,
+        );
 
         if let (Some(entered), Some(code_owner)) = (owned_frame_entered, leading_frame_code_owner) {
             emit_owned_execution_frame_enter(
@@ -887,7 +895,7 @@ impl SimpleBackend {
                 );
                 if leading_frame_exception_check_idx.is_none() {
                     let lent = builder.create_block();
-                    let failed = builder.ins().icmp_imm(IntCC::Equal, base, 0);
+                    let failed = builder.ins().icmp_imm_s(IntCC::Equal, base, 0);
                     let none = builder.ins().iconst(types::I64, box_none());
                     let args = if returns_value { &[none][..] } else { &[] };
                     brif_block(&mut builder, failed, master_return_block, args, lent, &[]);
@@ -2260,7 +2268,7 @@ impl SimpleBackend {
         switch_to_block_materialized(&mut builder, master_return_block);
         seal_block_once(&mut builder, &mut sealed_blocks, master_return_block);
 
-        literal_hoists.release_anchors(&mut builder, local_dec_ref_obj);
+        literal_hoists.release_anchors(&mut builder, pointer_type, local_dec_ref_obj);
 
         emit_owned_execution_frame_exit(
             owned_frame_entered,
@@ -2289,7 +2297,7 @@ impl SimpleBackend {
                 if raw_backed_slot_names.contains(name) {
                     continue;
                 }
-                let val = builder.ins().stack_load(types::I64, *slot, 0);
+                let val = builder.ins().stack_load(pointer_type, types::I64, *slot, 0);
                 builder.ins().call(local_dec_ref_obj, &[val]);
             }
         }
@@ -2309,6 +2317,7 @@ impl SimpleBackend {
         if func_ir.name == "molt_main" {
             let has_exc = emit_exception_pending_condition(
                 &mut builder,
+                pointer_type,
                 local_exc_pending_fast,
                 exc_flag_ptr_slot,
             );
@@ -2459,7 +2468,7 @@ impl SimpleBackend {
             }
         }
         builder.seal_all_blocks();
-        builder.finalize();
+        builder.finalize(frontend_config);
 
         if let Some(config) = should_dump_ir()
             && dump_ir_matches(&config, &func_ir.name)

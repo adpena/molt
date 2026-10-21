@@ -21,14 +21,14 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = { workspace = true }
 sha2 = "0.11"
 rustc-demangle = "0.1.28"
-object = { version = "0.39", default-features = false, features = ["read", "std"] }
+object = { version = "0.40", default-features = false, features = ["read", "std"] }
 ar_archive_writer = { version = "0.5.2", optional = true }
 memmap2 = { version = "0.9", optional = true }
 rmp-serde = "1"
 ciborium = { version = "0.2", optional = true }
 
 [dev-dependencies]
-object = { version = "0.39", default-features = false, features = ["read", "write", "std"] }
+object = { version = "0.40", default-features = false, features = ["read", "write", "std"] }
 molt-codegen-abi = { path = "../molt-codegen-abi" }
 # Re-import molt-tir with the test-util feature so molt-backend's own tests can
 # reach the crate-private accessor seams (representation-plan / tir-cache /

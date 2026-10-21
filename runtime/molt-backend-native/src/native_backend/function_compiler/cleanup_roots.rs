@@ -108,7 +108,7 @@ impl NativeCleanupRoots {
             .get(alias_root_name(&self.aliases, name))
         {
             let count = builder.use_var(credits);
-            let next = builder.ins().iadd_imm(count, 1);
+            let next = builder.ins().iadd_imm_s(count, 1);
             builder.def_var(credits, next);
         }
     }
@@ -118,11 +118,12 @@ impl NativeCleanupRoots {
         if let Some(&credits) = self.explicit_credits.get(root) {
             let count = builder.use_var(credits);
             let zero = builder.ins().iconst(types::I64, 0);
-            let extra =
-                builder
-                    .ins()
-                    .icmp_imm(cranelift_codegen::ir::condcodes::IntCC::NotEqual, count, 0);
-            let decremented = builder.ins().iadd_imm(count, -1);
+            let extra = builder.ins().icmp_imm_s(
+                cranelift_codegen::ir::condcodes::IntCC::NotEqual,
+                count,
+                0,
+            );
+            let decremented = builder.ins().iadd_imm_s(count, -1);
             let remaining = builder.ins().select(extra, decremented, zero);
             builder.def_var(credits, remaining);
             if let Some(token) = self.token(name) {
@@ -203,7 +204,7 @@ impl NativeCleanupRoots {
         if let Some(token) = self.token(name) {
             let owned = builder.use_var(token);
             let none = self.empty_token.expect("a tracked root has an empty token");
-            let borrowed = builder.ins().icmp_imm(
+            let borrowed = builder.ins().icmp_imm_s(
                 cranelift_codegen::ir::condcodes::IntCC::Equal,
                 owned,
                 box_none(),

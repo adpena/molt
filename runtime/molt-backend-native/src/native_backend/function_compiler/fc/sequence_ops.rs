@@ -266,8 +266,10 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
 
             // Load each element from the output array into its named variable.
             let mut index: usize = 0;
+            let pointer_type = module.target_config().pointer_type();
             crate::tir::simple_def_use::visit_simple_ir_result_names(op, |output| {
                 let elem = builder.ins().stack_load(
+                    pointer_type,
                     types::I64,
                     out_slot,
                     i32::try_from(index.checked_mul(8).expect("unpack offset overflow"))
@@ -487,7 +489,12 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
             );
             let call = builder.ins().call(callee, &[*iter, value_ptr]);
             let done = builder.inst_results(call)[0];
-            let value = builder.ins().stack_load(types::I64, value_slot, 0);
+            let value = builder.ins().stack_load(
+                module.target_config().pointer_type(),
+                types::I64,
+                value_slot,
+                0,
+            );
             if value_name.is_none() {
                 bind_owned_runtime_result_name(None, value, module, import_ids, builder, vars);
             }

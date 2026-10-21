@@ -475,7 +475,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         };
 
                         // Compute unrolled_len = len & ~3  (round down to multiple of 4)
-                        let unrolled_len = builder.ins().band_imm(len_val, !3i64);
+                        let unrolled_len = builder.ins().band_imm_u(len_val, !3i64);
 
                         // Get raw start index (i64). For list iteration
                         // this is typically 0, produced by iter_devirt.
@@ -527,7 +527,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         let cur_acc = builder.use_var(acc_loop_var);
 
                         // Element 0: data_ptr[idx * 8]
-                        let off0 = builder.ins().ishl_imm(cur_idx, 3);
+                        let off0 = builder.ins().ishl_imm_u(cur_idx, 3);
                         let addr0 = builder.ins().iadd(data_ptr, off0);
                         let e0 = builder
                             .ins()
@@ -553,7 +553,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         let acc4 = builder.ins().iadd(acc3, e3);
 
                         // Advance index by 4
-                        let next_idx_u = builder.ins().iadd_imm(cur_idx, 4);
+                        let next_idx_u = builder.ins().iadd_imm_s(cur_idx, 4);
                         builder.def_var(idx_loop_var, next_idx_u);
                         builder.def_var(acc_loop_var, acc4);
                         jump_block(&mut *builder, unroll_header, &[]);
@@ -576,14 +576,14 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         seal_block_once(&mut *builder, sealed_blocks, epilogue_body);
                         let idx_eb = builder.use_var(idx_loop_var);
                         let acc_eb = builder.use_var(acc_loop_var);
-                        let off_e = builder.ins().ishl_imm(idx_eb, 3);
+                        let off_e = builder.ins().ishl_imm_u(idx_eb, 3);
                         let addr_e = builder.ins().iadd(data_ptr, off_e);
                         let elem_e =
                             builder
                                 .ins()
                                 .load(types::I64, MemFlagsData::trusted(), addr_e, 0);
                         let acc_e_next = builder.ins().iadd(acc_eb, elem_e);
-                        let next_idx_e = builder.ins().iadd_imm(idx_eb, 1);
+                        let next_idx_e = builder.ins().iadd_imm_s(idx_eb, 1);
                         builder.def_var(idx_loop_var, next_idx_e);
                         builder.def_var(acc_loop_var, acc_e_next);
                         jump_block(&mut *builder, epilogue_header, &[]);
@@ -713,6 +713,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                 // _fast` + `icmp != 0` — never a foldable value.
                 let cond_bool = emit_exception_pending_condition(
                     &mut *builder,
+                    module.target_config().pointer_type(),
                     local_exc_pending_fast,
                     exc_flag_ptr_slot,
                 );
@@ -797,7 +798,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     bool_raw_value(&mut *builder, vars, representation_plan, cond_name)
                 {
                     // Raw bool from proven list_bool getitem or const_bool.
-                    builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
+                    builder.ins().icmp_imm_s(IntCC::NotEqual, raw_val, 0)
                 } else if cond_is_bool_typed {
                     // NaN-boxed bool: bit 0 is the boolean value.
                     let cond = var_get_boxed_overflow_safe(
@@ -813,12 +814,12 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     .expect("Loop break cond not found");
                     let one = builder.ins().iconst(types::I64, 1);
                     let payload = builder.ins().band(*cond, one);
-                    builder.ins().icmp_imm(IntCC::NotEqual, payload, 0)
+                    builder.ins().icmp_imm_s(IntCC::NotEqual, payload, 0)
                 } else if let Some(raw_shadow) =
                     int_raw_value(&mut *builder, vars, representation_plan, &args[0])
                 {
                     // Proven raw i64 carrier: truthiness is `value != 0`.
-                    builder.ins().icmp_imm(IntCC::NotEqual, raw_shadow, 0)
+                    builder.ins().icmp_imm_s(IntCC::NotEqual, raw_shadow, 0)
                 } else if cond_is_int_typed {
                     // `cond_is_int_typed` only proves Python-`int` type,
                     // which includes heap BigInts (TAG_PTR). The trusted
@@ -840,7 +841,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     .expect("Loop break cond not found");
                     let cond_val = unbox_int_or_bool(&mut *builder, *cond, nbc);
                     let is_inline_int = fused_is_int_or_bool(&mut *builder, *cond, nbc);
-                    let inline_truthy = builder.ins().icmp_imm(IntCC::NotEqual, cond_val, 0);
+                    let inline_truthy = builder.ins().icmp_imm_s(IntCC::NotEqual, cond_val, 0);
                     let true_val = builder.ins().iconst(types::I8, 1);
                     builder.ins().select(is_inline_int, inline_truthy, true_val)
                 } else {
@@ -865,7 +866,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     let local_callee = module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*cond]);
                     let truthy = builder.inst_results(call)[0];
-                    builder.ins().icmp_imm(IntCC::NotEqual, truthy, 0)
+                    builder.ins().icmp_imm_s(IntCC::NotEqual, truthy, 0)
                 };
                 let cleanup_block = builder.create_block();
                 if debug_block_origins.is_some() {
@@ -960,7 +961,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     bool_raw_value(&mut *builder, vars, representation_plan, cond_name)
                 {
                     // Raw bool from proven list_bool getitem or const_bool.
-                    builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
+                    builder.ins().icmp_imm_s(IntCC::NotEqual, raw_val, 0)
                 } else if cond_is_bool_typed {
                     // Condition is QNAN|TAG_BOOL|{0,1}: low bit is the bool.
                     let cond = var_get_boxed_overflow_safe(
@@ -976,12 +977,12 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     .expect("Loop break cond not found");
                     let one = builder.ins().iconst(types::I64, 1);
                     let payload = builder.ins().band(*cond, one);
-                    builder.ins().icmp_imm(IntCC::NotEqual, payload, 0)
+                    builder.ins().icmp_imm_s(IntCC::NotEqual, payload, 0)
                 } else if let Some(raw_shadow) =
                     int_raw_value(&mut *builder, vars, representation_plan, &args[0])
                 {
                     // Proven raw i64 carrier: truthiness is `value != 0`.
-                    builder.ins().icmp_imm(IntCC::NotEqual, raw_shadow, 0)
+                    builder.ins().icmp_imm_s(IntCC::NotEqual, raw_shadow, 0)
                 } else if cond_is_int_typed {
                     // `cond_is_int_typed` only proves Python-`int` type,
                     // which includes heap BigInts (TAG_PTR). The trusted
@@ -1003,7 +1004,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     .expect("Loop break cond not found");
                     let cond_val = unbox_int_or_bool(&mut *builder, *cond, nbc);
                     let is_inline_int = fused_is_int_or_bool(&mut *builder, *cond, nbc);
-                    let inline_truthy = builder.ins().icmp_imm(IntCC::NotEqual, cond_val, 0);
+                    let inline_truthy = builder.ins().icmp_imm_s(IntCC::NotEqual, cond_val, 0);
                     let true_val = builder.ins().iconst(types::I8, 1);
                     builder.ins().select(is_inline_int, inline_truthy, true_val)
                 } else {
@@ -1028,7 +1029,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     let local_callee = module.declare_func_in_func(callee, builder.func);
                     let call = builder.ins().call(local_callee, &[*cond]);
                     let truthy = builder.inst_results(call)[0];
-                    builder.ins().icmp_imm(IntCC::NotEqual, truthy, 0)
+                    builder.ins().icmp_imm_s(IntCC::NotEqual, truthy, 0)
                 };
                 let cleanup_block = builder.create_block();
                 if debug_block_origins.is_some() {

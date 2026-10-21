@@ -87,7 +87,7 @@ impl SimpleBackend {
                             let compiled = ctx.compiled_code().unwrap_or_else(|| {
                                 panic!("Cranelift produced no compiled code for `{name}`")
                             });
-                            let alignment = compiled.buffer.alignment as u64;
+                            let alignment = compiled.buffer.min_alignment as u64;
                             let code = compiled.buffer.data().to_vec();
                             let relocs: Vec<cranelift_module::ModuleReloc> = compiled
                                 .buffer

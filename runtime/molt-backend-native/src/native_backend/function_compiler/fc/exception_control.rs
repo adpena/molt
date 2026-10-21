@@ -241,6 +241,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
             };
             let cond = emit_exception_pending_condition(
                 &mut *builder,
+                module.target_config().pointer_type(),
                 pending_observer,
                 pending_flag_slot,
             );

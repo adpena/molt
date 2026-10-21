@@ -253,7 +253,9 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 );
             }
             let attr_val = if let Some(&slot) = hoisted_str_slot.get(&args[1]) {
-                builder.ins().stack_load(types::I64, slot, 0)
+                builder
+                    .ins()
+                    .stack_load(module.target_config().pointer_type(), types::I64, slot, 0)
             } else {
                 *var_get_boxed_overflow_safe(
                     &mut *module,
@@ -428,7 +430,9 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
             )
             .expect("Module not found");
             let attr_bits = if let Some(&slot) = hoisted_str_slot.get(&args[1]) {
-                builder.ins().stack_load(types::I64, slot, 0)
+                builder
+                    .ins()
+                    .stack_load(module.target_config().pointer_type(), types::I64, slot, 0)
             } else {
                 *var_get_boxed_overflow_safe(
                     &mut *module,

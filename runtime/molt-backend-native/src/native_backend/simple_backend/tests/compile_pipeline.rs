@@ -1110,7 +1110,7 @@ fn leading_frame_exception_edge_precedes_heap_literal_materialization() {
             .block_insts(enter_block)
             .take_while(|&inst| inst != enter_call)
             .filter(|&inst| {
-                matches!(function.dfg.insts[inst], InstructionData::StackStore { .. })
+                crate::test_support::is_stack_store(function, inst)
                     && function.dfg.inst_args(inst).first().is_some_and(|&value| {
                         constant(function, value) == Some(molt_codegen_abi::box_none_bits())
                     })

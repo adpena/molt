@@ -228,7 +228,7 @@ fn universal(wide: bool) -> Vec<u8> {
     for architecture in [Architecture::X86_64, Architecture::Aarch64] {
         let mut image =
             object::write::Object::new(BinaryFormat::MachO, architecture, Endianness::Little);
-        image.set_macho_cpu_subtype(0);
+        image.set_macho_cpu_subtype(object::macho::CpuSubtype(0));
         let section = image.add_section(b"__TEXT".to_vec(), b"__text".to_vec(), SectionKind::Text);
         image.append_section_data(section, &[0; 16], 4);
         images.push(image.write().unwrap());
@@ -253,7 +253,7 @@ fn universal(wide: bool) -> Vec<u8> {
         if wide {
             bytes.extend_from_slice(object::pod::bytes_of(&FatArch64 {
                 cputype: U32::new(BigEndian, cpu),
-                cpusubtype: U32::new(BigEndian, 0),
+                cpusubtype: U32::new(BigEndian, object::macho::CpuSubtype(0)),
                 offset: U64::new(BigEndian, offset),
                 size: U64::new(BigEndian, image.len() as u64),
                 align: U32::new(BigEndian, 10),
@@ -262,7 +262,7 @@ fn universal(wide: bool) -> Vec<u8> {
         } else {
             bytes.extend_from_slice(object::pod::bytes_of(&FatArch32 {
                 cputype: U32::new(BigEndian, cpu),
-                cpusubtype: U32::new(BigEndian, 0),
+                cpusubtype: U32::new(BigEndian, object::macho::CpuSubtype(0)),
                 offset: U32::new(BigEndian, offset as u32),
                 size: U32::new(BigEndian, image.len() as u32),
                 align: U32::new(BigEndian, 10),
@@ -283,15 +283,16 @@ fn universal_tables_preserve_order_and_reject_bounds_identity_and_overlap() {
         assert_eq!(images.len(), 2);
         assert_eq!(images[0]["offset"], 2048);
         assert_eq!(images[1]["offset"], 1024);
-        assert_eq!(images[0]["machine"], object::macho::CPU_TYPE_X86_64);
-        assert_eq!(images[1]["machine"], object::macho::CPU_TYPE_ARM64);
+        assert_eq!(images[0]["machine"], object::macho::CPU_TYPE_X86_64.0);
+        assert_eq!(images[1]["machine"], object::macho::CPU_TYPE_ARM64.0);
         let stride = if wide { 32 } else { 20 };
         let mut controls = Vec::new();
         let mut bad = bytes.clone();
         bad[12..16].copy_from_slice(&1u32.to_be_bytes());
         controls.push(bad); // wrong subtype
         let mut bad = bytes.clone();
-        bad[8 + stride..12 + stride].copy_from_slice(&object::macho::CPU_TYPE_X86_64.to_be_bytes());
+        bad[8 + stride..12 + stride]
+            .copy_from_slice(&object::macho::CPU_TYPE_X86_64.0.to_be_bytes());
         controls.push(bad); // duplicate identity
         let mut bad = bytes.clone();
         if wide {
@@ -381,8 +382,8 @@ fn arm_thumb_tag_is_only_an_arm_function_value_projection() {
             weak: false,
             section: object::write::SymbolSection::Section(section),
             flags: SymbolFlags::Elf {
-                st_info: (object::elf::STB_GLOBAL << 4) | elf_type,
-                st_other: 0,
+                st_info: object::elf::SymbolInfo::new(object::elf::STB_GLOBAL, elf_type),
+                st_other: object::elf::SymbolOther(0),
             },
         });
         let facts = scan(&image.write().unwrap());
@@ -423,7 +424,7 @@ fn macho_kind_projection_includes_dylib_dyld_and_bundle() {
         assert_eq!(facts["facts"]["slices"][0]["kind"], expected);
     }
     let mut bytes = original;
-    bytes[12..16].copy_from_slice(&object::macho::MH_CORE.to_le_bytes());
+    bytes[12..16].copy_from_slice(&object::macho::MH_CORE.0.to_le_bytes());
     let input = temporary(&bytes);
     let result = command(&input).output().unwrap();
     assert_eq!(result.status.code(), Some(2));

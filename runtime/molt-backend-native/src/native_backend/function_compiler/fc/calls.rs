@@ -259,7 +259,11 @@ fn operand_adopted(op: &OpIR, index: usize) -> bool {
 /// Spill call argument words to an 8-byte-aligned stack slot for a runtime
 /// entry that takes `(args_ptr, nargs)`.
 #[cfg(feature = "native-backend")]
-fn spill_call_arguments(builder: &mut FunctionBuilder<'_>, args: &[Value]) -> (Value, Value) {
+fn spill_call_arguments(
+    builder: &mut FunctionBuilder<'_>,
+    pointer_type: types::Type,
+    args: &[Value],
+) -> (Value, Value) {
     let slot_size = std::cmp::max(args.len(), 1) * 8;
     let args_slot = builder.create_sized_stack_slot(StackSlotData::new(
         StackSlotKind::ExplicitSlot,
@@ -267,7 +271,9 @@ fn spill_call_arguments(builder: &mut FunctionBuilder<'_>, args: &[Value]) -> (V
         3, // align_shift: 2^3 = 8-byte alignment
     ));
     for (i, arg) in args.iter().enumerate() {
-        builder.ins().stack_store(*arg, args_slot, (i * 8) as i32);
+        builder
+            .ins()
+            .stack_store(pointer_type, *arg, args_slot, (i * 8) as i32);
     }
     let args_ptr = builder.ins().stack_addr(types::I64, args_slot, 0);
     let nargs = builder.ins().iconst(types::I64, args.len() as i64);
@@ -306,7 +312,11 @@ fn release_adopted_call_inputs(
         Some(callable) if operand_adopted(op, 0) => callable,
         _ => builder.ins().iconst(types::I64, 0),
     };
-    let (args_ptr, nargs) = spill_call_arguments(builder, &adopted_args);
+    let (args_ptr, nargs) = spill_call_arguments(
+        builder,
+        module.target_config().pointer_type(),
+        &adopted_args,
+    );
     let release = import_func_ref(
         module,
         import_ids,
@@ -360,7 +370,8 @@ fn emit_owned_dynamic_call(
     args: &[Value],
     code_id: i64,
 ) -> Value {
-    let (args_ptr, nargs) = spill_call_arguments(builder, args);
+    let (args_ptr, nargs) =
+        spill_call_arguments(builder, module.target_config().pointer_type(), args);
     let code_id = builder.ins().iconst(types::I64, code_id);
     let callee = SimpleBackend::import_func_id_split(
         module,
@@ -1030,7 +1041,7 @@ fn handle_call_guarded_op(
         .ins()
         .call(is_func_local, &[*callee_bits, supplied, closure_shape]);
     let eligible = builder.inst_results(eligible_call)[0];
-    let is_func_bool = builder.ins().icmp_imm(IntCC::NotEqual, eligible, 0);
+    let is_func_bool = builder.ins().icmp_imm_s(IntCC::NotEqual, eligible, 0);
 
     let resolve_local = import_func_ref(
         &mut *module,
@@ -1087,7 +1098,7 @@ fn handle_call_guarded_op(
     seal_block_once(&mut *builder, &mut *sealed_blocks, then_block);
     let guard_call = builder.ins().call(guard_enter_local, &[]);
     let guard_val = builder.inst_results(guard_call)[0];
-    let guard_ok = builder.ins().icmp_imm(IntCC::NotEqual, guard_val, 0);
+    let guard_ok = builder.ins().icmp_imm_s(IntCC::NotEqual, guard_val, 0);
     let then_call_block = builder.create_block();
     let then_fail_block = builder.create_block();
     builder
@@ -1098,7 +1109,9 @@ fn handle_call_guarded_op(
     seal_block_once(&mut *builder, &mut *sealed_blocks, then_call_block);
     let invocation_call = builder.ins().call(invocation_enter_local, &[*callee_bits]);
     let invocation_token = builder.inst_results(invocation_call)[0];
-    let invocation_ok = builder.ins().icmp_imm(IntCC::NotEqual, invocation_token, 0);
+    let invocation_ok = builder
+        .ins()
+        .icmp_imm_s(IntCC::NotEqual, invocation_token, 0);
     let then_invoke_block = builder.create_block();
     let then_invocation_fail_block = builder.create_block();
     builder.ins().brif(
@@ -1268,7 +1281,7 @@ fn handle_call_func_op(
             .ins()
             .call(eligibility_ref, &[*func_bits, supplied, shape]);
         let eligible = builder.inst_results(eligibility_call)[0];
-        let admitted = builder.ins().icmp_imm(IntCC::NotEqual, eligible, 0);
+        let admitted = builder.ins().icmp_imm_s(IntCC::NotEqual, eligible, 0);
         brif_block(builder, admitted, direct_call_block, &[], slow_block, &[]);
 
         switch_to_block_materialized(builder, direct_call_block);
@@ -1362,7 +1375,9 @@ fn handle_call_func_op(
         );
         let invocation_call = builder.ins().call(invocation_enter, &[*func_bits]);
         let invocation_token = builder.inst_results(invocation_call)[0];
-        let invocation_ok = builder.ins().icmp_imm(IntCC::NotEqual, invocation_token, 0);
+        let invocation_ok = builder
+            .ins()
+            .icmp_imm_s(IntCC::NotEqual, invocation_token, 0);
         let invoke_block = builder.create_block();
         let invocation_fail_block = builder.create_block();
         brif_block(
@@ -1470,17 +1485,8 @@ fn handle_call_func_op(
         merge_params[0]
     } else {
         // Fallback: spill to stack + call molt_call_func_dispatch.
-        let slot_size = std::cmp::max(nargs, 1) * 8;
-        let args_slot = builder.create_sized_stack_slot(StackSlotData::new(
-            StackSlotKind::ExplicitSlot,
-            slot_size as u32,
-            3, // align_shift: 2^3 = 8-byte alignment
-        ));
-        for (i, arg) in args.iter().enumerate() {
-            builder.ins().stack_store(*arg, args_slot, (i * 8) as i32);
-        }
-        let args_ptr = builder.ins().stack_addr(types::I64, args_slot, 0);
-        let nargs_val = builder.ins().iconst(types::I64, nargs as i64);
+        let (args_ptr, nargs_val) =
+            spill_call_arguments(builder, module.target_config().pointer_type(), &args);
         let code_id_val = builder.ins().iconst(types::I64, code_id);
         // Adopted arguments belong to the call: the owned lane of the same
         // invocation authority moves or releases them.
@@ -1622,11 +1628,15 @@ fn emit_native_forward_f32_call(
     let length_slot =
         builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
     let zero = builder.ins().iconst(types::I64, 0);
-    builder.ins().stack_store(zero, length_slot, 0);
+    builder
+        .ins()
+        .stack_store(pointer_type, zero, length_slot, 0);
     let length_ptr = builder.ins().stack_addr(pointer_type, length_slot, 0);
     let input_call = builder.ins().call(bytes_as_ptr, &[input_bits, length_ptr]);
     let input_ptr = builder.inst_results(input_call)[0];
-    let input_len = builder.ins().stack_load(types::I64, length_slot, 0);
+    let input_len = builder
+        .ins()
+        .stack_load(pointer_type, types::I64, length_slot, 0);
 
     let have_input = builder.create_block();
     let have_output = builder.create_block();
@@ -1636,7 +1646,7 @@ fn emit_native_forward_f32_call(
     let done = builder.create_block();
     builder.append_block_param(done, types::I64);
 
-    let input_valid = builder.ins().icmp_imm(IntCC::NotEqual, input_ptr, 0);
+    let input_valid = builder.ins().icmp_imm_s(IntCC::NotEqual, input_ptr, 0);
     builder
         .ins()
         .brif(input_valid, have_input, &[], done, &[BlockArg::from(zero)]);
@@ -1645,7 +1655,7 @@ fn emit_native_forward_f32_call(
     seal_block_once(builder, sealed_blocks, have_input);
     let output_call = builder.ins().call(scratch_alloc, &[input_len]);
     let output_ptr = builder.inst_results(output_call)[0];
-    let output_valid = builder.ins().icmp_imm(IntCC::NotEqual, output_ptr, 0);
+    let output_valid = builder.ins().icmp_imm_s(IntCC::NotEqual, output_ptr, 0);
     builder.ins().brif(
         output_valid,
         have_output,
@@ -1665,7 +1675,7 @@ fn emit_native_forward_f32_call(
         .ins()
         .call(direct_symbol, &[input_ptr, input_len, output_native_ptr]);
     let native_status = builder.inst_results(native_call)[0];
-    let native_ok = builder.ins().icmp_imm(IntCC::Equal, native_status, 0);
+    let native_ok = builder.ins().icmp_imm_s(IntCC::Equal, native_status, 0);
     builder.ins().brif(
         native_ok,
         convert_output,
@@ -2100,7 +2110,8 @@ fn handle_call_loaded_method_op(
         let call = builder.ins().call(local, &words);
         builder.inst_results(call)[0]
     } else {
-        let (args_ptr, nargs) = spill_call_arguments(&mut *builder, args);
+        let (args_ptr, nargs) =
+            spill_call_arguments(&mut *builder, module.target_config().pointer_type(), args);
         let callee = SimpleBackend::import_func_id_split(
             &mut *module,
             &mut *import_ids,

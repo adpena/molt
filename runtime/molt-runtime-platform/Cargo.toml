@@ -32,8 +32,8 @@ libc = "0.2"
 
 [build-dependencies]
 cc = "1"
-object = { version = "0.39", default-features = false, features = ["read", "std"] }
+object = { version = "0.40", default-features = false, features = ["read", "std"] }
 
 [dev-dependencies]
 cc = "1"
-object = { version = "0.39", default-features = false, features = ["read", "std"] }
+object = { version = "0.40", default-features = false, features = ["read", "std"] }

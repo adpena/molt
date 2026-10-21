@@ -190,7 +190,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
             {
                 // Raw bool from proven list_bool getitem or const_bool.
                 // Branch directly on raw 0/1 — ZERO NaN-box overhead.
-                builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
+                builder.ins().icmp_imm_s(IntCC::NotEqual, raw_val, 0)
             } else if scalar_fast_paths_enabled
                 && representation_plan.name_is_bool_scalar(cond_name)
             {
@@ -208,12 +208,12 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 .expect("Cond not found");
                 let one = builder.ins().iconst(types::I64, 1);
                 let bit0 = builder.ins().band(*cond, one);
-                builder.ins().icmp_imm(IntCC::NotEqual, bit0, 0)
+                builder.ins().icmp_imm_s(IntCC::NotEqual, bit0, 0)
             } else if let Some(raw_shadow) =
                 int_raw_value(&mut *builder, vars, representation_plan, &args[0])
             {
                 // Proven raw i64 carrier: truthiness is `value != 0`.
-                builder.ins().icmp_imm(IntCC::NotEqual, raw_shadow, 0)
+                builder.ins().icmp_imm_s(IntCC::NotEqual, raw_shadow, 0)
             } else if scalar_fast_paths_enabled
                 && representation_plan.name_is_integer_scalar(cond_name)
             {
@@ -236,7 +236,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 .expect("Cond not found");
                 let cond_val = unbox_int_or_bool(&mut *builder, *cond, nbc);
                 let is_inline_int = fused_is_int_or_bool(&mut *builder, *cond, nbc);
-                let inline_truthy = builder.ins().icmp_imm(IntCC::NotEqual, cond_val, 0);
+                let inline_truthy = builder.ins().icmp_imm_s(IntCC::NotEqual, cond_val, 0);
                 let true_val = builder.ins().iconst(types::I8, 1);
                 builder.ins().select(is_inline_int, inline_truthy, true_val)
             } else {
@@ -422,6 +422,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 .expect("store_var source");
             let mut incoming = CapturedScalarTransport::read_local(
                 builder,
+                module.target_config().pointer_type(),
                 vars,
                 representation_plan,
                 slot_backed_join_slots,
@@ -485,13 +486,14 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     local_inc_ref_obj,
                 );
             }
+            let pointer_type = module.target_config().pointer_type();
             let displaced = if native_rc && storage == MergeRebindStorageKind::BoxedI64 {
-                slot.map(|slot| builder.ins().stack_load(types::I64, slot, 0))
+                slot.map(|slot| builder.ins().stack_load(pointer_type, types::I64, slot, 0))
             } else {
                 None
             };
             if let Some(slot) = slot {
-                builder.ins().stack_store(value, slot, 0);
+                builder.ins().stack_store(pointer_type, value, slot, 0);
             } else {
                 def_var_from_merge_rebind_storage(
                     module,
@@ -586,7 +588,12 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
             )
             .expect("delete_var: old local operand not found");
             if let Some(&slot) = slot_backed_join_slots.get(name) {
-                builder.ins().stack_store(missing_val, slot, 0);
+                builder.ins().stack_store(
+                    module.target_config().pointer_type(),
+                    missing_val,
+                    slot,
+                    0,
+                );
             } else {
                 def_var_from_boxed_transport(
                     &mut *module,
@@ -616,6 +623,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
             };
             let mut incoming = CapturedScalarTransport::read_local(
                 builder,
+                module.target_config().pointer_type(),
                 vars,
                 representation_plan,
                 slot_backed_join_slots,

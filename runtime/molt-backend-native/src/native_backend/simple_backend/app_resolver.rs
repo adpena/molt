@@ -187,7 +187,7 @@ impl SimpleBackend {
             // probe: mid = lo + (hi - lo) / 2; load record(mid); compare.
             builder.switch_to_block(probe_block);
             let span = builder.ins().isub(hi, lo);
-            let half = builder.ins().ushr_imm(span, 1);
+            let half = builder.ins().ushr_imm_u(span, 1);
             let mid = builder.ins().iadd(lo, half);
             let rec_stride = builder
                 .ins()
@@ -213,7 +213,7 @@ impl SimpleBackend {
             // cmp == 0 -> hit: load and return func_ptr at rec_ptr+8.
             let hit_block = builder.create_block();
             let go_left_or_right = builder.create_block();
-            let is_eq = builder.ins().icmp_imm(IntCC::Equal, cmp, 0);
+            let is_eq = builder.ins().icmp_imm_s(IntCC::Equal, cmp, 0);
             builder
                 .ins()
                 .brif(is_eq, hit_block, &[], go_left_or_right, &[]);
@@ -228,7 +228,7 @@ impl SimpleBackend {
             builder.seal_block(go_left_or_right);
             let left_block = builder.create_block();
             let right_block = builder.create_block();
-            let cmp_lt = builder.ins().icmp_imm(IntCC::SignedLessThan, cmp, 0);
+            let cmp_lt = builder.ins().icmp_imm_s(IntCC::SignedLessThan, cmp, 0);
             builder
                 .ins()
                 .brif(cmp_lt, left_block, &[], right_block, &[]);
@@ -252,7 +252,7 @@ impl SimpleBackend {
         let zero_ret = builder.ins().iconst(types::I64, 0);
         builder.ins().return_(&[zero_ret]);
 
-        builder.finalize();
+        builder.finalize(self.module.target_config());
 
         self.module
             .define_function(resolver_id, &mut ctx)

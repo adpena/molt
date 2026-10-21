@@ -211,7 +211,7 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                 if bce_safe {
                     // BCE-proven safe: straight-line element access
                     // with no bounds check, no branch, no slow path.
-                    let byte_offset = builder.ins().ishl_imm(raw_idx, 3);
+                    let byte_offset = builder.ins().ishl_imm_u(raw_idx, 3);
                     let elem_addr = builder.ins().iadd(data_ptr, byte_offset);
                     let raw_result =
                         builder
@@ -250,7 +250,7 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                     // Fast path: direct load
                     switch_to_block_materialized(&mut *builder, fast_block);
                     seal_block_once(&mut *builder, sealed_blocks, fast_block);
-                    let byte_offset = builder.ins().imul_imm(raw_idx, 8);
+                    let byte_offset = builder.ins().imul_imm_s(raw_idx, 8);
                     let elem_addr = builder.ins().iadd(data_ptr, byte_offset);
                     let raw_result =
                         builder
@@ -374,7 +374,7 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
 
                 switch_to_block_materialized(builder, word_block);
                 seal_block_once(builder, sealed_blocks, word_block);
-                let offset = builder.ins().ishl_imm(raw_idx, 3);
+                let offset = builder.ins().ishl_imm_u(raw_idx, 3);
                 let address = builder.ins().iadd(storage.data, offset);
                 let word = builder
                     .ins()
