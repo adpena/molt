@@ -2312,7 +2312,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_dr.add_argument("--json", action="store_true", help="emit JSON to stdout")
     p_dr.add_argument(
-        "command",
+        "argv",
         nargs=argparse.REMAINDER,
         metavar="-- cmd ...",
         help="the command to daemonize (everything after --)",

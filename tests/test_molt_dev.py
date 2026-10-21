@@ -3730,7 +3730,8 @@ def _dr_ns(drv, name, state_root, command, *, cwd=None, env=None, replace=False)
         replace=replace,
         verify_min_age_hint=30,
         json=False,
-        command=["--", *command],
+        command="detached-run",
+        argv=["--", *command],
     )
 
 
@@ -3775,14 +3776,23 @@ def _verify_json(drv, capsys, ns) -> tuple[int, dict]:
 
 def test_detached_run_completes_and_records_rc(drv, tmp_path, capsys):
     state_root = tmp_path / "detached"
-    rc = drv.cmd_detached_run(
-        _dr_ns(
-            drv,
-            "ok-run",
-            state_root,
-            [sys.executable, "-c", "print('MARKER-OUT', flush=True)"],
-        )
-    )
+    # Exercise the complete dispatcher, not only the detached handler: payload
+    # argv must never replace the subcommand identity used by the controller.
+    argv = [
+        "detached-run",
+        "--name",
+        "ok-run",
+        "--state-dir",
+        str(state_root),
+        "--",
+        sys.executable,
+        "-c",
+        "print('MARKER-OUT', flush=True)",
+    ]
+    parsed = drv.build_parser().parse_args(argv)
+    assert parsed.command == "detached-run"
+    assert parsed.argv == argv[5:]
+    rc = drv.main(argv)
     assert rc == drv.EXIT_OK
     state = state_root / "ok-run"
     assert _wait_done(drv, capsys, "ok-run", state_root)["rc"] == 0
