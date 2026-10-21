@@ -78,6 +78,7 @@ the source of truth.
 - Landing queue (main advances only to a commit that passed its selected proofs on every cell; rollups on the owner's machines; HF-334): [design/landing_queue.md](design/landing_queue.md)
 - Process environment (one Windows/POSIX name-rule authority for child environments, after Rust `EnvKey`, Cargo `Env` and Go `dedupEnvCase`; HF-355): [design/process_environment.md](design/process_environment.md)
 - Development JIT tier (run from memory through Cranelift JIT, no object or link, after rustc_codegen_cranelift's JIT mode and Goose's TinyCC route; HF-371): [design/dev_jit_tier.md](design/dev_jit_tier.md)
+- Toolchain fact cache (one host store of toolchain probe answers keyed by tool identity, argv, cwd, typed environment and file inputs, after Cargo `.rustc_info.json` and Go tool IDs; HF-357): [design/toolchain_fact_cache.md](design/toolchain_fact_cache.md)
 - Frontend semantic fingerprint (the declared producer set that keys lowering records; rustc tracked options, Bazel action keys; HF-254, HF-182): [design/frontend_semantic_fingerprint.md](design/frontend_semantic_fingerprint.md)
 - Op-kind registry and generated dispatch/classifier direction: [design/foundation/25_op_kind_registry.md](design/foundation/25_op_kind_registry.md)
 - One SimpleIR optimization pipeline for every target: [design/foundation/76_simple_ir_pass_pipeline.md](design/foundation/76_simple_ir_pass_pipeline.md)
