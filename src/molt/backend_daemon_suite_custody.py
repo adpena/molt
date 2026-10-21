@@ -113,7 +113,7 @@ def _source_digest() -> str:
     value = hashlib.sha256()
     # This binds custody implementation files, not loaded compiler images.
     from molt import exact_json, file_deletion, file_locks, file_publication
-    from tools.memory_guard_core import process_model
+    from molt import process_model
 
     for source in (
         Path(__file__),
@@ -334,7 +334,7 @@ def acknowledge_started_daemon(
         return True
     if os.name != "posix":
         return False
-    from tools.memory_guard_core.process_model import sample_processes
+    from molt.process_model import sample_processes
 
     try:
         samples = sample_processes()
@@ -719,7 +719,7 @@ def registered_groups(
     acknowledge: bool = True,
 ):
     """Receiving scope observes receipts independently of mutable daemon lookup."""
-    from tools.memory_guard_core.process_model import birth_fenced_descendants
+    from molt.process_model import birth_fenced_descendants
 
     groups = []
     records, errors = _custody_records(path, lease=lease, daemon_root=daemon_root)
@@ -803,13 +803,20 @@ def _guardian_import_path(inherited: str | None) -> str:
 
     The guardian runs from the guest project root, so neither its working
     directory nor a relative inherited entry can find the custody modules the
-    owner loaded; the lease's source digest binds exactly those files.
+    owner loaded; the lease's source digest binds exactly those files. The
+    guardian drains through ``tools.memory_guard``, so the owner's ``tools``
+    root comes from that module's own spec.
     """
-    from tools.memory_guard_core import process_model
+    import importlib.util
 
+    drain = importlib.util.find_spec("tools.memory_guard")
+    if drain is None or drain.origin is None:
+        raise ModuleNotFoundError(
+            "the suite guardian drains through tools.memory_guard", name="tools"
+        )
     roots = [
         str(Path(__file__).resolve().parents[1]),
-        str(Path(process_model.__file__).resolve().parents[2]),
+        str(Path(drain.origin).resolve().parents[1]),
     ]
     entries = [entry for entry in (inherited or "").split(os.pathsep) if entry]
     return os.pathsep.join(dict.fromkeys([*roots, *entries]))
@@ -1034,7 +1041,7 @@ def daemon_suite_scope(
         if os.name == "posix":
             inherited = None
             if previous:
-                from tools.memory_guard_core.process_model import sample_processes
+                from molt.process_model import sample_processes
 
                 inherited = live_lease(
                     Path(previous),
@@ -1078,7 +1085,7 @@ def drain_lease(path: Path) -> bool:
     clean_passes = 0
     observed_history: dict[tuple[int, int], dict[int, int]] = {}
     unverified_history: dict[tuple[int, int], set[int]] = {}
-    from tools.memory_guard_core.process_model import birth_fenced_descendants
+    from molt.process_model import birth_fenced_descendants
 
     sample_errors = (
         OSError,

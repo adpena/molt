@@ -70,7 +70,7 @@ _REPO_ROOT = _THIS_FILE.parents[1]
 from tools import memory_guard  # noqa: E402
 from tools import process_sentinel  # noqa: E402
 from tools.memory_guard import ProcessSample  # noqa: E402
-from tools.memory_guard_core import process_model  # noqa: E402
+from molt import process_model  # noqa: E402
 
 # Build/pipe tools that are safe to reap WHEN ORPHANED **and Molt-owned**.
 # Deliberately excludes python/node (ambiguous — Codex/guard helpers) and every
@@ -112,7 +112,7 @@ def _exe_name(command: str) -> str:
     """Return the lowercased basename of the executable in ``command``.
 
     ``command`` is a full command line for cargo/rustc/etc. or a full image path
-    otherwise (see ``memory_guard_core.windows_snapshot``). The reaper matches on
+    otherwise (see ``molt.windows_process_snapshot``). The reaper matches on
     the leading executable's basename against ``REAP_NAMES``.
     """
     text = command.strip()

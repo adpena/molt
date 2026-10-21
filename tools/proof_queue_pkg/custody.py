@@ -20,6 +20,7 @@ from molt.process_spawn import (
     hidden_windows_process_group_kwargs,
 )
 from tools.proof_queue_pkg import state
+from molt import process_model
 from molt.windows_process_api import process_query_api
 from molt.process_environment import ProcessEnvironment
 
@@ -228,10 +229,6 @@ def _launch_queued_command(
 
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
-_ERROR_ACCESS_DENIED = 5
-
-_STILL_ACTIVE = 259
-
 
 def _windows_process_creation_ticks(pid: int) -> int | None:
     """Return the process creation time as 100ns ticks since 1601, or None.
@@ -316,48 +313,21 @@ def _process_identity(pid: int) -> str | None:
     return f"{os.name}:{int(pid)}:{ticks}"
 
 
-def _pid_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    if os.name == "nt":
-        kernel32 = process_query_api()
-        handle = kernel32.OpenProcess(
-            _PROCESS_QUERY_LIMITED_INFORMATION,
-            False,
-            int(pid),
-        )
-        if not handle:
-            return ctypes.get_last_error() == _ERROR_ACCESS_DENIED
-        try:
-            exit_code = wintypes.DWORD()
-            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
-                return False
-            return exit_code.value == _STILL_ACTIVE
-        finally:
-            kernel32.CloseHandle(handle)
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    return True
-
-
 def _guard_process_live(pid: int | None, recorded_identity: str | None) -> bool:
     """True only when the guard PID is alive AND still the recorded process.
 
-    ``_pid_alive`` is a bare liveness probe: on Windows it cannot distinguish a
-    real exit code of 259 from STILL_ACTIVE, treats ERROR_ACCESS_DENIED as
-    alive, and — critically — reports True for whatever unrelated process now
-    owns a recycled PID. When an identity was recorded at launch we require the
-    live process to still match it, so a recycled PID no longer looks like a
-    live guard. When no identity was recorded (older row, or identity
+    ``process_model.pid_alive`` is a bare liveness probe: it treats a process
+    that refuses this caller as alive, and, critically, reports True for
+    whatever unrelated process now owns a recycled PID. When an identity was
+    recorded at launch we require the live process to still match it, so a
+    recycled PID no longer looks like a live guard. When no identity was recorded (older row, or identity
     unavailable) we fall back to bare liveness and rely on the running-age
     ceiling to reclaim genuinely dead rows.
     """
     if pid is None:
         return False
     pid = int(pid)
-    if not _pid_alive(pid):
+    if not process_model.pid_alive(pid):
         return False
     if not recorded_identity:
         return True

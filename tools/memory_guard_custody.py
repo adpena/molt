@@ -32,7 +32,7 @@ from tools.memory_guard_core.active_custody import (  # noqa: E402
     record_custody_sweep,
 )
 from molt.memory_guard_paths import active_guard_marker_dir  # noqa: E402
-from tools.memory_guard_core.process_model import (  # noqa: E402
+from molt.process_model import (  # noqa: E402
     ProcessSnapshotError,
     sample_processes,
 )

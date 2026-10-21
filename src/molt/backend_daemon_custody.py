@@ -202,23 +202,11 @@ def current_session_backend_daemon_identity_records(
     )
 
 
-def _pid_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
 def _process_command(pid: int) -> tuple[str, ...] | None:
     # Human-readable ps output cannot prove argument boundaries.
     if pid <= 0 or os.name == "nt":
         return None
-    from tools.memory_guard_core.process_model import process_command_argv
+    from molt.process_model import process_command_argv
 
     return process_command_argv(pid)
 
@@ -423,19 +411,14 @@ def _backend_daemon_health_contradicts_identity(
 
 
 def process_started_at_ns(pid: int) -> int | None:
+    from molt import process_model
+
     # POSIX admission must not scan the entire process table under its lock.
     if os.name == "posix":
-        from tools.memory_guard_core.process_model import (
-            process_started_at_ns as native_birth,
-        )
-
-        return native_birth(pid)
-    memory_guard = _load_memory_guard_module()
-    if memory_guard is None:
-        return None
+        return process_model.process_started_at_ns(pid)
     try:
-        sample = memory_guard.sample_processes().get(pid)
-    except (OSError, subprocess.SubprocessError, memory_guard.ProcessSnapshotError):
+        sample = process_model.sample_processes().get(pid)
+    except (OSError, subprocess.SubprocessError, process_model.ProcessSnapshotError):
         return None
     return None if sample is None else sample.started_at_ns
 
@@ -456,7 +439,9 @@ def backend_daemon_identity_is_verified(
     process_command: ProcessCommandProbe | None = None,
     pid_alive: PidAliveProbe | None = None,
 ) -> bool:
-    alive_probe = pid_alive or _pid_alive
+    from molt import process_model
+
+    alive_probe = pid_alive or process_model.pid_alive
     if (
         identity.started_at_ns is None
         or process_started_at_ns(identity.pid) != identity.started_at_ns
@@ -619,7 +604,9 @@ def terminate_backend_daemon_identity(
     health_probe: HealthProbe | None = None,
     pid_alive: PidAliveProbe | None = None,
 ) -> bool:
-    alive_probe = pid_alive or _pid_alive
+    from molt import process_model
+
+    alive_probe = pid_alive or process_model.pid_alive
     if identity.pid <= 0 or not alive_probe(identity.pid):
         return False
     if _backend_daemon_health_contradicts_identity(

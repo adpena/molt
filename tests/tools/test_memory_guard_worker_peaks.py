@@ -9,7 +9,7 @@ from pathlib import Path
 import sys
 
 from tools import memory_guard
-from tools.memory_guard_core.process_model import ProcessSample
+from molt.process_model import ProcessSample
 from tools.memory_guard_core.worker_peaks import WorkerPeakTracker
 
 ROOT = Path(__file__).resolve().parents[2]

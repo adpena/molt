@@ -8,7 +8,7 @@ import pytest
 
 from molt import file_locks as locks
 from tools import memory_guard, process_sentinel as sentinel
-from tools.memory_guard_core import process_model
+from molt import process_model
 from tools.memory_guard_core import process_custody as core
 
 from tests.process_guard_common import run_custody_subject_process
@@ -129,7 +129,7 @@ print("preexec rejected")
 
 
 def test_birth_fenced_descendants_follow_moved_ancestors_and_reject_pid_reuse():
-    from tools.memory_guard_core.process_model import birth_fenced_descendants
+    from molt.process_model import birth_fenced_descendants
 
     parent = memory_guard.ProcessSample(90010, 1, 1, "moved", 90010, None, 100)
     child = memory_guard.ProcessSample(90011, 90010, 1, "child", 90011, None, 200)
@@ -149,7 +149,7 @@ def test_birth_fenced_descendants_follow_moved_ancestors_and_reject_pid_reuse():
 
 @pytest.mark.parametrize("child_birth", [None, 0, -1, True, 200.0, "200", 99])
 def test_birth_fenced_descendants_leave_invalid_edges_unresolved(child_birth):
-    from tools.memory_guard_core.process_model import birth_fenced_descendants
+    from molt.process_model import birth_fenced_descendants
 
     sample = memory_guard.ProcessSample
     samples = {

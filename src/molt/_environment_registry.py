@@ -8469,7 +8469,7 @@ _REGISTRY_JSON = r"""{
       "kind": "float",
       "name": "MOLT_WINDOWS_PROCESS_SNAPSHOT_TIMEOUT_SEC",
       "output_neutral": false,
-      "owner": "tools/memory_guard_core/windows_snapshot.py",
+      "owner": "src/molt/windows_process_snapshot.py",
       "summary": "Budget in seconds for the Windows process-table snapshot helper that the memory guard and process sentinels use; 0, false, off, no, or a non-positive number removes the budget, a non-numeric value uses 5, and exceeding the budget fails closed to an empty process table; default 5.",
       "values": []
     },

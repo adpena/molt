@@ -29,8 +29,8 @@ _REPO_ROOT = _THIS_FILE.parents[1]
 from molt.host_tool_products import HostToolProduct  # noqa: E402
 
 from tools import guarded_entrypoints, memory_guard  # noqa: E402
-from tools.memory_guard_core import process_model as _process_model  # noqa: E402
-from tools.memory_guard_core.process_model import (  # noqa: E402
+from molt import process_model as _process_model  # noqa: E402
+from molt.process_model import (  # noqa: E402
     ancestor_pids,
     birth_fenced_descendants,
     process_identity_has_creation_marker,
@@ -132,7 +132,6 @@ PYTEST_PROCESS_TOKENS = (
 INSPECTION_COMMAND_TOKENS = (
     "tools/process_sentinel.py",
     "process_sentinel.py",
-    "tools/memory_guard_core/windows_snapshot.py",
     "--molt-windows-process-snapshot-json",
     " ps -",
     "ps -",

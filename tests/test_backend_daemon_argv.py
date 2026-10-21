@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from molt import backend_daemon_custody as daemon
-from tools.memory_guard_core import process_model as model
+from molt import process_model as model
 from tests.process_guard_common import install_module_view
 
 
@@ -278,8 +278,8 @@ def test_posix_daemon_birth_probe_uses_single_pid_authority(monkeypatch):
         model, "process_started_at_ns", lambda pid: calls.append(pid) or 123
     )
     monkeypatch.setattr(
-        daemon,
-        "_load_memory_guard_module",
+        model,
+        "sample_processes",
         lambda: pytest.fail("birth admission scanned all processes"),
     )
     assert daemon.process_started_at_ns(12) == 123 and calls == [12]

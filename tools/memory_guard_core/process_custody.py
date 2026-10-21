@@ -25,11 +25,11 @@ if TYPE_CHECKING:
     from tools.memory_guard_core.worker_peaks import WorkerPeakSummary
     from tools.win_job import WindowsJobCleanup
 
-from tools.memory_guard_core import process_model as _process_model
+from molt import process_model as _process_model
 from tools.memory_guard_core.cargo_quarantine import CargoIncrementalQuarantine
 from tools.memory_guard_core.common import utc_timestamp as _utc_timestamp
 from tools.memory_guard_core.memory_limits import ResolvedMemoryLimits
-from tools.memory_guard_core.windows_snapshot import (
+from molt.windows_process_snapshot import (
     WindowsProcessSnapshotRow,
 )
 

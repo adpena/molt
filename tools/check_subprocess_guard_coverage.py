@@ -35,10 +35,12 @@ DEFAULT_TARGET_PATHS = (
     "src/molt/backend_daemon_custody.py",
     "src/molt/cli",
     "src/molt/process_guard.py",
+    "src/molt/process_model.py",
     "src/molt/process_spawn.py",
     "src/molt/pytest_memory_guard_bootstrap.py",
     "src/molt/toolchain_identity.py",
     "src/molt/repl.py",
+    "src/molt/windows_process_snapshot.py",
     "src/molt_accel",
     "packaging",
 )
@@ -229,6 +231,13 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "test_fork_child_does_not_keep_suite_eof_alive",
         "os.kill",
         "terminates the single forked child this custody test owns",
+    ),
+    AllowedRawSubprocessUse(
+        "tests/tools/test_memory_guard_windows_sampling.py",
+        "test_pid_alive_counts_an_exited_unreaped_child_dead_and_never_reaps_it",
+        "os.kill",
+        "signal-0 probe that the exited child this test owns is still listed "
+        "unreaped (a zombie); never sends a signal",
     ),
     AllowedRawSubprocessUse(
         "tests/test_child_clock_custody.py",
@@ -466,26 +475,19 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "bounded git metadata/status probe for landing-safety diagnostics",
     ),
     AllowedRawSubprocessUse(
-        "tools/molt_dev_probe.py",
-        "probe_pid",
-        "os.kill",
-        "bounded pid-liveness probe only; detached-run and gate children avoid raw "
-        "subprocess launchers",
-    ),
-    AllowedRawSubprocessUse(
         "tools/linear_workspace.py",
         "_git_run",
         "run",
         "bounded git workspace metadata/mutation helper outside benchmark/test lanes",
     ),
     AllowedRawSubprocessUse(
-        "tools/memory_guard_core/process_model.py",
+        "src/molt/process_model.py",
         "sample_processes_posix",
         "run",
         "memory guard POSIX process sampler",
     ),
     AllowedRawSubprocessUse(
-        "tools/memory_guard_core/windows_snapshot.py",
+        "src/molt/windows_process_snapshot.py",
         "_windows_process_snapshot_rows_hard_timeout",
         "run",
         "memory guard Windows process snapshot helper with a hard timeout",
@@ -507,12 +509,6 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "_launch_detached_runner",
         "Popen",
         "proof queue detached runner custody boundary records run id, command, and log path",
-    ),
-    AllowedRawSubprocessUse(
-        "tools/proof_queue_pkg/custody.py",
-        "_pid_alive",
-        "os.kill",
-        "bounded PID liveness probe for stale proof-queue row pruning",
     ),
     AllowedRawSubprocessUse(
         "tests/test_agent_contract_budget.py",
@@ -743,12 +739,6 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "differential harness bounded dyld preflight compile probe",
     ),
     AllowedRawSubprocessUse(
-        "tests/molt_diff.py",
-        "_pid_alive",
-        "os.kill",
-        "differential harness generic pid-liveness probe",
-    ),
-    AllowedRawSubprocessUse(
         "tests/test_tkinter_phase0_wrappers.py",
         "_run_probe",
         "run",
@@ -774,10 +764,10 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "CLI subprocess helper's explicit unguarded branch for opt-out call sites",
     ),
     AllowedRawSubprocessUse(
-        "src/molt/backend_daemon_custody.py",
-        "_pid_alive",
+        "src/molt/process_model.py",
+        "pid_alive",
         "os.kill",
-        "backend daemon custody pid-liveness probe only; not signal authority",
+        "the one POSIX pid-liveness probe (signal 0); not signal authority",
     ),
     AllowedRawSubprocessUse(
         "src/molt/toolchain_identity.py",

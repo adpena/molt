@@ -10,6 +10,7 @@ import pytest
 
 from molt import backend_daemon_custody as daemon
 from molt import backend_daemon_suite_custody as suite
+from molt import process_model
 from molt.exact_json import write_exact
 from molt.file_locks import _try_acquire_file_lock, _release_file_lock
 from tools import memory_guard
@@ -144,8 +145,6 @@ def lease_samples(record):
 def test_daemon_scope_borrows_live_receiver_without_another_guardian(
     lease, tmp_path, monkeypatch
 ):
-    from tools.memory_guard_core import process_model
-
     path, record, _handle = lease
     install_module_os_view(monkeypatch, suite, name="posix")
     monkeypatch.setattr(
@@ -526,7 +525,7 @@ def test_eof_guardian_drains_only_its_registered_births(lease, tmp_path, monkeyp
 def test_birth_bound_daemon_reuse_never_signals_replacement(tmp_path, monkeypatch):
     owned = identity(tmp_path, "suite")
     monkeypatch.setattr(daemon, "process_started_at_ns", lambda pid: 301)
-    monkeypatch.setattr(daemon, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(process_model, "pid_alive", lambda pid: True)
     monkeypatch.setattr(daemon, "_process_command", lambda pid: owned.command)
     assert not daemon.backend_daemon_identity_is_verified(
         owned, allow_health_probe=False
@@ -825,12 +824,11 @@ def test_birth_probe_snapshot_error_is_unavailable(monkeypatch):
     # POSIX reads the native birth time; the process snapshot serves the other
     # hosts, so select that path here on every host.
     install_module_os_view(monkeypatch, daemon, name="nt")
-    monkeypatch.setattr(daemon, "_load_memory_guard_module", lambda: memory_guard)
 
     def fail():
-        raise memory_guard.ProcessSnapshotError("snapshot unavailable")
+        raise process_model.ProcessSnapshotError("snapshot unavailable")
 
-    monkeypatch.setattr(memory_guard, "sample_processes", fail)
+    monkeypatch.setattr(process_model, "sample_processes", fail)
     assert daemon.process_started_at_ns(30) is None
 
 

@@ -5,7 +5,6 @@ orphan-leak prevention (complement to tools/orphan_reaper.py's sweep net)."""
 
 from __future__ import annotations
 
-import ctypes
 import contextlib
 import os
 import subprocess
@@ -20,15 +19,13 @@ from tests.process_guard_common import (
     start_owned_test_process,
 )
 
+from molt.process_model import pid_alive
 from tools import win_job
 
 pytestmark = pytest.mark.skipif(
     not sys.platform.startswith("win"),
     reason="Job Objects and the orphan-leak class are Windows-only",
 )
-
-_STILL_ACTIVE = 259
-_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
 # Child: only AFTER it starts running (i.e. after resume) does it spawn a
 # grandchild and record its pid, then idle. If the grandchild inherits the job,
@@ -45,20 +42,6 @@ _EXITING_CHILD = (
     "gc=subprocess.Popen([sys.executable,'-c','import time;time.sleep(120)']);"
     "open(sys.argv[1],'w').write(str(gc.pid))"
 )
-
-
-def _alive(pid: int) -> bool:
-    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    h = k32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-    if not h:
-        return False
-    try:
-        code = ctypes.c_ulong()
-        if not k32.GetExitCodeProcess(h, ctypes.byref(code)):
-            return False
-        return code.value == _STILL_ACTIVE
-    finally:
-        k32.CloseHandle(h)
 
 
 def test_kill_on_job_close_reaps_child_and_grandchild() -> None:
@@ -86,8 +69,8 @@ def test_kill_on_job_close_reaps_child_and_grandchild() -> None:
             time.sleep(0.1)
         assert gc_pid is not None, "child never spawned grandchild (resume failed)"
 
-        assert _alive(proc.pid), "child not alive after resume"
-        assert _alive(gc_pid), "grandchild not alive after resume"
+        assert pid_alive(proc.pid), "child not alive after resume"
+        assert pid_alive(gc_pid), "grandchild not alive after resume"
         job_members = set(win_job.process_ids(job))
         assert {proc.pid, gc_pid} <= job_members
         assert win_job.active_process_count(job) == len(job_members)
@@ -104,8 +87,8 @@ def test_kill_on_job_close_reaps_child_and_grandchild() -> None:
 
         child_dead = gc_dead = False
         for _ in range(100):
-            child_dead = not _alive(proc.pid)
-            gc_dead = not _alive(gc_pid)
+            child_dead = not pid_alive(proc.pid)
+            gc_dead = not pid_alive(gc_pid)
             if child_dead and gc_dead:
                 break
             time.sleep(0.1)
@@ -114,7 +97,7 @@ def test_kill_on_job_close_reaps_child_and_grandchild() -> None:
     finally:
         if proc is not None and proc.poll() is None:
             close_owned_test_process(proc)
-        if gc_pid is not None and _alive(gc_pid):
+        if gc_pid is not None and pid_alive(gc_pid):
             run_guarded_test_process(
                 ["taskkill", "/PID", str(gc_pid), "/F"], capture_output=True
             )
@@ -140,7 +123,7 @@ def test_completion_waits_for_descendant_release_before_returning() -> None:
         win_job.assign_and_resume(job, proc)
         proc.wait(timeout=10)
         gc_pid = int(open(pidfile.name, encoding="utf-8").read().strip())
-        assert _alive(gc_pid)
+        assert pid_alive(gc_pid)
         assert win_job.active_process_count(job) >= 1
 
         cleanup = win_job.complete_job_custody(job, timeout=5.0)
@@ -154,14 +137,14 @@ def test_completion_waits_for_descendant_release_before_returning() -> None:
         assert cleanup.after.total_page_fault_count > 0
         assert cleanup.system_before.process_count is not None
         assert cleanup.system_after.process_count is not None
-        assert not _alive(gc_pid)
+        assert not pid_alive(gc_pid)
     finally:
         if job is not None:
             with contextlib.suppress(win_job.WinJobError):
                 win_job.close_job(job)
         if proc is not None and proc.poll() is None:
             close_owned_test_process(proc)
-        if gc_pid is not None and _alive(gc_pid):
+        if gc_pid is not None and pid_alive(gc_pid):
             run_guarded_test_process(
                 ["taskkill", "/PID", str(gc_pid), "/F"], capture_output=True
             )

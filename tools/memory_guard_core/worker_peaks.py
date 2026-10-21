@@ -24,7 +24,7 @@ from pathlib import Path
 import stat
 
 from molt.memory_guard_paths import pytest_custody_path_is_canonical
-from tools.memory_guard_core.process_model import ProcessSample
+from molt.process_model import ProcessSample
 from tools.memory_guard_core.repro_context import _read_pytest_current_test_json
 
 # The phases in which a worker's record names the test it is running.

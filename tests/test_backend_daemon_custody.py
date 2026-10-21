@@ -10,7 +10,8 @@ import pytest
 from molt import backend_daemon_custody as custody
 from molt.backend_executable_names import is_host_tool_executable_name
 from tools import memory_guard
-from tools.memory_guard_core import process_custody, process_model
+from tools.memory_guard_core import process_custody
+from molt import process_model
 from tests.process_guard_common import (
     install_thread_module_view,
 )
@@ -149,7 +150,7 @@ def test_backend_daemon_identity_rejects_live_foreign_pid(
     monkeypatch,
 ) -> None:
     identity = _identity(tmp_path)
-    monkeypatch.setattr(custody, "_pid_alive", lambda pid: pid == identity.pid)
+    monkeypatch.setattr(process_model, "pid_alive", lambda pid: pid == identity.pid)
     monkeypatch.setattr(custody, "_process_command", lambda pid: "/bin/sleep 999")
 
     assert not custody.backend_daemon_identity_is_verified(
@@ -163,7 +164,7 @@ def test_backend_daemon_identity_health_probe_cannot_substitute_for_process_iden
     monkeypatch,
 ) -> None:
     identity = _identity(tmp_path)
-    monkeypatch.setattr(custody, "_pid_alive", lambda pid: pid == identity.pid)
+    monkeypatch.setattr(process_model, "pid_alive", lambda pid: pid == identity.pid)
     monkeypatch.setattr(custody, "_process_command", lambda pid: "/bin/sleep 999")
 
     assert not custody.backend_daemon_identity_is_verified(
@@ -214,7 +215,7 @@ def test_backend_daemon_termination_never_signals_unverified_identity(
 ) -> None:
     identity = _identity(tmp_path)
     signals: list[int] = []
-    monkeypatch.setattr(custody, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(process_model, "pid_alive", lambda pid: True)
     monkeypatch.setattr(custody, "_process_command", lambda pid: "/bin/sleep 999")
     _patch_memory_guard_termination(
         monkeypatch,
@@ -234,7 +235,7 @@ def test_backend_daemon_termination_revalidates_before_sigkill(
 ) -> None:
     identity = _identity(tmp_path)
     signals: list[int] = []
-    monkeypatch.setattr(custody, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(process_model, "pid_alive", lambda pid: True)
     original = _daemon_sample(identity, started_at_ns=111)
     reused = _daemon_sample(identity, command="/bin/sleep 999", started_at_ns=222)
 
@@ -262,7 +263,7 @@ def test_backend_daemon_termination_keeps_identity_after_protective_fallback_ski
     identity_path = daemon_root / "molt-backend.dev.alpha.protected.identity.json"
     custody.write_backend_daemon_identity(identity_path, identity)
     sample = _daemon_sample(identity)
-    monkeypatch.setattr(custody, "_pid_alive", lambda pid: pid == identity.pid)
+    monkeypatch.setattr(process_model, "pid_alive", lambda pid: pid == identity.pid)
     monkeypatch.setattr(custody, "_load_memory_guard_module", lambda: memory_guard)
     monkeypatch.setattr(
         memory_guard, "sample_processes", lambda: {identity.pid: sample}
@@ -306,7 +307,7 @@ def test_backend_daemon_termination_escalates_only_after_verified_grace(
 ) -> None:
     identity = _identity(tmp_path)
     signals: list[int] = []
-    monkeypatch.setattr(custody, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(process_model, "pid_alive", lambda pid: True)
     _patch_memory_guard_termination(
         monkeypatch,
         samples=lambda: {identity.pid: _daemon_sample(identity)},
@@ -323,7 +324,7 @@ def test_backend_daemon_termination_escalates_with_sigterm_without_sigkill(
 ) -> None:
     identity = _identity(tmp_path)
     signals: list[int] = []
-    monkeypatch.setattr(custody, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(process_model, "pid_alive", lambda pid: True)
     # The escalation reads the fallback from the custody module that signals.
     monkeypatch.setattr(
         process_custody,
@@ -401,3 +402,122 @@ def test_identity_reader_rejects_decode_and_recursive_json_without_escape(
     path = tmp_path / "malformed.identity.json"
     path.write_bytes(raw)
     assert custody.read_backend_daemon_identity(path) is None
+
+
+# The product's daemon probes, run as an installed wheel runs them: `python -I`
+# with only the `molt` package importable, never the repository's `tools`.
+_INSTALLED_DAEMON_PROBES = r"""
+import importlib.util
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+source_root, scratch = sys.argv[1], Path(sys.argv[2])
+# A wheel ships only `src`; drop any entry that would expose the checkout.
+sys.path[:] = [
+    entry
+    for entry in sys.path
+    if not (Path(entry or ".") / "tools" / "memory_guard.py").is_file()
+]
+sys.path.insert(0, source_root)
+assert importlib.util.find_spec("tools") is None, sys.path
+
+from molt import backend_daemon_custody as custody
+from molt import process_model
+
+backend_bin = scratch / "molt-backend"
+socket_path = scratch / "daemon.sock"
+daemon = subprocess.Popen(
+    [
+        str(backend_bin),
+        "-c",
+        "import time; time.sleep(60)",
+        "--daemon",
+        "--socket",
+        str(socket_path),
+    ],
+    executable=sys.executable,
+)
+try:
+    identity = custody.backend_daemon_identity_for_pid(
+        daemon.pid,
+        socket_path=socket_path,
+        project_root=scratch,
+        cargo_profile="dev-fast",
+        config_digest=None,
+        backend_bin=backend_bin,
+    )
+    verified_live = custody.backend_daemon_identity_is_verified(
+        identity, allow_health_probe=False
+    )
+    daemon.kill()
+    deadline = time.monotonic() + 30
+    while process_model.pid_alive(daemon.pid):
+        assert time.monotonic() < deadline, "the killed daemon stays alive"
+        time.sleep(0.01)
+    # Exited and not yet reaped: the identity no longer verifies.
+    verified_exited = custody.backend_daemon_identity_is_verified(
+        identity, allow_health_probe=False
+    )
+finally:
+    daemon.kill()
+    daemon.wait()
+print(
+    json.dumps(
+        {
+            "self_alive": process_model.pid_alive(os.getpid()),
+            "self_argv": custody._process_command(os.getpid()),
+            "self_birth": custody.process_started_at_ns(os.getpid()),
+            "identity_birth": identity.started_at_ns,
+            "identity_command": identity.command,
+            "verified_live": verified_live,
+            "verified_exited": verified_exited,
+            "tools_loaded": sorted(
+                name
+                for name in sys.modules
+                if name == "tools" or name.startswith("tools.")
+            ),
+        }
+    )
+)
+"""
+
+
+@pytest.mark.skipif(
+    os.name != "posix", reason="the backend daemon runs by default on POSIX only"
+)
+def test_installed_daemon_probes_need_only_the_molt_package(tmp_path: Path) -> None:
+    import json
+    import sys
+
+    from tests.process_guard_common import run_guarded_test_process
+
+    source_root = Path(custody.__file__).resolve().parents[1]
+    result = run_guarded_test_process(
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            _INSTALLED_DAEMON_PROBES,
+            str(source_root),
+            str(tmp_path),
+        ],
+        cwd=tmp_path,
+        env={**os.environ, "PYTHONPATH": ""},
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    report = json.loads(result.stdout)
+    assert report["self_alive"] is True
+    # Native argv keeps its boundaries: the multi-line program is one argument.
+    assert report["self_argv"][1:4] == ["-I", "-c", _INSTALLED_DAEMON_PROBES]
+    assert report["self_argv"][-1] == str(tmp_path)
+    assert type(report["self_birth"]) is int
+    assert type(report["identity_birth"]) is int
+    assert "--daemon" in report["identity_command"]
+    assert report["verified_live"] is True
+    assert report["verified_exited"] is False
+    assert report["tools_loaded"] == []

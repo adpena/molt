@@ -12,7 +12,7 @@ import pytest
 
 from tools import bench_individual as bench
 from molt.backend_daemon_custody import BackendDaemonObservation
-from tools.memory_guard_core.process_model import ProcessSample
+from molt.process_model import ProcessSample
 
 
 ROOT = Path(__file__).resolve().parents[1]

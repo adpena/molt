@@ -13,11 +13,12 @@ from pathlib import Path
 from typing import Literal, Mapping
 
 from molt.exact_json import canonical_json_bytes, loads_exact, read_exact
+from molt import process_model
 from tools.memory_guard_core.process_custody import GuardInfrastructureFailure
 from tools.memory_guard_core import repro_context
 from molt.memory_guard_paths import ACTIVE_DIRNAME
 from tools.memory_guard_core.active_custody import MarkerRecord, guard_marker_records
-from tools.proof_queue_pkg import command_admission, command_identity, custody, state
+from tools.proof_queue_pkg import command_admission, command_identity, state
 from tools.proof_queue_pkg.diagnostic_model import (
     _diagnostic,
     _format_duration,
@@ -922,7 +923,7 @@ def _running_child_missing_diagnostic(row: sqlite3.Row) -> dict[str, object] | N
         if host_platform == "win32"
         else "memory_guard_child_process"
     )
-    if not custody._pid_alive(child_pid):
+    if not process_model.pid_alive(child_pid):
         evidence = (
             f"child_pid={child_pid} last_log_age={_format_duration(log_age_s)} "
             f"summary_json={row['summary_json']}"

@@ -23,7 +23,7 @@ from tools.memory_guard_core.common import utc_timestamp as _utc_timestamp
 
 
 if TYPE_CHECKING:
-    from tools.memory_guard_core.process_model import ProcessIdentity, ProcessSample
+    from molt.process_model import ProcessIdentity, ProcessSample
 
 
 def _exception_diagnostic(exc: BaseException) -> str:
@@ -145,7 +145,7 @@ def _owned_sample_argv(
         ):
             return None
         from molt.backend_daemon_custody import _split_command
-        from tools.memory_guard_core.windows_snapshot import (
+        from molt.windows_process_snapshot import (
             windows_job_command_context,
         )
 
@@ -158,7 +158,7 @@ def _owned_sample_argv(
 
         argv = tuple(_split_command(sample.command))
     elif argv is None and sys.platform.startswith("linux"):
-        from tools.memory_guard_core.process_model import process_started_at_ns
+        from molt.process_model import process_started_at_ns
 
         try:
             before = process_started_at_ns(sample.pid)
@@ -189,7 +189,7 @@ def _owned_cargo_ancestor(
     watched: set[int],
     identities: Mapping[int, ProcessIdentity],
 ) -> ProcessSample | None:
-    from tools.memory_guard_core.process_model import (
+    from molt.process_model import (
         process_births_are_ordered,
         process_identity,
     )
@@ -224,7 +224,7 @@ def observe_owned_incremental_state(
     A manual Rustc process, token appearing in a shell command, missing ancestor,
     or stale/reused parent instance cannot authorize Cargo cache recovery.
     """
-    from tools.memory_guard_core.process_model import process_identity
+    from molt.process_model import process_identity
 
     observations = set()
     for pid in watched:
@@ -273,7 +273,7 @@ def observe_cargo_interruption_inventory(
     An unobserved or wrapped compiler remains unknown. Absence of incremental
     observations alone never proves that no compiler cache was interrupted.
     """
-    from tools.memory_guard_core.process_model import process_identity
+    from molt.process_model import process_identity
 
     if not watched:
         return CargoInterruptionInventory("no owned process inventory observed")
@@ -323,7 +323,7 @@ def _observed_pid_is_definitely_closed(pid: int) -> bool:
     if os.name == "nt":
         if pid > 0xFFFFFFFF:
             return False
-        from tools.memory_guard_core.windows_snapshot import _windows_snapshot_api
+        from molt.windows_process_snapshot import _windows_snapshot_api
 
         api = _windows_snapshot_api()  # Shared pointer-width-correct query ABI.
         snapshot = api.create_snapshot(0x00000002, 0)  # TH32CS_SNAPPROCESS
@@ -355,7 +355,7 @@ def _observed_pid_is_definitely_closed(pid: int) -> bool:
 def _observed_compilers_closed(
     observations: Sequence[CargoIncrementalObservation],
 ) -> bool:
-    from tools.memory_guard_core.process_model import sample_processes
+    from molt.process_model import sample_processes
 
     try:
         samples = sample_processes()
@@ -469,7 +469,7 @@ def _local_cargo_lock_filesystem(path: Path) -> bool:
 def _observed_incremental_units(
     target_dir: Path, observations: Sequence[CargoIncrementalObservation]
 ) -> dict[Path, Path]:
-    from tools.memory_guard_core.process_model import process_births_are_ordered
+    from molt.process_model import process_births_are_ordered
 
     root = target_dir.resolve(strict=True)
     units: dict[Path, Path] = {}

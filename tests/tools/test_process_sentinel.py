@@ -14,7 +14,7 @@ from tests.process_guard_common import (
     run_guarded_test_process,
 )
 from tools import guarded_entrypoints, process_sentinel
-from tools.memory_guard_core import process_model
+from molt import process_model
 from tools.memory_guard_core import process_custody
 
 pytestmark = pytest.mark.usefixtures("session_sentinel_paused")
@@ -803,7 +803,7 @@ def test_process_groups_exclude_windows_snapshot_helper_descendants(
             rss_kb=100,
             command=(
                 r"C:\repo\molt\.venv\Scripts\python.exe "
-                r"C:\repo\molt\tools\memory_guard_core\windows_snapshot.py "
+                "-P -m molt.windows_process_snapshot "
                 "--molt-windows-process-snapshot-json"
             ),
         ),
@@ -843,7 +843,7 @@ def test_process_groups_exclude_explicitly_owned_windows_snapshot_helper_tree(
             rss_kb=100,
             command=(
                 r"C:\repo\molt\.venv\Scripts\python.exe "
-                r"C:\repo\molt\tools\memory_guard_core\windows_snapshot.py "
+                "-P -m molt.windows_process_snapshot "
                 "--molt-windows-process-snapshot-json"
             ),
         ),
@@ -2673,7 +2673,7 @@ def test_current_tree_decisions_read_argv_only_for_the_tree_and_its_ancestry() -
     groups protection skipped.
     """
     module = process_sentinel
-    model = sys.modules["tools.memory_guard_core.process_model"]
+    model = sys.modules["molt.process_model"]
     root = Path("/repo/molt")
     bound: list[int] = []
 

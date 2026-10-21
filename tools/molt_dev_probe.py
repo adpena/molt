@@ -3,9 +3,10 @@
 
 from __future__ import annotations
 
-import os
 import time
 from pathlib import Path
+
+from molt import process_model
 
 
 def probe_path(path: Path) -> dict:
@@ -24,19 +25,8 @@ def probe_path(path: Path) -> dict:
 
 
 def probe_pid(pid: int) -> dict:
-    """Liveness of a pid via os.kill(pid, 0) (never `ps`/`kill -0` shell text)."""
-    alive: bool
-    detail = ""
-    try:
-        os.kill(pid, 0)
-        alive = True
-    except ProcessLookupError:
-        alive = False
-    except PermissionError:
-        # Exists but owned by another user: still ALIVE for liveness purposes.
-        alive = True
-        detail = "owned by another user"
-    except OSError as exc:
-        alive = False
-        detail = str(exc)
-    return {"pid": pid, "alive": alive, "detail": detail}
+    """The `probe --pid` record: liveness from the process model, never `ps`.
+
+    An exited, unreaped child (a zombie) is not alive.
+    """
+    return {"pid": pid, "alive": process_model.pid_alive(pid)}

@@ -32,7 +32,8 @@ from tools.molt_dev_common import (  # noqa: E402
     _ok,
     _say,
 )
-from tools.molt_dev_probe import probe_path, probe_pid  # noqa: E402
+from molt.process_model import pid_alive  # noqa: E402
+from tools.molt_dev_probe import probe_path  # noqa: E402
 
 from tools.command_execution import CommandExecutor  # type: ignore  # noqa: E402
 
@@ -189,7 +190,7 @@ def cmd_detached_run(args: argparse.Namespace) -> int:
     pid_f, rc_f = state / "pid", state / "rc"
     if pid_f.exists():
         old_pid = int(pid_f.read_text(encoding="utf-8").strip() or "0")
-        if old_pid and probe_pid(old_pid)["alive"] and not rc_f.exists():
+        if old_pid and pid_alive(old_pid) and not rc_f.exists():
             raise DriverError(
                 f"detached-run: {args.name!r} is already RUNNING (pid {old_pid}). "
                 "This driver NEVER kills - wait, detached-verify it, or use a "
@@ -276,7 +277,7 @@ def cmd_detached_verify(args: argparse.Namespace) -> int:
             return EXIT_OK
         _fail(f"detached {args.name!r}: DONE rc={rc} (log {result['log_size']}B)")
         return EXIT_FAIL
-    if probe_pid(pid)["alive"]:
+    if pid_alive(pid):
         if age_s < args.min_age_s:
             result["status"] = "too-young"
             if args.json:

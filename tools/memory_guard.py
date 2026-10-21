@@ -185,7 +185,7 @@ from tools.memory_guard_core.cargo_quarantine import (  # noqa: E402
     _token_executable_name as _token_executable_name,
     _write_cargo_quarantine_receipt as _write_cargo_quarantine_receipt,
 )
-from tools.memory_guard_core.windows_snapshot import (  # noqa: E402
+from molt.windows_process_snapshot import (  # noqa: E402
     ProcessSnapshotError as ProcessSnapshotError,
     WindowsProcessSnapshotTimeout as WindowsProcessSnapshotTimeout,
     WINDOWS_FULL_COMMAND_LINE_EXECUTABLE_NAMES as WINDOWS_FULL_COMMAND_LINE_EXECUTABLE_NAMES,
@@ -209,7 +209,7 @@ from molt.metric_ratios import RatioDirection, signed_ratio_value  # noqa: E402
 from tools import win_job as _win_job  # noqa: E402
 
 WindowsJobCleanup = _win_job.WindowsJobCleanup
-from tools.memory_guard_core import process_model as _process_model  # noqa: E402
+from molt import process_model as _process_model  # noqa: E402
 from tools.memory_guard_core import cli_contract as _cli_contract  # noqa: E402
 from tools.memory_guard_core import repro_context as _repro_context  # noqa: E402
 from tools.memory_guard_core.worker_peaks import WorkerPeakTracker  # noqa: E402
@@ -218,7 +218,7 @@ from molt.memory_guard_paths import (  # noqa: E402
     active_guard_marker_dir,
     memory_guard_state_root,
 )
-from tools.memory_guard_core.process_model import (  # noqa: E402
+from molt.process_model import (  # noqa: E402
     sample_processes as sample_processes,
     sample_processes_custody as sample_processes_custody,
 )
@@ -1241,7 +1241,7 @@ def run_guarded(
                         for key, value in job_member_contexts.items()
                         if key in live_keys
                     }
-                    from tools.memory_guard_core.windows_snapshot import (
+                    from molt.windows_process_snapshot import (
                         windows_job_command_context,
                     )
 

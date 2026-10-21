@@ -13,7 +13,7 @@ from molt.memory_guard_paths import (
     pytest_custody_path_is_canonical,
     pytest_guard_summary_dir,
 )
-from tools.memory_guard_core.process_model import ProcessSample, ancestor_pids
+from molt.process_model import ProcessSample, ancestor_pids
 
 
 REPRO_ENV_KEYS = {
