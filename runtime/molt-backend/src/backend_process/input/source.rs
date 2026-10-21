@@ -13,6 +13,7 @@ pub(super) fn invalid_ir(context: &str, err: impl std::fmt::Display) -> io::Erro
 }
 
 /// Check the same reader used by the decoder, including any buffered suffix.
+#[cfg(feature = "cbor")]
 pub(super) fn require_eof(reader: &mut impl io::Read, context: &str) -> io::Result<()> {
     let mut suffix = [0_u8; 1];
     loop {

@@ -153,7 +153,7 @@ struct CompiledFunctionClif {
     import_ids: BTreeMap<String, FuncId>,
 }
 
-fn declared_import_ids(module: &impl Module) -> BTreeMap<String, FuncId> {
+fn declared_import_ids(module: &dyn Module) -> BTreeMap<String, FuncId> {
     // Direct runtime calls and helper calls share the module's declarations;
     // the helper cache contains only calls made through import_func_ref.
     module
@@ -477,6 +477,7 @@ pub(in crate::native_backend) fn emit_direct_object(mut backend: SimpleBackend) 
     backend.flush_deferred_defines();
     backend
         .module
+        .into_object()
         .finish()
         .emit()
         .expect("emit native test object")

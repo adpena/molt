@@ -111,8 +111,3 @@ pub(crate) fn batch_external_function_names(
         .cloned()
         .collect()
 }
-
-pub(crate) fn deduplicate_functions_by_name(functions: &mut Vec<FunctionIR>) {
-    let mut seen: BTreeSet<String> = BTreeSet::new();
-    functions.retain(|f| seen.insert(f.name.clone()));
-}

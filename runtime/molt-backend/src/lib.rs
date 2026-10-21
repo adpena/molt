@@ -31,7 +31,9 @@ pub use crate::passes::{
 #[cfg(feature = "llvm")]
 pub use molt_backend_native::llvm_backend;
 #[cfg(feature = "native-backend")]
-pub use molt_backend_native::{CompileOutput, NativeBackendModuleContext, SimpleBackend};
+pub use molt_backend_native::{
+    CompileOutput, NativeBackendModuleContext, SimpleBackend, prepare_native_application_ir,
+};
 /// The representation lattice element (the orthogonal carrier axis to
 /// `TirType`). Re-exported publicly because it appears in the signature of the
 /// `pub` `tir::lower_to_lir::lower_function_to_lir` (Phase 1 of the typed-IR

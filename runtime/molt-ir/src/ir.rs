@@ -242,6 +242,22 @@ pub struct BackendIrDocument {
 }
 
 impl BackendIrDocument {
+    /// Decode one MessagePack document (the CLI's backend IR lease format) and
+    /// require that the reader holds nothing after it.
+    pub fn from_msgpack_reader(reader: &mut impl std::io::Read) -> Result<Self, String> {
+        let document: Self =
+            rmp_serde::from_read(&mut *reader).map_err(|error| error.to_string())?;
+        let mut suffix = [0_u8; 1];
+        loop {
+            match reader.read(&mut suffix) {
+                Ok(0) => return Ok(document),
+                Ok(_) => return Err("trailing bytes after the IR value".to_string()),
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+    }
+
     pub fn from_json_str(input: &str) -> Result<Self, String> {
         let value: JsonValue =
             serde_json::from_str(input).map_err(|err| format!("invalid IR JSON: {err}"))?;

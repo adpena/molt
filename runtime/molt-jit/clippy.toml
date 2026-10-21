@@ -1,0 +1,8 @@
+# Backend settings reach compiler code through
+# `molt_ir::backend_environment::{var, var_os, is_set}` (typed `BackendEnv`
+# keys, per-request scopes in the daemon). A process-level read outside that
+# catalog states its reason with `#[expect(clippy::disallowed_methods)]`.
+disallowed-methods = [
+    { path = "std::env::var", reason = "read backend settings with molt_ir::backend_environment::var(BackendEnv::...)" },
+    { path = "std::env::var_os", reason = "read backend settings with molt_ir::backend_environment::var_os(BackendEnv::...)" },
+]
