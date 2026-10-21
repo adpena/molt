@@ -23,7 +23,8 @@ def _run_ocr_api_script(script: str) -> dict[str, object]:
         capture_output=True,
         text=True,
     )
-    return json.loads(run.stdout)
+    # The script writes its result last; the worker's monitoring logs JSON lines.
+    return json.loads(run.stdout.strip().splitlines()[-1])
 
 
 def test_cloudflare_ocr_decode_rejects_empty_token_array() -> None:
@@ -557,3 +558,105 @@ def test_cloudflare_worker_shared_ocr_payload_rebinds_request_id() -> None:
     assert result["rebound"]["text"] == "Invoice 42"
     assert result["rebound"]["tokens"] == [1, 2]
     assert result["rebound"]["request_id"] == "rid-second"
+
+
+def test_cloudflare_ocr_request_validation_answers_client_errors() -> None:
+    # MAX_IMAGE_BYTES is 4: four bytes pass the size check, five do not.
+    result = _run_ocr_api_script(
+        """
+        const mod = await import('./deploy/cloudflare/ocr_api.js');
+        const env = { MAX_IMAGE_BYTES: '4' };
+        const url = 'https://falcon-ocr.example/ocr';
+        const json = (body) => new Request(url, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body,
+        });
+        const form = (blob) => {
+          const data = new FormData();
+          if (blob) data.append('image', blob);
+          return new Request(url, { method: 'POST', body: data });
+        };
+        const cases = {
+          notJson: json('{"image":'),
+          jsonArray: json('[1, 2]'),
+          missingImage: json('{}'),
+          badBase64: json('{"image": "!!!"}'),
+          tooLarge: json(JSON.stringify({ image: btoa('12345'), format: 'image/png' })),
+          badFormat: json(JSON.stringify({ image: btoa('1234'), format: 'image/gif' })),
+          badContentType: new Request(url, {
+            method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: 'x',
+          }),
+          formMissing: form(null),
+          formTooLarge: form(new Blob([new Uint8Array(5)], { type: 'image/png' })),
+          formBadType: form(new Blob([new Uint8Array(4)], { type: 'image/gif' })),
+        };
+        const results = {};
+        for (const [name, request] of Object.entries(cases)) {
+          const response = await mod.handleOcrRequest(request, null, env, {}, 'rid');
+          results[name] = { status: response.status, body: await response.json() };
+        }
+        process.stdout.write(JSON.stringify(results));
+        """
+    )
+
+    expected = {
+        "notJson": 400,
+        "jsonArray": 400,
+        "missingImage": 400,
+        "badBase64": 400,
+        "tooLarge": 413,
+        "badFormat": 415,
+        "badContentType": 415,
+        "formMissing": 400,
+        "formTooLarge": 413,
+        "formBadType": 415,
+    }
+    assert {name: case["status"] for name, case in result.items()} == expected
+    for name, case in result.items():
+        assert case["body"]["request_id"] == "rid", name
+        assert case["body"]["error"], name
+
+
+def test_cloudflare_worker_routes_answer_malformed_bodies_with_400() -> None:
+    # Before the client input parsers, these bodies threw: the template routes
+    # answered 503 or 500, the GPU route 502, and the batch route threw.
+    result = _run_ocr_api_script(
+        """
+        const workerModule = await import('./deploy/cloudflare/worker.js');
+        const rateLimiter = {
+          idFromName(name) { return name; },
+          get() { return { async fetch() { return new Response('ok'); } }; },
+        };
+        const ai = { async run() { return { response: '{}' }; } };
+        const call = async (path, body, headers = {}, env = {}) => {
+          const response = await workerModule.default.fetch(
+            new Request(`https://falcon-ocr.example${path}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'X-Request-ID': 'rid', ...headers },
+              body,
+            }),
+            { RATE_LIMITER: rateLimiter, ...env },
+            { waitUntil() {} },
+          );
+          return { status: response.status, body: await response.json() };
+        };
+        process.stdout.write(JSON.stringify({
+          templateFast: await call('/template/extract', '{"image":', {}, { AI: ai }),
+          templateFastBase64: await call('/template/extract', '{"image": "!!!"}', {}, { AI: ai }),
+          templateSlow: await call('/template/extract', '{"image":'),
+          templateSlowBase64: await call('/template/extract', '{"image": "!!!"}'),
+          gpu: await call('/ocr', 'not json', { 'X-Use-Backend': 'gpu' }),
+          invoiceFill: await call('/invoice/fill', '[]', {}, { AI: ai }),
+          batch: await call('/batch', '{', {}, { OCR_QUEUE: { async send() {} } }),
+        }));
+        """
+    )
+
+    for name, case in result.items():
+        assert case["status"] == 400, (name, case)
+        assert case["body"]["error"], name
+    # The queue module answers without the request id; the route adds the header.
+    assert all(
+        case["body"]["request_id"] == "rid"
+        for name, case in result.items()
+        if name != "batch"
+    )

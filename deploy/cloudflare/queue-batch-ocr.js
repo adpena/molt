@@ -35,6 +35,8 @@
 //   // In queue handler:
 //   export default { queue: (batch, env) => processQueueBatch(batch, env) };
 
+import { readJsonObject } from './client_input.js';
+
 /**
  * Generate a unique batch ID (collision-resistant, URL-safe).
  */
@@ -58,8 +60,14 @@ function generateBatchId() {
  *   { "batch_id": "abc123", "count": 5, "status": "queued" }
  */
 export async function handleBatchSubmit(request, env) {
-    const body = await request.json();
-    const images = body.images;
+    const parsed = await readJsonObject(request);
+    if ('error' in parsed) {
+        return new Response(JSON.stringify({ error: parsed.error }), {
+            status: parsed.status,
+            headers: { 'Content-Type': 'application/json' },
+        });
+    }
+    const images = parsed.value.images;
 
     if (!Array.isArray(images) || images.length === 0) {
         return new Response(JSON.stringify({ error: 'images must be a non-empty array' }), {
