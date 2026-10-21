@@ -6,8 +6,20 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 
 from molt.file_hashing import _sha256_file
+from molt.toolchain_facts import (
+    DARWIN_DEVELOPER_SELECTION_LINK,
+    LINK_DRIVER_PROBE_ENVIRONMENT,
+    ProbeAnswer,
+    ProbeKey,
+    capture_probe_tool,
+    completed_probe,
+    environment_inputs,
+    file_input,
+    host_toolchain_facts,
+)
 from molt.llvm_wasi_tools import (
     _tool_version,
     llvm_linker_candidates,
@@ -96,20 +108,53 @@ def _resolve_native_link_executable(
     return candidates[0] if candidates else None
 
 
-def _system_linker_from_driver(driver: Path) -> Path | None:
-    try:
-        result = process_guard.run_completed_command(
-            [str(driver), "-print-prog-name=ld"],
-            cwd=driver.parent,
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    raw = result.stdout.strip()
+def _driver_printed_linker(stdout: str, driver: Path) -> Path | None:
+    raw = stdout.strip()
     return _resolve_native_link_executable(raw, sibling=driver.parent) if raw else None
+
+
+def _system_linker_from_driver(driver: Path) -> Path | None:
+    """The linker a C driver selects, from the toolchain facts.
+
+    ``-print-prog-name`` searches the driver's program paths, COMPILER_PATH,
+    the GCC prefix and PATH; the Apple ``/usr/bin`` shim dispatches on the
+    developer selection. The probe inherits this process's environment, so
+    the key reads that environment.
+    """
+    label = "native link driver"
+    try:
+        tool = capture_probe_tool(driver, label=label)
+        key = ProbeKey(
+            "link-driver-linker",
+            (tool,),
+            ("-print-prog-name=ld",),
+            os.fspath(driver.parent),
+            environment_inputs(os.environ, LINK_DRIVER_PROBE_ENVIRONMENT),
+            (file_input(DARWIN_DEVELOPER_SELECTION_LINK),)
+            if sys.platform == "darwin"
+            else (),
+        )
+
+        def run() -> subprocess.CompletedProcess[str]:
+            with tool.fenced(label=label):
+                return process_guard.run_completed_command(
+                    [str(driver), "-print-prog-name=ld"],
+                    cwd=driver.parent,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    check=False,
+                )
+
+        def current(answer: ProbeAnswer) -> bool:
+            return _driver_printed_linker(answer.stdout, driver) is not None
+
+        result, _cached = completed_probe(
+            host_toolchain_facts(), key, run, accept=current
+        )
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    return _driver_printed_linker(result.stdout, driver)
 
 
 def _linker_from_driver_trace(plan: NativeLinkPlan, driver: Path) -> Path | None:

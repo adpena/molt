@@ -12,6 +12,7 @@ import pytest
 
 from molt import platform_toolchain as platform_tools
 from molt.process_environment import NameRule, ProcessEnvironment
+from tests.executable_test_support import write_mock_executable
 from tests.process_guard_common import install_module_view
 import subprocess
 
@@ -234,26 +235,31 @@ def test_darwin_resolves_real_tools_under_pinned_developer_and_sdk(
     for name in ("clang", "clang++", "ar", "ranlib", "ld"):
         (actual / name).write_bytes(name.encode())
     calls = []
+    # The selectors are real files: the toolchain facts key each answer by
+    # the selector's bytes before asking it (HF-357). Only the process is faked.
+    selectors = tmp_path / "selectors"
+    selectors.mkdir()
+    for name in ("xcode-select", "xcrun"):
+        write_mock_executable(selectors / name, b"MZ " + name.encode())
 
-    def resolve(name, **_kwargs):
-        return Path(name) if Path(name).is_absolute() else tmp_path / name
-
-    monkeypatch.setattr(platform_tools, "resolve_executable", resolve)
-
-    def query(argv, env, **_kwargs):
+    def query(argv, **kwargs):
+        env = kwargs["env"]
         calls.append((argv, ProcessEnvironment(env)))
         if "--print-path" in argv:
-            return str(developer)
-        assert env["DEVELOPER_DIR"] == str(developer)
-        if "--show-sdk-path" in argv:
-            return str(sdk)
-        assert "--show-sdk-version" not in argv
-        assert argv[argv.index("--sdk") + 1] == str(sdk)
-        assert env["SDKROOT"] == str(sdk)
-        return str(actual / argv[-1])
+            stdout = str(developer)
+        else:
+            assert env["DEVELOPER_DIR"] == str(developer)
+            if "--show-sdk-path" in argv:
+                stdout = str(sdk)
+            else:
+                assert "--show-sdk-version" not in argv
+                assert argv[argv.index("--sdk") + 1] == str(sdk)
+                assert env["SDKROOT"] == str(sdk)
+                stdout = str(actual / argv[-1])
+        return subprocess.CompletedProcess(argv, 0, stdout + "\n", "")
 
-    monkeypatch.setattr(platform_tools, "_query", query)
-    selection = platform_tools.select_darwin_toolchain({"PATH": "/usr/bin"})
+    monkeypatch.setattr(platform_tools.process_guard, "run_completed_command", query)
+    selection = platform_tools.select_darwin_toolchain({"PATH": str(selectors)})
     assert set(selection.tools.values()) == set(actual.iterdir())
     assert selection.versions() == {
         "sdk": "15.4",
@@ -262,10 +268,11 @@ def test_darwin_resolves_real_tools_under_pinned_developer_and_sdk(
     }
     assert selection.environment()["MACOSX_DEPLOYMENT_TARGET"] == "15.4"
     before = len([argv for argv, _ in calls if "--print-path" in argv])
-    assert selection == platform_tools.select_darwin_toolchain(selection.environment())
+    pinned = {**selection.environment(), "PATH": str(selectors)}
+    assert selection == platform_tools.select_darwin_toolchain(pinned)
     assert len([argv for argv, _ in calls if "--print-path" in argv]) == before
     (sdk / "SDKSettings.json").write_bytes(b'{"Version":"15.4","changed":true}')
-    assert selection != platform_tools.select_darwin_toolchain(selection.environment())
+    assert selection != platform_tools.select_darwin_toolchain(pinned)
 
 
 @pytest.mark.parametrize("developer_override", [False, True])
@@ -355,12 +362,13 @@ def test_darwin_deployment_policy_rejects_malformed_override():
     ],
 )
 def test_selector_failures_stay_inside_platform_selection_diagnostics(
-    monkeypatch, error
+    tmp_path, monkeypatch, error
 ):
+    # The selector's bytes are identified before it runs; the failure under
+    # test is the process, so the selector itself is a real file.
+    selector = write_mock_executable(tmp_path / "selector", b"MZ selector")
     monkeypatch.setattr(
-        platform_tools,
-        "resolve_executable",
-        lambda *_args, **_kwargs: Path("/fixture/selector"),
+        platform_tools, "resolve_executable", lambda *_args, **_kwargs: selector
     )
 
     def fail(*_args, **_kwargs):

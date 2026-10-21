@@ -7,18 +7,34 @@ Keep this lookup separate from PATH discovery and preserve its provenance.
 
 from __future__ import annotations
 
-from molt.process_environment import ProcessEnvironment
+from molt.process_environment import (
+    NameRule,
+    ProcessEnvironment,
+    ProcessEnvironmentBuilder,
+)
 
 from contextlib import contextmanager
 from dataclasses import dataclass
 import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 import tomllib
 from typing import Generator, Iterator, Mapping, Sequence
 
 from molt.exact_json import string_keyed_mapping
+from molt.toolchain_facts import (
+    RUSTUP_PROBE_ENVIRONMENT,
+    FileInput,
+    ProbeAnswer,
+    ProbeKey,
+    ProbeTool,
+    completed_probe,
+    environment_inputs,
+    file_input,
+    host_toolchain_facts,
+)
 from molt.toolchain_identity import (
     find_executable,
     resolve_executable,
@@ -85,9 +101,26 @@ class RustupProxyUnavailable(ValueError):
         self.diagnostic = diagnostic
 
 
-@contextmanager
-def rustup_proxy_entrypoint(path: Path) -> Generator[Path | None, None, None]:
-    """Yield the named Rustup CLI only while its bytes match the selected proxy."""
+@dataclass(frozen=True, slots=True)
+class RustupProxySelection:
+    """A content-proven rustup proxy and the rustup CLI that resolves it."""
+
+    entrypoint: Path
+    proxy: ProbeTool
+    rustup: ProbeTool
+
+    @contextmanager
+    def fenced(self) -> Generator[Path, None, None]:
+        """Yield the rustup CLI while both captured generations are current."""
+        with (
+            self.proxy.fenced(label="Rust proxy selection"),
+            self.rustup.fenced(label="rustup selection") as entrypoint,
+        ):
+            yield entrypoint
+
+
+def rustup_proxy_selection(path: Path) -> RustupProxySelection | None:
+    """The named rustup CLI, only when its bytes match the selected proxy."""
     from molt import input_report
 
     name = "rustup.exe" if os.name == "nt" else "rustup"
@@ -98,86 +131,142 @@ def rustup_proxy_entrypoint(path: Path) -> Generator[Path | None, None, None]:
         input_report.report_probe(candidate)
         if candidate.is_file():
             candidates.append(candidate)
-    if candidates:
-        with stable_executable_probe(path, label="Rust proxy selection") as (
-            _,
-            selected,
-        ):
-            if selected.path != path:
-                input_report.report_probe(path)
-            input_report.report_captured_file(
-                selected.path, selected.stat_token(), selected.sha256
-            )
-            for rustup in candidates:
-                with stable_executable_probe(rustup, label="rustup selection") as (
-                    entrypoint,
-                    proxy,
-                ):
-                    input_report.report_captured_file(
-                        proxy.path, proxy.stat_token(), proxy.sha256
+    if not candidates:
+        return None
+    with stable_executable_probe(path, label="Rust proxy selection") as (
+        invoked,
+        selected,
+    ):
+        if selected.path != path:
+            input_report.report_probe(path)
+        input_report.report_captured_file(
+            selected.path, selected.stat_token(), selected.sha256
+        )
+        for rustup in candidates:
+            with stable_executable_probe(rustup, label="rustup selection") as (
+                entrypoint,
+                proxy,
+            ):
+                input_report.report_captured_file(
+                    proxy.path, proxy.stat_token(), proxy.sha256
+                )
+                if selected.sha256 == proxy.sha256:
+                    return RustupProxySelection(
+                        entrypoint,
+                        ProbeTool.from_identity(invoked, selected),
+                        ProbeTool.from_identity(entrypoint, proxy),
                     )
-                    if selected.sha256 == proxy.sha256:
-                        yield entrypoint
-                        return
-    yield None
+    return None
+
+
+def _rustup_home_inputs(rustup_home: Path) -> tuple[FileInput, ...]:
+    """What rustup reads under its home: settings, the installed toolchains
+    and each toolchain's ``bin`` listing (a component that appears there
+    changes which binary ``which`` selects, including the cargo fallback)."""
+    toolchains = rustup_home / "toolchains"
+    try:
+        with os.scandir(toolchains) as iterator:
+            names = sorted(entry.name for entry in iterator)
+    except OSError:
+        names = []
+    return (
+        file_input(rustup_home / "settings.toml"),
+        file_input(toolchains),
+        *(file_input(toolchains / name / "bin") for name in names),
+    )
+
+
+def _printed_executable(stdout: str) -> Path | None:
+    """The one absolute path a selector printed, while it names a file."""
+    value = stdout.strip()
+    if not value or "\n" in value or "\r" in value or not Path(value).is_absolute():
+        return None
+    path = Path(value)
+    return path if path.is_file() else None
 
 
 def resolve_rustup_proxy(
     path: Path, *, role: str, root: Path, env: Mapping[str, str]
 ) -> Path:
-    """Resolve a content-proven rustup proxy, preserving custom tool binaries."""
-    with rustup_proxy_entrypoint(path) as entrypoint:
-        if entrypoint is None:
-            return path
-        from molt import process_guard
-        from molt import input_report
+    """Resolve a content-proven rustup proxy, preserving custom tool binaries.
 
-        if input_report.active():
-            # rustup selects by toolchain files from the root upward and by
-            # its settings; the record must see each lookup.
-            input_report.report_file(Path(entrypoint))
-            for directory in (root, *root.parents):
-                input_report.report_data_file(directory / "rust-toolchain.toml")
-                input_report.report_data_file(directory / "rust-toolchain")
-            rustup_home = Path(
-                env.get("RUSTUP_HOME") or Path(env.get("HOME", "~")) / ".rustup"
-            ).expanduser()
-            input_report.report_data_file(rustup_home / "settings.toml")
+    ``rustup which`` reads the explicit toolchain, the ``rust-toolchain``
+    file chain from the root upward, its settings and the installed
+    toolchains; the answer is keyed by all of them (rustup-rs ``config.rs``).
+    """
+    selection = rustup_proxy_selection(path)
+    if selection is None:
+        return path
+    from molt import process_guard
+    from molt import input_report
 
-        result = process_guard.run_completed_command(
-            [os.fspath(entrypoint), "which", role],
-            cwd=root,
-            env=ProcessEnvironment(env),
-            check=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=30,
-            memory_guard_prefix=None,
-        )
-        if result.returncode != 0:
-            raise RustupProxyUnavailable(
-                role,
-                {
-                    "phase": "rustup-component-selection",
-                    "unit": role,
-                    "argv": [os.fspath(entrypoint), "which", role],
-                    "cwd": os.fspath(root),
-                    "returncode": result.returncode,
-                    "stdout": result.stdout,
-                    "stderr": result.stderr,
-                },
+    environment = ProcessEnvironment(env)
+    entrypoint = selection.entrypoint
+    toolchain_files = tuple(
+        directory / name
+        for directory in (root, *root.parents)
+        for name in ("rust-toolchain.toml", "rust-toolchain")
+    )
+    rustup_home = Path(
+        environment.get("RUSTUP_HOME") or Path(environment.get("HOME", "~")) / ".rustup"
+    ).expanduser()
+    if input_report.active():
+        # rustup selects by toolchain files from the root upward and by
+        # its settings; the record must see each lookup.
+        input_report.report_file(Path(entrypoint))
+        for file in toolchain_files:
+            input_report.report_data_file(file)
+        input_report.report_data_file(rustup_home / "settings.toml")
+    argv = ("which", role)
+    key = ProbeKey(
+        "rustup-which",
+        (selection.proxy, selection.rustup),
+        argv,
+        os.fspath(root),
+        environment_inputs(environment, RUSTUP_PROBE_ENVIRONMENT),
+        (
+            *(file_input(file) for file in toolchain_files),
+            *_rustup_home_inputs(rustup_home),
+        ),
+    )
+
+    def run() -> subprocess.CompletedProcess[str]:
+        with selection.fenced():
+            return process_guard.run_completed_command(
+                [os.fspath(entrypoint), *argv],
+                cwd=root,
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=30,
+                memory_guard_prefix=None,
             )
-        value = result.stdout.strip()
-        if not value or "\n" in value or "\r" in value or not Path(value).is_absolute():
-            raise ValueError(f"rustup {role} selector must print one absolute path")
-        selected = resolve_executable(
-            value, environment=env, label=f"selected Rust {role}"
-        )
-        from molt import input_report
 
-        input_report.report_file(selected)
-        return selected
+    def current(answer: ProbeAnswer) -> bool:
+        return _printed_executable(answer.stdout) is not None
+
+    result, _cached = completed_probe(host_toolchain_facts(), key, run, accept=current)
+    if result.returncode != 0:
+        raise RustupProxyUnavailable(
+            role,
+            {
+                "phase": "rustup-component-selection",
+                "unit": role,
+                "argv": [os.fspath(entrypoint), *argv],
+                "cwd": os.fspath(root),
+                "returncode": result.returncode,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+            },
+        )
+    value = result.stdout.strip()
+    if not value or "\n" in value or "\r" in value or not Path(value).is_absolute():
+        raise ValueError(f"rustup {role} selector must print one absolute path")
+    selected = resolve_executable(value, environment=env, label=f"selected Rust {role}")
+    input_report.report_file(selected)
+    return selected
 
 
 # dyld's search list when DYLD_FALLBACK_LIBRARY_PATH is unset.
@@ -257,9 +346,23 @@ def cargo_config_arguments(command: Sequence[str], *, cwd: Path) -> list[str]:
     return result
 
 
+def _platform_environment(env: Mapping[str, str]) -> ProcessEnvironment:
+    """``env`` under the platform this module selects Cargo's tools on.
+
+    A typed environment keeps its rule. A plain mapping takes the rule of the
+    ``os`` that decides the PATH grammar and the home variable here, so a
+    captured Windows selection reads ``Path`` the way Cargo does on Windows.
+    """
+    if isinstance(env, (ProcessEnvironment, ProcessEnvironmentBuilder)):
+        return ProcessEnvironment(env)
+    return ProcessEnvironment(
+        env, rule=NameRule.WINDOWS if os.name == "nt" else NameRule.EXACT
+    )
+
+
 def cargo_home_path(root: Path, env: Mapping[str, str]) -> Path:
     """Cargo home selection shared by config and external-subcommand lookup."""
-    environment = ProcessEnvironment(env)
+    environment = _platform_environment(env)
     home_value = environment.get("CARGO_HOME", "")
     if home_value:
         home = Path(home_value)
@@ -277,7 +380,7 @@ def cargo_external_subcommand_path(
     Keep lexical PATH order, including a deliberately lower-priority Cargo home;
     resolving aliases before the membership check changes Cargo's selection.
     """
-    environment = ProcessEnvironment(env)
+    environment = _platform_environment(env)
     path_value = environment.get("PATH", "")
     directories: list[Path] = []
     if "PATH" in environment:

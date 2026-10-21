@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 import hashlib
+import os
 from pathlib import Path
 import platform
 import re
@@ -14,6 +15,18 @@ from molt import process_guard
 from molt.exact_json import loads_exact
 from molt.llvm_toolchain import llvm_host_architecture
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
+from molt.toolchain_facts import (
+    DARWIN_DEVELOPER_SELECTION_LINK,
+    DARWIN_SELECTOR_ENVIRONMENT,
+    FileInput,
+    ProbeAnswer,
+    ProbeKey,
+    capture_probe_tool,
+    completed_probe,
+    environment_inputs,
+    file_input,
+    host_toolchain_facts,
+)
 from molt.toolchain_identity import (
     find_executable,
     resolve_executable,
@@ -43,9 +56,11 @@ SDK_ENVIRONMENT_NAMES = frozenset(
 )
 
 
-def _query(argv: list[str], env: Mapping[str, str], *, timeout: int = 30) -> str:
+def _completed_query(
+    argv: list[str], env: Mapping[str, str], *, timeout: int = 30
+) -> subprocess.CompletedProcess[str]:
     try:
-        result = process_guard.run_completed_command(
+        return process_guard.run_completed_command(
             argv,
             env=ProcessEnvironment(env),
             capture_output=True,
@@ -61,7 +76,80 @@ def _query(argv: list[str], env: Mapping[str, str], *, timeout: int = 30) -> str
         raise ValueError(
             f"Platform toolchain selector {argv[0]} failed: {detail[:2048]}"
         ) from exc
+
+
+def _query(argv: list[str], env: Mapping[str, str], *, timeout: int = 30) -> str:
+    return _completed_query(argv, env, timeout=timeout).stdout.strip()
+
+
+def _darwin_selection(
+    kind: str,
+    selector: Path,
+    argv: tuple[str, ...],
+    env: Mapping[str, str],
+    *,
+    label: str,
+    inputs: tuple[FileInput, ...],
+    accept: Callable[[str], bool],
+) -> str:
+    """One xcode-select/xcrun answer from the toolchain facts.
+
+    The key names the selector binary, the developer-directory link the
+    ``/usr/bin`` shims dispatch on, the selector environment and the
+    directories the question searches. A recorded answer is served only while
+    ``accept`` holds for it; otherwise the selector runs again.
+    """
+    tool = capture_probe_tool(selector, label=label)
+    key = ProbeKey(
+        kind,
+        (tool,),
+        argv,
+        None,
+        environment_inputs(env, DARWIN_SELECTOR_ENVIRONMENT),
+        (file_input(DARWIN_DEVELOPER_SELECTION_LINK), *inputs),
+    )
+
+    def run() -> subprocess.CompletedProcess[str]:
+        with tool.fenced(label=label):
+            return _completed_query([str(selector), *argv], env)
+
+    def current(answer: ProbeAnswer) -> bool:
+        return accept(answer.stdout.strip())
+
+    result, _cached = completed_probe(host_toolchain_facts(), key, run, accept=current)
     return result.stdout.strip()
+
+
+def _one_line(value: str) -> bool:
+    return bool(value) and "\n" not in value
+
+
+def _developer_inputs(developer_dir: Path, *relative: str) -> tuple[FileInput, ...]:
+    """The real xcrun under the developer directory, then each searched path."""
+    return (
+        file_input(developer_dir / "usr" / "bin" / "xcrun"),
+        *(file_input(developer_dir / path) for path in relative),
+    )
+
+
+def _darwin_toolchain_inputs(
+    developer_dir: Path, env: Mapping[str, str]
+) -> tuple[FileInput, ...]:
+    """Every ``usr/bin`` an ``xcrun --find`` can select a tool from."""
+    inputs = list(_developer_inputs(developer_dir, "usr/bin"))
+    home = ProcessEnvironment(env).get("HOME")
+    roots = [developer_dir / "Toolchains"]
+    if home:
+        roots.append(Path(home) / "Library" / "Developer" / "Toolchains")
+    for root in roots:
+        inputs.append(file_input(root))
+        try:
+            with os.scandir(root) as iterator:
+                names = sorted(entry.name for entry in iterator)
+        except OSError:
+            names = []
+        inputs.extend(file_input(root / name / "usr" / "bin") for name in names)
+    return tuple(inputs)
 
 
 def visual_studio_installation(component: str, env: Mapping[str, str]) -> Path | None:
@@ -259,7 +347,15 @@ def _darwin_developer_directory(
         selector = resolve_executable(
             "xcode-select", environment=env, label="Darwin developer selector"
         )
-        selected = _query([str(selector), "--print-path"], env)
+        selected = _darwin_selection(
+            "xcode-select-path",
+            selector,
+            ("--print-path",),
+            env,
+            label="Darwin developer selector",
+            inputs=(),
+            accept=lambda value: _one_line(value) and Path(value).is_dir(),
+        )
         if not selected or "\n" in selected:
             raise ValueError("xcode-select must select exactly one developer directory")
         developer_dir = Path(selected)
@@ -295,8 +391,21 @@ def select_darwin_sdk(
         xcrun = resolve_executable(
             "xcrun", environment=selected_env, label="Darwin SDK selector"
         )
-        selected = _query(
-            [str(xcrun), "--sdk", "macosx", "--show-sdk-path"], selected_env
+        assert developer_dir is not None
+        selected = _darwin_selection(
+            "xcrun-sdk-path",
+            xcrun,
+            ("--sdk", "macosx", "--show-sdk-path"),
+            selected_env,
+            label="Darwin SDK selector",
+            inputs=_developer_inputs(
+                developer_dir,
+                "Platforms/MacOSX.platform/Developer/SDKs",
+                "Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk",
+                "SDKs",
+                "SDKs/MacOSX.sdk",
+            ),
+            accept=lambda value: _one_line(value) and Path(value).is_dir(),
         )
         if not selected or "\n" in selected:
             raise ValueError("xcrun must select exactly one SDK directory")
@@ -335,9 +444,19 @@ def select_darwin_toolchain(
         "xcrun", environment=selected_env, label="Darwin SDK selector"
     )
     tools = {}
+    search_inputs = (
+        *_darwin_toolchain_inputs(developer_dir, selected_env),
+        file_input(sdk.sdk_root / "usr" / "bin"),
+    )
     for name in ("clang", "clang++", "ar", "ranlib", "ld"):
-        selected = _query(
-            [str(xcrun), "--sdk", str(sdk.sdk_root), "--find", name], selected_env
+        selected = _darwin_selection(
+            "xcrun-find",
+            xcrun,
+            ("--sdk", str(sdk.sdk_root), "--find", name),
+            selected_env,
+            label="Darwin SDK selector",
+            inputs=search_inputs,
+            accept=lambda value: _one_line(value) and Path(value).is_file(),
         )
         if not selected or "\n" in selected:
             raise ValueError(f"xcrun must select one value for {name}")

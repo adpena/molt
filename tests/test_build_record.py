@@ -123,7 +123,7 @@ def test_stat_only_selection_misses_when_an_absent_input_appears(
 ) -> None:
     from molt.compiler_distribution import MANIFEST_NAME, installed_compiler
     from molt.python_external_custody import _observe_startup_gate
-    from molt.rust_toolchain import rustup_proxy_entrypoint
+    from molt.rust_toolchain import rustup_proxy_selection
 
     root = tmp_path / "project"
     root.mkdir()
@@ -136,8 +136,7 @@ def test_stat_only_selection_misses_when_an_absent_input_appears(
         tool = root / ("rustc.exe" if os.name == "nt" else "rustc")
         tool.write_bytes(b"custom compiler")
         subject = root / ("rustup.exe" if os.name == "nt" else "rustup")
-        with rustup_proxy_entrypoint(tool) as selected:
-            assert selected is None
+        assert rustup_proxy_selection(tool) is None
     else:
         monkeypatch.chdir(root)
         monkeypatch.setenv("SETUPTOOLS_USE_DISTUTILS", "local")
@@ -348,7 +347,7 @@ def test_windows_tokens_distinguish_file_length_from_directory_allocation(
 def test_a_rustup_candidate_becoming_the_selected_proxy_invalidates_output(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from molt.rust_toolchain import rustup_proxy_entrypoint
+    from molt.rust_toolchain import rustup_proxy_selection
 
     tool = tmp_path / ("rustc.exe" if os.name == "nt" else "rustc")
     proxy = tmp_path / ("rustup.exe" if os.name == "nt" else "rustup")
@@ -358,16 +357,15 @@ def test_a_rustup_candidate_becoming_the_selected_proxy_invalidates_output(
         path.chmod(path.stat().st_mode | stat.S_IXUSR)
     ledger = _future_ledger()
     monkeypatch.setattr(input_report, "_SINK", ledger)
-    with rustup_proxy_entrypoint(tool) as selected:
-        assert selected is None
+    assert rustup_proxy_selection(tool) is None
     monkeypatch.setattr(input_report, "_SINK", None)
     output = tmp_path / "app"
     output.write_bytes(b"compiled output")
     record, reason = _write(tmp_path, ledger, output)
     assert reason is None and _current(record, output)
     proxy.write_bytes(tool.read_bytes())
-    with rustup_proxy_entrypoint(tool) as selected:
-        assert selected == proxy
+    selection = rustup_proxy_selection(tool)
+    assert selection is not None and selection.entrypoint == proxy
     assert not _current(record, output)
 
 
