@@ -195,22 +195,22 @@ operations, whose inputs are their arguments. Whole-gate tracing would repeat th
 soundness gaps (environment reads, stat probes) that rejected the HF-263
 test-result cache.
 
-**Result.** Three alternating base/new rounds of all 24 gates on the same host,
-under a competing load average of 20 to 60, with every gate passing:
+**Result.** Three alternating base/new rounds of all 24 gates at the lane head,
+on one host under a competing load average of 14 to 25, every gate passing:
 
 | Gate | Base wall / CPU (s) | Records wall / CPU (s) | Peak RSS (MB) |
 |---|---|---|---|
-| `check_ratio_direction` | 13.46 / 11.06 | 0.93 / 0.74 | 184 → 47 |
-| `check_subprocess_guard_coverage` | 9.88 / 8.41 | 0.78 / 0.69 | 160 → 40 |
-| `encoding_gate --check` | 7.94 / 6.88 | 0.40 / 0.34 | 159 → 34 |
-| `check_environment_registry --check` | 7.55 / 23.24 | 4.75 / 8.65 | 167 → 154 |
-| All 24 gates (sum of medians) | 113.3 / 131.2 | 73.7 / 90.0 | |
+| `check_ratio_direction` | 9.27 / 8.73 | 0.76 / 0.57 | 186 → 47 |
+| `check_subprocess_guard_coverage` | 6.12 / 5.89 | 0.55 / 0.53 | 160 → 38 |
+| `encoding_gate --check` | 5.50 / 5.30 | 0.27 / 0.26 | 159 → 32 |
+| `check_environment_registry --check` | 4.21 / 19.89 | 3.55 / 7.84 | 165 → 153 |
+| All 24 gates (sum of medians) | 72.0 / 105.7 | 53.0 / 76.4 | |
 
-Per-round totals were 120.5, 98.3 and 120.6 s for the base and 68.7, 79.3 and
-72.3 s with records. On a quieter host, one gate at a time, the cold and warm
-runs took 8.8 and 0.58 s for the ratio gate, 4.5 and 0.25 s for the encoding gate,
-5.2 and 0.41 s for the subprocess audit, and 5.8 s / 21 s CPU and 3.0 s / 7.2 s
-CPU for the environment scan. The base gate code run on the records tree, the
+The four record consumers fall from 25.1 to 5.1 s wall and from 39.8 to 9.2 s
+CPU. Per-round totals were 73.0, 82.0 and 66.0 s for the base and 57.7, 60.4 and
+36.4 s with records; the unchanged gates carry the host noise. An earlier
+alternating run under a load of 20 to 60 gave 113.3 → 73.7 s wall and
+131.2 → 90.0 s CPU. The base gate code run on the records tree, the
 cold records run and the warm records run print byte-identical output for all 24
 gates (generator timing lines excluded). The environment inventory's 10,511 sites
 are byte-identical between cold and warm runs. Against the base code, only the
@@ -248,7 +248,10 @@ filesystem access, process startup and the complete gate.
 the largest re-scans every audited source with one regular expression
 (`gen_cpython_coverage`) or starts every target CPython (`gen_unicode_width`,
 `gen_stringprep_tables`). Its renders need keyed inputs, declared or runtime
-identities, before they can be replayed. `structural_audit` (13.6 s) and
+identities, before they can be replayed. The coverage generator now builds each
+audited path's ancestors once instead of per source root (0.54 to 0.22 s CPU);
+its regular expression scan costs about 2.2 s of CPU, and 3,620 of its 4,417
+files contain none of the pattern's literals. `structural_audit` (13.6 s) and
 `check_generator_manifest` (3.5 s) hold per-file probes that are the next scan
 record consumers. Every gate also compiles its imports from source, because the
 canonical execution environment sets `PYTHONDONTWRITEBYTECODE` and checkouts hold
