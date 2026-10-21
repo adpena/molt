@@ -854,7 +854,9 @@ def run_guarded(
     ``no_output_timeout`` ends a command whose captured stdout and stderr
     stop growing for that long, as CI runners end a silent job (CircleCI's
     no_output_timeout). It bounds a command by its progress, not by its
-    total wall time; the result reports it as a timeout.
+    total wall time, and it counts only time the guard watched: a host
+    freeze that stops guard and child alike is not silence. The result
+    reports it as a timeout.
     """
     if not command:
         raise ValueError("command is required")
@@ -1992,11 +1994,18 @@ def run_guarded(
             return True
 
         output_size_seen = -1
-        output_moved_at = start
+        output_silence_s = 0.0
 
-        def command_output_stalled(now: float) -> bool:
-            """Whether the captured output stopped growing for the bound."""
-            nonlocal output_size_seen, output_moved_at
+        def command_output_stalled(watched_s: float) -> bool:
+            """Whether the captured output stopped growing for the bound.
+
+            Silence accrues only for ``watched_s``, the part of the poll the
+            guard spent waiting as it planned. Time beyond that plan (a host
+            freeze that stops guard and child alike, a stalled sample) is
+            not the command's silence: a frozen host must not end a command
+            that resumes its output with the host.
+            """
+            nonlocal output_size_seen, output_silence_s
             if no_output_timeout is None:
                 return False
             size = sum(
@@ -2004,9 +2013,10 @@ def run_guarded(
                 for capture in (stdout_capture, stderr_capture)
             )
             if size != output_size_seen:
-                output_size_seen, output_moved_at = size, now
+                output_size_seen, output_silence_s = size, 0.0
                 return False
-            return now - output_moved_at >= no_output_timeout
+            output_silence_s += watched_s
+            return output_silence_s >= no_output_timeout
 
         def next_poll_wait_s(*, fast_start: bool) -> float:
             elapsed = time.perf_counter() - start
@@ -2117,13 +2127,17 @@ def run_guarded(
             baseline_pgids = _live_process_group_ids(snapshot[0])
             baseline_authoritative = True
         child_exited = False
+        previous_poll_at = start
         while not guard_interrupted:
             if snapshot is not None and enforce_snapshot(*snapshot):
                 break
-            if await_child_exit(next_poll_wait_s(fast_start=snapshot is not None)):
+            planned_wait_s = next_poll_wait_s(fast_start=snapshot is not None)
+            if await_child_exit(planned_wait_s):
                 child_exited = True
                 break
             now = time.perf_counter()
+            watched_s = min(max(0.0, now - previous_poll_at), planned_wait_s)
+            previous_poll_at = now
             cancelled = (
                 cancellation_watch is not None and cancellation_watch.requested()
             )
@@ -2163,7 +2177,7 @@ def run_guarded(
                     termination_wait_expired = True
                 progressed("child_wait_finished")
                 break
-            stalled = command_output_stalled(now)
+            stalled = command_output_stalled(watched_s)
             if stalled or (timeout is not None and now - start >= timeout):
                 timed_out = True
                 output_stalled = stalled
