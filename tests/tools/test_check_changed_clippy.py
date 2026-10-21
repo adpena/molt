@@ -53,6 +53,11 @@ def workspace(tmp_path: Path) -> gate.Workspace:
     # with none: neither belongs to the root workspace.
     _package(tmp_path, "deploy/simd", "simd")
     _package(tmp_path, "crates/mlir", "mlir")
+    for directory in ("deploy/simd", "crates/mlir"):
+        manifest = tmp_path / directory / "Cargo.toml"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8") + "[workspace]\n", encoding="utf-8"
+        )
     return gate.Workspace.load(tmp_path)
 
 
@@ -86,6 +91,35 @@ COMMANDS = (
 def _selected(workspace: gate.Workspace, *paths: str) -> dict[str, str]:
     change = gate.reach(workspace, paths)
     return {command.id: reason for command, reason in gate.select(COMMANDS, change)}
+
+
+def test_all_selected_boundaries_are_checked_before_the_first_clippy(
+    workspace, monkeypatch, capsys
+):
+    manifest = workspace.root / "deploy/simd/Cargo.toml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").removesuffix("[workspace]\n"),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(gate, "ROOT", workspace.root)
+    monkeypatch.setattr(
+        gate,
+        "changed_paths",
+        lambda _base: ["Cargo.toml", "deploy/simd/Cargo.toml"],
+    )
+    monkeypatch.setattr(gate, "local_clippy_commands", lambda _plan: COMMANDS)
+    monkeypatch.setattr(gate.ProofPlan, "load", lambda: object())
+
+    def no_build(*_args, **_kwargs):
+        pytest.fail("a later invalid project must refuse before the first clippy")
+
+    monkeypatch.setattr(gate, "run", no_build)
+    assert gate.main([]) == 1
+    assert "explicit [workspace]" in capsys.readouterr().err
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8") + "[workspace]\n", encoding="utf-8"
+    )
+    assert gate.main(["--dry-run"]) == 0
 
 
 def test_change_reaches_its_member_and_every_dependent(workspace) -> None:

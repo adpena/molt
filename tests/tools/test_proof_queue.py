@@ -7009,6 +7009,26 @@ def test_proof_queue_refuses_concurrent_compiler_build_resource_mutex(
     assert "active-pact" in stderr
 
 
+@pytest.mark.parametrize("recent", ["-1", "-100"])
+def test_proof_queue_status_rejects_negative_recent_before_inspection(
+    tmp_path, monkeypatch, capsys, recent
+):
+    def unexpected_inspection(_db):
+        pytest.fail("negative result count inspected the proof queue")
+
+    monkeypatch.setattr(state, "_inspection", unexpected_inspection)
+    assert (
+        cli.main(
+            ["--db", str(tmp_path / "missing.sqlite3"), "status", "--recent", recent]
+        )
+        == 2
+    )
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "--recent must be non-negative" in output.err
+    assert not (tmp_path / "missing.sqlite3").exists()
+
+
 def test_proof_queue_status_shows_active_log_phase(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
