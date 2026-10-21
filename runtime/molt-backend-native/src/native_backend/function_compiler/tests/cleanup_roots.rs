@@ -91,7 +91,7 @@ fn cleanup_tokens_release_sibling_paths_without_cross_branch_dedup() {
             builder.seal_block(merge);
             roots.release_all(&mut builder, release);
             builder.ins().return_(&[]);
-            builder.finalize();
+            builder.finalize(crate::test_support::host_frontend_config());
         }
         let calls = |block| {
             function.layout.block_insts(block).filter(|&inst| matches!(
@@ -159,7 +159,7 @@ fn cleanup_tokens_rearm_and_transfer_on_the_executing_path() {
         roots.acquire(&mut builder, release, "owner", values[0]);
         roots.release_all(&mut builder, release); // reacquired: one release
         builder.ins().return_(&[]);
-        builder.finalize();
+        builder.finalize(crate::test_support::host_frontend_config());
     }
     let calls = function.layout.blocks().flat_map(|block| function.layout.block_insts(block))
         .filter(|&inst| matches!(function.dfg.insts[inst], InstructionData::Call { func_ref, .. } if func_ref == release)).count();
@@ -232,7 +232,7 @@ fn cleanup_token_reassignment_is_carried_over_a_real_backedge() {
         builder.seal_block(exit);
         roots.release_all(&mut builder, release);
         builder.ins().return_(&[]);
-        builder.finalize();
+        builder.finalize(crate::test_support::host_frontend_config());
     }
     verify_function(&function, &settings::Flags::new(settings::builder()))
         .unwrap_or_else(|errors| panic!("{errors}\n{}", function.display()));

@@ -124,7 +124,7 @@ fn native_representation_results_keep_discarded_box_effects_and_independent_owne
                         &crate::NanBoxConsts::new(),
                     );
                     builder.ins().return_(&[]);
-                    builder.finalize();
+                    builder.finalize(crate::test_support::host_frontend_config());
                 }
                 verify_function(&func, &settings::Flags::new(settings::builder())).unwrap();
                 let calls = |callee| {
@@ -254,10 +254,12 @@ fn captured_scalar_transport_preserves_raw_outputs_and_shares_one_box() {
                             8,
                             3,
                         ));
-                    builder.ins().stack_store(original, slot, 0);
+                    let pointer_type = crate::test_support::host_frontend_config().pointer_type();
+                    builder.ins().stack_store(pointer_type, original, slot, 0);
                     let incoming = if capture.ends_with("local") {
                         CapturedScalarTransport::read_local(
                             &mut builder,
+                            pointer_type,
                             &vars,
                             &plan,
                             &BTreeMap::from([("source".into(), slot)]),
@@ -271,7 +273,9 @@ fn captured_scalar_transport_preserves_raw_outputs_and_shares_one_box() {
                     // and stack-home rebinding before boxed materialization.
                     let replacement = builder.ins().iconst(types::I64, 7);
                     builder.def_var(vars["source"], replacement);
-                    builder.ins().stack_store(replacement, slot, 0);
+                    builder
+                        .ins()
+                        .stack_store(pointer_type, replacement, slot, 0);
                     incoming
                 };
                 let original = if capture.ends_with("local") {
@@ -289,10 +293,7 @@ fn captured_scalar_transport_preserves_raw_outputs_and_shares_one_box() {
                     else {
                         panic!("captured local must be a stack load");
                     };
-                    assert!(matches!(
-                        builder.func.dfg.insts[inst],
-                        cranelift_codegen::ir::InstructionData::StackLoad { .. }
-                    ));
+                    assert!(crate::test_support::is_stack_load(builder.func, inst));
                     value
                 } else {
                     original
@@ -330,7 +331,7 @@ fn captured_scalar_transport_preserves_raw_outputs_and_shares_one_box() {
                     );
                 }
                 builder.ins().return_(&values);
-                builder.finalize();
+                builder.finalize(crate::test_support::host_frontend_config());
             }
             verify_function(&func, &settings::Flags::new(settings::builder())).unwrap();
             if inline {
@@ -474,7 +475,7 @@ fn lower_unary_numeric_carrier_with_plan(
         }
         let result = builder.use_var(vars[out]);
         builder.ins().return_(&[result]);
-        builder.finalize();
+        builder.finalize(crate::test_support::host_frontend_config());
     }
     verify_function(&func, &settings::Flags::new(settings::builder()))
         .expect("unary numeric carrier CFG must verify");
@@ -836,7 +837,7 @@ fn raw_bool_boxing_accepts_i64_carrier() {
         let nbc = crate::NanBoxConsts::new();
         let boxed = box_raw_bool_value(&mut builder, raw, &nbc);
         builder.ins().return_(&[boxed]);
-        builder.finalize();
+        builder.finalize(crate::test_support::host_frontend_config());
     }
 
     let flags = settings::Flags::new(settings::builder());
@@ -896,7 +897,7 @@ fn conditional_list_fallback_shadow_preserves_the_captured_layout() {
                     if imm.bits() == 1
             ));
             builder.ins().return_(&[shadow.payload]);
-            builder.finalize();
+            builder.finalize(crate::test_support::host_frontend_config());
         }
         verify_function(&function, &settings::Flags::new(settings::builder()))
             .unwrap_or_else(|errors| panic!("{errors}\n{}", function.display()));
@@ -934,7 +935,7 @@ fn native_int_boxing_constants_materialized_at_site() {
             raw_zero,
         );
         builder.ins().return_(&[boxed]);
-        builder.finalize();
+        builder.finalize(crate::test_support::host_frontend_config());
     }
 
     let flags = settings::Flags::new(settings::builder());
@@ -1018,7 +1019,7 @@ fn boxed_transport_defines_scalar_primary_homes() {
 
         let raw_int = builder.use_var(int_var);
         builder.ins().return_(&[raw_int]);
-        builder.finalize();
+        builder.finalize(crate::test_support::host_frontend_config());
     }
 
     let flags = settings::Flags::new(settings::builder());
@@ -1062,7 +1063,7 @@ fn numeric_result_binding_converts_boxed_call_result_for_float_primary_home() {
 
         let raw_f64 = builder.use_var(float_var);
         builder.ins().return_(&[raw_f64]);
-        builder.finalize();
+        builder.finalize(crate::test_support::host_frontend_config());
     }
 
     let flags = settings::Flags::new(settings::builder());
@@ -1098,7 +1099,7 @@ fn raw_int_div_intmin_debug_guard_precedes_raw_sdiv() {
         // The guard must precede a raw division that would otherwise trap.
         let quot = builder.ins().sdiv(lhs_raw, rhs_raw);
         builder.ins().return_(&[quot]);
-        builder.finalize();
+        builder.finalize(crate::test_support::host_frontend_config());
     }
 
     let flags = settings::Flags::new(settings::builder());

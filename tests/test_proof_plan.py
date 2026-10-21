@@ -1480,6 +1480,17 @@ def test_maintained_object_sources_select_owning_and_actual_consumers(path):
     assert classes["native_integration"] is True
     assert classes["wasm"] is False
     assert classes["llvm"] is False
+    # The gates must test exactly the maintained (path-sourced) versions the
+    # workspace lock selects, not a version this test restates.
+    lock = tomllib.loads(
+        (Path(__file__).resolve().parents[1] / "Cargo.lock").read_text(encoding="utf-8")
+    )
+    maintained = {
+        f"{package['name']}@{package['version']}"
+        for package in lock["package"]
+        if package["name"] in {"object", "cranelift-object"} and "source" not in package
+    }
+    assert {spec.split("@")[0] for spec in maintained} == {"object", "cranelift-object"}
     gates, matched = molt_dev.GateConfig.load(PLAN.path).select([path])
     rule = next(r for r in matched if r.name == "native-object-emission")
     assert set(rule.gates) <= {gate.command for gate in gates}
@@ -1489,7 +1500,7 @@ def test_maintained_object_sources_select_owning_and_actual_consumers(path):
     ):
         packages = {argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "-p"}
         targets = {argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "--test"}
-        assert {"object@0.39.1", "cranelift-object@0.133.3", "molt-backend"} <= packages
+        assert maintained | {"molt-backend"} <= packages
         assert {"integration", "basic", "native_extern_linkage"} <= targets
         assert "--locked" in argv
 

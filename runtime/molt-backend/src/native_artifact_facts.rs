@@ -94,16 +94,23 @@ fn scan_image(out: &mut BoundedResponse, bytes: &[u8], origin: u64) -> io::Resul
             ));
         }
     };
+    // The receiver's wire format carries the raw header numbers.
     let (machine, subtype) = match &file {
-        object::File::Elf32(file) => (u32::from(file.elf_header().e_machine(file.endian())), None),
-        object::File::Elf64(file) => (u32::from(file.elf_header().e_machine(file.endian())), None),
+        object::File::Elf32(file) => (
+            u32::from(file.elf_header().e_machine(file.endian()).0),
+            None,
+        ),
+        object::File::Elf64(file) => (
+            u32::from(file.elf_header().e_machine(file.endian()).0),
+            None,
+        ),
         object::File::MachO32(file) => (
-            file.macho_header().cputype(file.endian()),
-            Some(file.macho_header().cpusubtype(file.endian())),
+            file.macho_header().cputype(file.endian()).0,
+            Some(file.macho_header().cpusubtype(file.endian()).0),
         ),
         object::File::MachO64(file) => (
-            file.macho_header().cputype(file.endian()),
-            Some(file.macho_header().cpusubtype(file.endian())),
+            file.macho_header().cputype(file.endian()).0,
+            Some(file.macho_header().cpusubtype(file.endian()).0),
         ),
         _ => return Err(invalid("unsupported native facts format")),
     };
@@ -200,10 +207,10 @@ fn scan_image(out: &mut BoundedResponse, bytes: &[u8], origin: u64) -> io::Resul
         // Preserve st_value verbatim; the receiver maps only this typed tag.
         // https://github.com/ARM-software/abi-aa/blob/main/aaelf32/aaelf32.rst#553-symbol-values
         let arm_thumb = format == "elf"
-            && machine == u32::from(object::elf::EM_ARM)
+            && machine == u32::from(object::elf::EM_ARM.0)
             && symbol.address() & 1 != 0
             && matches!(symbol.flags(), object::SymbolFlags::Elf { st_info, .. }
-                if st_info & 0x0f == object::elf::STT_FUNC);
+                if st_info.st_type() == object::elf::STT_FUNC);
         json(
             out,
             &Symbol {

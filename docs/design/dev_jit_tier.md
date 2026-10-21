@@ -126,10 +126,9 @@ because the JIT tier already calls functions through stubs:
 
 ## Dependencies and decisions
 
-- Molt uses the latest release of every dependency. The native backend is on Cranelift
-  0.133.3 and wasmtime 49.0.3 brings Cranelift 0.136.3; the current release is Cranelift
-  0.137.0 and wasmtime 50.0.0 (2026-10-20). The JIT tier starts with one upgrade of the
-  whole stack to that release: the native backend, the maintained `cranelift-object` patch
-  (re-applied, or retired if upstream now carries the AArch64 COFF relocation mapping),
-  wasmtime and `cranelift-jit` at the same version. The owner approved the downloads.
-- Step 1 (generic module) does not depend on the upgrade.
+- Molt uses the latest release of every dependency. The native backend, the maintained
+  `cranelift-object` patch and wasmtime moved together to Cranelift 0.137.0, wasmtime 50.0.0
+  and `object` 0.40.0 (the AArch64 COFF addend patch is still needed: upstream 0.40.0 fails 2
+  of its 3 regressions). `cranelift-jit` 0.137.0 joins the same stack; the owner approved
+  the download.
+- Step 1 (generic module) landed before the upgrade.

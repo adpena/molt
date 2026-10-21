@@ -66,6 +66,7 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
             // `ExceptionPending` op and consumed by loop-exit branches.
             let cond_bool = emit_exception_pending_condition(
                 &mut *builder,
+                module.target_config().pointer_type(),
                 local_exc_pending_fast,
                 exc_flag_ptr_slot,
             );

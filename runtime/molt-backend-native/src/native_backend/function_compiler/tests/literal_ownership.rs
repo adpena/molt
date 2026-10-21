@@ -91,7 +91,9 @@ fn heap_literal_results_retain_independently_and_unique_anchors_release_once() {
             &[types::I64],
             &[],
         );
-        let (hoists, materialization) = prepare_heap_literals(&input, &mut builder, &plan);
+        let pointer_type = crate::test_support::host_frontend_config().pointer_type();
+        let (hoists, materialization) =
+            prepare_heap_literals(&input, &mut builder, pointer_type, &plan);
         for runtime_func in [
             "molt_string_from_bytes",
             "molt_bytes_from_bytes",
@@ -150,10 +152,10 @@ fn heap_literal_results_retain_independently_and_unique_anchors_release_once() {
         jump_block(&mut builder, exit, &[result]);
         switch_to_block_materialized(&mut builder, exit);
         seal_block_once(&mut builder, &mut sealed_blocks, exit);
-        hoists.release_anchors(&mut builder, release);
+        hoists.release_anchors(&mut builder, pointer_type, release);
         let result = builder.block_params(exit)[0];
         builder.ins().return_(&[result]);
-        builder.finalize();
+        builder.finalize(crate::test_support::host_frontend_config());
     }
     verify_function(&function, &settings::Flags::new(settings::builder()))
         .expect("owned literal lowering must verify");
@@ -162,9 +164,7 @@ fn heap_literal_results_retain_independently_and_unique_anchors_release_once() {
         .layout
         .block_insts(entry)
         .take_while(|&inst| !matches!(function.dfg.insts[inst], InstructionData::Call { .. }))
-        .filter(|&inst| {
-            function.dfg.insts[inst].opcode() == cranelift_codegen::ir::Opcode::StackStore
-        })
+        .filter(|&inst| crate::test_support::is_stack_store(&function, inst))
         .count();
     assert_eq!(
         initialized_anchors, 3,

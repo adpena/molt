@@ -390,26 +390,24 @@ fn cross_format_objects_retain_generated_object_abi_anchor() {
             "{target}: ABI anchor pointer offset must remain aligned"
         );
         match (expected_format, section.flags()) {
-            (object::BinaryFormat::Elf, object::SectionFlags::Elf { sh_flags }) => {
+            (object::BinaryFormat::Elf, object::SectionFlags::Elf { sh_flags, .. }) => {
                 assert!(
                     matches!(file.flags(), object::FileFlags::Elf { os_abi, .. }
                     if os_abi == object::elf::ELFOSABI_GNU),
                     "{target}: SHF_GNU_RETAIN requires its ELF extension namespace"
                 );
-                assert_ne!(
-                    sh_flags & u64::from(object::elf::SHF_GNU_RETAIN),
-                    0,
+                assert!(
+                    sh_flags.contains(object::elf::SHF_GNU_RETAIN),
                     "ELF anchor must survive --gc-sections"
                 );
             }
-            (object::BinaryFormat::MachO, object::SectionFlags::MachO { .. }) => assert_ne!(
+            (object::BinaryFormat::MachO, object::SectionFlags::MachO { .. }) => assert!(
                 match anchor.flags() {
-                    object::SymbolFlags::MachO { n_desc } => {
-                        n_desc & object::macho::N_NO_DEAD_STRIP
+                    object::SymbolFlags::MachO { n_desc, .. } => {
+                        n_desc.contains(object::macho::N_NO_DEAD_STRIP)
                     }
                     flags => panic!("unexpected Mach-O anchor symbol flags: {flags:?}"),
                 },
-                0,
                 "Mach-O anchor must survive -dead_strip"
             ),
             (object::BinaryFormat::Coff, object::SectionFlags::Coff { .. }) => {

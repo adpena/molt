@@ -80,7 +80,7 @@ fn finalize_native_object(mut product: ObjectProduct) -> ObjectProduct {
                     product.object.flags = FileFlags::Elf {
                         os_abi: elf::ELFOSABI_GNU,
                         abi_version: 0,
-                        e_flags: 0,
+                        e_flags: elf::FileFlags(0),
                     };
                 }
                 FileFlags::Elf { os_abi, .. } if *os_abi == elf::ELFOSABI_NONE => {
@@ -174,7 +174,7 @@ mod header_flags_tests {
             let flags = emit_header_flags_load(&mut builder, object_ptr);
             builder.ins().return_(&[flags]);
             builder.seal_all_blocks();
-            builder.finalize();
+            builder.finalize(crate::test_support::host_frontend_config());
         }
         let ir = function.display().to_string();
         assert!(
@@ -208,7 +208,7 @@ mod header_flags_tests {
             let flags = emit_header_flags_load(&mut builder, object_ptr);
             builder.ins().return_(&[flags]);
             builder.seal_all_blocks();
-            builder.finalize();
+            builder.finalize(backend.module.target_config());
         }
         let mut context = Context::for_function(function);
         context
@@ -359,7 +359,7 @@ mod header_flags_tests {
             product.object.flags = FileFlags::Elf {
                 os_abi,
                 abi_version: 7,
-                e_flags: 0x1020,
+                e_flags: elf::FileFlags(0x1020),
             };
             let bytes = finalize_native_object(product).emit().unwrap();
             let object = cranelift_object::object::File::parse(&*bytes).unwrap();
@@ -368,7 +368,7 @@ mod header_flags_tests {
                 FileFlags::Elf {
                     os_abi: expected,
                     abi_version: 7,
-                    e_flags: 0x1020,
+                    e_flags: elf::FileFlags(0x1020),
                 }
             );
         }

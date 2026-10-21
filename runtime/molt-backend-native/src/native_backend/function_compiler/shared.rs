@@ -97,6 +97,7 @@ pub(in crate::native_backend::function_compiler) enum FixedAggregateConstructor 
 #[cfg(feature = "native-backend")]
 fn store_borrowed_word_range(
     builder: &mut FunctionBuilder<'_>,
+    pointer_type: types::Type,
     words: impl ExactSizeIterator<Item = Value>,
 ) -> (Value, Value) {
     let count = builder.ins().iconst(types::I64, words.len() as i64);
@@ -112,7 +113,9 @@ fn store_borrowed_word_range(
     let slot =
         builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, bytes, 3));
     for (index, value) in words.enumerate() {
-        builder.ins().stack_store(value, slot, (index * 8) as i32);
+        builder
+            .ins()
+            .stack_store(pointer_type, value, slot, (index * 8) as i32);
     }
     (builder.ins().stack_addr(types::I64, slot, 0), count)
 }
@@ -357,8 +360,11 @@ impl<'op> NativeOperandTransaction<'op> {
             switch_to_block_materialized(builder, failed);
             seal_block_once(builder, sealed_blocks, failed);
             if !self.adopted_objects.is_empty() || self.adopted_callable.is_some() {
-                let (arguments, count) =
-                    store_borrowed_word_range(builder, self.adopted_objects.iter().copied());
+                let (arguments, count) = store_borrowed_word_range(
+                    builder,
+                    module.target_config().pointer_type(),
+                    self.adopted_objects.iter().copied(),
+                );
                 let callable = self
                     .adopted_callable
                     .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
@@ -470,7 +476,12 @@ impl<'op> NativeOperandTransaction<'op> {
             &[],
             &[types::I64],
         );
-        let failed = emit_exception_pending_condition(builder, pending, None);
+        let failed = emit_exception_pending_condition(
+            builder,
+            module.target_config().pointer_type(),
+            pending,
+            None,
+        );
         self.fail_if(builder, sealed_blocks, failed);
     }
 
@@ -740,20 +751,26 @@ pub(in crate::native_backend::function_compiler) fn emit_fixed_aggregate_constru
         ));
     }
     let words = &operands[first_word..];
+    let pointer_type = module.target_config().pointer_type();
     let call_args = match constructor {
         FixedAggregateConstructor::List | FixedAggregateConstructor::Tuple => {
-            let (address, count) = store_borrowed_word_range(builder, words.iter().copied());
+            let (address, count) =
+                store_borrowed_word_range(builder, pointer_type, words.iter().copied());
             vec![address, count]
         }
         FixedAggregateConstructor::Dict => {
             let (keys, count) =
-                store_borrowed_word_range(builder, words.iter().step_by(2).copied());
-            let (values, _) =
-                store_borrowed_word_range(builder, words.iter().skip(1).step_by(2).copied());
+                store_borrowed_word_range(builder, pointer_type, words.iter().step_by(2).copied());
+            let (values, _) = store_borrowed_word_range(
+                builder,
+                pointer_type,
+                words.iter().skip(1).step_by(2).copied(),
+            );
             vec![keys, values, count]
         }
         FixedAggregateConstructor::Dataclass => {
-            let (address, count) = store_borrowed_word_range(builder, words.iter().copied());
+            let (address, count) =
+                store_borrowed_word_range(builder, pointer_type, words.iter().copied());
             vec![operands[0], operands[1], address, count, operands[2]]
         }
         FixedAggregateConstructor::DataclassTuple => operands.clone(),
@@ -765,8 +782,9 @@ pub(in crate::native_backend::function_compiler) fn emit_fixed_aggregate_constru
             flags,
         } => {
             let (bases, base_count) =
-                store_borrowed_word_range(builder, words[..nbases].iter().copied());
-            let (attrs, _) = store_borrowed_word_range(builder, words[nbases..].iter().copied());
+                store_borrowed_word_range(builder, pointer_type, words[..nbases].iter().copied());
+            let (attrs, _) =
+                store_borrowed_word_range(builder, pointer_type, words[nbases..].iter().copied());
             let attr_count = builder.ins().iconst(types::I64, nattrs as i64);
             let size = builder.ins().iconst(types::I64, layout_size);
             let version = builder.ins().iconst(types::I64, layout_version);
@@ -898,7 +916,9 @@ pub(in crate::native_backend::function_compiler) fn emit_hash_container_construc
     let capacity = builder.ins().iconst(types::I64, args.len() as i64);
     let created = builder.ins().call(create, &[capacity]);
     let aggregate = builder.inst_results(created)[0];
-    let unallocated = builder.ins().icmp_imm(IntCC::Equal, aggregate, box_none());
+    let unallocated = builder
+        .ins()
+        .icmp_imm_s(IntCC::Equal, aggregate, box_none());
     transaction.fail_if(builder, sealed_blocks, unallocated);
     for name in args {
         let operand = transaction.operand(
@@ -1027,7 +1047,7 @@ pub(in crate::native_backend::function_compiler) fn begin_task_initialization(
 ) -> Block {
     let initialize = builder.create_block();
     let done = builder.create_block();
-    let allocated = builder.ins().icmp_imm(IntCC::NotEqual, task, box_none());
+    let allocated = builder.ins().icmp_imm_s(IntCC::NotEqual, task, box_none());
     builder.ins().brif(allocated, initialize, &[], done, &[]);
     switch_to_block_materialized(builder, initialize);
     seal_block_once(builder, sealed_blocks, initialize);

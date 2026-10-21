@@ -93,7 +93,7 @@ fn lower_with_wide_operands(
             &plan,
         );
         builder.ins().return_(&[]);
-        builder.finalize();
+        builder.finalize(crate::test_support::host_frontend_config());
     }
     verify_function(&function, &settings::Flags::new(settings::builder()))
         .unwrap_or_else(|errors| panic!("{errors}\n{}", function.display()));

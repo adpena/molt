@@ -328,9 +328,10 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                     builder.insert_block_after(profile_block, current_block);
                     builder.insert_block_after(profile_cont, profile_block);
                 }
-                let profile_bool = builder
-                    .ins()
-                    .icmp_imm(IntCC::NotEqual, profile_enabled_val, 0);
+                let profile_bool =
+                    builder
+                        .ins()
+                        .icmp_imm_s(IntCC::NotEqual, profile_enabled_val, 0);
                 builder
                     .ins()
                     .brif(profile_bool, profile_block, &[], profile_cont, &[]);
@@ -373,8 +374,8 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             let flags_64 = builder.ins().uextend(types::I64, flags_val);
             let has_ptrs_bit = builder
                 .ins()
-                .band_imm(flags_64, i64::from(HEADER_FLAG_HAS_PTRS));
-            let has_ptrs_set = builder.ins().icmp_imm(IntCC::NotEqual, has_ptrs_bit, 0);
+                .band_imm_u(flags_64, i64::from(HEADER_FLAG_HAS_PTRS));
+            let has_ptrs_set = builder.ins().icmp_imm_s(IntCC::NotEqual, has_ptrs_bit, 0);
 
             let tag_mask = builder.ins().iconst(types::I64, nbc.qnan_tag_mask);
             let tag_bits = builder.ins().band(*val, tag_mask);
@@ -767,7 +768,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 let check = builder.create_block();
                 let skip = builder.create_block();
                 let join = builder.create_block();
-                let enabled = builder.ins().icmp_imm(IntCC::NotEqual, enabled, 0);
+                let enabled = builder.ins().icmp_imm_s(IntCC::NotEqual, enabled, 0);
                 builder.ins().brif(enabled, check, &[], skip, &[]);
                 switch_to_block_materialized(builder, skip);
                 seal_block_once(builder, sealed_blocks, skip);

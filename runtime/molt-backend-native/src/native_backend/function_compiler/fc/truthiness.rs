@@ -62,8 +62,8 @@ pub(in crate::native_backend::function_compiler) fn emit_boxed_truthiness(
 
     switch_to_block_materialized(builder, bool_block);
     seal_block_once(builder, sealed_blocks, bool_block);
-    let bit0 = builder.ins().band_imm(cond, 1);
-    let bool_truthy = builder.ins().icmp_imm(IntCC::NotEqual, bit0, 0);
+    let bit0 = builder.ins().band_imm_u(cond, 1);
+    let bool_truthy = builder.ins().icmp_imm_s(IntCC::NotEqual, bit0, 0);
     let merge_args = merge_args_with_live_through(bool_truthy, &live_through);
     jump_block(builder, merge, &merge_args);
 
@@ -79,7 +79,7 @@ pub(in crate::native_backend::function_compiler) fn emit_boxed_truthiness(
     switch_to_block_materialized(builder, int_block);
     seal_block_once(builder, sealed_blocks, int_block);
     let raw = unbox_int(builder, cond, nbc);
-    let int_truthy = builder.ins().icmp_imm(IntCC::NotEqual, raw, 0);
+    let int_truthy = builder.ins().icmp_imm_s(IntCC::NotEqual, raw, 0);
     let merge_args = merge_args_with_live_through(int_truthy, &live_through);
     jump_block(builder, merge, &merge_args);
 
@@ -95,7 +95,7 @@ pub(in crate::native_backend::function_compiler) fn emit_boxed_truthiness(
     let truthy_ref = module.declare_func_in_func(truthy_fn, builder.func);
     let call = builder.ins().call(truthy_ref, &[cond]);
     let truthy = builder.inst_results(call)[0];
-    let call_truthy = builder.ins().icmp_imm(IntCC::NotEqual, truthy, 0);
+    let call_truthy = builder.ins().icmp_imm_s(IntCC::NotEqual, truthy, 0);
     let merge_args = merge_args_with_live_through(call_truthy, &live_through);
     jump_block(builder, merge, &merge_args);
 

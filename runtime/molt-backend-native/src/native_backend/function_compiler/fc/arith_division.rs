@@ -63,8 +63,8 @@ pub(in crate::native_backend::function_compiler) fn emit_raw_int_div_intmin_debu
 ) {
     #[cfg(debug_assertions)]
     {
-        let lhs_is_min = builder.ins().icmp_imm(IntCC::Equal, lhs_raw, i64::MIN);
-        let rhs_is_neg_one = builder.ins().icmp_imm(IntCC::Equal, rhs_raw, -1);
+        let lhs_is_min = builder.ins().icmp_imm_s(IntCC::Equal, lhs_raw, i64::MIN);
+        let rhs_is_neg_one = builder.ins().icmp_imm_s(IntCC::Equal, rhs_raw, -1);
         let is_overflow = builder.ins().band(lhs_is_min, rhs_is_neg_one);
         builder.ins().trapnz(
             is_overflow,
@@ -1165,7 +1165,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     let merge_block = builder.create_block();
                     builder.append_block_param(merge_block, types::I64);
 
-                    let is_zero = builder.ins().icmp_imm(IntCC::Equal, exp_raw, 0);
+                    let is_zero = builder.ins().icmp_imm_s(IntCC::Equal, exp_raw, 0);
                     builder
                         .ins()
                         .brif(is_zero, exp0_block, &[], exp1_block, &[]);
@@ -1177,7 +1177,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
 
                     switch_to_block_materialized(&mut *builder, exp1_block);
                     seal_block_once(&mut *builder, &mut *sealed_blocks, exp1_block);
-                    let is_one = builder.ins().icmp_imm(IntCC::Equal, exp_raw, 1);
+                    let is_one = builder.ins().icmp_imm_s(IntCC::Equal, exp_raw, 1);
                     let exp1_ret_block = builder.create_block();
                     builder
                         .ins()
@@ -1189,7 +1189,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
 
                     switch_to_block_materialized(&mut *builder, exp2_block);
                     seal_block_once(&mut *builder, &mut *sealed_blocks, exp2_block);
-                    let is_two = builder.ins().icmp_imm(IntCC::Equal, exp_raw, 2);
+                    let is_two = builder.ins().icmp_imm_s(IntCC::Equal, exp_raw, 2);
                     builder
                         .ins()
                         .brif(is_two, exp2_fast_block, &[], slow_block, &[]);
@@ -1297,7 +1297,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 switch_to_block_materialized(&mut *builder, pow_inline_block);
                 seal_block_once(&mut *builder, &mut *sealed_blocks, pow_inline_block);
                 // Check exp == 0
-                let is_zero = builder.ins().icmp_imm(IntCC::Equal, exp_val, 0);
+                let is_zero = builder.ins().icmp_imm_s(IntCC::Equal, exp_val, 0);
                 builder
                     .ins()
                     .brif(is_zero, exp0_block, &[], exp1_block, &[]);
@@ -1312,7 +1312,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 // Check exp == 1 → result is base (return lhs as-is)
                 switch_to_block_materialized(&mut *builder, exp1_block);
                 seal_block_once(&mut *builder, &mut *sealed_blocks, exp1_block);
-                let is_one = builder.ins().icmp_imm(IntCC::Equal, exp_val, 1);
+                let is_one = builder.ins().icmp_imm_s(IntCC::Equal, exp_val, 1);
                 let exp1_ret_block = builder.create_block();
                 builder
                     .ins()
@@ -1325,7 +1325,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 // Check exp == 2
                 switch_to_block_materialized(&mut *builder, exp2_block);
                 seal_block_once(&mut *builder, &mut *sealed_blocks, exp2_block);
-                let is_two = builder.ins().icmp_imm(IntCC::Equal, exp_val, 2);
+                let is_two = builder.ins().icmp_imm_s(IntCC::Equal, exp_val, 2);
                 builder
                     .ins()
                     .brif(is_two, exp2_fast_block, &[], slow_block, &[]);

@@ -107,7 +107,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
             {
                 // Raw bool from proven list_bool getitem or const_bool.
                 // Branch directly on raw 0/1 — ZERO NaN-box overhead.
-                builder.ins().icmp_imm(IntCC::NotEqual, raw_val, 0)
+                builder.ins().icmp_imm_s(IntCC::NotEqual, raw_val, 0)
             } else if op_prefers_bool_lane(op) {
                 // NaN-boxed bool: bit 0 is the boolean value.
                 let cond = var_get_boxed_overflow_safe(
@@ -123,12 +123,12 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                 .expect("Cond not found");
                 let one = builder.ins().iconst(types::I64, 1);
                 let bit0 = builder.ins().band(*cond, one);
-                builder.ins().icmp_imm(IntCC::NotEqual, bit0, 0)
+                builder.ins().icmp_imm_s(IntCC::NotEqual, bit0, 0)
             } else if let Some(raw_shadow) =
                 int_raw_value(&mut *builder, vars, representation_plan, &args[0])
             {
                 // Proven raw i64 carrier: truthiness is `value != 0`.
-                builder.ins().icmp_imm(IntCC::NotEqual, raw_shadow, 0)
+                builder.ins().icmp_imm_s(IntCC::NotEqual, raw_shadow, 0)
             } else if op_prefers_int_lane(op) {
                 // op_prefers_int_lane only proves Python-`int` type, which
                 // includes heap BigInts (TAG_PTR). The trusted unbox would
@@ -150,7 +150,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                 .expect("Cond not found");
                 let cond_val = unbox_int_or_bool(&mut *builder, *cond, nbc);
                 let is_inline_int = fused_is_int_or_bool(&mut *builder, *cond, nbc);
-                let inline_truthy = builder.ins().icmp_imm(IntCC::NotEqual, cond_val, 0);
+                let inline_truthy = builder.ins().icmp_imm_s(IntCC::NotEqual, cond_val, 0);
                 let true_val = builder.ins().iconst(types::I8, 1);
                 builder.ins().select(is_inline_int, inline_truthy, true_val)
             } else {
@@ -339,6 +339,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                     func_name, op_idx, current_block, current_filled, merge_rebind_names
                 );
             }
+            let pointer_type = module.target_config().pointer_type();
             let merge_rebind_slots = merge_rebind_names
                 .iter()
                 .zip(merge_rebind_storages.iter().copied())
@@ -376,7 +377,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                     } else {
                         merge_rebind_default_value(&mut *builder, storage)
                     };
-                    builder.ins().stack_store(init, slot, 0);
+                    builder.ins().stack_store(pointer_type, init, slot, 0);
                     MergeRebindSlot { slot, storage }
                 })
                 .collect();
@@ -490,6 +491,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                     }
                 }
                 if frame.phi_ops.is_empty() && !frame.merge_rebind_names.is_empty() {
+                    let pointer_type = module.target_config().pointer_type();
                     for (idx, name) in frame.merge_rebind_names.iter().enumerate() {
                         let rebind_slot = frame.merge_rebind_slots[idx];
                         let val = merge_rebind_value_for_storage(
@@ -504,7 +506,9 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                             name,
                             rebind_slot.storage,
                         );
-                        builder.ins().stack_store(val, rebind_slot.slot, 0);
+                        builder
+                            .ins()
+                            .stack_store(pointer_type, val, rebind_slot.slot, 0);
                         merge_rebind_args.push(val);
                     }
                     if backend_env::var(BackendEnv::MOLT_DEBUG_PHI_ARGS).as_deref() == Ok(func_name)
@@ -669,6 +673,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                         }
                     }
                     if frame.phi_ops.is_empty() && !frame.merge_rebind_names.is_empty() {
+                        let pointer_type = module.target_config().pointer_type();
                         for (idx, name) in frame.merge_rebind_names.iter().enumerate() {
                             let rebind_slot = frame.merge_rebind_slots[idx];
                             let then_val = merge_rebind_value_for_storage(
@@ -683,7 +688,9 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                                 name,
                                 rebind_slot.storage,
                             );
-                            builder.ins().stack_store(then_val, rebind_slot.slot, 0);
+                            builder
+                                .ins()
+                                .stack_store(pointer_type, then_val, rebind_slot.slot, 0);
                             merge_rebind_args.push(then_val);
                         }
                     }
@@ -803,6 +810,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                         }
                     }
                     if frame.phi_ops.is_empty() && !frame.merge_rebind_names.is_empty() {
+                        let pointer_type = module.target_config().pointer_type();
                         for (idx, name) in frame.merge_rebind_names.iter().enumerate() {
                             let rebind_slot = frame.merge_rebind_slots[idx];
                             let then_val = merge_rebind_value_for_storage(
@@ -817,7 +825,9 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                                 name,
                                 rebind_slot.storage,
                             );
-                            builder.ins().stack_store(then_val, rebind_slot.slot, 0);
+                            builder
+                                .ins()
+                                .stack_store(pointer_type, then_val, rebind_slot.slot, 0);
                             merge_rebind_args.push(then_val);
                         }
                     }
@@ -944,6 +954,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                         }
                     }
                     if frame.phi_ops.is_empty() && !frame.merge_rebind_names.is_empty() {
+                        let pointer_type = module.target_config().pointer_type();
                         for (idx, name) in frame.merge_rebind_names.iter().enumerate() {
                             let rebind_slot = frame.merge_rebind_slots[idx];
                             let else_val = merge_rebind_value_for_storage(
@@ -958,7 +969,9 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                                 name,
                                 rebind_slot.storage,
                             );
-                            builder.ins().stack_store(else_val, rebind_slot.slot, 0);
+                            builder
+                                .ins()
+                                .stack_store(pointer_type, else_val, rebind_slot.slot, 0);
                             merge_rebind_args.push(else_val);
                         }
                         if backend_env::var(BackendEnv::MOLT_DEBUG_PHI_ARGS).as_deref()
@@ -1059,9 +1072,11 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                     && frame.phi_ops.is_empty()
                     && !frame.merge_rebind_names.is_empty()
                 {
+                    let pointer_type = module.target_config().pointer_type();
                     for (idx, name) in frame.merge_rebind_names.iter().enumerate() {
                         let rebind_slot = frame.merge_rebind_slots[idx];
                         let val = builder.ins().stack_load(
+                            pointer_type,
                             merge_rebind_storage_clif_type(rebind_slot.storage),
                             rebind_slot.slot,
                             0,

@@ -140,7 +140,7 @@ fn emit_frame_home_release(
 ) {
     let holds = builder
         .ins()
-        .band_imm(old_kind, molt_codegen_abi::FRAME_HOME_HOLDS_REFERENCE);
+        .band_imm_u(old_kind, molt_codegen_abi::FRAME_HOME_HOLDS_REFERENCE);
     let origin = builder.current_block();
     let release = builder.create_block();
     let done = builder.create_block();
@@ -206,7 +206,7 @@ fn box_frame_home_raw_int(
     jump_block(builder, done, &[boxed]);
     switch_to_block_materialized(builder, slow);
     seal_block_once(builder, sealed_blocks, slow);
-    let home = builder.ins().iadd_imm(homes, i64::from(offset));
+    let home = builder.ins().iadd_imm_s(homes, i64::from(offset));
     let callee = SimpleBackend::import_func_id_split(
         module,
         import_ids,
@@ -1011,7 +1011,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             let plain =
                 builder
                     .ins()
-                    .icmp_imm(IntCC::Equal, kind, molt_codegen_abi::FRAME_HOME_PLAIN);
+                    .icmp_imm_s(IntCC::Equal, kind, molt_codegen_abi::FRAME_HOME_PLAIN);
             let origin = builder.current_block();
             let inline = builder.create_block();
             let slow = builder.create_block();
@@ -1030,7 +1030,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             jump_block(&mut *builder, done, &[bits]);
             switch_to_block_materialized(&mut *builder, slow);
             seal_block_once(&mut *builder, &mut *sealed_blocks, slow);
-            let home = builder.ins().iadd_imm(homes, i64::from(offset));
+            let home = builder.ins().iadd_imm_s(homes, i64::from(offset));
             let callee = SimpleBackend::import_func_id_split(
                 &mut *module,
                 &mut *import_ids,
@@ -1060,7 +1060,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             );
             let home = builder
                 .ins()
-                .iadd_imm(homes, i64::from(frame_home_offset(op)));
+                .iadd_imm_s(homes, i64::from(frame_home_offset(op)));
             let callee = SimpleBackend::import_func_id_split(
                 &mut *module,
                 &mut *import_ids,

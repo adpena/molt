@@ -880,7 +880,6 @@ dependencies = [
  "unicode_names2 4.0.0",
  "webpki-roots 1.0.9",
  "windows-sys 0.61.2",
- "wtf8",
  "zip",
 ]
 
@@ -1066,6 +1065,7 @@ dependencies = [
 name = "molt-runtime-regex"
 version = "0.1.0"
 dependencies = [
+ "indexmap",
  "molt-lang-obj-model",
  "molt-runtime-core",
 ]
@@ -1262,9 +1262,9 @@ dependencies = [
 
 [[package]]
 name = "object"
-version = "0.39.1"
+version = "0.40.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e5a6c098c7a3b6547378093f5cc30bc54fd361ce711e05293a5cc589562739b"
+checksum = "dd229a0361b9d0d4396176e02d65897f487eebeab7caa6d443855ee152ca0b9c"
 dependencies = [
  "memchr",
 ]
@@ -2235,12 +2235,6 @@ name = "windows_x86_64_msvc"
 version = "0.52.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
-
-[[package]]
-name = "wtf8"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c01ae8492c38f52376efd3a17d0994b6bcf3df1e39c0226d458b7d81670b2a06"
 
 [[package]]
 name = "xz2"

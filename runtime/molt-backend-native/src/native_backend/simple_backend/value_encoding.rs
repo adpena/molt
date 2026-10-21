@@ -114,7 +114,7 @@ pub(crate) fn fused_both_int_check(
     let combined = builder.ins().bor(lhs_xored, rhs_xored);
     let tag_shift = builder.ins().iconst(types::I64, nbc.int_width);
     let upper = builder.ins().ushr(combined, tag_shift);
-    builder.ins().icmp_imm(IntCC::Equal, upper, 0)
+    builder.ins().icmp_imm_s(IntCC::Equal, upper, 0)
 }
 
 /// Returns true (i8 `1`) iff `val` is an inline NaN-boxed integer (`TAG_INT`) or
@@ -176,7 +176,7 @@ pub(crate) fn both_float_check(
     let either_special = builder.ins().bor(lhs_special, rhs_special);
     // both_float = !(lhs_special || rhs_special)
     // Since is_nanboxed_special returns an i8 (0 or 1), we check either_special == 0
-    builder.ins().icmp_imm(IntCC::Equal, either_special, 0)
+    builder.ins().icmp_imm_s(IntCC::Equal, either_special, 0)
 }
 
 /// Check whether a NaN-boxed value carries the int tag.
@@ -210,8 +210,8 @@ pub(crate) fn emit_mixed_int_float_op(
     let rhs_is_int = is_nanboxed_int(builder, rhs, nbc);
     let lhs_special = is_nanboxed_special(builder, lhs, nbc);
     let rhs_special = is_nanboxed_special(builder, rhs, nbc);
-    let rhs_not_special = builder.ins().icmp_imm(IntCC::Equal, rhs_special, 0);
-    let lhs_not_special = builder.ins().icmp_imm(IntCC::Equal, lhs_special, 0);
+    let rhs_not_special = builder.ins().icmp_imm_s(IntCC::Equal, rhs_special, 0);
+    let lhs_not_special = builder.ins().icmp_imm_s(IntCC::Equal, lhs_special, 0);
     let case_a = builder.ins().band(lhs_is_int, rhs_not_special);
     let case_b = builder.ins().band(rhs_is_int, lhs_not_special);
     let lhs_int_block = builder.create_block();
@@ -405,7 +405,7 @@ pub(crate) fn box_bool_value(
 pub(crate) fn unbox_ptr_value(builder: &mut FunctionBuilder, val: Value) -> Value {
     builder
         .ins()
-        .band_imm(val, molt_codegen_abi::POINTER_MASK as i64)
+        .band_imm_u(val, molt_codegen_abi::POINTER_MASK as i64)
 }
 
 /// Rebox an already-admitted runtime self pointer. Allocation/first publication

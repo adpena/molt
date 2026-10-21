@@ -120,6 +120,7 @@ impl HeapLiteralHoists {
     pub(in crate::native_backend::function_compiler) fn release_anchors(
         &self,
         builder: &mut FunctionBuilder<'_>,
+        pointer_type: types::Type,
         local_dec_ref_obj: FuncRef,
     ) {
         for &slot in self
@@ -128,7 +129,7 @@ impl HeapLiteralHoists {
             .chain(self.const_bytes_slots.values())
             .chain(self.const_bigint_slots.values())
         {
-            let value = builder.ins().stack_load(types::I64, slot, 0);
+            let value = builder.ins().stack_load(pointer_type, types::I64, slot, 0);
             builder.ins().call(local_dec_ref_obj, &[value]);
         }
     }
@@ -139,10 +140,11 @@ impl HeapLiteralHoists {
 #[cfg(feature = "native-backend")]
 fn load_owned_literal(
     builder: &mut FunctionBuilder<'_>,
+    pointer_type: types::Type,
     slot: cranelift_codegen::ir::StackSlot,
     local_inc_ref_obj: FuncRef,
 ) -> Value {
-    let value = builder.ins().stack_load(types::I64, slot, 0);
+    let value = builder.ins().stack_load(pointer_type, types::I64, slot, 0);
     emit_inc_ref_obj(builder, value, local_inc_ref_obj);
     value
 }
@@ -163,11 +165,14 @@ fn declare_literal_data(
 }
 
 #[cfg(feature = "native-backend")]
-fn new_literal_slot(builder: &mut FunctionBuilder<'_>) -> cranelift_codegen::ir::StackSlot {
+fn new_literal_slot(
+    builder: &mut FunctionBuilder<'_>,
+    pointer_type: types::Type,
+) -> cranelift_codegen::ir::StackSlot {
     let slot =
         builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
     let none = builder.ins().iconst(types::I64, box_none());
-    builder.ins().stack_store(none, slot, 0);
+    builder.ins().stack_store(pointer_type, none, slot, 0);
     slot
 }
 
@@ -225,7 +230,7 @@ fn hoist_outparam_literal(
     let local_callee = module.declare_func_in_func(callee, builder.func);
     let call = builder.ins().call(local_callee, &[ptr, len, tmp_ptr]);
     let status = builder.inst_results(call)[0];
-    let failed = builder.ins().icmp_imm(IntCC::NotEqual, status, 0);
+    let failed = builder.ins().icmp_imm_s(IntCC::NotEqual, status, 0);
     failure_exit.branch_if_failed(builder, sealed_blocks, failed);
 }
 
@@ -258,8 +263,10 @@ fn hoist_bigint_literal(
     let call = builder.ins().call(local_callee, &[ptr, len]);
     let val = builder.inst_results(call)[0];
 
-    builder.ins().stack_store(val, hoisted_slot, 0);
-    let failed = builder.ins().icmp_imm(IntCC::Equal, val, box_none());
+    builder
+        .ins()
+        .stack_store(module.target_config().pointer_type(), val, hoisted_slot, 0);
+    let failed = builder.ins().icmp_imm_s(IntCC::Equal, val, box_none());
     failure_exit.branch_if_failed(builder, sealed_blocks, failed);
 }
 
@@ -267,6 +274,7 @@ fn hoist_bigint_literal(
 pub(in crate::native_backend::function_compiler) fn prepare_heap_literals(
     func_ir: &FunctionIR,
     builder: &mut FunctionBuilder<'_>,
+    pointer_type: types::Type,
     representation_plan: &ScalarRepresentationPlan,
 ) -> (HeapLiteralHoists, HeapLiteralMaterialization) {
     let mut const_str_slots: BTreeMap<Vec<u8>, cranelift_codegen::ir::StackSlot> = BTreeMap::new();
@@ -341,7 +349,7 @@ pub(in crate::native_backend::function_compiler) fn prepare_heap_literals(
         (&unique_bigints, &mut const_bigint_slots),
     ] {
         for (bytes, _) in values {
-            slots.insert(bytes.clone(), new_literal_slot(builder));
+            slots.insert(bytes.clone(), new_literal_slot(builder, pointer_type));
         }
     }
 
@@ -479,7 +487,12 @@ pub(in crate::native_backend::function_compiler) fn handle_const_literal_op(
                     .const_bigint_slots
                     .get(&bytes)
                     .expect("boxed integer literal must have a frame anchor");
-                let boxed = load_owned_literal(builder, *slot, local_inc_ref_obj);
+                let boxed = load_owned_literal(
+                    builder,
+                    module.target_config().pointer_type(),
+                    *slot,
+                    local_inc_ref_obj,
+                );
                 def_var_named(builder, vars, out_name, boxed);
             }
         }
@@ -492,7 +505,12 @@ pub(in crate::native_backend::function_compiler) fn handle_const_literal_op(
                 .const_bigint_slots
                 .get(bytes)
                 .expect("bigint literal must have a frame anchor");
-            let boxed = load_owned_literal(builder, *slot, local_inc_ref_obj);
+            let boxed = load_owned_literal(
+                builder,
+                module.target_config().pointer_type(),
+                *slot,
+                local_inc_ref_obj,
+            );
             def_var_named(builder, vars, out_name, boxed);
         }
         "const_bool" => {
@@ -562,7 +580,12 @@ pub(in crate::native_backend::function_compiler) fn handle_const_literal_op(
                 .const_str_slots
                 .get(bytes)
                 .expect("string literal must have a frame anchor");
-            let boxed = load_owned_literal(builder, *slot, local_inc_ref_obj);
+            let boxed = load_owned_literal(
+                builder,
+                module.target_config().pointer_type(),
+                *slot,
+                local_inc_ref_obj,
+            );
 
             def_var_named(builder, vars, out_name, boxed);
         }
@@ -575,7 +598,12 @@ pub(in crate::native_backend::function_compiler) fn handle_const_literal_op(
                 .const_bytes_slots
                 .get(bytes)
                 .expect("bytes literal must have a frame anchor");
-            let boxed = load_owned_literal(builder, *slot, local_inc_ref_obj);
+            let boxed = load_owned_literal(
+                builder,
+                module.target_config().pointer_type(),
+                *slot,
+                local_inc_ref_obj,
+            );
 
             def_var_named(builder, vars, out_name, boxed);
         }

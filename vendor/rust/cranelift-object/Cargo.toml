@@ -11,9 +11,9 @@
 
 [package]
 edition = "2024"
-rust-version = "1.94.0"
+rust-version = "1.97.0"
 name = "cranelift-object"
-version = "0.133.3"
+version = "0.137.0"
 authors = ["The Cranelift Project Developers"]
 build = false
 autolib = false
@@ -44,11 +44,11 @@ name = "basic"
 path = "tests/basic.rs"
 
 [dependencies.anyhow]
-version = "1.0.100"
+version = "1.0.103"
 default-features = false
 
 [dependencies.cranelift-codegen]
-version = "0.133.3"
+version = "0.137.0"
 features = [
     "unwind",
     "std",
@@ -56,11 +56,11 @@ features = [
 default-features = false
 
 [dependencies.cranelift-control]
-version = "0.133.3"
+version = "0.137.0"
 default-features = false
 
 [dependencies.cranelift-module]
-version = "0.133.3"
+version = "0.137.0"
 
 [dependencies.gimli]
 version = "0.33.0"
@@ -76,7 +76,7 @@ version = "0.4.28"
 default-features = false
 
 [dependencies.object]
-version = "0.39.0"
+version = "0.40.0"
 features = [
     "read_core",
     "elf",
@@ -86,10 +86,10 @@ features = [
 default-features = false
 
 [dependencies.target-lexicon]
-version = "0.13.3"
+version = "0.13.5"
 
 [dev-dependencies.cranelift-codegen]
-version = "0.133.3"
+version = "0.137.0"
 features = [
     "unwind",
     "x86",
@@ -98,10 +98,10 @@ features = [
 default-features = false
 
 [dev-dependencies.cranelift-entity]
-version = "0.133.3"
+version = "0.137.0"
 
 [dev-dependencies.cranelift-frontend]
-version = "0.133.3"
+version = "0.137.0"
 
 [lints.clippy]
 allow_attributes_without_reason = "warn"
@@ -126,10 +126,10 @@ priority = -1
 [lints.rust]
 trivial_numeric_casts = "warn"
 unstable_features = "warn"
-unused_lifetimes = "warn"
-unused_macro_rules = "warn"
 unused_extern_crates = "warn"
 unused_import_braces = "warn"
+unused_lifetimes = "warn"
+unused_macro_rules = "warn"
 
 [lints.rust.unexpected_cfgs]
 level = "warn"

@@ -107,7 +107,8 @@ impl SimpleBackend {
                     .call(task_local, &[poll_addr, size_val, kind_val]);
                 let task_obj = builder.inst_results(call)[0];
 
-                let allocation_failed = builder.ins().icmp_imm(IntCC::Equal, task_obj, box_none());
+                let allocation_failed =
+                    builder.ins().icmp_imm_s(IntCC::Equal, task_obj, box_none());
                 let allocation_failure_block = builder.create_block();
                 let allocation_success_block = builder.create_block();
                 builder.ins().brif(
@@ -274,7 +275,7 @@ impl SimpleBackend {
         }
 
         builder.seal_all_blocks();
-        builder.finalize();
+        builder.finalize(module.target_config());
         inspect(&ctx);
 
         let trampoline_id = module

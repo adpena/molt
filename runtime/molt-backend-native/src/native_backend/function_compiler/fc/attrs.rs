@@ -226,7 +226,8 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
             let null = builder
                 .ins()
                 .iconst(types::I64, molt_codegen_abi::loaded_method_null_bits());
-            builder.ins().stack_store(null, self_slot, 0);
+            let pointer_type = module.target_config().pointer_type();
+            builder.ins().stack_store(pointer_type, null, self_slot, 0);
             let self_out = builder.ins().stack_addr(types::I64, self_slot, 0);
             let mut call_args = vec![site_bits];
             call_args.extend_from_slice(&operands);
@@ -241,7 +242,9 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &call_args);
             let callable = builder.inst_results(call)[0];
-            let self_or_null = builder.ins().stack_load(types::I64, self_slot, 0);
+            let self_or_null = builder
+                .ins()
+                .stack_load(pointer_type, types::I64, self_slot, 0);
             use crate::tir::simple_def_use::{SimpleIrResultField, visit_simple_ir_results};
             let mut results = [None, None];
             visit_simple_ir_results(op, |result| match result.field {

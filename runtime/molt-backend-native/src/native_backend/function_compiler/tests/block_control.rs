@@ -182,7 +182,7 @@ fn internal_single_predecessor_chain_resolves_only_demanded_values() {
         let (home, expected) = homes[37];
         assert_eq!(builder.use_var(home), expected);
         builder.ins().return_(&[expected]);
-        builder.finalize();
+        builder.finalize(crate::test_support::host_frontend_config());
     }
     for block in function.layout.blocks() {
         assert!(function.dfg.block_params(block).is_empty());
@@ -234,7 +234,7 @@ fn internal_diamond_preserves_redefinitions_before_and_after_sealing() {
             }
             assert_eq!(builder.block_params(join), &[result]);
             builder.ins().return_(&[result]);
-            builder.finalize();
+            builder.finalize(crate::test_support::host_frontend_config());
             (left_edge, right_edge, join)
         };
         // Inspect each actual edge's constant origin, not SSA value numbering
@@ -308,7 +308,7 @@ fn seal_block_once_rejects_unmaterialized_block_without_recording_success() {
         assert_eq!(builder.use_var(home), initial);
         assert!(builder.block_params(next).is_empty());
         builder.ins().return_(&[initial]);
-        builder.finalize();
+        builder.finalize(crate::test_support::host_frontend_config());
     }
     verify_function(&function, &settings::Flags::new(settings::builder())).unwrap();
 }

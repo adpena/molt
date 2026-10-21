@@ -149,7 +149,11 @@ fn switch_error() {
         bcx.ins().return_(&[r]);
 
         bcx.seal_all_blocks();
-        bcx.finalize();
+        bcx.finalize(cranelift_codegen::isa::TargetFrontendConfig {
+            default_call_conv: CallConv::SystemV,
+            pointer_width: target_lexicon::PointerWidth::U64,
+            page_size_align_log2: 12,
+        });
     }
 
     let flags = settings::Flags::new(settings::builder());
@@ -297,17 +301,118 @@ fn aarch64_colocated_data_symbol_reloc() {
 
         let gv = module.declare_data_in_func(data_id, &mut bcx.func);
         let ptr = module.target_config().pointer_type();
-        let addr = bcx.ins().global_value(ptr, gv);
+        let addr = bcx.ins().symbol_value(ptr, gv);
         bcx.ins().return_(&[addr]);
 
         bcx.seal_all_blocks();
-        bcx.finalize();
+        bcx.finalize(module.target_config());
     }
 
     module.define_function(func_id, &mut ctx).unwrap();
 
     let product = module.finish();
     product.emit().expect("emit object file");
+}
+
+#[test]
+fn x86_64_colocated_symbol_address_uses_non_branch_relocation() {
+    use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
+
+    for (triple, expected_encoding) in [
+        (
+            "x86_64-unknown-linux-gnu",
+            object::RelocationEncoding::Generic,
+        ),
+        (
+            "x86_64-apple-darwin",
+            object::RelocationEncoding::X86RipRelative,
+        ),
+        (
+            "x86_64-pc-windows-msvc",
+            object::RelocationEncoding::Generic,
+        ),
+    ] {
+        let flag_builder = settings::builder();
+        let isa = cranelift_codegen::isa::lookup_by_name(triple)
+            .unwrap()
+            .finish(settings::Flags::new(flag_builder))
+            .unwrap();
+        let mut module =
+            ObjectModule::new(ObjectBuilder::new(isa, "test", default_libcall_names()).unwrap());
+
+        let data_id = module
+            .declare_data("my_data", Linkage::Local, true, false)
+            .unwrap();
+        let mut data_desc = DataDescription::new();
+        data_desc.define_zeroinit(8);
+        module.define_data(data_id, &data_desc).unwrap();
+
+        let sig = Signature {
+            params: vec![],
+            returns: vec![AbiParam::new(types::I64)],
+            call_conv: module.target_config().default_call_conv,
+        };
+        let func_id = module
+            .declare_function("data_address", Linkage::Local, &sig)
+            .unwrap();
+        let mut ctx = Context::new();
+        ctx.func = Function::with_name_signature(UserFuncName::user(0, func_id.as_u32()), sig);
+        let mut func_ctx = FunctionBuilderContext::new();
+        {
+            let mut bcx = FunctionBuilder::new(&mut ctx.func, &mut func_ctx);
+            let block = bcx.create_block();
+            bcx.switch_to_block(block);
+            let data = module.declare_data_in_func(data_id, &mut bcx.func);
+            let address = bcx
+                .ins()
+                .symbol_value(module.target_config().pointer_type(), data);
+            bcx.ins().return_(&[address]);
+            bcx.seal_all_blocks();
+            bcx.finalize(module.target_config());
+        }
+        module.define_function(func_id, &mut ctx).unwrap();
+
+        let bytes = module.finish().emit().expect("emit object file");
+        let file = object::File::parse(&*bytes).expect("parse emitted object");
+        let data_symbol = file
+            .symbols()
+            .find(|symbol| {
+                symbol
+                    .name()
+                    .is_ok_and(|name| name.trim_start_matches('_') == "my_data")
+            })
+            .unwrap_or_else(|| panic!("{triple}: data symbol present in object"))
+            .index();
+        let function = file
+            .symbols()
+            .find(|symbol| {
+                symbol
+                    .name()
+                    .is_ok_and(|name| name.trim_start_matches('_') == "data_address")
+            })
+            .unwrap_or_else(|| panic!("{triple}: function symbol present in object"));
+        let section = file
+            .section_by_index(function.section_index().unwrap())
+            .expect("function section present");
+        let (_, relocation) = section
+            .relocations()
+            .find(|(_, relocation)| {
+                relocation.target() == object::read::RelocationTarget::Symbol(data_symbol)
+            })
+            .expect("address materialization relocation present");
+
+        assert_eq!(
+            relocation.kind(),
+            object::RelocationKind::Relative,
+            "{triple}"
+        );
+        assert_eq!(
+            relocation.encoding(),
+            expected_encoding,
+            "{triple}: an address materialization must not use a branch relocation"
+        );
+        assert_eq!(relocation.size(), 32, "{triple}");
+    }
 }
 
 // ---------- `.eh_frame` emission tests ----------
@@ -353,7 +458,7 @@ mod eh_frame {
             bcx.switch_to_block(block);
             bcx.ins().return_(&[]);
             bcx.seal_all_blocks();
-            bcx.finalize();
+            bcx.finalize(module.target_config());
         }
         module.define_function(func_id, &mut ctx).unwrap();
         func_id
@@ -547,7 +652,7 @@ mod eh_frame {
             bcx.switch_to_block(block);
             bcx.ins().return_(&[]);
             bcx.seal_all_blocks();
-            bcx.finalize();
+            bcx.finalize(module.target_config());
         }
         module.define_function(func_id, &mut ctx).unwrap();
 
@@ -602,10 +707,10 @@ fn aarch64_coff_near_symbol_addresses_keep_page_relocations_and_addends() {
     let mut builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
     let entry = builder.create_block();
     builder.switch_to_block(entry);
-    let address = builder.ins().global_value(types::I64, global);
+    let address = builder.ins().symbol_value(types::I64, global);
     builder.ins().return_(&[address]);
     builder.seal_all_blocks();
-    builder.finalize();
+    builder.finalize(module.target_config());
     module.define_function(function_id, &mut context).unwrap();
     let bytes = module.finish().emit().unwrap();
     let file = object::File::parse(bytes.as_slice()).unwrap();
