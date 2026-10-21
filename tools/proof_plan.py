@@ -3037,7 +3037,11 @@ def compiler_tool_path(
     if selector == "native-strip":
         from molt.llvm_wasi_tools import llvm_tool_candidates
 
-        candidates = llvm_tool_candidates("strip", environment=environment)
+        # As for llvm-sdk below: the policy's checkout pins the WASI SDK and
+        # owns the managed tool state, not the driver running admission.
+        candidates = llvm_tool_candidates(
+            "strip", environment=environment, source_root=policy.root
+        )
         selected = candidates[0] if candidates else None
     elif selector == "build-python":
         from molt.python_runtime_admission import resolve_build_python
@@ -3055,7 +3059,7 @@ def compiler_tool_path(
     elif selector == "wasm-opt":
         from molt.wasm_optimizer_identity import find_wasm_opt
 
-        selected = find_wasm_opt(environment=environment)
+        selected = find_wasm_opt(environment=environment, source_root=policy.root)
     else:
         raise ValueError(f"{policy.name}: unknown compiler tool selector {selector!r}")
     if selected is None:

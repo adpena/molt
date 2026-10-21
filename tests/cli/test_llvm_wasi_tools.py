@@ -2225,3 +2225,67 @@ def test_freestanding_explicit_family_does_not_select_unused_sdk_state(
         source_extension_toolchain._resolve_source_extension_wasm_toolchain(
             wasi, environment=environment
         )
+
+
+def test_tool_ladder_reads_the_wasi_sdk_pin_from_the_requested_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A landing controller runs main's extracted driver, whose tree has no
+    # config/, against a candidate checkout. The SDK pin and the managed tool
+    # state come from the checkout being qualified, never the running code.
+    controller = tmp_path / "controller"
+    controller.mkdir()
+    monkeypatch.setenv("MOLT_SOURCE_ROOT", str(controller))
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    pinned_by: list[Path] = []
+
+    def installation(root: Path, *, environ):
+        pinned_by.append(Path(root))
+        return None
+
+    monkeypatch.setattr(llvm_wasi_tools, "selected_wasi_sdk_installation", installation)
+    environment = {"PATH": "", "WASI_SDK_PATH": str(tmp_path / "wasi-sdk")}
+    with pytest.raises(
+        llvm_toolchain.LlvmToolchainConfigError, match="not provisioned"
+    ):
+        llvm_wasi_tools.llvm_tool_candidates(
+            "strip", environment=environment, source_root=candidate
+        )
+    with pytest.raises(
+        llvm_toolchain.LlvmToolchainConfigError, match="not provisioned"
+    ):
+        llvm_wasi_tools.llvm_tool_candidates("strip", environment=environment)
+
+    assert pinned_by == [candidate, controller]
+    assert llvm_wasi_tools._source_checkout_roots(candidate)[0] == candidate.resolve()
+
+
+def test_managed_wasm_opt_reads_the_binaryen_pin_from_the_requested_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt import wasm_optimizer_identity
+    from molt.binaryen_toolchain import BinaryenConfigError
+
+    controller = tmp_path / "controller"
+    controller.mkdir()
+    monkeypatch.setenv("MOLT_SOURCE_ROOT", str(controller))
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    pinned_by: list[Path] = []
+
+    def asset(root: Path):
+        pinned_by.append(Path(root))
+        raise BinaryenConfigError("no manifest in this fixture")
+
+    monkeypatch.setattr(wasm_optimizer_identity, "binaryen_host_asset", asset)
+    environment = {"PATH": ""}
+    assert (
+        wasm_optimizer_identity.find_wasm_opt(
+            environment=environment, source_root=candidate
+        )
+        is None
+    )
+    assert wasm_optimizer_identity.find_wasm_opt(environment=environment) is None
+
+    assert pinned_by == [candidate, controller]

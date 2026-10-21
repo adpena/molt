@@ -144,9 +144,18 @@ def _dedupe_paths(paths: Iterable[Path]) -> tuple[Path, ...]:
     return tuple(result)
 
 
-def _source_checkout_roots() -> tuple[Path, ...]:
-    """Return the loaded checkout and its Git common checkout, if worktree-backed."""
-    checkout = Path(__file__).resolve().parents[2]
+def _source_checkout_roots(source_root: Path | None = None) -> tuple[Path, ...]:
+    """Return the selected checkout and its Git common checkout, if worktree-backed.
+
+    ``source_root`` is the checkout whose tool state applies; the default is the
+    loaded checkout. A landing controller qualifies another checkout than the
+    one it runs from, so proof admission passes that checkout explicitly.
+    """
+    checkout = (
+        Path(__file__).resolve().parents[2]
+        if source_root is None
+        else source_root.resolve()
+    )
     roots = [checkout]
     directories = custody_layout.git_directories(checkout)
     if directories is not None:
@@ -217,6 +226,7 @@ def _managed_llvm_bin_directories(
     *,
     environment: Mapping[str, str],
     target_family: LlvmTargetFamily,
+    source_root: Path | None = None,
 ) -> tuple[Path, ...]:
     environment = ProcessEnvironment(environment)
     roots: list[Path] = []
@@ -233,7 +243,7 @@ def _managed_llvm_bin_directories(
     defaults = environment.without(("MOLT_TARGET_ROOT",))
     roots.extend(
         canonical_toolchain_root(checkout, defaults, require_exists=False)
-        for checkout in _source_checkout_roots()
+        for checkout in _source_checkout_roots(source_root)
     )
 
     normalized_roots = tuple(
@@ -248,8 +258,14 @@ def _managed_llvm_bin_directories(
     )
 
 
-def _selected_wasi_sdk_bins(environment: Mapping[str, str]) -> tuple[Path, ...]:
-    """Use the admitted SDK's provenance; sysroot paths are never guessed."""
+def _selected_wasi_sdk_bins(
+    environment: Mapping[str, str], source_root: Path | None = None
+) -> tuple[Path, ...]:
+    """Use the admitted SDK's provenance; sysroot paths are never guessed.
+
+    The SDK pin comes from ``source_root``, the checkout being built or
+    qualified; the default is the running compiler's source root.
+    """
     selectors = (
         "WASI_SDK_PATH",
         "WASI_SDK_PREFIX",
@@ -262,7 +278,8 @@ def _selected_wasi_sdk_bins(environment: Mapping[str, str]) -> tuple[Path, ...]:
         return ()
     try:
         installation = selected_wasi_sdk_installation(
-            compiler_source_root(), environ=environment
+            compiler_source_root() if source_root is None else source_root,
+            environ=environment,
         )
     except OSError as error:
         raise LlvmToolchainConfigError(
@@ -383,13 +400,16 @@ def _tool_is_wasi_sdk(
 
 
 def llvm_tool_is_wasi_sdk(
-    path: Path, *, environment: Mapping[str, str] | None = None
+    path: Path,
+    *,
+    environment: Mapping[str, str] | None = None,
+    source_root: Path | None = None,
 ) -> bool:
     """Identify SDK provenance while retaining a tool's lexical entrypoint."""
     effective_environment = ProcessEnvironment(
         os.environ if environment is None else environment
     )
-    sdk_bins = _selected_wasi_sdk_bins(effective_environment)
+    sdk_bins = _selected_wasi_sdk_bins(effective_environment, source_root)
     provenance = _tool_is_wasi_sdk(path, sdk_bins, {})
     if provenance is None:
         raise LlvmToolchainConfigError(f"cannot resolve LLVM tool provenance: {path}")
@@ -530,6 +550,7 @@ def _cached_llvm_named_tool_candidates(
     module_file: str,
     finder_identity: int,
     target_family: LlvmTargetFamily,
+    source_root: str | None,
 ) -> _LlvmCandidateSnapshot:
     """Resolve one immutable, filesystem-identified tool-search snapshot.
 
@@ -543,7 +564,9 @@ def _cached_llvm_named_tool_candidates(
         finder_identity,
     )
     environment = ProcessEnvironment(dict(environment_items), rule=environment_rule)
-    sdk_bins = _selected_wasi_sdk_bins(environment)
+    sdk_bins = _selected_wasi_sdk_bins(
+        environment, None if source_root is None else Path(source_root)
+    )
     observations: _ProvenanceObservations = {}
 
     def automatic_candidate_admitted(path: Path) -> bool:
@@ -631,6 +654,7 @@ def llvm_tool_candidates(
     environment: Mapping[str, str] | None = None,
     target_family: LlvmTargetFamily = "native",
     target_triple: str | None = None,
+    source_root: Path | None = None,
 ) -> tuple[Path, ...]:
     """Return one deterministic candidate ladder for every LLVM/WASI consumer."""
     if role == "wasm_ld":
@@ -642,6 +666,7 @@ def llvm_tool_candidates(
             include_rust_toolchain=include_rust_toolchain,
             environment=environment,
             target_family=target_family,
+            source_root=source_root,
         )
     names = (
         ("clang-cl",)
@@ -658,6 +683,7 @@ def llvm_tool_candidates(
         include_rust_toolchain=include_rust_toolchain,
         environment=environment,
         target_family=target_family,
+        source_root=source_root,
     )
 
 
@@ -670,6 +696,7 @@ def llvm_linker_candidates(
     include_rust_toolchain: bool = False,
     environment: Mapping[str, str] | None = None,
     target_family: LlvmTargetFamily = "native",
+    source_root: Path | None = None,
 ) -> tuple[Path, ...]:
     """Return only entrypoints that select one exact LLVM linker role."""
 
@@ -681,6 +708,7 @@ def llvm_linker_candidates(
         include_rust_toolchain=include_rust_toolchain,
         environment=environment,
         target_family=target_family,
+        source_root=source_root,
     )
     return tuple(
         path for path in candidates if executable_selects_linker_role(path, role)
@@ -714,6 +742,7 @@ def llvm_named_tool_candidates(
     include_rust_toolchain: bool = False,
     environment: Mapping[str, str] | None = None,
     target_family: LlvmTargetFamily = "native",
+    source_root: Path | None = None,
 ) -> tuple[Path, ...]:
     """Resolve an LLVM utility through the canonical managed-tool ladder.
 
@@ -728,7 +757,7 @@ def llvm_named_tool_candidates(
     effective_environment = ProcessEnvironment(
         os.environ if environment is None else environment
     )
-    sdk_bins = _selected_wasi_sdk_bins(effective_environment)
+    sdk_bins = _selected_wasi_sdk_bins(effective_environment, source_root)
     observations: _ProvenanceObservations = {}
     for selected_bin in sdk_bins:
         if _resolved_provenance_path(selected_bin, observations) is None:
@@ -748,7 +777,10 @@ def llvm_named_tool_candidates(
         )
     search_directories.extend(
         _managed_llvm_bin_directories(
-            target_root, environment=effective_environment, target_family=target_family
+            target_root,
+            environment=effective_environment,
+            target_family=target_family,
+            source_root=source_root,
         )
     )
     normalized_search_directories = tuple(
@@ -797,6 +829,7 @@ def llvm_named_tool_candidates(
         os.path.abspath(__file__),
         id(find_executable),
         target_family,
+        None if source_root is None else os.fspath(source_root.resolve()),
     )
     snapshot = _cached_llvm_named_tool_candidates(*key)
     if any(

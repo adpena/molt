@@ -7878,20 +7878,23 @@ def test_compiler_helper_selection_reuses_actual_compiler_authority(
     seen = []
 
     def llvm(requested, **kwargs):
-        seen.append((requested, kwargs["environment"]))
+        seen.append((requested, kwargs["environment"], kwargs["source_root"]))
         return (selected,)
 
     def optimizer(**kwargs):
-        seen.append(("wasm-opt", kwargs["environment"]))
+        seen.append(("wasm-opt", kwargs["environment"], kwargs["source_root"]))
         return str(selected)
 
     monkeypatch.setattr(llvm_wasi_tools, "llvm_tool_candidates", llvm)
     monkeypatch.setattr(wasm_optimizer_identity, "find_wasm_opt", optimizer)
     policy = next(p for p in PLAN.toolchain_policies if p.name == name)
+    # A landing controller's own tree is not the candidate that pins the tool.
+    candidate = tmp_path / "candidate"
+    policy = replace(policy, root=candidate)
     assert (
         proof_plan.compiler_tool_path(policy, environment=env, cwd=tmp_path) == selected
     )
-    assert seen == [(role, env)]
+    assert seen == [(role, env, candidate)]
 
 
 def test_missing_compiler_helper_is_refused_before_probe(monkeypatch, tmp_path):

@@ -99,9 +99,16 @@ def _is_sha256(value: object) -> TypeGuard[str]:
 
 
 def _managed_binaryen_asset(
-    path: Path, *, environment: Mapping[str, str] | None = None
+    path: Path,
+    *,
+    environment: Mapping[str, str] | None = None,
+    source_root: Path | None = None,
 ) -> BinaryenHostAsset | None:
-    """Return the exact receipted host asset when *path* is managed Binaryen."""
+    """Return the exact receipted host asset when *path* is managed Binaryen.
+
+    The Binaryen pin comes from ``source_root``, the checkout being built or
+    qualified; the default is the running compiler's source root.
+    """
 
     from molt.dx import (
         DxConfigError,
@@ -110,7 +117,7 @@ def _managed_binaryen_asset(
     )
 
     try:
-        source = compiler_source_root()
+        source = compiler_source_root() if source_root is None else source_root
         if not selected_toolchain_contains(source, path, environment):
             return None
         target_root = canonical_toolchain_root(
@@ -227,7 +234,11 @@ def wasm_optimizer_executable_identity(
     )
 
 
-def find_wasm_opt(*, environment: Mapping[str, str] | None = None) -> str | None:
+def find_wasm_opt(
+    *,
+    environment: Mapping[str, str] | None = None,
+    source_root: Path | None = None,
+) -> str | None:
     """Resolve ``wasm-opt`` through one fail-closed discovery authority.
 
     A non-empty ``MOLT_WASM_OPT`` is an explicit pin. If that pin is unusable,
@@ -243,10 +254,14 @@ def find_wasm_opt(*, environment: Mapping[str, str] | None = None) -> str | None
     on_path = shutil.which("wasm-opt", path=environment.get("PATH", os.defpath))
     if on_path is not None:
         return on_path
-    return managed_wasm_opt(environment=environment)
+    return managed_wasm_opt(environment=environment, source_root=source_root)
 
 
-def managed_wasm_opt(*, environment: Mapping[str, str] | None = None) -> str | None:
+def managed_wasm_opt(
+    *,
+    environment: Mapping[str, str] | None = None,
+    source_root: Path | None = None,
+) -> str | None:
     """The attested manifest-owned ``wasm-opt`` installation, or ``None``.
 
     ``tools/toolchain_env.py`` pins ``MOLT_WASM_OPT`` to it, so a shell's
@@ -257,7 +272,7 @@ def managed_wasm_opt(*, environment: Mapping[str, str] | None = None) -> str | N
     from molt.dx import DxConfigError, canonical_toolchain_root
 
     try:
-        source = compiler_source_root()
+        source = compiler_source_root() if source_root is None else source_root
         toolchains = (
             canonical_toolchain_root(source, environment, require_exists=False)
             / "toolchains"
@@ -270,7 +285,12 @@ def managed_wasm_opt(*, environment: Mapping[str, str] | None = None) -> str | N
     if executable.is_file():
         try:
             resolved = executable.resolve(strict=True)
-            if _managed_binaryen_asset(resolved, environment=environment) == asset:
+            if (
+                _managed_binaryen_asset(
+                    resolved, environment=environment, source_root=source_root
+                )
+                == asset
+            ):
                 return str(executable)
         except (OSError, WasmOptimizerIdentityError):
             return None
