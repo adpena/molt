@@ -43,6 +43,7 @@ from tests.process_guard_common import (
     install_module_os_view,
     install_module_view,
     install_thread_module_view,
+    hung_child_marker,
     processes_carrying,
     run_in_fresh_guard_observer,
     start_owned_test_process,
@@ -6824,7 +6825,7 @@ def test_run_guarded_terminates_a_new_session_grandchild_left_after_exit(
     """
     pid_file = tmp_path / "grandchild.pid"
     sampled = tmp_path / "grandchild-sampled"
-    marker = f"grandchild-of-{tmp_path.name}"
+    marker = hung_child_marker()
     custody_sample = memory_guard.sample_processes_custody
 
     def sample_then_release_the_child(interest):
@@ -6900,7 +6901,7 @@ def test_run_guarded_terminates_a_group_member_orphaned_between_samples(
         memory_guard, "sample_processes_custody", sample_then_release_the_child
     )
     pid_file = tmp_path / "grandchild.pid"
-    marker = f"group-orphan-of-{tmp_path.name}"
+    marker = hung_child_marker()
     script = (
         "import pathlib, subprocess, sys, time\n"
         f"while not pathlib.Path({str(launch_sampled)!r}).exists():\n"
@@ -6978,7 +6979,7 @@ def test_run_guarded_enforces_tree_rss_across_a_new_session_grandchild(
     tree limit. The grandchild's RSS counts only if the sampler keeps it in
     the tree after it leaves the child's session."""
     pid_file = tmp_path / "grandchild.pid"
-    marker = f"grandchild-of-{tmp_path.name}"
+    marker = hung_child_marker()
     allocate = (
         "buf = bytearray(120 * 1024 * 1024); buf[::4096] = b'x' * len(buf[::4096])"
     )
