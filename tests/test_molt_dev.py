@@ -2945,6 +2945,36 @@ def test_queue_plan_survives_between_runners_and_drops_closed_requests(tmp_path)
     assert not paths.plan.exists()
 
 
+def test_queue_retires_old_runner_logs_and_results_only(tmp_path):
+    from tools import molt_dev_queue as queue
+
+    paths = queue.QueuePaths(tmp_path / "landing-queue")
+    now = 50_000_000.0
+    for index in range(queue.RUNNER_LOGS_KEPT + 3):
+        runner = paths.runners / f"runner-{index:03d}"
+        runner.mkdir(parents=True)
+        (runner / "rc").write_text("0\n", encoding="utf-8")
+        os.utime(runner / "rc", (now - index, now - index))
+    live = paths.runners / "runner-live"
+    live.mkdir()
+    old = queue.enqueue(paths, head="1" * 40, worktree=tmp_path, branch=None)
+    recent = queue.enqueue(paths, head="2" * 40, worktree=tmp_path, branch=None)
+    waiting = queue.enqueue(paths, head="3" * 40, worktree=tmp_path, branch=None)
+    for request, age_days in ((old, queue.RESULT_DAYS + 1), (recent, 1)):
+        queue.record_result(paths, request, status="landed", detail="", landed=None)
+        result = paths.results / f"{request.id}.json"
+        os.utime(result, (now - age_days * 86400, now - age_days * 86400))
+
+    queue.retire_old_records(paths, now=now)
+
+    kept = sorted(entry.name for entry in paths.runners.iterdir())
+    expected = [f"runner-{index:03d}" for index in range(queue.RUNNER_LOGS_KEPT)]
+    assert kept == sorted(expected + ["runner-live"])
+    assert queue.read_result(paths, old.id) is None
+    assert queue.read_result(paths, recent.id)["status"] == "landed"
+    assert queue.pending(paths) == [waiting]
+
+
 @pytest.mark.parametrize("outcome", ["success", "driver-error", "interrupt"])
 def test_integrate_lock_released_on_every_exclusive_exit(
     drv, origin_and_clone, monkeypatch, outcome

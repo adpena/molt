@@ -222,8 +222,13 @@ One runner owns main. Agents enqueue and continue.
   that runs as far as the admitted capacity allows: one chain on this Mac,
   wider on the farm.
 - **Cost.** N small lanes pay the fixed gate cost once, not N times. A bad
-  lane costs O(log N) extra runs. The runner is one process that sleeps on
-  the integration lock and on the queue directory; it does not poll Git.
+  lane costs O(log N) extra runs. The runner is one process per batch; it
+  waits for the integration lock with the lock authority's 2 s retry and
+  exits when the queue is empty, and `land` starts the next one.
+- **Status.** Batches, bisection, conflict exclusion and the main-moved
+  rebuild are implemented and tested on real repositories (2026-10-20). The
+  candidate chain runs one batch at a time on this Mac; parallel speculation
+  needs the farm's cells (Migration item 3).
 
 ## Costs
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import tempfile
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
@@ -31,6 +32,10 @@ RESULT_SCHEMA = "molt.landing-result.v1"
 PLAN_SCHEMA = "molt.landing-plan.v1"
 # A batch larger than this costs more in bisection than one more gate run.
 MAX_BATCH = 8
+# Retention: finished runner logs beyond the newest RUNNER_LOGS_KEPT, and
+# results older than RESULT_DAYS, retire when a runner starts.
+RUNNER_LOGS_KEPT = 20
+RESULT_DAYS = 30
 
 
 @dataclass(frozen=True)
@@ -303,3 +308,20 @@ def build_candidate(
             continue
         included.append(request)
     return Candidate(included=tuple(included), conflicted=tuple(conflicted))
+
+
+def retire_old_records(paths: QueuePaths, *, now: float) -> None:
+    """Bound the queue's own records; a live runner and a pending request stay."""
+
+    if paths.runners.is_dir():
+        finished = sorted(
+            (entry for entry in paths.runners.iterdir() if (entry / "rc").is_file()),
+            key=lambda entry: (entry / "rc").stat().st_mtime,
+            reverse=True,
+        )
+        for entry in finished[RUNNER_LOGS_KEPT:]:
+            shutil.rmtree(entry)
+    if paths.results.is_dir():
+        for result in paths.results.glob("*.json"):
+            if now - result.stat().st_mtime > RESULT_DAYS * 86400:
+                result.unlink()
