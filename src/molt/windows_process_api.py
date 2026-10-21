@@ -26,6 +26,8 @@ def bind_process_query_api(api: ctypes.CDLL) -> None:
     api.GetProcessTimes.restype = wintypes.BOOL
     api.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
     api.GetExitCodeProcess.restype = wintypes.BOOL
+    api.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    api.WaitForSingleObject.restype = wintypes.DWORD
 
 
 @lru_cache(maxsize=1)

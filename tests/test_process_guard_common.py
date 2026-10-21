@@ -474,7 +474,8 @@ def test_thread_module_view_scopes_function_fakes_to_the_installing_thread(
     import threading
 
     from tests.process_guard_common import install_thread_module_view
-    from tools.memory_guard_core import process_custody, process_model
+    from tools.memory_guard_core import process_custody
+    from molt import process_model
 
     real_pid = os.getpid()
     view = install_thread_module_view(

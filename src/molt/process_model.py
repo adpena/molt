@@ -1,3 +1,10 @@
+"""The host process model: samples, identities, births, argv and liveness.
+
+The compiler's backend-daemon custody and the repository's memory guard,
+sentinels and queues read every process fact here; ``tools`` consumes this
+module, never the reverse.
+"""
+
 from __future__ import annotations
 
 from collections.abc import (
@@ -24,11 +31,12 @@ import threading
 import time
 from typing import Any, cast
 
-from tools.memory_guard_core.windows_snapshot import (
+from molt.windows_process_snapshot import (
     ProcessSnapshotError,
     WindowsProcessSnapshotRow,
     _windows_process_snapshot_rows_hard_timeout,
     windows_current_process_started_at_ns,
+    windows_pid_alive,
     windows_process_resident_kb,
 )
 
@@ -208,16 +216,16 @@ class _BoundOnRead:
 class ProcessSample:
     pid: int
     ppid: int
-    rss_kb: int = _BoundOnRead(("rss_kb",))  # type: ignore[assignment]
-    command: str = _BoundOnRead(("command", "argv", "command_kind"))  # type: ignore[assignment]
+    rss_kb: int = _BoundOnRead(("rss_kb",))  # ty: ignore[invalid-assignment]
+    command: str = _BoundOnRead(("command", "argv", "command_kind"))  # ty: ignore[invalid-assignment]
     pgid: int | None = None
     elapsed_sec: int | None = None
     started_at_ns: int | None = None
     # None uses the native sampler's command source; () explicitly means unknown.
-    argv: tuple[str, ...] | None = _BoundOnRead(  # type: ignore[assignment]
+    argv: tuple[str, ...] | None = _BoundOnRead(  # ty: ignore[invalid-assignment]
         ("command", "argv", "command_kind"), None
     )
-    command_kind: str = _BoundOnRead(  # type: ignore[assignment]
+    command_kind: str = _BoundOnRead(  # ty: ignore[invalid-assignment]
         ("command", "argv", "command_kind"), "full"
     )
 
@@ -576,7 +584,7 @@ class ProcessTreeTracker:
     ) -> list[dict[str, object]]:
         """Serialize only birth-bound chains admitted by this live tree tracker."""
         assert self.known_ancestry is not None
-        records = []
+        records: list[dict[str, object]] = []
         for pid, identity in self.custody_identities(samples).items():
             chain = self.known_ancestry.get(pid)
             if (
@@ -939,15 +947,17 @@ def _linux_custody_rows(
 
 
 def _linux_uptime_sec(proc_root: Path) -> float:
-    try:
-        return time.clock_gettime(time.CLOCK_BOOTTIME)
-    except (AttributeError, OSError):
+    if sys.platform == "linux":
         try:
-            return float((proc_root / "uptime").read_text(encoding="utf-8").split()[0])
-        except (IndexError, OSError, ValueError) as exc:
-            raise ProcessSnapshotError(
-                f"Linux boot-time clock is unavailable: {exc}"
-            ) from exc
+            return time.clock_gettime(time.CLOCK_BOOTTIME)
+        except OSError:
+            pass
+    try:
+        return float((proc_root / "uptime").read_text(encoding="utf-8").split()[0])
+    except (IndexError, OSError, ValueError) as exc:
+        raise ProcessSnapshotError(
+            f"Linux boot-time clock is unavailable: {exc}"
+        ) from exc
 
 
 def _linux_sample(
@@ -1597,6 +1607,65 @@ def process_started_at_ns(pid: int) -> int | None:
     if sys.platform == "darwin":
         return _darwin_proc_started_at_ns(pid)
     return None
+
+
+# ``kill(2)`` takes a ``pid_t``, a C ``int`` on every POSIX host Molt targets.
+_POSIX_PID_MAX = 0x7FFFFFFF
+# proc(5) states of a process that exited: ``Z`` zombie, ``X``/``x`` dead.
+_LINUX_EXITED_STATES = frozenset({b"Z", b"X", b"x"})
+
+
+def pid_alive(pid: int) -> bool:
+    """Whether ``pid`` names a process that has not exited.
+
+    A zombie (exited and not yet reaped by its parent) is not alive. The probe
+    never reaps it, so a ``Popen`` owner keeps its child's exit status. A
+    process this caller may not signal is alive while the kernel lists it.
+    Windows asks the process object: there ``os.kill(pid, 0)`` sends
+    ``CTRL_C_EVENT`` to a console process group instead of probing.
+    """
+
+    if type(pid) is not int or pid <= 0:
+        return False
+    if os.name == "nt":
+        return windows_pid_alive(pid)
+    if pid > _POSIX_PID_MAX:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass  # Another user's process: the kernel still lists it.
+    return not _posix_pid_is_zombie(pid)
+
+
+def _posix_pid_is_zombie(pid: int) -> bool:
+    """True only when the kernel reports ``pid`` exited and awaiting its reap.
+
+    An unreadable row is not evidence of exit: the caller keeps the verdict of
+    ``kill(2)``, which found the pid.
+    """
+
+    if sys.platform == "darwin":
+        row = _darwin_proc_kernel_row(pid)
+        return row is not None and row.status == _DARWIN_SZOMB
+    if sys.platform.startswith("linux"):
+        return _linux_proc_state(pid) in _LINUX_EXITED_STATES
+    return False
+
+
+def _linux_proc_state(pid: int, proc_root: Path = Path("/proc")) -> bytes | None:
+    """The one-byte state field of ``/proc/<pid>/stat``; None when unreadable."""
+
+    try:
+        raw = (proc_root / str(pid) / "stat").read_bytes()
+        # The state follows the command name, which may hold spaces and ")".
+        state_at = raw.rindex(b")") + 2
+    except (OSError, ValueError):
+        return None
+    state = raw[state_at : state_at + 1]
+    return state or None
 
 
 def parse_windows_process_snapshot_rows(

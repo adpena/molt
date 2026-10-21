@@ -49,7 +49,7 @@ from molt.dx import (  # noqa: E402
     proof_scratch_root,
     scratch_root,
 )
-from molt import compiler_process, host_capacity  # noqa: E402
+from molt import compiler_process, host_capacity, process_model  # noqa: E402
 from molt.file_publication import resolve_owned_path  # noqa: E402
 from molt.portable_paths import portable_relative_path  # noqa: E402
 from molt import backend_daemon_custody as daemon_custody  # noqa: E402
@@ -662,18 +662,6 @@ def _parse_int_env(name: str, default: int) -> int:
     return value
 
 
-def _pid_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
 _DAEMON_CONTROL_TIMEOUT_S = 0.75
 
 
@@ -964,7 +952,7 @@ def _prune_backend_daemons() -> None:
         rss_kb = process.sample.rss_kb
         if rss_kb is None or rss_kb <= max_rss_kb:
             continue
-        if not _pid_alive(process.sample.pid):
+        if not process_model.pid_alive(process.sample.pid):
             continue
         if records_by_pid is None:
             records_by_pid = _current_session_backend_daemon_records_by_pid()

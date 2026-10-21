@@ -528,6 +528,8 @@ def _sweep_orphaned_backend_daemon_locks(
     Cargo targets through the same build-state authority. Never scan the
     hashed control namespace as a directory wildcard.
     """
+    from molt import process_model
+
     cleaned = 0
 
     candidate_roots: list[Path] = []
@@ -597,7 +599,7 @@ def _sweep_orphaned_backend_daemon_locks(
                 _remove_backend_daemon_identity(identity_file)
                 cleaned += 1
                 continue
-            if _pid_alive(identity.pid):
+            if process_model.pid_alive(identity.pid):
                 if _backend_daemon_identity_process_matches(identity):
                     continue
                 _remove_backend_daemon_identity(identity_file)
@@ -635,10 +637,6 @@ def _sweep_orphaned_backend_daemon_locks_once(project_root: Path) -> None:
     except Exception:
         # Sweep is best-effort — never block daemon spawn on cleanup errors.
         pass
-
-
-def _pid_alive(pid: int) -> bool:
-    return _daemon_custody._pid_alive(pid)
 
 
 def _backend_daemon_process_command(pid: int) -> _daemon_custody.ProcessCommand | None:
@@ -707,7 +705,6 @@ def _backend_daemon_identity_is_verified(
         allow_health_probe=allow_health_probe,
         health_probe=_backend_daemon_health_probe,
         process_command=_backend_daemon_process_command,
-        pid_alive=_pid_alive,
     )
 
 

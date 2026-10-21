@@ -190,6 +190,7 @@ from molt.cli import output as cli_output
 from molt import default_paths as molt_default_paths
 from molt import file_hashing as molt_file_hashing
 from molt import frontend as molt_frontend
+from molt import process_model as molt_process_model
 from molt import source_root as molt_source_root
 import socket
 import tracemalloc
@@ -4294,7 +4295,7 @@ def test_run_subprocess_captured_to_tempfiles_does_not_block_on_inherited_pipes(
     the census of the command's process group before the reap; Windows: the
     Job) and close the tree, or the run fails as an infrastructure failure.
     """
-    from tools.memory_guard_core.process_model import process_command_argv
+    from molt.process_model import process_command_argv
 
     marker = f"inherited-pipes-{tmp_path.name}"
     child_pid_file = tmp_path / "sleeper.pid"
@@ -31056,7 +31057,7 @@ def test_orphaned_backend_daemon_sweep_removes_dead_identity_and_legacy_pid(
         BACKEND_EXECUTION, "_build_state_root", lambda project_root: canonical_root
     )
     monkeypatch.setattr(
-        BACKEND_EXECUTION, "_pid_alive", lambda pid: alive.get(pid, False)
+        molt_process_model, "pid_alive", lambda pid: alive.get(pid, False)
     )
     monkeypatch.setattr(
         BACKEND_EXECUTION,
@@ -31096,7 +31097,7 @@ def test_orphaned_backend_daemon_sweep_keeps_a_dead_daemons_successor_socket(
     monkeypatch.setattr(
         BACKEND_EXECUTION, "_build_state_root", lambda project_root: canonical_root
     )
-    monkeypatch.setattr(BACKEND_EXECUTION, "_pid_alive", lambda pid: False)
+    monkeypatch.setattr(molt_process_model, "pid_alive", lambda pid: False)
 
     cleaned = BACKEND_EXECUTION._sweep_orphaned_backend_daemon_locks(
         tmp_path,
@@ -31200,7 +31201,7 @@ def test_sweep_orphaned_backend_daemon_locks_removes_dead_and_unverified_identit
     def fake_pid_alive(pid: int) -> bool:
         return pid in {4242, 5252}
 
-    monkeypatch.setattr(BACKEND_EXECUTION, "_pid_alive", fake_pid_alive)
+    monkeypatch.setattr(molt_process_model, "pid_alive", fake_pid_alive)
     monkeypatch.setattr(
         BACKEND_EXECUTION,
         "_backend_daemon_identity_process_matches",

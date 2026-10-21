@@ -64,7 +64,8 @@ The hazard inventory -> countermeasure map (the spec this file implements)
           run post-rebase, pre-push, via python file ops.
   9. Liveness/recovery probes (agent transcripts, daemon pids)
        -> `probe` reports size+mtime (python `os.stat`) and pid liveness
-          (`os.kill(pid, 0)`), replacing ad-hoc shell one-liners.
+          (`molt.process_model.pid_alive`; a zombie is not alive),
+          replacing ad-hoc shell one-liners.
  10. Gate selection by change-class
        -> `integrate` reads tools/proof_plan.toml (touched-path glob ->
           required gate commands) and runs exactly the gates the change-class
@@ -1714,10 +1715,7 @@ def cmd_probe(args: argparse.Namespace) -> int:
     else:
         for r in results:
             if "pid" in r:
-                _say(
-                    f"    pid {r['pid']}: alive={r['alive']}"
-                    + (f" ({r['detail']})" if r["detail"] else "")
-                )
+                _say(f"    pid {r['pid']}: alive={r['alive']}")
             elif r.get("exists"):
                 _say(
                     f"    {r['path']}: size={r['size']} mtime={r['mtime_iso']} "

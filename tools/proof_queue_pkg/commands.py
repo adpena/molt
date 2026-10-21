@@ -13,6 +13,7 @@ import uuid
 from contextlib import closing
 from pathlib import Path
 
+from molt import process_model
 from tools.proof_queue_pkg import (
     cargo_cache_custody,
     cargo_output_lifecycle,
@@ -808,7 +809,11 @@ def _cmd_prune_stale(args: argparse.Namespace) -> int:
                 diagnostics
             )
             if diagnostic_summary is None:
-                if not guard_alive and pid is not None and custody._pid_alive(int(pid)):
+                if (
+                    not guard_alive
+                    and pid is not None
+                    and process_model.pid_alive(int(pid))
+                ):
                     # PID is alive but no longer the recorded guard: Windows recycled
                     # the PID to an unrelated process while our guard was already
                     # dead.
@@ -1188,7 +1193,7 @@ def _queue_audit_payload(args: argparse.Namespace) -> dict[str, object]:
         if status != "running":
             continue
         pid = row["guard_pid"]
-        if pid is None or not custody._pid_alive(int(pid)):
+        if pid is None or not process_model.pid_alive(int(pid)):
             issues.append(
                 diagnostic_audit._audit_issue(
                     signal_id="audit-dead-running-guard",

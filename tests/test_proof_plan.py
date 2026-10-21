@@ -20,7 +20,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from molt import tool_releases
+from molt import process_model, tool_releases
 from molt.cargo_execution_policy import (
     CARGO_WRAPPER_ENV_NAMES,
     PROOF_COMMAND_TIMEOUT_ENV,
@@ -36,7 +36,6 @@ from tools import (
 )
 from tools.dependency_manifests import cargo_workspace_dirs
 from tools.proof_queue_pkg import command_admission, supervisor_custody
-from tools.proof_queue_pkg import custody as proof_queue_custody
 from tools.proof_queue_pkg import evidence as proof_queue_evidence
 from tests.executable_test_support import custody_spelling
 from tests.process_guard_common import install_module_view, run_guarded_test_process
@@ -5715,9 +5714,9 @@ def test_executor_global_stop_uses_guard_custody_to_reap_live_process_tree(
     assert child_pid_path.is_file()
     child_pid = int(child_pid_path.read_text(encoding="utf-8"))
     deadline = time.monotonic() + 30.0
-    while proof_queue_custody._pid_alive(child_pid) and time.monotonic() < deadline:
+    while process_model.pid_alive(child_pid) and time.monotonic() < deadline:
         time.sleep(0.05)
-    assert not proof_queue_custody._pid_alive(child_pid)
+    assert not process_model.pid_alive(child_pid)
 
 
 def test_executor_process_custody_is_classified_by_subprocess_guard() -> None:

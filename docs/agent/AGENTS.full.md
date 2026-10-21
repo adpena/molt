@@ -804,7 +804,7 @@ Read these first instead of rediscovering project structure:
   continue through a healthy lane or ask for explicit Codex app/CLI repair; do
   not make Codex repair collateral damage of Molt cleanup.
 - The executable classifier authority for this boundary is
-  `tools/memory_guard_core/process_model.py`. Any cleanup, sentinel, guard, or
+  `src/molt/process_model.py`. Any cleanup, sentinel, guard, or
   process-sampling change that touches Codex/Claude/app-server/node-repl
   identity must update that classifier and the host-control matrix tests before
   changing kill behavior. Do not add ad hoc name/path matching elsewhere.

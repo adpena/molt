@@ -18,7 +18,7 @@ import signal
 import os
 from tests.process_guard_common import install_module_view
 from tools import orphan_reaper
-from tools.memory_guard_core import process_model
+from molt import process_model
 from tools.memory_guard_core import process_custody
 
 pytestmark = pytest.mark.usefixtures("session_sentinel_paused")

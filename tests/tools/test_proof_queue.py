@@ -38,6 +38,7 @@ from molt import llvm_toolchain
 from molt import rust_toolchain
 from molt import tool_releases
 from molt.exact_json import ExactJsonError, canonical_json_sha256
+from molt import process_model
 from tests.python_environment_test_support import (
     build_environment_manifest,
     create_owned_python_venv,
@@ -5975,11 +5976,6 @@ def test_proof_queue_session_id_is_contention_key_scoped() -> None:
     )
 
 
-def test_proof_queue_pid_alive_detects_current_process() -> None:
-    assert custody._pid_alive(os.getpid())
-    assert not custody._pid_alive(0)
-
-
 def test_proof_queue_git_snapshot_tracks_runtime_generation_changes(
     tmp_path: Path,
 ) -> None:
@@ -7576,7 +7572,9 @@ def test_proof_queue_diagnoses_running_nested_guard_without_work_child(
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr(custody, "_pid_alive", lambda pid: pid in {child_pid, 99_001})
+    monkeypatch.setattr(
+        process_model, "pid_alive", lambda pid: pid in {child_pid, 99_001}
+    )
     monkeypatch.setattr(memory_guard, "sample_processes", lambda: {})
     monkeypatch.setattr(memory_guard, "descendant_pids", lambda samples, pid: set())
     conn = state._connect(db)
@@ -7662,7 +7660,7 @@ def test_proof_queue_diagnoses_stale_running_log_with_live_work_child(
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr(custody, "_pid_alive", lambda pid: pid == child_pid)
+    monkeypatch.setattr(process_model, "pid_alive", lambda pid: pid == child_pid)
     monkeypatch.setattr(
         memory_guard,
         "sample_processes",
@@ -8384,7 +8382,7 @@ def test_proof_queue_prune_stale_preserves_live_launch_summary_only_row(
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr(custody, "_pid_alive", lambda pid: pid == 99_001)
+    monkeypatch.setattr(process_model, "pid_alive", lambda pid: pid == 99_001)
     conn = state._connect(db)
     scheduling._insert_run(
         conn,
@@ -8476,7 +8474,7 @@ def test_proof_queue_prune_stale_reclaims_launch_summary_after_guard_exit(
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr(custody, "_pid_alive", lambda pid: False)
+    monkeypatch.setattr(process_model, "pid_alive", lambda pid: False)
     conn = state._connect(db)
     scheduling._insert_run(
         conn,
@@ -8558,7 +8556,7 @@ def test_proof_queue_prune_stale_terminalizes_dead_nested_guard_child(
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr(custody, "_pid_alive", lambda pid: pid == guard_pid)
+    monkeypatch.setattr(process_model, "pid_alive", lambda pid: pid == guard_pid)
     conn = state._connect(db)
     scheduling._insert_run(
         conn,
@@ -8644,7 +8642,7 @@ def test_proof_queue_prune_stale_preserves_live_windows_child_runner_missing(
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr(custody, "_pid_alive", lambda pid: pid == guard_pid)
+    monkeypatch.setattr(process_model, "pid_alive", lambda pid: pid == guard_pid)
     conn = state._connect(db)
     scheduling._insert_run(
         conn,
@@ -8782,7 +8780,7 @@ def test_proof_queue_run_self_terminalizes_dead_nested_guard_child(
             "status": [],
         },
     )
-    monkeypatch.setattr(custody, "_pid_alive", lambda pid: pid == guard_pid)
+    monkeypatch.setattr(process_model, "pid_alive", lambda pid: pid == guard_pid)
     monkeypatch.setattr(custody, "PROOF_QUEUE_ACTIVE_POLL_SECONDS", 0.01)
     monkeypatch.setattr(
         custody,
@@ -8971,7 +8969,7 @@ def test_proof_queue_run_does_not_self_terminalize_windows_child_runner_missing(
             "status": [],
         },
     )
-    monkeypatch.setattr(custody, "_pid_alive", lambda pid: pid == guard_pid)
+    monkeypatch.setattr(process_model, "pid_alive", lambda pid: pid == guard_pid)
     monkeypatch.setattr(custody, "PROOF_QUEUE_ACTIVE_POLL_SECONDS", 0.01)
     monkeypatch.setattr(
         diagnostic_evidence, "RUNNING_CHILD_MISSING_STALE_LOG_SECONDS", 0.0
@@ -9097,7 +9095,7 @@ def test_proof_queue_run_does_not_self_terminalize_launch_summary_only(
             "status": [],
         },
     )
-    monkeypatch.setattr(custody, "_pid_alive", lambda pid: pid == guard_pid)
+    monkeypatch.setattr(process_model, "pid_alive", lambda pid: pid == guard_pid)
     monkeypatch.setattr(custody, "PROOF_QUEUE_ACTIVE_POLL_SECONDS", 0.01)
     monkeypatch.setattr(
         diagnostic_evidence, "RUNNING_CHILD_MISSING_STALE_LOG_SECONDS", 0.0
@@ -9195,7 +9193,7 @@ def test_proof_queue_prune_stale_run_id_preserves_unselected_active_rows(
     # The selected target's guard has exited; the unselected sibling still owns
     # live custody. This keeps the test focused on --run-id scoping now that a
     # launch-summary-only diagnostic is not terminal while its guard is live.
-    monkeypatch.setattr(custody, "_pid_alive", lambda pid: pid == 99_002)
+    monkeypatch.setattr(process_model, "pid_alive", lambda pid: pid == 99_002)
 
     assert (
         cli.main(
@@ -17274,14 +17272,14 @@ def test_prune_stale_reclaims_running_row_when_guard_pid_reused(
 ) -> None:
     """Defect 1: a detached runner set status='running',guard_pid=P then died.
 
-    Windows recycled P to an unrelated live process. Bare ``_pid_alive(P)`` is
+    Windows recycled P to an unrelated live process. Bare ``pid_alive(P)`` is
     True, so pre-fix prune-stale left the row stuck 'running' forever. The
     identity recorded at launch no longer matches the live PID, so the reused
     PID must not count as a live guard and the row must be reclaimed.
     """
     db = tmp_path / "proof_queue.sqlite3"
     live_pid = os.getpid()
-    monkeypatch.setattr(custody, "_pid_alive", lambda pid: int(pid) == live_pid)
+    monkeypatch.setattr(process_model, "pid_alive", lambda pid: int(pid) == live_pid)
     monkeypatch.setattr(
         custody,
         "_process_identity",
@@ -17297,7 +17295,7 @@ def test_prune_stale_reclaims_running_row_when_guard_pid_reused(
         guard_identity=f"{os.name}:{live_pid}:dead",
     )
     # The PID is genuinely alive (it is our own process); only identity differs.
-    assert custody._pid_alive(live_pid)
+    assert process_model.pid_alive(live_pid)
 
     assert (
         cli.main(

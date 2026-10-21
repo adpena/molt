@@ -10,6 +10,7 @@ from tests.process_guard_common import install_module_os_view, install_module_vi
 import sys
 
 from molt import backend_daemon_custody as custody
+from molt import process_model
 from molt.backend_daemon_paths import _backend_daemon_paths
 import os
 
@@ -213,7 +214,7 @@ def test_molt_diff_missing_socket_daemon_without_identity_is_not_killed(
     monkeypatch.setenv("MOLT_DIFF_DAEMON_MAX_RSS_KB", "0")
     monkeypatch.setattr(module, "_diff_backend_daemon_root", lambda: daemon_root)
     monkeypatch.setattr(module, "_list_backend_daemon_processes", lambda: [process])
-    monkeypatch.setattr(module, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(process_model, "pid_alive", lambda pid: True)
     install_module_os_view(monkeypatch, module, name="posix")
 
     def fake_terminate(identity, **kwargs) -> bool:
@@ -373,7 +374,7 @@ def test_molt_diff_never_stops_a_verified_daemon_whose_socket_is_gone(
     monkeypatch.setenv("MOLT_DIFF_DAEMON_MAX_RSS_KB", "0")
     monkeypatch.setattr(module, "_diff_backend_daemon_root", lambda: daemon_root)
     monkeypatch.setattr(module, "_list_backend_daemon_processes", lambda: [process])
-    monkeypatch.setattr(module, "_pid_alive", lambda pid: pid == identity.pid)
+    monkeypatch.setattr(process_model, "pid_alive", lambda pid: pid == identity.pid)
     install_module_os_view(monkeypatch, module, name="posix")
     monkeypatch.setattr(
         module,
@@ -432,7 +433,7 @@ def test_molt_diff_never_stops_an_older_daemon_beside_its_successor(
     monkeypatch.setenv("MOLT_DIFF_DAEMON_MAX_RSS_KB", "1")
     monkeypatch.setattr(module, "_diff_backend_daemon_root", lambda: daemon_root)
     monkeypatch.setattr(module, "_list_backend_daemon_processes", lambda: processes)
-    monkeypatch.setattr(module, "_pid_alive", lambda pid: pid in records)
+    monkeypatch.setattr(process_model, "pid_alive", lambda pid: pid in records)
     monkeypatch.setattr(module, "_daemon_health", lambda _socket: None)
     install_module_os_view(monkeypatch, module, name="posix")
     monkeypatch.setattr(
@@ -479,7 +480,7 @@ def test_molt_diff_rss_threshold_skips_unverified_daemon(
     monkeypatch.setenv("MOLT_DIFF_DAEMON_MAX_RSS_KB", "1")
     monkeypatch.setattr(module, "_diff_backend_daemon_root", lambda: daemon_root)
     monkeypatch.setattr(module, "_list_backend_daemon_processes", lambda: [process])
-    monkeypatch.setattr(module, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(process_model, "pid_alive", lambda pid: True)
     install_module_os_view(monkeypatch, module, name="posix")
     monkeypatch.setattr(
         module,
@@ -528,7 +529,7 @@ def _oversized_daemon(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("MOLT_DIFF_DAEMON_MAX_RSS_KB", "1000")
     monkeypatch.setattr(module, "_diff_backend_daemon_root", lambda: daemon_root)
     monkeypatch.setattr(module, "_list_backend_daemon_processes", lambda: [process])
-    monkeypatch.setattr(module, "_pid_alive", lambda pid: pid == identity.pid)
+    monkeypatch.setattr(process_model, "pid_alive", lambda pid: pid == identity.pid)
 
     def no_subprocess(*args, **kwargs):
         raise AssertionError("daemon resource pruning must reuse its native sample")

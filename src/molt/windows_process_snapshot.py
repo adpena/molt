@@ -1,3 +1,10 @@
+"""The Windows process-table snapshot behind the process model.
+
+The snapshot runs in a helper interpreter (``python -m
+molt.windows_process_snapshot``) under a hard timeout, so a stalled Win32
+query cannot stall its caller.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -11,21 +18,17 @@ from functools import lru_cache
 from types import SimpleNamespace
 from typing import TypeAlias
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
-
-from tools.import_file import bind_repository_imports  # noqa: E402
-
-bind_repository_imports(__file__)
-
-from molt.backend_executable_names import is_host_tool_executable_name  # noqa: E402
-from molt.windows_process_api import bind_process_query_api, process_query_api  # noqa: E402
+from molt.backend_executable_names import is_host_tool_executable_name
+from molt.windows_process_api import bind_process_query_api, process_query_api
 
 
 DEFAULT_WINDOWS_PROCESS_SNAPSHOT_TIMEOUT_SEC = 5.0
 WINDOWS_PROCESS_SNAPSHOT_TIMEOUT_ENV = "MOLT_WINDOWS_PROCESS_SNAPSHOT_TIMEOUT_SEC"
 WINDOWS_PROCESS_SNAPSHOT_HELPER_ARG = "--molt-windows-process-snapshot-json"
+WINDOWS_PROCESS_SNAPSHOT_HELPER_MODULE = "molt.windows_process_snapshot"
+# The import root that holds this ``molt``. The helper imports exactly this
+# implementation, whatever the caller's working directory or import path.
+_MOLT_IMPORT_ROOT = Path(__file__).resolve().parents[1]
 WindowsProcessSnapshotRow: TypeAlias = tuple[int, int, str, int | None, int | None, str]
 WINDOWS_FULL_COMMAND_LINE_EXECUTABLE_NAMES = frozenset(
     {
@@ -128,6 +131,17 @@ def _coerce_windows_process_snapshot_rows(
     return rows
 
 
+def _windows_process_snapshot_helper_env(environ: Mapping[str, str]) -> dict[str, str]:
+    """The caller's environment with only this ``molt`` on the helper's path.
+
+    ``-P`` keeps the working directory off ``sys.path``; ``PYTHONPATH`` names
+    this import root alone, so a caller's import roots cannot shadow it.
+    """
+    env = dict(environ)
+    env["PYTHONPATH"] = str(_MOLT_IMPORT_ROOT)
+    return env
+
+
 def _windows_process_snapshot_rows_hard_timeout() -> list[WindowsProcessSnapshotRow]:
     if os.name != "nt":
         return []
@@ -137,7 +151,9 @@ def _windows_process_snapshot_rows_hard_timeout() -> list[WindowsProcessSnapshot
         result = subprocess.run(
             [
                 sys.executable,
-                str(Path(__file__).resolve()),
+                "-P",
+                "-m",
+                WINDOWS_PROCESS_SNAPSHOT_HELPER_MODULE,
                 WINDOWS_PROCESS_SNAPSHOT_HELPER_ARG,
             ],
             capture_output=True,
@@ -146,6 +162,7 @@ def _windows_process_snapshot_rows_hard_timeout() -> list[WindowsProcessSnapshot
             check=False,
             creationflags=creationflags,
             encoding="utf-8",
+            env=_windows_process_snapshot_helper_env(os.environ),
         )
     except subprocess.TimeoutExpired as exc:
         raise WindowsProcessSnapshotTimeout(
@@ -317,6 +334,39 @@ def windows_process_handle_started_at_ns(handle: object) -> int | None:
     )
 
 
+_WINDOWS_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_WINDOWS_SYNCHRONIZE = 0x00100000
+_WINDOWS_ERROR_ACCESS_DENIED = 5
+_WINDOWS_WAIT_OBJECT_0 = 0
+
+
+def windows_pid_alive(pid: int) -> bool:
+    """Whether the Windows process ``pid`` has not exited.
+
+    The process object is signaled once the process exits, while open handles
+    still keep it, so a zero-timeout wait reads exit exactly; an exit code of
+    ``STILL_ACTIVE`` (259) cannot, since a process may exit with 259. A
+    process that refuses this caller a handle exists, so it is alive.
+    """
+
+    if os.name != "nt" or type(pid) is not int or not 0 < pid <= 0xFFFFFFFF:
+        return False
+    import ctypes
+
+    api = process_query_api()
+    handle = api.OpenProcess(
+        _WINDOWS_PROCESS_QUERY_LIMITED_INFORMATION | _WINDOWS_SYNCHRONIZE,
+        False,
+        pid,
+    )
+    if not handle:
+        return ctypes.get_last_error() == _WINDOWS_ERROR_ACCESS_DENIED
+    try:
+        return api.WaitForSingleObject(handle, 0) != _WINDOWS_WAIT_OBJECT_0
+    finally:
+        api.CloseHandle(handle)
+
+
 def windows_current_process_started_at_ns() -> int | None:
     """Read this process's creation identity from its kernel pseudo-handle."""
 
@@ -359,6 +409,8 @@ def _validated_windows_process_binding(
 def _windows_snapshot_api() -> SimpleNamespace:
     """Bind immutable Win32 snapshot types/functions once per guard process."""
 
+    if sys.platform != "win32":
+        raise OSError("Win32 process snapshots require Windows")
     import ctypes
     from ctypes import wintypes
 

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from molt import windows_process_api
+from molt import process_model, windows_process_api
 from tools.proof_queue_pkg import custody
 from tests.process_guard_common import install_module_view
 
@@ -61,6 +61,11 @@ def test_queue_process_queries_preserve_pointer_width_and_close_handles(
         code.contents.value = 259
         return 1
 
+    @ctypes.CFUNCTYPE(wintypes.DWORD, wintypes.HANDLE, wintypes.DWORD)
+    def wait(handle, milliseconds):
+        observed.append(("wait", handle, milliseconds))
+        return 0x102  # WAIT_TIMEOUT: the process has not exited.
+
     @ctypes.CFUNCTYPE(wintypes.HANDLE)
     def current_process():
         return handle_value
@@ -70,6 +75,7 @@ def test_queue_process_queries_preserve_pointer_width_and_close_handles(
         CloseHandle=close_handle,
         GetProcessTimes=process_times,
         GetExitCodeProcess=exit_code,
+        WaitForSingleObject=wait,
         GetCurrentProcess=current_process,
     )
     loads = []
@@ -82,13 +88,13 @@ def test_queue_process_queries_preserve_pointer_width_and_close_handles(
     monkeypatch.setattr(ctypes, "WinDLL", load)
     try:
         assert custody._windows_process_creation_ticks(123) == (0x1234 << 32) | 0x5678
-        assert custody._pid_alive(123)
+        assert process_model.pid_alive(123)
         assert windows_process_api.process_query_api() is api
         assert loads == [("kernel32", {"use_last_error": True})]
         assert observed == [
             ("times", handle_value),
             ("close", handle_value),
-            ("exit", handle_value),
+            ("wait", handle_value, 0),
             ("close", handle_value),
         ]
         # A fresh WinDLL defaults undeclared parameters to C int. Retain that

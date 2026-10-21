@@ -124,8 +124,11 @@ self-commits or invents an external scheduling authority.
 
 ### Runtime safety / process custody
 - `tools/memory_guard.py` / `tools/process_sentinel.py` — process custody; the
-  classifier authority is `tools/memory_guard_core/process_model.py` (Codex/Claude/
+  classifier authority is `src/molt/process_model.py` (Codex/Claude/
   host-control-plane are NEVER kill targets). Never name/tree-kill.
+- `molt.process_model.pid_alive(pid)` — the one pid-liveness probe. A zombie is
+  not alive and the probe never reaps; Windows waits on the process object.
+  Never probe with `os.kill(pid, 0)`: on Windows signal 0 is `CTRL_C_EVENT`.
 - `tools/memory_guard_custody.py --json` — inspect guard-marker custody; dry-run
   by default. `--apply` reconciles records whose processes are proven gone and
   retires resolved records into the bounded `retired/` history; `--release

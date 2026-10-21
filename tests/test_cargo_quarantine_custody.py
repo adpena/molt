@@ -24,7 +24,7 @@ from molt.file_locks import _try_acquire_file_lock, _release_file_lock
 from molt.cargo_execution_policy import CARGO_WRAPPER_ENV_NAMES
 from molt.rust_toolchain import rust_channel
 from tools.memory_guard_core import cargo_quarantine as cargo
-from tools.memory_guard_core.process_model import process_identity
+from molt.process_model import process_identity
 from tests.process_guard_common import (
     close_owned_test_process,
     current_thread_only,
@@ -158,9 +158,9 @@ def observation(path):
 @pytest.fixture(autouse=True)
 def quarantine_uses_a_private_os(monkeypatch):
     """Every ``os`` patch in this file stays inside the custody modules."""
-    from tools.memory_guard_core import process_model, windows_snapshot
+    from molt import process_model, windows_process_snapshot
 
-    install_module_os_view(monkeypatch, cargo, process_model, windows_snapshot)
+    install_module_os_view(monkeypatch, cargo, process_model, windows_process_snapshot)
 
 
 @pytest.fixture(autouse=True)
@@ -350,7 +350,7 @@ def test_interruption_inventory_rejects_unowned_or_unobserved_compilers(
 def test_interruption_inventory_queries_image_arguments_with_birth_custody(
     monkeypatch, native_command
 ):
-    from tools.memory_guard_core import windows_snapshot
+    from molt import windows_process_snapshot
 
     sample = SimpleNamespace(
         command_kind="image",
@@ -369,7 +369,7 @@ def test_interruption_inventory_queries_image_arguments_with_birth_custody(
         calls.append((pid, birth))
         return (90050, native_command) if native_command else None
 
-    monkeypatch.setattr(windows_snapshot, "windows_job_command_context", query)
+    monkeypatch.setattr(windows_process_snapshot, "windows_job_command_context", query)
     assert cargo.observe_cargo_interruption_inventory(
         samples, set(samples), identities, set()
     ).complete is (native_command is not None and native_command.startswith('"C:'))
@@ -705,7 +705,7 @@ def test_unknown_descendant_closure_never_mutates_profile(tmp_path):
 
 
 def test_live_or_unknown_compiler_birth_never_mutates_profile(tmp_path, monkeypatch):
-    from tools.memory_guard_core import process_model
+    from molt import process_model
 
     target = tmp_path / "target"
     owned = unit(target)
@@ -725,7 +725,7 @@ def test_compiler_closure_observation_may_spawn_like_the_darwin_sampler(
 ):
     # The Darwin process snapshot runs ps. File-lock custody rejects a fork
     # inside a pinned mutation, so closure must be observed before any pin.
-    from tools.memory_guard_core import process_model
+    from molt import process_model
 
     target = tmp_path / "target"
     owned = unit(target)
@@ -1003,7 +1003,7 @@ def test_actual_cargo_held_profile_locks_defer_recovery(tmp_path):
         except BaseException as exc:
             outcome.append(exc)
 
-    from tools.memory_guard_core import process_model
+    from molt import process_model
 
     tracker = process_model.ProcessTreeTracker(os.getpid())
     tracker.update(process_model.sample_processes())
@@ -1115,7 +1115,7 @@ def test_observer_rejects_unproven_cargo_producer(tmp_path, case):
 
 
 def test_observed_cargo_instance_must_also_be_closed(tmp_path, monkeypatch):
-    from tools.memory_guard_core import process_model
+    from molt import process_model
 
     target = tmp_path / "target"
     owned = unit(target)
@@ -1142,7 +1142,7 @@ def test_unproven_cargo_receipt_cannot_authorize_recovery(tmp_path):
 def test_missing_sampler_row_requires_positive_process_closure(
     tmp_path, monkeypatch, pid
 ):
-    from tools.memory_guard_core import process_model
+    from molt import process_model
 
     target = tmp_path / "target"
     owned = unit(target)
@@ -1203,7 +1203,7 @@ def test_actual_native_current_process_never_counts_closed():
 def test_windows_complete_pid_enumeration_is_required(
     monkeypatch, found, error, close_ok, expected
 ):
-    from tools.memory_guard_core import windows_snapshot
+    from molt import windows_process_snapshot
     import os
 
     calls, errors = [], [0]
@@ -1234,7 +1234,7 @@ def test_windows_complete_pid_enumeration_is_required(
         close_handle=lambda handle: calls.append(handle) or close_ok,
     )
     install_module_os_view(monkeypatch, cargo, name="nt")
-    monkeypatch.setattr(windows_snapshot, "_windows_snapshot_api", lambda: api)
+    monkeypatch.setattr(windows_process_snapshot, "_windows_snapshot_api", lambda: api)
     assert cargo._observed_pid_is_definitely_closed(90051) == expected
     assert calls[-1] == 111
 
@@ -1253,7 +1253,7 @@ def test_posix_oversize_pid_cannot_escape_structured_deferral(monkeypatch):
     "mode", ["empty", "self_missing", "stale_error", "invalid_snapshot"]
 )
 def test_windows_ambiguous_snapshot_cannot_authorize_absence(monkeypatch, mode):
-    from tools.memory_guard_core import windows_snapshot
+    from molt import windows_process_snapshot
     import os
 
     calls, error = [], [18]
@@ -1281,13 +1281,13 @@ def test_windows_ambiguous_snapshot_cannot_authorize_absence(monkeypatch, mode):
         close_handle=lambda handle: calls.append(handle) or True,
     )
     install_module_os_view(monkeypatch, cargo, name="nt")
-    monkeypatch.setattr(windows_snapshot, "_windows_snapshot_api", lambda: api)
+    monkeypatch.setattr(windows_process_snapshot, "_windows_snapshot_api", lambda: api)
     assert not cargo._observed_pid_is_definitely_closed(90051)
     assert calls == ([] if mode == "invalid_snapshot" else [111])
 
 
 def test_observed_missing_pid_closure_is_deduplicated(tmp_path, monkeypatch):
-    from tools.memory_guard_core import process_model
+    from molt import process_model
 
     calls = []
     monkeypatch.setattr(process_model, "sample_processes", lambda: {})
@@ -1420,7 +1420,7 @@ def test_windows_job_command_context_has_single_ordinary_birth_bound_query(
 ):
     import ctypes
     from ctypes import wintypes
-    from tools.memory_guard_core import windows_snapshot as native
+    from molt import windows_process_snapshot as native
 
     calls = []
     closed = []
@@ -1812,7 +1812,7 @@ def test_actual_native_profile_lock_shared_budget_uses_other_process(
 def test_darwin_native_argv_decoder_preserves_boundaries_and_raw_bytes():
     import ctypes
     import sys
-    from tools.memory_guard_core import process_model as model
+    from molt import process_model as model
 
     wanted = (
         b"/toolchain with 'quotes'/rustc",
@@ -1859,7 +1859,7 @@ def test_darwin_native_argv_decoder_preserves_boundaries_and_raw_bytes():
 def test_darwin_sampler_to_cargo_observer_preserves_native_authority(
     tmp_path, monkeypatch, failure
 ):
-    from tools.memory_guard_core import process_model as model
+    from molt import process_model as model
 
     incremental = tmp_path / "cache with spaces and 'quotes'" / "debug" / "incremental"
     argv = {
@@ -1920,7 +1920,7 @@ def test_darwin_sampler_to_cargo_observer_preserves_native_authority(
 
 
 def test_linux_native_sampler_preserves_argv_without_flattening(tmp_path):
-    from tools.memory_guard_core import process_model as model
+    from molt import process_model as model
 
     proc = tmp_path / "123"
     proc.mkdir()
@@ -1952,7 +1952,7 @@ def test_native_build_kind_uses_executable_not_flattened_diagnostic(argv, expect
 
 
 def test_host_native_launcher_classification_uses_typed_arguments():
-    from tools.memory_guard_core import process_model as model
+    from molt import process_model as model
 
     sample = model.ProcessSample(
         7,

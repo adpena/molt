@@ -32,7 +32,7 @@ from tests.process_guard_common import (
 )
 from tools import memory_guard_custody as cli
 from tools.memory_guard_core import active_custody as custody
-from tools.memory_guard_core import process_model, windows_snapshot
+from molt import process_model, windows_process_snapshot
 
 # These tests fake process data the session sentinel also reads.
 pytestmark = pytest.mark.usefixtures("session_sentinel_paused")
@@ -622,18 +622,18 @@ def test_windows_current_birth_observes_owned_pseudo_handle_only(monkeypatch):
             return -1
 
     seen = []
-    monkeypatch.setattr(windows_snapshot, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(windows_process_snapshot, "os", SimpleNamespace(name="nt"))
     monkeypatch.setattr(
-        windows_snapshot,
+        windows_process_snapshot,
         "process_query_api",
         lambda: SimpleNamespace(GetCurrentProcess=CurrentProcess()),
     )
     monkeypatch.setattr(
-        windows_snapshot,
+        windows_process_snapshot,
         "windows_process_handle_started_at_ns",
         lambda handle: seen.append(handle) or 1234,
     )
-    assert windows_snapshot.windows_current_process_started_at_ns() == 1234
+    assert windows_process_snapshot.windows_current_process_started_at_ns() == 1234
     assert seen == [-1]
 
 

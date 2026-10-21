@@ -350,7 +350,7 @@ def test_nontest_startup_preserves_package_only_import_boundary(monkeypatch, rel
     # this thread observes the complete transitive startup import path.
     with ThreadPoolExecutor(max_workers=1) as custody_thread:
         imported = custody_thread.submit(
-            builtins.__import__, "tools.memory_guard_core.process_model"
+            builtins.__import__, "tools.memory_guard_core.process_custody"
         ).result()
     assert imported is sys.modules["tools"]
     surface = REPO_ROOT / relative

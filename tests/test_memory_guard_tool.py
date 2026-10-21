@@ -25,10 +25,9 @@ from tools.memory_guard_core import (
     cargo_quarantine,
     memory_limits,
     process_custody,
-    process_model,
     reporting,
-    windows_snapshot,
 )
+from molt import process_model, windows_process_snapshot
 
 import tools.memory_guard as memory_guard
 from molt import host_capacity
@@ -142,7 +141,7 @@ def guard_modules_use_a_private_os(monkeypatch: pytest.MonkeyPatch) -> None:
         process_custody,
         process_model,
         cargo_quarantine,
-        windows_snapshot,
+        windows_process_snapshot,
         reporting,
         memory_limits,
     )
@@ -1963,7 +1962,7 @@ def test_default_windows_sampler_uses_hard_timeout_snapshot(
         process_model, "_windows_process_snapshot_rows_hard_timeout", bounded_snapshot
     )
     monkeypatch.setattr(
-        windows_snapshot, "_windows_process_snapshot_rows", native_snapshot
+        windows_process_snapshot, "_windows_process_snapshot_rows", native_snapshot
     )
 
     samples = memory_guard.sample_processes()
