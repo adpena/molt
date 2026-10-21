@@ -4509,6 +4509,7 @@ globs = [
   "tools/gen_intrinsics.py",
   "src/molt/_intrinsics.pyi", "src/molt/_intrinsic_symbols.py",
   "src/molt/_runtime_feature_gates.py",
+  "src/molt/builtin_callables.py",
   "src/molt/frontend/_types.py", "src/molt/frontend/lowering/runtime_references.py",
   "src/molt/cli/required_features.py", "src/molt/_wasm_runtime_exports.py",
   "runtime/molt-runtime/src/intrinsics/manifest.pyi",
@@ -5934,7 +5935,7 @@ globs = [
   "tests/test_frontend_builtin_binding_guards.py",
 ]
 gates = [
-  "cargo test --locked -p molt-runtime --lib binding_guards",
+  "cargo test --locked --profile dev-fast -p molt-runtime --lib binding_guards",
 ]
 pytest = [
   "tests/test_gen_builtin_binding_guards.py",

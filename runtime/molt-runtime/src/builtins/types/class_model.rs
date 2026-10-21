@@ -844,6 +844,26 @@ pub extern "C" fn molt_tuple_new_bound(cls_bits: u64, iterable_bits: u64) -> u64
                 return raise_exception::<_>(_py, "TypeError", "tuple.__new__ expects type");
             }
         }
+        if unsafe {
+            crate::object::class_storage::class_declares(
+                cls_ptr,
+                crate::object::class_storage::ClassDeclaration::StructSequence,
+            )
+        } {
+            let name = crate::builtins::structseq::native_name(_py, cls_bits);
+            if unsafe { crate::builtins::structseq::disallows_instantiation(_py, cls_ptr) } {
+                return raise_exception(
+                    _py,
+                    "TypeError",
+                    &format!("cannot create '{name}' instances"),
+                );
+            }
+            return raise_exception(
+                _py,
+                "TypeError",
+                &format!("tuple.__new__({name}) is not safe, use {name}.__new__()"),
+            );
+        }
         let builtins = builtin_classes(_py);
         if cls_bits == builtins.tuple {
             if iterable_bits == missing_bits(_py) {

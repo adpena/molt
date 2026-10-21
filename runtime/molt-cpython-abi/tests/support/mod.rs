@@ -397,6 +397,10 @@ fn assert_installed_runtime_hooks(requested: RuntimeHooks) {
             context_var_get,
             context_var_set,
             context_var_reset,
+            tuple_hidden_len,
+            structseq_type_new,
+            structseq_new,
+            type_runtime_slots,
         }
         optional {
             alloc_str,
@@ -483,7 +487,7 @@ impl Drop for AbiTestThreadStateTransaction {
             unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
             // Retire roots while hooks and the execution attachment still exist.
             // This does not sweep fixture-owned nodes or forgive leaked edges.
-            unsafe { molt_cpython_abi::abi_types::retire_builtin_static_type_runtime_state() };
+            unsafe { molt_cpython_abi::abi_types::retire_static_type_runtime_state(&[]) };
             molt_cpython_abi::api::object::detach_runtime_execution_thread();
             molt_cpython_abi::api::object::clear_runtime_execution_thread_state(|| false);
             NATIVE_GC_NODES.with(|nodes| {

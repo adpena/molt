@@ -539,7 +539,7 @@ pub extern "C" fn molt_pathlib_owner(path_bits: u64) -> u64 {
             Ok(s) => s,
             Err(bits) => return bits,
         };
-        #[cfg(unix)]
+        #[cfg(all(unix, not(target_arch = "wasm32")))]
         {
             let meta = match path_metadata(_py, &s, true, OperationId::PathlibOwner, false) {
                 Ok(Some(metadata)) => metadata,
@@ -554,21 +554,31 @@ pub extern "C" fn molt_pathlib_owner(path_bits: u64) -> u64 {
                 );
             }
             let uid = meta.fields[4] as libc::uid_t;
-            let pw = unsafe { libc::getpwuid(uid) };
-            if pw.is_null() {
-                return raise_exception::<u64>(_py, "KeyError", &format!("no user with uid {uid}"));
-            }
-            let name = unsafe { std::ffi::CStr::from_ptr((*pw).pw_name) };
+            let entry = {
+                let _release = molt_runtime_core::GilReleaseGuard::suspend();
+                molt_runtime_platform::userdb::user_name_by_uid(uid)
+            };
+            let name = match entry {
+                Ok(Some(Some(name))) => name,
+                Ok(Some(None)) => return MoltObject::none().bits(),
+                Ok(None) => {
+                    return raise_exception::<u64>(
+                        _py,
+                        "KeyError",
+                        &format!(
+                            "getpwuid(): uid not found: {}",
+                            molt_runtime_platform::utils::uid_integer(uid)
+                        ),
+                    );
+                }
+                Err(_) => return raise_exception::<u64>(_py, "MemoryError", ""),
+            };
             {
                 use std::os::unix::ffi::OsStrExt;
-                path_result(
-                    _py,
-                    Path::new(std::ffi::OsStr::from_bytes(name.to_bytes())),
-                    false,
-                )
+                path_result(_py, Path::new(std::ffi::OsStr::from_bytes(&name)), false)
             }
         }
-        #[cfg(not(unix))]
+        #[cfg(not(all(unix, not(target_arch = "wasm32"))))]
         {
             let _ = s;
             raise_exception::<u64>(
@@ -588,7 +598,7 @@ pub extern "C" fn molt_pathlib_group(path_bits: u64) -> u64 {
             Ok(s) => s,
             Err(bits) => return bits,
         };
-        #[cfg(unix)]
+        #[cfg(all(unix, not(target_arch = "wasm32")))]
         {
             let meta = match path_metadata(_py, &s, true, OperationId::PathlibGroup, false) {
                 Ok(Some(metadata)) => metadata,
@@ -603,25 +613,33 @@ pub extern "C" fn molt_pathlib_group(path_bits: u64) -> u64 {
                 );
             }
             let gid = meta.fields[5] as libc::gid_t;
-            let gr = unsafe { libc::getgrgid(gid) };
-            if gr.is_null() {
-                return raise_exception::<u64>(
-                    _py,
-                    "KeyError",
-                    &format!("no group with gid {gid}"),
-                );
-            }
-            let name = unsafe { std::ffi::CStr::from_ptr((*gr).gr_name) };
+            let entry = {
+                let _release = molt_runtime_core::GilReleaseGuard::suspend();
+                molt_runtime_platform::userdb::group_name_by_gid(gid)
+            };
+            let name = match entry {
+                Ok(Some(Some(name))) => name,
+                Ok(Some(None)) => {
+                    return raise_exception::<u64>(_py, "SystemError", "null group name");
+                }
+                Ok(None) => {
+                    return raise_exception::<u64>(
+                        _py,
+                        "KeyError",
+                        &format!(
+                            "getgrgid(): gid not found: {}",
+                            molt_runtime_platform::utils::gid_integer(gid)
+                        ),
+                    );
+                }
+                Err(_) => return raise_exception::<u64>(_py, "MemoryError", ""),
+            };
             {
                 use std::os::unix::ffi::OsStrExt;
-                path_result(
-                    _py,
-                    Path::new(std::ffi::OsStr::from_bytes(name.to_bytes())),
-                    false,
-                )
+                path_result(_py, Path::new(std::ffi::OsStr::from_bytes(&name)), false)
             }
         }
-        #[cfg(not(unix))]
+        #[cfg(not(all(unix, not(target_arch = "wasm32"))))]
         {
             let _ = s;
             raise_exception::<u64>(

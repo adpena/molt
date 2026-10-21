@@ -1155,7 +1155,7 @@ pub(crate) fn alloc_list(_py: &PyToken<'_>, elems: &[u64]) -> *mut u8 {
     alloc_list_with_capacity(_py, elems, cap)
 }
 
-fn alloc_tuple_unpublished(
+pub(crate) fn alloc_tuple_unpublished(
     _py: &PyToken<'_>,
     elems: &[u64],
     owned: bool,
@@ -1884,15 +1884,37 @@ pub(crate) fn alloc_class_obj_with_namespace(
     name_bits: u64,
     dict_bits: u64,
 ) -> *mut u8 {
+    alloc_class_obj_with_spec(_py, name_bits, dict_bits, None)
+}
+
+/// The struct-sequence factory preselects a private tail before allocation.
+/// Ordinary class constructors share this initializer without allocating it.
+/// `spec` is a borrowed, validated exact immutable native specification.
+pub(crate) fn alloc_class_obj_with_spec(
+    _py: &PyToken<'_>,
+    name_bits: u64,
+    dict_bits: u64,
+    spec: Option<u64>,
+) -> *mut u8 {
     if !super::layout::validate_class_name(_py, name_bits) {
         return std::ptr::null_mut();
     }
+    if let Some(spec) = spec {
+        crate::builtins::structseq::assert_spec_shape(spec);
+    }
+    let metaclass = spec.map(|_| builtin_classes(_py).type_obj);
     inc_ref_bits(_py, dict_bits);
     // Typed reference slots, layout epoch, atomic cold policy and write-once
     // payload size. The slot authority also owns private layout provenance.
     let total = std::mem::size_of::<MoltHeader>()
-        + super::layout::CLASS_PAYLOAD_WORDS * std::mem::size_of::<u64>();
-    let ptr = alloc_object_with_aux(_py, total, TYPE_ID_TYPE, ObjectAuxPreselection::ClassInline);
+        + (super::layout::CLASS_PAYLOAD_WORDS + usize::from(spec.is_some()))
+            * std::mem::size_of::<u64>();
+    let ptr = crate::object::alloc_object_zeroed_unpublished_with_aux(
+        _py,
+        total,
+        TYPE_ID_TYPE,
+        ObjectAuxPreselection::ClassInline,
+    );
     if ptr.is_null() {
         dec_ref_bits(_py, dict_bits);
         return ptr;
@@ -1900,12 +1922,20 @@ pub(crate) fn alloc_class_obj_with_namespace(
     unsafe {
         use super::class_storage::ClassReferenceSlot;
         super::class_storage::initialize_class_declarations(ptr);
+        if let Some(spec) = spec {
+            super::class_storage::class_declare(
+                ptr,
+                super::class_storage::ClassDeclaration::StructSequence,
+            );
+            inc_ref_bits(_py, spec);
+        }
         inc_ref_bits(_py, name_bits);
         inc_ref_bits(_py, name_bits); // independent name and qualname owners
         for slot in ClassReferenceSlot::ALL {
             let bits = match slot {
                 ClassReferenceSlot::Name | ClassReferenceSlot::Qualname => name_bits,
                 ClassReferenceSlot::Dictionary => dict_bits,
+                ClassReferenceSlot::StructSequence => spec.unwrap_or(0),
                 ClassReferenceSlot::Bases | ClassReferenceSlot::Mro => MoltObject::none().bits(),
                 ClassReferenceSlot::SlotDeclaration
                 | ClassReferenceSlot::FieldLayout
@@ -1930,6 +1960,15 @@ pub(crate) fn alloc_class_obj_with_namespace(
                 as *mut std::sync::atomic::AtomicU64,
             std::sync::atomic::AtomicU64::new(0),
         );
+        if let Some(metaclass) = metaclass {
+            assert!(object_init_class_edge_unpublished(
+                _py,
+                ptr,
+                metaclass,
+                ClassEdgeOwnership::Owned
+            ));
+        }
+        crate::object::gc::gc_publish_initialized(_py, ptr);
     }
     ptr
 }

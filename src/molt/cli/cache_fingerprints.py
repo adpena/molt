@@ -97,6 +97,7 @@ def _frontend_tooling_source_paths_cached(project_root_str: str) -> tuple[Path, 
     return (
         molt_root / "cli",
         molt_root / "frontend",
+        molt_root / "builtin_callables.py",
         molt_root / "backend_environment.py",
         molt_root / "backend_environment.json",
         molt_root / "backend_protocol.py",
@@ -199,6 +200,7 @@ _FRONTEND_COMPILER_INPUTS: Mapping[str, _FrontendInputRole] = MappingProxyType(
         # Generated tables and semantic helpers that lowering reads.
         "_intrinsic_symbols.py": _P,
         "_wasm_abi_generated.py": _P,
+        "builtin_callables.py": _P,
         "compat.py": _P,
         "exact_json.py": _P,
         # The path every emitted module location reports (HF-372).

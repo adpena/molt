@@ -483,6 +483,9 @@ unsafe fn adjust_tuple_contains_refs(ptr: *mut u8, removed: &[u64], added: &[u64
         if added_ref {
             (*header).fetch_or_flags(HEADER_FLAG_CONTAINS_REFS);
         } else if removed_ref
+            // Native subtype fields and class custody are sticky references;
+            // a visible tuple edit cannot clear their GC admission.
+            && !super::native_instance::has_fields(ptr)
             && !tuple_slice(ptr)
                 .iter()
                 .copied()

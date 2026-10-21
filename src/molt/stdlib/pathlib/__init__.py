@@ -578,12 +578,10 @@ class Path:
         _MOLT_PATH_RMDIR(self)
 
     def stat(self) -> _os.stat_result:
-        raw = _MOLT_OS_STAT(self)
-        return _os.stat_result(raw)
+        return _MOLT_OS_STAT(self)
 
     def lstat(self) -> _os.stat_result:
-        raw = _MOLT_OS_LSTAT(self)
-        return _os.stat_result(raw)
+        return _MOLT_OS_LSTAT(self)
 
     def touch(self, mode: int = 0o666, exist_ok: bool = True) -> None:
         capabilities.require("fs.write")

@@ -7,8 +7,8 @@ from typing import (
     Any,
 )
 
+from molt.builtin_callables import BUILTIN_FUNC_SPECS
 from molt.frontend._types import (
-    BUILTIN_FUNC_SPECS,
     MoltOp,
     MoltValue,
 )

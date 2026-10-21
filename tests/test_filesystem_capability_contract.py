@@ -14,7 +14,10 @@ from types import SimpleNamespace
 
 import pytest
 from tests.process_guard_common import ModuleView
-from tests.stdlib_intrinsic_registry import intrinsic_registry
+from tests.stdlib_intrinsic_registry import (
+    intrinsic_registry,
+    struct_sequence_intrinsics,
+)
 
 STDLIB = Path(__file__).resolve().parents[1] / "src/molt/stdlib"
 
@@ -830,8 +833,13 @@ def _os_module(monkeypatch, behavior):
             "molt_os_fspath": os.fspath,
         }
     )
+    native_records = struct_sequence_intrinsics()
     return _load(
-        monkeypatch, "_molt_os_paths", "os.py", hooks, {**defaults, **behavior}
+        monkeypatch,
+        "_molt_os_paths",
+        "os.py",
+        hooks,
+        {**native_records, **defaults, **behavior},
     )
 
 
@@ -999,9 +1007,29 @@ def test_os_owned_results_preserve_flavor_without_scans_or_copies(monkeypatch):
 
     path = b"/raw/\xff"
     names = UnscannableList([b"\xfe"])
+    native_stat = os.stat_result(
+        tuple(range(10)), {"st_atime": 70.25, "st_atime_ns": 70_250_000_001}
+    )
+    stat_calls = []
+
+    def metadata(*args):
+        stat_calls.append(args)
+        return native_stat
+
+    stat_providers = dict.fromkeys(
+        (
+            "molt_os_stat",
+            "molt_os_lstat",
+            "molt_os_fstat",
+            "molt_os_stat_at",
+            "molt_os_lstat_at",
+        ),
+        metadata,
+    )
     module = _os_module(
         monkeypatch,
         {
+            **stat_providers,
             "molt_os_listdir": lambda value: names,
             "molt_env_mapping_keys": lambda: [b"SELECTED"],
             "molt_env_mapping_len": lambda: 1,
@@ -1015,6 +1043,30 @@ def test_os_owned_results_preserve_flavor_without_scans_or_copies(monkeypatch):
     assert list(module.environ) == ["SELECTED"]
     assert module.environ.popitem() == ("SELECTED", "value")
     assert module.path.commonpath(iter([path, path + b"/child"])) is path
+    # One acquisition returns the native record itself, including fields beyond
+    # its visible tuple. Public type rebinding cannot re-enter construction.
+    module.stat_result = object
+    entry = module.DirEntry(b"entry", path, False, True, False)
+    with intrinsic_registry(stat_providers):
+        for query, expected in (
+            (lambda: module.stat(path), (path,)),
+            (lambda: module.stat(path, follow_symlinks=False), (path,)),
+            (lambda: module.stat(path, dir_fd=7), (path, 7, True)),
+            (
+                lambda: module.stat(path, dir_fd=7, follow_symlinks=False),
+                (path, 7, False),
+            ),
+            (lambda: module.lstat(path), (path,)),
+            (lambda: module.lstat(path, dir_fd=7), (path, 7)),
+            (lambda: module.fstat(7), (7,)),
+            (entry.stat, (path,)),
+            (lambda: entry.stat(follow_symlinks=False), (path,)),
+        ):
+            before = len(stat_calls)
+            assert query() is native_stat
+            assert stat_calls[before:] == [expected]
+    assert native_stat[7] == 7 and native_stat.st_atime == 70.25
+    assert native_stat.st_atime_ns == 70_250_000_001
 
 
 @pytest.mark.parametrize("path", [b"/raw/\xff", "/raw/\udcff"])

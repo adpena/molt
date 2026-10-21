@@ -971,15 +971,20 @@ pub extern "C" fn molt_shutil_chown(path_bits: u64, user_bits: u64, group_bits: 
                 u32::MAX // signals "don't change"
             } else if let Some(n) = to_i64(obj_from_bits(user_bits)) {
                 n as libc::uid_t
-            } else if let Some(name) = string_obj_to_owned(obj_from_bits(user_bits)) {
+            } else if unsafe {
+                crate::object::ops_format::with_string_bytes(obj_from_bits(user_bits), |_| ())
+            }
+            .is_some()
+            {
+                let name = match userdb_name(_py, user_bits) {
+                    Ok(name) => name,
+                    Err(error) => return error,
+                };
                 match lookup_uid(&name) {
-                    Some(uid) => uid,
-                    None => {
-                        return raise_exception::<_>(
-                            _py,
-                            "LookupError",
-                            &format!("no such user: '{name}'"),
-                        );
+                    Ok(Some(uid)) => uid,
+                    Err(_) => return raise_exception::<_>(_py, "MemoryError", ""),
+                    Ok(None) => {
+                        return userdb_missing_name(_py, user_bits, "user");
                     }
                 }
             } else {
@@ -990,15 +995,20 @@ pub extern "C" fn molt_shutil_chown(path_bits: u64, user_bits: u64, group_bits: 
                 u32::MAX
             } else if let Some(n) = to_i64(obj_from_bits(group_bits)) {
                 n as libc::gid_t
-            } else if let Some(name) = string_obj_to_owned(obj_from_bits(group_bits)) {
+            } else if unsafe {
+                crate::object::ops_format::with_string_bytes(obj_from_bits(group_bits), |_| ())
+            }
+            .is_some()
+            {
+                let name = match userdb_name(_py, group_bits) {
+                    Ok(name) => name,
+                    Err(error) => return error,
+                };
                 match lookup_gid(&name) {
-                    Some(gid) => gid,
-                    None => {
-                        return raise_exception::<_>(
-                            _py,
-                            "LookupError",
-                            &format!("no such group: '{name}'"),
-                        );
+                    Ok(Some(gid)) => gid,
+                    Err(_) => return raise_exception::<_>(_py, "MemoryError", ""),
+                    Ok(None) => {
+                        return userdb_missing_name(_py, group_bits, "group");
                     }
                 }
             } else {
@@ -1024,24 +1034,55 @@ pub extern "C" fn molt_shutil_chown(path_bits: u64, user_bits: u64, group_bits: 
     })
 }
 
-#[cfg(unix)]
-fn lookup_uid(name: &str) -> Option<libc::uid_t> {
-    let c_name = std::ffi::CString::new(name).ok()?;
-    let pw = unsafe { libc::getpwnam(c_name.as_ptr()) };
-    if pw.is_null() {
-        return None;
+#[cfg(all(unix, not(target_arch = "wasm32")))]
+fn userdb_missing_name(py: &PyToken<'_>, bits: u64, kind: &str) -> u64 {
+    let representation = crate::molt_repr_from_obj(bits);
+    let owner = unsafe {
+        molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), representation)
+    };
+    if exception_pending(py) {
+        return MoltObject::none().bits();
     }
-    Some(unsafe { (*pw).pw_uid })
+    let text = string_obj_to_owned(obj_from_bits(owner.bits())).expect("repr produces text");
+    raise_exception::<u64>(py, "LookupError", &format!("no such {kind}: {text}"))
 }
 
-#[cfg(unix)]
-fn lookup_gid(name: &str) -> Option<libc::gid_t> {
-    let c_name = std::ffi::CString::new(name).ok()?;
-    let gr = unsafe { libc::getgrnam(c_name.as_ptr()) };
-    if gr.is_null() {
-        return None;
+#[cfg(all(unix, not(target_arch = "wasm32")))]
+fn userdb_name(py: &PyToken<'_>, bits: u64) -> Result<std::ffi::CString, u64> {
+    let value = unsafe {
+        crate::object::ops_format::with_string_bytes(obj_from_bits(bits), |bytes| {
+            crate::builtins::io_path_utils::os_string_from_text(py, bytes, Some(bits))
+        })
     }
-    Some(unsafe { (*gr).gr_gid })
+    .expect("string checked before conversion")?;
+    let mut bytes = value.into_encoded_bytes();
+    if bytes.contains(&0) {
+        return Err(raise_exception::<u64>(
+            py,
+            "ValueError",
+            "embedded null byte",
+        ));
+    }
+    if bytes.try_reserve(1).is_err() {
+        return Err(raise_exception::<u64>(py, "MemoryError", ""));
+    }
+    Ok(std::ffi::CString::new(bytes).expect("NUL checked before native query"))
+}
+
+#[cfg(all(unix, not(target_arch = "wasm32")))]
+fn lookup_uid(
+    name: &std::ffi::CStr,
+) -> Result<Option<libc::uid_t>, molt_runtime_platform::userdb::AllocationError> {
+    let _release = molt_runtime_core::GilReleaseGuard::suspend();
+    molt_runtime_platform::userdb::uid_by_name(name)
+}
+
+#[cfg(all(unix, not(target_arch = "wasm32")))]
+fn lookup_gid(
+    name: &std::ffi::CStr,
+) -> Result<Option<libc::gid_t>, molt_runtime_platform::userdb::AllocationError> {
+    let _release = molt_runtime_core::GilReleaseGuard::suspend();
+    molt_runtime_platform::userdb::gid_by_name(name)
 }
 
 #[cfg(target_arch = "wasm32")]

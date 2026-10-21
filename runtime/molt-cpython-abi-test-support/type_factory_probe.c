@@ -1620,3 +1620,185 @@ int KNOWN_HASH_PROBE(PyObject *dict, PyObject *key, Py_hash_t hash,
     PyErr_SetRaisedException(error);
     return status;
 }
+
+
+#ifdef MOLT_PUBLIC_HEADER_PROBE
+#define STRUCTSEQ_PROBE molt_public_structseq_probe
+#else
+#define STRUCTSEQ_PROBE molt_linked_structseq_probe
+#endif
+static int structseq_stop_visit(PyObject *value, void *arg) {
+    (void)value;
+    ++*(int *)arg;
+    return 73;
+}
+
+/* Public C producer and consumer: fixed visible/hidden geometry, borrowed get,
+ * stealing set, real descriptors and native/static type identity. The static
+ * shell outlives the runtime binding; every temporary owner drains on failure. */
+int STRUCTSEQ_PROBE(PyObject *edge) {
+    static struct {
+        uint64_t before;
+        PyTypeObject type;
+        uint64_t after;
+    } shell = { .before = UINT64_C(0x51e11cab1), .after = UINT64_C(0xa110ca7e) };
+    PyTypeObject *static_type = &shell.type;
+    PyStructSequence_Field fields[] = {
+        {"visible", "visible doc"}, {NULL, "unnamed doc"},
+        {"hidden", "hidden doc"}, {NULL, NULL}
+    };
+    fields[1].name = PyStructSequence_UnnamedField;
+    PyStructSequence_Desc desc = {"probe.StructRecord", "record doc", fields, 2};
+    static PyTypeObject shape_static[3];
+    PyTypeObject *heap_type = NULL, *shape_type = NULL;
+    PyObject *shape_value = NULL;
+    PyObject *value = NULL, *static_value = NULL, *attr = NULL, *name = NULL;
+    PyObject *sequence = NULL, *constructed = NULL, *number = NULL;
+    PyObject *error_type = NULL, *error_value = NULL, *error_tb = NULL;
+    int status = 0;
+#define SEQ_REQUIRE(condition, code) do { if (!(condition)) { status = code; goto done; } } while (0)
+    heap_type = PyStructSequence_NewType(&desc);
+    SEQ_REQUIRE(heap_type != NULL, 1);
+    SEQ_REQUIRE(heap_type->tp_base == &PyTuple_Type, 2);
+    SEQ_REQUIRE((heap_type->tp_flags & Py_TPFLAGS_HEAPTYPE) != 0 &&
+                (heap_type->tp_flags & Py_TPFLAGS_BASETYPE) == 0, 3);
+    SEQ_REQUIRE(strcmp(heap_type->tp_name, "probe.StructRecord") == 0, 4);
+    SEQ_REQUIRE(heap_type->tp_basicsize == (Py_ssize_t)(offsetof(PyTupleObject, ob_item) + sizeof(PyObject *)), 5);
+    SEQ_REQUIRE(heap_type->tp_itemsize == sizeof(PyObject *), 6);
+    SEQ_REQUIRE(heap_type->tp_members != NULL &&
+                strcmp(heap_type->tp_members[0].name, "visible") == 0 &&
+                strcmp(heap_type->tp_members[1].name, "hidden") == 0 &&
+                heap_type->tp_members[2].name == NULL, 7);
+    value = PyStructSequence_New(heap_type);
+    SEQ_REQUIRE(value != NULL && Py_TYPE(value) == heap_type && PyTuple_Check(value), 8);
+    SEQ_REQUIRE(!PyTuple_CheckExact(value) && PyTuple_Size(value) == 2 && Py_SIZE(value) == 2, 9);
+    PyStructSequence_SET_ITEM(value, 0, PyLong_FromLong(11));
+    PyStructSequence_SetItem(value, 1, PyLong_FromLong(22));
+    Py_INCREF(edge);
+    PyStructSequence_SET_ITEM(value, 2, edge);
+    Py_ssize_t refs = Py_REFCNT(edge);
+    SEQ_REQUIRE(PyStructSequence_GetItem(value, 2) == edge &&
+                PyStructSequence_GET_ITEM(value, 2) == edge && Py_REFCNT(edge) == refs, 10);
+    SEQ_REQUIRE(PyTuple_GetItem(value, 2) == NULL && PyErr_ExceptionMatches(PyExc_IndexError), 11);
+    PyErr_Clear();
+    attr = PyObject_GetAttrString(value, "hidden");
+    SEQ_REQUIRE(attr == edge, 12);
+    Py_CLEAR(attr);
+    attr = PyObject_GetAttrString((PyObject *)heap_type, "n_fields");
+    SEQ_REQUIRE(attr != NULL && PyLong_AsLong(attr) == 3, 13);
+    Py_CLEAR(attr);
+    sequence = PyTuple_Pack(2, edge, Py_None);
+    SEQ_REQUIRE(sequence != NULL, 14);
+    constructed = PyObject_CallOneArg((PyObject *)heap_type, sequence);
+    SEQ_REQUIRE(constructed != NULL && PyStructSequence_GetItem(constructed, 0) == edge &&
+                PyStructSequence_GetItem(constructed, 2) == Py_None, 15);
+    name = PyUnicode_FromString("StructRecord");
+    SEQ_REQUIRE(name != NULL && PyObject_SetAttrString((PyObject *)heap_type, "__name__", name) == 0, 16);
+    /* Even assigning the same short name ends the initial qualified tp_name. */
+    SEQ_REQUIRE(strcmp(heap_type->tp_name, "StructRecord") == 0, 17);
+    number = PyLong_FromLong(42);
+    SEQ_REQUIRE(number != NULL && PyObject_SetAttrString((PyObject *)heap_type, "__name__", number) < 0 && PyErr_ExceptionMatches(PyExc_TypeError), 18);
+    PyErr_Clear();
+    SEQ_REQUIRE(strcmp(heap_type->tp_name, "StructRecord") == 0, 19);
+    SEQ_REQUIRE(PyObject_SetAttrString((PyObject *)heap_type, "__module__", name) == 0 &&
+                PyObject_SetAttrString((PyObject *)heap_type, "__qualname__", name) == 0 &&
+                strcmp(heap_type->tp_name, "StructRecord") == 0, 20);
+    SEQ_REQUIRE(PyStructSequence_InitType2(static_type, &desc) == 0, 21);
+    SEQ_REQUIRE(static_type->tp_flags & Py_TPFLAGS_READY, 22);
+    SEQ_REQUIRE((static_type->tp_flags & (Py_TPFLAGS_HEAPTYPE | Py_TPFLAGS_BASETYPE)) == 0, 23);
+    static_value = PyStructSequence_New(static_type);
+    SEQ_REQUIRE(static_value != NULL && Py_TYPE(static_value) == static_type, 24);
+    PyStructSequence_SET_ITEM(static_value, 0, Py_NewRef(edge));
+    PyStructSequence_SET_ITEM(static_value, 1, Py_NewRef(Py_None));
+    PyStructSequence_SET_ITEM(static_value, 2, Py_NewRef(edge));
+    SEQ_REQUIRE(PyTuple_Size(static_value) == 2 && PyStructSequence_GetItem(static_value, 2) == edge, 25);
+    SEQ_REQUIRE(PyStructSequence_InitType2(static_type, &desc) < 0 && PyErr_ExceptionMatches(PyExc_SystemError), 26);
+    PyErr_Clear();
+    SEQ_REQUIRE(Py_TYPE(static_value) == static_type && static_type->tp_flags & Py_TPFLAGS_READY, 27);
+    SEQ_REQUIRE(PyObject_SetAttrString((PyObject *)static_type, "__name__", name) < 0 && PyErr_ExceptionMatches(PyExc_TypeError), 28);
+    PyErr_Clear();
+    SEQ_REQUIRE(strcmp(static_type->tp_name, "probe.StructRecord") == 0, 29);
+    SEQ_REQUIRE(PyErr_Occurred() == NULL &&
+                shell.before == UINT64_C(0x51e11cab1) &&
+                shell.after == UINT64_C(0xa110ca7e), 30);
+    /* Traverse the actual managed graph through each public type slot. The
+     * repeated edge must be reported twice (visible + hidden), and a visitor
+     * failure must stop traversal without consuming either owned reference. */
+    PyObject *gc_values[] = {value, static_value};
+    PyTypeObject *gc_types[] = {heap_type, static_type};
+    for (int kind = 0; kind < 2; ++kind) {
+        VisitWitness witness = { .edge = edge, .type = (PyObject *)gc_types[kind] };
+        Py_ssize_t before_refs = Py_REFCNT(edge);
+        SEQ_REQUIRE(gc_types[kind]->tp_traverse != NULL, 38);
+        SEQ_REQUIRE(gc_types[kind]->tp_traverse(gc_values[kind], visit_payload, &witness) == 0 &&
+                    witness.edge_visits == (kind == 0 ? 1 : 2) && witness.type_visits == 1, 39);
+        int calls = 0;
+        SEQ_REQUIRE(gc_types[kind]->tp_traverse(gc_values[kind], structseq_stop_visit, &calls) == 73 &&
+                    calls == 1 && Py_REFCNT(edge) == before_refs, 40);
+        /* A raw C allocation cannot masquerade as the managed tuple layout. */
+        PyObject *raw = PyType_GenericAlloc(gc_types[kind], 2);
+        int raw_rejected = raw == NULL;
+        Py_XDECREF(raw);
+        SEQ_REQUIRE(raw_rejected && PyErr_ExceptionMatches(PyExc_SystemError), 41);
+        PyErr_Clear();
+    }
+    /* Zero, all-visible and all-hidden records cross the same allocation and
+     * C projection boundary. The mixed static/heap case above remains intact. */
+    PyStructSequence_Field empty_fields[] = {{NULL, NULL}};
+    PyStructSequence_Field shape_fields[] = {{"first", "first doc"},
+                                             {"second", "second doc"}, {NULL, NULL}};
+    for (int geometry = 0; geometry < 6; ++geometry) {
+        int mode = geometry % 3;
+        int static_origin = geometry >= 3;
+        int total = mode == 0 ? 0 : 2;
+        int visible = mode == 1 ? 2 : 0;
+        PyStructSequence_Desc shape_desc = {"probe.ShapeRecord", "geometry",
+            mode == 0 ? empty_fields : shape_fields, visible};
+        if (static_origin) {
+            SEQ_REQUIRE(PyStructSequence_InitType2(&shape_static[mode], &shape_desc) == 0, 42);
+            shape_type = &shape_static[mode];
+        } else {
+            shape_type = PyStructSequence_NewType(&shape_desc);
+        }
+        SEQ_REQUIRE(shape_type != NULL, 31);
+        shape_value = PyStructSequence_New(shape_type);
+        SEQ_REQUIRE(shape_value != NULL && Py_TYPE(shape_value) == shape_type &&
+                    PyTuple_Size(shape_value) == visible && Py_SIZE(shape_value) == visible, 32);
+        Py_ssize_t before_refs = Py_REFCNT(edge);
+        for (int index = 0; index < total; ++index) {
+            SEQ_REQUIRE(PyStructSequence_GET_ITEM(shape_value, index) == NULL &&
+                        PyErr_Occurred() == NULL, 33);
+            PyStructSequence_SET_ITEM(shape_value, index, Py_NewRef(edge));
+        }
+        SEQ_REQUIRE(PyTuple_Size(shape_value) == visible, 34);
+        for (int index = 0; index < total; ++index) {
+            SEQ_REQUIRE(PyStructSequence_GetItem(shape_value, index) == edge, 35);
+        }
+        SEQ_REQUIRE(Py_REFCNT(edge) == before_refs + total, 36);
+        Py_CLEAR(shape_value);
+        SEQ_REQUIRE(Py_REFCNT(edge) == before_refs, 37);
+        if (static_origin) {
+            shape_type = NULL;
+        } else {
+            Py_CLEAR(shape_type);
+        }
+    }
+done:
+    PyErr_Fetch(&error_type, &error_value, &error_tb);
+    Py_XDECREF(shape_value);
+    if (shape_type != &shape_static[0] && shape_type != &shape_static[1] &&
+        shape_type != &shape_static[2]) {
+        Py_XDECREF((PyObject *)shape_type);
+    }
+    Py_XDECREF(number);
+    Py_XDECREF(constructed);
+    Py_XDECREF(sequence);
+    Py_XDECREF(name);
+    Py_XDECREF(attr);
+    Py_XDECREF(static_value);
+    Py_XDECREF(value);
+    Py_XDECREF((PyObject *)heap_type);
+    PyErr_Restore(error_type, error_value, error_tb);
+    return status;
+#undef SEQ_REQUIRE
+}

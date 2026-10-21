@@ -152,11 +152,28 @@ fn vfs_metadata_admission_and_call_budget() {
                             }
                             Observation::Stat => {
                                 assert!(!crate::exception_pending(py));
+                                // Every native route already returns the canonical
+                                // record, including its non-sequence timestamp owners.
+                                let class = crate::molt_os_stat_result_type();
+                                assert!(!crate::exception_pending(py));
                                 let pointer = obj_from_bits(result).as_ptr().unwrap();
-                                assert_eq!(
-                                    unsafe { crate::object::layout::tuple_storage_len(pointer) },
-                                    10
-                                );
+                                assert_eq!(unsafe { crate::object_class_bits(pointer) }, class);
+                                assert_eq!(unsafe { crate::tuple_len(pointer) }, 10);
+                                for (name, expected_type) in [
+                                    (b"st_atime".as_slice(), "float"),
+                                    (b"st_atime_ns".as_slice(), "int"),
+                                ] {
+                                    let key = crate::attr_name_bits_from_bytes(py, name).unwrap();
+                                    let value = crate::molt_get_attr_name(result, key);
+                                    assert!(!crate::exception_pending(py));
+                                    assert_eq!(
+                                        crate::type_name(py, obj_from_bits(value)),
+                                        expected_type
+                                    );
+                                    dec_ref_bits(py, value);
+                                    dec_ref_bits(py, key);
+                                }
+                                dec_ref_bits(py, class);
                                 let fields = unsafe {
                                     std::slice::from_raw_parts(
                                         crate::object::layout::tuple_storage_items(pointer),

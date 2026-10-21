@@ -15,7 +15,8 @@ from molt.compiler_analysis.builtin_binding_guards_generated import (
 from molt.compiler_analysis.python_identity_catalog_generated import (
     BUILTIN_SHAPE_NAMES,
 )
-from molt.frontend._types import BUILTIN_FUNC_SPECS, BUILTIN_TYPE_TAGS
+from molt.builtin_callables import BUILTIN_FUNC_SPECS
+from molt.frontend._types import BUILTIN_TYPE_TAGS
 
 
 def _gen():

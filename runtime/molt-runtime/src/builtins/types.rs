@@ -107,6 +107,7 @@ define_types_runtime_state! {
     context_items_iterator_class,
     mappingproxy_class,
     simplenamespace_class,
+    stat_result_class,
     capsule_class,
     cell_class,
     dynamic_class_attribute_class,

@@ -135,6 +135,8 @@ pub enum TypeMetadataField {
     NativeProtocolSlots = 8,
     /// Physical native tp_name, distinct from public name and qualified name.
     CName = 9,
+    /// Exact immutable native struct-sequence specification, or Missing.
+    StructSequence = 10,
 }
 
 /// Native protocol presence is independent of Python method spelling. In
@@ -170,7 +172,8 @@ impl NativeProtocolSlot {
 pub const TYPE_SEMANTIC_FLAGS_MASK: std::os::raw::c_ulong = crate::abi_types::Py_TPFLAGS_HEAPTYPE
     | crate::abi_types::Py_TPFLAGS_IMMUTABLETYPE
     | crate::abi_types::Py_TPFLAGS_BASETYPE
-    | crate::abi_types::Py_TPFLAGS_IS_ABSTRACT;
+    | crate::abi_types::Py_TPFLAGS_IS_ABSTRACT
+    | crate::abi_types::Py_TPFLAGS_DISALLOW_INSTANTIATION;
 
 /// Python's generic class-info protocols, distinct from physical subtype tests.
 #[repr(u32)]
@@ -773,8 +776,21 @@ pub struct RuntimeHooks {
     >,
     /// Return the number of items in a tuple.
     pub tuple_len: Option<unsafe extern "C" fn(bits: u64) -> usize>,
-    /// Return a borrowed item, or `Missing` for an uninitialized/out-of-range slot.
+    /// Exact hidden native struct-sequence extent; ordinary tuples return zero.
+    pub tuple_hidden_len: unsafe extern "C" fn(bits: u64) -> usize,
+    /// Return a borrowed physical item (including declared hidden fields), or `Missing` for an uninitialized/out-of-range slot.
     pub tuple_item: Option<unsafe extern "C" fn(bits: u64, i: usize) -> BorrowedHandleResult>,
+    /// Native struct-sequence factory. A non-null static_type preserves that
+    /// caller-owned compact shell; NULL requests the ordinary heap projection.
+    /// Generic C declarations never gain a builtin Time/Stat/Forbidden role.
+    pub structseq_type_new: unsafe extern "C" fn(
+        desc: *const crate::abi_types::PyStructSequence_Desc,
+        static_type: *mut crate::abi_types::PyTypeObject,
+    ) -> OwnedHandleResult,
+    pub structseq_new: unsafe extern "C" fn(type_bits: u64) -> OwnedHandleResult,
+    /// Exact runtime-owned external static slot storage. No name/flag inference.
+    pub type_runtime_slots:
+        unsafe extern "C" fn(type_ptr: *mut crate::abi_types::PyTypeObject) -> bool,
     /// Allocate an empty dict. Returns handle bits.
     pub alloc_dict: unsafe extern "C" fn() -> u64,
     /// Construct the canonical runtime mappingproxy; mapping is borrowed.
@@ -1471,7 +1487,11 @@ pub const RUNTIME_HOOKS_ABI_MAGIC: u64 = 0x4d4f_4c54_484f_4f4b;
 // Version 65 exposes sealed managed scalar fields as borrowed payloads.
 // Version 67 removes physical buffer eligibility; semantic slots own the protocol.
 // Version 68 adds the native CName type-metadata domain, distinct from Name.
-pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 68;
+// Version 71 on the retained branch combined struct-sequence factories with
+// import-dictionary hooks that are absent from this main-line hook table.
+// Version 72 adds sealed struct-sequence factories and physical hidden tuple
+// storage to main's Version 68 table without reusing that distinct ABI identity.
+pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 72;
 
 #[inline]
 fn runtime_hooks_layout_matches(abi_magic: u64, abi_version: u32, struct_size: u32) -> bool {
@@ -2182,6 +2202,19 @@ unsafe extern "C" fn stub_type_dict_borrowed(_type: u64) -> BorrowedHandleResult
     BorrowedHandleResult::error()
 }
 
+unsafe extern "C" fn stub_structseq_type_new(
+    _: *const crate::abi_types::PyStructSequence_Desc,
+    _: *mut crate::abi_types::PyTypeObject,
+) -> OwnedHandleResult {
+    OwnedHandleResult::error()
+}
+unsafe extern "C" fn stub_structseq_new(_: u64) -> OwnedHandleResult {
+    OwnedHandleResult::error()
+}
+unsafe extern "C" fn stub_type_runtime_slots(_: *mut crate::abi_types::PyTypeObject) -> bool {
+    false
+}
+
 unsafe extern "C" fn stub_type_metadata(
     _type: u64,
     _field: TypeMetadataField,
@@ -2767,6 +2800,10 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     alloc_tuple: None,
     tuple_set: None,
     tuple_len: None,
+    tuple_hidden_len: stub_tuple_len,
+    structseq_type_new: stub_structseq_type_new,
+    structseq_new: stub_structseq_new,
+    type_runtime_slots: stub_type_runtime_slots,
     tuple_item: None,
     alloc_dict: stub_alloc_dict,
     mappingproxy_new: stub_mappingproxy_new,

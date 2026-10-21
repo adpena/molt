@@ -71,7 +71,36 @@ pub(crate) struct TimeParts {
     pub(crate) isdst: i32,
 }
 
-pub(crate) fn time_parts_to_tuple(_py: &PyToken<'_>, parts: TimeParts) -> u64 {
+pub(crate) fn time_parts_to_tuple(
+    _py: &PyToken<'_>,
+    parts: TimeParts,
+    zone: &[u8],
+    gmtoff: i64,
+) -> u64 {
+    use molt_runtime_core::OwnedRuntimeValue;
+    #[cfg(not(target_arch = "wasm32"))]
+    let zone = {
+        let encoding = match crate::builtins::platform::locale_encoding() {
+            Ok(value) => value,
+            Err(message) => return raise_exception::<u64>(_py, "RuntimeError", &message),
+        };
+        match crate::object::ops::decode_bytes_text(&encoding, "surrogateescape", zone) {
+            Ok((text, _)) => text,
+            Err(error) => return error.raise::<u64>(_py, zone),
+        }
+    };
+    let zone_ptr = alloc_string(_py, &zone);
+    if zone_ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    let zone = unsafe {
+        OwnedRuntimeValue::from_owned_bits(_py.core_token(), MoltObject::from_ptr(zone_ptr).bits())
+    };
+    let offset = crate::builtins::numbers::int_bits_from_i64(_py, gmtoff);
+    let offset = unsafe { OwnedRuntimeValue::from_owned_bits(_py.core_token(), offset) };
+    if exception_pending(_py) {
+        return MoltObject::none().bits();
+    }
     let elems = [
         MoltObject::from_int(parts.year as i64).bits(),
         MoltObject::from_int(parts.month as i64).bits(),
@@ -82,12 +111,56 @@ pub(crate) fn time_parts_to_tuple(_py: &PyToken<'_>, parts: TimeParts) -> u64 {
         MoltObject::from_int(parts.wday as i64).bits(),
         MoltObject::from_int(parts.yday as i64).bits(),
         MoltObject::from_int(parts.isdst as i64).bits(),
+        zone.bits(),
+        offset.bits(),
     ];
     let tuple_ptr = alloc_tuple(_py, &elems);
     if tuple_ptr.is_null() {
         MoltObject::none().bits()
     } else {
         MoltObject::from_ptr(tuple_ptr).bits()
+    }
+}
+
+/// Preserve the provider's actual timezone and offset alongside the nine
+/// sequence fields. Windows has no tm_zone; CPython uses CRT strftime and the
+/// same civil-to-epoch calculation there, rather than OS display-name settings.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn time_tuple_from_tm(
+    py: &PyToken<'_>,
+    tm: &libc::tm,
+    seconds: i64,
+    local: bool,
+) -> u64 {
+    let parts = time_parts_from_tm(tm);
+    #[cfg(unix)]
+    {
+        let _ = (seconds, local);
+        if tm.tm_zone.is_null() {
+            return raise_exception::<u64>(
+                py,
+                "SystemError",
+                "native time provider returned no timezone",
+            );
+        }
+        let zone = unsafe { CStr::from_ptr(tm.tm_zone) }.to_bytes();
+        time_parts_to_tuple(py, parts, zone, tm.tm_gmtoff as i64)
+    }
+    #[cfg(windows)]
+    {
+        if !local {
+            return time_parts_to_tuple(py, parts, b"UTC", 0);
+        }
+        let mut zone = [0u8; 100];
+        let length = unsafe {
+            crate::windows_abi::strftime(zone.as_mut_ptr().cast(), zone.len(), c"%Z".as_ptr(), tm)
+        };
+        time_parts_to_tuple(
+            py,
+            parts,
+            &zone[..length],
+            tm_to_epoch_seconds(tm) - seconds,
+        )
     }
 }
 
@@ -105,28 +178,6 @@ pub(crate) fn time_parts_from_tm(tm: &libc::tm) -> TimeParts {
         yday: tm.tm_yday + 1,
         isdst: tm.tm_isdst,
     }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn tm_from_time_parts(_py: &PyToken<'_>, parts: TimeParts) -> Result<libc::tm, u64> {
-    let mut tm = unsafe { std::mem::zeroed::<libc::tm>() };
-    tm.tm_sec = parts.second;
-    tm.tm_min = parts.minute;
-    tm.tm_hour = parts.hour;
-    tm.tm_mday = parts.day;
-    tm.tm_mon = parts.month - 1;
-    tm.tm_year = parts.year - 1900;
-    tm.tm_wday = (parts.wday + 1).rem_euclid(7);
-    tm.tm_yday = parts.yday - 1;
-    tm.tm_isdst = parts.isdst;
-    if tm.tm_mon < 0 || tm.tm_mon > 11 {
-        return Err(raise_exception::<_>(
-            _py,
-            "ValueError",
-            "strftime() argument 2 out of range",
-        ));
-    }
-    Ok(tm)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -310,7 +361,7 @@ pub(crate) fn days_from_civil(year: i32, month: i32, day: i32) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
-#[cfg(unix)]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn tm_to_epoch_seconds(tm: &libc::tm) -> i64 {
     let year = tm.tm_year + 1900;
     let month = tm.tm_mon + 1;
@@ -330,90 +381,209 @@ pub(crate) fn offset_west_from_secs(secs: i64) -> Result<i64, String> {
     Ok(utc_secs.saturating_sub(local_secs))
 }
 
-pub(crate) fn parse_time_tuple(_py: &PyToken<'_>, tuple_bits: u64) -> Result<TimeParts, u64> {
-    let obj = obj_from_bits(tuple_bits);
-    let Some(ptr) = obj.as_ptr() else {
-        return Err(raise_exception::<_>(
-            _py,
+/// One argument conversion owns the native Unicode view through every later
+/// numeric callback and the final libc call. No zone pointer outlives its owner.
+pub(crate) struct ParsedTime {
+    pub(crate) parts: TimeParts,
+    #[cfg(not(windows))]
+    zone: Option<crate::object::foreign::NativeObjectOwner>,
+    #[cfg(not(windows))]
+    gmtoff: std::os::raw::c_long,
+}
+
+impl ParsedTime {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn native_tm(&self) -> libc::tm {
+        let mut tm = unsafe { std::mem::zeroed::<libc::tm>() };
+        tm.tm_sec = self.parts.second;
+        tm.tm_min = self.parts.minute;
+        tm.tm_hour = self.parts.hour;
+        tm.tm_mday = self.parts.day;
+        tm.tm_mon = self.parts.month.wrapping_sub(1);
+        tm.tm_year = self.parts.year - 1900;
+        tm.tm_wday = (self.parts.wday + 1).rem_euclid(7);
+        tm.tm_yday = self.parts.yday.wrapping_sub(1);
+        tm.tm_isdst = self.parts.isdst;
+        #[cfg(unix)]
+        {
+            tm.tm_gmtoff = self.gmtoff;
+            if let Some(zone) = &self.zone {
+                // parse_time_argument has already created and validated this
+                // immutable cached UTF-8 view before the offset callback.
+                // Darwin declares tm_zone mutable; Linux declares it const.
+                // libc borrows this already validated view without writing it.
+                tm.tm_zone =
+                    unsafe { molt_cpython_abi::api::strings::PyUnicode_AsUTF8(zone.as_ptr()) }
+                        .cast_mut();
+                #[cfg(all(target_os = "linux", target_env = "musl"))]
+                unsafe {
+                    // musl accepts only its own zone pointers. Match the same
+                    // provider-owned UTC/local strings as CPython gettmarg;
+                    // no process registry or copied timezone state is needed.
+                    unsafe extern "C" {
+                        static mut tzname: [*mut libc::c_char; 2];
+                    }
+                    let epoch: libc::time_t = 0;
+                    let mut utc = std::mem::zeroed::<libc::tm>();
+                    let utc_ptr = if libc::gmtime_r(&epoch, &mut utc).is_null() {
+                        std::ptr::null()
+                    } else {
+                        utc.tm_zone
+                    };
+                    for candidate in [utc_ptr, tzname[0].cast_const(), tzname[1].cast_const()] {
+                        if !candidate.is_null() && libc::strcmp(tm.tm_zone, candidate) == 0 {
+                            tm.tm_zone = candidate;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        tm
+    }
+
+    fn check_ranges(&mut self, py: &PyToken<'_>) -> Result<(), u64> {
+        let p = &mut self.parts;
+        if p.month == 0 {
+            p.month = 1;
+        }
+        if p.day == 0 {
+            p.day = 1;
+        }
+        if p.yday == 0 {
+            p.yday = 1;
+        }
+        let error = if !(1..=12).contains(&p.month) {
+            Some("month out of range")
+        } else if !(1..=31).contains(&p.day) {
+            Some("day of month out of range")
+        } else if !(0..=23).contains(&p.hour) {
+            Some("hour out of range")
+        } else if !(0..=59).contains(&p.minute) {
+            Some("minute out of range")
+        } else if !(0..=61).contains(&p.second) {
+            Some("seconds out of range")
+        } else if p.wday < 0 {
+            Some("day of week out of range")
+        } else if !(1..=366).contains(&p.yday) {
+            Some("day of year out of range")
+        } else {
+            None
+        };
+        if let Some(message) = error {
+            return Err(raise_exception(py, "ValueError", message));
+        }
+        Ok(())
+    }
+}
+
+/// CPython gettmarg: nine required C-int conversions, then exact struct_time
+/// extension fields, then the caller-specific range check. mktime normalizes
+/// calendar fields instead of using checktm.
+pub(crate) fn parse_time_argument(
+    py: &PyToken<'_>,
+    bits: u64,
+    operation: &str,
+    check: bool,
+) -> Result<ParsedTime, u64> {
+    #[cfg(not(windows))]
+    use crate::object::foreign::{NativeObjectOwner, retire_native_reference};
+    #[cfg(not(windows))]
+    use molt_cpython_abi::{
+        api::{errors, numbers, strings},
+        bridge::GLOBAL_BRIDGE,
+    };
+    let Some(ptr) = obj_from_bits(bits)
+        .as_ptr()
+        .filter(|&ptr| unsafe { object_type_id(ptr) == TYPE_ID_TUPLE })
+    else {
+        return Err(raise_exception(
+            py,
             "TypeError",
-            "strftime() argument 2 must be tuple",
+            "Tuple or struct_time argument required",
         ));
     };
-    unsafe {
-        if object_type_id(ptr) != TYPE_ID_TUPLE {
-            let type_name = class_name_for_error(type_of_bits(_py, tuple_bits));
-            let msg = format!("strftime() argument 2 must be tuple, not {type_name}");
-            return Err(raise_exception::<_>(_py, "TypeError", &msg));
-        }
-        let Some(elems) = crate::object::seq_access::pin_tuple(_py, ptr) else {
+    let Some(fields) = (unsafe { crate::object::seq_access::pin_tuple(py, ptr) }) else {
+        return Err(MoltObject::none().bits());
+    };
+    if fields.len() != 9 {
+        return Err(raise_exception(
+            py,
+            "TypeError",
+            &format!("{operation}(): illegal time tuple argument"),
+        ));
+    }
+    let mut values = [0i32; 9];
+    for (index, value) in values.iter_mut().enumerate() {
+        let Some(converted) = crate::builtins::numbers::index_c_int_from_obj(py, fields[index])
+        else {
             return Err(MoltObject::none().bits());
         };
-        if elems.len() != 9 {
-            return Err(raise_exception::<_>(
-                _py,
-                "TypeError",
-                "time tuple must have exactly 9 elements",
-            ));
-        }
-        let mut vals = [0i64; 9];
-        for (idx, slot) in vals.iter_mut().enumerate() {
-            let bits = elems[idx];
-            let Some(val) = to_i64(obj_from_bits(bits)) else {
-                let type_name = class_name_for_error(type_of_bits(_py, bits));
-                let msg = format!("an integer is required (got type {type_name})");
-                return Err(raise_exception::<_>(_py, "TypeError", &msg));
-            };
-            if val < i32::MIN as i64 || val > i32::MAX as i64 {
-                return Err(raise_exception::<_>(
-                    _py,
-                    "ValueError",
-                    "strftime() argument 2 out of range",
-                ));
-            }
-            *slot = val;
-        }
-        let year = vals[0] as i32;
-        let month = vals[1] as i32;
-        let day = vals[2] as i32;
-        let hour = vals[3] as i32;
-        let minute = vals[4] as i32;
-        let second = vals[5] as i32;
-        let wday = vals[6] as i32;
-        let yday = vals[7] as i32;
-        let isdst = vals[8] as i32;
-        if !(1..=12).contains(&month)
-            || !(1..=31).contains(&day)
-            || !(0..=23).contains(&hour)
-            || !(0..=59).contains(&minute)
-            || !(0..=60).contains(&second)
-            || !(0..=6).contains(&wday)
-            || !(1..=366).contains(&yday)
-        {
-            return Err(raise_exception::<_>(
-                _py,
-                "ValueError",
-                "strftime() argument 2 out of range",
-            ));
-        }
-        if ![-1, 0, 1].contains(&isdst) {
-            return Err(raise_exception::<_>(
-                _py,
-                "ValueError",
-                "strftime() argument 2 out of range",
-            ));
-        }
-        Ok(TimeParts {
-            year,
-            month,
-            day,
-            hour,
-            minute,
-            second,
-            wday,
-            yday,
-            isdst,
-        })
+        *value = converted;
     }
+    if values[0] < i32::MIN + 1900 {
+        return Err(raise_exception(py, "OverflowError", "year out of range"));
+    }
+    // C gettmarg applies remainder before checktm. -1 denotes Sunday; more
+    // negative remainders are invalid, while positive weekdays wrap modulo 7.
+    let c_wday = values[6].wrapping_add(1) % 7;
+    let mut result = ParsedTime {
+        parts: TimeParts {
+            year: values[0],
+            month: values[1],
+            day: values[2],
+            hour: values[3],
+            minute: values[4],
+            second: values[5],
+            wday: if c_wday < 0 { -1 } else { (c_wday + 6) % 7 },
+            yday: values[7],
+            isdst: values[8],
+        },
+        #[cfg(not(windows))]
+        zone: None,
+        #[cfg(not(windows))]
+        gmtoff: 0,
+    };
+    #[cfg(not(windows))]
+    if let Some((zone_bits, offset_bits)) =
+        unsafe { crate::builtins::structseq::time_fields(py, ptr) }
+    {
+        if !obj_from_bits(zone_bits).is_none() {
+            let zone = unsafe {
+                NativeObjectOwner::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(zone_bits))
+            };
+            if zone.as_ptr().is_null() {
+                retire_native_reference(|| ());
+                return Err(MoltObject::none().bits());
+            }
+            let text = unsafe { strings::PyUnicode_AsUTF8(zone.as_ptr()) };
+            if text.is_null() {
+                retire_native_reference(|| ());
+                return Err(MoltObject::none().bits());
+            }
+            result.zone = Some(zone);
+        }
+        if !obj_from_bits(offset_bits).is_none() {
+            let offset = unsafe {
+                NativeObjectOwner::from_owned(
+                    GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(offset_bits),
+                )
+            };
+            if offset.as_ptr().is_null() {
+                retire_native_reference(|| ());
+                return Err(MoltObject::none().bits());
+            }
+            result.gmtoff = unsafe { numbers::PyLong_AsLong(offset.as_ptr()) };
+            if unsafe { !errors::PyErr_Occurred().is_null() } {
+                retire_native_reference(|| ());
+                return Err(MoltObject::none().bits());
+            }
+        }
+    }
+    if check {
+        result.check_ranges(py)?;
+    }
+    Ok(result)
 }
 
 pub(crate) fn asctime_from_parts(parts: TimeParts) -> Result<String, String> {
@@ -433,64 +603,6 @@ pub(crate) fn asctime_from_parts(parts: TimeParts) -> Result<String, String> {
         "{wday} {month} {:2} {:02}:{:02}:{:02} {:04}",
         parts.day, parts.hour, parts.minute, parts.second, parts.year
     ))
-}
-
-pub(crate) fn parse_mktime_tuple(_py: &PyToken<'_>, tuple_bits: u64) -> Result<TimeParts, u64> {
-    let obj = obj_from_bits(tuple_bits);
-    let Some(ptr) = obj.as_ptr() else {
-        return Err(raise_exception::<_>(
-            _py,
-            "TypeError",
-            "Tuple or struct_time argument required",
-        ));
-    };
-    unsafe {
-        if object_type_id(ptr) != TYPE_ID_TUPLE {
-            return Err(raise_exception::<_>(
-                _py,
-                "TypeError",
-                "Tuple or struct_time argument required",
-            ));
-        }
-        let Some(elems) = crate::object::seq_access::pin_tuple(_py, ptr) else {
-            return Err(MoltObject::none().bits());
-        };
-        if elems.len() != 9 {
-            return Err(raise_exception::<_>(
-                _py,
-                "TypeError",
-                "mktime(): illegal time tuple argument",
-            ));
-        }
-        let mut vals = [0i64; 9];
-        for (idx, slot) in vals.iter_mut().enumerate() {
-            let bits = elems[idx];
-            let Some(val) = to_i64(obj_from_bits(bits)) else {
-                let type_name = class_name_for_error(type_of_bits(_py, bits));
-                let msg = format!("an integer is required (got type {type_name})");
-                return Err(raise_exception::<_>(_py, "TypeError", &msg));
-            };
-            if val < i32::MIN as i64 || val > i32::MAX as i64 {
-                return Err(raise_exception::<_>(
-                    _py,
-                    "OverflowError",
-                    "mktime(): argument out of range",
-                ));
-            }
-            *slot = val;
-        }
-        Ok(TimeParts {
-            year: vals[0] as i32,
-            month: vals[1] as i32,
-            day: vals[2] as i32,
-            hour: vals[3] as i32,
-            minute: vals[4] as i32,
-            second: vals[5] as i32,
-            wday: vals[6] as i32,
-            yday: vals[7] as i32,
-            isdst: vals[8] as i32,
-        })
-    }
 }
 
 pub(crate) fn parse_timegm_tuple(
@@ -594,7 +706,8 @@ pub(crate) fn gmtime_tm(secs: libc::time_t) -> Result<libc::tm, String> {
 }
 
 #[cfg(target_arch = "wasm32")]
-pub(crate) fn strftime_wasm(format: &str, parts: TimeParts) -> Result<String, String> {
+pub(crate) fn strftime_wasm(format: &str, value: &ParsedTime) -> Result<String, String> {
+    let parts = value.parts;
     const WEEKDAY_SHORT: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
     const WEEKDAY_LONG: [&str; 7] = [
         "Monday",
@@ -782,8 +895,25 @@ pub(crate) fn strftime_wasm(format: &str, parts: TimeParts) -> Result<String, St
                 push_num(&mut out, yy, 2, '0');
             }
             'Y' => push_num(&mut out, parts.year, 4, '0'),
-            'Z' => out.push_str("UTC"),
-            'z' => out.push_str("+0000"),
+            'Z' => {
+                if let Some(zone) = &value.zone {
+                    let text =
+                        unsafe { molt_cpython_abi::api::strings::PyUnicode_AsUTF8(zone.as_ptr()) };
+                    // The cached view was validated before all offset callbacks.
+                    let text = unsafe { CStr::from_ptr(text) }.to_str().unwrap();
+                    out.push_str(text);
+                } else if parts.isdst >= 0 {
+                    out.push_str(&tzname_label_wasm(i32::from(parts.isdst > 0))?);
+                }
+            }
+            'z' => {
+                if parts.isdst >= 0 {
+                    let offset = value.gmtoff as i64;
+                    out.push(if offset < 0 { '-' } else { '+' });
+                    let minutes = offset.unsigned_abs() / 60;
+                    out.push_str(&format!("{:02}{:02}", minutes / 60, minutes % 60));
+                }
+            }
             'c' => {
                 out.push_str(WEEKDAY_SHORT[parts.wday as usize]);
                 out.push(' ');
@@ -1070,22 +1200,21 @@ pub(crate) fn altzone_wasm() -> Result<i64, String> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn mktime_native(parts: TimeParts) -> f64 {
-    let mut tm = unsafe { std::mem::zeroed::<libc::tm>() };
-    tm.tm_sec = parts.second;
-    tm.tm_min = parts.minute;
-    tm.tm_hour = parts.hour;
-    tm.tm_mday = parts.day;
-    tm.tm_mon = parts.month - 1;
-    tm.tm_year = parts.year - 1900;
-    tm.tm_wday = (parts.wday + 1).rem_euclid(7);
-    tm.tm_yday = parts.yday - 1;
-    tm.tm_isdst = parts.isdst;
+pub(crate) fn mktime_native(py: &PyToken<'_>, value: &ParsedTime) -> Result<f64, u64> {
+    let mut tm = value.native_tm();
+    tm.tm_wday = -1;
     #[cfg(windows)]
-    let out = unsafe { crate::windows_abi::mktime64(&mut tm as *mut libc::tm) };
+    let out = unsafe { crate::windows_abi::mktime64(&mut tm) };
     #[cfg(not(windows))]
-    let out = unsafe { libc::mktime(&mut tm as *mut libc::tm) };
-    out as f64
+    let out = unsafe { libc::mktime(&mut tm) };
+    if out == -1 && tm.tm_wday == -1 {
+        return Err(raise_exception(
+            py,
+            "OverflowError",
+            "mktime argument out of range",
+        ));
+    }
+    Ok(out as f64)
 }
 
 #[cfg(target_arch = "wasm32")]

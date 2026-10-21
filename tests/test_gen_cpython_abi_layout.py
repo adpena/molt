@@ -223,3 +223,35 @@ def test_generated_header_pins_physical_bound_method_vector_layout() -> None:
     assert "offsetof(PyMethodObject, vectorcall) == 40u" in text
     assert "sizeof(PyMethodObject) == 24u" in text
     assert "offsetof(PyMethodObject, vectorcall) == 20u" in text
+
+
+@pytest.mark.parametrize("name", gen_cpython_abi_layout.TYPE_LAYOUT_STRUCTS)
+def test_shared_type_shell_projection_tracks_each_physical_owner(name: str) -> None:
+    """A tail field must change both the shell extent and its generated oracle."""
+    gen = gen_cpython_abi_layout
+    authority = gen.parse_rust_authority(gen.AUTHORITY_RS.read_text(encoding="utf-8"))
+    baseline = gen.emit_header(authority, type_shell=True)
+    original = authority[name]
+    authority[name] = gen.Struct(
+        original.name, original.fields + (gen.Field("probe_tail", gen.PTR),)
+    )
+    changed = gen.emit_header(authority, type_shell=True)
+    assert changed != baseline
+    c_name = gen._c_type_expr(name)
+    assert f"offsetof({c_name}, probe_tail)" in changed
+    assert "MOLT_TYPE_LAYOUT_GENERATED_H" in changed
+
+
+def test_shared_type_shell_layout_is_the_public_and_linked_allocation_contract() -> None:
+    gen = gen_cpython_abi_layout
+    outputs = gen.generated_outputs()
+    shared = outputs[gen.TYPE_LAYOUT_H]
+    # Independent CPython 3.12 C object.h allocation extents on LP64/LLP64.
+    assert "sizeof(PyTypeObject) == 416u" in shared
+    assert "sizeof(PyHeapTypeObject) == 920u" in shared
+    assert "sizeof(PyNumberMethods) == 288u" in shared
+    assert "sizeof(PySequenceMethods) == 80u" in shared
+    assert "offsetof(PyHeapTypeObject, ht_name) == 856u" in shared
+    assert "offsetof(PyHeapTypeObject, _spec_cache) == 904u" in shared
+    assert "sizeof(PyTypeObject) == 208u" in shared
+    assert gen.TYPE_LAYOUT_H.read_text(encoding="utf-8") == shared

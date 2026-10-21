@@ -7,6 +7,13 @@ pub const HANDLE_FLAG_INHERIT: u32 = 0x00000001;
 pub const DUPLICATE_SAME_ACCESS: u32 = 0x00000002;
 pub const FILE_NAME_NORMALIZED: u32 = 0x00000000;
 pub const VOLUME_NAME_DOS: u32 = 0x00000000;
+pub const OPEN_EXISTING: u32 = 3;
+pub const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x02000000;
+const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x00200000;
+const FILE_SHARE_READ: u32 = 1;
+const FILE_SHARE_WRITE: u32 = 2;
+const FILE_SHARE_DELETE: u32 = 4;
+const FILE_ATTRIBUTE_TAG_INFO_CLASS: i32 = 9;
 pub const WSAENOTSOCK: i32 = 10038;
 pub const WSAESHUTDOWN: i32 = 10058;
 
@@ -56,6 +63,21 @@ pub fn winerror_to_errno(mut winerror: i32) -> i32 {
 unsafe extern "system" {
     pub fn NeedCurrentDirectoryForExePathW(exe_name: *const u16) -> i32;
     pub fn GetCurrentProcess() -> *mut c_void;
+    pub fn CreateFileW(
+        path: *const u16,
+        access: u32,
+        share: u32,
+        security: *mut c_void,
+        disposition: u32,
+        flags: u32,
+        template: *mut c_void,
+    ) -> *mut c_void;
+    fn GetFileInformationByHandleEx(
+        handle: *mut c_void,
+        info_class: i32,
+        output: *mut c_void,
+        size: u32,
+    ) -> i32;
     pub fn GetFileType(hFile: *mut c_void) -> u32;
     pub fn GetConsoleMode(hConsoleHandle: *mut c_void, lpMode: *mut u32) -> i32;
     pub fn GetHandleInformation(hObject: *mut c_void, lpdwFlags: *mut u32) -> i32;
@@ -166,4 +188,69 @@ unsafe extern "system" {
 unsafe extern "C" {
     pub fn _wsetlocale(category: libc::c_int, locale: *const u16) -> *mut u16;
     pub fn _wputenv_s(name: *const u16, value: *const u16) -> libc::c_int;
+}
+
+fn nul_terminated_path(path: &std::ffi::OsStr) -> std::io::Result<Vec<u16>> {
+    use std::os::windows::ffi::OsStrExt;
+    let mut wide: Vec<u16> = path.encode_wide().collect();
+    if wide.contains(&0) {
+        return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
+    }
+    wide.push(0);
+    Ok(wide)
+}
+
+/// Open the already-admitted path for metadata, without requesting data access.
+/// The returned file owns exactly this handle. No-follow applies to the final
+/// component; directory and junction handles require backup semantics.
+pub fn open_metadata_file(path: &std::path::Path, follow: bool) -> std::io::Result<std::fs::File> {
+    use std::os::windows::io::FromRawHandle;
+    let wide = nul_terminated_path(path.as_os_str())?;
+    let flags = FILE_FLAG_BACKUP_SEMANTICS
+        | if follow {
+            0
+        } else {
+            FILE_FLAG_OPEN_REPARSE_POINT
+        };
+    let raw = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null_mut(),
+            OPEN_EXISTING,
+            flags,
+            std::ptr::null_mut(),
+        )
+    };
+    if raw as isize == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(unsafe { std::fs::File::from_raw_handle(raw) })
+}
+
+/// Query the actual tag of the same handle used for the rest of the metadata.
+/// Attributes only select this query; they never determine the reparse kind.
+pub fn file_attribute_tag(file: &std::fs::File) -> std::io::Result<(u32, u32)> {
+    use std::os::windows::io::AsRawHandle;
+    #[repr(C)]
+    struct AttributeTag {
+        attributes: u32,
+        tag: u32,
+    }
+    const _: () = assert!(std::mem::size_of::<AttributeTag>() == 8);
+    let mut result = std::mem::MaybeUninit::<AttributeTag>::uninit();
+    let success = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FILE_ATTRIBUTE_TAG_INFO_CLASS,
+            result.as_mut_ptr().cast(),
+            std::mem::size_of::<AttributeTag>() as u32,
+        )
+    };
+    if success == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let result = unsafe { result.assume_init() };
+    Ok((result.attributes, result.tag))
 }

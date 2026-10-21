@@ -2436,6 +2436,7 @@ mod tests {
                         simplenamespace_class(py),
                         capsule_class(py),
                         cell_class(py),
+                        crate::builtins::io_path::stat_result_class(py),
                     ];
                     let native_functools =
                         [partial_class(py), cmpkey_class(py), lru_wrapper_class(py)];
@@ -2484,6 +2485,15 @@ mod tests {
                     for class in native_operator {
                         assert!(operator_roots.contains(&class));
                     }
+                    let stat_class = crate::molt_os_stat_result_type();
+                    assert_eq!(stat_class, native_types[6]);
+                    assert!(!unsafe {
+                        crate::object::class_is_immutable(
+                            py,
+                            obj_from_bits(stat_class).as_ptr().unwrap(),
+                        )
+                    });
+                    dec_ref_bits(py, stat_class);
                     assert_eq!(partial_class(py), native_functools[0]);
                     assert_eq!(cmpkey_class(py), native_functools[1]);
                     assert_eq!(lru_wrapper_class(py), native_functools[2]);

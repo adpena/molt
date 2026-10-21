@@ -585,6 +585,30 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_dict_count_elements",
             crate::molt_dict_count_elements as *const (),
         )),
+        "molt_structseq_type" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_structseq_type",
+            crate::molt_structseq_type as *const (),
+        )),
+        "molt_structseq_new" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_structseq_new",
+            crate::molt_structseq_new as *const (),
+        )),
+        "molt_pwd_module_init" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_pwd_module_init",
+            crate::molt_pwd_module_init as *const (),
+        )),
+        "molt_pwd_getpwuid" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_pwd_getpwuid",
+            crate::molt_pwd_getpwuid as *const (),
+        )),
+        "molt_pwd_getpwnam" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_pwd_getpwnam",
+            crate::molt_pwd_getpwnam as *const (),
+        )),
+        "molt_pwd_getpwall" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_pwd_getpwall",
+            crate::molt_pwd_getpwall as *const (),
+        )),
         _ => None,
     }
 }
