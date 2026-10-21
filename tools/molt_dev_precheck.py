@@ -57,9 +57,8 @@ def precheck_landing(
     if not static:
         return 0
     drv._assert_integration_source(git, head)
-    environments = config.environments(
-        static, baseline=drv.gate_environment(repo, session_id=session_id)
-    )
+    baseline = drv.gate_environment(repo, session_id=session_id)
+    environments = config.environments(static, baseline=baseline)
     runtime = drv._gate_runtime(
         git,
         head,
@@ -70,7 +69,7 @@ def precheck_landing(
         cargo_outputs={},
         capacity_requirements={},
         progress=drv._IntegrationProgress(),
-        toolchains=config.admit_gates(static),
+        toolchains=config.admit_gates(static, environ=baseline),
         receipt_kind="precheck",
     )
     gate_seconds: list[tuple[float, str]] = []

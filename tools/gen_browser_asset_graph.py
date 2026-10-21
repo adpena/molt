@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import tomllib
 from collections.abc import Iterable, Mapping
@@ -410,7 +411,7 @@ def main(argv: list[str] | None = None) -> int:
     def admitted_outputs() -> dict[Path, str]:
         from tools.generators import admit_generators, manifest_generators
 
-        admit_generators(
+        admission = admit_generators(
             [
                 row
                 for row in manifest_generators(ROOT / "tools/generator_manifest.toml")
@@ -418,6 +419,8 @@ def main(argv: list[str] | None = None) -> int:
             ],
             root=ROOT,
         )
+        # This command owns its process; the graph's tools start with it.
+        os.environ.update(admission.environment)
         return generated_outputs()
 
     return generator_main(admitted_outputs, argv, description=__doc__)
