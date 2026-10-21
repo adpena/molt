@@ -721,7 +721,7 @@ def _required_command_text(
     return result.stdout.strip()
 
 
-def _parse_worktree_porcelain(text: str) -> list[dict[str, Any]]:
+def parse_worktree_porcelain(text: str) -> list[dict[str, Any]]:
     worktrees: list[dict[str, Any]] = []
     for block in re.split(r"\r?\n\r?\n", text.strip()):
         if not block.strip():
@@ -841,7 +841,7 @@ def _git_agent_context(
                 )
             )
 
-    worktrees = _parse_worktree_porcelain(worktree_text or "")
+    worktrees = parse_worktree_porcelain(worktree_text or "")
 
     def inspect_worktree(
         record: dict[str, Any],
@@ -1538,7 +1538,11 @@ def build_record(
     created_at: str,
     request_owner: str | None = None,
     requested_paths: Sequence[str] = (),
+    registry_root: Path | None = None,
 ) -> dict[str, Any]:
+    """One task's record. ``repo_root`` is the source checkout it describes;
+    ``registry_root`` (default ``repo_root``) holds ``logs/agents``."""
+    registry_root = repo_root if registry_root is None else registry_root
     if role not in VALID_ROLES:
         raise ValueError(f"unknown proof role: {role}")
     request = None
@@ -1559,7 +1563,7 @@ def build_record(
         session or os.environ.get("MOLT_SESSION_ID") or f"agent-{task}-{os.getpid()}"
     )
     agent_id = agent or os.environ.get("MOLT_AGENT_ID") or session_id
-    base = task_dir(repo_root, task)
+    base = task_dir(registry_root, task)
     return {
         "schema_version": SCHEMA_VERSION,
         "task": task,
@@ -1580,9 +1584,9 @@ def build_record(
         "environment": environment_snapshot(repo_root),
         "env_sh": str(base / "env.sh"),
         "env_ps1": str(base / "env.ps1"),
-        "report_path": repo_relative(report_path, repo_root),
-        "progress_log": repo_relative(base / "progress.log", repo_root),
-        "artifacts_dir": repo_relative(base / "artifacts", repo_root),
+        "report_path": repo_relative(report_path, registry_root),
+        "progress_log": repo_relative(base / "progress.log", registry_root),
+        "artifacts_dir": repo_relative(base / "artifacts", registry_root),
     }
 
 
@@ -2364,17 +2368,10 @@ def run_codex_stall_diagnostic(args: argparse.Namespace) -> int:
 
 def init_task(args: argparse.Namespace) -> dict[str, Any]:
     repo_root = args.repo_root.resolve()
-    task = validate_task_name(args.task)
-    base = task_dir(repo_root, task)
-    artifacts = base / "artifacts"
-
-    created_at = utc_now()
-    stamp = created_at.replace("-", "").replace(":", "").removesuffix("Z")
-    report_path = base / f"report_{stamp}.md"
-    record = build_record(
-        repo_root=repo_root,
-        task=task,
-        report_path=report_path,
+    return create_task(
+        registry_root=repo_root,
+        source_root=repo_root,
+        task=args.task,
         role=args.role,
         lane=args.lane,
         status=args.status,
@@ -2382,23 +2379,72 @@ def init_task(args: argparse.Namespace) -> dict[str, Any]:
         owned_paths=args.owned,
         agent=args.agent,
         session=args.session,
-        created_at=created_at,
         request_owner=args.request_owner,
         requested_paths=args.requested,
     )
+
+
+def create_task(
+    *,
+    registry_root: Path,
+    source_root: Path,
+    task: str,
+    role: str = "implementer",
+    lane: str = "",
+    status: str = "running",
+    target_root: str = "target",
+    owned_paths: Sequence[str] = (),
+    agent: str | None = None,
+    session: str | None = None,
+    request_owner: str | None = None,
+    requested_paths: Sequence[str] = (),
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Write a task scaffold and its record under ``registry_root``.
+
+    ``source_root`` is the checkout the task works in; its Git identity and DX
+    environment fill the record. ``extra`` adds owner-specific fields.
+    """
+    registry_root = registry_root.resolve()
+    source_root = source_root.resolve()
+    task = validate_task_name(task)
+    base = task_dir(registry_root, task)
+    artifacts = base / "artifacts"
+
+    created_at = utc_now()
+    stamp = created_at.replace("-", "").replace(":", "").removesuffix("Z")
+    report_path = base / f"report_{stamp}.md"
+    record = build_record(
+        repo_root=source_root,
+        registry_root=registry_root,
+        task=task,
+        report_path=report_path,
+        role=role,
+        lane=lane,
+        status=status,
+        target_root=target_root,
+        owned_paths=owned_paths,
+        agent=agent,
+        session=session,
+        created_at=created_at,
+        request_owner=request_owner,
+        requested_paths=requested_paths,
+    )
+    if extra:
+        record.update(extra)
     artifacts.mkdir(parents=True, exist_ok=True)
     (base / "progress.log").touch()
     session_env = dict(os.environ)
-    if not args.session and not session_env.get("MOLT_SESSION_ID"):
+    if not session and not session_env.get("MOLT_SESSION_ID"):
         # init named this session itself. Only --session pins an isolated
         # Cargo target; an unpinned task shares the warm persistent one.
         session_env["MOLT_SESSION_ID"] = record["session_id"]
         session_env["MOLT_SESSION_ID_GENERATED"] = "1"
     dx_env = development_artifact_env(
-        repo_root,
+        source_root,
         session_env,
         session_prefix=f"agent-{task}",
-        session_id=args.session,
+        session_id=session,
         create_dirs=False,
     )
     record["dx_env"] = {key: dx_env[key] for key in DX_ENV_KEYS if key in dx_env}
@@ -2417,6 +2463,34 @@ def init_task(args: argparse.Namespace) -> dict[str, Any]:
             f"{created_at} initialized task={task} session={record['session_id']}\n"
         )
     return record
+
+
+def update_task(
+    registry_root: Path,
+    task: str,
+    *,
+    status: str,
+    fields: dict[str, Any],
+    note: str = "",
+) -> dict[str, Any]:
+    """Set an existing record's status and fields, and log the change."""
+    base = task_dir(registry_root.resolve(), task)
+    path = base / "coordination.json"
+    payload = json.loads(_decode_record_bytes(path.read_bytes()))
+    if not isinstance(payload, dict) or payload.get("task") != task:
+        raise ValueError(f"coordination record {path} does not name task {task!r}")
+    updated_at = utc_now()
+    payload.update(fields)
+    payload["status"] = status
+    payload["updated_at_utc"] = updated_at
+    write_json(path, payload)
+    with (base / "progress.log").open("a", encoding="utf-8") as progress:
+        progress.write(
+            f"{updated_at} status={status} task={task}"
+            + (f" {note}" if note else "")
+            + "\n"
+        )
+    return payload
 
 
 def _decode_record_bytes(data: bytes) -> str:

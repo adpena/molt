@@ -22,6 +22,10 @@ def test_family_members_resolve_to_the_family_root(tmp_path: Path) -> None:
     assert custody_layout.custody_root(lane) == root.resolve()
     # The family root owns scratch for every member.
     assert custody_layout.scratch_root(root, lane) == root / "tmp"
+    # A lane created at the declared root joins the same family.
+    lanes = custody_layout.family_worktrees_root(checkout)
+    assert lanes == (root / "worktrees").resolve()
+    assert custody_layout.custody_root(lanes / "lane-b") == root.resolve()
 
 
 def test_a_plain_clone_is_its_own_family_and_keeps_scratch_out_of_its_tree(
@@ -31,6 +35,8 @@ def test_a_plain_clone_is_its_own_family_and_keeps_scratch_out_of_its_tree(
     clone.mkdir(parents=True)
 
     assert custody_layout.custody_root(clone) == clone.resolve()
+    # Its own directory would nest lanes inside its source tree.
+    assert custody_layout.family_worktrees_root(clone) is None
     scratch = custody_layout.scratch_root(clone, clone)
     assert clone.resolve() not in (scratch, *scratch.parents)
     assert scratch.parent == Path(tempfile.gettempdir()).resolve()

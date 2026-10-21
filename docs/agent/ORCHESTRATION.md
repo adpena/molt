@@ -316,8 +316,9 @@ The shared checkout accumulates multiple hands' uncommitted WIP, which blocks
   <crate>`) so the author's compile-check transfers — no rebuild. This is how
   0f955df37 landed cleanly while the shared tree stayed dirty.
 - **Prefer per-lane worktrees for NEW build-heavy lanes** so the shared
-  checkout stays clean; commit + push to a branch and the orchestrator
-  cherry-picks to main.
+  checkout stays clean: `tools/molt_dev.py lane start <slug>` creates,
+  records and provisions one, and `lane retire <slug>` removes it after it
+  lands (docs/ops/INTEGRATION.md).
 
 ## 1000-Year End-State Roadmap (R0–R9) — the recipe
 

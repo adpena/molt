@@ -159,7 +159,7 @@ integration speedup.
 |---|--------|------------------------------|
 | 1 | **Rebase silently drops commits** (patch-id dedup vs moved-upstream) | Without replay, require unchanged captured HEAD and upstream ancestry, with zero patch-diff work. Actual replay computes source `git patch-id --stable` before mutation and verifies survival afterward. Missing ⇒ LOUD FAIL listing the dangling shas; never proceeds. |
 | 2 | **Push exit codes lie** (rtk/sandbox swallow; 144-detached pushes can “succeed”) | `verify-push` / the push step **fetch** the remote and confirm `origin/<branch>` **contains** the tip via `merge-base --is-ancestor`. Cleanup is gated on that, never on the push command's exit. |
-| 3 | **Worktree cleanup loses work** | cleanup **refuses** if unpushed commits exist (`origin/main..HEAD` non-empty) **or** tracked staged/unstaged changes exist (excluding the ignore set). `--force` requires **naming the sha** being abandoned (deliberate + auditable). The main worktree is never removed. |
+| 3 | **Worktree cleanup loses work** | cleanup **refuses** if a commit of `origin/main..HEAD` is not on `origin/main` by `Change-Id` trailer or patch-id (`landing_representation`, below) **or** tracked staged/unstaged changes exist (excluding the ignore set). `--force` requires **naming the sha** being abandoned (deliberate + auditable). The main worktree is never removed. |
 | 4 | **Partial WIP salvage** (split staged vs unstaged) | `secure-wip` enumerates **all** tracked modifications from `git status --porcelain -z` (staged + unstaged + adds), honors partner-excludes, and commits them in **ONE** `WIP-RECOVERY`-marked commit scoped to an explicit pathspec (a pre-staged excluded file is left out). |
 | 5 | **diff/ls/stat lie under rtk** | Every comparison verdict uses git **plumbing** (`rev-list`, `diff-tree`/`patch-id`, `rev-parse`, `merge-base --is-ancestor`, `status --porcelain -z`, `worktree list --porcelain`) captured as bytes, or python file ops (`pathlib` and owned content admission). Never a human-readable shell text tool whose output the proxy can rewrite. |
 | 6 | **Stale-binary misattribution** | Each selected Cargo gate owns its declared package, feature, profile and target graph against the captured integration source. Product compiler reuse binds source/toolchain inputs and executable bytes through the existing compiler admission. A Git date, marker substring or byte difference cannot attest a different artifact; deterministic identical output is valid. |
@@ -184,6 +184,74 @@ integration speedup.
 | `detached-run` | Spawn a command as a `setsid` daemon with a state dir (hazard 11). `--name`, `--cwd`, `--env K=V`, `--replace`, `--state-dir`, `--json`, `-- cmd…`. The spawning tool call itself must run unsandboxed; verify in a *later* call. |
 | `detached-verify` | Prove the daemon outlived its spawning call: `running` / `done(rc)` / `died-silent`. `--name`, `--min-age-s`, `--state-dir`, `--json`. Exit 0 only for `running` past min-age or `done` rc 0. |
 | `cleanup` | Standalone hazard-3 worktree cleanup gate. `--ignore`, `--force SHA`. |
+| `lane start <slug>` | Create `lane/<slug>` and its worktree at the fetched base, write its coordination record, and provision its checkout inputs. `--base`, `--root`. |
+| `lane retire <slug>` | Remove a landed lane completely: worktree, local and remote branch, checkout state, and record. `--abandon` first writes a verified bundle. `--ignore`. |
+| `lane list` | Each lane's tip, base, commits ahead and behind, landed, dirty and provisioned state. `--json`, `--no-fetch`. |
+
+### Lanes (`lane start | retire | list`)
+
+The driver owns each lane's lifecycle (design: `docs/design/landing_queue.md`,
+"Orchestrator-owned lanes"). A lane is the branch `lane/<slug>` and its
+worktree. A slug is 1 to 64 lower-case letters, digits, `.`, `_` or `-`.
+
+- **`lane start <slug>`** fetches `origin/main` (or `--base <ref>`), then runs
+  `git worktree add --no-track -b lane/<slug>`. The worktree goes to
+  `<root>/worktrees/<slug>` beside the main checkout `<root>/molt-src`
+  (`molt.custody_layout.family_worktrees_root`); another layout must pass
+  `--root`. It writes the record `logs/agents/lane-<slug>/coordination.json`
+  in the main checkout through `tools/agent_coordination.py`, with the lane
+  worktree as its source checkout. Then it provisions every checkout input
+  (`molt.checkout_provisioning`): the uv environment `<lane>/.venv`, the Acorn
+  tree, and the managed Git hooks. An inherited `UV_PROJECT_ENVIRONMENT`
+  names the caller's environment, so provisioning drops it. It refuses an
+  existing branch, an existing path and an active record. A provisioning
+  failure keeps the lane and prints the command that finishes it.
+- **`lane retire <slug>`** fetches, then accepts the lane only when it is
+  landed. *Landed* is one predicate, `molt_dev_common.landing_representation`:
+  every non-merge commit of `origin/main..lane/<slug>` is on `origin/main`
+  since the merge base, by its `Change-Id:` trailer or by its patch-id
+  (`git cherry`). A tip that is an ancestor of `origin/main` is the trivial
+  case; a lane replayed by the queue, with its last commit amended, is
+  landed too. `--abandon` accepts an unlanded lane after it writes
+  `origin/main..lane/<slug>` to `<root>/drift-bundles/lane-<slug>-<tip>.bundle`
+  (where `tools/drift_harvest.py` keeps bundles), verifies it and prints its
+  path. Retirement refuses a dirty worktree (tracked changes or untracked
+  files, outside the ignore set) and names each path. It refuses to remove
+  the checkout that runs the driver or holds the current directory, and a
+  remote lane branch that holds commits in neither the lane nor main. Then it
+  removes the worktree through the hazard-3 cleanup (which retires the
+  checkout's backend daemons and reclaims its checkout state, HF-313),
+  deletes `origin/lane/<slug>` with a lease and confirms it with
+  `ls-remote`, deletes the local branch with `update-ref -d <ref> <tip>`, and
+  closes the record as `landed` or `abandoned`.
+- **`lane list`** shows each `lane/*` branch: tip, merge base, commits ahead
+  and behind, landed, dirty paths and per-input provisioning state, plus the
+  repository's hook state. Read-only Git plumbing (`merge-base`, `rev-list`,
+  `cherry`, `for-each-ref`, `worktree list`) runs as a bounded metadata
+  probe without a memory guard: on 2026-10-20, 10 lanes took 5.8 s instead
+  of 26.8 s.
+
+Cost: `lane start` pays one fetch, one `git worktree add` and the
+provisioners. `landing_representation` pays one `git log` when the tip is on
+main, and at most one `merge-base`, one more `log` and one `cherry` otherwise.
+
+### Checkout provisioning
+
+`molt.checkout_provisioning` owns a checkout's lock-declared inputs, as
+`uv run` syncs before it runs. `ensure(<input>)` with a current stamp reads
+the stamp and the lock files; otherwise it runs one guarded command under a
+lock in the checkout's Git directory and writes the stamp only after success.
+`python -m molt.checkout_provisioning ensure|status [INPUT ...]` runs it by
+hand. The memory guard fills unset variables with dx defaults, so the uv
+command names its target environment and the caller's uv cache explicitly;
+otherwise it would sync a managed environment instead, or copy 136 MB from
+the artifact volume where a clone costs 1 s. Toolchain admission ensures a selected tool's `checkout_input` (the
+Acorn tree), so `tools/generators.py`, the proof executor and `integrate`
+provision it on demand. Gate environment selection ensures the checkout's own
+uv environment (`UV_PROJECT_ENVIRONMENT`, else `.venv`) before it validates
+it: a missing environment is built with `uv sync --frozen`, and an unstamped
+one is confirmed by the same command. An explicit `MOLT_VENV` and a borrowed
+main-worktree environment are used as they are.
 
 ### The landing queue (`land`, `queue run`)
 
@@ -362,13 +430,13 @@ wall time.
 These are the per-session conventions every agent follows; the driver assumes
 them and the doc records them so they are canonical, not tribal.
 
-- **Worktree off `origin/main`.** Each parallel agent works in a fresh detached
-  worktree:
+- **One lane per change, from `origin/main`.** Each parallel agent works in
+  its own lane:
   ```bash
-  git -C /Users/adpena/Projects/molt worktree add --detach /tmp/wt_<name> origin/main
+  uv run --python 3.12 python tools/molt_dev.py lane start <slug>
   ```
-  (Agent worktree isolation branches from the session-start commit; foundation
-  work touching just-landed files should branch from current `main` instead.)
+  It prints the worktree path. Retire the lane with `lane retire <slug>`
+  once it lands.
 - **DX env before any build.** Export the RunContext facts at the start of a
   shell before build/test/bench work so artifact roots, cache roots, temp roots,
   daemon socket paths, and Python path all come from the same authority:
@@ -436,8 +504,13 @@ python3 tools/molt_dev.py probe --pid 12345 --file logs/calib.log
 `tests/test_molt_dev.py` exercises the driver's Git and process countermeasures
 on real temporary repositories with a bare origin: commit preservation, push
 confirmation, cleanup refusal, WIP capture, source markers, selected-gate failure
-and interpreter admission. The `dev-tooling` rule runs that owner whenever the
-driver, its config or tests change. `tests/test_proof_plan.py` exercises local
+and interpreter admission. `tests/test_molt_dev_lanes.py` exercises the lane
+commands and the landed predicate on a real checkout family, including a lane
+replayed onto a moved main with its last commit amended.
+`tests/test_checkout_provisioning.py` exercises stamps, failures, owner
+installation, admission and a guarded `integrate` child whose inherited
+`UV_PROJECT_ENVIRONMENT` names an environment nobody built. The `dev-tooling`
+rule runs these owners whenever the driver, its config or tests change. `tests/test_proof_plan.py` exercises local
 policy admission and projection. Compiler identity remains qualified by the
 existing CLI artifact-custody owners: `test_compiler_identity.py`,
 `test_cli_backend_binary_materialization.py`, `test_native_toolchain_transfer.py`

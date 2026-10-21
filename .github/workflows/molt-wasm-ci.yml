@@ -63,7 +63,7 @@ jobs:
           sync-groups: source-build-numpy
 
       - name: Provision browser asset parser
-        run: uv run --no-sync python3 tools/bootstrap_browser_asset_graph.py
+        run: uv run --no-sync python3 -m molt.checkout_provisioning ensure browser-acorn
 
       - name: Install WASM validator
         run: python3 -m molt.tool_releases provision wasm-tools --github-path "$GITHUB_PATH"

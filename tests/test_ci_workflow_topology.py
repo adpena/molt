@@ -1315,7 +1315,6 @@ def test_executable_receipt_root_is_git_ignored() -> None:
 
 def test_executable_proof_workflows_contain_only_executor_mechanics() -> None:
     allowed_tools = {
-        "tools/bootstrap_browser_asset_graph.py",
         "tools/ci_resource_env.py",
         "tools/guarded_exec.py",
         "tools/profile_hotspots.py",
@@ -2063,7 +2062,8 @@ def test_node_toolchain_consumers_provision_the_canonical_version() -> None:
             parser_indices = [
                 index
                 for index, step in enumerate(steps)
-                if "tools/bootstrap_browser_asset_graph.py" in step.get("run", "")
+                if "molt.checkout_provisioning ensure browser-acorn"
+                in step.get("run", "")
             ]
             partition_index = next(
                 index

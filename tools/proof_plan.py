@@ -445,6 +445,31 @@ def load_toolchain_policies(
             with (root / row["generator_manifest"]).open("rb") as handle:
                 generators = tomllib.load(handle).get("generator", [])
             row["members"] = list(generator_toolchains(generators))
+        if "checkout_input" in row:
+            # A lock-declared checkout tree: molt.checkout_provisioning owns its
+            # locks and its provisioning command, and admission ensures it.
+            from molt.checkout_provisioning import (
+                CHECKOUT_INPUT_NAMES,
+                locked_input_files,
+                provisioning_command,
+            )
+
+            checkout_input = row["checkout_input"]
+            if checkout_input not in CHECKOUT_INPUT_NAMES:
+                raise ValueError(f"{name}: unknown checkout input {checkout_input!r}")
+            if "setup_command" in row:
+                raise ValueError(
+                    f"{name}: a checkout input derives its setup command; "
+                    "remove setup_command"
+                )
+            if "package_lock" in row and row["package_lock"] not in locked_input_files(
+                checkout_input
+            ):
+                raise ValueError(
+                    f"{name}: package_lock {row['package_lock']!r} is not a lock "
+                    f"file of checkout input {checkout_input}"
+                )
+            row["setup_command"] = provisioning_command(checkout_input)
         if "package_lock" in row:
             if row.get("node_package_mode", "require") not in {"require", "import"}:
                 raise ValueError(f"{name}: invalid node package resolution mode")
@@ -3509,21 +3534,54 @@ def admit_toolchains(
     declared tool closure from that baseline, so unrelated commands do not
     inherit another command's compiler or target selection.
     A tool the contract admits on PATH still passes when its pinned provider
-    is not installed; a refusal names what to install.
+    is not installed; a refusal names what to install. A selected tool that a
+    checkout input supplies (``checkout_input``) is provisioned from its lock
+    first, as ``uv run`` syncs before it runs (`molt.checkout_provisioning`).
     """
     policies = tuple(policies)
     names = toolchain_closure(policies, names)
     projection = project_toolchains(policies, names, environ=os.environ, root=root)
     os.environ.update(projection.delta)
+    provisioning_error = _provision_checkout_inputs(policies, names, root=root)
     try:
         fingerprints = toolchain_fingerprints(
             policies, names, owners=owners, python_admissions=python_admissions
         )
     except ValueError as exc:
-        if not projection.missing:
+        details = [str(exc)]
+        if provisioning_error is not None:
+            details.append(provisioning_error)
+        if projection.missing:
+            details.append(_not_provisioned(projection.missing))
+        if len(details) == 1:
             raise
-        raise ValueError(f"{exc}; {_not_provisioned(projection.missing)}") from exc
+        raise ValueError("; ".join(details)) from exc
+    if provisioning_error is not None:
+        raise ValueError(f"toolchain contract violation: {provisioning_error}")
     return AdmittedToolchains(fingerprints=fingerprints, environment=projection.delta)
+
+
+def _provision_checkout_inputs(
+    policies: Iterable[ToolchainPolicy], names: tuple[str, ...], *, root: Path
+) -> str | None:
+    """Ensure each selected checkout input; the failure text, or None."""
+    selected = set(names)
+    inputs = tuple(
+        dict.fromkeys(
+            policy.data["checkout_input"]
+            for policy in policies
+            if policy.name in selected and "checkout_input" in policy.data
+        )
+    )
+    if not inputs:
+        return None
+    from molt import checkout_provisioning
+
+    try:
+        checkout_provisioning.ensure_all(root, names=inputs)
+    except checkout_provisioning.ProvisioningError as exc:
+        return f"checkout input provisioning failed: {exc}"
+    return None
 
 
 def toolchain_fingerprints(

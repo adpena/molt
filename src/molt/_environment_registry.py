@@ -489,6 +489,11 @@ _REGISTRY_JSON = r"""{
       "summary": "Guard scope for the C-extension trampoline benchmark."
     },
     {
+      "name": "MOLT_CHECKOUT_PROVISIONING",
+      "owner": "src/molt/checkout_provisioning.py",
+      "summary": "Guard scope for the package-manager commands that provision a checkout's lock-declared inputs."
+    },
+    {
       "name": "MOLT_CI",
       "owner": "tools/ci_resource_env.py",
       "summary": "Guard scope for CI resource planning (memory budgets exported to workflow steps)."

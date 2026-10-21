@@ -162,6 +162,12 @@ A checkout's inputs come from its lock files, on demand, as `uv run` does.
   to run a bootstrap script. `lane start` provisions every input at once.
 - **Cost.** 2.2 s for a new worktree (uv 1.5 s, npm 0.7 s, both from warm
   caches); about 1 ms per consumer afterwards.
+- **Landed (slice 3).** `src/molt/checkout_provisioning.py` holds the uv
+  environment, the Acorn tree and the managed Git hooks. Admission and gate
+  environment selection ensure them; `tools/bootstrap_browser_asset_graph.py`
+  is deleted. Measured on a fresh clone: uv 1.0 s, npm 0.8 s, hooks 0.4 s;
+  a current stamp costs under 0.3 ms. See the
+  [integration contract](../ops/INTEGRATION.md).
 
 ### 3. Stable change ids
 
@@ -198,6 +204,9 @@ The driver creates, provisions and retires each lane.
   lane's state. The queue retires each lane it lands.
 - **Cost.** The same Git and provisioning work an agent does by hand now,
   without the forgotten steps.
+- **Landed (slice 3).** `tools/molt_dev_lanes.py` implements `lane start`,
+  `lane retire` and `lane list`. A lane is landed when every commit is on
+  main by Change-Id or patch-id, so a replayed and amended lane retires.
 
 ### 5. A queue with speculative batches and bisection
 

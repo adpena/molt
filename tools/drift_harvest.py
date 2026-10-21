@@ -52,6 +52,7 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
 
+from molt.custody_layout import BUNDLES_DIRNAME  # noqa: E402
 from molt.dx import canonical_molt_root  # noqa: E402
 from tools import lane_maturity  # noqa: E402
 
@@ -362,7 +363,7 @@ def main() -> int:
         default_root = canonical_molt_root(REPO_ROOT)
         bundle_path = Path(
             args.bundle
-            or (default_root / "drift-bundles" / f"drift-harvest-{int(now)}.bundle")
+            or (default_root / BUNDLES_DIRNAME / f"drift-harvest-{int(now)}.bundle")
         )
         captured = bundle_signal(rows, bundle_path)
         print(f"bundled {len(captured)} signal worktrees -> {bundle_path}")
