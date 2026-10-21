@@ -266,6 +266,12 @@ def _read_receipt(path: Path, *, label: str, absent_is_residue: bool = True) -> 
         # The stable reader reports an absent leaf through its own error.
         if not absent_is_residue or not isinstance(error.__cause__, FileNotFoundError):
             raise
+        # A POSIX remover can move a reclaimed generation after _locked
+        # acquired its file. Missing the whole namespace is completion, not
+        # a lost receipt in a surviving generation. Let both readers use
+        # their existing absent-generation disposition.
+        if not os.path.lexists(path.parent):
+            raise
         raise _CrashResidue(f"{label} is absent: {path}") from error
     except (json.JSONDecodeError, UnicodeDecodeError) as error:
         raise _CrashResidue(f"{label} is undecodable: {path}: {error}") from error
