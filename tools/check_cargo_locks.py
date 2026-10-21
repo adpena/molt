@@ -33,6 +33,7 @@ ROOT = bind_repository_imports(__file__)
 
 from molt import process_guard  # noqa: E402
 from molt.cargo_execution_policy import cargo_subprocess_environment  # noqa: E402
+from molt.cargo_workspace import require_cargo_workspace_root  # noqa: E402
 
 TIMEOUT_SECONDS = 300
 
@@ -152,6 +153,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
     parser.add_argument("--root", type=Path, default=ROOT)
     args = parser.parse_args(argv)
+    try:
+        for lockfile in tracked_lockfiles(args.root):
+            require_cargo_workspace_root(lockfile.with_name("Cargo.toml"))
+    except ValueError as exc:
+        print(f"cargo-locks: {exc}", file=sys.stderr)
+        return 1
     unpatched = unpatched_vendored_crates(args.root)
     for diagnostic in unpatched:
         print(f"cargo-locks: {diagnostic}", file=sys.stderr)

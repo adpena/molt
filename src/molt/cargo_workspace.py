@@ -144,6 +144,21 @@ def _table(value: object, field: str, manifest: Path) -> dict[str, Any]:
     return result
 
 
+def require_cargo_workspace_root(manifest: Path) -> None:
+    """An independently executed Cargo project must stop ancestor discovery.
+
+    A parent's exclude list does not make this manifest a workspace boundary;
+    Cargo may keep looking into an enclosing checkout. Callers supply known
+    project roots, not ordinary member or vendored dependency manifests.
+    """
+    data = _read_manifest(manifest)
+    if "workspace" not in data:
+        raise ValueError(
+            f"{manifest}: independent Cargo project requires an explicit [workspace]"
+        )
+    _table(data["workspace"], "workspace", manifest)
+
+
 def _local_manifest(value: object, base: Path, field: str) -> Path:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{base}: {field} must be a nonempty path")
