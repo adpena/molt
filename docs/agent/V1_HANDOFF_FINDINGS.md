@@ -10,6 +10,11 @@ fixed history, with remaining family obligations linked to their existing open
 owners. Do not delete findings or discard earlier failure or measurement evidence
 when status changes.
 
+Cite a commit of the same landing as `change:I` plus 8 to 40 hex digits of
+its `Change-Id` trailer; `tools/molt_dev.py integrate` rewrites the citation
+to the landed commit id ([integration contract](../ops/INTEGRATION.md)). Cite a
+landed commit by its commit id.
+
 Evidence paths under `C:\Molt\...` exist only on the Windows host that
 produced them; the public CI run IDs are enough to reproduce each finding.
 

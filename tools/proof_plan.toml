@@ -4818,6 +4818,24 @@ pytest = [
   "tests/test_cargo_workspace.py",
 ]
 
+# --- Managed Git hooks ---------------------------------------------------
+[[rule]]
+name = "managed-git-hooks"
+toolchains = ["python"]
+description = "Managed Git hooks, their installer and the attribution checker they run."
+globs = [
+  ".githooks/**",
+  "tools/install_git_hooks.py",
+  "tools/check_commit_attribution.py",
+  "tests/tools/test_install_git_hooks.py",
+  "tests/tools/test_check_commit_attribution.py",
+]
+gates = []
+pytest = [
+  "tests/tools/test_install_git_hooks.py",
+  "tests/tools/test_check_commit_attribution.py",
+]
+
 # --- Development output custody ----------------------------------------
 [[rule]]
 name = "checkout-output-custody"

@@ -1043,6 +1043,53 @@ def _gate_pycache_prefix(repo: Path, env: Mapping[str, str]) -> Path:
     return prefix
 
 
+def _resolve_change_references(
+    git: Git, repo: Path, upstream: str, selected_commit: str, *, dry: bool
+) -> str:
+    """Rewrite the landing's change citations and amend its last commit."""
+    from tools import molt_dev_change_ids as change_ids
+
+    def run_git(arguments: list[str]) -> str:
+        return git._run(arguments).stdout
+
+    touched = changed_paths(upstream, selected_commit, run_git=run_git)
+    documents = {
+        path: (repo / path).read_bytes()
+        for path in change_ids.citing_paths(touched)
+        if (repo / path).is_file()
+    }
+    if not any(change_ids.CHANGE_REFERENCE.search(text) for text in documents.values()):
+        return selected_commit
+    _step("resolve change citations")
+    try:
+        rewritten, resolutions = change_ids.resolve(
+            documents,
+            change_ids.change_ids(run_git, f"{upstream}..{selected_commit}"),
+            tip=selected_commit,
+            abbreviate=lambda commit: git._run(
+                ["rev-parse", f"--short={change_ids.SHORT_ID_LENGTH}", commit]
+            ).stdout.strip(),
+        )
+    except ValueError as exc:
+        raise DriverError(f"{exc}\nexecuted=0") from exc
+    for resolution in resolutions:
+        _ok(f"{resolution.path}: change:{resolution.token} -> {resolution.commit}")
+    if dry:
+        _say("    would amend the last commit with the resolved citations")
+        return selected_commit
+    for path, content in rewritten.items():
+        (repo / path).write_bytes(content)
+    git._run(["add", "--", *rewritten])
+    # The message is unchanged and already passed its commit-msg hook.
+    git._run(["commit", "--amend", "--no-edit", "--no-verify", "--quiet"])
+    amended = require_git_object_id(git.head_sha(), label="resolved integration commit")
+    _assert_integration_source(git, amended)
+    _ok(f"amended {git.short(selected_commit)} -> {git.short(amended)}")
+    return amended
+
+
+
+
 def _gate_runtime(
     git: Git,
     selected_commit: str,
@@ -1321,6 +1368,12 @@ def _integrate_exclusive(
             "dry-run cannot verify post-rebase patch-ids (no rebase performed); "
             "the live run verifies them"
         )
+
+    # --- step 3b: stable change ids -----------------------------------------
+    selected_commit = _resolve_change_references(
+        git, repo, upstream_before, selected_commit, dry=dry
+    )
+    progress.source_commit = selected_commit
 
     # --- step 4: content markers (hazard 8) ---------------------------------
     markers = [Marker.parse(spec) for spec in (args.marker or [])]

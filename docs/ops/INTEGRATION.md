@@ -34,8 +34,21 @@ checkout. The driver checks source cleanliness and the selected HEAD at gate
 boundaries. These checks are not a continuous filesystem monitor.
 
 ```
-fetch  →  rebase  →  verify-commits  →  markers  →  gates  →  push  →  confirm  →  cleanup
+controller  →  fetch  →  rebase  →  verify-commits  →  cite  →  markers  →  gates  →  push  →  confirm  →  cleanup
 ```
+
+0. **controller** — a live `integrate` fetches, then runs the driver of main's
+   tip, never the candidate's. It extracts `tools/`, `src/molt`,
+   `pyproject.toml`, `uv.lock` and `.python-version` from that commit into
+   `<git-common-dir>/molt/controllers/<key>` (the key is the digest of those
+   trees, so a landing that changes none of them reuses the extraction), runs
+   `uv sync --frozen --no-dev` from main's lock there, and execs the driver as
+   `python -I` with `--pinned-controller <key>`. The candidate still supplies
+   its gate policy and its tests; a change to the driver takes effect once it
+   lands. `--candidate-controller` runs the checkout's own driver to repair a
+   broken controller on main, and `--dry-run` always runs in-process. Every
+   progress event names its `controller`. The four most recently used
+   controllers stay; an older one retires after a day without use.
 
 1. **fetch** — require clean source, then `git fetch origin main`; pin the full
    upstream identity. `--expected-upstream <full-commit>` additionally requires
@@ -56,10 +69,19 @@ fetch  →  rebase  →  verify-commits  →  markers  →  gates  →  push  �
    commits retain their explicit not-patch-tracked diagnostic. A missing
    patch-id is a **LOUD FAIL listing the dangling shas**. A dry-run requiring
    replay reports that survival remains unverified.
-4. **markers (hazard 8)** — declared `--marker` content markers
+4. **cite** — the managed `commit-msg` hook gives every commit a Gerrit-style
+   `Change-Id: I<40 hex>` trailer that survives rebase and amend. A Markdown
+   document under `docs/` cites a commit of the same landing as `change:I`
+   plus 8 to 40 hex digits of its Change-Id. After the patch-id check, the
+   driver rewrites each citation to the rebased commit's 9-character id and
+   amends the last commit, so the gates and the push see the final text. A
+   citation that names no commit of the landing, names several, or names the
+   last commit (whose id the amend changes) fails before any gate. Cite a
+   landed commit by its commit id.
+5. **markers (hazard 8)** — declared `--marker` content markers
    (`exists:<path>` / `contains:<path>::<needle>`) are checked against the
    post-rebase tree via python file ops. A mismatch fails before push.
-5. **gates (hazard 10)** — the set of touched paths selects gate commands from
+6. **gates (hazard 10)** — the set of touched paths selects gate commands from
    the selected commit's `tools/proof_plan.toml` (change-class → gates). Always
    gates and every matching rule run. A non-zero gate or source/HEAD drift halts
    the run **before push**. `--extra-gate` only adds arc-specific gates. There is
@@ -92,15 +114,15 @@ fetch  →  rebase  →  verify-commits  →  markers  →  gates  →  push  �
    to the DX pycache prefix outside the checkout (`molt.dx.scratch_dir`,
    `"pycache"`). A prefix inside the checkout is refused. No gate result is
    reused: the receipt is evidence, not a cache.
-6. **push** — `git push origin <captured-commit>:refs/heads/main`. Foreign Git
+7. **push** — `git push origin <captured-commit>:refs/heads/main`. Foreign Git
    hooks remain active and both rejection streams are retained. Git identity
    reads ignore local replacement refs. The push command's **exit code is
    NOT trusted** (hazard 2).
-7. **confirm (hazard 2)** — `git fetch` then confirm `origin/main` **contains**
+8. **confirm (hazard 2)** — `git fetch` then confirm `origin/main` **contains**
    the pushed tip via `git merge-base --is-ancestor`. Cleanup is gated on THIS,
    never on the push exit code. A non-landed tip is a loud fail; cleanup is
    refused.
-8. **cleanup (hazard 3)** — with `--cleanup-worktree`, remove the worktree, but
+9. **cleanup (hazard 3)** — with `--cleanup-worktree`, remove the worktree, but
    only when safe (see below).
 
 Each failure raises a `DriverError` that `main()` translates to a non-zero exit
