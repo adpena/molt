@@ -420,6 +420,16 @@ layer = 4
 role = "thin backend driver + daemon bin; fans in every backend crate"
 
 [[crate]]
+name = "molt-jit"
+runtime_layer = "outside"
+layer = 4
+# The development JIT runner (HF-371): native backend (L3) plus runtime core
+# (L2) and the vocabulary (L0); no crate depends on it. A new leaf adds one
+# crate to every cone below it (molt-codegen-abi 29 -> 30), never an edge
+# between existing crates.
+role = "development JIT runner: compiles backend IR into process memory"
+
+[[crate]]
 name = "molt-runtime"
 runtime_layer = "runtime"
 layer = 5

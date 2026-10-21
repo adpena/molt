@@ -302,7 +302,7 @@ impl SimpleBackend {
             // on `emit_resolver_here` so batch/stdlib-cache LLVM objects never
             // emit a duplicate `_molt_app_resolve_callable` symbol.
             if emit_resolver_here {
-                llvm.emit_app_resolver_function(&app_callable_manifest);
+                llvm.emit_app_resolver_function(app_callable_manifest);
             }
             //  Module registry blob (import bedrock)
             // Same single-object custody as the resolver: the main application
