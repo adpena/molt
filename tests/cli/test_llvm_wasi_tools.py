@@ -68,7 +68,9 @@ def test_candidate_cache_preserves_environment_rule_with_identical_spellings(
     compiler = _tool_path(directory, "cc")
     compiler.write_bytes(b"selected compiler")
     compiler.chmod(0o755)
-    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
+    monkeypatch.setattr(
+        llvm_wasi_tools, "_source_checkout_roots", lambda _source_root=None: ()
+    )
     other_rule = NameRule.WINDOWS if first_rule is NameRule.EXACT else NameRule.EXACT
     for rule in (first_rule, other_rule, first_rule):
         environment = ProcessEnvironment(
@@ -86,7 +88,9 @@ def test_default_managed_root_removes_only_equivalent_explicit_selector(
     tmp_path, monkeypatch, rule
 ):
     observed = []
-    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: (tmp_path,))
+    monkeypatch.setattr(
+        llvm_wasi_tools, "_source_checkout_roots", lambda _source_root=None: (tmp_path,)
+    )
 
     def root(_checkout, environment, **_kwargs):
         observed.append(environment)
@@ -519,7 +523,9 @@ def test_managed_sdk_discovery_is_target_scoped_in_both_cache_orders(
     target = tmp_path / "target"
     native = _write_tool_family(target / "toolchains" / "llvm-22" / "bin")
     sdk = _write_tool_family(target / "toolchains" / "wasi-sdk" / "bin")
-    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
+    monkeypatch.setattr(
+        llvm_wasi_tools, "_source_checkout_roots", lambda _source_root=None: ()
+    )
     environment = {"PATH": "", "NoDefaultCurrentDirectoryInExePath": "1"}
     for family in (first, "wasm" if first == "native" else "native", first):
         candidates = llvm_wasi_tools.llvm_tool_candidates(
@@ -538,7 +544,9 @@ def test_native_discovery_rejects_automatic_sdk_provenance(
     native = _write_tool_family(tmp_path / "native" / "bin")
     for path in (*sdk.values(), *native.values()):
         path.chmod(0o755)
-    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
+    monkeypatch.setattr(
+        llvm_wasi_tools, "_source_checkout_roots", lambda _source_root=None: ()
+    )
     directories = [sdk["cc"].parent]
     if native_present:
         directories.append(native["cc"].parent)
@@ -574,7 +582,9 @@ def test_relocated_sdk_selection_needs_no_path_mutation(
     install = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(tmp_path))
     root, sysroot = install.sdk, install.sysroot
     cc = root / "bin" / ("clang.exe" if os.name == "nt" else "clang")
-    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
+    monkeypatch.setattr(
+        llvm_wasi_tools, "_source_checkout_roots", lambda _source_root=None: ()
+    )
     environment = {
         "PATH": str(root / "bin"),
         selector: str(sysroot if "SYSROOT" in selector else root),
@@ -604,7 +614,9 @@ def test_sdk_file_alias_does_not_hide_later_native_path_compiler(
         pytest.skip("file symlink privilege unavailable")
     for path in (*sdk.values(), *native.values()):
         path.chmod(0o755)
-    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
+    monkeypatch.setattr(
+        llvm_wasi_tools, "_source_checkout_roots", lambda _source_root=None: ()
+    )
     environment = {
         "PATH": os.pathsep.join(map(str, (alias_directory, native["cc"].parent))),
         "PATHEXT": ".EXE",
@@ -651,7 +663,9 @@ def test_automatic_search_skips_unclassifiable_entries_without_crossing_families
     }
     before = dict(environment)
     siblings = tuple(directories) if source == "sibling" else ()
-    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
+    monkeypatch.setattr(
+        llvm_wasi_tools, "_source_checkout_roots", lambda _source_root=None: ()
+    )
     resolve = Path.resolve
     is_file = Path.is_file
     failed_resolutions: list[Path] = []
@@ -707,7 +721,9 @@ def test_explicit_tool_with_unknown_provenance_refuses_automatic_substitution(
         "PATHEXT": ".EXE",
         "NoDefaultCurrentDirectoryInExePath": "1",
     }
-    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
+    monkeypatch.setattr(
+        llvm_wasi_tools, "_source_checkout_roots", lambda _source_root=None: ()
+    )
     resolve = Path.resolve
 
     def denied(path, *args, **kwargs):
@@ -764,7 +780,9 @@ def test_native_sdk_path_filter_reuses_windows_executable_search_policy(
 ) -> None:
     sdk = _write_tool_family(tmp_path / "wasi-sdk" / "bin")
     native = _write_tool_family(tmp_path / "native" / "bin")
-    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
+    monkeypatch.setattr(
+        llvm_wasi_tools, "_source_checkout_roots", lambda _source_root=None: ()
+    )
     monkeypatch.chdir(sdk["cc"].parent)
     path = f'"{sdk["cc"].parent}";"{native["cc"].parent}"'
     environment = {"Path": path, "PATH": path, "PathExt": ".EXE"}
@@ -779,7 +797,9 @@ def test_explicit_sdk_compiler_does_not_authorize_automatic_native_siblings(
 ) -> None:
     sdk = _write_tool_family(tmp_path / "wasi-sdk" / "bin")
     native = _write_tool_family(tmp_path / "native" / "bin")
-    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
+    monkeypatch.setattr(
+        llvm_wasi_tools, "_source_checkout_roots", lambda _source_root=None: ()
+    )
     monkeypatch.setattr(
         llvm_wasi_tools, "_tool_version", lambda _path, **_kw: "fixture"
     )
@@ -801,7 +821,9 @@ def test_native_source_extension_default_and_explicit_compiler_share_target_poli
     target = tmp_path / "target"
     sdk = _write_tool_family(target / "toolchains" / "wasi-sdk" / "bin")
     native = _write_tool_family(target / "toolchains" / "llvm-22" / "bin")
-    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
+    monkeypatch.setattr(
+        llvm_wasi_tools, "_source_checkout_roots", lambda _source_root=None: ()
+    )
     monkeypatch.setattr(
         llvm_wasi_tools, "_tool_version", lambda _path, **_kw: "fixture"
     )
@@ -869,7 +891,9 @@ def test_sdk_source_compilers_disable_hidden_config_before_probe_and_materializa
         environment["MOLT_WASM_CC"] = '"' + str(compiler) + '"'
         if requested == "wasm":
             environment["MOLT_WASM_CC"] += ' --sysroot "' + str(sysroot) + '"'
-    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
+    monkeypatch.setattr(
+        llvm_wasi_tools, "_source_checkout_roots", lambda _source_root=None: ()
+    )
     monkeypatch.setattr(
         llvm_wasi_tools, "_tool_version", lambda _path, **_kw: "fixture"
     )
@@ -1022,7 +1046,9 @@ def test_sdk_provenance_reuses_resolution_and_layout_across_roles_and_warm_hits(
     native = _write_tool_family(tmp_path / "native" / "bin")
     for path in (*sdk.values(), *native.values()):
         path.chmod(0o755)
-    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
+    monkeypatch.setattr(
+        llvm_wasi_tools, "_source_checkout_roots", lambda _source_root=None: ()
+    )
     environment = {
         "PATH": os.pathsep.join(map(str, (sdk["cc"].parent, native["cc"].parent))),
         "PATHEXT": ".EXE",
@@ -1090,7 +1116,9 @@ def test_sdk_provenance_cache_tracks_alias_and_target_layout_mutations(
         alias.symlink_to(original_target, target_is_directory=alias_kind == "directory")
     except OSError:
         pytest.skip("symlink privilege unavailable")
-    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
+    monkeypatch.setattr(
+        llvm_wasi_tools, "_source_checkout_roots", lambda _source_root=None: ()
+    )
     environment = {
         "PATH": os.pathsep.join(map(str, (search_directory, fallback["cc"].parent))),
         "PATHEXT": ".EXE",
@@ -1260,7 +1288,9 @@ def test_captured_search_environment_controls_execution_and_cache(
     ambient_paths = _write_tool_family(tmp_path / "ambient")
     for path in (*captured_paths.values(), *ambient_paths.values()):
         path.chmod(0o755)
-    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
+    monkeypatch.setattr(
+        llvm_wasi_tools, "_source_checkout_roots", lambda _source_root=None: ()
+    )
     monkeypatch.setenv("PATH", str(ambient_paths["cc"].parent))
     environment = {
         "PATH": str(captured_paths["cc"].parent),
@@ -1297,7 +1327,9 @@ def test_empty_captured_environment_never_uses_ambient_search(
         path.chmod(0o755)
     monkeypatch.setenv("PATH", str(ambient["cc"].parent))
     monkeypatch.delenv("MOLT_TARGET_ROOT", raising=False)
-    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
+    monkeypatch.setattr(
+        llvm_wasi_tools, "_source_checkout_roots", lambda _source_root=None: ()
+    )
     assert llvm_wasi_tools.llvm_tool_candidates("cc", environment={}) == ()
     with pytest.raises(ValueError, match="not found on PATH"):
         resolve_explicit_tool_command("clang", label="compiler", environment={})
@@ -1311,7 +1343,9 @@ def test_captured_managed_target_root_owns_candidate_precedence(
     captured = _write_tool_family(captured_root / "toolchains" / "llvm-22" / "bin")
     _write_tool_family(ambient_root / "toolchains" / "llvm-99" / "bin")
     monkeypatch.setenv("MOLT_TARGET_ROOT", str(ambient_root))
-    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
+    monkeypatch.setattr(
+        llvm_wasi_tools, "_source_checkout_roots", lambda _source_root=None: ()
+    )
     assert llvm_wasi_tools.llvm_tool_candidates(
         "cc",
         environment={
@@ -1329,7 +1363,9 @@ def test_llvm_user_selectors_use_selected_home_and_cache_identity(
     home_key = "USERPROFILE" if os.name == "nt" else "HOME"
     homes = [tmp_path / "first", tmp_path / "second"]
     monkeypatch.setenv(home_key, str(tmp_path / "ambient"))
-    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
+    monkeypatch.setattr(
+        llvm_wasi_tools, "_source_checkout_roots", lambda _source_root=None: ()
+    )
     for home in homes:
         relative = (
             Path("target/toolchains/llvm-22/bin")
@@ -1358,7 +1394,9 @@ def test_llvm_family_materializes_selected_user_command(tmp_path, monkeypatch):
     home_key = "USERPROFILE" if os.name == "nt" else "HOME"
     environment = {home_key: str(home), "PATH": "", "PATHEXT": ".EXE"}
     monkeypatch.setenv(home_key, str(tmp_path / "ambient"))
-    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
+    monkeypatch.setattr(
+        llvm_wasi_tools, "_source_checkout_roots", lambda _source_root=None: ()
+    )
     monkeypatch.setattr(
         llvm_wasi_tools, "_tool_version", lambda _path, *, environment: "fixture"
     )
@@ -1388,7 +1426,9 @@ def test_windows_captured_pathext_and_cwd_policy_override_ambient(
     monkeypatch.chdir(current)
     monkeypatch.setenv("PATHEXT", ".EXE")
     monkeypatch.delenv("NoDefaultCurrentDirectoryInExePath", raising=False)
-    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
+    monkeypatch.setattr(
+        llvm_wasi_tools, "_source_checkout_roots", lambda _source_root=None: ()
+    )
     captured = {
         "Path": str(directory),
         "PathExt": ".ALT",
@@ -2184,7 +2224,9 @@ def test_freestanding_explicit_family_does_not_select_unused_sdk_state(
         "MOLT_TARGET_ROOT": str(invalid),
         "PATH": "",
     }
-    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
+    monkeypatch.setattr(
+        llvm_wasi_tools, "_source_checkout_roots", lambda _source_root=None: ()
+    )
     versions = []
 
     def version(path, *, environment):
