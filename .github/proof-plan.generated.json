@@ -9419,6 +9419,7 @@
       "local.host-capability-authority.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/test_gen_host_capabilities.py tests/test_capability_policy.py",
       "local.host-capacity.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_host_capacity.py tests/test_pytest_capacity_plugin.py tests/cli/test_cli_frontend_parallel_authority.py tests/tools/test_ci_resource_env.py tests/test_memory_guard_tool.py",
       "local.host-entrypoint-imports.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_import_file.py",
+      "local.host-fact-test-isolation.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.5 tests/test_toolchain_facts.py::test_default_fact_store_cannot_pollute_the_host_namespace",
       "local.import-symbol-gate.0": "python tools/import_symbol_gate.py",
       "local.import-symbol-gate.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/tools/test_import_symbol_gate.py",
       "local.installed-compiler-distribution.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/cli/test_installed_compiler.py tests/cli/test_installed_runtime.py tests/cli/test_installed_toolchain_rules.py tests/tools/test_release_installed_distribution.py tests/tools/test_release_native_build.py tests/tools/test_release_supply_chain.py",
@@ -10850,6 +10851,24 @@
         "name": "generator-manifest",
         "pytest": [
           "tests/test_generator_manifest.py"
+        ],
+        "toolchains": [
+          "python"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.host-fact-test-isolation.pytest"
+        ],
+        "description": "Private default host facts, process memo lifetime and explicit shared-store ownership.",
+        "gates": [],
+        "globs": [
+          "tests/conftest.py",
+          "tests/test_toolchain_facts.py"
+        ],
+        "name": "host-fact-test-isolation",
+        "pytest": [
+          "tests/test_toolchain_facts.py::test_default_fact_store_cannot_pollute_the_host_namespace"
         ],
         "toolchains": [
           "python"
@@ -12675,6 +12694,9 @@
         "python"
       ],
       "local.host-entrypoint-imports.pytest": [
+        "python"
+      ],
+      "local.host-fact-test-isolation.pytest": [
         "python"
       ],
       "local.import-symbol-gate.0": [

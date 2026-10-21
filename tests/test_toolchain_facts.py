@@ -68,7 +68,7 @@ def _fresh_process(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def store(isolated_molt_cache: Path) -> facts.ToolchainFactStore:
+def store() -> facts.ToolchainFactStore:
     return facts.host_toolchain_facts()
 
 
@@ -78,6 +78,69 @@ def _rewrite_with_restored_mtime(path: Path, value: bytes) -> None:
     assert len(value) == before.st_size
     path.write_bytes(value)
     os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+
+
+@pytest.mark.parametrize("repeat", [0, 1])
+def test_default_fact_store_cannot_pollute_the_host_namespace(
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    repeat: int,
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    # Use a disposable stand-in for the host, including across these cases.
+    # This law is safe even when the automatic isolation is removed.
+    host = tmp_path_factory.getbasetemp() / "surrogate-host-cache"
+    monkeypatch.setenv("MOLT_CACHE", str(host))
+    # Existing tests undo their fake process boundary before real probes.
+    # Reestablish the disposable host even if isolation itself was undone.
+    monkeypatch.undo()
+    monkeypatch.setenv("MOLT_CACHE", str(host))
+    path = facts.toolchain_fact_store_path(host)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    original = b"host cache must remain byte-for-byte unchanged\n"
+    path.write_bytes(original)
+    allocations: list[str] = []
+    mktemp = tmp_path_factory.mktemp
+
+    def counted_mktemp(basename: str, numbered: bool = True) -> Path:
+        allocations.append(basename)
+        return mktemp(basename, numbered=numbered)
+
+    monkeypatch.setattr(tmp_path_factory, "mktemp", counted_mktemp)
+    aliases = (
+        facts.host_toolchain_facts,
+        rust_toolchain.host_toolchain_facts,
+        platform_toolchain.host_toolchain_facts,
+        link_tools.host_toolchain_facts,
+        rustc_probes.host_toolchain_facts,
+        plans.host_toolchain_facts,
+    )
+    ready = Barrier(len(aliases))
+
+    def acquire(alias):
+        ready.wait(timeout=5)
+        return alias()
+
+    with ThreadPoolExecutor(max_workers=len(aliases)) as pool:
+        acquired = list(pool.map(acquire, aliases))
+    store = acquired[0]
+    assert all(value is store for value in acquired)
+    key = _key(probe="pytest-private-namespace")
+    assert store.lookup(key) is None  # No previous test's process memo or disk.
+    answer = facts.ProbeAnswer(f"synthetic answer {repeat}", "")
+    for alias in aliases:
+        assert alias() is store  # Preimported consumers keep one owner.
+    store.record(key, answer, persist=True)
+    assert path.read_bytes() == original
+    assert store.cache_root.is_relative_to(tmp_path_factory.getbasetemp())
+    _fresh_process(monkeypatch)
+    assert facts.host_toolchain_facts().lookup(key) == answer
+    # Explicit store owners still share real disk state at their chosen root.
+    explicit = facts.ToolchainFactStore(store.cache_root, max_age_ns=DAY_NS)
+    assert explicit.lookup(key) == answer
+    assert allocations == ["toolchain-facts"]
 
 
 # --- the store -----------------------------------------------------------
@@ -440,7 +503,7 @@ def _metadata_spawns(sysroot: Path) -> _Spawns:
 
 
 def test_rustc_metadata_is_asked_once_per_toolchain_generation(
-    tmp_path: Path, isolated_molt_cache: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     sysroot, rustc = _rust_toolchain(tmp_path)
     wrapper = write_mock_executable(tmp_path / "sccache", b"MZ wrapper")
@@ -494,7 +557,6 @@ def test_rustc_metadata_is_asked_once_per_toolchain_generation(
 )
 def test_rustc_metadata_reprobes_when_a_key_input_changes(
     tmp_path: Path,
-    isolated_molt_cache: Path,
     monkeypatch: pytest.MonkeyPatch,
     change: str,
 ) -> None:
@@ -551,7 +613,7 @@ def test_rustc_metadata_reprobes_when_a_key_input_changes(
 
 
 def test_rustc_metadata_qualification_persists_only_an_agreeing_answer(
-    tmp_path: Path, isolated_molt_cache: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     sysroot, rustc = _rust_toolchain(tmp_path)
     answers = iter(["unix\nfirst\n", "unix\nsecond\n", "unix\nsecond\n"])
@@ -583,7 +645,7 @@ def test_rustc_metadata_qualification_persists_only_an_agreeing_answer(
 
 
 def test_rustc_metadata_records_nothing_when_the_probe_fails(
-    tmp_path: Path, isolated_molt_cache: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     sysroot, rustc = _rust_toolchain(tmp_path)
     calls = 0
@@ -644,7 +706,6 @@ def _rustup_setup(root: Path) -> tuple[Path, Path, Path]:
 )
 def test_rustup_selection_is_asked_once_per_selection_inputs(
     tmp_path: Path,
-    isolated_molt_cache: Path,
     monkeypatch: pytest.MonkeyPatch,
     change: str,
 ) -> None:
@@ -711,7 +772,6 @@ def test_rustup_selection_is_asked_once_per_selection_inputs(
 )
 def test_rustup_selection_keys_what_rustup_reads(
     tmp_path: Path,
-    isolated_molt_cache: Path,
     monkeypatch: pytest.MonkeyPatch,
     change: str,
 ) -> None:
@@ -943,7 +1003,7 @@ def test_store_answers_what_real_rustup_answers(
 
 
 def test_rustup_failure_is_not_recorded(
-    tmp_path: Path, isolated_molt_cache: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     proxy, _rustup, _selected = _rustup_setup(tmp_path)
     calls = 0
@@ -968,7 +1028,7 @@ def test_rustup_failure_is_not_recorded(
 
 
 def test_cargo_version_is_asked_once_per_cargo_generation(
-    tmp_path: Path, isolated_molt_cache: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cargo = write_mock_executable(tmp_path / "cargo", b"MZ cargo 1.99.0")
     spawns = _Spawns(lambda command, kwargs: ("cargo 1.99.0 (abc 2026-01-01)\n", ""))
@@ -1019,7 +1079,6 @@ def _selectors(root: Path) -> tuple[Path, dict[str, str]]:
 )
 def test_developer_directory_selection_is_asked_once_per_selection(
     tmp_path: Path,
-    isolated_molt_cache: Path,
     monkeypatch: pytest.MonkeyPatch,
     change: str,
 ) -> None:
@@ -1063,7 +1122,7 @@ def test_developer_directory_selection_is_asked_once_per_selection(
 
 @pytest.mark.skipif(os.name == "nt", reason="the Darwin selectors never run on Windows")
 def test_sdk_and_tool_selection_are_asked_once_per_developer_layout(
-    tmp_path: Path, isolated_molt_cache: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _bin_dir, env = _selectors(tmp_path)
     developer = _developer_directory(tmp_path)
@@ -1115,7 +1174,7 @@ def test_sdk_and_tool_selection_are_asked_once_per_developer_layout(
 
 
 def test_link_driver_linker_is_asked_once_per_driver_and_search_environment(
-    tmp_path: Path, isolated_molt_cache: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     driver = write_mock_executable(tmp_path / "clang", b"MZ clang")
     linker = write_mock_executable(tmp_path / "ld", b"MZ ld")

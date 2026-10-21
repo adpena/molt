@@ -857,7 +857,7 @@ def test_native_build_reuse_revalidates_actual_selection_and_images(
 
 @pytest.mark.parametrize("role", ["cargo", "rustc"])
 def test_rust_reuse_resolves_current_component_before_cache_without_phase_reprobe(
-    tmp_path, monkeypatch, role, isolated_molt_cache
+    tmp_path, monkeypatch, role
 ):
     from molt import process_guard, rust_toolchain
     from tests.tools.test_toolchain_capture import _native_build_capture_fixture
@@ -1064,7 +1064,7 @@ def test_registered_tool_identity_uses_bound_payload_before_dependency_selectors
 
 @pytest.mark.parametrize("owner", ["python", "cargo", "delegated-cargo"])
 def test_python_rustc_metadata_dependency_has_independent_reuse_identity(
-    tmp_path, monkeypatch, owner, isolated_molt_cache
+    tmp_path, monkeypatch, owner
 ):
     from molt import process_guard
     from tools.proof_queue_pkg import toolchain_capture
