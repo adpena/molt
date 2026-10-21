@@ -205,6 +205,7 @@ def _ensure_native_build_warm() -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.long_pole
 class TestTracebackCarets:
     """Verify that traceback caret annotations match CPython output."""
 

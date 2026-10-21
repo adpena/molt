@@ -630,6 +630,7 @@ def test_planned_update_steps_bootstrap_cargo_edit_when_missing(
     assert "cargo-upgrade-fuzz" in names
 
 
+@pytest.mark.long_pole
 def test_cli_run_json(tmp_path: Path) -> None:
     script = tmp_path / "hello.py"
     script.write_text("print('ok')\n", encoding="utf-8")
@@ -654,6 +655,7 @@ def test_base_env_keeps_the_session_roots(tmp_path: Path, monkeypatch) -> None:
     assert env["PYTHONPATH"] == str(ROOT / "src")
 
 
+@pytest.mark.long_pole
 @pytest.mark.parametrize("profile", ["dev", "release"])
 def test_cli_build_json_binary_executes_for_native_profiles(
     tmp_path: Path, profile: str
@@ -689,6 +691,7 @@ def test_cli_build_json_binary_executes_for_native_profiles(
     assert run.stdout.strip() == "ok"
 
 
+@pytest.mark.long_pole
 def test_cli_rebuild_without_changes_finishes_from_its_record(tmp_path: Path) -> None:
     # HF-250: an unchanged rebuild stats the inputs its record lists and stops.
     # Guarded children, temporary files, artifact-root checks and publication
@@ -735,6 +738,7 @@ def test_cli_rebuild_without_changes_finishes_from_its_record(tmp_path: Path) ->
     assert run.returncode == 0 and run.stdout == "ok\n", run.stdout + run.stderr
 
 
+@pytest.mark.long_pole
 def test_cli_compare_json(tmp_path: Path) -> None:
     script = tmp_path / "hello.py"
     script.write_text("print('ok')\n", encoding="utf-8")
@@ -774,6 +778,7 @@ def test_cli_parity_run_timing_json(tmp_path: Path) -> None:
     assert payload["data"]["timing"]["cpython_run_s"] >= 0
 
 
+@pytest.mark.long_pole
 @pytest.mark.parametrize(
     ("symbol", "invocation"),
     [("exec", "exec('value = 1')"), ("eval", "eval('1 + 1')")],
@@ -1494,6 +1499,7 @@ def test_cli_publish_remote_registry(tmp_path: Path) -> None:
     assert expected_suffixes.issubset(seen_suffixes)
 
 
+@pytest.mark.long_pole
 def test_cli_build_cross_target_with_zig(tmp_path: Path) -> None:
     target_triple = _cross_target_triple()
     if target_triple is None:
@@ -2539,6 +2545,7 @@ def test_default_cache_does_not_expand_unused_platform_root(
     )
 
 
+@pytest.mark.long_pole
 def test_cli_imported_syntax_errors_keep_native_identity_and_payload(
     tmp_path: Path,
 ) -> None:

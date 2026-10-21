@@ -644,6 +644,7 @@ def test_real_asyncio_graph_projection_retains_static_and_relative_discovery() -
     assert "asyncio.exceptions" not in projection.imports
 
 
+@pytest.mark.long_pole
 def test_real_asyncio_and_importlib_dynamic_sources_join_runtime_custody(
     tmp_path: Path,
 ) -> None:
@@ -816,6 +817,7 @@ def test_owner_analysis_persists_source_pure_and_completes_each_catalog(
     assert b"admitted.later" not in record.payload
 
 
+@pytest.mark.long_pole
 @pytest.mark.parametrize(
     "source,needs_custody",
     [

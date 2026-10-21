@@ -138,7 +138,10 @@ percentages. Required conformance and release matrix gates still apply.
   capacity fixtures cannot authorize actual builds. Run required checks, then
   repeat or widen only for changed inputs, failures, or unresolved claims.
   Timing assertions belong in controlled
-  performance lanes, not noisy functional tests.
+  performance lanes, not noisy functional tests. Mark a test that takes 10 s
+  or more in a warm `-n 4` run `@pytest.mark.long_pole`, so xdist starts it
+  first and it cannot bound the run by starting last
+  ([host capacity](../../../design/host_capacity.md), "Longest first").
 
 During review, ask: which realistic defect would pass unnoticed, is the oracle
 independent, and does this add distinct signal beyond existing tests? Remove or
