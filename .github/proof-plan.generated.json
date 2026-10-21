@@ -9447,7 +9447,8 @@
       "local.python-identity-catalog-authority.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_gen_python_identity_catalog.py tests/test_python_binding_flow.py tests/test_python_builtin_shape_facts.py",
       "local.python-source-dependencies.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_python_namespace_graph.py tests/cli/test_cli_python_source_closure.py tests/cli/test_cli_python_import_authority.py tests/cli/test_cli_lowering_cache_tooling_scope.py tests/cli/test_source_pure_import_requests.py",
       "local.repository-scan-records.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/tools/test_encoding_gate.py tests/tools/test_signed_ratio.py tests/tools/test_subprocess_guard_coverage.py tests/tools/test_check_environment_registry.py tests/tools/test_gen_cpython_coverage.py tests/tools/test_structural_audit_records.py tests/test_gen_stringprep_tables.py tests/test_runtime_build_python.py::test_unicode_width_facts_replay_keyed_by_the_admitted_runtime",
-      "local.runtime-cargo-input-custody.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 -m 'not slow' tests/cli/test_cargo_build_reads.py tests/cli/test_cargo_environment_inputs.py tests/cli/test_runtime_source_identity.py tests/cli/test_runtime_c_resource_custody.py tests/cli/test_runtime_build_identity.py tests/cli/test_runtime_native_generation.py tests/cli/test_runtime_wasm_single_compile.py tests/test_wasm_link_runtime_generation.py tests/cli/test_compiler_identity.py tests/cli/test_wasm_facts_tool.py tests/cli/test_runtime_family_authority.py tests/cli/test_cargo_execution_failure_authority.py tests/test_toolchain_identity.py tests/test_runtime_build_python.py",
+      "local.runtime-cargo-input-custody.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 -m 'not slow' tests/cli/test_cargo_build_reads.py tests/cli/test_cargo_environment_inputs.py tests/cli/test_runtime_source_identity.py tests/cli/test_runtime_c_resource_custody.py tests/cli/test_runtime_build_identity.py tests/cli/test_runtime_native_generation.py tests/cli/test_runtime_wasm_single_compile.py tests/test_wasm_link_runtime_generation.py tests/cli/test_compiler_identity.py tests/cli/test_wasm_facts_tool.py tests/cli/test_runtime_family_authority.py tests/cli/test_cargo_execution_failure_authority.py tests/test_toolchain_identity.py tests/test_runtime_build_python.py tests/test_toolchain_facts.py tests/tools/test_tool_identity_reuse.py",
+      "local.runtime-cargo-input-custody.pytest-select-1": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 -k 'rustup or clippy or toolchain_fact or darwin or formatter or documenter or rust_proxy' tests/tools/test_toolchain_capture.py tests/tools/test_cargo_bindgen_toolchain.py tests/tools/test_proof_queue_execution_custody_p0.py tests/test_platform_toolchain.py",
       "local.runtime-lib.0": "python tools/run_runtime_test_gate.py --profile release-output --build-timeout-seconds 6300 --child-timeout-seconds 120 --parallel-threads 8",
       "local.runtime-profile-schema-authority.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/test_gen_runtime_profile_schema.py tests/test_runtime_profile_schema.py",
       "local.runtime-regex.0": "cargo test --locked --profile dev-fast -p molt-runtime-regex -p molt-runtime-core -p molt-stdlib-text --no-default-features --no-fail-fast --lib -- regex:: text_storage::",
@@ -10770,7 +10771,8 @@
       },
       {
         "command_ids": [
-          "local.runtime-cargo-input-custody.pytest-select-0"
+          "local.runtime-cargo-input-custody.pytest-select-0",
+          "local.runtime-cargo-input-custody.pytest-select-1"
         ],
         "description": "Runtime/compiler Cargo inputs: external resource freshness, Python generator signatures, producer transport, and execution failure custody.",
         "gates": [],
@@ -10804,6 +10806,8 @@
           "src/molt/toolchain_identity.py",
           "src/molt/toolchain_facts.py",
           "src/molt/rust_toolchain.py",
+          "tools/proof_queue_pkg/command_identity.py",
+          "tools/proof_queue_pkg/toolchain_capture.py",
           "runtime/build_support/*.rs",
           "runtime/*/build.rs",
           "tests/runtime_build_identity_helper.py",
@@ -10821,7 +10825,9 @@
           "tests/cli/test_compiler_identity.py",
           "tests/cli/test_wasm_facts_tool.py",
           "tests/cli/test_runtime_family_authority.py",
-          "tests/cli/test_cargo_execution_failure_authority.py"
+          "tests/cli/test_cargo_execution_failure_authority.py",
+          "tests/test_toolchain_facts.py",
+          "tests/tools/test_tool_identity_reuse.py"
         ],
         "name": "runtime-cargo-input-custody",
         "pytest_select": [
@@ -10841,7 +10847,18 @@
               "tests/cli/test_runtime_family_authority.py",
               "tests/cli/test_cargo_execution_failure_authority.py",
               "tests/test_toolchain_identity.py",
-              "tests/test_runtime_build_python.py"
+              "tests/test_runtime_build_python.py",
+              "tests/test_toolchain_facts.py",
+              "tests/tools/test_tool_identity_reuse.py"
+            ]
+          },
+          {
+            "k": "rustup or clippy or toolchain_fact or darwin or formatter or documenter or rust_proxy",
+            "targets": [
+              "tests/tools/test_toolchain_capture.py",
+              "tests/tools/test_cargo_bindgen_toolchain.py",
+              "tests/tools/test_proof_queue_execution_custody_p0.py",
+              "tests/test_platform_toolchain.py"
             ]
           }
         ],
@@ -12657,6 +12674,12 @@
         "python"
       ],
       "local.runtime-cargo-input-custody.pytest-select-0": [
+        "python",
+        "cargo",
+        "rustc",
+        "git"
+      ],
+      "local.runtime-cargo-input-custody.pytest-select-1": [
         "python",
         "cargo",
         "rustc",
