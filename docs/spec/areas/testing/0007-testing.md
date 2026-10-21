@@ -426,6 +426,17 @@ re-runs itself under a new guard. A test that needs another root
 sets its own. `tests/test_memory_guard_wiring.py` proves that a guarded child
 leaves no record in the host roots.
 
+Programmatic guardian launches use `guardian_argv` from
+`tools/memory_guard_core/cli_contract.py`. The guardian starts with `-I -S`
+and binds its repository before workload Python startup hooks can import a
+different checkout. Its dependencies are the standard library and that bound
+source. Isolation belongs to the guardian: the workload retains its original
+argv, environment and interpreter startup policy. The command-execution tests
+exercise foreign editable installations, `sitecustomize` and hostile
+`PYTHONPATH` while checking actual inner-guardian custody and normal child
+startup. This is development process supervision; emitted programs incur none
+of this startup work.
+
 A background thread in the test process, such as the serial session's
 sentinel, binds every module it uses before the thread starts and never runs an
 import: a test may clear `molt.*` from `sys.modules`, and an import on another
