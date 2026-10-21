@@ -862,30 +862,35 @@ _PROTOCOL_ENDINGS = {
     os.name != "posix", reason="real guarded daemon-scope transfer requires POSIX"
 )
 @pytest.mark.parametrize(
-    ("ending", "lock_held"),
+    ("ending", "lock_mode"),
     [
-        ("exit", False),
-        ("exit", True),
-        ("fail", False),
-        ("timeout", True),
-        ("cancel", True),
-        ("signal", True),
-        ("rss", True),
+        ("exit", "free"),
+        ("exit", "held"),
+        ("fail", "free"),
+        ("timeout", "held"),
+        ("cancel", "held"),
+        ("signal", "held"),
+        ("signal", "past-slack"),
+        ("rss", "held"),
+        ("rss", "past-slack"),
     ],
 )
 def test_guarded_protocol_daemon_transfer_and_failure_cleanup(
-    tmp_path, ending, lock_held, request, monkeypatch
+    tmp_path, ending, lock_mode, request, monkeypatch
 ):
     """Exercise actual guard/guardian protocol; this is not a compiler benchmark.
 
-    With ``lock_held``, another party holds the adoption lock from before the
-    command ends until well past the observer bound, and every poll gives up
-    its export, as polls do under that contention: only the last export, after
-    the exit or before the guard's signal, can transfer the adopted daemon. On
-    2026-10-21 that export gave up under host I/O load and the exiting build's
-    guard killed the shared daemon. Events order every step: the command ends
-    only after a poll has sampled the daemon, and the holder keeps the lock
-    for three observer bounds after the last export starts to wait.
+    With ``lock_mode`` ``held``, another party holds the adoption lock from before
+    the command ends until well past the observer bound, and every poll gives
+    up its export, as polls do under that contention: only the last export,
+    after the exit or before the guard's signal, can transfer the adopted
+    daemon. On 2026-10-21 that export gave up under host I/O load and the
+    exiting build's guard killed the shared daemon. Events order every step:
+    the command ends only after a poll has sampled the daemon, and the holder
+    keeps the lock for three observer bounds after the last export starts to
+    wait. ``past-slack`` holds it until the command is dead: the run loop
+    waits in its export, so only the enforcer can have signalled the root's
+    group, and the daemon still survives once the export returns.
     """
     if run_in_fresh_guard_observer(request):
         return
@@ -894,6 +899,7 @@ def test_guarded_protocol_daemon_transfer_and_failure_cleanup(
 
     exit_code = _PROTOCOL_ENDINGS[ending]
     acknowledged = ending != "fail"
+    lock_held = lock_mode != "free"
     root = Path(__file__).resolve().parents[1]
     env = dict(os.environ)
     env["CARGO_TARGET_DIR"] = str(tmp_path / "target")
@@ -905,6 +911,7 @@ def test_guarded_protocol_daemon_transfer_and_failure_cleanup(
     env["OWNED_PROTOCOL_SCRATCH_FILE"] = str(tmp_path / "daemon.scratch")
     env["OWNED_PROTOCOL_ACKNOWLEDGE"] = "1" if acknowledged else ""
     env["OWNED_PROTOCOL_ENDING"] = ending
+    env["OWNED_PROTOCOL_ROOT_FILE"] = str(tmp_path / "root.pid")
     go = tmp_path / "go"
     env["OWNED_PROTOCOL_GO_FILE"] = str(go)
     script = textwrap.dedent("""
@@ -915,6 +922,9 @@ def test_guarded_protocol_daemon_transfer_and_failure_cleanup(
             acknowledge_started_daemon, persistent_daemon_env,
         )
         root=Path.cwd()
+        root_file = Path(os.environ['OWNED_PROTOCOL_ROOT_FILE'])
+        root_file.with_suffix('.partial').write_text(str(os.getpid()))
+        os.replace(root_file.with_suffix('.partial'), root_file)
         socket=Path(os.environ['OWNED_PROTOCOL_PID_FILE']).with_suffix('.sock')
         child_code = (
             'import os, sys, tempfile, time; from pathlib import Path; '
@@ -962,6 +972,7 @@ def test_guarded_protocol_daemon_transfer_and_failure_cleanup(
     holding = threading.Event()
     last_export_started = threading.Event()
     last_export_contended: list[bool] = []
+    root_ended_while_held: list[bool] = []
     polled = threading.Condition()
     polled_pids: set[int] = set()
     real_transferable_groups = suite.transferable_groups
@@ -1014,7 +1025,14 @@ def test_guarded_protocol_daemon_transfer_and_failure_cleanup(
                 while not last_export_started.wait(0.05):
                     if stop_conductor.is_set():
                         return
-                stop_conductor.wait(suite._ADOPTION_LOCK_S * 3)
+                if lock_mode == "past-slack":
+                    root_pid = int((tmp_path / "root.pid").read_text("utf-8"))
+                    while process_model.pid_alive(root_pid):
+                        if stop_conductor.wait(0.02):
+                            return
+                    root_ended_while_held.append(True)
+                else:
+                    stop_conductor.wait(suite._ADOPTION_LOCK_S * 3)
         except BaseException as exc:
             conductor_errors.append(exc)
         finally:
@@ -1065,6 +1083,22 @@ def test_guarded_protocol_daemon_transfer_and_failure_cleanup(
         if lock_held:
             # The last export started while another party held the lock.
             assert last_export_contended[:1] == [True]
+        if lock_mode == "past-slack":
+            # The run loop was still waiting in its export when the root died:
+            # the enforcer signalled the root's group, and only that group.
+            assert root_ended_while_held == [True]
+            root_pid = int((tmp_path / "root.pid").read_text(encoding="utf-8"))
+            reason = "rss_limit" if ending == "rss" else "guard_signal"
+            struck = [
+                action
+                for report in result.termination_reports
+                if report.reason == reason
+                for action in report.actions
+                if action.signal_name == "SIGTERM"
+            ]
+            assert [(a.target_kind, a.target_id) for a in struck] == [
+                ("process_group", root_pid)
+            ]
         pid = int((tmp_path / "daemon.pid").read_text(encoding="utf-8"))
         assert result.temporary_artifacts is not None
         closure = result.temporary_artifacts["closure"]
