@@ -2179,7 +2179,8 @@ class ProtectedProcessGroups(AbcSet[int]):
     neither explicitly owned nor a confirmed orphan. Membership decides only
     the queried group, reading argv for its members and their ancestry alone,
     so a guard deciding about its own tree pays for that tree. Iteration and
-    ``len`` decide every group, for reports that list the whole set.
+    ``len`` decide every group and so read argv for every host row; a report
+    names only the groups its decision visited (HF-368).
     """
 
     __slots__ = (

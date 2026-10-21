@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, MutableMapping, Sequence, Set as AbcSet
+from collections.abc import (
+    Callable,
+    Collection,
+    Mapping,
+    MutableMapping,
+    Sequence,
+    Set as AbcSet,
+)
 import contextlib
 from dataclasses import dataclass
 import errno
@@ -506,6 +513,26 @@ def _filter_protected_watched_pids(
         ),
         current_pid=os.getpid(),
     )
+
+
+def _reported_protected_groups(
+    samples: Mapping[int, ProcessSample],
+    pids: Collection[int],
+    *,
+    root_pgid: int | None,
+    protected_pgids: AbcSet[int],
+) -> set[int]:
+    """Return the protected groups among a termination's own groups.
+
+    A termination report names the protection verdicts its decision depends
+    on: the root group and the groups of the pids it owned by identity.
+    Listing every protected host group decided every host group, which binds
+    argv for every host row, on each termination (HF-368).
+    """
+    groups = {_sample_pgid(samples[pid]) for pid in pids if pid in samples}
+    if root_pgid is not None:
+        groups.add(root_pgid)
+    return {pgid for pgid in groups if pgid in protected_pgids}
 
 
 def descendant_pids(samples: Mapping[int, ProcessSample], root_pid: int) -> set[int]:
@@ -1693,7 +1720,12 @@ def terminate_watched_processes(
         return finish(
             root_pgid=root_group_pgid,
             watched_pids=owned_pids,
-            protected_pgids=protected_pgids,
+            protected_pgids=_reported_protected_groups(
+                observed_samples,
+                identity_owned_pids,
+                root_pgid=root_group_pgid,
+                protected_pgids=protected_pgids,
+            ),
             remaining_pids=remaining_pids,
             finish_reason="windows_pid_tree",
         )
@@ -1918,7 +1950,12 @@ def terminate_watched_processes(
         root_pgid=root_group_pgid,
         root_sid=root_sid,
         watched_pids=set(observed),
-        protected_pgids=protected_pgids,
+        protected_pgids=_reported_protected_groups(
+            observed_samples,
+            identity_owned_pids,
+            root_pgid=root_group_pgid,
+            protected_pgids=protected_pgids,
+        ),
         escaped_pids=escaped_pids,
         remaining_pgids=remaining_pgids,
         remaining_pids=remaining_pids,
@@ -2166,7 +2203,14 @@ def _repo_scoped_orphan_cleanup_report(
         grace_sec=grace,
         watched_pids=tuple(sorted(sample.pid for sample in group.samples)),
         protected_pgids=tuple(
-            sorted(_current_protected_process_group_ids(fresh_samples))
+            sorted(
+                _reported_protected_groups(
+                    fresh_samples,
+                    [sample.pid for sample in group.samples],
+                    root_pgid=group.pgid,
+                    protected_pgids=_current_protected_process_group_ids(fresh_samples),
+                )
+            )
         ),
         escaped_pids=(),
         remaining_pgids=(group.pgid,) if remaining_pids else (),

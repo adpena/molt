@@ -3497,6 +3497,84 @@ def test_terminate_watched_processes_never_killpgs_mixed_root_group(
     assert all(pid != 200 for pid, _sig in sent_pids)
 
 
+def test_termination_report_decides_only_the_terminated_tree_groups(
+    monkeypatch,
+) -> None:
+    """HF-368: a termination binds argv for its tree, never the host's rows."""
+    if process_custody.os.name != "posix":
+        pytest.skip("requires POSIX process custody")
+    bound: list[int] = []
+    dead_groups: set[int] = set()
+    rows = {
+        100: (1, 100, "python -c 'import time; time.sleep(60)'"),
+        101: (100, 100, "python -c 'import time; time.sleep(60)'"),
+        # Unrelated host rows: a control-plane app and a process whose parent
+        # is unobserved. A host-wide decision protects both groups.
+        500: (1, 500, "/Applications/Claude.app/Contents/MacOS/Claude"),
+        501: (4242, 501, "/usr/sbin/unrelated-daemon"),
+    }
+
+    def table() -> dict[int, process_custody.ProcessSample]:
+        def row(pid: int, ppid: int, pgid: int, command: str):
+            def bind() -> tuple[str, tuple[str, ...], str]:
+                bound.append(pid)
+                return command, tuple(command.split()), "full"
+
+            return process_model.native_process_sample(
+                pid=pid,
+                ppid=ppid,
+                rss_kb=1,
+                pgid=pgid,
+                elapsed_sec=1,
+                started_at_ns=pid,
+                bind_command=bind,
+            )
+
+        return {
+            pid: row(pid, ppid, pgid, command)
+            for pid, (ppid, pgid, command) in rows.items()
+            if pgid not in dead_groups
+        }
+
+    sent_groups: list[tuple[int, int]] = []
+
+    def fake_killpg(pgid: int, sig: int) -> None:
+        if pgid in dead_groups:
+            raise ProcessLookupError
+        if sig:
+            sent_groups.append((pgid, sig))
+            dead_groups.add(pgid)
+
+    def fake_kill(pid: int, sig: int) -> None:
+        if rows[pid][1] in dead_groups:
+            raise ProcessLookupError
+        pytest.fail("the fully owned group closes by its group signal")
+
+    monkeypatch.setattr(process_model, "sample_processes", table)
+    _fake_guard(
+        monkeypatch,
+        "os",
+        os,
+        getpgrp=lambda: 999,
+        getpid=lambda: 999,
+        killpg=fake_killpg,
+        kill=fake_kill,
+    )
+
+    report = process_custody.terminate_watched_processes(
+        100,
+        samples=table(),
+        watched={100, 101},
+        grace=0.001,
+        root_owned=True,
+    )
+
+    assert (100, process_custody.signal.SIGTERM) in sent_groups
+    assert report.remaining_pids == () and report.remaining_pgids == ()
+    assert report.protected_pgids == ()
+    assert not {500, 501} & set(bound)
+
+
 def test_terminate_watched_processes_never_kills_host_control_plane_group(
     monkeypatch,
 ) -> None:
