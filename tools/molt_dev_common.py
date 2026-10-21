@@ -6,8 +6,11 @@ from __future__ import annotations
 from collections.abc import Callable
 import subprocess
 import os
+import re
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 from tools import harness_memory_guard
 from molt.cargo_execution_policy import normalize_cargo_environment
@@ -22,6 +25,11 @@ DEFAULT_REPO = Path(__file__).resolve().parents[1]
 EXIT_OK = 0
 EXIT_FAIL = 1
 EXIT_USAGE = 2
+
+# The trailer that keeps one change's identity across rebases and amends
+# (Gerrit's commit-msg hook; docs/design/landing_queue.md, "Stable change ids").
+CHANGE_ID_TRAILER = "Change-Id"
+CHANGE_ID = re.compile(r"I[0-9a-f]{40}")
 
 
 def _say(msg: str) -> None:
@@ -146,6 +154,111 @@ def _run_fast_captured_command(
         else:
             stderr = f"{timeout_msg}\n"
         return subprocess.CompletedProcess(cmd, 124, stdout, stderr)
+
+
+class GitPlumbing(Protocol):
+    """The driver's fail-loud `git -C <repo>` runner (`molt_dev.Git`)."""
+
+    def _run(
+        self, args: list[str], *, check: bool = True, input_text: str | None = None
+    ) -> subprocess.CompletedProcess[str]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class LandingRepresentation:
+    """Which of a branch's commits an upstream already carries."""
+
+    merge_base: str | None
+    commits: tuple[str, ...]
+    unrepresented: tuple[str, ...]
+
+    @property
+    def landed(self) -> bool:
+        return not self.unrepresented
+
+
+def landing_representation(
+    git: GitPlumbing, tip: str, upstream: str
+) -> LandingRepresentation:
+    """The one landed predicate: every commit of `upstream..tip` is on upstream.
+
+    A queue replays a lane onto main and may amend its last commit, so a
+    landed tip need not be an ancestor of upstream. A commit is represented
+    when its ``Change-Id:`` trailer appears on an upstream commit (Gerrit's
+    rule), or when its patch-id matches one (``git cherry``'s rule). Both
+    searches cover only upstream's commits since the merge base. Merge commits
+    carry no patch of their own and are skipped, as ``git cherry`` skips them;
+    an empty commit needs a matching Change-Id or an empty upstream commit.
+
+    Cost: one ``log`` of ``upstream..tip``, which is empty when the tip is on
+    upstream. Otherwise also one ``merge-base``, one ``log`` of upstream since
+    the merge base when a lane commit carries a Change-Id, and one ``cherry``
+    when a commit has no matching Change-Id. A Change-Id is ``I`` and 40 hex
+    digits, the managed commit-msg hook's format.
+    """
+    listing = git._run(
+        [
+            "log",
+            "-z",
+            "--no-merges",
+            f"--format=%H%x1f%(trailers:key={CHANGE_ID_TRAILER},valueonly,separator=%x1e)",
+            f"{upstream}..{tip}",
+        ]
+    ).stdout
+    commits: list[tuple[str, frozenset[str]]] = []
+    for entry in listing.split("\0"):
+        entry = entry.strip("\n")
+        if not entry:
+            continue
+        sha, _, trailers = entry.partition("\x1f")
+        ids = frozenset(
+            value.strip()
+            for value in trailers.split("\x1e")
+            if CHANGE_ID.fullmatch(value.strip())
+        )
+        commits.append((sha.strip(), ids))
+    if not commits:
+        return LandingRepresentation(None, (), ())
+    shas = tuple(sha for sha, _ids in commits)
+    base = git._run(["merge-base", upstream, tip], check=False)
+    if base.returncode == 1:
+        return LandingRepresentation(None, shas, shas)  # Unrelated histories.
+    if base.returncode != 0:
+        raise DriverError(
+            f"git merge-base {upstream} {tip} failed (exit {base.returncode}): "
+            f"{base.stderr.strip()}"
+        )
+    merge_base = base.stdout.strip()
+    upstream_ids: frozenset[str] = frozenset()
+    if any(ids for _sha, ids in commits):
+        upstream_listing = git._run(
+            [
+                "log",
+                "-z",
+                f"--format=%(trailers:key={CHANGE_ID_TRAILER},valueonly,separator=%x1e)",
+                f"{merge_base}..{upstream}",
+            ]
+        ).stdout
+        upstream_ids = frozenset(
+            value.strip()
+            for entry in upstream_listing.split("\0")
+            for value in entry.split("\x1e")
+            if CHANGE_ID.fullmatch(value.strip())
+        )
+    pending = [sha for sha, ids in commits if not ids & upstream_ids]
+    if pending:
+        cherry = git._run(["cherry", upstream, tip]).stdout
+        on_upstream = {
+            line[2:].strip() for line in cherry.splitlines() if line.startswith("- ")
+        }
+        pending = [sha for sha in pending if sha not in on_upstream]
+    return LandingRepresentation(merge_base, shas, tuple(pending))
+
+
+def _run_live_gate(
+    cmd: str | tuple[str, ...], *, repo: Path, env: ProcessEnvironment
+) -> int:
+    """Run shell syntax or structured argv live through memory custody."""
 
 
 def _gate_launch(

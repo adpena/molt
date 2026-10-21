@@ -56,7 +56,7 @@ jobs:
           sync-groups: dev
 
       - name: Provision browser asset parser
-        run: uv run python3 tools/bootstrap_browser_asset_graph.py
+        run: uv run python3 -m molt.checkout_provisioning ensure browser-acorn
 
       - name: Execute repository policy partitions
         run: python3 tools/proof_plan.py --run-family repository_policy --receipt proof-receipts/repository_policy.json

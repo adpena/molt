@@ -35,6 +35,7 @@ bind_repository_imports(__file__)
 
 from tools.generator_io import generator_main  # noqa: E402
 
+from molt import checkout_provisioning  # noqa: E402
 from molt.browser_asset_closure import (  # noqa: E402
     canonical_text_bytes,
     canonical_wasm_loader_asset_bytes,
@@ -185,11 +186,11 @@ def scan_sources(
     node = shutil.which("node")
     if node is None:
         raise RuntimeError("node is required to validate the browser ECMAScript graph")
-    acorn_package = SCANNER_ROOT / "node_modules" / "acorn" / "package.json"
-    if not acorn_package.is_file():
-        raise RuntimeError(
-            "Acorn parser is missing; run: python tools/bootstrap_browser_asset_graph.py"
-        )
+    try:
+        # The parser tree comes from its lock file on demand, as `uv run` syncs.
+        checkout_provisioning.ensure("browser-acorn", ROOT)
+    except checkout_provisioning.ProvisioningError as exc:
+        raise RuntimeError(f"Acorn parser is not provisioned: {exc}") from exc
     if not SCANNER.is_file():
         raise RuntimeError(f"browser asset scanner is missing: {SCANNER}")
     result = _COMMANDS.run(

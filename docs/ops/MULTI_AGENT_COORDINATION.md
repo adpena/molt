@@ -199,6 +199,12 @@ record when scope changes or the worker finishes. A reviewer has no owned write
 paths. Keep the agreed registry root and actual source checkout explicit in the
 parent record; `scan` reads the selected repository's records, not agent chat.
 
+`tools/molt_dev.py lane start <slug>` registers each lane it creates as task
+`lane-<slug>` in the main checkout's registry, with the lane worktree as the
+record's source checkout and a `lane` object (branch, base, worktree).
+`lane retire` closes the record as `landed` or `abandoned` and records the
+retired tip and any bundle.
+
 The registry consists only of `logs/agents/<task>/coordination.json`, where
 `<task>` is one directory name and the record's `task` field matches it exactly.
 `init` rejects nested task names and nonportable or aliased directory names

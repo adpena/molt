@@ -36,8 +36,9 @@ The hazard inventory -> countermeasure map (the spec this file implements)
           `git merge-base --is-ancestor`. Cleanup is gated on THAT, never on
           the push command's exit code.
   3. Worktree cleanup loses work
-       -> cleanup REFUSES when unpushed commits exist (rev-list
-          upstream..HEAD non-empty) OR tracked staged/unstaged changes exist
+       -> cleanup REFUSES when a commit of upstream..HEAD is not on upstream
+          by Change-Id or patch-id (molt_dev_common.landing_representation)
+          OR tracked staged/unstaged changes exist
           (excluding a configurable ignore set, default the legacy and keyed wasm sha256 files).
           --force requires NAMING the sha being abandoned (so an abandon is
           deliberate and auditable, never accidental).
@@ -121,6 +122,9 @@ Subcommands
                     (state dir: pid/sid/cmd.json/run.log/rc)
   detached-verify   prove the daemon outlived its spawning call; report
                     running / done(rc) / DIED-SILENT (the hazard-11 class)
+  lane              start | retire | list lane/<slug> worktrees: create,
+                    record and provision a lane; retire a landed or bundled
+                    one completely (tools/molt_dev_lanes.py)
 """
 
 from __future__ import annotations
@@ -177,6 +181,7 @@ from tools.molt_dev_common import (  # noqa: E402
     _say,
     _step,
     _warn,
+    landing_representation,
 )
 
 from tools.git_identity import (  # noqa: E402
@@ -198,6 +203,7 @@ from tools.molt_dev_detached import (  # noqa: E402
     cmd_detached_verify,
 )
 from tools.molt_dev_probe import probe_path, probe_pid  # noqa: E402
+from tools.molt_dev_lanes import add_lane_arguments  # noqa: E402
 from tools import venv_exec  # noqa: E402
 from tools.molt_dev_gates import (  # noqa: E402
     GateOutcome,
@@ -858,15 +864,32 @@ def _resolve_repo_venv(repo: Path, env: Mapping[str, str]) -> Path | None:
     An existing or explicitly selected environment is returned even when broken:
     validation must diagnose it rather than silently choose another interpreter.
     Only an absent automatic checkout default permits main-worktree discovery.
+    In a checkout that declares a uv project (``uv.lock``), its own
+    environment (``UV_PROJECT_ENVIRONMENT``, else an existing ``.venv``) is
+    first ensured from the lock, as ``uv run`` syncs before it runs: a missing
+    one is built and an unstamped one is confirmed by ``uv sync --frozen``
+    (`molt.checkout_provisioning`). A memory-guarded child inherits dx's
+    default ``UV_PROJECT_ENVIRONMENT`` even where that managed environment was
+    never built. An explicit ``MOLT_VENV`` and a borrowed main-worktree
+    environment are used as they are.
     """
     selected = venv_exec.resolve_venv(repo_root=repo, env=env)
     own = repo / ".venv"
+    if env.get("MOLT_VENV"):
+        return selected
     if (
-        env.get("MOLT_VENV")
-        or env.get("UV_PROJECT_ENVIRONMENT", "").strip()
+        env.get("UV_PROJECT_ENVIRONMENT", "").strip()
         or own.exists()
         or own.is_symlink()
     ):
+        from molt import checkout_provisioning
+
+        project = checkout_provisioning.checkout_input("uv-environment", repo, env)
+        if checkout_provisioning.declares(project):
+            try:
+                checkout_provisioning.ensure_input(project)
+            except checkout_provisioning.ProvisioningError as exc:
+                raise DriverError(str(exc)) from exc
         return selected
     common = _git_common_directory(repo)
     if common is not None:
@@ -2023,20 +2046,21 @@ def _cleanup_worktree(
     """Remove the worktree at `repo` ONLY when safe (hazard 3).
 
     REFUSES when:
-      * unpushed commits exist (upstream_ref..HEAD non-empty), OR
+      * a commit of upstream_ref..HEAD is not on upstream by Change-Id or
+        patch-id (`landing_representation`), OR
       * tracked staged/unstaged (non-ignored) changes exist.
     --force (force_sha set) overrides BOTH, but only when force_sha names the
     exact HEAD being abandoned (so an abandon is deliberate + auditable).
     """
-    unpushed = git.commits_in_range(f"{upstream_ref}..HEAD")
-    dirty = _tracked_dirty(git, ignore_globs)
     head = git.head_sha()
+    unpushed = list(landing_representation(git, head, upstream_ref).unrepresented)
+    dirty = _tracked_dirty(git, ignore_globs)
 
     if unpushed or dirty:
         reasons: list[str] = []
         if unpushed:
             reasons.append(
-                f"{len(unpushed)} unpushed commit(s): "
+                f"{len(unpushed)} commit(s) not on {upstream_ref}: "
                 + ", ".join(git.short(s) for s in unpushed)
             )
         if dirty:
@@ -2729,6 +2753,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="abandon despite unpushed/dirty; MUST name the HEAD sha being abandoned",
     )
     p_cl.set_defaults(func=cmd_cleanup)
+
+    # lane: orchestrator-owned lane worktrees (tools/molt_dev_lanes.py)
+    p_ln = sub.add_parser("lane", help="start, retire or list lane/<slug> worktrees")
+    add_lane_arguments(
+        p_ln, add_repo_arg=_add_repo_arg, add_remote_branch=_add_remote_branch
+    )
 
     # fix: the one command read-only gate failures point to
     p_fx = sub.add_parser(

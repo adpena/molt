@@ -109,8 +109,9 @@ Molt expects production-grade changes, not opportunistic patches.
   `uv run --python 3.12 pre-commit install`. They validate staged changes on
   commit, including the public-source artifact boundary.
 - Install Molt's managed Git hooks once per clone with
-  `uv run --python 3.12 python tools/install_git_hooks.py`: the `pre-push`
-  drift gate and the `commit-msg` attribution policy.
+  `uv run --python 3.12 python tools/install_git_hooks.py`: the `commit-msg`
+  attribution policy. `tools/molt_dev.py lane start` refreshes them for each
+  new lane.
 - Commit messages and pull requests carry no AI attribution: no
   `Co-Authored-By: Claude` trailer and no "Generated with Claude Code" footer.
   The `commit-msg` hook and CI's `repository_policy` family

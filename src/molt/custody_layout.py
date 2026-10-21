@@ -26,6 +26,8 @@ MAIN_CHECKOUT_DIRNAME = "molt-src"
 WORKTREES_DIRNAME = "worktrees"
 # Disk scratch is this child of the artifact root.
 SCRATCH_DIRNAME = "tmp"
+# Git bundles of retired, unlanded branches: a child of the custody root.
+BUNDLES_DIRNAME = "drift-bundles"
 _GIT_PATH_BYTES = 64 * 1024
 
 
@@ -122,6 +124,19 @@ def custody_root(repo_root: str | Path) -> Path:
         if checkout != root and host_path_is_within(custody, checkout):
             custody = checkout.parent
     return custody
+
+
+def family_worktrees_root(main_checkout: str | Path) -> Path | None:
+    """`<root>/worktrees` for a main checkout at `<root>/molt-src`, else None.
+
+    A lane worktree there resolves to the same custody root as the main
+    checkout. A clone outside the family layout has no such place: its own
+    directory would nest the worktrees inside its source tree.
+    """
+    root = Path(main_checkout).expanduser().resolve()
+    if root.name != MAIN_CHECKOUT_DIRNAME:
+        return None
+    return root.parent / WORKTREES_DIRNAME
 
 
 def _identity_name(path: str | Path) -> str:
