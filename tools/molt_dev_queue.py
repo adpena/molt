@@ -61,6 +61,7 @@ MAX_BATCH = 8
 # results older than RESULT_DAYS, retire when a runner starts.
 RUNNER_LOGS_KEPT = 20
 RESULT_DAYS = 30
+_AWAIT_POLL_S = 10.0
 
 
 @dataclass(frozen=True)
@@ -432,7 +433,8 @@ def _start_queue_runner(paths, repo: Path, args: argparse.Namespace) -> None:
             str(repo),
             "--",
             sys.executable,
-            str(Path(__file__).resolve()),
+            # The driver itself: this module is a library, not an entry point.
+            str(Path(drv.__file__).resolve()),
             "queue",
             "run",
             "--repo",
@@ -446,10 +448,38 @@ def _start_queue_runner(paths, repo: Path, args: argparse.Namespace) -> None:
     drv.cmd_detached_run(detached)
 
 
-def _await_landing(paths, request_id: str) -> int:
+def _runner_exited_without(paths: QueuePaths, request_id: str) -> Path | None:
+    """The finished runner's state dir when no runner can still land the request.
 
+    A runner holds its lock while it works and writes its exit status last
+    (the detached-run protocol), so a free lock, a finished newest runner and a
+    still-queued request mean nothing will land it.
+    """
+    drv = _driver()
+    if not (paths.requests / f"{request_id}.json").is_file():
+        return None
+    probe = drv._try_acquire_file_lock(paths.runner_lock)
+    if probe is None:
+        return None
+    drv._release_file_lock(probe)
+    runners = sorted(paths.runners.iterdir()) if paths.runners.is_dir() else []
+    if not runners or not (runners[-1] / "rc").is_file():
+        return None
+    if read_result(paths, request_id) is not None:
+        return None
+    return runners[-1]
+
+
+def _await_landing(paths, request_id: str) -> int:
     while (result := read_result(paths, request_id)) is None:
-        time.sleep(10)
+        exited = _runner_exited_without(paths, request_id)
+        if exited is not None:
+            _fail(
+                f"{request_id} is still queued, but its runner exited "
+                f"(see {exited / 'run.log'}); `molt_dev.py queue run` restarts it"
+            )
+            return EXIT_FAIL
+        time.sleep(_AWAIT_POLL_S)
     status = result["status"]
     if status == "landed":
         _ok(f"{request_id} landed in {result['landed'][:12]}")
