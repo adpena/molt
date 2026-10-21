@@ -1,26 +1,36 @@
 #!/usr/bin/env python3
 """Fail when a pytest file has no CI owner beyond the recorded backlog.
 
-CI runs only what the proof plan's commands name, so a test file that no
-command names never runs in CI and can rot unseen. A file is owned when a plan
-command's argv names it or a directory that contains it. A node selection
-(``path::node``) runs only that node, so it does not own the rest of its file.
-The baseline records the files without an owner; it may only shrink. A new
-test file must join a plan command, and a file that gains an owner (or is
-deleted) must leave the baseline.
+CI runs only what the proof plan's commands select, so a test file that no
+command selects never runs in CI and can rot unseen. A file is owned when a
+plan pytest command selects it or a directory that contains it, as pytest's own
+parser reads the argv (the proof queue's ``command_pytest_targets``): an option
+value such as ``--ignore tests/x.py`` selects nothing, and a command that does
+not run pytest selects no test file. A node selection (``path::node``) runs
+only that node, so it does not own the rest of its file. The baseline records
+the files without an owner; it may only shrink. A new test file must join a
+plan command, and a file that gains an owner (or is deleted) must leave the
+baseline.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 import sys
 import tomllib
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-ROOT = Path(__file__).resolve().parents[1]
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+ROOT = bind_repository_imports(__file__)
+
+from tools.proof_command_argv import command_pytest_targets  # noqa: E402
+
 BASELINE_NAME = "tools/test_ownership_baseline.json"
 SCHEMA_VERSION = 1
 # pyproject's addopts ignore these trees; their own runners own them.
@@ -37,40 +47,25 @@ def test_files(root: Path) -> set[str]:
     return files
 
 
-def command_test_targets(argv: Sequence[object]) -> frozenset[str]:
-    """The whole test files and directories under tests/ that one argv names.
-
-    This is the one ownership rule: this gate and the proof queue's focused
-    pytest admission (HF-179) both read it.
-    """
-    return frozenset(
-        argument.rstrip("/")
-        for argument in argv
-        if isinstance(argument, str)
-        and argument.startswith("tests")
-        and "::" not in argument
-    )
-
-
-def owns(targets: frozenset[str] | set[str], path: str) -> bool:
-    """Whether ``targets`` name repository-relative ``path`` or a directory of it."""
-    return path in targets or bool(
-        {str(parent) for parent in PurePosixPath(path).parents} & targets
-    )
-
-
 def plan_targets(root: Path) -> set[str]:
-    """Every whole file or directory under tests/ that a plan command names."""
+    """Every whole test file or directory that a plan pytest command selects."""
     plan = tomllib.loads((root / "tools" / "proof_plan.toml").read_text("utf-8"))
-    targets: set[str] = set()
-    for command in plan.get("command", []):
-        targets.update(command_test_targets(command.get("argv", [])))
-    return targets
+    return {
+        target.path
+        for command in plan.get("command", [])
+        for target in command_pytest_targets(command.get("argv", []), root=root) or ()
+        if target.node is None
+    }
 
 
 def unowned(root: Path) -> set[str]:
     targets = plan_targets(root)
-    return {file for file in test_files(root) if not owns(targets, file)}
+    return {
+        file
+        for file in test_files(root)
+        if file not in targets
+        and not {str(parent) for parent in PurePosixPath(file).parents} & targets
+    }
 
 
 def read_baseline(root: Path) -> set[str] | None:

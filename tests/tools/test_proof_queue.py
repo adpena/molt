@@ -29,7 +29,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tools import proof_plan
+from tools import proof_command_argv, proof_plan
 from molt.cargo_execution_policy import normalize_cargo_environment
 from molt.process_environment import NameRule, ProcessEnvironment
 from molt.file_hashing import _sha256_file
@@ -1047,19 +1047,79 @@ _UV_ACTIVE = [
     "--no-sync",
     "--no-config",
 ]
+# Two small, owned test files with light imports for pytest's own collection.
+_INJECTED_TESTS = "tests/tools/test_triality.py"
+_NAMED_TESTS = "tests/tools/test_determinism_perf_gate.py"
 
 
-def _commands_naming(path: str) -> set[str]:
-    """Independent oracle: plan commands whose argv names ``path`` or a parent."""
+def _rows_naming(path: str, *, nodes: bool = True) -> set[str]:
+    """Independent oracle: plan rows whose argv names ``path`` or a parent of it.
+
+    Authority is declared per row, so a row that selects one node of a file
+    owns that file for focused admission (HF-179); ``nodes=False`` counts only
+    rows that name the whole path. This reads argv spellings; no row names
+    these test paths as an option value.
+    """
     names = {path, *(str(parent) for parent in Path(path).parents if parent.parts)}
+    plan = proof_plan.ProofPlan.load()
     return {
-        command.id
-        for command in proof_plan.ProofPlan.load().commands
+        row.id
+        for row in (*plan.commands, *plan.named_lanes)
         if any(
-            str(argument).rstrip("/") in names
-            for argument in command.argv
-            if "::" not in str(argument)
+            str(argument).split("::", 1)[0] in names
+            and (nodes or "::" not in str(argument))
+            for argument in row.argv
         )
+    }
+
+
+def _focused_plan(monkeypatch, *rows, root: Path | None = None) -> None:
+    """Judge focused proofs against a plan holding only ``rows``.
+
+    Each row is ``(id, argv, toolchains)`` or ``(id, argv, toolchains, data)``.
+    ``root`` moves the plan, and with it the checkout that focused admission
+    resolves selections in.
+    """
+    commands = []
+    for row_id, argv, toolchains, *data in rows:
+        commands.append(
+            proof_plan.ProofCommand(
+                row_id,
+                {"argv": list(argv), "toolchains": list(toolchains), **dict(*data)},
+            )
+        )
+    registry = copy.copy(command_admission._proof_command_registry())
+    plan = registry["plan"]
+    registry["plan"] = replace(
+        plan,
+        path=plan.path if root is None else root / "tools" / "proof_plan.toml",
+        commands=tuple(commands),
+        named_lanes=(),
+    )
+    monkeypatch.setattr(command_admission, "_proof_command_registry", lambda: registry)
+
+
+def _collected_files(arguments: list[str], *, cwd: Path) -> set[str]:
+    """pytest's actual collection: the files whose tests ``pytest --co`` lists."""
+    completed = run_guarded_test_process(
+        [sys.executable, "-m", "pytest", "--co", "-q", "-p", "no:cacheprovider"]
+        + arguments,
+        cwd=cwd,
+        env={
+            name: value
+            for name, value in os.environ.items()
+            if name != "PYTEST_ADDOPTS"
+        },
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    return {
+        line.split("::", 1)[0]
+        for line in completed.stdout.splitlines()
+        if "::" in line and not line.startswith(" ")
     }
 
 
@@ -1075,13 +1135,14 @@ def _commands_naming(path: str) -> set[str]:
 )
 def test_focused_pytest_admission_is_one_rule_for_every_spelling(spelling) -> None:
     # HF-179: pytest is one program however it is launched. An ad hoc run is a
-    # focused proof admitted with every toolchain of the commands that own the
-    # files it selects, and it never counts as one of those commands' proofs.
+    # focused proof admitted with every toolchain of the rows that own the file
+    # it selects, node rows included, and it never counts as one of their proofs.
     envelope = command_admission.envelope_for_command([*spelling, _FOCUSED_NODE, "-q"])
-    owners = _commands_naming(_FOCUSED_TEST)
+    owners = _rows_naming(_FOCUSED_TEST)
+    node_only = owners - _rows_naming(_FOCUSED_TEST, nodes=False)
     plan = proof_plan.ProofPlan.load()
 
-    assert owners
+    assert node_only, "the oracle file must keep a node-only owner"
     assert envelope["typed_command"]["family"] == "focused-pytest"
     assert envelope["typed_command"]["selections"] == [_FOCUSED_TEST]
     assert set(envelope["typed_command"]["owners"]) == owners
@@ -1111,10 +1172,254 @@ def test_focused_pytest_option_values_are_never_selections() -> None:
             "2",
             "--molt-worker-memory-gb",
             "2.5",
+            "--deselect",
+            _INJECTED_TESTS,
             _FOCUSED_TEST,
         ]
     )
     assert envelope["typed_command"]["selections"] == [_FOCUSED_TEST]
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        ["-o", f"addopts={_INJECTED_TESTS}"],
+        [f"--override-ini=addopts={_INJECTED_TESTS}"],
+    ],
+    ids=["short", "long"],
+)
+def test_focused_pytest_selects_what_an_ini_override_makes_pytest_collect(
+    override,
+) -> None:
+    # Review finding 1. The oracle is pytest's own collection: an addopts
+    # override selects a file the argv never names, so admission reads the
+    # overridden configuration as pytest does, and that file's owners join.
+    collected = _collected_files([*override, _NAMED_TESTS], cwd=state.ROOT)
+    envelope = command_admission.envelope_for_command(
+        ["python", "-m", "pytest", *override, _NAMED_TESTS]
+    )
+
+    assert collected == {_INJECTED_TESTS, _NAMED_TESTS}
+    assert set(envelope["typed_command"]["selections"]) == collected
+    assert set(envelope["typed_command"]["owners"]) == _rows_naming(
+        _INJECTED_TESTS
+    ) | _rows_naming(_NAMED_TESTS)
+
+
+def test_focused_pytest_refuses_a_run_that_names_no_target_under_testpaths() -> None:
+    # pytest reads testpaths only when no target is named; a focused proof
+    # must name its targets, so an overridden testpaths cannot select one.
+    assert _collected_files(["-o", f"testpaths={_INJECTED_TESTS}"], cwd=state.ROOT) == {
+        _INJECTED_TESTS
+    }
+    with pytest.raises(ValueError, match="must name the test files"):
+        command_admission.envelope_for_command(
+            ["python", "-m", "pytest", "-o", f"testpaths={_INJECTED_TESTS}"]
+        )
+
+
+def test_focused_pytest_admits_strictness_flags_that_pytest_spells_as_overrides() -> (
+    None
+):
+    # pytest 9 implements --strict-config, --strict-markers and --strict as ini
+    # overrides; they select nothing.
+    envelope = command_admission.envelope_for_command(
+        [*_UV_ACTIVE, "pytest", "--strict-config", "--strict-markers", _NAMED_TESTS]
+    )
+    assert envelope["typed_command"]["selections"] == [_NAMED_TESTS]
+
+
+def test_focused_pytest_overrides_are_checked_against_ownership(
+    monkeypatch, tmp_path
+) -> None:
+    # In the plan's checkout, a path an override injects needs an owner like a
+    # named one. A collection key only chooses tests inside the selected paths,
+    # which pytest's own collection confirms.
+    suite = tmp_path / "tests" / "suite"
+    suite.mkdir(parents=True)
+    (suite / "test_a.py").write_text("def test_a():\n    pass\n", encoding="utf-8")
+    (suite / "helper.py").write_text("def test_helper():\n    pass\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_unowned.py").write_text(
+        "def test_unowned():\n    pass\n", encoding="utf-8"
+    )
+    _focused_plan(
+        monkeypatch,
+        ("fixture.suite", ["python", "-m", "pytest", "tests/suite"], ["python", "uv"]),
+        root=tmp_path,
+    )
+    injected = ["-o", "addopts=tests/test_unowned.py", "tests/suite/test_a.py"]
+    assert "tests/test_unowned.py" in _collected_files(injected, cwd=tmp_path)
+    with pytest.raises(ValueError, match="tests/test_unowned.py has no owning"):
+        command_admission.envelope_for_command(["python", "-m", "pytest", *injected])
+
+    widened = ["-o", "python_files=*.py", "tests/suite"]
+    collected = _collected_files(widened, cwd=tmp_path)
+    assert collected == {"tests/suite/test_a.py", "tests/suite/helper.py"}
+    envelope = command_admission.envelope_for_command(
+        ["python", "-m", "pytest", *widened]
+    )
+    assert envelope["typed_command"]["selections"] == ["tests/suite"]
+    assert all(path.startswith("tests/suite/") for path in collected), (
+        "a collection key stays inside the selected path"
+    )
+
+
+def test_focused_pytest_reads_the_checkout_configuration_as_pytest_does(
+    tmp_path,
+) -> None:
+    # pytest puts its configuration's addopts before the argv; the oracle is
+    # pytest's own collection in the same checkout.
+    (tmp_path / "tests").mkdir()
+    for name in ("a", "b"):
+        (tmp_path / "tests" / f"test_{name}.py").write_text(
+            f"def test_{name}():\n    pass\n", encoding="utf-8"
+        )
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\naddopts = ["tests/test_b.py"]\n', encoding="utf-8"
+    )
+    collected = _collected_files(["tests/test_a.py"], cwd=tmp_path)
+
+    assert collected == {"tests/test_a.py", "tests/test_b.py"}
+    assert (
+        set(
+            proof_command_argv.pytest_run_selections(["tests/test_a.py"], root=tmp_path)
+        )
+        == collected
+    )
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\naddopts = ["--pyargs"]\n', encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="--pyargs"):
+        proof_command_argv.pytest_run_selections(["tests/test_a.py"], root=tmp_path)
+
+
+def test_focused_pytest_owners_include_a_node_id_only_row(monkeypatch) -> None:
+    # Review finding 2: a row that selects one node declares authority for its
+    # file, so a focused proof of any part of that file admits the row.
+    file = "tests/tools/test_check_test_ownership.py"
+    node = f"{file}::test_a_new_unowned_file_fails_and_cannot_be_baselined"
+    _focused_plan(
+        monkeypatch,
+        (
+            "fixture.node-only",
+            ["python", "-m", "pytest", node],
+            ["python", "uv", "git"],
+        ),
+    )
+    for selected in (
+        file,
+        node,
+        f"{file}::test_a_file_that_gains_an_owner_must_leave_the_baseline",
+    ):
+        envelope = command_admission.envelope_for_command(
+            ["python", "-m", "pytest", selected]
+        )
+        assert envelope["typed_command"]["owners"] == ["fixture.node-only"]
+        assert "git" in envelope["toolchains"]
+
+
+def test_focused_pytest_owners_include_a_named_lane_that_runs_pytest() -> None:
+    # A named lane that runs pytest declares authority for the files it
+    # selects, as a proof-plan command does.
+    plan = proof_plan.ProofPlan.load()
+    lane = plan.named_lane("native.capability-cache-policy")
+    node = next(argument for argument in lane.argv if "::" in argument)
+    envelope = command_admission.envelope_for_command(["python", "-m", "pytest", node])
+
+    assert lane.id in envelope["typed_command"]["owners"]
+    assert set(plan.toolchain_closure(lane.toolchains)) <= set(envelope["toolchains"])
+
+
+def test_focused_pytest_directory_admits_the_rows_inside_it(monkeypatch) -> None:
+    # A run of a directory executes every row inside it, so it needs a row that
+    # selects the whole directory and admits the rows below as well.
+    inner = (
+        "tests/tools/test_check_test_ownership.py"
+        "::test_a_new_unowned_file_fails_and_cannot_be_baselined"
+    )
+    _focused_plan(
+        monkeypatch,
+        (
+            "fixture.directory",
+            ["python", "-m", "pytest", "tests/tools"],
+            ["python", "uv"],
+        ),
+        (
+            "fixture.inner-node",
+            ["python", "-m", "pytest", inner],
+            ["python", "uv", "git"],
+        ),
+    )
+    envelope = command_admission.envelope_for_command(
+        ["python", "-m", "pytest", "tests/tools"]
+    )
+    assert set(envelope["typed_command"]["owners"]) == {
+        "fixture.directory",
+        "fixture.inner-node",
+    }
+    assert "git" in envelope["toolchains"]
+    with pytest.raises(ValueError, match="tests has no owning proof-plan command"):
+        command_admission.envelope_for_command(["python", "-m", "pytest", "tests"])
+
+
+def test_focused_pytest_resolves_selections_in_the_plans_checkout(
+    monkeypatch, tmp_path
+) -> None:
+    # Review finding 3: selections and owners resolve against one checkout, the
+    # plan's, never the tree that runs admission.
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_only_here.py").write_text(
+        "def test_here():\n    pass\n", encoding="utf-8"
+    )
+    _focused_plan(
+        monkeypatch,
+        (
+            "fixture.checkout",
+            ["python", "-m", "pytest", "tests/test_only_here.py", _NAMED_TESTS],
+            ["python", "uv"],
+        ),
+        root=tmp_path,
+    )
+    envelope = command_admission.envelope_for_command(
+        ["python", "-m", "pytest", "tests/test_only_here.py"]
+    )
+    assert envelope["typed_command"]["selections"] == ["tests/test_only_here.py"]
+    # The admitting tree has this file; the plan's checkout does not.
+    assert (state.ROOT / _NAMED_TESTS).is_file()
+    with pytest.raises(ValueError, match="must name the test files"):
+        command_admission.envelope_for_command(["python", "-m", "pytest", _NAMED_TESTS])
+    # Execution confines every typed command, a focused proof among them, to
+    # the checkout that admitted it, so no row runs it in another tree.
+    with pytest.raises(ValueError, match="differs from its bootstrap checkout"):
+        execution_environment.validate_typed_source_root(
+            envelope, {"root": str(tmp_path.resolve())}
+        )
+
+
+def test_focused_pytest_carries_its_owners_cargo_build_python(monkeypatch) -> None:
+    # Review finding 5: the payload carries the one build-Python role its Cargo
+    # owners declare, as an exact row does.
+    plan = proof_plan.ProofPlan.load()
+    owner = next(row for row in plan.commands if row.id == "browser-simd.contract")
+    assert owner.data["cargo_build_python"] is False
+    assert "cargo" in owner.toolchains
+    envelope = command_admission.envelope_for_command(
+        ["python", "-m", "pytest", "tests/tools/test_build_browser_simd.py"]
+    )
+    assert envelope["typed_command"]["owners"] == ["browser-simd.contract"]
+    assert envelope["typed_command"]["cargo_build_python"] is False
+    assert not command_admission.cargo_build_python_required(envelope)
+    assert "build-python" not in envelope["toolchains"]
+
+    cargo = ["python", "uv", "cargo", "rustc"]
+    argv = ["python", "-m", "pytest", _NAMED_TESTS]
+    _focused_plan(
+        monkeypatch,
+        ("fixture.generator", argv, cargo, {"cargo_build_python": True}),
+        ("fixture.no-generator", [*argv, "-x"], cargo, {"cargo_build_python": False}),
+    )
+    with pytest.raises(ValueError, match="disagree on the Cargo build Python"):
+        command_admission.envelope_for_command(["python", "-m", "pytest", _NAMED_TESTS])
 
 
 @pytest.mark.parametrize(
@@ -1147,17 +1452,15 @@ def test_console_script_near_match_keeps_the_registered_authority(spelling) -> N
 
 
 def test_focused_pytest_refuses_a_file_that_no_command_owns(monkeypatch) -> None:
-    import copy
-    import dataclasses
-
-    owners = _commands_naming(_FOCUSED_TEST)
+    owners = _rows_naming(_FOCUSED_TEST)
     registry = copy.copy(command_admission._proof_command_registry())
     plan = registry["plan"]
-    registry["plan"] = dataclasses.replace(
+    registry["plan"] = replace(
         plan,
         commands=tuple(
             command for command in plan.commands if command.id not in owners
         ),
+        named_lanes=tuple(lane for lane in plan.named_lanes if lane.id not in owners),
     )
     monkeypatch.setattr(command_admission, "_proof_command_registry", lambda: registry)
     with pytest.raises(ValueError, match=f"{_FOCUSED_TEST} has no owning proof-plan"):
@@ -19288,7 +19591,9 @@ def test_multiple_registered_variants_never_turn_transport_changes_into_leaves(
         ),
     ]
     ids = ["fixture.full", "fixture.macos"]
-    entrypoint = command_admission._command_entrypoint(commands[0])
+    entrypoint = proof_command_argv._command_entrypoint(
+        commands[0], root=command_admission._REPO_ROOT
+    )
     registry["entrypoints"][entrypoint] = list(ids)
     # Each fixture row projects every registered field the real registry does,
     # including its Cargo build-generator declaration (a compiling driver).

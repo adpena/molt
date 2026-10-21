@@ -9,7 +9,7 @@ import functools
 import os
 from pathlib import Path
 import re
-from typing import Any, Literal, Mapping, Sequence, cast
+from typing import Literal, Mapping, Sequence, cast
 
 from molt.compilation_target import target_name
 from molt.compilation_target import admit_target
@@ -17,6 +17,24 @@ from molt.exact_json import canonical_json_bytes
 from molt.rust_toolchain import rust_flag_spans
 from tools import proof_plan
 from tools.command_execution import CommandExecutor
+from tools.proof_command_argv import (
+    PythonInvocation,
+    _PY_LAUNCHERS,
+    _PY_SELECTOR,
+    _PYTHON_COMMAND,
+    _PYTHON_CONSOLE_MODULES,
+    _PYTHON_CONSOLE_SCRIPTS,
+    _UV_OPTION_SEMANTICS,
+    _basename,
+    _command_entrypoint,
+    _command_wrapper,
+    _normalized_entrypoint_target,
+    _uv_option_values,
+    _uv_prefix_and_payload,
+    command_pytest_targets,
+    parse_python_invocation,
+    pytest_run_selections,
+)
 from tools.proof_queue_pkg import cargo_output_layout
 from tools.proof_queue_pkg.python_payload_authority import is_molt_cli_payload
 
@@ -27,140 +45,6 @@ _PYTHON_CUSTODY_BOOTSTRAP = Path(__file__).with_name("python_custody_bootstrap.p
 ENVELOPE_SCHEMA = "molt.proof-command-envelope.v8"
 EXECUTION_SCHEMA = "molt.proof-command-execution.v4"
 _COMMANDS = CommandExecutor.for_file(__file__)
-
-_PYTHON_COMMAND = re.compile(r"^python(?:\d+(?:\.\d+)*)?(?:\.exe)?$", re.IGNORECASE)
-_PY_LAUNCHERS = frozenset({"py", "py.exe"})
-_PY_SELECTOR = re.compile(
-    r"(?:-\d+(?:\.\d+)?(?:-(?:32|64))?|-V:[^\s/:]+(?:/[^\s/:]+)?)",
-    re.IGNORECASE,
-)
-
-
-@dataclass(frozen=True)
-class PythonInvocation:
-    """Canonical CPython command-line split at the payload boundary.
-
-    Interpreter options remain interpreter options when the payload is routed
-    through the custody bootstrap.  Payload arguments are never reparsed, so
-    values beginning with ``-`` retain their ordinary ``sys.argv`` meaning.
-    """
-
-    interpreter_options: tuple[str, ...]
-    mode: str
-    target: str | None
-    arguments: tuple[str, ...]
-
-
-_PYTHON_FLAG_CHARACTERS = frozenset("bBdEhiIOPqRsStuvVx?")
-_PYTHON_TERMINAL_OPTIONS = frozenset(
-    {
-        "-h",
-        "-?",
-        "--help",
-        "--help-all",
-        "--help-env",
-        "--help-xoptions",
-        "--version",
-    }
-)
-
-
-def parse_python_invocation(argv: Sequence[str]) -> PythonInvocation:
-    """Split the CPython prefix, including grouped argument-taking options.
-
-    c/m stop parsing; W/X consume their token remainder or the next argument.
-    This follows CPython 3.12's getopt and initialization boundary.
-    """
-    if not argv:
-        raise ValueError("Python invocation has no interpreter")
-    values = [str(value) for value in argv]
-    options: list[str] = []
-    version = False
-
-    def payload(
-        mode: str, target: str | None, arguments: Sequence[str]
-    ) -> PythonInvocation:
-        if version:
-            return PythonInvocation(tuple(values[1:]), "terminal", None, ())
-        return PythonInvocation(tuple(options), mode, target, tuple(arguments))
-
-    index = 1
-    while index < len(values):
-        value = values[index]
-        if value == "--":
-            index += 1
-            break
-        if value == "-":
-            return payload("stdin", None, values[index + 1 :])
-        if not value.startswith("-"):
-            break
-        if value in _PYTHON_TERMINAL_OPTIONS:
-            if value == "--version":
-                version = True
-                options.append(value)
-                index += 1
-                continue
-            return PythonInvocation(tuple(values[1:]), "terminal", None, ())
-        if value == "--check-hash-based-pycs":
-            if index + 1 >= len(values):
-                raise ValueError("Python --check-hash-based-pycs requires a value")
-            option_value = values[index + 1]
-            if option_value not in {"always", "default", "never"}:
-                raise ValueError(
-                    "Python --check-hash-based-pycs requires always, default, or never"
-                )
-            options.extend((value, option_value))
-            index += 2
-            continue
-        if value.startswith("--"):
-            raise ValueError(f"unsupported Python interpreter option {value!r}")
-        for offset, character in enumerate(value[1:], 1):
-            if character in "cmWX":
-                if offset > 1:
-                    options.append(value[:offset])
-                attached = value[offset + 1 :]
-                if attached:
-                    option_value = attached
-                else:
-                    index += 1
-                    if index >= len(values):
-                        label = {
-                            "c": "a command",
-                            "m": "a module",
-                            "W": "a value",
-                            "X": "a value",
-                        }[character]
-                        raise ValueError(f"Python -{character} requires {label}")
-                    option_value = values[index]
-                if character in "cm":
-                    if character == "m" and not option_value:
-                        raise ValueError("Python -m requires a non-empty module")
-                    return payload(
-                        "command" if character == "c" else "module",
-                        option_value,
-                        values[index + 1 :],
-                    )
-                options.extend(
-                    ("-" + character + attached,)
-                    if attached
-                    else ("-" + character, option_value)
-                )
-                break
-            if character not in _PYTHON_FLAG_CHARACTERS:
-                raise ValueError(f"unsupported Python interpreter option {value!r}")
-            if character in "h?":
-                return PythonInvocation(tuple(values[1:]), "terminal", None, ())
-            if character == "V":
-                version = True
-        else:
-            options.append(value)
-        index += 1
-    if index < len(values):
-        if values[index] == "-":
-            return payload("stdin", None, values[index + 1 :])
-        return payload("script", values[index], values[index + 1 :])
-    return payload("stdin", None, ())
-
 
 _SHELL_LAUNCHERS = frozenset(
     {
@@ -181,64 +65,12 @@ _SHELL_LAUNCHERS = frozenset(
         "zsh.exe",
     }
 )
-_PYTHON_CONSOLE_MODULES = {
-    "pytest": "pytest",
-    "pytest.exe": "pytest",
-    "py.test": "pytest",
-    "py.test.exe": "pytest",
-    "pip-audit": "pip_audit",
-    "pip-audit.exe": "pip_audit",
-}
-_PYTHON_CONSOLE_SCRIPTS = frozenset(_PYTHON_CONSOLE_MODULES)
-# One closed authority for every admitted ``uv run`` option.  Input-bearing
-# options are either assigned an immutable custody role or rejected here; no
-# second parser is allowed to infer their semantics later.
-_UV_OPTION_SEMANTICS: dict[str, tuple[str, str]] = {
-    "--active": ("flag", "environment-selection"),
-    "--all-extras": ("flag", "project-selection"),
-    "--exact": ("flag", "environment-selection"),
-    "--frozen": ("flag", "project-lock"),
-    "--inexact": ("flag", "environment-selection"),
-    "--isolated": ("flag", "environment-selection"),
-    "--locked": ("flag", "project-lock"),
-    "--no-config": ("flag", "environment-selection"),
-    "--no-default-groups": ("flag", "project-selection"),
-    "--no-dev": ("flag", "project-selection"),
-    "--no-project": ("flag", "project-selection"),
-    "--no-sync": ("flag", "environment-selection"),
-    "--offline": ("flag", "network-denial"),
-    "--directory": ("value", "source-directory"),
-    "--extra": ("value", "project-selection"),
-    "--group": ("value", "project-selection"),
-    "--only-group": ("value", "project-selection"),
-    "--project": ("value", "project-directory"),
-    "--python": ("value", "python-selection"),
-    "-p": ("value", "python-selection"),
-    # These can inject source, configuration, or network state that is not
-    # represented by the admitted project snapshot.  Reject them structurally
-    # rather than growing exception-shaped partial custody.
-    "--default-index": ("reject", "network-source"),
-    "--env-file": ("reject", "environment-file"),
-    "--find-links": ("reject", "package-source"),
-    "--index": ("reject", "network-source"),
-    "--with": ("reject", "package-overlay"),
-    "--with-editable": ("reject", "editable-source"),
-}
-_UV_VALUE_OPTIONS = frozenset(
-    option
-    for option, (shape, _role) in _UV_OPTION_SEMANTICS.items()
-    if shape in {"value", "reject"}
-)
 _WHICH_SCRIPT = (
     "import json,pathlib,shutil,sys;"
     "v=sys.argv[1];c=pathlib.Path(v);"
     "p=str(c.resolve()) if (c.is_absolute() or c.parent != pathlib.Path('.')) and c.exists() else shutil.which(v);"
     "print(json.dumps({'path':p},sort_keys=True))"
 )
-
-
-def _basename(value: str) -> str:
-    return value.replace("\\", "/").rsplit("/", 1)[-1].casefold()
 
 
 def _executable_registry_names(value: str) -> frozenset[str]:
@@ -249,242 +81,6 @@ def _executable_registry_names(value: str) -> frozenset[str]:
         basename,
     )
     return frozenset({stem, *(stem + suffix for suffix in suffixes)})
-
-
-def _uv_prefix_and_payload(argv: Sequence[str]) -> tuple[list[str], list[str]]:
-    if len(argv) < 3 or argv[1] != "run":
-        raise ValueError("proof queue only models `uv run` execution envelopes")
-    index = 2
-    while index < len(argv):
-        value = argv[index]
-        if value == "--":
-            index += 1
-            break
-        option = value.split("=", 1)[0]
-        semantics = _UV_OPTION_SEMANTICS.get(option)
-        if semantics is None:
-            if value.startswith("-"):
-                raise ValueError(
-                    f"unmodeled uv run option {value!r}; executable proof custody "
-                    "requires an exact, typed launch prefix"
-                )
-            break
-        shape, role = semantics
-        if shape == "reject":
-            raise ValueError(
-                f"uv option {option!r} is non-hermetic ({role}) and is not "
-                "admitted by proof custody"
-            )
-        if shape == "flag":
-            if "=" in value:
-                raise ValueError(f"uv flag {option!r} does not accept a value")
-            index += 1
-            continue
-        if shape == "value":
-            if "=" in value:
-                if not value.split("=", 1)[1]:
-                    raise ValueError(f"uv option {option!r} has an empty value")
-                index += 1
-            else:
-                if index + 1 >= len(argv) or not argv[index + 1]:
-                    raise ValueError(f"uv option {option!r} needs a value")
-                index += 2
-            continue
-        raise AssertionError(f"unknown uv option shape {shape!r}")
-    payload = [str(value) for value in argv[index:]]
-    if not payload:
-        raise ValueError("uv run proof envelope has no payload command")
-    return [str(value) for value in argv[:index]], payload
-
-
-def _normalized_entrypoint_target(value: str, *, root: Path | None = None) -> str:
-    root = _REPO_ROOT if root is None else root
-    normalized = value.replace("\\", "/")
-    while normalized.startswith("./"):
-        normalized = normalized[2:]
-    candidate = Path(value)
-    if candidate.is_absolute():
-        try:
-            normalized = candidate.resolve(strict=False).relative_to(root).as_posix()
-        except ValueError:
-            pass
-    return normalized.casefold()
-
-
-def _command_wrapper(
-    command: Sequence[str], *, root: Path | None = None
-) -> tuple[dict[str, object], list[str]] | None:
-    """Model one environment wrapper using its actual argument-parser authority.
-
-    ``root`` is the checkout the command runs in; it defaults to the
-    admission root.
-    """
-    root = _REPO_ROOT if root is None else root
-    payload = list(command)
-    if not payload:
-        return None
-    transport_prefix = None
-    if _basename(payload[0]) in {"uv", "uv.exe"}:
-        transport_prefix, payload = _uv_prefix_and_payload(payload)
-    first = _basename(payload[0])
-    if first in _PY_LAUNCHERS:
-        offset = 2 if len(payload) > 1 and _PY_SELECTOR.fullmatch(payload[1]) else 1
-        payload = [payload[0], *payload[offset:]]
-    elif not _PYTHON_COMMAND.fullmatch(first):
-        return None
-    invocation = parse_python_invocation(payload)
-    if invocation.mode == "module":
-        name = {"tools.venv_exec": "venv", "tools.uv_project_env": "uv-project"}.get(
-            str(invocation.target)
-        )
-    elif invocation.mode == "script":
-        # Model only the repository-owned wrapper actually selected by Python.
-        # Resolving components covers equivalent spellings without treating a
-        # nonexistent case alias (on case-sensitive hosts) as executable code.
-        candidate = Path(str(invocation.target))
-        if not candidate.is_absolute():
-            candidate = root / candidate
-        try:
-            selected = candidate.resolve(strict=True)
-        except (OSError, RuntimeError):
-            return None
-        name = next(
-            (
-                kind
-                for filename, kind in (
-                    ("venv_exec.py", "venv"),
-                    ("uv_project_env.py", "uv-project"),
-                )
-                if selected == (root / "tools" / filename).resolve(strict=True)
-            ),
-            None,
-        )
-    else:
-        return None
-    if name is None:
-        return None
-    if transport_prefix is not None:
-        allowed = {
-            "run",
-            "--active",
-            "--project",
-            ".",
-            "--python",
-            "3.12",
-            "--no-sync",
-            "--no-config",
-            "--offline",
-        }
-        if (
-            any(value not in allowed for value in transport_prefix[1:])
-            or not {"--active", "--no-sync", "--no-config"}.issubset(transport_prefix)
-            or _uv_option_values(transport_prefix, "--project") != ["."]
-            or _uv_option_values(transport_prefix, "--python") != ["3.12"]
-        ):
-            raise ValueError(
-                "wrapper uv transport requires the active no-sync/no-config project contract"
-            )
-    from tools import venv_exec, uv_project_env
-
-    authority = venv_exec if name == "venv" else uv_project_env
-    try:
-        options = authority.argument_parser().parse_args(list(invocation.arguments))
-    except SystemExit as exc:
-        if exc.code == 0:
-            return None  # A terminal help query executes no wrapped payload.
-        raise ValueError(f"invalid {name} wrapper options") from exc
-    wrapped = list(options.command)
-    if wrapped[:1] == ["--"]:
-        wrapped = wrapped[1:]
-    if name == "uv-project" and options.print_env:
-        if wrapped:
-            raise ValueError(
-                "uv-project --print-env with execution is not a modeled proof wrapper"
-            )
-        return None
-    if not wrapped:
-        raise ValueError(f"{name} wrapper requires a payload command")
-    descriptor = (
-        {"kind": name, "venv": options.venv}
-        if name == "venv"
-        else {
-            "kind": name,
-            "python": options.python,
-            "purpose": options.purpose,
-            "venv": options.venv,
-        }
-    )
-    return descriptor, wrapped
-
-
-def _command_entrypoint(
-    argv: Sequence[str], *, root: Path | None = None, _wrapper_depth: int = 0
-) -> tuple[str, str] | None:
-    """Return the stable program entrypoint whose plan authority cannot drift.
-
-    Arguments are deliberately excluded.  If an argv is close enough to execute
-    the same Python/Node program as a proof-plan command, it must be an exact plan
-    command; otherwise changing one selector could silently discard that
-    command's declared toolchain closure. ``root`` is the checkout the command
-    runs in; it defaults to the admission root.
-    """
-    root = _REPO_ROOT if root is None else root
-    if not argv:
-        return None
-    modeled = _command_wrapper(argv, root=root)
-    if modeled is not None:
-        if _wrapper_depth >= 1:
-            raise ValueError("command wrappers are limited to one typed layer")
-        return _command_entrypoint(
-            modeled[1], root=root, _wrapper_depth=_wrapper_depth + 1
-        )
-    payload = [str(value) for value in argv]
-    if _basename(payload[0]) in {"uv", "uv.exe"}:
-        _prefix, payload = _uv_prefix_and_payload(payload)
-    first = _basename(payload[0])
-    console_module = _PYTHON_CONSOLE_MODULES.get(first)
-    if console_module is not None:
-        # A Python console script is its module: `pytest` and `python -m pytest`
-        # run one program, so they share one registered entrypoint (HF-179).
-        return ("python-module", console_module.casefold())
-    python_index: int | None = None
-    if _PYTHON_COMMAND.fullmatch(first):
-        python_index = 1
-    elif first in _PY_LAUNCHERS:
-        python_index = (
-            2 if len(payload) > 1 and _PY_SELECTOR.fullmatch(payload[1]) else 1
-        )
-    if python_index is not None:
-        if python_index >= len(payload):
-            return None
-        invocation = parse_python_invocation([payload[0], *payload[python_index:]])
-        if invocation.mode == "module":
-            module = str(invocation.target)
-            if module == "tools.guarded_exec":
-                return None
-            is_cli = is_molt_cli_payload("module", module, repo_root=root)
-            entrypoint = ("python-module", module.casefold())
-        elif invocation.mode == "script":
-            target = str(invocation.target)
-            if _basename(target) == "guarded_exec.py":
-                return None
-            normalized = _normalized_entrypoint_target(target, root=root)
-            is_cli = is_molt_cli_payload(
-                "script", str(invocation.target), repo_root=root
-            )
-            entrypoint = ("python-script", normalized)
-        else:
-            return None
-        if is_cli and invocation.arguments:
-            command = invocation.arguments[0]
-            if not command.startswith("-"):
-                return ("python-cli-command", f"molt.cli:{command}".casefold())
-        return entrypoint
-    if first in {"node", "node.exe"} and len(payload) > 1:
-        target = payload[1]
-        if not target.startswith("-"):
-            return ("node-script", _normalized_entrypoint_target(target, root=root))
-    return None
 
 
 @functools.lru_cache(maxsize=1)
@@ -719,7 +315,7 @@ def _command_registration(
             proof_plan.cargo_native_units(plan.named_lane(lane_id).data),
         )
 
-    entrypoint = _command_entrypoint(argv)
+    entrypoint = _command_entrypoint(argv, root=_REPO_ROOT)
     named_entrypoints = registry["named_entrypoints"]
     assert isinstance(named_entrypoints, dict)
     registered_entrypoints = registry["entrypoints"]
@@ -1348,12 +944,20 @@ def cargo_build_python_required(envelope: Mapping[str, object]) -> bool:
     ids = envelope.get("proof_plan_command_ids", [])
     if not isinstance(ids, list):
         raise ValueError("Cargo generator selection requires command registration IDs")
+    typed = envelope.get("typed_command")
     if ids:
         owners = _proof_command_registry()["cargo_build_python"]
         assert isinstance(owners, dict)
         declarations = [owners[str(name)] for name in ids]
         if len(set(declarations)) != 1:
             raise ValueError("registered Cargo commands disagree on build Python")
+    elif isinstance(typed, Mapping) and typed.get("family") == "focused-pytest":
+        # Admission carries the one declaration of the proof's Cargo owners
+        # and refuses owners that disagree (HF-179).
+        carried = typed.get("cargo_build_python")
+        if carried is not None and type(carried) is not bool:
+            raise ValueError("focused pytest build Python declaration is malformed")
+        declarations = [carried]
     declared = declarations[0] if declarations else None
     closure = envelope.get("process_closure")
     if isinstance(closure, Mapping) and closure.get("descendants") == "forbidden":
@@ -1491,24 +1095,6 @@ def _registered_toolchain_descendants(argv: Sequence[str]) -> str:
     }:
         return "forbidden"
     return "declared-toolchains"
-
-
-def _uv_option_values(prefix: Sequence[str], name: str) -> list[str]:
-    values: list[str] = []
-    index = 2
-    while index < len(prefix):
-        value = str(prefix[index])
-        option = value.split("=", 1)[0]
-        if option == name:
-            if "=" in value:
-                values.append(value.split("=", 1)[1])
-                index += 1
-            else:
-                values.append(str(prefix[index + 1]))
-                index += 2
-            continue
-        index += 2 if option in _UV_VALUE_OPTIONS and "=" not in value else 1
-    return values
 
 
 def _uv_option_value_indices(prefix: Sequence[str], name: str) -> list[int]:
@@ -1848,111 +1434,93 @@ def _locked_python_environment_root(executable: str) -> Path:
     return environment_root
 
 
-@functools.lru_cache(maxsize=1)
-def _pytest_option_parser() -> Any:
-    """pytest's own argument parser with its builtin and installed plugins.
-
-    Only pytest knows which of its options take a value, so its parser, not a
-    second option table, tells test selections from option values. Conftest
-    files are never imported here; an option they add is unknown to this
-    parser, and its value then reads as a positional that names no file.
-    """
-    try:
-        # pytest exposes no public parser constructor; get_config is the entry
-        # its own plugin bootstrap uses.
-        from _pytest.config import get_config
-    except ImportError as exc:  # pragma: no cover - the queue's environment has it
-        raise ValueError(
-            "focused pytest admission needs pytest in the admitting environment"
-        ) from exc
-    config = get_config()
-    config.pluginmanager.load_setuptools_entrypoints("pytest11")
-    return config._parser
-
-
-def _pytest_selections(arguments: Sequence[str]) -> tuple[str, ...]:
-    """The repository-relative test paths an ad hoc pytest argv selects."""
-    namespace, _unknown = _pytest_option_parser().parse_known_and_unknown_args(
-        [str(value) for value in arguments]
-    )
-    if getattr(namespace, "pyargs", False):
-        raise ValueError(
-            "a focused pytest proof selects test paths; --pyargs names modules "
-            "whose owning proof cells cannot be resolved"
-        )
-    selections: list[str] = []
-    root = _REPO_ROOT.resolve()
-    for raw in getattr(namespace, "file_or_dir", None) or ():
-        path_part = str(raw).split("::", 1)[0]
-        candidate = Path(path_part)
-        resolved = (
-            candidate if candidate.is_absolute() else root / candidate
-        ).resolve()
-        if not resolved.exists():
-            # pytest reports a missing path itself; an unknown plugin option's
-            # value lands here too and names nothing.
-            continue
-        try:
-            relative = resolved.relative_to(root).as_posix()
-        except ValueError:
-            raise ValueError(
-                f"focused pytest selection {raw!r} is outside the checkout"
-            ) from None
-        if relative not in selections:
-            selections.append(relative)
-    return tuple(selections)
+def _path_within(path: str, directory: str) -> bool:
+    """Whether checkout-relative ``path`` is ``directory`` or lies inside it."""
+    return path == directory or path.startswith(directory + "/")
 
 
 def _focused_pytest_family(invocation: PythonInvocation) -> dict[str, object]:
-    """Admit an ad hoc pytest run with the authority of its files' owners.
+    """Admit an ad hoc pytest run with the authority of its paths' owners.
 
     pytest is one program however it is spelled (``uv run pytest``,
-    ``python -m pytest``, a wrapper). A run that is not an exact plan command
-    is a focused proof: each test path it selects must be owned by a proof-plan
-    command (``tools/check_test_ownership.py``'s rule), and the run admits the
-    union of those owners' toolchains and native units, so it discards no
-    authority an owner declares (HF-179). Its receipt never stands in for an
-    owner's proof.
+    ``python -m pytest``, a wrapper). A run that is not an exact plan command is
+    a focused proof. Its selections and their owners resolve against one
+    checkout: the root of the plan that judges ownership, never the admitting
+    tree. A selected path is owned when a proof-plan command or named lane
+    selects it, a directory that holds it, or a node in it: authority is
+    declared per command, so a node row owns its file here (the CI coverage
+    gate keeps its own rule). The run executes everything inside a selected
+    directory, so it admits the toolchains and native units of every row whose
+    targets lie on, above or inside a selection, and the one Cargo build-Python
+    role those rows declare. Its receipt never stands in for an owner's proof
+    (HF-179).
     """
-    from tools.check_test_ownership import command_test_targets, owns
-
-    selections = _pytest_selections(invocation.arguments)
+    plan = _proof_command_registry()["plan"]
+    assert isinstance(plan, proof_plan.ProofPlan)
+    root = plan.path.parent.parent
+    selections = pytest_run_selections(invocation.arguments, root=root)
     if not selections:
         raise ValueError(
             "a focused pytest proof must name the test files or directories it "
             "runs; the whole suite runs through its registered proof-plan commands"
         )
-    plan = _proof_command_registry()["plan"]
-    assert isinstance(plan, proof_plan.ProofPlan)
-    targets = {
-        command.id: command_test_targets(command.argv) for command in plan.commands
-    }
-    owners: list[proof_plan.ProofCommand] = []
+    rows = [
+        (
+            row,
+            tuple(
+                target.path
+                for target in command_pytest_targets(row.argv, root=root) or ()
+            ),
+        )
+        for row in (*plan.commands, *plan.named_lanes)
+    ]
+    owners: list[proof_plan.ProofCommand | proof_plan.NamedLane] = []
     for selection in selections:
-        owning = [
-            command for command in plan.commands if owns(targets[command.id], selection)
-        ]
-        if not owning:
+        if not any(
+            _path_within(selection, path) for _row, paths in rows for path in paths
+        ):
             raise ValueError(
                 f"{selection} has no owning proof-plan command; join it to a proof "
                 "cell (tools/check_test_ownership.py) before proving it in the queue"
             )
-        owners.extend(command for command in owning if command not in owners)
+        owners.extend(
+            row
+            for row, paths in rows
+            if row not in owners
+            and any(
+                _path_within(selection, path) or _path_within(path, selection)
+                for path in paths
+            )
+        )
     toolchains: dict[str, None] = {}
     native_units: dict[str, dict[str, None]] = {}
-    for command in owners:
-        toolchains.update(dict.fromkeys(command.toolchains))
-        for unit, languages in proof_plan.cargo_native_units(command.data).items():
+    build_python: dict[bool | None, list[str]] = {}
+    for row in owners:
+        toolchains.update(dict.fromkeys(row.toolchains))
+        for unit, languages in proof_plan.cargo_native_units(row.data).items():
             native_units.setdefault(unit, {}).update(dict.fromkeys(languages))
+        if "cargo" in row.toolchains:
+            build_python.setdefault(proof_plan.cargo_build_python(row.data), []).append(
+                row.id
+            )
+    if len(build_python) > 1:
+        declared = "; ".join(
+            f"{value} by {', '.join(ids)}" for value, ids in build_python.items()
+        )
+        raise ValueError(
+            "the owners of a focused pytest proof disagree on the Cargo build "
+            f"Python ({declared}); prove their paths separately"
+        )
     return {
         "family": "focused-pytest",
         "selections": list(selections),
-        "owners": [command.id for command in owners],
+        "owners": [row.id for row in owners],
         "toolchains": list(toolchains),
         "cargo_native_units": {
             unit: [language for language in ("c", "c++") if language in languages]
             for unit, languages in native_units.items()
         },
+        "cargo_build_python": next(iter(build_python), None),
     }
 
 
@@ -1977,9 +1545,9 @@ def _typed_python_command_family(
         ] = []
         registered_entrypoint = False
         for lane in plan.named_lanes:
-            if _command_entrypoint(lane.argv) != (
+            if _command_entrypoint(lane.argv, root=_REPO_ROOT) != (
                 "python-script",
-                _normalized_entrypoint_target(str(invocation.target)),
+                _normalized_entrypoint_target(str(invocation.target), root=_REPO_ROOT),
             ):
                 continue
             registered = _registered_named_python_invocation(lane)
@@ -2264,11 +1832,11 @@ def _envelope_for_command(
     if not argv or not argv[0]:
         raise ValueError("proof command must have a non-empty executable")
     submitted_argv = list(argv)
-    modeled_wrapper = _command_wrapper(argv)
+    modeled_wrapper = _command_wrapper(argv, root=_REPO_ROOT)
     wrapper = None
     if modeled_wrapper is not None:
         wrapper, argv = modeled_wrapper
-        if _command_wrapper(argv) is not None:
+        if _command_wrapper(argv, root=_REPO_ROOT) is not None:
             raise ValueError("command wrappers are limited to one typed layer")
         if _guarded_exec_invocation(argv) is not None:
             raise ValueError("command wrappers cannot delegate guarded_exec")

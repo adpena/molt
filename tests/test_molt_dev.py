@@ -897,9 +897,9 @@ def test_structured_gate_preserves_node_ids_without_a_shell(
         "tests/test_x.py::test_one[spaces and & > 'quotes']",
         'tests/test_x.py::test_one["double quotes"]',
     )
-    from tools.proof_plan import PytestMemoryUnits, local_pytest_argv
+    from tools.proof_plan import ROOT, PytestMemoryUnits, local_pytest_argv
 
-    command = local_pytest_argv(targets, memory_units=PytestMemoryUnits(()))
+    command = local_pytest_argv(targets, memory_units=PytestMemoryUnits((), root=ROOT))
     observed = []
 
     def guarded(argv, **kwargs):
