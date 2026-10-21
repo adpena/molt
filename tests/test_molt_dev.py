@@ -4284,11 +4284,14 @@ def test_integrate_binds_the_fetched_upstream_for_every_change_gate(
     upstream = "{integration_upstream_commit}"
     # Always gates run concurrently, so each gate moves the selected tracking
     # ref itself after fetch. A ref spelling passed instead of the captured
-    # commit would silently select no changes.
+    # commit would silently select no changes. The two gates update one ref at
+    # once: core.filesRefLockTimeout makes Git wait for the other's ref lock
+    # instead of failing with "cannot lock ref" (exit 128).
     imports = (
         "import sys, subprocess; from pathlib import Path; "
         f"sys.path[:0] = [{str(REPO_ROOT)!r}, {str(REPO_ROOT / 'src')!r}]; "
-        f"subprocess.run(['git', 'update-ref', 'refs/remotes/{remote}/main', 'HEAD'], check=True); "
+        "subprocess.run(['git', '-c', 'core.filesRefLockTimeout=60000', "
+        f"'update-ref', 'refs/remotes/{remote}/main', 'HEAD'], check=True); "
     )
     selection_gate = (
         _integration_python(
