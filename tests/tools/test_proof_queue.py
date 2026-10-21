@@ -5813,6 +5813,33 @@ def test_passed_windows_declared_tree_requires_platform_process_custody(
         evidence_module._queue_proof_receipt(row)
 
 
+def test_active_run_count_counts_the_runs_status_lists_as_active(
+    tmp_path: Path,
+) -> None:
+    # Hooks read this count in-process instead of parsing `status` output.
+    db = tmp_path / "proof_queue.sqlite3"
+    assert state.active_run_count(db) == 0  # no queue has run here yet
+    statuses = ("queued", "dispatched", "running", "passed", "failed", "stale")
+    with closing(state._connect(db)) as conn:
+        for status in statuses:
+            scheduling._insert_run(
+                conn,
+                run_id=f"run-{status}",
+                logical_id=status,
+                reason="active count",
+                command=[sys.executable, "-c", "pass"],
+                cwd=state.ROOT,
+                resource_family="python",
+                contention_key=f"python:{status}",
+                scopes=["tools/proof_queue.py"],
+                log_path=tmp_path / f"{status}.log",
+                summary_json=tmp_path / f"{status}.memory_guard.json",
+            )
+            state._update_run(conn, f"run-{status}", status=status)
+    # queued, dispatched and running are active; finished and stale are not.
+    assert state.active_run_count(db) == 3
+
+
 def test_status_keeps_pact_authority_out_of_the_hot_import_path(tmp_path: Path) -> None:
     db = tmp_path / "proof_queue.sqlite3"
     logs = tmp_path / "runs"

@@ -369,13 +369,16 @@ def run_from_pinned_controller(args: argparse.Namespace, argv: list[str]) -> int
 
 
 def runs_from_pinned_controller(args: argparse.Namespace) -> bool:
-    """A landing, a queued landing and the queue runner run main's driver.
+    """A landing, a queued landing, the queue runner and a withdrawal run
+    main's driver.
 
-    ``land`` writes the queue request and starts the runner, so a candidate's
-    stale driver would decide both.
+    ``land`` and ``queue withdraw`` write queue state and start the runner, so
+    a candidate's stale driver would decide both.
     """
     pinned = args.command in {"integrate", "land"} and not getattr(
         args, "dry_run", False
     )
-    pinned = pinned or (args.command == "queue" and args.queue_command == "run")
+    pinned = pinned or (
+        args.command == "queue" and args.queue_command in {"run", "withdraw"}
+    )
     return pinned and not (args.candidate_controller or args.pinned_controller)

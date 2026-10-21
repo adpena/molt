@@ -8,13 +8,13 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import tools.check_gate_liveness as cgl  # noqa: E402
-import tools.hooks.bash_guard as bg  # noqa: E402
 
 
 def test_all_canaries_live():
@@ -44,6 +44,14 @@ def test_main_check_passes_when_healthy():
 
 
 def test_main_check_fails_when_a_gate_rots(monkeypatch):
-    # Simulate bash_guard.decide silently going inert (always allows).
-    monkeypatch.setattr(bg, "decide", lambda *a, **k: bg.Decision(block=False))
+    # Simulate the advisory classifier silently going inert (accepts anything).
+    inert = SimpleNamespace(verdict="poison", reason=None)
+    monkeypatch.setattr(cgl.advisory_classifier, "decide_output", lambda *a, **k: inert)
     assert cgl.main(["--check"]) == 1
+
+
+def test_settings_json_is_the_projection_of_the_declared_wiring():
+    from tools.hooks import wiring
+
+    settings = (cgl.ROOT / ".claude" / "settings.json").read_text(encoding="utf-8")
+    assert settings == wiring.settings_document()

@@ -18,6 +18,10 @@ from typing import BinaryIO, Protocol
 from molt.default_paths import _default_molt_cache, shared_cache_lock_path
 
 
+class FileLockTimeout(RuntimeError):
+    """Another holder kept the lock for the whole timeout."""
+
+
 @dataclass
 class _InProcessLockEntry:
     mutex: _thread.LockType
@@ -438,7 +442,7 @@ def _exclusive_record_file(
                 if exc.errno not in (errno.EACCES, errno.EAGAIN):
                     raise
             if time.monotonic() >= deadline:
-                raise RuntimeError(timeout_message)
+                raise FileLockTimeout(timeout_message)
             time.sleep(poll_s)
         try:
             opened, current = os.fstat(fd), os.stat(path)
@@ -533,7 +537,7 @@ def _acquire_file_lock(
         if handle is not None:
             return handle
         if deadline is not None and time.monotonic() >= deadline:
-            raise RuntimeError(timeout_message)
+            raise FileLockTimeout(timeout_message)
         time.sleep(poll_s)
 
 

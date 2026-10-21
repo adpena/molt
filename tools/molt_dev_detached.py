@@ -9,6 +9,7 @@ from contextlib import ExitStack, contextmanager
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -80,6 +81,26 @@ def _detached_state_dir(name: str, override: str | None) -> Path:
         else Path(tempfile.gettempdir()) / "molt_dev_detached"
     )
     return root / name
+
+
+def verify_command(name: str, state_dir: str | None, min_age_s: float) -> list[str]:
+    """The ``detached-verify`` argv that finds the state ``detached-run`` wrote.
+
+    A run under ``--state-dir`` is invisible to a verify without it: the
+    default root is the system temp directory.
+    """
+    state_root = ["--state-dir", str(Path(state_dir).resolve())] if state_dir else []
+    return [
+        # This interpreter and the driver by absolute path: a bare `python3`
+        # may be one that cannot run the driver (macOS ships 3.9).
+        *python_command(str(Path(__file__).resolve().with_name("molt_dev.py"))),
+        "detached-verify",
+        "--name",
+        name,
+        *state_root,
+        "--min-age-s",
+        str(min_age_s),
+    ]
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
@@ -345,8 +366,10 @@ def cmd_detached_run(args: argparse.Namespace) -> int:
         _say("    REQUIRED next step, in a LATER tool call (teardown of THIS call")
         _say("    is exactly what hazard 11 is about):")
         _say(
-            f"      python3 tools/molt_dev.py detached-verify --name {args.name}"
-            f" --min-age-s {args.verify_min_age_hint}"
+            "      "
+            + shlex.join(
+                verify_command(args.name, args.state_dir, args.verify_min_age_hint)
+            )
         )
         if args.json:
             print(
