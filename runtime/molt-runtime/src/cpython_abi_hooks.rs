@@ -1059,7 +1059,7 @@ unsafe extern "C" fn hook_structseq_type_new(
         }
         let mut storage = match molt_cpython_abi::api::typeobj::ExternalStaticType::prepare(bits) {
             Ok(storage) => storage,
-            Err(()) => {
+            Err(molt_cpython_abi::ErrorIndicatorSet) => {
                 retire_native_reference(|| ());
                 return OwnedHandleResult::error();
             }

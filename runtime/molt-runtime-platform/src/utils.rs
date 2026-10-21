@@ -1,6 +1,3 @@
-#[cfg(target_arch = "wasm32")]
-use crate::libc_compat as libc;
-
 #[inline(always)]
 pub fn usize_from_bits(bits: u64) -> Option<usize> {
     usize::try_from(bits).ok()
@@ -8,13 +5,13 @@ pub fn usize_from_bits(bits: u64) -> Option<usize> {
 
 /// CPython's native UID/GID result convention preserves the POSIX -1 sentinel.
 /// Query arguments and archive identities have different conversion contracts.
-#[cfg(any(unix, target_os = "wasi"))]
+#[cfg(unix)]
 #[inline]
 pub fn uid_integer(value: libc::uid_t) -> i64 {
     if value == !0 { -1 } else { i64::from(value) }
 }
 
-#[cfg(any(unix, target_os = "wasi"))]
+#[cfg(unix)]
 #[inline]
 pub fn gid_integer(value: libc::gid_t) -> i64 {
     if value == !0 { -1 } else { i64::from(value) }
@@ -49,7 +46,7 @@ pub fn python_lowercase(mut text: &[u8]) -> Vec<u8> {
 mod tests {
     use super::{python_lowercase, usize_from_bits};
 
-    #[cfg(any(unix, target_os = "wasi"))]
+    #[cfg(unix)]
     #[test]
     fn native_identity_results_preserve_signed_sentinel_and_unsigned_values() {
         // Literal boundary expectations from _PyLong_FromUid/_PyLong_FromGid;
@@ -60,7 +57,7 @@ mod tests {
         assert_eq!(super::gid_integer(0), 0);
         assert_eq!(super::gid_integer(42), 42);
         assert_eq!(super::gid_integer(!0), -1);
-        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "wasi"))]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             assert_eq!(super::uid_integer(0x8000_0000), 2_147_483_648);
             assert_eq!(super::uid_integer(0xffff_fffe), 4_294_967_294);

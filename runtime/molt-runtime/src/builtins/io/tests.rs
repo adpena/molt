@@ -209,6 +209,31 @@ fn vfs_metadata_admission_and_call_budget() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn native_stat_record_device_projection_tracks_python_version() {
+    // Pinned posixmodule.c: 3.12 uses signed C long for st_rdev;
+    // 3.13+ uses _PyLong_FromDev's unsigned view for this non-NODEV value.
+    for (minor, expected) in [(12, "-2"), (13, "18446744073709551614")] {
+        let transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            transaction.with_target_python_minor(py, minor, || {
+                let mut raw: libc::stat = unsafe { std::mem::zeroed() };
+                raw.st_rdev = !1;
+                let record = crate::builtins::io_path::stat_result_from_libc_stat(py, &raw);
+                assert!(!crate::exception_pending(py));
+                let key = crate::attr_name_bits_from_bytes(py, b"st_rdev").unwrap();
+                let value = crate::molt_get_attr_name(record, key);
+                assert!(!crate::exception_pending(py));
+                assert_eq!(crate::format_obj(py, obj_from_bits(value)), expected);
+                dec_ref_bits(py, value);
+                dec_ref_bits(py, key);
+                dec_ref_bits(py, record);
+            });
+        });
+    }
+}
+
 #[test]
 fn vfs_metadata_aliases_and_errno_domain() {
     let backend = MetadataBackend::new();

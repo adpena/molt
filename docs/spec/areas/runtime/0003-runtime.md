@@ -136,6 +136,18 @@ fractional remainder, and nanosecond attributes never reconstruct values from
 floats. Native optional fields come from that acquisition owner. VFS identity
 fields remain explicitly unknown.
 
+Native integer projection follows the selected CPython source and target C ABI:
+link counts, block counts, block size, flags and generation use signed `long`.
+Device acquisition retains the unsigned `long long` view; the shared projection
+preserves native `NODEV` semantics. `st_dev` uses this device convention, while
+`st_rdev` uses signed `long` for 3.12 and the device convention from 3.13 onward.
+The distinction follows pinned
+[3.12 stat conversion](https://github.com/python/cpython/blob/v3.12.13/Modules/posixmodule.c)
+and [3.14 stat conversion](https://github.com/python/cpython/blob/v3.14.3/Modules/posixmodule.c).
+The platform crate owns native widths; the record publisher owns target-version
+selection. Both runtime and path satellites consume the same `PathMetadata`
+layout and must be rebuilt together after its physical fields change.
+
 Each acquisition constructs the final native record directly, with no
 intermediate tuple or Python reconstruction. The existing runtime class-cache
 inventory owns its lazy type, roots and retirement. Public `os.stat_result`

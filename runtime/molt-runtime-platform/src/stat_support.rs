@@ -399,7 +399,7 @@ pub struct PathMetadata {
         target_os = "netbsd",
         target_os = "dragonfly"
     ))]
-    pub flags: u32,
+    pub flags: i64,
     #[cfg(any(
         target_vendor = "apple",
         target_os = "freebsd",
@@ -407,7 +407,7 @@ pub struct PathMetadata {
         target_os = "netbsd",
         target_os = "dragonfly"
     ))]
-    pub generation: u32,
+    pub generation: i64,
     #[cfg(any(
         target_vendor = "apple",
         target_os = "freebsd",
@@ -424,6 +424,44 @@ pub struct PathMetadata {
     pub fstype: [u8; 16],
 }
 
+/// CPython changed st_rdev from PyLong_FromLong to _PyLong_FromDev in 3.13.
+/// The device acquisition retains C's unsigned-long-long view; the Python
+/// record owner selects the required publication convention.
+#[cfg(any(unix, target_os = "wasi"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeviceNumberConvention {
+    CLong,
+    PythonDev,
+}
+
+#[cfg(any(unix, target_os = "wasi"))]
+#[inline]
+#[allow(clippy::unnecessary_cast)] // Native dev_t can be signed or unsigned.
+pub fn device_number_integer(value: u64, convention: DeviceNumberConvention) -> i128 {
+    match convention {
+        DeviceNumberConvention::CLong => i128::from(value as libc::c_long),
+        DeviceNumberConvention::PythonDev => {
+            // The BSD sys/param.h NODEV declaration is (dev_t)(-1), as in
+            // Apple's SDK and FreeBSD's native headers. CPython preserves its
+            // signed-long-long view, and unsigned-casts every other device.
+            #[cfg(any(
+                target_vendor = "apple",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            {
+                let nodev: libc::dev_t = !0;
+                if value == nodev as u64 {
+                    return i128::from(value as i64);
+                }
+            }
+            i128::from(value)
+        }
+    }
+}
+
 impl PathMetadata {
     pub fn is_dir(&self) -> bool {
         stat_isdir(self.fields[ST_MODE as usize] as i64)
@@ -436,6 +474,9 @@ impl PathMetadata {
     }
 
     #[cfg(unix)]
+    // CPython's posixmodule projects these fields through C long, whose width
+    // differs from the native stat fields on supported Unix architectures.
+    #[allow(clippy::unnecessary_cast)]
     pub fn from_unix_stat(st: &libc::stat) -> Self {
         #[cfg(not(target_os = "netbsd"))]
         let times = [
@@ -453,16 +494,16 @@ impl PathMetadata {
             fields: [
                 st.st_mode as i128,
                 st.st_ino as i128,
-                st.st_dev as i128,
-                st.st_nlink as i128,
+                device_number_integer(st.st_dev as u64, DeviceNumberConvention::PythonDev),
+                (st.st_nlink as libc::c_long) as i128,
                 i128::from(crate::utils::uid_integer(st.st_uid)),
                 i128::from(crate::utils::gid_integer(st.st_gid)),
                 st.st_size as i128,
             ],
             times,
             virtual_file: false,
-            block_size: st.st_blksize as i64,
-            blocks: st.st_blocks as i64,
+            block_size: (st.st_blksize as libc::c_long) as i64,
+            blocks: (st.st_blocks as libc::c_long) as i64,
             rdev: st.st_rdev as u64,
             #[cfg(any(target_os = "solaris", target_os = "illumos"))]
             fstype: st.st_fstype.map(|byte| byte as u8),
@@ -473,7 +514,7 @@ impl PathMetadata {
                 target_os = "netbsd",
                 target_os = "dragonfly"
             ))]
-            flags: st.st_flags as u32,
+            flags: (st.st_flags as libc::c_long) as i64,
             #[cfg(any(
                 target_vendor = "apple",
                 target_os = "freebsd",
@@ -481,7 +522,7 @@ impl PathMetadata {
                 target_os = "netbsd",
                 target_os = "dragonfly"
             ))]
-            generation: st.st_gen as u32,
+            generation: (st.st_gen as libc::c_long) as i64,
             #[cfg(any(target_vendor = "apple", target_os = "freebsd", target_os = "openbsd"))]
             birthtime: StatTime::from_parts(st.st_birthtime as i128, st.st_birthtime_nsec as i128),
             #[cfg(target_os = "netbsd")]
@@ -526,6 +567,9 @@ impl PathMetadata {
         Ok(result)
     }
 
+    // Keep the same intermediate C long conversion as from_unix_stat; a cast
+    // that is redundant on one host can be the required narrowing on another.
+    #[allow(clippy::unnecessary_cast)]
     fn from_host_base(metadata: &std::fs::Metadata) -> Self {
         // This adapter never adds a query: the admitted route owns acquisition.
         let mut result = Self::from_virtual(
@@ -542,8 +586,8 @@ impl PathMetadata {
             result.fields = [
                 metadata.mode() as i128,
                 metadata.ino() as i128,
-                metadata.dev() as i128,
-                metadata.nlink() as i128,
+                device_number_integer(metadata.dev(), DeviceNumberConvention::PythonDev),
+                (metadata.nlink() as libc::c_long) as i128,
                 i128::from(crate::utils::uid_integer(metadata.uid())),
                 i128::from(crate::utils::gid_integer(metadata.gid())),
                 metadata.size() as i128,
@@ -553,15 +597,15 @@ impl PathMetadata {
                 StatTime::from_parts(metadata.mtime() as i128, metadata.mtime_nsec() as i128),
                 StatTime::from_parts(metadata.ctime() as i128, metadata.ctime_nsec() as i128),
             ];
-            result.block_size = metadata.blksize() as i64;
-            result.blocks = metadata.blocks() as i64;
+            result.block_size = (metadata.blksize() as libc::c_long) as i64;
+            result.blocks = (metadata.blocks() as libc::c_long) as i64;
             result.rdev = metadata.rdev();
         }
         #[cfg(target_vendor = "apple")]
         {
             use std::os::macos::fs::MetadataExt;
-            result.flags = metadata.st_flags();
-            result.generation = metadata.st_gen();
+            result.flags = (metadata.st_flags() as libc::c_long) as i64;
+            result.generation = (metadata.st_gen() as libc::c_long) as i64;
         }
         #[cfg(not(unix))]
         {

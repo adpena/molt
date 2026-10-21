@@ -1827,7 +1827,17 @@ fn stat_result_from_metadata(
             #[cfg(any(unix, target_os = "wasi"))]
             Blocks => int_bits_from_i128(py, metadata.blocks as i128),
             #[cfg(any(unix, target_os = "wasi"))]
-            Rdev => int_bits_from_i128(py, metadata.rdev as i128),
+            Rdev => {
+                use molt_runtime_platform::stat_support::{
+                    DeviceNumberConvention, device_number_integer,
+                };
+                let convention = if crate::object::ops_sys::runtime_target_at_least(py, 3, 13) {
+                    DeviceNumberConvention::PythonDev
+                } else {
+                    DeviceNumberConvention::CLong
+                };
+                int_bits_from_i128(py, device_number_integer(metadata.rdev, convention))
+            }
             #[cfg(any(
                 target_vendor = "apple",
                 target_os = "freebsd",

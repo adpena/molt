@@ -283,7 +283,7 @@ unsafe fn validate_arguments(
             return None;
         }
         if unsafe { crate::api::strings::PyUnicode_Check(key) } == 0 {
-            unsafe { type_error("keywords must be strings".to_owned()) };
+            unsafe { type_error("keywords must be strings") };
             return None;
         }
     }
