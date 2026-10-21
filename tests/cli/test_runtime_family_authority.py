@@ -22,6 +22,8 @@ import pytest
 from molt.cli import cargo_command as cargo_argv
 from molt.cli import cargo_resource_custody as resource_custody
 from molt.cli import runtime_cargo_plan as plans
+from molt.cli import rustc_probes
+from molt.cli import cargo_target_cfg
 from molt.cli import runtime_fingerprints as fingerprints
 from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
 from molt.cli.runtime_build_identity import (
@@ -819,7 +821,7 @@ def test_cfg_target_plan_uses_rustc_facts_and_pins_selected_tools(
         seen.append((selected_target, flags))
         return _metadata(plan_root, fact_text)
 
-    monkeypatch.setattr(plans, "_rust_target_metadata", probe)
+    monkeypatch.setattr(rustc_probes, "rust_target_metadata", probe)
     _config(
         plan_root,
         "[target.'cfg(not(target_arch=\"wasm32\"))']\nrustflags=[]\n"
@@ -873,7 +875,9 @@ def test_cfg_probe_retains_selected_compiler_and_reports_failure(
     write_mock_executable(rustc, b"compiler-before")
     expected = [
         str(rustc),
-        *plans.cargo_target_query_arguments("wasm32-wasip1", ("--cfg", "selected")),
+        *cargo_target_cfg.cargo_target_query_arguments(
+            "wasm32-wasip1", ("--cfg", "selected")
+        ),
     ]
     seen = []
 
@@ -896,7 +900,7 @@ def test_cfg_probe_retains_selected_compiler_and_reports_failure(
 
     monkeypatch.setattr(plans.process_guard, "run_completed_command", run)
     if failure == "none":
-        metadata = plans._rust_target_metadata(
+        metadata = rustc_probes.rust_target_metadata(
             rustc,
             "wasm32-wasip1",
             ("--cfg", "selected"),
@@ -907,7 +911,7 @@ def test_cfg_probe_retains_selected_compiler_and_reports_failure(
         assert ("selected", None) in metadata.cfg
     else:
         with pytest.raises((ValueError, OSError)) as exc:
-            plans._rust_target_metadata(
+            rustc_probes.rust_target_metadata(
                 rustc,
                 "wasm32-wasip1",
                 ("--cfg", "selected"),
@@ -924,7 +928,9 @@ def test_cfg_linker_conflicts_are_rejected_unless_exact_target_wins(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        plans, "_rust_target_metadata", lambda *a, **k: _metadata(plan_root, "unix")
+        rustc_probes,
+        "rust_target_metadata",
+        lambda *a, **k: _metadata(plan_root, "unix"),
     )
     _config(
         plan_root,
@@ -972,7 +978,7 @@ def test_cargo_string_lists_merge_file_cli_and_environment_before_cfg_selection(
         probes.append((target, flags))
         return _metadata(plan_root, "\n".join(("unix", *flags[1::2])))
 
-    monkeypatch.setattr(plans, "_rust_target_metadata", metadata)
+    monkeypatch.setattr(rustc_probes, "rust_target_metadata", metadata)
     plan = _plan(
         plan_root, env=env, args=("--config", f'{scope}.rustflags=["--cfg","cli"]')
     )
@@ -1070,7 +1076,7 @@ def test_normalized_cfg_metadata_is_reused_for_dependency_and_final_resources(
         return _metadata(selected, facts)
 
     # Fake the rustc query itself: the reuse under test is the memo above it.
-    monkeypatch.setattr(plans, "_rust_target_metadata", metadata)
+    monkeypatch.setattr(rustc_probes, "rust_target_metadata", metadata)
     monkeypatch.setattr(plans, "_rust_resource_roots", _rust_resource_roots)
     plan = _plan(
         plan_root,
@@ -2310,7 +2316,9 @@ def test_cfg_probe_uses_and_fences_nested_cargo_wrappers(
     def run(command, **kwargs):
         prefix = [*wrappers.values(), rustc]
         assert [Path(arg) for arg in command[: len(prefix)]] == prefix
-        assert tuple(command[len(prefix) :]) == plans.cargo_target_query_arguments(
+        assert tuple(
+            command[len(prefix) :]
+        ) == cargo_target_cfg.cargo_target_query_arguments(
             "target", ("--cfg", "selected")
         )
         if mutated is not None:
@@ -2319,7 +2327,7 @@ def test_cfg_probe_uses_and_fences_nested_cargo_wrappers(
 
     monkeypatch.setattr(plans.process_guard, "run_completed_command", run)
     if mutated is None:
-        assert ("selected", None) in plans._rust_target_metadata(
+        assert ("selected", None) in rustc_probes.rust_target_metadata(
             rustc,
             "target",
             ("--cfg", "selected"),
@@ -2329,7 +2337,7 @@ def test_cfg_probe_uses_and_fences_nested_cargo_wrappers(
         ).cfg
     else:
         with pytest.raises((ValueError, OSError), match="changed"):
-            plans._rust_target_metadata(
+            rustc_probes.rust_target_metadata(
                 rustc,
                 "target",
                 ("--cfg", "selected"),
@@ -3368,7 +3376,7 @@ def test_runtime_metadata_preserves_resource_owned_unstable_backend_and_confines
         return subprocess.CompletedProcess(command, 0, _metadata_stdout(plan_root), "")
 
     monkeypatch.setattr(plans.process_guard, "run_completed_command", run)
-    metadata = plans._rust_target_metadata(
+    metadata = rustc_probes.rust_target_metadata(
         rustc,
         "target",
         (
@@ -3421,7 +3429,7 @@ def test_metadata_questions_are_fresh_for_each_plan(
         observed.append(altered)
         return _metadata(plan_root, "changed" if altered else "unix")
 
-    monkeypatch.setattr(plans, "_rust_target_metadata", query)
+    monkeypatch.setattr(rustc_probes, "rust_target_metadata", query)
     environment = {
         "RUSTFLAGS": "-C codegen-backend=" + str(backend),
         "RUSTC_WRAPPER": str(wrapper),
@@ -3462,7 +3470,7 @@ def test_metadata_discovery_must_agree_under_captured_resources(
             _rewrite_with_restored_mtime(backend, b"new")
         return _metadata(plan_root, fact)
 
-    monkeypatch.setattr(plans, "_rust_target_metadata", query)
+    monkeypatch.setattr(rustc_probes, "rust_target_metadata", query)
     with pytest.raises(ValueError, match="changed"):
         _plan(plan_root, env={"RUSTFLAGS": "-C codegen-backend=" + str(backend)})
     assert calls == 2
@@ -3483,8 +3491,8 @@ def test_provisional_backend_remains_in_plan_custody(
         + "\n",
     )
     monkeypatch.setattr(
-        plans,
-        "_rust_target_metadata",
+        rustc_probes,
+        "rust_target_metadata",
         lambda *args, **kwargs: _metadata(plan_root, "selected"),
     )
     selected = _plan(plan_root)
@@ -3510,7 +3518,7 @@ def test_metadata_memo_uses_actual_wrapper_command(
         observed.append(bool(kwargs["wrappers"]))
         return _metadata(plan_root, "unix")
 
-    monkeypatch.setattr(plans, "_rust_target_metadata", query)
+    monkeypatch.setattr(rustc_probes, "rust_target_metadata", query)
     monkeypatch.setattr(plans, "_rust_resource_roots", _rust_resource_roots)
     _plan(plan_root, env={"RUSTC_WRAPPER": "wrapper"} if wrapped else {})
     assert observed == ([False, True, False, True] if wrapped else [False, False])
@@ -3536,8 +3544,8 @@ def test_metadata_declared_target_search_is_retained_in_plan(
     nested.parent.mkdir()
     nested.write_bytes(b"not a target specification")
     monkeypatch.setattr(
-        plans,
-        "_rust_target_metadata",
+        rustc_probes,
+        "rust_target_metadata",
         lambda *args, **kwargs: _metadata(plan_root, "unix"),
     )
     environment = {"RUST_TARGET_PATH": str(search)}
@@ -3585,7 +3593,7 @@ def test_wasi_metadata_combines_admitted_lanes_without_readmitting_them(
         seen.append((target, flags))
         return _metadata(plan_root, 'target_arch="wasm32"')
 
-    monkeypatch.setattr(plans, "_rust_target_metadata", query)
+    monkeypatch.setattr(rustc_probes, "rust_target_metadata", query)
     resource = None
     if final == "response":
         resource = plan_root / "runtime.rsp"

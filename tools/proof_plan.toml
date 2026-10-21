@@ -5031,6 +5031,7 @@ globs = [
   "src/molt/cli/runtime_build_identity.py",
   "src/molt/cli/runtime_build_python.py",
   "src/molt/cli/runtime_cargo_plan.py",
+  "src/molt/cli/rustc_probes.py",
   "src/molt/cli/runtime_fingerprints.py",
   "src/molt/cli/runtime_identity_schema.py",
   "src/molt/cli/runtime_native_build.py",

@@ -25,6 +25,7 @@ from molt import platform_toolchain, process_guard, rust_toolchain
 from molt import toolchain_facts as facts
 from molt.cli import native_link_tool_identity as link_tools
 from molt.cli import runtime_cargo_plan as plans
+from molt.cli import rustc_probes
 from molt.cli.cargo_resource_custody import CargoExecutableCustody
 from molt.process_environment import ProcessEnvironment
 from tests.executable_test_support import write_mock_executable
@@ -441,7 +442,7 @@ def test_rustc_metadata_is_asked_once_per_toolchain_generation(
     env = {"RUSTC_LOG": "debug"}
 
     def ask(**kwargs: object) -> plans.RustcTargetMetadata:
-        return plans._rust_target_metadata(
+        return rustc_probes.rust_target_metadata(
             rustc,
             "aarch64-apple-darwin",
             ("--cfg", "x"),
@@ -500,7 +501,7 @@ def test_rustc_metadata_reprobes_when_a_key_input_changes(
     flags: tuple[str, ...] = ("--cfg", "x")
 
     def ask() -> plans.RustcTargetMetadata:
-        return plans._rust_target_metadata(
+        return rustc_probes.rust_target_metadata(
             rustc,
             "custom-target",
             flags,
@@ -555,7 +556,7 @@ def test_rustc_metadata_qualification_persists_only_an_agreeing_answer(
     root.mkdir()
 
     def ask(qualify: bool) -> plans.RustcTargetMetadata:
-        return plans._rust_target_metadata(
+        return rustc_probes.rust_target_metadata(
             rustc, None, (), root=root, env={}, qualify=qualify
         )
 
@@ -592,10 +593,14 @@ def test_rustc_metadata_records_nothing_when_the_probe_fails(
     root = tmp_path / "project"
     root.mkdir()
     with pytest.raises(ValueError, match="unsupported target"):
-        plans._rust_target_metadata(rustc, None, (), root=root, env={}, qualify=True)
+        rustc_probes.rust_target_metadata(
+            rustc, None, (), root=root, env={}, qualify=True
+        )
     # A compiler replaced while it answered is not the key's generation.
     with pytest.raises(ValueError, match="changed"):
-        plans._rust_target_metadata(rustc, None, (), root=root, env={}, qualify=True)
+        rustc_probes.rust_target_metadata(
+            rustc, None, (), root=root, env={}, qualify=True
+        )
     assert calls == 2
     assert not facts.host_toolchain_facts().path.exists()
 
@@ -653,11 +658,15 @@ def test_rustup_selection_is_asked_once_per_selection_inputs(
     _fresh_process(monkeypatch)
     assert resolve() == selected and spawns.count == 1
     if change == "toolchain-file":
-        (root / "rust-toolchain.toml").write_text('[toolchain]\nchannel = "1.99.0"\n')
+        (root / "rust-toolchain.toml").write_text(
+            '[toolchain]\nchannel = "1.99.0"\n', encoding="utf-8"
+        )
     elif change == "rustup-toolchain":
         env["RUSTUP_TOOLCHAIN"] = "nightly"
     elif change == "settings":
-        (tmp_path / "rustup-home" / "settings.toml").write_text("version = '12'\n")
+        (tmp_path / "rustup-home" / "settings.toml").write_text(
+            "version = '12'\n", encoding="utf-8"
+        )
     elif change == "toolchain-installed":
         (tmp_path / "rustup-home" / "toolchains" / "nightly").mkdir()
     elif change == "component-installed":

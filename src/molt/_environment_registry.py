@@ -1521,7 +1521,7 @@ _REGISTRY_JSON = r"""{
       "kind": "int",
       "name": "MOLT_CACHE_MAX_AGE_DAYS",
       "output_neutral": false,
-      "owner": "src/molt/cache_eviction.py",
+      "owner": "src/molt/default_paths.py",
       "summary": "Age in days after which cache retention evicts inactive entries, default 30. CLI builds (at most once a day), `molt cache prune` and proof-queue maintenance share this budget.",
       "values": []
     },
@@ -1531,7 +1531,7 @@ _REGISTRY_JSON = r"""{
       "kind": "float",
       "name": "MOLT_CACHE_MAX_GB",
       "output_neutral": false,
-      "owner": "src/molt/cache_eviction.py",
+      "owner": "src/molt/default_paths.py",
       "summary": "Logical cache-entry size budget in GiB, default 30. CLI builds apply it at most once a day after they succeed, `molt cache prune` applies it on demand, and proof-queue maintenance after each closed payload; active entries, durable state and protected legacy native generations are retained.",
       "values": []
     },

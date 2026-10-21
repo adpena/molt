@@ -384,7 +384,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `repository-scan-records` | 18 | 0 |
 | `backend-daemon-custody` | 11 | 0 |
 | `encoding-diagnostics` | 2 | 0 |
-| `runtime-cargo-input-custody` | 46 | 0 |
+| `runtime-cargo-input-custody` | 47 | 0 |
 | `rust-toolchain` | 11 | 1 |
 | `table-drift` | 18 | 1 |
 | `findings-registry` | 4 | 0 |

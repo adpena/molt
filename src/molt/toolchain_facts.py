@@ -227,7 +227,8 @@ def directory_inputs(
     The listing is what a loader or a spec search sees; it never descends.
     """
     own = file_input(directory)
-    if own[1] is None or not stat.S_ISDIR(int(own[1][2])):
+    mode = None if own[1] is None else own[1][2]  # the token's st_mode
+    if not isinstance(mode, int) or not stat.S_ISDIR(mode):
         return (own,)
     entries: list[FileInput] = [own]
     with os.scandir(directory) as iterator:
