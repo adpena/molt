@@ -847,7 +847,15 @@ def run_guarded(
     on_spawn: Callable[[int], None] | None = None,
     cancellation_requested: Callable[[], bool] | None = None,
     closure_progress: Callable[[str], None] | None = None,
+    no_output_timeout: float | None = None,
 ) -> GuardResult:
+    """Run ``command`` under the guard's memory, deadline and closure custody.
+
+    ``no_output_timeout`` ends a command whose captured stdout and stderr
+    stop growing for that long, as CI runners end a silent job (CircleCI's
+    no_output_timeout). It bounds a command by its progress, not by its
+    total wall time; the result reports it as a timeout.
+    """
     if not command:
         raise ValueError("command is required")
 
@@ -861,6 +869,8 @@ def run_guarded(
         raise ValueError("poll interval must be greater than 0")
     if timeout is not None and timeout <= 0:
         raise ValueError("timeout must be greater than 0")
+    if no_output_timeout is not None and (no_output_timeout <= 0 or not capture_output):
+        raise ValueError("no_output_timeout must be positive and capture output")
     if (stdout_capture_path is None) != (stderr_capture_path is None):
         raise ValueError("stdout/stderr capture paths must be provided together")
     if stdout_capture_path is not None and not capture_output:
@@ -1547,6 +1557,7 @@ def run_guarded(
                 scope="process_tree_handle",
             )
         timed_out = False
+        output_stalled = False
         child_exit_usage: ChildExitResourceUsage | None = None
         last_limits: ResolvedMemoryLimits | None = None
         termination_wait_expired = False
@@ -1966,6 +1977,23 @@ def run_guarded(
                 return child_exit_observed()
             return True
 
+        output_size_seen = -1
+        output_moved_at = start
+
+        def command_output_stalled(now: float) -> bool:
+            """Whether the captured output stopped growing for the bound."""
+            nonlocal output_size_seen, output_moved_at
+            if no_output_timeout is None:
+                return False
+            size = sum(
+                os.fstat(capture.fileno()).st_size
+                for capture in (stdout_capture, stderr_capture)
+            )
+            if size != output_size_seen:
+                output_size_seen, output_moved_at = size, now
+                return False
+            return now - output_moved_at >= no_output_timeout
+
         def next_poll_wait_s(*, fast_start: bool) -> float:
             elapsed = time.perf_counter() - start
             wait_s = paced_poll_interval(poll_interval, last_sample_cost_s)
@@ -2121,8 +2149,14 @@ def run_guarded(
                     termination_wait_expired = True
                 progressed("child_wait_finished")
                 break
-            if timeout is not None and now - start >= timeout:
+            stalled = command_output_stalled(now)
+            if stalled or (timeout is not None and now - start >= timeout):
                 timed_out = True
+                output_stalled = stalled
+                stop_reason = "output_stalled" if stalled else "timeout"
+                if stalled and enforcer is not None:
+                    # The export below may wait for the adoption lock.
+                    enforcer.request(stop_reason, grace=0.25)
                 timeout_snapshot = sample_tracked_tree(before_signal=True)
                 assert timeout_snapshot is not None
                 samples, watched = timeout_snapshot
@@ -2141,7 +2175,7 @@ def run_guarded(
                     or _samples_include_cargo_build_state(samples, watched)
                 )
                 terminate_owned_tree(
-                    reason="timeout",
+                    reason=stop_reason,
                     samples=samples,
                     watched=watched,
                     grace=0.25,
@@ -2378,7 +2412,11 @@ def run_guarded(
             returncode = GUARD_RETURN_CODE
         if timed_out:
             returncode = TIMEOUT_RETURN_CODE
-            timeout_msg = f"memory_guard: timeout after {timeout:.2f}s\n"
+            timeout_msg = (
+                f"memory_guard: no output for {no_output_timeout:.2f}s\n"
+                if output_stalled
+                else f"memory_guard: timeout after {timeout:.2f}s\n"
+            )
             stderr = _append_guard_message(stderr, timeout_msg, text=text)
         if guard_signal is not None and violation is None and not timed_out:
             returncode = 128 + guard_signal

@@ -10305,3 +10305,99 @@ def test_enforcer_signals_only_what_the_run_loop_has_not_delivered() -> None:
     )
     inert.request("rss_limit", grace=0.25)
     assert inert.stop() == ((), ())
+
+
+def test_run_guarded_ends_a_command_whose_output_stops() -> None:
+    result = memory_guard.run_guarded(
+        [sys.executable, "-c", "print('started', flush=True)\n" + HUNG_CHILD_SOURCE],
+        max_rss_kb=1_000_000,
+        poll_interval=0.02,
+        no_output_timeout=0.3,
+        timeout=120,  # A hang guard only; its message differs.
+    )
+
+    assert result.timed_out is True
+    assert result.returncode == memory_guard.TIMEOUT_RETURN_CODE
+    assert result.stdout == "started\n"
+    assert "memory_guard: no output for 0.30s" in result.stderr
+    assert [report.reason for report in result.termination_reports] == [
+        "output_stalled"
+    ]
+    assert result.descendants_closed is True
+
+
+def test_run_guarded_output_bound_restarts_with_each_new_byte(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Moving output keeps a command alive however long it runs.
+
+    The guard's clock advances a quarter of the bound with each poll. Each
+    poll waits until the child has printed the line the previous poll
+    released, so a new line lands within every two polls (half the bound),
+    while the run spans three bounds. A bound measured from the first byte,
+    or never restarted, ends it.
+    """
+    polls = tmp_path / "polls"
+    lines = tmp_path / "lines"
+    done = tmp_path / "done"
+    bound = 100.0
+    real_custody = memory_guard.sample_processes_custody
+    count = [0]
+
+    def published(path: Path) -> int:
+        try:
+            return int(path.read_text(encoding="utf-8") or 0)
+        except FileNotFoundError:
+            return 0
+
+    def publish(path: Path, value: int) -> None:
+        partial = path.with_suffix(".partial")
+        partial.write_text(str(value), encoding="utf-8")
+        os.replace(partial, path)
+
+    def paced_custody(*args, **kwargs):
+        # Poll k follows the child's line k - 1.
+        while published(lines) < count[0] and not done.exists():
+            time.sleep(0.005)
+        samples = real_custody(*args, **kwargs)
+        count[0] += 1
+        publish(polls, count[0])
+        return samples
+
+    monkeypatch.setattr(memory_guard, "sample_processes_custody", paced_custody)
+    # The handshake inside the sampler is not sampling cost to pace by.
+    monkeypatch.setattr(memory_guard, "SAMPLE_COST_PACING_FACTOR", 0.0)
+    install_module_view(
+        monkeypatch,
+        "time",
+        time,
+        memory_guard,
+        perf_counter=lambda: time.perf_counter() + count[0] * bound / 4,
+    )
+    child = (
+        "import os, pathlib, sys, time\n"
+        "polls, lines, done = map(pathlib.Path, sys.argv[1:4])\n"
+        "def published(path):\n"
+        "    try:\n"
+        "        return int(path.read_text() or 0)\n"
+        "    except FileNotFoundError:\n"
+        "        return 0\n"
+        "for line in range(12):\n"
+        "    while published(polls) < line + 1:\n"
+        "        time.sleep(0.005)\n"
+        "    print(line, flush=True)\n"
+        "    lines.with_suffix('.partial').write_text(str(line + 1))\n"
+        "    os.replace(lines.with_suffix('.partial'), lines)\n"
+        "done.write_text('done')\n"
+    )
+
+    result = memory_guard.run_guarded(
+        [sys.executable, "-c", child, str(polls), str(lines), str(done)],
+        max_rss_kb=1_000_000,
+        poll_interval=0.02,
+        no_output_timeout=bound,
+    )
+
+    assert result.timed_out is False, result.stderr
+    assert result.returncode == 0
+    assert result.stdout.split() == [str(line) for line in range(12)]
