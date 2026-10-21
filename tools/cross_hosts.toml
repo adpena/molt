@@ -29,14 +29,20 @@
 #   shell       (str, optional)   "bash" (default), "sh", or "powershell".
 #                                 Picks the remote command shape and
 #                                 path separators.
-#   remote_dir  (str)             Absolute path the runner may write to.
-#                                 Will be created. Cleaned up on exit
-#                                 unless --keep-remote is passed.
+#   remote_dir  (str)             Absolute staging parent (created if absent).
+#                                 Each run allocates a fresh child; only that
+#                                 child is removed, including on failed setup.
+#                                 --keep-remote retains the child for debugging.
+#                                 Parent and sibling files are never removed.
+#                                 Provider/custody failures retain resources and
+#                                 report cleanup errors; no VM shares are changed.
 #
 #   # docker transport fields ------------------------------------------
 #   container   (str)             An already provisioned image digest. Runner does
-#                                   docker run --pull=never --rm -v <stage>:<remote_dir>
-#                                 mounting the staged artefacts.
+#                                 Containers are created with --pull=never and a
+#                                 per-run custody label, started attached, proved
+#                                 stopped and removed before stage deletion.
+#                                 --keep-remote retains stage files, not containers.
 #   remote_dir  (str, optional)   Mount point inside container.
 #                                 Defaults to /work.
 #
