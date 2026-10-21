@@ -335,24 +335,24 @@ def test_unicode_width_gate_distinguishes_same_minor_across_majors(
     }
     for attribute, source in fixtures.items():
         path = tmp_path / (attribute + ".py")
-        path.write_text(source)
+        path.write_text(source, encoding="utf-8")
         monkeypatch.setattr(GATE, attribute, path)
     width = tmp_path / "runtime/molt-runtime/src/object/unicode_width_generated.rs"
     width.parent.mkdir(parents=True)
     source = (
         '(3, 0) => Some(("three", WIDTH_3_0)),\n(4, 0) => Some(("four", WIDTH_4_0)),\n'
     )
-    width.write_text(source)
+    width.write_text(source, encoding="utf-8")
     assert GATE.check_target_python_versions().ok
     # Same minor, wrong major must not be reported as an identical target set.
-    width.write_text(source.replace("(4, 0)", "(3, 0)"))
+    width.write_text(source.replace("(4, 0)", "(3, 0)"), encoding="utf-8")
     result = GATE.check_target_python_versions()
     assert not result.ok
     assert any(
         item.name == "unicode-width-target-versions" and not item.ok
         for item in result.items
     )
-    width.write_text(source)
+    width.write_text(source, encoding="utf-8")
     assert GATE.check_target_python_versions().ok
 
 
