@@ -138,21 +138,56 @@ def test_windows_job_sampling_automatically_avoids_global_process_table() -> Non
     not memory_guard._process_model.posix_custody_reads_partial_rows(),
     reason="this host reads the process table for custody",
 )
-def test_guard_polls_read_the_tree_not_the_host_table(request) -> None:
+@pytest.mark.parametrize(
+    "sample_delay_s", [0.0, 0.5], ids=["host-speed", "throttled-sampler"]
+)
+def test_guard_polls_read_the_tree_not_the_host_table(
+    request, monkeypatch, tmp_path, sample_delay_s
+) -> None:
     if run_in_fresh_guard_observer(request):
         return
     # Each poll once read every process of the host (about 1,300 kern.proc rows
     # on a developer Mac, or every /proc entry) to keep the few of this tree.
-    grandchild = "import time; x=bytearray(20_000_000); time.sleep(0.3)"
-    child = (
-        "import subprocess,sys,time;"
-        "x=bytearray(20_000_000);"
-        "p=subprocess.Popen([sys.executable,'-c',sys.argv[1]]);"
-        "time.sleep(0.3);p.wait()"
+    held = tmp_path / "held"
+    sampled = tmp_path / "sampled"
+    # The child and the grandchild each hold 20 MB until a poll has sampled
+    # them together. A fixed 0.3 s overlap missed the pair on a loaded host
+    # (HF-425); the throttled sampler is slower than that overlap.
+    grandchild = (
+        "import pathlib, sys, time\n"
+        "x = b'x' * 20_000_000\n"
+        "pathlib.Path(sys.argv[1]).write_text('held')\n"
+        "while not pathlib.Path(sys.argv[2]).exists():\n"
+        "    time.sleep(0.01)\n"
     )
+    child = (
+        "import subprocess, sys\n"
+        "x = b'x' * 20_000_000\n"
+        "subprocess.run([sys.executable, '-c', *sys.argv[1:]], check=True)\n"
+    )
+    real_total_rss = memory_guard.total_rss
+    held_seen = False
+
+    def total_rss(samples, *args, **kwargs):
+        # A poll that starts after one saw the pair hold samples them both.
+        nonlocal held_seen
+        if held_seen:
+            sampled.touch()
+        held_seen = held_seen or held.exists()
+        return real_total_rss(samples, *args, **kwargs)
+
+    monkeypatch.setattr(memory_guard, "total_rss", total_rss)
+    if sample_delay_s:
+        real_custody = memory_guard.sample_processes_custody
+
+        def slow_custody(*args, **kwargs):
+            time.sleep(sample_delay_s)  # A host that samples slowly.
+            return real_custody(*args, **kwargs)
+
+        monkeypatch.setattr(memory_guard, "sample_processes_custody", slow_custody)
 
     result = memory_guard.run_guarded(
-        [sys.executable, "-c", child, grandchild],
+        [sys.executable, "-c", child, grandchild, str(held), str(sampled)],
         max_rss_kb=256 * 1024,
         max_total_rss_kb=512 * 1024,
         poll_interval=0.01,
