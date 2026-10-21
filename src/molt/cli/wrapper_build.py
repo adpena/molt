@@ -35,6 +35,7 @@ from molt.cli.cache_fingerprints import (
 )
 from molt.cli.compiler_identity import CompilerIdentityError
 from molt.cli.rust_cpu_policy import resolve_rust_cpu_policy
+from molt.cli.run_tier import JIT_LAUNCH_SUFFIX, RunTier
 from molt.backend_executable_names import backend_features_for_target
 from molt.cli.command_runtime import _CLI_MEMORY_GUARD_PREFIX, _run_completed_command
 from molt.cli.config_resolution import (
@@ -115,6 +116,23 @@ def _wrapper_build_default_binary_path(
         resolved_build_entry.source_path,
     )
     return _default_molt_bin() / f"{output_base}_molt"
+
+
+def _wrapper_build_default_consumer_path(
+    resolved_build_entry: _ResolvedBuildEntry, *, tier: RunTier
+) -> Path:
+    """The default artifact a run tier consumes: an executable or a JIT launch."""
+    binary = _wrapper_build_default_binary_path(resolved_build_entry)
+    match tier:
+        case RunTier.AOT:
+            return binary
+        case RunTier.JIT:
+            return binary.with_name(binary.name + JIT_LAUNCH_SUFFIX)
+
+
+# The files a cached JIT launch runs besides its manifest. A cached launch is
+# valid only while every one still exists.
+_JIT_LAUNCH_ARTIFACTS = ("program", "runner", "runtime_image")
 
 
 def _wrapper_build_cache_semantic_env(env: Mapping[str, str]) -> dict[str, str]:
@@ -333,9 +351,10 @@ def _read_wrapper_build_cache_contract(
     *,
     resolved_build_entry: _ResolvedBuildEntry,
     cache_input: tuple[dict[str, Any], str],
+    tier: RunTier,
 ) -> _WrapperBuildContract | None:
     _payload, cache_key = cache_input
-    cached_bin = _wrapper_build_default_binary_path(resolved_build_entry)
+    cached_bin = _wrapper_build_default_consumer_path(resolved_build_entry, tier=tier)
     manifest_path = _wrapper_build_cache_manifest_path(cached_bin)
     manifest = _read_cached_json_object(manifest_path)
     if (
@@ -365,6 +384,11 @@ def _read_wrapper_build_cache_contract(
         for key, value in raw_artifacts.items():
             if isinstance(key, str) and isinstance(value, str):
                 artifacts[key] = Path(value)
+    if tier is RunTier.JIT and not all(
+        name in artifacts and artifacts[name].is_file()
+        for name in _JIT_LAUNCH_ARTIFACTS
+    ):
+        return None
     bundle_root = manifest.get("bundle_root")
     return _WrapperBuildContract(
         output=Path(raw_output),
@@ -379,8 +403,9 @@ def _write_wrapper_build_cache_manifest(
     resolved_build_entry: _ResolvedBuildEntry,
     contract: _WrapperBuildContract,
     cache_input: tuple[dict[str, Any], str],
+    tier: RunTier,
 ) -> None:
-    cached_bin = _wrapper_build_default_binary_path(resolved_build_entry)
+    cached_bin = _wrapper_build_default_consumer_path(resolved_build_entry, tier=tier)
     if contract.consumer_output.resolve() != cached_bin.resolve():
         return
     # The wrapper owns the input-generation fence. Publication consumes its
@@ -567,17 +592,20 @@ def _run_wrapper_build(
         )
     except ValueError as exc:
         return None, 0.0, _fail(str(exc), json_output, command=command)
+    # The build request's emit selects the run tier's artifact: an
+    # executable, or a launch manifest for the JIT runner.
+    tier = RunTier.JIT if request.emit == RunTier.JIT.build_emit else RunTier.AOT
     if (
         command == "run"
         and not is_wasm_target(request.target)
         and request.target not in {TargetKind.LUAU, TargetKind.MLIR}
-        and request.emit not in {None, "bin"}
+        and request.emit not in {None, *(each.build_emit for each in RunTier)}
     ):
         return (
             None,
             0.0,
             _fail(
-                f"Compiled run requires emit=bin (got {request.emit})",
+                f"Compiled run requires emit=bin or emit=jit (got {request.emit})",
                 json_output,
                 command=command,
             ),
@@ -626,6 +654,7 @@ def _run_wrapper_build(
             cached_contract = _read_wrapper_build_cache_contract(
                 resolved_build_entry=resolved_build_entry,
                 cache_input=cache_input,
+                tier=tier,
             )
             if cached_contract is not None:
                 return cached_contract, 0.0, None
@@ -750,10 +779,11 @@ def _run_wrapper_build(
                 resolved_build_entry=resolved_build_entry,
                 contract=contract,
                 cache_input=cache_input,
+                tier=tier,
             )
         except OSError as exc:
             manifest_path = _wrapper_build_cache_manifest_path(
-                _wrapper_build_default_binary_path(resolved_build_entry)
+                _wrapper_build_default_consumer_path(resolved_build_entry, tier=tier)
             )
             return (
                 None,

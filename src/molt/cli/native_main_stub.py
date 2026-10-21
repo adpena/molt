@@ -5,25 +5,22 @@ from pathlib import Path
 from typing import Sequence
 
 from molt.capability_manifest import ResolvedRuntimePolicy
+from molt.cli.native_launch_plan import NativeLaunchPlan
 
 
 def _native_main_stub_snippets(
     *,
-    resolved_capability_policy: ResolvedRuntimePolicy,
+    plan: NativeLaunchPlan,
 ) -> tuple[str, str, str, str]:
-    runtime_environment = {
-        **resolved_capability_policy.to_env_vars(),
-        "MOLT_EXECUTION_TARGET": "native",
-    }
     windows_updates = "\n".join(
         f"    if (_putenv_s({json.dumps(key)}, {json.dumps(value)}) != 0) "
         "molt_capability_policy_env_failure();"
-        for key, value in sorted(runtime_environment.items())
+        for key, value in plan.environment.items()
     )
     posix_updates = "\n".join(
         f"    if (setenv({json.dumps(key)}, {json.dumps(value)}, 1) != 0) "
         "molt_capability_policy_env_failure();"
-        for key, value in sorted(runtime_environment.items())
+        for key, value in plan.environment.items()
     )
     policy_snippet = f"""
 static void molt_capability_policy_env_failure() {{
@@ -86,17 +83,21 @@ def _render_native_main_stub(
     compiled_source_paths: Sequence[str] = (),
     runtime_module_roots: Sequence[Path] = (),
 ) -> str:
+    """Render the program's ``NativeLaunchPlan`` as an AOT executable's C main."""
+    plan = NativeLaunchPlan.for_program(
+        resolved_capability_policy=resolved_capability_policy,
+        compiled_source_paths=compiled_source_paths,
+        runtime_module_roots=runtime_module_roots,
+    )
     runtime_module_roots_literals = tuple(
-        json.dumps(str(path.resolve())) for path in dict.fromkeys(runtime_module_roots)
+        json.dumps(root) for root in plan.runtime_module_roots
     )
     (
         capability_policy_snippet,
         capability_policy_call,
         module_roots_snippet,
         module_roots_call,
-    ) = _native_main_stub_snippets(
-        resolved_capability_policy=resolved_capability_policy,
-    )
+    ) = _native_main_stub_snippets(plan=plan)
     if runtime_module_roots_literals:
         roots_array = ", ".join(runtime_module_roots_literals)
         roots_count = len(runtime_module_roots_literals)
@@ -302,7 +303,7 @@ int main(int argc, char** argv) {
         "/* MOLT_RUNTIME_MODULE_ROOTS_CALL */", module_roots_call
     )
     compiled_sources_snippet, compiled_sources_call = _compiled_sources_snippets(
-        compiled_source_paths
+        plan.compiled_source_paths
     )
     main_c_content = main_c_content.replace(
         "/* MOLT_COMPILED_SOURCES_SNIPPET */", compiled_sources_snippet

@@ -29,6 +29,7 @@ from molt.cli.arg_helpers import (
     _build_args_has_capabilities_flag,
     _build_args_has_profile_flag,
     _build_args_has_trusted_flag,
+    _build_args_emit,
     _resolve_binary_output,
 )
 from molt.cli.atomic_io import (
@@ -61,6 +62,7 @@ from molt.cli.command_runtime import (
 )
 from molt.cli.env_paths import _base_env
 from molt.cli.build_request import BuildProfile
+from molt.cli.run_tier import DEFAULT_RUN_TIER, RunTier
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import fail as _fail
 from molt.cli.output import json_payload as _json_payload
@@ -641,11 +643,14 @@ def run_script(
     audit_log: str | None = None,
     io_mode: str | None = None,
     environment_overrides: Mapping[str, str] | None = None,
+    tier: RunTier = DEFAULT_RUN_TIER,
 ) -> int:
-    """Build and run a native program.
+    """Build and run a native program in the selected run tier.
 
     ``environment_overrides`` reaches the build and the program through their
     own environment mappings; the caller's process environment is not written.
+    The JIT tier builds a launch manifest instead of an executable and runs
+    the ``molt-jit`` runner on it; it never falls back to the AOT tier.
     """
     if file_path and module:
         return _fail(
@@ -709,6 +714,22 @@ def run_script(
     if trusted and not _build_args_has_trusted_flag(build_args):
         build_args.append("--trusted")
     try:
+        requested_emit = _build_args_emit(build_args)
+    except ValueError as exc:
+        return _fail(str(exc), json_output, command="run")
+    if requested_emit is None:
+        # `molt build` emits an executable by default; only the JIT tier
+        # names its artifact.
+        if tier is not RunTier.AOT:
+            build_args.extend(["--emit", tier.build_emit])
+    elif requested_emit != tier.build_emit:
+        return _fail(
+            f"The {tier.value} run tier runs emit={tier.build_emit}; "
+            f"--build-arg requested emit={requested_emit}.",
+            json_output,
+            command="run",
+        )
+    try:
         if capabilities is not None and not _build_args_has_capabilities_flag(
             build_args
         ):
@@ -735,16 +756,36 @@ def run_script(
     if build_error is not None:
         return build_error
     assert build_contract is not None
-    output_binary = _resolve_binary_output(str(build_contract.consumer_output))
-    if output_binary is None:
-        return _fail(
-            f"Compiled binary not found at {build_contract.consumer_output}.",
-            json_output,
-            command="run",
-        )
+    if tier is RunTier.JIT:
+        launch_manifest = build_contract.consumer_output
+        runner = build_contract.artifacts.get("runner")
+        if runner is None or not runner.is_file() or not launch_manifest.is_file():
+            return _fail(
+                f"The JIT build published no runnable launch at {launch_manifest}.",
+                json_output,
+                command="run",
+            )
+        # argv[0] names the program image, as an AOT executable's path does.
+        program_command = [
+            str(runner),
+            "--launch",
+            str(launch_manifest),
+            "--",
+            str(launch_manifest),
+            *script_args,
+        ]
+    else:
+        output_binary = _resolve_binary_output(str(build_contract.consumer_output))
+        if output_binary is None:
+            return _fail(
+                f"Compiled binary not found at {build_contract.consumer_output}.",
+                json_output,
+                command="run",
+            )
+        program_command = [str(output_binary), *script_args]
     if timing:
         run_res = _run_command_timed(
-            [str(output_binary), *script_args],
+            program_command,
             env=env,
             cwd=project_root,
             verbose=verbose,
@@ -781,7 +822,7 @@ def run_script(
             print(f"- total: {_format_duration(total)}", file=sys.stderr)
         return run_res.returncode
     return _run_command(
-        [str(output_binary), *script_args],
+        program_command,
         env=env,
         cwd=project_root,
         json_output=json_output,

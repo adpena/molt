@@ -463,6 +463,33 @@ def _dispatch_entrypoint_command(
                 args.json,
                 command="run",
             )
+        from molt.cli.run_tier import DEFAULT_RUN_TIER, RunTier
+
+        raw_tier = getattr(args, "tier", None) or run_cfg.get("tier")
+        try:
+            run_tier = DEFAULT_RUN_TIER if raw_tier is None else RunTier(raw_tier)
+        except ValueError:
+            return _fail(
+                f"Invalid run tier: {raw_tier!r} (expected one of "
+                f"{', '.join(tier.value for tier in RunTier)})",
+                args.json,
+                command="run",
+            )
+        if run_tier is RunTier.JIT and run_target in {
+            TargetKind.WASM,
+            TargetKind.WASI,
+            TargetKind.LUAU,
+            TargetKind.MLIR,
+            TargetKind.WASM_FREESTANDING,
+            TargetKind.WASM_UNKNOWN,
+            TargetKind.RUST,
+        }:
+            return _fail(
+                f"The JIT tier runs native host programs; target "
+                f"{target_name(run_target)!r} has its own runner.",
+                args.json,
+                command="run",
+            )
         trusted = args.trusted
         if trusted is None:
             trusted = _coerce_bool(run_cfg.get("trusted"), False)
@@ -537,6 +564,7 @@ def _dispatch_entrypoint_command(
             cast("BuildProfile | None", run_profile),
             audit_log=getattr(args, "audit_log", None),
             io_mode=getattr(args, "io_mode", None),
+            tier=run_tier,
         )
     if args.command == "repl":
         from molt.repl import run_repl

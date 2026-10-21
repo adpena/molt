@@ -654,7 +654,7 @@ def _backend_probe_target(
     backend_features: tuple[str, ...],
     product: HostToolProduct = HostToolProduct.BACKEND,
 ) -> str:
-    if product is HostToolProduct.WASM_FACTS:
+    if product is not HostToolProduct.BACKEND:
         return product.value
     if "wasm-backend" in backend_features:
         return "wasm"
@@ -761,7 +761,7 @@ def _ensure_backend_binary(
     """
     if not isinstance(product, HostToolProduct):
         return _backend_ensure_failure("host_tool_product", "Unknown host tool product")
-    tool_label = "Backend" if product is HostToolProduct.BACKEND else "WASM facts tool"
+    tool_label = product.label
     # Installed compilers are immutable release inputs, never Cargo outputs.
     # Admit before every developer skip/hydration/rebuild path.
     try:
@@ -771,6 +771,11 @@ def _ensure_backend_binary(
             cargo_profile if product is HostToolProduct.BACKEND else None,
         )
         if installed is not None:
+            if product is HostToolProduct.JIT:
+                raise ValueError(
+                    "Installed Molt ships no JIT runner; the JIT tier needs a "
+                    "source checkout"
+                )
             if rust_cpu is not RustCpuPolicy.BASELINE:
                 raise ValueError(
                     "Installed Molt ships a baseline-CPU backend compiler; "
@@ -917,6 +922,11 @@ def _ensure_backend_binary(
             if product is HostToolProduct.WASM_FACTS:
                 probe_ir = None
                 probe_cmd = [str(binary), "--scan-wasm-link-facts", str(probe_path)]
+            elif product is HostToolProduct.JIT:
+                # Compile and run one function in executable memory: the
+                # host's W^X policy must admit the runner before any program.
+                probe_ir = None
+                probe_cmd = [str(binary), "--probe"]
             elif probe_target == "wasm":
                 probe_cmd.extend(["--target", "wasm"])
             elif probe_target == "luau":
