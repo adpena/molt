@@ -20,15 +20,9 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = ROOT / "src"
 
 
-from molt.dx import development_artifact_env, uv_project_env_component  # noqa: E402
+from molt.dx import development_artifact_env  # noqa: E402
 from molt.process_spawn import forward_command  # noqa: E402
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder  # noqa: E402
-
-
-def _session_id(*, python: str, purpose: str, env: Mapping[str, str]) -> str:
-    if env.get("MOLT_SESSION_ID"):
-        return env["MOLT_SESSION_ID"]
-    return f"{uv_project_env_component(purpose)}__py{uv_project_env_component(python)}"
 
 
 def project_environment_path(
@@ -45,7 +39,6 @@ def project_environment_path(
         repo_root,
         env_view,
         session_prefix="uv-project-env",
-        session_id=_session_id(python=python, purpose=purpose, env=env_view),
         create_dirs=False,
     )
     return Path(resolved["UV_PROJECT_ENVIRONMENT"]).expanduser().resolve()
@@ -72,7 +65,6 @@ def uv_project_env(
         repo_root,
         merged,
         session_prefix="uv-project-env",
-        session_id=_session_id(python=python, purpose=purpose, env=merged),
         create_dirs=create_dirs,
     )
 
