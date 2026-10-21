@@ -73,7 +73,7 @@ export interface FalconOcrSession {
 // Tokenizer
 // --------------------------------------------------------------------------
 
-interface TokenizerVocab {
+export interface TokenizerVocab {
   idToToken: Map<number, string>;
   tokenToId: Map<string, number>;
 }
@@ -93,7 +93,7 @@ async function loadTokenizer(url: string): Promise<TokenizerVocab> {
   return { idToToken, tokenToId };
 }
 
-function decodeTokens(tokenIds: number[], vocab: TokenizerVocab): string {
+export function decodeTokens(tokenIds: number[], vocab: TokenizerVocab): string {
   const parts: string[] = [];
   for (const id of tokenIds) {
     const token = vocab.idToToken.get(id);
