@@ -9,8 +9,10 @@ agent pushes to main by hand.
 The current local driver implements immutable candidate custody and
 selected-volume readiness through the existing proof plan. Unfiltered pytest
 targets share one invocation using the largest declared owning envelope.
-The driver still uses local rules and runs gates sequentially; scheduling
-migration belongs to the existing proof executor and HF-334. The family queue,
+The driver still uses local rules. Its always gates run as one block through
+the proof executor, which leaves a receipt per landing; rule, pytest and Cargo
+gates still run one at a time. The rest of the scheduling migration belongs to
+the proof executor and HF-334. The family queue,
 cross-host scheduling and reusable action receipts below remain release work.
 The [integration contract](../ops/INTEGRATION.md) owns implemented local
 behavior. Input-closed action reuse requires finer declared dependencies and
@@ -113,7 +115,8 @@ within a family once conftest imports are lazy.
 ## Migration
 
 1. Landing receipts, and landing gates run through the proof executor
-   (HF-334 slice 3).
+   (HF-334 slice 3). The always-gate block and its receipt are done; rule,
+   pytest and Cargo gates remain.
 2. The queue runner on this host, with the plan's family selection for the
    macOS and host-independent cells.
 3. Linux and Windows cells on the farm.
