@@ -342,9 +342,7 @@ def test_bound_executor_retains_source_owner_with_foreign_compiler_inputs(
 
         monkeypatch.setattr(authority.ProcessStateUse, "__enter__", enter)
         command = ["git", "rev-parse", "--show-toplevel"]
-    result = command_execution.CommandExecutor(
-        prefix="MOLT_TEST", repo_root=ROOT, encoding="utf-8"
-    ).run(
+    result = command_execution.CommandExecutor(prefix="MOLT_TEST", repo_root=ROOT).run(
         command,
         env=dict(os.environ),
         cwd=ROOT,
