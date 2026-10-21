@@ -19,7 +19,7 @@ def guard(value: str = "value") -> MoltOp:
 def test_exception_edge_coalesced_with_fallthrough_records_both_modes() -> None:
     ops = [guard(), op("CHECK_EXCEPTION", "handler"), op("LABEL", "handler"), guard()]
     cfg = build_cfg(ops)
-    edge = (cfg.index_to_block[1], cfg.index_to_block[2])
+    edge = (cfg.op_blocks[1], cfg.op_blocks[2])
     assert cfg.edge_kinds[edge] == CFGEdgeKind.NORMAL | CFGEdgeKind.EXCEPTION
 
 
@@ -40,15 +40,12 @@ def test_cfg_records_complete_edge_modes_at_the_edge_authority() -> None:
         for block, successors in cfg.successors.items()
         for successor in successors
     }
-    entry = cfg.index_to_block[0]
-    assert cfg.edge_kinds[entry, cfg.index_to_block[1]] == CFGEdgeKind.NORMAL
+    entry = cfg.op_blocks[0]
+    assert cfg.edge_kinds[entry, cfg.op_blocks[1]] == CFGEdgeKind.NORMAL
     # Region custody routes to the handler, never past a textual TRY_END.
-    assert (entry, cfg.index_to_block[3]) not in cfg.edge_kinds
-    assert cfg.edge_kinds[entry, cfg.index_to_block[4]] == CFGEdgeKind.EXCEPTION
-    assert (
-        cfg.edge_kinds[cfg.index_to_block[5], cfg.index_to_block[6]]
-        == CFGEdgeKind.RESUME
-    )
+    assert (entry, cfg.op_blocks[3]) not in cfg.edge_kinds
+    assert cfg.edge_kinds[entry, cfg.op_blocks[4]] == CFGEdgeKind.EXCEPTION
+    assert cfg.edge_kinds[cfg.op_blocks[5], cfg.op_blocks[6]] == CFGEdgeKind.RESUME
 
 
 def rewrite_branches(

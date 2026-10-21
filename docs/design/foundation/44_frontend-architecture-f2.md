@@ -608,6 +608,25 @@ immediately; `CFGGraph.dominance` derives the immutable tree on first use.
 The entry count bounds retained generations, not bytes independently of input
 size. Cold/warm lowering and retained-cache memory require actual measurements.
 
+Operation-to-block identity is dense over the complete operation stream, so
+`CFGGraph.op_blocks` stores one immutable tuple of block IDs without a hash
+entry and integer key per operation. Known-valid operation
+indices use direct indexing; optional positions use `block_for_op`, which
+returns `None` for negative indices and positions past the stream. Required
+public queries reject absent indices instead of applying Python's negative
+sequence indexing. `BasicBlock` is an immutable slotted record; graph caching,
+edge modes and lazy dominance retain their existing ownership and identity.
+Construction extends a temporary list by each block's span before freezing it
+as a tuple. Temporary storage is linear in operation count, with one repeated
+block span at a time; the final list and tuple overlap during freezing. This
+keeps construction in C-level list operations rather than a Python iteration
+per operation. Retained storage has no per-operation dictionary keys.
+This applies the compact graph representation principle visible in
+[tsrs's pinned arena handles and threading contract](https://github.com/oxc-project/tsrs/blob/357d1d3ec23180eae94a8485b8b7444487a7ea5f/crates/tsrs_core/src/ptr.rs#L3-L16)
+through Molt's existing Python CFG authority. It introduces no arena, new cache
+or cache eviction policy; compiler-wide memory and latency need full-module
+lowering evidence.
+
 Frontend CFG dominance is owned by `DominatorTree` in that module. It computes
 immediate dominators over reachable reverse postorder and answers dominance
 through tree intervals, following TIR's `IndexedDominance` contract. Retained

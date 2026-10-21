@@ -138,7 +138,10 @@ class _ResumeLiveness:
 
     def live_into(self, op_index: int) -> list[str]:
         """The names live on entry to the block that starts at ``op_index``."""
-        mask = self._live_in[self.cfg.index_to_block[op_index]]
+        block = self.cfg.block_for_op(op_index)
+        if block is None:
+            raise KeyError(op_index)
+        mask = self._live_in[block]
         names: list[str] = []
         while mask:
             lowest = mask & -mask
