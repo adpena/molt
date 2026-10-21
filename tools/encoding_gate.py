@@ -66,6 +66,7 @@ import json
 from pathlib import Path
 import re
 import sys
+import warnings
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
@@ -79,6 +80,12 @@ bind_repository_imports(__file__)
 # runs as an always landing gate (high traffic), so it must not itself trip the cp1252
 # crash it guards against. force_utf8_stdio() is idempotent and never raises.
 from tools._io_utf8 import force_utf8_stdio  # noqa: E402
+from tools.scan_records import (  # noqa: E402
+    ScanRecords,
+    decoded_text,
+    open_scan_records,
+    scan_result,
+)
 
 force_utf8_stdio()
 
@@ -267,7 +274,11 @@ def scan_source(source: str, relpath: str) -> list[Violation]:
     if not _may_violate(source):
         return []
     try:
-        tree = ast.parse(source, filename=relpath)
+        # Parser warnings concern the file's own owner, not this gate, and a
+        # replayed result must report exactly what a computed one reports.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", SyntaxWarning)
+            tree = ast.parse(source, filename=relpath)
     except SyntaxError:
         return []  # not valid Python for this interpreter; skip, don't crash the gate
     out: list[Violation] = []
@@ -363,12 +374,25 @@ def fix_files(paths: list[Path] | None = None, root: Path = ROOT) -> dict[str, i
     return fixed
 
 
-def _scan_file(path: Path, relpath: str) -> list[Violation]:
+def _scan_file(
+    path: Path, relpath: str, records: ScanRecords | None = None
+) -> list[Violation]:
     try:
-        source = path.read_text(encoding="utf-8", errors="replace")
+        data = path.read_bytes()
     except OSError:
         return []
-    return scan_source(source, relpath)
+    return scan_result(
+        records,
+        relpath,
+        data,
+        lambda: scan_source(
+            decoded_text(data, encoding="utf-8", errors="replace"), relpath
+        ),
+        encode=lambda found: [[violation.line, violation.rule] for violation in found],
+        decode=lambda stored: [
+            Violation(relpath, int(line), str(rule)) for line, rule in stored
+        ],
+    )
 
 
 def _iter_python_files(root: Path) -> list[tuple[Path, str]]:
@@ -387,11 +411,11 @@ def _iter_python_files(root: Path) -> list[tuple[Path, str]]:
     return files
 
 
-def scan(root: Path = ROOT) -> list[Violation]:
+def scan(root: Path = ROOT, records: ScanRecords | None = None) -> list[Violation]:
     """All current violations across the scanned tree, sorted for stable output."""
     out: list[Violation] = []
     for path, relpath in _iter_python_files(root):
-        out.extend(_scan_file(path, relpath))
+        out.extend(_scan_file(path, relpath, records))
     out.sort(key=lambda v: (v.relpath, v.line, v.rule))
     return out
 
@@ -537,7 +561,7 @@ def _cmd_check(violations: list[Violation], root: Path) -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, scan_records: bool = False) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     group = ap.add_mutually_exclusive_group()
     group.add_argument(
@@ -578,7 +602,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
-    violations = scan(root)
+    with open_scan_records(
+        "encoding_gate", owner=__file__, enabled=scan_records
+    ) as records:
+        violations = scan(root, records)
 
     if args.list:
         return _cmd_list(violations)
@@ -588,4 +615,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(scan_records=True))

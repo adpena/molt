@@ -17,6 +17,7 @@ that every parallel proof command attests.
 from __future__ import annotations
 from tests.process_guard_common import run_guarded_test_process
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -28,6 +29,7 @@ TOOLS_ROOT = REPO_ROOT / "tools"
 
 
 from tools import encoding_gate as eg  # noqa: E402
+from tools import scan_records as sr  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -285,3 +287,300 @@ def test_identifier_prefilter_never_hides_a_violation() -> None:
     ]
     assert eg._may_violate("x = 1\n") is False
     assert eg._may_violate('subprocess.run(["x"])\n') is False
+
+
+# ---------------------------------------------------------------------------
+# Scan records -- tools/scan_records.py, the shared per-file result authority.
+# The encoding gate is its first consumer, so its contract is proven here
+# through the real gate scan; the other consumers prove their own codecs.
+# ---------------------------------------------------------------------------
+
+_OWNER = TOOLS_ROOT / "encoding_gate.py"
+
+
+def _records(cache: Path, owner: Path = _OWNER) -> sr.ScanRecords:
+    return sr.ScanRecords("encoding_gate", owner=owner, cache_root=cache)
+
+
+def _sites(violations: list[eg.Violation]) -> list[tuple[str, int, str]]:
+    return [(v.relpath, v.line, v.rule) for v in violations]
+
+
+def _encoding_checkout(root: Path) -> Path:
+    tools = root / "tools"
+    tools.mkdir(parents=True)
+    (tools / "two.py").write_text('open("a")\np.read_text()\n', encoding="utf-8")
+    (tools / "clean.py").write_text('open("a", "rb")\n', encoding="utf-8")
+    (tools / "crlf.py").write_bytes(b'x = 1\r\nsubprocess.run(["x"], text=True)\r\n')
+    # Undecodable bytes take the gate's errors="replace" path.
+    (tools / "bytes.py").write_bytes(b'"\xff"\nopen("a", mode="w")\n')
+    (tools / "café.py").write_text('p.write_text("x")\n', encoding="utf-8")
+    return root
+
+
+def test_scan_records_replay_exactly_what_the_scan_computes(tmp_path: Path) -> None:
+    root = _encoding_checkout(tmp_path / "checkout")
+    cache = tmp_path / "cache"
+    expected = _sites(eg.scan(root))
+    assert len(expected) == 5
+
+    cold = _records(cache)
+    assert _sites(eg.scan(root, cold)) == expected
+    assert (cold.hits, cold.misses) == (0, 5)
+    assert cold.publish() is True
+
+    warm = _records(cache)
+    assert _sites(eg.scan(root, warm)) == expected
+    assert (warm.hits, warm.misses) == (5, 0)
+    # A fully replayed run writes nothing.
+    assert warm.publish() is False
+
+
+def test_scan_records_catch_a_seeded_violation_cold_and_warm(tmp_path: Path) -> None:
+    root = _encoding_checkout(tmp_path / "checkout")
+    cache = tmp_path / "cache"
+    clean = root / "tools" / "clean.py"
+    before = _sites(eg.scan(root))
+    for _ in range(2):
+        records = _records(cache)
+        assert _sites(eg.scan(root, records)) == before
+        records.publish()
+
+    clean.write_text('open("a", "rb")\nopen("seeded")\n', encoding="utf-8")
+    seeded = _records(cache)
+    found = _sites(eg.scan(root, seeded))
+    assert ("tools/clean.py", 2, "open-no-encoding") in found
+    assert (seeded.hits, seeded.misses) == (4, 1)
+    seeded.publish()
+    warm = _records(cache)
+    assert _sites(eg.scan(root, warm)) == found
+    assert warm.misses == 0
+
+    # Restoring the bytes replays the original record.
+    clean.write_text('open("a", "rb")\n', encoding="utf-8")
+    restored = _records(cache)
+    assert _sites(eg.scan(root, restored)) == before
+    assert restored.misses == 0
+
+
+def test_scan_records_are_bound_to_the_scanner_source(tmp_path: Path) -> None:
+    root = _encoding_checkout(tmp_path / "checkout")
+    cache = tmp_path / "cache"
+    owner = tmp_path / "scanner.py"
+    owner.write_bytes(_OWNER.read_bytes())
+    first = _records(cache, owner)
+    eg.scan(root, first)
+    assert first.publish() is True
+    assert _records(cache, owner).generation == first.generation
+
+    owner.write_bytes(_OWNER.read_bytes() + b"# edited\n")
+    edited = _records(cache, owner)
+    assert edited.generation != first.generation
+    eg.scan(root, edited)
+    assert (edited.hits, edited.misses) == (0, 5)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [b"", b"{not json", b"[]", b'{"schema": 999, "records": {}}'],
+)
+def test_scan_records_treat_an_unusable_file_as_empty(
+    tmp_path: Path, payload: bytes
+) -> None:
+    root = _encoding_checkout(tmp_path / "checkout")
+    cache = tmp_path / "cache"
+    probe = _records(cache)
+    assert probe.path is not None
+    probe.path.parent.mkdir(parents=True)
+    probe.path.write_bytes(payload)
+
+    records = _records(cache)
+    expected = _sites(eg.scan(root))
+    assert _sites(eg.scan(root, records)) == expected
+    assert records.misses == 5
+    assert records.publish() is True
+    assert _records(cache)._load().keys() == records._used.keys()
+
+
+def test_scan_records_publish_nothing_after_a_failed_scan(tmp_path: Path) -> None:
+    cache = tmp_path / "cache"
+
+    def failing() -> list[eg.Violation]:
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "fixture")
+
+    with pytest.raises(UnicodeDecodeError):
+        with sr.open_scan_records(
+            "encoding_gate", owner=_OWNER, enabled=True, cache_root=cache
+        ) as records:
+            assert records is not None
+            records.result("tools/ok.py", b"x = 1\n", list, encode=list, decode=list)
+            records.result("tools/bad.py", b"\xff", failing, encode=list, decode=list)
+    assert not (cache / "repository-scan-records").exists()
+
+
+def test_scan_records_refuse_publication_after_new_first_party_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _encoding_checkout(tmp_path / "checkout")
+    records = _records(tmp_path / "cache")
+    eg.scan(root, records)
+    # A first-party module imported during the run could have shaped results.
+    late = tmp_path / "late_module.py"
+    late.write_text("VALUE = 1\n", encoding="utf-8")
+    module = type(sys)("tools._scan_records_late_fixture")
+    module.__file__ = str(late)
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    assert records.publish() is False
+    assert records.path is not None and not records.path.exists()
+
+
+def test_scan_records_from_a_narrow_run_keep_the_other_records(tmp_path: Path) -> None:
+    root = _encoding_checkout(tmp_path / "checkout")
+    cache = tmp_path / "cache"
+    full = _records(cache)
+    eg.scan(root, full)
+    full.publish()
+
+    narrow_root = tmp_path / "narrow"
+    (narrow_root / "tools").mkdir(parents=True)
+    (narrow_root / "tools" / "one.py").write_text('open("n")\n', encoding="utf-8")
+    narrow = _records(cache)
+    eg.scan(narrow_root, narrow)
+    assert narrow.publish() is True
+
+    warm = _records(cache)
+    eg.scan(root, warm)
+    assert (warm.hits, warm.misses) == (5, 0)
+
+
+def test_scan_records_renew_used_records_and_expire_unused_ones(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _encoding_checkout(tmp_path / "checkout")
+    cache = tmp_path / "cache"
+    clock = {"now": 1_000_000_000}
+    monkeypatch.setattr(sr, "_wall_clock", lambda: clock["now"])
+    first = _records(cache)
+    eg.scan(root, first)
+    first.publish()
+
+    clock["now"] += sr.RECORD_RENEWAL_SECONDS - 1
+    fresh = _records(cache)
+    eg.scan(root, fresh)
+    assert fresh.misses == 0 and fresh.publish() is False
+
+    clock["now"] += 2
+    stale = _records(cache)
+    eg.scan(root, stale)
+    assert stale.misses == 0 and stale.publish() is True
+
+    # Only one file stays in use; the other four expire after their lifetime.
+    only = tmp_path / "only"
+    (only / "tools").mkdir(parents=True)
+    (only / "tools" / "two.py").write_bytes((root / "tools" / "two.py").read_bytes())
+    clock["now"] += sr.RECORD_LIFETIME_SECONDS - sr.RECORD_RENEWAL_SECONDS
+    narrow = _records(cache)
+    eg.scan(only, narrow)
+    narrow.publish()
+    assert len(_records(cache)._load()) == 5
+    clock["now"] += sr.RECORD_RENEWAL_SECONDS
+    narrow = _records(cache)
+    eg.scan(only, narrow)
+    assert narrow.publish() is True
+    assert list(_records(cache)._load()) == list(narrow._used)
+
+
+def test_scan_records_retire_old_generations_and_interrupted_stages(
+    tmp_path: Path,
+) -> None:
+    cache = tmp_path / "cache"
+    records = _records(cache)
+    directory = records.directory
+    directory.mkdir(parents=True)
+    now = records._now
+    older = []
+    for age in range(1, 6):
+        path = directory / f"{age:064x}.json"
+        path.write_bytes(b"{}")
+        os.utime(path, (now - age * 60, now - age * 60))
+        older.append(path)
+    stale_stage = directory / f".molt-write-{'0' * 16}-{'1' * 32}.tmp"
+    fresh_stage = directory / f".molt-write-{'0' * 16}-{'2' * 32}.tmp"
+    for stage, age in ((stale_stage, sr.STALE_STAGE_SECONDS + 60), (fresh_stage, 60)):
+        stage.write_bytes(b"")
+        os.utime(stage, (now - age, now - age))
+
+    records.result("tools/a.py", b"x = 1\n", list, encode=list, decode=list)
+    assert records.publish() is True
+    remaining = {path.name for path in directory.iterdir()}
+    assert records.path is not None
+    kept = {records.path.name, *(path.name for path in older[:3])}
+    assert remaining == kept | {fresh_stage.name}
+
+
+def test_library_entry_points_open_no_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
+    root = _encoding_checkout(tmp_path / "checkout")
+    assert eg.main(["--list", "--root", str(root)]) == 0
+    assert not (tmp_path / "cache").exists()
+
+
+@pytest.mark.parametrize(
+    ("data", "encoding", "errors"),
+    [
+        (b"a\r\nb\rc\n", "utf-8", "strict"),
+        (b"\xef\xbb\xbfx = 1\r\n", "utf-8-sig", "strict"),
+        (b"ok\xff\xfe\r\n", "utf-8", "replace"),
+        (b"\r", "utf-8", "strict"),
+    ],
+)
+def test_scan_records_decode_exactly_as_path_read_text(
+    tmp_path: Path, data: bytes, encoding: str, errors: str
+) -> None:
+    path = tmp_path / "source.py"
+    path.write_bytes(data)
+    assert sr.decoded_text(data, encoding=encoding, errors=errors) == path.read_text(
+        encoding=encoding, errors=errors
+    )
+
+
+def test_cli_replays_records_and_still_fails_a_planted_violation(
+    tmp_path: Path,
+) -> None:
+    cache = tmp_path / "cache"
+    env = {**os.environ, "MOLT_CACHE": str(cache)}
+    root = tmp_path / "checkout"
+    (root / "tools").mkdir(parents=True)
+    (root / "tools" / "encoding_gate_baseline.json").write_bytes(
+        (TOOLS_ROOT / "encoding_gate_baseline.json").read_bytes()
+    )
+    (root / "tools" / "clean.py").write_text('open("a", "rb")\n', encoding="utf-8")
+
+    def check() -> subprocess.CompletedProcess[str]:
+        return run_guarded_test_process(
+            [sys.executable, str(_OWNER), "--check", "--root", str(root)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+        )
+
+    assert check().returncode == 0
+    published = list((cache / "repository-scan-records" / "encoding_gate").iterdir())
+    assert len(published) == 1
+    assert check().returncode == 0  # replayed
+
+    planted = root / "tools" / "planted.py"
+    planted.write_text('open("x")\n', encoding="utf-8")
+    result = check()
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "tools/planted.py" in result.stderr
+    assert check().returncode == 2  # the replayed violation still fails
+
+    planted.unlink()
+    assert check().returncode == 0

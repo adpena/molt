@@ -13,25 +13,48 @@ import warnings
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_TARGETS = (
-    REPO_ROOT / "tools",
-    REPO_ROOT / "tests",
-    REPO_ROOT / "src" / "molt" / "backend_daemon_custody.py",
-    REPO_ROOT / "src" / "molt" / "cli",
-    REPO_ROOT / "src" / "molt" / "process_guard.py",
-    REPO_ROOT / "src" / "molt" / "process_spawn.py",
-    REPO_ROOT / "src" / "molt" / "pytest_memory_guard_bootstrap.py",
-    REPO_ROOT / "src" / "molt" / "toolchain_identity.py",
-    REPO_ROOT / "src" / "molt" / "repl.py",
-    REPO_ROOT / "src" / "molt_accel",
-    REPO_ROOT / "packaging",
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from tools.scan_records import (  # noqa: E402
+    ScanRecords,
+    decoded_text,
+    open_scan_records,
+    scan_result,
 )
-DEFAULT_TEXT_TARGETS = (
-    REPO_ROOT / "Makefile",
-    REPO_ROOT / "Makefile.pgo",
-    REPO_ROOT / "packaging",
-    REPO_ROOT / "tools",
+
+DEFAULT_TARGET_PATHS = (
+    "tools",
+    "tests",
+    "src/molt/backend_daemon_custody.py",
+    "src/molt/cli",
+    "src/molt/process_guard.py",
+    "src/molt/process_spawn.py",
+    "src/molt/pytest_memory_guard_bootstrap.py",
+    "src/molt/toolchain_identity.py",
+    "src/molt/repl.py",
+    "src/molt_accel",
+    "packaging",
 )
+DEFAULT_TEXT_TARGET_PATHS = ("Makefile", "Makefile.pgo", "packaging", "tools")
+
+
+def default_targets(root: Path) -> tuple[Path, ...]:
+    """The audited dev/test/CLI surfaces of one checkout."""
+    return tuple(root.joinpath(*path.split("/")) for path in DEFAULT_TARGET_PATHS)
+
+
+def default_text_targets(root: Path) -> tuple[Path, ...]:
+    """The audited guard-text surfaces of one checkout."""
+    return tuple(root.joinpath(*path.split("/")) for path in DEFAULT_TEXT_TARGET_PATHS)
+
+
+DEFAULT_TARGETS = default_targets(REPO_ROOT)
+DEFAULT_TEXT_TARGETS = default_text_targets(REPO_ROOT)
 EXCLUDED_PREFIXES = (
     "tests/differential/",
     "tests/harness/corpus/",
@@ -1115,15 +1138,35 @@ def _iter_text_files(paths: Sequence[Path], *, root: Path) -> Iterable[Path]:
             yield candidate
 
 
-def _scan_file(path: Path, *, root: Path) -> tuple[RawSubprocessCall, ...]:
-    rel = _normalize_path(path, root=root)
-    source_text = path.read_text(encoding="utf-8-sig")
+def scan_source(data: bytes, rel: str) -> tuple[RawSubprocessCall, ...]:
+    """Raw process calls in one source: a pure function of its bytes and path."""
+    source_text = decoded_text(data, encoding="utf-8-sig")
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", SyntaxWarning)
         tree = ast.parse(source_text, filename=rel)
     visitor = _SubprocessVisitor(path=rel, source_text=source_text)
     visitor.visit(tree)
     return tuple(visitor.calls)
+
+
+def _scan_file(
+    path: Path, *, root: Path, records: ScanRecords | None = None
+) -> tuple[RawSubprocessCall, ...]:
+    rel = _normalize_path(path, root=root)
+    data = path.read_bytes()
+    return scan_result(
+        records,
+        rel,
+        data,
+        lambda: scan_source(data, rel),
+        encode=lambda calls: [
+            [call.line, call.qualname, call.method, call.source] for call in calls
+        ],
+        decode=lambda stored: tuple(
+            RawSubprocessCall(rel, int(line), str(qualname), str(method), str(source))
+            for line, qualname, method, source in stored
+        ),
+    )
 
 
 def _scan_text_file(path: Path, *, root: Path) -> tuple[RawSubprocessCall, ...]:
@@ -1171,16 +1214,19 @@ def _scoped_allowlist(
 
 
 def audit_paths(
-    paths: Sequence[Path] = DEFAULT_TARGETS,
+    paths: Sequence[Path] | None = None,
     *,
     root: Path = REPO_ROOT,
     allowlist: Sequence[AllowedRawSubprocessUse] | None = None,
     text_paths: Sequence[Path] | None = None,
+    records: ScanRecords | None = None,
 ) -> SubprocessGuardAudit:
     """Audit the selected inventory; explicit allowlists are checked in full."""
-    default_scope = tuple(paths) == DEFAULT_TARGETS
+    if paths is None:
+        paths = default_targets(root)
+    default_scope = tuple(paths) == default_targets(root)
     if text_paths is None:
-        text_paths = DEFAULT_TEXT_TARGETS if default_scope else paths
+        text_paths = default_text_targets(root) if default_scope else paths
     if allowlist is None:
         allowlist = (
             ALLOWLIST
@@ -1191,7 +1237,7 @@ def audit_paths(
     raw_calls: list[RawSubprocessCall] = []
     for path in _iter_python_files(paths, root=root):
         scanned_files += 1
-        raw_calls.extend(_scan_file(path, root=root))
+        raw_calls.extend(_scan_file(path, root=root, records=records))
     for path in _iter_text_files(text_paths, root=root):
         scanned_files += 1
         raw_calls.extend(_scan_text_file(path, root=root))
@@ -1291,13 +1337,23 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         ),
     )
     parser.add_argument("--json", action="store_true", help="Emit JSON output.")
+    parser.add_argument(
+        "--root",
+        type=Path,
+        default=REPO_ROOT,
+        help="checkout to audit; relative paths name its files (default: this repository)",
+    )
     return parser.parse_args(argv)
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None, *, scan_records: bool = False) -> int:
     args = _parse_args(argv)
-    paths = tuple(args.paths) if args.paths else DEFAULT_TARGETS
-    audit = audit_paths(paths)
+    root = args.root.resolve()
+    paths = tuple(args.paths) if args.paths else default_targets(root)
+    with open_scan_records(
+        "check_subprocess_guard_coverage", owner=__file__, enabled=scan_records
+    ) as records:
+        audit = audit_paths(paths, root=root, records=records)
     if args.json:
         print(json.dumps(_audit_to_dict(audit), indent=2, sort_keys=True))
     else:
@@ -1306,4 +1362,4 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(scan_records=True))
