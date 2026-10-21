@@ -1046,29 +1046,24 @@ _EXIT_PROBE_INTERVAL_S = 0.02
 _KILL_EXIT_OBSERVATION_S = 2.0
 
 
-def _signal_probe_reports_absence(probe: Callable[[], None], *, grace: float) -> bool:
-    """Probe with signal 0 until ESRCH or the end of a positive grace window.
+def _observation_reports_absence(
+    observe: Callable[[], bool | None], *, grace: float
+) -> bool:
+    """Observe until absence is proven or a positive grace window ends.
 
-    ESRCH proves absence. EPERM proves presence, so the window keeps
-    observing: XNU refuses every process-group signal while all members are
-    exiting or wait for their reap, and the group vanishes only at that reap.
-    Any other OSError leaves the target unknown. A window ends with an
-    observation, so an exit at the deadline (an owned child's reap racing the
-    window) is seen. A zero window observes nothing and reports not-proven,
-    so the caller escalates.
+    ``observe`` returns True for proven absence, False for presence (keep
+    observing) and None for an unknown target (stop: not proven). A window
+    ends with an observation, so an exit at the deadline (an owned child's
+    reap racing the window) is seen. A zero window observes nothing and
+    reports not-proven, so the caller escalates.
     """
     if grace <= 0:
         return False
     deadline = time.monotonic() + grace
     while True:
-        try:
-            probe()
-        except ProcessLookupError:
-            return True
-        except PermissionError:
-            pass
-        except OSError:
-            return False
+        verdict = observe()
+        if verdict is not False:
+            return bool(verdict)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return False
@@ -1076,16 +1071,41 @@ def _signal_probe_reports_absence(probe: Callable[[], None], *, grace: float) ->
 
 
 def _pid_exited_or_unobservable(pid: int, *, grace: float) -> bool:
-    return _signal_probe_reports_absence(lambda: os.kill(pid, 0), grace=grace)
+    """Observe ``pid`` through the process model's liveness until it exits.
+
+    An exited, unreaped child counts as exited. Windows asks the process
+    object; signal 0 there is ``CTRL_C_EVENT``, never a probe.
+    """
+    return _observation_reports_absence(
+        lambda: not _process_model.pid_alive(pid), grace=grace
+    )
 
 
 def _process_group_exited_or_unobservable(pgid: int, *, grace: float) -> bool:
     if _process_model.is_windows_process_model():
         return _pid_exited_or_unobservable(pgid, grace=grace)
-    killpg = getattr(os, "killpg", None)
-    if killpg is None:
+    if getattr(os, "killpg", None) is None:
         return False
-    return _signal_probe_reports_absence(lambda: killpg(pgid, 0), grace=grace)
+
+    def absence() -> bool | None:
+        """Signal 0 to the group: ESRCH proves absence.
+
+        EPERM proves presence, so the window keeps observing: XNU refuses
+        every process-group signal while all members are exiting or wait for
+        their reap, and the group vanishes only at that reap. Any other
+        OSError leaves the group unknown.
+        """
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            return False
+        except OSError:
+            return None
+        return False
+
+    return _observation_reports_absence(absence, grace=grace)
 
 
 def process_group_exited_or_unobservable(pgid: int, *, grace: float) -> bool:

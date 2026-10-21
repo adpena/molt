@@ -617,6 +617,38 @@ def test_windows_pid_alive_without_a_handle_reads_the_open_error(
     assert [call[0] for call in api.calls] == ["open"]
 
 
+def test_guard_exit_probe_sees_an_unreaped_child_exit_at_once() -> None:
+    # After a scoped signal the guard waits for its target to exit. Its own
+    # child stays unreaped until the guard waits on it, so a signal-0 probe
+    # saw it present for the whole grace window and reported it still live.
+    child = start_owned_test_process([sys.executable, "-c", "raise SystemExit(0)"])
+    try:
+        started = time.monotonic()
+        assert process_custody._pid_exited_or_unobservable(child.pid, grace=30.0)
+        assert time.monotonic() - started < 15.0
+        assert child.wait(timeout=30) == 0
+    finally:
+        close_owned_test_process(child)
+
+
+def test_windows_guard_exit_probes_never_send_signal_zero(monkeypatch) -> None:
+    api = _WindowsLivenessApi(handle=77, wait_result=0)
+    _install_windows_liveness(monkeypatch, api)
+    install_module_view(
+        monkeypatch,
+        "os",
+        os,
+        process_custody,
+        name="nt",
+        kill=lambda *_: pytest.fail("the guard sent CTRL_C_EVENT as a probe"),
+    )
+    monkeypatch.setattr(process_model, "is_windows_process_model", lambda: True)
+
+    assert process_custody._pid_exited_or_unobservable(4242, grace=1.0)
+    assert process_custody._process_group_exited_or_unobservable(4243, grace=1.0)
+    assert [call[0] for call in api.calls] == ["open", "wait", "close"] * 2
+
+
 def test_windows_pid_alive_rejects_pids_outside_a_dword(monkeypatch) -> None:
     api = _WindowsLivenessApi(handle=77)
     _install_windows_liveness(monkeypatch, api)
