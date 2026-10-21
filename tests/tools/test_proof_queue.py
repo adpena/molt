@@ -20211,7 +20211,9 @@ def test_proof_queue_notebook_retains_explicit_diagnostics_after_payload_split(
     assert '"signal_id": "proof-dependency-blocked"' in text
 
 
-@pytest.mark.parametrize("birth_status", [None, "dispatched", "running", "failed"])
+@pytest.mark.parametrize(
+    "birth_status", [None, "dispatched", "running", "failed", "racing-running"]
+)
 def test_detached_handoff_error_preserves_actual_child_row(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, birth_status: str | None
 ) -> None:
@@ -20253,7 +20255,7 @@ def test_detached_handoff_error_preserves_actual_child_row(
             # child whose real failure must retain its original return code.
             code = (
                 "import sys; sys.stdin.buffer.read(1)"
-                if birth_status == "dispatched"
+                if birth_status in {"dispatched", "racing-running"}
                 else (
                     "import sqlite3,sys; "
                     "conn=sqlite3.connect(sys.argv[1]); "
@@ -20274,9 +20276,29 @@ def test_detached_handoff_error_preserves_actual_child_row(
                 stderr=subprocess.PIPE,
             )
             children.append(process)
+            if birth_status == "racing-running":
+                identity = custody._process_identity
+
+                def publish_successor(pid):
+                    observed = identity(pid)
+                    if pid == process.pid:
+                        with closing(state._connect(db)) as writer:
+                            state._update_run(
+                                writer,
+                                run_id,
+                                status="running",
+                                guard_identity="independently-published-worker",
+                            )
+                    return observed
+
+                monkeypatch.setattr(custody, "_process_identity", publish_successor)
             on_birth(process)
+            if birth_status == "racing-running":
+                assert state._row_by_run_id(conn, run_id)["guard_identity"] == (
+                    "independently-published-worker"
+                )
             setattr(failure, "owned_process", process)
-            if birth_status != "dispatched":
+            if birth_status not in {"dispatched", "racing-running"}:
                 stdout, stderr = process.communicate(timeout=5)
                 assert process.returncode == (17 if birth_status == "failed" else 0), (
                     stdout,
@@ -20302,8 +20324,10 @@ def test_detached_handoff_error_preserves_actual_child_row(
             assert row["elapsed_s"] == 0.0
         else:
             assert dict(row) == expected
-            assert row["status"] == birth_status
-            if birth_status == "dispatched":
+            assert row["status"] == (
+                "running" if birth_status == "racing-running" else birth_status
+            )
+            if birth_status in {"dispatched", "racing-running"}:
                 assert children[0].poll() is None
             elif birth_status == "failed":
                 assert row["returncode"] == 17

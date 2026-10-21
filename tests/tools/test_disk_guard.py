@@ -2104,8 +2104,8 @@ def test_managed_case_alias_use_contends_before_root_materialization(tmp_path):
         ("target/debug", False),
         ("target/checkouts", False),
         ("target/.disk_guard", False),
-        ("target/DEBUG", os.name != "nt"),
-        ("target/.MOLT_STATE", os.name != "nt"),
+        ("target/DEBUG", False),
+        ("target/.MOLT_STATE", False),
         ("target/CACHEDIR.TAG", False),
         ("arbitrary/caller-output", False),
     ],
@@ -2116,7 +2116,10 @@ def test_structural_use_scope_never_adopts_an_owner_or_deletion_permission(
     from molt import checkout_state
 
     selected = tmp_path / relative
-    selected.mkdir(parents=True)
+    if sys.platform == "darwin" and relative == "target/DEBUG":
+        # Default APFS may resolve this alias to an existing protected root.
+        (tmp_path / "target/debug").mkdir(parents=True)
+    selected.mkdir(parents=True, exist_ok=True)
     (selected / "payload").write_bytes(b"caller data")
     with checkout_state.checkout_state_use(((selected, None),)):
         assert (selected / checkout_state.LAST_USE_STAMP).exists() is retained

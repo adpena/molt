@@ -1125,12 +1125,21 @@ def _commit_with_locked_retry(conn: sqlite3.Connection) -> None:
         raise last_exc
 
 
-def _update_run(conn: sqlite3.Connection, run_id: str, **values: object) -> None:
+def _update_run(
+    conn: sqlite3.Connection,
+    run_id: str,
+    *,
+    expected_status: str | None = None,
+    **values: object,
+) -> None:
     if not values:
         return
     assignments = ", ".join(f"{key} = ?" for key in values)
+    condition = "" if expected_status is None else " AND status = ?"
+    parameters = (*values.values(), run_id)
+    if expected_status is not None:
+        parameters = (*parameters, expected_status)
     conn.execute(
-        f"UPDATE proof_runs SET {assignments} WHERE run_id = ?",
-        (*values.values(), run_id),
+        f"UPDATE proof_runs SET {assignments} WHERE run_id = ?{condition}", parameters
     )
     _commit_with_locked_retry(conn)

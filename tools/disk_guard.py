@@ -148,6 +148,10 @@ _LAST_USE_KINDS: frozenset[CandidateKind] = frozenset(
     {"checkout-state", "session-target", "lane", "cargo-target"}
 )
 
+_GUARD_PROTECTED_KINDS: frozenset[CandidateKind] = frozenset(
+    {"lane", "cargo-target", "quarantine"}
+)
+
 
 LOG_RELDIR = Path("logs") / "disk_guard"
 
@@ -516,7 +520,7 @@ def _is_reclaimable(
     root = root.resolve()
     if root not in rp.parents:
         return None
-    if os.path.normcase(rp.name) in PROTECTED_TARGET_NAMES:
+    if rp.name.casefold() in PROTECTED_TARGET_NAMES:
         return None
     parts = rp.relative_to(root).parts
     # A pinned session's target, below a checkout target or the root's own
@@ -595,7 +599,7 @@ def _delete_candidate(
             lock_held=_root_lock_held(candidate.path, scope_roots),
             guard_active=(
                 _has_active_guard(owner_root)
-                if candidate.kind in {"lane", "cargo-target", "quarantine"}
+                if candidate.kind in _GUARD_PROTECTED_KINDS
                 else False
             ),
         )
@@ -797,8 +801,7 @@ def discover_candidates(
                 owner_root=owner_root,
                 # Guard markers elsewhere in the artifact root say nothing
                 # about a last-use root; its last use and its locks do.
-                guard_active=guard_active
-                and kind not in {"checkout-state", "session-target"},
+                guard_active=guard_active and kind in _GUARD_PROTECTED_KINDS,
             )
         )
 
@@ -1209,18 +1212,18 @@ def _retention_candidates(
                 continue
             for child in children:
                 kind = _is_reclaimable(child, owner_root, config.lane_globs)
-                if kind in {"lane", "cargo-target"} and child.is_dir():
+                if kind in _GUARD_PROTECTED_KINDS and child.is_dir():
                     roots.append((child, kind))
     legacy_guard_active = (
         _has_active_guard(owner_root)
-        if any(kind in {"lane", "cargo-target"} for _, kind in roots)
+        if any(kind in _GUARD_PROTECTED_KINDS for _, kind in roots)
         else False
     )
     return [
         Candidate(
             path=child,
             kind=kind,
-            guard_active=legacy_guard_active and kind in {"lane", "cargo-target"},
+            guard_active=legacy_guard_active and kind in _GUARD_PROTECTED_KINDS,
             mtime=checkout_state_last_use(child),
             lock_held=_root_lock_held(child, scope_roots),
             owner_root=owner_root,

@@ -581,7 +581,9 @@ use the one hard denylist and receive no stamp or lifetime metadata; ordinary
 outside-layout paths remain untouched. Admission costs one finite external
 lock per selected root/dependency and an hourly stamp check, independent of
 artifact bytes or sibling count. Structural use never adopts checkout ownership
-or expands a collector's deletion allow-set.
+or expands a collector's deletion allow-set. For an explicit top-level
+`$HOME/cargo-target-x`, the stable interlock directory is `$HOME/target/.disk_guard`;
+only its finite metadata is created, never ownership of that target.
 
 POSIX exec transfers these finite reader descriptors to the actual command.
 Inheriting descendants conservatively retain state, including a long-lived
@@ -596,8 +598,9 @@ generation-safe protocol and is outside payload retirement.
 
 Child handoff must prove that the intended child has acquired its own hold before
 the parent releases its hold. An unproved startup or descendant closure retains
-custody instead of treating an exception, process wrapper collection or a stale
-marker as proof of death. Managed subprocess, guard, daemon, timer, pytest and
+custody through the owning parent's lifetime instead of treating an exception,
+process wrapper collection or a stale marker as proof of death. An escaped
+descendant after that parent exits has no managed lifetime guarantee. Managed subprocess, guard, daemon, timer, pytest and
 queue consumers use that same owner; they do not add a second retention clock.
 Finite root admission performs bounded path and lock work per operation, with
 no process spawn or compiled-application cost. Raw Cargo or arbitrary external

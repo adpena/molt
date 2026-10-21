@@ -1391,14 +1391,15 @@ def _dispatch_detached_runner(
         # A Windows redirector PID does not identify the actual worker.
         if custody._queue_process_spawn_is_windows():
             return
-        row = state._row_by_run_id(conn, run_id)
-        if row is not None and row["status"] == "dispatched":
-            state._update_run(
-                conn,
-                run_id,
-                guard_pid=process.pid,
-                guard_identity=custody._process_identity(process.pid),
-            )
+        # The child can publish its running identity during this lookup.
+        # Compare-and-update in SQLite, never overwrite a successor state.
+        state._update_run(
+            conn,
+            run_id,
+            expected_status="dispatched",
+            guard_pid=process.pid,
+            guard_identity=custody._process_identity(process.pid),
+        )
 
     try:
         pid, runner_log = custody._launch_detached_runner(
