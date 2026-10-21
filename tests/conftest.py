@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from tools.import_file import require_repository_identity
+from tools.import_file import bind_repository_imports, require_repository_identity
 
 if TYPE_CHECKING:
     from molt.llvm_toolchain import WasiSdkInstallation
@@ -456,11 +456,10 @@ def test_guard_custody_roots(
         os.environ[STATE_ROOT_ENV] = previous
 
 
-def _ensure_src_on_path() -> None:
-    for subdir in ("src", "tools"):
-        p = str(ROOT / subdir)
-        if p not in sys.path:
-            sys.path.insert(0, p)
+def _bind_repository_import_path() -> None:
+    # The one binding authority; no directory inside tools/ belongs on the
+    # path (tools/profile.py would shadow the stdlib `profile`).
+    bind_repository_imports(__file__)
     _remove_molt_stdlib_top_level_root()
 
 
@@ -522,7 +521,7 @@ def _keep_hypothesis_storage_in_scratch() -> None:
 
 
 def pytest_configure() -> None:
-    _ensure_src_on_path()
+    _bind_repository_import_path()
     _assert_pytest_memory_guard_active()
     _ensure_pytest_process_scope()
     _keep_hypothesis_storage_in_scratch()
@@ -670,7 +669,7 @@ def _report_checkout_target_leaks(session) -> None:  # type: ignore[no-untyped-d
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_sessionstart(session) -> None:  # type: ignore[no-untyped-def]
-    _ensure_src_on_path()
+    _bind_repository_import_path()
     _ensure_pytest_process_scope()
     if not _is_xdist_worker():
         # Before the repo sentinel, whose suite lease is the first writer of
