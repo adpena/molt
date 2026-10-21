@@ -238,6 +238,9 @@ def test_git_transfer_names_the_commands_that_talk_to_a_remote(command, expected
         if transfer is None
         else (transfer.subcommand, transfer.index, transfer.repository)
     ) == expected
+    if transfer is not None:
+        # The guard applies the transfer bound; a probe would bypass it.
+        assert not command_execution._is_bounded_metadata_probe(command)
 
 
 @pytest.mark.parametrize(
@@ -281,10 +284,23 @@ def test_git_transfer_http_bound_keeps_a_tighter_user_value(
         attended=True,
         ssh_wrapper=tmp_path / "wrapper.sh",
     )
-    assert (
-        bounded.env["GIT_HTTP_LOW_SPEED_LIMIT"],
-        bounded.env["GIT_HTTP_LOW_SPEED_TIME"],
-    ) == expected
+    assert _low_speed_git_reads(bounded.env) == expected
+
+
+def _configured(env) -> dict[str, str]:
+    """The ``git -c`` settings an environment carries, last value per key."""
+    return {
+        env[f"GIT_CONFIG_KEY_{index}"]: env[f"GIT_CONFIG_VALUE_{index}"]
+        for index in range(int(env.get("GIT_CONFIG_COUNT", "0")))
+    }
+
+
+def _low_speed_git_reads(env) -> tuple[str, str]:
+    # Git's http.c reads the environment before any configuration.
+    if "GIT_HTTP_LOW_SPEED_LIMIT" in env:
+        return env["GIT_HTTP_LOW_SPEED_LIMIT"], env["GIT_HTTP_LOW_SPEED_TIME"]
+    configured = _configured(env)
+    return configured["http.lowSpeedLimit"], configured["http.lowSpeedTime"]
 
 
 def test_unattended_git_transfer_never_prompts_and_ends_on_silence(tmp_path):
@@ -312,12 +328,10 @@ def test_unattended_git_transfer_never_prompts_and_ends_on_silence(tmp_path):
     assert env["SSH_ASKPASS_REQUIRE"] == "never"
     assert env["GIT_TERMINAL_PROMPT"] == "0"
     assert env["GCM_INTERACTIVE"] == "never"
-    configured = {
-        env[f"GIT_CONFIG_KEY_{index}"]: env[f"GIT_CONFIG_VALUE_{index}"]
-        for index in range(int(env["GIT_CONFIG_COUNT"]))
-    }
-    assert configured == {
+    assert _configured(env) == {
         "user.name": "Molt Dev",
+        "http.lowSpeedLimit": "1",
+        "http.lowSpeedTime": "120",
         "credential.interactive": "false",
         "ssh.variant": "ssh",
     }
@@ -477,6 +491,77 @@ def test_git_transfer_leaves_a_non_ssh_client_as_configured(tmp_path, environmen
         ssh_wrapper=tmp_path / "wrapper.sh",
     )
     assert bounded.env.get("GIT_SSH_COMMAND") == environment.get("GIT_SSH_COMMAND")
+
+
+def test_git_transfer_reads_settings_as_git_does_and_git_agrees(tmp_path):
+    """Each setting is the last value Git reads; Git's own lookup is the oracle.
+
+    A global key and a repository deploy key: the repository's wins, and a
+    ``-c`` value on the transfer wins over both. The HTTP bound joins the
+    configuration after the user's files, so ``git config --get-urlmatch``
+    with the bounded environment shows what the transfer uses: the
+    repository's higher limit stays, the time tightens to the bound, and a
+    URL-scoped time stays for its own URL.
+    """
+    global_config = tmp_path / "global.gitconfig"
+    global_config.write_text(
+        "[core]\n\tsshCommand = ssh -i /keys/global_key\n"
+        "[http]\n\tlowSpeedLimit = 1\n\tlowSpeedTime = 600\n",
+        encoding="utf-8",
+    )
+    environment = {
+        "PATH": os.environ["PATH"],
+        "HOME": str(tmp_path),
+        "GIT_CONFIG_GLOBAL": str(global_config),
+        "GIT_CONFIG_NOSYSTEM": "1",
+    }
+    repo = tmp_path / "repo"
+
+    def git(*args: str, env=environment) -> str:
+        result = run_guarded_test_process(["git", *args], env=env)
+        assert result.returncode == 0, result.stderr
+        return result.stdout.strip()
+
+    git("init", "-q", str(repo))
+    git("-C", str(repo), "config", "core.sshCommand", "ssh -i /keys/deploy_key")
+    git("-C", str(repo), "config", "http.lowSpeedLimit", "5000")
+    git("-C", str(repo), "config", "http.https://slow.example.lowSpeedTime", "900")
+
+    def settings(command):
+        return git_transfer.read_settings(
+            command, git_transfer.git_transfer(command), cwd=None, env=environment
+        )
+
+    command = ["git", "-C", str(repo), "fetch", "origin"]
+    read = settings(command)
+    assert read == git_transfer.TransportSettings(
+        ssh_command="ssh -i /keys/deploy_key", low_speed_limit=5000, low_speed_time=600
+    )
+    assert git("-C", str(repo), "config", "--get", "core.sshCommand") == (
+        read.ssh_command
+    )
+    with_cli = ["git", "-C", str(repo), "-c", "core.sshCommand=ssh -i /k/cli", "fetch"]
+    assert settings(with_cli).ssh_command == "ssh -i /k/cli"
+
+    bounded = git_transfer.bound_transfer(
+        command,
+        git_transfer.git_transfer(command),
+        environment,
+        settings=read,
+        attended=True,
+        ssh_wrapper=tmp_path / "wrapper.sh",
+    )
+    assert bounded.env["GIT_SSH_COMMAND"].endswith(" ssh -i /keys/deploy_key")
+    assert "GIT_HTTP_LOW_SPEED_LIMIT" not in bounded.env
+
+    def git_uses(key: str, url: str) -> str:
+        return git(
+            "-C", str(repo), "config", "--get-urlmatch", key, url, env=bounded.env
+        )
+
+    assert git_uses("http.lowSpeedLimit", "https://example.com/x.git") == "5000"
+    assert git_uses("http.lowSpeedTime", "https://example.com/x.git") == "120"
+    assert git_uses("http.lowSpeedTime", "https://slow.example/x.git") == "900"
 
 
 def test_git_version_report_is_a_probe_and_git_help_is_not() -> None:

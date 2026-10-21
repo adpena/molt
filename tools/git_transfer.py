@@ -1,15 +1,22 @@
 """Bound a Git network transfer by its progress, never by wall clock (HF-414).
 
-The one authority for the Git transfers a repository tool starts through
-``CommandExecutor``: ``fetch``, ``push``, ``pull``, ``clone``, ``ls-remote``,
-``remote update`` and ``submodule update``. A deadline on such a command
-measures the network and the host; a transfer that moves nothing for
-``TRANSFER_STALL_SECONDS`` has a dead or wedged peer, or waits for a person.
+The one authority for the Git transfers (``fetch``, ``push``, ``pull``,
+``clone``, ``ls-remote``, ``remote update``, ``submodule update``) that pass
+the memory guard: ``guarded_completed_process`` applies it, so every tool
+that runs Git through ``CommandExecutor``, the harness or
+``HarnessExecutionContext`` gets it. A raw subprocess bypasses it, as it
+bypasses the guard. A deadline on such a command measures the network and
+the host; a transfer that moves nothing for ``TRANSFER_STALL_SECONDS`` has a
+dead or wedged peer, or waits for a person.
 
 - HTTP aborts below 1 byte/s over the stall bound (curl's low-speed limit,
-  as Cargo's ``http.low-speed-limit``). A tighter value the user set
-  (``GIT_HTTP_LOW_SPEED_*``, or ``http.lowSpeed*`` when the environment sets
-  none) stays.
+  as Cargo's ``http.low-speed-limit``). A tighter value the user set stays:
+  ``GIT_HTTP_LOW_SPEED_*`` is tightened in place, since Git reads it before
+  any configuration; otherwise the bound joins the configuration after the
+  user's own files, so the last plain ``http.lowSpeed*`` (tightened here)
+  and any URL-scoped ``http.<url>.lowSpeed*`` (Git prefers the more specific
+  key) keep their effect. Settings are read as Git reads them: the last
+  value of each key, with the transfer's own ``-C`` and ``-c`` options.
 - ssh runs through ``git_ssh_bound.sh``, which adds ConnectTimeout (the
   connect and the banner exchange) and server-alive probes (the session)
   only where the connection's own setting, as ``ssh -G`` reports it, is
@@ -19,7 +26,8 @@ measures the network and the host; a transfer that moves nothing for
   askpass programs are blanked, Git's terminal prompt and Git Credential
   Manager's interaction are off, credential helpers are asked not to
   interact, ssh runs in BatchMode, and the command ends once its output
-  stops for the stall bound (CircleCI's ``no_output_timeout``). Fetch, push,
+  stops for the stall bound (CircleCI's ``no_output_timeout``), counting only
+  time the guard watched, so a host freeze is not silence. Fetch, push,
   pull and clone report progress, so a moving transfer keeps its output
   moving; that output bound is what ends a credential helper that waits.
 
@@ -123,17 +131,22 @@ def prompt_reaches_a_person() -> bool:
     return True
 
 
-def settings_query(transfer: GitTransfer) -> list[str]:
-    """The read-only Git command that reports the user's transport settings."""
-    location = [] if transfer.repository is None else ["-C", transfer.repository]
-    return ["git", *location, "config", "--get-regexp", _SETTINGS_PATTERN]
+def settings_query(command: Sequence[str], transfer: GitTransfer) -> list[str]:
+    """The read-only Git command that reports the user's transport settings.
+
+    It carries the transfer's own global options (``-C``, ``-c``,
+    ``--git-dir``), so it reads the configuration the transfer would.
+    """
+    return [*command[: transfer.index], "config", "--get-regexp", _SETTINGS_PATTERN]
 
 
 def parse_settings(output: str) -> TransportSettings:
+    """The value Git uses for each key: the last one read (system, global,
+    repository, worktree, then the command line)."""
     values: dict[str, str] = {}
     for line in output.splitlines():
         key, _, value = line.partition(" ")
-        values.setdefault(key.lower(), value)
+        values[key.lower()] = value
     return TransportSettings(
         ssh_command=values.get("core.sshcommand") or None,
         low_speed_limit=_whole_number(values.get("http.lowspeedlimit")),
@@ -156,8 +169,13 @@ def bound_transfer(
     settings: TransportSettings,
     attended: bool,
     ssh_wrapper: Path,
+    watch_output: bool = True,
 ) -> BoundedTransfer:
-    """``command`` and its environment, bounded by progress."""
+    """``command`` and its environment, bounded by progress.
+
+    ``watch_output`` says the guard captures the command's output, which the
+    unattended output bound reads.
+    """
     bounded = dict(env)
     _bound_http(bounded, settings)
     _bound_ssh(bounded, settings, attended=attended, ssh_wrapper=ssh_wrapper)
@@ -172,6 +190,7 @@ def bound_transfer(
         bounded["SSH_ASKPASS_REQUIRE"] = "never"
         bounded["GCM_INTERACTIVE"] = "never"
         _add_config(bounded, "credential.interactive", "false")
+    if not attended and watch_output:
         if transfer.subcommand in _PROGRESS_SUBCOMMANDS:
             argv.insert(transfer.index + 1, "--progress")
         if transfer.subcommand in _PROGRESS_SUBCOMMANDS | {"ls-remote"}:
@@ -180,18 +199,32 @@ def bound_transfer(
 
 
 def _bound_http(env: dict[str, str], settings: TransportSettings) -> None:
-    # The environment outranks configuration in Git's http.c.
     limit = _whole_number(env.get("GIT_HTTP_LOW_SPEED_LIMIT"))
     seconds = _whole_number(env.get("GIT_HTTP_LOW_SPEED_TIME"))
-    if limit is None and seconds is None:
-        limit, seconds = settings.low_speed_limit, settings.low_speed_time
+    if limit is not None or seconds is not None:
+        # Git's http.c reads these before any configuration: tighten them.
+        env["GIT_HTTP_LOW_SPEED_LIMIT"], env["GIT_HTTP_LOW_SPEED_TIME"] = (
+            _tighter_low_speed(limit, seconds)
+        )
+        return
+    # Otherwise the bound joins the configuration, after the user's files. A
+    # URL-scoped http.<url>.lowSpeed* still wins for its URL, since Git's
+    # urlmatch prefers the more specific key; a plain one is tightened here.
+    tightest = _tighter_low_speed(settings.low_speed_limit, settings.low_speed_time)
+    _add_config(env, "http.lowSpeedLimit", tightest[0])
+    _add_config(env, "http.lowSpeedTime", tightest[1])
+
+
+def _tighter_low_speed(limit: int | None, seconds: int | None) -> tuple[str, str]:
     # curl aborts below ``limit`` bytes/s sustained for ``seconds``: a higher
-    # limit or a shorter time is tighter.
-    env["GIT_HTTP_LOW_SPEED_LIMIT"] = str(max(limit or 0, 1))
-    env["GIT_HTTP_LOW_SPEED_TIME"] = str(
-        min(seconds, TRANSFER_STALL_SECONDS)
-        if seconds is not None and seconds > 0
-        else TRANSFER_STALL_SECONDS
+    # limit or a shorter time is tighter; zero turns curl's bound off.
+    return (
+        str(max(limit or 0, 1)),
+        str(
+            min(seconds, TRANSFER_STALL_SECONDS)
+            if seconds is not None and seconds > 0
+            else TRANSFER_STALL_SECONDS
+        ),
     )
 
 
@@ -240,3 +273,60 @@ def _add_config(env: dict[str, str], key: str, value: str) -> None:
     env[f"GIT_CONFIG_KEY_{count}"] = key
     env[f"GIT_CONFIG_VALUE_{count}"] = value
     env["GIT_CONFIG_COUNT"] = str(count + 1)
+
+
+SSH_WRAPPER = Path(__file__).with_name("git_ssh_bound.sh")
+
+
+def bound_for_guard(
+    command: Sequence[str],
+    *,
+    cwd: str | Path | None,
+    env: Mapping[str, str] | None,
+    capture_output: bool,
+) -> BoundedTransfer | None:
+    """The guard boundary's bound for ``command``, or None when it is no transfer.
+
+    Every guarded command passes through ``guarded_completed_process``, so
+    every Git transfer a tool starts through ``CommandExecutor``, the harness
+    or ``HarnessExecutionContext`` gets this one bound. The output bound needs
+    captured output; a command that inherits its streams keeps its transport
+    bounds and prompts nothing when unattended, but nothing watches its output.
+    """
+    transfer = git_transfer(command)
+    if transfer is None:
+        return None
+    source = os.environ if env is None else env
+    bounded = bound_transfer(
+        command,
+        transfer,
+        source,
+        settings=read_settings(command, transfer, cwd=cwd, env=source),
+        attended=prompt_reaches_a_person(),
+        ssh_wrapper=SSH_WRAPPER,
+        watch_output=capture_output,
+    )
+    return bounded
+
+
+def read_settings(
+    command: Sequence[str],
+    transfer: GitTransfer,
+    *,
+    cwd: str | Path | None,
+    env: Mapping[str, str],
+) -> TransportSettings:
+    """Read the user's transport settings with a bounded metadata probe."""
+    from molt.process_environment import ProcessEnvironment
+    from molt.process_guard import run_completed_command
+
+    result = run_completed_command(
+        settings_query(command, transfer),
+        cwd=cwd,
+        env=ProcessEnvironment(env),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        memory_guard_prefix=None,
+    )
+    return parse_settings(result.stdout or "")

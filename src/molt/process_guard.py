@@ -95,6 +95,11 @@ def raise_for_guard_outcome(
     """
     command = [str(part) for part in command]
     if bool(getattr(result, "timed_out", False)):
+        # A command ended for silence reports the silence bound as its timeout
+        # (the guard bounds a Git transfer by its output, tools/git_transfer.py).
+        stalled = getattr(result, "output_stall_s", None)
+        if stalled is not None:
+            timeout = stalled
         if timeout is None:
             raise RuntimeError(
                 "guarded subprocess reported a timeout without a requested "
@@ -226,7 +231,6 @@ def run_completed_command(
     progress_label: str | None = None,
     guard_loader: GuardLoader = load_harness_memory_guard,
     guard_source_root: Path | None = None,
-    no_output_timeout: float | None = None,
 ) -> subprocess.CompletedProcess[Any]:
     if isinstance(cmd, (str, bytes)):
         raise TypeError("command must be typed argv, not shell text")
@@ -245,8 +249,6 @@ def run_completed_command(
     if memory_guard_prefix is None:
         if stdout_capture_path is not None or stderr_capture_path is not None:
             raise ValueError("evidence capture paths require guarded execution")
-        if no_output_timeout is not None:
-            raise ValueError("an output progress bound requires guarded execution")
         # A probe has a deadline only when its caller sets one, as a guarded
         # command does. A default deadline on a local read measures host load,
         # not the probe: on 2026-10-21 two 5 ms Git reads exceeded theirs while
@@ -358,16 +360,12 @@ def run_completed_command(
         encoding=encoding or "utf-8",
         errors=errors or "strict",
         progress_label=progress_label,
-        no_output_timeout=no_output_timeout,
     )
     if stderr == subprocess.DEVNULL:
         result.stderr = None
     if stdout == subprocess.DEVNULL:
         result.stdout = None
-    # A command ended for silence reports the silence bound as its timeout.
-    raise_for_guard_outcome(
-        command, result, timeout=timeout if timeout is not None else no_output_timeout
-    )
+    raise_for_guard_outcome(command, result, timeout=timeout)
     if check and result.returncode != 0:
         error = subprocess.CalledProcessError(
             result.returncode,

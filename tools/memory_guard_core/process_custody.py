@@ -170,6 +170,8 @@ class GuardResult:
     descendants_closed: bool = False
     # The largest pytest worker subtree and per-test peaks (worker_peaks.py).
     worker_peaks: WorkerPeakSummary | None = None
+    # The output bound that ended the command, when silence ended it.
+    output_stall_s: float | None = None
 
 
 ChildExitResourceUsage = _process_model.ChildExitResourceUsage
