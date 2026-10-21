@@ -22,11 +22,7 @@ import tools.hooks.bash_guard as bg  # noqa: E402
 
 def _d(cmd, *, shared=False, queue=False, https=False, env=None):
     return bg.decide(
-        cmd,
-        in_shared_checkout=shared,
-        queue_live=queue,
-        origin_is_https=https,
-        env=env,
+        cmd, facts=bg.GuardFacts.fixed(shared=shared, queue=queue, https=https), env=env
     )
 
 
@@ -214,9 +210,12 @@ def test_enforcement_state_reads_the_gate_flip_and_never_defaults_to_strict(
             + ([] if state is None else [{"name": "bash_guard", "state": state}])
         )
 
-    monkeypatch.setattr(flips, "load_flip_entries", entries("STRICT"))
+    monkeypatch.setattr(flips, "load_flip_entries", entries("strict"))
     assert bg.enforcement_state() == "strict"
     monkeypatch.setattr(flips, "load_flip_entries", entries("warn"))
+    assert bg.enforcement_state() == "warn"
+    # A misspelled state is refused by the one reader and never enforces.
+    monkeypatch.setattr(flips, "load_flip_entries", entries("STRICT"))
     assert bg.enforcement_state() == "warn"
     # Another gate's state never leaks in; no entry means observe-only.
     monkeypatch.setattr(flips, "load_flip_entries", entries(None))
@@ -377,3 +376,60 @@ def test_inline_override_is_scoped_to_actual_assignment_and_obeys_environment_pr
     assert decision.block and not decision.override
     assert not _d('"MOLT_GUARD_OK=1" echo harmless', queue=True).override
     assert _d("MOLT_GUARD_OK=1 echo harmless; cargo build", queue=True).block
+
+
+def test_facts_are_read_only_when_a_rule_reaches_a_command_that_needs_them():
+    reads = []
+
+    def reader(name):
+        def read():
+            reads.append(name)
+            return True
+
+        return read
+
+    def facts():
+        return bg.GuardFacts(
+            in_shared_checkout=reader("shared"),
+            queue_live=reader("queue"),
+            origin_is_https=reader("https"),
+        )
+
+    assert not bg.decide("git status && ls build/", facts=facts()).block
+    assert reads == []
+    assert bg.decide("git reset --hard HEAD", facts=facts()).block
+    assert reads == ["shared"]
+    reads.clear()
+    # The queue rule reaches `python -m molt.cli build`, which no text
+    # predicate in run() may skip (HF-426 review: "molt build" was required).
+    decision = bg.decide("python -m molt.cli build examples/hello.py", facts=facts())
+    assert decision.block and decision.rule == "build-bypasses-queue"
+    assert reads == ["queue"]
+    reads.clear()
+    many = bg.GuardFacts(
+        in_shared_checkout=reader("shared"),
+        queue_live=reader("queue"),
+        origin_is_https=reader("https"),
+    )
+    assert bg.decide("cargo build && cargo test", facts=many).block
+    assert reads == ["queue"]  # read once, memoized
+
+
+def test_executable_names_are_matched_without_case():
+    # On a case-insensitive filesystem `GIT` runs git.
+    assert _d("GIT reset --hard HEAD", shared=True).block
+    assert _d("/usr/bin/Cargo build", queue=True).block
+    assert bg.passes_prefilter("GIT reset --hard HEAD")
+    assert not bg.passes_prefilter("ls -la docs")
+
+
+def test_run_sends_a_python_molt_build_to_the_queue_rule(monkeypatch, tmp_path):
+    monkeypatch.setattr(bg._common, "repo_root", lambda cwd=None: tmp_path)
+    monkeypatch.setattr(bg, "_queue_live", lambda root: True)
+    monkeypatch.setattr(bg, "enforcement_state", lambda: "strict")
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "python -m molt.cli build x.py"},
+        "cwd": str(tmp_path),
+    }
+    assert _run_with_stdin(monkeypatch, payload) == 2

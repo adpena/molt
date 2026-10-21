@@ -45,6 +45,7 @@ import os
 import re
 import shlex
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from pathlib import Path
@@ -59,6 +60,7 @@ bind_repository_imports(__file__)
 
 from tools.hooks import _common  # noqa: E402
 from tools.hooks.waivers import record_waiver  # noqa: E402
+from tools.check_gate_flips import FlipState  # noqa: E402
 
 
 OVERRIDE_TOKEN = "MOLT_GUARD_OK"
@@ -154,6 +156,54 @@ class Segment:
     args: list[str] = field(default_factory=list)
 
 
+class GuardFacts:
+    """The host facts the rules may need, each read at most once and only when
+    a rule reaches a command that needs it.
+
+    The rules decide which facts to read, so no text predicate outside them
+    can skip a rule (review of HF-426: a `"molt build"` substring test skipped
+    the queue rule for `python -m molt.cli build`).
+    """
+
+    def __init__(
+        self,
+        *,
+        in_shared_checkout: Callable[[], bool],
+        queue_live: Callable[[], bool],
+        origin_is_https: Callable[[], bool],
+    ) -> None:
+        self._readers = {
+            "in_shared_checkout": in_shared_checkout,
+            "queue_live": queue_live,
+            "origin_is_https": origin_is_https,
+        }
+        self._values: dict[str, bool] = {}
+
+    @classmethod
+    def fixed(
+        cls, *, shared: bool = False, queue: bool = False, https: bool = False
+    ) -> "GuardFacts":
+        return cls(
+            in_shared_checkout=lambda: shared,
+            queue_live=lambda: queue,
+            origin_is_https=lambda: https,
+        )
+
+    def _read(self, name: str) -> bool:
+        if name not in self._values:
+            self._values[name] = bool(self._readers[name]())
+        return self._values[name]
+
+    def in_shared_checkout(self) -> bool:
+        return self._read("in_shared_checkout")
+
+    def queue_live(self) -> bool:
+        return self._read("queue_live")
+
+    def origin_is_https(self) -> bool:
+        return self._read("origin_is_https")
+
+
 @dataclass
 class Decision:
     block: bool = False
@@ -197,8 +247,10 @@ def _parse_segment(seg: str) -> Segment | None:
 
 
 def _exe_base(exe: str) -> str:
-    # Strip any path prefix so ".../cargo" or "cargo.exe" -> "cargo".
-    base = re.split(r"[\\/]", exe)[-1]
+    # Strip any path prefix so ".../cargo" or "cargo.exe" -> "cargo". Casefold:
+    # on a case-insensitive filesystem (the macOS and Windows defaults) `GIT`
+    # runs git, and the guard over-approximates rather than miss it.
+    base = re.split(r"[\\/]", exe)[-1].casefold()
     if base.endswith(".exe"):
         base = base[:-4]
     return base
@@ -252,19 +304,13 @@ def _heavy_payload(segment: Segment) -> tuple[str, str]:
     return base, command[1] if len(command) > 1 else ""
 
 
-def decide(
-    command: str,
-    *,
-    in_shared_checkout: bool,
-    queue_live: bool,
-    origin_is_https: bool,
-    env=None,
-) -> Decision:
+def decide(command: str, *, facts: GuardFacts, env=None) -> Decision:
     """Pure: classify a Bash command against the four guarded classes.
 
-    All environment-dependent facts are INJECTED so this function is fully
-    unit-testable. Returns a ``Decision``; ``block`` is True only for a refused
-    command with no active override.
+    Host facts are INJECTED (``facts``) and read only when a rule reaches a
+    command that needs one, so this function is fully unit-testable. Returns a
+    ``Decision``; ``block`` is True only for a refused command with no active
+    override.
     """
     if not command or not command.strip():
         return Decision()
@@ -277,21 +323,20 @@ def decide(
     git_segs = [s for s in segments if _exe_base(s.exe) == "git"]
 
     # (a) destructive working-tree git on the shared checkout
-    if in_shared_checkout:
-        for s in git_segs:
-            override = _override_active(s, env)
-            sub, rest = _git_subcommand(s.args)
-            pred = DESTRUCTIVE_GIT.get(sub)
-            if pred and pred(rest):
-                cmd_txt = f"git {sub} {' '.join(rest)}".rstrip()
-                return _mk(
-                    override,
-                    "destructive-git-shared-checkout",
-                    f"`{cmd_txt}` is a DESTRUCTIVE working-tree op on the SHARED checkout. "
-                    f"This class has destroyed other agents' uncommitted WIP (M17/M18). Use "
-                    f"an ISOLATED `git worktree add`, or temp-index plumbing. Recovery "
-                    f"snapshots: tools/git_guard.py snapshot.",
-                )
+    for s in git_segs:
+        override = _override_active(s, env)
+        sub, rest = _git_subcommand(s.args)
+        pred = DESTRUCTIVE_GIT.get(sub)
+        if pred and pred(rest) and facts.in_shared_checkout():
+            cmd_txt = f"git {sub} {' '.join(rest)}".rstrip()
+            return _mk(
+                override,
+                "destructive-git-shared-checkout",
+                f"`{cmd_txt}` is a DESTRUCTIVE working-tree op on the SHARED checkout. "
+                f"This class has destroyed other agents' uncommitted WIP (M17/M18). Use "
+                f"an ISOLATED `git worktree add`, or temp-index plumbing. Recovery "
+                f"snapshots: tools/git_guard.py snapshot.",
+            )
 
     # (b) bare git add / commit sweeps (M20)
     has_add = False
@@ -333,23 +378,25 @@ def decide(
 
     # (c) Heavy builds are classified per execution segment. A queue command
     # elsewhere, a filename substring or an environment wrapper grants no route.
-    if queue_live:
-        for segment in segments:
-            override = _override_active(segment, env)
-            try:
-                base, sub = _heavy_payload(segment)
-            except ValueError as exc:
+    for segment in segments:
+        override = _override_active(segment, env)
+        try:
+            base, sub = _heavy_payload(segment)
+        except ValueError as exc:
+            if facts.queue_live():
                 return _mk(override, "build-bypasses-queue", str(exc))
-            if (base == "cargo" and sub in _HEAVY_CARGO_SUBS) or (
-                base == "molt" and sub == "build"
-            ):
-                return _mk(
-                    override,
-                    "build-bypasses-queue",
-                    f"`{base} {sub}` is a heavy build launched while a proof_queue is LIVE. "
-                    "Route builds through the queue (M27): "
-                    "`uv run --python 3.12 python tools/proof_queue.py ...`.",
-                )
+            continue
+        if (
+            (base == "cargo" and sub in _HEAVY_CARGO_SUBS)
+            or (base == "molt" and sub == "build")
+        ) and facts.queue_live():
+            return _mk(
+                override,
+                "build-bypasses-queue",
+                f"`{base} {sub}` is a heavy build launched while a proof_queue is LIVE. "
+                "Route builds through the queue (M27): "
+                "`uv run --python 3.12 python tools/proof_queue.py ...`.",
+            )
 
     # (d) https push to origin (M19)
     for s in git_segs:
@@ -363,7 +410,7 @@ def decide(
             pushes_origin = "origin" in rest or not any(
                 not a.startswith("-") for a in rest
             )
-            if pushes_https_url or (pushes_origin and origin_is_https):
+            if pushes_https_url or (pushes_origin and facts.origin_is_https()):
                 return _mk(
                     override,
                     "https-push",
@@ -382,28 +429,6 @@ def _mk(override: bool, rule: str, reason: str) -> Decision:
 # --- fail-open wrapper -----------------------------------------------------
 
 
-def _maybe_destructive_git(command: str) -> bool:
-    return "git" in command and any(
-        k in command
-        for k in (
-            "reset",
-            "checkout",
-            "restore",
-            "switch",
-            "clean",
-            "stash",
-            "branch",
-            "gc",
-            "update-ref",
-            "reflog",
-        )
-    )
-
-
-def _maybe_heavy_build(command: str) -> bool:
-    return ("cargo" in command) or ("molt build" in command)
-
-
 def _queue_live(root) -> bool:
     """Is a proof_queue run active? Uncertain -> False (never block a build)."""
     cnt = _common.proof_queue_active_count(root)
@@ -412,28 +437,32 @@ def _queue_live(root) -> bool:
 
 SHADOW_NAME = "bash_guard_shadow.jsonl"
 
-# Every rule needs one of these in the command: git (rules a, b, d), cargo
-# (rule c) or the `build` of `molt build` (rule c). tools/hooks/run.sh applies
-# the same tokens to the raw payload before it starts Python.
+# Every rule needs one of these, in any case, in the command: git (rules a, b,
+# d), cargo (rule c) or the `build` of `molt build` (rule c). The one source:
+# tools/hooks/run.sh applies a projection generated from this tuple to the raw
+# payload before it starts Python (tools/hooks/prefilter.generated.sh).
 PREFILTER_TOKENS = ("git", "cargo", "build")
 
 
-def enforcement_state() -> str:
-    """This guard's ``[[gate_flip]]`` state in tools/proof_plan.toml.
+def passes_prefilter(text: str) -> bool:
+    """Could any rule apply? A shell escape can still hide a token (HF-423)."""
+    folded = text.casefold()
+    return any(token in folded for token in PREFILTER_TOKENS)
 
-    ``strict`` blocks; anything else (``warn``, or no readable entry) only
-    records the decision. Read only for a would-block decision, so an allowed
-    command never pays for parsing the plan.
+
+def enforcement_state() -> FlipState:
+    """This guard's ``[[gate_flip]]`` state, read through the one reader.
+
+    ``strict`` blocks; ``warn``, no entry, or an unreadable plan only records
+    the decision. Read only for a would-block decision, so an allowed command
+    never pays for parsing the plan.
     """
-    try:
-        from tools.check_gate_flips import DEFAULT_CONFIG, load_flip_entries
+    from tools.check_gate_flips import flip_state
 
-        for entry in load_flip_entries(DEFAULT_CONFIG):
-            if entry.get("name") == "bash_guard":
-                return str(entry.get("state", "warn")).lower()
-    except Exception:
-        pass
-    return "warn"
+    try:
+        return flip_state("bash_guard") or "warn"
+    except (OSError, ValueError):  # tomllib.TOMLDecodeError is a ValueError
+        return "warn"
 
 
 def run() -> int:
@@ -443,30 +472,18 @@ def run() -> int:
     command = tool_input.get("command", "") if isinstance(tool_input, dict) else ""
     if tool_name and tool_name != "Bash":
         return 0
-    if not command:
-        return 0
-    # Fast path: nothing we guard is mentioned -> allow without any git calls.
-    if not any(token in command for token in PREFILTER_TOKENS):
+    if not command or not passes_prefilter(command):
         return 0
 
     cwd = data.get("cwd")
     root = _common.repo_root(cwd)
-
-    in_shared = False
-    if _maybe_destructive_git(command):
-        # Shared checkout = the MAIN worktree (not a linked worktree / plumbing).
-        in_shared = not _common.is_linked_worktree(root)
-    heavy_build = _maybe_heavy_build(command)
-    queue_live = _queue_live(root) if heavy_build else False
-    origin_https = _common.origin_is_https(root) if "push" in command else False
-
-    decision = decide(
-        command,
-        in_shared_checkout=in_shared,
-        queue_live=queue_live,
-        origin_is_https=origin_https,
-        env=dict(os.environ),
+    facts = GuardFacts(
+        # Shared checkout = the MAIN worktree (not a linked worktree/plumbing).
+        in_shared_checkout=lambda: not _common.is_linked_worktree(root),
+        queue_live=lambda: _queue_live(root),
+        origin_is_https=lambda: _common.origin_is_https(root),
     )
+    decision = decide(command, facts=facts, env=dict(os.environ))
 
     if decision.override and decision.rule:
         # An override neutralized a would-be block; audit it.
@@ -481,12 +498,14 @@ def run() -> int:
 
     if decision.block and enforcement_state() != "strict":
         # Observe-only: record what strict mode would refuse; allow the call.
-        _common.append_jsonl(
-            _common.state_dir(root) / SHADOW_NAME,
+        _common.record_shadow(
+            root,
+            SHADOW_NAME,
             {
+                "session_id": str(data.get("session_id", "")),
                 "rule": decision.rule,
                 "reason": decision.reason,
-                "command": command[:400],
+                "command": command,
                 "cwd": str(cwd or ""),
             },
         )

@@ -9,8 +9,9 @@ ad-hoc overrides. molt adopts one grammar everywhere:
   construct. ``<GATE>`` is the upper-snake gate id (``BASH_GUARD``,
   ``LANDING_GATE``, ``MAGNITUDE_DISMISSAL``). The rationale must be REAL: at
   least 4 non-placeholder characters. ``# LANDING_GATE_OK:todo`` is refused.
-* **commit token** ``[skip-<gate>]`` in a commit subject opts the whole commit
-  window out of ``<gate>`` (lower-kebab id).
+* **commit token** ``[skip-<gate>] <rationale>`` in a commit subject opts the
+  whole commit window out of ``<gate>`` (lower-kebab id). The rationale must
+  FOLLOW the token and be real; a bare token is refused.
 
 Every honored waiver is appended to ``.molt/state/waivers.jsonl`` for audit.
 
@@ -137,17 +138,32 @@ def find_all_waivers(text: str) -> list[tuple[str, str, bool]]:
     return out
 
 
-def parse_skip_tokens(commit_subject: str) -> set[str]:
-    """Return the set of ``<gate>`` ids opted out via ``[skip-<gate>]`` tokens."""
-    if not commit_subject:
-        return set()
-    return {m.group(1) for m in _SKIP_RE.finditer(commit_subject)}
+def commit_opt_out(subjects: Iterable[str], gate: str) -> str | None:
+    """The rationale of a window-wide ``[skip-<gate>] <rationale>`` opt-out in
+    any commit subject, or None: the one commit-token classifier.
 
-
-def has_skip_token(commit_subject: str, gate: str) -> bool:
-    """True iff ``[skip-<gate>]`` (lower-kebab) is present in the subject."""
+    The rationale is the text that FOLLOWS the token, so surrounding subject
+    prose never counts and a bare token is refused.
+    """
     kebab = gate.strip().lower().replace("_", "-")
-    return kebab in parse_skip_tokens(commit_subject)
+    for subject in subjects:
+        text = str(subject or "")
+        for match in _SKIP_RE.finditer(text):
+            if match.group(1) != kebab:
+                continue
+            rationale = text[match.end() :].strip(" -:.\t")
+            if is_valid_rationale(rationale):
+                return rationale
+    return None
+
+
+def grammar_summary() -> str:
+    """The waiver grammar in one line, for the session digest."""
+    return (
+        "inline `# <GATE>_OK: <rationale>` on the flagged line, or "
+        "`[skip-<gate>] <rationale>` in a commit subject; a rationale needs at "
+        f"least {MIN_RATIONALE_CHARS} real characters"
+    )
 
 
 def record_waiver(

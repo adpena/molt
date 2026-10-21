@@ -45,9 +45,8 @@ Consumers wired so it is READ, not just built (the whole point of A10):
     memories itself: it ranked against a fixed 2026-07 goal, and the harness
     loads the memory index into every session.)
 
-Pure stdlib (``tomllib`` is optional/guarded) so the hook spine can import it
-under any Python 3.9+ without the molt venv. Never raises on load; the CLI is the
-only place that prints.
+Pure stdlib (``tomllib`` is optional/guarded), so its consumers import it
+cheaply. Never raises on load; the CLI is the only place that prints.
 """
 
 from __future__ import annotations

@@ -29,10 +29,11 @@ NOT touched this window:
     next session reads it (M63, M12). (``landed`` is deliberately dropped: M12
     makes "LANDED" boilerplate on ~every commit -- it would storm.)
 
-ESCAPE VALVE ("never binary"): ``[no-triality]`` / ``[skip-triality]`` /
-``[skip-drift]`` in a commit subject opts the whole window out -- but ONLY with a
-real trailing rationale (>=4 non-placeholder chars); a bare token is refused. The
-honored waiver is logged to ``.molt/state/waivers.jsonl``.
+ESCAPE VALVE ("never binary"): ``[skip-triality] <rationale>`` in a commit
+subject opts the whole window out, through the one grammar in
+``tools/hooks/waivers.py`` (``commit_opt_out``): ONLY with a real trailing
+rationale; a bare token is refused. The honored waiver is logged to
+``.molt/state/waivers.jsonl``.
 
 INVARIANTS (identical to the Wave-1 legs): PURE unit-tested classifier; fail-open
 wrapper (a raising core -> allow); event-triggered (silent when no new commits);
@@ -62,7 +63,7 @@ from tools.command_execution import CommandExecutor  # type: ignore  # noqa: E40
 _COMMANDS = CommandExecutor.for_file(__file__)
 
 from tools.hooks import _common  # noqa: E402
-from tools.hooks.waivers import is_valid_rationale, record_waiver  # noqa: E402
+from tools.hooks.waivers import commit_opt_out, record_waiver  # noqa: E402
 
 
 MARKER_NAME = "triality_gate_marker.json"
@@ -135,7 +136,8 @@ _FINDING_NET_FILE = re.compile(
 _CODE_SUFFIX = re.compile(r"\.(?:rs|py|c|h|cc|cpp|pyx|pyi|toml)$", re.IGNORECASE)
 _DOC_FILE = re.compile(r"\.(?:md|rst|txt)$", re.IGNORECASE)
 
-_SKIP_TOKEN = re.compile(r"\[(no-triality|skip-triality|skip-drift)\]", re.IGNORECASE)
+# The commit-token gate id: `[skip-triality] <rationale>`.
+WAIVER_GATE = "triality"
 
 
 # ----------------------------- pure logic (tested) -----------------------------
@@ -175,25 +177,6 @@ def touched_code(files: list[str]) -> bool:
         if _CODE_SUFFIX.search(f) and not _DOC_FILE.search(f):
             return True
     return False
-
-
-def opt_out_rationale(subjects: list[str]) -> str | None:
-    """The trailing rationale of a ``[no-triality]``/``[skip-*]`` opt-out, or None.
-
-    Window-wide (fail-SAFE: never over-nag). Honored ONLY with a real rationale
-    (>=4 non-placeholder chars after the token is removed); a bare token is
-    refused so the opt-out always carries a reason.
-    """
-    for s in (str(x or "") for x in (subjects or [])):
-        m = _SKIP_TOKEN.search(s)
-        if not m:
-            continue
-        # The rationale must FOLLOW the token (``[no-triality] <real reason>``);
-        # the surrounding subject prose does NOT count, so a bare token is refused.
-        rest = s[m.end() :].strip(" -:.\t")
-        if is_valid_rationale(rest):
-            return rest
-    return None
 
 
 def window_drift(subjects: list[str], files: list[str]) -> list[tuple[str, str]]:
@@ -252,7 +235,7 @@ def build_reason(drift: list[tuple[str, str]]) -> str:
     return (
         f"Triality drift ({legs}): a substantive commit this turn kept the "
         f"knowledge legs OUT of sync (M63 -- the campaign form of forgetting). "
-        f"{body} Deliberate exception: '[no-triality] <real reason>' in a commit "
+        f"{body} Deliberate exception: '[skip-triality] <real reason>' in a commit "
         f"subject (window-wide, logged)."
     )
 
@@ -276,13 +259,13 @@ def evaluate(data: dict, root: Path) -> str | None:
     subjects = _common.git_window_subjects(root, base)
     files = _common.git_window_files(root, base)
 
-    rationale = opt_out_rationale(subjects)
+    rationale = commit_opt_out(subjects, WAIVER_GATE)
     if rationale is not None:
         record_waiver(
             "triality_gate",
             rationale,
             source="commit-token",
-            context="[no-triality] window opt-out",
+            context="[skip-triality] window opt-out",
             root=root,
         )
         win.allow(head)  # opt-out is a deliberate window; advance past it
@@ -367,9 +350,9 @@ _SELFTEST_CASES: list[tuple[str, list[str], list[str], bool]] = [
     ),
     (
         "opt-out-with-reason-passes",
-        ["fix: silent truncation [no-triality] mechanical revert, net lands next"],
+        ["fix: silent truncation [skip-triality] mechanical revert, net lands next"],
         ["runtime/src/numbers.rs"],
-        False,  # honored via opt_out_rationale (checked separately below)
+        False,  # honored via commit_opt_out (checked separately below)
     ),
 ]
 
@@ -378,14 +361,14 @@ def _run_selftest() -> tuple[int, list[str]]:
     failures: list[str] = []
     for name, subjects, files, expect in _SELFTEST_CASES:
         if name == "opt-out-with-reason-passes":
-            ok = opt_out_rationale(subjects) is not None
+            ok = commit_opt_out(subjects, WAIVER_GATE) is not None
             got = not ok  # "drift stands" == opt-out NOT honored
         else:
             got = bool(window_drift(subjects, files))
         if got != expect:
             failures.append(f"{name}: expected drift={expect}, got drift={got}")
     # bare opt-out token (no reason) must NOT be honored
-    if opt_out_rationale(["fix: x [no-triality]"]) is not None:
+    if commit_opt_out(["fix: x [skip-triality]"], WAIVER_GATE) is not None:
         failures.append("bare-opt-out-token: honored without a rationale (must not)")
     return (1 if failures else 0), failures
 
@@ -417,7 +400,7 @@ def _window_report(root: Path, n: int) -> int:
         files = _sh(["git", "show", "--name-only", "--format=", sha]).splitlines()
         subj = [x for x in one if x.strip()]
         fl = [x.strip() for x in files if x.strip()]
-        if opt_out_rationale(subj) is not None:
+        if commit_opt_out(subj, WAIVER_GATE) is not None:
             continue
         drift = window_drift(subj, fl)
         for leg, _ in drift:

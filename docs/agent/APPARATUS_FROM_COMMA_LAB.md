@@ -414,10 +414,17 @@ loop-safe, uniform waiver grammar with mandatory rationale.
   nothing. A replay of 28,676 recorded session commands found 633 that it
   would block; it goes strict only when a replay shows zero false blocks and
   its text prefilter is a proven over-approximation of its rules (HF-423).
-- `tools/hooks/stop_gates.py` (Stop): runs the anti-recurrence advisory, the
-  A3 drift detector and the A6 verdict-scope gate; prints
-  `{"decision":"block","reason":...}` on violation. The A2 landing gate is
-  not wired (see A2).
+- `tools/hooks/stop_gates.py` (Stop): runs each `StopLeg` in `LEGS` (the
+  anti-recurrence check, the A3 drift detector and the A6 verdict-scope gate).
+  Each leg's `[[gate_flip]]`, read through `check_gate_flips.flip_state`,
+  decides: under `strict` the first reason prints
+  `{"decision":"block","reason":...}`; under `warn` it becomes a record in
+  `.molt/state/stop_gates_shadow.jsonl` and nothing reaches the session. All
+  three are `warn` (owner, 2026-10-21): they diff one session window per
+  checkout, so another author's commit re-prompted an idle session (HF-424).
+  The A2 landing gate is not wired (see A2). The wiring itself is one typed
+  declaration, `tools/hooks/wiring.py`, which generates
+  `.claude/settings.json`.
 
 **Mechanizes:** M16, M17, M18, M19, M20, M27, M67.
 **Runs:** `.claude/settings.json` starts every hook through
@@ -488,7 +495,8 @@ commit-window classifier —
 - a finding-class commit (`landed|falsified|root.cause|discovered`) must touch
   a memory topic file, a docs/agent ledger, or the A4 findings registry — the
   lesson is recorded where the next session reads it.
-Escape valve `[no-triality]` + rationale; window-wide; logged.
+Escape valve `[skip-triality] <rationale>` through the one waiver grammar
+(`tools/hooks/waivers.py`, `commit_opt_out`); window-wide; logged.
 **Mechanizes:** M63, M05, M10, M16. **Composes with:** every existing gate
 (they become the "equations" leg the detector points commits at).
 

@@ -72,10 +72,12 @@ def test_stop_hook_never_runs_the_memory_writer(tmp_path, monkeypatch, capsys):
         session_learning.memory_graph, "discover_memory_dir", lambda **_: memory_dir
     )
 
-    def refuse(*_args, **_kwargs):
-        raise AssertionError("a Stop reached the session-learning writer")
-
-    monkeypatch.setattr(session_learning, "record", refuse)
+    # Record, never raise: stop_gates catches a leg's exception, so a raising
+    # stub would be swallowed and could not fail this test.
+    calls = []
+    monkeypatch.setattr(
+        session_learning, "record", lambda *args, **kwargs: calls.append(args)
+    )
     monkeypatch.setattr(
         stop_gates._common,
         "read_hook_input",
@@ -87,6 +89,7 @@ def test_stop_hook_never_runs_the_memory_writer(tmp_path, monkeypatch, capsys):
     )
     monkeypatch.setattr(stop_gates._common, "repo_root", lambda cwd=None: tmp_path)
     assert stop_gates.run() == 0
+    assert calls == []
     assert capsys.readouterr().out == ""
     assert list(memory_dir.iterdir()) == []
 

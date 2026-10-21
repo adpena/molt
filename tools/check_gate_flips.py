@@ -31,12 +31,45 @@ import re
 import subprocess
 import sys
 import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal, get_args
 
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = ROOT / "tools" / "proof_plan.toml"
+
+FlipState = Literal["warn", "strict"]
+FLIP_STATES: tuple[FlipState, ...] = get_args(FlipState)
+
+
+def entry_state(entry: Mapping[str, object]) -> FlipState:
+    """The state one ``[[gate_flip]]`` entry declares: the one parser.
+
+    An entry without ``state`` is ``warn``; any other spelling is refused, so
+    a typo never silently enforces or silently relaxes a gate.
+    """
+    state = entry.get("state", "warn")
+    if state not in FLIP_STATES:
+        raise ValueError(
+            f"gate_flip {entry.get('name', '?')!r}: state {state!r} is not one of "
+            f"{', '.join(FLIP_STATES)}"
+        )
+    return state  # type: ignore[return-value]
+
+
+def flip_state(name: str, *, config: Path = DEFAULT_CONFIG) -> FlipState | None:
+    """Gate *name*'s declared state, or None when it has no ``[[gate_flip]]``.
+
+    Every enforcement decision reads this; each caller states what a gate
+    with no entry means for it.
+    """
+    for entry in load_flip_entries(config):
+        if entry.get("name") == name:
+            return entry_state(entry)
+    return None
+
 
 _COND_RE = re.compile(r"^live_count\s*(==|<=|<|>=|>)\s*(\d+)$")
 
@@ -143,7 +176,7 @@ def _run_count_detector(detector_id: str, cwd: Path) -> int | None:
 def evaluate_flip(entry: dict, *, live_count: int | None = None) -> FlipVerdict:
     """Pure: classify one ``[[gate_flip]]`` entry given an optional live count."""
     name = str(entry.get("name", "?"))
-    state = str(entry.get("state", "warn")).lower()
+    state = entry_state(entry)
     strict_when = str(entry.get("strict_when", ""))
     if state == "strict":
         return FlipVerdict(name, state, strict_when, "ok-strict")
