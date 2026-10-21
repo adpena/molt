@@ -8207,6 +8207,7 @@ def test_run_guarded_scratch_cleanup_failure_preserves_primary_result(
             self.release_calls += 1
 
     lease = FakeLease()
+    lease.target.mkdir()
     lease.generation.mkdir()
     finish_error_receipt = lease.generation / "finish-error.json"
     finish_error_receipt.write_text("{}", encoding="utf-8")
@@ -8302,6 +8303,7 @@ def test_run_guarded_retention_sweep_health_preserves_primary_result(
             self.release_calls += 1
 
     lease = FakeLease()
+    lease.target.mkdir()
     monkeypatch.setattr(
         memory_guard._temporary_artifacts,
         "acquire_guard_scratch",
@@ -8420,6 +8422,7 @@ def test_run_guarded_exception_releases_lease_and_updates_marker(
             self.release_calls += 1
 
     lease = FakeLease()
+    lease.target.mkdir()
     finish_calls: list[dict[str, object]] = []
     monkeypatch.setattr(
         memory_guard._temporary_artifacts,

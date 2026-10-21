@@ -73,6 +73,7 @@ def test_scan_mode_projects_explicit_source_depth(
     ) == ("full" if full_scan else "module_init")
 
 
+@pytest.mark.usefixtures("isolated_molt_cache")
 @pytest.mark.parametrize("first_full", [False, True])
 def test_graph_cache_keeps_initialization_and_full_roots_disjoint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, first_full: bool
@@ -345,6 +346,7 @@ def test_import_call_result_selects_members_like_an_import_alias(
     assert set(result.graph) == expected
 
 
+@pytest.mark.usefixtures("isolated_molt_cache")
 @pytest.mark.parametrize(
     ("hook", "entry_source", "expected"),
     [
@@ -548,6 +550,7 @@ def test_public_stdlib_deferred_demand_graph(
     )
 
 
+@pytest.mark.usefixtures("isolated_molt_cache")
 @pytest.mark.parametrize(
     ("hook", "use", "required", "excluded"),
     [
@@ -992,6 +995,7 @@ def test_generator_source_demand_is_resumed_not_its_creation(tmp_path, consume):
     assert any(key[-1] == "GeneratorExp" for key, _args in owners) is consume
 
 
+@pytest.mark.usefixtures("isolated_molt_cache")
 @pytest.mark.parametrize("write_kind", ["named", "computed", "canonical-member"])
 def test_namespace_writer_delta_reprojects_only_affected_reached_contexts(
     tmp_path, monkeypatch, write_kind
@@ -1445,6 +1449,7 @@ def test_matching_precomputed_scan_cannot_override_explicit_source(
     assert set(loaded.scan.imports) == {"supplied"}
 
 
+@pytest.mark.usefixtures("isolated_molt_cache")
 @pytest.mark.parametrize(
     "activation",
     ["unused", "called", "decorated", "unstarted-generator", "resumed-generator"],
@@ -1564,6 +1569,7 @@ def test_foreign_namespace_writes_require_actual_source_body_custody(
             assert "unused_leaf" not in result.graph
 
 
+@pytest.mark.usefixtures("isolated_molt_cache")
 @pytest.mark.parametrize(
     ("invoke", "subclass"), [(False, False), (True, False), (True, True)]
 )
@@ -1621,6 +1627,7 @@ def test_star_custom_method_keeps_its_actual_hook_writer_provenance(
         assert bool(premise.member_writes & PythonMember.IMPORT_HOOKS) is invoke
 
 
+@pytest.mark.usefixtures("isolated_molt_cache")
 @pytest.mark.parametrize(
     ("expression", "method"),
     [
@@ -1701,6 +1708,7 @@ def test_disjoint_import_cache_key_keeps_actual_format_callback_custody(
         assert ("late_leaf" in result.graph) is (method is not None)
 
 
+@pytest.mark.usefixtures("isolated_molt_cache")
 @pytest.mark.parametrize("publication", ["local", "imported", "global_fallback"])
 def test_class_mapping_call_keeps_source_candidates_without_module_universe(
     tmp_path, monkeypatch, publication
@@ -1764,6 +1772,7 @@ def test_class_mapping_call_keeps_source_candidates_without_module_universe(
             assert "unused_leaf" not in result.graph
 
 
+@pytest.mark.usefixtures("isolated_molt_cache")
 @pytest.mark.parametrize(
     "read",
     [
@@ -1821,6 +1830,7 @@ def test_current_namespace_read_keeps_imported_callable_source(
         assert "namespace_callback_leaf" in result.graph
 
 
+@pytest.mark.usefixtures("isolated_molt_cache")
 @pytest.mark.parametrize("publication", ["container", "local", "parameter", "starred"])
 def test_named_source_writer_keeps_only_published_callable_availability(
     tmp_path, monkeypatch, publication
@@ -1896,6 +1906,7 @@ def test_named_source_writer_keeps_only_published_callable_availability(
         assert ("chosen_leaf" in result.graph) is (publication != "container")
 
 
+@pytest.mark.usefixtures("isolated_molt_cache")
 def test_starred_class_base_keeps_actual_subclass_hook_source(tmp_path, monkeypatch):
     import json
     import sys
@@ -1944,6 +1955,7 @@ def test_starred_class_base_keeps_actual_subclass_hook_source(tmp_path, monkeypa
         assert "unrelated_leaf" not in result.graph
 
 
+@pytest.mark.usefixtures("isolated_molt_cache")
 @pytest.mark.parametrize("warm", [False, True])
 def test_late_closure_writer_updates_prior_source_without_rescanning_siblings(
     tmp_path, monkeypatch, warm
