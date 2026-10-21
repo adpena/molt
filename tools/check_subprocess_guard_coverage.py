@@ -240,6 +240,14 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "unreaped (a zombie); never sends a signal",
     ),
     AllowedRawSubprocessUse(
+        "tests/test_molt_dev.py",
+        "test_land_wait_fails_when_its_runner_supervisor_dies_without_rc",
+        "os.kill",
+        "kills the one detached supervisor this test started, then probes that "
+        "it stays listed unreaped",
+        expected_count=2,
+    ),
+    AllowedRawSubprocessUse(
         "tests/test_child_clock_custody.py",
         "test_actual_posix_owned_signal_keeps_child_reserved_until_reap",
         "Popen",

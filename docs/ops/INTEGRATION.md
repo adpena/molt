@@ -290,6 +290,13 @@ it works, it drops inherited `MOLT_VENV`, `UV_PROJECT_ENVIRONMENT` and
 older than 30 days and finished runner logs beyond the newest 20 retire when a
 runner starts.
 
+`land --wait` polls for the request's result. It fails, naming the runner's
+log, when the runner lock is free, the request is still queued and the newest
+runner has finished: its supervisor wrote `rc`, or the process its `pid` file
+names is no longer alive (`molt.process_model.pid_alive`; a supervisor that
+died before it wrote `rc` stays an unreaped zombie of `land`, which counts as
+dead).
+
 ### The detached-run protocol (hazard 11)
 
 ```bash

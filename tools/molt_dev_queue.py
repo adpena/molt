@@ -31,6 +31,7 @@ from pathlib import Path
 
 from tools.molt_dev_controller import integration_controller, run_from_pinned_controller
 from tools.molt_dev_detached import python_command
+from molt import process_model
 from tools.molt_dev_common import (
     EXIT_FAIL,
     EXIT_OK,
@@ -451,9 +452,11 @@ def _start_queue_runner(paths, repo: Path, args: argparse.Namespace) -> None:
 def _runner_exited_without(paths: QueuePaths, request_id: str) -> Path | None:
     """The finished runner's state dir when no runner can still land the request.
 
-    A runner holds its lock while it works and writes its exit status last
-    (the detached-run protocol), so a free lock, a finished newest runner and a
-    still-queued request mean nothing will land it.
+    A runner holds its lock while it works and its supervisor writes the exit
+    status last (the detached-run protocol), so a free lock, a finished newest
+    runner and a still-queued request mean nothing will land it. A supervisor
+    that died before it wrote ``rc`` (killed, or dead at startup) finished
+    too: the process its ``pid`` file names is no longer alive.
     """
     drv = _driver()
     if not (paths.requests / f"{request_id}.json").is_file():
@@ -463,19 +466,42 @@ def _runner_exited_without(paths: QueuePaths, request_id: str) -> Path | None:
         return None
     drv._release_file_lock(probe)
     runners = sorted(paths.runners.iterdir()) if paths.runners.is_dir() else []
-    if not runners or not (runners[-1] / "rc").is_file():
+    if not runners:
+        return None
+    newest = runners[-1]
+    if not ((newest / "rc").is_file() or _supervisor_died(newest)):
         return None
     if read_result(paths, request_id) is not None:
         return None
-    return runners[-1]
+    return newest
+
+
+def _supervisor_died(state: Path) -> bool:
+    """True when the runner's supervisor is gone, whether or not it wrote ``rc``.
+
+    The launcher publishes ``pid`` once the supervisor runs; before that the
+    runner is still starting. The supervisor is the launching ``land``
+    process's child, so after it dies it stays an unreaped zombie of the
+    process that waits here: the probe counts a zombie dead and never reaps.
+    """
+    try:
+        pid = int((state / "pid").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return not process_model.pid_alive(pid)
 
 
 def _await_landing(paths, request_id: str) -> int:
     while (result := read_result(paths, request_id)) is None:
         exited = _runner_exited_without(paths, request_id)
         if exited is not None:
+            how = (
+                "exited"
+                if (exited / "rc").is_file()
+                else "died before it wrote an exit status"
+            )
             _fail(
-                f"{request_id} is still queued, but its runner exited "
+                f"{request_id} is still queued, but its runner {how} "
                 f"(see {exited / 'run.log'}); `molt_dev.py queue run` restarts it"
             )
             return EXIT_FAIL

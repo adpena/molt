@@ -40,6 +40,7 @@ Hazard -> proving test(s):
                                 test_detached_verify_too_young_is_not_trusted
                                 test_detached_run_missing_command_is_usage_error
                                 test_detached_run_exec_failure_records_sentinel_rc
+                                test_land_wait_fails_when_its_runner_supervisor_dies_without_rc
 """
 
 from __future__ import annotations
@@ -3002,6 +3003,62 @@ def test_land_wait_fails_when_its_runner_exits_without_landing(tmp_path, monkeyp
 
     assert queue._await_landing(paths, request.id) == molt_dev.EXIT_FAIL
     assert queue._runner_exited_without(paths, request.id) == runner
+
+
+# The command outlives no supervisor: it exits once its parent is gone.
+_ORPHAN_EXITING_SLEEPER = (
+    "import os, time\n"
+    "parent = os.getppid()\n"
+    "while os.getppid() == parent:\n"
+    "    time.sleep(0.05)\n"
+)
+
+
+@pytest.mark.skipif(
+    os.name != "posix", reason="an unreaped child (a zombie) is a POSIX state"
+)
+def test_land_wait_fails_when_its_runner_supervisor_dies_without_rc(
+    tmp_path, monkeypatch
+):
+    import signal
+
+    from tools import molt_dev_queue as queue
+    from tests.process_guard_common import install_module_view
+
+    paths = queue.QueuePaths(tmp_path / "landing-queue")
+    request = queue.enqueue(paths, head="1" * 40, worktree=tmp_path, branch=None)
+    # A real detached supervisor, started by this process as `land` starts it.
+    molt_dev.cmd_detached_run(
+        _dr_ns(
+            molt_dev,
+            "runner-1",
+            paths.runners,
+            [sys.executable, "-c", _ORPHAN_EXITING_SLEEPER],
+        )
+    )
+    runner = paths.runners / "runner-1"
+    supervisor = int((runner / "pid").read_text(encoding="utf-8"))
+    # A live supervisor without rc may still land the request: keep waiting.
+    assert queue._runner_exited_without(paths, request.id) is None
+
+    # Dead before it wrote rc. It stays this process's unreaped child, as the
+    # supervisor stays `land`'s, so `kill(pid, 0)` still finds it.
+    os.kill(supervisor, signal.SIGKILL)
+    deadline = time.monotonic() + 30
+
+    def bounded_sleep(seconds: float) -> None:
+        assert time.monotonic() < deadline, "land --wait waits on a dead runner"
+        time.sleep(seconds)
+
+    install_module_view(monkeypatch, "time", time, queue, sleep=bounded_sleep)
+    monkeypatch.setattr(queue, "_AWAIT_POLL_S", 0.01)
+
+    assert queue._await_landing(paths, request.id) == molt_dev.EXIT_FAIL
+    assert not (runner / "rc").exists()
+    assert queue._runner_exited_without(paths, request.id) == runner
+    # The kernel still lists the supervisor: the wait saw a zombie, unreaped.
+    os.kill(supervisor, 0)
+    os.waitpid(supervisor, 0)
 
 
 def test_queue_plan_survives_between_runners_and_drops_closed_requests(tmp_path):
