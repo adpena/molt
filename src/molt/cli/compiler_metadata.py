@@ -255,20 +255,12 @@ def _rust_toolchain_channel(toolchain_file: Path) -> str | None:
     return channel if isinstance(channel, str) and channel else None
 
 
-def _rustup_home() -> Path | None:
-    raw = os.environ.get("RUSTUP_HOME")
-    if raw:
-        return Path(raw).expanduser()
-    try:
-        return Path.home() / ".rustup"
-    except RuntimeError:
-        return None
-
-
 def _rustup_toolchain_rustc_identities(channel: str | None) -> list[dict[str, Any]]:
     if not channel:
         return []
-    home = _rustup_home()
+    from molt.rust_toolchain import rustup_home
+
+    home = rustup_home(os.environ, _compiler_root())
     if home is None:
         return []
     toolchains = home / "toolchains"
