@@ -5363,7 +5363,12 @@ def test_rustup_role_content_resolution_tracks_physical_component_before_reuse(
     if retarget:
         alias.symlink_to(first)
     selected = [alias if retarget else first]
-    environment = {"PATH": str(proxy_dir), "RUSTUP_TOOLCHAIN": "selected-by-override"}
+    rustup_home = tmp_path / "rustup-home"
+    environment = {
+        "PATH": str(proxy_dir),
+        "RUSTUP_TOOLCHAIN": "selected-by-override",
+        "RUSTUP_HOME": str(rustup_home),
+    }
     resolutions, versions = [], []
 
     def resolve(argv, **kwargs):
@@ -5427,11 +5432,18 @@ def test_rustup_role_content_resolution_tracks_physical_component_before_reuse(
     warm, hit = capture()
     assert len(phases) == cold_phases
     assert initial == warm and hit[0]["state"] == "hit"
-    assert len(resolutions) == 2 and len(versions) == 1
+    # The warm capture re-resolves the component through the toolchain facts:
+    # one rustup process answered both captures (HF-357).
+    assert len(resolutions) == 1 and len(versions) == 1
     if retarget:
         alias.unlink()
         alias.symlink_to(replacement)
     else:
+        # The override toolchain gains its own component. Its bin listing is
+        # a selection input, so rustup is asked again and answers anew.
+        component_bin = rustup_home / "toolchains" / "selected-by-override" / "bin"
+        component_bin.mkdir(parents=True)
+        (component_bin / (role + suffix)).write_bytes(b"installed component")
         selected[0] = replacement
     changed, changed_telemetry = capture()
     assert changed_telemetry[0]["state"] == "miss"
@@ -5439,7 +5451,9 @@ def test_rustup_role_content_resolution_tracks_physical_component_before_reuse(
     assert changed["launcher_sha256"] == initial["launcher_sha256"]
     assert changed["content_path"] == str(replacement)
     assert changed["executable_sha256"] != initial["executable_sha256"]
-    assert len(resolutions) == 3 and len(versions) == 2
+    # A retargeted alias keeps its selection; a new component is reselected.
+    expected_resolutions = 1 if retarget else 2
+    assert len(resolutions) == expected_resolutions and len(versions) == 2
     for _ in range(2):
         assert (
             rust_toolchain.resolve_rustup_proxy(
@@ -5447,7 +5461,7 @@ def test_rustup_role_content_resolution_tracks_physical_component_before_reuse(
             )
             == replacement
         )
-    assert len(resolutions) == 3
+    assert len(resolutions) == expected_resolutions
 
 
 def test_unavailable_executable_and_input_hashes_are_never_evidence(
