@@ -3046,7 +3046,11 @@ def compiler_tool_path(
     elif selector == "llvm-sdk":
         from molt.llvm_toolchain import discover_llvm_toolchain
 
-        discovery = discover_llvm_toolchain(ROOT, environ=dict(environment), cwd=cwd)
+        # The policy's checkout pins the SDK, not the driver running admission
+        # (under the landing controller they differ).
+        discovery = discover_llvm_toolchain(
+            policy.root, environ=dict(environment), cwd=cwd
+        )
         selected = discovery.llvm_config if discovery is not None else None
     elif selector == "wasm-opt":
         from molt.wasm_optimizer_identity import find_wasm_opt
