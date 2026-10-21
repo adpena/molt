@@ -417,26 +417,45 @@ def test_admission_provisions_only_selected_checkout_inputs(
     from tools import proof_plan
 
     spec = _tree(checkout)
-    monkeypatch.setattr(cp, "checkout_input", lambda name, *_args, **_kwargs: spec)
+    seen_environments = []
+
+    def selected_input(name, _checkout, environ=None, **_kwargs):
+        seen_environments.append(environ)
+        return spec
+
+    monkeypatch.setattr(cp, "checkout_input", selected_input)
+    marked = {**os.environ, "MOLT_ADMISSION_MARK": "selected"}
     data = {"toolchain_policy": [_acorn_policy()]}
     policies = proof_plan.load_toolchain_policies(data, root=checkout)
     (policy,) = policies
     assert policy.data["setup_command"] == cp.provisioning_command("browser-acorn")
 
-    assert proof_plan._provision_checkout_inputs(policies, (), root=checkout) is None
+    assert (
+        proof_plan._provision_checkout_inputs(
+            policies, (), root=checkout, environment=os.environ
+        )
+        is None
+    )
     assert _runs(checkout) == [], "an unselected input is not provisioned"
     assert (
-        proof_plan._provision_checkout_inputs(policies, ("acorn-tree",), root=checkout)
+        proof_plan._provision_checkout_inputs(
+            policies, ("acorn-tree",), root=checkout, environment=marked
+        )
         is None
     )
     assert cp.input_state(spec) == "current"
+    # Provisioning ran under the environment admission handed it.
+    assert seen_environments
+    assert all(env["MOLT_ADMISSION_MARK"] == "selected" for env in seen_environments)
 
     (checkout / "fixture.lock").write_text("fail\n", encoding="utf-8")
     monkeypatch.setattr(proof_plan, "toolchain_fingerprints", lambda *_a, **_k: {})
     with pytest.raises(
         ValueError, match="checkout input provisioning failed"
     ) as raised:
-        proof_plan.admit_toolchains(policies, ("acorn-tree",), root=checkout)
+        proof_plan.admit_toolchains(
+            policies, ("acorn-tree",), root=checkout, environ=os.environ
+        )
     assert "provision.py" in str(raised.value)
 
 
