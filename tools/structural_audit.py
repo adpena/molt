@@ -61,6 +61,9 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 
 ROOT_DEFAULT = bind_repository_imports(__file__)
 
+# The projection pool's worker context loads here, before scan records open:
+# a first-party import during the run would refuse their publication.
+from molt import compiler_process, host_capacity  # noqa: E402,F401
 from molt.rust_source_scan import (  # noqa: E402
     mask_rust_comments_and_strings,
     mask_rust_test_items,
@@ -71,6 +74,12 @@ from molt.rust_source_scan import (  # noqa: E402
 )
 from tools import release_criterion_receipt as release_receipt  # noqa: E402
 from tools import compatibility_error_protocol as compatibility_errors  # noqa: E402
+from tools.scan_records import (  # noqa: E402
+    ScanRecords,
+    decoded_text,
+    open_scan_records,
+    scan_result,
+)
 from tools.structural_audit_rust_admission import (  # noqa: E402
     RUST_CHECKED_ADMISSION_PREFIX,
     proven_admitted_wire_domain,
@@ -200,6 +209,7 @@ class _AuditOperation:
     root: Path
     path_scope: frozenset[str] | None
     cache: dict[tuple[object, ...], object] = dataclass_field(default_factory=dict)
+    records: ScanRecords | None = None
 
 
 _AUDIT_STATE = local()
@@ -207,7 +217,9 @@ _AUDIT_STATE = local()
 
 @contextmanager
 def audit_operation(
-    root: Path, path_scope: frozenset[str] | None = None
+    root: Path,
+    path_scope: frozenset[str] | None = None,
+    records: ScanRecords | None = None,
 ) -> Iterator[None]:
     """Own one synchronous filesystem view and lexical memo in this thread.
 
@@ -216,7 +228,9 @@ def audit_operation(
     content-keyed lexical results may be shared with that outer operation.
     """
     previous = getattr(_AUDIT_STATE, "operation", None)
-    _AUDIT_STATE.operation = _AuditOperation(root.resolve(), path_scope)
+    _AUDIT_STATE.operation = _AuditOperation(
+        root.resolve(), path_scope, records=records
+    )
     try:
         with scan_memo():
             yield
@@ -260,11 +274,57 @@ def _resolved(path: Path) -> Path:
     return _run_cached(("resolved", path), path.resolve)
 
 
+def _source_bytes(path: Path) -> bytes:
+    """The file's bytes, read once per run_all pass."""
+    return _run_cached(("bytes", path), path.read_bytes)
+
+
 def _source_text(path: Path) -> str:
-    """The file's text, read once per run_all pass."""
+    """The file's text, decoded once per run_all pass from its bytes."""
     return _run_cached(
-        ("text", path), lambda: path.read_text(errors="replace", encoding="utf-8")
+        ("text", path),
+        lambda: decoded_text(_source_bytes(path), encoding="utf-8", errors="replace"),
     )
+
+
+def _file_result(
+    kind: str,
+    path: Path,
+    compute: Callable[[], _T],
+    *,
+    encode: Callable[[_T], object],
+    decode: Callable[[object], _T],
+    identity: str = "",
+) -> _T:
+    """One pure per-file probe result, replayed from scan records when the
+    command opened them. ``compute`` reads only this file's text and the
+    ``identity`` facts it names."""
+    operation = getattr(_AUDIT_STATE, "operation", None)
+    return scan_result(
+        None if operation is None else operation.records,
+        f"{kind}\0{identity}",
+        _source_bytes(path),
+        compute,
+        encode=encode,
+        decode=decode,
+    )
+
+
+def _encode_hits(hits: list) -> list[list[object]]:
+    return [[hit.line, hit.marker] for hit in hits]
+
+
+def _inventory_value(hits: list) -> list[list[object]]:
+    return [[hit.line, hit.outcome, hit.proved, hit.detail] for hit in hits]
+
+
+def _inventory(value: object) -> list:
+    return [
+        compatibility_errors.InventoryHit(
+            int(line), str(outcome), bool(proved), str(detail)
+        )
+        for line, outcome, proved, detail in value
+    ]
 
 
 def _walk_pruned_files(base: Path, root: Path, suffixes: tuple[str, ...]) -> list[Path]:
@@ -1179,7 +1239,15 @@ def probe_debt_markers(root: Path) -> list[Finding]:
             text = _source_text(path)
         except OSError:
             continue
-        hits = _debt_marker_hits(path, text)
+        # The hits depend on the path's suffix and stdlib membership.
+        hits = _file_result(
+            "debt-markers",
+            path,
+            lambda: _debt_marker_hits(path, text),
+            identity=path.as_posix(),
+            encode=_encode_hits,
+            decode=lambda value: [DebtMarkerHit(int(a), str(b)) for a, b in value],
+        )
         count = len(hits)
         if count == 0:
             continue
@@ -1398,7 +1466,16 @@ def probe_python_stub_surfaces(root: Path) -> list[Finding]:
         inventory = (
             projection
             if projection is not None
-            else compatibility_errors.python_inventory(text, compatibility_proved)
+            else _file_result(
+                "python-compatibility-inventory",
+                path,
+                lambda: compatibility_errors.python_inventory(
+                    text, compatibility_proved
+                ),
+                identity=str(compatibility_proved),
+                encode=_inventory_value,
+                decode=_inventory,
+            )
         )
         findings.extend(_compatibility_findings(path, root, inventory))
         # Exact canonical emitters are classified, never skipped by a generated
@@ -1406,7 +1483,15 @@ def probe_python_stub_surfaces(root: Path) -> list[Finding]:
         hits = (
             []
             if projection is not None and compatibility_proved
-            else _python_stub_surface_hits(path, text)
+            else _file_result(
+                "python-stub-surfaces",
+                path,
+                lambda: _python_stub_surface_hits(path, text),
+                encode=_encode_hits,
+                decode=lambda value: [
+                    ImplementationGapHit(int(a), str(b)) for a, b in value
+                ],
+            )
         )
         hits.extend(
             ImplementationGapHit(hit.line, "unproved compatibility: " + hit.outcome)
@@ -1547,10 +1632,17 @@ def probe_rust_stub_surfaces(root: Path) -> list[Finding]:
         inventory = (
             projection
             if projection is not None
-            else compatibility_errors.rust_inventory(
-                text,
-                mask_rust_comments_and_strings(mask_rust_test_items(text)),
-                compatibility_proved,
+            else _file_result(
+                "rust-compatibility-inventory",
+                path,
+                lambda: compatibility_errors.rust_inventory(
+                    text,
+                    mask_rust_comments_and_strings(mask_rust_test_items(text)),
+                    compatibility_proved,
+                ),
+                identity=str(compatibility_proved),
+                encode=_inventory_value,
+                decode=_inventory,
             )
         )
         findings.extend(_compatibility_findings(path, root, inventory))
@@ -1559,7 +1651,15 @@ def probe_rust_stub_surfaces(root: Path) -> list[Finding]:
         hits = (
             []
             if projection is not None and compatibility_proved
-            else _rust_stub_surface_hits(text)
+            else _file_result(
+                "rust-stub-surfaces",
+                path,
+                lambda: _rust_stub_surface_hits(text),
+                encode=_encode_hits,
+                decode=lambda value: [
+                    ImplementationGapHit(int(a), str(b)) for a, b in value
+                ],
+            )
         )
         hits.extend(
             ImplementationGapHit(hit.line, "unproved compatibility: " + hit.outcome)
@@ -2747,6 +2847,16 @@ def _iter_test_files(root: Path) -> list[Path]:
     )
 
 
+def _process_wide_patch_lines_of(text: str) -> list[int]:
+    if not _PROCESS_WIDE_PATCH_PREFILTER.search(text):
+        return []
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return []
+    return _process_wide_patch_lines(tree)
+
+
 @_audit_probe
 def probe_process_wide_test_patches(root: Path) -> list[Finding]:
     """Tests that fake a shared stdlib attribute for the whole process.
@@ -2762,13 +2872,13 @@ def probe_process_wide_test_patches(root: Path) -> list[Finding]:
             text = _source_text(path)
         except OSError:
             continue
-        if not _PROCESS_WIDE_PATCH_PREFILTER.search(text):
-            continue
-        try:
-            tree = ast.parse(text)
-        except SyntaxError:
-            continue
-        lines = _process_wide_patch_lines(tree)
+        lines = _file_result(
+            "process-wide-test-patches",
+            path,
+            lambda: _process_wide_patch_lines_of(text),
+            encode=list,
+            decode=lambda value: [int(line) for line in value],
+        )
         if not lines:
             continue
         rel = path.relative_to(root).as_posix()
@@ -2830,6 +2940,16 @@ def _build_failure_skip_lines(tree: ast.AST) -> list[int]:
     return sorted(lines)
 
 
+def _build_failure_skip_lines_of(text: str) -> list[int]:
+    if not _BUILD_SKIP_PREFILTER.search(text):
+        return []
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return []
+    return _build_failure_skip_lines(tree)
+
+
 @_audit_probe
 def probe_build_failure_test_skips(root: Path) -> list[Finding]:
     """Tests that turn a failed build into a skip.
@@ -2844,13 +2964,13 @@ def probe_build_failure_test_skips(root: Path) -> list[Finding]:
             text = _source_text(path)
         except OSError:
             continue
-        if not _BUILD_SKIP_PREFILTER.search(text):
-            continue
-        try:
-            tree = ast.parse(text)
-        except SyntaxError:
-            continue
-        lines = _build_failure_skip_lines(tree)
+        lines = _file_result(
+            "build-failure-test-skips",
+            path,
+            lambda: _build_failure_skip_lines_of(text),
+            encode=list,
+            decode=lambda value: [int(line) for line in value],
+        )
         if not lines:
             continue
         rel = path.relative_to(root).as_posix()
@@ -3201,6 +3321,25 @@ def _rust_scratch_authority_sites(text: str) -> list[tuple[int, str, str]]:
     return sites
 
 
+def _scratch_authority_sites_of(
+    text: str, *, rust: bool, test_module: bool
+) -> list[tuple[int, str, str]]:
+    """One file's scratch-authority sites; a pure function of its text."""
+    if (
+        _ARTIFACT_ROOT_ENV not in text
+        and _ARTIFACT_ROOT_CONSTANT not in text
+        and ("tmp" not in text or not rust and _PY_TMP_LITERAL_RE.search(text) is None)
+    ):
+        return []
+    if rust:
+        return _rust_scratch_authority_sites(text)
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return []
+    return _scratch_authority_sites(tree, test_module=test_module)
+
+
 def _iter_scratch_authority_files(root: Path) -> list[Path]:
     scope = _source_scope(root)
     if scope is not None:
@@ -3254,25 +3393,20 @@ def probe_scratch_authority_bypasses(root: Path) -> list[Finding]:
             text = _source_text(path)
         except OSError:
             continue
-        if (
-            _ARTIFACT_ROOT_ENV not in text
-            and _ARTIFACT_ROOT_CONSTANT not in text
-            and (
-                "tmp" not in text
-                or path.suffix != ".rs"
-                and _PY_TMP_LITERAL_RE.search(text) is None
-            )
-        ):
-            continue
-        if path.suffix == ".rs":
-            found = _rust_scratch_authority_sites(text)
-        else:
-            try:
-                tree = ast.parse(text)
-            except SyntaxError:
-                continue
-            test_module = rel.startswith("tests/") and path.name.startswith("test_")
-            found = _scratch_authority_sites(tree, test_module=test_module)
+        test_module = rel.startswith("tests/") and path.name.startswith("test_")
+        rust = path.suffix == ".rs"
+        found = _file_result(
+            "scratch-authority-sites",
+            path,
+            lambda: _scratch_authority_sites_of(
+                text, rust=rust, test_module=test_module
+            ),
+            identity=f"{rust}:{test_module}",
+            encode=lambda sites: [list(site) for site in sites],
+            decode=lambda value: [
+                (int(line), str(kind), str(base)) for line, kind, base in value
+            ],
+        )
         sites = []
         for line, kind, base in found:
             key = (rel, base)
@@ -3350,8 +3484,6 @@ def _prewarm_rust_projections(root: Path) -> None:
     The probes project every Rust file under the source roots (test ownership
     ignores a --path selection), so the whole set is warmed once.
     """
-    from molt import host_capacity
-
     paths = [
         path
         for sub in _SOURCE_ROOTS
@@ -3371,9 +3503,13 @@ def _prewarm_rust_projections(root: Path) -> None:
         )
 
 
-def run_all(root: Path, path_scope: frozenset[str] | None = None) -> list[Finding]:
+def run_all(
+    root: Path,
+    path_scope: frozenset[str] | None = None,
+    records: ScanRecords | None = None,
+) -> list[Finding]:
     findings: list[Finding] = []
-    with audit_operation(root, path_scope):
+    with audit_operation(root, path_scope, records):
         _prewarm_rust_projections(root)
         for probe in PROBES:
             findings.extend(probe(root))
@@ -3733,7 +3869,7 @@ def format_path_scope_report(
     return "\n".join(lines)
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, scan_records: bool = False) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -3807,7 +3943,13 @@ def main(argv: list[str] | None = None) -> int:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 2
 
-    findings = run_all(root, path_scope=path_scope)
+    # A release receipt attests one fresh computation; it replays nothing.
+    with open_scan_records(
+        "structural_audit",
+        owner=__file__,
+        enabled=scan_records and receipt_destination is None,
+    ) as records:
+        findings = run_all(root, path_scope=path_scope, records=records)
     metrics = ratchet_metrics(findings)
     baseline_path = root / BASELINE_PATH_REL
 
@@ -3959,4 +4101,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(scan_records=True))

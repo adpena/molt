@@ -10,11 +10,14 @@ changed file, identity or code misses. This is the per-file cache of ruff and
 the content-keyed action cache of Go and Bazel, applied to Molt's own gates.
 
 The code generation digests the interpreter identity, the scanner's own source
-file and the source bytes of every loaded first-party module (``tools``,
-``molt``, ``sitecustomize`` and ``__main__``). The scanner names its own file
-because a wrapper such as ``cProfile`` or ``runpy`` may run it outside
-``sys.modules``. Publication recomputes the generation: a module that was
-imported or edited during the run changes it, and the run publishes nothing. An
+file and the source bytes of every first-party module (``tools``, ``molt``,
+``sitecustomize`` and ``__main__``) loaded when records open. The scanner names
+its own file because a wrapper such as ``cProfile`` or ``runpy`` may run it
+outside ``sys.modules``. Publication recomputes that digest: an edit during the
+run publishes nothing. A first-party module imported later is recorded by its
+checkout-relative path and content digest, and a replaying run verifies the
+same content in its own checkout before it replays anything; a late module
+outside the checkout refuses publication. An
 unreadable, corrupt or foreign record file is a miss. A failed publication
 never changes the gate's result.
 
@@ -75,8 +78,8 @@ def _wall_clock() -> int:
     return int(time.time())
 
 
-def _first_party_sources(owner: Path) -> list[tuple[str, Path]]:
-    sources: list[tuple[str, Path]] = [("", owner)]
+def _first_party_modules() -> dict[str, Path]:
+    modules: dict[str, Path] = {}
     for name, module in list(sys.modules.items()):
         if (
             name not in _FIRST_PARTY_MODULES
@@ -85,15 +88,34 @@ def _first_party_sources(owner: Path) -> list[tuple[str, Path]]:
             continue
         source = getattr(module, "__file__", None)
         if isinstance(source, str):
-            sources.append((name, Path(source)))
-    return sorted(sources)
+            modules[name] = Path(source)
+    return modules
 
 
-def code_generation(scanner: str, owner: Path) -> str | None:
-    """Digest the interpreter, the scanner file and loaded first-party sources.
+def _repository_root(owner: Path) -> Path | None:
+    """The checkout that holds a ``tools/`` scanner, which late modules share."""
+    for parent in owner.parents:
+        if parent.name == "tools":
+            return parent.parent
+    return None
 
-    None means the code cannot be identified, so nothing may be replayed.
+
+def _file_digest(path: Path) -> str | None:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def code_generation(
+    scanner: str, owner: Path, modules: dict[str, Path] | None = None
+) -> str | None:
+    """Digest the interpreter, the scanner file and first-party module sources.
+
+    ``modules`` defaults to every loaded first-party module. None means the
+    code cannot be identified, so nothing may be replayed.
     """
+    loaded = _first_party_modules() if modules is None else modules
     digest = hashlib.sha256()
     for part in (
         f"molt.scan-records.v{SCHEMA}",
@@ -104,7 +126,7 @@ def code_generation(scanner: str, owner: Path) -> str | None:
     ):
         digest.update(part.encode("utf-8", "surrogatepass"))
         digest.update(b"\0")
-    for name, source in _first_party_sources(owner):
+    for name, source in [("", owner), *sorted(loaded.items())]:
         try:
             data = source.read_bytes()
         except OSError:
@@ -144,7 +166,12 @@ class ScanRecords:
             raise ValueError(f"invalid scanner name: {scanner!r}")
         self.scanner = scanner
         self.owner = Path(owner).resolve()
-        self.generation = code_generation(scanner, self.owner)
+        self.root = _repository_root(self.owner)
+        self._modules = _first_party_modules()
+        self.generation = code_generation(scanner, self.owner, self._modules)
+        # Modules a recording run imported after opening, by checkout path and
+        # content digest; a replay requires the same content in this checkout.
+        self._late: dict[str, list[str]] = {}
         root = _default_molt_cache() if cache_root is None else cache_root
         self.directory = root / DIRECTORY / scanner
         self.hits = 0
@@ -176,11 +203,50 @@ class ScanRecords:
             or not isinstance(document.get("records"), dict)
         ):
             return {}
+        late = document.get("late", {})
+        if not isinstance(late, dict) or not self._late_modules_match(late):
+            return {}
+        self._late = late
         return {
             key: record
             for key, record in document["records"].items()
             if isinstance(record, list) and len(record) == 2 and type(record[0]) is int
         }
+
+    def _late_modules_match(self, late: dict) -> bool:
+        if late and self.root is None:
+            return False
+        for entry in late.values():
+            if not (isinstance(entry, list) and len(entry) == 2):
+                return False
+            relative, digest = entry
+            path = self.root / relative
+            if not path.resolve().is_relative_to(self.root):
+                return False
+            if _file_digest(path) != digest:
+                return False
+        return True
+
+    def _late_modules(self) -> dict[str, list[str]] | None:
+        """The modules imported since opening, by checkout path and digest.
+
+        None refuses publication: a late module outside this checkout cannot be
+        located again by a replaying run.
+        """
+        late = dict(self._late)
+        for name, source in _first_party_modules().items():
+            if name in self._modules or name in late:
+                continue
+            if self.root is None:
+                return None
+            resolved = source.resolve()
+            if not resolved.is_relative_to(self.root):
+                return None
+            digest = _file_digest(resolved)
+            if digest is None:
+                return None
+            late[name] = [resolved.relative_to(self.root).as_posix(), digest]
+        return late
 
     def result(
         self,
@@ -234,7 +300,10 @@ class ScanRecords:
         path = self.path
         if path is None or not (self.misses or self._renew):
             return False
-        if code_generation(self.scanner, self.owner) != self.generation:
+        if code_generation(self.scanner, self.owner, self._modules) != self.generation:
+            return False
+        late = self._late_modules()
+        if late is None:
             return False
         records = {key: [self._now, value] for key, (_, value) in self._used.items()}
         retained = sorted(
@@ -251,6 +320,7 @@ class ScanRecords:
             "schema": SCHEMA,
             "scanner": self.scanner,
             "generation": self.generation,
+            "late": late,
             "records": records,
         }
         payload = json.dumps(document, separators=(",", ":")).encode("utf-8")

@@ -418,13 +418,14 @@ def test_scan_records_publish_nothing_after_a_failed_scan(tmp_path: Path) -> Non
     assert not (cache / "repository-scan-records").exists()
 
 
-def test_scan_records_refuse_publication_after_new_first_party_code(
+def test_scan_records_refuse_publication_after_code_outside_the_checkout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = _encoding_checkout(tmp_path / "checkout")
     records = _records(tmp_path / "cache")
     eg.scan(root, records)
-    # A first-party module imported during the run could have shaped results.
+    # A first-party module imported during the run could have shaped results,
+    # and one outside the checkout cannot be verified by a replaying run.
     late = tmp_path / "late_module.py"
     late.write_text("VALUE = 1\n", encoding="utf-8")
     module = type(sys)("tools._scan_records_late_fixture")
@@ -432,6 +433,39 @@ def test_scan_records_refuse_publication_after_new_first_party_code(
     monkeypatch.setitem(sys.modules, module.__name__, module)
     assert records.publish() is False
     assert records.path is not None and not records.path.exists()
+
+
+def test_scan_records_verify_late_imports_by_checkout_content(
+    tmp_path: Path,
+) -> None:
+    root = _encoding_checkout(tmp_path / "checkout")
+    repo = tmp_path / "scanner-repo"
+    owner = repo / "tools" / "scanner.py"
+    owner.parent.mkdir(parents=True)
+    owner.write_bytes(_OWNER.read_bytes())
+    late = repo / "tools" / "late_helper.py"
+    late.write_text("VALUE = 1\n", encoding="utf-8")
+    name = "tools._scan_records_late_helper_fixture"
+    module = type(sys)(name)
+    module.__file__ = str(late)
+    cache = tmp_path / "cache"
+
+    first = _records(cache, owner)
+    eg.scan(root, first)
+    sys.modules[name] = module  # imported after the records opened
+    try:
+        assert first.publish() is True
+    finally:
+        del sys.modules[name]
+    replay = _records(cache, owner)
+    eg.scan(root, replay)
+    assert (replay.hits, replay.misses) == (5, 0)
+
+    # The late module changed: its earlier results may no longer hold.
+    late.write_text("VALUE = 2\n", encoding="utf-8")
+    edited = _records(cache, owner)
+    eg.scan(root, edited)
+    assert (edited.hits, edited.misses) == (0, 5)
 
 
 def test_scan_records_from_a_narrow_run_keep_the_other_records(tmp_path: Path) -> None:
