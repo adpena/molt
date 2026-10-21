@@ -1891,6 +1891,7 @@ def test_ensure_backend_binary_preserves_repo_local_shared_stdlib_cache(
         "hash": canonical_json_sha256("shared-stdlib-backend-source"),
         "rustc": "rustc",
         "inputs_digest": canonical_json_sha256("shared-stdlib-backend-inputs"),
+        "meta_digest": canonical_json_sha256("shared-stdlib-backend-meta"),
     }
     build_cmds: list[list[str]] = []
 

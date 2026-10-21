@@ -107,6 +107,16 @@ class Checkout:
         """The product store this checkout's builds use (after ``activate``)."""
         return runtime_native_build.native_runtime_store(self.root)
 
+    @property
+    def backend_store(self) -> ProductStore:
+        """The host-tool store this checkout's builds use (after ``activate``)."""
+        return backend_binary.host_tool_store(self.root)
+
+    def stored_backend_variants(self) -> list[Path]:
+        """Every published host-tool variant in this checkout's store."""
+        root = self.backend_store.root
+        return sorted(root.glob("[0-9a-f]" * 64 + "/" + "[0-9a-f]" * 64))
+
     def stored_runtimes(self, seed: str | None = None) -> tuple:
         """The admitted store generations of this checkout's runtime identity."""
         return generations.native_runtime_store_generations(
@@ -142,9 +152,7 @@ class Checkout:
         publish_backend(
             backend,
             f"#!/bin/sh\nexit 0\n# {self.backend_seed}\n".encode(),
-            receipt=backend_binary._backend_fingerprint_path(
-                self.root, backend, BACKEND_PROFILE
-            ),
+            project_root=self.root,
             fingerprint=backend_fingerprint(self.backend_seed),
             cargo_environment=compiler_environment_inputs(),
         )

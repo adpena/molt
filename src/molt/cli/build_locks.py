@@ -21,10 +21,17 @@ class BuildLockAcquisitionError(RuntimeError):
 
 
 @contextmanager
-def _build_lock(project_root: Path, name: str, *, default_timeout_s: float = 300.0):
+def _build_lock(
+    project_root: Path,
+    name: str,
+    *,
+    default_timeout_s: float = 300.0,
+    cargo_target: Path | None = None,
+):
+    """Hold ``name`` in the build control of ``cargo_target`` (the project's)."""
     lock_dir = _build_lock_dir_cached(
         os.fspath(project_root),
-        os.fspath(_build_state_root(project_root)),
+        os.fspath(_build_state_root(project_root, cargo_target)),
     )
     # The build-state root already carries target/session isolation. When an
     # operator explicitly shares a target/build-state root, mutable Cargo

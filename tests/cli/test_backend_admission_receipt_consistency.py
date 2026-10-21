@@ -17,7 +17,6 @@ import pytest
 
 from molt.cli import backend_binary, build_locks, runtime_fingerprints
 from molt.cli.static_archive_identity import artifact_content_identity
-from tests.cli.backend_generation_test_support import publish_backend
 from tests.cli.test_cli_backend_prewarm import (
     _dispatch,
     _fake_backend_toolchain,
@@ -89,7 +88,6 @@ def test_cargo_spawn_failure_is_structured(tmp_path, monkeypatch, capsys):
 def test_backend_admission_preserves_lockfile_on_its_single_cargo_attempt(
     target, failure_stage, tmp_path, monkeypatch, capsys
 ):
-    import os
     import subprocess
 
     from molt.cli import cargo_execution
@@ -183,21 +181,55 @@ def test_backend_lock_wait_covers_cold_build_and_preserves_override(
     monkeypatch.setattr(build_locks, "_acquire_file_lock", acquire)
     monkeypatch.setattr(build_locks, "_release_file_lock", lambda handle: None)
     with backend_binary._backend_admission_lock(
-        tmp_path, "release", cargo_timeout=1200
+        tmp_path,
+        tmp_path / "target" / "release" / "molt-backend.native_backend",
+        "release",
+        cargo_timeout=1200,
     ):
         pass
     assert seen == [expected]
 
 
+def test_the_backend_lock_guards_the_cargo_output_of_its_coordinates_target(
+    tmp_path, monkeypatch
+):
+    """Variants of one target share a lock; another target's build never waits.
+
+    The lock guards Cargo's one output beside a coordinate, so it lives in that
+    coordinate's target build control, not in whatever target the project
+    selects by default.
+    """
+    monkeypatch.delenv("MOLT_BUILD_STATE_DIR", raising=False)
+    monkeypatch.setenv("MOLT_BUILD_LOCK_TIMEOUT", "0.2")
+    native = tmp_path / "a" / "release" / "molt-backend.native_backend"
+    wasm = native.with_name("molt-backend.wasm_backend")
+    other_target = tmp_path / "b" / "release" / native.name
+    with backend_binary._backend_admission_lock(tmp_path, native, "release"):
+        with backend_binary._backend_admission_lock(tmp_path, other_target, "release"):
+            pass
+        with pytest.raises(backend_binary._BackendAdmissionLockError, match="Timed"):
+            with backend_binary._backend_admission_lock(tmp_path, wasm, "release"):
+                pytest.fail("two variants of one target held its lock at once")
+
+
 @pytest.mark.parametrize("target", ["native", "wasm"])
-def test_unavailable_rustc_preserves_admitted_receipt_cache_identity(
+def test_an_incomplete_identity_never_selects_or_renames_a_stored_compiler(
     target, tmp_path, monkeypatch, capsys
 ):
+    """A store key needs the whole product identity; a partial one fails closed.
+
+    The receipt-filling tolerance for an unknown rustc belonged to per-checkout
+    selections. Admission always knows rustc from executable custody, so a
+    fingerprint without it is a defect: it must neither reuse the stored
+    compiler under another name nor rebuild.
+    """
     _isolated_molt_root(tmp_path, monkeypatch)
     cargo, probes = _fake_backend_toolchain(monkeypatch)
     argv = ["internal-backend-build", "--target", target, "--json"]
     assert _dispatch(argv) == 0
     before = json.loads(capsys.readouterr().out)["data"]
+    receipt = Path(before["receipts"]["source_content"]["path"])
+    stored = receipt.read_bytes()
     original = backend_binary._backend_fingerprint
 
     def no_rustc(*args, **kwargs):
@@ -206,34 +238,44 @@ def test_unavailable_rustc_preserves_admitted_receipt_cache_identity(
         return fingerprint
 
     monkeypatch.setattr(backend_binary, "_backend_fingerprint", no_rustc)
-    assert _dispatch(argv) == 0
-    after = json.loads(capsys.readouterr().out)["data"]
-    assert after["compiler"]["fingerprint"] == before["compiler"]["fingerprint"]
-    assert after["receipts"]["source_content"]["rustc"] == "rustc-fixture"
+    assert _dispatch(argv) == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["data"]["failure"]["phase"] == "backend_source_identity"
+    assert "identity is incomplete" in payload["errors"][0]
     assert len(cargo) == len(probes) == 1
+    assert receipt.read_bytes() == stored
 
 
-@pytest.mark.parametrize("missing_rustc", [False, True])
-def test_identical_feature_alias_reuses_transferred_probe(
-    missing_rustc, tmp_path, monkeypatch
+def test_a_removed_stored_compiler_is_corruption_until_its_entry_is_removed(
+    tmp_path, monkeypatch, capsys
 ):
+    """Removing part of a published entry fails loud; removing it whole rebuilds.
+
+    The message names the entry. Once the entry is gone, this checkout's
+    admitted Cargo output republishes it without Cargo, and the probe runs once
+    for the new generation.
+    """
+    import shutil
+
     _isolated_molt_root(tmp_path, monkeypatch)
     cargo, probes = _fake_backend_toolchain(monkeypatch)
     argv = ["internal-backend-build", "--target", "wasm", "--json"]
     assert _dispatch(argv) == 0
-    alias = Path(probes[0][0])
-    alias.unlink()
-    if missing_rustc:
-        original = backend_binary._backend_fingerprint
+    generation = Path(probes[0][0])
+    generation.unlink()
+    capsys.readouterr()
+    assert _dispatch(argv) == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["data"]["failure"]["phase"] == "product_store"
+    [message] = payload["errors"]
+    assert "is corrupt" in message
+    entry = next(parent for parent in generation.parents if parent.name in message)
+    assert (len(cargo), len(probes)) == (1, 1)
 
-        def no_rustc(*args, **kwargs):
-            return {**original(*args, **kwargs), "rustc": None}
-
-        monkeypatch.setattr(backend_binary, "_backend_fingerprint", no_rustc)
+    shutil.rmtree(entry)
     assert _dispatch(argv) == 0
-    assert len(cargo) == 1
-    assert len(probes) == 2  # one canonical probe, no duplicate alias probe
-    assert alias.exists()
+    assert (len(cargo), len(probes)) == (1, 2)
+    assert generation.exists()
 
 
 def test_refresh_write_failure_is_nonfatal_but_invalid_identity_is_not(
@@ -270,65 +312,6 @@ def test_refresh_write_failure_is_nonfatal_but_invalid_identity_is_not(
         runtime_fingerprints._refresh_runtime_fingerprint_metadata(receipt, source)
 
 
-def _canonical_and_session_coordinates(tmp_path):
-    name = "molt-backend.native_backend"
-    canonical = tmp_path / "canonical-target" / "release" / name
-    session = tmp_path / "session-target" / "release" / name
-    return canonical, session
-
-
-def test_hydration_preserves_matched_toolchain_coordinates(tmp_path):
-    canonical, session = _canonical_and_session_coordinates(tmp_path)
-    receipt = tmp_path / "canonical.json"
-    fingerprint = {
-        "hash": "a" * 64,
-        "rustc": "known-toolchain",
-        "inputs_digest": "b" * 64,
-    }
-    image = b"#!/bin/sh\nexit 0\n"
-    canonical_generation = publish_backend(
-        canonical,
-        image,
-        receipt=receipt,
-        fingerprint=fingerprint,
-        cargo_environment=compiler_environment_inputs(),
-    )
-    session_receipt = tmp_path / "session.json"
-    hydrated = backend_binary._hydrate_canonical_backend_generation(
-        session,
-        session_receipt,
-        canonical,
-        receipt,
-        fingerprint={**fingerprint, "rustc": None},
-        environment=ProcessEnvironment(os.environ),
-    )
-    assert hydrated is not None
-    generation, admitted = hydrated
-    assert admitted["rustc"] == "known-toolchain"
-    assert (
-        runtime_fingerprints._read_runtime_fingerprint(session_receipt)["rustc"]
-        == "known-toolchain"
-    )
-    assert generation.path.read_bytes() == image
-    # The session publishes its own generation; the canonical one is only read.
-    assert (
-        generation.path.parent.parent
-        == (session.parent / ".molt-backend-generations" / session.name).resolve()
-    )
-    assert canonical_generation.read_bytes() == image
-    assert (
-        backend_binary._hydrate_canonical_backend_generation(
-            session,
-            session_receipt,
-            canonical,
-            receipt,
-            fingerprint={**fingerprint, "rustc": "different-toolchain"},
-            environment=ProcessEnvironment(os.environ),
-        )
-        is None
-    )
-
-
 @pytest.mark.parametrize("bad_capacity", ["abc", "1000000000"])
 def test_real_cargo_capacity_rejection_preserves_prewarm_json(
     bad_capacity, tmp_path, monkeypatch, capsys
@@ -359,7 +342,6 @@ def test_real_cargo_capacity_rejection_preserves_prewarm_json(
 def test_feature_probe_failure_does_not_retry_a_different_build_environment(
     failure_kind, tmp_path, monkeypatch, capsys
 ):
-    import os
     import subprocess
     from molt.cli import cargo_execution
 
@@ -438,7 +420,9 @@ def test_generation_copy_rejects_bytes_changed_after_admission(
 def test_build_lock_real_timeout_does_not_mask_inner_failure(tmp_path, monkeypatch):
     from molt.file_locks import _acquire_file_lock, _release_file_lock
 
-    monkeypatch.setattr(build_locks, "_build_state_root", lambda root: tmp_path)
+    monkeypatch.setattr(
+        build_locks, "_build_state_root", lambda root, cargo_target=None: tmp_path
+    )
     lock_path = tmp_path / "build_locks" / "held.lock"
     handle = _acquire_file_lock(
         lock_path, timeout_s=1, timeout_message="initial lock unavailable"
@@ -486,42 +470,6 @@ def test_daemon_lock_failures_share_framing_and_timing(
     payload = json.loads(capsys.readouterr().out)
     assert payload["data"]["failure"]["phase"] == phase
     assert payload["data"]["stage_timings_ms"][phase] >= 0
-
-
-def test_hydration_copy_race_cannot_publish_receipt(tmp_path, monkeypatch):
-    from molt.cli import backend_generation
-
-    canonical, session = _canonical_and_session_coordinates(tmp_path)
-    fingerprint = {"hash": "a" * 64, "rustc": "rustc", "inputs_digest": "b" * 64}
-    receipt = tmp_path / "canonical.json"
-    canonical_generation = publish_backend(
-        canonical,
-        b"#!/bin/sh\nexit 0\n",
-        receipt=receipt,
-        fingerprint=fingerprint,
-        cargo_environment=compiler_environment_inputs(),
-    )
-    session_receipt = tmp_path / "session.json"
-    original = backend_generation._staged_copy_file
-
-    def mutate(source, target, **kwargs):
-        source.write_bytes(b"#!/bin/sh\nexit 1\n")
-        return original(source, target, **kwargs)
-
-    monkeypatch.setattr(backend_generation, "_staged_copy_file", mutate)
-    assert (
-        backend_binary._hydrate_canonical_backend_generation(
-            session,
-            session_receipt,
-            canonical,
-            receipt,
-            fingerprint=fingerprint,
-            environment=ProcessEnvironment(os.environ),
-        )
-        is None
-    )
-    assert canonical_generation.exists()
-    assert not session_receipt.exists()
 
 
 @pytest.mark.parametrize("inside_work", [False, True])
@@ -661,9 +609,11 @@ def test_published_lane_is_admitted_while_another_lane_holds_the_lock(
         payload["data"]["stage_timings_ms"]["backend_binary_published_admission"] >= 0
     )
 
-    # A lane whose bytes no longer match their receipt takes the lock again.
+    # Stored bytes that no longer match their receipt are corruption: the
+    # build fails loud by reads alone, without waiting for the lock.
     binary = Path(payload["data"]["compiler"]["path"])
     binary.write_bytes(binary.read_bytes() + b"changed")
     assert _dispatch(["internal-backend-build", "--target", target, "--json"]) == 2
     payload = json.loads(capsys.readouterr().out)
-    assert payload["data"]["failure"]["phase"] == "backend_build_lock"
+    assert payload["data"]["failure"]["phase"] == "product_store"
+    assert "its executable differs from its receipt" in payload["errors"][0]

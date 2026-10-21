@@ -1,4 +1,4 @@
-"""The host's store of Rust build products (design 56, section 2.7).
+"""The host's store of Rust build products (design 56, section 2.8).
 
 Every checkout used to select its runtime archives and compiler executables
 inside its own Cargo target, so a new lane, the landing sandbox, a pinned
@@ -24,8 +24,11 @@ places it beside the checkout targets of one artifact root.
 - One builder per identity: ``single_flight`` holds the entry's lock across
   the build, so concurrent checkouts with the same inputs build once.
 - Retention follows last use, as Go's trim does: each admission renews its
-  entry in the store's ledger, and each publication evicts the entries no
-  build used for ``PRODUCT_STORE_IDLE_SECONDS``.
+  entry in the store's ledger at most once per
+  ``PRODUCT_STORE_RENEWAL_SECONDS``, and each publication evicts the entries
+  no build used for ``PRODUCT_STORE_IDLE_SECONDS``. A renewal inside the
+  interval reads the ledger without the lock and writes nothing, so a warm
+  build takes no store lock and makes no write.
 """
 
 from __future__ import annotations
@@ -39,17 +42,25 @@ import re
 from typing import Literal, get_args
 
 from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
-from molt.cli.generation_store import GenerationStoreLayout, generation_store
+from molt.cli.generation_store import (
+    GenerationStoreLayout,
+    generation_store,
+    used_within,
+)
 from molt.dx import product_store_dir
 from molt.file_deletion import delete_path
 from molt.file_locks import _acquire_file_lock, _parse_lock_timeout, _release_file_lock
 
-ProductKind = Literal["native-runtime", "host-tool", "runtime-wasm"]
+ProductKind = Literal["native-runtime", "host-tool"]
 PRODUCT_KINDS: tuple[ProductKind, ...] = get_args(ProductKind)
 LAYOUT_VERSION = "v1"
 # Go's build cache trims entries no build used for five days
 # (cmd/go/internal/cache, trimLimit); a publication applies the same window.
 PRODUCT_STORE_IDLE_SECONDS = 5 * 24 * 60 * 60.0
+# Go renews an entry's mtime at most once an hour (cmd/go/internal/cache,
+# mtimeInterval): a renewal inside the hour cannot change what the window
+# decides, so it costs no lock and no write.
+PRODUCT_STORE_RENEWAL_SECONDS = 60 * 60.0
 _DIGEST = re.compile(r"[0-9a-f]{64}")
 _ASIDE_PREFIX = ".evicted-"
 _BUILD_LOCK = ".build.lock"
@@ -127,8 +138,15 @@ class ProductStore:
         )
 
     def record_use(self, identity: str) -> None:
-        """Renew ``identity`` before reading it, so no eviction races the read."""
+        """Renew ``identity`` before reading it, so no eviction races the read.
+
+        A use recorded within the renewal interval already keeps the entry for
+        the whole idle window less that interval, far longer than any read, so
+        it is left as it is.
+        """
         self.entry(identity)
+        if used_within(self.root, _LEDGER, identity, PRODUCT_STORE_RENEWAL_SECONDS):
+            return
         self.root.mkdir(parents=True, exist_ok=True)
         try:
             with generation_store(self.root, _LEDGER) as ledger:

@@ -206,3 +206,55 @@ def test_eviction_moves_an_entry_aside_before_deleting_it(
     assert len(seen) == 1 and seen[0].name.startswith(".evicted-" + "a" * 64)
     assert seen[0].parent == tmp_path and seen[0].is_dir()
     assert os.path.exists(seen[0] / "variant")
+
+
+class _Clock:
+    def __init__(self, now: float) -> None:
+        self.now = now
+
+    def time(self) -> float:
+        return self.now
+
+
+def test_a_use_inside_the_renewal_interval_takes_no_lock_and_writes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Go renews a cache entry at most hourly; a warm build here writes nothing."""
+    from molt.cli import generation_store
+
+    clock = _Clock(1_000_000.0)
+    monkeypatch.setattr(generation_store, "time", clock)
+    store = products.ProductStore(tmp_path / "store")
+    identity = _digest("a")
+    store.record_use(identity)
+    ledger = store.root / ".product-store.json"
+    recorded = ledger.read_bytes()
+    assert _ledger(store)["last_used"][identity] == clock.now
+    locks: list[Path] = []
+    acquire = generation_store._acquire_file_lock
+
+    def counted(path, **kwargs):
+        locks.append(path)
+        return acquire(path, **kwargs)
+
+    monkeypatch.setattr(generation_store, "_acquire_file_lock", counted)
+    clock.now += products.PRODUCT_STORE_RENEWAL_SECONDS
+    store.record_use(identity)
+    assert locks == [] and ledger.read_bytes() == recorded
+
+    clock.now += 1
+    store.record_use(identity)
+    assert len(locks) == 1
+    assert _ledger(store)["last_used"][identity] == clock.now
+    # Another identity has no recorded use, so its first use is written.
+    store.record_use(_digest("b"))
+    assert len(locks) == 2
+    assert _ledger(store)["last_used"][_digest("b")] == clock.now
+
+
+def test_the_renewal_interval_is_far_inside_the_idle_window() -> None:
+    """A skipped renewal still leaves the entry its idle window less an hour."""
+    assert (
+        products.PRODUCT_STORE_RENEWAL_SECONDS * 24
+        < products.PRODUCT_STORE_IDLE_SECONDS
+    )

@@ -205,6 +205,15 @@ def test_facts_source_rebuild_policy_uses_explicit_environment(
     assert len(state.builds) == 1
 
 
+_FACTS_TOOL = "molt-wasm-facts.host_tool" + (".exe" if os.name == "nt" else "")
+
+
+def _stored_facts_receipts(root: Path) -> list[Path]:
+    """The store receipts of every published facts-tool variant."""
+    store = backend_binary.host_tool_store(root)
+    return sorted(store.root.glob(f"*/*/{_FACTS_TOOL}.fingerprint"))
+
+
 def test_facts_observed_receipt_and_probe_use_explicit_environment(
     source_tool, monkeypatch
 ):
@@ -215,14 +224,8 @@ def test_facts_observed_receipt_and_probe_use_explicit_environment(
     monkeypatch.setenv("MOLT_TEST_BACKEND_INPUT", "other-ambient-poison")
     assert wasm_facts_tool.ensure_wasm_facts_tool(root, env=environment) == first
     assert len(state.builds) == 1
-    coordinate = (
-        root
-        / "target/release-fast"
-        / ("molt-wasm-facts.host_tool" + (".exe" if os.name == "nt" else ""))
-    )
-    receipt_path = backend_binary._backend_fingerprint_path(
-        root, coordinate, "release-fast"
-    )
+    [receipt_path] = _stored_facts_receipts(root)
+    initial_bytes = receipt_path.read_bytes()
     initial = backend_binary._read_runtime_fingerprint(receipt_path)
     observation = CargoEnvironmentInputs.from_dict(initial["cargo_environment"])
     observation.verify(ProcessEnvironment(environment))
@@ -230,13 +233,25 @@ def test_facts_observed_receipt_and_probe_use_explicit_environment(
     changed = {**environment, "MOLT_TEST_BACKEND_INPUT": state.expected_probe_value}
     with pytest.raises(ValueError, match="MOLT_TEST_BACKEND_INPUT"):
         observation.verify(ProcessEnvironment(changed))
-    # Source/output bytes stay fixed; only the observed ambient input changes.
-    assert wasm_facts_tool.ensure_wasm_facts_tool(root, env=changed) == first
+    # Source/output bytes stay fixed; only the observed ambient input changes,
+    # so the build publishes another variant of the same identity beside the
+    # first one, which stays as it was.
+    second = wasm_facts_tool.ensure_wasm_facts_tool(root, env=changed)
+    assert second != first and second.read_bytes() == first.read_bytes()
     assert len(state.builds) == 2
-    current = backend_binary._read_runtime_fingerprint(receipt_path)
+    receipts = _stored_facts_receipts(root)
+    assert len(receipts) == 2 and receipt_path in receipts
+    assert receipt_path.read_bytes() == initial_bytes
+    [current_path] = [path for path in receipts if path != receipt_path]
+    assert current_path.parent.parent == receipt_path.parent.parent
+    current = backend_binary._read_runtime_fingerprint(current_path)
     CargoEnvironmentInputs.from_dict(current["cargo_environment"]).verify(
         ProcessEnvironment(changed)
     )
+    # Each environment reuses its own variant without another build.
+    assert wasm_facts_tool.ensure_wasm_facts_tool(root, env=environment) == first
+    assert wasm_facts_tool.ensure_wasm_facts_tool(root, env=changed) == second
+    assert len(state.builds) == 2
 
 
 def test_failed_facts_probe_is_terminal_and_selects_no_receipt(source_tool):
@@ -246,11 +261,8 @@ def test_failed_facts_probe_is_terminal_and_selects_no_receipt(source_tool):
         wasm_facts_tool.ensure_wasm_facts_tool(root, env=environment)
     assert state.builds == [HostToolProduct.WASM_FACTS]
     assert len(state.probes) == 1
-    coordinate = (
-        root
-        / "target/release-fast"
-        / ("molt-wasm-facts.host_tool" + (".exe" if os.name == "nt" else ""))
-    )
+    assert _stored_facts_receipts(root) == []
+    coordinate = root / "target/release-fast" / _FACTS_TOOL
     assert not backend_binary._backend_fingerprint_path(
         root, coordinate, "release-fast"
     ).exists()

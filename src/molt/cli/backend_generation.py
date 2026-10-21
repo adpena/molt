@@ -1,22 +1,23 @@
 """Immutable, content-addressed generations of compiler and host-tool executables.
 
-A backend variant's coordinate (``<target>/<profile>/molt-backend.<features>``)
-names a selection, not a file a build runs. Each published executable lives at
-``<target>/<profile>/.molt-backend-generations/<variant>/<sha256>/<variant>``
-and never changes after publication: a later build publishes another
-generation or reuses this identical one. Publication never overwrites a build's
-captured executable; idle retention is a separate store policy. The variant's
-backend receipt is the selection. Its byte identity names the selected generation, and
-publishing a new selection replaces only that receipt. Bazel and Nix publish
-outputs the same way: content-addressed paths and an atomic pointer switch.
-The standalone WASM facts product reuses this store and receipt authority with
-its own product coordinate; the historical directory name is not a tool kind.
+A host tool's coordinate names a selection, not a file a build runs. The
+coordinates that publish generations live in a product store variant
+(``molt.cli.product_store``, kind ``host-tool``): each published executable
+lives at ``<variant>/.molt-backend-generations/<tool>/<sha256>/<tool>`` and
+never changes after publication. A build publishes another generation or
+reuses this identical one. The variant's store receipt is the selection; its
+byte identity names the selected generation, and it is written once, after
+the generation and its probe evidence. Bazel and Nix publish outputs the same
+way: content-addressed paths and an atomic pointer. The WASM facts product
+reuses this store and receipt authority with its own product coordinate; the
+historical directory name is not a tool kind.
 
 The generation keeps the variant's basename, so process discovery and the
 executable's content identity read the same name a variant always had.
-Retention belongs to the shared generation store owner: each publication
-selects its generation and evicts the generations that no build used for the
-store's idle window, and every build that admits a generation records its use.
+Retention of whole entries belongs to the product store. Inside a variant the
+shared generation store owner selects each published generation and evicts
+unselected ones (a publication whose probe failed) after its idle window; the
+selected generation is never evicted, so admitting it writes nothing.
 """
 
 from __future__ import annotations
@@ -153,13 +154,3 @@ def publish_backend_generation(
         store.select(generation.parent.name)
         store.evict_idle(GENERATION_STORE_IDLE_SECONDS)
     return published
-
-
-def record_backend_generation_use(coordinate: Path, generation: Path) -> None:
-    """Renew the retention window of the generation this build runs."""
-    if not is_backend_generation(coordinate, generation):
-        raise ValueError(
-            f"backend executable is not a generation of {coordinate}: {generation}"
-        )
-    with generation_store(generation.parent.parent, _BACKEND_STORE) as store:
-        store.use(generation.parent.name)

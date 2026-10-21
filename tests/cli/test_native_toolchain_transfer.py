@@ -140,6 +140,39 @@ def test_imported_toolchain_is_admitted_by_the_next_build_without_cargo(
     )
 
 
+def _published_files(consumer) -> dict[Path, tuple[int, int, bytes]]:
+    """Every file of every published entry: identity, time and bytes.
+
+    The ledgers and locks are store bookkeeping, not entry content.
+    """
+    files = {}
+    for store in (consumer.runtime_store, consumer.backend_store):
+        for path in sorted(store.root.rglob("*")):
+            if path.is_file() and not path.name.startswith(".product-store"):
+                if path.name == ".build.lock":
+                    continue
+                stat = path.stat()
+                files[path] = (stat.st_ino, stat.st_mtime_ns, path.read_bytes())
+    return files
+
+
+def test_a_repeated_import_never_rewrites_a_published_variant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Readers may hold what a variant selects, so a second import keeps it."""
+    files = _exported(tmp_path, monkeypatch)
+    consumer = checkout(tmp_path, monkeypatch, "consumer")
+    consumer.activate(monkeypatch)
+    transfer.import_native_toolchain(consumer.selection, files)
+    published = _published_files(consumer)
+    assert any(path.suffix == ".fingerprint" for path in published)
+    assert any(path.name.endswith(".generation.json") for path in published)
+
+    transfer.import_native_toolchain(consumer.selection, files)
+
+    assert _published_files(consumer) == published
+
+
 def test_import_refuses_a_runtime_built_from_other_inputs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -153,7 +186,7 @@ def test_import_refuses_a_runtime_built_from_other_inputs(
     # Neither the consumer's identity nor the exported one gained an entry.
     assert not consumer.stored_runtimes()
     assert not consumer.stored_runtimes("runtime")
-    assert not (consumer.root / "target" / BACKEND_PROFILE).exists()
+    assert not consumer.stored_backend_variants()
 
 
 def test_import_refuses_a_backend_built_from_other_sources(
@@ -166,7 +199,7 @@ def test_import_refuses_a_backend_built_from_other_sources(
     with pytest.raises(transfer.NativeToolchainTransferError, match="other inputs"):
         transfer.import_native_toolchain(consumer.selection, files)
 
-    assert not (consumer.root / "target" / BACKEND_PROFILE).exists()
+    assert not consumer.stored_backend_variants()
 
 
 def test_import_refuses_a_backend_that_differs_from_its_receipt(
@@ -181,8 +214,7 @@ def test_import_refuses_a_backend_that_differs_from_its_receipt(
     with pytest.raises(transfer.NativeToolchainTransferError, match="receipt"):
         transfer.import_native_toolchain(consumer.selection, files)
 
-    canonical = consumer.root / "target" / BACKEND_PROFILE
-    assert not canonical.exists() or not any(canonical.iterdir())
+    assert not consumer.stored_backend_variants()
 
 
 @pytest.mark.parametrize("change", ["missing", "unknown"])
@@ -201,6 +233,7 @@ def test_import_requires_the_exact_file_set(
         transfer.import_native_toolchain(consumer.selection, files)
     assert not (consumer.root / "target").exists()
     assert not consumer.runtime_store.root.exists()
+    assert not consumer.backend_store.root.exists()
 
 
 def test_export_requires_an_admitted_runtime(

@@ -5,12 +5,7 @@ import hashlib
 import os
 from pathlib import Path
 
-from molt.cli.runtime_paths import (
-    _build_state_root,
-    _build_state_root_cached,
-)
-from molt.default_paths import configured_artifact_root_text
-from molt.dx import cargo_target_dir_for_artifact_root
+from molt.cli.runtime_paths import _build_state_root
 
 
 @functools.lru_cache(maxsize=512)
@@ -70,11 +65,6 @@ def _artifact_state_path_cached(
     return Path(build_state_root_str) / subdir / f"{stem}.{extension}"
 
 
-@functools.lru_cache(maxsize=512)
-def _build_state_subdir_cached(build_state_root_str: str, subdir: str) -> Path:
-    return Path(build_state_root_str) / subdir
-
-
 def _artifact_state_path(
     project_root: Path,
     artifact: Path,
@@ -109,20 +99,4 @@ def _artifact_state_path_for_build_state_root(
         subdir,
         stem_suffix,
         extension,
-    )
-
-
-def _canonical_target_root(project_root: Path) -> Path:
-    """The project's persistent local target: the hydration source."""
-    return cargo_target_dir_for_artifact_root(
-        project_root, None, source_root=project_root
-    )
-
-
-def _canonical_build_state_root(project_root: Path) -> Path:
-    return _build_state_root_cached(
-        os.fspath(project_root),
-        os.environ.get("MOLT_BUILD_STATE_DIR"),
-        os.fspath(_canonical_target_root(project_root)),
-        configured_artifact_root_text(os.environ),
     )

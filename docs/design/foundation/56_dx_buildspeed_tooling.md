@@ -850,6 +850,16 @@ tests that place their target in a temporary directory.
   see an entry whole or not at all. A receipt that exists but does not verify
   is therefore corruption: the build fails at stage `product-store` and names
   the entry; it never rebuilds over it silently.
+- A variant is written once. Nothing rewrites its receipt while readers may
+  hold what it selects: a stored compiler that fails its capability probe
+  fails the build (the same inputs build the same compiler), and an import
+  of a variant the host already holds returns the stored one. Probe evidence
+  is a cached check beside the receipt, so a stale one is probed again.
+- A receipt names the product, never the checkout that built it: the
+  backend's store receipt keeps only the source identity (`hash`, `rustc`,
+  `meta_digest`), the observed environment and the bytes. Each checkout keeps
+  its fast-path metadata (source timestamps, clean-head state) in its own
+  identity memo, so a later build of that checkout skips hashing its sources.
 - One builder per input: a miss takes the entry's lock (`single_flight`) and
   reads the store again under it, so a second checkout with the same inputs
   waits and then reuses the first one's publication. CPU admission across
@@ -859,11 +869,32 @@ tests that place their target in a temporary directory.
   the store's ledger before reading it, and each publication evicts entries no
   build used for 5 days. The native runtime's per-target generations had no
   eviction at all (12 generations, 1.5 GB, in one live checkout's dev-fast).
+  Like Go, which renews an entry's mtime at most hourly, an admission renews
+  at most once an hour: inside the hour it reads the ledger without the lock
+  and writes nothing. A locked, durable renewal measured 14 ms (median 24 ms,
+  maximum 155 ms) at load 161 on this host, and every warm build made one for
+  the runtime and one for the backend.
+- Lock order is fixed: a build takes its checkout's build lock first (for
+  the backend it guards Cargo's one output that every feature variant
+  publishes from), then the identity's lock. Imports take only the identity's
+  lock, so no order inverts.
 
-The native runtime reads and publishes only the store; the per-target
-selection receipts and the canonical-target candidates are deleted. The
-cross-host transfer (`molt.cli.native_toolchain_transfer`, used by the Nightly
-bundle) exports a store entry and imports into the importing host's store.
+The native runtime and every host tool (each backend feature variant and the
+WASM facts tool, store kind `host-tool`) read and publish only the store; the
+per-target selection receipts, the canonical-target candidates and the
+backend's canonical hydration are deleted. A host tool's entry is named by its
+executable name and source identity. On a miss, a checkout whose own Cargo
+output already carries an admitted receipt for those inputs publishes it
+without running Cargo, so the first build after this change seeds the store
+from a warm target. The cross-host transfer
+(`molt.cli.native_toolchain_transfer`, used by the Nightly bundle) exports a
+store entry and imports into the importing host's store.
+
+The runtime WASM pair already lives in one host directory
+(`<MOLT_EXT_ROOT>/wasm`, `molt.cli.runtime_wasm_generation`) keyed by a
+location-independent identity, so it is built once per input on a host that
+sets an artifact root; it has its own store and retention. Folding it into
+this store is open.
 
 Cargo's PATH no longer carries the caller's PATH (HF-385): the plan derives it
 from its typed selections (the managed LLVM `bin`, each captured executable's
