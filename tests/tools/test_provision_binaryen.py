@@ -10,6 +10,7 @@ import stat
 import subprocess
 import sys
 import tarfile
+from types import SimpleNamespace
 
 import pytest
 
@@ -802,12 +803,11 @@ def test_version_probe_preserves_windows_text_newline_contract(
     executable, digest = _native_probe_fixture(tmp_path)
     probes = []
 
-    def completed(command, **kwargs):
+    def started(command, **kwargs):
         probes.append(command)
         assert kwargs["text"] is True
         assert kwargs["encoding"] == "utf-8"
         assert kwargs["errors"] == "strict"
-        assert kwargs["timeout"] == 30
         # subprocess text mode uses this standard-library universal-newline
         # contract. Exercise the real shared runner, mocking only its OS call.
         with io.TextIOWrapper(
@@ -816,11 +816,18 @@ def test_version_probe_preserves_windows_text_newline_contract(
             errors=kwargs["errors"],
         ) as stream:
             stdout = stream.read()
-        return subprocess.CompletedProcess(command, 0, stdout, "")
+
+        def communicate(_input, *, timeout):
+            assert timeout == 30
+            return stdout, ""
+
+        return SimpleNamespace(
+            communicate=communicate, poll=lambda: 0, __exit__=lambda *_args: None
+        )
 
     # The shared runner launches unguarded metadata probes.
     install_module_view(
-        monkeypatch, "subprocess", subprocess, process_guard, run=completed
+        monkeypatch, "subprocess", subprocess, process_guard, Popen=started
     )
     assert (
         provisioner._read_wasm_opt_version(executable, expected_sha256=digest) == "130"
