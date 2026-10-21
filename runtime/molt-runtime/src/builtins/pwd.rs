@@ -11,11 +11,7 @@ fn raise_provider_absence(py: &PyToken<'_>) -> u64 {
         return MoltObject::none().bits();
     };
     let name = crate::builtins::exceptions::ExceptionValue::adopt(py, name);
-    crate::builtins::exceptions::raise_module_not_found(
-        py,
-        b"No module named 'pwd'",
-        name.bits(),
-    )
+    crate::builtins::exceptions::raise_module_not_found(py, b"No module named 'pwd'", name.bits())
 }
 
 #[unsafe(no_mangle)]
