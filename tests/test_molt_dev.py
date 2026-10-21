@@ -3382,11 +3382,17 @@ def test_queue_plan_survives_between_runners_and_drops_closed_requests(tmp_path)
 
 
 def test_queue_withdraw_closes_pending_requests_only_between_batches(
-    drv, origin_and_clone
+    drv, origin_and_clone, monkeypatch
 ):
     from tools import molt_dev_queue as queue
 
     _origin, work = origin_and_clone
+    # A `land` that probed the lock while withdraw held it started no runner,
+    # so withdraw starts one while requests remain. Record it; never spawn.
+    started = []
+    monkeypatch.setattr(
+        queue, "_start_queue_runner", lambda paths, *_rest: started.append(paths)
+    )
     paths = queue.queue_paths(work)
     first, second, third = (
         queue.enqueue(
@@ -3404,7 +3410,8 @@ def test_queue_withdraw_closes_pending_requests_only_between_batches(
         )  # fmt: skip
         return args.func(args)
 
-    assert withdraw(second.id) == drv.EXIT_OK
+    assert withdraw(second.id, second.id) == drv.EXIT_OK
+    assert started == [paths]
     result = queue.read_result(paths, second.id)
     assert result["status"] == queue.LandingStatus.WITHDRAWN
     assert result["detail"] == "review found defects"
@@ -3425,6 +3432,30 @@ def test_queue_withdraw_closes_pending_requests_only_between_batches(
     finally:
         drv._release_file_lock(handle)
     assert queue.pending(paths) == [first, third]
+    # The last pending requests close; no runner starts for an empty queue.
+    started.clear()
+    assert withdraw(first.id, third.id) == drv.EXIT_OK
+    assert queue.pending(paths) == [] and started == []
+
+
+def test_queue_results_read_in_the_order_they_closed(tmp_path, monkeypatch):
+    from tools import molt_dev_queue as queue
+
+    paths = queue.QueuePaths(tmp_path / "landing-queue")
+    stamps = iter(f"2026-10-21T12:00:0{second}+00:00" for second in (0, 1, 2, 3, 4, 5))
+    monkeypatch.setattr(queue, "_now", lambda: next(stamps))
+    early, late = (
+        queue.enqueue(paths, head=f"{index:040x}", worktree=tmp_path, branch=None)
+        for index in (1, 2)
+    )
+    # A bisected batch closes the later request first.
+    queue.record_result(paths, late, status=queue.LandingStatus.LANDED, detail="")
+    queue.record_result(paths, early, status=queue.LandingStatus.FAILED, detail="")
+    closed = [row["request"]["id"] for row in queue.recorded_results(paths)]
+    assert closed == [late.id, early.id]
+    assert [row["request"]["id"] for row in queue.recorded_results(paths, limit=1)] == [
+        early.id
+    ]
 
 
 def test_queue_retires_old_runner_logs_and_results_only(tmp_path):
