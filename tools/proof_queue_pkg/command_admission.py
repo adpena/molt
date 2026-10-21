@@ -31,7 +31,6 @@ from tools.proof_command_argv import (
     _normalized_entrypoint_target,
     _uv_option_values,
     _uv_prefix_and_payload,
-    command_pytest_targets,
     parse_python_invocation,
     pytest_run_selections,
 )
@@ -1446,10 +1445,11 @@ def _focused_pytest_family(invocation: PythonInvocation) -> dict[str, object]:
     ``python -m pytest``, a wrapper). A run that is not an exact plan command is
     a focused proof. Its selections and their owners resolve against one
     checkout: the root of the plan that judges ownership, never the admitting
-    tree. A selected path is owned when a proof-plan command or named lane
-    selects it, a directory that holds it, or a node in it: authority is
-    declared per command, so a node row owns its file here (the CI coverage
-    gate keeps its own rule). The run executes everything inside a selected
+    tree. pytest custody reads the argv first, so admission refuses what a run
+    would refuse. A selected path is owned when a proof-plan command or named
+    lane declares it as a ``pytest`` target, declares a directory that holds it,
+    or declares a node in it: authority is declared per row, so a node row owns
+    its file here (the CI coverage gate keeps its own rule). The run executes everything inside a selected
     directory, so it admits the toolchains and native units of every row whose
     targets lie on, above or inside a selection, and the one Cargo build-Python
     role those rows declare. Its receipt never stands in for an owner's proof
@@ -1468,8 +1468,7 @@ def _focused_pytest_family(invocation: PythonInvocation) -> dict[str, object]:
         (
             row,
             tuple(
-                target.path
-                for target in command_pytest_targets(row.argv, root=root) or ()
+                target.split("::", 1)[0].rstrip("/") for target in row.pytest_targets
             ),
         )
         for row in (*plan.commands, *plan.named_lanes)

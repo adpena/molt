@@ -3,14 +3,13 @@
 
 CI runs only what the proof plan's commands select, so a test file that no
 command selects never runs in CI and can rot unseen. A file is owned when a
-plan pytest command selects it or a directory that contains it, as pytest's own
-parser reads the argv (the proof queue's ``command_pytest_targets``): an option
-value such as ``--ignore tests/x.py`` selects nothing, and a command that does
-not run pytest selects no test file. A node selection (``path::node``) runs
-only that node, so it does not own the rest of its file. The baseline records
-the files without an owner; it may only shrink. A new test file must join a
-plan command, and a file that gains an owner (or is deleted) must leave the
-baseline.
+plan command's declared ``pytest`` targets name it or a directory that contains
+it (HF-179). The plan declares targets as data, so option values and tools that
+are not pytest never own a test file, and this gate imports nothing but the
+standard library. A node target (``path::node``) runs only that node, so it
+does not own the rest of its file. The baseline records the files without an
+owner; it may only shrink. A new test file must join a plan command, and a file
+that gains an owner (or is deleted) must leave the baseline.
 """
 
 from __future__ import annotations
@@ -21,16 +20,8 @@ from pathlib import Path, PurePosixPath
 import sys
 import tomllib
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
 
-from tools.import_file import bind_repository_imports  # noqa: E402
-
-ROOT = bind_repository_imports(__file__)
-
-from tools.proof_command_argv import command_pytest_targets  # noqa: E402
-
+ROOT = Path(__file__).resolve().parents[1]
 BASELINE_NAME = "tools/test_ownership_baseline.json"
 SCHEMA_VERSION = 1
 # pyproject's addopts ignore these trees; their own runners own them.
@@ -48,13 +39,13 @@ def test_files(root: Path) -> set[str]:
 
 
 def plan_targets(root: Path) -> set[str]:
-    """Every whole test file or directory that a plan pytest command selects."""
+    """Every whole test file or directory that a plan command declares."""
     plan = tomllib.loads((root / "tools" / "proof_plan.toml").read_text("utf-8"))
     return {
-        target.path
+        target
         for command in plan.get("command", [])
-        for target in command_pytest_targets(command.get("argv", []), root=root) or ()
-        if target.node is None
+        for target in command.get("pytest", [])
+        if "::" not in target
     }
 
 

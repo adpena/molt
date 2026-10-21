@@ -156,20 +156,25 @@ def _run_under_real_child_audit(envelope, exact, environment, tmp_path):
     import socket
     import sys
     import threading
+    from molt.cargo_execution_policy import default_nested_process_timeout_seconds
     from tools.proof_queue_pkg import command_identity
     from tests.process_guard_common import run_custody_subject_process
 
+    # A nested real pytest under the custody bootstrap takes 9-17 s on an idle
+    # host and more under load, so it shares the one nested execution budget
+    # instead of a fixed wall clock (review v3, finding 9).
+    deadline = default_nested_process_timeout_seconds("execution")
     events = []
     errors = []
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
     listener.listen(1)
-    listener.settimeout(30)
+    listener.settimeout(deadline)
 
     def broker():
         try:
             with listener, listener.accept()[0] as client:
-                client.settimeout(30)
+                client.settimeout(deadline)
                 with client.makefile("rb") as stream:
                     while line := stream.readline():
                         event = json.loads(line)
@@ -218,12 +223,12 @@ def _run_under_real_child_audit(envelope, exact, environment, tmp_path):
         launch,
         cwd=tmp_path,
         env=env,
-        timeout=30,
+        timeout=deadline,
         capture_output=True,
         text=True,
         check=False,
     )
-    thread.join(timeout=30)
+    thread.join(timeout=deadline)
     assert not thread.is_alive(), "custody broker did not terminate"
     assert not errors, errors
     output = tmp_path / "stdout.bin"

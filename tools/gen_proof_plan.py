@@ -224,9 +224,7 @@ def _json_projection(plan: ProofPlan) -> str:
             "always_toolchains": plan.always_toolchains,
             "rule": plan.local_rules,
         },
-        memory_units=PytestMemoryUnits(
-            (command.data for command in plan.commands), root=plan.path.parent.parent
-        ),
+        memory_units=PytestMemoryUnits(command.data for command in plan.commands),
     )
     local_commands = {
         identifier: command for identifier, (command, _) in local_rows.items()

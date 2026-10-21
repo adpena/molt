@@ -9,7 +9,8 @@ def _repo(root: Path, *, argv: list[str], tests: list[str]) -> Path:
     (root / "tools").mkdir(parents=True)
     quoted = ", ".join(f'"{item}"' for item in argv)
     (root / "tools" / "proof_plan.toml").write_text(
-        f'[[command]]\nid = "unit"\nargv = ["uv", "run", "pytest", {quoted}]\n',
+        f'[[command]]\nid = "unit"\nargv = ["uv", "run", "pytest"]\n'
+        f"pytest = [{quoted}]\n",
         encoding="utf-8",
     )
     for test in tests:
@@ -38,16 +39,15 @@ def test_files_named_by_path_or_directory_are_owned_but_a_node_is_not(
     assert ownership.unowned(root) == {"tests/test_b.py", "tests/test_d.py"}
 
 
-def test_only_a_file_that_pytest_selects_has_an_owner(tmp_path: Path) -> None:
-    # pytest's own parser reads each command (HF-179). pytest runs neither a
-    # file it is told to --ignore nor one named only as a --deselect value,
-    # and a tool that is not pytest runs no pytest file, though all three
-    # spell a tests/ path.
+def test_only_a_declared_pytest_target_owns_a_file(tmp_path: Path) -> None:
+    # The plan declares each row's pytest targets as data (HF-179). A path in a
+    # row's options (--ignore, --deselect) and a path that another tool names
+    # are not targets that CI runs, though all of them spell a tests/ path.
     (tmp_path / "tools").mkdir()
     (tmp_path / "tools" / "proof_plan.toml").write_text(
         '[[command]]\nid = "unit"\nargv = ["uv", "run", "pytest", "--ignore", '
-        '"tests/test_ignored.py", "--deselect", "tests/test_deselected.py", '
-        '"tests/test_a.py"]\n'
+        '"tests/test_ignored.py", "--deselect", "tests/test_deselected.py"]\n'
+        'pytest = ["tests/test_a.py"]\n'
         '[[command]]\nid = "tool"\nargv = ["python", "tools/runner.py", '
         '"tests/test_operand.py"]\n',
         encoding="utf-8",

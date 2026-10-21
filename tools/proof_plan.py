@@ -213,6 +213,118 @@ def cargo_native_units(data: Mapping[str, Any]) -> dict[str, list[str]]:
     }
 
 
+PYTEST_WORKER_MEMORY_OPTION = "--molt-worker-memory-gb"
+
+
+def pytest_declaration_argv(data: Mapping[str, Any]) -> tuple[str, ...]:
+    """The argv tail that a row's typed pytest declaration contributes.
+
+    A pytest row declares its targets as ``pytest`` and its measured worker
+    unit as ``pytest_worker_memory_gb``, as local rules declare ``pytest``
+    (HF-179). The plan reads those facts as data; this projection is the only
+    place they become argv, after the row's declared launch prefix and options.
+    """
+    unit = data.get("pytest_worker_memory_gb")
+    targets = data.get("pytest", ())
+    return (
+        *((f"{PYTEST_WORKER_MEMORY_OPTION}={unit}",) if unit is not None else ()),
+        *(str(target) for target in targets if isinstance(targets, list)),
+    )
+
+
+def pytest_target_spelling_error(
+    target: str, *, root: Path, listings: dict[Path, frozenset[str]]
+) -> str | None:
+    """Why a declared pytest target is not the one spelling of an existing test.
+
+    CI selection, focused admission and the ownership gate compare declared
+    targets as text, so each test has one spelling (HF-179): a relative POSIX
+    path, each of whose ``/``-separated segments is a name its parent directory
+    lists, case included, then an optional non-empty ``::node``. No directory
+    lists an empty, ``.`` or ``..`` name, so a leading or trailing or doubled
+    slash and a relative segment have no place in it, and a case-insensitive
+    file system cannot admit another case. ``listings`` caches each
+    directory's names for one validation pass.
+    """
+    path, separator, node = target.partition("::")
+    if separator and not node:
+        return f"pytest target {target!r} names an empty node"
+    directory = root
+    for part in path.split("/"):
+        names = listings.get(directory)
+        if names is None:
+            try:
+                names = frozenset(os.listdir(directory))
+            except OSError:
+                names = frozenset()
+            listings[directory] = names
+        if part not in names:
+            return f"pytest target does not exist with this exact spelling: {target!r}"
+        directory = directory / part
+    if separator and not directory.is_file():
+        return f"pytest node id must name a file: {target!r}"
+    return None
+
+
+def pytest_declaration_errors(
+    label: str,
+    data: Mapping[str, Any],
+    *,
+    root: Path = ROOT,
+    listings: dict[Path, frozenset[str]] | None = None,
+) -> list[str]:
+    """Check a row's typed pytest declaration without importing pytest.
+
+    pytest's own reading of each declared row, including the checkout's
+    addopts, is proven by the plan's tests in the project environment.
+    """
+    errors: list[str] = []
+    argv = data.get("argv")
+    if isinstance(argv, list) and any(
+        isinstance(part, str)
+        and (
+            part == PYTEST_WORKER_MEMORY_OPTION
+            or part.startswith(PYTEST_WORKER_MEMORY_OPTION + "=")
+        )
+        for part in argv
+    ):
+        errors.append(
+            f"{label}: declare the worker unit as pytest_worker_memory_gb, "
+            f"not as {PYTEST_WORKER_MEMORY_OPTION} in argv"
+        )
+    unit = data.get("pytest_worker_memory_gb")
+    if unit is not None:
+        size = unit * 1024**3 if isinstance(unit, (int, float)) else math.nan
+        if isinstance(unit, bool) or not math.isfinite(size) or size < 1:
+            errors.append(
+                f"{label}: pytest_worker_memory_gb must describe a positive "
+                "finite byte count"
+            )
+    targets = data.get("pytest")
+    if targets is None:
+        if unit is not None:
+            errors.append(f"{label}: pytest_worker_memory_gb requires pytest targets")
+        return errors
+    if (
+        not isinstance(targets, list)
+        or not targets
+        or not all(
+            isinstance(target, str) and target and not target.startswith(("-", "@"))
+            for target in targets
+        )
+    ):
+        errors.append(f"{label}: pytest must be a non-empty list of test paths")
+        return errors
+    if len(set(targets)) != len(targets):
+        errors.append(f"{label}: pytest targets must be unique")
+    listings = {} if listings is None else listings
+    for target in targets:
+        error = pytest_target_spelling_error(target, root=root, listings=listings)
+        if error is not None:
+            errors.append(f"{label}: {error}")
+    return errors
+
+
 @dataclass(frozen=True, slots=True)
 class ProofCommand:
     id: str
@@ -228,7 +340,13 @@ class ProofCommand:
 
     @property
     def argv(self) -> tuple[str, ...]:
-        return tuple(self.data["argv"])
+        """The executed argv: the declared prefix, then the pytest declaration."""
+        return (*self.data["argv"], *pytest_declaration_argv(self.data))
+
+    @property
+    def pytest_targets(self) -> tuple[str, ...]:
+        """The declared test targets of a pytest row; empty for other tools."""
+        return pytest_declaration_argv({"pytest": self.data.get("pytest", [])})
 
     @property
     def toolchains(self) -> tuple[str, ...]:
@@ -257,11 +375,16 @@ class NamedLane:
 
     @property
     def argv(self) -> tuple[str, ...]:
-        return self.command_prefix + self.differential_cases
+        return self.command_prefix + self.pytest_targets + self.differential_cases
 
     @property
     def command_prefix(self) -> tuple[str, ...]:
         return tuple(str(value) for value in self.data.get("argv", ()))
+
+    @property
+    def pytest_targets(self) -> tuple[str, ...]:
+        """The declared test targets of a pytest lane, as for a command."""
+        return pytest_declaration_argv({"pytest": self.data.get("pytest", [])})
 
     @property
     def differential_cases(self) -> tuple[str, ...]:
@@ -595,38 +718,26 @@ class PytestMemoryUnits:
     no finer memory measurement is inferred from a -k or -m expression.
     """
 
-    def __init__(self, commands: Iterable[Mapping[str, Any]], *, root: Path) -> None:
-        from tools.proof_command_argv import command_pytest_targets
-
+    def __init__(self, commands: Iterable[Mapping[str, Any]]) -> None:
         self._root = _PytestMemoryNode()
-        option = "--molt-worker-memory-gb"
         for command in commands:
-            argv = command.get("argv", ())
-            unit = None
-            for index, argument in enumerate(argv):
-                if argument == option:
-                    if index + 1 == len(argv):
-                        raise ValueError(f"{option} requires a value")
-                    raw = argv[index + 1]
-                elif argument.startswith(option + "="):
-                    raw = argument[len(option) + 1 :]
-                else:
-                    continue
-                unit = float(raw)
-                size = unit * 1024**3
-                if not math.isfinite(size) or size < 1:
-                    raise ValueError(
-                        f"{option} must describe a positive finite byte count"
-                    )
+            # A row declares its targets and measured unit as data (HF-179);
+            # nothing reads them back from argv, and no test is collected.
+            unit = command.get("pytest_worker_memory_gb")
             if unit is None:
                 continue
-            # pytest's own parser names the command's targets (HF-179): an
-            # option value such as a --deselect node owns no envelope. No test
-            # is collected.
-            for target in command_pytest_targets(argv, root=root) or ():
+            if isinstance(unit, bool) or not isinstance(unit, (int, float)):
+                raise ValueError("pytest_worker_memory_gb must be a number")
+            unit = float(unit)
+            size = unit * 1024**3
+            if not math.isfinite(size) or size < 1:
+                raise ValueError(
+                    "pytest_worker_memory_gb must describe a positive finite byte count"
+                )
+            for target in command.get("pytest", ()):
                 node = self._root
                 node.maximum_gb = max(node.maximum_gb, unit)
-                for component in _pytest_target_parts(str(target)):
+                for component in _pytest_target_parts(target):
                     child = node.children.get(component)
                     if child is None:
                         child = node.children[component] = _PytestMemoryNode()
@@ -675,7 +786,7 @@ def local_pytest_argv(
         *_LOCAL_PYTEST_PREFIX,
         "-n",
         "auto",
-        f"--molt-worker-memory-gb={unit}",
+        f"{PYTEST_WORKER_MEMORY_OPTION}={unit}",
         *select,
         *targets,
     )
@@ -824,11 +935,16 @@ def local_pytest_target_errors(
         return [f"{name}: pytest must be a list of test paths"]
     errors = []
     tests_root = (root / "tests").resolve()
+    listings: dict[Path, frozenset[str]] = {}
     for target in targets:
         path = target.split("::", 1)[0]
         candidate = (root / path).resolve()
         if not path.startswith("tests/") or not candidate.is_relative_to(tests_root):
             errors.append(f"{name}: pytest target {target!r} must be a tests/ path")
+        elif (
+            error := pytest_target_spelling_error(target, root=root, listings=listings)
+        ) is not None:
+            errors.append(f"{name}: {error}")
         elif not candidate.is_file():
             errors.append(f"{name}: pytest target {target!r} does not exist")
     return errors
@@ -863,9 +979,9 @@ def argv_repository_paths(argv: Iterable[object]) -> tuple[str, ...]:
 
     A token names a path when its text before any ``::`` is a source root or
     lies under one. This reads the argv of any tool, so it cannot tell an
-    operand from an option value; a pytest command's test targets come from
-    ``command_pytest_targets`` instead. Plan validation (each path must exist)
-    and the test inputs of commands that do not run pytest read this rule.
+    operand from an option value; a pytest row declares its test targets in
+    ``pytest`` instead. Plan validation (each path must exist) and the test
+    inputs of commands that do not run pytest read this rule.
     """
     prefixes = tuple(f"{root}/" for root in _REPOSITORY_SOURCE_ROOTS)
     paths: dict[str, None] = {}
@@ -879,16 +995,12 @@ def argv_repository_paths(argv: Iterable[object]) -> tuple[str, ...]:
 
 
 def _resolve_ci_command_test_inputs(
-    families: tuple[ProofFamily, ...],
-    commands: tuple[ProofCommand, ...],
-    *,
-    root: Path,
+    families: tuple[ProofFamily, ...], commands: tuple[ProofCommand, ...]
 ) -> None:
     """Project validated command targets into their change-selected owners.
 
-    A pytest command's targets are what pytest's own parser selects
-    (``command_pytest_targets``, HF-179): an option value is never one, and a
-    node id selects its file. A command that does not run pytest has no pytest
+    A pytest command's inputs are its declared ``pytest`` targets (HF-179), and
+    a node id selects its file. A command that does not run pytest declares no
     targets; the ``tests`` paths its argv names (``argv_repository_paths``) are
     its test inputs. A literal target owns itself and its descendants, whether
     it is a file or directory. The existing ``path/**`` matcher expresses that
@@ -896,18 +1008,18 @@ def _resolve_ci_command_test_inputs(
     of a target's spelling. Scheduled families have no changed-path owner.
     Resolve once at load time; selection and generated projections read the
     same family data. Work is linear in declared argv, inputs and path parts.
-    ``root`` is the plan's checkout.
     """
-    from tools.proof_command_argv import command_pytest_targets
-
     targets: dict[str, dict[str, None]] = {family.name: {} for family in families}
     for command in commands:
         owner = targets.get(command.family)
         if owner is None:
             continue
-        pytest_targets = command_pytest_targets(command.argv, root=root)
-        if pytest_targets is not None:
-            owner.update(dict.fromkeys(target.path for target in pytest_targets))
+        if command.pytest_targets:
+            owner.update(
+                dict.fromkeys(
+                    target.split("::", 1)[0] for target in command.pytest_targets
+                )
+            )
             continue
         for path in argv_repository_paths(command.argv):
             if path == "tests" or path.startswith("tests/"):
@@ -1149,13 +1261,10 @@ class ProofPlan:
             always=tuple(data.get("always", [])),
             always_toolchains=tuple(data.get("always_toolchains", [])),
         )
-        from tools.proof_command_argv import checkout_pytest_configuration_errors
-
-        root = path.parent.parent
-        errors = [*plan.validate(), *checkout_pytest_configuration_errors(root)]
+        errors = plan.validate()
         if errors:
             raise ValueError("invalid proof plan:\n- " + "\n- ".join(errors))
-        _resolve_ci_command_test_inputs(plan.families, plan.commands, root=root)
+        _resolve_ci_command_test_inputs(plan.families, plan.commands)
         return plan
 
     def named_lane(self, lane_id: str) -> NamedLane:
@@ -1164,7 +1273,9 @@ class ProofPlan:
                 return lane
         raise KeyError(f"proof plan has no named lane {lane_id!r}")
 
-    def _validate_named_lanes(self, errors: list[str]) -> None:
+    def _validate_named_lanes(
+        self, errors: list[str], listings: dict[Path, frozenset[str]]
+    ) -> None:
         policy_names = {policy.name for policy in self.toolchain_policies}
         command_argvs = {
             tuple(str(value) for value in command.argv) for command in self.commands
@@ -1189,10 +1300,19 @@ class ProofPlan:
                     "cargo_native_units",
                     "cargo_build_python",
                     "differential_cases",
+                    "pytest",
                 }
             )
             if extra:
                 errors.append(f"{lane.id}: unknown named lane fields {sorted(extra)!r}")
+            errors.extend(
+                pytest_declaration_errors(lane.id, lane.data, listings=listings)
+            )
+            if "pytest" in lane.data and "differential_cases" in lane.data:
+                errors.append(
+                    f"{lane.id}: a named lane declares pytest targets or "
+                    "differential cases, not both"
+                )
             try:
                 cargo_native_units(lane.data)
                 cargo_build_python(lane.data)
@@ -1266,7 +1386,9 @@ class ProofPlan:
         errors: list[str] = []
         if self.receipt_schema != proof_receipts.RECEIPT_SCHEMA:
             errors.append(f"receipt_schema must be {proof_receipts.RECEIPT_SCHEMA!r}")
-        self._validate_named_lanes(errors)
+        # One directory listing per checkout directory for every declared target.
+        listings: dict[Path, frozenset[str]] = {}
+        self._validate_named_lanes(errors, listings)
         if self.executor_max_workers <= 0:
             errors.append("executor_max_workers must be positive")
         if not 1 <= self.inventory_hash_workers <= 32:
@@ -2130,6 +2252,9 @@ class ProofPlan:
                 cargo_build_python(command.data)
             except ValueError as exc:
                 errors.append(f"{command.id}: {exc}")
+            errors.extend(
+                pytest_declaration_errors(command.id, command.data, listings=listings)
+            )
             toolchains = command.data.get("toolchains")
             if (
                 not isinstance(toolchains, list)
@@ -2240,7 +2365,7 @@ class ProofPlan:
                         )
                 shape = (
                     command.family,
-                    tuple(argv),
+                    command.argv,
                     str(command.data.get("cwd", ".")),
                     str(command.data.get("cell", "")),
                 )

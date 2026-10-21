@@ -1,22 +1,19 @@
 """Proof-command argv: the program an argv runs and the tests pytest selects.
 
-This is the one authority for reading a proof command's argv (HF-179). Proof
-admission registers and admits commands through it, and the proof plan reads it
-for CI selection and pytest memory units, as the test-ownership gate does. The
-plan classifies changes with this module, so it is a proof-plan authority input
-and keeps a light import closure: nothing here imports the compiler. Every
-function that resolves a path takes the checkout it reads as ``root``.
+This is the one reading of a proof command's argv (HF-179): the Python
+invocation and its ``uv run`` transport, the typed wrappers, the program
+entrypoint and, for a focused pytest proof, the paths pytest selects. Proof
+admission and the queue's command identity read it. The proof plan does not: a
+plan row declares its pytest targets as data. Every function that resolves a
+path takes the checkout it reads as ``root``.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-import functools
-import os
 from pathlib import Path
 import re
-import shlex
-from typing import Any, Sequence
+from typing import Sequence
 
 from tools.proof_queue_pkg.python_payload_authority import is_molt_cli_payload
 
@@ -227,6 +224,58 @@ def _uv_option_values(prefix: Sequence[str], name: str) -> list[str]:
     return values
 
 
+def project_python(root: Path) -> str:
+    """The interpreter that `uv run --python` selects in ``root``, as major.minor.
+
+    uv runs the project interpreter that ``.python-version`` pins (the plan's
+    ``python`` toolchain policy records the same pin as setup evidence). The
+    default compile target is a different fact and may move on its own.
+    """
+    pin_path = root / ".python-version"
+    pin = pin_path.read_text(encoding="utf-8").strip()
+    match = re.fullmatch(r"(3\.[0-9]+)(?:\.[0-9]+)?", pin)
+    if match is None:
+        raise ValueError(f"{pin_path} must pin one CPython 3.x version, not {pin!r}")
+    return match.group(1)
+
+
+def uv_project_contract(root: Path) -> tuple[str, ...]:
+    """The `uv run` launch prefix of every queued Python proof in ``root``.
+
+    One owner for the contract: queue policy refuses an incomplete `uv run`
+    command with ``uv_project_contract_gaps``, a typed wrapper's transport must
+    have no gap, and the queue's own commands and help text spell it from here.
+    """
+    return (
+        "uv",
+        "run",
+        "--active",
+        "--project",
+        ".",
+        "--python",
+        project_python(root),
+        "--no-sync",
+        "--no-config",
+    )
+
+
+def uv_project_contract_gaps(prefix: Sequence[str], *, root: Path) -> list[str]:
+    """What a `uv run` prefix lacks of ``uv_project_contract(root)``."""
+    python = project_python(root)
+    gaps = []
+    if "--active" not in prefix:
+        gaps.append("--active")
+    if _uv_option_values(prefix, "--project") != ["."]:
+        gaps.append("--project .")
+    if _uv_option_values(prefix, "--python") != [python]:
+        gaps.append(f"--python {python}")
+    if "--no-sync" not in prefix:
+        gaps.append("--no-sync")
+    if "--no-config" not in prefix:
+        gaps.append("--no-config")
+    return gaps
+
+
 def _uv_prefix_and_payload(argv: Sequence[str]) -> tuple[list[str], list[str]]:
     if len(argv) < 3 or argv[1] != "run":
         raise ValueError("proof queue only models `uv run` execution envelopes")
@@ -337,23 +386,11 @@ def _command_wrapper(
     if name is None:
         return None
     if transport_prefix is not None:
-        allowed = {
-            "run",
-            "--active",
-            "--project",
-            ".",
-            "--python",
-            "3.12",
-            "--no-sync",
-            "--no-config",
-            "--offline",
-        }
-        if (
-            any(value not in allowed for value in transport_prefix[1:])
-            or not {"--active", "--no-sync", "--no-config"}.issubset(transport_prefix)
-            or _uv_option_values(transport_prefix, "--project") != ["."]
-            or _uv_option_values(transport_prefix, "--python") != ["3.12"]
-        ):
+        # The contract's own tokens, plus --offline; nothing else.
+        allowed = {*uv_project_contract(root)[1:], "--offline"}
+        if any(
+            value not in allowed for value in transport_prefix[1:]
+        ) or uv_project_contract_gaps(transport_prefix, root=root):
             raise ValueError(
                 "wrapper uv transport requires the active no-sync/no-config project contract"
             )
@@ -459,87 +496,6 @@ def _command_entrypoint(
     return None
 
 
-@dataclass(frozen=True, slots=True)
-class PytestTarget:
-    """One test path that a pytest argv selects, optionally narrowed to a node.
-
-    ``path`` is pytest's spelling of the file or directory, relative to the
-    invocation directory unless absolute, without a ``./`` prefix or a trailing
-    slash. ``node`` is the text after the first ``::``, where pytest splits it
-    (a parametrization may hold more ``::``), or None for the whole path.
-    """
-
-    path: str
-    node: str | None
-
-    @classmethod
-    def from_argument(cls, value: str) -> PytestTarget:
-        path, separator, node = value.partition("::")
-        while path.startswith("./"):
-            path = path[2:]
-        return cls(path.rstrip("/") or path, node if separator else None)
-
-    def __str__(self) -> str:
-        return self.path if self.node is None else f"{self.path}::{self.node}"
-
-
-@dataclass(frozen=True, slots=True)
-class PytestArguments:
-    """pytest's own reading of one argument list, before any configuration."""
-
-    targets: tuple[PytestTarget, ...]
-    pyargs: bool
-    override_ini: tuple[str, ...]
-    inifile: str | None
-    rootdir: str | None
-
-
-@functools.lru_cache(maxsize=1)
-def _pytest_option_parser() -> Any:
-    """pytest's own argument parser with its builtin and installed plugins.
-
-    Only pytest knows which of its options take a value, so its parser, not a
-    second option table, tells test targets from option values. Conftest files
-    and ``-p`` modules are never imported here. An option they add is unknown
-    to this parser, and its separate value then reads as a target: that can
-    only add a path the caller must account for. Building the parser costs
-    about 0.3 s once per process.
-    """
-    try:
-        # pytest exposes no public parser constructor; get_config is the entry
-        # its own plugin bootstrap uses.
-        from _pytest.config import get_config
-    except ImportError as exc:  # pragma: no cover - the queue's environment has it
-        raise ValueError(
-            "pytest test targets need pytest in the reading environment"
-        ) from exc
-    config = get_config()
-    config.pluginmanager.load_setuptools_entrypoints("pytest11")
-    return config._parser
-
-
-def parse_pytest_arguments(arguments: Sequence[str]) -> PytestArguments:
-    """Read one pytest argument list with pytest's own parser (HF-179)."""
-    from _pytest.config.exceptions import UsageError
-
-    try:
-        namespace, _unknown = _pytest_option_parser().parse_known_and_unknown_args(
-            [str(value) for value in arguments]
-        )
-    except UsageError as exc:
-        raise ValueError(f"invalid pytest arguments: {exc}") from exc
-    return PytestArguments(
-        targets=tuple(
-            PytestTarget.from_argument(str(value))
-            for value in getattr(namespace, "file_or_dir", None) or ()
-        ),
-        pyargs=bool(getattr(namespace, "pyargs", False)),
-        override_ini=tuple(getattr(namespace, "override_ini", None) or ()),
-        inifile=getattr(namespace, "inifilename", None) or None,
-        rootdir=getattr(namespace, "rootdir", None) or None,
-    )
-
-
 def pytest_arguments(argv: Sequence[str], *, root: Path) -> tuple[str, ...] | None:
     """pytest's own arguments when ``argv`` runs pytest, however it is spelled.
 
@@ -568,119 +524,40 @@ def pytest_arguments(argv: Sequence[str], *, root: Path) -> tuple[str, ...] | No
     return parse_python_invocation([payload[0], *payload[offset:]]).arguments
 
 
-@functools.lru_cache(maxsize=4096)
-def _command_pytest_targets(
-    argv: tuple[str, ...], root: Path
-) -> tuple[PytestTarget, ...] | None:
-    arguments = pytest_arguments(argv, root=root)
-    return None if arguments is None else parse_pytest_arguments(arguments).targets
-
-
-def command_pytest_targets(
-    argv: Sequence[object], *, root: Path
-) -> tuple[PytestTarget, ...] | None:
-    """The test targets a proof-plan argv selects, or None when it is not pytest.
-
-    This is the one test-target authority (HF-179). The test-ownership gate,
-    CI selection, pytest memory units and focused queue admission all read it.
-    pytest's own parser reads the argv, so an option value (``--deselect``,
-    ``--ignore``, ``-k``, ``--basetemp``) is never a target, and a node id keeps
-    its node. A plan row is read without the checkout's ``addopts``;
-    ``checkout_pytest_configuration_errors`` holds those to selecting nothing.
-    ``root`` is the checkout the command runs in.
-    """
-    return _command_pytest_targets(tuple(str(value) for value in argv), root)
-
-
-def _configured_pytest_addopts(
-    arguments: PytestArguments, *, root: Path
-) -> tuple[str, ...]:
-    """The ``addopts`` of the configuration pytest selects for a run in ``root``.
-
-    pytest's own ``determine_setup`` chooses the configuration file from the
-    run's ``-c``, ``--rootdir`` and target paths, as ``pytest`` does when it is
-    invoked in ``root``. Relative spellings are anchored at ``root``, not at the
-    admitting process's working directory.
-    """
-    from _pytest.config.exceptions import UsageError
-    from _pytest.config.findpaths import determine_setup
-    from _pytest.outcomes import Failed
-
-    def anchored(value: str) -> str:
-        path = Path(value)
-        return str(path if path.is_absolute() else root / path)
-
-    try:
-        _rootpath, _inipath, inicfg, _ignored = determine_setup(
-            inifile=anchored(arguments.inifile) if arguments.inifile else None,
-            override_ini=arguments.override_ini,
-            args=[anchored(target.path) for target in arguments.targets],
-            rootdir_cmd_arg=(
-                anchored(os.path.expandvars(arguments.rootdir))
-                if arguments.rootdir
-                else None
-            ),
-            invocation_dir=root,
-        )
-    except (OSError, UsageError, Failed) as exc:
-        raise ValueError(
-            f"pytest configuration in {root} is unreadable: {exc}"
-        ) from exc
-    configured = inicfg.get("addopts")
-    if configured is None:
-        return ()
-    value = configured.value
-    if isinstance(value, str) and configured.mode == "ini":
-        return tuple(shlex.split(value))
-    if isinstance(value, list) and all(isinstance(item, str) for item in value):
-        return tuple(value)
-    raise ValueError(f"pytest addopts in {root} must be a string or a string list")
-
-
-def checkout_pytest_configuration_errors(root: Path) -> list[str]:
-    """Plan rows are read without addopts; the checkout's must select nothing.
-
-    ``command_pytest_targets`` reads a plan row's own argv. That equals what
-    pytest selects only while the checkout's ``addopts`` add no target and no
-    ``--pyargs``.
-    """
-    configured = parse_pytest_arguments(
-        _configured_pytest_addopts(parse_pytest_arguments(()), root=root)
-    )
-    errors = [
-        f"pytest addopts in {root} must not select tests; {target} does"
-        for target in configured.targets
-    ]
-    if configured.pyargs:
-        errors.append(f"pytest addopts in {root} must not use --pyargs")
-    return errors
-
-
 def pytest_run_selections(arguments: Sequence[str], *, root: Path) -> tuple[str, ...]:
     """The checkout test paths a focused run selects, read as pytest reads them.
 
-    pytest puts the ``addopts`` of its configuration before the argv. That
-    configuration is the checkout's file as ``-c``, ``--rootdir`` and the
-    targets choose it, with ``-o``/``--override-ini`` applied over it, so
-    ``-o addopts=...`` selects what it names, exactly as pytest runs it.
-    pytest reads ``testpaths`` only for a run that names no target, which a
-    focused proof refuses. ``python_files``, ``python_functions`` and the other
-    collection keys choose tests inside the selected paths, whose owners
-    already cover them. The result holds checkout-relative POSIX paths in the
-    order pytest receives them.
+    The pytest custody check (``read_pytest_run``) reads the run as the
+    sitecustomize bootstrap does when it starts: the configuration pytest
+    selects in ``root``, with ``-o`` applied, its ``addopts``, then the argv.
+    Admission refuses what custody refuses, among them ``@`` argument files and
+    an ``addopts`` override. Admission runs outside pytest, so it also reads
+    the installed and custody plugins' options, and a plugin option's value
+    never reads as a target. The queue strips ``PYTEST_ADDOPTS`` from every
+    run, so none applies here. ``testpaths`` applies only to a run that names
+    no target, which a focused proof refuses. The result holds
+    checkout-relative POSIX paths in the order pytest receives them.
     """
-    submitted = parse_pytest_arguments(arguments)
-    effective = parse_pytest_arguments(
-        (*_configured_pytest_addopts(submitted, root=root), *arguments)
+    from molt.pytest_memory_guard_bootstrap import read_pytest_run
+
+    run = read_pytest_run(
+        arguments,
+        environ={},
+        invocation_dir=root,
+        plugin_options=True,
+        repository_root=root,
     )
-    if effective.pyargs:
+    if run.violations:
+        raise ValueError("; ".join(run.violations))
+    assert run.effective is not None
+    if run.effective.pyargs:
         raise ValueError(
             "a focused pytest proof selects test paths; --pyargs names modules "
             "whose owning proof cells cannot be resolved"
         )
     checkout = root.resolve()
     selections: dict[str, None] = {}
-    for target in effective.targets:
+    for target in run.effective.targets:
         candidate = Path(target.path)
         resolved = (
             candidate if candidate.is_absolute() else checkout / candidate

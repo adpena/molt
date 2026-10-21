@@ -897,9 +897,9 @@ def test_structured_gate_preserves_node_ids_without_a_shell(
         "tests/test_x.py::test_one[spaces and & > 'quotes']",
         'tests/test_x.py::test_one["double quotes"]',
     )
-    from tools.proof_plan import ROOT, PytestMemoryUnits, local_pytest_argv
+    from tools.proof_plan import PytestMemoryUnits, local_pytest_argv
 
-    command = local_pytest_argv(targets, memory_units=PytestMemoryUnits((), root=ROOT))
+    command = local_pytest_argv(targets, memory_units=PytestMemoryUnits(()))
     observed = []
 
     def guarded(argv, **kwargs):
@@ -960,13 +960,14 @@ def test_landing_pytest_inherits_actual_larger_owning_units(drv):
 
 
 @pytest.mark.parametrize(
-    "unit", ["0", "-1", "nan", "inf", "1e-100", "1e308", "invalid", None]
+    "unit", ["0.0", "-1.0", "nan", "inf", "1e-100", "1e308", '"invalid"', "true"]
 )
 def test_gate_driver_rejects_malformed_declared_pytest_unit_before_admission(drv, unit):
-    argv = ["python", "-m", "pytest", "tests/test_x.py", "--molt-worker-memory-gb"]
-    if unit is not None:
-        argv.append(unit)
-    source = "[[command]]\nargv = " + json.dumps(argv)
+    source = (
+        '[[command]]\nargv = ["python", "-m", "pytest"]\n'
+        'pytest = ["tests/test_x.py"]\n'
+        f"pytest_worker_memory_gb = {unit}\n"
+    )
     with pytest.raises(drv.DriverError, match="invalid local gate policy"):
         drv.GateConfig.parse(source, "invalid worker unit")
 
