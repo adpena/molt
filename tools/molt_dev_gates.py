@@ -24,8 +24,10 @@ import time
 from typing import TYPE_CHECKING, Any, Protocol
 
 from tools import proof_executor, proof_receipts
+from tools.molt_dev_common import _say, _warn
 
 if TYPE_CHECKING:
+    from molt.disk_capacity import DiskCapacityProbe
     from molt.process_environment import ProcessEnvironment
 
 # Local always gates share the repository-policy resource class with their CI
@@ -128,6 +130,87 @@ def concurrent_gate_limit() -> int:
         bytes_per_worker=CONCURRENT_GATE_BYTES,
         headroom_bytes=host_capacity.headroom_bytes(host_capacity.memory_capacity()),
     )
+
+
+def admit_selected_output_capacity(
+    outputs: dict[tuple[str, ...], tuple[Path, ...]],
+    environments: dict[tuple[str, ...], ProcessEnvironment],
+) -> dict[tuple[str, ...], int]:
+    """Check current volumes before any gate, without forecasting growth."""
+    from molt.disk_capacity import minimum_headroom_bytes, require_build_capacity
+
+    requirements = {}
+    observed: set[tuple[tuple[Path, ...], int]] = set()
+    for tools, paths in outputs.items():
+        environment = environments[tools]
+        required = minimum_headroom_bytes(environment)
+        requirements[tools] = required
+        key = (paths, required)
+        if key in observed:
+            continue
+        receipt = require_build_capacity(paths, env=environment)
+        observed.add(key)
+        _say(
+            "    selected output capacity: "
+            + json.dumps(
+                {
+                    **receipt.as_dict(),
+                    "scope": "current Cargo-capable selected outputs",
+                    "remaining_campaign_growth_bytes": None,
+                    "reserved_bytes": 0,
+                },
+                sort_keys=True,
+            )
+        )
+    if outputs:
+        _say("    remaining campaign growth unknown; capacity is not reserved")
+    return requirements
+
+
+def observe_gate_capacity(
+    paths: tuple[Path, ...],
+    *,
+    required_bytes: int,
+    phase: str,
+    gate: str,
+    before: tuple[DiskCapacityProbe, ...] = (),
+) -> tuple[DiskCapacityProbe, ...]:
+    """Record interval observations; telemetry cannot change a gate verdict."""
+    from molt.disk_capacity import probe_capacity
+
+    try:
+        probes = tuple(
+            probe_capacity(path, required_bytes=required_bytes) for path in paths
+        )
+        previous = {probe.requested_path: probe.free_bytes for probe in before}
+        changes = {
+            str(probe.requested_path): (
+                probe.free_bytes - prior
+                if isinstance(prior := previous.get(probe.requested_path), int)
+                and isinstance(probe.free_bytes, int)
+                else None
+            )
+            for probe in probes
+        }
+        _say(
+            "    gate capacity: "
+            + json.dumps(
+                {
+                    "scope": "Cargo-capable gate interval; not exclusive allocation",
+                    "phase": phase,
+                    "gate": gate,
+                    "probes": [probe.as_dict() for probe in probes],
+                    "free_bytes_delta": changes if phase == "after" else {},
+                },
+                sort_keys=True,
+            )
+        )
+        return probes
+    except Exception as exc:
+        _warn(
+            f"gate capacity observation unavailable ({phase}): {type(exc).__name__}: {exc}"
+        )
+        return ()
 
 
 def run_selected_gates(

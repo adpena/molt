@@ -2094,23 +2094,34 @@ def test_integrate_gates_never_write_bytecode_into_the_checkout(
     # The caller's shell may already set the policy; integrate must not rely on it.
     monkeypatch.delenv("PYTHONDONTWRITEBYTECODE", raising=False)
     origin, work = origin_and_clone
+    observed = work.parent / "bytecode.json"
     _commit_file(work, "src/probe_import.py", "VALUE = 1\n", "feat: probe")
+    probe = (
+        "import json, sys; sys.path.insert(0, 'src'); import probe_import; "
+        f"open({str(observed)!r}, 'w').write(json.dumps([sys.pycache_prefix, "
+        "sys.dont_write_bytecode, probe_import.__cached__]))"
+    )
     _commit_file(
         work,
         "tools/proof_plan.toml",
-        """
+        f"""
 always = []
 
 [[rule]]
 name = "imports-source"
 globs = ["src/*.py"]
-gates = ["env python3 -c \\"import sys; sys.path.insert(0, 'src'); import probe_import\\""]
+gates = [{json.dumps(shlex.join(["env", "python3", "-c", probe]))}]
 """,
         "a gate that imports checkout source",
     )
     ns = _integrate_ns(drv, repo=str(work), no_push=True)
     drv.cmd_integrate(ns)
     assert not list((work / "src").rglob("__pycache__"))
+    # Gates share one bytecode prefix outside the checkout instead.
+    prefix, no_write, cached = json.loads(observed.read_text(encoding="utf-8"))
+    assert prefix and not Path(prefix).resolve().is_relative_to(work.resolve())
+    assert no_write is False
+    assert Path(cached).is_file() and Path(cached).is_relative_to(prefix)
 
 
 @pytest.mark.parametrize("pin_upstream", [False, True])
