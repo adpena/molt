@@ -31,6 +31,8 @@ from tools.import_file import (
     load_sibling_package_module_from_path,
 )
 
+from tools.memory_guard_core.cli_contract import guardian_argv
+
 
 def _harness_memory_guard() -> Any:
     from tools import harness_memory_guard
@@ -672,9 +674,9 @@ class CommandExecutor:
         if harness:
             # The harness worker runs the same memory_guard owner in this process;
             # preserve its preflight, profiling and sentinel without a second guard.
-            guarded_argv = [
-                sys.executable,
-                str(self.repo_root / "tools" / "guarded_exec.py"),
+            guarded_argv = guardian_argv(
+                sys.executable, self.repo_root / "tools" / "guarded_exec.py"
+            ) + [
                 "--prefix",
                 self.prefix,
                 "--cwd",
@@ -689,9 +691,9 @@ class CommandExecutor:
             if timeout is not None:
                 guarded_argv.extend(("--timeout", str(timeout)))
         else:
-            guarded_argv = [
-                sys.executable,
-                str(self.repo_root / "tools" / "memory_guard.py"),
+            guarded_argv = guardian_argv(
+                sys.executable, self.repo_root / "tools" / "memory_guard.py"
+            ) + [
                 "--max-rss-gb",
                 str(limits.max_process_rss_gb),
                 "--max-total-rss-gb",
