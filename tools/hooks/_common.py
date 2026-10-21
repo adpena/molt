@@ -19,9 +19,12 @@ So this module gives every hook the same spine:
 * cross-platform (``msvcrt`` on Windows, ``fcntl`` on POSIX) locked append for
   the append-only ledgers.
 
-Nothing here imports a third-party package -- hooks must run under any Python
-3.9+ interpreter (host ``python`` on the Windows box, or any fleet python),
-because the hook ``command`` in settings.json cannot depend on the molt venv.
+Nothing here imports a third-party package. Every hook runs under the
+checkout's own interpreter: ``.claude/settings.json`` starts each one through
+``tools/hooks/run.sh``, which selects the uv environment's Python. Claude Code
+runs hook commands with the app's PATH, which need not carry ``python`` (the
+macOS desktop app has none), and the hooks import repository tools that need
+the project's Python floor, not any interpreter that happens to be on PATH.
 """
 
 from __future__ import annotations

@@ -342,7 +342,8 @@ def decide(
                     override,
                     "build-bypasses-queue",
                     f"`{base} {sub}` is a heavy build launched while a proof_queue is LIVE. "
-                    "Route builds through the queue (M27): `python tools/proof_queue.py ...`.",
+                    "Route builds through the queue (M27): "
+                    "`uv run --python 3.12 python tools/proof_queue.py ...`.",
                 )
 
     # (d) https push to origin (M19)

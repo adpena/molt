@@ -11104,6 +11104,7 @@
         "globs": [
           ".claude/settings.json",
           "tools/hooks/**/*.py",
+          "tools/hooks/run.sh",
           "tools/check_gate_flips.py",
           "tools/check_gate_liveness.py",
           "tests/tools/test_hooks_bash_guard.py",
