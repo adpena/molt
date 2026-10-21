@@ -162,7 +162,11 @@ from tools.molt_dev_common import (  # noqa: E402
     EXIT_FAIL,
     EXIT_OK,
     EXIT_USAGE,
+    CandidateFailure,
     DriverError,
+    GateFailure,
+    PublicationRace,
+    RebaseConflict,
     _fail,
     _run_fast_captured_command,
     _ok,
@@ -182,6 +186,7 @@ from tools.git_identity import (  # noqa: E402
 )
 from tools.release.git_source_snapshot import immutable_git_environment  # noqa: E402
 from molt.file_locks import (  # noqa: E402
+    _acquire_file_lock,
     _release_file_lock,
     _try_acquire_file_lock,
 )
@@ -1071,7 +1076,7 @@ def _resolve_change_references(
             ).stdout.strip(),
         )
     except ValueError as exc:
-        raise DriverError(f"{exc}\nexecuted=0") from exc
+        raise CandidateFailure(f"{exc}\nexecuted=0") from exc
     for resolution in resolutions:
         _ok(f"{resolution.path}: change:{resolution.token} -> {resolution.commit}")
     if dry:
@@ -1204,7 +1209,15 @@ def cmd_integrate(args: argparse.Namespace) -> int:
             returncode = _integrate_exclusive(args, progress=progress)
             return returncode
         lock_path = _integration_lock_path(Path(args.repo).resolve())
-        handle = _try_acquire_file_lock(lock_path)
+        if args.wait_for_lock:
+            # The landing queue's runner waits out another integrator's
+            # landing; an interactive integrate still refuses at once.
+            _say("    waiting for the repository integration lock")
+            handle = _acquire_file_lock(
+                lock_path, timeout_s=None, timeout_message="", poll_s=2.0
+            )
+        else:
+            handle = _try_acquire_file_lock(lock_path)
         if handle is None:
             raise DriverError(
                 "another integration owns this Git repository; no fetch or gates ran. "
@@ -1336,7 +1349,7 @@ def _integrate_exclusive(
         if proc.returncode != 0:
             # Abort a half-applied rebase so the tree is never left mid-conflict.
             git._run(["rebase", "--abort"], check=False)
-            raise DriverError(
+            raise RebaseConflict(
                 f"rebase onto {upstream_ref} failed (conflicts?). Aborted the "
                 "rebase to restore the pre-rebase HEAD. Resolve manually, then "
                 f"re-run integrate.\n{proc.stdout.strip()}\n{proc.stderr.strip()}"
@@ -1400,9 +1413,13 @@ def _integrate_exclusive(
     matched_rules: list[GateRule] = []
     # Policy comes from the same immutable commit whose clean source executes it.
     policy = git._run(["show", f"{selected_commit}:tools/{GATES_CONFIG_NAME}"]).stdout
-    config = GateConfig.parse(
-        policy, f"{selected_commit}:tools/{GATES_CONFIG_NAME}", root=repo
-    )
+    try:
+        config = GateConfig.parse(
+            policy, f"{selected_commit}:tools/{GATES_CONFIG_NAME}", root=repo
+        )
+    except DriverError as exc:
+        # The selected commit's own gate policy is invalid.
+        raise CandidateFailure(str(exc), code=exc.code) from exc
     touched = changed_paths(
         upstream_before,
         selected_commit,
@@ -1422,7 +1439,9 @@ def _integrate_exclusive(
             for gate in gate_cmds
         ]
     except ValueError as exc:
-        raise DriverError(f"invalid local gate binding; executed=0: {exc}") from exc
+        raise CandidateFailure(
+            f"invalid local gate binding; executed=0: {exc}"
+        ) from exc
     progress.source_commit = selected_commit
     progress.gate_total = len(gate_cmds)
     progress.emit("candidate_selected")
@@ -1528,7 +1547,8 @@ def _integrate_exclusive(
     upstream_after = git.rev_parse(upstream_ref)
     landed = git.is_ancestor(head_to_push, upstream_after)
     if not landed:
-        raise DriverError(
+        error = PublicationRace if upstream_after != upstream_before else DriverError
+        raise error(
             f"PUSH NOT CONFIRMED (hazard 2): {upstream_ref} is now "
             f"{git.short(upstream_after)} but does NOT contain the pushed tip "
             f"{git.short(head_to_push)} (ancestor check failed). The push did "
@@ -1550,6 +1570,233 @@ def _integrate_exclusive(
         _ok("cleanup not requested (--cleanup-worktree to remove this worktree)")
 
     _ok("integrate complete: pushed + confirmed.")
+    return EXIT_OK
+
+
+# --------------------------------------------------------------------------
+# Subcommands: land, queue run, queue status (docs/design/landing_queue.md)
+# --------------------------------------------------------------------------
+
+
+def _queue_paths(repo: Path):
+    from tools.molt_dev_queue import QueuePaths
+
+    common_dir = _git_common_directory(repo)
+    if common_dir is None:
+        raise DriverError("cannot resolve the Git common directory for the queue")
+    return QueuePaths.of(common_dir)
+
+
+def cmd_land(args: argparse.Namespace) -> int:
+    from tools.molt_dev_queue import enqueue, pending
+
+    repo = Path(args.repo).resolve()
+    git = Git(repo)
+    head = require_git_object_id(git.head_sha(), label="landing source")
+    _assert_integration_source(git, head)
+    git.fetch(args.remote, args.branch)
+    upstream = git.rev_parse(f"{args.remote}/{args.branch}")
+    if git.is_ancestor(head, upstream):
+        _ok(f"{git.short(head)} is already on {args.remote}/{args.branch}")
+        return EXIT_OK
+    paths = _queue_paths(repo)
+    request = enqueue(paths, head=head, worktree=repo, branch=git.symbolic_head())
+    position = [item.id for item in pending(paths)].index(request.id) + 1
+    _ok(f"queued {request.id} (position {position}); the runner lands it")
+    _start_queue_runner(paths, repo, args)
+    if not args.wait:
+        return EXIT_OK
+    return _await_landing(paths, request.id)
+
+
+def _start_queue_runner(paths, repo: Path, args: argparse.Namespace) -> None:
+    """Start a runner unless one holds the runner lock; the lock decides."""
+    probe = _try_acquire_file_lock(paths.runner_lock)
+    if probe is None:
+        _ok("a landing runner is active; it takes this request")
+        return
+    _release_file_lock(probe)
+    # A unique name: a runner that is exiting never blocks the next one.
+    name = "runner-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    detached = build_parser().parse_args(
+        [
+            "detached-run",
+            "--name",
+            name,
+            "--state-dir",
+            str(paths.runners),
+            "--cwd",
+            str(repo),
+            "--",
+            sys.executable,
+            str(Path(__file__).resolve()),
+            "queue",
+            "run",
+            "--repo",
+            str(repo),
+            "--remote",
+            args.remote,
+            "--branch",
+            args.branch,
+        ]
+    )
+    cmd_detached_run(detached)
+
+
+def _await_landing(paths, request_id: str) -> int:
+    from tools.molt_dev_queue import read_result
+
+    while (result := read_result(paths, request_id)) is None:
+        time.sleep(10)
+    status = result["status"]
+    if status == "landed":
+        _ok(f"{request_id} landed in {result['landed'][:12]}")
+        return EXIT_OK
+    _fail(f"{request_id} {status}: {result['detail']}")
+    return EXIT_FAIL
+
+
+def _sandbox_git(paths, git: Git, upstream: str) -> Git:
+    """The queue's own worktree; created once, so its build state stays warm."""
+    sandbox = paths.sandbox
+    if not (sandbox / ".git").exists():
+        paths.sandbox.parent.mkdir(parents=True, exist_ok=True)
+        git._run(["worktree", "add", "--detach", "--quiet", str(sandbox), upstream])
+    listed = git._run(["worktree", "list", "--porcelain", "-z"]).stdout.split("\0")
+    if f"worktree {sandbox.resolve()}" not in listed:
+        raise DriverError(f"{sandbox} is not a worktree of this repository")
+    return Git(sandbox.resolve())
+
+
+def _land_one_batch(args: argparse.Namespace, git: Git, paths) -> None:
+    from tools import molt_dev_queue as queue
+
+    git.fetch(args.remote, args.branch)
+    upstream = require_git_object_id(
+        git.rev_parse(f"{args.remote}/{args.branch}"), label="queue upstream"
+    )
+    ready = queue.pending(paths)
+    for request in ready:
+        if git.is_ancestor(request.head, upstream):
+            queue.record_result(
+                paths, request, status="landed", landed=upstream,
+                detail="already on main when the runner took it",
+            )  # fmt: skip
+    ready = queue.pending(paths)
+    if not ready:
+        return
+    batch = queue.next_batch(paths, ready)
+    sandbox = _sandbox_git(paths, git, upstream)
+
+    def run_git(arguments):
+        proc = sandbox._run(list(arguments), check=False)
+        return queue.GitResult(proc.returncode, proc.stdout, proc.stderr)
+
+    _step(f"landing batch of {len(batch)} on {git.short(upstream)}")
+    candidate = queue.build_candidate(run_git, upstream, batch)
+    for request, reason in candidate.conflicted:
+        queue.record_result(paths, request, status="conflict", detail=reason)
+        _warn(f"{request.id} {reason}")
+    if not candidate.included:
+        queue.retire_batch_plan(paths, batch)
+        return
+    integration = build_parser().parse_args(
+        [
+            "integrate",
+            "--repo",
+            str(sandbox.repo),
+            "--remote",
+            args.remote,
+            "--branch",
+            args.branch,
+            "--wait-for-lock",
+            *(
+                ["--pinned-controller", args.pinned_controller]
+                if args.pinned_controller
+                else ["--candidate-controller"]
+            ),
+        ]
+    )
+    try:
+        cmd_integrate(integration)
+    except (RebaseConflict, PublicationRace) as exc:
+        # main moved under the batch; the next runner rebuilds it on the new tip.
+        _warn(f"main moved; rebuilding the batch: {exc}")
+        return
+    except CandidateFailure as exc:
+        if len(candidate.included) > 1:
+            _warn(f"batch of {len(candidate.included)} failed; bisecting")
+            queue.bisect(paths, batch, candidate.included)
+            return
+        (request,) = candidate.included
+        queue.record_result(paths, request, status="failed", detail=str(exc))
+        queue.retire_batch_plan(paths, batch)
+        return
+    landed = require_git_object_id(sandbox.head_sha(), label="landed batch")
+    for request in candidate.included:
+        queue.record_result(
+            paths, request, status="landed", landed=landed,
+            detail=f"landed with {len(candidate.included)} lane(s)",
+        )  # fmt: skip
+    queue.retire_batch_plan(paths, batch)
+
+
+def cmd_queue_run(args: argparse.Namespace) -> int:
+    from tools.molt_dev_queue import pending
+
+    repo = Path(args.repo).resolve()
+    git = Git(repo)
+    paths = _queue_paths(repo)
+    paths.root.mkdir(parents=True, exist_ok=True)
+    controller = _integration_controller(args)
+    # The runner serves every lane: the sandbox's gates use the sandbox's own
+    # environment, never the venv selection of whoever started the runner.
+    for key in ("MOLT_VENV", "UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV"):
+        os.environ.pop(key, None)
+    while True:
+        handle = _try_acquire_file_lock(paths.runner_lock)
+        if handle is None:
+            _ok("another landing runner is active")
+            return EXIT_OK
+        try:
+            _step(f"landing runner ({controller})")
+            _land_one_batch(args, git, paths)
+        finally:
+            _release_file_lock(handle)
+        # Checked after the release: a request that arrives later starts its
+        # own runner, so none waits on a runner that is about to exit.
+        if not pending(paths):
+            _ok("landing queue is empty")
+            return EXIT_OK
+        if args.pinned_controller is not None:
+            # Each batch runs under the driver of the main it lands on.
+            return _run_from_pinned_controller(
+                args,
+                ["queue", "run", "--remote", args.remote, "--branch", args.branch],
+            )
+
+
+def cmd_queue_status(args: argparse.Namespace) -> int:
+    from tools.molt_dev_queue import pending
+
+    paths = _queue_paths(Path(args.repo).resolve())
+    requests = pending(paths)
+    plan = (
+        json.loads(paths.plan.read_text(encoding="utf-8"))["groups"]
+        if paths.plan.is_file()
+        else []
+    )
+    results = (
+        sorted(paths.results.glob("*.json"))[-args.recent :]
+        if paths.results.is_dir()
+        else []
+    )
+    report = {
+        "pending": [request.id for request in requests],
+        "plan": plan,
+        "recent": [json.loads(path.read_text(encoding="utf-8")) for path in results],
+    }
+    print(json.dumps(report, indent=2, sort_keys=True))
     return EXIT_OK
 
 
@@ -2284,6 +2531,8 @@ def build_parser() -> argparse.ArgumentParser:
     # Set only by the pinned-controller handoff; names the controller this
     # process must be (molt_dev_controller.verify_pinned_controller).
     p_int.add_argument("--pinned-controller", help=argparse.SUPPRESS)
+    # Set only by the landing queue's runner (tools/molt_dev_queue.py).
+    p_int.add_argument("--wait-for-lock", action="store_true", help=argparse.SUPPRESS)
     p_int.add_argument(
         "--marker",
         action="append",
@@ -2311,6 +2560,39 @@ def build_parser() -> argparse.ArgumentParser:
         help="MOLT_SESSION_ID to export for gates (default env or 'devtool')",
     )
     p_int.set_defaults(func=cmd_integrate)
+
+    # land / queue (docs/design/landing_queue.md)
+    p_land = sub.add_parser(
+        "land",
+        help="queue this checkout's commit for the landing runner and return",
+    )
+    _add_repo_arg(p_land)
+    _add_remote_branch(p_land)
+    p_land.add_argument(
+        "--wait",
+        action="store_true",
+        help="wait for the result; exit 0 only when the commit landed",
+    )
+    p_land.set_defaults(func=cmd_land)
+
+    p_queue = sub.add_parser("queue", help="the landing queue's runner and state")
+    queue_sub = p_queue.add_subparsers(dest="queue_command", required=True)
+    p_run = queue_sub.add_parser(
+        "run", help="land queued commits in batches; `land` starts it"
+    )
+    _add_repo_arg(p_run)
+    _add_remote_branch(p_run)
+    p_run.add_argument(
+        "--candidate-controller",
+        action="store_true",
+        help="run this checkout's driver instead of main's pinned controller",
+    )
+    p_run.add_argument("--pinned-controller", help=argparse.SUPPRESS)
+    p_run.set_defaults(func=cmd_queue_run)
+    p_status = queue_sub.add_parser("status", help="pending requests and results")
+    _add_repo_arg(p_status)
+    p_status.add_argument("--recent", type=int, default=10, help="results to show")
+    p_status.set_defaults(func=cmd_queue_status)
 
     # secure-wip
     p_wip = sub.add_parser(
@@ -2530,8 +2812,8 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
-def _integrate_from_pinned_controller(args: argparse.Namespace, argv: list[str]) -> int:
-    """Fetch, then hand the landing to main's driver (docs/design/landing_queue.md)."""
+def _run_from_pinned_controller(args: argparse.Namespace, argv: list[str]) -> int:
+    """Fetch, then hand the command to main's driver (docs/design/landing_queue.md)."""
     from tools.molt_dev_controller import pinned_controller, run_controller
 
     repo = Path(args.repo).resolve()
@@ -2547,14 +2829,19 @@ def _integrate_from_pinned_controller(args: argparse.Namespace, argv: list[str])
     return run_controller(controller, argv, repo=repo)
 
 
+def _runs_from_pinned_controller(args: argparse.Namespace) -> bool:
+    """A landing and the queue runner run main's driver, never the candidate's."""
+    pinned = args.command == "integrate" and not args.dry_run
+    pinned = pinned or (args.command == "queue" and args.queue_command == "run")
+    return pinned and not (args.candidate_controller or args.pinned_controller)
+
+
 def main(argv: list[str]) -> int:
     ap = build_parser()
     args = ap.parse_args(argv)
     try:
-        if args.command == "integrate" and not (
-            args.dry_run or args.candidate_controller or args.pinned_controller
-        ):
-            return _integrate_from_pinned_controller(args, argv)
+        if _runs_from_pinned_controller(args):
+            return _run_from_pinned_controller(args, argv)
         return args.func(args)
     except (DriverError, ValueError) as exc:
         _say("")

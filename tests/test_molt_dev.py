@@ -74,6 +74,7 @@ from tools.molt_dev_common import (  # noqa: E402
     GateFailure,
     _run_fast_captured_command,
 )
+from tests.integration_driver_fixture import copy_driver_trees  # noqa: E402
 
 SCRIPT_PATH = REPO_ROOT / "tools" / "molt_dev.py"
 COMMITTED_GATES = REPO_ROOT / "tools" / "proof_plan.toml"
@@ -2467,7 +2468,9 @@ def exclusive(args, *, progress):
     return 73
 molt_dev._integrate_exclusive = exclusive
 try:
-    code = molt_dev.cmd_integrate(argparse.Namespace(repo=sys.argv[1], dry_run=False))
+    code = molt_dev.cmd_integrate(argparse.Namespace(
+        repo=sys.argv[1], dry_run=False, pinned_controller=None, wait_for_lock=False
+    ))
 except molt_dev.DriverError as error:
     result = {"busy": True, "message": str(error)}
 else:
@@ -2638,33 +2641,8 @@ def test_pinned_controller_is_reused_per_tree_and_replaced_when_main_changes(
 def test_real_driver_lands_and_retires_a_worktree_as_pinned_controller(
     origin_and_clone, tmp_path
 ):
-    # main carries this checkout's driver trees, copied from the working tree
-    # so the test runs the code under test, not the last commit.
     _, work = origin_and_clone
-    listed = _run_fast_captured_command(
-        [
-            "git",
-            "ls-files",
-            "-z",
-            "--cached",
-            "--others",
-            "--exclude-standard",
-            "--",
-            "tools",
-            "src/molt",
-            "pyproject.toml",
-            "uv.lock",
-            ".python-version",
-        ],
-        cwd=REPO_ROOT,
-    )
-    assert listed.returncode == 0, listed.stderr
-    for relative in filter(None, listed.stdout.split("\0")):
-        source = REPO_ROOT / relative
-        if source.is_file():
-            target = work / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source, target)
+    copy_driver_trees(work)
     (work / "tools" / "proof_plan.toml").write_text(
         'always = ["echo controller-gate"]\n', encoding="utf-8"
     )
@@ -2790,6 +2768,181 @@ def test_controller_retention_keeps_recent_and_retires_idle(tmp_path):
         "recent-b",
     }
     assert not (tmp_path / "old-a").exists()
+
+
+# --------------------------------------------------------------------------
+# Landing queue: batches, bisection, conflicts and races
+# --------------------------------------------------------------------------
+
+
+def _counting_policy(work: Path, counter: Path, check: str = "true") -> None:
+    """main's gate policy: each run appends one line, then runs `check`."""
+    (work / "tools" / "proof_plan.toml").write_text(
+        f"always = [{json.dumps(f'echo run >> {shlex.quote(str(counter))} && {check}')}]\n",
+        encoding="utf-8",
+    )
+    _git(work, "add", "--", "tools/proof_plan.toml")
+    _git(work, "commit", "-q", "--no-verify", "-m", "counting gate")
+    _git(work, "push", "-q", "origin", "HEAD:main")
+
+
+def _lane(work: Path, name: str, files: dict[str, str]) -> str:
+    lane = work.parent / f"lane-{name}"
+    _git(work, "fetch", "-q", "origin")
+    _git(work, "worktree", "add", "-q", "-b", f"lane/{name}", str(lane), "origin/main")
+    for rel, content in files.items():
+        tip = _commit_file(lane, rel, content, f"lane {name}: {rel}")
+    return tip
+
+
+def _enqueue(drv, work: Path, *heads: str):
+    from tools import molt_dev_queue as queue
+
+    paths = drv._queue_paths(work)
+    return paths, [
+        queue.enqueue(paths, head=head, worktree=work, branch=None) for head in heads
+    ]
+
+
+def _run_queue(drv, work: Path) -> int:
+    args = drv.build_parser().parse_args(
+        ["queue", "run", "--repo", str(work), "--candidate-controller"]
+    )
+    return drv.cmd_queue_run(args)
+
+
+def _statuses(paths, requests) -> list[str]:
+    from tools import molt_dev_queue as queue
+
+    return [queue.read_result(paths, request.id)["status"] for request in requests]
+
+
+def _origin_tree(work: Path) -> set[str]:
+    _git(work, "fetch", "-q", "origin")
+    return set(_git(work, "ls-tree", "-r", "--name-only", "origin/main").stdout.split())
+
+
+def test_queue_lands_ready_lanes_in_one_batch_with_one_gate_run(
+    drv, origin_and_clone, tmp_path
+):
+    _, work = origin_and_clone
+    counter = tmp_path / "gate-runs.txt"
+    _counting_policy(work, counter)
+    heads = [_lane(work, name, {f"{name}.py": f"{name} = 1\n"}) for name in "abc"]
+    paths, requests = _enqueue(drv, work, *heads)
+
+    assert _run_queue(drv, work) == drv.EXIT_OK
+
+    assert _statuses(paths, requests) == ["landed"] * 3
+    assert counter.read_text(encoding="utf-8").splitlines() == ["run"]
+    assert {"a.py", "b.py", "c.py"} <= _origin_tree(work)
+    from tools import molt_dev_queue as queue
+
+    landed = {queue.read_result(paths, r.id)["landed"] for r in requests}
+    assert landed == {_git(work, "rev-parse", "origin/main").stdout.strip()}
+    assert queue.pending(paths) == [] and not paths.plan.exists()
+
+
+def test_queue_bisects_a_failed_batch_and_lands_the_rest(
+    drv, origin_and_clone, tmp_path
+):
+    _, work = origin_and_clone
+    counter = tmp_path / "gate-runs.txt"
+    _counting_policy(work, counter, check="test ! -e broken.txt")
+    heads = [
+        _lane(work, "a", {"a.py": "a = 1\n"}),
+        _lane(work, "b", {"b.py": "b = 1\n"}),
+        _lane(work, "c", {"broken.txt": "breaks the gate\n"}),
+        _lane(work, "d", {"d.py": "d = 1\n"}),
+    ]
+    paths, requests = _enqueue(drv, work, *heads)
+
+    assert _run_queue(drv, work) == drv.EXIT_OK
+
+    assert _statuses(paths, requests) == ["landed", "landed", "failed", "landed"]
+    # [a b c d] fails, [a b] lands, [c d] fails, [c] fails alone, [d] lands.
+    assert len(counter.read_text(encoding="utf-8").splitlines()) == 5
+    tree = _origin_tree(work)
+    assert {"a.py", "b.py", "d.py"} <= tree and "broken.txt" not in tree
+    from tools import molt_dev_queue as queue
+
+    assert "gate failed" in queue.read_result(paths, requests[2].id)["detail"]
+
+
+def test_queue_leaves_a_conflicting_lane_out_of_its_batch(
+    drv, origin_and_clone, tmp_path
+):
+    _, work = origin_and_clone
+    _counting_policy(work, tmp_path / "gate-runs.txt")
+    first = _lane(work, "first", {"shared.txt": "first\n"})
+    second = _lane(work, "second", {"shared.txt": "second\n"})
+    paths, requests = _enqueue(drv, work, first, second)
+
+    assert _run_queue(drv, work) == drv.EXIT_OK
+
+    assert _statuses(paths, requests) == ["landed", "conflict"]
+    _git(work, "fetch", "-q", "origin")
+    assert _git(work, "show", "origin/main:shared.txt").stdout == "first\n"
+    from tools import molt_dev_queue as queue
+
+    detail = queue.read_result(paths, requests[1].id)["detail"]
+    assert "does not apply" in detail
+
+
+def test_queue_rebuilds_a_batch_when_main_moves_under_it(
+    drv, origin_and_clone, tmp_path
+):
+    origin, work = origin_and_clone
+    other = tmp_path / "other"
+    _git(tmp_path, "clone", "-q", str(origin), str(other))
+    _git(other, "config", "user.email", "o@molt.test")
+    _git(other, "config", "user.name", "Other")
+    once = tmp_path / "moved-once"
+    # The first gate run publishes an unrelated commit before the push.
+    move = (
+        f"if [ ! -e {shlex.quote(str(once))} ]; then touch {shlex.quote(str(once))}"
+        f" && git -C {shlex.quote(str(other))} pull -q --rebase"
+        f" && echo x > {shlex.quote(str(other / 'moved.txt'))}"
+        f" && git -C {shlex.quote(str(other))} add moved.txt"
+        f" && git -C {shlex.quote(str(other))} commit -qm moved"
+        f" && git -C {shlex.quote(str(other))} push -q origin HEAD:main; fi"
+    )
+    _counting_policy(work, tmp_path / "gate-runs.txt", check=move)
+    head = _lane(work, "a", {"a.py": "a = 1\n"})
+    paths, requests = _enqueue(drv, work, head)
+
+    assert _run_queue(drv, work) == drv.EXIT_OK
+
+    assert _statuses(paths, requests) == ["landed"]
+    assert {"a.py", "moved.txt"} <= _origin_tree(work)
+    assert len((tmp_path / "gate-runs.txt").read_text().splitlines()) == 2
+
+
+def test_queue_plan_survives_between_runners_and_drops_closed_requests(tmp_path):
+    from tools import molt_dev_queue as queue
+
+    paths = queue.QueuePaths(tmp_path / "landing-queue")
+    requests = [
+        queue.enqueue(paths, head=f"{index:040x}", worktree=tmp_path, branch=None)
+        for index in range(1, 6)
+    ]
+    batch = queue.next_batch(paths, queue.pending(paths))
+    assert batch == requests
+    # requests[4] conflicted and left; the four that applied failed together.
+    queue.record_result(paths, requests[4], status="conflict", detail="")
+    queue.bisect(paths, batch, requests[:4])
+    batch = queue.next_batch(paths, queue.pending(paths))
+    assert batch == requests[:2]
+    for request in batch:
+        queue.record_result(paths, request, status="landed", detail="", landed=None)
+    queue.retire_batch_plan(paths, batch)
+    assert queue.next_batch(paths, queue.pending(paths)) == requests[2:4]
+    # A request closed outside the runner drops out of the plan.
+    queue.record_result(paths, requests[2], status="failed", detail="")
+    assert queue.next_batch(paths, queue.pending(paths)) == requests[3:4]
+    queue.record_result(paths, requests[3], status="landed", detail="", landed=None)
+    assert queue.next_batch(paths, queue.pending(paths)) == []
+    assert not paths.plan.exists()
 
 
 @pytest.mark.parametrize("outcome", ["success", "driver-error", "interrupt"])
@@ -3103,6 +3256,7 @@ def _integrate_ns(drv, **overrides):
         expected_upstream=None,
         candidate_controller=False,
         pinned_controller=None,
+        wait_for_lock=False,
         marker=None,
         extra_gate=None,
         cleanup_worktree=False,

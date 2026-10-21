@@ -5,11 +5,14 @@ from __future__ import annotations
 from tests.process_guard_common import run_guarded_test_process
 
 import datetime as dt
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+
+from tests.integration_driver_fixture import copy_driver_trees
 
 TOOLS = Path(__file__).resolve().parents[2] / "tools"
 CLAIM = TOOLS / "claim_lane.py"
@@ -36,25 +39,43 @@ def _claims_body(rows: str) -> str:
     )
 
 
-@pytest.fixture()
-def repo(tmp_path: Path) -> Path:
-    bare = tmp_path / "remote.git"
+@pytest.fixture(scope="module")
+def _seed(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """One origin and clone per module; a claim lands through main's driver."""
+    root = tmp_path_factory.mktemp("claim-seed")
+    bare = root / "remote.git"
     bare.mkdir()
     _git(bare, "init", "--bare", "-q", "-b", "main")
-    w = tmp_path / "work"
+    w = root / "work"
     (w / "docs" / "agent").mkdir(parents=True)
     _git(w, "init", "-q", "-b", "main")
     _git(w, "config", "user.email", "t@t")
     _git(w, "config", "user.name", "t")
-    _git(w, "remote", "add", "origin", str(bare))
     (w / "docs" / "agent" / "CLAIMS.md").write_text(_claims_body(""), encoding="utf-8")
-    (w / "tools").mkdir()
+    copy_driver_trees(w)
     (w / "tools/proof_plan.toml").write_text(
         'always = ["echo claim-policy"]\n', encoding="utf-8"
     )
     _git(w, "add", "-A")
     _git(w, "commit", "-q", "-m", "init")
-    _git(w, "push", "-q", "origin", "main")
+    _git(w, "push", "-q", str(bare), "main")
+    return root
+
+
+@pytest.fixture()
+def repo(tmp_path: Path, _seed: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    # These repositories run generic shell gates, not the caller's venv: the
+    # session's dx environment names this checkout's managed env, which may
+    # not exist, and integrate refuses an explicit selection that is broken.
+    for key in ("MOLT_VENV", "UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV"):
+        monkeypatch.delenv(key, raising=False)
+    # Copy, never hardlink: each test mutates refs and objects.
+    shutil.copytree(_seed / "remote.git", tmp_path / "remote.git")
+    shutil.copytree(_seed / "work", tmp_path / "work")
+    w = tmp_path / "work"
+    _git(w, "remote", "add", "origin", str(tmp_path / "remote.git"))
+    _git(w, "fetch", "-q", "origin")
+    _git(w, "branch", "-q", "--set-upstream-to=origin/main", "main")
     return w
 
 

@@ -63,6 +63,14 @@ class GateFailure(CandidateFailure):
     """A selected gate failed on the candidate."""
 
 
+class RebaseConflict(DriverError):
+    """The candidate does not apply to the current upstream."""
+
+
+class PublicationRace(DriverError):
+    """Upstream moved between the gates and the push confirmation."""
+
+
 def _run_driver_command(
     cmd: list[str],
     *,
