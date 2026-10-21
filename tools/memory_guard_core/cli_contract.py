@@ -124,6 +124,10 @@ def parser(
     result.add_argument(
         "--cancel-file", help="Exclusive owner cancellation request path."
     )
+    result.add_argument(
+        "--progress-file",
+        help="Append-only closure progress notices for the cancelling owner.",
+    )
     result.add_argument("command", nargs=argparse.REMAINDER)
     return result
 
@@ -210,4 +214,6 @@ def worker_argv(
         result.extend(["--timeout", str(args.timeout)])
     if args.cancel_file:
         result.extend(["--cancel-file", args.cancel_file])
+    if args.progress_file:
+        result.extend(["--progress-file", args.progress_file])
     return result

@@ -458,7 +458,17 @@ remains failed even if all independent commands succeed.
 Cancellation requests use the existing `GuardedCommand` launch capability and
 its sticky cancellation file. The guard remains the sole descendant owner,
 including the Windows Job. The five-second cancellation observation window is
-not a cleanup deadline and never authorizes terminating the guard. A pending
+not a cleanup deadline and never authorizes terminating the guard. It bounds a
+stalled guard, not a slow one: the guard appends a closure progress notice to
+the launch's `progress` file at each closure step (cancellation observed, tree
+signalled, child wait finished, descendant closure started, temporary
+artifacts finished, terminal metrics or summary published), and the owner
+ends its observation five seconds after the last notice, as systemd renews a
+stop timeout on `EXTEND_TIMEOUT_USEC`. CPU load therefore stretches the
+observation instead of failing it, while a guard that reports nothing for a
+whole window still expires. The guard's critical path stays proportional to
+its own tree: its repro census and termination reports decide only the
+process groups on its own and the incident's ancestry (HF-368). A pending
 observation yields a global infrastructure outcome, with the unique launch,
 startup, summary, cancellation and custody references in the ordinary failed
 receipt. The library preserves the exact handle on its custody exception; the
