@@ -377,8 +377,12 @@ def test_python_generated_child_matches_native_execution_identity(tmp_path: Path
         payload,
     ]
     server = execution_custody.ChildCustodyEventServer("python", child_policy)
-    environment.update(server.environment())
-    environment[execution_custody.CHILD_POLICY_ENV] = json.dumps(child_policy)
+    environment = environment.updated(
+        {
+            **server.environment(),
+            execution_custody.CHILD_POLICY_ENV: json.dumps(child_policy),
+        }
+    )
     policy_path = tmp_path / "native-policy.json"
     native_policy = supervisor_custody._supervisor_policy(
         envelope=envelope,

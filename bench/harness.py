@@ -62,6 +62,7 @@ bind_repository_imports(__file__)
 from tools import harness_memory_guard  # noqa: E402
 from tools import perf_authority  # noqa: E402
 from molt.dx import development_artifact_env, scratch_dir  # noqa: E402
+from molt.process_environment import ProcessEnvironment  # noqa: E402
 
 BENCH_MEMORY_PREFIX = "MOLT_BENCH"
 
@@ -193,7 +194,7 @@ def run_cmd(cmd: list, timeout_s: float, cwd: Optional[Path] = None):
         return "", str(e), -2, elapsed
 
 
-def _base_env() -> dict[str, str]:
+def _base_env() -> ProcessEnvironment:
     return development_artifact_env(
         REPO_ROOT,
         os.environ,

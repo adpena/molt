@@ -161,10 +161,12 @@ def test_demo_bench_run_k6_uses_live_tree_guard(
     )
     # The k6 stderr log goes to the results directory; never the checkout's.
     monkeypatch.setattr(demo_bench, "RESULTS_DIR", tmp_path)
+    # k6 defaults fill unset names; a caller's selection wins.
+    monkeypatch.delenv("K6_SUMMARY_TREND_STATS", raising=False)
 
     data, proc_metrics = demo_bench.run_k6(
         tmp_path / "scenario.js",
-        {"K6_SUMMARY_EXPORT": str(summary_path)},
+        {"K6_SUMMARY_EXPORT": str(summary_path), "K6_LOG_LEVEL": "info"},
     )
 
     assert (tmp_path / "k6_scenario_stderr.log").is_file()
@@ -184,6 +186,8 @@ def test_demo_bench_run_k6_uses_live_tree_guard(
     assert call["capture_output"] is True
     assert call["text"] is True
     assert call["env"]["K6_SUMMARY_EXPORT"] == str(summary_path)
+    assert call["env"]["K6_SUMMARY_TREND_STATS"] == "med,p(95),p(99),p(99.9)"
+    assert call["env"]["K6_LOG_LEVEL"] == "info"
     assert call["env"]["MOLT_EXT_ROOT"] == str(
         molt_dx.canonical_molt_root(demo_bench.ROOT)
     )
@@ -331,6 +335,37 @@ def test_demo_k6_failure_retains_full_diagnostic(monkeypatch, tmp_path, capsys):
     assert (tmp_path / "k6_baseline_stderr.log").read_text(
         encoding="utf-8"
     ) == "threshold breached\nguard repro context\n"
+
+
+def test_demo_scenario_routes_its_summary_through_k6(monkeypatch, tmp_path):
+    guard_calls: list[dict[str, object]] = []
+    summary_path = tmp_path / "k6_offload_summary.json"
+    summary_path.write_text(json.dumps(scenario_summary(p95=7.0)), encoding="utf-8")
+
+    def fake_guarded_completed_process(cmd, **kwargs):
+        guard_calls.append({"cmd": cmd, **kwargs})
+        return demo_bench.harness_memory_guard.GuardedCompletedProcess(
+            cmd, 0, "", "", elapsed_s=0.01, child_stderr=""
+        )
+
+    monkeypatch.setattr(demo_bench, "RESULTS_DIR", tmp_path)
+    monkeypatch.setattr(demo_bench, "extract_proc_matchers", lambda env: {})
+    monkeypatch.setattr(
+        demo_bench.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
+    caller_env = {"MOLT_DEMO_SCENARIO_PROBE": "kept"}
+
+    result = demo_bench.run_scenario("offload", "offload.js", caller_env)
+
+    assert result.p95 == 7.0
+    assert result.raw["summary_path"] == str(summary_path)
+    call = guard_calls[0]
+    assert call["cmd"][-2:] == [str(summary_path), str(demo_bench.ROOT / "offload.js")]
+    assert call["env"]["K6_SUMMARY_EXPORT"] == str(summary_path)
+    assert call["env"]["MOLT_DEMO_SCENARIO_PROBE"] == "kept"
+    assert caller_env == {"MOLT_DEMO_SCENARIO_PROBE": "kept"}
 
 
 BASH = (

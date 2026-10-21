@@ -21,6 +21,7 @@ import statistics
 import sys
 import tempfile
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -42,6 +43,10 @@ bind_repository_imports(__file__)
 from tools import harness_memory_guard  # noqa: E402
 from tools import perf_authority  # noqa: E402
 from molt.dx import development_artifact_env, scratch_dir  # noqa: E402
+from molt.process_environment import (  # noqa: E402
+    ProcessEnvironment,
+    ProcessEnvironmentBuilder,
+)
 
 BENCH_TMP_ROOT = scratch_dir(ROOT, "bench/wasm")
 
@@ -169,8 +174,8 @@ class BenchEntry:
         return d
 
 
-def _base_env() -> dict[str, str]:
-    """Return a base environment dict with PYTHONPATH and MOLT_EXT_ROOT set."""
+def _base_env() -> ProcessEnvironment:
+    """Return the base environment snapshot with PYTHONPATH and MOLT_EXT_ROOT set."""
     return development_artifact_env(
         ROOT,
         os.environ,
@@ -180,10 +185,19 @@ def _base_env() -> dict[str, str]:
     )
 
 
+def _compile_env(**forced: str) -> ProcessEnvironment:
+    """Compile-step environment: ambient selections win over compile defaults."""
+    env = ProcessEnvironmentBuilder(_base_env())
+    env.setdefault("MOLT_BACKEND_DAEMON", "0")
+    env.setdefault("MOLT_MIDEND_DISABLE", "1")
+    env.update(forced)
+    return ProcessEnvironment(env)
+
+
 def _run_guarded(
     cmd: list[str],
     *,
-    env: dict[str, str],
+    env: Mapping[str, str],
     cwd: Path = ROOT,
     timeout: float | None = None,
     limits: harness_memory_guard.HarnessMemoryLimits | None = None,
@@ -208,10 +222,7 @@ def _compile_wasm(
     limits: harness_memory_guard.HarnessMemoryLimits | None = None,
 ) -> CompileResult:
     out_dir.mkdir(parents=True, exist_ok=True)
-    env = _base_env()
-    env["MOLT_WASM_LINKED"] = "0"
-    env.setdefault("MOLT_BACKEND_DAEMON", "0")
-    env.setdefault("MOLT_MIDEND_DISABLE", "1")
+    env = _compile_env(MOLT_WASM_LINKED="0")
     t0 = time.monotonic()
     r = _run_guarded(
         [
@@ -251,9 +262,7 @@ def _compile_native(
     limits: harness_memory_guard.HarnessMemoryLimits | None = None,
 ) -> CompileResult:
     out_dir.mkdir(parents=True, exist_ok=True)
-    env = _base_env()
-    env.setdefault("MOLT_BACKEND_DAEMON", "0")
-    env.setdefault("MOLT_MIDEND_DISABLE", "1")
+    env = _compile_env()
     t0 = time.monotonic()
     r = _run_guarded(
         [
