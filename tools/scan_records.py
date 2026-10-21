@@ -42,7 +42,7 @@ import sys
 import time
 from typing import Any, TypeVar
 
-from molt.default_paths import _default_molt_cache, repository_scan_records_root
+from molt.default_paths import _default_molt_cache
 from molt.file_deletion import unlink_file
 from molt.file_publication import (
     PublicationDurability,
@@ -53,6 +53,9 @@ from molt.file_publication import (
 _T = TypeVar("_T")
 
 SCHEMA = 1
+# Scan records own this cache namespace and bound it themselves; the cache
+# budget's pruner never treats an unknown namespace as an eviction unit.
+DIRECTORY = "repository-scan-records"
 DAY_SECONDS = 24 * 3600
 # A record unused this long expires at the next publication.
 RECORD_LIFETIME_SECONDS = 7 * DAY_SECONDS
@@ -143,7 +146,7 @@ class ScanRecords:
         self.owner = Path(owner).resolve()
         self.generation = code_generation(scanner, self.owner)
         root = _default_molt_cache() if cache_root is None else cache_root
-        self.directory = repository_scan_records_root(root) / scanner
+        self.directory = root / DIRECTORY / scanner
         self.hits = 0
         self.misses = 0
         self._now = _wall_clock()
