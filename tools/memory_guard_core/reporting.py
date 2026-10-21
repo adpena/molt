@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 import contextlib
+import time
 import json
 import os
 from pathlib import Path
@@ -527,20 +528,59 @@ def default_incident_summary_path(state_root: Path) -> Path:
     return state_root / "incidents" / f"{stamp}-pid{os.getpid()}.json"
 
 
-def prune_default_incident_summaries(directory: Path, *, keep: int) -> None:
+#: A record a stream has named survives at least this long (design 56
+#: section 2.9: the soft-retirement window).
+NAMED_RECORD_MIN_AGE_S = 7 * 24 * 3600
+
+
+def prune_named_records(
+    directory: Path, *, keep: int, now: float | None = None
+) -> None:
+    """Delete a record only when it is beyond the newest ``keep`` and older
+    than ``NAMED_RECORD_MIN_AGE_S``, so no record a stream named disappears
+    within the window, however many incidents follow it. A ``.json.tmp`` that
+    old is a crashed write and goes too. A failure prints one warning."""
     if keep <= 0:
         return
+    cutoff = (time.time() if now is None else now) - NAMED_RECORD_MIN_AGE_S
+    failures: list[str] = []
     try:
-        paths = sorted(
-            (path for path in directory.glob("*.json") if path.is_file()),
-            key=lambda path: path.stat().st_mtime,
+        dated = sorted(
+            (
+                (path.stat().st_mtime, path)
+                for path in directory.glob("*.json")
+                if path.is_file()
+            ),
             reverse=True,
         )
-    except OSError:
+        stale = [
+            path
+            for path in directory.glob("*.json.tmp")
+            if path.stat().st_mtime < cutoff
+        ]
+    except FileNotFoundError:
         return
-    for path in paths[keep:]:
-        with contextlib.suppress(OSError):
+    except OSError as exc:
+        dated, stale = [], []
+        failures.append(f"{directory}: {type(exc).__name__}: {exc}")
+    for path in [path for mtime, path in dated[keep:] if mtime < cutoff] + stale:
+        try:
             path.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            failures.append(f"{path}: {type(exc).__name__}: {exc}")
+    if failures:
+        print(
+            f"memory_guard: {len(failures)} named record(s) could not be pruned; "
+            f"first: {failures[0]}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
+def prune_default_incident_summaries(directory: Path, *, keep: int) -> None:
+    prune_named_records(directory, keep=keep)
 
 
 def _publish_interactive_startup(
@@ -769,6 +809,7 @@ def emit_terminal_report(
     repro_payload: Mapping[str, object] | None,
     signal_payload: Callable[[int], dict[str, object] | None],
     stderr: TextIO = sys.stderr,
+    repro_record: str | None = None,
 ) -> None:
     if result.violation is not None:
         violation_limits = result.limit_at_violation
@@ -927,9 +968,8 @@ def emit_terminal_report(
                 file=stderr,
             )
     if repro_payload is not None:
-        from tools.memory_guard_core.repro_context import repro_context_line
+        # A record on disk carries the whole context; the stream names it.
+        from tools.memory_guard_core.repro_context import repro_context_text
 
-        print(
-            f"memory_guard: repro context: {repro_context_line(repro_payload)}",
-            file=stderr,
-        )
+        context = repro_context_text(repro_payload, record=repro_record)
+        print(f"memory_guard: repro context: {context}", file=stderr)

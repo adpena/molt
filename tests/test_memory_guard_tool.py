@@ -8007,8 +8007,14 @@ def test_main_reports_incident_repro_context(
 
     assert rc == memory_guard.GUARD_RETURN_CODE
     stderr = capsys.readouterr().err
-    assert "memory_guard: repro context:" in stderr
-    assert "tests/test_memory_guard_tool.py::unit" in stderr
+    # The summary holds the repro record; the stream names it in one line.
+    (line,) = [
+        line
+        for line in stderr.splitlines()
+        if line.startswith("memory_guard: repro context:")
+    ]
+    assert f"record={summary_path} " in line and len(line) < 1024
+    assert "tests/test_memory_guard_tool.py::unit" in line
     payload = json.loads(summary_path.read_text(encoding="utf-8"))
     repro = payload["repro"]
     assert repro["command"] == [sys.executable, "-c", "pass"]
@@ -8041,6 +8047,101 @@ def test_main_reports_incident_repro_context(
         "to": str(tmp_path / "uv-project-env"),
     }
     assert "SECRET_TOKEN" not in env_delta["changed"]
+
+
+def test_main_reports_the_reason_when_its_summary_cannot_be_written(
+    tmp_path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch,
+) -> None:
+    summary_path = tmp_path / "rss-summary.json"
+    current_root = tmp_path / "pytest-memory-guard"
+    current_test_path = current_root / "pytest-current-test.json"
+    current_root.mkdir(parents=True)
+    current_test_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "nodeid": "tests/test_memory_guard_tool.py::live_unit",
+                "phase": "call",
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    env = {
+        "MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path / "memory_guard"),
+        "CARGO_BUILD_JOBS": "2",
+        "CARGO_INCREMENTAL": "1",
+        "PATH": "/usr/bin",
+        "PYTEST_CURRENT_TEST": "tests/test_memory_guard_tool.py::unit (call)",
+        "MOLT_PYTEST_CURRENT_TEST_FILE": str(current_test_path),
+        "MOLT_SESSION_ID": "unit-session",
+        "SECRET_TOKEN": "must-not-leak",
+        "UV_LINK_MODE": "copy",
+        "UV_PROJECT_ENVIRONMENT": str(tmp_path / "uv-project-env"),
+    }
+
+    def fake_run_guarded(_command, **_kwargs):
+        return memory_guard.GuardResult(
+            returncode=memory_guard.GUARD_RETURN_CODE,
+            violation=memory_guard.RssViolation(
+                pid=321,
+                rss_kb=4 * 1024 * 1024,
+                command="python hungry.py",
+                scope="process_tree",
+            ),
+            peak=None,
+            peak_total=None,
+            stdout="",
+            stderr="",
+            elapsed_s=1.25,
+            limit_at_violation=memory_guard.ResolvedMemoryLimits(
+                max_process_rss_kb=2 * 1024 * 1024,
+                max_total_rss_kb=3 * 1024 * 1024,
+            ),
+            child_stderr="",
+        )
+
+    monkeypatch.setattr(memory_guard, "run_guarded", fake_run_guarded)
+
+    def unwritable_summary(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(memory_guard, "_write_summary_json", unwritable_summary)
+    monkeypatch.setattr(memory_guard, "sample_processes", lambda: {})
+
+    rc = memory_guard.main(
+        [
+            "--max-rss-gb",
+            "2",
+            "--max-total-rss-gb",
+            "3",
+            "--poll-interval",
+            "0.01",
+            "--summary-json",
+            str(summary_path),
+            "--",
+            sys.executable,
+            "-c",
+            "pass",
+        ],
+        environ=env,
+    )
+
+    assert rc == memory_guard.GUARD_RETURN_CODE
+    stderr = capsys.readouterr().err
+    assert "memory_guard: failed to write summary JSON" in stderr
+    assert "RSS limit exceeded" in stderr
+    # No record holds the repro, so the stream carries it whole.
+    (line,) = [
+        line
+        for line in stderr.splitlines()
+        if line.startswith("memory_guard: repro context: ")
+    ]
+    repro = json.loads(line.removeprefix("memory_guard: repro context: "))
+    assert repro["pytest"]["current_test"] == env["PYTEST_CURRENT_TEST"]
 
 
 def test_repro_context_platform_detail_does_not_spawn_subprocess(
@@ -8669,6 +8770,92 @@ def test_run_guarded_retention_sweep_health_preserves_primary_result(
     )
     assert ("infrastructure_error" in diagnostic.getvalue()) is bool(retention_errors)
     assert ("SIGKILL" in diagnostic.getvalue()) is (child_returncode == 137)
+
+
+def test_a_named_record_survives_its_window_whatever_follows(tmp_path):
+    from tools.memory_guard_core import reporting
+
+    now = 10_000_000.0
+    window = reporting.NAMED_RECORD_MIN_AGE_S
+    ages = {
+        "new.json": 0,
+        "young.json": window - 60,
+        "old.json": window + 60,
+        "young.json.tmp": window - 60,
+        "crashed.json.tmp": window + 60,
+    }
+    for name, age in ages.items():
+        path = tmp_path / name
+        path.write_text("{}", encoding="utf-8")
+        os.utime(path, (now - age, now - age))
+    reporting.prune_named_records(tmp_path, keep=1, now=now)
+    # Beyond the newest one, only the record older than the window goes; a
+    # temporary file that old is a crashed write.
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        "new.json",
+        "young.json",
+        "young.json.tmp",
+    ]
+
+
+def test_a_named_record_that_cannot_be_pruned_says_so(tmp_path, capsys):
+    from tools.memory_guard_core import reporting
+
+    now = 10_000_000.0
+    old = now - reporting.NAMED_RECORD_MIN_AGE_S - 60
+    # A directory under a crashed write's name cannot be unlinked on any OS.
+    stuck = tmp_path / "crashed.json.tmp"
+    stuck.mkdir()
+    os.utime(stuck, (old, old))
+    reporting.prune_named_records(tmp_path, keep=1, now=now)
+    err = capsys.readouterr().err
+    assert "1 named record(s) could not be pruned" in err
+    assert f"{stuck}: " in err
+    assert stuck.is_dir()
+
+
+def test_terminal_report_names_a_written_record_and_keeps_an_unwritten_one():
+    result = memory_guard.GuardResult(
+        returncode=0,
+        violation=None,
+        peak=None,
+        peak_total=None,
+        stdout="",
+        stderr="",
+        elapsed_s=0.1,
+        child_stderr="",
+    )
+    repro = {
+        "command": ["python3", "-c", "pass", "--first", "--second"],
+        "pytest": {"current_test": "tests/x.py::t (call)"},
+        "host_control_plane": {"processes": ["x" * 5000]},
+    }
+
+    def report(record):
+        stream = io.StringIO()
+        memory_guard._reporting.emit_terminal_report(
+            result,
+            timeout_s=None,
+            max_rss_gb=0.5,
+            max_total_rss_gb=1.0,
+            repro_payload=repro,
+            signal_payload=memory_guard.exit_signal_payload,
+            stderr=stream,
+            repro_record=record,
+        )
+        (line,) = [
+            line
+            for line in stream.getvalue().splitlines()
+            if line.startswith("memory_guard: repro context: ")
+        ]
+        return line.removeprefix("memory_guard: repro context: ")
+
+    assert report("/state/summary.json") == (
+        "record=/state/summary.json command=python3 -c pass --first ... "
+        "test=tests/x.py::t (call)"
+    )
+    # Without a written record nothing may be lost: the context stays whole.
+    assert json.loads(report(None)) == repro
 
 
 def test_run_guarded_exception_releases_lease_and_updates_marker(

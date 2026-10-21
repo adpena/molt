@@ -1214,12 +1214,209 @@ def test_guarded_completed_process_profiles_incident_by_default(
     )
 
     assert result.returncode == harness_memory_guard.memory_guard.GUARD_RETURN_CODE
-    assert "memory_guard: repro context:" in result.stderr
     event = json.loads(profile_log.read_text(encoding="utf-8"))
     assert event["status"] == "rss_limit_exceeded"
     assert event["repro"]["pytest"]["current_test"].startswith(
         "tests/test_harness_memory_guard.py::unit"
     )
+    # The stream names the record it was written to, in one short line,
+    # instead of repeating the whole context.
+    (line,) = [
+        line
+        for line in result.stderr.splitlines()
+        if line.startswith("memory_guard: repro context:")
+    ]
+    # The incident has its own file, which outlives the profile log's rotation.
+    (incident,) = (tmp_path / "incidents").iterdir()
+    assert json.loads(incident.read_text(encoding="utf-8")) == event
+    assert f"record={incident} " in line
+    assert "test=tests/test_harness_memory_guard.py::unit" in line
+    assert "host_control_plane" not in result.stderr and len(line) < 1024
+
+
+def test_unrecorded_incident_keeps_its_whole_repro_context_inline(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    profile_log = tmp_path / "commands.jsonl"
+
+    def fake_run_guarded(command, **kwargs):
+        del command, kwargs
+        return harness_memory_guard.memory_guard.GuardResult(
+            returncode=harness_memory_guard.memory_guard.GUARD_RETURN_CODE,
+            violation=harness_memory_guard.memory_guard.RssViolation(
+                pid=123,
+                rss_kb=4 * 1024 * 1024,
+                command="python hungry.py",
+                scope="process_tree",
+            ),
+            peak=None,
+            peak_total=None,
+            stdout="",
+            stderr="",
+            elapsed_s=0.25,
+            child_stderr="",
+        )
+
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard, "run_guarded", fake_run_guarded
+    )
+    monkeypatch.setattr(
+        harness_memory_guard,
+        "command_profile_log_path",
+        lambda _env: profile_log,
+    )
+    _patch_guard_operation(
+        monkeypatch,
+        harness_memory_guard.memory_guard,
+        "sample_processes",
+        lambda: {},
+    )
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=2,
+        max_total_rss_gb=3,
+        max_global_rss_gb=4,
+        poll_interval=0.1,
+    )
+
+    result = harness_memory_guard.guarded_completed_process(
+        [sys.executable, "-c", "print('ok')"],
+        prefix="MOLT_TEST",
+        env={
+            **guard_custody_env(),
+            "MOLT_GUARD_PROFILE": "off",
+            "PYTEST_CURRENT_TEST": "tests/test_harness_memory_guard.py::unit (call)",
+        },
+        limits=limits,
+    )
+
+    assert result.returncode == harness_memory_guard.memory_guard.GUARD_RETURN_CODE
+    # With profiling off no record holds the context, so none is lost: the
+    # stream carries it whole.
+    assert not profile_log.exists()
+    (line,) = [
+        line
+        for line in result.stderr.splitlines()
+        if line.startswith("memory_guard: repro context:")
+    ]
+    context = json.loads(line.removeprefix("memory_guard: repro context: "))
+    assert context["pytest"]["current_test"].startswith(
+        "tests/test_harness_memory_guard.py::unit"
+    )
+
+
+def test_unwritable_incident_record_keeps_the_context_inline(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    profile_log = tmp_path / "commands.jsonl"
+    (tmp_path / "incidents").write_text("", encoding="utf-8")
+
+    def fake_run_guarded(command, **kwargs):
+        del command, kwargs
+        return harness_memory_guard.memory_guard.GuardResult(
+            returncode=harness_memory_guard.memory_guard.GUARD_RETURN_CODE,
+            violation=harness_memory_guard.memory_guard.RssViolation(
+                pid=123,
+                rss_kb=4 * 1024 * 1024,
+                command="python hungry.py",
+                scope="process_tree",
+            ),
+            peak=None,
+            peak_total=None,
+            stdout="",
+            stderr="",
+            elapsed_s=0.25,
+            child_stderr="",
+        )
+
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard, "run_guarded", fake_run_guarded
+    )
+    monkeypatch.setattr(
+        harness_memory_guard,
+        "command_profile_log_path",
+        lambda _env: profile_log,
+    )
+    _patch_guard_operation(
+        monkeypatch,
+        harness_memory_guard.memory_guard,
+        "sample_processes",
+        lambda: {},
+    )
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=2,
+        max_total_rss_gb=3,
+        max_global_rss_gb=4,
+        poll_interval=0.1,
+    )
+
+    result = harness_memory_guard.guarded_completed_process(
+        [sys.executable, "-c", "print('ok')"],
+        prefix="MOLT_TEST",
+        env={
+            **guard_custody_env(),
+            "PYTEST_CURRENT_TEST": "tests/test_harness_memory_guard.py::unit (call)",
+        },
+        limits=limits,
+    )
+
+    assert result.returncode == harness_memory_guard.memory_guard.GUARD_RETURN_CODE
+    # The incident file cannot be written: the stream says so and carries
+    # the context whole.
+    assert "memory_guard: incident record write failed" in result.stderr
+    (line,) = [
+        line
+        for line in result.stderr.splitlines()
+        if line.startswith("memory_guard: repro context:")
+    ]
+    context = json.loads(line.removeprefix("memory_guard: repro context: "))
+    assert context["pytest"]["current_test"].startswith(
+        "tests/test_harness_memory_guard.py::unit"
+    )
+
+
+def test_a_plain_nonzero_exit_writes_no_incident_record(monkeypatch, tmp_path):
+    # Only an incident the stream names gets its own file; a failing command
+    # stays in the profile log alone.
+    profile_log = tmp_path / "commands.jsonl"
+
+    def fake_run_guarded(command, **kwargs):
+        return harness_memory_guard.memory_guard.GuardResult(
+            returncode=3,
+            violation=None,
+            peak=None,
+            peak_total=None,
+            stdout="",
+            stderr="",
+            elapsed_s=0.1,
+            child_stderr="",
+        )
+
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard, "run_guarded", fake_run_guarded
+    )
+    monkeypatch.setattr(
+        harness_memory_guard, "command_profile_log_path", lambda _env: profile_log
+    )
+    result = harness_memory_guard.guarded_completed_process(
+        [sys.executable, "-c", "raise SystemExit(3)"],
+        prefix="MOLT_TEST",
+        env=guard_custody_env(),
+        limits=harness_memory_guard.HarnessMemoryLimits(
+            enabled=True,
+            max_process_rss_gb=2,
+            max_total_rss_gb=3,
+            max_global_rss_gb=4,
+            poll_interval=0.1,
+        ),
+    )
+    assert result.returncode == 3
+    assert json.loads(profile_log.read_text(encoding="utf-8"))["status"] != "pass"
+    assert not (tmp_path / "incidents").exists()
+    assert "memory_guard: repro context" not in result.stderr
 
 
 def test_guarded_completed_process_profiles_cargo_incremental_quarantine(
@@ -2108,7 +2305,7 @@ def test_command_profile_routes_effective_env_and_violation_limit_to_repro(
         max_global_rss_kb=123_456,
     )
 
-    _path, error = harness_memory_guard._append_guarded_command_profile(
+    _path, error, _record = harness_memory_guard._append_guarded_command_profile(
         command=[sys.executable, "hungry.py"],
         prefix="MOLT_TEST",
         cwd=tmp_path,
