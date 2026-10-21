@@ -7,8 +7,8 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 ## Counts
 
 - `authority-routed` files: 63
-- `operational-tooling` files: 58
-- `scattered-assumption` files: 343
+- `operational-tooling` files: 59
+- `scattered-assumption` files: 342
 
 ## Files
 
@@ -427,14 +427,14 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `tools/gen_intrinsics.py` | 1 | scattered-assumption | `3.11` |
 | `tools/gen_unicode_width.py` | 2 | authority-routed | `sys.version_info` |
 | `tools/generator_manifest.toml` | 1 | authority-routed | `3.12` |
-| `tools/hooks/_common.py` | 1 | scattered-assumption | `3.9` |
-| `tools/hooks/session_digest.py` | 1 | scattered-assumption | `3.5` |
+| `tools/hooks/session_digest.py` | 2 | operational-tooling | `3.12` |
 | `tools/hosted_ci_env.py` | 1 | operational-tooling | `3.12` |
 | `tools/kdtree_3d.py` | 2 | scattered-assumption | `3.0` |
 | `tools/linear_hygiene.py` | 1 | scattered-assumption | `3.12` |
-| `tools/memory_graph.py` | 3 | scattered-assumption | `3.9` |
+| `tools/memory_graph.py` | 2 | scattered-assumption | `3.0` |
 | `tools/memory_guard_core/process_custody.py` | 1 | scattered-assumption | `3.12` |
 | `tools/molt_dev.py` | 5 | authority-routed | `3.12` |
+| `tools/molt_dev_detached.py` | 1 | scattered-assumption | `3.9` |
 | `tools/molt_regrtest_shim.py` | 1 | operational-tooling | `sys.version_info` |
 | `tools/mutation_test.py` | 1 | operational-tooling | `3.12` |
 | `tools/native_cext_driver.c` | 1 | scattered-assumption | `3.12` |

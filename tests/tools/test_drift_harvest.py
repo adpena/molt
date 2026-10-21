@@ -26,7 +26,7 @@ def test_classify_assigns_states(monkeypatch):
         {"path": "/d/wt/signal", "branch": "sig"},
         {"path": "/d/wt/gone", "branch": "g"},
     ]
-    monkeypatch.setattr(dh, "_worktrees", lambda: wts)
+    monkeypatch.setattr(dh, "_worktrees", lambda _root: wts)
     monkeypatch.setattr(dh, "_worktree_exists", lambda p: not p.endswith("/gone"))
     monkeypatch.setattr(
         dh, "_dirty_count", lambda p: 4 if p.endswith("fresh-dirty") else 0
@@ -47,9 +47,12 @@ def test_classify_assigns_states(monkeypatch):
         "main": 0,
         "g": 0,
     }
-    monkeypatch.setattr(dh, "_unique_commit_count", lambda ref: uniq.get(ref, 0))
+    monkeypatch.setattr(dh, "_unique_commit_count", lambda ref, _root: uniq.get(ref, 0))
 
-    state = {r["path"]: r["state"] for r in dh.classify(fresh_hours=24.0, now=now)}
+    state = {
+        r["path"]: r["state"]
+        for r in dh.classify(fresh_hours=24.0, now=now, root=Path("/d/repo"))
+    }
     assert state["/Users/x/OneDrive/Documents/molt"] == "PROTECTED"
     assert state["/d/Molt/worktrees/recover-mainclean-20260707"] == "PROTECTED"
     assert state["/d/Molt/worktrees/molt-cli"] == "PROTECTED"
@@ -74,7 +77,7 @@ def test_classify_computes_uniq_lazily(monkeypatch):
         {"path": "/d/wt/locked", "branch": "lk", "locked": True},
         {"path": "/d/wt/old-clean", "branch": "oc"},
     ]
-    monkeypatch.setattr(dh, "_worktrees", lambda: wts)
+    monkeypatch.setattr(dh, "_worktrees", lambda _root: wts)
     monkeypatch.setattr(dh, "_worktree_exists", lambda p: True)
     monkeypatch.setattr(
         dh, "_dirty_count", lambda p: 4 if p.endswith("fresh-dirty") else 0
@@ -86,12 +89,12 @@ def test_classify_computes_uniq_lazily(monkeypatch):
     )
     called: list[str] = []
 
-    def spy(ref):
+    def spy(ref, _root):
         called.append(ref)
         return 3
 
     monkeypatch.setattr(dh, "_unique_commit_count", spy)
-    dh.classify(fresh_hours=24.0, now=now)
+    dh.classify(fresh_hours=24.0, now=now, root=Path("/d/repo"))
     # uniq computed ONLY for the clean+old worktree; never for fresh/protected/locked.
     assert called == ["oc"]
 
@@ -103,22 +106,24 @@ def test_classify_protects_executing_repository_without_name_conventions(
     sibling = tmp_path / "ordinary-retired-checkout"
     repository.mkdir()
     sibling.mkdir()
-    monkeypatch.setattr(dh, "REPO_ROOT", repository)
     monkeypatch.setattr(
         dh,
         "_worktrees",
-        lambda: [{"path": str(path)} for path in (repository, sibling)],
+        lambda _root: [{"path": str(path)} for path in (repository, sibling)],
     )
     monkeypatch.setattr(dh, "_dirty_count", lambda _path: 0)
     monkeypatch.setattr(dh, "_last_commit_epoch", lambda _path: 0)
-    monkeypatch.setattr(dh, "_unique_commit_count", lambda _ref: 0)
+    monkeypatch.setattr(dh, "_unique_commit_count", lambda _ref, _root: 0)
 
-    states = {row["path"]: row["state"] for row in dh.classify(24.0, 1_000_000.0)}
+    states = {
+        row["path"]: row["state"]
+        for row in dh.classify(24.0, 1_000_000.0, root=repository)
+    }
 
     assert states[str(repository)] == "PROTECTED"
     assert states[str(sibling)] == "SUPERSEDED"
-    assert dh._protected(str(repository / ".." / repository.name))
-    assert dh._protected(str(repository.parent))
+    assert dh._protected(str(repository / ".." / repository.name), repository)
+    assert dh._protected(str(repository.parent), repository)
 
 
 def test_only_superseded_and_stale_are_prunable_without_include_signal(monkeypatch):
@@ -140,10 +145,9 @@ def test_prune_leaves_target_cwd_before_removal(monkeypatch, tmp_path):
     repo_root = tmp_path / "molt"
     worktree = repo_root / "wt-old"
     worktree.mkdir(parents=True)
-    monkeypatch.setattr(dh, "REPO_ROOT", repo_root)
     monkeypatch.chdir(worktree)
 
-    destination = dh._leave_prune_targets([worktree])
+    destination = dh._leave_prune_targets([worktree], repo_root)
 
     assert destination == tmp_path.resolve()
     assert Path.cwd() == tmp_path.resolve()
@@ -159,11 +163,10 @@ def test_empty_orphan_sweep_is_bounded_and_preserves_nonempty(monkeypatch, tmp_p
     nonempty.mkdir()
     unrelated.mkdir()
     (nonempty / "signal.txt").write_text("keep", encoding="utf-8")
-    monkeypatch.setattr(dh, "REPO_ROOT", repo_root)
     monkeypatch.setattr(dh, "canonical_molt_root", lambda _root: tmp_path)
-    monkeypatch.setattr(dh, "_worktrees", lambda: [])
+    monkeypatch.setattr(dh, "_worktrees", lambda _root: [])
 
-    removed = dh._sweep_empty_orphan_worktree_dirs()
+    removed = dh._sweep_empty_orphan_worktree_dirs(repo_root)
 
     assert removed == [empty]
     assert not empty.exists()
@@ -217,7 +220,7 @@ def test_bundle_signal_captures_detached_head_signal(monkeypatch, tmp_path):
             "state": "SUPERSEDED",
         },
     ]
-    captured = dh.bundle_signal(rows, tmp_path / "b.bundle")
+    captured = dh.bundle_signal(rows, tmp_path / "b.bundle", root=tmp_path)
     # Both SIGNAL worktrees captured; the zero-unique one is not.
     assert captured == {"/branch-sig", "/detached-sig"}
     # Detached head pinned under a synthetic GC-safe ref AND put in the bundle.
@@ -285,7 +288,7 @@ def test_no_fetch_flag_skips_origin_refresh(monkeypatch, capsys):
         return _R()
 
     monkeypatch.setattr(dh, "_git", fake_git)
-    monkeypatch.setattr(dh, "_worktrees", lambda: [])
+    monkeypatch.setattr(dh, "_worktrees", lambda _root: [])
     monkeypatch.setattr(
         "sys.argv", ["drift_harvest.py", "--gate", "--no-fetch", "--now", "1"]
     )

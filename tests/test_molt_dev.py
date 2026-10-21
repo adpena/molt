@@ -1676,7 +1676,6 @@ def test_retirement_binds_complete_checkout_inventory_independent_of_caller_sele
         )
         assert rc == (drv.EXIT_OK if removal_succeeds else drv.EXIT_FAIL)
     else:
-        monkeypatch.setattr(drift_harvest, "REPO_ROOT", main)
         real = drift_harvest._git
 
         def remove(args, **kwargs):
@@ -1690,6 +1689,10 @@ def test_retirement_binds_complete_checkout_inventory_independent_of_caller_sele
             "argv",
             [
                 "drift_harvest.py",
+                # The repository is named on the command line; rebinding the
+                # module's global once let this prune the real worktree list.
+                "--repo",
+                str(main),
                 "--prune",
                 "--no-fetch",
                 "--fresh-hours",
@@ -2990,7 +2993,7 @@ def _lane(work: Path, name: str, files: dict[str, str]) -> str:
 def _enqueue(drv, work: Path, *heads: str):
     from tools import molt_dev_queue as queue
 
-    paths = queue._queue_paths(work)
+    paths = queue.queue_paths(work)
     return paths, [
         queue.enqueue(paths, head=head, worktree=work, branch=None) for head in heads
     ]
@@ -3186,7 +3189,7 @@ def test_land_runs_static_gates_in_the_lane_before_queueing(
     assert admitted and all("PYTHONPYCACHEPREFIX" in env for env in admitted)
 
     assert counter.read_text(encoding="utf-8").splitlines() == ["run"]
-    assert [item.head for item in queue.pending(queue._queue_paths(lane))] == [head]
+    assert [item.head for item in queue.pending(queue.queue_paths(lane))] == [head]
 
 
 def test_land_queues_nothing_when_a_static_gate_fails_in_the_lane(
@@ -3204,7 +3207,7 @@ def test_land_queues_nothing_when_a_static_gate_fails_in_the_lane(
         _land_without_runner(drv, monkeypatch, lane)
 
     assert counter.read_text(encoding="utf-8").splitlines() == ["run"]
-    assert queue.pending(queue._queue_paths(lane)) == []
+    assert queue.pending(queue.queue_paths(lane)) == []
 
 
 def test_land_no_precheck_queues_without_running_gates(
@@ -3223,7 +3226,7 @@ def test_land_no_precheck_queues_without_running_gates(
     )
 
     assert not counter.exists()
-    assert [item.head for item in queue.pending(queue._queue_paths(lane))] == [head]
+    assert [item.head for item in queue.pending(queue.queue_paths(lane))] == [head]
 
 
 def test_land_waits_for_a_real_runner_through_the_pinned_controller(
@@ -3357,20 +3360,186 @@ def test_queue_plan_survives_between_runners_and_drops_closed_requests(tmp_path)
     batch = queue.next_batch(paths, queue.pending(paths))
     assert batch == requests
     # requests[4] conflicted and left; the four that applied failed together.
-    queue.record_result(paths, requests[4], status="conflict", detail="")
+    queue.record_result(
+        paths, requests[4], status=queue.LandingStatus.CONFLICT, detail=""
+    )
     queue.bisect(paths, batch, requests[:4])
     batch = queue.next_batch(paths, queue.pending(paths))
     assert batch == requests[:2]
     for request in batch:
-        queue.record_result(paths, request, status="landed", detail="", landed=None)
+        queue.record_result(
+            paths, request, status=queue.LandingStatus.LANDED, detail="", landed=None
+        )
     queue.retire_batch_plan(paths, batch)
     assert queue.next_batch(paths, queue.pending(paths)) == requests[2:4]
     # A request closed outside the runner drops out of the plan.
-    queue.record_result(paths, requests[2], status="failed", detail="")
+    queue.record_result(
+        paths, requests[2], status=queue.LandingStatus.FAILED, detail=""
+    )
     assert queue.next_batch(paths, queue.pending(paths)) == requests[3:4]
-    queue.record_result(paths, requests[3], status="landed", detail="", landed=None)
+    queue.record_result(
+        paths, requests[3], status=queue.LandingStatus.LANDED, detail="", landed=None
+    )
     assert queue.next_batch(paths, queue.pending(paths)) == []
     assert not paths.plan.exists()
+
+
+def test_queue_withdraw_closes_pending_requests_only_between_batches(
+    drv, origin_and_clone, monkeypatch
+):
+    from tools import molt_dev_queue as queue
+
+    _origin, work = origin_and_clone
+    # A `land` that probed the lock while withdraw held it started no runner,
+    # so withdraw starts one while requests remain. Record it; never spawn.
+    started = []
+    monkeypatch.setattr(
+        queue,
+        "_start_queue_runner",
+        lambda paths, repo, args: started.append(
+            (paths, repo, args.remote, args.branch)
+        ),
+    )
+    paths = queue.queue_paths(work)
+    first, second, third = (
+        queue.enqueue(
+            paths, head=f"{index:040x}", worktree=work, branch=f"lane/{index}"
+        )
+        for index in range(1, 4)
+    )
+    # A bisection plan from an earlier runner still names the second request.
+    queue._write_plan(paths, [[first.id, second.id], [third.id]])
+
+    def withdraw(*request_ids: str) -> int:
+        args = drv.build_parser().parse_args(
+            ["queue", "withdraw", "--repo", str(work), *request_ids,
+             "--reason", "review found defects"]
+        )  # fmt: skip
+        return args.func(args)
+
+    assert withdraw(second.id, second.id) == drv.EXIT_OK
+    assert started == [(paths, work.resolve(), "origin", "main")]
+    result = queue.read_result(paths, second.id)
+    assert result["status"] == queue.LandingStatus.WITHDRAWN
+    assert result["detail"] == "review found defects"
+    assert queue.pending(paths) == [first, third]
+    assert queue.next_batch(paths, queue.pending(paths)) == [first]
+    assert [row["request"]["id"] for row in queue.recorded_results(paths)] == [
+        second.id
+    ]
+    # All or nothing: one unknown id withdraws nothing.
+    with pytest.raises(drv.DriverError, match="no-such-request"):
+        withdraw(third.id, "no-such-request")
+    assert queue.read_result(paths, third.id) is None
+    # A runner holds the lock for each batch; nothing is withdrawn under it.
+    monkeypatch.setattr(queue, "RUNNER_LOCK_WAIT_S", 0.1)
+    handle = drv._try_acquire_file_lock(paths.runner_lock)
+    assert handle is not None
+    try:
+        assert withdraw(third.id) == drv.EXIT_FAIL
+    finally:
+        drv._release_file_lock(handle)
+    assert queue.pending(paths) == [first, third]
+    # The last pending requests close; no runner starts for an empty queue.
+    started.clear()
+    assert withdraw(first.id, third.id) == drv.EXIT_OK
+    assert queue.pending(paths) == [] and started == []
+
+
+def test_runner_liveness_probes_never_read_each_other_as_a_runner(
+    drv, tmp_path, monkeypatch
+):
+    from tools import molt_dev_queue as queue
+
+    paths = queue.QueuePaths(tmp_path / "landing-queue")
+    paths.root.mkdir(parents=True)
+    spawned = []
+    monkeypatch.setattr(drv, "cmd_detached_run", lambda args: spawned.append(args))
+    args = drv.build_parser().parse_args(["queue", "run", "--repo", str(tmp_path)])
+    # A `land --wait` poller holds its probe: a runner still starts.
+    poller = drv._try_acquire_file_lock(paths.runner_lock, shared=True)
+    assert poller is not None
+    try:
+        queue._start_queue_runner(paths, tmp_path, args)
+    finally:
+        drv._release_file_lock(poller)
+    assert len(spawned) == 1
+    # A runner (or a withdrawal) holds it exclusively: none starts.
+    runner = drv._try_acquire_file_lock(paths.runner_lock)
+    assert runner is not None
+    try:
+        queue._start_queue_runner(paths, tmp_path, args)
+    finally:
+        drv._release_file_lock(runner)
+    assert len(spawned) == 1
+
+
+def test_a_probe_never_sends_a_runner_away(drv, tmp_path, monkeypatch):
+    import molt.file_locks as file_locks
+    from tools import molt_dev_queue as queue
+
+    paths = queue.QueuePaths(tmp_path / "landing-queue")
+    paths.root.mkdir(parents=True)
+    # A `land --wait` poller holds its shared probe as a runner starts, and
+    # lets go between the runner's polls.
+    probe = drv._try_acquire_file_lock(paths.runner_lock, shared=True)
+    assert probe is not None
+    real_try = file_locks._try_acquire_file_lock
+    attempts = []
+
+    def probe_ends_after_the_first_try(path, **kwargs):
+        handle = real_try(path, **kwargs)
+        attempts.append(handle is not None)
+        if len(attempts) == 1:
+            drv._release_file_lock(probe)
+        return handle
+
+    monkeypatch.setattr(
+        file_locks, "_try_acquire_file_lock", probe_ends_after_the_first_try
+    )
+    handle = queue._take_runner_lock(paths)
+    assert handle is not None and attempts == [False, True]
+    drv._release_file_lock(handle)
+    monkeypatch.setattr(file_locks, "_try_acquire_file_lock", real_try)
+    # A runner holds it for the whole wait: the next one stands aside.
+    monkeypatch.setattr(queue, "RUNNER_LOCK_WAIT_S", 0.1)
+    runner = drv._try_acquire_file_lock(paths.runner_lock)
+    assert runner is not None
+    try:
+        assert queue._take_runner_lock(paths) is None
+    finally:
+        drv._release_file_lock(runner)
+
+
+def test_withdraw_runs_from_the_pinned_controller(drv, tmp_path):
+    args = drv.build_parser().parse_args(
+        ["queue", "withdraw", "--repo", str(tmp_path), "x", "--reason", "why"]
+    )
+    assert drv.molt_dev_controller.runs_from_pinned_controller(args)
+    candidate = drv.build_parser().parse_args(
+        ["queue", "withdraw", "--candidate-controller", "x", "--reason", "why"]
+    )
+    assert not drv.molt_dev_controller.runs_from_pinned_controller(candidate)
+
+
+def test_queue_results_read_in_the_order_they_closed(tmp_path, monkeypatch):
+    from tools import molt_dev_queue as queue
+
+    paths = queue.QueuePaths(tmp_path / "landing-queue")
+    stamps = iter(f"2026-10-21T12:00:0{second}+00:00" for second in (0, 1, 2, 3, 4, 5))
+    monkeypatch.setattr(queue, "_now", lambda: next(stamps))
+    early, late = (
+        queue.enqueue(paths, head=f"{index:040x}", worktree=tmp_path, branch=None)
+        for index in (1, 2)
+    )
+    # A bisected batch closes the later request first.
+    queue.record_result(paths, late, status=queue.LandingStatus.LANDED, detail="")
+    queue.record_result(paths, early, status=queue.LandingStatus.FAILED, detail="")
+    closed = [row["request"]["id"] for row in queue.recorded_results(paths)]
+    assert closed == [late.id, early.id]
+    assert [row["request"]["id"] for row in queue.recorded_results(paths, limit=1)] == [
+        early.id
+    ]
 
 
 def test_queue_retires_old_runner_logs_and_results_only(tmp_path):
@@ -3389,7 +3558,9 @@ def test_queue_retires_old_runner_logs_and_results_only(tmp_path):
     recent = queue.enqueue(paths, head="2" * 40, worktree=tmp_path, branch=None)
     waiting = queue.enqueue(paths, head="3" * 40, worktree=tmp_path, branch=None)
     for request, age_days in ((old, queue.RESULT_DAYS + 1), (recent, 1)):
-        queue.record_result(paths, request, status="landed", detail="", landed=None)
+        queue.record_result(
+            paths, request, status=queue.LandingStatus.LANDED, detail="", landed=None
+        )
         result = paths.results / f"{request.id}.json"
         os.utime(result, (now - age_days * 86400, now - age_days * 86400))
 
@@ -3837,6 +4008,28 @@ def test_detached_run_completes_and_records_rc(drv, tmp_path, capsys):
     assert verdict["status"] == "done" and verdict["rc"] == 0
 
 
+def test_detached_run_prints_a_verify_command_that_finds_its_state(
+    drv, tmp_path, capsys
+):
+    # The landing queue starts its runners under --state-dir; the printed
+    # next step once omitted it and looked in the system temp directory.
+    state_root = tmp_path / "runners"
+    command = [sys.executable, "-c", "pass"]
+    assert drv.cmd_detached_run(_dr_ns(drv, "hinted", state_root, command)) == 0
+    printed = capsys.readouterr().err  # status lines go to stderr
+    from tools.molt_dev_detached import verify_command
+
+    argv = verify_command("hinted", str(state_root), 0)
+    assert (
+        "      " + shlex.join(verify_command("hinted", str(state_root), 30)) in printed
+    )
+    _wait_done(drv, capsys, "hinted", state_root)
+    # Run exactly what a person would paste, from an unrelated directory.
+    completed = run_guarded_test_process(argv, cwd=tmp_path, timeout=120)
+    assert completed.returncode == drv.EXIT_OK, completed.stderr
+    assert "no state" not in completed.stderr
+
+
 def test_detached_runner_never_forks_the_live_python_process(drv):
     """Detachment stays safe under memory-guard and free-threaded callers."""
     source = (
@@ -4176,11 +4369,14 @@ def test_integrate_binds_the_fetched_upstream_for_every_change_gate(
     upstream = "{integration_upstream_commit}"
     # Always gates run concurrently, so each gate moves the selected tracking
     # ref itself after fetch. A ref spelling passed instead of the captured
-    # commit would silently select no changes.
+    # commit would silently select no changes. The two gates update one ref at
+    # once: core.filesRefLockTimeout makes Git wait for the other's ref lock
+    # instead of failing with "cannot lock ref" (exit 128).
     imports = (
         "import sys, subprocess; from pathlib import Path; "
         f"sys.path[:0] = [{str(REPO_ROOT)!r}, {str(REPO_ROOT / 'src')!r}]; "
-        f"subprocess.run(['git', 'update-ref', 'refs/remotes/{remote}/main', 'HEAD'], check=True); "
+        "subprocess.run(['git', '-c', 'core.filesRefLockTimeout=60000', "
+        f"'update-ref', 'refs/remotes/{remote}/main', 'HEAD'], check=True); "
     )
     selection_gate = (
         _integration_python(
