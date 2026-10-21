@@ -10,6 +10,7 @@ import pytest
 from molt.cli import runtime_native_build as runtime
 from molt.cli.cargo_execution import CargoExecutionResult
 from molt.cli.models import _RuntimeArtifactState
+from molt.cli.product_store import ProductStore
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from tests.cli.native_link_test_support import write_test_static_archive
 from tests.runtime_build_identity_helper import (
@@ -62,7 +63,7 @@ def plan(
         ),
         fingerprint_features=("stdlib_micro",),
         build_identity=identity,
-        candidates=(),
+        store=ProductStore(tmp_path / "store" / "native-runtime"),
     )
 
 

@@ -771,6 +771,108 @@ Cargo-incremental quarantine receipt names a directory that survives the run,
 and artifact, cache-entry and release publications are outputs other
 processes trust. Neither runs on a successful guarded command.
 
+### 2.8 One product store per host (HF-390)
+
+Each checkout used to select its Rust products (the native runtime archive per
+profile, stdlib profile and target; the backend and host-tool executables; the
+WASM runtime pair) inside its own Cargo target. A new lane, the landing
+sandbox, a pinned session and every agent worktree therefore rebuilt products
+that another checkout had built from identical inputs. Measured on the
+integrator Mac on 2026-10-21 (load 14-22): a fresh lane's first
+`molt build examples/hello.py` took 330.8 s, with one Cargo run each for the
+runtime (about 103 s) and the backend (about 153 s), against 18.8 s warm. Two
+checkouts of one commit compute the same runtime identity and the same backend
+identity; only their target paths differ.
+
+Leading tools share builds across checkouts through one store keyed by inputs:
+
+- Go keeps one build cache per user (`os.UserCacheDir()/go-build`), shared by
+  every checkout. An action ID hashes the command, environment, input contents
+  and tool contents; main-module packages also hash their directory unless
+  `-trimpath` is set
+  ([exec.go](https://github.com/golang/go/blob/go1.27.3/src/cmd/go/internal/work/exec.go),
+  [cache.go](https://github.com/golang/go/blob/go1.27.3/src/cmd/go/internal/cache/cache.go)).
+  It renews an entry's mtime at most hourly and trims entries unused for 5 days.
+- Bazel keeps an action cache (action key to result) beside a content-addressed
+  store; its disk cache serves "multiple workspaces of the same project, such
+  as multiple checkouts" ([remote caching](https://bazel.build/remote/caching),
+  [command line](https://bazel.build/reference/command-line-reference)).
+  `--incompatible_strict_action_env`, the default since Bazel 9.0, gives every
+  action a static PATH so a user's PATH cannot split a shared cache.
+- Nix addresses a store path by the derivation that made it, shares one
+  `/nix/store` across projects, and builds with `PATH=/path-not-set`
+  ([input addressing](https://nix.dev/manual/nix/latest/store/derivation/outputs/input-address),
+  [building](https://nix.dev/manual/nix/latest/store/building)).
+
+Nothing below the product level shares across checkouts today, so the store
+works at the product level:
+
+- sccache 0.18.0 hashes a Rust compile's working directory, every `CARGO_*`
+  variable and every `env!` dependency (such as `OUT_DIR`) as given; its
+  `SCCACHE_BASEDIRS` applies to C and C++ only
+  ([rust.rs @v0.18.0](https://github.com/mozilla/sccache/blob/v0.18.0/src/compiler/rust.rs),
+  [#2652](https://github.com/mozilla/sccache/issues/2652)). On this host the
+  build server hit 6 of 855 Rust requests (0.70%) against 95.5% for C/C++,
+  with its 10 GiB cache at capacity (HF-391).
+- Cargo's `build.build-dir` (1.91) moves intermediates but does not share them;
+  the cross-workspace cache is a design and a draft
+  ([#5931](https://github.com/rust-lang/cargo/issues/5931),
+  [2026 goal](https://goals.rust-lang.org/2026/cargo-cross-workspace-cache.html)),
+  content freshness (`-Zchecksum-freshness`) is nightly-only, and
+  `profile.trim-paths` stabilizes in 1.101.
+- An APFS clone of a warm build directory (0.64 s, no space) cut a second
+  checkout's runtime build from about 103 s to 39.6 s: Cargo kept every
+  registry unit and recompiled the 17 workspace crates whose files were newer
+  than the clone. It is unsound in general: freshness compares mtimes, so a
+  lane whose differing sources are older than the clone's fingerprints would
+  reuse the clone's code (the HF-45/V1-01 wrong-source failure), and absolute
+  dep-info entries keep pointing into the first checkout. Rejected until
+  content freshness is stable.
+
+`molt.cli.product_store` owns the store; `molt.dx.product_store_dir` places it
+at `<target base>/target/.molt-products` (`v1/<kind>/` below it), beside the
+checkout targets of one artifact root, so every checkout target and pinned
+session target there shares it. An explicit `CARGO_TARGET_DIR` outside that
+directory is operator-owned and keeps a store of its own, which also isolates
+tests that place their target in a temporary directory.
+
+- An entry is named by the product's existing identity digest, which names
+  sources by content and logical root and never by checkout path. A store miss
+  builds once in the checkout's own target and publishes; every later build of
+  the same inputs on the host reuses the entry with no Cargo run.
+- A variant inside an entry holds what one observed Cargo environment
+  (`CargoEnvironmentInputs`) produced, named by its digest. A build-script
+  variable can change bytes without changing the declared identity, so a
+  reader admits the variant whose recorded environment matches its own, and
+  two environments keep two variants instead of overwriting one selection.
+- Publication completes a variant's closure before its selection receipt
+  appears, and eviction moves an entry aside before deleting it, so readers
+  see an entry whole or not at all. A receipt that exists but does not verify
+  is therefore corruption: the build fails at stage `product-store` and names
+  the entry; it never rebuilds over it silently.
+- One builder per input: a miss takes the entry's lock (`single_flight`) and
+  reads the store again under it, so a second checkout with the same inputs
+  waits and then reuses the first one's publication. CPU admission across
+  builds stays with `molt.host_capacity` ([host capacity](../host_capacity.md),
+  design item 6).
+- Retention follows last use, as Go's does: an admission renews its entry in
+  the store's ledger before reading it, and each publication evicts entries no
+  build used for 5 days. The native runtime's per-target generations had no
+  eviction at all (12 generations, 1.5 GB, in one live checkout's dev-fast).
+
+The native runtime reads and publishes only the store; the per-target
+selection receipts and the canonical-target candidates are deleted. The
+cross-host transfer (`molt.cli.native_toolchain_transfer`, used by the Nightly
+bundle) exports a store entry and imports into the importing host's store.
+
+Cargo's PATH no longer carries the caller's PATH (HF-385): the plan derives it
+from its typed selections (the managed LLVM `bin`, each captured executable's
+directory, POSIX `confstr(_CS_PATH)`), so `uv run molt` and `.venv/bin/molt`
+share one variant. Before, each alternation reran
+`runtime/molt-runtime-platform/build.rs` and rebuilt molt-runtime (81-133 s at
+`release-output`) for a byte-identical archive. Windows keeps the caller's
+PATH (an unverified cell).
+
 ### 2.9 One owner and one last use for every regenerable root (HF-434..HF-437)
 
 Section 2.6 retires checkout state by last use and owner absence. Every other
