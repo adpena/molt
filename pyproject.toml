@@ -95,7 +95,13 @@ exclude = ["src/molt/stdlib/**", "stdlib/**", "tests/differential/**"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 cache_dir = "tmp/pytest-cache"
+# The import path is `src`, then the repository root: the order that
+# tools.import_file.bind_repository_imports admits. The importlib import mode
+# never edits sys.path afterwards, so every test sees the same path whatever
+# ran before it on the worker.
+pythonpath = ["src", "."]
 addopts = [
+    "--import-mode=importlib",
     # Repository custody is explicit; installing Molt must not hook user pytest.
     "-p",
     "molt.pytest_memory_guard_config_plugin",
