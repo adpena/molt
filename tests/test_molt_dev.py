@@ -1474,12 +1474,15 @@ def test_cleanup_retires_the_checkouts_state_with_it(
     assert sibling_target.is_dir() and sibling_uv.is_dir()
 
 
+@pytest.mark.parametrize("cwd", ["outside", "inside"])
 def test_cleanup_imports_nothing_after_it_removes_the_worktree(
-    origin_and_clone, tmp_path
+    origin_and_clone, tmp_path, cwd
 ):
     """Integration runs from the checkout it removes, so retirement must import
     every module it needs before `git worktree remove`: afterwards a lazy import
-    finds no source. A fresh process with an import guard models that."""
+    finds no source. A fresh process with an import guard models that. A
+    landing runs `integrate --repo .` with the checkout as its working
+    directory, which the removal deletes; the "inside" case runs that way."""
     origin, _work = origin_and_clone
     wt = _worktree_off(origin, tmp_path, "wt_import_order")
     ext = tmp_path / "artifacts"
@@ -1521,11 +1524,12 @@ sys.exit(drv._cleanup_worktree(
 """
     completed = run_guarded_test_process(
         [sys.executable, "-c", code, str(wt)],
-        cwd=tmp_path,
+        cwd=wt if cwd == "inside" else tmp_path,
         env={**os.environ, "MOLT_EXT_ROOT": str(ext)},
         timeout=180,
     )
     assert completed.returncode == 0, completed.stderr
+    assert "were not reclaimed" not in completed.stderr
     assert not wt.exists()
     assert not target.exists() and not uv_environment.exists()
 

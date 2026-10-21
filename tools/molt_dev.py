@@ -1757,6 +1757,11 @@ def _cleanup_worktree(
         return EXIT_FAIL
     _retire_checkout_daemons(repo)
     checkout = repo.resolve()
+    # A landing runs `integrate --repo .` from the checkout it removes. Step
+    # out first: after the removal, anything that resolves against this
+    # process's working directory (`Path.cwd()`) would find it deleted.
+    if Path(os.getcwd()).resolve().is_relative_to(checkout):
+        os.chdir(main_repo)
     reclaim_checkout_state = _prepare_checkout_state_retirement(checkout)
     remove_args = ["worktree", "remove"]
     # `git worktree remove` refuses (without --force) on ANY modified/untracked
