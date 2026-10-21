@@ -434,6 +434,40 @@ def test_wrapper_help_remains_a_terminal_leaf_query(script):
     assert "wrapper" not in envelope
 
 
+def test_registry_projected_beside_a_redirected_root_keeps_plan_entrypoints(
+    tmp_path, monkeypatch
+):
+    """HF-368: a redirected admission root cannot poison later admission.
+
+    A fixture that pointed the admission root at an empty tree made the first
+    registry projection of its pytest worker there. Wrapped plan commands then
+    registered under the wrapper's own entrypoint, and every later
+    ``venv_exec.py --help`` query in that worker failed as a near-match.
+    """
+    wrapped = next(
+        command
+        for command in proof_plan.ProofPlan.load().commands
+        if command.argv[1:2] == ("tools/venv_exec.py",)
+        and not command.binds_source_commit
+    )
+    # Make the redirected projection the first one in this process.
+    command_admission._proof_command_registry.cache_clear()
+    try:
+        with monkeypatch.context() as redirected:
+            redirected.setattr(command_admission, "_REPO_ROOT", tmp_path)
+            command_admission._proof_command_registry()
+        help_query = command_admission.envelope_for_command(
+            ["python", "tools/venv_exec.py", "--help"]
+        )
+        assert help_query["argv"] == ["python", "tools/venv_exec.py", "--help"]
+        assert "wrapper" not in help_query
+        admitted = command_admission.envelope_for_command(list(wrapped.argv))
+        assert admitted["kind"] == "proof-plan"
+        assert wrapped.id in admitted["proof_plan_command_ids"]
+    finally:
+        command_admission._proof_command_registry.cache_clear()
+
+
 @pytest.mark.parametrize(
     "spelling", ["tools/./venv_exec.py", "tools/../tools/venv_exec.py"]
 )
