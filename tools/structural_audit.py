@@ -333,16 +333,35 @@ def _walk_pruned_files(base: Path, root: Path, suffixes: tuple[str, ...]) -> lis
     while stack:
         current = stack.pop()
         try:
-            entries = sorted(current.iterdir(), key=lambda path: path.name)
+            with os.scandir(current) as scan:
+                entries = sorted(scan, key=lambda entry: entry.name)
         except OSError:
             continue
         dirs: list[Path] = []
-        for path in entries:
+        for entry in entries:
+            path = current / entry.name
             if _is_excluded(path, root):
                 continue
-            if path.is_dir() and not path.is_symlink():
-                dirs.append(path)
-            elif path.is_file() and path.suffix in suffixes:
+            # DirEntry reuses the directory's native type metadata. On a rare
+            # query error, Path owns the host interpreter's suppression policy;
+            # do not duplicate pathlib's version/platform-specific errno lists.
+            try:
+                is_dir = entry.is_dir()
+            except OSError:
+                is_dir = path.is_dir()
+            if is_dir:
+                try:
+                    is_symlink = entry.is_symlink()
+                except OSError:
+                    is_symlink = path.is_symlink()
+                if not is_symlink:
+                    dirs.append(path)
+                    continue
+            try:
+                is_file = entry.is_file()
+            except OSError:
+                is_file = path.is_file()
+            if is_file and path.suffix in suffixes:
                 out.append(path)
         stack.extend(reversed(dirs))
     return out

@@ -263,11 +263,29 @@ semantic inputs, and import requests complete against the current project
 roots and custody after reuse. SQL applies each reader's byte bound before
 payload allocation; lowering explicitly retains its uncapped role. There is
 one decode per hit, no retained parsed-document cache, and no per-project copy.
+Schema version two stores opaque payloads in an ordinary rowid table with a
+unique `(kind, key)` primary-key index. The small generation table retains its
+`WITHOUT ROWID` layout. [SQLite's layout guidance](https://sqlite.org/withoutrowid.html#when_to_use_without_rowid)
+recommends small rows for `WITHOUT ROWID`: its intermediate nodes carry record
+content, reducing fan-out for large values. Source records include uncapped
+binary lowerings, so key lookup uses the narrow index, followed by a rowid-table
+lookup; record data lives in table leaves and their overflow pages. This changes no
+semantic key, byte bound, revision fence or consumer codec.
 Source-record initialization is a versioned database transition. Schema version
-zero enters one cold bootstrap owner through the existing portable file lock;
+zero or one enters one cold bootstrap owner through the existing portable file lock;
 that owner rechecks admission, establishes incremental vacuum and WAL, then
 publishes schema, legacy-row migration, indexes and the version in one SQL
-transaction. An unknown version refuses the optional store. Ordinary opens
+transaction. Existing `WITHOUT ROWID` records are copied once through SQL into
+the canonical table, preserving opaque payloads, revisions, timestamps and
+generation metadata; the old table is dropped in that same transaction. Existing
+peer read snapshots retain the old generation until they end. There is no second
+cache path or Python list of payloads. This cold transition holds the writer
+for one full live-record copy: work and changed-page WAL scale with live rows
+and indexes, temporary database space can include both table layouts, and
+memory scales with SQLite's page cache and the largest record being copied.
+It has no fixed wall-clock bound. Failure rolls back the whole transition and
+refuses the optional cache; migration does not reclaim or checkpoint peer-owned
+pages. An unknown version refuses the optional store. Ordinary opens
 read the admitted version and set connection-local synchronous mode; they
 do not repeat persistent pragmas, DDL or the bootstrap file lock. Write maintenance
 tries cold ownership once and preserves its nonwaiting refusal contract.

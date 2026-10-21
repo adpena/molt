@@ -9397,10 +9397,12 @@
       "local.codec-tables.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/test_gen_codecs.py",
       "local.compression-stream-state.0": "cargo test --locked --profile dev-fast --no-fail-fast -p molt-runtime-compression -p molt-lang-cpython-abi --lib --test test_numbers -- --test-threads=4",
       "local.cpython-abi-authorities.0": "cargo test --locked --no-fail-fast --profile dev-fast -p molt-lang-cpython-abi --tests -- --test-threads=4",
+      "local.cpython-coverage-generation.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/tools/test_gen_cpython_coverage.py",
       "local.dev-tooling.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/tools/test_setup_project_inputs.py tests/test_molt_dev.py tests/tools/test_claim_lane.py tests/test_molt_dev_lanes.py tests/test_checkout_provisioning.py tests/tools/test_rust_toolchain_contract.py tests/tools/test_check_rustfmt.py tests/tools/test_check_changed_clippy.py tests/test_cargo_workspace.py",
       "local.docs-architecture.0": "python tools/check_docs_architecture.py",
       "local.ecosystem-compat.0": "python tools/check_ecosystem_compat.py",
       "local.encoding-diagnostics.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_encoding_gate.py",
+      "local.environment-registry-audit.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/tools/test_check_environment_registry.py",
       "local.findings-registry.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_findings_registry.py",
       "local.fresh-guard-observer.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_process_guard_common.py tests/test_backend_daemon_suite_custody.py::test_guarded_protocol_daemon_transfer_and_failure_cleanup tests/test_memory_guard_tool.py::test_run_guarded_marks_child_environment_as_guarded tests/test_memory_guard_tool.py::test_run_guarded_scratch_cleanup_failure_preserves_primary_result tests/test_memory_guard_tool.py::test_run_guarded_retention_sweep_health_preserves_primary_result tests/test_memory_guard_tool.py::test_run_guarded_exports_backend_memory_contract tests/tools/test_memory_guard_spawn_callback.py::test_on_spawn_observes_custodied_child_and_result_owns_tree_peak tests/tools/test_memory_guard_spawn_callback.py::test_guard_polls_read_the_tree_not_the_host_table",
       "local.frontend-diagnostics.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/test_frontend_diagnostics.py",
@@ -9410,6 +9412,7 @@
       "local.frontend-python.0": "python -m ty check src",
       "local.frontend-python.1": "python tools/verified_subset.py check",
       "local.frontend-python.2": "python tools/check_dynamic_policy.py",
+      "local.generator-manifest.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_generator_manifest.py",
       "local.gpu-runtime.0": "cargo test --locked -p molt-gpu-runtime --all-features --no-fail-fast",
       "local.guard-marker-custody.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/tools/test_memory_guard_custody.py tests/tools/test_guard_marker_consumers.py tests/tools/test_runtime_wasm_final_preflight.py tests/tools/test_disk_guard.py tests/tools/test_proof_queue_execution_receipt_details.py",
       "local.heap-kind-lifetime-authority.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_gen_heap_kinds.py",
@@ -9446,7 +9449,7 @@
       "local.python-effect-capability-authority.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_gen_python_effects.py",
       "local.python-identity-catalog-authority.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_gen_python_identity_catalog.py tests/test_python_binding_flow.py tests/test_python_builtin_shape_facts.py",
       "local.python-source-dependencies.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_python_namespace_graph.py tests/cli/test_cli_python_source_closure.py tests/cli/test_cli_python_import_authority.py tests/cli/test_cli_lowering_cache_tooling_scope.py tests/cli/test_source_pure_import_requests.py",
-      "local.repository-scan-records.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/tools/test_encoding_gate.py tests/tools/test_signed_ratio.py tests/tools/test_subprocess_guard_coverage.py tests/tools/test_check_environment_registry.py tests/tools/test_gen_cpython_coverage.py tests/tools/test_structural_audit_records.py tests/test_gen_stringprep_tables.py tests/test_runtime_build_python.py::test_unicode_width_facts_replay_keyed_by_the_admitted_runtime",
+      "local.repository-scan-records.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/tools/test_encoding_gate.py tests/tools/test_signed_ratio.py tests/tools/test_subprocess_guard_coverage.py tests/tools/test_check_environment_registry.py tests/tools/test_gen_cpython_coverage.py tests/tools/test_structural_audit_records.py tests/test_structural_audit.py tests/test_generator_manifest.py tests/test_gen_stringprep_tables.py tests/test_runtime_build_python.py::test_unicode_width_facts_replay_keyed_by_the_admitted_runtime",
       "local.runtime-cargo-input-custody.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 -m 'not slow' tests/cli/test_cargo_build_reads.py tests/cli/test_cargo_environment_inputs.py tests/cli/test_runtime_source_identity.py tests/cli/test_runtime_c_resource_custody.py tests/cli/test_runtime_build_identity.py tests/cli/test_runtime_native_generation.py tests/cli/test_runtime_wasm_single_compile.py tests/test_wasm_link_runtime_generation.py tests/cli/test_compiler_identity.py tests/cli/test_wasm_facts_tool.py tests/cli/test_runtime_family_authority.py tests/cli/test_cargo_execution_failure_authority.py tests/test_toolchain_identity.py tests/test_runtime_build_python.py",
       "local.runtime-lib.0": "python tools/run_runtime_test_gate.py --profile release-output --build-timeout-seconds 6300 --child-timeout-seconds 120 --parallel-threads 8",
       "local.runtime-profile-schema-authority.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/test_gen_runtime_profile_schema.py tests/test_runtime_profile_schema.py",
@@ -9464,6 +9467,9 @@
       "local.source-extension-proof-policy.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=1.0 -k 'proof_queue_pact_witness or proof_queue_rejects_scipy or proof_queue_requires_explicit_scipy or rejects_expected_extension_identity_drift' tests/tools/test_proof_queue.py",
       "local.stringprep-leaf.0": "cargo check --locked --manifest-path Cargo.toml -p molt-runtime-stringprep --lib",
       "local.stringprep-tables.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/test_gen_stringprep_tables.py",
+      "local.structural-audit-records.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/tools/test_structural_audit_records.py",
+      "local.structural-audit.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_structural_audit.py",
+      "local.subprocess-guard-coverage.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_subprocess_guard_coverage.py",
       "local.suite-honesty.0": "python tools/check_differential_suite_layout.py",
       "local.suite-honesty.1": "python tools/check_suite_honesty.py",
       "local.table-drift.0": "python tools/check_table_drift.py --check",
@@ -9475,6 +9481,7 @@
       "local.tinygrad-upat-static-exec-registry.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_tinygrad_upat_static_exec_registry.py",
       "local.tir-midend.0": "cargo clippy --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir -p molt-backend-wasm --all-targets --all-features -- -D warnings",
       "local.tir-midend.1": "cargo test --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir -p molt-backend-wasm --all-features --no-fail-fast",
+      "local.unicode-width-scan-records.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_runtime_build_python.py::test_unicode_width_facts_replay_keyed_by_the_admitted_runtime",
       "local.wasm-abi-registry.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_gen_wasm_abi.py",
       "local.wasm-facts-host-tool.0": "cargo test --locked --profile release-fast -p molt-wasm-facts -p molt-artifact-publish -p molt-host-process --features molt-wasm-facts/host-tool --lib --bins --test wasm_link_facts_cli --no-fail-fast",
       "local.wasm-facts-host-tool.1": "python -m pytest -q tests/test_wasm_link_validation.py -k 'rust_facts or wasm_artifact_state'",
@@ -10683,27 +10690,13 @@
         "command_ids": [
           "local.repository-scan-records.pytest"
         ],
-        "description": "Content-keyed per-file scan records and the gates that replay them.",
+        "description": "Shared scan-record storage and replay select all scanner consumers.",
         "gates": [],
         "globs": [
           "tools/scan_records.py",
-          "tools/check_ratio_direction.py",
-          "tools/encoding_gate.py",
-          "tools/check_subprocess_guard_coverage.py",
-          "tools/check_environment_registry.py",
-          "tools/gen_cpython_coverage.py",
           "tools/molt_dev_gates.py",
           "tools/molt_dev_common.py",
-          "tools/structural_audit.py",
-          "tools/generators.py",
-          "tools/gen_unicode_width.py",
-          "tools/gen_stringprep_tables.py",
-          "tests/tools/test_encoding_gate.py",
-          "tests/tools/test_signed_ratio.py",
-          "tests/tools/test_subprocess_guard_coverage.py",
-          "tests/tools/test_check_environment_registry.py",
-          "tests/tools/test_structural_audit_records.py",
-          "tests/test_gen_stringprep_tables.py"
+          "tools/generators.py"
         ],
         "name": "repository-scan-records",
         "pytest": [
@@ -10713,8 +10706,149 @@
           "tests/tools/test_check_environment_registry.py",
           "tests/tools/test_gen_cpython_coverage.py",
           "tests/tools/test_structural_audit_records.py",
+          "tests/test_structural_audit.py",
+          "tests/test_generator_manifest.py",
           "tests/test_gen_stringprep_tables.py",
           "tests/test_runtime_build_python.py::test_unicode_width_facts_replay_keyed_by_the_admitted_runtime"
+        ],
+        "toolchains": [
+          "python"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.subprocess-guard-coverage.pytest"
+        ],
+        "description": "Subprocess guard coverage diagnostics and their semantic controls.",
+        "gates": [],
+        "globs": [
+          "tools/check_subprocess_guard_coverage.py",
+          "tests/tools/test_subprocess_guard_coverage.py"
+        ],
+        "name": "subprocess-guard-coverage",
+        "pytest": [
+          "tests/tools/test_subprocess_guard_coverage.py"
+        ],
+        "toolchains": [
+          "python"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.environment-registry-audit.pytest"
+        ],
+        "description": "Environment registry audit and its semantic controls.",
+        "gates": [],
+        "globs": [
+          "tools/check_environment_registry.py",
+          "tests/tools/test_check_environment_registry.py"
+        ],
+        "name": "environment-registry-audit",
+        "pytest": [
+          "tests/tools/test_check_environment_registry.py"
+        ],
+        "toolchains": [
+          "python"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.cpython-coverage-generation.pytest"
+        ],
+        "description": "CPython coverage generation and scan-record replay controls.",
+        "gates": [],
+        "globs": [
+          "tools/gen_cpython_coverage.py",
+          "tests/tools/test_gen_cpython_coverage.py"
+        ],
+        "name": "cpython-coverage-generation",
+        "pytest": [
+          "tests/tools/test_gen_cpython_coverage.py"
+        ],
+        "toolchains": [
+          "python"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.unicode-width-scan-records.pytest"
+        ],
+        "description": "Unicode-width facts replay against the admitted runtime.",
+        "gates": [],
+        "globs": [
+          "tools/gen_unicode_width.py"
+        ],
+        "name": "unicode-width-scan-records",
+        "pytest": [
+          "tests/test_runtime_build_python.py::test_unicode_width_facts_replay_keyed_by_the_admitted_runtime"
+        ],
+        "toolchains": [
+          "python"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.structural-audit.pytest"
+        ],
+        "description": "Structural audit parser, inventory, policy and regression controls.",
+        "gates": [],
+        "globs": [
+          "tools/structural_audit.py",
+          "tools/structural_audit_rust_admission.py",
+          "tools/structural_audit_rust_domains.py",
+          "src/molt/rust_source_scan.py",
+          "tools/structural_audit_baseline.json",
+          "tools/generator_manifest.toml",
+          "tests/test_structural_audit.py"
+        ],
+        "name": "structural-audit",
+        "pytest": [
+          "tests/test_structural_audit.py"
+        ],
+        "toolchains": [
+          "python"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.structural-audit-records.pytest"
+        ],
+        "description": "Structural audit scan-record replay matches freshly computed results.",
+        "gates": [],
+        "globs": [
+          "tools/structural_audit.py",
+          "tools/structural_audit_rust_admission.py",
+          "tools/structural_audit_rust_domains.py",
+          "src/molt/rust_source_scan.py",
+          "tests/tools/test_structural_audit_records.py"
+        ],
+        "name": "structural-audit-records",
+        "pytest": [
+          "tests/tools/test_structural_audit_records.py"
+        ],
+        "toolchains": [
+          "python"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.generator-manifest.pytest"
+        ],
+        "description": "Generator manifest ownership, shared structural parsing and replay controls.",
+        "gates": [],
+        "globs": [
+          "tools/check_generator_manifest.py",
+          "tools/generator_manifest.toml",
+          "tools/generator_manifest_baseline.json",
+          "tools/structural_audit.py",
+          "tools/structural_audit_rust_admission.py",
+          "tools/structural_audit_rust_domains.py",
+          "src/molt/rust_source_scan.py",
+          "tests/test_generator_manifest.py"
+        ],
+        "name": "generator-manifest",
+        "pytest": [
+          "tests/test_generator_manifest.py"
         ],
         "toolchains": [
           "python"
@@ -11013,7 +11147,6 @@
           "tools/translation_validate.py",
           "tools/ci_resource_env.py",
           "tools/resource_pressure.py",
-          "tests/test_generator_manifest.py",
           "tests/tools/test_nightly_prepare.py",
           "tests/tools/test_nightly_profile_feedback.py",
           "tests/tools/test_nightly_runtime_bundle.py",
@@ -12442,6 +12575,9 @@
         "cargo",
         "git"
       ],
+      "local.cpython-coverage-generation.pytest": [
+        "python"
+      ],
       "local.dev-tooling.pytest": [
         "python",
         "uv"
@@ -12453,6 +12589,9 @@
         "python"
       ],
       "local.encoding-diagnostics.pytest": [
+        "python"
+      ],
+      "local.environment-registry-audit.pytest": [
         "python"
       ],
       "local.findings-registry.pytest": [
@@ -12493,6 +12632,9 @@
       "local.frontend-python.2": [
         "python",
         "uv"
+      ],
+      "local.generator-manifest.pytest": [
+        "python"
       ],
       "local.gpu-runtime.0": [
         "python",
@@ -12767,6 +12909,15 @@
         "python",
         "rustfmt"
       ],
+      "local.structural-audit-records.pytest": [
+        "python"
+      ],
+      "local.structural-audit.pytest": [
+        "python"
+      ],
+      "local.subprocess-guard-coverage.pytest": [
+        "python"
+      ],
       "local.suite-honesty.0": [
         "python"
       ],
@@ -12812,6 +12963,9 @@
         "git",
         "node",
         "wasm-ld"
+      ],
+      "local.unicode-width-scan-records.pytest": [
+        "python"
       ],
       "local.wasm-abi-registry.pytest": [
         "python",
@@ -13356,15 +13510,15 @@
       "projection": "tool-release",
       "setup_command": "python -m molt.tool_releases provision node",
       "setup_evidence": [
-        "config/tool_releases.toml::version = \"26.11.1\"",
+        "config/tool_releases.toml::version = \"26.12.1\"",
         ".github/actions/setup-project/action.yml::uses: actions/setup-node@",
         ".github/workflows/formal.yml::node-version: pinned"
       ],
-      "setup_value": "26.11.1",
+      "setup_value": "26.12.1",
       "version_args": [
         "--version"
       ],
-      "version_pattern": "^v26\\.11\\.1$"
+      "version_pattern": "^v26\\.12\\.1$"
     },
     {
       "content_path_command": [
@@ -13536,16 +13690,16 @@
       },
       "name": "rustc",
       "setup_evidence": [
-        "rust-toolchain.toml::channel = \"1.99.0\"",
+        "rust-toolchain.toml::channel = \"1.99.1\"",
         ".github/actions/setup-project/action.yml::python3 -I -B .github/actions/setup-project/provision-rust.py",
         ".github/actions/setup-project/action.yml::steps.inputs.outputs.rust-toolchain"
       ],
-      "setup_value": "1.99.0",
+      "setup_value": "1.99.1",
       "version_args": [
         "--version",
         "--verbose"
       ],
-      "version_pattern": "^rustc 1\\.99\\.0\\b"
+      "version_pattern": "^rustc 1\\.99\\.1\\b"
     },
     {
       "executable": "lune",
@@ -13591,15 +13745,15 @@
       "fingerprint_domain": "rustup",
       "name": "cargo",
       "setup_evidence": [
-        "rust-toolchain.toml::channel = \"1.99.0\"",
+        "rust-toolchain.toml::channel = \"1.99.1\"",
         ".github/actions/setup-project/action.yml::python3 -I -B .github/actions/setup-project/provision-rust.py",
         ".github/actions/setup-project/action.yml::steps.inputs.outputs.rust-toolchain"
       ],
-      "setup_value": "1.99.0",
+      "setup_value": "1.99.1",
       "version_args": [
         "--version"
       ],
-      "version_pattern": "^cargo 1\\.99\\.0\\b"
+      "version_pattern": "^cargo 1\\.99\\.1\\b"
     },
     {
       "executable": "git",
