@@ -164,32 +164,6 @@ def test_backend_admission_preserves_lockfile_on_its_single_cargo_attempt(
         assert attempts[0][1] == "sccache"
 
 
-@pytest.mark.parametrize("override,expected", [(None, 1200), ("0.2", 0.2)])
-def test_backend_lock_wait_covers_cold_build_and_preserves_override(
-    override, expected, tmp_path, monkeypatch
-):
-    if override is None:
-        monkeypatch.delenv("MOLT_BUILD_LOCK_TIMEOUT", raising=False)
-    else:
-        monkeypatch.setenv("MOLT_BUILD_LOCK_TIMEOUT", override)
-    seen = []
-
-    def acquire(path, **kwargs):
-        seen.append(kwargs["timeout_s"])
-        return object()
-
-    monkeypatch.setattr(build_locks, "_acquire_file_lock", acquire)
-    monkeypatch.setattr(build_locks, "_release_file_lock", lambda handle: None)
-    with backend_binary._backend_admission_lock(
-        tmp_path,
-        tmp_path / "target" / "release" / "molt-backend.native_backend",
-        "release",
-        cargo_timeout=1200,
-    ):
-        pass
-    assert seen == [expected]
-
-
 def test_the_backend_lock_guards_the_cargo_output_of_its_coordinates_target(
     tmp_path, monkeypatch
 ):
@@ -207,7 +181,9 @@ def test_the_backend_lock_guards_the_cargo_output_of_its_coordinates_target(
     with backend_binary._backend_admission_lock(tmp_path, native, "release"):
         with backend_binary._backend_admission_lock(tmp_path, other_target, "release"):
             pass
-        with pytest.raises(backend_binary._BackendAdmissionLockError, match="Timed"):
+        with pytest.raises(
+            backend_binary._BackendAdmissionLockError, match="Timed out"
+        ):
             with backend_binary._backend_admission_lock(tmp_path, wasm, "release"):
                 pytest.fail("two variants of one target held its lock at once")
 
@@ -429,9 +405,7 @@ def test_build_lock_real_timeout_does_not_mask_inner_failure(tmp_path, monkeypat
     )
     monkeypatch.setenv("MOLT_BUILD_LOCK_TIMEOUT", "0.02")
     try:
-        with pytest.raises(
-            build_locks.BuildLockAcquisitionError, match="Timed out waiting"
-        ):
+        with pytest.raises(build_locks.BuildLockAcquisitionError, match="Timed out"):
             with build_locks._build_lock(tmp_path, "held"):
                 pytest.fail("held lock must not grant admission")
     finally:
@@ -453,7 +427,7 @@ def test_daemon_lock_failures_share_framing_and_timing(
     def unavailable(*args, **kwargs):
         raise RuntimeError("daemon lock timed out")
 
-    monkeypatch.setattr(build_locks, "_acquire_file_lock", unavailable)
+    monkeypatch.setattr(build_locks, "held_file_lock", unavailable)
     ready, error = backend_compile._start_backend_daemon_under_lock(
         tmp_path / "backend",
         tmp_path / "daemon.sock",
@@ -513,7 +487,7 @@ def test_wasm_member_lock_boundary_distinguishes_acquisition_from_work(
     if inside_work:
         monkeypatch.setattr(runtime_wasm_build, "_reuse_target_runtime_wasm", broken)
     else:
-        monkeypatch.setattr(build_locks, "_acquire_file_lock", broken)
+        monkeypatch.setattr(build_locks, "held_file_lock", broken)
 
     def run():
         return runtime_wasm_build._materialize_runtime_wasm_member_from_target(

@@ -315,7 +315,6 @@ def _prebuild_backend_binary(
                 molt_root,
                 selection.binary,
                 selection.cargo_profile,
-                cargo_timeout=cargo_timeout,
             ):
                 identity, installed, receipts = admitted_identity()
     except (OSError, ValueError, _backend_binary._BackendAdmissionLockError) as exc:

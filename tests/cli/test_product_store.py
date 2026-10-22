@@ -126,7 +126,7 @@ def test_retention_evicts_only_entries_no_build_used_for_the_window(
 def test_an_entry_a_builder_holds_is_renewed_before_its_lock(tmp_path: Path) -> None:
     store = products.ProductStore(tmp_path / "store")
     identity = _digest("a")
-    with store.single_flight(identity, default_timeout_s=5.0):
+    with store.single_flight(identity):
         assert _ledger(store)["last_used"][identity] >= time.time() - 60
         assert (store.entry(identity) / ".build.lock").is_file()
 
@@ -144,7 +144,7 @@ def test_one_builder_per_identity_and_the_other_reuses_its_publication(
     def builder(name: str) -> None:
         try:
             entered.wait(timeout=10)
-            with store.single_flight(identity, default_timeout_s=30.0):
+            with store.single_flight(identity):
                 # The store is read again under the lock, as the build does.
                 if published.exists():
                     return
@@ -164,19 +164,19 @@ def test_one_builder_per_identity_and_the_other_reuses_its_publication(
     assert published.read_text(encoding="utf-8") == builds[0]
 
 
-def test_a_held_build_lock_bounds_the_wait(
+def test_an_operator_bound_fails_a_waiter_with_a_build_lock_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from molt.cli.build_locks import BuildLockAcquisitionError
 
-    monkeypatch.delenv("MOLT_BUILD_LOCK_TIMEOUT", raising=False)
+    monkeypatch.setenv("MOLT_BUILD_LOCK_TIMEOUT", "0.2")
     store = products.ProductStore(tmp_path / "store")
     identity = _digest("a")
     held = threading.Event()
     release = threading.Event()
 
     def holder() -> None:
-        with store.single_flight(identity, default_timeout_s=5.0):
+        with store.single_flight(identity):
             held.set()
             release.wait(timeout=10)
 
@@ -184,8 +184,8 @@ def test_a_held_build_lock_bounds_the_wait(
     thread.start()
     try:
         assert held.wait(timeout=10)
-        with pytest.raises(BuildLockAcquisitionError, match="another build"):
-            with store.single_flight(identity, default_timeout_s=0.2):
+        with pytest.raises(BuildLockAcquisitionError, match="Timed out after 0.2s"):
+            with store.single_flight(identity):
                 pass
     finally:
         release.set()

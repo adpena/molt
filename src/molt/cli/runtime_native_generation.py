@@ -445,7 +445,7 @@ def import_native_runtime_generation(
     cargo_environment.verify(environment)
     coordinate = store.variant(build_identity.digest, cargo_environment) / runtime_name
     profile_dir = _cargo_profile_dir(cargo_profile)
-    with store.single_flight(build_identity.digest, default_timeout_s=300.0):
+    with store.single_flight(build_identity.digest):
         for existing in native_runtime_store_generations(
             store,
             build_identity,

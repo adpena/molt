@@ -551,9 +551,9 @@ summary = "Detail level of build diagnostics: default/normal/standard, summary/c
 name = "MOLT_BUILD_LOCK_TIMEOUT"
 audience = "user"
 kind = "float"
-default = "300"
-owner = "src/molt/cli/build_locks.py"
-summary = "Seconds molt waits for a build lock or shared cache lock; 0 or less waits without limit, and empty or non-numeric values use 300."
+default = ""
+owner = "src/molt/file_locks.py"
+summary = "Seconds molt waits for a build, product store or shared cache lock that another process holds; unset, empty, non-numeric, 0 or less waits while the holder holds the lock, as Cargo does, and the waiter prints one notice naming the lock and the holder's pid."
 
 [[variable]]
 name = "MOLT_BUILD_PYTHON"

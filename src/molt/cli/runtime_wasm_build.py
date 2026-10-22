@@ -260,7 +260,6 @@ def _materialize_runtime_wasm_member_from_target(
         with _build_lock(
             ctx.root,
             ctx.lock_name,
-            default_timeout_s=cargo_timeout if cargo_timeout is not None else 300.0,
         ):
             return bool(
                 _reuse_target_runtime_wasm(

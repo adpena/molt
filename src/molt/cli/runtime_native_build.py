@@ -1191,11 +1191,9 @@ def _ensure_stored_native_runtime(plan: _NativeRuntimeBuildPlan) -> bool:
         return store_failure(exc)
     if generation is not None:
         return plan.accept(generation)
-    # A waiter waits as long as the build it waits for may run (design 56,
-    # section 2.8): the Cargo timeout, else until the builder exits.
-    with plan.store.single_flight(
-        plan.build_identity.digest, default_timeout_s=plan.cargo_timeout
-    ):
+    # A waiter waits while the build it waits for holds the lock (design 56,
+    # section 2.8, molt.file_locks.lock_wait_s).
+    with plan.store.single_flight(plan.build_identity.digest):
         try:
             generation = admit_stored_native_runtime(plan)
         except (ProductStoreError, OSError) as exc:
@@ -1298,7 +1296,6 @@ def _ensure_runtime_lib(
             _build_lock(
                 project_root,
                 f"runtime.{cargo_profile}.{target_triple or 'native'}",
-                default_timeout_s=cargo_timeout if cargo_timeout is not None else 300.0,
             ),
         ):
             plan = _prepare_native_runtime_build(
