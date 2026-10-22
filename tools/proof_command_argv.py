@@ -157,8 +157,6 @@ _PYTHON_CONSOLE_MODULES = {
     "pytest.exe": "pytest",
     "py.test": "pytest",
     "py.test.exe": "pytest",
-    "pip-audit": "pip_audit",
-    "pip-audit.exe": "pip_audit",
 }
 _PYTHON_CONSOLE_SCRIPTS = frozenset(_PYTHON_CONSOLE_MODULES)
 # One closed authority for every admitted ``uv run`` option.  Input-bearing

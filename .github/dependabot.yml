@@ -1,9 +1,16 @@
-# Keeps every locked dependency at its newest release (owner directive:
-# latest everywhere, kept current by automation). Toolchain pins in config/
-# and rust-toolchain.toml move through `tools/pin_freshness.py`, whose weekly
-# `security.pin-freshness` family fails when a pin falls behind.
+# Keeps every locked dependency at its newest release that has been public
+# for 7 days (owner directive: latest everywhere, under the release-age rule).
+# `cooldown` holds each version update until the release is 7 days old.
+# Security updates skip cooldown, but uv and npm apply the same rule themselves
+# (pyproject's [tool.uv] exclude-newer, each npm project's .npmrc), so a fix
+# younger than 7 days cannot lock: it enters through a hand-written, dated
+# exemption (docs/DEVELOPER_GUIDE.md, "Release-age rule"), and
+# `tools/pin_freshness.py --audit` reports the advisory. Toolchain pins in
+# config/ and rust-toolchain.toml move through `tools/pin_freshness.py`, whose
+# weekly `security.pin-freshness` family fails when a pin falls behind; it
+# also checks the ages of these Action pins.
 # tests/test_dependabot_config.py keeps these directories equal to the
-# tracked manifests.
+# tracked manifests and the cooldown equal to the tool's rule.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -12,6 +19,8 @@ updates:
       - "/.github/actions/*"
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     groups:
       github-actions:
         update-types: [minor, patch]
@@ -27,6 +36,8 @@ updates:
       - "/tools/proof_supervisor"
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     groups:
       cargo:
         update-types: [minor, patch]
@@ -35,6 +46,8 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     groups:
       uv:
         update-types: [minor, patch]
@@ -46,6 +59,8 @@ updates:
       - "/tools/browser_asset_graph"
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     groups:
       npm:
         update-types: [minor, patch]
