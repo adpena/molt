@@ -20,7 +20,9 @@ fn discard_itertools_class(py: &crate::PyToken<'_>, class: u64) -> u64 {
 /// Allocate a complete itertools declaration before publishing its class cache.
 ///
 /// Iterator callbacks have the positional `(self)` ABI. An optional constructor
-/// supplies its positional arity and retained defaults and never binds a receiver.
+/// supplies its full positional arity, including an explicit first `cls` operand,
+/// and retained trailing defaults. Attribute lookup never binds `cls` implicitly:
+/// type.__call__ prepends it, while explicit __new__ callers supply it themselves.
 /// The namespace owns the callables; there is no parallel method cache.
 pub(crate) fn alloc_itertools_class(
     py: &crate::PyToken<'_>,
@@ -521,15 +523,42 @@ mod tests {
                 !exception_pending(py),
                 "constructor must retain its omitted count default"
             );
-            for _ in 0..3 {
-                let next = attr(py, defaulted, b"__next__");
-                let yielded = unsafe { call_callable0(py, next) };
+            let class_defaulted = unsafe { call_callable1(py, repeat_class, value) };
+            assert!(
+                !exception_pending(py),
+                "repeat class must supply explicit cls"
+            );
+            for reader in [defaulted, class_defaulted] {
+                for _ in 0..3 {
+                    let next = attr(py, reader, b"__next__");
+                    let yielded = unsafe { call_callable0(py, next) };
+                    assert!(!exception_pending(py));
+                    assert_eq!(yielded, value);
+                    dec_ref_bits(py, yielded);
+                    dec_ref_bits(py, next);
+                }
+            }
+            let finite =
+                unsafe { call_callable2(py, repeat_class, value, MoltObject::from_int(2).bits()) };
+            assert!(
+                !exception_pending(py),
+                "repeat class must bind its full arity"
+            );
+            for _ in 0..2 {
+                let yielded = crate::molt_itertools_repeat_next(finite);
                 assert!(!exception_pending(py));
                 assert_eq!(yielded, value);
                 dec_ref_bits(py, yielded);
-                dec_ref_bits(py, next);
             }
-            for owned in [defaulted, instance_constructor, constructor, count, repeat] {
+            for owned in [
+                finite,
+                class_defaulted,
+                defaulted,
+                instance_constructor,
+                constructor,
+                count,
+                repeat,
+            ] {
                 dec_ref_bits(py, owned);
             }
         });
