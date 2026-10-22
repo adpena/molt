@@ -229,7 +229,28 @@ mod tests {
         crate::with_gil_entry_nopanic!(py, {
             let value = MoltObject::from_ptr(alloc_list(py, &[])).bits();
             let value_ptr = obj_from_bits(value).as_ptr().unwrap();
-            let source = crate::molt_itertools_repeat(value, MoltObject::from_int(500).bits());
+            let source = crate::molt_itertools_repeat(value, MoltObject::from_int(900).bits());
+            // Measure the same source protocol independently. Repeat currently
+            // takes generic descriptor dispatch, whose temporary allocations
+            // belong to source advancement rather than tee cache storage.
+            let source_allocations_before =
+                crate::ALLOC_COUNT.load(std::sync::atomic::Ordering::Relaxed);
+            let source_bytes_before =
+                crate::ALLOC_BYTES_TOTAL.load(std::sync::atomic::Ordering::Relaxed);
+            {
+                let iterator =
+                    molt_runtime_core::OwnedRuntimeValue::retain(py.core_token(), source);
+                for _ in 0..400 {
+                    let yielded = molt_runtime_core::iter_next_owned(py.core_token(), &iterator)
+                        .expect("repeat source must advance")
+                        .expect("repeat source must not exhaust");
+                    assert_eq!(yielded.bits(), value);
+                }
+            }
+            let source_allocations = crate::ALLOC_COUNT.load(std::sync::atomic::Ordering::Relaxed)
+                - source_allocations_before;
+            let source_bytes = crate::ALLOC_BYTES_TOTAL.load(std::sync::atomic::Ordering::Relaxed)
+                - source_bytes_before;
             let baseline = unsafe { (*header_from_obj_ptr(value_ptr)).owned_ref_count_snapshot() };
             let [first, second] = tee_pair(py, source);
             let allocations_before = crate::ALLOC_COUNT.load(std::sync::atomic::Ordering::Relaxed);
@@ -237,10 +258,18 @@ mod tests {
                 crate::ALLOC_BYTES_TOTAL.load(std::sync::atomic::Ordering::Relaxed);
             for _ in 0..400 {
                 for reader in [first, second] {
+                    let before = crate::ALLOC_COUNT.load(std::sync::atomic::Ordering::Relaxed);
                     let yielded = crate::molt_itertools_tee_next(reader);
                     assert!(!exception_pending(py));
                     assert_eq!(yielded, value);
                     dec_ref_bits(py, yielded);
+                    if reader == second {
+                        assert_eq!(
+                            crate::ALLOC_COUNT.load(std::sync::atomic::Ordering::Relaxed),
+                            before,
+                            "cached reader advancement must not allocate"
+                        );
+                    }
                 }
                 let owners =
                     unsafe { (*header_from_obj_ptr(value_ptr)).owned_ref_count_snapshot() };
@@ -256,12 +285,18 @@ mod tests {
                 - allocated_bytes_before;
             // The first block exists already. 400 successful source advances
             // cross seven CPython block boundaries; cached reads allocate none.
+            // Keep generic source dispatch costs visible instead of attributing
+            // every allocation to tee or assuming source advancement is free.
             assert_eq!(
-                allocations, 7,
-                "tee allocation density must be one block per 57 yields"
+                allocations,
+                source_allocations + 7,
+                "tee must add one cache block per 57 source yields"
             );
+            let block_bytes = allocated_bytes
+                .checked_sub(source_bytes)
+                .expect("tee adds cache storage to the same source cost");
             eprintln!(
-                "tee lockstep: source_yields=400 reader_yields=800 heap_allocations={allocations} allocated_bytes={allocated_bytes} live_cached_value_bound=57"
+                "tee lockstep: source_yields=400 reader_yields=800 total_allocations={allocations} source_allocations={source_allocations} block_allocations=7 total_bytes={allocated_bytes} source_bytes={source_bytes} block_bytes={block_bytes} live_cached_value_bound=57"
             );
             dec_ref_bits(py, first);
             dec_ref_bits(py, second);
