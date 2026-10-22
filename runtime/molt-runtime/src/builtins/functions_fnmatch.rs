@@ -1,7 +1,6 @@
 // Fnmatch pattern matching implementation.
 // Extracted from functions.rs for compilation-unit size reduction and tree shaking.
 
-use super::functions::*;
 use crate::*;
 use molt_obj_model::MoltObject;
 use molt_runtime_platform::fnmatch::{
