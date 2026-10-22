@@ -119,9 +119,18 @@ def _run_fast_captured_command(
     cwd: Path | None = None,
     env: ProcessEnvironment | None = None,
     input_text: str | None = None,
-    timeout: float | None = 60.0,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Run cheap non-shell plumbing directly, with a bounded fail-loud timeout."""
+    """Run cheap non-shell plumbing directly; it has no wall-clock deadline.
+
+    A deadline on local plumbing measures the host, not the command. On
+    2026-10-21 the host stalled for 38 minutes and two 5 ms Git reads in a
+    landing gate passed the old 60 s bound, which failed a 47-minute batch.
+    Local plumbing now waits out a stall. A network transfer is bounded by its
+    progress instead (tools/git_transfer.py, applied by CommandExecutor). A
+    caller that must bound a command passes ``timeout`` and receives exit 124
+    when it expires.
+    """
     try:
         return _COMMANDS.run(
             cmd,
@@ -146,6 +155,13 @@ def _run_fast_captured_command(
         else:
             stderr = f"{timeout_msg}\n"
         return subprocess.CompletedProcess(cmd, 124, stdout, stderr)
+
+
+def _run_fast_captured_bytes(
+    cmd: list[str], *, cwd: Path, env: ProcessEnvironment
+) -> subprocess.CompletedProcess[bytes]:
+    """``_run_fast_captured_command`` with byte-exact output (paths, archives)."""
+    return _COMMANDS.run(cmd, cwd=cwd, env=env, capture_output=True, check=False)
 
 
 def _run_live_gate(

@@ -71,7 +71,14 @@ MAX_BATCH = 8
 # results older than RESULT_DAYS, retire when a runner starts.
 RUNNER_LOGS_KEPT = 20
 RESULT_DAYS = 30
-_AWAIT_POLL_S = 10.0
+# `land --wait` watches for the queue's result record. Each look costs two
+# stats and a lock probe, so the wait starts short and doubles to one second:
+# a landing that takes two seconds is seen within a second of landing, and a
+# long one costs one look per second. A fixed ten-second look made every
+# `land --wait` end up to ten seconds after its landing (measured 2026-10-21:
+# a 1.8 s fixture landing returned after 24.7 s).
+_AWAIT_POLL_MIN_S = 0.05
+_AWAIT_POLL_MAX_S = 1.0
 
 
 class LandingStatus(StrEnum):
@@ -558,13 +565,14 @@ def _start_queue_runner(paths, repo: Path, args: argparse.Namespace) -> None:
 
 
 def _runner_exited_without(paths: QueuePaths, request_id: str) -> Path | None:
-    """The finished runner's state dir when no runner can still land the request.
+    """The newest runner's state dir when no runner can still land the request.
 
-    A runner holds its lock while it works and its supervisor writes the exit
-    status last (the detached-run protocol), so a free lock, a finished newest
-    runner and a still-queued request mean nothing will land it. A supervisor
-    that died before it wrote ``rc`` (killed, or dead at startup) finished
-    too: the process its ``pid`` file names is no longer alive.
+    A runner holds its lock while it lands a batch and waits for it briefly
+    between batches (`_take_runner_lock`), and its supervisor writes the exit
+    status last (the detached-run protocol). So a free lock, no runner that may
+    still land (`_runner_may_land`) and a still-queued request mean nothing will
+    land it. Every runner counts, not only the newest: an older one can be
+    waiting for the lock while a newer one has exited.
     """
     if not (paths.requests / f"{request_id}.json").is_file():
         return None
@@ -574,32 +582,46 @@ def _runner_exited_without(paths: QueuePaths, request_id: str) -> Path | None:
     if not runners:
         return None
     newest = runners[-1]
-    if not ((newest / "rc").is_file() or _supervisor_died(newest)):
+    if any(_runner_may_land(state, newest=state == newest) for state in runners):
         return None
     if read_result(paths, request_id) is not None:
         return None
     return newest
 
 
-def _supervisor_died(state: Path) -> bool:
-    """True when the runner's supervisor is gone, whether or not it wrote ``rc``.
+def _runner_may_land(state: Path, *, newest: bool) -> bool:
+    """Whether the runner recorded in ``state`` has not finished.
 
-    The launcher publishes ``pid`` once the supervisor runs; before that the
-    runner is still starting. The supervisor is the launching ``land``
-    process's child, so after it dies it stays an unreaped zombie of the
-    process that waits here: the probe counts a zombie dead and never reaps.
+    It has not written ``rc``, and the process its ``pid`` file names is
+    alive and is that runner's supervisor: its argv names the runner's own
+    ``worker.json``, so a reused pid never counts. The launcher publishes
+    ``pid`` once the supervisor runs; before that only the newest runner can
+    still be starting. The supervisor is the launching ``land`` process's
+    child, so after it dies it stays an unreaped zombie of the process that
+    waits here: the probe counts a zombie dead and never reaps.
     """
+    if (state / "rc").is_file():
+        return False
     try:
         pid = int((state / "pid").read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return False
+        return newest
     try:
-        return not process_model.pid_alive(pid)
+        if not process_model.pid_alive(pid):
+            return False
     except OSError:
-        return False  # Unknown does not establish supervisor death.
+        return True  # Unknown does not establish supervisor death.
+    argv = process_model.process_command_argv(pid)
+    if argv is None:
+        return True  # This platform does not show argv; liveness decides.
+    return any(
+        Path(part).name == "worker.json" and Path(part).parent.name == state.name
+        for part in argv
+    )
 
 
 def _await_landing(paths, request_id: str) -> int:
+    delay = _AWAIT_POLL_MIN_S
     while (result := read_result(paths, request_id)) is None:
         exited = _runner_exited_without(paths, request_id)
         if exited is not None:
@@ -613,7 +635,8 @@ def _await_landing(paths, request_id: str) -> int:
                 f"(see {exited / 'run.log'}); `molt_dev.py queue run` restarts it"
             )
             return EXIT_FAIL
-        time.sleep(_AWAIT_POLL_S)
+        time.sleep(delay)
+        delay = min(_AWAIT_POLL_MAX_S, delay * 2)
     status = LandingStatus(result["status"])
     if status is LandingStatus.LANDED:
         _ok(f"{request_id} landed in {result['landed'][:12]}")
@@ -795,8 +818,9 @@ def cmd_queue_run(args: argparse.Namespace) -> int:
             _ok("another landing runner is active")
             return EXIT_OK
         try:
-            _step(f"landing runner ({controller})")
-            _land_one_batch(args, git, paths)
+            if pending(paths):
+                _step(f"landing runner ({controller})")
+                _land_one_batch(args, git, paths)
         finally:
             drv._release_file_lock(handle)
         # Checked after the release: a request that arrives later starts its

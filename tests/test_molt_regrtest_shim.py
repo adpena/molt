@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 import tools.molt_regrtest_shim as shim
+from tests.process_guard_common import HUNG_CHILD_SOURCE
 
 
 def test_build_env_enables_hermetic_module_roots(monkeypatch, tmp_path: Path) -> None:
@@ -59,10 +60,10 @@ def _worker(
 def test_worker_enforces_the_regrtest_test_timeout(tmp_path: Path, capsys) -> None:
     # CPython's own workers stop a test at --timeout through faulthandler;
     # regrtest kills a worker only at min(1.5 x timeout, timeout + 300 s).
-    started = time.monotonic()
-    result, row = _worker(tmp_path, capsys, "import time; time.sleep(30)", timeout=1)
+    # The test never ends by itself, so only the timeout ends it; an elapsed
+    # bound would also fail a healthy run on a stalled host.
+    result, row = _worker(tmp_path, capsys, HUNG_CHILD_SOURCE, timeout=1)
 
-    assert time.monotonic() - started < 20
     assert result["state"] == "TIMEOUT"
     assert (row["state"], row["reason"]) == ("TIMEOUT", "timeout")
     assert row["duration_s"] >= 1

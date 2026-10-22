@@ -14,6 +14,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from tools.command_execution import CommandExecutor  # noqa: E402
+
+_COMMANDS = CommandExecutor.for_file(__file__)
+
 
 LINEAR_ENDPOINT = "https://api.linear.app/graphql"
 
@@ -956,7 +968,14 @@ def _git_branch_exists_local(branch: str) -> bool:
 
 
 def _git_branch_exists_remote(remote: str, branch: str) -> bool:
-    proc = _git_run(["git", "ls-remote", "--heads", remote, branch])
+    # A network transfer: the guard bounds it by its progress
+    # (tools/git_transfer.py), which a raw subprocess would bypass.
+    proc = _COMMANDS.run(
+        ["git", "ls-remote", "--heads", remote, branch],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
     return proc.returncode == 0 and bool((proc.stdout or "").strip())
 
 

@@ -1,0 +1,280 @@
+"""The pytest profile record measures what bounds a run's wall clock."""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+import sys
+
+from tests.process_guard_common import run_guarded_test_process
+from tools import pytest_profile
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def _phase(
+    nodeid: str,
+    when: str,
+    *,
+    worker: str,
+    start: float,
+    duration: float,
+    cpu: float = 0.0,
+    child_cpu: float = 0.0,
+    spawns: int = 0,
+    outcome: str = "passed",
+) -> dict:
+    return {
+        "nodeid": nodeid,
+        "when": when,
+        "outcome": outcome,
+        "duration": duration,
+        "start": start,
+        "stop": start + duration,
+        "worker": worker,
+        "cpu": cpu,
+        "child_cpu": child_cpu,
+        "spawns": spawns,
+    }
+
+
+def _profile() -> dict:
+    return {
+        "schema": pytest_profile.SCHEMA,
+        "worker": None,
+        "argv": ["pytest"],
+        "numprocesses": 2,
+        "session_start": 1000.0,
+        "collection_finish": 1002.0,
+        "session_finish": 1020.0,
+        "exit_at": 1025.0,
+        "worker_records": {
+            "gw0": {"worker": "gw0", "session_finish": 1019.0, "exit_at": 1023.5},
+            "gw1": {"worker": "gw1", "session_finish": 1019.5, "exit_at": 1020.0},
+        },
+        "phases": [
+            _phase(
+                "tests/a.py::t1",
+                "setup",
+                worker="gw0",
+                start=1002.0,
+                duration=4.0,
+                cpu=0.5,
+                child_cpu=1.0,
+                spawns=2,
+            ),
+            _phase(
+                "tests/a.py::t1",
+                "call",
+                worker="gw0",
+                start=1006.0,
+                duration=6.0,
+                cpu=1.0,
+                spawns=1,
+            ),
+            _phase(
+                "tests/a.py::t1", "teardown", worker="gw0", start=1012.0, duration=1.0
+            ),
+            _phase("tests/b.py::t2", "setup", worker="gw1", start=1002.0, duration=0.5),
+            _phase(
+                "tests/b.py::t2",
+                "call",
+                worker="gw1",
+                start=1002.5,
+                duration=2.5,
+                cpu=2.5,
+                outcome="failed",
+            ),
+            _phase(
+                "tests/b.py::t2", "teardown", worker="gw1", start=1005.0, duration=0.0
+            ),
+            _phase("tests/b.py::t3", "setup", worker="gw1", start=1005.0, duration=0.0),
+            _phase(
+                "tests/b.py::t3",
+                "call",
+                worker="gw1",
+                start=1005.0,
+                duration=3.0,
+                cpu=1.0,
+            ),
+            _phase(
+                "tests/b.py::t3", "teardown", worker="gw1", start=1008.0, duration=0.0
+            ),
+        ],
+    }
+
+
+def test_summary_measures_wall_phases_balance_waits_and_exit_tails() -> None:
+    summary = pytest_profile.summarize(_profile())
+    assert summary["wall"] == 20.0
+    assert summary["collection"] == 2.0
+    assert summary["exit_tail"] == 5.0
+    assert summary["worker_exit_tail_max"] == 4.5
+    assert (summary["tests"], summary["failed"], summary["workers"]) == (3, 1, 2)
+    assert summary["sum_total"] == 17.0
+    assert (summary["sum_setup"], summary["sum_call"], summary["sum_teardown"]) == (
+        4.5,
+        11.5,
+        1.0,
+    )
+    # t1 waits 11 - 1.5 own - 1.0 child = 8.5; t2 waits 3 - 2.5 = 0.5; t3 waits 2.
+    assert summary["sum_waiting"] == 11.0
+    assert summary["spawns"] == 3
+    assert summary["busiest_worker"] == 11.0
+    assert summary["mean_worker"] == 8.5
+    assert abs(summary["imbalance"] - (11.0 / 8.5 - 1.0)) < 1e-9
+    assert summary["per_worker"]["gw1"]["span"] == 6.0
+    assert summary["per_file"]["tests/b.py"] == {
+        "total": 6.0,
+        "setup": 0.5,
+        "tests": 2,
+        "spawns": 0,
+    }
+    rows = {row["nodeid"]: row for row in summary["test_rows"]}
+    assert rows["tests/a.py::t1"]["waiting"] == 8.5
+    assert rows["tests/b.py::t2"]["waiting"] == 0.5
+    assert rows["tests/b.py::t2"]["outcome"] == "failed"
+
+
+def test_report_names_the_slowest_waiting_setup_file_and_tail_rows() -> None:
+    text = "\n".join(pytest_profile.report_lines(_profile(), top=1))
+    assert "3 tests (1 failed) on 2 worker(s) (-n 2)" in text
+    assert "wall 20.0s: collection 2.0s, exit tail after the session 5.0s" in text
+    assert "slowest worker exit 4.5s" in text
+    assert "busiest 11.0s, mean 8.5s (+29.4%)" in text
+    slowest = text.split("slowest 1 tests:\n", 1)[1].splitlines()[0]
+    assert "tests/a.py::t1" in slowest and "spawns   3" in slowest
+    waiting = text.split("most waiting", 1)[1].splitlines()[1]
+    assert "tests/a.py::t1" in waiting and "wait    8.5" in waiting
+    setups = text.split("slowest setups, top 1:\n", 1)[1].splitlines()[0]
+    assert "setup    4.0" in setups
+    files = text.split("files by test time, top 1:\n", 1)[1].splitlines()[0]
+    assert files.strip().endswith("tests/a.py")
+    # The last 10 s of a 20 s session: t1 ended at 1013, t3 at 1008.
+    tail = text.split("last stretch:", 1)[1]
+    assert "tests/a.py::t1" in tail and "tests/b.py::t3" not in tail
+
+
+def test_compare_reports_the_deltas_per_file_and_per_test() -> None:
+    before = _profile()
+    after = _profile()
+    after["session_finish"] = 1012.0
+    after["exit_at"] = 1012.5
+    after["phases"] = [
+        phase
+        for phase in after["phases"]
+        if not (phase["nodeid"] == "tests/a.py::t1" and phase["when"] == "setup")
+    ]
+    text = "\n".join(pytest_profile.compare_lines(before, after, top=5))
+    assert "wall 20.0 -> 12.0 (-8.0)" in text
+    assert "exit_tail 5.0 -> 0.5 (-4.5)" in text
+    assert "sum_setup 4.5 -> 0.5 (-4.0)" in text
+    assert "spawns 3 -> 1" in text
+    assert "   11.0s ->     7.0s (   -4.0)  tests/a.py" in text
+    assert "   11.0s ->     7.0s (   -4.0)  tests/a.py::t1" in text
+
+
+def test_plugin_records_every_workers_phases_spawns_waits_and_exit_tails(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "profiled-project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\naddopts = ""\n', encoding="utf-8"
+    )
+    (project / "test_profiled.py").write_text(
+        "import subprocess, sys, time\n"
+        "import pytest\n"
+        "@pytest.fixture\n"
+        "def slow_setup():\n"
+        "    time.sleep(0.3)\n"
+        "def test_spawns(slow_setup):\n"
+        "    subprocess.run([sys.executable, '-c', 'pass'], check=True)\n"
+        "def test_sleeps():\n"
+        "    time.sleep(0.4)\n"
+        "@pytest.mark.parametrize('index', range(6))\n"
+        "def test_quick(index):\n"
+        "    assert index >= 0\n",
+        encoding="utf-8",
+    )
+    record = tmp_path / "profile.json"
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = os.pathsep.join([str(ROOT / "src"), str(ROOT)])
+    # The child is its own session, not this run's xdist worker.
+    for key in (
+        "PYTEST_ADDOPTS",
+        "PYTEST_XDIST_WORKER",
+        "PYTEST_XDIST_WORKER_COUNT",
+        "PYTEST_XDIST_TESTRUNUID",
+    ):
+        environment.pop(key, None)
+    result = run_guarded_test_process(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "tools.pytest_profile",
+            "-p",
+            "no:cacheprovider",
+            f"--molt-profile={record}",
+            "-n",
+            "2",
+            str(project / "test_profiled.py"),
+        ],
+        cwd=project,
+        env=environment,
+        timeout=180.0,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    profile = pytest_profile.load(record)
+    assert profile["numprocesses"] == 2
+    assert sorted(profile["worker_records"]) == ["gw0", "gw1"]
+    for worker in profile["worker_records"].values():
+        assert worker["exit_at"] >= worker["session_finish"] > 0
+    summary = pytest_profile.summarize(profile)
+    assert summary["tests"] == 8 and summary["failed"] == 0
+    assert summary["workers"] == 2
+    assert summary["exit_tail"] >= 0
+    assert summary["collection"] > 0
+    rows = {row["nodeid"].split("::", 1)[1]: row for row in summary["test_rows"]}
+    assert set(rows) == {
+        "test_spawns",
+        "test_sleeps",
+        *(f"test_quick[{i}]" for i in range(6)),
+    }
+    assert rows["test_spawns"]["spawns"] == 1
+    assert rows["test_spawns"]["setup"] >= 0.3
+    assert rows["test_spawns"]["child_cpu"] > 0
+    assert rows["test_sleeps"]["spawns"] == 0
+    assert rows["test_sleeps"]["call"] >= 0.4
+    assert rows["test_sleeps"]["waiting"] >= 0.35
+    assert all(row["cpu"] >= 0 for row in rows.values())
+    assert {row["worker"] for row in rows.values()} == {"gw0", "gw1"}
+    assert all(row["stop"] >= row["start"] > 0 for row in rows.values())
+
+    report = "\n".join(pytest_profile.report_lines(profile, top=3))
+    assert "8 tests (0 failed) on 2 worker(s) (-n 2)" in report
+    assert "test_sleeps" in report.split("most waiting", 1)[1]
+
+    # The record is also readable through the command line.
+    listing = run_guarded_test_process(
+        [
+            sys.executable,
+            str(ROOT / "tools" / "pytest_profile.py"),
+            "report",
+            str(record),
+        ],
+        cwd=ROOT,
+        env=environment,
+        timeout=120.0,
+    )
+    assert listing.returncode == 0, listing.stdout + listing.stderr
+    assert "8 tests (0 failed)" in listing.stdout
+    assert (
+        json.loads(record.read_text(encoding="utf-8"))["schema"]
+        == pytest_profile.SCHEMA
+    )

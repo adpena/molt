@@ -170,6 +170,8 @@ class GuardResult:
     descendants_closed: bool = False
     # The largest pytest worker subtree and per-test peaks (worker_peaks.py).
     worker_peaks: WorkerPeakSummary | None = None
+    # The output bound that ended the command, when silence ended it.
+    output_stall_s: float | None = None
 
 
 ChildExitResourceUsage = _process_model.ChildExitResourceUsage
@@ -871,6 +873,311 @@ class ChildExecutionClock:
             assert timeout is not None  # An unbounded Event.wait cannot expire.
             raise subprocess.TimeoutExpired(self.proc.args, timeout)
         return self.poll()
+
+
+# The enforcer's signal: (whether it signalled, its report, if any).
+RootSignal: TypeAlias = Callable[
+    [str, float], tuple[bool, GuardTerminationReport | None]
+]
+
+
+def owned_root_group_signal(
+    proc: Any,
+    clock: ChildExecutionClock | None,
+    child: GuardedChildProcess,
+    *,
+    terminate_job: Callable[[], None] | None = None,
+) -> RootSignal | None:
+    """The one signal whose target needs no observation, or None.
+
+    On Windows it is the guard's Job. On POSIX it is the child's own process
+    group: the child leads a new session from launch, so only its descendants
+    can join that group, and while its ChildExecutionClock holds the child
+    unreaped, its PID and so the group it leads cannot name another process.
+    Each signal is sent under the lock that the reap also takes. SIGTERM goes
+    first; SIGKILL follows the grace unless the reaper has reaped the root by
+    then, when the group may no longer be this child's and observation must
+    finish what remains.
+    """
+    if terminate_job is not None:
+
+        def signal_job(_reason: str, _grace: float):
+            if proc.poll() is not None:
+                return False, None
+            terminate_job()
+            return True, None
+
+        return signal_job
+    pgid = child.pgid
+    if (
+        os.name != "posix"
+        or clock is None
+        or not clock.posix_reserved_wait
+        or pgid is None
+        or pgid != proc.pid
+        or getattr(os, "killpg", None) is None
+    ):
+        return None
+
+    def signal_group(reason: str, grace: float):
+        started_at = _utc_timestamp()
+        actions: list[GuardTerminationAction] = []
+        with clock.reap_signal_lock:
+            if clock.error is not None or proc.returncode is not None:
+                return False, None
+            actions.append(_send_process_group_signal_action(pgid, signal.SIGTERM))
+        clock.done.wait(grace)
+        with clock.reap_signal_lock:
+            if clock.error is None and proc.returncode is None:
+                actions.append(
+                    _send_process_group_signal_action(pgid, fallback_kill_signal())
+                )
+        return True, GuardTerminationReport(
+            reason=reason,
+            started_at=started_at,
+            completed_at=_utc_timestamp(),
+            root_pid=proc.pid,
+            root_pgid=pgid,
+            root_sid=child.sid,
+            grace_sec=grace,
+            watched_pids=(),
+            protected_pgids=(),
+            escaped_pids=(),
+            remaining_pgids=(),
+            remaining_pids=(),
+            actions=tuple(actions),
+        )
+
+    return signal_group
+
+
+class OwnedTreeEnforcer:
+    """Signal an owned child's tree without observing the host (HF-417).
+
+    The run loop observes: it samples the tree, accounts memory, exports
+    daemon custody and writes evidence, and each of those can block while the
+    host stalls. On 2026-10-21 a guard with a 300 s deadline signalled its
+    child at 2,270 s. This thread reads no process table and writes no file,
+    so a blocked observation cannot delay it; it signals through
+    ``owned_root_group_signal`` only.
+
+    It is a backstop. Each reason (the deadline, a memory trip, an owner's
+    cancellation) falls due ``slack`` after it arises, and again ``slack``
+    after the run loop begins to signal for it; the thread signals a reason
+    still due and undelivered. A healthy run loop delivers first and keeps
+    its evidence (the Cargo interruption inventory it takes before it
+    signals), and this thread stays idle. A run loop that reaches its own
+    signal after this thread defers to it, so one tree is never signalled
+    twice from stale observations. Without an identity-safe signal the
+    enforcer is inert and the run loop alone enforces, as before.
+    """
+
+    def __init__(
+        self,
+        signal_root: RootSignal | None,
+        *,
+        slack: float,
+        deadline: float | None = None,
+        deadline_grace: float = 0.0,
+        clock: Callable[[], float] = time.perf_counter,
+    ) -> None:
+        self._signal_root = signal_root
+        self._slack = slack
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._wake = threading.Event()
+        self._due: dict[str, tuple[float, float]] = {}
+        self._delivered: set[str] = set()
+        self._started: set[str] = set()
+        self._enforced: list[str] = []
+        self._reports: list[GuardTerminationReport] = []
+        self._thread: threading.Thread | None = None
+        self._stopped = False
+        if signal_root is not None and deadline is not None:
+            with self._lock:
+                self._due["timeout"] = (deadline + slack, deadline_grace)
+                self._start_locked()
+
+    def request(self, reason: str, *, grace: float) -> None:
+        """Make ``reason`` due after the slack unless the run loop delivers it."""
+        if self._signal_root is None:
+            return
+        with self._lock:
+            if (
+                self._stopped
+                or reason in self._delivered
+                or reason in self._due
+                or reason in self._started
+            ):
+                return
+            self._due[reason] = (self._clock() + self._slack, grace)
+            self._start_locked()
+        self._wake.set()
+
+    def begin(self, reason: str) -> bool:
+        """The run loop will signal for ``reason``; False if this thread has.
+
+        A reason still due waits another slack: the run loop's signal follows
+        at once, and only a stall inside the run loop's own termination lets
+        this thread act.
+        """
+        with self._lock:
+            if reason in self._started:
+                return False
+            if reason in self._due:
+                _, grace = self._due[reason]
+                self._due[reason] = (self._clock() + self._slack, grace)
+            return True
+
+    def delivered(self, reason: str) -> None:
+        """The run loop has signalled the tree for ``reason`` itself."""
+        with self._lock:
+            self._delivered.add(reason)
+            self._due.pop(reason, None)
+
+    def stop(self) -> tuple[tuple[str, ...], tuple[GuardTerminationReport, ...]]:
+        """Stop enforcing; return the reasons this thread enforced, with reports."""
+        with self._lock:
+            self._stopped = True
+            thread = self._thread
+        self._wake.set()
+        if thread is not None:
+            # It never waits on observation: at most one grace remains.
+            thread.join()
+        with self._lock:
+            return tuple(self._enforced), tuple(self._reports)
+
+    def _start_locked(self) -> None:
+        if self._thread is None:
+            self._thread = threading.Thread(
+                target=self._run, name="molt-guard-enforcer", daemon=True
+            )
+            self._thread.start()
+
+    def _run(self) -> None:
+        signal_root = self._signal_root
+        assert signal_root is not None
+        while True:
+            reason: str | None = None
+            grace = 0.0
+            wait: float | None = None
+            with self._lock:
+                if self._stopped:
+                    return
+                now = self._clock()
+                ready = [
+                    (due, name) for name, (due, _) in self._due.items() if due <= now
+                ]
+                if ready:
+                    _, reason = min(ready)
+                    _, grace = self._due.pop(reason)
+                    self._started.add(reason)
+                else:
+                    next_due = min((due for due, _ in self._due.values()), default=None)
+                    wait = None if next_due is None else max(0.0, next_due - now)
+                    self._wake.clear()
+            if reason is None:
+                self._wake.wait(wait)
+                continue
+            signalled, report = signal_root(reason, grace)
+            with self._lock:
+                if signalled:
+                    self._enforced.append(reason)
+                if report is not None:
+                    self._reports.append(report)
+
+
+def completed_enforcement_report(
+    report: GuardTerminationReport,
+    *,
+    identities: Mapping[int, ProcessIdentity],
+    sampler: Callable[[], Mapping[int, ProcessSample]],
+    grace: float,
+) -> GuardTerminationReport:
+    """Add the terminal observation the enforcer could not make itself.
+
+    The enforcer signals without observing; closure accepts a signal only
+    with a later observed exit of the same target. The run loop observes
+    once the child has exited, when observation can no longer delay a signal.
+    """
+    groups = sorted(
+        {
+            action.target_id
+            for action in report.actions
+            if action.target_kind == "process_group"
+        }
+    )
+    observations = tuple(
+        _observe_termination_exit_action(
+            "process_group", pgid, identities, sampler=sampler, grace=grace
+        )
+        for pgid in groups
+    )
+    return GuardTerminationReport(
+        reason=report.reason,
+        started_at=report.started_at,
+        completed_at=_utc_timestamp(),
+        root_pid=report.root_pid,
+        root_pgid=report.root_pgid,
+        root_sid=report.root_sid,
+        grace_sec=report.grace_sec,
+        watched_pids=report.watched_pids,
+        protected_pgids=report.protected_pgids,
+        escaped_pids=report.escaped_pids,
+        remaining_pgids=report.remaining_pgids,
+        remaining_pids=report.remaining_pids,
+        actions=report.actions + observations,
+    )
+
+
+class StopRequestWatch:
+    """Poll a stop request on a thread of its own (HF-417).
+
+    An owner's cancellation callable may do I/O (a cancel file's existence),
+    and an operator's signal is only recorded by a handler that runs Python
+    on the guard thread. The run loop may be blocked observing the host or
+    waiting for the adoption lock; neither waits for the other. The first
+    request is latched for the run loop and handed to the enforcer.
+    """
+
+    def __init__(
+        self,
+        requested: Callable[[], bool],
+        *,
+        interval: float,
+        on_request: Callable[[], None],
+        name: str,
+    ) -> None:
+        self._requested = requested
+        self._interval = interval
+        self._on_request = on_request
+        self._stopped = threading.Event()
+        self._latched = threading.Event()
+        self._error: BaseException | None = None
+        self._thread = threading.Thread(target=self._run, name=name, daemon=True)
+        self._thread.start()
+
+    def requested(self) -> bool:
+        """Whether the stop was requested; re-raises the callable's error."""
+        if self._error is not None:
+            raise self._error
+        return self._latched.is_set()
+
+    def stop(self) -> None:
+        # Never joined: the owner's callable may block in I/O, and a late
+        # answer after the run is ignored.
+        self._stopped.set()
+
+    def _run(self) -> None:
+        try:
+            while not self._stopped.is_set():
+                if self._requested():
+                    self._latched.set()
+                    self._on_request()
+                    return
+                self._stopped.wait(self._interval)
+        except BaseException as exc:
+            self._error = exc
 
 
 def _take_child_exit_usage(

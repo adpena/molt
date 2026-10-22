@@ -83,6 +83,8 @@ _READ_ONLY_GIT_ACTIONS = frozenset({("worktree", "list")})
 # ``core.fsmonitor`` or ``core.pager`` and so turns any read into a launch.
 _INERT_GIT_GLOBAL_OPTIONS = frozenset({"--no-optional-locks", "--no-pager"})
 _VERSION_FLAGS = frozenset({"--help", "--version", "-V", "-vV", "-version"})
+# Git's own version report. `git --help` stays guarded: it opens a pager.
+_GIT_VERSION_REQUESTS = frozenset({"--version", "version"})
 
 
 def _is_bounded_metadata_probe(command: Sequence[str]) -> bool:
@@ -102,7 +104,7 @@ def _is_bounded_metadata_probe(command: Sequence[str]) -> bool:
         if index >= len(command):
             return False
         subcommand = command[index]
-        if subcommand in _READ_ONLY_GIT_SUBCOMMANDS:
+        if subcommand in _READ_ONLY_GIT_SUBCOMMANDS | _GIT_VERSION_REQUESTS:
             return True
         if tuple(command[index : index + 2]) in _READ_ONLY_GIT_ACTIONS:
             return True

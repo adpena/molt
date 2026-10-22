@@ -36,14 +36,18 @@ from molt.backend_daemon_suite_custody import LEASE_ENV
 import molt.dx as molt_dx
 from molt.custody_layout import out_of_tree_scratch_root
 from tests.process_guard_common import (
+    HUNG_CHILD_SOURCE,
     check_output_guarded_test_process,
     current_thread_only,
     guard_custody_env,
     install_module_os_view,
     install_module_view,
     install_thread_module_view,
+    hung_child_marker,
+    processes_carrying,
     run_in_fresh_guard_observer,
     start_owned_test_process,
+    stop_test_processes_carrying,
 )
 from molt.memory_guard_paths import (
     active_guard_marker_dir,
@@ -4178,7 +4182,8 @@ def test_run_guarded_external_evidence_contract_rejects_ambiguous_paths(
         )
 
 
-_SIGTERM_CHILD = """
+_SIGTERM_CHILD = (
+    """
 import pathlib, signal, sys, time
 receipt, ready, mode = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), sys.argv[3]
 pathlib.Path(sys.argv[4]).write_text(str(__import__("os").getpid()))
@@ -4188,8 +4193,9 @@ def drain(signum, frame):
     sys.exit(3)
 signal.signal(signal.SIGTERM, drain if mode == "drain" else signal.SIG_IGN)
 ready.write_text("ready")
-time.sleep(60)
 """
+    + HUNG_CHILD_SOURCE
+)
 
 
 def _signal_guard_parent(tmp_path: Path, mode: str) -> tuple[int, float, Path, int]:
@@ -4261,7 +4267,7 @@ def test_run_guarded_interrupt_during_sampling_terminates_child_tree(
 
     monkeypatch.setattr(memory_guard._win_job, "create_kill_on_close_job", lambda: None)
     result = memory_guard.run_guarded(
-        [sys.executable, "-c", "import time; time.sleep(30)"],
+        [sys.executable, "-c", HUNG_CHILD_SOURCE],
         max_rss_kb=1_000_000,
         poll_interval=0.01,
         sampler=interrupting_sampler,
@@ -6388,7 +6394,7 @@ def test_run_command_timeout_reports_post_baseline_repo_orphan_cleanup(
     monkeypatch.setattr(memory_guard._win_job, "create_kill_on_close_job", lambda: None)
 
     result = memory_guard.run_guarded(
-        [sys.executable, "-c", "import time; time.sleep(10)"],
+        [sys.executable, "-c", HUNG_CHILD_SOURCE],
         max_rss_kb=1_000_000,
         poll_interval=0.01,
         timeout=0.01,
@@ -6526,7 +6532,7 @@ def test_run_command_ignores_samples_without_root_pid() -> None:
 
 def test_run_command_returns_guard_code_on_real_low_limit() -> None:
     result = memory_guard.run_guarded(
-        [sys.executable, "-c", "import time; time.sleep(10)"],
+        [sys.executable, "-c", HUNG_CHILD_SOURCE],
         max_rss_kb=1,
         poll_interval=0.01,
     )
@@ -6537,15 +6543,10 @@ def test_run_command_returns_guard_code_on_real_low_limit() -> None:
 
 
 def test_run_command_fast_start_poll_catches_allocator_before_slow_poll() -> None:
-    # The allocation outlives the 5 s slow poll by far, and exit rusage cannot
-    # report it before 10 s. Only a live sample taken in the fast-start window
-    # can trip the limit before the slow poll interval elapses.
-    script = (
-        "import time; "
-        "buf = bytearray(192 * 1024 * 1024); "
-        "time.sleep(10.0); "
-        "print(len(buf))"
-    )
+    # The child holds the allocation until the guard kills it, so exit rusage
+    # never reports it. Only a live sample taken in the fast-start window can
+    # trip the limit before the slow poll interval elapses.
+    script = "buf = bytearray(192 * 1024 * 1024)\n" + HUNG_CHILD_SOURCE
 
     result = memory_guard.run_guarded(
         [sys.executable, "-c", script],
@@ -6586,7 +6587,7 @@ def test_run_command_rusage_catches_short_lived_allocator_spike() -> None:
 
 def test_run_command_returns_timeout_code_when_wall_clock_expires() -> None:
     result = memory_guard.run_guarded(
-        [sys.executable, "-c", "import time; time.sleep(10)"],
+        [sys.executable, "-c", HUNG_CHILD_SOURCE],
         max_rss_kb=1_000_000,
         poll_interval=0.01,
         timeout=0.01,
@@ -6810,49 +6811,44 @@ def _wait_for_pid_file(path: Path, *, timeout_s: float = 10.0) -> int:
     raise AssertionError(f"no pid published at {path}")
 
 
-def _is_test_grandchild(pid: int, marker: str) -> bool:
-    """True while ``pid`` runs the argv this test gave its grandchild."""
-    argv = memory_guard._process_model.process_command_argv(pid)
-    return argv is not None and marker in argv
-
-
-def _test_grandchild_gone(pid: int, marker: str, *, timeout_s: float = 5.0) -> bool:
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        if not _is_test_grandchild(pid, marker):
-            return True
-        time.sleep(0.02)
-    return False
-
-
-def _kill_test_grandchild(pid: int, marker: str) -> None:
-    """Stop an escaped test grandchild only while it still runs our argv."""
-    born = memory_guard._process_model.process_started_at_ns(pid)
-    if born is not None and _is_test_grandchild(pid, marker):
-        memory_guard.terminate_verified_pid(
-            pid, memory_guard.ProcessIdentity(born), grace=1.0
-        )
-
-
 @pytest.mark.skipif(os.name != "posix", reason="POSIX sampled orphan custody")
 def test_run_guarded_terminates_a_new_session_grandchild_left_after_exit(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     """The grandchild escapes the child's group and outlives the child.
 
     Only the guard's tracked custody can find it after the child exits: it is
     reparented, in its own session, and named by no group the guard created.
+    The child exits only once a poll has sampled the grandchild under it; a
+    fixed half-second wait let a starved guard miss it.
     """
     pid_file = tmp_path / "grandchild.pid"
-    marker = f"grandchild-of-{tmp_path.name}"
+    sampled = tmp_path / "grandchild-sampled"
+    marker = hung_child_marker()
+    custody_sample = memory_guard.sample_processes_custody
+
+    def sample_then_release_the_child(interest):
+        samples = custody_sample(interest)
+        published = pid_file.read_text(encoding="utf-8") if pid_file.exists() else ""
+        if published and int(published) in samples:
+            sampled.touch()
+        return samples
+
+    monkeypatch.setattr(
+        memory_guard, "sample_processes_custody", sample_then_release_the_child
+    )
     script = (
-        "import pathlib, subprocess, sys, time\n"
+        "import os, pathlib, subprocess, sys, time\n"
         "grandchild = subprocess.Popen(\n"
-        f"    [sys.executable, '-c', 'import time; time.sleep(60)', {marker!r}],\n"
+        f"    [sys.executable, '-c', {HUNG_CHILD_SOURCE!r}, {marker!r}],\n"
         "    start_new_session=True,\n"
         ")\n"
-        f"pathlib.Path({str(pid_file)!r}).write_text(str(grandchild.pid))\n"
-        "time.sleep(0.5)\n"
+        f"partial = pathlib.Path({str(pid_file) + '.partial'!r})\n"
+        "partial.write_text(str(grandchild.pid))\n"
+        f"os.replace(partial, {str(pid_file)!r})\n"
+        f"while not pathlib.Path({str(sampled)!r}).exists():\n"
+        "    time.sleep(0.01)\n"
     )
     grandchild_pid: int | None = None
     try:
@@ -6860,17 +6856,17 @@ def test_run_guarded_terminates_a_new_session_grandchild_left_after_exit(
             [sys.executable, "-c", script],
             max_rss_kb=1_000_000,
             poll_interval=0.05,
-            timeout=30.0,
         )
         grandchild_pid = _wait_for_pid_file(pid_file)
 
         assert result.returncode == 0
         assert grandchild_pid in result.orphaned_process_groups
         assert result.descendants_closed is True
-        assert _test_grandchild_gone(grandchild_pid, marker)
+        # Closure observed its exit: it runs nothing now.
+        assert grandchild_pid not in processes_carrying(marker)
     finally:
-        if grandchild_pid is not None:
-            _kill_test_grandchild(grandchild_pid, marker)
+        # Found by its marker: run_guarded may raise before the pid is known.
+        stop_test_processes_carrying(marker)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX process-group census")
@@ -6905,13 +6901,13 @@ def test_run_guarded_terminates_a_group_member_orphaned_between_samples(
         memory_guard, "sample_processes_custody", sample_then_release_the_child
     )
     pid_file = tmp_path / "grandchild.pid"
-    marker = f"group-orphan-of-{tmp_path.name}"
+    marker = hung_child_marker()
     script = (
         "import pathlib, subprocess, sys, time\n"
         f"while not pathlib.Path({str(launch_sampled)!r}).exists():\n"
         "    time.sleep(0.01)\n"
         "grandchild = subprocess.Popen(\n"
-        f"    [sys.executable, '-c', 'import time; time.sleep(60)', {marker!r}],\n"
+        f"    [sys.executable, '-c', {HUNG_CHILD_SOURCE!r}, {marker!r}],\n"
         ")\n"
         f"pathlib.Path({str(pid_file)!r}).write_text(str(grandchild.pid))\n"
     )
@@ -6935,10 +6931,11 @@ def test_run_guarded_terminates_a_group_member_orphaned_between_samples(
         assert result.temporary_artifacts is not None
         census = result.temporary_artifacts["closure"]["root_exit_census"]
         assert census == {"admitted_pids": [grandchild_pid]}
-        assert _test_grandchild_gone(grandchild_pid, marker)
+        # Closure observed its exit: it runs nothing now.
+        assert grandchild_pid not in processes_carrying(marker)
     finally:
-        if grandchild_pid is not None:
-            _kill_test_grandchild(grandchild_pid, marker)
+        # Found by its marker: run_guarded may raise before the pid is known.
+        stop_test_processes_carrying(marker)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX owned-child reap")
@@ -6960,7 +6957,7 @@ def test_timeout_closure_survives_a_late_reap_of_the_killed_child(
     # The view confines the late reap to the clock under test.
     install_module_view(monkeypatch, "os", os, process_custody, wait4=late_wait4)
     result = memory_guard.run_guarded(
-        [sys.executable, "-c", "import time; time.sleep(60)"],
+        [sys.executable, "-c", HUNG_CHILD_SOURCE],
         max_rss_kb=1_000_000,
         poll_interval=0.05,
         timeout=0.5,
@@ -6982,19 +6979,19 @@ def test_run_guarded_enforces_tree_rss_across_a_new_session_grandchild(
     tree limit. The grandchild's RSS counts only if the sampler keeps it in
     the tree after it leaves the child's session."""
     pid_file = tmp_path / "grandchild.pid"
-    marker = f"grandchild-of-{tmp_path.name}"
+    marker = hung_child_marker()
     allocate = (
         "buf = bytearray(120 * 1024 * 1024); buf[::4096] = b'x' * len(buf[::4096])"
     )
+    held = f"{allocate}\n{HUNG_CHILD_SOURCE}"
     script = (
-        "import pathlib, subprocess, sys, time\n"
+        "import pathlib, subprocess, sys\n"
         "grandchild = subprocess.Popen(\n"
-        f"    [sys.executable, '-c', {f'{allocate}; import time; time.sleep(60)'!r}, {marker!r}],\n"
+        f"    [sys.executable, '-c', {held!r}, {marker!r}],\n"
         "    start_new_session=True,\n"
         ")\n"
         f"pathlib.Path({str(pid_file)!r}).write_text(str(grandchild.pid))\n"
-        f"{allocate}\n"
-        "time.sleep(60)\n"
+        f"{held}"
     )
     grandchild_pid: int | None = None
     try:
@@ -7012,10 +7009,11 @@ def test_run_guarded_enforces_tree_rss_across_a_new_session_grandchild(
         assert result.violation is not None
         assert result.violation.scope == "process_tree"
         assert result.violation.rss_kb > 180 * 1024
-        assert _test_grandchild_gone(grandchild_pid, marker)
+        # Closure observed its exit: it runs nothing now.
+        assert grandchild_pid not in processes_carrying(marker)
     finally:
-        if grandchild_pid is not None:
-            _kill_test_grandchild(grandchild_pid, marker)
+        # Found by its marker: run_guarded may raise before the pid is known.
+        stop_test_processes_carrying(marker)
 
 
 @pytest.mark.parametrize("tracked_cleanup_signalled", [False, True])
@@ -7131,7 +7129,7 @@ def test_main_enforces_timeout_and_writes_summary(
             "--",
             sys.executable,
             "-c",
-            "import time; time.sleep(10)",
+            HUNG_CHILD_SOURCE,
         ]
     )
 
@@ -7170,11 +7168,8 @@ def test_main_writes_summary_when_guard_parent_receives_sigterm(
             "--",
             sys.executable,
             "-c",
-            (
-                "import os, signal, time; "
-                "os.kill(os.getppid(), signal.SIGTERM); "
-                "time.sleep(10)"
-            ),
+            "import os, signal\nos.kill(os.getppid(), signal.SIGTERM)\n"
+            + HUNG_CHILD_SOURCE,
         ]
     )
 
@@ -10000,3 +9995,486 @@ def test_windows_exit_observation_queries_without_signaling(
         assert queries[-1] == 0.04
     else:
         assert queries
+
+
+# Enforcement does not wait on observation (HF-417). On 2026-10-21 a guard
+# blocked 38 minutes in a host-wide read and signalled its 300 s deadline at
+# 2,270 s. These tests stall each observation that stood on the enforcement
+# path and require the child's own process group to be signalled anyway.
+
+# A child that ends only when its process group is signalled.
+_ENFORCED_CHILD = "import threading\nthreading.Event().wait()\n"
+
+
+def _wait_until(predicate: Callable[[], bool], bound_s: float) -> bool:
+    """Poll ``predicate``; ``bound_s`` is a hang guard, never the oracle."""
+    deadline = time.monotonic() + bound_s
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
+
+
+class _GuardThread:
+    """Run ``run_guarded`` on a thread; optionally stall its own samples."""
+
+    def __init__(
+        self, command: list[str], *, stall_samples: bool = False, **kwargs: Any
+    ) -> None:
+        self.release = threading.Event()
+        self.guard_samples = 0
+        self.spawned: list[int] = []
+        self.outcome: dict[str, Any] = {}
+        if stall_samples:
+            kwargs["sampler"] = self._stalled_sampler
+        self.thread = threading.Thread(
+            target=self._run, args=(command,), kwargs=kwargs, name="hf417-guard"
+        )
+
+    def _stalled_sampler(self) -> Mapping[int, memory_guard.ProcessSample]:
+        # The guard's first sample is its launch baseline; each later one on
+        # the guard thread stalls until the test releases it. The reaper's
+        # exit census runs on its own thread and is not stalled.
+        if threading.current_thread() is self.thread:
+            self.guard_samples += 1
+            if self.guard_samples > 1:
+                self.release.wait(600)
+        return memory_guard.sample_processes()
+
+    def _run(self, command: list[str], **kwargs: Any) -> None:
+        try:
+            self.outcome["result"] = memory_guard.run_guarded(
+                command, on_spawn=self.spawned.append, **kwargs
+            )
+        except BaseException as exc:
+            self.outcome["error"] = exc
+
+    def start(self) -> int:
+        self.thread.start()
+        assert _wait_until(lambda: bool(self.spawned), 120)
+        return self.spawned[0]
+
+    def finish(self) -> memory_guard.GuardResult:
+        self.release.set()
+        self.thread.join(600)
+        assert not self.thread.is_alive()
+        if "error" in self.outcome:
+            raise self.outcome["error"]
+        return self.outcome["result"]
+
+
+def _root_signalled(pid: int) -> Callable[[], bool]:
+    # The reaper reaps the signalled root; a reaped or zombie child is absent.
+    return lambda: pid not in memory_guard.sample_processes()
+
+
+def _enforcer_reports(
+    result: memory_guard.GuardResult, reason: str
+) -> list[memory_guard.GuardTerminationReport]:
+    # The enforcer observes nothing, so its reports watch no sampled pid.
+    return [
+        report
+        for report in result.termination_reports
+        if report.reason == reason and report.watched_pids == ()
+    ]
+
+
+@pytest.mark.skipif(
+    os.name != "posix", reason="the POSIX enforcer signals the child's own group"
+)
+def test_deadline_holds_while_the_guard_thread_is_blocked_sampling() -> None:
+    guard = _GuardThread(
+        [sys.executable, "-c", _ENFORCED_CHILD],
+        max_rss_kb=4_000_000,
+        poll_interval=0.02,
+        timeout=0.5,
+        stall_samples=True,
+    )
+    try:
+        pid = guard.start()
+        bound = 0.5 + memory_guard.ENFORCEMENT_SLACK_SEC + 120
+        assert _wait_until(_root_signalled(pid), bound)
+        # The guard thread was still blocked in its second sample.
+        assert guard.guard_samples >= 2 and not guard.release.is_set()
+    finally:
+        result = guard.finish()
+    assert result.timed_out
+    assert result.returncode == memory_guard.TIMEOUT_RETURN_CODE
+    # The run loop deferred to the enforcer's strike: one report, no stale
+    # second signal.
+    assert [report.reason for report in result.termination_reports] == ["timeout"]
+    (report,) = _enforcer_reports(result, "timeout")
+    actions = [
+        (action.target_kind, action.target_id, action.signal_name, action.result)
+        for action in report.actions
+    ]
+    # SIGTERM to the root's own group; SIGKILL follows only a root that
+    # outlived the grace; the run loop observed the group's exit afterwards.
+    assert actions[0] == ("process_group", pid, "SIGTERM", "sent")
+    assert actions[-1] == ("process_group", pid, None, "exited")
+    assert {action[2] for action in actions[1:-1]} <= {"SIGKILL"}
+    assert result.descendants_closed
+
+
+@pytest.mark.skipif(
+    os.name != "posix", reason="the POSIX enforcer signals the child's own group"
+)
+def test_owner_cancellation_holds_while_the_guard_thread_is_blocked_sampling() -> None:
+    cancel = threading.Event()
+    guard = _GuardThread(
+        [sys.executable, "-c", _ENFORCED_CHILD],
+        max_rss_kb=4_000_000,
+        poll_interval=0.02,
+        cancellation_requested=cancel.is_set,
+        stall_samples=True,
+    )
+    try:
+        pid = guard.start()
+        assert _wait_until(lambda: guard.guard_samples >= 2, 120)
+        cancel.set()
+        bound = memory_guard.ENFORCEMENT_SLACK_SEC + 120
+        assert _wait_until(_root_signalled(pid), bound)
+        assert not guard.release.is_set()
+    finally:
+        result = guard.finish()
+    assert result.cancelled
+    assert not result.timed_out
+    assert [report.reason for report in result.termination_reports] == [
+        "owner_cancellation"
+    ]
+    assert _enforcer_reports(result, "owner_cancellation")
+    assert result.descendants_closed
+
+
+@pytest.mark.skipif(
+    os.name != "posix", reason="the POSIX enforcer signals the child's own group"
+)
+def test_memory_trip_holds_while_the_kill_waits_on_the_host_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if not process_model.posix_custody_reads_partial_rows():
+        pytest.skip("this host's polls read the whole table; no separate kill read")
+    holder: dict[str, Any] = {}
+    entered = threading.Event()
+    real_table = memory_guard.sample_processes
+
+    def stalled_table() -> Mapping[int, memory_guard.ProcessSample]:
+        # Polls read custody rows; the kill's protection decision reads the
+        # host table. Stall that read on the guard thread.
+        guard = holder.get("guard")
+        if guard is not None and threading.current_thread() is guard.thread:
+            entered.set()
+            guard.release.wait(600)
+        return real_table()
+
+    # The guard's host sampler is this function, so its polls stay custody
+    # reads and only its whole-table reads stall.
+    monkeypatch.setattr(memory_guard, "sample_processes", stalled_table)
+    guard = _GuardThread(
+        [sys.executable, "-c", _ENFORCED_CHILD],
+        max_rss_kb=1,
+        poll_interval=0.02,
+        sampler=stalled_table,
+    )
+    holder["guard"] = guard
+    try:
+        pid = guard.start()
+        assert entered.wait(120)
+        bound = memory_guard.ENFORCEMENT_SLACK_SEC + 120
+        assert _wait_until(_root_signalled(pid), bound)
+        assert not guard.release.is_set()
+    finally:
+        result = guard.finish()
+    assert result.violation is not None
+    assert result.returncode == memory_guard.GUARD_RETURN_CODE
+    # The run loop deferred to the enforcer's strike.
+    assert [report.reason for report in result.termination_reports] == ["rss_limit"]
+    assert _enforcer_reports(result, "rss_limit")
+    assert result.descendants_closed
+
+
+@pytest.mark.skipif(
+    os.name != "posix", reason="the POSIX enforcer signals the child's own group"
+)
+def test_deadline_holds_while_the_running_summary_reads_the_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    guard = _GuardThread(
+        [sys.executable, "-c", _ENFORCED_CHILD],
+        max_rss_kb=4_000_000,
+        poll_interval=0.02,
+        timeout=0.5,
+        running_summary_json=str(tmp_path / "summary.json"),
+    )
+    entered = threading.Event()
+    real_repro = memory_guard.repro_context_payload
+
+    def stalled_repro(**kwargs: Any) -> dict[str, object]:
+        # Every process's command line on the host: the read that stalled.
+        entered.set()
+        guard.release.wait(600)
+        return real_repro(**kwargs)
+
+    monkeypatch.setattr(memory_guard, "repro_context_payload", stalled_repro)
+    try:
+        pid = guard.start()
+        assert entered.wait(120)
+        assert _wait_until(_root_signalled(pid), 120)
+        assert not guard.release.is_set()
+    finally:
+        result = guard.finish()
+    assert result.timed_out
+    assert result.returncode == memory_guard.TIMEOUT_RETURN_CODE
+
+
+def test_enforcer_signals_only_what_the_run_loop_has_not_delivered() -> None:
+    calls: list[tuple[str, float]] = []
+    signalled = threading.Event()
+
+    def signal_root(reason: str, grace: float):
+        calls.append((reason, grace))
+        signalled.set()
+        return True, None
+
+    # A delivered reason is never enforced; the long slack rules out a race.
+    idle = process_custody.OwnedTreeEnforcer(
+        signal_root, slack=600.0, deadline=time.perf_counter(), deadline_grace=0.25
+    )
+    idle.request("rss_limit", grace=0.25)
+    idle.delivered("rss_limit")
+    idle.delivered("timeout")
+    assert idle.stop() == ((), ())
+    assert calls == []
+
+    # An undelivered request is enforced once, no sooner than the slack.
+    busy = process_custody.OwnedTreeEnforcer(signal_root, slack=0.05)
+    requested_at = time.perf_counter()
+    busy.request("owner_cancellation", grace=0.0)
+    busy.request("owner_cancellation", grace=0.0)
+    assert signalled.wait(120)
+    assert time.perf_counter() - requested_at >= 0.05
+    assert busy.stop() == (("owner_cancellation",), ())
+    assert calls == [("owner_cancellation", 0.0)]
+
+    # A run loop about to signal defers to a strike already made, and a
+    # strike not yet made waits another slack behind the loop's own signal.
+    calls.clear()
+    signalled.clear()
+    struck = process_custody.OwnedTreeEnforcer(signal_root, slack=0.05)
+    struck.request("rss_limit", grace=0.25)
+    assert _wait_until(lambda: calls == [("rss_limit", 0.25)], 120)
+    assert struck.begin("rss_limit") is False
+    assert struck.stop() == (("rss_limit",), ())
+    calls.clear()
+    signalled.clear()
+    behind = process_custody.OwnedTreeEnforcer(signal_root, slack=600.0)
+    behind.request("timeout", grace=0.25)
+    assert behind.begin("timeout") is True
+    behind.delivered("timeout")
+    assert behind.stop() == ((), ())
+    assert calls == []
+
+    # The deadline is due at deadline + slack, with its own grace.
+    calls.clear()
+    signalled.clear()
+    deadline = process_custody.OwnedTreeEnforcer(
+        signal_root,
+        slack=0.05,
+        deadline=time.perf_counter() + 0.05,
+        deadline_grace=0.25,
+    )
+    assert signalled.wait(120)
+    assert deadline.stop() == (("timeout",), ())
+    assert calls == [("timeout", 0.25)]
+
+    # A root already reaped is not signalled, so nothing counts as enforced.
+    attempted = threading.Event()
+
+    def reaped_root(_reason: str, _grace: float):
+        attempted.set()
+        return False, None
+
+    reaped = process_custody.OwnedTreeEnforcer(reaped_root, slack=0.0)
+    reaped.request("rss_limit", grace=0.25)
+    assert attempted.wait(120)
+    assert reaped.stop() == ((), ())
+
+    # Without an identity-safe signal the enforcer is inert.
+    inert = process_custody.OwnedTreeEnforcer(
+        None, slack=0.0, deadline=time.perf_counter()
+    )
+    inert.request("rss_limit", grace=0.25)
+    assert inert.stop() == ((), ())
+
+
+def test_run_guarded_ends_a_command_whose_output_stops() -> None:
+    result = memory_guard.run_guarded(
+        [sys.executable, "-c", "print('started', flush=True)\n" + HUNG_CHILD_SOURCE],
+        max_rss_kb=1_000_000,
+        poll_interval=0.02,
+        no_output_timeout=0.3,
+        timeout=120,  # A hang guard only; its message differs.
+    )
+
+    assert result.timed_out is True
+    assert result.returncode == memory_guard.TIMEOUT_RETURN_CODE
+    assert result.stdout == "started\n"
+    assert "memory_guard: no output for 0.30s" in result.stderr
+    assert [report.reason for report in result.termination_reports] == [
+        "output_stalled"
+    ]
+    assert result.descendants_closed is True
+
+
+def test_run_guarded_output_bound_restarts_with_each_new_byte(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Moving output keeps a command alive however long it runs.
+
+    Silence accrues by the guard's planned poll wait, 0.02 s here. The child
+    prints a line every three polls, and each poll waits until the child has
+    printed the line due before it, so at most five polls (0.1 s) pass
+    between two observed lines, under the 0.15 s bound. The run holds about
+    two silent polls per line, 24 in all (about 0.5 s), so a count that is
+    not reset by new output passes the bound, however loaded the host.
+    """
+    polls = tmp_path / "polls"
+    lines = tmp_path / "lines"
+    done = tmp_path / "done"
+    bound = 0.15
+    real_custody = memory_guard.sample_processes_custody
+    count = [0]
+
+    def published(path: Path) -> int:
+        try:
+            return int(path.read_text(encoding="utf-8") or 0)
+        except FileNotFoundError:
+            return 0
+
+    def publish(path: Path, value: int) -> None:
+        partial = path.with_suffix(".partial")
+        partial.write_text(str(value), encoding="utf-8")
+        os.replace(partial, path)
+
+    def paced_custody(*args, **kwargs):
+        # Poll k follows the child's line k // 3 - 1.
+        while published(lines) < count[0] // 3 and not done.exists():
+            time.sleep(0.005)
+        samples = real_custody(*args, **kwargs)
+        count[0] += 1
+        publish(polls, count[0])
+        return samples
+
+    monkeypatch.setattr(memory_guard, "sample_processes_custody", paced_custody)
+    # The handshake inside the sampler is not sampling cost to pace by.
+    monkeypatch.setattr(memory_guard, "SAMPLE_COST_PACING_FACTOR", 0.0)
+    child = (
+        "import os, pathlib, sys, time\n"
+        "polls, lines, done = map(pathlib.Path, sys.argv[1:4])\n"
+        "def published(path):\n"
+        "    try:\n"
+        "        return int(path.read_text() or 0)\n"
+        "    except FileNotFoundError:\n"
+        "        return 0\n"
+        "for line in range(12):\n"
+        "    while published(polls) < 3 * line + 1:\n"
+        "        time.sleep(0.005)\n"
+        "    print(line, flush=True)\n"
+        "    lines.with_suffix('.partial').write_text(str(line + 1))\n"
+        "    os.replace(lines.with_suffix('.partial'), lines)\n"
+        "done.write_text('done')\n"
+    )
+
+    result = memory_guard.run_guarded(
+        [sys.executable, "-c", child, str(polls), str(lines), str(done)],
+        max_rss_kb=1_000_000,
+        poll_interval=0.02,
+        no_output_timeout=bound,
+    )
+
+    assert result.timed_out is False, result.stderr
+    assert result.returncode == 0
+    assert result.stdout.split() == [str(line) for line in range(12)]
+
+
+def test_run_guarded_output_bound_ignores_time_the_guard_did_not_watch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A host freeze stops the guard and its child alike: it is no silence.
+
+    The child prints, then waits while the host "freezes": the guard's clock
+    leaps ten bounds between two polls and no output arrives. Once the guard
+    has looked across the leap, the child resumes and prints again. A bound
+    that counts the leap ends the command (exit 124); one that counts only
+    the time the guard watched lets it finish. Events order every step.
+    """
+    frozen = tmp_path / "frozen"
+    resume = tmp_path / "resume"
+    bound = 30.0
+    leap = [0.0]
+    polls = [0]
+    polled = threading.Condition()
+    finished = threading.Event()
+    real_custody = memory_guard.sample_processes_custody
+
+    def counted_custody(*args, **kwargs):
+        samples = real_custody(*args, **kwargs)
+        with polled:
+            polls[0] += 1
+            polled.notify_all()
+        return samples
+
+    def after_polls(count: int) -> bool:
+        with polled:
+            target = polls[0] + count
+            while polls[0] < target:
+                if finished.is_set():
+                    return False
+                polled.wait(0.05)
+        return True
+
+    def freeze_the_host() -> None:
+        while not frozen.exists():
+            if finished.wait(0.005):
+                return
+        # The guard has seen the first line; then its clock leaps while the
+        # child is silent, and it looks across the leap before the thaw.
+        if after_polls(2):
+            leap[0] += 10 * bound
+            if after_polls(2):
+                resume.touch()
+
+    monkeypatch.setattr(memory_guard, "sample_processes_custody", counted_custody)
+    install_module_view(
+        monkeypatch,
+        "time",
+        time,
+        memory_guard,
+        perf_counter=lambda: time.perf_counter() + leap[0],
+    )
+    child = (
+        "import pathlib, sys, time\n"
+        "print('before', flush=True)\n"
+        "pathlib.Path(sys.argv[1]).touch()\n"
+        "while not pathlib.Path(sys.argv[2]).exists():\n"
+        "    time.sleep(0.005)\n"
+        "print('after', flush=True)\n"
+    )
+    thaw = threading.Thread(target=freeze_the_host)
+    thaw.start()
+    try:
+        result = memory_guard.run_guarded(
+            [sys.executable, "-c", child, str(frozen), str(resume)],
+            max_rss_kb=1_000_000,
+            poll_interval=0.02,
+            no_output_timeout=bound,
+        )
+    finally:
+        finished.set()
+        resume.touch()  # A child left waiting ends.
+        thaw.join(120)  # A hang guard only.
+
+    assert result.timed_out is False, result.stderr
+    assert result.returncode == 0
+    assert result.stdout.split() == ["before", "after"]

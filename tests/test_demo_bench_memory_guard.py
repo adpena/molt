@@ -386,7 +386,8 @@ def test_stack_cleanup_waits_for_graceful_service_exit(tmp_path, exit_status):
     service.write_text(
         'trap \'kill "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; '
         'sleep 0.2; printf drained > "$2"; exit 0\' TERM\n'
-        'sleep 60 &\nchild=$!\nprintf "%s" "$child" > "$1"\nwait "$child"\n',
+        # The service's child ends only when the service's TERM trap kills it.
+        'tail -f /dev/null &\nchild=$!\nprintf "%s" "$child" > "$1"\nwait "$child"\n',
         encoding="utf-8",
     )
     helper = REPO_ROOT / "bench/scripts/stack_lifecycle.sh"
