@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Molt's Linux VMs (Lima on macOS): one definition, checked, released, applied.
+"""Molt's Linux VMs (Lima on macOS): one definition, checked, pushed to, applied.
 
 ``tools/linux_vm.toml`` defines each VM. This tool is its only consumer:
 
@@ -8,31 +8,36 @@
     --json``) with its definition and exits 1 on drift. A running VM whose
     ``lima.yaml`` changed after its hostagent started is drift too: it runs an
     older configuration. For running VMs it also reports the host files their
-    virtiofs server holds (one ``lsof``). It runs nothing in a guest.
+    virtiofs servers hold (one ``lsof``). It runs nothing in a guest.
+
+``push``
+    Sends a commit of this checkout into a guest's clone over Lima's SSH
+    (``git push``), and with ``--checkout`` checks it out there, detached. The
+    definitions mount no host path, so this is how sources reach a guest.
 
 ``release``
-    Makes every running VM drop the host files its guest caches, and reports
-    the deleted files and bytes its VM process holds before and after. Apple's
-    virtiofs server keeps one host file open for each inode the guest caches,
-    until the guest evicts the inode (FUSE ``FORGET``); a file the host deletes
-    stays allocated until then. The guest action is ``echo 2 >
-    /proc/sys/vm/drop_caches``: the kernel frees only unused dentries and
-    inodes, so a guest process's open files stay open. It never stops a VM.
+    Frees the host files that a running VM's virtiofs mounts pin. It serves a
+    VM that still mounts host paths: one not yet applied, or one made by hand.
+    Apple's virtiofs server holds one host descriptor for each inode the guest
+    has looked up, until the guest forgets the inode (``FUSE_FORGET``), and it
+    closes forgotten descriptors only once 64 forgets have arrived. The guest
+    runs ``echo 2 > /proc/sys/vm/drop_caches`` (it forgets every unused inode),
+    looks up the 64 files of a forget set under each mount, and drops again:
+    those 64 forgets carry every earlier one through the server. A file a
+    guest process holds open stays open. It never stops a VM.
 
 ``render`` / ``apply``
     ``render`` prints a VM's ``lima.yaml``. ``apply`` validates it with
-    ``limactl validate``, then stops the VM, installs it (keeping
-    ``lima.yaml.molt-previous``) and starts the VM. It refuses without
-    ``--confirm-restart`` and while the guest runs anything but its own
-    session and daemon processes.
+    ``limactl validate``, then stops the VM, installs it and starts the VM. It
+    keeps the first config it replaced as ``lima.yaml.molt-previous`` and
+    restores the replaced config if the VM does not start. It refuses without
+    ``--confirm-restart`` and while the guest runs work.
 
 Lane retirement calls ``release_for_paths`` (``tools/molt_dev_retire.py``)
-just before it deletes a checkout: each running VM whose process holds host
-files under the checkout, or deleted files, drops its caches first, so the
-deletion frees those files at once. With no live Lima hostagent the call
-reads one directory and spawns nothing.
+just before it deletes a checkout. With no live Lima hostagent, or when every
+live VM runs its own definition, the call spawns nothing.
 
-Design, prior art and measured costs: ``docs/design/linux_vm_apparatus.md``.
+Design, measurements and prior art: ``docs/design/linux_vm_apparatus.md``.
 """
 
 from __future__ import annotations
@@ -45,6 +50,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -60,14 +66,13 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
 
-from molt.custody_layout import custody_root, git_directories  # noqa: E402
 from molt.path_custody import host_path_is_within  # noqa: E402
 from molt.process_model import pid_alive  # noqa: E402
 from tools.command_execution import CommandExecutor  # noqa: E402
 
 ROOT = _REPO_ROOT
 DEFINITIONS_PATH = ROOT / "tools" / "linux_vm.toml"
-DEFINITIONS_SCHEMA = 1
+DEFINITIONS_SCHEMA = 2
 CHECK_SCHEMA = "molt.linux-vm.check.v1"
 RELEASE_SCHEMA = "molt.linux-vm.release.v1"
 
@@ -92,17 +97,33 @@ LSOF_VZ_FILES = (
     "pcftskn",
 )
 DROP_GUEST_CACHES = "echo 2 > /proc/sys/vm/drop_caches"
-# Prints the guest user's uid, the probe shell's pid, then every process.
-IDLE_PROBE = "id -u; echo $$; ps -eo pid=,ppid=,uid=,comm="
+# Apple's virtiofs server closes the descriptors of forgotten inodes once this
+# many FUSE_FORGET requests have arrived, and not before (measured on macOS
+# 26.4 with Linux 6.8 and 7.0 guests; docs/design/linux_vm_apparatus.md).
+FORGET_BATCH = 64
+# Under each mount: the empty files a release looks up and forgets.
+FORGET_SET = ".molt-linux-vm-forget"
+# Prints the guest user's uid and name, the probe shell's pid, the user's
+# subordinate id ranges, then every process with its cgroup.
+IDLE_PROBE = (
+    "id -u; id -un; echo $$; echo '--- subuid'; cat /etc/subuid 2>/dev/null; "
+    "echo '--- ps'; ps -ww -eo pid=,ppid=,uid=,comm=,cgroup="
+)
+# A systemd-logind login session (`limactl shell` runs in one).
+_SESSION_SCOPE = re.compile(r"/session-[^/]+\.scope(?:/|$)")
 # Linux keeps a task's comm in TASK_COMM_LEN (16) bytes with a terminator.
 COMM_LENGTH = 15
 LIMA_INSTANCE_DISKS = ("disk", "diffdisk")
+# Lima merges these into every instance's configuration.
+LIMA_SHARED_CONFIGS = ("default.yaml", "override.yaml")
 GUEST_COMMAND_SECONDS = 120.0
 LIFECYCLE_SECONDS = 900.0
 PREVIOUS_CONFIG = "lima.yaml.molt-previous"
 NEXT_CONFIG = "lima.yaml.molt-next"
+DEFAULT_PUSH_REF = "from-host"
 _SIZE = re.compile(r"^([1-9][0-9]*)(MiB|GiB|TiB)$")
 _PARAM_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_RELATIVE_PATH = re.compile(r"^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$")
 _SIZE_UNITS = {"MiB": 1 << 20, "GiB": 1 << 30, "TiB": 1 << 40}
 
 
@@ -122,16 +143,6 @@ class Arch(enum.StrEnum):
     AARCH64 = "aarch64"
 
 
-class MountType(enum.StrEnum):
-    VIRTIOFS = "virtiofs"
-
-
-class MountSource(enum.StrEnum):
-    # `molt.custody_layout.custody_root` of the main checkout: `<root>` for a
-    # family at `<root>/molt-src` and `<root>/worktrees/<lane>`.
-    CUSTODY_ROOT = "custody-root"
-
-
 class ForwardProto(enum.StrEnum):
     TCP = "tcp"
     UDP = "udp"
@@ -144,7 +155,6 @@ class DriftField(enum.StrEnum):
     MEMORY = "memory"
     DISK = "disk"
     IMAGES = "images"
-    MOUNT_TYPE = "mount_type"
     MOUNTS = "mounts"
     PORT_FORWARDS = "port_forwards"
     CONTAINERD = "containerd"
@@ -171,12 +181,6 @@ class Image:
 
 
 @dataclass(frozen=True, slots=True)
-class MountDefinition:
-    source: MountSource
-    writable: bool
-
-
-@dataclass(frozen=True, slots=True)
 class PortForward:
     guest_port: int
     host_port: int
@@ -194,11 +198,12 @@ class VmDefinition:
     disk: Size
     rosetta: bool
     containerd_user: bool
-    mount_type: MountType
     params: tuple[tuple[str, str], ...]
-    mounts: tuple[MountDefinition, ...]
     port_forwards: tuple[PortForward, ...]
     image: Image
+    # The guest's Molt clone, relative to the guest user's home: `push`'s
+    # destination.
+    clone: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -263,6 +268,13 @@ def _size(value: object, where: str) -> Size:
     return Size(match.group(0), int(match.group(1)) * _SIZE_UNITS[match.group(2)])
 
 
+def _relative_path(value: object, where: str) -> str:
+    text = _string(value, where)
+    if not _RELATIVE_PATH.match(text) or ".." in text.split("/"):
+        raise DefinitionError(f"{where} must be a relative path without '..'")
+    return text
+
+
 def _names(value: object, where: str) -> frozenset[str]:
     if not isinstance(value, list) or not value:
         raise DefinitionError(f"{where} must be a non-empty list")
@@ -284,11 +296,10 @@ def _vm(name: str, raw: object) -> VmDefinition:
             "disk",
             "rosetta",
             "containerd_user",
-            "mount_type",
             "params",
-            "mounts",
             "port_forwards",
             "image",
+            "clone",
         },
     )
     cpus = table["cpus"]
@@ -299,22 +310,6 @@ def _vm(name: str, raw: object) -> VmDefinition:
         if not _PARAM_KEY.match(key):
             raise DefinitionError(f"{where}.params key {key!r} is not an identifier")
         _string(value, f"{where}.params.{key}")
-    mounts_raw = table["mounts"]
-    if not isinstance(mounts_raw, list):
-        raise DefinitionError(f"{where}.mounts must be a list")
-    mounts = []
-    for index, mount_raw in enumerate(mounts_raw):
-        mount_where = f"{where}.mounts[{index}]"
-        mount = _table(mount_raw, mount_where)
-        _keys(mount, mount_where, {"source", "writable"})
-        mounts.append(
-            MountDefinition(
-                _enum(MountSource, mount["source"], f"{mount_where}.source"),
-                _bool(mount["writable"], f"{mount_where}.writable"),
-            )
-        )
-    if len({mount.source for mount in mounts}) != len(mounts):
-        raise DefinitionError(f"{where}.mounts names one source twice")
     forwards_raw = table["port_forwards"]
     if not isinstance(forwards_raw, list):
         raise DefinitionError(f"{where}.port_forwards must be a list")
@@ -345,11 +340,10 @@ def _vm(name: str, raw: object) -> VmDefinition:
         disk=_size(table["disk"], f"{where}.disk"),
         rosetta=_bool(table["rosetta"], f"{where}.rosetta"),
         containerd_user=_bool(table["containerd_user"], f"{where}.containerd_user"),
-        mount_type=_enum(MountType, table["mount_type"], f"{where}.mount_type"),
         params=tuple(sorted((key, str(value)) for key, value in params.items())),
-        mounts=tuple(mounts),
         port_forwards=tuple(forwards),
         image=Image(_string(image["location"], f"{where}.image.location"), digest),
+        clone=_relative_path(table["clone"], f"{where}.clone"),
     )
 
 
@@ -386,25 +380,6 @@ def load_definitions(path: Path = DEFINITIONS_PATH) -> Definitions:
         ),
         vms={name: _vm(name, vm) for name, vm in vms.items()},
     )
-
-
-def family_custody_root(repo_root: Path = ROOT) -> Path:
-    """The custody root of this checkout's family, read through Git metadata.
-
-    A linked worktree's common directory is the main checkout's ``.git``, so
-    every member of one family resolves the same root without a Git process.
-    """
-    directories = git_directories(repo_root)
-    main = repo_root
-    if directories is not None and directories[1].name == ".git":
-        main = directories[1].parent
-    return custody_root(main)
-
-
-def mount_location(mount: MountDefinition, *, custody: Path) -> Path:
-    match mount.source:
-        case MountSource.CUSTODY_ROOT:
-            return custody
 
 
 # --------------------------------------------------------------------------
@@ -499,9 +474,7 @@ def port_rules(vm: VmDefinition) -> tuple[PortRule, ...]:
     return (*declared, IGNORE_EVERY_GUEST_PORT)
 
 
-def lima_config(
-    vm: VmDefinition, *, custody: Path, minimum_lima_version: str
-) -> dict[str, object]:
+def lima_config(vm: VmDefinition, *, minimum_lima_version: str) -> dict[str, object]:
     config: dict[str, object] = {
         "minimumLimaVersion": minimum_lima_version,
         "vmType": vm.vm_type.value,
@@ -516,14 +489,9 @@ def lima_config(
                 "digest": vm.image.digest,
             }
         ],
-        "mountType": vm.mount_type.value,
-        "mounts": [
-            {
-                "location": str(mount_location(mount, custody=custody)),
-                "writable": mount.writable,
-            }
-            for mount in vm.mounts
-        ],
+        # A guest that mounts no host path pins no host file; sources arrive
+        # through `push` (HF-463).
+        "mounts": [],
         "portForwards": [rule.lima() for rule in port_rules(vm)],
         "containerd": {"system": False, "user": vm.containerd_user},
     }
@@ -569,12 +537,12 @@ def _yaml_lines(value: Mapping[str, object], indent: int) -> list[str]:
     return lines
 
 
-def render(vm: VmDefinition, *, custody: Path, minimum_lima_version: str) -> str:
+def render(vm: VmDefinition, *, minimum_lima_version: str) -> str:
     header = (
         f"# Generated by tools/linux_vm.py from tools/linux_vm.toml (vm.{vm.name}).\n"
         "# Edit the definition and run `tools/linux_vm.py apply`; do not edit this file.\n"
     )
-    config = lima_config(vm, custody=custody, minimum_lima_version=minimum_lima_version)
+    config = lima_config(vm, minimum_lima_version=minimum_lima_version)
     return header + "\n".join(_yaml_lines(config, 0)) + "\n"
 
 
@@ -660,6 +628,7 @@ class Instance:
         return self.status == "Running"
 
     def mounts(self) -> tuple[tuple[Path, Path, bool], ...]:
+        """(host location, guest mount point, writable) of each mount."""
         rows = []
         for raw in self.config.get("mounts") or ():
             mount = _lima_table(raw, f"{self.name} mount")
@@ -673,16 +642,6 @@ class Instance:
                 )
             )
         return tuple(rows)
-
-    def mount_type(self) -> str | None:
-        declared = self.config.get("mountType")
-        if isinstance(declared, str) and declared:
-            return declared
-        # Lima's vz driver fills an undeclared mountType with virtiofs
-        # (pkg/driver/vz/vz_driver_darwin.go, v2.2.1); `limactl list` does not.
-        if self.vm_type == VmType.VZ.value:
-            return MountType.VIRTIOFS.value
-        return None
 
 
 def _instance(line: str) -> Instance:
@@ -732,22 +691,14 @@ def _format_bytes(count: int) -> str:
     return f"{count} B"
 
 
-def _mount_rows(
-    rows: Iterable[tuple[Path, Path, bool]],
-) -> tuple[tuple[str, str, bool], ...]:
-    return tuple(
-        (str(_resolved(location)), str(_resolved(point)), writable)
-        for location, point, writable in rows
-    )
-
-
-def _describe_mounts(rows: tuple[tuple[str, str, bool], ...]) -> str:
-    if not rows:
-        return "none"
-    return ", ".join(
-        f"{location}{'' if point == location else ' at ' + point}"
-        f" ({'rw' if writable else 'ro'})"
-        for location, point, writable in rows
+def _describe_mounts(rows: Iterable[tuple[Path, Path, bool]]) -> str:
+    return (
+        ", ".join(
+            f"{location}{'' if point == location else f' at {point}'}"
+            f" ({'rw' if writable else 'ro'})"
+            for location, point, writable in rows
+        )
+        or "none"
     )
 
 
@@ -763,9 +714,7 @@ def restart_pending(instance: Instance) -> bool:
     return configured > started
 
 
-def compare(
-    vm: VmDefinition, instance: Instance, *, custody: Path
-) -> tuple[Drift, ...]:
+def compare(vm: VmDefinition, instance: Instance) -> tuple[Drift, ...]:
     """Every field where ``instance`` does not run ``vm``'s definition."""
     drift: list[Drift] = []
 
@@ -796,24 +745,9 @@ def compare(
                 f"{len(images)} image entries",
             )
         )
-    differ(DriftField.MOUNT_TYPE, vm.mount_type.value, instance.mount_type())
-    expected_mounts = _mount_rows(
-        (
-            mount_location(mount, custody=custody),
-            mount_location(mount, custody=custody),
-            mount.writable,
-        )
-        for mount in vm.mounts
-    )
-    effective_mounts = _mount_rows(instance.mounts())
-    if effective_mounts != expected_mounts:
-        drift.append(
-            Drift(
-                DriftField.MOUNTS,
-                _describe_mounts(expected_mounts),
-                _describe_mounts(effective_mounts),
-            )
-        )
+    mounts = instance.mounts()
+    if mounts:
+        drift.append(Drift(DriftField.MOUNTS, "none", _describe_mounts(mounts)))
     rules = tuple(PortRule.from_lima(raw) for raw in config.get("portForwards") or ())
     expected_rules = port_rules(vm)
     if rules != expected_rules:
@@ -859,6 +793,31 @@ def compare(
             )
         )
     return tuple(drift)
+
+
+def runs_its_definition(directory: Path, definitions: Definitions, home: Path) -> bool:
+    """Whether a Lima instance runs exactly its rendered definition.
+
+    Read from files, without a process: the instance's ``lima.yaml`` equals
+    the rendering and its hostagent started after the file was written. Lima
+    merges ``$LIMA_HOME/_config/default.yaml`` and ``override.yaml`` into every
+    instance, so either file makes the answer no. The rendering mounts no
+    host path, so such an instance pins no host file.
+    """
+    vm = definitions.vms.get(directory.name)
+    if vm is None:
+        return False
+    if any((home / "_config" / name).exists() for name in LIMA_SHARED_CONFIGS):
+        return False
+    config = directory / "lima.yaml"
+    try:
+        if config.read_text(encoding="utf-8") != render(
+            vm, minimum_lima_version=definitions.minimum_lima_version
+        ):
+            return False
+        return (directory / "ha.pid").stat().st_mtime >= config.stat().st_mtime
+    except (OSError, UnicodeDecodeError):
+        return False
 
 
 # --------------------------------------------------------------------------
@@ -948,7 +907,8 @@ def held_files(
     held deleted file is a regular file on a numbered descriptor with no links
     left: the share's pins. Mapped executables (``txt``) are the process's own.
     A deleted file's path is often partial, so every one counts. ``paths``
-    adds the count of open files under them.
+    adds the count of open files under them. A forget set's files are the
+    release's own and count only once deleted.
     """
     if not instances:
         return {}
@@ -956,6 +916,10 @@ def held_files(
     # lsof exits 1 when no process matches.
     if completed.returncode not in (0, 1):
         raise LimaError(f"lsof failed: {completed.stderr.strip()}")
+    try:
+        processes = _lsof_processes(completed.stdout)
+    except ValueError as exc:
+        raise LimaError(f"cannot read lsof's output: {exc}") from exc
     disks = {
         str(_resolved(instance.directory / disk)): instance
         for instance in instances
@@ -963,7 +927,7 @@ def held_files(
     }
     disk_suffixes = tuple(f"/{disk}" for disk in LIMA_INSTANCE_DISKS)
     held: dict[str, Held] = {}
-    for process in _lsof_processes(completed.stdout):
+    for process in processes:
         if process.command != VZ_COMMAND:
             continue
         owner = next(
@@ -981,7 +945,9 @@ def held_files(
         if owner is None:
             continue
         # lsof prints the kernel's resolved paths; compare them as text.
-        mounts = [str(_resolved(location)) for location, _point, _rw in owner.mounts()]
+        locations = [_resolved(location) for location, _point, _rw in owner.mounts()]
+        mounts = [str(location) for location in locations]
+        forget_sets = [str(location / FORGET_SET) for location in locations]
         watched = [str(_resolved(path)) for path in paths]
         deleted = [
             item
@@ -993,7 +959,10 @@ def held_files(
         opened = [
             item.name
             for item in process.files
-            if item.fd.isdigit() and item.links and not item.name.startswith(own)
+            if item.fd.isdigit()
+            and item.links
+            and not item.name.startswith(own)
+            and not _under(item.name, forget_sets)
         ]
         held[owner.name] = Held(
             pid=process.pid,
@@ -1028,22 +997,46 @@ class Release:
         }
 
 
-def drop_guest_caches(host: Host, name: str) -> Completed:
+def forget_set(location: Path) -> Path:
+    """The ``FORGET_BATCH`` empty files under a mount; creates what is missing."""
+    directory = location / FORGET_SET
+    directory.mkdir(exist_ok=True)
+    present = set(os.listdir(directory))
+    for index in range(FORGET_BATCH):
+        name = f"{index:02d}"
+        if name not in present:
+            (directory / name).touch()
+    return directory
+
+
+def release_script(guest_forget_sets: Sequence[Path]) -> str:
+    """The guest command: forget every unused inode, then push the forgets out.
+
+    The first drop makes the guest forget every inode no process uses. The
+    lookups give each mount ``FORGET_BATCH`` fresh inodes, and the second drop
+    forgets them; those forgets reach the server's batch size, so it closes
+    every descriptor forgotten before them. A failed step fails the command.
+    """
+    sets = " ".join(f"{shlex.quote(str(path))}/*" for path in guest_forget_sets)
+    return f"{DROP_GUEST_CACHES} && stat -- {sets} >/dev/null && {DROP_GUEST_CACHES}"
+
+
+def release_guest(host: Host, name: str, script: str) -> Completed:
     return host.run(
-        [
-            "limactl",
-            "shell",
-            "--workdir",
-            "/",
-            name,
-            "sudo",
-            "-n",
-            "sh",
-            "-c",
-            DROP_GUEST_CACHES,
-        ],
+        ["limactl", "shell", "--workdir", "/", name, "sudo", "-n", "sh", "-c", script],
         timeout=GUEST_COMMAND_SECONDS,
     )
+
+
+def _pinning(instances: Iterable[Instance]) -> list[Instance]:
+    """Running vz instances that mount host paths: the only ones that pin."""
+    return [
+        instance
+        for instance in instances
+        if instance.running
+        and instance.vm_type == VmType.VZ.value
+        and instance.mounts()
+    ]
 
 
 def release(
@@ -1053,34 +1046,38 @@ def release(
     before: Mapping[str, Held] | None = None,
     paths: Sequence[Path] = (),
 ) -> tuple[Release, ...]:
-    """Make each running vz instance drop its guest caches; measure around it.
+    """Free the host files each running vz instance's mounts pin; measure it.
 
     ``before`` reuses a snapshot the caller just took of these instances with
     the same ``paths``.
     """
-    running = [
-        instance
-        for instance in instances
-        if instance.running and instance.vm_type == VmType.VZ.value
-    ]
+    pinning = _pinning(instances)
     if before is None:
-        before = held_files(host, running, paths=paths)
+        before = held_files(host, pinning, paths=paths)
     outcomes: list[tuple[Instance, float, str | None]] = []
-    for instance in running:
+    for instance in pinning:
         if instance.name not in before:
             outcomes.append((instance, 0.0, "no VM process holds this instance's disk"))
             continue
+        try:
+            guest_sets = [
+                point / forget_set(location).name
+                for location, point, _writable in instance.mounts()
+            ]
+        except OSError as exc:
+            outcomes.append((instance, 0.0, f"cannot write a forget set: {exc}"))
+            continue
         start = time.monotonic()
-        completed = drop_guest_caches(host, instance.name)
+        completed = release_guest(host, instance.name, release_script(guest_sets))
         seconds = time.monotonic() - start
         error = None
         if completed.returncode != 0:
             error = (
-                f"drop_caches failed (exit {completed.returncode}): "
+                f"the guest release failed (exit {completed.returncode}): "
                 f"{completed.stderr.strip()}"
             )
         outcomes.append((instance, seconds, error))
-    after = held_files(host, running, paths=paths)
+    after = held_files(host, pinning, paths=paths)
     return tuple(
         Release(
             instance.name,
@@ -1117,30 +1114,36 @@ def live_hostagents(home: Path) -> tuple[Path, ...]:
 
 
 def release_for_paths(
-    paths: Sequence[Path], *, environment: Mapping[str, str], host: Host
+    paths: Sequence[Path],
+    *,
+    environment: Mapping[str, str],
+    host: Host,
+    definitions: Definitions | None = None,
 ) -> tuple[Release, ...]:
     """Before Molt deletes ``paths``: release the VMs that would pin them.
 
-    A host file a guest caches stays allocated after its deletion until the
-    guest evicts the inode, so each running VM that mounts a path and whose
-    process holds files under it (or already holds deleted files) drops its
-    caches first; the deletion then frees the files at once. Files a guest
-    process has open stay open and are reported.
-
-    Costs nothing beyond one directory listing when no hostagent runs. With
-    one running, it lists instances (~25 ms) and, only when a running VM
-    mounts a path, reads the VM processes' files (~50 ms) and drops the caches
-    of each VM that holds files there (~70 ms).
+    A running VM releases when it mounts a path and its process holds files
+    under one, or holds deleted files (a release frees them, so they are new).
+    Spawns nothing when no hostagent is live or every live VM runs its own
+    definition, which mounts nothing. Otherwise one ``limactl list`` and, when
+    a running VM mounts a path, one ``lsof``; a release adds one guest command
+    and one ``lsof``.
     """
-    if not live_hostagents(lima_home(environment)) or host.which("limactl") is None:
+    home = lima_home(environment)
+    live = live_hostagents(home)
+    if not live:
+        return ()
+    if definitions is None:
+        definitions = load_definitions()
+    if all(runs_its_definition(directory, definitions, home) for directory in live):
+        return ()
+    if host.which("limactl") is None:
         return ()
     watched = tuple(_resolved(path) for path in paths)
     covering = [
         instance
-        for instance in list_instances(host)
-        if instance.running
-        and instance.vm_type == VmType.VZ.value
-        and any(
+        for instance in _pinning(list_instances(host))
+        if any(
             host_path_is_within(path, location)
             for path in watched
             for location, _point, _writable in instance.mounts()
@@ -1161,6 +1164,104 @@ def release_for_paths(
 
 
 # --------------------------------------------------------------------------
+# Push
+# --------------------------------------------------------------------------
+
+
+def push(
+    name: str,
+    *,
+    rev: str,
+    ref: str,
+    checkout: bool,
+    definitions: Definitions,
+    host: Host,
+    repo: Path = ROOT,
+) -> int:
+    """Push ``rev`` of ``repo`` into the guest clone as ``refs/heads/<ref>``.
+
+    Git negotiates over Lima's SSH (``<instance>/ssh.config``, host
+    ``lima-<vm>``) and sends only the objects the clone lacks.
+    """
+    vm = definitions.vms.get(name)
+    if vm is None:
+        _say(f"REFUSED: {name} is not defined in tools/linux_vm.toml")
+        return EXIT_USAGE
+    if not _RELATIVE_PATH.match(ref) or ".." in ref:
+        _say(f"REFUSED: {ref!r} is not a plain branch name")
+        return EXIT_USAGE
+    instances = list_instances(host, [name])
+    if not instances or not instances[0].running:
+        _say(f"REFUSED: {name} is not running")
+        return EXIT_FAIL
+    ssh_config = instances[0].directory / "ssh.config"
+    if not ssh_config.is_file():
+        _say(f"REFUSED: Lima wrote no {ssh_config}")
+        return EXIT_FAIL
+    resolved = host.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            f"{rev}^{{commit}}",
+        ],
+        timeout=60.0,
+    )
+    commit = resolved.stdout.strip()
+    if resolved.returncode != 0 or not commit:
+        _say(f"REFUSED: {rev!r} names no commit in {repo}")
+        return EXIT_USAGE
+    start = time.monotonic()
+    pushed = host.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            f"core.sshCommand=ssh -F {shlex.quote(str(ssh_config))}",
+            "push",
+            "--force",
+            "--no-verify",
+            "--quiet",
+            f"lima-{name}:{vm.clone}",
+            f"{commit}:refs/heads/{ref}",
+        ],
+        timeout=LIFECYCLE_SECONDS,
+    )
+    if pushed.returncode != 0:
+        _say(f"FAILED: git push to {name}: {pushed.stderr.strip()}")
+        return EXIT_FAIL
+    _say(
+        f"pushed {commit} to {name}:~/{vm.clone} as {ref} "
+        f"in {time.monotonic() - start:.2f} s"
+    )
+    if not checkout:
+        _say(f"  in the guest: git -C ~/{vm.clone} checkout --detach {ref}")
+        return EXIT_OK
+    switched = host.run(
+        [
+            "limactl",
+            "shell",
+            "--workdir",
+            "/",
+            name,
+            "sh",
+            "-c",
+            f'git -C "$HOME"/{shlex.quote(vm.clone)} checkout --quiet --detach {commit}',
+        ],
+        timeout=GUEST_COMMAND_SECONDS,
+    )
+    if switched.returncode != 0:
+        _say(f"FAILED: checkout in {name}: {switched.stderr.strip()}")
+        return EXIT_FAIL
+    _say(f"  checked out {commit} in {name}:~/{vm.clone}")
+    return EXIT_OK
+
+
+# --------------------------------------------------------------------------
 # Apply
 # --------------------------------------------------------------------------
 
@@ -1171,6 +1272,54 @@ class GuestProcess:
     ppid: int
     uid: int
     comm: str
+    cgroup: str
+
+
+@dataclass(frozen=True, slots=True)
+class _Probe:
+    guest_uid: int
+    guest_user: str
+    shell: int
+    subordinate: tuple[range, ...]
+    processes: Mapping[int, GuestProcess]
+
+
+def _parse_probe(probe_output: str) -> _Probe:
+    lines = probe_output.splitlines()
+    try:
+        subuid_at = lines.index("--- subuid")
+        ps_at = lines.index("--- ps")
+        guest_uid = int(lines[0].strip())
+        guest_user = lines[1].strip()
+        shell = int(lines[2].strip())
+    except (ValueError, IndexError) as exc:
+        raise LimaError(f"unreadable guest process probe: {probe_output!r}") from exc
+    subordinate = []
+    for line in lines[subuid_at + 1 : ps_at]:
+        parts = line.strip().split(":")
+        if len(parts) != 3 or parts[0] not in (guest_user, str(guest_uid)):
+            continue
+        try:
+            first, count = int(parts[1]), int(parts[2])
+        except ValueError as exc:
+            raise LimaError(f"unreadable /etc/subuid line: {line!r}") from exc
+        subordinate.append(range(first, first + count))
+    processes: dict[int, GuestProcess] = {}
+    for line in lines[ps_at + 1 :]:
+        parts = line.split(maxsplit=3)
+        rest = parts[3].rsplit(maxsplit=1) if len(parts) == 4 else []
+        if len(rest) != 2:
+            raise LimaError(f"unreadable guest process line: {line!r}")
+        try:
+            process = GuestProcess(
+                int(parts[0]), int(parts[1]), int(parts[2]), rest[0], rest[1]
+            )
+        except ValueError as exc:
+            raise LimaError(f"unreadable guest process line: {line!r}") from exc
+        processes[process.pid] = process
+    if shell not in processes:
+        raise LimaError("the guest process probe does not list its own shell")
+    return _Probe(guest_uid, guest_user, shell, tuple(subordinate), processes)
 
 
 def busy_guest_processes(
@@ -1179,38 +1328,31 @@ def busy_guest_processes(
     """The guest processes that make a restart unsafe.
 
     The probe's own shell, its ancestors (this session) and its children are
-    excluded. Every other process of the guest user must be a session or
-    daemon process, and no maintenance process of any user may run.
+    excluded. Busy are: a maintenance process of any user; a process of the
+    guest user outside the session and daemon set; a process in a login
+    session (``session-*.scope``) outside that set, whatever its user, such as
+    a ``sudo`` build; and a process of the guest user's subordinate ids, such
+    as a rootless container's non-root user. Root work outside a login session
+    (a ``systemd-run`` unit, a cron job) is not seen.
     """
-    lines = probe_output.splitlines()
-    if len(lines) < 2:
-        raise LimaError(f"unreadable guest process probe: {probe_output!r}")
-    try:
-        guest_uid = int(lines[0].strip())
-        shell = int(lines[1].strip())
-    except ValueError as exc:
-        raise LimaError(f"unreadable guest process probe: {exc}") from exc
-    processes: dict[int, GuestProcess] = {}
-    for line in lines[2:]:
-        parts = line.split(maxsplit=3)
-        if len(parts) != 4:
-            raise LimaError(f"unreadable guest process line: {line!r}")
-        process = GuestProcess(int(parts[0]), int(parts[1]), int(parts[2]), parts[3])
-        processes[process.pid] = process
-    if shell not in processes:
-        raise LimaError("the guest process probe does not list its own shell")
-    session = {shell}
-    cursor = processes[shell].ppid
+    probe = _parse_probe(probe_output)
+    processes = probe.processes
+    session = {probe.shell}
+    cursor = processes[probe.shell].ppid
     while cursor in processes and cursor not in session:
         session.add(cursor)
         cursor = processes[cursor].ppid
     busy = []
     for process in processes.values():
-        if process.pid in session or process.ppid == shell:
+        if process.pid in session or process.ppid == probe.shell:
             continue
         comm = process.comm[:COMM_LENGTH]
-        if comm in definitions.maintenance_guest_processes or (
-            process.uid == guest_uid and comm not in definitions.idle_guest_processes
+        idle = comm in definitions.idle_guest_processes
+        if (
+            comm in definitions.maintenance_guest_processes
+            or (process.uid == probe.guest_uid and not idle)
+            or (_SESSION_SCOPE.search(process.cgroup) is not None and not idle)
+            or any(process.uid in ids for ids in probe.subordinate)
         ):
             busy.append(process)
     return tuple(busy)
@@ -1225,7 +1367,6 @@ def apply(
     *,
     definitions: Definitions,
     host: Host,
-    custody: Path,
     confirm_restart: bool,
 ) -> int:
     vm = definitions.vms.get(name)
@@ -1254,11 +1395,10 @@ def apply(
         )
         return EXIT_FAIL
     config_path = instance.directory / "lima.yaml"
+    previous_path = instance.directory / PREVIOUS_CONFIG
     next_path = instance.directory / NEXT_CONFIG
     next_path.write_text(
-        render(
-            vm, custody=custody, minimum_lima_version=definitions.minimum_lima_version
-        ),
+        render(vm, minimum_lima_version=definitions.minimum_lima_version),
         encoding="utf-8",
     )
     validated = host.run(["limactl", "validate", str(next_path)], timeout=60.0)
@@ -1289,21 +1429,35 @@ def apply(
             next_path.unlink()
             _say(f"FAILED: limactl stop {name}: {stopped.stderr.strip()}")
             return EXIT_FAIL
-    shutil.copy2(config_path, instance.directory / PREVIOUS_CONFIG)
+    replaced = config_path.read_bytes()
+    # The first config apply replaces is the one no rendering can recreate.
+    if not previous_path.exists():
+        shutil.copy2(config_path, previous_path)
     os.replace(next_path, config_path)
-    _say(f"installed {config_path} (previous: {PREVIOUS_CONFIG})")
+    _say(f"installed {config_path} (first replaced config: {PREVIOUS_CONFIG})")
     if was_running:
         started = host.run(
             ["limactl", "start", "--tty=false", name], timeout=LIFECYCLE_SECONDS
         )
         if started.returncode != 0:
+            restored = instance.directory / NEXT_CONFIG
+            restored.write_bytes(replaced)
+            os.replace(restored, config_path)
+            again = host.run(
+                ["limactl", "start", "--tty=false", name], timeout=LIFECYCLE_SECONDS
+            )
+            state = (
+                "restarted it with the replaced config"
+                if again.returncode == 0
+                else f"its start failed too: {again.stderr.strip()}"
+            )
             _say(
-                f"FAILED: limactl start {name}: {started.stderr.strip()}; the "
-                f"previous config is {instance.directory / PREVIOUS_CONFIG}"
+                f"FAILED: limactl start {name}: {started.stderr.strip()}; restored "
+                f"the replaced config and {state}"
             )
             return EXIT_FAIL
     after = list_instances(host, [name])
-    drift = compare(vm, after[0], custody=custody) if after else ()
+    drift = compare(vm, after[0]) if after else ()
     for item in drift:
         _say(f"  drift {item.field}: declared {item.declared}; runs {item.effective}")
     if drift:
@@ -1331,7 +1485,6 @@ def check(
     *,
     definitions: Definitions,
     host: Host,
-    custody: Path,
     names: Sequence[str],
     as_json: bool,
 ) -> int:
@@ -1344,19 +1497,12 @@ def check(
     instances = list_instances(host) if lima_present else ()
     by_name = {instance.name: instance for instance in instances}
     defined = [by_name[name] for name in selected if name in by_name]
-    held = held_files(
-        host,
-        [i for i in defined if i.running and i.vm_type == VmType.VZ.value],
-    )
+    held = held_files(host, _pinning(defined))
     rows = []
     drifted = False
     for name in selected:
         instance = by_name.get(name)
-        drift = (
-            ()
-            if instance is None
-            else compare(definitions.vms[name], instance, custody=custody)
-        )
+        drift = () if instance is None else compare(definitions.vms[name], instance)
         drifted = drifted or bool(drift)
         rows.append(
             {
@@ -1429,9 +1575,9 @@ def release_command(*, host: Host, names: Sequence[str], as_json: bool) -> int:
         )
     else:
         if not results:
-            _say("no running vz VM")
+            _say("no running vz VM mounts a host path: nothing is pinned")
         for result in results:
-            _say(f"{result.name}: dropped guest caches in {result.seconds:.3f} s")
+            _say(f"{result.name}: released in {result.seconds:.3f} s")
             _say(f"  before: {_describe_held(result.before)}")
             _say(f"  after:  {_describe_held(result.after)}")
             if result.error:
@@ -1444,17 +1590,23 @@ def main(
     *,
     host: Host | None = None,
     definitions_path: Path = DEFINITIONS_PATH,
-    custody: Path | None = None,
 ) -> int:
     parser = argparse.ArgumentParser(
-        description="Check, release and apply Molt's Lima VM definitions."
+        description="Check, push to, release and apply Molt's Lima VMs."
     )
     commands = parser.add_subparsers(dest="command", required=True)
     check_parser = commands.add_parser("check", help="report drift (exit 1)")
     check_parser.add_argument("--vm", action="append", default=[])
     check_parser.add_argument("--json", action="store_true")
+    push_parser = commands.add_parser(
+        "push", help="send a commit of this checkout into a guest's clone"
+    )
+    push_parser.add_argument("vm")
+    push_parser.add_argument("rev", nargs="?", default="HEAD")
+    push_parser.add_argument("--ref", default=DEFAULT_PUSH_REF)
+    push_parser.add_argument("--checkout", action="store_true")
     release_parser = commands.add_parser(
-        "release", help="make running VMs drop the host files they pin"
+        "release", help="free the host files a mounting VM pins"
     )
     release_parser.add_argument("--vm", action="append", default=[])
     release_parser.add_argument("--json", action="store_true")
@@ -1472,16 +1624,23 @@ def main(
         _say(f"ERROR: {exc}")
         return EXIT_USAGE
     host = host or LocalHost(os.environ)
-    custody = custody or family_custody_root()
     try:
         match args.command:
             case "check":
                 return check(
                     definitions=definitions,
                     host=host,
-                    custody=custody,
                     names=args.vm,
                     as_json=args.json,
+                )
+            case "push":
+                return push(
+                    args.vm,
+                    rev=args.rev,
+                    ref=args.ref,
+                    checkout=args.checkout,
+                    definitions=definitions,
+                    host=host,
                 )
             case "release":
                 return release_command(host=host, names=args.vm, as_json=args.json)
@@ -1491,11 +1650,7 @@ def main(
                     _say(f"ERROR: {args.vm} is not defined in tools/linux_vm.toml")
                     return EXIT_USAGE
                 sys.stdout.write(
-                    render(
-                        vm,
-                        custody=custody,
-                        minimum_lima_version=definitions.minimum_lima_version,
-                    )
+                    render(vm, minimum_lima_version=definitions.minimum_lima_version)
                 )
                 return EXIT_OK
             case "apply":
@@ -1503,7 +1658,6 @@ def main(
                     args.vm,
                     definitions=definitions,
                     host=host,
-                    custody=custody,
                     confirm_restart=args.confirm_restart,
                 )
     except LimaError as exc:

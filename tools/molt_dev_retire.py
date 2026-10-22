@@ -7,10 +7,10 @@ no tracked change remains. Retirement stops the checkout's own
 daemons, binds the reclaim of its checkout state while the checkout still
 exists, steps out of it, removes it through ``git worktree remove`` from the
 surviving main checkout, and then reclaims its state (HF-313). Just before
-the removal, each running Linux VM that caches host files under the checkout
-or its state roots drops its caches, so the removal frees them at once
-(HF-463). ``integrate --cleanup-worktree``, ``cleanup``, ``lane retire`` and
-``drift_harvest --prune`` share this one path.
+the removal, each running Linux VM that still mounts host paths and holds
+files under the checkout or its state roots releases them, so the removal
+frees them at once (HF-463). ``integrate --cleanup-worktree``, ``cleanup``,
+``lane retire`` and ``drift_harvest --prune`` share this one path.
 """
 
 from __future__ import annotations
@@ -156,9 +156,9 @@ def prepare_checkout_retirement(checkout: Path) -> Callable[[], None]:
     callable needs is imported here: after `git worktree remove` this process
     can import nothing from it, and it can launch no guarded command, whose
     guard runs from the checkout's sources. So the Linux VM release runs now:
-    each running VM that caches host files under the checkout or its state
-    roots drops its caches (``tools/linux_vm.py``), and the removal frees
-    those files at once. The returned callable reclaims the state roots;
+    each running VM that mounts host paths and holds files under the checkout
+    or its state roots releases them (``tools/linux_vm.py``), and the removal
+    frees those files at once. The returned callable reclaims the state roots;
     roots it cannot resolve stay for `tools/disk_guard.py --gc`. A failure
     never fails the cleanup.
     """
@@ -217,25 +217,37 @@ def prepare_checkout_retirement(checkout: Path) -> Callable[[], None]:
 def _release_guest_caches(
     checkout: Path, paths: list[Path], environment: Mapping[str, str]
 ) -> None:
-    """Make running Linux VMs drop the host files they cache under ``paths``."""
-    from tools import linux_vm
+    """Release the host files running Linux VMs pin under ``paths``.
 
+    Advisory: whatever the import, the definitions, Lima, lsof or a guest
+    raises is reported, and the cleanup goes on.
+    """
     try:
+        from tools import linux_vm
+
         releases = linux_vm.release_for_paths(
             paths, environment=environment, host=linux_vm.LocalHost(environment)
         )
-    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+    except (
+        ImportError,
+        OSError,
+        ValueError,
+        TypeError,
+        KeyError,
+        RuntimeError,
+        subprocess.SubprocessError,
+    ) as exc:
         _warn(
             f"Linux VMs may keep files of {checkout} allocated after its removal "
-            f"({exc}); run tools/linux_vm.py release"
+            f"({type(exc).__name__}: {exc}); run tools/linux_vm.py release"
         )
         return
     for item in releases:
         if item.error is not None or item.before is None or item.after is None:
-            _warn(f"{item.name} keeps its caches of {checkout}: {item.error}")
+            _warn(f"{item.name} keeps its pins of {checkout}: {item.error}")
             continue
         _ok(
-            f"{item.name} dropped its caches of {checkout}: "
+            f"{item.name} released its pins of {checkout}: "
             f"{item.before.open_under_paths - item.after.open_under_paths} host "
             f"files released, {item.after.open_under_paths} open in the guest; "
             f"{item.before.deleted_files - item.after.deleted_files} deleted "

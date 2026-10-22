@@ -4,16 +4,23 @@
 # failures on aarch64 (`molt-linux`) and x86_64 through Rosetta (`molt-x86`).
 # `tools/linux_vm.py` renders each [vm.<name>] into $LIMA_HOME/<name>/lima.yaml
 # (`apply`), compares each VM's effective configuration with it (`check`), and
-# makes the guests drop the host files they pin (`release`). Edit this file,
-# never lima.yaml. Design, prior art and costs:
+# sends commits into each guest's clone (`push`). Edit this file, never
+# lima.yaml. Design, measurements and prior art:
 # docs/design/linux_vm_apparatus.md.
+#
+# No VM mounts a host path. Apple's virtiofs server keeps a host file open for
+# every inode a guest has looked up and closes forgotten ones only in batches
+# of 64, so a mount pins files the host deletes (HF-463). Sources reach a guest
+# through `tools/linux_vm.py push`, which costs no more than the mount did.
 
-schema = 1
+schema = 2
 minimum_lima_version = "2.0.0"
 
 # The guest's own session and daemon processes. `apply` restarts a VM only
-# when every process of the guest user is one of these (comm, truncated by
-# Linux to 15 characters) and no maintenance process runs.
+# when every process of the guest user, and every process in a login session
+# (`sudo` work too), is one of these (comm, truncated by Linux to 15
+# characters), no process runs under the user's subordinate ids (a container
+# user), and no maintenance process runs.
 idle_guest_processes = [
   "systemd",
   "(sd-pam)",
@@ -25,7 +32,7 @@ idle_guest_processes = [
   "rootlesskit",
   "exe",
   "containerd",
-  "containerd-shim-runc-v2",
+  # Not containerd-shim-runc-v2: a shim runs only while a container runs.
   "buildkitd",
   "slirp4netns",
   "bypass4netnsd",
@@ -52,13 +59,11 @@ memory = "12GiB"
 disk = "225GiB"
 rosetta = false
 containerd_user = true
-mount_type = "virtiofs"
 # Ubuntu 26.04 renames its NIC on first boot (LP: #2136392); without this
 # parameter systemd-networkd-wait-online blocks boot for 120 s.
 params = { internal_netplanOptional = "true" }
-# The custody root (<root> of <root>/molt-src), read-only: guests fetch
-# commits from <root>/molt-src and read lane worktrees and <root>/tmp.
-mounts = [{ source = "custody-root", writable = false }]
+# `push` sends commits into this clone (relative to the guest user's home).
+clone = "molt-main"
 # Guest ports forwarded to the host. The renderer appends one rule that
 # ignores every other guest port (HF-F251, HF-463).
 port_forwards = []
@@ -76,9 +81,8 @@ memory = "8GiB"
 disk = "40GiB"
 rosetta = true
 containerd_user = true
-mount_type = "virtiofs"
 params = {}
-mounts = [{ source = "custody-root", writable = false }]
+clone = "molt-main"
 port_forwards = []
 
 [vm.molt-x86.image]

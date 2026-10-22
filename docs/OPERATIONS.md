@@ -807,33 +807,45 @@ previous execution has unknown closure.
 On a macOS host, two Lima VMs reproduce Linux failures: `molt-linux`
 (aarch64) and `molt-x86` (x86_64 through Rosetta, with an x86_64 cross GCC and
 Lean). [`tools/linux_vm.toml`](../tools/linux_vm.toml) defines them; edit it,
-never `~/.lima/<vm>/lima.yaml`. Each mounts the custody root (`<root>` of
-`<root>/molt-src`) read-only and forwards no guest port to the host. Design and
-costs: [design/linux_vm_apparatus.md](design/linux_vm_apparatus.md).
+never `~/.lima/<vm>/lima.yaml`. They mount no host path and forward no guest
+port to the host. Design, measurements and costs:
+[design/linux_vm_apparatus.md](design/linux_vm_apparatus.md).
 
 ```bash
-python3 tools/linux_vm.py check            # drift from the definition: exit 1
-python3 tools/linux_vm.py release          # free host files the guests pin
+python3 tools/linux_vm.py check                      # drift from the definition: exit 1
+python3 tools/linux_vm.py push molt-linux --checkout # this checkout's HEAD into ~/molt-main
+python3 tools/linux_vm.py push molt-x86 origin/main  # a ref: refs/heads/from-host in the guest
+python3 tools/linux_vm.py release                    # free host files a mounting VM pins
 python3 tools/linux_vm.py render molt-linux
 python3 tools/linux_vm.py apply molt-linux --confirm-restart
 ```
 
-- **Moving commits in.** Point a branch in the shared repository at the
-  commit (`git branch -f integrate/latest HEAD`), then in the guest clone
-  (`~/molt-main`): `git fetch -q <root>/molt-src integrate/latest && git
-  checkout -q --detach FETCH_HEAD`. The guest sees the host path unchanged.
-  macOS temporary paths are not visible in the guests.
-- **Pinned host files.** A guest keeps every host file it has read
-  allocated until it evicts the inode, even after the host deletes the file.
-  Lane retirement makes each running VM that caches files of the retiring
-  checkout drop its caches first, so the removal frees them. `check` shows
-  what each VM process holds; `release` frees the rest, for example packs
-  that `git gc` replaced. Neither stops a VM or closes a guest process's
-  files.
-- **Apply.** `apply` restarts the VM. It refuses while any guest process of
-  the guest user runs outside the session and daemon set in the definition,
-  or while `apt`, `dpkg` or `cloud-init` runs. It keeps the previous config
-  as `lima.yaml.molt-previous`.
+- **Moving commits in.** `push <vm> [rev]` sends a commit of the checkout you
+  run it from into the guest clone (`~/molt-main`) over Lima's SSH, as
+  `refs/heads/from-host`; `--checkout` also checks it out, detached. For a
+  writable tree, `git -C ~/molt-main archive from-host | tar -x -C /tmp/<x>`
+  in the guest. Copy a single file with `limactl copy <file> <vm>:/tmp/`.
+  A guest cannot fetch from a host path: nothing is mounted.
+- **Pinned host files.** A VM that still mounts host paths (not yet applied,
+  or made by hand) pins every host file its guest looked up, even after the
+  host deletes it. Apple's virtiofs server closes forgotten files only in
+  batches of 64, so `drop_caches` alone frees nothing. `release` makes the
+  guest forget its unused inodes and then 64 more, which frees every pin no
+  guest process holds open; lane retirement runs it for a VM that holds
+  files of the retiring checkout, or deleted files. `check` shows what each
+  mounting VM holds. `release` never stops a VM. It leaves
+  `<mount>/.molt-linux-vm-forget/` (64 empty files) under each mount; delete
+  that directory once no VM mounts the path.
+- **Apply.** `apply` restarts the VM. It refuses while the guest is busy: a
+  process of the guest user, or any process in a login session (`sudo` work
+  too), outside the session and daemon set in the definition; a process
+  under the user's subordinate ids (a container user) or a containerd shim (a
+  running container); or `apt`, `dpkg` or `cloud-init`. It does not see root
+  work outside a login session (a `systemd-run` unit, a cron job), and a
+  session that starts after its probe is stopped with the VM, so check by
+  hand on a shared VM. It keeps the first config it replaced as
+  `lima.yaml.molt-previous` and restores the replaced config if the VM does
+  not start.
 - **Disk.** VM disk images live in `~/.lima` on the boot volume, so guest
   builds use the Mac's free space.
 
