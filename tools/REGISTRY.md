@@ -108,6 +108,10 @@ self-commits or invents an external scheduling authority.
   shared RSS/walltime guard. Python measurement consumers use its typed
   `_run_measured_command` result directly, avoiding wrapper processes and stderr
   metadata parsing. Both paths require complete descendant closure.
+- `tools/linux_vm.py check|release|render|apply` — Molt's Lima Linux VMs on a
+  macOS host. `tools/linux_vm.toml` is their one definition: `check` reports
+  drift (exit 1), `release` frees host files a guest pins, `apply` installs a
+  definition and restarts only an idle guest. Lane retirement releases first.
 - `tests/molt_diff.py <files> --jobs 1` — the CPython differential (serial until the
   collective-budget-pool lands; parallel gives false FAILs). `--target native,wasm,llvm,luau`
   (or `all`) runs the MULTI-BACKEND oracle (doc 66): every backend is compared vs CPython AND
