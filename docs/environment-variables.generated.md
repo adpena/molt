@@ -15,9 +15,9 @@ Output-neutral names supervise a build and never change its outputs; the build r
 ## Contents
 
 - [User variables](#user-variables) (478)
-- [Developer variables](#developer-variables) (172)
+- [Developer variables](#developer-variables) (173)
 - [CI variables](#ci-variables) (14)
-- [Internal variables](#internal-variables) (103)
+- [Internal variables](#internal-variables) (102)
 - [Guard scopes and families](#guard-scopes-and-families) (11 families, 62 scopes)
 - [Prefix families](#prefix-families) (1)
 - [Retired names](#retired-names) (49)
@@ -536,6 +536,7 @@ Set these when you work on Molt itself: the dev wrappers, proof queue, benchmark
 | `MOLT_COMPILE_GUARD_POLL_SEC` | float | `0.5` | `tools/compile_governor.py` | Seconds the compile governor sleeps between slot acquisition attempts; values below 0.05 clamp to 0.05 and non-numeric values fall back to 0.5. |
 | `MOLT_COMPILE_GUARD_WAIT_SEC` | float | `180` | `tools/compile_governor.py` | Seconds the compile governor waits for a free slot before it gives up; negative values clamp to 0 and non-numeric values fall back to 180. |
 | `MOLT_CONFORMANCE_MOLT_CMD` | string | unset | `src/molt/harness_layers.py` | Shell-like command tests/harness/run_molt_conformance.py uses to invoke the Molt CLI; the conformance layer of src/molt/harness_layers.py sets it from its configured CLI command; unset means the checkout's `python -m molt.cli`, else a molt on PATH. |
+| `MOLT_DEBUG_MAIN_EXCEPTION` | bool | unset | `runtime/molt-jit/src/launch.rs` | Any value other than empty or 0 makes a native program's launch print whether an exception is pending when its entry returns (molt main finish pending=0\|1) on stderr; the JIT runner and the AOT main stub that src/molt/cli/native_main_stub.py renders read it once, after the program runs. |
 | `MOLT_DEMO_DB_PATH` | path | unset | `bench/scripts/run_stack.sh` | SQLite database file for the Django demo stack; when set, run_stack.sh seeds it and derives MOLT_DB_SQLITE_PATH from it, the demo views read it for /baseline and /offload, and the bench records it, while unset means no SQLite-backed demo reads. |
 | `MOLT_DEMO_METRICS_PATH` | path | unset | `bench/scripts/run_stack.sh` | JSONL file that the demo Django server appends per-request worker metrics to and the demo bench summarizes; default <MOLT_DEMO_RUN_DIR>/molt_demo_metrics.jsonl, and run_stack.sh refuses a file that already exists. |
 | `MOLT_DEMO_RUN_DIR` | path | unset | `bench/scripts/run_demo_bench.py` | Exclusive demo run directory, which must be a new bench/results/demo-runs/<run-id> path with a lowercase [a-z0-9-] id of 8-128 characters; run_stack.sh binds it before startup, CI sets one per job attempt, and unset creates a fresh UUID directory. |
@@ -739,7 +740,6 @@ Set by one Molt process for a child it launches. Do not set these by hand; the p
 | `MOLT_DEBUG_EVAL_PASSES_CSV` | list | unset | `src/molt/cli/debug_helpers.py` | Set by molt debug bisect in pass mode for each --eval-command child to the comma-separated prefix of pass names to run; the evaluator script reads it and nothing in Molt does. |
 | `MOLT_DEBUG_EVAL_PASSES_JSON` | string | unset | `src/molt/cli/debug_helpers.py` | Set by molt debug bisect in pass mode for each --eval-command child to the same pass-name prefix as a JSON list; the evaluator script reads it and nothing in Molt does. |
 | `MOLT_DEBUG_EVAL_SOURCE_PATH` | path | unset | `src/molt/cli/debug_helpers.py` | Set by molt debug reduce and bisect for each --eval-command child to the path of the original failing source file; the evaluator script reads it and nothing in Molt does. |
-| `MOLT_DEBUG_MAIN_EXCEPTION` | bool | unset | `runtime/molt-jit/src/launch.rs` | Any value other than empty or 0 makes a native program's launch print whether an exception is pending when its entry returns (molt main finish pending=0\|1) on stderr; the JIT runner and the AOT main stub that src/molt/cli/native_main_stub.py renders read it once, after the program runs. |
 | `MOLT_DEMO_SERVER_PID` | int | unset | `bench/scripts/run_demo_bench.py` | Set by run_stack.sh to the demo HTTP server's PID and read by run_demo_bench.py as the root of the server process tree for CPU and RSS sampling; unset or non-numeric falls back to listen PIDs on MOLT_SERVER_PORT and command-name matching. |
 | `MOLT_DEMO_WORKER_BIN` | path | unset | `bench/scripts/run_demo_bench.py` | Set by run_stack.sh to the molt-worker binary it built or found and read by run_demo_bench.py to record that binary's path, size, and SHA-256 in the run's composite artifact; unset records no worker identity. |
 | `MOLT_DEMO_WORKER_PID` | int | unset | `bench/scripts/run_demo_bench.py` | Set by run_stack.sh to the molt-worker PID and read by run_demo_bench.py as the root of the worker process tree for CPU and RSS sampling; unset or non-numeric falls back to command-name matching. |

@@ -1490,7 +1490,7 @@ summary = "Exact function name for which TIR-to-SimpleIR lowering prints the rev
 
 [[variable]]
 name = "MOLT_DEBUG_MAIN_EXCEPTION"
-audience = "internal"
+audience = "developer"
 kind = "bool"
 default = ""
 owner = "runtime/molt-jit/src/launch.rs"

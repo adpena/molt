@@ -65,7 +65,7 @@ from project configuration: `[tool.molt.build] entry-file = "app.py"` or
 | `--type-facts PATH` | Path to type facts JSON from `molt check`. |
 | `--pgo-profile PATH` | Path to PGO profile artifact for optimization hints. |
 | `--pgo-collect` | Instrument the binary to collect PGO counters at runtime. |
-| `--emit {bin,obj,wasm}` | Select artifact format. |
+| `--emit {bin,obj,wasm,jit}` | Select artifact format. `jit` publishes a JIT image (`<name>_molt.jit`) for the development JIT tier instead of an executable; see `molt run --tier`. |
 | `--linked / --no-linked` | Emit linked WASM artifact alongside output. |
 | `--split-runtime` | Produce separate runtime and app WASM modules. |
 | `--wasm-opt-level {O1,O2,O3,O4,Os,Oz}` | Binaryen optimization level. Dev defaults to `O1`; release deployment profiles select their shipping level. |
@@ -161,6 +161,7 @@ molt run app.py --release                # Optimized build and run
 molt run app.py --target wasm            # Build and run with the Node host shim
 molt run app.py --target luau            # Build and run with lune
 molt run app.py --target mlir            # Build and emit MLIR text
+molt run app.py --tier jit               # Compile into memory and run (no link)
 molt run app.py -- --arg1 val            # Pass args to your script
 molt run --module mypackage              # Run a package
 ```
@@ -177,6 +178,7 @@ uses its provisioned pinned Node when available, then Node on `PATH`.
 |------|-------------|
 | `--target TARGET` | Build target: `native`, `wasm`, `luau`, `mlir`, or a target triple. |
 | `--release` | Optimized release build. |
+| `--tier {aot,jit}` | How to run a native program. `aot` (default) builds an executable and runs it. `jit` builds a JIT image and runs it in the `molt-jit` runner, which compiles the whole program into its own memory on every run: no object, link or executable. The JIT tier runs only in a source checkout on aarch64 macOS (the verified cell), with the Cranelift code generator and no external native package artifacts; any other request fails before the frontend runs and never falls back to `aot`. `[tool.molt.run] tier` sets the default. |
 | `--module MODULE` | Entry module name. |
 | `--profile {dev,release}` | Build profile (default: `dev`). |
 | `--python-version VERSION` | Target Python semantics for the build side. `molt run` forwards it to `molt build` and records it in wrapper cache manifests. |
@@ -190,7 +192,9 @@ uses its provisioned pinned Node when available, then Node on `PATH`.
 full binary-image closure payload, target Python version, dead-module
 elimination mode, static import modules, external static package/native artifact
 custody, and the discovered source closure. A cache hit is valid only when those
-facts and the output binary hash still match the manifest.
+facts and the output binary hash still match the manifest. A JIT-tier key also
+includes the `molt-jit` runner's source and dependency identity, and a hit renews
+the retention of the runner and runtime image the cached JIT image runs.
 
 #### `molt test`
 
@@ -548,6 +552,7 @@ portable = false
 # Run-specific overrides
 trusted = true
 timing = true
+tier = "aot"  # or "jit"; see `molt run --tier`
 
 [tool.molt.test]
 # Test-specific overrides

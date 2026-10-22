@@ -2652,7 +2652,7 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
-      "audience": "internal",
+      "audience": "developer",
       "default": "",
       "kind": "bool",
       "name": "MOLT_DEBUG_MAIN_EXCEPTION",

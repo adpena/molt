@@ -59,10 +59,25 @@ function into a `cranelift_module::Module`; only the module that owns the code d
    `cranelift_jit`. It builds as `HostToolProduct.JIT` through the backend binary's Cargo
    plan, source receipts, generation store and capability probe, with the backend's Cargo
    profile and CPU policy. Its probe compiles and runs one function, so a host whose W^X
-   policy refuses JIT code fails admission. It reads a launch manifest, verifies the
-   program's SHA-256, compiles the program and starts it in process. Stdout, stderr, exit
-   status and signals are the program's own; compiler stderr appears only when compilation
-   fails or backend diagnostics were requested, as `molt run` shows a backend's stderr.
+   policy refuses JIT code fails admission. It reads a JIT image, compiles the program and
+   starts it in process. Stdout, stderr, exit status and signals are the program's own.
+
+   The program must start in the process state an AOT executable gives it, so the runner
+   is a C `main` (`#![no_main]`), not a Rust `main`: Rust's start-up code sets `SIGPIPE`
+   to `SIG_IGN` and installs `SIGSEGV`/`SIGBUS` handlers on alternate signal stacks, and a
+   program would inherit both (a write to a closed pipe raised `BrokenPipeError` instead
+   of ending the process with `SIGPIPE`; a native stack overflow aborted with a message
+   instead of `SIGSEGV`). Compilation runs on its own thread with the compiler's 64 MiB
+   stack (`COMPILE_THREAD_STACK_BYTES`), inside `catch_unwind`; the runner then joins it
+   and retires every compiler pool thread (`retire_compile_thread_pools`), so the program
+   starts with one thread, as a C `main` does.
+
+   Compiler stderr appears only when compilation fails or backend diagnostics were
+   requested, as `molt run` shows a backend's stderr. While it compiles, the runner points
+   file descriptor 2 at a pipe that a forked keeper process holds in memory; the runner
+   then tells the keeper to discard or to write the text. A runner that dies while it
+   compiles, by any signal or exit, never gives a verdict, and the keeper writes the text.
+   The keeper is reaped before the program starts.
 3. **Runtime symbols.** Generated code imports runtime functions through
    `Linkage::Import`. The runner loads the runtime as a shared image and resolves every
    import with `dlsym` on that image, as cg_clif resolves dependency symbols in their
@@ -91,25 +106,56 @@ function into a `cranelift_module::Module`; only the module that owns the code d
    initializers, the bulk of a small program, always run. Without JIT redefinition,
    laziness needs Molt-owned call slots, the mechanism "Patched calls" needs too; it is
    built once, there.
-5. **CLI.** `molt run --tier jit` selects the JIT tier (`RunTier`); `aot` stays the
-   default and `molt build` stays AOT. `molt build --emit jit` publishes
-   `<name>_molt.jit.json` (the launch manifest) and `<name>_molt.jit.msgpack` (the
-   program's backend IR in the lease format) after the shared frontend and backend IR
-   preparation. No tier falls back to another: a cross target, the LLVM code generator or
-   an external native package artifact fails the build with a diagnostic that names it.
-   WASM already runs under wasmtime, which is a JIT.
+5. **CLI.** `molt run --tier jit` (or `[tool.molt.run] tier = "jit"`) selects the JIT
+   tier (`RunTier`); `aot` stays the default and `molt build` stays AOT. `molt build
+   --emit jit` publishes one JIT image, `<name>_molt.jit`, after the shared frontend and
+   backend IR preparation. No tier falls back to another. One admission,
+   `run_tier.jit_tier_refusal` (target, host, code generator, installed compiler), runs
+   at build request resolution for every `emit=jit` request, so `molt build`, `molt run`
+   and the differential harness refuse an unsupported cell before the frontend runs and
+   before any runtime image link. External native package artifacts are refused by the
+   build's native-artifact custody check, which runs on the import plan before the
+   frontend. WASM already runs under wasmtime, which is a JIT.
+
+   A `molt run` cache hit reuses a JIT image only while its key matches. The key adds
+   the runner's own source and locked-dependency identity (`_cache_fingerprint` for
+   `HostToolProduct.JIT`) to the backend and runtime identity an AOT key holds, so an
+   edit to the runner or its `cranelift-jit` stack rebuilds. A hit renews the retention
+   of the runner generation and the runtime image it runs.
+
+**JIT image.** A JIT image is one executable file (`src/molt/cli/jit_image.py` writes it,
+`runtime/molt-jit/src/image.rs` reads it):
+
+```text
+#!/bin/sh
+exec <runner> --launch "$0" -- "$0" "$@"
+#molt.jit-image.v1 <header bytes> <program bytes>
+<header: JSON: runtime image, backend environment, compiler diagnostics, launch plan>
+<program: backend IR, MessagePack, the backend lease format>
+```
+
+The CLI publishes it with one rename, so a header always belongs to its own program, even
+when two builds publish the same name at once. Its first two lines make it a program
+`execve` can start: `argv[0]`, and so `sys.executable`, names the image, which starts the
+same program again, as an AOT executable's path does. `subprocess.run([sys.executable,
+...])` and spawn-mode `multiprocessing` (which executes `sys.argv[0]`) therefore work; each
+such start compiles the program again, a cost the AOT tier does not pay. `molt run` and the
+differential harness start the runner directly with the same command shape
+(`run_tier.jit_runner_argv`), adding `--start-receipt`.
 
 **Launch.** `NativeLaunchPlan` owns a program's launch facts: the resolved capability
 environment and `MOLT_EXECUTION_TARGET`, external runtime module roots, and the compiled
-source paths. The AOT main stub renders them as C; the JIT launch manifest carries them.
-The runner then performs the stub's sequence in order: install the environment, register
-compiled sources, set the app callable resolver, install the module registry,
-`molt_runtime_init`, take the GIL, set argv, call `molt_main`, and leave through
-`molt_runtime_exit` after reporting an uncaught exception. `argv[0]` names the launch
-manifest, as an AOT executable's path names the executable. The runner's own failures
-exit with status 125, as the stub's do. With `--start-receipt <path>` the runner also
-creates `<path>` after the program compiled, immediately before the program starts, so
-a caller can tell a failure to compile from a program that exits with status 125.
+source paths. The AOT main stub renders them as C; the JIT image header carries them.
+`runtime/native_launch_abi.toml` declares the runtime entry points the launch calls and
+their order; `tools/gen_native_launch_abi.py` generates the stub's C declarations and the
+runner's `RuntimeLaunchApi` from it. The runner performs the stub's sequence in order:
+install the environment, register compiled sources, set the app callable resolver, install
+the module registry, `molt_runtime_init`, take the GIL, set argv, call `molt_main`, and
+leave through `molt_runtime_exit` after reporting an uncaught exception. The runner's own
+failures exit with status 125, as the stub's do. With `--start-receipt <path>` the runner
+also creates `<path>` after the program compiled, immediately before the runtime starts,
+so a caller can tell a failure to compile from a program that exits with status 125;
+`molt run` reports a run with no receipt as a failed build.
 
 ## Incremental patching
 
@@ -150,11 +196,15 @@ because the JIT tier already owns its program's call graph:
   output signing, and first-link work for new programs.
 - Added once per toolchain: the runner build (the same order as the backend binary).
 - Added once per runtime generation: the runtime image link (2.6 s for the 98 MiB
-  `stdlib_micro` dev archive on macOS arm64; 37 MiB image).
-- Per run: process start, runtime image load (3.5 ms), program decode (13 ms for the
-  1.1 MB hello program) and compilation of the whole program, stdlib included (852 ms for
+  `stdlib_micro` dev archive on macOS arm64; 37 MiB image). The images of one runtime
+  directory form a generation store (`generation_store.py`): an image no build or cached
+  launch used for 24 hours leaves at the next image publication.
+- Per run: process start, one read of the JIT image, the keeper fork when compiler
+  output is captured, runtime image load (3.5 ms), program decode (13 ms for the 1.1 MB
+  hello program) and compilation of the whole program, stdlib included (852 ms for
   hello). An AOT build reuses a cached shared-stdlib object; the JIT tier compiles those
-  functions on every run.
+  functions on every run, and again in every process that re-runs the image (a spawned
+  `multiprocessing` worker, a `subprocess` of `sys.executable`).
 - Not removed: frontend lowering on edited modules, backend IR preparation (HF-266) and
   toolchain probes (HF-357). Those lanes run in parallel with this one.
 
@@ -195,9 +245,9 @@ cache for the edited functions.
   `MAP_JIT` `JITMemoryProvider` with write-protect toggling.
 - Linux x86_64/aarch64: unverified, so refused. The runtime image would be a shared
   object linked with `--whole-archive`, and the runner exports `molt_isolate_bootstrap`
-  with `--export-dynamic-symbol`. `VERIFIED_JIT_HOSTS` (`src/molt/cli/jit_pipeline.py`)
+  with `--export-dynamic-symbol`. `VERIFIED_JIT_HOSTS` (`src/molt/cli/run_tier.py`)
   admits only the cells the twin gate ran; any other host, macOS x86_64 included, fails
-  before the build with a message that names it.
+  at build request resolution, before the frontend, with a message that names it.
 - Windows x64: unsupported. The runner loads its runtime image with `dlopen`, and a DLL
   cannot bind a symbol from the executable without an import library.
 - WASM targets: not applicable.
@@ -210,18 +260,42 @@ cache for the edited functions.
   `native_direct_symbol_object_call_links_provider_archive_and_executes` links against a
   provider archive, but into memory against the same provider symbols, and runs it; it
   also proves that a missing import or ABI witness refuses the program.
+- Runner: `runtime/molt-jit/tests/runner_launch.rs` compiles a recording runtime image
+  and a tiny program, runs the real runner, and checks the call sequence against the
+  generated launch ABI, that the start receipt exists before `molt_runtime_init`, that the
+  runtime binds the runner's `molt_isolate_bootstrap`, and that a program that cannot
+  compile leaves no receipt. `compiler_output.rs` tests the keeper: a successful compile
+  discards compiler stderr, a failed one replays it first, and a runner killed while it
+  compiles still shows it.
 - Steps 2-5: the JIT-versus-AOT differential. `tests/molt_diff.py --target native,jit`
-  treats the two as exact twins (`EXACT_TWIN_BACKENDS`): they must agree on stdout, stderr
-  and exit status whatever a file's CPython law, and a build that succeeds for one twin
-  must succeed for the other (Goose's TinyCC-versus-native rule), plus the CPython oracle
-  as today. The JIT tier compiles when it runs, so a run that leaves no start receipt
-  counts as its failed build; a timeout or guard failure counts as unknown, not as a
-  divergence. The comparison first removes text any two runs of one program differ in
-  (heap addresses in default reprs, the OS thread id of a Rust panic). Of 512 basic
-  programs a native calibration listed as passing, 479 match CPython under both tiers,
-  33 fail identically under both, and no twin pair diverges (macOS arm64, 2026-10-21).
-  The local proof-queue lane `native.jit-aot-twins` runs the 479; `native.jit-code-owner`
-  runs the molt-jit tests.
+  treats the two as exact twins (`EXACT_TWIN_BACKENDS`): they must agree on exit status,
+  on stdout under the file's stdout comparison mode, and on stderr exactly after removing
+  the text any two runs of one program differ in (heap addresses in default reprs, the OS
+  thread id of a Rust panic), whatever the file's CPython law; and a build that succeeds
+  for one twin must succeed for the other. The CPython oracle applies as today. The JIT
+  tier compiles when it runs, so a run that leaves no start receipt counts as its failed
+  build; a timeout or guard failure counts as unknown, not as a divergence. The twins
+  share the frontend, TIR, the Cranelift code generator and the runtime bytes, so the
+  gate proves that the two code owners and launches run the same program; unlike
+  Goose's TinyCC-versus-native diff, it is not an independent implementation and finds
+  no shared code-generation defect. Process-state cases pin what a Rust `main` broke:
+  `closed_pipe_write_signal.py` (a closed pipe ends both tiers with `SIGPIPE`),
+  `native_stack_exhaustion.py` (stack exhaustion ends both with `SIGSEGV`), and
+  `multiprocessing_pool_apply_async.py` (spawn-mode workers execute `sys.argv[0]`, the
+  image, and so start the program again). The harness sets `sys.executable` to the
+  CPython oracle for every compiled program, so `tests/cli/test_jit_run_tier.py` proves
+  the `sys.executable` path: executing an image starts its runner with the image as
+  argv[0] and the new arguments.
+  On macOS arm64 (2026-10-21, main 9e0f94f11, dev compiler, `--jobs 4`, 201 min at load
+  10-27), 514 programs ran: the 510 basic programs a native calibration lists as passing,
+  without its two expected-failure programs that both tiers pass (XPASS), the two
+  process-state cases and two spawn-mode `multiprocessing` programs. 480 pass under both
+  tiers; 33 fail CPython identically under both (HF-295 names them and their failure
+  classes); one diverges: `multiprocessing_pool_apply_async.py` waits 5 s for a result,
+  and its spawned JIT worker is still compiling the program. Two programs that first
+  failed on a runtime build lock timeout at cold start (HF-388) passed on a recheck.
+  The local proof-queue lane `native.jit-aot-twins` runs the 480 passing cases;
+  `native.jit-code-owner` runs the molt-jit tests.
 - Latency: edit-run of a small program, new and after a one-line edit, AOT against JIT
   ("Costs"). The target is Goose-class: well under a second for a one-module edit once
   HF-357 and HF-266 land, the untimed CLI overhead shrinks, and the per-run stdlib compile
