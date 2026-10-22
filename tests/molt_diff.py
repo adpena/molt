@@ -3412,7 +3412,7 @@ def _run_backend_for_diff(
     context: compat_backends.BackendExecutionContext,
 ) -> compat_backends.BackendResult | compat_backends.BackendAvailability:
     """Keep the adapter's complete outcome, including resource failure facts."""
-    context = replace(context, budget=context.budget.for_backend(backend))
+    context = context.for_backend(backend)
     if context.budget.expired():
         return context.budget.exhausted_result(build_failed=True)
     try:

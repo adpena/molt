@@ -21,7 +21,7 @@ deterministic regression that the divergence logic itself is correct.
 from __future__ import annotations
 
 import inspect
-from dataclasses import replace
+from dataclasses import fields, replace
 import hashlib
 import multiprocessing
 import os
@@ -45,6 +45,15 @@ from tools.compat import backends as compat_backends  # noqa: E402
 from tools.compat import diff_output_layout  # noqa: E402
 from tools import memory_guard  # noqa: E402
 from tests.process_guard_common import HUNG_CHILD_SOURCE  # noqa: E402
+
+
+def _dispatch_view(context):
+    """A backend context without its budget, which each backend narrows for
+    itself (``BackendExecutionContext.for_backend``); the rest is the one
+    context the dispatch hands every backend."""
+    return {
+        f.name: getattr(context, f.name) for f in fields(context) if f.name != "budget"
+    }
 
 
 @pytest.mark.parametrize("runner", ["native", "adapter"])
@@ -1058,7 +1067,9 @@ def test_all_backends_receive_one_stdlib_profile(
     context = native_contexts[0]
     assert context.stdlib_profile == "full"
     for target in targets[1:]:
-        assert registry[target].contexts == [context]
+        assert [_dispatch_view(c) for c in registry[target].contexts] == [
+            _dispatch_view(context)
+        ]
     backend_rows = records[0]["backend_rows"]
     assert isinstance(backend_rows, list)
     assert len(backend_rows) == len(targets)
@@ -1109,7 +1120,9 @@ def test_all_backends_receive_one_explicit_untrusted_test_context(
     assert len(native_contexts) == 1
     context = native_contexts[0]
     for target in targets[1:]:
-        assert registry[target].contexts == [context]
+        assert [_dispatch_view(c) for c in registry[target].contexts] == [
+            _dispatch_view(context)
+        ]
     assert context.target_python == cpython_oracle
     assert context.environment["MOLT_SYS_EXECUTABLE"] == "oracle-python"
     assert context.environment["PYTHONOPTIMIZE"] == "2"
