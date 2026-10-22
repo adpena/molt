@@ -619,7 +619,7 @@ def _run_wrapper_build(
     except ValueError as exc:
         return None, 0.0, _fail(str(exc), json_output, command=command)
     # The build request's emit selects the run tier's artifact: an
-    # executable, or a launch manifest for the JIT runner.
+    # executable, or a JIT image for the JIT runner.
     tier = RunTier.JIT if request.emit == RunTier.JIT.build_emit else RunTier.AOT
     if (
         command == "run"

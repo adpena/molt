@@ -2,7 +2,7 @@
 
 An AOT executable installs them in its generated C ``main``
 (``native_main_stub.py``). The development JIT runner installs them from its
-launch manifest (``runtime/molt-jit/src/launch.rs``), in the same order. Both
+JIT image's header (``runtime/molt-jit/src/launch.rs``), in the same order. Both
 read this plan, so the two tiers start a program in the same environment.
 """
 
@@ -51,8 +51,8 @@ class NativeLaunchPlan:
             compiled_source_paths=tuple(compiled_source_paths),
         )
 
-    def manifest_payload(self) -> dict[str, Any]:
-        """The ``launch`` object of a JIT launch manifest."""
+    def image_header_payload(self) -> dict[str, Any]:
+        """The ``launch`` object of a JIT image's header (``jit_image.py``)."""
         return {
             "environment": dict(self.environment),
             "runtime_module_roots": list(self.runtime_module_roots),

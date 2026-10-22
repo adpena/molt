@@ -655,8 +655,8 @@ def run_script(
 
     ``environment_overrides`` reaches the build and the program through their
     own environment mappings; the caller's process environment is not written.
-    The JIT tier builds a launch manifest instead of an executable and runs
-    the ``molt-jit`` runner on it; it never falls back to the AOT tier.
+    The JIT tier builds a JIT image instead of an AOT executable and runs the
+    ``molt-jit`` runner on it; it never falls back to the AOT tier.
     """
     if file_path and module:
         return _fail(

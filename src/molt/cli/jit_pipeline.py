@@ -93,6 +93,18 @@ def _run_jit_pipeline(
         return prepared_backend_ir_error
     assert prepared_backend_ir is not None
     molt_root = prepared_build_roots.molt_root
+    # Admit the runner first: its probe refuses a host that blocks executable
+    # memory before this build builds the runtime and links its 37 MiB image.
+    try:
+        runner = ensure_jit_runner(
+            molt_root,
+            cargo_profile=prepared_build_config.backend_cargo_profile,
+            rust_cpu=prepared_build_preamble.rust_cpu,
+            cargo_timeout=prepared_build_config.cargo_timeout,
+            json_output=json_output,
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        return _fail(str(exc), json_output, command="build")
     runtime_stdlib_profile = (
         _runtime_features.runtime_stdlib_profile_for_required_features(
             stdlib_profile,
@@ -147,13 +159,6 @@ def _run_jit_pipeline(
             profile=profile,
             link_timeout=prepared_build_config.link_timeout,
         )
-        runner = ensure_jit_runner(
-            molt_root,
-            cargo_profile=prepared_build_config.backend_cargo_profile,
-            rust_cpu=prepared_build_preamble.rust_cpu,
-            cargo_timeout=prepared_build_config.cargo_timeout,
-            json_output=json_output,
-        )
         backend_environment = request_environment_inputs(
             _backend_request_environment(
                 native_runtime_codegen_environment(
@@ -190,7 +195,7 @@ def _run_jit_pipeline(
                     if _env_requests_backend_diagnostics(os.environ)
                     else "on_failure"
                 ),
-                "launch": plan.manifest_payload(),
+                "launch": plan.image_header_payload(),
             },
             ir=prepared_backend_ir.ir,
         )
