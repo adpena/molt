@@ -1543,7 +1543,7 @@ def test_locator_publishes_captured_physical_rust_and_native_build_selections(
                 "content_path": str(tools["cargo"]),
                 "launcher_sha256": image["sha256"],
                 "executable_sha256": image["sha256"],
-                "version": "cargo 1.99.0",
+                "version": f"cargo {policy.data['setup_value']}",
                 "probe_cwd": str(tmp_path),
                 "configuration_files": [],
                 "process_images": [image],
