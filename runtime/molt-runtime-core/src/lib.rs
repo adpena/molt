@@ -1257,9 +1257,9 @@ pub type RuntimeExtensionStateDrop = unsafe extern "C" fn(*mut u8);
 
 /// `MOLTVTAB` encoded as a little-endian `u64`.
 pub const RUNTIME_VTABLE_ABI_MAGIC: u64 = 0x4241_5456_544c_4f4d;
-// Version 9 adds atomic replacement through the existing raised-exception owner
-// for consumers whose Argument Clinic converter replaces exporter failures.
-pub const RUNTIME_VTABLE_ABI_VERSION: u32 = 9;
+// Version 10 retires the serial boxed-next transport. Serial consumers use
+// the canonical core owned unboxed iterator contract; later slot offsets move.
+pub const RUNTIME_VTABLE_ABI_VERSION: u32 = 10;
 
 /// Native binascii module exception identities; exported names are metadata.
 #[repr(u32)]
@@ -1371,7 +1371,6 @@ pub struct RuntimeVtable {
 
     // --- Iteration ---
     pub molt_iter: unsafe extern "C" fn(u64) -> u64,
-    pub molt_iter_next: unsafe extern "C" fn(u64, *mut u64) -> i32,
     pub raise_not_iterable: unsafe extern "C" fn(u64) -> u64,
     pub molt_sorted_builtin: unsafe extern "C" fn(u64) -> u64,
     pub molt_mul: unsafe extern "C" fn(u64, u64) -> u64,

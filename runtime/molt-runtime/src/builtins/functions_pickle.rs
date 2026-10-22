@@ -20,31 +20,6 @@ fn alloc_string_bits(_py: &crate::PyToken<'_>, value: &str) -> Option<u64> {
     }
 }
 
-fn iter_next_pair(_py: &crate::PyToken<'_>, iter_bits: u64) -> Result<(u64, bool), u64> {
-    let pair_bits = crate::molt_iter_next(iter_bits);
-    let pair_obj = obj_from_bits(pair_bits);
-    let Some(pair_ptr) = pair_obj.as_ptr() else {
-        return Err(MoltObject::none().bits());
-    };
-    unsafe {
-        if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-            return Err(MoltObject::none().bits());
-        }
-        if crate::object::seq_access::len(pair_ptr) < 2 {
-            return Err(MoltObject::none().bits());
-        }
-        let mut val_bits = 0;
-        let mut done_bits = 0;
-        if crate::object::seq_access::read_item_gil_borrowed(pair_ptr, 0, &mut val_bits) == 0
-            || crate::object::seq_access::read_item_gil_borrowed(pair_ptr, 1, &mut done_bits) == 0
-        {
-            return Err(MoltObject::none().bits());
-        }
-        let done = is_truthy(_py, obj_from_bits(done_bits));
-        Ok((val_bits, done))
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
 enum PickleGlobal {
     CodecsEncode,

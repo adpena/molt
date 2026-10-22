@@ -21,11 +21,11 @@ use crate::{
     init_atomic_bits, instance_dict_bits, intern_static_name, is_truthy, isinstance_runtime,
     issubclass_bits, issubclass_runtime, missing_bits, molt_call_bind, molt_callargs_new,
     molt_callargs_push_pos, molt_contains, molt_dict_from_obj, molt_dict_get, molt_eq,
-    molt_getattr_builtin, molt_hash_builtin, molt_index, molt_iter, molt_iter_next, molt_len,
-    molt_repr_from_obj, molt_set_attr_name, molt_setitem_method, molt_str_from_obj,
-    molt_string_isidentifier, obj_from_bits, object_class_bits, object_type_id, property_del_bits,
-    property_get_bits, property_set_bits, raise_exception, raise_not_iterable, runtime_state,
-    string_obj_to_owned, to_i64, tuple_from_iter_bits, type_name, type_of_bits,
+    molt_getattr_builtin, molt_hash_builtin, molt_index, molt_iter, molt_len, molt_repr_from_obj,
+    molt_set_attr_name, molt_setitem_method, molt_str_from_obj, molt_string_isidentifier,
+    obj_from_bits, object_class_bits, object_type_id, property_del_bits, property_get_bits,
+    property_set_bits, raise_exception, raise_not_iterable, runtime_state, string_obj_to_owned,
+    to_i64, tuple_from_iter_bits, type_name, type_of_bits,
 };
 
 pub(crate) mod class_construction;
@@ -470,33 +470,6 @@ fn set_class_method(_py: &PyToken<'_>, dict_ptr: *mut u8, name: &str, fn_bits: u
     let published = unsafe { dict_set_in_place(_py, dict_ptr, name_bits, fn_bits) };
     dec_ref_bits(_py, name_bits);
     published
-}
-
-fn iter_next_pair(_py: &PyToken<'_>, iter_bits: u64) -> Option<(u64, bool)> {
-    let pair_bits = molt_iter_next(iter_bits);
-    let pair_obj = obj_from_bits(pair_bits);
-    let pair_ptr = pair_obj.as_ptr()?;
-    unsafe {
-        if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-            let _ = raise_exception::<u64>(_py, "TypeError", "object is not an iterator");
-            return None;
-        }
-        if locked_len(pair_ptr) < 2 {
-            let _ = raise_exception::<u64>(_py, "TypeError", "object is not an iterator");
-            return None;
-        }
-        let Some(val) = pin_item(_py, pair_ptr, 0) else {
-            let _ = raise_exception::<u64>(_py, "TypeError", "object is not an iterator");
-            return None;
-        };
-        let Some(done_value) = pin_item(_py, pair_ptr, 1) else {
-            let _ = raise_exception::<u64>(_py, "TypeError", "object is not an iterator");
-            return None;
-        };
-        let val_bits = val.bits();
-        let done = is_truthy(_py, obj_from_bits(done_value.bits()));
-        Some((val_bits, done))
-    }
 }
 
 #[unsafe(no_mangle)]

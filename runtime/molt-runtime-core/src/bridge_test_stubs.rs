@@ -288,8 +288,6 @@ aborting_bridge_stub!(__molt_path_index_c_int);
 aborting_bridge_stub!(__molt_path_index_i64);
 aborting_bridge_stub!(__molt_path_is_truthy);
 aborting_bridge_stub!(__molt_path_metadata);
-aborting_bridge_stub!(__molt_path_molt_iter);
-aborting_bridge_stub!(__molt_path_molt_iter_next);
 aborting_bridge_stub!(__molt_path_molt_object_hash);
 aborting_bridge_stub!(__molt_path_object_type_id);
 aborting_bridge_stub!(__molt_path_path_from_bits);

@@ -44,8 +44,8 @@ use crate::{
     function_globals_bits, function_set_closure_bits, function_set_globals_bits,
     function_set_trampoline_ptr, inc_ref_bits, is_truthy, missing_bits, module_dict_bits,
     molt_cpython_abi_cext_call_trampoline, molt_getattr_builtin, molt_getitem_method, molt_iter,
-    molt_iter_next, molt_trace_enter_slot, obj_from_bits, object_class_bits, object_type_id,
-    raise_exception, string_obj_to_owned, to_i64, type_name,
+    molt_trace_enter_slot, obj_from_bits, object_class_bits, object_type_id, raise_exception,
+    string_obj_to_owned, to_i64, type_name,
 };
 mod compile_codeop;
 mod function_abi;
@@ -130,45 +130,26 @@ fn shlex_quote_impl(input: &str) -> String {
     format!("'{escaped}'")
 }
 
-pub(super) fn iter_next_pair(_py: &crate::PyToken<'_>, iter_bits: u64) -> Result<(u64, bool), u64> {
-    let pair_bits = molt_iter_next(iter_bits);
-    let pair_obj = obj_from_bits(pair_bits);
-    let Some(pair_ptr) = pair_obj.as_ptr() else {
-        return Err(MoltObject::none().bits());
-    };
-    unsafe {
-        if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-            return Err(MoltObject::none().bits());
-        }
-        if crate::object::seq_access::len(pair_ptr) < 2 {
-            return Err(MoltObject::none().bits());
-        }
-        let mut val_bits = 0;
-        let mut done_bits = 0;
-        if crate::object::seq_access::read_item_gil_borrowed(pair_ptr, 0, &mut val_bits) == 0
-            || crate::object::seq_access::read_item_gil_borrowed(pair_ptr, 1, &mut done_bits) == 0
-        {
-            return Err(MoltObject::none().bits());
-        }
-        let done = is_truthy(_py, obj_from_bits(done_bits));
-        Ok((val_bits, done))
-    }
-}
-
 pub(super) fn iterable_to_string_vec(
     _py: &crate::PyToken<'_>,
     values_bits: u64,
 ) -> Result<Vec<String>, u64> {
     let iter_bits = molt_iter(values_bits);
+    let iterator_owner = unsafe {
+        molt_runtime_core::OwnedRuntimeValue::from_owned_bits(_py.core_token(), iter_bits)
+    };
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
     }
     let mut out: Vec<String> = Vec::new();
     loop {
-        let (item_bits, done) = iter_next_pair(_py, iter_bits)?;
-        if done {
+        let Some(item_owner) =
+            molt_runtime_core::iter_next_owned(_py.core_token(), &iterator_owner)
+                .map_err(|_| MoltObject::none().bits())?
+        else {
             break;
-        }
+        };
+        let item_bits = item_owner.bits();
         let Some(item) = string_obj_to_owned(obj_from_bits(item_bits)) else {
             return Err(raise_exception::<_>(_py, "TypeError", "expected str item"));
         };

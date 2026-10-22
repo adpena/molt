@@ -268,25 +268,6 @@ pub unsafe fn seq_snapshot(ptr: *mut u8) -> OwnedBridgeHandleSnapshot {
 }
 
 // ---------------------------------------------------------------------------
-// Iteration helpers
-// ---------------------------------------------------------------------------
-
-unsafe extern "C" {
-    fn __molt_path_molt_iter(bits: u64) -> u64;
-    fn __molt_path_molt_iter_next(iter_bits: u64, out: *mut u64) -> i32;
-}
-
-pub fn molt_iter(_py: &CoreGilToken, bits: u64) -> u64 {
-    unsafe { __molt_path_molt_iter(bits) }
-}
-
-pub fn molt_iter_next(_py: &CoreGilToken, iter_bits: u64) -> Option<u64> {
-    let mut out: u64 = 0;
-    let ok = unsafe { __molt_path_molt_iter_next(iter_bits, &mut out) };
-    if ok != 0 { Some(out) } else { None }
-}
-
-// ---------------------------------------------------------------------------
 // Capability helpers
 // ---------------------------------------------------------------------------
 
