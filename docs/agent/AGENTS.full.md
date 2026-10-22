@@ -1486,7 +1486,7 @@ PermissionError: missing 'net.connect' capability. Grant MOLT_CAPABILITIES=net.c
 - `python3 tools/profile.py`: repeatable CPU/alloc profiling runs.
 - `python3 tools/runtime_safety.py clippy|miri|fuzz --target string_ops --runs 10000`: runtime safety gates.
 - `cargo audit` and `cargo deny check`: Rust supply-chain audits.
-- `uv run pip-audit`: Python dependency audit (run after `uv sync --group dev`).
+- `uv run python3 tools/pin_freshness.py --audit`: Python and npm lock advisory audit (OSV over `uv.lock` and the npm locks; see `docs/DEVELOPER_GUIDE.md`, "Release-age rule").
 - `cargo nextest run -p molt-runtime --all-targets`: faster Rust test runner.
 - `export RUSTC_WRAPPER=sccache`: enable Rust compile caching (check stats with `sccache -s`).
 - The CLI auto-enables `sccache` when available (`MOLT_USE_SCCACHE=auto`); set `MOLT_USE_SCCACHE=0` to disable or `MOLT_USE_SCCACHE=1` to require it in your shell setup.

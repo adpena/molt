@@ -1308,6 +1308,49 @@ def test_cli_update_steps_use_memory_guard(
         ]
 
 
+@pytest.mark.parametrize("unnamed", [False, True])
+def test_cli_update_shows_the_lock_advisory_audit(
+    monkeypatch: pytest.MonkeyPatch, capsys, unnamed: bool
+) -> None:
+    """The audit's report reaches the operator whether it passes (named
+    advisories are warnings) or fails (an advisory no ledger row names)."""
+    report = (
+        "WARNING web/package-lock.json: left 1.0.0 carries GHSA-aaaa; named by HF-1\n"
+    )
+    steps = [
+        _MaintenanceStep("later", ["uv", "lock", "-U"], ROOT, "lock"),
+        _MaintenanceStep(
+            "lock-advisory-audit",
+            [sys.executable, "tools/pin_freshness.py", "--audit"],
+            ROOT,
+            "audit",
+        ),
+    ]
+
+    def fake_run_completed(cmd, **kwargs):
+        audit = cmd[-1] == "--audit"
+        return subprocess.CompletedProcess(
+            cmd, 1 if audit and unnamed else 0, report if audit else "", ""
+        )
+
+    monkeypatch.setattr(
+        TOOLCHAIN_VALIDATION, "compiler_source_root", lambda: ROOT, raising=True
+    )
+    monkeypatch.setattr(
+        TOOLCHAIN_VALIDATION,
+        "_planned_update_steps",
+        lambda *_args, **_kwargs: (steps, []),
+        raising=True,
+    )
+    monkeypatch.setattr(
+        TOOLCHAIN_VALIDATION, "_run_completed_command", fake_run_completed, raising=True
+    )
+
+    assert TOOLCHAIN_VALIDATION.update_repo(json_output=False) == int(unnamed)
+    captured = capsys.readouterr()
+    assert report in (captured.err if unnamed else captured.out)
+
+
 def test_cli_update_check_does_not_execute_or_mutate_dependencies(monkeypatch, capsys):
     projects = (
         ROOT,
