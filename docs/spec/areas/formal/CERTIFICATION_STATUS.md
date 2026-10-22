@@ -288,11 +288,11 @@ but vacuous with respect to actual backend behavior (see Scope Disclaimer above)
 ### Runtime (sorry-free)
 
 - **NanBoxCorrect.lean** -- NaN-boxing encode/decode correctness.
-- **NanBoxBV.lean** -- BitVec-based NaN-boxing proofs. Builds with no `sorry` on Lean 4.34.1, but stays outside
+- **NanBoxBV.lean** -- BitVec-based NaN-boxing proofs. Builds with no `sorry` on Lean 4.35.0, but stays outside
   the Lake roots: its `native_decide` facts reach values at or above 2^63, the pattern that crashes Lean on CI's
   x86_64 runners (HF-66).
 - **IntrinsicContracts.lean** -- 61 trust axioms for Python builtin behavior.
-- **MemorySafety.lean / MemorySafetyCorrect.lean** -- Memory safety model and proofs (not built: outside the Lake roots and 14 errors on Lean 4.34.1, HF-63).
+- **MemorySafety.lean / MemorySafetyCorrect.lean** -- Memory safety model and proofs (not built: outside the Lake roots and 14 errors on Lean 4.35.0, HF-63).
 - **Refcount.lean / RCElisionCorrect.lean** -- Reference counting elision proofs.
 - **OwnershipModel.lean** -- Ownership and lifetime model.
 - **CapabilityGate.lean** -- Capability-based security gate.
@@ -419,7 +419,7 @@ The formalization achieves genuine results within its scope:
 6. **Lean type system extension (P2):** Add Union, Box/DynBox, Func, Never to match
    the Rust type system. Without this, type-driven passes cannot be meaningfully proven.
 
-7. **`bv_decide` proofs (P3):** Lean 4.34.1 is pinned and provides `bv_decide`; use it
+7. **`bv_decide` proofs (P3):** Lean 4.35.0 is pinned and provides `bv_decide`; use it
    for the NaN-boxing BitVec proofs in `NanBoxBV.lean`. See `LEAN_UPGRADE_PLAN.md`.
 
 8. **Intrinsic axiom reduction (P4):** Some of the 61 intrinsic axioms are provable

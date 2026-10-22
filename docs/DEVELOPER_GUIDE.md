@@ -197,7 +197,8 @@ tracked Cargo workspace and npm project lock. The inventory is shared with
 Dependabot and the Cargo security audit; fixture projects retain their pins.
 The npm steps use `corepack npm` in each project so its `packageManager` selects
 the writer, update only lockfiles, and disable lifecycle scripts and implicit
-audit/funding requests.
+audit/funding requests. uv and npm apply the release-age rule (below) on each of
+these steps, and the last step audits every lock for advisories.
 
 Python dependency resolution is uv-owned and future-forward. The project floor
 is CPython `>=3.12` with no artificial upper cap; run floor checks with
@@ -236,6 +237,99 @@ The package authorities are `tools/browser_asset_graph/package.json`,
 lockfiles committed with the manifest change. Workers types v5 exposes only
 current runtime types; its type check does not qualify deployment against an
 older `compatibility_date` or replace a live Worker check.
+
+### Release-age rule
+
+Every dependency, toolchain and Action moves to its newest release that has
+been public for at least 7 days. A release that fixes a published advisory
+(GHSA, PYSEC, RUSTSEC or CVE) moves at once, through a named, dated exemption.
+Each resolver applies the rule itself:
+
+- uv: `[tool.uv] exclude-newer = "7 days"` in `pyproject.toml`. uv applies the
+  window to each file on every `uv lock`, `uv add` and `uv sync`, and records
+  the span (`exclude-newer-span = "P7D"`) in `uv.lock`, so `uv lock --check`
+  holds as time passes.
+- npm: `min-release-age=7` in each npm project's `.npmrc`; npm 11.20 and 12.2.1
+  read it. It governs `npm install` and `npm update`; `npm ci` installs the
+  lock as written.
+- Dependabot: `cooldown: default-days: 7` for every ecosystem. Security updates
+  skip the cooldown, but Dependabot runs uv and npm with the settings above,
+  so it cannot lock a fix younger than 7 days.
+- Pins: `tools/pin_freshness.py --check` covers the toolchain pins in `config/`
+  and `rust-toolchain.toml`, the reference CPython pins, every Action pinned
+  under `.github`, and each npm project's `packageManager`. It queries OSV for
+  every candidate release of the pins OSV knows (uv, quint, cargo-deny,
+  cargo-audit, wasm-tools, lune, sccache, the Actions and npm) and never
+  targets a release that carries an advisory, and it reads the `security` flag
+  of Node's release index. A pin younger than 7 days fails as EARLY unless it
+  is the oldest clean release above an aged release that carries an advisory
+  (or that a security release supersedes), or has an exemption. Python, Rust,
+  LLVM, Lean, Binaryen, the WASI SDK and elan publish no advisory feed the tool
+  reads: their pins follow the age rule alone.
+
+The rule does not yet reach the packages that `deploy/modal` images install at
+build time (`pip_install` and `pip install` with ranges) or the pre-commit hook
+revisions; HF-62 tracks both.
+
+#### Exemptions
+
+An exemption admits exactly one release, cites an advisory ID or the open
+ledger row that owns it, names its reason and ages out when that release is 7
+days old. A cited advisory must hold: `--check` and `--audit` ask OSV (one
+batch query over the releases concerned) whether it, or an alias, affects the
+newest aged release below the exempt one and every release between, but not
+the exempt release. That is the rule a young pin meets without a record. A
+release taken for any other reason, even one that also fixes an advisory,
+cites the row that owns it.
+
+- uv: an `[tool.uv.exclude-newer-package]` entry set to the upload time just
+  after the release's newest file, commented
+  `# <version> (<cites>): <reason>; ages out <date>`, and a `<name>==<version>`
+  entry in `constraint-dependencies`, which refuses every sibling release.
+- npm: a `min-release-age-exclude[]=<package>` line after a comment
+  `; exempt <package>@<version> until <time>, range <range> (<cites>): <reason>`,
+  with `package.json` pinning exactly `<version>`. npm exempts a package by
+  name, so the exact pin is what holds it to one release; `<range>` is the spec
+  to restore.
+- Pins: a `[[pin]]` entry (name, version, until, cites, reason) in
+  `config/release_age_exemptions.toml`.
+
+`tools/pin_freshness.py --prune-expired` deletes every exemption that has aged
+out, restores npm ranges, relocks and fails if any locked version moved.
+`molt update` runs it first. `--check` fails on an aged-out uv or npm
+exemption, whose `==` pin freezes its package until it is pruned. An aged-out
+pin record does nothing, so it only warns. `--check` and `--audit` both fail
+on a malformed exemption or a refuted citation.
+
+**Advisory procedure.** When an advisory's fix is younger than 7 days, no
+resolver here will take it, Dependabot's security update included. Add a
+dated exemption for the oldest release that fixes it (citing the advisory ID),
+move the dependency, and relock. To clear a transitive advisory that an
+upstream range blocks, an npm `overrides` entry (or a uv constraint) may step
+outside that range when the row that owns it records the API review; HF-454's
+basic-ftp override is the example. When no release fixes the advisory, add an
+`ACCEPTED_ADVISORIES` entry in `tools/pin_freshness.py` under an open ledger
+row instead.
+
+#### Lock advisory audit
+
+`tools/pin_freshness.py --audit` queries OSV for every version in `uv.lock` and
+the npm locks. It is the one Python and npm advisory authority. An advisory
+that an `ACCEPTED_ADVISORIES` entry (advisory, lock, package, version) names
+under an open ledger row is a warning; any other fails, as does an entry whose
+row is not open or whose advisory has left the lock. `molt update` runs the
+audit as its last step, so an accepted advisory never stops the steps before
+it. The `security.lock-audit` proof command runs it on every change with
+`--allow-expired`: an exemption's age-out is a dated chore for the scheduled
+`--check` and the refresh, not a failure of an unrelated pull request.
+
+Prior art: Dependabot `cooldown` (version updates wait; security updates do
+not); uv `exclude-newer`, with a relative span and per-package
+`exclude-newer-package`; uv's experimental `uv audit` (OSV-backed, with
+`--ignore` and `--ignore-until-fixed`); npm `min-release-age` and
+`min-release-age-exclude` (and the absolute `before`); pnpm `minimumReleaseAge`
+and `minimumReleaseAgeExclude`. Molt uses each resolver's own control, so the
+window applies to every file inside the resolver, not in a wrapper around it.
 
 ## Differential Suite Controls
 - **Memory profiling**: native RSS profiling is opt-in with `MOLT_DIFF_MEASURE_RSS=1` or a positive `MOLT_DIFF_MAX_RSS_KB` threshold; explicit profiling-off conflicts with an active threshold. The mandatory memory guard remains active. See [Operations](OPERATIONS.md) for metric scope and proof-custody limits.
@@ -740,9 +834,7 @@ uv run --python 3.12 python3 tools/runtime_safety.py fuzz --target string_ops --
 ```bash
 cargo audit
 cargo deny check
-uv run pip-audit
-corepack npm audit --prefix deploy/cloudflare
-corepack npm audit --prefix examples/edgebox/packages/edgebox-cloudflare
+uv run python3 tools/pin_freshness.py --audit
 ```
 
 ### Faster Rust test runs

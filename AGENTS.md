@@ -115,8 +115,7 @@ prefer live code, tests, measurements and explicit user direction over stale pro
   `docs/agent/ORCHESTRATION.md`.
 - Preserve user and parallel-agent work. Never reset, clean, overwrite, revert or broadly stage
   unrelated changes. Integrate with pathspecs and review every diff before commit or landing.
-- Generated files are projections. Change their declarative source or generator and regenerate them
-  in the same arc.
+- Generated files are projections; change the source or generator and regenerate in the same arc.
 - Reuse project commands, repairing stale, ambiguous or wasteful helpers. The frontend is CPython 3.12+, including 3.15;
   reuse uv selection and record its version separately from the CLI/project target (`docs/getting-started.md`).
 - Keep operational history, incidents, long procedures and tutorials out of this always-loaded file;
@@ -171,6 +170,7 @@ prefer live code, tests, measurements and explicit user direction over stale pro
 - Never add Claude or other AI attribution to a commit or pull request: no `Co-Authored-By: Claude`
   trailer and no "Generated with Claude Code" footer. `tools/check_commit_attribution.py` enforces
   this in the `commit-msg` hook and in CI (the `repository_policy` proof-plan family).
+- Dependencies, toolchains, Actions: newest release >=7 days old; advisory fixes by dated exemption.
 - Never use destructive Git operations or broad filesystem cleanup without explicit authorization
   and verified targets.
 - Before retiring old WIP, make at least two passes through its source, history and current owners,

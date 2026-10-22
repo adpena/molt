@@ -617,6 +617,14 @@ def test_cli_update_check_json() -> None:
         for entry in npm_steps
     )
     assert any("not an attestation" in warning for warning in payload["warnings"])
+    # Aged-out exemptions go first; the lock advisory audit runs last, so it
+    # never stops a step before it.
+    lock_steps = [entry for entry in steps if entry["category"] == "lock"]
+    assert lock_steps[0]["name"] == "release-age-prune"
+    assert lock_steps[0]["cmd"][1:] == ["tools/pin_freshness.py", "--prune-expired"]
+    assert steps[-1]["name"] == "lock-advisory-audit"
+    assert steps[-1]["category"] == "audit"
+    assert steps[-1]["cmd"][1:] == ["tools/pin_freshness.py", "--audit"]
 
 
 def test_required_llvm_backend_major_matches_manifest() -> None:

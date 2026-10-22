@@ -12,7 +12,7 @@
     "check": "tsc --noEmit --target ES2022 --module ESNext --moduleResolution Bundler --lib ES2022 --types @cloudflare/workers-types src/wasm.d.ts src/index.ts src/box.ts src/db-bridge.ts"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20261022.1",
+    "@cloudflare/workers-types": "5.20261022.1",
     "typescript": "7.0.2"
   }
 }
