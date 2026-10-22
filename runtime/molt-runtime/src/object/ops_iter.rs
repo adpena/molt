@@ -314,31 +314,40 @@ pub(crate) unsafe fn map_new_impl(_py: &PyToken<'_>, func_bits: u64, iterables: 
         for &iterable_bits in iterables.iter() {
             let iter_bits = molt_iter(iterable_bits);
             if obj_from_bits(iter_bits).is_none() {
+                // Each previous acquisition owns a reference, even though the
+                // aggregate iterator has not been allocated yet.
+                for prior in iters.into_iter().rev() {
+                    dec_ref_bits(_py, prior);
+                }
                 return raise_not_iterable(_py, iterable_bits);
             }
             iters.push(iter_bits);
         }
+        // Stage the fallible backing before allocating the aggregate object.
+        // Until payload publication, `iters` owns every acquired reference.
+        let Some(iters_ptr) =
+            crate::object::backing::tracked_vec_box_from_slice(iters.as_slice(), iters.len())
+        else {
+            crate::record_memory_error_without_allocation(_py);
+            for iter_bits in iters.into_iter().rev() {
+                dec_ref_bits(_py, iter_bits);
+            }
+            return MoltObject::none().bits();
+        };
         let total = std::mem::size_of::<MoltHeader>() + MAP_PAYLOAD_SIZE;
         let map_ptr = alloc_object(_py, total, TYPE_ID_MAP);
         if map_ptr.is_null() {
-            for iter_bits in iters {
+            // Dropping u64 backing releases its tracked charge, not its Python
+            // references. Retire those once through their current owner below.
+            drop(crate::object::backing::tracked_vec_box_from_raw(iters_ptr));
+            for iter_bits in iters.into_iter().rev() {
                 dec_ref_bits(_py, iter_bits);
             }
             return MoltObject::none().bits();
         }
-        let Some(iters_ptr) =
-            crate::object::backing::tracked_vec_box_from_slice(iters.as_slice(), iters.len())
-        else {
-            for iter_bits in iters {
-                dec_ref_bits(_py, iter_bits);
-            }
-            dec_ref_bits(_py, MoltObject::from_ptr(map_ptr).bits());
-            return raise_exception::<_>(_py, "MemoryError", "map allocation failed");
-        };
         *(map_ptr as *mut u64) = func_bits;
         *(map_ptr.add(std::mem::size_of::<u64>()) as *mut *mut Vec<u64>) = iters_ptr;
-        // Initialize cached-tuple slot to null (payload bytes are not
-        // zero-initialized when the nursery serves the allocation).
+        // Publish the complete payload with no subsequent fallible allocation.
         map_set_cached_tuple(map_ptr, std::ptr::null_mut());
         inc_ref_bits(_py, func_bits);
         MoltObject::from_ptr(map_ptr).bits()
@@ -403,29 +412,39 @@ pub(crate) unsafe fn zip_new_impl(_py: &PyToken<'_>, iterables: &[u64], strict: 
         for &iterable_bits in iterables.iter() {
             let iter_bits = molt_iter(iterable_bits);
             if obj_from_bits(iter_bits).is_none() {
+                // Each previous acquisition owns a reference, even though the
+                // aggregate iterator has not been allocated yet.
+                for prior in iters.into_iter().rev() {
+                    dec_ref_bits(_py, prior);
+                }
                 return raise_not_iterable(_py, iterable_bits);
             }
             iters.push(iter_bits);
         }
+        // Stage the fallible backing before allocating the aggregate object.
+        // Until payload publication, `iters` owns every acquired reference.
+        let Some(iters_ptr) =
+            crate::object::backing::tracked_vec_box_from_slice(iters.as_slice(), iters.len())
+        else {
+            crate::record_memory_error_without_allocation(_py);
+            for iter_bits in iters.into_iter().rev() {
+                dec_ref_bits(_py, iter_bits);
+            }
+            return MoltObject::none().bits();
+        };
         let total = std::mem::size_of::<MoltHeader>()
             + std::mem::size_of::<*mut Vec<u64>>()
             + std::mem::size_of::<u64>();
         let zip_ptr = alloc_object(_py, total, TYPE_ID_ZIP);
         if zip_ptr.is_null() {
-            for iter_bits in iters {
+            // Dropping u64 backing releases its tracked charge, not its Python
+            // references. Retire those once through their current owner below.
+            drop(crate::object::backing::tracked_vec_box_from_raw(iters_ptr));
+            for iter_bits in iters.into_iter().rev() {
                 dec_ref_bits(_py, iter_bits);
             }
             return MoltObject::none().bits();
         }
-        let Some(iters_ptr) =
-            crate::object::backing::tracked_vec_box_from_slice(iters.as_slice(), iters.len())
-        else {
-            for iter_bits in iters {
-                dec_ref_bits(_py, iter_bits);
-            }
-            dec_ref_bits(_py, MoltObject::from_ptr(zip_ptr).bits());
-            return raise_exception::<_>(_py, "MemoryError", "zip allocation failed");
-        };
         *(zip_ptr as *mut *mut Vec<u64>) = iters_ptr;
         zip_set_strict_bits(zip_ptr, strict_bits);
         inc_ref_bits(_py, strict_bits);
@@ -3090,6 +3109,78 @@ mod tests {
                         assert!(!crate::exception_pending(py));
                     }
                     dec_ref_bits(py, iter);
+                    dec_ref_bits(py, bits);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn map_and_zip_construction_denial_releases_references_and_backing() {
+        use crate::object::backing::{tracked_vec_box_from_raw, tracked_vec_box_with_capacity};
+        use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+
+        struct ResetTracker;
+        impl Drop for ResetTracker {
+            fn drop(&mut self) {
+                set_tracker(Box::new(UnlimitedTracker));
+            }
+        }
+
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        assert!(crate::cpython_abi_hooks::register_cpython_hooks());
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                let tuple =
+                    MoltObject::from_ptr(crate::alloc_tuple(py, &[MoltObject::from_int(1).bits()]))
+                        .bits();
+                let first = molt_iter(tuple);
+                let second = molt_iter(tuple);
+                let refs = [refcount(first), refcount(second)];
+                let none = MoltObject::none().bits();
+                for map in [true, false] {
+                    // These already-created iterators return themselves from
+                    // __iter__, so the denied allocations are constructor work.
+                    // Zero denies the backing; one admits it and denies the
+                    // aggregate object. Neither failure may retain a reference
+                    // or consume the budget needed by a subsequent allocation.
+                    for allowed in [0, 1] {
+                        let reset = ResetTracker;
+                        set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                            max_allocations: Some(allowed),
+                            ..Default::default()
+                        })));
+                        let result = if map {
+                            super::map_new_impl(py, none, &[first, second])
+                        } else {
+                            super::zip_new_impl(py, &[first, second], false)
+                        };
+                        assert_eq!(result, none);
+                        crate::test_support::assert_and_clear_emergency_memory_error(py);
+                        assert_eq!([refcount(first), refcount(second)], refs);
+                        let probe = tracked_vec_box_with_capacity::<u64>(0);
+                        assert_eq!(probe.is_some(), allowed == 1);
+                        if let Some(probe) = probe {
+                            assert!(tracked_vec_box_with_capacity::<u64>(0).is_none());
+                            drop(tracked_vec_box_from_raw(probe));
+                        }
+                        drop(reset);
+                    }
+                    let result = if map {
+                        super::map_new_impl(py, none, &[first, second])
+                    } else {
+                        super::zip_new_impl(py, &[first, second], false)
+                    };
+                    assert!(!crate::exception_pending(py));
+                    assert!(MoltObject::from_bits(result).as_ptr().is_some());
+                    assert_eq!(
+                        [refcount(first), refcount(second)],
+                        [refs[0] + 1, refs[1] + 1]
+                    );
+                    dec_ref_bits(py, result);
+                    assert_eq!([refcount(first), refcount(second)], refs);
+                }
+                for bits in [first, second, tuple] {
                     dec_ref_bits(py, bits);
                 }
             }
