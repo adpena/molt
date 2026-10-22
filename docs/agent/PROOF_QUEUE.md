@@ -1437,9 +1437,11 @@ reads its command, and the read proves the pid still names the sampled birth;
 otherwise the row keeps its sampled identity with an explicitly unknown argv.
 Host-protection decisions (`ProtectedProcessGroups`) decide only the process
 groups a caller asks about, so a guard deciding about its own tree reads argv
-for that tree and its ancestry, not for the host. An exited, unreaped
-(`SZOMB`) row is left out, so a killed child is never reported as a live
-member of its tree. XNU answers argv and task info only to a caller with the
+for that tree and its ancestry, not for the host. An exited, unreaped row is
+left out on both hosts, so a killed child is never reported as a live member
+of its tree: on macOS a `SZOMB` row; on Linux a stat row whose state is `Z`,
+`X` or `x` and whose `num_threads` is at most one (a leader that called
+`pthread_exit` reads `Z` while its other threads run). XNU answers argv and task info only to a caller with the
 process's effective uid, or root; such a withheld row (a system daemon, another
 user's process, a setuid child) keeps its group and name and binds no ancestry,
 birth or resident set, since global RSS sums only Molt-owned process groups.
@@ -1609,7 +1611,8 @@ queue-owned guard is still live; it means the memory guard has not yet published
 child-process custody. Only terminal stale signals such as
 `running-proof-child-missing` and `running-proof-guard-timeout-expired`, a
 dead/reused guard, an expired dispatch handoff, or the fallback running-age
-ceiling may reclaim a live row. The timeout signal is emitted when a non-final
+ceiling (6 hours) may reclaim a live row. A row whose recorded guard pid is
+not a valid pid proves no exit, so only that ceiling reclaims it. The timeout signal is emitted when a non-final
 `running`/`child_running` summary remains past its own typed `limits.timeout_s`
 contract plus the bounded finalization grace. Its evidence records row age,
 timeout and overdue durations, guard PID, marker state/age, and exact

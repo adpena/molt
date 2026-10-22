@@ -4,7 +4,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 import contextlib
 import ctypes
-import errno
 import json
 import os
 import platform
@@ -307,49 +306,20 @@ def observe_cargo_interruption_inventory(
 
 
 def _observed_pid_is_definitely_closed(pid: int) -> bool:
-    """Non-signaling ordinary OS authority; missing sampler rows are unknown."""
-    if type(pid) is not int or pid <= 0:
-        return False
-    if os.name == "posix":
-        if pid > 0x7FFFFFFF:
-            return False
-        try:
-            os.kill(pid, 0)  # Probe existence only; no process is signaled.
-        except ProcessLookupError as exc:
-            return exc.errno == errno.ESRCH
-        except OSError:
-            return False  # EPERM and other ambiguous failures stay unknown.
-        return False
-    if os.name == "nt":
-        if pid > 0xFFFFFFFF:
-            return False
-        from molt.windows_process_snapshot import _windows_snapshot_api
+    """Only a proven exit closes a pid the sampler omitted (HF-379).
 
-        api = _windows_snapshot_api()  # Shared pointer-width-correct query ABI.
-        snapshot = api.create_snapshot(0x00000002, 0)  # TH32CS_SNAPPROCESS
-        if snapshot in (None, 0, api.invalid_handle_value):
-            return False
-        absent = False
-        try:
-            entry = api.ProcessEntry32W()
-            entry.dwSize = api.ctypes.sizeof(api.ProcessEntry32W)
-            saw_self = False
-            api.ctypes.set_last_error(0)
-            ok = api.process_first(snapshot, api.ctypes.byref(entry))
-            while ok:
-                saw_self |= int(entry.th32ProcessID) == os.getpid()
-                if int(entry.th32ProcessID) == pid:
-                    return False  # Includes access-degraded live process rows.
-                api.ctypes.set_last_error(0)
-                ok = api.process_next(snapshot, api.ctypes.byref(entry))
-            absent = (
-                saw_self and api.ctypes.get_last_error() == 18
-            )  # ERROR_NO_MORE_FILES only.
-        finally:
-            if not api.close_handle(snapshot):
-                absent = False
-        return absent
-    return False
+    ``pid_alive`` counts a process exited only when every thread has exited,
+    so an unreaped compiler it calls dead can write nothing more. An invalid
+    pid or an unknown native observation stays open.
+    """
+    from molt.process_model import pid_alive, valid_pid
+
+    if not valid_pid(pid):
+        return False
+    try:
+        return not pid_alive(pid)
+    except OSError:
+        return False
 
 
 def _observed_compilers_closed(

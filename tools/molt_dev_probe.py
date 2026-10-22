@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import sys
 import time
 from pathlib import Path
 
@@ -29,8 +28,7 @@ def probe_pid(pid: int) -> dict:
     """Query a positive PID without signaling; unknown never proves absence."""
     alive: bool | None = None
     detail = ""
-    maximum = 0xFFFFFFFF if sys.platform == "win32" else 0x7FFFFFFF
-    if type(pid) is not int or not 0 < pid <= maximum:
+    if not process_model.valid_pid(pid):
         return {"pid": pid, "alive": None, "detail": "invalid positive process ID"}
     try:
         alive = process_model.pid_alive(pid)

@@ -59,7 +59,7 @@ from pathlib import Path
 from tests.process_guard_common import (
     HUNG_CHILD_SOURCE,
     install_module_os_view,
-    install_module_view,
+    install_thread_module_view,
     hung_child_marker,
     processes_carrying,
     run_guarded_test_process,
@@ -3450,6 +3450,23 @@ def test_land_wait_fails_when_its_runner_exits_without_landing(tmp_path, monkeyp
     assert queue._runner_exited_without(paths, request.id) == runner
 
 
+@pytest.mark.parametrize("recorded", ["0", "-7", str(2**32 + 1)])
+def test_land_wait_reads_a_pid_that_names_no_process_as_unwritten(tmp_path, recorded):
+    from tools import molt_dev_queue as queue
+
+    paths = queue.QueuePaths(tmp_path / "landing-queue")
+    request = queue.enqueue(paths, head="1" * 40, worktree=tmp_path, branch=None)
+    older, newest = paths.runners / "runner-1", paths.runners / "runner-2"
+    for runner in (older, newest):
+        runner.mkdir(parents=True)
+        (runner / "pid").write_text(recorded, encoding="utf-8")
+    # A corrupt pid proves no exit: the newest runner may still be starting.
+    assert queue._runner_exited_without(paths, request.id) is None
+    # An older runner with the same pid file is not the one still starting.
+    (newest / "rc").write_text("1\n", encoding="utf-8")
+    assert queue._runner_exited_without(paths, request.id) == newest
+
+
 def test_land_wait_looks_again_at_a_doubling_interval(tmp_path, monkeypatch):
     from tools import molt_dev_queue as queue
     from tests.process_guard_common import install_module_view
@@ -6112,17 +6129,19 @@ def test_detached_retry_preserves_unresolved_birth_and_requires_worker_dispositi
             owner._close_at_exit()
 
 
-@pytest.mark.parametrize("platform", ["linux", "win32"])
 def test_probe_unknown_never_admits_replacement_or_reports_death(
-    drv, tmp_path, capsys, monkeypatch, platform
+    drv, tmp_path, capsys, monkeypatch
 ):
+    from molt import process_model
     from tools import molt_dev_detached as detached, molt_dev_probe as probe
 
     def unknown(*args):
         raise OSError("independent process query unavailable")
 
-    install_module_view(monkeypatch, "sys", sys, probe, platform=platform)
-    monkeypatch.setattr(probe.process_model, "pid_alive", unknown)
+    # Only this thread's queries fail; the session sentinel keeps real ones.
+    install_thread_module_view(
+        monkeypatch, "process_model", process_model, probe, pid_alive=unknown
+    )
     pid = os.getpid()
     result = probe.probe_pid(pid)
     assert result["alive"] is None and "unavailable" in result["detail"]
