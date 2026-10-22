@@ -402,14 +402,18 @@ def _read_wrapper_build_cache_contract(
         if not all(name in artifacts for name in _JIT_LAUNCH_ARTIFACTS):
             return None
         from molt.cli.product_store import record_stored_file_use
+        from molt.dx import product_store_dir
+        from molt.source_root import compiler_source_root
 
         try:
             # A JIT start reads every file its image names: the runner, the
-            # runtime image and the runtime's callable-symbol table. A hit
-            # renews each one's store entry under the ledger lock, so eviction
-            # cannot remove it during the run; an evicted entry is a miss.
+            # runtime image and the runtime's callable-symbol table, all in the
+            # product store (the JIT tier admits no installed compiler). A hit
+            # renews each one's entry under the ledger lock, so eviction cannot
+            # remove it during the run; an evicted entry is a miss.
+            store_dir = product_store_dir(compiler_source_root(), os.environ)
             stored = all(
-                record_stored_file_use(artifacts[name])
+                record_stored_file_use(artifacts[name], store_dir)
                 for name in _JIT_LAUNCH_ARTIFACTS
             )
         except (OSError, ValueError):

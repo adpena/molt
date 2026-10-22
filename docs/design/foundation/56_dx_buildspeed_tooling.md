@@ -889,10 +889,15 @@ tests that place their target in a temporary directory.
   or absent, and both leave with their entry. The JIT tier's runtime image
   (37 MiB) is not added to the runtime's entry: it is an entry of its own
   kind, `jit-runtime-image`, keyed by the archive digest and the link command.
-  A cached JIT launch renews the image and the runner, not the runtime, and an
-  image written inside a runtime entry that later aged out recreated a variant
-  with no receipt, which the next publication of that runtime collided with
-  (HF-390 review v2, M1).
+  An image written inside a runtime entry that a cached JIT launch never
+  renewed could age out with it, and the image's lock then recreated a
+  variant with no receipt, which the next publication of that runtime
+  collided with (HF-390 review v2, M1). A cached JIT launch now renews the
+  entry of every file a JIT start reads: the runner, the image and the
+  runtime's callable-symbol table. A host tool's probe evidence is the one
+  other late write: a cached check beside its receipt, rewritten under the
+  entry's build lock when it does not match (a variant imported from
+  another host carries none until its first use).
 - A receipt names the product, never the checkout that built it: the
   backend's store receipt keeps only the source identity (`hash`, `rustc`,
   `meta_digest`), the observed environment and the bytes. Each checkout keeps
@@ -934,9 +939,13 @@ tests that place their target in a temporary directory.
   or a process that exited), a record names its pid only while that pid runs,
   with a note that the pid may be reused; before, an exited holder's record
   was named as the live holder (HF-390 review v2, m2). A bounded wait that
-  gives up writes one line (`molt.file_locks.lock_wait_timeout_message`);
-  `tools/compile_progress.py` retries only on that line, not on the waiting
-  notice, which names `MOLT_BUILD_LOCK_TIMEOUT` too (m3). The record is process-lifetime state with no barrier (section
+  gives up reports one message (`molt.file_locks.lock_wait_timeout_message`),
+  which callers embed in their own failure lines; `tools/compile_progress.py`
+  retries on that message wherever it appears (`is_lock_wait_timeout` reads
+  its head, "Timed out after Ns waiting for"), not on the waiting notice,
+  which names `MOLT_BUILD_LOCK_TIMEOUT` too (m3; review v3 found the first
+  version required the message at a line's end, which the native runtime's
+  stage line never prints). The record is process-lifetime state with no barrier (section
   2.7): one write, and one `ftruncate` on the descriptor it keeps for the
   hold. Measured on the integrator Mac (2026-10-22, median of 7 x 400): an
   uncontended acquire and release took 72 us against 47 us without the
@@ -950,7 +959,9 @@ tests that place their target in a temporary directory.
 - Retention follows last use, as Go's does: every read renews its entry in
   the store's ledger before it reads (build admission, the backend receipt
   check of `internal-backend-build`, the cross-host export, a cached JIT
-  launch's runner and image), and each publication evicts entries no build
+  launch's runner, image and callable-symbol table, each mapped to its entry
+  after resolving both the file and the store directory, so a file in no
+  entry is a miss), and each publication evicts entries no build
   used for 5 days. The check and the renewal hold the ledger lock, where
   eviction runs. A read of an absent entry is a miss that creates and renews
   nothing; the build that follows creates and renews the entry in one step
@@ -1045,8 +1056,10 @@ Sizes are the integrator Mac's on 2026-10-22.
 | WASM pair store, `<MOLT_EXT_ROOT>/wasm` (else the target's `molt-runtime-wasm`) | one target's selected runtime pair and the generations it replaced | ledger; publication and binding | a replaced generation 24 h unused, at each publication; the selected one never | no budget; 519 MB and 624 MB in two roots | A replaced generation has no reuse; only a build that bound it before the switch reads it, and a build ends well inside 24 h. |
 | `MOLT_CACHE` (module, link and stdlib caches; the result cache of its lane lives here too) | entries keyed by program and compiler inputs | entry mtime, refreshed on use | 30 days unused, then oldest first past 30 GiB; daily after a build, `molt cache prune` on demand | 30 GiB; 72 GB and 6.3 GB in two roots | Entries scale with the programs built, so a byte budget bounds them; 30 days is Cargo's limit for recreatable data. |
 
-Host-tool generations inside a store variant are written once and retire
-with their entry; they need no policy of their own.
+Host-tool generations inside a store variant use the backend generation store
+(`backend_generation.py`): its selection keeps the one generation a variant
+publishes, and its 24-hour eviction runs only at a publication, which a
+written-once variant makes once. They leave with their entry.
 
 Cargo's PATH no longer carries the caller's PATH (HF-385): the plan derives it
 from its typed selections (the managed LLVM `bin`, each captured executable's

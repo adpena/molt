@@ -1042,7 +1042,9 @@ def test_a_record_naming_an_exited_process_names_no_holder(
 
 
 def test_only_a_timeout_reads_as_a_lock_wait_timeout(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """The waiting notice names the knob too (review v2, m3).
 
@@ -1070,6 +1072,25 @@ def test_only_a_timeout_reads_as_a_lock_wait_timeout(
     assert file_locks.LOCK_WAIT_ENV in notice
     assert not file_locks.is_lock_wait_timeout(notice + "\nerror: link failed")
     assert file_locks.is_lock_wait_timeout(f"notice\nmolt: {raised.value}\n")
+    # The native runtime build prints the timeout inside its stage line, with
+    # its evidence path after it (review v3, A-M1): compile_progress retries it.
+    from molt.cli import runtime_native_build
+    from tools import compile_progress
+
+    monkeypatch.setenv("MOLT_BUILD_STATE_DIR", str(tmp_path / "build-state"))
+    runtime_native_build._record_native_runtime_failure(
+        None,
+        project_root=tmp_path,
+        stage="build-lock",
+        summary=f"Native runtime build lock acquisition failed: {raised.value}",
+        emit_diagnostic=True,
+    )
+    printed = capsys.readouterr().err
+    assert "Evidence: " in printed and printed.rstrip().endswith(".json"), printed
+    assert compile_progress._is_retryable_failure(2, False, printed) == (
+        "build_lock_timeout"
+    )
+    assert compile_progress._is_retryable_failure(2, False, notice) is None
 
 
 def test_a_record_its_process_no_longer_backs_names_no_holder(tmp_path: Path) -> None:

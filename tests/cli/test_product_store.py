@@ -123,7 +123,9 @@ def test_retention_evicts_only_entries_no_build_used_for_the_window(
     assert set(_ledger(store)["last_used"]) == {used, recent}
 
 
-def test_an_entry_a_builder_holds_is_renewed_before_its_lock(tmp_path: Path) -> None:
+def test_an_entry_a_builder_holds_is_renewed_while_it_holds_its_lock(
+    tmp_path: Path,
+) -> None:
     store = products.ProductStore(tmp_path / "store")
     identity = _digest("a")
     with store.single_flight(identity):
@@ -326,34 +328,75 @@ def test_a_stored_file_maps_to_its_entry_and_no_other_file_does(
 ) -> None:
     """A cached launch renews the entry that holds each file it runs.
 
-    Only ``<.molt-products>/<layout>/<known kind>/<digest>`` names an entry; a
-    file anywhere else (an installed toolchain's) is used as it is.
+    Only ``<store>/<layout>/<known kind>/<digest>/...`` names an entry, matched
+    after resolving both, so a store reached through a link maps the same
+    entry (review v3, A-m2); a file in no entry is a miss, never a silent
+    success that renews nothing.
     """
-    root = tmp_path / PRODUCT_STORE_DIRNAME / products.LAYOUT_VERSION
+    store_dir = tmp_path / PRODUCT_STORE_DIRNAME
+    root = store_dir / products.LAYOUT_VERSION
     store = products.ProductStore(root / "native-runtime")
     stored = store.entry(_digest("a")) / _digest("b") / ".gen" / "runtime.a"
-    assert products.ProductStore.entry_of(stored) == (store, _digest("a"))
+    located = products.ProductStore.entry_of(stored, store_dir)
+    assert located is not None
+    assert located[0].root == store.root.resolve() and located[1] == _digest("a")
     for outside in (
         tmp_path / "runtime.a",
         tmp_path / "other" / products.LAYOUT_VERSION / "native-runtime" / _digest("a"),
-        tmp_path / PRODUCT_STORE_DIRNAME / "v0" / "native-runtime" / _digest("a"),
+        store_dir / "v0" / "native-runtime" / _digest("a"),
         root / "unknown-kind" / _digest("a") / "runtime.a",
         root / "native-runtime" / "not-a-digest" / "runtime.a",
     ):
-        assert products.ProductStore.entry_of(outside) is None, outside
+        assert products.ProductStore.entry_of(outside, store_dir) is None, outside
 
     stored.parent.mkdir(parents=True)
     stored.write_bytes(b"runtime")
-    assert products.record_stored_file_use(stored)
+    linked = tmp_path / "linked-store"
+    linked.symlink_to(store_dir, target_is_directory=True)
+    through_link = linked / stored.relative_to(store_dir)
+    assert not (store.root / ".product-store.json").exists()
+    assert products.record_stored_file_use(through_link, store_dir)
     assert _digest("a") in _ledger(store)["last_used"]
-    installed = tmp_path / "installed" / "runtime.a"
-    installed.parent.mkdir()
-    installed.write_bytes(b"runtime")
-    assert products.record_stored_file_use(installed)
-    assert not products.record_stored_file_use(installed.with_name("missing.a"))
+    assert products.record_stored_file_use(stored.resolve(), linked)
+    elsewhere = tmp_path / "installed" / "runtime.a"
+    elsewhere.parent.mkdir()
+    elsewhere.write_bytes(b"runtime")
+    assert not products.record_stored_file_use(elsewhere, store_dir)
     assert store.evict(_digest("a"))
-    assert not products.record_stored_file_use(stored)
+    assert not products.record_stored_file_use(stored, store_dir)
     assert not store.entry(_digest("a")).exists()
+
+
+def test_an_evict_that_wins_the_build_lock_never_removes_a_builders_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`molt cache evict` takes an identity's build lock before its builder;
+    the builder then creates and renews the entry under that lock, so the
+    entry it builds into exists (review v3, A-m1)."""
+    from contextlib import contextmanager
+
+    monkeypatch.delenv("MOLT_BUILD_LOCK_TIMEOUT", raising=False)
+    store = products.ProductStore(tmp_path / "store")
+    identity = _digest("a")
+    store.entry(identity).mkdir(parents=True)
+    assert store.record_use(identity)
+    held = products.ProductStore._held
+    evicted: list[bool] = []
+
+    @contextmanager
+    def evict_first(self, name):
+        # The evict itself takes the build lock through _held: mark first.
+        if not evicted:
+            evicted.append(False)
+            evicted[0] = self.evict(name)
+        with held(self, name):
+            yield
+
+    monkeypatch.setattr(products.ProductStore, "_held", evict_first)
+    with store.single_flight(identity):
+        assert store.entry(identity).is_dir()
+        assert _ledger(store)["last_used"][identity] >= time.time() - 60
+    assert evicted == [True]
 
 
 def test_evict_waits_for_the_builder_and_removes_the_entry_whole(

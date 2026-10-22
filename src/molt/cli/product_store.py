@@ -23,7 +23,9 @@ places it beside the checkout targets of one artifact root.
   receipt that exists but does not verify is corruption, and it fails loud.
   The only later writes are content-addressed derivations of a runtime
   archive (its callable-symbol projection and custody extraction), published
-  exclusively beside its generation; none recreates a removed generation.
+  exclusively beside its generation, and a host tool's probe evidence, a
+  cached check rewritten under the entry's build lock; none recreates a
+  removed generation.
 - One builder per identity: ``single_flight`` holds the entry's lock across
   the build, so concurrent checkouts with the same inputs build once.
 - Retention follows last use, as Go's trim does: each admission renews its
@@ -51,7 +53,7 @@ from molt.cli.generation_store import (
     generation_store,
     used_within,
 )
-from molt.dx import PRODUCT_STORE_DIRNAME, product_store_dir
+from molt.dx import product_store_dir
 from molt.file_deletion import delete_path
 
 LAYOUT_VERSION = "v1"
@@ -135,22 +137,25 @@ class ProductStore:
         return cls(store / LAYOUT_VERSION / kind)
 
     @classmethod
-    def entry_of(cls, path: Path) -> tuple[ProductStore, str] | None:
-        """The store and identity of the entry that holds ``path``.
+    def entry_of(cls, path: Path, store_dir: Path) -> tuple[ProductStore, str] | None:
+        """The store and identity of the entry under ``store_dir`` (a
+        ``product_store_dir``) that holds ``path``; None when no entry does.
 
-        None outside every store: an installed toolchain's files are not the
-        store's to retain.
+        Both are resolved, so a store reached through a symbolic link maps
+        the same entry as its target (review v3, A-m2).
         """
-        parts = path.parts
-        for index in range(len(parts) - 3):
-            if (
-                parts[index] == PRODUCT_STORE_DIRNAME
-                and parts[index + 1] == LAYOUT_VERSION
-                and parts[index + 2] in PRODUCT_KINDS
-                and _DIGEST.fullmatch(parts[index + 3])
-            ):
-                return cls(Path(*parts[: index + 3])), parts[index + 3]
-        return None
+        try:
+            parts = path.resolve().relative_to(store_dir.resolve()).parts
+        except (OSError, ValueError):
+            return None
+        if (
+            len(parts) < 3
+            or parts[0] != LAYOUT_VERSION
+            or parts[1] not in PRODUCT_KINDS
+            or not _DIGEST.fullmatch(parts[2])
+        ):
+            return None
+        return cls(store_dir.resolve() / parts[0] / parts[1]), parts[2]
 
     @property
     def kind(self) -> str:
@@ -239,17 +244,19 @@ class ProductStore:
         from molt.cli.build_locks import BuildLockAcquisitionError
 
         entry = self.entry(identity)
-        try:
-            # Created and renewed in one step under the ledger lock, where
-            # eviction runs: an entry a builder holds is never idle, and no
-            # eviction removes it between its creation and its renewal.
-            self.root.mkdir(parents=True, exist_ok=True)
-            with generation_store(self.root, _LEDGER) as ledger:
-                entry.mkdir(exist_ok=True)
-                ledger.use(identity)
-        except (OSError, RuntimeError) as exc:
-            raise BuildLockAcquisitionError(str(exc)) from exc
         with self._held(identity):
+            try:
+                # Created and renewed under the build lock, in one step under
+                # the ledger lock, where eviction runs: an entry a builder
+                # holds is never idle, and `molt cache evict`, which takes the
+                # build lock first, cannot remove it between this step and the
+                # build (review v3, A-m1).
+                self.root.mkdir(parents=True, exist_ok=True)
+                with generation_store(self.root, _LEDGER) as ledger:
+                    entry.mkdir(exist_ok=True)
+                    ledger.use(identity)
+            except (OSError, RuntimeError) as exc:
+                raise BuildLockAcquisitionError(str(exc)) from exc
             yield
 
     @contextmanager
@@ -286,17 +293,17 @@ class ProductStore:
         return True
 
 
-def record_stored_file_use(path: Path) -> bool:
-    """Renew the store entry that holds ``path``; False when ``path`` is gone.
+def record_stored_file_use(path: Path, store_dir: Path) -> bool:
+    """Renew the entry under ``store_dir`` that holds ``path``; False is a miss.
 
     A cached launch runs files a build selected without admitting them again:
     renewing their entries under the ledger lock keeps eviction from removing
-    them during the run, and an entry eviction already removed is a miss. A
-    file outside every store needs no renewal.
+    them during the run. A file that eviction removed, or that lies in no
+    entry of this store, is a miss, so the caller builds: renewing nothing
+    would let the next publication evict what the launch runs.
     """
-    located = ProductStore.entry_of(path)
-    if located is not None:
-        store, identity = located
-        if not store.record_use(identity):
-            return False
-    return path.is_file()
+    located = ProductStore.entry_of(path, store_dir)
+    if located is None:
+        return False
+    store, identity = located
+    return store.record_use(identity) and path.is_file()
