@@ -318,9 +318,7 @@ def test_next_operation_observes_clean_tree_edit(tmp_path, monkeypatch):
     assert compiler_metadata._compiler_clean_source_state(tmp_path) is None
 
 
-def test_daemon_identity_uses_admitted_compiler_and_request_environment(
-    tmp_path, monkeypatch
-):
+def test_daemon_identity_uses_the_admitted_compiler(tmp_path, monkeypatch):
     monkeypatch.setattr(
         backend_execution, "_cache_tooling_fingerprint", lambda: "tooling"
     )
