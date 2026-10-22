@@ -12,6 +12,8 @@
 //! molt-jit --probe
 //! ```
 //!
+//! (`runtime/native_launch_abi.toml` declares the flags.)
+//!
 //! The image's first line is `#!<runner> --image`, so `execve` of the image
 //! starts the runner directly, with no shell, as `<runner> --image <image>
 //! [args...]`; the program's argv is `<image> [args...]`. `molt run` and the
@@ -54,7 +56,7 @@ const EXIT_USAGE: i32 = 2;
 // after the program compiled, immediately before the program starts, so its
 // absence means the runner failed first: the JIT tier's form of a failed
 // build (src/molt/cli/run_tier.py).
-use launch_abi::{IMAGE_FLAG, START_RECEIPT, START_RECEIPT_FLAG};
+use launch_abi::{IMAGE_FLAG, PROBE_FLAG, START_RECEIPT, START_RECEIPT_FLAG};
 
 /// The compiled program's `molt_isolate_bootstrap`, published before the
 /// runtime starts. The runtime image imports the symbol from this executable.
@@ -237,7 +239,7 @@ fn parse_invocation(arguments: Vec<OsString>) -> Option<Invocation> {
     let mut start_receipt = None;
     loop {
         match args.next().as_ref().and_then(|arg| arg.to_str()) {
-            Some("--probe") if start_receipt.is_none() && args.len() == 0 => {
+            Some(PROBE_FLAG) if start_receipt.is_none() && args.len() == 0 => {
                 return Some(Invocation::Probe);
             }
             Some(START_RECEIPT_FLAG) if start_receipt.is_none() => {
@@ -280,7 +282,7 @@ fn runner_main(invocation: Invocation) -> i32 {
 
 fn usage() -> i32 {
     eprintln!(
-        "usage: molt-jit [{START_RECEIPT_FLAG} <path>] {IMAGE_FLAG} <image> [args...]\n       molt-jit --probe"
+        "usage: molt-jit [{START_RECEIPT_FLAG} <path>] {IMAGE_FLAG} <image> [args...]\n       molt-jit {PROBE_FLAG}"
     );
     EXIT_USAGE
 }
@@ -469,15 +471,21 @@ fn compile(
 mod tests {
     #[test]
     fn the_process_entry_refuses_a_command_line_it_does_not_know() {
+        let flag = |name: &str| std::ffi::CString::new(name).expect("a flag has no NUL");
+        let (image, receipt, probe) = (
+            flag(super::IMAGE_FLAG),
+            flag(super::START_RECEIPT_FLAG),
+            flag(super::PROBE_FLAG),
+        );
         for argv in [
             vec![
                 c"molt-jit".as_ptr(),
                 c"--launch".as_ptr(),
                 c"a.jit".as_ptr(),
             ],
-            vec![c"molt-jit".as_ptr(), c"--image".as_ptr()],
-            vec![c"molt-jit".as_ptr(), c"--start-receipt".as_ptr()],
-            vec![c"molt-jit".as_ptr(), c"--probe".as_ptr(), c"extra".as_ptr()],
+            vec![c"molt-jit".as_ptr(), image.as_ptr()],
+            vec![c"molt-jit".as_ptr(), receipt.as_ptr()],
+            vec![c"molt-jit".as_ptr(), probe.as_ptr(), c"extra".as_ptr()],
         ] {
             let count = libc::c_int::try_from(argv.len()).unwrap();
             // SAFETY: valid NUL-terminated strings.

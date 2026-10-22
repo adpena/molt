@@ -4,6 +4,8 @@
 /// The flag that names the image; everything after the image is the
 /// program's. A JIT image's first line is `#!<runner> ` followed by it.
 pub(crate) const IMAGE_FLAG: &str = "--image";
+/// Alone, this flag runs the executable-memory admission probe.
+pub(crate) const PROBE_FLAG: &str = "--probe";
 /// The flag whose value is the start receipt's path.
 pub(crate) const START_RECEIPT_FLAG: &str = "--start-receipt";
 /// The runner's own flag for its one allocator restart (macOS).

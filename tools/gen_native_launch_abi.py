@@ -61,6 +61,7 @@ _PHASES = ("start", "finish")
 
 _RUNNER_KEYS = (
     "image_flag",
+    "probe_flag",
     "start_receipt_flag",
     "allocator_restart_flag",
     "start_receipt",
@@ -74,6 +75,7 @@ class RunnerProtocol:
     """How the JIT runner is started, and the format of its image."""
 
     image_flag: str
+    probe_flag: str
     start_receipt_flag: str
     allocator_restart_flag: str
     start_receipt: str
@@ -162,6 +164,8 @@ same command line and image format from it.
 
 # The JIT runner's command line: [<receipt flag> <path>] <image flag> <image> [args...].
 JIT_RUNNER_IMAGE_FLAG = {runner.image_flag!r}
+# Alone, this flag runs the runner's executable-memory admission probe.
+JIT_RUNNER_PROBE_FLAG = {runner.probe_flag!r}
 JIT_RUNNER_START_RECEIPT_FLAG = {runner.start_receipt_flag!r}
 # What the runner writes to its start receipt right before the program starts.
 JIT_START_RECEIPT = {runner.start_receipt!r}
@@ -198,6 +202,8 @@ def render_rust(entries: tuple[LaunchEntry, ...], runner: RunnerProtocol) -> str
 /// The flag that names the image; everything after the image is the
 /// program's. A JIT image's first line is `#!<runner> ` followed by it.
 pub(crate) const IMAGE_FLAG: &str = {_rust_str(runner.image_flag)};
+/// Alone, this flag runs the executable-memory admission probe.
+pub(crate) const PROBE_FLAG: &str = {_rust_str(runner.probe_flag)};
 /// The flag whose value is the start receipt's path.
 pub(crate) const START_RECEIPT_FLAG: &str = {_rust_str(runner.start_receipt_flag)};
 /// The runner's own flag for its one allocator restart (macOS).

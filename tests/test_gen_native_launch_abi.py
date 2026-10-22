@@ -117,6 +117,7 @@ def test_the_runner_command_and_image_format_come_from_the_declaration() -> None
     rust = gen.OUT_RUST.read_text(encoding="utf-8")
     for key, constant in (
         ("image_flag", "IMAGE_FLAG"),
+        ("probe_flag", "PROBE_FLAG"),
         ("start_receipt_flag", "START_RECEIPT_FLAG"),
         ("allocator_restart_flag", "ALLOCATOR_RESTART_FLAG"),
         ("image_marker", "IMAGE_MARKER"),

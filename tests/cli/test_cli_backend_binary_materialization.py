@@ -1519,6 +1519,19 @@ def test_a_build_that_reads_outside_its_source_closure_is_never_published(
     if read == "declared":
         assert result, result.message
         assert generation.read_bytes() == b"built"
+        if product is HostToolProduct.JIT:
+            # The admission probe is the runner's declared probe command
+            # (runtime/native_launch_abi.toml [runner]), nothing spelled here.
+            import tomllib
+
+            declared_runner = tomllib.loads(
+                (
+                    Path(__file__).resolve().parents[2]
+                    / "runtime"
+                    / "native_launch_abi.toml"
+                ).read_text(encoding="utf-8")
+            )["runner"]
+            assert probes and probes[-1][1:] == (declared_runner["probe_flag"],)
         return
     assert not result
     assert result.phase == "backend_build_input_coverage"

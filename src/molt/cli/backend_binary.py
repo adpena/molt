@@ -46,6 +46,7 @@ from molt.cli.compiler_identity import (
     backend_build_admission,
     installed_compiler_admission,
 )
+from molt.cli.native_launch_abi_generated import JIT_RUNNER_PROBE_FLAG
 from molt.cli.runtime_fingerprints import (
     _artifact_semantic_identity,
     _admitted_runtime_fingerprint,
@@ -926,7 +927,7 @@ def _ensure_backend_binary(
                 # Compile and run one function in executable memory: the
                 # host's W^X policy must admit the runner before any program.
                 probe_ir = None
-                probe_cmd = [str(binary), "--probe"]
+                probe_cmd = [str(binary), JIT_RUNNER_PROBE_FLAG]
             elif probe_target == "wasm":
                 probe_cmd.extend(["--target", "wasm"])
             elif probe_target == "luau":
