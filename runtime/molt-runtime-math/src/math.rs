@@ -2068,7 +2068,11 @@ pub extern "C" fn molt_math_remainder(x_bits: u64, y_bits: u64) -> u64 {
 fn statistics_mean_value(_py: &PyToken, data_bits: u64) -> Option<f64> {
     let values = collect_real_vec(_py, data_bits)?;
     if values.is_empty() {
-        raise_exception::<()>(_py, "ValueError", "mean requires at least one data point");
+        raise_exception::<()>(
+            _py,
+            "StatisticsError",
+            "mean requires at least one data point",
+        );
         return None;
     }
     Some(sum_f64_simd(&values) / values.len() as f64)
@@ -2094,7 +2098,7 @@ fn statistics_variance_value(
         } else {
             format!("{opname} requires at least two data points")
         };
-        raise_exception::<()>(_py, "ValueError", &msg);
+        raise_exception::<()>(_py, "StatisticsError", &msg);
         return None;
     }
     let mean = if obj_from_bits(center_bits).is_none() {
@@ -2139,7 +2143,7 @@ fn statistics_collect_sorted_real(_py: &PyToken, data_bits: u64, opname: &str) -
     let mut values = collect_real_vec(_py, data_bits)?;
     if values.is_empty() {
         let msg = format!("{opname} requires at least one data point");
-        raise_exception::<()>(_py, "ValueError", &msg);
+        raise_exception::<()>(_py, "StatisticsError", &msg);
         return None;
     }
     values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -2150,7 +2154,7 @@ fn statistics_mode_value(_py: &PyToken, data_bits: u64) -> Option<u64> {
     let owned_values = collect_values_vec(_py, data_bits)?;
     let values = OwnedRuntimeValue::as_bits_slice(&owned_values);
     if values.is_empty() {
-        raise_exception::<()>(_py, "ValueError", "no mode for empty data");
+        raise_exception::<()>(_py, "StatisticsError", "no mode for empty data");
         return None;
     }
     let counts_bits = molt_dict_new(0);
@@ -2292,12 +2296,12 @@ fn statistics_quantiles_value(
         return None;
     }
     if n < 1 {
-        raise_exception::<()>(_py, "ValueError", "n must be at least 1");
+        raise_exception::<()>(_py, "StatisticsError", "n must be at least 1");
         return None;
     }
     let mut values = collect_real_vec(_py, data_bits)?;
     if values.len() < 2 {
-        raise_exception::<()>(_py, "ValueError", "must have at least two data points");
+        raise_exception::<()>(_py, "StatisticsError", "must have at least two data points");
         return None;
     }
     values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -2349,7 +2353,7 @@ fn statistics_harmonic_mean_value(_py: &PyToken, data_bits: u64) -> Option<f64> 
     if values.is_empty() {
         raise_exception::<()>(
             _py,
-            "ValueError",
+            "StatisticsError",
             "harmonic_mean requires at least one data point",
         );
         return None;
@@ -2357,7 +2361,7 @@ fn statistics_harmonic_mean_value(_py: &PyToken, data_bits: u64) -> Option<f64> 
     if values.iter().any(|v| *v < 0.0) {
         raise_exception::<()>(
             _py,
-            "ValueError",
+            "StatisticsError",
             "harmonic mean does not support negative values",
         );
         return None;
@@ -2374,7 +2378,7 @@ fn statistics_geometric_mean_value(_py: &PyToken, data_bits: u64) -> Option<f64>
     if values.is_empty() {
         raise_exception::<()>(
             _py,
-            "ValueError",
+            "StatisticsError",
             "geometric_mean requires at least one data point",
         );
         return None;
@@ -2382,7 +2386,7 @@ fn statistics_geometric_mean_value(_py: &PyToken, data_bits: u64) -> Option<f64>
     if values.iter().any(|v| *v < 0.0) {
         raise_exception::<()>(
             _py,
-            "ValueError",
+            "StatisticsError",
             "geometric mean does not support negative values",
         );
         return None;
@@ -2400,7 +2404,7 @@ fn statistics_covariance_value(_py: &PyToken, x_bits: u64, y_bits: u64) -> Optio
     if x_values.len() != y_values.len() {
         raise_exception::<()>(
             _py,
-            "ValueError",
+            "StatisticsError",
             "covariance requires that both inputs have the same length",
         );
         return None;
@@ -2408,7 +2412,7 @@ fn statistics_covariance_value(_py: &PyToken, x_bits: u64, y_bits: u64) -> Optio
     if x_values.len() < 2 {
         raise_exception::<()>(
             _py,
-            "ValueError",
+            "StatisticsError",
             "covariance requires at least two data points",
         );
         return None;
@@ -2428,7 +2432,7 @@ fn statistics_correlation_value(_py: &PyToken, x_bits: u64, y_bits: u64) -> Opti
     if x_values.len() != y_values.len() {
         raise_exception::<()>(
             _py,
-            "ValueError",
+            "StatisticsError",
             "correlation requires that both inputs have the same length",
         );
         return None;
@@ -2436,7 +2440,7 @@ fn statistics_correlation_value(_py: &PyToken, x_bits: u64, y_bits: u64) -> Opti
     if x_values.len() < 2 {
         raise_exception::<()>(
             _py,
-            "ValueError",
+            "StatisticsError",
             "correlation requires at least two data points",
         );
         return None;
@@ -2455,7 +2459,11 @@ fn statistics_correlation_value(_py: &PyToken, x_bits: u64, y_bits: u64) -> Opti
     }
     let denom = math_sqrt(x_var * y_var);
     if denom == 0.0 {
-        raise_exception::<()>(_py, "ValueError", "at least one of the inputs is constant");
+        raise_exception::<()>(
+            _py,
+            "StatisticsError",
+            "at least one of the inputs is constant",
+        );
         return None;
     }
     Some(num / denom)
@@ -2472,7 +2480,7 @@ fn statistics_linear_regression_value(
     if x_values.len() != y_values.len() {
         raise_exception::<()>(
             _py,
-            "ValueError",
+            "StatisticsError",
             "x and y must have the same number of data points",
         );
         return None;
@@ -2480,7 +2488,7 @@ fn statistics_linear_regression_value(
     if x_values.len() < 2 {
         raise_exception::<()>(
             _py,
-            "ValueError",
+            "StatisticsError",
             "linear_regression requires at least two data points",
         );
         return None;
@@ -2493,7 +2501,7 @@ fn statistics_linear_regression_value(
             sxy += *xv * *yv;
         }
         if sxx == 0.0 {
-            raise_exception::<()>(_py, "ValueError", "x is constant");
+            raise_exception::<()>(_py, "StatisticsError", "x is constant");
             return None;
         }
         return Some((sxy / sxx, 0.0));
@@ -2508,7 +2516,7 @@ fn statistics_linear_regression_value(
         sxy += dx * (*yv - y_mean);
     }
     if sxx == 0.0 {
-        raise_exception::<()>(_py, "ValueError", "x is constant");
+        raise_exception::<()>(_py, "StatisticsError", "x is constant");
         return None;
     }
     let slope = sxy / sxx;

@@ -14,8 +14,8 @@ libfuzzer-sys = "0.4"
 molt-backend = { path = "..", features = ["wasm-backend"] }
 molt-codegen-abi = { path = "../../molt-codegen-abi" }
 arbitrary = { version = "1", features = ["derive"] }
-wasm-encoder = "0.261.0"
-wasmparser = "0.261.0"
+wasm-encoder = "0.262.0"
+wasmparser = "0.262.0"
 
 # Prevent this from interfering with workspace, if any
 [workspace]

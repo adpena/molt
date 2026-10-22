@@ -1,6 +1,4 @@
 #[cfg(not(target_arch = "wasm32"))]
-use parking_lot::lock_api::RawMutex as _;
-#[cfg(not(target_arch = "wasm32"))]
 use parking_lot::{Mutex, MutexGuard};
 #[cfg(not(target_arch = "wasm32"))]
 use std::cell::RefCell;
@@ -343,18 +341,17 @@ impl GilGuard {
             }
         }
 
-        // TLS is unavailable, so custody cannot live in a thread-local guard.
-        // Lock the raw mutex and publish exact ThreadId/depth metadata in one
-        // synchronized process state; whichever destruction token drops last owns
-        // the raw unlock, independent of token drop order.
-        unsafe {
-            molt_gil().raw().lock();
-        }
+        // TLS is unavailable, so the process state retains the actual mutex
+        // acquisition. Keep local RAII custody until publication succeeds: an
+        // assertion or poisoned state lock must release on this acquiring thread.
+        let acquisition = molt_gil().lock();
         let mut state = TLS_DESTRUCTION_GIL_STATE.lock().unwrap();
         assert!(state.owner.is_none());
         assert_eq!(state.depth, 0);
+        assert!(state.acquisition.is_none());
         state.owner = Some(owner);
         state.depth = 1;
+        state.acquisition = Some(acquisition);
         Self {
             lane: GilGuardLane::TlsDestruction,
             _not_send_sync: std::marker::PhantomData,
@@ -368,23 +365,25 @@ impl Drop for GilGuard {
         match self.lane {
             GilGuardLane::Transferred => {}
             GilGuardLane::TlsDestruction => {
-                let should_unlock = {
+                let acquisition = {
                     let mut state = TLS_DESTRUCTION_GIL_STATE.lock().unwrap();
                     assert_eq!(state.owner, Some(std::thread::current().id()));
                     assert!(state.depth > 0);
                     state.depth -= 1;
                     if state.depth == 0 {
+                        let acquisition = state
+                            .acquisition
+                            .take()
+                            .expect("final TLS-destruction depth had no mutex custody");
                         state.owner = None;
-                        true
+                        Some(acquisition)
                     } else {
-                        false
+                        None
                     }
                 };
-                if should_unlock {
-                    unsafe {
-                        molt_gil().force_unlock();
-                    }
-                }
+                // Consume the acquired guard on its owning thread, after
+                // releasing the state lock so the next owner can publish.
+                drop(acquisition);
             }
             GilGuardLane::Main => {
                 let should_release = GIL_DEPTH
@@ -556,13 +555,24 @@ pub(crate) fn touch_gil_tls_lifetime() {
 struct TlsDestructionGilState {
     owner: Option<std::thread::ThreadId>,
     depth: usize,
+    acquisition: Option<MutexGuard<'static, ()>>,
 }
+
+// SAFETY: This private state lives only in the static mutex below, which is
+// never destroyed, including during runtime shutdown. Its acquisition is
+// published by the acquiring thread and taken only after checking that same
+// ThreadId on the final depth transition. Other threads may inspect the owner
+// and depth but never access or drop the acquisition. Poisoning refuses access;
+// it does not transfer custody. The exposed GilGuard tokens remain !Send.
+#[cfg(not(target_arch = "wasm32"))]
+unsafe impl Send for TlsDestructionGilState {}
 
 #[cfg(not(target_arch = "wasm32"))]
 static TLS_DESTRUCTION_GIL_STATE: std::sync::Mutex<TlsDestructionGilState> =
     std::sync::Mutex::new(TlsDestructionGilState {
         owner: None,
         depth: 0,
+        acquisition: None,
     });
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -719,6 +729,17 @@ mod tests {
         assert!(!super::tls_destruction_gil_held());
         acquired_rx.recv_timeout(Duration::from_secs(2)).unwrap();
         worker.join().unwrap();
+
+        // Unwinding nested destruction tokens must retire their actual mutex
+        // acquisition exactly once and permit a fresh owner afterwards.
+        let unwind = std::panic::catch_unwind(|| {
+            let _outer = GilGuard::tls_destruction_new();
+            let _inner = GilGuard::new();
+            panic!("TLS destruction unwind witness");
+        });
+        assert!(unwind.is_err());
+        assert!(!super::tls_destruction_gil_held());
+        assert!(super::molt_gil().try_lock().is_some());
     }
 
     #[test]

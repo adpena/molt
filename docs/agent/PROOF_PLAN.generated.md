@@ -17,8 +17,8 @@ Landing checks execute the generator and authority inputs captured from the exac
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 13 |
 | Hashed executable authority inputs | 1 | 382 |
-| Local path rules | 35 | 83 |
-| Unique local commands | 73 | 75 |
+| Local path rules | 35 | 84 |
+| Unique local commands | 73 | 76 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
 ## CI families
@@ -129,6 +129,8 @@ Executable identities bind resolved path, version text, and the repository-relat
 | `target-pythons` | `group` | `target-pythons.3.12`, `target-pythons.3.13`, `target-pythons.3.14` | `selection only` | — | — | — |
 | `generators` | `group` | `target-pythons`, `rustfmt`, `browser-acorn` | `selection only` | — | — | — |
 | `browser-acorn` | `executable` | — | `^8\.19\.0$` | `tools/browser_asset_graph` | `8.19.0` | 1 |
+| `corepack` | `executable` | — | `^[0-9]+\.[0-9]+\.[0-9]+$` | `.` | `Corepack npm packageManager launcher` | 1 |
+| `edgebox-typescript` | `executable` | — | `^7\.0\.2$` | `examples/edgebox/packages/edgebox-cloudflare` | `7.0.2` | 1 |
 | `rustc` | `executable` | — | `^rustc 1\.99\.1\b` | `.` | `1.99.1` | 3 |
 | `lune` | `executable` | — | `^lune 0\.11\.1$` | `.` | `0.11.1` | 2 |
 | `build-python` | `executable` | `compiler:build-python` | `^Python 3\.[0-9]+\.[0-9]+.*$` | `.` | `effective Cargo build Python` | 1 |
@@ -410,6 +412,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `phase-exit-manifest` | 7 | 1 |
 | `public-contract` | 19 | 1 |
 | `installed-compiler-distribution` | 16 | 0 |
+| `edgebox-typescript` | 2 | 1 |
 | `browser-simd` | 11 | 0 |
 | `rust-clippy-changed` | 8 | 1 |
 | `backend-native` | 9 | 1 |
