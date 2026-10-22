@@ -12,5 +12,8 @@
   "main": "worker.js",
   "dependencies": {
     "@cloudflare/puppeteer": "^1.4.0"
+  },
+  "overrides": {
+    "basic-ftp": "6.2.3"
   }
 }

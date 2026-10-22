@@ -1,4 +1,5 @@
-"""Dependabot watches exactly the dependency manifests the repository tracks."""
+"""Dependabot watches exactly the dependency manifests the repository tracks,
+under the release-age rule `tools/pin_freshness.py` owns."""
 
 from __future__ import annotations
 
@@ -7,6 +8,7 @@ from pathlib import Path, PurePosixPath
 import yaml
 
 from tools.dependency_manifests import cargo_workspace_dirs, tracked_manifest_dirs
+from tools.pin_freshness import MIN_RELEASE_AGE
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / ".github" / "dependabot.yml"
@@ -45,3 +47,13 @@ def test_workflows_and_every_composite_action_are_watched() -> None:
     assert actions, "expected composite actions"
     assert all(path.startswith("/.github/actions/") for path in actions)
     assert _configured()["github-actions"] == {"/", "/.github/actions/*"}
+
+
+def test_every_ecosystem_waits_out_the_release_age_rule() -> None:
+    """Each version update waits until its release is 7 days old; Dependabot
+    security updates skip cooldown, which is the rule's advisory exception."""
+    config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    for update in config["updates"]:
+        assert update["cooldown"] == {"default-days": MIN_RELEASE_AGE.days}, update[
+            "package-ecosystem"
+        ]

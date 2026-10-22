@@ -8,7 +8,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 
 - `authority-routed` files: 66
 - `operational-tooling` files: 61
-- `scattered-assumption` files: 345
+- `scattered-assumption` files: 346
 
 ## Files
 
@@ -398,6 +398,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `config/llvm_toolchain_releases.toml` | 1 | scattered-assumption | `3.20` |
 | `config/public_contract_v1.toml` | 1 | scattered-assumption | `3.12` |
 | `config/python_numeric_errors.toml` | 4 | scattered-assumption | `3.12` |
+| `config/release_age_exemptions.toml` | 4 | scattered-assumption | `3.13` |
 | `config/scientific_stack_versions.toml` | 2 | scattered-assumption | `3.12` |
 | `config/source_extension_package_sets.toml` | 2 | scattered-assumption | `3.12` |
 | `config/verified_subset.toml` | 3 | scattered-assumption | `3.12` |

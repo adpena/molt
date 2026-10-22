@@ -45,7 +45,7 @@ class _MaintenanceStep(NamedTuple):
     name: str
     cmd: list[str]
     cwd: Path
-    category: Literal["toolchain", "lock", "manifest"]
+    category: Literal["toolchain", "lock", "manifest", "audit"]
 
 
 class _ValidationStep(NamedTuple):
@@ -189,6 +189,15 @@ def _planned_update_steps(
                 )
 
     if include_locks:
+        # First, so no refresh runs under an exemption that has aged out.
+        steps.append(
+            _MaintenanceStep(
+                "release-age-prune",
+                [sys.executable, "tools/pin_freshness.py", "--prune-expired"],
+                root,
+                "lock",
+            )
+        )
         for directory in cargo_directories:
             label = "root" if str(directory) == "." else str(directory)
             steps.append(
@@ -231,6 +240,8 @@ def _planned_update_steps(
                 "A successful update is not an attestation that every dependency "
                 "is at its newest release."
             )
+        # uv and npm apply the 7-day release-age rule themselves (pyproject's
+        # [tool.uv] exclude-newer, each project's .npmrc min-release-age).
 
     if include_manifests:
         if shutil.which("cargo-upgrade") is None:
@@ -258,6 +269,19 @@ def _planned_update_steps(
                     "manifest",
                 )
             )
+
+    if include_locks:
+        # Last, so a lock advisory never stops the steps before it: a WARNING
+        # for each advisory an accepted entry and its open ledger row name,
+        # failure for any other and for a malformed or aged-out exemption.
+        steps.append(
+            _MaintenanceStep(
+                "lock-advisory-audit",
+                [sys.executable, "tools/pin_freshness.py", "--audit"],
+                root,
+                "audit",
+            )
+        )
 
     return steps, warnings
 
@@ -381,6 +405,8 @@ def update_repo(
                     f"molt update failed at {step.name}: {shlex.join(step.cmd)}",
                     file=sys.stderr,
                 )
+                if step.category == "audit" and proc.stdout:
+                    print(proc.stdout, file=sys.stderr, end="")
                 if proc.stderr:
                     print(proc.stderr, file=sys.stderr, end="")
             return proc.returncode or 1
@@ -404,6 +430,8 @@ def update_repo(
             print(
                 f"- [{result['category']}] {result['name']} (rc={result['returncode']})"
             )
+            if result["category"] == "audit" and result.get("stdout"):
+                print(result["stdout"], end="")
     return 0
 
 
