@@ -225,14 +225,12 @@ def test_an_incomplete_identity_never_selects_or_renames_a_stored_compiler(
 def test_a_removed_stored_compiler_is_corruption_until_its_entry_is_removed(
     tmp_path, monkeypatch, capsys
 ):
-    """Removing part of a published entry fails loud; removing it whole rebuilds.
+    """Removing part of a published entry fails loud; evicting it rebuilds.
 
-    The message names the entry. Once the entry is gone, this checkout's
-    admitted Cargo output republishes it without Cargo, and the probe runs once
-    for the new generation.
+    The message names the entry and the tool that evicts it. Once the tool
+    has removed it, the next build runs Cargo, publishes and probes once for
+    the new generation.
     """
-    import shutil
-
     _isolated_molt_root(tmp_path, monkeypatch)
     cargo, probes = _fake_backend_toolchain(monkeypatch)
     argv = ["internal-backend-build", "--target", "wasm", "--json"]
@@ -245,13 +243,19 @@ def test_a_removed_stored_compiler_is_corruption_until_its_entry_is_removed(
     assert payload["data"]["failure"]["phase"] == "product_store"
     [message] = payload["errors"]
     assert "is corrupt" in message
-    entry = next(parent for parent in generation.parents if parent.name in message)
+    # <entry>/<variant>/.molt-backend-generations/<tool>/<sha256>/<tool>
+    entry = generation.parents[4]
+    assert str(entry) in message
     assert (len(cargo), len(probes)) == (1, 1)
+    assert f"`molt cache evict host-tool {entry.name}`" in message
 
-    shutil.rmtree(entry)
+    assert _dispatch(["cache", "evict", "host-tool", entry.name, "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["data"]["evicted"]
+    assert not entry.exists()
     assert _dispatch(argv) == 0
-    assert (len(cargo), len(probes)) == (1, 2)
-    assert generation.exists()
+    assert (len(cargo), len(probes)) == (2, 2)
+    # The rebuild published and probed a whole new entry.
+    assert Path(probes[1][0]).is_file() and Path(probes[1][0]).is_relative_to(entry)
 
 
 def test_refresh_write_failure_is_nonfatal_but_invalid_identity_is_not(
@@ -387,10 +391,10 @@ def test_generation_copy_rejects_bytes_changed_after_admission(
     monkeypatch.setattr(backend_generation, "_staged_copy_file", changed_copy)
     assert _dispatch(argv) == 2
     payload = json.loads(capsys.readouterr().out)
-    assert payload["data"]["failure"]["phase"] == "backend_selection_publication"
+    assert payload["data"]["failure"]["phase"] == "backend_artifact"
     assert not selection_receipt.exists()
     assert not generation.exists()
-    assert len(cargo) == 1
+    assert len(cargo) == 2
 
 
 def test_build_lock_real_timeout_does_not_mask_inner_failure(tmp_path, monkeypatch):

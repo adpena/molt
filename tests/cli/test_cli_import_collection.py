@@ -25846,10 +25846,15 @@ def _stored_backend_generation(coordinate: Path, path: Path) -> bool:
     )
 
 
-def test_ensure_backend_binary_selects_admitted_cargo_output_without_rebuild(
+def test_ensure_backend_binary_runs_cargo_beside_an_attested_cargo_output(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """An attested earlier Cargo output is never published without a build.
+
+    Its build left no reads to prove that the identity covers them, so a store
+    miss runs Cargo (design 56, section 2.8).
+    """
     stub_compiler_admission(monkeypatch)
     target_dir = tmp_path / "target"
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target_dir))
@@ -25923,21 +25928,10 @@ def test_ensure_backend_binary_selects_admitted_cargo_output_without_rebuild(
         backend_features=("wasm-backend",),
         rust_cpu=RustCpuPolicy.BASELINE,
     )
-    assert result, result.message
-
-    assert build_cmds == []
-    assert result.binary is not None
-    assert _stored_backend_generation(backend_bin, result.binary)
-    assert result.binary.read_bytes() == cargo_output.read_bytes()
-    assert not backend_bin.exists()
-    assert (
-        RUNTIME_FINGERPRINTS._read_runtime_fingerprint(
-            cli_backend_binary._backend_fingerprint_path(
-                tmp_path, backend_bin, "dev-fast"
-            )
-        )["hash"]
-        == fingerprint["hash"]
-    )
+    assert not result and result.phase == "backend_cargo_build"
+    assert len(build_cmds) == 1
+    store = cli_backend_binary.host_tool_store(tmp_path)
+    assert not store.root.exists() or not list(store.root.glob("*/*/*"))
 
 
 def test_ensure_backend_binary_fails_when_feature_rebuild_emits_no_binary(

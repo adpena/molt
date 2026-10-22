@@ -282,7 +282,7 @@ def test_cargo_mutation_rejected_before_any_alias_probe_or_receipt(
     for name in (
         "publish_backend_generation",
         "_run_subprocess_captured_to_tempfiles",
-        "_write_runtime_fingerprint",
+        "atomic_write_bytes",
         "_atomic_write_json",
     ):
         monkeypatch.setattr(backend_binary, name, forbidden)
