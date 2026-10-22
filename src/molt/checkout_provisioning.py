@@ -23,10 +23,14 @@ same contract for every input it declares (docs/design/landing_queue.md,
   ``--prefer-offline`` reads the npm cache first, and ``--no-audit
   --no-fund`` skip two registry round trips (0.19 s instead of 0.37 s to
   0.55 s from a warm cache, measured 2026-10-20).
-- ``edgebox-typescript``: the Edgebox Worker's locked development tree.
-  Corepack selects npm from its ``packageManager``; the same guarded,
-  script-free ``npm ci`` and stamp contract as Acorn owns this tree. It is
-  selected explicitly by its proof, rather than installed for every lane.
+- ``edgebox-typescript``: the Edgebox Worker's locked development tree,
+  under the same guarded, script-free ``npm ci`` and stamp contract as Acorn.
+  It is selected explicitly by its proof, rather than installed for every lane.
+
+Both npm trees run the npm that ``config/tool_releases.toml`` pins, on the
+pinned Node (``molt.tool_releases.pinned_command``), provisioned on first use;
+nothing finds npm, Node or Corepack on PATH. Each project's ``packageManager``
+must name that pin, or provisioning refuses it.
 - ``git-hooks``: Molt's managed Git hooks in the Git common directory.
   ``tools/install_git_hooks.py`` owns their content and its own
   current/stale comparison (``--check``); this module only runs it. The
@@ -51,11 +55,10 @@ again.
 
 The stamp is keyed on the lock, not on the tool binary. npm installs
 integrity-pinned bytes and uv installs the exact locked wheels, so the tree
-is a function of the lock. This host has two npm installations (the shell's
-and the pinned Node release that toolchain admission puts first on PATH); a
-key on the tool path would re-run ``npm ci`` at every switch and empty
-``node_modules`` under a concurrent reader. The tool and its version stay in
-the stamp as provenance.
+is a function of the lock. A key on the tool's path would re-run ``npm ci``
+whenever the toolchain root moves and empty ``node_modules`` under a
+concurrent reader. The tool's command and version stay in the stamp as
+provenance.
 
 Each provisioner runs under the memory guard, which fills unset variables
 with dx defaults: a managed ``UV_PROJECT_ENVIRONMENT`` and a ``UV_CACHE_DIR``
@@ -169,6 +172,11 @@ class LockedTree:
     # A variable in which a running tool names its own binary (`uv run` sets
     # UV); it outranks PATH.
     tool_variable: str | None = None
+    # The tool is a pinned release in config/tool_releases.toml: provisioned
+    # and run through molt.tool_releases (npm on its pinned Node), never PATH.
+    pinned: bool = False
+    # The package.json whose packageManager must name the pinned version.
+    package_manifest: str | None = None
     # Execution implementation custody is independent of provisioned content.
     guard_source_root: Path | None = None
 
@@ -182,10 +190,27 @@ class LockedTree:
     def stamp(self) -> Path:
         return self.tree / STAMP_NAME
 
-    def executable(self) -> str | None:
+    def command(self) -> tuple[tuple[str, ...], ProcessEnvironment] | None:
+        """The argv prefix that runs the tool and the environment it runs in;
+        None when PATH has no such tool."""
+        if self.pinned:
+            from molt.tool_releases import ToolReleaseError, pinned_command
+
+            try:
+                pinned = pinned_command(
+                    self.tool,
+                    self.checkout,
+                    environ=self.environment,
+                    cwd=self.checkout,
+                    provision=True,
+                )
+            except ToolReleaseError as exc:
+                raise ProvisioningError(f"{self.name}: {exc}") from exc
+            return pinned.argv, pinned.environment(self.environment)
         if self.tool_variable and self.environment.get(self.tool_variable):
-            return self.environment[self.tool_variable]
-        return shutil.which(self.tool, path=self.environment.get("PATH"))
+            return (self.environment[self.tool_variable],), self.environment
+        found = shutil.which(self.tool, path=self.environment.get("PATH"))
+        return None if found is None else ((found,), self.environment)
 
 
 @dataclass(frozen=True, slots=True)
@@ -278,6 +303,8 @@ def checkout_input(
                 tree=checkout / ACORN_ROOT / "node_modules",
                 sentinel="acorn/package.json",
                 tool="npm",
+                pinned=True,
+                package_manifest=f"{ACORN_ROOT}/package.json",
                 arguments=(
                     "ci",
                     "--ignore-scripts",
@@ -300,9 +327,10 @@ def checkout_input(
                 ),
                 tree=checkout / EDGEBOX_ROOT / "node_modules",
                 sentinel="typescript/bin/tsc",
-                tool="corepack",
+                tool="npm",
+                pinned=True,
+                package_manifest=f"{EDGEBOX_ROOT}/package.json",
                 arguments=(
-                    "npm",
                     "ci",
                     "--ignore-scripts",
                     "--prefer-offline",
@@ -409,8 +437,8 @@ def _action_digest(spec: LockedTree, locks: Mapping[str, str]) -> str:
     digest = hashlib.sha256(SCHEMA.encode("ascii"))
     for part in (spec.name, spec.tool, *spec.arguments):
         digest.update(b"\0" + part.encode("utf-8"))
-    # Default-cwd actions keep their existing digest/stamp. Corepack needs
-    # the package directory to select its packageManager, not npm's --prefix.
+    # Default-cwd actions keep their existing digest/stamp; a project that
+    # runs in its own directory binds that directory.
     if spec.command_cwd != ".":
         digest.update(b"\2" + spec.command_cwd.encode("utf-8"))
     for relative, file_digest in locks.items():
@@ -487,13 +515,42 @@ class _ProvisioningLock:
             _release_file_lock(self._handle)
 
 
-def _tool_version(spec: LockedTree, executable: str) -> str:
-    argv = [executable, "--version"]
+def _require_package_manager(spec: LockedTree) -> None:
+    """Refuse a project whose packageManager names another npm than the pin."""
+    if spec.package_manifest is None:
+        return
+    from molt.tool_releases import ToolReleaseError, tool_release
+
+    try:
+        expected = f"{spec.tool}@{tool_release(spec.tool, spec.checkout).version}"
+    except ToolReleaseError as exc:
+        raise ProvisioningError(f"{spec.name}: {exc}") from exc
+    manifest = spec.checkout / spec.package_manifest
+    try:
+        declared = json.loads(manifest.read_text(encoding="utf-8")).get(
+            "packageManager"
+        )
+    except (OSError, ValueError, AttributeError) as exc:
+        raise ProvisioningError(
+            f"{spec.name}: cannot read packageManager from {manifest}: {exc}"
+        ) from exc
+    if declared != expected:
+        raise ProvisioningError(
+            f"{spec.name}: {spec.package_manifest} declares packageManager "
+            f"{declared!r}, but config/tool_releases.toml pins {expected}; "
+            f"`python3 tools/pin_freshness.py --update {spec.tool}` moves both"
+        )
+
+
+def _tool_version(
+    spec: LockedTree, command: Sequence[str], environment: ProcessEnvironment
+) -> str:
+    argv = [*command, "--version"]
     result = _run(
         spec.name,
         argv,
         cwd=spec.checkout,
-        environment=spec.environment,
+        environment=environment,
         guarded=False,
         guard_source_root=spec.guard_source_root,
     )
@@ -532,7 +589,9 @@ def _dx_choice(variable: str, spec: LockedTree) -> Path | None:
     return Path(value) if value else None
 
 
-def _with_caller_choices(spec: LockedTree, executable: str) -> ProcessEnvironment:
+def _with_caller_choices(
+    spec: LockedTree, command: Sequence[str], environment: ProcessEnvironment
+) -> ProcessEnvironment:
     """Pin each choice the caller left to its tool, as the tool itself makes it.
 
     A choice in ``same_volume_choices`` is a store the tool clones or
@@ -542,14 +601,14 @@ def _with_caller_choices(spec: LockedTree, executable: str) -> ProcessEnvironmen
     """
     pinned: dict[str, str] = {}
     for variable, arguments in spec.caller_choices:
-        if spec.environment.get(variable, "").strip():
+        if environment.get(variable, "").strip():
             continue
-        argv = [executable, *arguments]
+        argv = [*command, *arguments]
         result = _run(
             spec.name,
             argv,
             cwd=spec.checkout,
-            environment=spec.environment,
+            environment=environment,
             guarded=False,
             guard_source_root=spec.guard_source_root,
         )
@@ -559,7 +618,7 @@ def _with_caller_choices(spec: LockedTree, executable: str) -> ProcessEnvironmen
         pinned[variable] = lines[0].strip()
     device = _device_of(spec.tree)
     for variable in spec.same_volume_choices:
-        chosen = pinned.get(variable) or spec.environment.get(variable, "").strip()
+        chosen = pinned.get(variable) or environment.get(variable, "").strip()
         if not chosen or device is None or _device_of(Path(chosen)) == device:
             continue
         alternative = _dx_choice(variable, spec)
@@ -569,7 +628,7 @@ def _with_caller_choices(spec: LockedTree, executable: str) -> ProcessEnvironmen
             and _device_of(alternative) == device
         ):
             pinned[variable] = str(alternative)
-    return spec.environment.updated(pinned) if pinned else spec.environment
+    return environment.updated(pinned) if pinned else environment
 
 
 def _provision_locked(spec: LockedTree) -> bool:
@@ -581,15 +640,17 @@ def _provision_locked(spec: LockedTree) -> bool:
         digest = _action_digest(spec, locks)
         if _locked_state(spec, digest) == "current":
             return False  # Another process provisioned it while we waited.
-        executable = spec.executable()
-        if executable is None:
+        _require_package_manager(spec)
+        launch = spec.command()
+        if launch is None:
             raise ProvisioningError(
                 f"{spec.name}: `{spec.tool}` is not on PATH; it builds "
                 f"{spec.tree} from {', '.join(spec.lock_files)}"
             )
-        environment = _with_caller_choices(spec, executable)
+        command, tool_environment = launch
+        environment = _with_caller_choices(spec, command, tool_environment)
         spec.stamp.unlink(missing_ok=True)
-        argv = [executable, *spec.arguments]
+        argv = [*command, *spec.arguments]
         started = time.monotonic()
         command_cwd = spec.checkout / spec.command_cwd
         result = _run(
@@ -622,8 +683,8 @@ def _provision_locked(spec: LockedTree) -> bool:
                 "locks": locks,
                 "tool": {
                     "name": spec.tool,
-                    "path": executable,
-                    "version": _tool_version(spec, executable),
+                    "command": list(command),
+                    "version": _tool_version(spec, command, tool_environment),
                 },
                 "provisioned_at_utc": datetime.now(UTC).isoformat(timespec="seconds"),
                 "seconds": round(seconds, 3),

@@ -60,7 +60,14 @@ jobs:
           node-version: pinned
 
       - name: Install Quint
-        run: npm install -g "$MOLT_QUINT_NPM_PACKAGE"
+        # The pinned npm (config/tool_releases.toml) on the pinned Node; its own
+        # prefix keeps the global install out of the managed Node's directory.
+        env:
+          PYTHONPATH: ${{ github.workspace }}/src
+        run: |
+          set -euo pipefail
+          python3 -m molt.tool_releases run npm -- install --global --prefix "$RUNNER_TEMP/quint" "$MOLT_QUINT_NPM_PACKAGE"
+          echo "$RUNNER_TEMP/quint/bin" >> "$GITHUB_PATH"
 
       - name: Install Quint Rust evaluator
         run: |

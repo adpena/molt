@@ -133,14 +133,23 @@ TARGET_DERIVED_IDENTITY_PROVIDERS = frozenset({"source-extension"})
 # The provider that owns a policy's managed install, which
 # tools/toolchain_env.py projects into a shell (HF-231): the verified LLVM SDK,
 # the provisioned wasi-sdk, a pinned tool release, or the Binaryen release.
-TOOLCHAIN_PROJECTIONS = frozenset({"llvm-sdk", "wasi-sdk", "tool-release", "binaryen"})
+TOOLCHAIN_PROJECTIONS = frozenset(
+    {"llvm-sdk", "wasi-sdk", "tool-release", "runtime-tool-release", "binaryen"}
+)
+# A runtime tool release (npm) runs through molt.tool_releases on its pinned
+# runtime; it is provisioned and identified, never projected onto PATH.
+RELEASE_PROJECTIONS = frozenset({"tool-release", "runtime-tool-release"})
 
 
 @functools.cache
-def _tool_release_names(root: Path) -> frozenset[str]:
+def _tool_release_kinds(root: Path) -> dict[str, str]:
+    """Each pinned tool release and the projection that names it."""
     from molt.tool_releases import load_tool_releases
 
-    return frozenset(load_tool_releases(root))
+    return {
+        name: "tool-release" if release.runtime is None else "runtime-tool-release"
+        for name, release in load_tool_releases(root).items()
+    }
 
 
 def family_matrix_output(family_name: str) -> str:
@@ -1651,12 +1660,14 @@ class ProofPlan:
                     f"{policy.name}: projection must be one of "
                     f"{sorted(TOOLCHAIN_PROJECTIONS)!r}"
                 )
-            if projection == "tool-release" and policy.data.get(
-                "executable"
-            ) not in _tool_release_names(policy.root):
+            if projection in RELEASE_PROJECTIONS and (
+                _tool_release_kinds(policy.root).get(str(policy.data.get("executable")))
+                != projection
+            ):
                 errors.append(
-                    f"{policy.name}: a tool-release projection needs its executable "
-                    "in config/tool_releases.toml"
+                    f"{policy.name}: a {projection} projection needs its executable "
+                    f"in config/tool_releases.toml as a "
+                    f"{'runtime' if projection == 'runtime-tool-release' else 'native'} tool"
                 )
             identity_kind = policy.identity_kind
             if identity_kind == "executable":
@@ -3576,6 +3587,158 @@ def _find_tool(requested: str, environment: Mapping[str, str], cwd: Path) -> str
     return None if found is None else str(found)
 
 
+_RUNTIME_COMMANDS: dict[tuple[str, ...], Any] = {}
+
+
+def _runtime_command(
+    tool: str,
+    root: Path,
+    environ: Mapping[str, str],
+    cwd: Path | None,
+    *,
+    provision: bool = False,
+) -> Any:
+    """A runtime tool release's pinned command, verified once per installation.
+
+    Discovery re-hashes the package tree and its runtime (about 0.17 s for
+    npm's 1,942 files and Node), and one admission needs the command to
+    provision, project and identify the tool. The key binds the tool's and
+    its runtime's pins and host-asset digests, and the identity of each
+    installation's attestation, which provisioning replaces with the tree:
+    a long-lived runner whose batches move either pin, or re-provision
+    either tree, verifies again instead of serving the old command.
+    """
+    from molt.dx import DxConfigError, canonical_toolchain_root
+    from molt.tool_releases import (
+        TOOL_ATTESTATION_FILENAME,
+        ToolReleaseError,
+        host_asset,
+        load_tool_releases,
+        pinned_command,
+        tool_prefix,
+        tool_release,
+    )
+
+    manifest = load_tool_releases(root)
+    release = manifest.get(tool) or tool_release(tool, root)
+    try:
+        toolchain_root = canonical_toolchain_root(
+            root, environ, require_exists=False, cwd=cwd
+        )
+    except DxConfigError as exc:
+        raise ToolReleaseError(str(exc)) from exc
+    releases = [release]
+    if release.runtime is not None:
+        releases.append(
+            manifest.get(release.runtime) or tool_release(release.runtime, root)
+        )
+
+    def key() -> tuple[object, ...]:
+        parts: list[object] = [str(root), str(toolchain_root)]
+        for selected in releases:
+            attestation = (
+                tool_prefix(toolchain_root, selected) / TOOL_ATTESTATION_FILENAME
+            )
+            try:
+                stat = attestation.stat()
+                installed = (stat.st_ino, stat.st_mtime_ns, stat.st_size)
+            except OSError:
+                installed = None
+            parts.append(
+                (
+                    selected.name,
+                    selected.version,
+                    host_asset(selected).sha256,
+                    installed,
+                )
+            )
+        return tuple(parts)
+
+    command = _RUNTIME_COMMANDS.get(key())
+    if command is None:
+        command = pinned_command(
+            tool, root, environ=environ, cwd=cwd, provision=provision
+        )
+        # Keyed after provisioning, which may have just written the trees.
+        _RUNTIME_COMMANDS[key()] = command
+    return command
+
+
+def _provision_runtime_tools(
+    policies: Iterable[ToolchainPolicy],
+    names: tuple[str, ...],
+    *,
+    root: Path,
+    environment: Mapping[str, str],
+) -> str | None:
+    """Provision each selected runtime tool release (npm) before admission.
+
+    It runs on its pinned runtime through ``molt.tool_releases``, which
+    provisions it on use, so admission provisions it too, as it provisions
+    a checkout input from its lock, instead of refusing until a person does.
+    """
+    from molt.tool_releases import ToolReleaseError
+
+    selected = set(names)
+    errors = []
+    for policy in policies:
+        if policy.name in selected and policy.projection == "runtime-tool-release":
+            try:
+                _runtime_command(
+                    str(policy.data["executable"]),
+                    root,
+                    environment,
+                    root,
+                    provision=True,
+                )
+            except ToolReleaseError as exc:
+                errors.append(f"{policy.name}: {exc}")
+    return "; ".join(errors) or None
+
+
+def _runtime_tool_fingerprint(
+    policy: ToolchainPolicy, *, environment: Mapping[str, str]
+) -> dict[str, Any] | None:
+    """Identify a runtime tool release by the installation consumers run.
+
+    It runs on its pinned runtime through ``molt.tool_releases``, never from
+    PATH, so the identity binds the runtime's executable, the digest of every
+    file of the package, and the version the tool reports when run that way.
+    """
+    from molt.tool_releases import ToolReleaseError
+
+    probe_cwd, probe_directory = _toolchain_probe_cwd(policy)
+    try:
+        command = _runtime_command(
+            str(policy.data["executable"]), policy.root, environment, probe_directory
+        )
+    except ToolReleaseError:
+        return None
+    completed = toolchain_probe.run_toolchain_probe(
+        policy.name,
+        [*command.argv, *policy.data["version_args"]],
+        stage="version query",
+        cwd=probe_directory,
+        environment=environment,
+    )
+    runtime = command.executable
+    # Like every identity, `path` and `launcher_*` name the launched file (the
+    # runtime); `content_path` names what it runs.
+    identity = {
+        "path": str(runtime.executable),
+        "launcher_path": str(runtime.executable),
+        "launcher_sha256": runtime.executable_sha256,
+        "content_path": str(command.tool.executable),
+        "version": completed.stdout.strip(),
+        "version_pattern": str(policy.data["version_pattern"]),
+        "probe_cwd": probe_cwd,
+        "executable_sha256": command.tool.executable_sha256,
+        "tree_sha256": command.tool.tree_sha256,
+    }
+    identity["identity_sha256"] = _toolchain_fingerprint_digest(identity)
+    return identity
+
+
 def _version_fingerprint(
     policy: ToolchainPolicy,
     *,
@@ -3593,6 +3756,8 @@ def _version_fingerprint(
             f"{policy.name}: {policy.identity_kind} toolchain identity "
             "requires target-context capture"
         )
+    if policy.projection == "runtime-tool-release":
+        return _runtime_tool_fingerprint(policy, environment=environment)
     executable = str(policy.data["executable"])
     requested = sys.executable if executable == "{python}" else executable
     probe_cwd, probe_directory = _toolchain_probe_cwd(policy)
@@ -3805,7 +3970,7 @@ def project_toolchains(
         verify_available_llvm_toolchain,
         wasm_toolchain_environment_delta,
     )
-    from molt.tool_releases import discover_pinned_tool
+    from molt.tool_releases import ToolReleaseError, discover_pinned_tool
     from molt.wasm_optimizer_identity import managed_wasm_opt
 
     policies = {policy.name: policy for policy in policies}
@@ -3844,6 +4009,13 @@ def project_toolchains(
                     installation, environ=env, rust_target="wasm32-wasip1"
                 )
             )
+    for name in kinds.get("runtime-tool-release", ()):
+        # It runs through molt.tool_releases on its runtime, never PATH.
+        tool = str(policies[name].data["executable"])
+        try:
+            _runtime_command(tool, root, env, cwd)
+        except ToolReleaseError:
+            missing.append(f"{tool}: python3 -m molt.tool_releases provision {tool}")
     for name in kinds.get("tool-release", ()):
         tool = str(policies[name].data["executable"])
         discovery = discover_pinned_tool(tool, root, environ=env, cwd=cwd)
@@ -3873,10 +4045,14 @@ def project_toolchains(
     return ToolchainProjection(delta=delta, missing=tuple(missing))
 
 
-def _not_provisioned(missing: tuple[str, ...]) -> str:
-    return "not provisioned (this command never downloads); install with:\n  " + (
-        "\n  ".join(missing)
+def _not_provisioned(missing: tuple[str, ...], *, attempted: bool = False) -> str:
+    """The refusal for unprovisioned tools; ``attempted`` when admission tried."""
+    why = (
+        "admission's provisioning failed (see above)"
+        if attempted
+        else "this command never downloads"
     )
+    return f"not provisioned ({why}); install with:\n  " + "\n  ".join(missing)
 
 
 @dataclass(frozen=True, slots=True)
@@ -3910,15 +4086,23 @@ def admit_toolchains(
     A tool the contract admits on PATH still passes when its pinned provider
     is not installed; a refusal names what to install. A selected tool that a
     checkout input supplies (``checkout_input``) is provisioned from its lock
-    first, as ``uv run`` syncs before it runs (`molt.checkout_provisioning`).
+    first, as ``uv run`` syncs before it runs (`molt.checkout_provisioning`),
+    and a selected runtime tool release (npm) is provisioned the same way.
     """
     policies = tuple(policies)
     names = toolchain_closure(policies, names)
+    runtime_error = _provision_runtime_tools(
+        policies, names, root=root, environment=environ
+    )
     projection = project_toolchains(policies, names, environ=environ, root=root)
     environment = MappingProxyType({**environ, **projection.delta})
     provisioning_error = _provision_checkout_inputs(
         policies, names, root=root, environment=environment
     )
+    if runtime_error is not None:
+        provisioning_error = "; ".join(
+            error for error in (runtime_error, provisioning_error) if error
+        )
     try:
         fingerprints = toolchain_fingerprints(
             policies,
@@ -3932,7 +4116,11 @@ def admit_toolchains(
         if provisioning_error is not None:
             details.append(provisioning_error)
         if projection.missing:
-            details.append(_not_provisioned(projection.missing))
+            details.append(
+                _not_provisioned(
+                    projection.missing, attempted=runtime_error is not None
+                )
+            )
         if len(details) == 1:
             raise
         raise ValueError("; ".join(details)) from exc

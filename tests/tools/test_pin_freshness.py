@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from datetime import UTC, datetime, timedelta
 import hashlib
 import io
@@ -1305,11 +1306,34 @@ def test_every_action_and_package_manager_is_a_pin() -> None:
         assert pins[repo].current == version
         assert pins[repo].advisories is not None
     assert "astral-sh/setup-uv" in pins
-    for directory in ("deploy/cloudflare", "tools/browser_asset_graph"):
-        manager = json.loads(
-            (ROOT / directory / "package.json").read_text(encoding="utf-8")
-        )
-        assert manager["packageManager"] == f"npm@{pins[f'npm ({directory})'].current}"
+    # One npm pin, with its advisories; every tracked npm project names it.
+    assert pins["npm"].advisories is not None
+    assert not any(name.startswith("npm (") for name in pins)
+    projects = pin_freshness._npm_projects(ROOT)
+    assert len(projects) >= 3
+    for project in projects:
+        manager = json.loads((project / "package.json").read_text(encoding="utf-8"))
+        assert manager["packageManager"] == f"npm@{pins['npm'].current}", project
+    assert (
+        pin_freshness.check_package_managers(ROOT, pins["npm"].current, io.StringIO())
+        == 0
+    )
+    # The plan's npm policy names exactly these projects' packageManager.
+    policy = next(
+        row
+        for row in tomllib.loads(
+            (ROOT / "tools/proof_plan.toml").read_text(encoding="utf-8")
+        )["toolchain_policy"]
+        if row["name"] == "npm"
+    )
+    named = {
+        item.split("::", 1)[0]
+        for item in policy["setup_evidence"]
+        if "packageManager" in item
+    }
+    assert named == {
+        f"{project.relative_to(ROOT).as_posix()}/package.json" for project in projects
+    }
 
 
 # The lock resolvers: uv's and npm's own release-age settings and exemptions.
@@ -1971,6 +1995,42 @@ def test_both_modes_prove_cited_advisories(tmp_path, monkeypatch, capsys, argv) 
     ) in capsys.readouterr().out
 
 
+def test_check_fails_on_a_project_whose_package_manager_drifts(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """--check holds every npm project's packageManager to the npm pin."""
+    root = _main_root(tmp_path, "2099-01-01T00:00:00Z")
+    project = root / "edge-app"
+    project.mkdir()
+    (project / "package.json").write_text(
+        json.dumps({"packageManager": "npm@11.0.0"}), encoding="utf-8"
+    )
+    npm = pin_freshness.Pin("npm", "config/tool_releases.toml", "12.2.1", lambda: [])
+    offline = pin_freshness.Fetchers(fetch=_no_network, post=_no_network)
+    monkeypatch.setattr(pin_freshness, "Fetchers", lambda: offline)
+    monkeypatch.setattr(pin_freshness, "collect_pins", lambda *args, **kwargs: [npm])
+    monkeypatch.setattr(pin_freshness, "check_pins", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(pin_freshness, "_npm_projects", lambda root: [project])
+    assert pin_freshness.main(["--check", "--root", str(root)]) == 1
+    assert (
+        "ERROR   edge-app/package.json packageManager is 'npm@11.0.0'; "
+        "config/tool_releases.toml pins npm@12.2.1"
+    ) in capsys.readouterr().out
+
+
+def test_the_registry_must_name_the_pinned_tarball() -> None:
+    """A registry record for another tarball is not the pin's (npm's dist)."""
+    from molt import tool_releases
+
+    provenance = tool_releases.tool_release("npm", ROOT).provenance
+    tarball = tool_releases.npm_registry_tarball_url(provenance)
+    record = {"dist": {"tarball": tarball, "integrity": "sha512-AAAA"}}
+    assert pin_freshness.npm_registry_assets(provenance, lambda url: record)
+    moved = {"dist": {**record["dist"], "tarball": tarball.replace(".tgz", "-x.tgz")}}
+    with pytest.raises(pin_freshness.PinFreshnessError, match="names no"):
+        pin_freshness.npm_registry_assets(provenance, lambda url: moved)
+
+
 def test_reference_pins_reread_policy_and_track_their_own_patch_line(tmp_path) -> None:
     root = _pin_root(tmp_path)
     authority = root / "config/verified_subset.toml"
@@ -2019,3 +2079,123 @@ def test_reference_pins_reread_policy_and_track_their_own_patch_line(tmp_path) -
     assert failures == len(policy.python_versions)
     for line in policy.python_versions:
         assert f"STALE   reference-python-{line}: {line}.1 -> {line}.999" in output
+
+
+class _NpmRegistry:
+    """The npm registry and OSV for one npm move: `versions` maps a version to
+    its age in days; `tarball` is the new version's package."""
+
+    def __init__(self, versions: dict[str, float], new: str, tarball: bytes):
+        self.versions = versions
+        self.new = new
+        self.tarball = tarball
+        self.url = f"https://registry.npmjs.org/npm/-/npm-{new}.tgz"
+        digest = hashlib.sha512(tarball).digest()
+        self.integrity = "sha512-" + base64.b64encode(digest).decode()
+
+    def fetch(self, url: str) -> object:
+        if url == "https://registry.npmjs.org/npm":
+            return {
+                "versions": {version: {} for version in self.versions},
+                "time": {v: _ago(age).isoformat() for v, age in self.versions.items()},
+            }
+        if url == f"https://registry.npmjs.org/npm/{self.new}":
+            return {"dist": {"tarball": self.url, "integrity": self.integrity}}
+        raise AssertionError(f"unexpected fetch {url}")
+
+    def fetch_file(self, url: str, destination: Path) -> None:
+        assert url == self.url, url
+        destination.write_bytes(self.tarball)
+
+    def post(self, url: str, payload: object) -> object:
+        assert url == "https://api.osv.dev/v1/querybatch", url
+        return {"results": [{"vulns": []} for _ in payload["queries"]]}
+
+    def fetchers(self) -> pin_freshness.Fetchers:
+        return pin_freshness.Fetchers(
+            self.fetch, lambda url: b"", self.fetch_file, self.post
+        )
+
+
+def _npm_package(entrypoint: str = "package/bin/npm-cli.js") -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        for name in (entrypoint, "package/package.json"):
+            entry = tarfile.TarInfo(name)
+            entry.size = 2
+            archive.addfile(entry, io.BytesIO(b"{}"))
+    return buffer.getvalue()
+
+
+def _npm_pin_root(tmp_path: Path) -> Path:
+    root = _pin_root(tmp_path)
+    for directory in ("deploy/cloudflare", "tools/browser_asset_graph"):
+        (root / directory).mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(
+            ROOT / directory / "package.json", root / directory / "package.json"
+        )
+        (root / directory / "package-lock.json").write_text("{}\n", encoding="utf-8")
+        argv = ["git", "-C", str(root), "add", directory]
+        assert run_guarded_test_process(argv).returncode == 0
+    return root
+
+
+def test_npm_update_checks_registry_integrity_and_moves_every_package_manager(
+    tmp_path,
+) -> None:
+    root = _npm_pin_root(tmp_path)
+    old = tool_releases.load_tool_releases(root)["npm"].version
+    registry = _NpmRegistry(
+        {old: 30, "99.0.0": 8, "99.0.1": 1}, "99.0.0", _npm_package()
+    )
+    plan_before = (root / "tools/proof_plan.toml").read_text(encoding="utf-8")
+
+    message = pin_freshness.update(root, "npm", registry.fetchers(), now=NOW)
+
+    # 99.0.1 is a day old: the move stops at 99.0.0.
+    assert message.startswith(f"npm: {old} -> 99.0.0")
+    (asset,) = tool_releases.load_tool_releases(root)["npm"].assets.values()
+    assert asset.url == registry.url and asset.archive_tree == "package"
+    assert asset.sha256 == hashlib.sha256(registry.tarball).hexdigest()
+    assert asset.size == len(registry.tarball)
+    for directory in ("deploy/cloudflare", "tools/browser_asset_graph"):
+        before = (ROOT / directory / "package.json").read_text(encoding="utf-8")
+        after = (root / directory / "package.json").read_text(encoding="utf-8")
+        assert _changed_lines(before, after) == [
+            (f'  "packageManager": "npm@{old}",', '  "packageManager": "npm@99.0.0",')
+        ]
+    assert pin_freshness.check_package_managers(root, "99.0.0", io.StringIO()) == 0
+    plan = (root / "tools/proof_plan.toml").read_text(encoding="utf-8")
+    assert f"npm@{old}" in plan_before and f"npm@{old}" not in plan
+    assert 'npm@99.0.0\\"' in plan and re.escape("99.0.0") in plan
+
+
+@pytest.mark.parametrize("defect", ["integrity", "entrypoint"])
+def test_npm_update_fails_closed_and_leaves_files_unchanged(tmp_path, defect) -> None:
+    root = _npm_pin_root(tmp_path)
+    old = tool_releases.load_tool_releases(root)["npm"].version
+    package = _npm_package(
+        "package/bin/other.js" if defect == "entrypoint" else "package/bin/npm-cli.js"
+    )
+    registry = _NpmRegistry({old: 30, "99.0.0": 8}, "99.0.0", package)
+    if defect == "integrity":
+        registry.integrity = "sha512-" + base64.b64encode(b"0" * 64).decode()
+    watched = [*PIN_AUTHORITIES, "deploy/cloudflare/package.json"]
+    before = {relative: (root / relative).read_bytes() for relative in watched}
+    with pytest.raises(PinFreshnessError, match="sha512|npm-cli.js"):
+        pin_freshness.update(root, "npm", registry.fetchers(), now=NOW)
+    assert before == {relative: (root / relative).read_bytes() for relative in watched}
+
+
+def test_package_manager_drift_is_a_check_failure(tmp_path) -> None:
+    root = _npm_pin_root(tmp_path)
+    manifest = root / "deploy/cloudflare/package.json"
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    data["packageManager"] = "npm@0.0.1"
+    manifest.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    out = io.StringIO()
+    version = tool_releases.load_tool_releases(root)["npm"].version
+    assert pin_freshness.check_package_managers(root, version, out) == 1
+    assert (
+        "deploy/cloudflare/package.json packageManager is 'npm@0.0.1'" in out.getvalue()
+    )
