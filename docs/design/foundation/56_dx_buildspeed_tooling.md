@@ -472,7 +472,13 @@ files inside each root:
 - `.molt-state-owner.json`, the owner record, published once (as Bazel does
   for its output base) and only when it binds: the owner is an absolute
   checkout path whose component the root's name carries, or, for build
-  control, the Cargo target whose address names the root.
+  control, the Cargo target whose address names the root. A writer creates
+  its build-control root under the use's lock and binds the owner before it
+  writes: a build's selection (`record_build_control_use`), its build scope,
+  and a writer outside a build (`bound_project_build_state_root`: the compile
+  guard and the backend daemon's suite lease). A command's use
+  (`checkout_state_command_roots`) creates no root; it binds and stamps only
+  a root that exists (HF-469).
 - `.molt-last-use`, a stamp that every use refreshes at most once an hour
   (`record_checkout_state_use`): `RunContext.canonical_env` records common
   checkout state and the selected target and build control; a CLI build process
