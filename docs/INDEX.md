@@ -41,6 +41,7 @@ the source of truth.
 - Standalone binary proof workflow: [proofs/STANDALONE_BINARY_PROOF_WORKFLOW.md](proofs/STANDALONE_BINARY_PROOF_WORKFLOW.md)
 - Benchmarking guide: [BENCHMARKING.md](BENCHMARKING.md)
 - Performance authority rule: [../tools/PERF_AUTHORITY.md](../tools/PERF_AUTHORITY.md)
+- Optimization evidence registry (measured verdicts tied to their typed context, reopened when the context changes; after tsrs's rejected list, Rudin's interpretable models and Schmidhuber's Success-Story Algorithm; HF-460): [design/optimization_evidence_registry.md](design/optimization_evidence_registry.md)
 - Agent proof queue custody, append-only notes, proof DAG lineage, and marimo
   lab notebooks:
   [agent/PROOF_QUEUE.md](agent/PROOF_QUEUE.md)
