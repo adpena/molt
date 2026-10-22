@@ -61,8 +61,9 @@ from tools.command_execution import CommandExecutor  # noqa: E402
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 
-# The SPRAWL threshold (M67): the gate fails above this many live worktrees.
-MAX_LIVE_WORKTREES = 24
+# The SPRAWL threshold (M67): the gate fails above this many live worktrees,
+# and `lane start` refuses a lane that would pass it (owner, 2026-10-22: 12).
+MAX_LIVE_WORKTREES = 12
 
 
 # Worktrees that must never be pruned regardless of freshness.
