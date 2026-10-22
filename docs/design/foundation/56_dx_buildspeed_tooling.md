@@ -927,10 +927,20 @@ The native runtime and every host tool (each backend feature variant and the
 WASM facts tool, store kind `host-tool`) read and publish only the store; the
 per-target selection receipts, the canonical-target candidates and the
 backend's canonical hydration are deleted. A host tool's entry is named by its
-executable name and source identity. On a miss, a checkout whose own Cargo
-output already carries an admitted receipt for those inputs publishes it
-without running Cargo, so the first build after this change seeds the store
-from a warm target. The cross-host transfer
+executable name and source identity. Every publication, of a runtime or a
+host tool, follows a Cargo run in this checkout's target and refuses at
+`build-input-coverage` (`backend_build_input_coverage` for a host tool) when
+Cargo's dep-info and build-script reads name a file the identity does not
+cover (`molt.cli.cargo_build_reads.paths_outside`): the store serves every
+checkout from that identity, so a missed input would let all of them reuse a
+stale product, where before the staleness stayed in one checkout. The host
+tool's identity was a hand list of its crate closure plus two files Rust
+embeds from outside it (`backend_environment.json`,
+`backend_daemon_protocol_version.txt`); the check now proves the list against
+what Cargo read. A host tool no longer seeds the store from a checkout's
+earlier Cargo output without running Cargo: that output's build left no reads
+to check, and on a warm target the Cargo run that replaces it finds every unit
+fresh. The cross-host transfer
 (`molt.cli.native_toolchain_transfer`, used by the Nightly bundle) exports a
 store entry and imports into the importing host's store.
 

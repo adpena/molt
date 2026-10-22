@@ -614,9 +614,6 @@ def test_prewarm_receipts_let_the_next_build_skip_cargo_until_removed(
     cargo_calls, probe_calls = _fake_backend_toolchain(monkeypatch)
     release_dir = root / "target" / "sessions" / "wasm-ci" / "release"
     coordinate = release_dir / f"molt-backend.luau_backend{_EXE}"
-    cargo_output_receipt = cli_backend_binary._backend_fingerprint_path(
-        root, release_dir / f"molt-backend{_EXE}", "release"
-    )
 
     assert _dispatch(["internal-backend-build", "--target", "luau", "--json"]) == 0
 
@@ -659,7 +656,6 @@ def test_prewarm_receipts_let_the_next_build_skip_cargo_until_removed(
     # The receipts, not a lucky cache, carry that admission: without them the
     # build must establish provenance with Cargo again.
     source_receipt.unlink()
-    cargo_output_receipt.unlink()
     prepared, error = _build_backend_setup(TargetKind.LUAU, tmp_path, "cranelift")
     assert error is None and prepared is not None
     assert len(cargo_calls) == 2

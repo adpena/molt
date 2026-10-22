@@ -503,13 +503,18 @@ def test_backend_refresh_distinguishes_source_metadata_from_content(
 @pytest.mark.parametrize(
     "mutation", ["newer", "in-place", "replacement", "unattested", "wrong-source"]
 )
-def test_ensure_backend_binary_publishes_only_an_admitted_cargo_output(
+def test_a_stored_product_wins_and_a_miss_always_runs_cargo(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     mutation: str,
     stored: bool,
 ) -> None:
-    """A stored product wins; else only an attested Cargo output is published."""
+    """A stored product wins; a miss runs Cargo, whatever Cargo's output holds.
+
+    An earlier Cargo output, attested by a receipt or not, left no build reads
+    to prove that the identity covers what it read (design 56, 2.8), so it is
+    never published as it is.
+    """
     write_compiler_source(tmp_path)
     stub_compiler_admission(monkeypatch)
     exe_suffix = ".exe" if os.name == "nt" else ""
@@ -570,17 +575,15 @@ def test_ensure_backend_binary_publishes_only_an_admitted_cargo_output(
     )
 
     result = _ensure(backend_bin, tmp_path, ("wasm-backend",))
-    if not stored and mutation in {"unattested", "wrong-source"}:
-        # Nothing admits these bytes, so the build runs Cargo.
+    if not stored:
         assert not result and result.phase == "backend_cargo_build"
         assert len(builds) == 1
         return
     assert result, result.message
     assert not builds
     assert result.binary is not None
-    expected = old_bytes if stored else new_bytes
-    assert result.binary.read_bytes() == expected
-    assert result.binary.samefile(_generation(tmp_path, backend_bin, expected))
+    assert result.binary.read_bytes() == old_bytes
+    assert result.binary.samefile(_generation(tmp_path, backend_bin, old_bytes))
     if old_generation is not None:
         # The stored product and what a build captured of it did not change.
         verify_stable_regular_file_identity(held, label="held backend")
@@ -1031,6 +1034,7 @@ def test_backend_build_publishes_provenance_only_after_successful_probe(
             artifact=cargo_output if receipt == "stale-content" else None,
             cargo_environment=compiler_environment_inputs(),
         )
+    left = cargo_receipt.read_bytes() if cargo_receipt.exists() else None
     metadata = cargo_output.stat()
     cargo_output.write_bytes(b"backend-v2")
     os.utime(cargo_output, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
@@ -1094,13 +1098,9 @@ def test_backend_build_publishes_provenance_only_after_successful_probe(
     generation = _generation(tmp_path, backend_bin, b"backend-v3")
     assert Path(probe_commands[0][0]).samefile(generation)
     assert generation.read_bytes() == b"backend-v3"
-    assert cli_backend_binary._runtime_artifact_fingerprint_matches(
-        cargo_output,
-        fingerprint,
-        cargo_receipt,
-        require_artifact_digest=True,
-        environment=ProcessEnvironment(os.environ),
-    ) == (probe_outcome == "pass")
+    # A receipt beside Cargo's output, as earlier builds wrote one, is neither
+    # read nor rewritten: only the store's receipt selects a compiler.
+    assert (cargo_receipt.read_bytes() if cargo_receipt.exists() else None) == left
     # Only a probed compiler acquires the store receipt that selects it.
     selection = cli_backend_binary.stored_host_tools(
         cli_backend_binary.host_tool_store(tmp_path),
@@ -1114,9 +1114,8 @@ def test_backend_build_publishes_provenance_only_after_successful_probe(
         assert selection[0].generation.samefile(generation)
 
 
-@pytest.mark.parametrize("admitted_source", [False, True])
 def test_generation_replaced_during_selection_cannot_acquire_provenance(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, admitted_source: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     write_compiler_source(tmp_path)
     stub_compiler_admission(monkeypatch)
@@ -1129,13 +1128,6 @@ def test_generation_replaced_during_selection_cannot_acquire_provenance(
     fingerprint = _fingerprint()
     selection_receipt = _stored(tmp_path, backend_bin).receipt
     generation = _generation(tmp_path, backend_bin, b"backend-v1")
-    if admitted_source:
-        cli_runtime_fingerprints._write_runtime_fingerprint(
-            _receipt(tmp_path, cargo_output),
-            fingerprint,
-            artifact=cargo_output,
-            cargo_environment=compiler_environment_inputs(),
-        )
     write_receipt = cli_backend_binary.atomic_write_bytes
 
     def replace_before_selection(path: Path, data: bytes, **kwargs: object) -> None:
@@ -1167,11 +1159,7 @@ def test_generation_replaced_during_selection_cannot_acquire_provenance(
     )
     result = _ensure(backend_bin, tmp_path, ("native-backend",))
     assert not result
-    assert result.phase == (
-        "backend_selection_publication"
-        if admitted_source
-        else "backend_artifact_publication"
-    )
+    assert result.phase == "backend_artifact_publication"
     # The receipt names the bytes it saw, which were then replaced: the next
     # reader finds a corrupt entry and fails loud, never admitting them.
     with pytest.raises(ProductStoreError, match="differs from its receipt"):
@@ -1598,13 +1586,7 @@ def test_backend_observation_rebuild_keeps_identical_byte_cache_key_and_warm_rec
     assert first, first.message
     assert first.binary is not None
     stored = _stored(tmp_path, coordinate, fingerprint)
-    cargo_output = coordinate.with_name(backend_executable_name(os_name=os.name))
-    paths = (
-        stored.receipt,
-        _receipt(tmp_path, cargo_output, "release"),
-        stored.probe_validation,
-        first.binary,
-    )
+    paths = (stored.receipt, stored.probe_validation, first.binary)
     before = [(path.read_bytes(), path.stat().st_mtime_ns) for path in paths]
     for _ in range(2):
         warm = _ensure(coordinate, tmp_path, features, profile="release")
@@ -1626,20 +1608,12 @@ def test_backend_observation_rebuild_keeps_identical_byte_cache_key_and_warm_rec
     second = _stored(tmp_path, coordinate, fingerprint)
     assert second.receipt != stored.receipt
     current = cli_runtime_fingerprints._read_runtime_fingerprint(second.receipt)
-    cargo_current = cli_runtime_fingerprints._read_runtime_fingerprint(paths[1])
-    assert (
-        current["cargo_environment"]
-        != (
-            cli_runtime_fingerprints._read_runtime_fingerprint(stored.receipt)[
-                "cargo_environment"
-            ]
-        )
+    previous = cli_runtime_fingerprints._read_runtime_fingerprint(stored.receipt)
+    assert current["cargo_environment"] != previous["cargo_environment"]
+    assert current["cargo_environment"] == (
+        compiler_environment_inputs(ProcessEnvironment(os.environ)).to_dict()
     )
-    assert current["cargo_environment"] == cargo_current["cargo_environment"]
-    assert (
-        current["artifact_content_identity"]
-        == cargo_current["artifact_content_identity"]
-    )
+    assert current["artifact_content_identity"] == previous["artifact_content_identity"]
     assert (
         current["artifact_content_identity"]["sha256"]
         == hashlib.sha256(first.binary.read_bytes()).hexdigest()
@@ -1661,15 +1635,10 @@ def test_a_store_receipt_whose_observation_changed_is_corrupt(tmp_path, monkeypa
     cli_runtime_fingerprints._write_runtime_fingerprint(
         stored.receipt, source, cargo_environment=replacement
     )
-    monkeypatch.setenv("MOLT_SKIP_RUNTIME_REBUILD", "1")
-    monkeypatch.setattr(
-        cli_backend_binary,
-        "_run_resolved_cargo_plan",
-        lambda *_a, **_k: pytest.fail("a corrupt entry must not invoke Cargo"),
-    )
     result = _ensure(coordinate, tmp_path, ("wasm-backend",), profile="release")
     # The receipt names no environment of its variant, so no reader admits
-    # it; this build's own publication finds it and names the eviction tool.
+    # it; this build runs Cargo, and its own publication finds the receipt
+    # and names the eviction tool instead of writing over it.
     assert not result and result.phase == "product_store"
     assert "molt cache evict host-tool" in result.message
     assert generation.read_bytes() == b"#!/bin/sh\n# v1\n"
@@ -1732,17 +1701,12 @@ def test_a_build_that_reads_outside_its_source_closure_is_never_published(
     )
     monkeypatch.setattr(cli_backend_binary, "_run_resolved_cargo_plan", fake_cargo)
     monkeypatch.setattr(
-        cli_backend_binary,
-        "_hydrate_canonical_backend_generation",
-        lambda *_a, **_k: None,
-    )
-    monkeypatch.setattr(
         cli_backend_binary, "_run_subprocess_captured_to_tempfiles", probe
     )
 
     result = _ensure(coordinate, tmp_path, product.required_features, product=product)
 
-    generation = _generation(coordinate, b"built")
+    generation = _generation(tmp_path, coordinate, b"built")
     if read == "declared":
         assert result, result.message
         assert generation.read_bytes() == b"built"
@@ -1815,3 +1779,48 @@ def test_a_host_tool_receipt_is_written_once(tmp_path: Path) -> None:
         )
     assert receipt.read_bytes() == selected
     assert first.read_bytes() == b"#!/bin/sh\n# first\n"
+
+
+def test_a_host_tool_whose_identity_misses_a_file_cargo_read_is_not_published(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every checkout reuses a stored tool by its identity, so it covers all reads.
+
+    The fixture compiler embeds a file from outside its crate, as an
+    ``include_str!`` would, that the identity does not name. Publication
+    refuses, as the runtime's does, and the store stays empty.
+    """
+    write_compiler_source(tmp_path)
+    stub_compiler_admission(monkeypatch)
+    embedded = tmp_path / "src" / "molt" / "embedded_table.json"
+    embedded.write_text("{}\n", encoding="utf-8")
+    backend_bin = tmp_path / "target" / "release" / "molt-backend.native_backend"
+    cargo_output = backend_bin.with_name(backend_executable_name(os_name=os.name))
+
+    def build(cmd, **_kwargs):
+        cargo_output.parent.mkdir(parents=True, exist_ok=True)
+        cargo_output.write_bytes(b"#!/bin/sh\n# embedded\n")
+        cargo_output.chmod(0o755)
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            compiler_cargo_stdout(
+                tmp_path, cargo_output, cmd.environment, extra_reads=(embedded,)
+            ),
+            "",
+        )
+
+    monkeypatch.setattr(
+        cli_backend_binary, "_backend_fingerprint", lambda *_a, **_k: _fingerprint()
+    )
+    monkeypatch.setattr(cli_backend_binary, "_run_resolved_cargo_plan", build)
+    monkeypatch.setattr(
+        cli_backend_binary,
+        "_run_subprocess_captured_to_tempfiles",
+        lambda cmd, **_k: pytest.fail("an uncovered compiler must not be probed"),
+    )
+    result = _ensure(backend_bin, tmp_path, ("native-backend",), profile="release")
+    assert not result and result.phase == "backend_build_input_coverage"
+    assert "src/molt/embedded_table.json" in result.message
+    store = cli_backend_binary.host_tool_store(tmp_path)
+    assert not store.root.exists() or not list(store.root.glob("*/*/*"))

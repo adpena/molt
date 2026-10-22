@@ -51,7 +51,6 @@ from molt.cli.runtime_fingerprints import (
     _runtime_artifact_fingerprint_matches,
     _stored_fingerprint_matches_clean_source_state,
     _stored_fingerprint_matches_source_metadata,
-    _write_runtime_fingerprint,
 )
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.cli.static_archive_identity import artifact_content_identity
@@ -653,27 +652,16 @@ def admitted_backend_binary(
 
 
 def _publish_backend_generation_from(
-    coordinate: Path,
-    source: Path,
-    *,
-    label: str,
-    expected_identity: StableRegularFileIdentity | None = None,
-) -> tuple[StableRegularFileIdentity, StableRegularFileIdentity]:
+    coordinate: Path, source: Path, *, label: str
+) -> StableRegularFileIdentity:
     """Publish an executable's bytes as a generation of ``coordinate``.
 
-    Returns the source identity the copy was bound to and the generation.
     A generation is the exact source bytes: a copy keeps the linker signature
     valid, and re-signing would only rewrite the bytes (and the compiler
     identity) on every build.
     """
-    with stable_executable_probe(source, label=label, identity=expected_identity) as (
-        _entrypoint,
-        identity,
-    ):
-        generation = publish_backend_generation(
-            coordinate, identity.path, observed=identity
-        )
-    return identity, generation
+    with stable_executable_probe(source, label=label) as (_entrypoint, identity):
+        return publish_backend_generation(coordinate, identity.path, observed=identity)
 
 
 def _stored_receipt_identity(fingerprint: Mapping[str, Any]) -> dict[str, Any]:
@@ -1055,22 +1043,6 @@ def _ensure_backend_binary(
             return _backend_ensure_failure("backend_build_lock", str(exc))
         cargo_output = backend_bin.parent / _host_tool_output_name(product)
 
-        def _publish_cargo_output_receipt(
-            identity: StableRegularFileIdentity,
-            cargo_environment: CargoEnvironmentInputs,
-        ) -> None:
-            verify_stable_regular_file_identity(identity, label="backend publication")
-            content_identity = artifact_content_identity(
-                identity.path, observed=identity
-            )
-            verify_stable_regular_file_identity(identity, label="backend publication")
-            _write_runtime_fingerprint(
-                _backend_fingerprint_path(project_root, cargo_output, cargo_profile),
-                {**fingerprint, "artifact_content_identity": content_identity},
-                cargo_environment=cargo_environment,
-            )
-            verify_stable_regular_file_identity(identity, label="backend publication")
-
         def _probe_backend_binary_support(
             probe_target: str,
             *,
@@ -1215,81 +1187,6 @@ def _ensure_backend_binary(
                 fingerprint=admission.fingerprint,
             )
 
-        def _select_admitted_cargo_output(
-            probe_target: str,
-        ) -> _BackendBinaryEnsureResult | None:
-            """Publish this checkout's admitted Cargo output when the store lacks it."""
-            if not cargo_output.exists():
-                return None
-            candidate_fingerprint_path = _backend_fingerprint_path(
-                project_root, cargo_output, cargo_profile
-            )
-            try:
-                with stable_executable_probe(
-                    cargo_output, label="admitted Cargo backend output"
-                ) as (_entrypoint, cargo_identity):
-                    if not _runtime_artifact_fingerprint_matches(
-                        cargo_output,
-                        fingerprint,
-                        candidate_fingerprint_path,
-                        environment=build_admission.plan.environment,
-                        require_artifact_digest=True,
-                    ):
-                        return None
-                    admitted = _admitted_runtime_fingerprint(
-                        fingerprint,
-                        _read_runtime_fingerprint(candidate_fingerprint_path),
-                    )
-                    cargo_environment = CargoEnvironmentInputs.from_dict(
-                        admitted.get("cargo_environment")
-                    )
-                    cargo_environment.verify(build_admission.plan.environment)
-                    stored = stored_host_tool(
-                        store, identity, backend_bin, cargo_environment
-                    )
-                    _require_unpublished_host_tool(store, identity, stored)
-                    _source, generation = _publish_backend_generation_from(
-                        stored.coordinate,
-                        cargo_output,
-                        label="admitted Cargo backend output",
-                        expected_identity=cargo_identity,
-                    )
-                probe_result = _probe_backend_binary_support(
-                    probe_target,
-                    binary=generation.path,
-                    validation_path=stored.probe_validation,
-                    admitted=admitted,
-                    identity=generation,
-                )
-                if not probe_result:
-                    # A rejected capability probe is not source admission.
-                    # Let the rebuild path repair it; publication failures
-                    # remain terminal.
-                    return (
-                        probe_result
-                        if probe_result.phase == "backend_probe_publication"
-                        else None
-                    )
-                _select_backend_generation(
-                    stored.receipt,
-                    generation,
-                    fingerprint=admitted,
-                    cargo_environment=cargo_environment,
-                )
-                store.retain(identity)
-            except ProductStoreError as exc:
-                return _backend_ensure_failure("product_store", str(exc))
-            except (OSError, RuntimeError, ValueError) as exc:
-                return _backend_ensure_failure(
-                    "backend_selection_publication", str(exc)
-                )
-            _remember_backend_identity(memo_path, memo, fingerprint)
-            return _backend_ensure_success(
-                coordinate=stored.coordinate,
-                binary_path=generation.path,
-                fingerprint=admitted,
-            )
-
         _quick_target = _backend_probe_target(backend_features, product)
         probe_failure: tuple[Path, _BackendBinaryEnsureResult] | None = None
         # Another checkout with these inputs may have published while this
@@ -1358,9 +1255,6 @@ def _ensure_backend_binary(
                 returncode=result.returncode,
                 command=result.command,
             )
-        selection_result = _select_admitted_cargo_output(_quick_target)
-        if selection_result is not None:
-            return selection_result
         if reason := source_build_disabled_reason(
             product.value, environment=admission_environment
         ):
@@ -1518,12 +1412,8 @@ def _ensure_backend_binary(
         except ProductStoreError as exc:
             return _backend_ensure_failure("product_store", str(exc), command=cmd)
         try:
-            rebuilt_source_identity, rebuilt_generation = (
-                _publish_backend_generation_from(
-                    stored.coordinate,
-                    cargo_output,
-                    label="rebuilt Cargo backend output",
-                )
+            rebuilt_generation = _publish_backend_generation_from(
+                stored.coordinate, cargo_output, label="rebuilt Cargo backend output"
             )
         except (OSError, RuntimeError, ValueError) as exc:
             return _backend_ensure_failure("backend_artifact", str(exc))
@@ -1551,7 +1441,6 @@ def _ensure_backend_binary(
                 command=_probe_result.command,
             )
         try:
-            _publish_cargo_output_receipt(rebuilt_source_identity, reads.environment)
             _select_backend_generation(
                 stored.receipt,
                 rebuilt_generation,
