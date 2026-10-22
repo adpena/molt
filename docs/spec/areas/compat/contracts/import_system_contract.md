@@ -35,6 +35,17 @@ resolver and load-module cases, dynamic/broader CPython `fromlist`
 star/`__all__` expansion, and namespace-package edge cases still need structural
 reconciliation against CPython 3.12.
 
+Compiler and tooling dependencies use the actual frontend interpreter's import
+semantics; compiled program dependencies use the selected target version.
+The pinned [CPython 3.15.0 `resolve_name`](https://github.com/python/cpython/blob/d220409a13b77de7a6c30abe16ea90db01528edc/Python/import.c#L3498)
+retains explicit `__package__` precedence, `__spec__.parent` and name/path
+fallback. The shared source resolver preserves those anchors separately from
+required runtime callbacks, warnings and failures. Eager source analysis does
+not require lazy-import implementation: shared AST admission refuses PEP 810
+before producing eager facts or code. These developer-side dependency and
+admission checks introduce no guest interpreter or guest verification work;
+they do not admit Python 3.15 as a compiled-program target.
+
 Import bedrock (native lane, design
 `docs/design/foundation/import_bedrock_frozen_module_layer.md`, PR1):
 within a build, module identity is a dense `ModuleId` from the generated

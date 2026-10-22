@@ -36,6 +36,7 @@ from molt.compiler_analysis.python_imports import (
     _StaticSourceExecutionRequest,
     _StaticSourcePath,
 )
+from molt.compiler_analysis.python_syntax import require_python_syntax_target
 from molt.target_python import (
     TargetPythonVersion,
     _DEFAULT_TARGET_PYTHON_VERSION,
@@ -1424,6 +1425,7 @@ def _collect_imports(
     def _record_import_statement(
         node: ast.Import | ast.ImportFrom,
     ) -> None:
+        require_python_syntax_target(node, target_python.feature_version)
         if isinstance(node, ast.Import):
             for alias in node.names:
                 record_site(

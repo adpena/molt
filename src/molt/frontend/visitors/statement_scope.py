@@ -21,6 +21,7 @@ from molt.compiler_analysis.python_binding_flow import (
     analyze_python_bindings,
 )
 from molt.compiler_analysis.python_imports import resolve_relative_import
+from molt.compiler_analysis.python_syntax import require_python_syntax_target
 from molt.compiler_analysis.python_lexical_scope import class_annotation_syntax_error
 from molt.compiler_analysis.python_source_keys import python_ast_digest
 from molt.compiler_analysis.static_truth import (
@@ -579,6 +580,7 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
         return None
 
     def visit_Import(self, node: ast.Import) -> None:
+        require_python_syntax_target(node, self.target_python)
         for alias in node.names:
             module_name = alias.name
             if module_name in {"typing", "typing_extensions"}:
@@ -608,6 +610,7 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
         return None
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        require_python_syntax_target(node, self.target_python)
         if any(alias.name == "*" for alias in node.names) and (
             self.current_func_name != "molt_main" or self._class_ns_stack
         ):

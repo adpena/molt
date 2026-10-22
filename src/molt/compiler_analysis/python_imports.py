@@ -25,6 +25,7 @@ from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Literal, NamedTuple
 
+from molt.compiler_analysis.python_syntax import require_python_syntax_target
 from molt.compiler_analysis.python_call_arguments import call_argument_schedule
 from molt.compiler_analysis.python_effects import (
     expression_evaluation_children,
@@ -966,6 +967,8 @@ def _analyze_module_import_flow_uncached(
     )
 
     def record(node: ast.AST, states: tuple[ModuleImportState, ...]) -> None:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            require_python_syntax_target(node, context.target_python)
         # Source operands capture metadata before later sibling argument effects.
         if isinstance(node, (ast.Import, ast.ImportFrom, ast.Call)) or (
             source_discovery
@@ -1477,6 +1480,8 @@ def _analyze_module_import_flow_uncached(
         # Explicit absence differs from an unobserved deferred execution phase.
         # Never erase a site reached through another incoming completion.
         for child in ast.walk(node):
+            if isinstance(child, (ast.Import, ast.ImportFrom)):
+                require_python_syntax_target(child, context.target_python)
             if isinstance(child, (ast.stmt, ast.Call)):
                 by_node.setdefault(python_node_source_key(child), ())
 
@@ -2150,12 +2155,9 @@ def _fallback_package(state: ModuleImportState) -> StaticMetadataValue:
 
 def effective_relative_package(context: ModuleImportContext) -> StaticMetadataValue:
     state = context_import_state(context)
-    if context.target_python >= (3, 15):
-        raise ValueError(
-            "Python 3.15 import execution semantics are not authorized until "
-            "PEP 810 lazy imports and __package__ resolution are implemented "
-            "and proven atomically"
-        )
+    # CPython v3.15.0 (d220409), Python/import.c:resolve_name retains
+    # explicit __package__, then spec.parent, then __name__/__path__ fallback.
+    # Lazy statement admission is independent of this eager import protocol.
     if state.package.kind == "known":
         return state.package
     if state.package.kind == "none":
@@ -2172,9 +2174,6 @@ def resolve_relative_import(
         return RelativeImportResolution(None, "negative_level")
     if level == 0:
         return RelativeImportResolution(module)
-    if context.target_python >= (3, 15):
-        effective_relative_package(context)
-        raise AssertionError("unreachable Python 3.15 import resolution")
     state = context_import_state(context)
     if state.package.kind == "known":
         if state.spec_parent.kind == "invalid":
