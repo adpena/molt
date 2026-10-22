@@ -79,7 +79,7 @@ pub(crate) fn time_parts_to_tuple(
 ) -> u64 {
     use molt_runtime_core::OwnedRuntimeValue;
     #[cfg(not(target_arch = "wasm32"))]
-    let zone = {
+    let decoded_zone = {
         let encoding = match crate::builtins::platform::locale_encoding() {
             Ok(value) => value,
             Err(message) => return raise_exception::<u64>(_py, "RuntimeError", &message),
@@ -89,7 +89,9 @@ pub(crate) fn time_parts_to_tuple(
             Err(error) => return error.raise::<u64>(_py, zone),
         }
     };
-    let zone_ptr = alloc_string(_py, &zone);
+    #[cfg(not(target_arch = "wasm32"))]
+    let zone = decoded_zone.as_slice();
+    let zone_ptr = alloc_string(_py, zone);
     if zone_ptr.is_null() {
         return MoltObject::none().bits();
     }
@@ -144,7 +146,12 @@ pub(crate) fn time_tuple_from_tm(
             );
         }
         let zone = unsafe { CStr::from_ptr(tm.tm_zone) }.to_bytes();
-        time_parts_to_tuple(py, parts, zone, tm.tm_gmtoff as i64)
+        time_parts_to_tuple(
+            py,
+            parts,
+            zone,
+            molt_codegen_abi::c_width::c_long_to_i64(tm.tm_gmtoff),
+        )
     }
     #[cfg(windows)]
     {
