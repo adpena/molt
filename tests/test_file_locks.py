@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from molt import file_locks as build_locks
+from molt.cli import build_locks as cli_build_locks
 from tests.process_guard_common import run_custody_subject_process
 
 
@@ -909,10 +910,10 @@ def test_shared_readers_and_writer_contend_across_processes(tmp_path, held_befor
 _HOLD_SCRIPT = """
 import sys, time
 from pathlib import Path
-from molt.file_locks import held_file_lock
+from molt.cli.build_locks import held_build_lock
 
 path, release = Path(sys.argv[1]), Path(sys.argv[2])
-with held_file_lock(path, purpose="test"):
+with held_build_lock(path, purpose="test"):
     print("held", flush=True)
     deadline = time.monotonic() + 30
     while not release.exists() and time.monotonic() < deadline:
@@ -947,17 +948,17 @@ def test_a_waiter_names_the_holding_process_and_waits_while_it_holds(
     holder = _start_holder(lock_path, release)
     notices: list[str] = []
     try:
-        recorded = build_locks.read_lock_holder(lock_path)
+        recorded = cli_build_locks.read_lock_holder(lock_path)
         assert recorded is not None and recorded.pid == holder.pid
         timer = threading.Timer(1.0, release.touch)
         timer.start()
         started = time.monotonic()
-        with build_locks.held_file_lock(
+        with cli_build_locks.held_build_lock(
             lock_path, purpose="test", notice=notices.append
         ):
             waited = time.monotonic() - started
             # The waiter now holds the lock and names itself for the next one.
-            assert build_locks.read_lock_holder(lock_path).pid == os.getpid()
+            assert cli_build_locks.read_lock_holder(lock_path).pid == os.getpid()
         timer.join()
         assert holder.wait(timeout=30) == 0
     finally:
@@ -968,7 +969,7 @@ def test_a_waiter_names_the_holding_process_and_waits_while_it_holds(
     assert str(lock_path) in notices[0] and f"pid {holder.pid}," in notices[0]
     assert "until it is released" in notices[0]
     # A released lock names no holder, and the lock file stays empty metadata.
-    assert build_locks.read_lock_holder(lock_path) is None
+    assert cli_build_locks.read_lock_holder(lock_path) is None
     assert lock_path.read_bytes() == b""
     assert _HeldLocks.now().registry == held_before.registry
 
@@ -984,8 +985,8 @@ def test_an_operator_bound_fails_the_wait_naming_the_holder(
     holder = _start_holder(lock_path, release)
     notices: list[str] = []
     try:
-        with pytest.raises(build_locks.FileLockTimeout) as raised:
-            with build_locks.held_file_lock(
+        with pytest.raises(cli_build_locks.BuildLockAcquisitionError) as raised:
+            with cli_build_locks.held_build_lock(
                 lock_path, purpose="test", notice=notices.append
             ):
                 pytest.fail("a held lock admitted a second holder")
@@ -1002,8 +1003,8 @@ def test_a_record_its_process_no_longer_backs_names_no_holder(tmp_path: Path) ->
     import json
 
     lock_path = tmp_path / "build.lock"
-    record = build_locks.lock_holder_path(lock_path)
-    live = build_locks._own_start_marker()
+    record = cli_build_locks.lock_holder_path(lock_path)
+    live = cli_build_locks._own_start_marker()
     for pid, started in ((os.getpid(), live), (os.getpid(), (live or 0) + 1)):
         record.write_text(
             json.dumps(
@@ -1011,19 +1012,19 @@ def test_a_record_its_process_no_longer_backs_names_no_holder(tmp_path: Path) ->
             ),
             encoding="utf-8",
         )
-        holder = build_locks.read_lock_holder(lock_path)
+        holder = cli_build_locks.read_lock_holder(lock_path)
         if started == live:
-            assert holder == build_locks.LockHolder(pid, started)
+            assert holder == cli_build_locks.LockHolder(pid, started)
         elif live is not None:
             # Another process now has the pid: the record is stale.
             assert holder is None
     for garbage in (b"", b"{", b'{"schema": "other", "pid": 1}', b"x" * 600):
         record.write_bytes(garbage)
-        assert build_locks.read_lock_holder(lock_path) is None
+        assert cli_build_locks.read_lock_holder(lock_path) is None
     # A dead holder's longer record never leaks into the next holder's.
     record.write_bytes(b"x" * 400)
-    with build_locks.held_file_lock(lock_path, purpose="test"):
-        holder = build_locks.read_lock_holder(lock_path)
+    with cli_build_locks.held_build_lock(lock_path, purpose="test"):
+        holder = cli_build_locks.read_lock_holder(lock_path)
         assert holder is not None and holder.pid == os.getpid()
     assert record.read_bytes() == b""
 
@@ -1036,3 +1037,45 @@ def test_every_build_lock_waits_by_one_policy(monkeypatch: pytest.MonkeyPatch) -
         assert build_locks.lock_wait_s() is expected
     monkeypatch.setenv("MOLT_BUILD_LOCK_TIMEOUT", "2.5")
     assert build_locks.lock_wait_s() == 2.5
+
+
+def test_a_shared_cache_lock_waiter_waits_while_its_holder_holds_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """The shared cache lock follows the one wait policy: no 300 s default."""
+    monkeypatch.delenv("MOLT_BUILD_LOCK_TIMEOUT", raising=False)
+    held, release = threading.Event(), threading.Event()
+
+    def holder() -> None:
+        with build_locks._shared_cache_lock("compile.test", cache_root=tmp_path):
+            held.set()
+            release.wait(timeout=30)
+
+    thread = threading.Thread(target=holder)
+    thread.start()
+    assert held.wait(timeout=10)
+    threading.Timer(0.5, release.set).start()
+    started = time.monotonic()
+    try:
+        with build_locks._shared_cache_lock("compile.test", cache_root=tmp_path):
+            waited = time.monotonic() - started
+    finally:
+        release.set()
+        thread.join(timeout=30)
+    assert waited >= 0.3
+    assert "Blocking waiting for the shared cache lock" in capsys.readouterr().err
+    monkeypatch.setenv("MOLT_BUILD_LOCK_TIMEOUT", "0.1")
+    release.clear()
+    held.clear()
+    thread = threading.Thread(target=holder)
+    thread.start()
+    assert held.wait(timeout=10)
+    try:
+        with pytest.raises(
+            build_locks.FileLockTimeout, match="MOLT_BUILD_LOCK_TIMEOUT"
+        ):
+            with build_locks._shared_cache_lock("compile.test", cache_root=tmp_path):
+                pytest.fail("a held cache lock admitted a second holder")
+    finally:
+        release.set()
+        thread.join(timeout=30)

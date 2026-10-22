@@ -968,7 +968,7 @@ def _prune_backend_daemons() -> None:
 
 def _unlink_lock_holder(lock_path: Path) -> None:
     """A pruned lock takes its holder record (molt.file_locks) along."""
-    from molt.file_locks import lock_holder_path
+    from molt.cli.build_locks import lock_holder_path
 
     with contextlib.suppress(OSError):
         lock_holder_path(lock_path).unlink()

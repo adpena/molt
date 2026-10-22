@@ -173,7 +173,7 @@ def test_native_build_lock_failure_retains_structured_evidence_and_timing(
     def unavailable(*args, **kwargs):
         raise RuntimeError("native lock timed out")
 
-    monkeypatch.setattr(build_locks, "held_file_lock", unavailable)
+    monkeypatch.setattr(build_locks, "_try_acquire_file_lock", unavailable)
     timings = {}
     assert not runtime._ensure_runtime_lib(
         plan.runtime_lib,
