@@ -25,6 +25,7 @@ from molt.default_paths import (
 from molt.backend_environment import (
     environment_keys,
     codegen_environment_inputs,
+    daemon_process_environment_inputs,
     native_object_environment_inputs,
     request_environment_inputs,
 )
@@ -103,7 +104,7 @@ class _BackendDaemonCompileResult(NamedTuple):
 _BACKEND_CODEGEN_ENV_DIGEST_SCHEMA_VERSION = 8
 
 
-_DAEMON_CONFIG_DIGEST_SCHEMA_VERSION = 10
+_DAEMON_CONFIG_DIGEST_SCHEMA_VERSION = 11
 
 
 @functools.lru_cache(maxsize=256)
@@ -369,7 +370,7 @@ def _backend_daemon_config_digest(
             "schema": _DAEMON_CONFIG_DIGEST_SCHEMA_VERSION,
             "project_root": str(project_root.resolve()),
             "cargo_profile": cargo_profile,
-            "codegen": _backend_codegen_env_inputs(is_wasm=False, env=source),
+            "process_environment": daemon_process_environment_inputs(source),
             "backend_features": sorted(backend_features),
             "backend_compiler_fingerprint": compiler,
             "suite_daemon_lease": source.get("MOLT_BACKEND_DAEMON_SUITE_LEASE", ""),
