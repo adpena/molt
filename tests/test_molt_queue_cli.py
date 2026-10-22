@@ -448,6 +448,13 @@ import sys
 import time
 
 root = Path(__file__).resolve().parents[1]
+# As tools/proof_queue.py does: the queue starts its detached runner through
+# guardian_argv (`-I -S`), which ignores PYTHONPATH, so the script binds its
+# repository from its own file.
+if str(root) not in sys.path:
+    sys.path.insert(0, str(root))
+from tools.import_file import bind_repository_imports
+bind_repository_imports(__file__)
 if sys.argv[1:2] == ["--detached-state-use"]:
     from tools.command_execution import detached_command_use
     ready_path, use_token = Path(sys.argv[2]), sys.argv[3]
