@@ -112,6 +112,18 @@ fn run_planned(
         stats.facts_changed += activation_exits;
         am.invalidate_cfg();
     }
+    // Dead SSA payload lanes hold no source-language binding. Remove them
+    // before allocating transport ownership: a mixed raw/view lane would
+    // otherwise retain its borrowed input, skip an entry release on the raw
+    // path, and leave that retain behind when post-drop pruning removes it.
+    // Reuse the canonical fixed-point pruning of every control-edge family.
+    // Producers remain: their real uses, frame homes and lexical boundaries
+    // still determine their lifetime. Live mixed phis keep their owned ABI.
+    let pruned = crate::tir::passes::block_arg_prune::run(func);
+    if pruned.values_changed != 0 {
+        stats.values_changed += pruned.values_changed;
+        am.invalidate_cfg();
+    }
     let exception_region_drops_already_inserted =
         attr_is_true(func, EXCEPTION_REGION_DROPS_INSERTED_ATTR);
     let exception_creation_drops = if exception_region_drops_already_inserted {
