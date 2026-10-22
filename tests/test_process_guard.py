@@ -763,11 +763,11 @@ def test_nested_guard_operator_stop_prevents_next_serial_command(tmp_path, mode)
     assert result.guard_signal is None
     assert result.descendants_closed
     if mode == "ordinary143":
-        assert sentinel.read_text() == "143"
+        assert sentinel.read_text(encoding="utf-8") == "143"
         assert not receipt.exists()
     else:
         assert not sentinel.exists()
-        assert json.loads(receipt.read_text()) == {
+        assert json.loads(receipt.read_text(encoding="utf-8")) == {
             "kind": "KeyboardInterrupt" if mode == "SIGINT" else "SystemExit",
             "signal": 2 if mode == "SIGINT" else 15,
             "closed": True,
