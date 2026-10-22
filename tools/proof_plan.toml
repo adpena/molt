@@ -629,15 +629,24 @@ package_lock = "tools/browser_asset_graph/package-lock.json"
 checkout_input = "browser-acorn"
 dependencies = ["node"]
 
-# Corepack selects the npm writer from each project's packageManager. Its
-# launcher version/image is recorded; the package lock owns package versions.
+# npm is a runtime tool release: `python -m molt.tool_releases run npm` runs
+# its entrypoint on the pinned Node, so admission identifies it by that
+# installation, never PATH. Each npm project's packageManager names the pin;
+# `tools/pin_freshness.py --update npm` moves every literal below with it.
 [[toolchain_policy]]
-name = "corepack"
-executable = "corepack"
+name = "npm"
+projection = "runtime-tool-release"
+setup_command = "python -m molt.tool_releases provision npm"
+executable = "npm"
 version_args = ["--version"]
-version_pattern = '^[0-9]+\.[0-9]+\.[0-9]+$'
-setup_value = "Corepack npm packageManager launcher"
-setup_evidence = ["examples/edgebox/packages/edgebox-cloudflare/package.json::packageManager"]
+version_pattern = '^12\.2\.1$'
+setup_value = "12.2.1"
+setup_evidence = [
+  "config/tool_releases.toml::version = \"12.2.1\"",
+  "deploy/cloudflare/package.json::\"packageManager\": \"npm@12.2.1\"",
+  "examples/edgebox/packages/edgebox-cloudflare/package.json::\"packageManager\": \"npm@12.2.1\"",
+  "tools/browser_asset_graph/package.json::\"packageManager\": \"npm@12.2.1\"",
+]
 dependencies = ["node"]
 
 [[toolchain_policy]]
@@ -645,7 +654,7 @@ name = "edgebox-typescript"
 node_package = "typescript"
 package_lock = "examples/edgebox/packages/edgebox-cloudflare/package-lock.json"
 checkout_input = "edgebox-typescript"
-dependencies = ["node", "corepack"]
+dependencies = ["node", "npm"]
 
 [[toolchain_policy]]
 name = "rustc"
@@ -5833,9 +5842,11 @@ description = "Type-check the actual Edgebox Worker API against its locked depen
 globs = [
   "examples/edgebox/packages/edgebox-cloudflare/**",
   "src/molt/checkout_provisioning.py",
+  "src/molt/tool_releases.py",
+  "config/tool_releases.toml",
 ]
 gates = [
-  "python tools/guarded_exec.py --cwd examples/edgebox/packages/edgebox-cloudflare --timeout 120 -- corepack npm run check",
+  "python tools/guarded_exec.py --cwd examples/edgebox/packages/edgebox-cloudflare --timeout 120 -- python -m molt.tool_releases run npm -- run check",
 ]
 
 [[rule]]

@@ -559,7 +559,7 @@ def test_tool_release_lanes_run_the_pinned_release_first_on_path(
     from molt import dx, tool_releases
     from tools.proof_queue_pkg import guarded_execution as ge
 
-    assert "wasm-tools" in ge.tool_release_toolchains(PLAN)
+    assert {"wasm-tools", "uv"} <= ge.tool_release_toolchains(PLAN)
     assert "python" not in ge.tool_release_toolchains(PLAN)
 
     release = tool_releases.tool_release("wasm-tools")
@@ -600,8 +600,9 @@ def test_tool_release_lanes_run_the_pinned_release_first_on_path(
     assert env["PATH"].split(os.pathsep)[0] == str(executable.parent.resolve())
     assert env["PATH"].split(os.pathsep)[1:] == ambient.split(os.pathsep)
 
+    # A selection without a tool release provisions nothing and keeps PATH.
     untouched, prefixes = ge.prefer_tool_release_prefixes(
-        {"PATH": ambient}, ["python", "uv"], cwd=tmp_path
+        {"PATH": ambient}, ["python", "rustc"], cwd=tmp_path
     )
     assert prefixes == {} and untouched["PATH"] == ambient
 

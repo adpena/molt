@@ -196,7 +196,7 @@ def tool_release_toolchains(plan: "proof_plan.ProofPlan") -> frozenset[str]:
     return frozenset(
         policy.name
         for policy in plan.toolchain_policies
-        if policy.projection == "tool-release"
+        if policy.projection in proof_plan.RELEASE_PROJECTIONS
     )
 
 
@@ -227,6 +227,14 @@ def prefer_tool_release_prefixes(
     prefixes: dict[str, str] = {}
     for name in names:
         release = tool_releases.tool_release(name, state.ROOT)
+        if release.runtime is not None:
+            # A runtime tool (npm) runs through molt.tool_releases on its
+            # pinned runtime; provision both and leave PATH alone.
+            command = tool_releases.pinned_command(
+                name, state.ROOT, environ=resolved, cwd=Path(cwd), provision=True
+            )
+            prefixes[name] = str(command.tool.prefix)
+            continue
         discovery = tool_releases.provision_tool(release, toolchain_root)
         prefixes[name] = str(discovery.prefix)
         bin_dir = str(discovery.executable.parent.resolve())

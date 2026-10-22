@@ -58,6 +58,62 @@ def _default_python_version() -> str:
     return version
 
 
+_MOLT_MODULE_RUN = re.compile(r"\bpython3? -m molt\.")
+
+
+def _step_runs_with_env(
+    payload: dict[str, object],
+) -> list[tuple[str, str, dict[str, object]]]:
+    """(step name, run text, effective env) of each workflow or composite step."""
+    top = dict(payload.get("env") or {})
+    found: list[tuple[str, str, dict[str, object]]] = []
+    jobs = payload.get("jobs") or {}
+    groups = [
+        ({**top, **dict(job.get("env") or {})}, job.get("steps") or [])
+        for job in jobs.values()
+    ]
+    runs = payload.get("runs")
+    if isinstance(runs, dict):
+        groups.append((top, runs.get("steps") or []))
+    for env, steps in groups:
+        for step in steps:
+            run = step.get("run")
+            if isinstance(run, str):
+                found.append(
+                    (str(step.get("name")), run, {**env, **dict(step.get("env") or {})})
+                )
+    return found
+
+
+def test_every_step_that_runs_a_molt_module_can_import_molt() -> None:
+    """A bare `python3 -m molt.<module>` finds molt only through PYTHONPATH.
+
+    Setup syncs no project environment, and molt lives in `src`, so such a
+    step needs `uv run` (which syncs), an inline `PYTHONPATH=src`, or a
+    step, job or workflow `PYTHONPATH` naming `src` (HF-456 review A-N1:
+    formal.yml's Quint install lost it when it moved to the pinned npm).
+    """
+    files = [
+        *sorted((REPO_ROOT / ".github/workflows").glob("*.yml")),
+        *sorted((REPO_ROOT / ".github/actions").glob("*/action.yml")),
+    ]
+    offenders = []
+    checked = 0
+    for path in files:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+        for name, run, env in _step_runs_with_env(payload):
+            for line in run.splitlines():
+                if not _MOLT_MODULE_RUN.search(line):
+                    continue
+                checked += 1
+                if "uv run" in line or "PYTHONPATH=src" in line:
+                    continue
+                if "/src" not in str(env.get("PYTHONPATH", "")):
+                    offenders.append(f"{path.relative_to(REPO_ROOT)}: {name}")
+    assert checked
+    assert offenders == []
+
+
 def test_setup_project_callers_use_declared_inputs() -> None:
     action = yaml.safe_load(_read(".github/actions/setup-project/action.yml"))
     declared = set(action["inputs"])
@@ -1793,6 +1849,12 @@ def test_quint_workflows_pin_patched_node24_toolchain() -> None:
     )
     assert "Install Quint Rust evaluator" in formal_workflow
     assert "sha256sum --check" in formal_workflow
+    # Quint installs with the pinned npm into its own prefix, never PATH's npm.
+    assert (
+        'python3 -m molt.tool_releases run npm -- install --global --prefix "$RUNNER_TEMP/quint"'
+        in formal_workflow
+    )
+    assert "npm install -g" not in formal_workflow
 
     assert 'npm install -g "$MOLT_QUINT_NPM_PACKAGE"' not in nightly_workflow
     assert "actions/setup-node@" not in nightly_workflow

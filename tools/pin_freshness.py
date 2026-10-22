@@ -15,7 +15,8 @@ Each resolver applies the rule itself:
   this tool    the toolchain pins in config/ and rust-toolchain.toml, the
                CPython reference pins in config/verified_subset.toml (each on
                its own patch line, never a new line), the Actions pinned under
-               .github, and each npm `packageManager`.
+               .github, and npm (config/tool_releases.toml), which each npm
+               project's `packageManager` names.
 
 An exemption admits exactly one release, names its reason and ages out when
 that release is 7 days old:
@@ -45,7 +46,9 @@ that release is 7 days old:
                    no locked version moved. `molt update` runs it first.
   --update NAME    move one `config/tool_releases.toml` tool, Binaryen or the
                    WASI SDK to its target, accepting each asset only when its
-                   SHA-256 matches the upstream's own record.
+                   digest matches the upstream's own record (an npm tarball:
+                   the registry's SHA-512 integrity). Moving npm moves every
+                   npm project's `packageManager` with it.
 
 Advisories come from OSV (https://osv.dev) for pins and locks with an OSV
 coordinate, and from the `security` flag of nodejs.org's release index for
@@ -60,11 +63,13 @@ No third-party packages; set GITHUB_TOKEN to raise the GitHub API rate limit.
 from __future__ import annotations
 
 import argparse
+import base64
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 import functools
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -723,21 +728,18 @@ def collect_pins(
                 osv_version_advisories("GitHub Actions", repo, fetchers),
             )
         )
-    npm = functools.cache(lambda: npm_releases("npm", fetch))
-    for project in _npm_projects(root):
-        relative = project.relative_to(root).as_posix()
-        manager = json.loads((project / "package.json").read_text(encoding="utf-8"))
-        spelled = str(manager.get("packageManager", ""))
-        if spelled.startswith("npm@"):
-            pins.append(
-                Pin(
-                    f"npm ({relative})",
-                    f"{relative}/package.json packageManager",
-                    spelled.removeprefix("npm@").split("+", 1)[0],
-                    npm,
-                    osv_version_advisories("npm", "npm", fetchers),
-                )
+    if "npm" in tools:
+        # One pin; each npm project's packageManager is its projection
+        # (check_package_managers, package_manager_edits).
+        pins.append(
+            Pin(
+                "npm",
+                manifest,
+                tools["npm"].version,
+                lambda: npm_releases("npm", fetch),
+                osv_version_advisories("npm", "npm", fetchers),
             )
+        )
     unowned = set(tools) - {pin.name for pin in pins}
     if unowned:
         raise PinFreshnessError(
@@ -1036,6 +1038,40 @@ def _npm_projects(root: Path) -> list[Path]:
         root / directory
         for directory in tracked_manifest_dirs(root, "*package-lock.json")
     ]
+
+
+def check_package_managers(root: Path, version: str, out: TextIO | None = None) -> int:
+    """Report each npm project whose packageManager is not npm ``version``."""
+    out = sys.stdout if out is None else out
+    expected = f"npm@{version}"
+    failures = 0
+    for project in _npm_projects(root):
+        manifest = json.loads((project / "package.json").read_text(encoding="utf-8"))
+        declared = manifest.get("packageManager")
+        if declared != expected:
+            failures += 1
+            relative = project.relative_to(root).as_posix()
+            print(
+                f"ERROR   {relative}/package.json packageManager is {declared!r}; "
+                f"config/tool_releases.toml pins {expected}",
+                file=out,
+            )
+    return failures
+
+
+def package_manager_edits(root: Path, version: str) -> dict[Path, str]:
+    """Each npm project's package.json, naming npm ``version``.
+
+    npm writes package.json as two-space JSON with a final newline, so the
+    rewrite changes only the one field.
+    """
+    edits = {}
+    for project in _npm_projects(root):
+        path = project / "package.json"
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        manifest["packageManager"] = f"npm@{version}"
+        edits[path] = json.dumps(manifest, indent=2, ensure_ascii=False) + "\n"
+    return edits
 
 
 def _uv_registry_packages(lock_text: str) -> list[Mapping]:
@@ -1571,9 +1607,9 @@ def audit_locks(
 # --prune-expired: delete exemptions that have aged out, then relock.
 
 Runner = Callable[[Sequence[str], Path], None]
+# The pinned npm (config/tool_releases.toml), provisioned on use.
 NPM_RELOCK = [
-    "corepack",
-    "npm",
+    *tool_releases.run_command("npm"),
     "install",
     "--package-lock-only",
     "--ignore-scripts",
@@ -1723,8 +1759,12 @@ def prune_expired(
 
 @dataclass(frozen=True)
 class UpstreamAsset:
-    sha256: str
+    """The digest an upstream publishes for one asset: SHA-256, or SHA-512
+    (base64, as the npm registry's `dist.integrity` spells it)."""
+
+    sha256: str | None
     size: int | None
+    sha512: str | None = None
 
 
 def github_release_assets(
@@ -1753,9 +1793,33 @@ def checksum_manifest_assets(
     return assets
 
 
+def npm_registry_assets(
+    provenance: tool_releases.ToolProvenance, fetch: FetchJson
+) -> dict[str, UpstreamAsset]:
+    """The registry's own record of a version's tarball: its SHA-512."""
+    record = fetch(provenance.url)
+    dist = record.get("dist") if isinstance(record, dict) else None
+    tarball = tool_releases.npm_registry_tarball_url(provenance)
+    if not isinstance(dist, dict) or dist.get("tarball") != tarball:
+        raise PinFreshnessError(f"{provenance.url}: the registry names no {tarball}")
+    integrity = str(dist.get("integrity") or "")
+    if not integrity.startswith("sha512-"):
+        raise PinFreshnessError(f"{provenance.url}: no SHA-512 integrity")
+    return {
+        tarball.rsplit("/", 1)[-1]: UpstreamAsset(
+            None, None, integrity.removeprefix("sha512-")
+        )
+    }
+
+
 def _sha256_file(path: Path) -> str:
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def _sha512_base64(path: Path) -> str:
+    with path.open("rb") as stream:
+        return base64.b64encode(hashlib.file_digest(stream, "sha512").digest()).decode()
 
 
 def verified_download(
@@ -1768,15 +1832,22 @@ def verified_download(
 ) -> Path:
     filename = url.rsplit("/", 1)[-1]
     record = upstream.get(filename)
-    if record is None:
-        raise PinFreshnessError(f"{where}: upstream records no SHA-256 for {filename}")
+    if record is None or (record.sha256 is None and record.sha512 is None):
+        raise PinFreshnessError(f"{where}: upstream records no digest for {filename}")
     path = directory / filename
     fetch_file(url, path)
-    actual = _sha256_file(path)
-    if actual != record.sha256:
-        raise PinFreshnessError(
-            f"{where}: {filename} sha256 {actual} != upstream {record.sha256}"
-        )
+    if record.sha256 is not None:
+        actual = _sha256_file(path)
+        if actual != record.sha256:
+            raise PinFreshnessError(
+                f"{where}: {filename} sha256 {actual} != upstream {record.sha256}"
+            )
+    if record.sha512 is not None:
+        actual = _sha512_base64(path)
+        if actual != record.sha512:
+            raise PinFreshnessError(
+                f"{where}: {filename} sha512 {actual} != upstream {record.sha512}"
+            )
     size = path.stat().st_size
     if record.size is not None and record.size != size:
         raise PinFreshnessError(
@@ -1839,6 +1910,8 @@ def rewrite_policy(text: str, name: str, old: str, new: str) -> str:
     for before, after in (
         (f'"{old}"', f'"{new}"'),
         (f'\\"{old}\\"', f'\\"{new}\\"'),
+        # A `packageManager` spelling inside an evidence string.
+        (f'@{old}\\"', f'@{new}\\"'),
         (re.escape(old), re.escape(new)),
     ):
         block = block.replace(before, after)
@@ -1862,6 +1935,10 @@ def tool_release_edits(
         )
     elif release.provenance.kind == tool_releases.PROVENANCE_CHECKSUM_MANIFEST:
         upstream = checksum_manifest_assets(provenance_url, fetchers.fetch_text)
+    elif release.provenance.kind == tool_releases.PROVENANCE_NPM_REGISTRY:
+        upstream = npm_registry_assets(
+            replace(release.provenance, url=provenance_url), fetchers.fetch
+        )
     else:
         raise PinFreshnessError(f"unsupported provenance {release.provenance.kind!r}")
     table = f"tools.{release.name}"
@@ -1871,19 +1948,29 @@ def tool_release_edits(
     }
     for key, asset in release.assets.items():
         url = asset.url.replace(old, new)
-        member = asset.archive_member.replace(old, new)
         where = f"{release.name} {new}"
         path = verified_download(
             url, upstream, directory, fetchers.fetch_file, where=where
         )
-        if member not in _archive_members(path):
-            raise PinFreshnessError(f"{where}: {path.name} has no member {member}")
-        edits[f"{table}.assets.{key}"] = {
+        members = _archive_members(path)
+        moved: dict[str, object] = {
             "url": url,
             "size": path.stat().st_size,
             "sha256": _sha256_file(path),
-            "archive_member": member,
         }
+        if asset.archive_tree is not None:
+            # A runtime tool: its package tree must still hold its entrypoint.
+            entrypoint = f"{asset.archive_tree}/{release.entrypoint}"
+            if entrypoint not in members:
+                raise PinFreshnessError(f"{where}: {path.name} has no {entrypoint}")
+            moved["archive_tree"] = asset.archive_tree
+        else:
+            assert asset.archive_member is not None
+            member = asset.archive_member.replace(old, new)
+            if member not in members:
+                raise PinFreshnessError(f"{where}: {path.name} has no member {member}")
+            moved["archive_member"] = member
+        edits[f"{table}.assets.{key}"] = moved
         path.unlink()
     return edits
 
@@ -2049,11 +2136,17 @@ def update(
                 ),
                 plan_path: rewrite_policy(plan_text, name, pin.current, latest),
             }
+            if name == "npm":
+                edits.update(package_manager_edits(root, latest))
 
             def validate() -> None:
                 moved = tool_releases.load_tool_releases(root)[name]
                 if moved.version != latest:
                     raise PinFreshnessError(f"{manifest} still pins {moved.version}")
+                if name == "npm" and check_package_managers(
+                    root, latest, io.StringIO()
+                ):
+                    raise PinFreshnessError("an npm packageManager did not move")
 
         elif name == "binaryen":
             manifest = root / "config/binaryen_releases.toml"
@@ -2154,6 +2247,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 now=now,
                 early={record.package: record for record in records.exemptions},
             )
+            npm = next((pin for pin in pins() if pin.name == "npm"), None)
+            if npm is not None:
+                failures += check_package_managers(args.root, npm.current)
         else:
             failures += audit_locks(args.root, open_rows, fetchers)
         failures += check_exemptions(
