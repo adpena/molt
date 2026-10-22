@@ -744,6 +744,8 @@ def _land_one_batch(args: argparse.Namespace, git, paths) -> None:
             return
         (request,) = candidate.included
         record_result(paths, request, status=LandingStatus.FAILED, detail=str(exc))
+        # The runner's log is where an operator looks first: say why.
+        _fail(f"{request.id} failed: {exc}")
         retire_batch_plan(paths, batch)
         return
     landed = drv.require_git_object_id(sandbox.head_sha(), label="landed batch")

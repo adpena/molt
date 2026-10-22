@@ -1,22 +1,23 @@
 """Landing-gate execution for ``tools/molt_dev.py integrate``.
 
-Gates run in declared order and the first failure in that order halts the
+Gates report in declared order and the first failure in that order halts the
 landing. A gate's nonzero exit raises ``GateFailure``, a ``CandidateFailure``
 the landing queue bisects on; a stop of the runner itself stays a plain
-``DriverError``. The leading run of always gates (read-only whole-repository checks
-without Cargo outputs) executes through the one proof executor
-(``tools/proof_executor.py``): its admission bounds the block by the plan's
-executor ceiling and the gates' resource class, both capped by
-``molt.host_capacity``, and it leaves a receipt with each gate's duration and
-peak RSS. Every later gate runs alone (docs/design/host_capacity.md, "One
-scheduler"). Every gate writes its streams to files while it runs
-(`prepare_gate_streams`); the terminal shows a failure's bounded tail.
+``DriverError``. Every gate executes through the one proof executor
+(``tools/proof_executor.py``) in its plan resource class: gates that may build
+with Cargo share one target and run one at a time, pytest sessions run beside
+them in the memory slice the executor exports, and read-only checks fill the
+rest, all bounded by the plan's executor ceiling and ``molt.host_capacity``
+(docs/design/host_capacity.md, "One scheduler"). The block leaves a receipt
+with each gate's duration and peak RSS. Every gate writes its streams to files
+while it runs (`prepare_gate_streams`); the terminal shows a failure's bounded
+tail.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import datetime as dt
 import hashlib
 import json
@@ -39,6 +40,11 @@ if TYPE_CHECKING:
 # Local always gates share the repository-policy resource class with their CI
 # commands; a policy without that class admits up to the executor ceiling.
 GATE_RESOURCE_CLASS = "repository-policy"
+# Every gate that may build with Cargo shares one Cargo target, so those gates
+# run one at a time (a correctness bound, not capacity); pytest sessions size
+# their workers within the memory slice the executor exports to each.
+CARGO_GATE_RESOURCE_CLASS = "compiler-build-resource"
+PYTEST_GATE_RESOURCE_CLASS = "python-tests"
 LOCAL_GATE_FAMILY = "local_integration"
 # The largest always gate's process tree peaks below 1 GiB (structural_audit
 # 0.69 GB, generators 0.50 GB on the 2026-10 tree): the host-capacity unit.
@@ -49,6 +55,7 @@ class Gate(Protocol):
     command: str | tuple[str, ...]
     toolchains: tuple[str, ...]
     concurrent: bool
+    pytest: bool
 
 
 class Progress(Protocol):
@@ -322,6 +329,33 @@ def observe_gate_capacity(
         return ()
 
 
+def gate_resource_class(gate: Gate) -> str:
+    """The plan resource class one landing gate is admitted in. A pytest
+    session counts against the session limit even when its rules declare
+    Cargo; `_cargo_chain` keeps every Cargo-bearing gate off the others."""
+    if gate.pytest:
+        return PYTEST_GATE_RESOURCE_CLASS
+    if "cargo" in gate.toolchains:
+        return CARGO_GATE_RESOURCE_CLASS
+    return GATE_RESOURCE_CLASS
+
+
+def _cargo_chain(commands: list[_LocalGateCommand]) -> list[_LocalGateCommand]:
+    """Each gate that may build with Cargo waits for the previous one in
+    declared order: they share one target, and a pytest session that builds
+    is still admitted as a pytest session. The executor runs a dependent only
+    after its dependency passes, so the first failure still wins."""
+    chained: list[_LocalGateCommand] = []
+    previous: str | None = None
+    for command in commands:
+        if "cargo" in command.gate.toolchains:
+            if previous is not None:
+                command = replace(command, dependencies=(previous,))
+            previous = command.id
+        chained.append(command)
+    return chained
+
+
 def run_selected_gates(
     gates: list[Gate],
     runtime: GateRuntime,
@@ -329,20 +363,43 @@ def run_selected_gates(
     *,
     host_limit: Callable[[], int] = concurrent_gate_limit,
 ) -> None:
-    """Run gates in declared order; the first failure in that order halts."""
+    """Read-only checks first; then the heavy gates overlap in one block.
+
+    The read-only checks run as before: the leading always gates as one
+    executor block, then each rule check in declared order. A failing check
+    therefore stops every build before it starts. The heavy gates (Cargo and
+    pytest) then share one executor block: Cargo gates run one at a time on
+    their shared target while pytest sessions run beside them, each sized
+    within the exported memory slice. The first failure in declared order
+    within a phase halts the landing and cancels the gates declared after it.
+    """
+    ordered = list(enumerate(gates, start=1))
+    light = [
+        (ordinal, gate)
+        for ordinal, gate in ordered
+        if gate_resource_class(gate) == GATE_RESOURCE_CLASS
+    ]
+    heavy = [
+        (ordinal, gate)
+        for ordinal, gate in ordered
+        if gate_resource_class(gate) != GATE_RESOURCE_CLASS
+    ]
     block = 0
-    while (
-        block < len(gates)
-        and gates[block].concurrent
-        and not runtime.cargo_outputs.get(gates[block].toolchains)
-    ):
+    while block < len(light) and light[block][1].concurrent:
         block += 1
     if block >= 2:
-        _run_executor_block(gates[:block], runtime, gate_seconds, host_limit())
+        _run_executor_block(light[:block], runtime, gate_seconds, host_limit())
     else:
         block = 0
-    for ordinal, gate in enumerate(gates[block:], start=block + 1):
+    for ordinal, gate in light[block:]:
         _run_serial_gate(ordinal, gate, runtime, gate_seconds)
+    if len(heavy) >= 2:
+        _run_executor_block(
+            heavy, runtime, gate_seconds, host_limit(), receipt_kind="heavy"
+        )
+    else:
+        for ordinal, gate in heavy:
+            _run_serial_gate(ordinal, gate, runtime, gate_seconds)
 
 
 def _run_serial_gate(
@@ -446,28 +503,53 @@ class _BlockState:
             self.first_failure = min(self.first_failure, ordinal)
 
 
-def _local_plan(runtime: GateRuntime, block: int, host: int) -> _LocalGatePlan:
-    ceiling = min(host, block, runtime.executor_max_workers or host)
-    max_parallel = min(
-        ceiling, runtime.resource_limits.get(GATE_RESOURCE_CLASS, ceiling)
-    )
+def _local_plan(
+    runtime: GateRuntime, classes: dict[str, int], host: int
+) -> _LocalGatePlan:
+    ceiling = min(host, sum(classes.values()), runtime.executor_max_workers or host)
     return _LocalGatePlan(
         receipt_schema=proof_receipts.RECEIPT_SCHEMA,
         executor_max_workers=ceiling,
-        resource_policies=(_ResourcePolicy(GATE_RESOURCE_CLASS, max_parallel),),
+        resource_policies=tuple(
+            _ResourcePolicy(
+                name, min(ceiling, runtime.resource_limits.get(name, ceiling))
+            )
+            for name in sorted(classes)
+        ),
     )
+
+
+def _memory_slice(plan: _LocalGatePlan, classes: dict[str, int]) -> int | None:
+    """The memory one gate may claim while the executor runs others beside it.
+
+    The proof executor's own rule (``proof_plan._command_memory_share``): the
+    memory beyond the reserve, divided by the most gates that can run at once.
+    """
+    from molt import host_capacity
+
+    capacity = host_capacity.memory_capacity(os.environ)
+    _total, available = capacity.bounded_bytes
+    if available is None:
+        return None
+    slots = sum(
+        min(classes[policy.name], policy.max_parallel)
+        for policy in plan.resource_policies
+    )
+    concurrency = max(1, min(plan.executor_max_workers, slots))
+    usable = max(0, available - host_capacity.headroom_bytes(capacity))
+    return max(1, usable // concurrency)
 
 
 def _local_command(ordinal: int, gate: Gate, cell: str) -> _LocalGateCommand:
     cmd = gate.command
     argv = ("/bin/sh", "-c", cmd) if isinstance(cmd, str) else tuple(cmd)
     return _LocalGateCommand(
-        id=f"local.always.{ordinal}",
+        id=f"local.{'always' if gate.concurrent else 'gate'}.{ordinal}",
         family=LOCAL_GATE_FAMILY,
         data={
             "cell": cell,
             "tiers": ["local-integration"],
-            "resource_class": GATE_RESOURCE_CLASS,
+            "resource_class": gate_resource_class(gate),
             # Local always gates keep their unbounded deadline.
             "timeout_budget": "none",
             "timeout_seconds": 0,
@@ -479,21 +561,46 @@ def _local_command(ordinal: int, gate: Gate, cell: str) -> _LocalGateCommand:
 
 
 def _run_executor_block(
-    gates: list[Gate],
+    gates: list[tuple[int, Gate]],
     runtime: GateRuntime,
     gate_seconds: list[tuple[float, str]],
     host: int,
+    *,
+    receipt_kind: str | None = None,
 ) -> None:
     """Run the block through the proof executor; report it in declared order."""
     from tools.proof_plan import _normalized_arch, _normalized_os
 
-    plan = _local_plan(runtime, len(gates), host)
+    classes: dict[str, int] = {}
+    for _ordinal, gate in gates:
+        name = gate_resource_class(gate)
+        classes[name] = classes.get(name, 0) + 1
+    plan = _local_plan(runtime, classes, host)
     cell = f"{_normalized_os()}-{_normalized_arch()}-local"
-    commands = [
-        _local_command(ordinal, gate, cell)
-        for ordinal, gate in enumerate(gates, start=1)
-    ]
-    state = _BlockState(first_failure=len(gates) + 1)
+    commands = _cargo_chain(
+        [_local_command(ordinal, gate, cell) for ordinal, gate in gates]
+    )
+    state = _BlockState(first_failure=max(ordinal for ordinal, _gate in gates) + 1)
+    receipt_path = (
+        runtime.receipt_path
+        if receipt_kind is None
+        else runtime.receipt_path.with_name(
+            f"{runtime.receipt_path.stem}.{receipt_kind}{runtime.receipt_path.suffix}"
+        )
+    )
+    from molt import host_capacity
+
+    memory_slice = _memory_slice(plan, classes)
+    environments = {
+        toolchains: (
+            environment
+            if memory_slice is None
+            else environment.updated(
+                {host_capacity.MEMORY_SLICE_ENV: str(memory_slice)}
+            )
+        )
+        for toolchains, environment in runtime.environments.items()
+    }
 
     def run_command(
         _plan: Any, command: _LocalGateCommand, cancel: threading.Event
@@ -523,20 +630,53 @@ def _run_executor_block(
         runtime.progress.emit(
             "gate_started", **gate_details(command.ordinal, command.gate)
         )
+        shown = display(command.gate.command)
+        paths = runtime.cargo_outputs.get(command.gate.toolchains, ())
+        required = runtime.capacity_requirements.get(command.gate.toolchains, 0)
         started = time.monotonic()
         streams, stream_error = prepare_gate_streams(
             runtime.output_dir, command.ordinal
         )
         record.update(stream_record(streams, stream_error))
         try:
+            before = (
+                runtime.observe_capacity(
+                    paths, required_bytes=required, phase="before", gate=shown
+                )
+                if paths
+                else ()
+            )
             outcome = runtime.run_captured_gate(
                 command.gate.command,
                 runtime.repo,
-                runtime.environments[command.gate.toolchains],
+                environments[command.gate.toolchains],
                 lambda: cancel.is_set() or state.moot(command.ordinal),
                 streams,
             )
-        except BaseException as exc:  # reported in declared order below
+            if paths:
+                runtime.observe_capacity(
+                    paths,
+                    required_bytes=required,
+                    phase="after",
+                    gate=shown,
+                    before=before,
+                )
+        except Exception as exc:
+            # The runner itself failed, not the gate: stop the block, and keep
+            # this record (its streams and duration) for the receipt; the
+            # declared-order report below raises the original error.
+            state.outcomes[command.id] = exc
+            state.fail(command.ordinal)
+            return {
+                **record,
+                "duration_seconds": round(time.monotonic() - started, 6),
+                "status": "failure",
+                "returncode": 2,
+                "executor_error": f"{type(exc).__name__}: {exc}",
+                "failure_scope": "global",
+                "failure_reason": "the gate runner raised",
+            }
+        except BaseException as exc:  # an interrupt stops the block at once
             state.outcomes[command.id] = exc
             state.fail(command.ordinal)
             raise
@@ -567,7 +707,7 @@ def _run_executor_block(
     proof_executor.execute_commands(
         plan,
         commands,
-        runtime.receipt_path,
+        receipt_path,
         _source_tree_changes=runtime.source_changes,
         toolchain_fingerprints=lambda _policies, _names: dict(runtime.toolchains),
         _authority_sha256=lambda _plan: authority.hexdigest(),
@@ -579,14 +719,14 @@ def _run_executor_block(
         _cache_disposition=lambda _command: "none",
     )
     wall = time.monotonic() - block_started
-    receipt = json.loads(runtime.receipt_path.read_text(encoding="utf-8"))
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     records = {record["id"]: record for record in receipt.get("commands", ())}
 
     def stopped(where: str) -> DriverError:
         # The runner, not the candidate, stopped the block.
         errors = "; ".join(receipt.get("errors", ()) or ("no reason recorded",))
         return DriverError(
-            f"gate block stopped {where}: {errors}; receipt {runtime.receipt_path}"
+            f"gate block stopped {where}: {errors}; receipt {receipt_path}"
         )
 
     for command in commands:
@@ -637,5 +777,5 @@ def _run_executor_block(
     runtime.say(
         f"    gate block: {len(commands)} gates in {wall:.1f} s wall through the "
         f"proof executor, at most {plan.executor_max_workers} at once; "
-        f"receipt {runtime.receipt_path}"
+        f"receipt {receipt_path}"
     )
