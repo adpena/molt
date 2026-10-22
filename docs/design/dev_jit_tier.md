@@ -382,7 +382,7 @@ stdlib set into the runtime image and compile only the application partition.
   program's own path keeps the parent's environment and arguments) and
   `closed_stderr_start.py` (a program started with fd 2 closed runs under both tiers; both
   then see the runtime's `/dev/null` on fd 2 where CPython sees it closed, an expected
-  failure until that runtime defect is fixed). The harness sets `sys.executable` to the
+  failure until the runtime keeps a closed fd 2 closed, HF-455). The harness sets `sys.executable` to the
   CPython oracle for every compiled program, so `tests/cli/test_jit_run_tier.py` proves
   the `sys.executable` path: executing an image starts its runner with the image as
   argv[0] and the new arguments.
