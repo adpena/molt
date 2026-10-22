@@ -157,14 +157,17 @@ def export_native_toolchain(
     store = native_runtime_store(selection.project_root)
     try:
         # Renewed before the read, so no eviction races the export.
-        store.record_use(identity.digest)
-        generation = native_runtime_store_generation(
-            store,
-            identity,
-            inputs.environment,
-            runtime_name=selection.runtime_lib.name,
-            cargo_profile=selection.runtime_cargo_profile,
-            target_triple=None,
+        generation = (
+            native_runtime_store_generation(
+                store,
+                identity,
+                inputs.environment,
+                runtime_name=selection.runtime_lib.name,
+                cargo_profile=selection.runtime_cargo_profile,
+                target_triple=None,
+            )
+            if store.record_use(identity.digest)
+            else None
         )
     except (OSError, ProductStoreError) as exc:
         raise NativeToolchainTransferError(str(exc)) from exc

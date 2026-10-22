@@ -112,20 +112,23 @@ def _verified_backend_receipts(
     store = _backend_binary.host_tool_store(molt_root)
     key = _backend_binary.host_tool_identity(selection.binary, current)
     # Renewed before the read, so no eviction races it (design 56, 2.8).
-    store.record_use(key)
-    admission = next(
-        (
-            stored
-            for stored in _backend_binary.stored_host_tools(
-                store,
-                key,
-                selection.binary,
-                current,
-                environment=build_admission.plan.environment,
-            )
-            if stored.generation.resolve() == binary.resolve()
-        ),
-        None,
+    admission = (
+        next(
+            (
+                stored
+                for stored in _backend_binary.stored_host_tools(
+                    store,
+                    key,
+                    selection.binary,
+                    current,
+                    environment=build_admission.plan.environment,
+                )
+                if stored.generation.resolve() == binary.resolve()
+            ),
+            None,
+        )
+        if store.record_use(key)
+        else None
     )
     if admission is None:
         return None, (

@@ -133,7 +133,7 @@ def _wrapper_build_default_consumer_path(
 
 # The files a cached JIT image runs besides itself. A cached launch is valid
 # only while every one still exists; a hit renews their retention windows.
-_JIT_LAUNCH_ARTIFACTS = ("runner", "runtime_image")
+_JIT_LAUNCH_ARTIFACTS = ("runner", "runtime_image", "callable_symbols")
 
 
 def _wrapper_build_cache_semantic_env(env: Mapping[str, str]) -> dict[str, str]:
@@ -401,19 +401,20 @@ def _read_wrapper_build_cache_contract(
     if tier is RunTier.JIT:
         if not all(name in artifacts for name in _JIT_LAUNCH_ARTIFACTS):
             return None
-        from molt.cli.jit_runner_tool import record_jit_runner_use
-        from molt.cli.jit_runtime_image import record_jit_runtime_image_use
+        from molt.cli.product_store import record_stored_file_use
 
         try:
-            # A hit binds both generations, as the build that wrote it did.
-            # Each use checks its entry under the store lock and renews it, so
-            # eviction cannot remove it during the run; an evicted entry is a
-            # miss (GenerationEvicted).
-            record_jit_runner_use(artifacts["runner"])
-            record_jit_runtime_image_use(artifacts["runtime_image"])
+            # A JIT start reads every file its image names: the runner, the
+            # runtime image and the runtime's callable-symbol table. A hit
+            # renews each one's store entry under the ledger lock, so eviction
+            # cannot remove it during the run; an evicted entry is a miss.
+            stored = all(
+                record_stored_file_use(artifacts[name])
+                for name in _JIT_LAUNCH_ARTIFACTS
+            )
         except (OSError, ValueError):
             return None
-        if not all(artifacts[name].is_file() for name in _JIT_LAUNCH_ARTIFACTS):
+        if not stored:
             return None
     bundle_root = manifest.get("bundle_root")
     return _WrapperBuildContract(

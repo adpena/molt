@@ -142,6 +142,7 @@ def cache_evict(json_output: bool, *, kind: str, identity: str) -> int:
     entry the way idle eviction does, so readers never see it partial
     (``molt.cli.product_store``, design 56 section 2.8).
     """
+    from molt.cli.product_kinds import product_kind
     from molt.cli.product_store import ProductStore
 
     root = compiler_source_root()
@@ -150,7 +151,7 @@ def cache_evict(json_output: bool, *, kind: str, identity: str) -> int:
         return root_error
     assert root is not None
     try:
-        store = ProductStore.of(kind, root)  # type: ignore[arg-type]
+        store = ProductStore.of(product_kind(kind), root)
         entry = store.entry(identity)
         evicted = store.evict(identity)
     except (OSError, ValueError, RuntimeError) as exc:

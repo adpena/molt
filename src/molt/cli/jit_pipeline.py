@@ -30,7 +30,10 @@ from molt.cli.build_results import (
 )
 from molt.cli.jit_image import publish_jit_image
 from molt.cli.jit_runner_tool import ensure_jit_runner
-from molt.cli.jit_runtime_image import ensure_jit_runtime_image
+from molt.cli.jit_runtime_image import (
+    ensure_jit_runtime_image,
+    jit_runtime_image_store,
+)
 from molt.cli.models import (
     _PreparedBuildConfig,
     _PreparedBuildPreamble,
@@ -178,6 +181,7 @@ def _run_jit_pipeline(
             else resolve_native_target_spec(output_layout.target_triple)
         )
         runtime_image = ensure_jit_runtime_image(
+            store=jit_runtime_image_store(molt_root),
             binding=binding,
             target=native_target,
             sysroot_path=prepared_build_roots.sysroot_path,
@@ -246,6 +250,7 @@ def _run_jit_pipeline(
         "jit_image": str(image),
         "runner": str(runner),
         "runtime_image": str(runtime_image),
+        "callable_symbols": str(binding.callable_symbols.path),
     }
     return _emit_build_result_json(
         data=data,

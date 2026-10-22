@@ -813,14 +813,15 @@ def admit_stored_native_runtime(
 ) -> NativeRuntimeGeneration | None:
     """The stored generation built from this plan's inputs and environment.
 
-    The entry is renewed before it is read, so no eviction races the read. A
-    variant built under another observed Cargo environment is not this one
-    and is not read. This plan's own variant, when corrupt, raises
-    ``ProductStoreError``.
+    The entry is renewed before it is read, so no eviction races the read; an
+    absent entry is a miss. A variant built under another observed Cargo
+    environment is not this one and is not read. This plan's own variant,
+    when corrupt, raises ``ProductStoreError``.
     """
     started = time.perf_counter()
     try:
-        plan.store.record_use(plan.build_identity.digest)
+        if not plan.store.record_use(plan.build_identity.digest):
+            return None
         return native_runtime_store_generation(
             plan.store,
             plan.build_identity,

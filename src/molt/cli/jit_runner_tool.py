@@ -13,8 +13,6 @@ import os
 from pathlib import Path
 
 from molt.cli.backend_binary import _ensure_backend_binary
-from molt.cli.backend_generation import BACKEND_GENERATIONS_DIR
-from molt.cli.product_store import ProductStore
 from molt.cli.runtime_paths import _cargo_profile_dir, _cargo_target_root
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.host_tool_products import HostToolProduct
@@ -57,21 +55,3 @@ def ensure_jit_runner(
         raise ValueError(f"JIT runner admission failed: {result.message}")
     assert result.binary is not None
     return result.binary
-
-
-def record_jit_runner_use(runner: Path) -> None:
-    """Renew the product store entry of the runner a cached launch runs.
-
-    ``runner`` is a generation of a stored host tool,
-    ``<store>/<identity>/<variant>/.molt-backend-generations/<name>/<sha256>/<name>``;
-    the store entry is the unit of retention (HF-390). An evicted entry
-    raises ``GenerationEvicted``, a miss.
-    """
-    generations = runner.parent.parent
-    if (
-        generations.parent.name != BACKEND_GENERATIONS_DIR
-        or generations.name != runner.name
-    ):
-        raise ValueError(f"not a JIT runner generation: {runner}")
-    entry = generations.parent.parent.parent
-    ProductStore(entry.parent).record_use(entry.name)
