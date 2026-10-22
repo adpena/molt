@@ -1,4 +1,5 @@
 from molt.compilation_target import admit_target
+from molt.tool_releases import run_command
 import base64
 import importlib
 import json
@@ -603,16 +604,15 @@ def test_cli_update_check_json() -> None:
             "runtime/molt-runtime/fuzz/Cargo.toml",
             "tools/proof_supervisor/Cargo.toml",
         ]
-    npm_steps = [
-        entry for entry in steps if entry["cmd"][:3] == ["corepack", "npm", "update"]
-    ]
+    npm = [*run_command("npm"), "update"]
+    npm_steps = [entry for entry in steps if entry["cmd"][: len(npm)] == npm]
     assert [Path(entry["cwd"]).relative_to(ROOT).as_posix() for entry in npm_steps] == [
         "deploy/cloudflare",
         "examples/edgebox/packages/edgebox-cloudflare",
         "tools/browser_asset_graph",
     ]
     assert all(
-        entry["cmd"][3:]
+        entry["cmd"][len(npm) :]
         == ["--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund"]
         for entry in npm_steps
     )

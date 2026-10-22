@@ -3,6 +3,7 @@ from __future__ import annotations
 from molt.compilation_target import admit_target
 
 from molt.cli import wasm_link_inputs
+from molt.tool_releases import run_command
 from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
 
 import importlib
@@ -1255,7 +1256,7 @@ def test_cli_update_steps_use_memory_guard(
         _MaintenanceStep("probe", ["python3", "-c", "print('ok')"], ROOT, "toolchain"),
         _MaintenanceStep(
             "npm-update-project",
-            ["corepack", "npm", "update", "--package-lock-only", "--ignore-scripts"],
+            [*run_command("npm"), "update", "--package-lock-only", "--ignore-scripts"],
             ROOT / "deploy/cloudflare",
             "lock",
         ),
@@ -1265,7 +1266,10 @@ def test_cli_update_steps_use_memory_guard(
     def fake_run_completed(cmd, **kwargs):
         calls.append({"cmd": list(cmd), **kwargs})
         return subprocess.CompletedProcess(
-            cmd, 9 if failure and cmd[:2] == ["corepack", "npm"] else 0, "ok\n", ""
+            cmd,
+            9 if failure and tuple(cmd[:6]) == run_command("npm") else 0,
+            "ok\n",
+            "",
         )
 
     monkeypatch.setattr(
