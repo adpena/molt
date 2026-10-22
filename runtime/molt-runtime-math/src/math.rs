@@ -2295,7 +2295,7 @@ fn statistics_quantiles_value(
         return Some(not_implemented_bits(py));
     }
     let mut floats = Vec::with_capacity(values.len());
-    for bits in values {
+    for &bits in values.iter() {
         if !exact_builtin_real(py, bits) {
             return Some(not_implemented_bits(py));
         }
@@ -2349,7 +2349,7 @@ fn statistics_harmonic_mean_value(py: &PyToken, data: u64) -> Option<u64> {
         );
     }
     let mut total = StatisticsExactSum::default();
-    for &bits in &values {
+    for &bits in values.iter() {
         if !exact_builtin_real(py, bits) {
             return Some(not_implemented_bits(py));
         }

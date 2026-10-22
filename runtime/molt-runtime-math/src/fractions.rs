@@ -6,7 +6,7 @@ use molt_runtime_core::numeric_ratio::{RatioFloatError, ratio_to_f64};
 use molt_runtime_core::prelude::*;
 use num_bigint::BigInt;
 use num_integer::Integer;
-use num_traits::{One, Signed, ToPrimitive, Zero};
+use num_traits::{One, Signed, Zero};
 
 // ---------------------------------------------------------------------------
 // FractionHandle – always in lowest terms, denominator > 0
