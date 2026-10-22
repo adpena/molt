@@ -12,13 +12,13 @@ import pytest
 
 from tests.process_guard_common import run_guarded_test_process
 
+from molt.builtin_callables import BUILTIN_FUNC_SPECS
 from molt._wasm_abi_generated import wasm_runtime_callable_arity
 from molt.compat import CompatibilityError
 from molt.compiler_analysis.python_binding_flow import analyze_python_source_bindings
 from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator, compile_to_tir
 from molt.logical_source_paths import toolchain_logical_path
 from molt.frontend._types import (
-    BUILTIN_FUNC_SPECS,
     OBJECT_CLASS,
     BoundMethodHint,
     BuiltinClass,

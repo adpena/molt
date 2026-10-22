@@ -1558,3 +1558,73 @@ fn raw_custom_type_allocator_preserves_captured_member_extent_and_heap_ownership
         assert!(!crate::exception_pending(&py));
     });
 }
+
+#[test]
+fn structsequence_c_headers_preserve_static_heap_hidden_and_name_contracts() {
+    unsafe extern "C" {
+        fn molt_linked_structseq_probe(edge: *mut PyObject) -> std::os::raw::c_int;
+        fn molt_public_structseq_probe(edge: *mut PyObject) -> std::os::raw::c_int;
+    }
+    let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+    molt_cpython_abi_test_support::link();
+    with_gil(|_py| unsafe {
+        let edge = refcount::OwnedPyObject::from_owned(mapping::PyDict_New());
+        assert!(!edge.as_ptr().is_null());
+        for (header, probe) in [
+            (
+                "linked",
+                molt_linked_structseq_probe
+                    as unsafe extern "C" fn(*mut PyObject) -> std::os::raw::c_int,
+            ),
+            (
+                "public",
+                molt_public_structseq_probe
+                    as unsafe extern "C" fn(*mut PyObject) -> std::os::raw::c_int,
+            ),
+        ] {
+            let references = (*edge.as_ptr()).ob_refcnt;
+            let status = probe(edge.as_ptr());
+            if status != 0 {
+                // Keep the original indicator intact while rendering the exact
+                // returned error; a numeric C checkpoint alone hides its owner.
+                let mut kind = ptr::null_mut();
+                let mut value = ptr::null_mut();
+                let mut traceback = ptr::null_mut();
+                errors::PyErr_Fetch(&raw mut kind, &raw mut value, &raw mut traceback);
+                let description = errors::with_preserved_error(|| {
+                    if kind.is_null() {
+                        return String::from("no pending exception");
+                    }
+                    let name = std::ffi::CStr::from_ptr((*kind.cast::<PyTypeObject>()).tp_name)
+                        .to_string_lossy();
+                    if value.is_null() {
+                        return format!("{name}: no exception value");
+                    }
+                    let rendered =
+                        refcount::OwnedPyObject::from_owned(typeobj::PyObject_Str(value));
+                    let text = if rendered.as_ptr().is_null() {
+                        ptr::null()
+                    } else {
+                        molt_cpython_abi::api::strings::PyUnicode_AsUTF8(rendered.as_ptr())
+                    };
+                    if text.is_null() {
+                        format!("{name}: exception rendering failed")
+                    } else {
+                        format!(
+                            "{name}: {}",
+                            std::ffi::CStr::from_ptr(text).to_string_lossy()
+                        )
+                    }
+                });
+                errors::PyErr_Restore(kind, value, traceback);
+                panic!("{header} struct-sequence checkpoint {status}: {description}");
+            }
+            assert_eq!(
+                (*edge.as_ptr()).ob_refcnt,
+                references,
+                "{header} hidden owner retirement"
+            );
+            assert!(errors::PyErr_Occurred().is_null());
+        }
+    });
+}

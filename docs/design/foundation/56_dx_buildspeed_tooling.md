@@ -161,8 +161,10 @@ only on the file's bytes, an identity text (the repository-relative path, or
 nothing when the result ignores the path) and the scanner's code. The record key
 is SHA-256 over the identity and the bytes. The code generation digests the
 interpreter identity, the scanner's own file and every loaded first-party module.
-Publication recomputes the generation and publishes nothing when a module was
-imported or edited during the run. A record holds JSON facts, never a parse
+Publication recomputes the generation and refuses edited initial sources.
+First-party modules imported later are recorded by checkout-relative path and
+content digest, checked before replay. A late import outside the checkout or an
+unreadable source prevents publication. A record holds JSON facts, never a parse
 tree: a few integers and strings per file for most scanners, and the sites and
 function facts of each module for the environment scan (7.2 MB for 5,449 files,
 parsed in 42 ms). The rejected whole-tree AST memo retained every tree in one
@@ -194,6 +196,30 @@ traces the files and environment a test reads; records cover only pure per-file
 operations, whose inputs are their arguments. Whole-gate tracing would repeat the
 soundness gaps (environment reads, stat probes) that rejected the HF-263
 test-result cache.
+
+The shared pruned walker retains `os.scandir()` entries for one directory,
+closes that enumeration before descent and sorts names deterministically. It
+reuses each entry's native type metadata instead of statting every ordinary file
+again, following [PEP 471](https://peps.python.org/pep-0471/) and
+[CPython's directory walker](https://github.com/python/cpython/blob/v3.12.13/Lib/os.py#L358-L418).
+Excluded entries are removed before type queries. File symlinks remain visible;
+directory symlinks are not descended. On a metadata-query error only, the
+corresponding public `Path` predicate owns the host interpreter's suppression or
+propagation policy, including version and Windows differences. This does not
+promise an atomic filesystem snapshot. Directory read failures still skip that
+directory, and no open iterator survives a failure or the move to its children.
+
+The generator-manifest gate uses the same pruned traversal and operation-local
+source reads. Each pass releases its source view before the next pass starts;
+excluded directories are pruned before enumeration. Only the pure per-file
+Rust-match findings replay, under a key over the relative path, current bytes,
+each relevant live enum's
+variants and that file's audited-default admission. The current file inventory,
+generated/test ownership, enum discovery, manifest checks and baseline ratchet run
+on every invocation. File additions, removals and ownership or policy changes
+therefore affect the next verdict even when earlier file facts replay. The
+idempotence mode still executes every declared generator check; whole gate
+receipts remain evidence, not cached verdicts.
 
 **Result.** Three alternating base/new rounds of all 24 gates at the lane head,
 on one host under a competing load average of 14 to 25, every gate passing:

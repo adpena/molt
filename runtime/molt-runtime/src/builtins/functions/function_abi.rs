@@ -1183,12 +1183,50 @@ pub extern "C" fn molt_function_set_builtin(func_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, { function_set_builtin_class(_py, func_bits, false) })
 }
 
+/// Explicit METH_NOARGS/METH_O module-function promotion. The positional count
+/// declares the public convention; it is checked against the executable before
+/// any callable state is published.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_function_set_fixed_builtin(func_bits: u64, positional_count: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        if exception_pending(py) {
+            return MoltObject::none().bits();
+        }
+        let Some(count) = obj_from_bits(positional_count).as_int() else {
+            return raise_exception::<_>(
+                py,
+                "TypeError",
+                "fixed builtin positional count must be an integer",
+            );
+        };
+        let Some(convention) = u64::try_from(count).ok().and_then(
+            molt_cpython_abi::api::cfunction::CFunctionConvention::from_fixed_positional_count,
+        ) else {
+            return raise_exception::<_>(
+                py,
+                "ValueError",
+                "fixed builtin positional count must be zero or one",
+            );
+        };
+        function_set_builtin_class_with_convention(py, func_bits, false, Some(convention))
+    })
+}
+
 /// Assign the native callable class before publication. The defining-class
 /// calling convention is a distinct subtype, not a second function layout.
 pub(crate) fn function_set_builtin_class(
     _py: &PyToken<'_>,
     func_bits: u64,
     has_defining_class: bool,
+) -> u64 {
+    function_set_builtin_class_with_convention(_py, func_bits, has_defining_class, None)
+}
+
+fn function_set_builtin_class_with_convention(
+    _py: &PyToken<'_>,
+    func_bits: u64,
+    has_defining_class: bool,
+    fixed_convention: Option<molt_cpython_abi::api::cfunction::CFunctionConvention>,
 ) -> u64 {
     let Some(func_ptr) = obj_from_bits(func_bits).as_ptr() else {
         return raise_exception::<_>(_py, "TypeError", "expected function");
@@ -1224,6 +1262,7 @@ pub(crate) fn function_set_builtin_class(
                 super::native_callable::NativeCallableKind::Function
             },
             self_bits: module,
+            fixed_convention,
             ..super::native_callable::NativeCallableSpec::uncached_function()
         };
         if !super::native_callable::configure_native_callable(_py, func_ptr, spec) {
@@ -2077,6 +2116,7 @@ mod function_type_execution_kind_tests {
                             self_bits: Some(classes.object),
                             cache: None,
                             text_signature: Some("($self, /)"),
+                            fixed_convention: None,
                         }
                     ));
                     drop(reset);

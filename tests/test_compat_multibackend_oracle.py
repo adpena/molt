@@ -313,6 +313,9 @@ def test_adapter_child_receives_atomic_selected_capabilities(
             return compat_backends.BackendResult("", "", 0)
         # No compiler or target execution is claimed: the real guarded child
         # observes the exact environment each adapter would give its artifact.
+        assert kwargs["phase"] == (
+            "first_run" if adapter is compat_backends.LlvmAdapter else "run"
+        )
         return real_guarded_run(
             [
                 sys.executable,
@@ -2185,8 +2188,10 @@ def test_native_failure_cannot_replace_the_selected_budget_or_outcome(
     calls = []
 
     def native(file, profile, *, execution_context):
-        assert execution_context.budget is budget
-        calls.append(budget.limit(policy.phase("native", "build")))
+        attempt = execution_context.budget
+        assert attempt.policy is budget.policy
+        assert attempt.deadline == 8.0  # Native's 6+2, excluding CPython's 2.
+        calls.append(attempt.limit(policy.phase("native", "build")))
         clock.now = 10.0 - remaining
         return failure
 

@@ -2290,6 +2290,26 @@ pub(crate) unsafe fn class_name_bits(ptr: *mut u8) -> u64 {
     unsafe { ClassReferenceSlot::Name.load(ptr) }
 }
 
+/// Native tp_name is a factory fact until the canonical __name__ setter commits.
+/// Namespace module/qualname mutation does not affect this exact-class fact.
+pub(crate) unsafe fn class_native_name_bits(ptr: *mut u8) -> u64 {
+    unsafe {
+        use super::class_storage::{ClassDeclaration, ClassReferenceSlot, class_declares};
+        if class_declares(ptr, ClassDeclaration::StructSequence)
+            && ClassReferenceSlot::NativeModule.load(ptr) != 0
+        {
+            let spec = ClassReferenceSlot::StructSequence.load(ptr);
+            crate::object::seq_access::with_immutable_tuple_slice(
+                obj_from_bits(spec).as_ptr().unwrap(),
+                |items| items[4],
+            )
+            .unwrap()
+        } else {
+            class_name_bits(ptr)
+        }
+    }
+}
+
 /// One admission boundary for class creation and __name__ replacement.
 /// __qualname__ and __module__ are Python text and do not use this C-name rule.
 pub(crate) fn validate_class_name(py: &PyToken<'_>, bits: u64) -> bool {

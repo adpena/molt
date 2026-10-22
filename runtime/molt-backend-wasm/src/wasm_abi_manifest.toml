@@ -8109,3 +8109,45 @@ name = "struct_unpack_iterator_type"
 type = 0
 runtime_name = "molt_struct_unpack_iterator_type"
 callable_arity = 0
+
+[[import]]
+name = "pwd_module_init"
+type = 0
+runtime_name = "molt_pwd_module_init"
+callable_arity = 0
+
+[[import]]
+name = "pwd_getpwuid"
+type = 3
+runtime_name = "molt_pwd_getpwuid"
+callable_arity = 2
+
+[[import]]
+name = "pwd_getpwnam"
+type = 3
+runtime_name = "molt_pwd_getpwnam"
+callable_arity = 2
+
+[[import]]
+name = "pwd_getpwall"
+type = 2
+runtime_name = "molt_pwd_getpwall"
+callable_arity = 1
+
+[[import]]
+name = "structseq_type"
+type = 23
+runtime_name = "molt_structseq_type"
+callable_arity = 8
+
+[[import]]
+name = "structseq_new"
+type = 3
+runtime_name = "molt_structseq_new"
+callable_arity = 2
+
+[[import]]
+name = "os_stat_result_type"
+type = 0
+runtime_name = "molt_os_stat_result_type"
+callable_arity = 0

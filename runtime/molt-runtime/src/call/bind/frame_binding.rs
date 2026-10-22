@@ -247,6 +247,7 @@ fn trace_function_bind_meta_enabled() -> bool {
 pub(super) struct FunctionBindingShape {
     pub(super) full_binder: bool,
     pub(super) positional_defaults: usize,
+    fixed_builtin: bool,
 }
 
 pub(super) unsafe fn function_binding_meta(
@@ -262,13 +263,18 @@ pub(super) unsafe fn function_binding_shape(
     func_ptr: *mut u8,
 ) -> FunctionBindingShape {
     unsafe {
+        let fixed_builtin =
+            crate::builtins::functions::native_callable::fixed_builtin_convention(func_ptr)
+                .is_some();
         let mut full_binder = builtin_args::builtin_call_binding(py, func_ptr).is_some();
         for name in [
             FunctionBindingField::BindKind,
             FunctionBindingField::Varargs,
             FunctionBindingField::VarKeywords,
         ] {
-            full_binder |= !obj_from_bits(function_binding_meta(py, func_ptr, name)).is_none();
+            if name != FunctionBindingField::BindKind || !fixed_builtin {
+                full_binder |= !obj_from_bits(function_binding_meta(py, func_ptr, name)).is_none();
+            }
         }
         let kwonly = obj_from_bits(function_binding_meta(
             py,
@@ -314,6 +320,7 @@ pub(super) unsafe fn function_binding_shape(
         FunctionBindingShape {
             full_binder,
             positional_defaults,
+            fixed_builtin,
         }
     }
 }
@@ -383,6 +390,7 @@ pub(crate) unsafe fn function_raw_positional_call_needs_binding(
         // Native callables without a Python signature keep their own admission.
         let shape = function_binding_shape(_py, func_ptr);
         shape.full_binder
+            || shape.fixed_builtin
             || shape.positional_defaults != 0
             || !obj_from_bits(function_binding_meta(
                 _py,
@@ -449,6 +457,32 @@ pub(super) unsafe fn call_function_with_arguments(
             && obj_from_bits(kind_bits).as_int() == Some(BIND_KIND_CAPI_METHOD)
         {
             return call_capi_method_with_bound_args(_py, func_bits, &args);
+        }
+        if let Some(convention) =
+            crate::builtins::functions::native_callable::fixed_builtin_convention(func_ptr)
+        {
+            if let Some(error) =
+                convention.argument_error(args.positional().len(), args.keyword_count())
+            {
+                let Ok(name) =
+                    crate::builtins::functions::native_callable::native_function_error_name(
+                        _py, func_ptr,
+                    )
+                else {
+                    return MoltObject::none().bits();
+                };
+                return crate::builtins::exceptions::raise_exception_bytes(
+                    _py,
+                    "TypeError",
+                    &error.message(&name),
+                );
+            }
+            if args.custody() == ArgumentCustody::Frame && function_bits_adopt_arguments(func_bits)
+            {
+                return call_function_obj_moved(_py, func_bits, args.surrender_positional());
+            }
+            args.enter_inlined_frame();
+            return call_function_obj_bound_vec(_py, func_bits, args.positional());
         }
         let receiver_origin = args.receiver_origin;
         let view = match args.unpacked_view() {

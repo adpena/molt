@@ -427,6 +427,9 @@ pub enum OperationId {
     IoOpenReadwrite,
     PathMakedirs,
     MultiprocessingSpawn,
+    PwdGetpwuid,
+    PwdGetpwnam,
+    PwdGetpwall,
 }
 
 impl OperationId {
@@ -679,6 +682,9 @@ impl OperationId {
             "io.open.readwrite" => Some(Self::IoOpenReadwrite),
             "path.makedirs" => Some(Self::PathMakedirs),
             "multiprocessing.spawn" => Some(Self::MultiprocessingSpawn),
+            "pwd.getpwuid" => Some(Self::PwdGetpwuid),
+            "pwd.getpwnam" => Some(Self::PwdGetpwnam),
+            "pwd.getpwall" => Some(Self::PwdGetpwall),
             _ => None,
         }
     }
@@ -928,6 +934,9 @@ impl OperationId {
             Self::IoOpenReadwrite => "io.open.readwrite",
             Self::PathMakedirs => "path.makedirs",
             Self::MultiprocessingSpawn => "multiprocessing.spawn",
+            Self::PwdGetpwuid => "pwd.getpwuid",
+            Self::PwdGetpwnam => "pwd.getpwnam",
+            Self::PwdGetpwall => "pwd.getpwall",
         }
     }
 
@@ -1173,6 +1182,9 @@ impl OperationId {
             Self::IoOpenReadwrite => &[CapabilityId::FsRead, CapabilityId::FsWrite],
             Self::PathMakedirs => &[CapabilityId::FsRead, CapabilityId::FsWrite],
             Self::MultiprocessingSpawn => &[CapabilityId::ProcessExec, CapabilityId::EnvRead],
+            Self::PwdGetpwuid => &[CapabilityId::FsRead],
+            Self::PwdGetpwnam => &[CapabilityId::FsRead],
+            Self::PwdGetpwall => &[CapabilityId::FsRead],
         }
     }
 
@@ -1385,6 +1397,9 @@ impl OperationId {
             Self::IoOpenReadwrite => &[],
             Self::PathMakedirs => &[],
             Self::MultiprocessingSpawn => &[],
+            Self::PwdGetpwuid => &["native"],
+            Self::PwdGetpwnam => &["native"],
+            Self::PwdGetpwall => &["native"],
         }
     }
 
@@ -1597,6 +1612,9 @@ impl OperationId {
             Self::IoOpenReadwrite => &[],
             Self::PathMakedirs => &[],
             Self::MultiprocessingSpawn => &[],
+            Self::PwdGetpwuid => &["linux", "macos"],
+            Self::PwdGetpwnam => &["linux", "macos"],
+            Self::PwdGetpwall => &["linux", "macos"],
         }
     }
 
@@ -1809,6 +1827,9 @@ impl OperationId {
             Self::IoOpenReadwrite => &[],
             Self::PathMakedirs => &[],
             Self::MultiprocessingSpawn => &[],
+            Self::PwdGetpwuid => &[],
+            Self::PwdGetpwnam => &[],
+            Self::PwdGetpwall => &[],
         }
     }
 
@@ -2021,6 +2042,9 @@ impl OperationId {
             Self::IoOpenReadwrite => &[],
             Self::PathMakedirs => &[],
             Self::MultiprocessingSpawn => &[],
+            Self::PwdGetpwuid => &[],
+            Self::PwdGetpwnam => &[],
+            Self::PwdGetpwall => &[],
         }
     }
 

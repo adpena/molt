@@ -959,7 +959,13 @@ unsafe extern "C" fn hook_tuple_set(
         } else {
             val_bits
         };
-        match unsafe { crate::object::seq_access::replace_capi_item(&_py, ptr, i, val_bits) } {
+        match unsafe {
+            if i < tuple_len(ptr) {
+                crate::object::seq_access::replace_capi_item(&_py, ptr, i, val_bits)
+            } else {
+                crate::builtins::structseq::replace_hidden_item(&_py, ptr, i, val_bits)
+            }
+        } {
             Some(old_bits) if old_bits == crate::missing_bits(&_py) => OwnedHandleResult::missing(),
             Some(old_bits) => OwnedHandleResult::ok(old_bits),
             None => OwnedHandleResult::error(),
@@ -979,6 +985,16 @@ unsafe extern "C" fn hook_tuple_len(bits: u64) -> usize {
     unsafe { tuple_len(ptr) }
 }
 
+unsafe extern "C" fn hook_tuple_hidden_len(bits: u64) -> usize {
+    let Some(ptr) = MoltObject::from_bits(bits).as_ptr() else {
+        return 0;
+    };
+    if unsafe { object_type_id(ptr) } != TYPE_ID_TUPLE {
+        return 0;
+    }
+    with_gil(|py| unsafe { crate::builtins::structseq::hidden_len(&py, ptr) })
+}
+
 unsafe extern "C" fn hook_tuple_item(bits: u64, i: usize) -> BorrowedHandleResult {
     let obj = MoltObject::from_bits(bits);
     let ptr = match obj.as_ptr() {
@@ -989,9 +1005,112 @@ unsafe extern "C" fn hook_tuple_item(bits: u64, i: usize) -> BorrowedHandleResul
         return BorrowedHandleResult::missing();
     }
     with_gil(|py| {
-        unsafe { crate::object::seq_access::initialized_tuple_item(&py, ptr, i) }
-            .map(BorrowedHandleResult::ok)
-            .unwrap_or_else(BorrowedHandleResult::missing)
+        unsafe {
+            if i < tuple_len(ptr) {
+                crate::object::seq_access::initialized_tuple_item(&py, ptr, i)
+            } else {
+                crate::builtins::structseq::hidden_item(&py, ptr, i)
+                    .filter(|&bits| bits != crate::missing_bits(&py))
+            }
+        }
+        .map(BorrowedHandleResult::ok)
+        .unwrap_or_else(BorrowedHandleResult::missing)
+    })
+}
+
+unsafe extern "C" fn hook_structseq_new(class: u64) -> OwnedHandleResult {
+    with_gil(|py| {
+        owned_result_from_pending(crate::builtins::structseq::new_uninitialized(&py, class))
+    })
+}
+
+unsafe extern "C" fn hook_type_runtime_slots(pointer: *mut PyTypeObject) -> bool {
+    with_gil(|py| {
+        crate::runtime_state(&py)
+            .cpython
+            .static_bindings
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|binding| binding.pointer == pointer.cast() && binding.external_type.is_some())
+    })
+}
+
+unsafe extern "C" fn hook_structseq_type_new(
+    desc: *const molt_cpython_abi::abi_types::PyStructSequence_Desc,
+    pointer: *mut PyTypeObject,
+) -> OwnedHandleResult {
+    with_gil(|py| unsafe {
+        use crate::object::foreign::retire_native_reference;
+        use molt_cpython_abi::abi_types::*;
+        use molt_runtime_core::OwnedRuntimeValue;
+        if !pointer.is_null() && (*pointer).ob_base.ob_base.ob_refcnt != 0 {
+            molt_cpython_abi::api::errors::PyErr_BadInternalCall();
+            retire_native_reference(|| ());
+            return OwnedHandleResult::error();
+        }
+        let bits = crate::builtins::structseq::from_c_description(&py, desc, !pointer.is_null());
+        let class = OwnedRuntimeValue::from_owned_bits(py.core_token(), bits);
+        if crate::exception_pending(&py) {
+            return OwnedHandleResult::error();
+        }
+        if pointer.is_null() {
+            return OwnedHandleResult::ok(class.into_bits());
+        }
+        let mut storage = match molt_cpython_abi::api::typeobj::ExternalStaticType::prepare(bits) {
+            Ok(storage) => storage,
+            Err(molt_cpython_abi::ErrorIndicatorSet) => {
+                retire_native_reference(|| ());
+                return OwnedHandleResult::error();
+            }
+        };
+        // All allocations and metadata preparation precede caller-shell mutation.
+        // The saved compact prefix owns no new references and is restored after
+        // rollback has retired every temporary physical/runtime root.
+        let saved = std::ptr::read(pointer);
+        pointer.write(std::mem::zeroed());
+        (*pointer).ob_base.ob_base.ob_refcnt = 1;
+        (*pointer).ob_base.ob_base.ob_type = &raw mut PyType_Type;
+        (*pointer).tp_name = (*desc).name;
+        (*pointer).tp_doc = (*desc).doc;
+        (*pointer).tp_base = &raw mut PyTuple_Type;
+        (*pointer).tp_flags = Py_TPFLAGS_DEFAULT
+            | Py_TPFLAGS_HAVE_GC
+            | Py_TPFLAGS_TUPLE_SUBCLASS
+            | crate::object::class_storage::ClassSemanticPolicy::of(
+                &py,
+                crate::obj_from_bits(bits).as_ptr().unwrap(),
+            )
+            .cpython_flags();
+        storage.attach(pointer);
+        let runtime = &crate::runtime_state(&py).cpython;
+        if let Err(error) = runtime.try_bind_static(&py, pointer.cast(), bits, true, Some(storage))
+        {
+            pointer.write(saved);
+            match error {
+                molt_cpython_abi::bridge::StaticBindingError::Capacity => {
+                    crate::record_memory_error_without_allocation(&py)
+                }
+                _ => {
+                    crate::raise_exception::<u64>(
+                        &py,
+                        "SystemError",
+                        "static struct-sequence identity is already bound",
+                    );
+                }
+            }
+            return OwnedHandleResult::error();
+        }
+        molt_cpython_abi::api::typeobj::reopen_static_type_runtime_roots(&[(pointer, false)]);
+        if molt_cpython_abi::api::typeobj::PyType_Ready(pointer) < 0 {
+            molt_cpython_abi::api::errors::with_preserved_error(|| {
+                runtime.rollback_external_type(&py, pointer, bits);
+                pointer.write(saved);
+            });
+            retire_native_reference(|| ());
+            return OwnedHandleResult::error();
+        }
+        OwnedHandleResult::ok(class.into_bits())
     })
 }
 
@@ -2945,8 +3064,8 @@ unsafe extern "C" fn hook_number_power(
     owned_result_from_pending(bits)
 }
 
-unsafe extern "C" fn hook_target_python_minor() -> i64 {
-    with_gil(|py| crate::object::ops_sys::runtime_target_minor(&py))
+unsafe extern "C" fn hook_target_python_at_least(major: i64, minor: i64) -> bool {
+    with_gil(|py| crate::object::ops_sys::runtime_target_at_least(&py, major, minor))
 }
 
 /// Dict copy/keys/values. `op` matches [`molt_cpython_abi::DictOp`]. Routes to
@@ -3268,6 +3387,15 @@ unsafe extern "C" fn hook_type_metadata(
             return OwnedHandleResult::error();
         };
         let value = match field {
+            TypeMetadataField::StructSequence => {
+                let spec =
+                    crate::object::class_storage::ClassReferenceSlot::StructSequence.load(class);
+                if spec == 0 {
+                    return OwnedHandleResult::missing();
+                }
+                crate::builtins::structseq::assert_spec_shape(spec);
+                spec
+            }
             TypeMetadataField::Name => crate::class_name_bits(class),
             TypeMetadataField::CName => {
                 return match crate::object::class_storage::class_c_name_bits(&py, class) {
@@ -4676,6 +4804,7 @@ unsafe extern "C" fn hook_register_c_function(
                 self_bits: None,
                 cache: None,
                 text_signature: None,
+                fixed_convention: None,
             };
             let configured = crate::builtins::functions::native_callable::configure_native_callable(
                 &_py, func_ptr, spec,
@@ -4787,10 +4916,11 @@ enum HookRegistrationState {
     Failed,
 }
 
-#[derive(Clone, Copy)]
 struct StaticRuntimeBinding {
     pointer: *mut PyObject,
     bits: u64,
+    // Only factory-created external compact shells allocate extra protocols.
+    external_type: Option<Box<molt_cpython_abi::api::typeobj::ExternalStaticType>>,
 }
 
 // SAFETY: the C shell has process lifetime. Runtime handle access/retirement
@@ -4854,30 +4984,80 @@ impl CpythonRuntimeState {
         bits: u64,
         canonical_view: bool,
     ) {
+        unsafe { self.try_bind_static(py, pointer, bits, canonical_view, None) }
+            .expect("bootstrap static C object could not bind its runtime owner");
+    }
+
+    unsafe fn try_bind_static(
+        &self,
+        py: &crate::PyToken<'_>,
+        pointer: *mut PyObject,
+        bits: u64,
+        canonical_view: bool,
+        external_type: Option<Box<molt_cpython_abi::api::typeobj::ExternalStaticType>>,
+    ) -> Result<(), molt_cpython_abi::bridge::StaticBindingError> {
+        use molt_cpython_abi::bridge::StaticBindingError;
         let mut bindings = self.static_bindings.lock().unwrap();
-        assert!(
-            bindings.iter().all(|binding| binding.pointer != pointer),
-            "static C shell has duplicate runtime binding ownership"
-        );
-        bindings
-            .try_reserve(1)
-            .expect("runtime static binding ownership allocation failed");
+        if bindings.iter().any(|binding| binding.pointer == pointer) {
+            return Err(StaticBindingError::InvalidInput {
+                address: pointer.addr(),
+                bits,
+            });
+        }
+        if bindings.try_reserve(1).is_err() {
+            return Err(StaticBindingError::Capacity);
+        }
         inc_ref_bits(py, bits);
-        let bound = unsafe {
+        if let Err(error) = unsafe {
             molt_cpython_abi::bridge::GLOBAL_BRIDGE.bind_static_pyobj_to_runtime_handle(
                 pointer,
                 bits,
                 canonical_view,
             )
-        };
-        if let Err(conflict) = bound {
+        } {
             drop(bindings);
             dec_ref_bits(py, bits);
-            panic!(
-                "static C object {pointer:p} could not bind runtime value {bits:#x}: {conflict:?}"
-            );
+            return Err(error);
         }
-        bindings.push(StaticRuntimeBinding { pointer, bits });
+        bindings.push(StaticRuntimeBinding {
+            pointer,
+            bits,
+            external_type,
+        });
+        Ok(())
+    }
+
+    /// Roll back a not-yet-READY public factory publication. The binding stays
+    /// live through root retirement so destructors see one canonical identity.
+    unsafe fn rollback_external_type(
+        &self,
+        py: &crate::PyToken<'_>,
+        pointer: *mut PyTypeObject,
+        bits: u64,
+    ) {
+        unsafe {
+            molt_cpython_abi::api::typeobj::retire_static_type_runtime_roots(&[(pointer, false)]);
+        }
+        let mut binding = {
+            let mut bindings = self.static_bindings.lock().unwrap();
+            let index = bindings
+                .iter()
+                .position(|binding| binding.pointer == pointer.cast() && binding.bits == bits)
+                .expect("pending static type binding");
+            bindings.remove(index)
+        };
+        unsafe {
+            if let Some(storage) = &mut binding.external_type {
+                storage.detach(pointer);
+            }
+            assert!(
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                    .unbind_static_pyobj_from_runtime_handle(pointer.cast(), bits)
+            );
+            molt_cpython_abi::api::typeobj::reopen_static_type_runtime_roots(&[(pointer, false)]);
+        }
+        dec_ref_bits(py, bits);
+        drop(binding);
     }
 
     /// Detach the runtime-backed fields of this runtime's process-static shells.
@@ -4895,7 +5075,15 @@ impl CpythonRuntimeState {
             HookRegistrationState::Failed => panic!("retiring failed CPython bootstrap twice"),
         }
         drop(registration);
-        unsafe { molt_cpython_abi::abi_types::retire_builtin_static_type_runtime_state() };
+        let additional: Vec<_> = self
+            .static_bindings
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|binding| binding.external_type.is_some())
+            .map(|binding| (binding.pointer.cast::<PyTypeObject>(), false))
+            .collect();
+        unsafe { molt_cpython_abi::abi_types::retire_static_type_runtime_state(&additional) };
     }
 
     pub(crate) fn static_class_roots(&self) -> Vec<u64> {
@@ -4917,13 +5105,18 @@ impl CpythonRuntimeState {
     /// callback drain. An isolate that never published these shells owns none.
     pub(crate) fn retire_static_bindings(&self, py: &crate::PyToken<'_>) {
         crate::gil_assert();
-        let bindings = {
+        let mut bindings = {
             let mut owned = self.static_bindings.lock().unwrap();
             std::mem::take(&mut *owned)
         };
         // Remove every ingress/reverse identity before releasing any anchor.
         // Reference destruction runs outside both the ownership and bridge locks.
-        for binding in &bindings {
+        for binding in &mut bindings {
+            if let Some(storage) = &mut binding.external_type {
+                unsafe {
+                    storage.detach(binding.pointer.cast());
+                }
+            }
             assert!(
                 unsafe {
                     molt_cpython_abi::bridge::GLOBAL_BRIDGE
@@ -5308,6 +5501,10 @@ pub fn register_cpython_hooks() -> bool {
                 alloc_tuple: Some(hook_alloc_tuple),
                 tuple_set: Some(hook_tuple_set),
                 tuple_len: Some(hook_tuple_len),
+                tuple_hidden_len: hook_tuple_hidden_len,
+                structseq_type_new: hook_structseq_type_new,
+                structseq_new: hook_structseq_new,
+                type_runtime_slots: hook_type_runtime_slots,
                 tuple_item: Some(hook_tuple_item),
                 alloc_dict: hook_alloc_dict,
                 mappingproxy_new: hook_mappingproxy_new,
@@ -5377,7 +5574,7 @@ pub fn register_cpython_hooks() -> bool {
                 number_binary_op: hook_number_binary_op,
                 number_unary_op: hook_number_unary_op,
                 number_power: hook_number_power,
-                target_python_minor: hook_target_python_minor,
+                target_python_at_least: hook_target_python_at_least,
                 dict_op: hook_dict_op,
                 set_op: hook_set_op,
                 set_new: hook_set_new,
@@ -7973,13 +8170,20 @@ mod tests {
                     *runtime.cpython.registration.lock().unwrap(),
                     HookRegistrationState::Ready
                 );
-                let bindings = runtime.cpython.static_bindings.lock().unwrap().clone();
-                for binding in bindings {
+                let bindings: Vec<_> = runtime
+                    .cpython
+                    .static_bindings
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .map(|binding| (binding.pointer, binding.bits))
+                    .collect();
+                for (pointer, bits) in bindings {
                     let observed = molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                        .molt_handle_for_pyobj(binding.pointer)
+                        .molt_handle_for_pyobj(pointer)
                         .expect("every owned static shell must remain bound")
                         .bits();
-                    assert_eq!(observed, binding.bits);
+                    assert_eq!(observed, bits);
                 }
                 let singleton_bindings = [
                     (

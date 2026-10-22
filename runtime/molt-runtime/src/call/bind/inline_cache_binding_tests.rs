@@ -504,8 +504,9 @@ fn native_method_load_preserves_descriptor_identity_and_one_receiver_owner() {
                     b"reverse".as_ptr(),
                     7,
                 );
-                let minor = (molt_cpython_abi::hooks::hooks_or_stubs().target_python_minor)();
-                if source == builtin_classes(py).tuple && minor < 14 {
+                let modern =
+                    (molt_cpython_abi::hooks::hooks_or_stubs().target_python_at_least)(3, 14);
+                if source == builtin_classes(py).tuple && !modern {
                     assert!(exception_pending(py));
                     assert_eq!(loaded.self_or_null, LoadedMethod::NULL);
                     let error = crate::exception_last_bits_noinc(py).unwrap();

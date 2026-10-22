@@ -113,7 +113,10 @@ def test_unicode_width_projection_matches_running_cpython() -> None:
     table = source.split(f"const {table_name}: WidthRanges = &[", 1)[1].split("];", 1)[
         0
     ]
-    assert f'{minor} => Some(("{unicodedata.unidata_version}", {table_name}))' in source
+    assert (
+        f'({major}, {minor}) => Some(("{unicodedata.unidata_version}", {table_name}))'
+        in source
+    )
     expected = 0
     for lo, hi, width in re.findall(r'\((\d+), (\d+), "(N|Na|A|H|W|F)"\)', table):
         start, end = int(lo), int(hi)
@@ -383,3 +386,41 @@ def test_unicode_width_facts_replay_keyed_by_the_admitted_runtime(
     changed = records()
     gen_unicode_width.render(python_runtimes=runtimes("b"), records=changed)
     assert queried == list(versions)
+
+
+def test_unicode_width_projection_preserves_full_target_identity(monkeypatch):
+    from tools import gen_unicode_width
+
+    # Synthetic admitted query results exercise projection only. They are not
+    # claims about Python 3.0 or 4.0 Unicode data or compiler support.
+    monkeypatch.setattr(
+        gen_unicode_width, "SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS", ("3.0", "4.0")
+    )
+    observed = []
+
+    def query(version, selected, admission):
+        observed.append(version)
+        return {
+            "python": version,
+            "unicode": "three" if version == "3.0" else "four",
+            "ranges": [[0, 0x10FFFF, "N" if version == "3.0" else "W"]],
+        }
+
+    monkeypatch.setattr(gen_unicode_width, "_query", query)
+    runtimes = {
+        version: (
+            {
+                "runtime": {"runtime_closure_sha256": version},
+                "launch_argv": ["python" + version, "-I", "-S", "-B"],
+            },
+            None,
+        )
+        for version in ("3.0", "4.0")
+    }
+    rendered = gen_unicode_width.render(python_runtimes=runtimes)
+    assert observed == ["3.0", "4.0"]
+    assert '(3, 0) => Some(("three", WIDTH_3_0))' in rendered
+    assert '(4, 0) => Some(("four", WIDTH_4_0))' in rendered
+    assert "match target" in rendered and "_ => None" in rendered
+    with pytest.raises(ValueError, match="every admitted target runtime"):
+        gen_unicode_width.render(python_runtimes={"3.0": runtimes["3.0"]})

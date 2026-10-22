@@ -1593,6 +1593,7 @@ tests/differential/stdlib/poplib_basic.py
 tests/differential/stdlib/posix_platform_basic.py
 tests/differential/stdlib/posix_userdb_basic.py
 tests/differential/stdlib/pprint_basic.py
+tests/differential/stdlib/pwd_basic.py
 tests/differential/stdlib/py_compile_basic.py
 tests/differential/stdlib/queue_basic.py
 tests/differential/stdlib/queue_concurrency.py

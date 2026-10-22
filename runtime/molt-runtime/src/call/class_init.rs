@@ -538,6 +538,16 @@ pub(crate) unsafe fn construct_regular_class(
 ) -> u64 {
     unsafe {
         let class_bits = MoltObject::from_ptr(class).bits();
+        if crate::builtins::structseq::disallows_instantiation(py, class) {
+            return raise_exception(
+                py,
+                "TypeError",
+                &format!(
+                    "cannot create '{}' instances",
+                    crate::builtins::structseq::native_name(py, class_bits)
+                ),
+            );
+        }
         let new_name = intern_static_name(py, &runtime_state(py).interned.new_name, b"__new__");
         let init_name = intern_static_name(py, &runtime_state(py).interned.init_name, b"__init__");
         let new = match class_attr_lookup_raw_mro(py, class, new_name) {

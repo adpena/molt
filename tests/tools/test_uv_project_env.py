@@ -19,7 +19,7 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_project_environment_path_uses_dx_root_and_versioned_session(
+def test_project_environment_path_uses_dx_root_and_interpreter_identity(
     tmp_path: Path,
 ) -> None:
     artifact_root = tmp_path / "external"
@@ -97,45 +97,80 @@ def test_uv_project_env_accepts_explicit_relative_path(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("name_rule", [NameRule.EXACT, NameRule.WINDOWS])
-def test_uv_wrapper_selectors_keep_the_captured_environment_rule(tmp_path, name_rule):
+@pytest.mark.parametrize("session", ["default", "generated", "explicit"])
+@pytest.mark.parametrize("override_target", [False, True])
+def test_uv_wrapper_selectors_keep_the_captured_environment_rule(
+    tmp_path, name_rule, session, override_target
+):
     root = tmp_path / "repo"
     root.mkdir()
     artifact_root = tmp_path / "artifacts"
     alias = tmp_path / "caller-environment"
-    environment = ProcessEnvironment(
-        {
-            "MOLT_EXT_ROOT": str(artifact_root),
-            "uv_project_environment": str(alias),
-            "Path": "retained path",
-        },
-        rule=name_rule,
-    )
-    expected = (
-        dx.stable_uv_project_env_dir(
-            artifact_root, purpose="audit", python="3.14", source_root=root
-        )
-        if name_rule is NameRule.EXACT
-        else alias
-    )
-    assert (
-        uv_project_env.project_environment_path(
-            python="3.14", purpose="audit", repo_root=root, env=environment
-        )
-        == expected
-    )
-    selected = uv_project_env.uv_project_env(
-        python="3.14", purpose="audit", repo_root=root, env=environment
-    )
-    assert selected.rule is name_rule
-    assert selected["UV_PROJECT_ENVIRONMENT"] == str(expected)
-    assert selected["MOLT_UV_PROJECT_PURPOSE"] == "audit"
-    assert selected["MOLT_UV_PROJECT_PYTHON"] == "3.14"
-    assert selected["Path"] == "retained path"
-    assert dict(environment) == {
+    values = {
         "MOLT_EXT_ROOT": str(artifact_root),
         "uv_project_environment": str(alias),
         "Path": "retained path",
     }
+    if session != "default":
+        values["MOLT_SESSION_ID"] = "caller-session"
+    if session == "generated":
+        values["MOLT_SESSION_ID_GENERATED"] = "1"
+    explicit_target = tmp_path / "caller-target"
+    if override_target:
+        values["CARGO_TARGET_DIR"] = str(explicit_target)
+    environment = ProcessEnvironment(values, rule=name_rule)
+    expected_target = (
+        explicit_target
+        if override_target
+        else dx.cargo_target_dir_for_artifact_root(
+            artifact_root,
+            "caller-session" if session == "explicit" else None,
+            source_root=root,
+        )
+    )
+    selected_environments = []
+    # Interpreter/purpose selection changes dependency environments, never the
+    # caller's independent build-session decision or explicit Cargo target.
+    for python, purpose in (("3.14", "audit"), ("3.13", "public-records")):
+        expected = (
+            dx.stable_uv_project_env_dir(
+                artifact_root, purpose=purpose, python=python, source_root=root
+            )
+            if name_rule is NameRule.EXACT
+            else alias
+        )
+        assert (
+            uv_project_env.project_environment_path(
+                python=python, purpose=purpose, repo_root=root, env=environment
+            )
+            == expected
+        )
+        selected = uv_project_env.uv_project_env(
+            python=python,
+            purpose=purpose,
+            repo_root=root,
+            env=environment,
+            create_dirs=False,
+        )
+        selected_environments.append(selected["UV_PROJECT_ENVIRONMENT"])
+        assert selected.rule is name_rule
+        assert selected["UV_PROJECT_ENVIRONMENT"] == str(expected)
+        assert selected["MOLT_UV_PROJECT_PURPOSE"] == purpose
+        assert selected["MOLT_UV_PROJECT_PYTHON"] == python
+        assert selected["Path"] == "retained path"
+        assert selected["CARGO_TARGET_DIR"] == str(expected_target)
+        assert selected["MOLT_DIFF_CARGO_TARGET_DIR"] == str(expected_target)
+        if session == "explicit":
+            assert selected["MOLT_SESSION_ID"] == "caller-session"
+            assert "MOLT_SESSION_ID_GENERATED" not in selected
+        else:
+            assert selected["MOLT_SESSION_ID_GENERATED"] == "1"
+            if session == "generated":
+                assert selected["MOLT_SESSION_ID"] == "caller-session"
+        assert dict(environment) == values
+    assert (selected_environments[0] != selected_environments[1]) is (
+        name_rule is NameRule.EXACT
+    )
 
 
 def test_parse_command_strips_separator() -> None:

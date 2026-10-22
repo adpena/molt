@@ -40,7 +40,7 @@ thread_local! {
     static TRUNC_CALLS: Cell<usize> = const { Cell::new(0) };
     static TRUNC_BAD_RESULT: Cell<bool> = const { Cell::new(false) };
     static SLOT_RESULT: Cell<usize> = const { Cell::new(0) };
-    static TARGET_MINOR: Cell<i64> = const { Cell::new(12) };
+    static TARGET_VERSION: Cell<(i64, i64)> = const { Cell::new((3, 12)) };
     static LONG_OVERRIDE_CALLS: Cell<usize> = const { Cell::new(0) };
     static FLOAT_OVERRIDE_CALLS: Cell<usize> = const { Cell::new(0) };
     static COMPLEX_OVERRIDE_CALLS: Cell<usize> = const { Cell::new(0) };
@@ -265,8 +265,8 @@ unsafe extern "C" fn borrowed_slot_result(_object: *mut PyObject) -> *mut PyObje
     }
 }
 
-unsafe extern "C" fn numeric_target_minor() -> i64 {
-    TARGET_MINOR.with(Cell::get)
+unsafe extern "C" fn numeric_target_at_least(major: i64, minor: i64) -> bool {
+    TARGET_VERSION.with(Cell::get) >= (major, minor)
 }
 
 unsafe extern "C" fn protocol_unary(operation: u32, bits: u64) -> OwnedHandleResult {
@@ -389,7 +389,7 @@ fn init() -> support::AbiTestThreadStateTransaction {
     hooks.number_power = capture_number_power;
     hooks.number_binary_op = capture_binary;
     hooks.number_unary_op = protocol_unary;
-    hooks.target_python_minor = numeric_target_minor;
+    hooks.target_python_at_least = numeric_target_at_least;
     hooks.warning_emit = support::warnings::emit;
     hooks.numeric_identity_new = Some(counted_numeric_identity_new);
     hooks.int_from_bytes = counted_int_from_bytes;
@@ -409,7 +409,7 @@ fn init() -> support::AbiTestThreadStateTransaction {
     INDEX_OVERRIDE_CALLS.with(|calls| calls.set(0));
     FLOAT_OVERRIDE_CALLS.with(|calls| calls.set(0));
     LONG_OVERRIDE_CALLS.with(|calls| calls.set(0));
-    TARGET_MINOR.with(|minor| minor.set(12));
+    TARGET_VERSION.with(|minor| minor.set((3, 12)));
     COMPLEX_OVERRIDE_CALLS.with(|calls| calls.set(0));
     POWER_MODULUS_BITS.with(|value| value.set(None));
     POWER_HOOK_FAILS.with(|value| value.set(false));
@@ -1831,7 +1831,7 @@ fn test_managed_numeric_carrier_keeps_semantic_subtype_protocols() {
             assert_eq!((complex.real, complex.imag), (12.5, -3.0));
             assert_eq!(COMPLEX_OVERRIDE_CALLS.with(Cell::get), 1);
             for minor in [12, 13, 14] {
-                TARGET_MINOR.with(|target| target.set(minor));
+                TARGET_VERSION.with(|target| target.set((3, minor)));
                 COMPLEX_OVERRIDE_CALLS.with(|calls| calls.set(0));
                 let real = molt_cpython_abi::api::numbers::PyComplex_RealAsDouble(object);
                 let imag = molt_cpython_abi::api::numbers::PyComplex_ImagAsDouble(object);
@@ -1909,7 +1909,7 @@ fn test_complex_parts_versioned_non_numeric_refusal_and_recovery() {
     };
     unsafe {
         for minor in [12, 13, 14] {
-            TARGET_MINOR.with(|target| target.set(minor));
+            TARGET_VERSION.with(|target| target.set((3, minor)));
             let imag = molt_cpython_abi::api::numbers::PyComplex_ImagAsDouble(&raw mut object);
             if minor == 12 {
                 assert_eq!(imag, 0.0);
@@ -2319,7 +2319,7 @@ fn indexed_integer_conversion_retires_at_the_cpython_publication_phase() {
         // its byte-extraction error before decref; AsLong/AsInt publish after
         // AndOverflow retires; masks and AndOverflow do not raise overflow.
         for minor in [12, 13, 14] {
-            TARGET_MINOR.with(|target| target.set(minor));
+            TARGET_VERSION.with(|target| target.set((3, minor)));
             for negative in [false, true] {
                 for converter in [
                     "longlong",
@@ -2985,7 +2985,7 @@ fn test_foreign_trunc_delegation_version_warning_order_and_result_validation() {
             ob_type: class.as_ptr(),
         };
         for minor in [12, 13, 14] {
-            TARGET_MINOR.with(|target| target.set(minor));
+            TARGET_VERSION.with(|target| target.set((3, minor)));
             TRUNC_CALLS.with(|value| value.set(0));
             TRUNC_BAD_RESULT.with(|value| value.set(false));
             support::warnings::clear();
@@ -3056,7 +3056,7 @@ fn test_foreign_number_long_without_conversion_reports_exact_type_error() {
     };
     unsafe {
         for minor in [12, 13, 14] {
-            TARGET_MINOR.with(|target| target.set(minor));
+            TARGET_VERSION.with(|target| target.set((3, minor)));
             assert!(
                 molt_cpython_abi::api::abstract_number::PyNumber_Long(&raw mut object).is_null()
             );

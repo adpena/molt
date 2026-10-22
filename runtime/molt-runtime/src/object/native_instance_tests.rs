@@ -374,3 +374,173 @@ fn native_io_subtype_slots_preserve_payload_dictionary_and_cycle_retirement() {
         assert!(!exception_pending(py));
     });
 }
+
+#[test]
+fn native_declared_slots_share_allocation_projection_and_retirement() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+    crate::with_gil_entry_nopanic!(py, {
+        for kind in [
+            NativePayload::Tuple,
+            NativePayload::String,
+            NativePayload::Bytes,
+            NativePayload::Bytearray,
+            NativePayload::Set,
+            NativePayload::Frozenset,
+            NativePayload::Complex,
+        ] {
+            let roots: Vec<_> = builtin_classes(py)
+                .anchors()
+                .into_iter()
+                .filter(|&bits| unsafe {
+                    crate::object::class_instance_type_id(obj_from_bits(bits).as_ptr().unwrap())
+                        == kind.type_id()
+                })
+                .collect();
+            assert_eq!(roots, vec![kind.owner(py).unwrap()]);
+            let name = attr_name_bits_from_bytes(py, b"DeclaredNativeTail").unwrap();
+            let field = attr_name_bits_from_bytes(py, b"retained").unwrap();
+            let class = crate::molt_class_new(name);
+            let class_ptr = obj_from_bits(class).as_ptr().unwrap();
+            let policy = crate::object::class_storage::ClassSlotPolicy {
+                variable_sized: matches!(
+                    kind,
+                    NativePayload::Tuple | NativePayload::String | NativePayload::Bytes
+                ),
+                ..Default::default()
+            };
+            unsafe {
+                crate::object::class_storage::class_declare_native_slots(class_ptr, policy);
+            }
+            crate::molt_class_set_base(class, kind.owner(py).unwrap());
+            let names = MoltObject::from_ptr(alloc_tuple(py, &[field])).bits();
+            let declaration =
+                MoltObject::from_ptr(alloc_tuple(py, &[names, policy.encode()])).bits();
+            unsafe {
+                crate::object::layout::class_set_slot_declaration_owned(class_ptr, declaration);
+                crate::object::class_finish_definition(py, class_ptr).unwrap();
+            }
+            dec_ref_bits(py, names);
+            for length in [0, 9] {
+                let input = value(py, kind, length);
+                let object = construct(py, class, input);
+                let ptr = obj_from_bits(object).as_ptr().unwrap();
+                // NativeSlotLayout describes this declaration, not a root.
+                // Fail before any field write if the read projection disagrees.
+                assert!(unsafe { has_fields(ptr) });
+                assert!(unsafe { crate::object::gc::gc_is_tracked(ptr) });
+                let base = unsafe { field_base(ptr) };
+                assert!(base as usize > ptr as usize);
+                let native_bytes = unsafe {
+                    std::slice::from_raw_parts(ptr, base as usize - ptr as usize).to_vec()
+                };
+                let marker = MoltObject::from_ptr(alloc_list(py, &[])).bits();
+                let marker_ptr = obj_from_bits(marker).as_ptr().unwrap();
+                let refs = unsafe { (*header_from_obj_ptr(marker_ptr)).ref_count_snapshot() };
+                crate::molt_set_attr_name(object, field, marker);
+                assert!(!exception_pending(py));
+                let selected = crate::molt_get_attr_name(object, field);
+                assert_eq!(selected, marker);
+                dec_ref_bits(py, selected);
+                assert_eq!(
+                    unsafe { std::slice::from_raw_parts(ptr, native_bytes.len()) },
+                    native_bytes.as_slice(),
+                    "declared slots must not overwrite the native payload",
+                );
+                assert_eq!(
+                    unsafe { (*header_from_obj_ptr(marker_ptr)).ref_count_snapshot() },
+                    refs + 1,
+                );
+                dec_ref_bits(py, object);
+                assert_eq!(
+                    unsafe { (*header_from_obj_ptr(marker_ptr)).ref_count_snapshot() },
+                    refs,
+                    "physical field retirement releases its owner",
+                );
+                dec_ref_bits(py, marker);
+
+                let cycle = construct(py, class, input);
+                let cycle_ptr = obj_from_bits(cycle).as_ptr().unwrap();
+                crate::molt_set_attr_name(cycle, field, cycle);
+                assert!(!exception_pending(py));
+                dec_ref_bits(py, cycle);
+                let _ = unsafe { crate::object::gc::collect_cycles(py) };
+                assert!(!unsafe { crate::object::gc::gc_is_tracked(cycle_ptr) });
+                dec_ref_bits(py, input);
+            }
+            for bits in [field, name, class] {
+                dec_ref_bits(py, bits);
+            }
+        }
+        assert!(!exception_pending(py));
+    });
+}
+
+#[test]
+fn native_class_edge_publication_refuses_an_unallocated_tail_atomically() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        let name = attr_name_bits_from_bytes(py, b"NativePublicationExtent").unwrap();
+        let class = crate::molt_class_new(name);
+        dec_ref_bits(py, name);
+        let class_ptr = obj_from_bits(class).as_ptr().unwrap();
+        let policy = crate::object::class_storage::ClassSlotPolicy {
+            variable_sized: true,
+            ..Default::default()
+        };
+        unsafe { crate::object::class_storage::class_declare_native_slots(class_ptr, policy) };
+        crate::molt_class_set_base(class, builtin_classes(py).tuple);
+        let mut names = Vec::new();
+        for index in 0..32 {
+            names.push(attr_name_bits_from_bytes(py, format!("field{index}").as_bytes()).unwrap());
+        }
+        let slots = MoltObject::from_ptr(alloc_tuple(py, &names)).bits();
+        let declaration = MoltObject::from_ptr(alloc_tuple(py, &[slots, policy.encode()])).bits();
+        unsafe {
+            crate::object::layout::class_set_slot_declaration_owned(class_ptr, declaration);
+            crate::object::class_finish_definition(py, class_ptr).unwrap();
+        }
+        for bits in names.into_iter().chain([slots]) {
+            dec_ref_bits(py, bits);
+        }
+        assert!(!exception_pending(py));
+        let item = MoltObject::from_ptr(alloc_list(py, &[])).bits();
+        let exact = crate::object::builders::alloc_tuple_unpublished(py, &[item], false, None);
+        assert!(!exact.is_null());
+        let refs = unsafe { (*header_from_obj_ptr(class_ptr)).ref_count_snapshot() };
+        unsafe {
+            assert!(!crate::object::object_init_class_edge_unpublished(
+                py,
+                exact,
+                class,
+                crate::object::ClassEdgeOwnership::Owned,
+            ));
+            assert_eq!(object_class_bits(exact), 0);
+            assert_eq!((*header_from_obj_ptr(class_ptr)).ref_count_snapshot(), refs);
+            // The rejected publication did not touch payload ownership. Exact
+            // root identity still publishes, then rejects the same bad change.
+            assert!(crate::object::object_init_class_edge_unpublished(
+                py,
+                exact,
+                builtin_classes(py).tuple,
+                crate::object::ClassEdgeOwnership::Borrowed,
+            ));
+            crate::object::gc::gc_publish_initialized(py, exact);
+            assert!(!crate::object::object_replace_class_edge(
+                py,
+                exact,
+                class,
+                crate::object::ClassEdgeOwnership::Owned,
+            ));
+            assert_eq!(object_class_bits(exact), builtin_classes(py).tuple);
+            assert_eq!((*header_from_obj_ptr(class_ptr)).ref_count_snapshot(), refs);
+            assert_eq!(crate::object::seq_access::item(exact, 0), Some(item));
+        }
+        let correct = unsafe { crate::object::builders::alloc_tuple_subclass(py, class, &[item]) };
+        assert!(!exception_pending(py));
+        assert_eq!(type_of_bits(py, correct), class);
+        dec_ref_bits(py, correct);
+        dec_ref_bits(py, MoltObject::from_ptr(exact).bits());
+        dec_ref_bits(py, item);
+        dec_ref_bits(py, class);
+    });
+}

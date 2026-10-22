@@ -451,6 +451,45 @@ _MOLT_ABI_SASSERT(sizeof(PyTupleObject) == 32u, "layout drift: sizeof(PyTupleObj
 _MOLT_ABI_SASSERT(offsetof(PyTupleObject, ob_item) == 24u, "layout drift: offsetof(PyTupleObject, ob_item) != 24");
 #endif
 
+/* PyStructSequence_Field  <-  abi_types.rs */
+#if SIZEOF_VOID_P == 4
+_MOLT_ABI_SASSERT(sizeof(PyStructSequence_Field) == 8u, "layout drift: sizeof(PyStructSequence_Field) != 8 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyStructSequence_Field, name) == 0u, "layout drift: offsetof(PyStructSequence_Field, name) != 0");
+_MOLT_ABI_SASSERT(offsetof(PyStructSequence_Field, doc) == 4u, "layout drift: offsetof(PyStructSequence_Field, doc) != 4");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PyStructSequence_Field) == 16u, "layout drift: sizeof(PyStructSequence_Field) != 16 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyStructSequence_Field, name) == 0u, "layout drift: offsetof(PyStructSequence_Field, name) != 0");
+_MOLT_ABI_SASSERT(offsetof(PyStructSequence_Field, doc) == 8u, "layout drift: offsetof(PyStructSequence_Field, doc) != 8");
+#else
+_MOLT_ABI_SASSERT(sizeof(PyStructSequence_Field) == 16u, "layout drift: sizeof(PyStructSequence_Field) != 16 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyStructSequence_Field, name) == 0u, "layout drift: offsetof(PyStructSequence_Field, name) != 0");
+_MOLT_ABI_SASSERT(offsetof(PyStructSequence_Field, doc) == 8u, "layout drift: offsetof(PyStructSequence_Field, doc) != 8");
+#endif
+
+/* PyStructSequence_Desc  <-  abi_types.rs */
+#if SIZEOF_VOID_P == 4
+_MOLT_ABI_SASSERT(sizeof(PyStructSequence_Desc) == 16u, "layout drift: sizeof(PyStructSequence_Desc) != 16 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyStructSequence_Desc, name) == 0u, "layout drift: offsetof(PyStructSequence_Desc, name) != 0");
+_MOLT_ABI_SASSERT(offsetof(PyStructSequence_Desc, doc) == 4u, "layout drift: offsetof(PyStructSequence_Desc, doc) != 4");
+_MOLT_ABI_SASSERT(offsetof(PyStructSequence_Desc, fields) == 8u, "layout drift: offsetof(PyStructSequence_Desc, fields) != 8");
+_MOLT_ABI_SASSERT(offsetof(PyStructSequence_Desc, n_in_sequence) == 12u, "layout drift: offsetof(PyStructSequence_Desc, n_in_sequence) != 12");
+_MOLT_ABI_SASSERT(sizeof(((PyStructSequence_Desc *)0)->n_in_sequence) == 4u, "layout drift: width of PyStructSequence_Desc.n_in_sequence != 4");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PyStructSequence_Desc) == 32u, "layout drift: sizeof(PyStructSequence_Desc) != 32 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyStructSequence_Desc, name) == 0u, "layout drift: offsetof(PyStructSequence_Desc, name) != 0");
+_MOLT_ABI_SASSERT(offsetof(PyStructSequence_Desc, doc) == 8u, "layout drift: offsetof(PyStructSequence_Desc, doc) != 8");
+_MOLT_ABI_SASSERT(offsetof(PyStructSequence_Desc, fields) == 16u, "layout drift: offsetof(PyStructSequence_Desc, fields) != 16");
+_MOLT_ABI_SASSERT(offsetof(PyStructSequence_Desc, n_in_sequence) == 24u, "layout drift: offsetof(PyStructSequence_Desc, n_in_sequence) != 24");
+_MOLT_ABI_SASSERT(sizeof(((PyStructSequence_Desc *)0)->n_in_sequence) == 4u, "layout drift: width of PyStructSequence_Desc.n_in_sequence != 4");
+#else
+_MOLT_ABI_SASSERT(sizeof(PyStructSequence_Desc) == 32u, "layout drift: sizeof(PyStructSequence_Desc) != 32 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyStructSequence_Desc, name) == 0u, "layout drift: offsetof(PyStructSequence_Desc, name) != 0");
+_MOLT_ABI_SASSERT(offsetof(PyStructSequence_Desc, doc) == 8u, "layout drift: offsetof(PyStructSequence_Desc, doc) != 8");
+_MOLT_ABI_SASSERT(offsetof(PyStructSequence_Desc, fields) == 16u, "layout drift: offsetof(PyStructSequence_Desc, fields) != 16");
+_MOLT_ABI_SASSERT(offsetof(PyStructSequence_Desc, n_in_sequence) == 24u, "layout drift: offsetof(PyStructSequence_Desc, n_in_sequence) != 24");
+_MOLT_ABI_SASSERT(sizeof(((PyStructSequence_Desc *)0)->n_in_sequence) == 4u, "layout drift: width of PyStructSequence_Desc.n_in_sequence != 4");
+#endif
+
 /* PyListObject  <-  abi_types.rs */
 #if SIZEOF_VOID_P == 4
 _MOLT_ABI_SASSERT(sizeof(PyListObject) == 20u, "layout drift: sizeof(PyListObject) != 20 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");

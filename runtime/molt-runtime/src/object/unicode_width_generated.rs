@@ -1800,11 +1800,11 @@ const WIDTH_3_14: WidthRanges = &[
     (1048576, 1114109, "A"),
     (1114110, 1114111, "N"),
 ];
-pub(crate) fn for_minor(minor: i64) -> Option<(&'static str, WidthRanges)> {
-    match minor {
-        12 => Some(("15.0.0", WIDTH_3_12)),
-        13 => Some(("15.1.0", WIDTH_3_13)),
-        14 => Some(("16.0.0", WIDTH_3_14)),
+pub(crate) fn for_version(target: (i64, i64)) -> Option<(&'static str, WidthRanges)> {
+    match target {
+        (3, 12) => Some(("15.0.0", WIDTH_3_12)),
+        (3, 13) => Some(("15.1.0", WIDTH_3_13)),
+        (3, 14) => Some(("16.0.0", WIDTH_3_14)),
         _ => None,
     }
 }

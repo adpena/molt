@@ -4619,6 +4619,11 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
+        symbol: "molt_function_set_fixed_builtin",
+        arity: 2,
+        result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
         symbol: "molt_functools_cmp_to_key",
         arity: 1,
         result: RuntimeBoxedReturn::OwnedValue,
@@ -8299,6 +8304,11 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
+        symbol: "molt_os_stat_result_type",
+        arity: 0,
+        result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
         symbol: "molt_os_symlink",
         arity: 2,
         result: RuntimeBoxedReturn::OwnedValue,
@@ -8906,6 +8916,26 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_punycode_encode",
         arity: 1,
+        result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
+        symbol: "molt_pwd_getpwall",
+        arity: 1,
+        result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
+        symbol: "molt_pwd_getpwnam",
+        arity: 2,
+        result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
+        symbol: "molt_pwd_getpwuid",
+        arity: 2,
+        result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
+        symbol: "molt_pwd_module_init",
+        arity: 0,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
@@ -11034,6 +11064,16 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
+        symbol: "molt_structseq_new",
+        arity: 2,
+        result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
+        symbol: "molt_structseq_type",
+        arity: 8,
+        result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
         symbol: "molt_sub",
         arity: 2,
         result: RuntimeBoxedReturn::OwnedValue,
@@ -13029,14 +13069,14 @@ pub fn runtime_boxed_op_abi(kind: &str) -> Option<&'static RuntimeBoxedAbi> {
         "bytes_find_slice" => Some(&RUNTIME_BOXED_ABIS[241]),
         "bytes_startswith" => Some(&RUNTIME_BOXED_ABIS[247]),
         "bytes_startswith_slice" => Some(&RUNTIME_BOXED_ABIS[248]),
-        "string_count" => Some(&RUNTIME_BOXED_ABIS[2155]),
-        "string_count_slice" => Some(&RUNTIME_BOXED_ABIS[2156]),
-        "string_endswith" => Some(&RUNTIME_BOXED_ABIS[2157]),
-        "string_endswith_slice" => Some(&RUNTIME_BOXED_ABIS[2158]),
-        "string_find" => Some(&RUNTIME_BOXED_ABIS[2160]),
-        "string_find_slice" => Some(&RUNTIME_BOXED_ABIS[2161]),
-        "string_startswith" => Some(&RUNTIME_BOXED_ABIS[2183]),
-        "string_startswith_slice" => Some(&RUNTIME_BOXED_ABIS[2184]),
+        "string_count" => Some(&RUNTIME_BOXED_ABIS[2161]),
+        "string_count_slice" => Some(&RUNTIME_BOXED_ABIS[2162]),
+        "string_endswith" => Some(&RUNTIME_BOXED_ABIS[2163]),
+        "string_endswith_slice" => Some(&RUNTIME_BOXED_ABIS[2164]),
+        "string_find" => Some(&RUNTIME_BOXED_ABIS[2166]),
+        "string_find_slice" => Some(&RUNTIME_BOXED_ABIS[2167]),
+        "string_startswith" => Some(&RUNTIME_BOXED_ABIS[2189]),
+        "string_startswith_slice" => Some(&RUNTIME_BOXED_ABIS[2190]),
         _ => None,
     }
 }

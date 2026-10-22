@@ -67,7 +67,7 @@ _CORE_STDLIB_MODULES_MICRO = (
 def _core_stdlib_module_names_for_profile(
     stdlib_profile: str | None,
 ) -> tuple[str, ...]:
-    from molt.frontend._types import BUILTIN_FUNC_SPECS
+    from molt.builtin_callables import BUILTIN_FUNC_SPECS
 
     profile = stdlib_profile or DEFAULT_STDLIB_PROFILE
     if profile in {AUTO_STDLIB_PROFILE, "micro", "edge", "standard", "server"}:

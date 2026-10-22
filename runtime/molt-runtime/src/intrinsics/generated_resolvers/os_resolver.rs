@@ -357,6 +357,10 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_os_makedirs",
             crate::molt_os_makedirs as *const (),
         )),
+        "molt_os_stat_result_type" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_os_stat_result_type",
+            crate::molt_os_stat_result_type as *const (),
+        )),
         _ => None,
     }
 }

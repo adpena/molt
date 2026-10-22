@@ -661,6 +661,7 @@ pub use crate::builtins::platform::*;
 pub use crate::builtins::platform_mod::*;
 pub use crate::builtins::pprint_ext::*;
 pub use crate::builtins::punycode::*;
+pub use crate::builtins::pwd::*;
 pub use crate::builtins::select::*;
 pub use crate::builtins::shutil::*;
 pub use crate::builtins::signal_ext::*;
@@ -677,6 +678,7 @@ pub(crate) use crate::builtins::strings::{
     split_bytes_whitespace_to_list_maxsplit, split_string_bytes_to_list_maxsplit,
     split_string_whitespace_to_list_maxsplit, splitlines_bytes_to_list, splitlines_string_to_list,
 };
+pub use crate::builtins::structseq::{molt_structseq_new, molt_structseq_type};
 pub use crate::builtins::subprocess_ext::*;
 pub use crate::builtins::sys_ext::*;
 #[cfg(feature = "stdlib_fs_extra")]

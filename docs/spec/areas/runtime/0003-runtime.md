@@ -92,6 +92,85 @@ pub enum MoltObject {
 }
 ```
 
+### 2.2 Native struct sequences and platform records
+
+A native struct sequence has a direct tuple base and one sealed declaration of
+its field names, documentation, visible length and constructor role. Public
+class attributes describe this layout; changing those attributes cannot change
+physical allocation or the collector's reference graph. Only these classes own
+the optional class-specification slot; ordinary class allocation is unchanged.
+Visible tuple items and hidden native fields retain their own Python edges
+through the existing native-instance storage, tracing and retirement owners.
+Validation traverses metadata once before publication. Field access and hidden
+item bounds use constant work; construction, traversal and materialization scale
+with the actual number of fields. The selected class allocation adds one payload
+word and may cross an allocator size class; it is not a zero-cost representation.
+
+Original C type names use the existing native-module capture and C-name owner.
+Module or qualified-name rebinding does not change that creation name; a
+successful heap-type name assignment, including an equal-name assignment,
+retires the capture. Static and heap mutability remain governed by the canonical
+class semantic policy. The public C struct-sequence factories, physical hidden
+item access, constructor, representation and reduction all consume this same
+layout. External static type shells use the existing binding transaction,
+publish Ready last and restore the shell on preparation failure. These rules
+follow pinned [CPython struct sequences](https://github.com/python/cpython/blob/v3.15.0/Objects/structseq.c),
+with target-version constructor policy retained for the supported versions.
+
+`pwd` supplies the seven-field `struct_passwd` through this factory on admitted
+Unix targets. Its three queries and the native user/group lookup consumers share
+one lower platform owner over reentrant NSS lookups. Returned strings are copied
+before native scratch storage retires and use the startup filesystem codec at
+the Python boundary. Password enumeration serializes the process cursor and
+copies native records before releasing it; no Python callback runs under that
+cursor lock. Missing entries, failed index conversion and filesystem-encoding
+errors retain their distinct protocols. Import availability is a target fact;
+query capability admission precedes operand callbacks. Windows and WASI do not
+gain a synthetic password database. The source authority is
+[CPython's password database provider](https://github.com/python/cpython/blob/v3.15.0/Modules/pwdmodule.c).
+
+Filesystem stat results project the admitted path, descriptor or VFS query's
+`PathMetadata`. Signed nanosecond timestamps are the sole time facts. Integral
+sequence seconds use floor division, float attributes use the seconds and
+fractional remainder, and nanosecond attributes never reconstruct values from
+floats. Native optional fields come from that acquisition owner. VFS identity
+fields remain explicitly unknown.
+
+Native integer projection follows the selected CPython source and target C ABI:
+link counts, block counts, block size, flags and generation use signed `long`.
+Device acquisition retains the unsigned `long long` view; the shared projection
+preserves native `NODEV` semantics. `st_dev` uses this device convention, while
+`st_rdev` uses signed `long` for 3.12 and the device convention from 3.13 onward.
+The distinction follows pinned
+[3.12 stat conversion](https://github.com/python/cpython/blob/v3.12.13/Modules/posixmodule.c)
+and [3.14 stat conversion](https://github.com/python/cpython/blob/v3.14.3/Modules/posixmodule.c).
+The platform crate owns native widths; the record publisher owns target-version
+selection. Both runtime and path satellites consume the same `PathMetadata`
+layout and must be rebuilt together after its physical fields change.
+
+Each acquisition constructs the final native record directly, with no
+intermediate tuple or Python reconstruction. The existing runtime class-cache
+inventory owns its lazy type, roots and retirement. Public `os.stat_result`
+rebinding cannot change the class of records returned by either `os` or
+`pathlib`.
+
+Windows ordinary paths keep the existing metadata query. A reparse candidate
+is reacquired through one owned metadata handle with the original follow intent;
+the initial snapshot is discarded. Descriptor queries borrow their current
+handle. The actual attributes and tag come from
+[FileAttributeTagInfo](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_attribute_tag_info),
+never from a guessed reparse kind. Query failures propagate. Metadata handles
+permit read, write and delete sharing and close on success and error. The
+reparse slow path adds one handle open/close, a full metadata query and a tag
+query; ordinary path work is unchanged, and descriptors add a tag query only
+for a reparse record. Windows execution and cost remain unverified, and existing
+identity limits do not establish full Windows stat parity.
+
+These representation and ownership contracts require native, WASM, C-ABI and
+platform execution receipts for acceptance. Development CPython source/oracle
+tests do not establish emitted-binary behavior and do not introduce an
+interpreter into compiled applications.
+
 ## 3. Memory Management
 
 ### 3.1 RC + Incremental GC (Baseline)
@@ -358,6 +437,27 @@ physical kind admits subtype cycles. Traversal, cycle clearing, field access,
 dictionary access, and class reassignment project through the same field base.
 Generic object allocation cannot construct a native payload.
 
+Initial and replacement class-edge publication reject a native physical kind or
+field extent that the allocation cannot hold before acquiring class ownership.
+This callback-free check shares field projection's sealed layout authority;
+constructor initialization and public class-assignment admission remain separate
+obligations. Private `UnraisableHookArgs` uses the same static struct-sequence
+declaration, allocation, descriptors and constructor as public struct sequences.
+
+Struct-sequence representation and password-lookup/record-replacement errors
+compose Python-produced text through the shared `FormatWriter`. Callback strings
+retain their WTF-8 bytes, including lone surrogates and embedded NULs; the writer
+copies each result before retiring its owner and preserves pending callback or
+allocation errors. Descriptor names are borrowed from the sealed declaration.
+Native C type-name diagnostics separately obey CPython's byte-precision limits;
+the target-version decoder owns the treatment of incomplete trailing UTF-8.
+These are
+different contracts: Python values never pass through a lossy host-text adapter.
+The owning source references are CPython
+[struct sequences](https://github.com/python/cpython/blob/v3.12.13/Objects/structseq.c),
+[password lookup](https://github.com/python/cpython/blob/v3.12.13/Modules/pwdmodule.c),
+and [argument diagnostics](https://github.com/python/cpython/blob/v3.12.13/Python/getargs.c).
+
 Published `__new__` and `__init__` descriptors own the constructor argument and
 conversion contracts. Ordinary class calls invoke these phases through one
 lifecycle: a foreign `__new__` result skips initialization, and a subtype result
@@ -382,6 +482,19 @@ existing argument span. Extension, variadic, wrapper and named-signature
 binders retain their own contracts. This follows pinned CPython's
 [method calls](https://raw.githubusercontent.com/python/cpython/3bb231a6a5dc02b95658877318bf61501a7209e9/Objects/methodobject.c)
 and [descriptor calls](https://raw.githubusercontent.com/python/cpython/3bb231a6a5dc02b95658877318bf61501a7209e9/Objects/descrobject.c).
+
+Module functions declare fixed C argument semantics through
+`molt_function_set_fixed_builtin(function, positional_count)`, with an explicit
+count of zero or one. Promotion validates the executable signature before
+publishing native identity and calling-convention metadata atomically. Rejected
+arguments share `CFunctionConvention` admission with C-API methods, including
+keyword-before-count diagnostics and module-qualified labels from the published
+`__qualname__`. Exact successful positional calls retain direct transport.
+Public code, default and signature mutation remains sealed; publication
+invalidates cached call shapes before retiring displaced owners. Ordinary
+builtin promotion retains its existing binding semantics. This follows CPython's
+[fixed module calls](https://github.com/python/cpython/blob/v3.12.13/Objects/methodobject.c)
+and [function labels](https://github.com/python/cpython/blob/v3.12.13/Objects/object.c).
 
 Native C type readiness and default slot-wrapper publication preserve the same
 method pair and receiver ownership. Default-getter admission uses the canonical

@@ -44,10 +44,11 @@ fn install(
         ManagedView::Type {
             object: ManagedTypeAllocation::new(object),
             _name: name,
+            structseq: None,
         }
     } else {
         ManagedView::Tuple {
-            allocation: TupleAllocation::new(2, &raw mut PyTuple_Type, 1).unwrap(),
+            allocation: TupleAllocation::new(2, &raw mut PyTuple_Type, 1, 1).unwrap(),
         }
     };
     let pointer = view.py_obj();

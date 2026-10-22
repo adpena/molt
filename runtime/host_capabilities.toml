@@ -1078,3 +1078,21 @@ capabilities = ["fs.read", "fs.write"]
 [[operation]]
 name = "multiprocessing.spawn"
 requires = ["process.exec", "env.snapshot"]
+
+[[operation]]
+name = "pwd.getpwuid"
+targets = ["native"]
+platforms = ["linux", "macos"]
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "pwd.getpwnam"
+targets = ["native"]
+platforms = ["linux", "macos"]
+capabilities = ["fs.read"]
+
+[[operation]]
+name = "pwd.getpwall"
+targets = ["native"]
+platforms = ["linux", "macos"]
+capabilities = ["fs.read"]

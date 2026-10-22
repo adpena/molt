@@ -103,9 +103,7 @@ fn descriptor_metadata(
         let file = std::mem::ManuallyDrop::new(unsafe {
             std::fs::File::from_raw_handle(handle as *mut _)
         });
-        file.metadata()
-            .map(|metadata| PathMetadata::from_host(&metadata))
-            .map_err(super::io::PathIoError::from_native)
+        PathMetadata::from_windows_file(&file).map_err(super::io::PathIoError::from_native)
     }
     #[cfg(all(target_arch = "wasm32", target_os = "wasi"))]
     {
@@ -1564,13 +1562,338 @@ pub extern "C" fn molt_path_chmod(path_bits: u64, mode_bits: u64) -> u64 {
     })
 }
 
-fn stat_tuple_from_values(_py: &PyToken<'_>, fields: [i128; 10]) -> u64 {
-    let tuple_fields = fields.map(|value| int_bits_from_i128(_py, value));
-    let tuple_ptr = alloc_tuple(_py, &tuple_fields);
-    if tuple_ptr.is_null() {
-        return crate::builtins::exceptions::ExceptionSentinel::exception_sentinel();
+/// One compile-target field order governs both the public type and every
+/// stat/lstat/fstat/at payload. Visible timestamps are integers; attributes keep
+/// the separately acquired fractional seconds and exact nanosecond integers.
+#[derive(Clone, Copy)]
+enum StatField {
+    Mode,
+    Ino,
+    Dev,
+    Nlink,
+    Uid,
+    Gid,
+    Size,
+    AtimeSeconds,
+    MtimeSeconds,
+    CtimeSeconds,
+    Atime,
+    Mtime,
+    Ctime,
+    AtimeNs,
+    MtimeNs,
+    CtimeNs,
+    #[cfg(any(unix, target_os = "wasi"))]
+    Blksize,
+    #[cfg(any(unix, target_os = "wasi"))]
+    Blocks,
+    #[cfg(any(unix, target_os = "wasi"))]
+    Rdev,
+    #[cfg(any(
+        target_vendor = "apple",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    ))]
+    Flags,
+    #[cfg(any(
+        target_vendor = "apple",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    ))]
+    Gen,
+    #[cfg(any(
+        target_vendor = "apple",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        windows
+    ))]
+    Birthtime,
+    #[cfg(windows)]
+    BirthtimeNs,
+    #[cfg(windows)]
+    FileAttributes,
+    #[cfg(any(target_os = "solaris", target_os = "illumos"))]
+    Fstype,
+    #[cfg(windows)]
+    ReparseTag,
+}
+impl StatField {
+    const ALL: &'static [Self] = &[
+        Self::Mode,
+        Self::Ino,
+        Self::Dev,
+        Self::Nlink,
+        Self::Uid,
+        Self::Gid,
+        Self::Size,
+        Self::AtimeSeconds,
+        Self::MtimeSeconds,
+        Self::CtimeSeconds,
+        Self::Atime,
+        Self::Mtime,
+        Self::Ctime,
+        Self::AtimeNs,
+        Self::MtimeNs,
+        Self::CtimeNs,
+        #[cfg(any(unix, target_os = "wasi"))]
+        Self::Blksize,
+        #[cfg(any(unix, target_os = "wasi"))]
+        Self::Blocks,
+        #[cfg(any(unix, target_os = "wasi"))]
+        Self::Rdev,
+        #[cfg(any(
+            target_vendor = "apple",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly"
+        ))]
+        Self::Flags,
+        #[cfg(any(
+            target_vendor = "apple",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly"
+        ))]
+        Self::Gen,
+        #[cfg(any(
+            target_vendor = "apple",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            windows
+        ))]
+        Self::Birthtime,
+        #[cfg(windows)]
+        Self::BirthtimeNs,
+        #[cfg(windows)]
+        Self::FileAttributes,
+        #[cfg(any(target_os = "solaris", target_os = "illumos"))]
+        Self::Fstype,
+        #[cfg(windows)]
+        Self::ReparseTag,
+    ];
+    fn description(self) -> (Option<&'static std::ffi::CStr>, &'static std::ffi::CStr) {
+        use StatField::*;
+        match self {
+            Mode => (Some(c"st_mode"), c"protection bits"),
+            Ino => (Some(c"st_ino"), c"inode"),
+            Dev => (Some(c"st_dev"), c"device"),
+            Nlink => (Some(c"st_nlink"), c"number of hard links"),
+            Uid => (Some(c"st_uid"), c"user ID of owner"),
+            Gid => (Some(c"st_gid"), c"group ID of owner"),
+            Size => (Some(c"st_size"), c"total size, in bytes"),
+            AtimeSeconds => (None, c"integer time of last access"),
+            MtimeSeconds => (None, c"integer time of last modification"),
+            CtimeSeconds => (None, c"integer time of last change"),
+            Atime => (Some(c"st_atime"), c"time of last access"),
+            Mtime => (Some(c"st_mtime"), c"time of last modification"),
+            Ctime => (Some(c"st_ctime"), c"time of last change"),
+            AtimeNs => (Some(c"st_atime_ns"), c"time of last access in nanoseconds"),
+            MtimeNs => (
+                Some(c"st_mtime_ns"),
+                c"time of last modification in nanoseconds",
+            ),
+            CtimeNs => (Some(c"st_ctime_ns"), c"time of last change in nanoseconds"),
+            #[cfg(any(unix, target_os = "wasi"))]
+            Blksize => (Some(c"st_blksize"), c"blocksize for filesystem I/O"),
+            #[cfg(any(unix, target_os = "wasi"))]
+            Blocks => (Some(c"st_blocks"), c"number of blocks allocated"),
+            #[cfg(any(unix, target_os = "wasi"))]
+            Rdev => (Some(c"st_rdev"), c"device type (if inode device)"),
+            #[cfg(any(
+                target_vendor = "apple",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Flags => (Some(c"st_flags"), c"user defined flags for file"),
+            #[cfg(any(
+                target_vendor = "apple",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Gen => (Some(c"st_gen"), c"generation number"),
+            #[cfg(any(
+                target_vendor = "apple",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                windows
+            ))]
+            Birthtime => (Some(c"st_birthtime"), c"time of creation"),
+            #[cfg(windows)]
+            BirthtimeNs => (Some(c"st_birthtime_ns"), c"time of creation in nanoseconds"),
+            #[cfg(windows)]
+            FileAttributes => (Some(c"st_file_attributes"), c"Windows file attribute bits"),
+            #[cfg(any(target_os = "solaris", target_os = "illumos"))]
+            Fstype => (Some(c"st_fstype"), c"Type of filesystem"),
+            #[cfg(windows)]
+            ReparseTag => (Some(c"st_reparse_tag"), c"Windows reparse tag"),
+        }
     }
-    MoltObject::from_ptr(tuple_ptr).bits()
+}
+
+// Cold constructor copies the C description into the sealed native layout.
+// The cache, rather than the public os namespace, owns the resulting class.
+#[cold]
+fn build_stat_result_class(py: &PyToken<'_>) -> u64 {
+    use molt_cpython_abi::abi_types::{PyStructSequence_Desc, PyStructSequence_Field};
+    let mut fields: [PyStructSequence_Field; StatField::ALL.len() + 1] =
+        std::array::from_fn(|_| PyStructSequence_Field {
+            name: std::ptr::null(),
+            doc: std::ptr::null(),
+        });
+    for (index, field) in StatField::ALL.iter().enumerate() {
+        let (name, doc) = field.description();
+        fields[index] = PyStructSequence_Field {
+            name: name.map_or(
+                unsafe { molt_cpython_abi::api::sequences::PyStructSequence_UnnamedField },
+                std::ffi::CStr::as_ptr,
+            ),
+            doc: doc.as_ptr(),
+        };
+    }
+    let desc = PyStructSequence_Desc {
+        name: c"os.stat_result".as_ptr(),
+        doc: c"stat_result: Result from stat, fstat, or lstat.\n\nThis object may be accessed either as a tuple of\n  (mode, ino, dev, nlink, uid, gid, size, atime, mtime, ctime)\nor via the attributes st_mode, st_ino, st_dev, st_nlink, st_uid, and so on.\n\nPosix/windows: If your platform supports st_blksize, st_blocks, st_rdev,\nor st_flags, they are available as attributes only.\n\nSee os.stat for more information.".as_ptr(),
+        fields: fields.as_mut_ptr(), n_in_sequence: 10,
+    };
+    let class = unsafe { crate::builtins::structseq::from_stat_description(py, &desc) };
+    if exception_pending(py) || obj_from_bits(class).is_none() {
+        0
+    } else {
+        class
+    }
+}
+
+/// Borrow the interpreter's canonical stat-result class. A warm read is one
+/// cache load, with no Python namespace lookup or runtime/GIL reentry.
+pub(crate) fn stat_result_class(py: &PyToken<'_>) -> u64 {
+    init_atomic_bits(py, &runtime_state(py).types.stat_result_class, || {
+        build_stat_result_class(py)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_os_stat_result_type() -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        crate::state::cache::retain_cached_result(py, stat_result_class(py))
+    })
+}
+
+fn stat_result_from_metadata(
+    py: &PyToken<'_>,
+    metadata: &molt_runtime_platform::stat_support::PathMetadata,
+) -> u64 {
+    use StatField::*;
+    use molt_runtime_core::OwnedRuntimeValue;
+    let class = stat_result_class(py);
+    if class == 0 {
+        return MoltObject::none().bits();
+    }
+    let mut owners: [Option<OwnedRuntimeValue<'_>>; StatField::ALL.len()] =
+        std::array::from_fn(|_| None);
+    let mut bits = [MoltObject::none().bits(); StatField::ALL.len()];
+    for (index, &field) in StatField::ALL.iter().enumerate() {
+        let value = match field {
+            Mode => int_bits_from_i128(py, metadata.fields[0]),
+            Ino => int_bits_from_i128(py, metadata.fields[1]),
+            Dev => int_bits_from_i128(py, metadata.fields[2]),
+            Nlink => int_bits_from_i128(py, metadata.fields[3]),
+            Uid => int_bits_from_i128(py, metadata.fields[4]),
+            Gid => int_bits_from_i128(py, metadata.fields[5]),
+            Size => int_bits_from_i128(py, metadata.fields[6]),
+            AtimeSeconds => int_bits_from_i128(py, metadata.times[0].seconds()),
+            MtimeSeconds => int_bits_from_i128(py, metadata.times[1].seconds()),
+            CtimeSeconds => int_bits_from_i128(py, metadata.times[2].seconds()),
+            Atime => MoltObject::from_float(metadata.times[0].as_float()).bits(),
+            Mtime => MoltObject::from_float(metadata.times[1].as_float()).bits(),
+            Ctime => MoltObject::from_float(metadata.times[2].as_float()).bits(),
+            AtimeNs => int_bits_from_i128(py, metadata.times[0].nanoseconds()),
+            MtimeNs => int_bits_from_i128(py, metadata.times[1].nanoseconds()),
+            CtimeNs => int_bits_from_i128(py, metadata.times[2].nanoseconds()),
+            #[cfg(any(unix, target_os = "wasi"))]
+            Blksize => int_bits_from_i128(py, metadata.block_size as i128),
+            #[cfg(any(unix, target_os = "wasi"))]
+            Blocks => int_bits_from_i128(py, metadata.blocks as i128),
+            #[cfg(any(unix, target_os = "wasi"))]
+            Rdev => {
+                use molt_runtime_platform::stat_support::{
+                    DeviceNumberConvention, device_number_integer,
+                };
+                let convention = if crate::object::ops_sys::runtime_target_at_least(py, 3, 13) {
+                    DeviceNumberConvention::PythonDev
+                } else {
+                    DeviceNumberConvention::CLong
+                };
+                int_bits_from_i128(py, device_number_integer(metadata.rdev, convention))
+            }
+            #[cfg(any(
+                target_vendor = "apple",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Flags => int_bits_from_i128(py, metadata.flags as i128),
+            #[cfg(any(
+                target_vendor = "apple",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Gen => int_bits_from_i128(py, metadata.generation as i128),
+            #[cfg(any(
+                target_vendor = "apple",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                windows
+            ))]
+            Birthtime => MoltObject::from_float(metadata.birthtime.as_float()).bits(),
+            #[cfg(windows)]
+            BirthtimeNs => int_bits_from_i128(py, metadata.birthtime.nanoseconds()),
+            #[cfg(windows)]
+            FileAttributes => int_bits_from_i128(py, metadata.file_attributes as i128),
+            #[cfg(windows)]
+            ReparseTag => int_bits_from_i128(py, metadata.reparse_tag as i128),
+            #[cfg(any(target_os = "solaris", target_os = "illumos"))]
+            Fstype => {
+                let text = alloc_string(
+                    py,
+                    &metadata.fstype[..metadata
+                        .fstype
+                        .iter()
+                        .position(|&b| b == 0)
+                        .unwrap_or(metadata.fstype.len())],
+                );
+                if text.is_null() {
+                    MoltObject::none().bits()
+                } else {
+                    MoltObject::from_ptr(text).bits()
+                }
+            }
+        };
+        owners[index] = Some(unsafe { OwnedRuntimeValue::from_owned_bits(py.core_token(), value) });
+        if exception_pending(py) {
+            return MoltObject::none().bits();
+        }
+        bits[index] = value;
+    }
+    // Publish the final record once; hidden native owners never pass through a
+    // second Python constructor or an intermediate payload tuple.
+    crate::builtins::structseq::from_values(py, class, &bits)
 }
 
 /// Convert a path to a NUL-terminated `CString` for the `*at` POSIX syscall
@@ -1623,19 +1946,12 @@ pub(crate) fn at_resolve_dir_fd(_py: &PyToken<'_>, dir_fd_bits: u64) -> Result<l
     }
 }
 
-/// Build the canonical 10-field stat tuple from a raw `libc::stat`.
-///
-/// Mirrors the integer-seconds shape of `stat_tuple_from_metadata` (which is
-/// what `os.stat`/`os.lstat`/`os.fstat` return). The Rust `libc` crate already
-/// normalizes the time-field spelling across platforms: macOS's raw struct
-/// names the seconds component `st_atimespec.tv_sec`, but the crate flattens it
-/// to `st_atime: time_t` just like Linux/BSD, so a single field path covers all
-/// unix targets.
+/// Project the same canonical metadata value used by routed and descriptor queries.
 #[cfg(unix)]
-pub(crate) fn stat_tuple_from_libc_stat(py: &PyToken<'_>, st: &libc::stat) -> u64 {
-    stat_tuple_from_values(
+pub(crate) fn stat_result_from_libc_stat(py: &PyToken<'_>, st: &libc::stat) -> u64 {
+    stat_result_from_metadata(
         py,
-        molt_runtime_platform::stat_support::PathMetadata::from_unix_stat(st).fields,
+        &molt_runtime_platform::stat_support::PathMetadata::from_unix_stat(st),
     )
 }
 
@@ -1646,7 +1962,7 @@ fn metadata_stat(py: &PyToken<'_>, bits: u64, follow: bool) -> u64 {
     };
     match metadata_for_input(py, &input, follow, OperationId::OsStat) {
         Err(error) => error,
-        Ok(Ok(metadata)) => stat_tuple_from_values(py, metadata.fields),
+        Ok(Ok(metadata)) => stat_result_from_metadata(py, &metadata),
         Ok(Err(error)) => error.raise(py, if follow { "stat" } else { "lstat" }),
     }
 }
@@ -1693,7 +2009,7 @@ fn metadata_stat_at(
     if path.is_absolute() || default_directory {
         return match super::io::path_metadata(py, &path, follow, OperationId::OsStat) {
             Err(error) => error,
-            Ok(Ok(metadata)) => stat_tuple_from_values(py, metadata.fields),
+            Ok(Ok(metadata)) => stat_result_from_metadata(py, &metadata),
             Ok(Err(error)) => error.raise(py, if follow { "stat" } else { "lstat" }),
         };
     }
@@ -1720,7 +2036,7 @@ fn metadata_stat_at(
             return super::io::PathIoError::from_native(std::io::Error::last_os_error())
                 .raise(py, "stat");
         }
-        stat_tuple_from_libc_stat(py, unsafe { metadata.assume_init_ref() })
+        stat_result_from_libc_stat(py, unsafe { metadata.assume_init_ref() })
     }
     #[cfg(not(all(not(target_arch = "wasm32"), unix)))]
     {
@@ -1750,7 +2066,7 @@ pub extern "C" fn molt_os_fstat(fd_bits: u64) -> u64 {
         };
         match metadata_for_input(py, &MetadataInput::Fd(fd), true, OperationId::OsStat) {
             Err(error) => error,
-            Ok(Ok(metadata)) => stat_tuple_from_values(py, metadata.fields),
+            Ok(Ok(metadata)) => stat_result_from_metadata(py, &metadata),
             Ok(Err(error)) => error.raise(py, "fstat"),
         }
     })

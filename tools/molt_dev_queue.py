@@ -28,6 +28,7 @@ from typing import Any
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
+from heapq import nlargest
 from pathlib import Path
 
 from tools.molt_dev_controller import (
@@ -42,6 +43,7 @@ from tools.molt_dev_common import (
     _COMMANDS,
     EXIT_FAIL,
     EXIT_OK,
+    EXIT_USAGE,
     CandidateFailure,
     DriverError,
     PublicationRace,
@@ -232,22 +234,28 @@ def recorded_results(paths: QueuePaths, *, limit: int | None = None) -> list[dic
     which is not when it closed: a bisected batch closes out of queue order.
     The id breaks a tie between two results recorded in one clock tick."""
 
-    if not paths.results.is_dir():
+    if limit is not None and limit < 0:
+        raise DriverError("--recent must be non-negative", code=EXIT_USAGE)
+    if limit == 0 or not paths.results.is_dir():
         return []
-    results = sorted(
-        (
-            json.loads(path.read_text(encoding="utf-8"))
-            for path in paths.results.glob("*.json")
-            if not path.name.startswith(".")
-        ),
-        key=lambda result: (
+    records = (
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in paths.results.glob("*.json")
+        if not path.name.startswith(".")
+    )
+
+    def completion_key(result):
+        return (
             datetime.fromisoformat(result["recorded_at"]),
             result["request"]["id"],
-        ),
+        )
+
+    # Completion order is stored in each receipt, not in its enqueue-time name.
+    # Read every receipt once; bounded requests retain only the newest K bodies.
+    selected = (
+        records if limit is None else nlargest(limit, records, key=completion_key)
     )
-    if limit is not None:
-        results = results[-limit:] if limit else []
-    return results
+    return sorted(selected, key=completion_key)
 
 
 def withdraw(paths: QueuePaths, request_id: str, *, reason: str) -> LandingRequest:
@@ -806,6 +814,8 @@ def cmd_queue_run(args: argparse.Namespace) -> int:
 
 def cmd_queue_status(args: argparse.Namespace) -> int:
 
+    if args.recent < 0:
+        raise DriverError("--recent must be non-negative", code=EXIT_USAGE)
     paths = queue_paths(Path(args.repo).resolve())
     requests = pending(paths)
     plan = (
@@ -913,7 +923,12 @@ def add_queue_arguments(
     p_run.set_defaults(func=cmd_queue_run)
     p_status = queue_sub.add_parser("status", help="pending requests and results")
     add_repo_arg(p_status)
-    p_status.add_argument("--recent", type=int, default=10, help="results to show")
+    p_status.add_argument(
+        "--recent",
+        type=int,
+        default=10,
+        help="newest results to show (0 omits history)",
+    )
     p_status.set_defaults(func=cmd_queue_status)
     p_withdraw = queue_sub.add_parser(
         "withdraw", help="close pending requests without testing them"

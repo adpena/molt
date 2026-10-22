@@ -33,3 +33,37 @@ def test_differential_profile_preserves_explicit_selection(monkeypatch, profile)
 
     monkeypatch.setenv("MOLT_DIFF_BUILD_PROFILE", profile)
     assert molt_diff._diff_build_profile() == profile
+
+
+def test_compact_target_tags_preserve_full_catalog_identity(monkeypatch):
+    from molt import target_python as authority
+
+    # The live catalog remains the admission authority: no future target is
+    # accepted merely because its dotted or compact spelling can be parsed.
+    with pytest.raises(ValueError):
+        authority._parse_target_python_version("4.0")
+    with pytest.raises(ValueError):
+        authority._parse_target_python_version("py40")
+    versions = (
+        authority.TargetPythonVersion(3, 0, 0),
+        authority.TargetPythonVersion(4, 0, 0),
+    )
+    monkeypatch.setattr(authority, "_SUPPORTED_TARGET_PYTHON_VERSIONS", versions)
+    monkeypatch.setattr(
+        authority,
+        "_SUPPORTED_TARGET_PYTHON_BY_SHORT",
+        {target.short: target for target in versions},
+    )
+    monkeypatch.setattr(
+        authority, "SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS", ("3.0", "4.0")
+    )
+    assert authority._parse_target_python_version("py30").feature_version == (3, 0)
+    assert authority._parse_target_python_version("py40").feature_version == (4, 0)
+    assert authority._parse_target_python_version("4.0").feature_version == (4, 0)
+    assert authority.resolve_target_python_for_oracle(
+        (4, 0), "4.0"
+    ).feature_version == (4, 0)
+    with pytest.raises(ValueError, match="canonical <major>.<minor>"):
+        authority.resolve_target_python_for_oracle((4, 0), "4.0.0")
+    with pytest.raises(ValueError):
+        authority._parse_target_python_version("4.1")

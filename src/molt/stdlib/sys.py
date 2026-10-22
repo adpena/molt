@@ -96,7 +96,9 @@ _MOLT_GETRECURSIONLIMIT = _require_intrinsic("molt_getrecursionlimit")
 _MOLT_SETRECURSIONLIMIT = _require_intrinsic("molt_setrecursionlimit")
 _MOLT_EXCEPTION_ACTIVE = _require_intrinsic("molt_exception_active")
 _MOLT_EXCEPTION_LAST = _require_intrinsic("molt_exception_last")
-_MOLT_UNRAISABLE_HOOK_ARGS_IS_EXACT = _require_intrinsic("molt_unraisable_hook_args_is_exact")
+_MOLT_UNRAISABLE_HOOK_ARGS_IS_EXACT = _require_intrinsic(
+    "molt_unraisable_hook_args_is_exact"
+)
 _MOLT_ASYNCGEN_HOOKS_GET = _require_intrinsic("molt_asyncgen_hooks_get")
 _MOLT_ASYNCGEN_HOOKS_SET = _require_intrinsic("molt_asyncgen_hooks_set")
 _ASYNCGEN_HOOK_UNSET = object()
@@ -107,7 +109,9 @@ _MOLT_SYS_SETTRACE = _require_intrinsic("molt_sys_settrace")
 _MOLT_SYS_GETTRACE = _require_intrinsic("molt_sys_gettrace")
 _MOLT_SYS_SETPROFILE = _require_intrinsic("molt_sys_setprofile")
 _MOLT_SYS_GETPROFILE = _require_intrinsic("molt_sys_getprofile")
-_MOLT_SYS_GETFILESYSTEMENCODEERRORS = _require_intrinsic("molt_sys_getfilesystemencodeerrors")
+_MOLT_SYS_GETFILESYSTEMENCODEERRORS = _require_intrinsic(
+    "molt_sys_getfilesystemencodeerrors"
+)
 _MOLT_SYS_FLOAT_INFO = _require_intrinsic("molt_sys_float_info")
 _MOLT_SYS_INT_INFO = _require_intrinsic("molt_sys_int_info")
 _MOLT_SYS_HASH_INFO = _require_intrinsic("molt_sys_hash_info")
@@ -264,8 +268,9 @@ _SYS_FLAGS_BOOL_FIELDS = frozenset(("dev_mode", "safe_path"))
 # Named fields outside the sequence, with the first target minor exposing each.
 _SYS_FLAGS_EXTRA_FIELDS = (
     ("gil", 13),
-    ("context_aware_warnings", 14),
     ("thread_inherit_context", 14),
+    ("context_aware_warnings", 14),
+    ("lazy_imports", 15),
 )
 
 
@@ -332,114 +337,112 @@ _THREAD_INFO_FIELDS = (
 )
 
 
-class _StructSequence(tuple):
-    """CPython struct-sequence shape: a tuple with fixed, named fields.
-
-    Each public type is a small subclass published by `_struct_sequence_type`;
-    construction, field access and repr live here once.
-    """
-
-    __slots__ = ()
-    _fields: tuple[str, ...] = ()
-    _repr_prefix = ""
-    # CPython refuses Python-level construction of some struct sequences
-    # (sys.flags, sys.version_info); the bootstrap builds them with `_make`.
-    _creatable = True
-    n_fields = 0
-    n_sequence_fields = 0
-    n_unnamed_fields = 0
-
-    def __new__(cls, values: object) -> "_StructSequence":
-        if not cls._creatable:
-            raise TypeError(f"cannot create '{cls._repr_prefix}' instances")
-        return cls._make(values)
-
-    @classmethod
-    def _make(cls, values: object) -> "_StructSequence":
-        items = tuple(values)
-        if len(items) != len(cls._fields):
-            raise TypeError(
-                f"{cls._repr_prefix}() takes a {len(cls._fields)}-sequence "
-                f"({len(items)}-sequence given)"
-            )
-        return tuple.__new__(cls, items)
-
-    def __getattr__(self, name: str) -> object:
-        fields = type(self)._fields
-        if name in fields:
-            return self[fields.index(name)]
-        raise AttributeError(name)
-
-    def __repr__(self) -> str:
-        cls = type(self)
-        items = ", ".join(
-            f"{field}={value!r}" for field, value in zip(cls._fields, self)
-        )
-        return f"{cls._repr_prefix}({items})"
+_MOLT_STRUCTSEQ_TYPE = _require_intrinsic("molt_structseq_type")
+_struct_sequence_new = _require_intrinsic("molt_structseq_new")
 
 
 def _struct_sequence_type(
-    cls: type, name: str, fields: tuple[str, ...], *, module: str = "sys"
-) -> None:
-    """Publish `cls` under CPython's type identity for a struct sequence."""
-    cls._fields = fields
-    cls._repr_prefix = name if module == "builtins" else f"{module}.{name}"
-    cls.n_fields = cls.n_sequence_fields = len(fields)
-    cls.__name__ = cls.__qualname__ = name
-    cls.__module__ = module
+    name: str,
+    fields: tuple[str | None, ...],
+    *,
+    module: str = "sys",
+    visible: int | None = None,
+    constructor: int = 0,
+    static_origin: bool = True,
+    docs: tuple[str | None, ...] | None = None,
+    doc: str | None = None,
+) -> type:
+    """Publish one native direct-tuple class with an immutable field layout."""
+    if visible is None:
+        visible = len(fields)
+    if docs is None:
+        docs = (None,) * len(fields)
+    fullname = name if module == "builtins" else module + "." + name
+    return _MOLT_STRUCTSEQ_TYPE(
+        fullname, module, fields, docs, visible, constructor, static_origin, doc
+    )
 
 
-class _Flags(_StructSequence):
-    __slots__ = ()
-    _creatable = False
-    # Target-gated named fields outside the sequence, set once at bootstrap.
-    _extra_values: dict[str, int] = {}
-
-    def __getattr__(self, name: str) -> object:
-        extra_values = type(self)._extra_values
-        if name in extra_values:
-            return extra_values[name]
-        return _StructSequence.__getattr__(self, name)
-
-
-class _VersionInfo(_StructSequence):
-    __slots__ = ()
-    _creatable = False
-
-
-class _FloatInfo(_StructSequence):
-    __slots__ = ()
-
-
-class _IntInfo(_StructSequence):
-    __slots__ = ()
-
-
-class _HashInfo(_StructSequence):
-    __slots__ = ()
-
-
-class _ThreadInfo(_StructSequence):
-    __slots__ = ()
-
-
-class _AsyncgenHooks(_StructSequence):
-    __slots__ = ()
-
-
-_struct_sequence_type(_Flags, "flags", _SYS_FLAGS_SEQUENCE_FIELDS)
-_struct_sequence_type(_VersionInfo, "version_info", _VERSION_INFO_FIELDS)
-_struct_sequence_type(_FloatInfo, "float_info", _FLOAT_INFO_FIELDS)
-_struct_sequence_type(_IntInfo, "int_info", _INT_INFO_FIELDS)
-_struct_sequence_type(_HashInfo, "hash_info", _HASH_INFO_FIELDS)
-_struct_sequence_type(_ThreadInfo, "thread_info", _THREAD_INFO_FIELDS)
-_struct_sequence_type(
-    _AsyncgenHooks, "asyncgen_hooks", ("firstiter", "finalizer"), module="builtins"
+_VersionInfo = _struct_sequence_type(
+    "version_info",
+    _VERSION_INFO_FIELDS,
+    constructor=1,
+    docs=(
+        "Major release number",
+        "Minor release number",
+        "Patch release number",
+        "'alpha', 'beta', 'candidate', or 'final'",
+        "Serial release number",
+    ),
+    doc="sys.version_info\n\nVersion information as a named tuple.",
+)
+_FloatInfo = _struct_sequence_type(
+    "float_info",
+    _FLOAT_INFO_FIELDS,
+    docs=(
+        "DBL_MAX -- maximum representable finite float",
+        "DBL_MAX_EXP -- maximum int e such that radix**(e-1) is representable",
+        "DBL_MAX_10_EXP -- maximum int e such that 10**e is representable",
+        "DBL_MIN -- Minimum positive normalized float",
+        "DBL_MIN_EXP -- minimum int e such that radix**(e-1) is a normalized float",
+        "DBL_MIN_10_EXP -- minimum int e such that 10**e is a normalized float",
+        "DBL_DIG -- maximum number of decimal digits that can be faithfully represented in a float",
+        "DBL_MANT_DIG -- mantissa digits",
+        "DBL_EPSILON -- Difference between 1 and the next representable float",
+        "FLT_RADIX -- radix of exponent",
+        "FLT_ROUNDS -- rounding mode used for arithmetic operations",
+    ),
+    doc="sys.float_info\n\nA named tuple holding information about the float type. It contains low level\ninformation about the precision and internal representation. Please study\nyour system's :file:`float.h` for more information.",
+)
+_IntInfo = _struct_sequence_type(
+    "int_info",
+    _INT_INFO_FIELDS,
+    docs=(
+        "size of a digit in bits",
+        "size in bytes of the C type used to represent a digit",
+        "maximum string conversion digits limitation",
+        "minimum positive value for int_max_str_digits",
+    ),
+    doc="sys.int_info\n\nA named tuple that holds information about Python's\ninternal representation of integers.  The attributes are read only.",
+)
+_HashInfo = _struct_sequence_type(
+    "hash_info",
+    _HASH_INFO_FIELDS,
+    docs=(
+        "width of the type used for hashing, in bits",
+        "prime number giving the modulus on which the hash function is based",
+        "value to be used for hash of a positive infinity",
+        "value to be used for hash of a nan",
+        "multiplier used for the imaginary part of a complex number",
+        "name of the algorithm for hashing of str, bytes and memoryviews",
+        "internal output size of hash algorithm",
+        "seed size of hash algorithm",
+        "small string optimization cutoff",
+    ),
+    doc="hash_info\n\nA named tuple providing parameters used for computing\nhashes. The attributes are read only.",
+)
+_ThreadInfo = _struct_sequence_type(
+    "thread_info",
+    _THREAD_INFO_FIELDS,
+    docs=(
+        "name of the thread implementation",
+        "name of the lock implementation",
+        "name and version of the thread library",
+    ),
+    doc="sys.thread_info\n\nA named tuple holding information about the thread implementation.",
+)
+_AsyncgenHooks = _struct_sequence_type(
+    "asyncgen_hooks",
+    ("firstiter", "finalizer"),
+    module="builtins",
+    docs=("Hook to intercept first iteration", "Hook to intercept finalization"),
+    doc="asyncgen_hooks\n\nA named tuple providing information about asynchronous\ngenerators hooks.  The attributes are read only.",
 )
 
 
 if "abiflags" in globals():
     __all__.insert(__all__.index("flags"), "abiflags")
+
 
 def _validate_bootstrap_scalars() -> None:
     """Validate the native bootstrap's values without replacing their owners."""
@@ -447,9 +450,17 @@ def _validate_bootstrap_scalars() -> None:
     maxsize_value = g["maxsize"]
     maxunicode_value = g["maxunicode"]
     byteorder_value = g["byteorder"]
-    if not isinstance(maxsize_value, int) or isinstance(maxsize_value, bool) or maxsize_value <= 0:
+    if (
+        not isinstance(maxsize_value, int)
+        or isinstance(maxsize_value, bool)
+        or maxsize_value <= 0
+    ):
         raise RuntimeError("canonical sys bootstrap returned invalid maxsize")
-    if not isinstance(maxunicode_value, int) or isinstance(maxunicode_value, bool) or not 0 < maxunicode_value <= 0x10FFFF:
+    if (
+        not isinstance(maxunicode_value, int)
+        or isinstance(maxunicode_value, bool)
+        or not 0 < maxunicode_value <= 0x10FFFF
+    ):
         raise RuntimeError("canonical sys bootstrap returned invalid maxunicode")
     if not isinstance(byteorder_value, str) or byteorder_value not in ("little", "big"):
         raise RuntimeError("canonical sys bootstrap returned invalid byteorder")
@@ -465,24 +476,62 @@ def _init_metadata_views() -> None:
     """Finalize public shapes once, during the canonical module initializer."""
     g = globals()
     _validate_bootstrap_scalars()
-    raw_version = _expect_version_info_tuple(g["version_info"], "canonical sys bootstrap", "version_info")
+    raw_version = _expect_version_info_tuple(
+        g["version_info"], "canonical sys bootstrap", "version_info"
+    )
     implementation_value = _resolve_implementation(g["implementation"])
     flags_values, flag_extras = _resolve_flags_payload(
         _MOLT_SYS_FLAGS_PAYLOAD(), raw_version[1]
     )
-    float_values = _metadata_tuple(_MOLT_SYS_FLOAT_INFO(), "molt_sys_float_info", len(_FLOAT_INFO_FIELDS))
-    int_values = _metadata_tuple(_MOLT_SYS_INT_INFO(), "molt_sys_int_info", len(_INT_INFO_FIELDS))
-    hash_values = _metadata_tuple(_MOLT_SYS_HASH_INFO(), "molt_sys_hash_info", len(_HASH_INFO_FIELDS))
-    thread_values = _metadata_tuple(_MOLT_SYS_THREAD_INFO(), "molt_sys_thread_info", len(_THREAD_INFO_FIELDS))
-    g["version_info"] = _VersionInfo._make(raw_version)
+    float_values = _metadata_tuple(
+        _MOLT_SYS_FLOAT_INFO(), "molt_sys_float_info", len(_FLOAT_INFO_FIELDS)
+    )
+    int_values = _metadata_tuple(
+        _MOLT_SYS_INT_INFO(), "molt_sys_int_info", len(_INT_INFO_FIELDS)
+    )
+    hash_values = _metadata_tuple(
+        _MOLT_SYS_HASH_INFO(), "molt_sys_hash_info", len(_HASH_INFO_FIELDS)
+    )
+    thread_values = _metadata_tuple(
+        _MOLT_SYS_THREAD_INFO(), "molt_sys_thread_info", len(_THREAD_INFO_FIELDS)
+    )
+    g["version_info"] = _struct_sequence_new(_VersionInfo, raw_version)
     g["implementation"] = implementation_value
-    _Flags._extra_values = flag_extras
-    _Flags.n_fields = len(_SYS_FLAGS_SEQUENCE_FIELDS) + len(flag_extras)
-    g["flags"] = _Flags._make(flags_values)
-    g["float_info"] = _FloatInfo._make(float_values)
-    g["int_info"] = _IntInfo._make(int_values)
-    g["hash_info"] = _HashInfo._make(hash_values)
-    g["thread_info"] = _ThreadInfo._make(thread_values)
+    flags_type = _struct_sequence_type(
+        "flags",
+        _SYS_FLAGS_SEQUENCE_FIELDS + tuple(flag_extras),
+        visible=len(_SYS_FLAGS_SEQUENCE_FIELDS),
+        constructor=1,
+        docs=(
+            "-d",
+            "-i",
+            "-i",
+            "-O or -OO",
+            "-B",
+            "-s",
+            "-S",
+            "-E",
+            "-v",
+            "-b",
+            "-q",
+            "-R",
+            "-I",
+            "-X dev",
+            "-X utf8",
+            "-X warn_default_encoding",
+            "-P",
+            "-X int_max_str_digits",
+        )
+        + tuple("-X " + name for name in flag_extras),
+        doc="sys.flags\n\nFlags provided through command line arguments or environment vars.",
+    )
+    g["flags"] = _struct_sequence_new(
+        flags_type, flags_values + tuple(flag_extras.values())
+    )
+    g["float_info"] = _struct_sequence_new(_FloatInfo, float_values)
+    g["int_info"] = _struct_sequence_new(_IntInfo, int_values)
+    g["hash_info"] = _struct_sequence_new(_HashInfo, hash_values)
+    g["thread_info"] = _struct_sequence_new(_ThreadInfo, thread_values)
     g["stdlib_module_names"] = frozenset(g["stdlib_module_names"])
 
 
@@ -526,7 +575,7 @@ def get_asyncgen_hooks() -> object:
     hooks = _MOLT_ASYNCGEN_HOOKS_GET()
     if not isinstance(hooks, tuple) or len(hooks) != 2:
         raise RuntimeError("asyncgen hooks intrinsic returned invalid value")
-    return _AsyncgenHooks._make(hooks)
+    return _struct_sequence_new(_AsyncgenHooks, hooks)
 
 
 def set_asyncgen_hooks(
@@ -583,9 +632,7 @@ def excepthook(exc_type: object, exc_value: object, exc_tb: object) -> None:
 
 def unraisablehook(unraisable: object) -> None:
     if not _MOLT_UNRAISABLE_HOOK_ARGS_IS_EXACT(unraisable):
-        raise TypeError(
-            "sys.unraisablehook argument type must be UnraisableHookArgs"
-        )
+        raise TypeError("sys.unraisablehook argument type must be UnraisableHookArgs")
     err_msg = getattr(unraisable, "err_msg", None)
     obj = getattr(unraisable, "object", None)
     exc_value = getattr(unraisable, "exc_value", None)
@@ -686,6 +733,7 @@ def addaudithook(hook: object) -> None:
 
 def audit(event: str, *args: object) -> None:
     _MOLT_SYS_AUDIT(event, args)
+
 
 # Direct aliases preserve callable identity without an export registry.
 _getframe = _MOLT_GETFRAME

@@ -18,10 +18,9 @@ use crate::{
     TYPE_TAG_COMPLEX, TYPE_TAG_DICT, TYPE_TAG_FLOAT, TYPE_TAG_FROZENSET, TYPE_TAG_INT,
     TYPE_TAG_LIST, TYPE_TAG_MEMORYVIEW, TYPE_TAG_NONE, TYPE_TAG_RANGE, TYPE_TAG_SET,
     TYPE_TAG_SLICE, TYPE_TAG_STR, TYPE_TAG_TUPLE, alloc_class_obj, alloc_string, alloc_tuple,
-    attr_name_bits_from_bytes, class_bump_layout_version, class_dict_bits, class_name_bits,
-    dec_ref_bits, dict_set_in_place, inc_ref_bits, intern_static_name, molt_class_set_base,
-    obj_from_bits, object_type_id, raise_exception, runtime_state, runtime_state_for_gil,
-    string_obj_to_owned,
+    attr_name_bits_from_bytes, class_bump_layout_version, class_dict_bits, dec_ref_bits,
+    dict_set_in_place, inc_ref_bits, intern_static_name, molt_class_set_base, obj_from_bits,
+    object_type_id, raise_exception, runtime_state, runtime_state_for_gil, string_obj_to_owned,
 };
 
 static BUILTIN_CLASSES_INIT_LOCK: Mutex<()> = Mutex::new(());
@@ -1582,8 +1581,10 @@ pub(crate) fn class_name_for_error(class_bits: u64) -> String {
         if object_type_id(ptr) != TYPE_ID_TYPE {
             return "<class>".to_string();
         }
-        string_obj_to_owned(obj_from_bits(class_name_bits(ptr)))
-            .unwrap_or_else(|| "<class>".to_string())
+        string_obj_to_owned(obj_from_bits(
+            crate::object::layout::class_native_name_bits(ptr),
+        ))
+        .unwrap_or_else(|| "<class>".to_string())
     }
 }
 

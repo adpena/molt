@@ -133,21 +133,53 @@ fn align(bytes: usize) -> Option<usize> {
     bytes.checked_add(WORD - 1).map(|bytes| bytes & !(WORD - 1))
 }
 
-/// NativeSlotLayout is a non-inherited declaration of each native root.
-/// An exact value carrying its builtin class edge still has no extension.
+/// Read the same sealed root distinction used to allocate and publish the tail.
+/// A native subclass may declare slots without becoming its payload's root.
 #[inline]
 pub(crate) unsafe fn has_fields(object: *mut u8) -> bool {
     unsafe {
-        if NativePayload::from_type_id(object_type_id(object)).is_none() {
+        let Some(kind) = NativePayload::from_type_id(object_type_id(object)) else {
             return false;
-        }
+        };
         let Some(class) = obj_from_bits(object_class_bits(object)).as_ptr() else {
             return false;
         };
-        !super::class_storage::class_declares(
-            class,
-            super::class_storage::ClassDeclaration::NativeSlotLayout,
-        )
+        extends_root(kind, class)
+    }
+}
+
+/// The sealed tail and the allocation's immutable payload extent must agree
+/// before either publishing a class edge or projecting its fields. No class
+/// construction, callbacks, allocations or builtin initialization occur here.
+unsafe fn field_range(object: *mut u8, class: *mut u8, kind: NativePayload) -> Option<usize> {
+    unsafe {
+        if object_type_id(object) != kind.type_id() {
+            return None;
+        }
+        let size = super::layout::class_cached_layout_size(class)?;
+        let offset = kind.fields_offset(object);
+        offset
+            .checked_add(size)
+            .filter(|&end| end <= object_payload_size(object))
+            .map(|_| offset)
+    }
+}
+
+/// Cold class-edge admission. A native allocation cannot become a subtype by
+/// retagging an exact payload that lacks its sealed field tail. Clearing an
+/// edge and non-native layouts retain their existing ownership protocol.
+pub(crate) unsafe fn class_edge_fits(object: *mut u8, class_bits: u64) -> bool {
+    unsafe {
+        let Some(kind) = NativePayload::from_type_id(object_type_id(object)) else {
+            return true;
+        };
+        let Some(class) = obj_from_bits(class_bits).as_ptr() else {
+            return class_bits == 0;
+        };
+        if super::class_instance_type_id(class) != kind.type_id() {
+            return false;
+        }
+        !extends_root(kind, class) || field_range(object, class, kind).is_some()
     }
 }
 
@@ -158,15 +190,8 @@ pub(crate) unsafe fn field_base_for_class(object: *mut u8, class: *mut u8) -> *m
         let Some(kind) = NativePayload::from_type_id(super::class_instance_type_id(class)) else {
             return object;
         };
-        assert_eq!(object_type_id(object), kind.type_id());
-        let offset = kind.fields_offset(object);
-        let size =
-            super::layout::class_cached_layout_size(class).expect("sealed native class extent");
-        assert!(
-            offset
-                .checked_add(size)
-                .is_some_and(|end| end <= object_payload_size(object))
-        );
+        let offset = field_range(object, class, kind)
+            .expect("native allocation must contain its sealed class field tail");
         object.add(offset)
     }
 }
@@ -195,25 +220,18 @@ pub(crate) unsafe fn field_payload_size(object: *mut u8) -> usize {
     }
 }
 
-/// Whether `class` extends its payload's root. A payload with one canonical
-/// owner compares against it, so a native class that declares its own slot
-/// layout on top of `tuple` keeps its identity and fields. FileHandle has
-/// several concrete native roots, each declaring NativeSlotLayout.
-unsafe fn extends_root(
-    py: &PyToken<'_>,
-    kind: NativePayload,
-    class: u64,
-    class_ptr: *mut u8,
-) -> bool {
-    match kind.owner(py) {
-        Some(owner) => class != owner,
-        None => unsafe {
-            !super::class_storage::class_declares(
-                class_ptr,
-                super::class_storage::ClassDeclaration::NativeSlotLayout,
-            )
-        },
-    }
+/// BuiltinClass is the exact, non-inherited anchor fact, declared for the whole
+/// family before layout sealing. Each non-IO native kind has one such root.
+/// FileHandle has several concrete roots whose native slot declarations own
+/// that distinction. Reads and retirement must not initialize builtin classes.
+#[inline]
+unsafe fn extends_root(kind: NativePayload, class: *mut u8) -> bool {
+    let root = if kind == NativePayload::FileHandle {
+        super::class_storage::ClassDeclaration::NativeSlotLayout
+    } else {
+        super::class_storage::ClassDeclaration::BuiltinClass
+    };
+    !unsafe { super::class_storage::class_declares(class, root) }
 }
 
 /// Allocate only zeroed physical storage. The caller fills all native owners
@@ -228,7 +246,7 @@ pub(crate) unsafe fn alloc_unpublished(
         let Some(class_ptr) = kind.admit(py, class) else {
             return std::ptr::null_mut();
         };
-        let subtype = extends_root(py, kind, class, class_ptr);
+        let subtype = extends_root(kind, class_ptr);
         let native = kind.native_bytes(length);
         let payload = if subtype {
             native.and_then(align).and_then(|offset| {
@@ -274,7 +292,7 @@ pub(crate) unsafe fn prepare_publication(py: &PyToken<'_>, object: *mut u8, clas
         }
         let kind = NativePayload::from_type_id(object_type_id(object)).expect("native allocation");
         let class_ptr = obj_from_bits(class).as_ptr().unwrap();
-        let subtype = extends_root(py, kind, class, class_ptr);
+        let subtype = extends_root(kind, class_ptr);
         if subtype {
             let size = super::layout::class_cached_layout_size(class_ptr).unwrap();
             if super::field_storage::initialize_fields(py, object, class_ptr, size).is_err() {

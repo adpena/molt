@@ -658,7 +658,10 @@ If you want to modify Molt, follow these steps:
     UV_NO_SYNC=1 UV_CACHE_DIR=$PWD/.uv-cache uv run --python 3.12 python3 tools/dev.py test
     ```
     Multi-Python benchmark and measurement lanes should isolate their uv project
-    environment instead of rewriting the shared repo `.venv`:
+    environment instead of rewriting the shared repo `.venv`. Interpreter and
+    purpose select that environment independently of the persistent Cargo target.
+    Set `MOLT_SESSION_ID` explicitly when a lane requires isolated build artifacts;
+    an explicit `CARGO_TARGET_DIR` remains caller-owned:
     ```bash
     uv run --python 3.12 python3 tools/uv_project_env.py \
       --python 3.14 --purpose output-startup-size -- \
@@ -793,6 +796,12 @@ Keep source discovery, target admission and execution qualification separate.
 `config/cpython_regrtest_sources.toml` owns exact upstream tags and commits;
 `config/verified_subset.toml` owns configured executable references. A pending
 source row does not admit that version or prove an execution coordinate.
+Carry the full `(major, minor)` coordinate through generated tables and runtime
+lookups. Compact target tags resolve from the admitted catalog; ambiguous tags
+require dotted spelling. A new major follows this same workflow, including its
+reviewed semantic delta and explicit rejection until admission. The existing
+projection tests distinguish equal minors in different majors; they prove
+identity transport without claiming compatibility with an unknown release.
 The snapshot retains unmodified upstream text under the existing
 [CPython license](../src/molt/stdlib/collections/LICENSE.cpython).
 

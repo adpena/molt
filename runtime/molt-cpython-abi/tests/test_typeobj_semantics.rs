@@ -320,7 +320,7 @@ fn member_relative_offset_is_rejected_before_other_admission() {
     let _abi_test = install();
     unsafe {
         for minor in [12, 13, 14] {
-            MEMBER_TARGET.with(|target| target.set(minor));
+            MEMBER_TARGET_VERSION.with(|target| target.set((3, minor)));
             // All addresses are in bounds even for an implementation missing
             // the guard. NONE and unknown types also prove type-independent admission.
             for ty in [T_INT, T_STRING_INPLACE, 20, 999] {
@@ -378,7 +378,7 @@ fn member_inline_string_reads_storage_and_preserves_readonly_precedence() {
     let _abi_test = install();
     unsafe {
         for minor in [12, 13, 14] {
-            MEMBER_TARGET.with(|target| target.set(minor));
+            MEMBER_TARGET_VERSION.with(|target| target.set((3, minor)));
             for payload in [b"\0".as_slice(), b"h\xc3\xa9\0ignored".as_slice()] {
                 let mut storage = [0xa5u8; 24];
                 storage[1..1 + payload.len()].copy_from_slice(payload);
@@ -476,7 +476,7 @@ fn member_missing_object_and_unknown_type_use_pinned_diagnostics() {
     let mut definition = member(T_OBJECT_EX, std::mem::offset_of!(Record, value) as isize);
     unsafe {
         for minor in [12, 13, 14] {
-            MEMBER_TARGET.with(|target| target.set(minor));
+            MEMBER_TARGET_VERSION.with(|target| target.set((3, minor)));
             assert!(
                 typeobj::PyMember_GetOne((&raw const record).cast(), &raw mut definition,)
                     .is_null()
@@ -538,7 +538,7 @@ fn member_missing_object_and_unknown_type_use_pinned_diagnostics() {
 }
 
 thread_local! {
-    static MEMBER_TARGET: Cell<i64> = const { Cell::new(12) };
+    static MEMBER_TARGET_VERSION: Cell<(i64, i64)> = const { Cell::new((3, 12)) };
     static MEMBER_INDEX_CALLS: Cell<usize> = const { Cell::new(0) };
     static MEMBER_RESULT: Cell<usize> = const { Cell::new(0) };
     static MEMBER_ERROR: Cell<usize> = const { Cell::new(0) };
@@ -551,8 +551,8 @@ thread_local! {
     static MEMBER_FINALIZER_PENDING: Cell<(usize, usize)> = const { Cell::new((usize::MAX, usize::MAX)) };
 }
 
-unsafe extern "C" fn member_target_minor() -> i64 {
-    MEMBER_TARGET.with(Cell::get)
+unsafe extern "C" fn member_target_at_least(major: i64, minor: i64) -> bool {
+    MEMBER_TARGET_VERSION.with(Cell::get) >= (major, minor)
 }
 
 unsafe extern "C" fn member_index(_object: *mut PyObject) -> *mut PyObject {
@@ -632,10 +632,10 @@ fn install() -> support::AbiTestThreadStateTransaction {
     // Structured UnicodeDecodeError owns the offending bytes as well as text.
     hooks.alloc_bytes = support::fake_runtime::alloc_bytes;
     hooks.bytes_data = support::fake_runtime::bytes_data;
-    hooks.target_python_minor = member_target_minor;
+    hooks.target_python_at_least = member_target_at_least;
     hooks.warning_emit = support::warnings::emit;
     let transaction = support::enter_runtime_class_abi_test(hooks);
-    MEMBER_TARGET.with(|value| value.set(12));
+    MEMBER_TARGET_VERSION.with(|value| value.set((3, 12)));
     MEMBER_RESULT.with(|value| value.set(0));
     MEMBER_ERROR.with(|value| value.set(0));
     MEMBER_TRANSFER_RESULT.with(|value| value.set(false));
@@ -703,7 +703,7 @@ fn member_narrow_boundaries_warn_after_write_including_warning_errors() {
     support::warnings::with_provider(|| unsafe {
         support::warnings::set_observer(Some(observe_member_warning));
         for minor in [12, 13, 14] {
-            MEMBER_TARGET.with(|value| value.set(minor));
+            MEMBER_TARGET_VERSION.with(|value| value.set((3, minor)));
             for (ty, minimum, maximum, message) in [
                 (
                     T_BYTE,
@@ -803,7 +803,7 @@ fn member_unsigned_index_once_full_width_and_c_long_negative_boundary() {
             ob_type: class.as_ptr(),
         };
         for minor in [12, 13, 14] {
-            MEMBER_TARGET.with(|value| value.set(minor));
+            MEMBER_TARGET_VERSION.with(|value| value.set((3, minor)));
             for ty in [T_UINT, T_ULONG, T_ULONGLONG] {
                 let maximum = if ty == T_ULONGLONG {
                     u64::MAX as i128
@@ -902,7 +902,7 @@ fn member_converter_errors_preserve_identity_and_versioned_write_order() {
         MEMBER_ERROR.with(|value| value.set(error.as_ptr() as usize));
         let refs = (*error.as_ptr()).ob_refcnt;
         for minor in [12, 13, 14] {
-            MEMBER_TARGET.with(|value| value.set(minor));
+            MEMBER_TARGET_VERSION.with(|value| value.set((3, minor)));
             for ty in [
                 T_BYTE,
                 T_UBYTE,
@@ -966,7 +966,7 @@ fn member_wide_signed_boundaries_and_legitimate_minus_one() {
     let _abi_test = install();
     support::warnings::with_provider(|| unsafe {
         for minor in [12, 13, 14] {
-            MEMBER_TARGET.with(|value| value.set(minor));
+            MEMBER_TARGET_VERSION.with(|value| value.set((3, minor)));
             for (ty, minimum, maximum) in [
                 (T_LONG, c_long::MIN as i128, c_long::MAX as i128),
                 (T_PYSSIZET, isize::MIN as i128, isize::MAX as i128),
@@ -1056,7 +1056,7 @@ fn member_index_subtype_warning_precedes_release_write_and_negative_warning() {
         );
         support::warnings::with_error_instance(warning.as_ptr(), || {
             for minor in [12, 13, 14] {
-                MEMBER_TARGET.with(|value| value.set(minor));
+                MEMBER_TARGET_VERSION.with(|value| value.set((3, minor)));
                 for warning_error in [false, true] {
                     let mut result = member_abi::PyLongObject {
                         ob_base: PyObject {
@@ -1153,7 +1153,7 @@ fn member_index_subtype_warning_precedes_release_write_and_negative_warning() {
         }
         support::warnings::set_as_error(false);
         for minor in [12, 13, 14] {
-            MEMBER_TARGET.with(|value| value.set(minor));
+            MEMBER_TARGET_VERSION.with(|value| value.set((3, minor)));
             for ty in [T_UINT, T_ULONG, T_ULONGLONG] {
                 for negative in [false, true] {
                     let mut result = WideInteger {

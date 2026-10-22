@@ -11,6 +11,8 @@ pub mod path_text;
 pub mod randomness;
 pub mod socket_constants;
 pub mod stat_support;
+#[cfg(all(unix, not(target_arch = "wasm32")))]
+pub mod userdb;
 pub mod utils;
 pub mod uuid_support;
 #[cfg(windows)]

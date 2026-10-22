@@ -152,11 +152,28 @@ fn vfs_metadata_admission_and_call_budget() {
                             }
                             Observation::Stat => {
                                 assert!(!crate::exception_pending(py));
+                                // Every native route already returns the canonical
+                                // record, including its non-sequence timestamp owners.
+                                let class = crate::molt_os_stat_result_type();
+                                assert!(!crate::exception_pending(py));
                                 let pointer = obj_from_bits(result).as_ptr().unwrap();
-                                assert_eq!(
-                                    unsafe { crate::object::layout::tuple_storage_len(pointer) },
-                                    10
-                                );
+                                assert_eq!(unsafe { crate::object_class_bits(pointer) }, class);
+                                assert_eq!(unsafe { crate::tuple_len(pointer) }, 10);
+                                for (name, expected_type) in [
+                                    (b"st_atime".as_slice(), "float"),
+                                    (b"st_atime_ns".as_slice(), "int"),
+                                ] {
+                                    let key = crate::attr_name_bits_from_bytes(py, name).unwrap();
+                                    let value = crate::molt_get_attr_name(result, key);
+                                    assert!(!crate::exception_pending(py));
+                                    assert_eq!(
+                                        crate::type_name(py, obj_from_bits(value)),
+                                        expected_type
+                                    );
+                                    dec_ref_bits(py, value);
+                                    dec_ref_bits(py, key);
+                                }
+                                dec_ref_bits(py, class);
                                 let fields = unsafe {
                                     std::slice::from_raw_parts(
                                         crate::object::layout::tuple_storage_items(pointer),
@@ -189,6 +206,42 @@ fn vfs_metadata_admission_and_call_budget() {
                 dec_ref_bits(py, path);
             },
         );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn native_stat_record_device_projection_tracks_python_version() {
+    // Pinned posixmodule.c: 3.12 uses signed C long for st_rdev;
+    // 3.13+ uses _PyLong_FromDev's unsigned view for this non-NODEV value.
+    let unsigned_dev32 = std::mem::size_of::<libc::dev_t>() == 4 && libc::dev_t::MIN == 0;
+    let old = if unsigned_dev32 && std::mem::size_of::<libc::c_long>() == 8 {
+        "4294967294"
+    } else {
+        "-2"
+    };
+    let modern = if unsigned_dev32 {
+        "4294967294"
+    } else {
+        "18446744073709551614"
+    };
+    for (minor, expected) in [(12, old), (13, modern)] {
+        let transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            transaction.with_target_python_minor(py, minor, || {
+                let mut raw: libc::stat = unsafe { std::mem::zeroed() };
+                raw.st_rdev = !1;
+                let record = crate::builtins::io_path::stat_result_from_libc_stat(py, &raw);
+                assert!(!crate::exception_pending(py));
+                let key = crate::attr_name_bits_from_bytes(py, b"st_rdev").unwrap();
+                let value = crate::molt_get_attr_name(record, key);
+                assert!(!crate::exception_pending(py));
+                assert_eq!(crate::format_obj(py, obj_from_bits(value)), expected);
+                dec_ref_bits(py, value);
+                dec_ref_bits(py, key);
+                dec_ref_bits(py, record);
+            });
+        });
     }
 }
 

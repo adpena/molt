@@ -32,7 +32,7 @@ fn install_hooks() -> support::AbiTestThreadStateTransaction {
     // Diagnostic assertions need the same owned string/class transport as values.
     support::fake_runtime::wire(&mut hooks);
     hooks.numeric_identity_new = Some(parse_numeric_identity);
-    hooks.target_python_minor = numeric_target_minor;
+    hooks.target_python_at_least = numeric_target_at_least;
     support::enter_runtime_class_abi_test(hooks)
 }
 
@@ -164,7 +164,7 @@ fn numeric_mask_units_keep_wide_low_bits_and_signed_units_preserve_errors() {
     // Rust's fixed-width integer arithmetic supplies the independent oracle;
     // inputs pass the actual C byte constructor, tuple and variadic shim.
     for minor in [12, 13, 14] {
-        NUMERIC_TARGET_MINOR.with(|value| value.set(minor));
+        NUMERIC_TARGET_VERSION.with(|value| value.set((3, minor)));
         for value in [
             (1i128 << 100) + 0x1234_5678_9abc_def0,
             -((1i128 << 100) + 0x1234_5678_9abc_def0),
@@ -214,7 +214,7 @@ fn numeric_mask_units_keep_wide_low_bits_and_signed_units_preserve_errors() {
 }
 
 thread_local! {
-    static NUMERIC_TARGET_MINOR: std::cell::Cell<i64> = const { std::cell::Cell::new(12) };
+    static NUMERIC_TARGET_VERSION: std::cell::Cell<(i64, i64)> = const { std::cell::Cell::new((3, 12)) };
     static INDEX_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static FLOAT_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static INDEX_FAILS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -233,8 +233,8 @@ unsafe extern "C" fn parse_numeric_identity(
     }
 }
 
-unsafe extern "C" fn numeric_target_minor() -> i64 {
-    NUMERIC_TARGET_MINOR.with(std::cell::Cell::get)
+unsafe extern "C" fn numeric_target_at_least(major: i64, minor: i64) -> bool {
+    NUMERIC_TARGET_VERSION.with(std::cell::Cell::get) >= (major, minor)
 }
 unsafe extern "C" fn parse_index(_object: *mut PyObject) -> *mut PyObject {
     INDEX_CALLS.with(|calls| calls.set(calls.get() + 1));
@@ -276,7 +276,7 @@ fn numeric_format_units_preserve_protocol_and_target_version_admission() {
     parse_numeric(&args, b'n', 77isize, -1, 1);
     parse_numeric(&args, b'L', 77i64, -1, 1);
     for minor in [12, 13, 14] {
-        NUMERIC_TARGET_MINOR.with(|value| value.set(minor));
+        NUMERIC_TARGET_VERSION.with(|value| value.set((3, minor)));
         let before = INDEX_CALLS.with(std::cell::Cell::get);
         for &code in b"kK" {
             if minor < 14 {
@@ -688,6 +688,22 @@ fn assert_converter_refusal<T: Copy + PartialEq + std::fmt::Debug>(
 #[test]
 fn converter_diagnostics_bound_type_bytes_and_distinguish_none_identity() {
     let _abi_test = install_hooks();
+    struct RestoreTarget((i64, i64));
+    impl Drop for RestoreTarget {
+        fn drop(&mut self) {
+            NUMERIC_TARGET_VERSION.with(|value| value.set(self.0));
+        }
+    }
+    let _restore = RestoreTarget(NUMERIC_TARGET_VERSION.with(std::cell::Cell::get));
+    let unicode_name = std::ffi::CString::new(format!("{}Ω", "X".repeat(49))).unwrap();
+    let mut unicode_type = Box::new(PyTypeObject_zeroed());
+    unicode_type.tp_name = unicode_name.as_ptr();
+    let mut unicode_object = Box::new(PyObject {
+        ob_refcnt: 1,
+        ob_type: &raw mut *unicode_type,
+    });
+    let function_name = std::ffi::CString::new(format!("k:{}Ω", "F".repeat(199))).unwrap();
+    let wide_function_name = std::ffi::CString::new(format!("K:{}Ω", "F".repeat(199))).unwrap();
     let mut long_type = Box::new(PyTypeObject_zeroed());
     long_type.tp_name =
         c"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_Type".as_ptr();
@@ -702,8 +718,16 @@ fn converter_diagnostics_bound_type_bytes_and_distinguish_none_identity() {
         ob_refcnt: 1,
         ob_type: &raw mut *named_none_type,
     });
-    for minor in [12, 13, 14] {
-        NUMERIC_TARGET_MINOR.with(|value| value.set(minor));
+    for (version, suffix) in [
+        ((3, 12), "\u{fffd}"),
+        ((3, 13), "\u{fffd}"),
+        ((3, 14), ""),
+        ((3, 15), ""),
+        ((3, 16), ""),
+        ((4, 0), ""),
+    ] {
+        NUMERIC_TARGET_VERSION.with(|value| value.set(version));
+        let unicode_expected = format!("{}{suffix}", "X".repeat(49));
         for (object, expected_type) in [
             (&raw mut molt_cpython_abi::abi_types::Py_None, "None"),
             (
@@ -711,10 +735,20 @@ fn converter_diagnostics_bound_type_bytes_and_distinguish_none_identity() {
                 "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwx",
             ),
             (&raw mut *named_none, "NoneType"),
+            (&raw mut *unicode_object, unicode_expected.as_str()),
         ] {
             let direct = args_for_object(object);
             let nested = args_for_object(direct.as_ptr());
             for (small, wide, args, expected) in [
+                (
+                    function_name.as_c_str(),
+                    wide_function_name.as_c_str(),
+                    &direct,
+                    format!(
+                        "{}{suffix}() argument 1 must be int, not {expected_type}",
+                        "F".repeat(199)
+                    ),
+                ),
                 (
                     c"k",
                     c"K",
@@ -746,8 +780,7 @@ fn converter_diagnostics_bound_type_bytes_and_distinguish_none_identity() {
             // O! consumes the same converter authority, including both the
             // expected type's and actual type's independent 50-byte bounds.
             let mut wanted = PyTypeObject_zeroed();
-            wanted.tp_name =
-                c"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_expected".as_ptr();
+            wanted.tp_name = unicode_name.as_ptr();
             let poison = std::ptr::dangling_mut::<PyObject>();
             let mut output = poison;
             assert_eq!(
@@ -765,15 +798,15 @@ fn converter_diagnostics_bound_type_bytes_and_distinguish_none_identity() {
             assert!(err_is(
                 (&raw mut molt_cpython_abi::abi_types::PyExc_TypeError).cast()
             ));
-            let expected = format!(
-                "consume() argument 1 must be abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWX, not {expected_type}"
-            );
+            let expected =
+                format!("consume() argument 1 must be {unicode_expected}, not {expected_type}");
             assert_eq!(
                 support::take_current_error_text().as_deref(),
                 Some(expected.as_str())
             );
         }
     }
+    assert_eq!(unicode_object.ob_refcnt, 1);
     assert_eq!(long_object.ob_refcnt, 1);
     assert_eq!(named_none.ob_refcnt, 1);
 }
@@ -794,7 +827,7 @@ fn long_typename_converter_refusal_stops_at_admission_and_preserves_callback_err
     let direct = args_for_object(&raw mut *object);
     let nested = args_for_object(direct.as_ptr());
     for minor in [12, 13, 14] {
-        NUMERIC_TARGET_MINOR.with(|value| value.set(minor));
+        NUMERIC_TARGET_VERSION.with(|value| value.set((3, minor)));
         INDEX_FAILS.with(|value| value.set(false));
         let before = INDEX_CALLS.with(std::cell::Cell::get);
         if minor < 14 {
