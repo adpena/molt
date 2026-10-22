@@ -16,9 +16,8 @@ prefer live code, tests, measurements and explicit user direction over stale pro
 - Pause only for input the user alone can provide, a real scope change, or a destructive,
   irreversible, privileged, or externally consequential action that was not already authorized.
   Proceed with safe, reversible work that follows from the request.
-- Do not end on a plan, promise, checkpoint, commit, failed proof, compaction, or status report
-  while useful in-scope work remains. Recover from interrupted tools and continue from durable
-  repository and proof state.
+- Do not end on plans, promises, checkpoints, commits, failed proofs, compactions or reports while
+  useful in-scope work remains. Recover interrupted tools from durable repository and proof state.
 - Ground progress and completion claims in evidence from the current run. Say plainly what passed,
   failed, was skipped, or remains unknown.
 - If project guidance conflicts with the live repository or has gone stale, follow the safer current
@@ -29,11 +28,10 @@ prefer live code, tests, measurements and explicit user direction over stale pro
 - Before each repair or optimization, map the family: sibling sites across backend, profile and
   platform implementations, upstream producers and assumptions, downstream consumers and exports,
   and lateral analogous sites. Search by failure mechanism as well as symbol spelling.
-- Enter through one concrete aperture, then follow the invariant through the complete authority
-  class; the aperture bounds discovery, not the end state. Prefer one structural correction with
-  explicit invariants and family-wide regression or differential tests that adversarial review
-  challenges. Record justified exceptions and unverified coordinates; do not change look-alike sites
-  that have different semantics.
+- Enter through one concrete aperture, then follow the invariant through its complete authority
+  class. Bound discovery, not the end state. Prefer one structural correction with explicit
+  invariants and family-wide regression or differential tests challenged by adversarial review.
+  Record justified exceptions and unverified cells; preserve look-alike sites with different semantics.
 - Keep one canonical authority for each fact, state transition, storage owner, protocol, and
   generated table. Move all consumers together and delete the replaced implementation: no internal
   compatibility lanes, shims, duplicate registries, or speculative fallbacks.
@@ -74,8 +72,7 @@ prefer live code, tests, measurements and explicit user direction over stale pro
   or vendored patches are acceptable only when they are the maintained, provenance-pinned solution
   to an upstream defect—not a hidden substitute implementation.
 - Native and WASM are co-equal frontier targets. LLVM, MLIR, the rest of the IR stack, linkers,
-  runtime memory management, and every shipped backend/profile are first-class optimization
-  surfaces.
+  runtime memory management and every shipped backend/profile are first-class optimization surfaces.
 - Design for free-threaded and GIL-less execution while preserving deterministic expected CPython
   behavior by default.
 - Support claims are explicit matrices over target OS, architecture, ABI, Python version,
@@ -92,10 +89,9 @@ prefer live code, tests, measurements and explicit user direction over stale pro
   round trips, work repeated on unchanged inputs) and how each scales, then choose the smallest.
   A cost accepted to remove a larger one is a named, measured trade. Leading tools set the bar: a
   no-change rebuild in Cargo, Go or uv costs milliseconds.
-- Measure before and after load-bearing changes. Select the metrics that expose the changed
-  contract: latency, throughput, startup, allocations, bytes, peak live memory, process-tree
-  RSS/commit, cache behavior, atomics, contention, code size, link time, artifact size, and failure
-  atomicity.
+- Measure load-bearing changes before and after using metrics that expose the changed contract:
+  latency, throughput, startup, allocations, bytes, peak live memory, process-tree RSS/commit, cache
+  behavior, atomics, contention, code size, link time, artifact size and failure atomicity.
 - Optimize per platform and architecture through typed capability and target plans. Do not use
   post-failure retries or silent fallback as feature detection.
 - Build missing telemetry, profilers, benchmarks, or inspection tools when they materially shorten
@@ -117,9 +113,8 @@ prefer live code, tests, measurements and explicit user direction over stale pro
   versioned model), `git status`, applicable nested instructions, and the current source/proof
   state. For active multi-agent or Pact work, read only the relevant live sections of
   `docs/agent/ORCHESTRATION.md`.
-- Preserve user and parallel-agent work. Never reset, clean, overwrite, revert, or broadly stage
-  unrelated changes. Integrate with pathspecs and review every diff that will be committed or
-  landed.
+- Preserve user and parallel-agent work. Never reset, clean, overwrite, revert or broadly stage
+  unrelated changes. Integrate with pathspecs and review every diff before commit or landing.
 - Generated files are projections. Change their declarative source or generator and regenerate them
   in the same arc.
 - Reuse project commands, repairing stale, ambiguous or wasteful helpers. The frontend is CPython 3.12+, including 3.15;
@@ -131,24 +126,21 @@ prefer live code, tests, measurements and explicit user direction over stale pro
 
 ## Delegate deliberately
 
-- Before designing, implementing, or deleting, every worker searches the canonical authority,
-  relevant history and handoffs, and preserved WIP/donor trees for an existing solution, and reports
-  what already owns the invariant and what will be reused, reconciled, or retired. Task messages and
-  remembered summaries are leads to verify, not permission for a second implementation. Ask the
-  integrator when ownership or custody is unclear.
-- Use subagents for independent, bounded work: exploration, audits, log analysis, proof review,
-  mechanical migration, and disjoint implementation. Keep working while they run, redirect a lane
-  that drifts, and integrate their evidence instead of forwarding raw output. Avoid overlapping
-  write ownership and redundant proof fanout; the parent owns architecture, integration,
-  verification, and cleanup.
+- Before designing, implementing or deleting, search canonical authority, relevant history/handoffs
+  and preserved WIP/donor trees. Report the invariant's owner and what to reuse, reconcile or retire.
+  Task messages and memories are leads to verify, not permission for a second implementation.
+  Ask the integrator when ownership or custody is unclear.
+- Use subagents for independent, bounded exploration, audits, log analysis, proof review, mechanical
+  migration and disjoint implementation. Keep working, redirect drifting lanes and integrate evidence.
+  Avoid overlapping writers and redundant proofs; the parent owns architecture, integration,
+  verification and cleanup.
 - Record active worker ownership and handoff state in the coordination records described in
   `docs/ops/MULTI_AGENT_COORDINATION.md`; task messages and worktree names are not source locks.
-- Match model and effort to the task: strongest reasoning for load-bearing architecture and
-  correctness, faster workers for bounded scans and mechanical work. Respect the operator's
-  concurrency limits for Codex and external workers; use Astra for the most complex,
-  mission-critical or long-running reasoning. Claude Fable/Opus may give independent design or
-  review under the same search, ownership and evidence discipline; they open no second integration
-  lane.
+- Match model and effort: strongest reasoning for load-bearing architecture/correctness, faster
+  workers for bounded scans and mechanical work. Respect operator concurrency limits for Codex
+  and external workers; use Astra for complex, mission-critical or long-running reasoning.
+  Claude Fable/Opus may independently design or review under the same search, ownership and evidence
+  discipline, without opening a second integration lane.
 
 ## Verify the claim, not the ritual
 
@@ -166,12 +158,10 @@ prefer live code, tests, measurements and explicit user direction over stale pro
 - Treat a frozen or silent process as unknown until logs, artifacts, guard state, or live process
   evidence establishes its result.
 - Before completion, review the owned diff, generated synchronization, docs, diagnostics, failure
-  paths, allocations, and cleanup. Fix newly exposed in-scope defects rather than converting them
-  into a report.
-- Keep public documentation aligned in the same change: prioritize `README.md` and onboarding, then
-  the owning contract/status projections. Link to canonical matrices instead of duplicating them;
-  distinguish implementation, verified cells, and release acceptance. Keep local proof history out
-  of public overviews.
+  paths, allocations and cleanup. Fix newly exposed in-scope defects instead of merely reporting them.
+- Align public docs in the same change: `README.md` and onboarding, then owning contract/status
+  projections. Link canonical matrices; distinguish implementation, verified cells and release
+  acceptance. Keep local proof history out of public overviews.
 
 ## Safety and custody
 
