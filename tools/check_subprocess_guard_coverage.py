@@ -612,6 +612,17 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "proof queue detached runner custody boundary records run id, command, and log path",
     ),
     AllowedRawSubprocessUse(
+        "tools/linux_vm.py",
+        "LocalHost.start_service",
+        "Popen",
+        "`limactl start` leaves Lima's hostagent running and Lima owns its "
+        "lifecycle (`limactl stop` ends it); the guard closes every descendant "
+        "when its command returns and so killed both hostagents (HF-471). Own "
+        "session, a deadline on limactl alone through wait_owned, output to "
+        "anonymous files, no descendant custody; apply then requires Lima to "
+        "list the VM as running",
+    ),
+    AllowedRawSubprocessUse(
         "tests/test_agent_contract_budget.py",
         "_tracked_agent_docs",
         "run",

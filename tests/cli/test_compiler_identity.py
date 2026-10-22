@@ -244,11 +244,6 @@ def test_cargo_mutation_rejected_before_any_alias_probe_or_receipt(
     monkeypatch.setattr(
         backend_binary, "_compiler_clean_source_state", lambda *args: None
     )
-    monkeypatch.setattr(
-        backend_binary,
-        "_hydrate_canonical_backend_generation",
-        lambda *_a, **_k: None,
-    )
     monkeypatch.delenv("MOLT_SKIP_RUNTIME_REBUILD", raising=False)
 
     def cargo(plan, **kw):
@@ -287,7 +282,7 @@ def test_cargo_mutation_rejected_before_any_alias_probe_or_receipt(
     for name in (
         "publish_backend_generation",
         "_run_subprocess_captured_to_tempfiles",
-        "_write_runtime_fingerprint",
+        "atomic_write_bytes",
         "_atomic_write_json",
     ):
         monkeypatch.setattr(backend_binary, name, forbidden)

@@ -206,7 +206,7 @@ def compiler_cargo_stdout(
         env_line += "=" + value.replace("\\", "\\\\").replace("\n", "\\n").replace(
             "\r", "\\r"
         )
-    reads = (source, *extra_reads)
+    reads = (source, *(path.resolve() for path in extra_reads))
     unit.with_suffix(".d").write_text(
         f"{escape(unit)}: {' '.join(escape(read) for read in reads)}\n\n"
         + "".join(f"{escape(read)}:\n" for read in reads)

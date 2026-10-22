@@ -1462,3 +1462,23 @@ def test_parallel_worker_state_uses_fresh_context_and_live_shared_stop():
     before, after, parent_pid, stop_signal = json.loads(result.stdout)
     assert before == [None, parent_pid, True]
     assert after == [stop_signal, parent_pid, True]
+
+
+def test_pruning_a_stale_build_lock_takes_its_holder_record_along(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt.cli.build_locks import lock_holder_path
+
+    monkeypatch.setattr(molt_diff, "_diff_build_lock_root", lambda: tmp_path)
+    monkeypatch.setenv("MOLT_DIFF_BUILD_LOCK_MAX_AGE_SEC", "60")
+    stale, fresh = tmp_path / "stale.lock", tmp_path / "fresh.lock"
+    for lock in (stale, fresh):
+        lock.write_bytes(b"")
+        lock_holder_path(lock).write_bytes(b"")
+    old = time.time() - 3600
+    os.utime(stale, (old, old))
+    molt_diff._prune_stale_build_locks()
+    assert sorted(path.name for path in tmp_path.iterdir()) == [
+        "fresh.lock",
+        "fresh.lock.holder",
+    ]

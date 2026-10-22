@@ -2493,6 +2493,10 @@ def _native_build_capture_fixture(
         from types import MappingProxyType
         from molt.cli import runtime_cargo_plan as plans
         from molt.cli.cargo_resource_custody import CargoExecutableCustody
+        from molt.cli.cargo_search_path import (
+            cargo_search_path,
+            derives_cargo_search_path,
+        )
         from tests.runtime_build_identity_helper import (
             RuntimeFixtureRoot,
             runtime_cargo_plan,
@@ -2511,7 +2515,15 @@ def _native_build_capture_fixture(
                 "cargo": tools["cargo"],
                 "rustc": tools["rustc"],
             }
-            projected_env = selected.environment.updated({"RUSTC": str(tools["rustc"])})
+            projected = {"RUSTC": str(tools["rustc"])}
+            if derives_cargo_search_path():
+                # The plan derives Cargo's PATH from its selected tools, so
+                # substituted tools carry their own directories into it.
+                projected["PATH"] = cargo_search_path(
+                    selected.environment,
+                    (*tool_paths.values(), *selected.wrappers.values()),
+                )
+            projected_env = selected.environment.updated(projected)
             custody = tuple(
                 CargoExecutableCustody.capture(
                     row.label, tool_paths[row.label.removeprefix("tool/")]

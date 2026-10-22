@@ -176,8 +176,10 @@ unsigned long long molt_runtime_exit(unsigned long long code) {
         binary = source.with_suffix("")
         entrypoint = rendered
         if old_observer:
+            # The old observer, declared and called: renaming only the call
+            # leaves it undeclared, which C99 refuses to compile.
             entrypoint = entrypoint.replace(
-                "molt_exception_last_pending()", "molt_exception_last()"
+                "molt_exception_last_pending", "molt_exception_last"
             )
         source.write_text(entrypoint + runtime, encoding="utf-8")
         compiled = _COMMANDS.run(

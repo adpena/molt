@@ -79,6 +79,44 @@ def test_native_callable_symbol_stage_excludes_raw_borrowed_intrinsics(
     assert symbols_file.identity.sha256 == hashlib.sha256(b"molt_len\n").hexdigest()
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows refuses to remove an open archive, so no eviction races the read",
+)
+def test_a_projection_never_recreates_an_evicted_generation(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The projection is added beside its archive's published generation.
+
+    When eviction removes the entry while a build reads the archive, the write
+    fails and creates nothing: a recreated directory would be a variant
+    without a receipt that later publication collides with (HF-390 review v2,
+    M1).
+    """
+    import shutil
+
+    entry = tmp_path / "entry"
+    generation = entry / "variant" / ".molt-native-generations" / "g" / "release"
+    generation.mkdir(parents=True)
+    runtime_lib = generation / "runtime.a"
+    runtime_lib.write_bytes(b"runtime")
+
+    def inspect_archive(path, *, target_triple, identity, requirement):
+        shutil.rmtree(entry)
+        symbols = frozenset({"molt_len"})
+        return native_symbol_inspection._NativeGlobalSymbolFacts(
+            symbols, frozenset(), symbols, artifact_digest=identity.sha256
+        )
+
+    stub_native_symbol_admission(monkeypatch, inspect_archive)
+    projection, failure = runtime_callable_symbols._runtime_callable_symbols_file(
+        runtime_lib,
+        identity=native_symbol_inspection._native_symbol_artifact_identity(runtime_lib),
+    )
+    assert projection is None and failure is not None
+    assert not entry.exists()
+
+
 def test_callable_projection_cannot_reuse_same_size_restored_mtime(
     monkeypatch, tmp_path: Path
 ) -> None:

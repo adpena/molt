@@ -14,19 +14,14 @@ from typing import Any, Mapping, cast
 
 from molt.cargo_execution_policy import source_build_disabled_reason
 from molt.cli import progress as _progress
-from molt.cli.artifact_state import (
-    _artifact_state_path,
-    _artifact_state_path_for_build_state_root,
-    _canonical_build_state_root,
-    _canonical_target_root,
-)
+from molt.cli.artifact_state import _artifact_state_path
 from molt.cli.atomic_io import _atomic_write_json
 from molt.cli.backend_generation import (
+    is_backend_generation,
     publish_backend_generation,
-    record_backend_generation_use,
     selected_backend_generation,
 )
-from molt.cli.build_locks import _build_lock
+from molt.cli.build_locks import BuildLockAcquisitionError, _build_lock
 from molt.cli.cache_fingerprints import (
     _backend_source_identity_inputs,
     _backend_source_paths,
@@ -47,22 +42,21 @@ from molt.cli.compiler_identity import (
     installed_compiler_admission,
 )
 from molt.cli.native_launch_abi_generated import JIT_RUNNER_PROBE_FLAG
+from molt.cli.product_store import ProductStore, ProductStoreError
 from molt.cli.runtime_fingerprints import (
     _artifact_semantic_identity,
     _admitted_runtime_fingerprint,
+    _fingerprint_payload,
     _read_runtime_fingerprint,
-    _refresh_runtime_fingerprint_metadata,
     _runtime_artifact_fingerprint_matches,
-    _runtime_fingerprint_metadata_needs_refresh,
     _stored_fingerprint_matches_clean_source_state,
     _stored_fingerprint_matches_source_metadata,
-    _write_runtime_fingerprint,
 )
-from molt.cli.runtime_paths import _cargo_profile_dir
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.cli.static_archive_identity import artifact_content_identity
 from molt.exact_json import canonical_json_sha256, read_exact
 from molt import input_report as _input_report
+from molt.file_publication import atomic_write_bytes
 from molt.file_hashing import (
     _hash_source_tree_metadata,
     _hash_source_tree_paths,
@@ -136,20 +130,24 @@ class _BackendAdmissionLockError(RuntimeError):
 
 @contextmanager
 def _backend_admission_lock(
-    project_root: Path, cargo_profile: str, *, cargo_timeout: float | None = None
+    project_root: Path,
+    coordinate: Path,
+    cargo_profile: str,
 ):
-    # All feature lanes share Cargo's canonical output and its publication lock.
-    # A default waiter must tolerate one bounded cold build; operator overrides
-    # retain authority in _build_lock.
+    """Hold the lock over the Cargo output ``coordinate``'s variants publish from.
+
+    Every feature variant of one target publishes from Cargo's one output in
+    ``coordinate``'s profile directory, so the lock lives in that target's
+    build control. A waiter waits while the holder builds, probes and
+    publishes, by the one build-lock policy (``molt.file_locks.lock_wait_s``).
+    """
     with ExitStack() as stack:
         try:
             stack.enter_context(
                 _build_lock(
                     project_root,
                     f"backend.{cargo_profile}",
-                    default_timeout_s=cargo_timeout
-                    if cargo_timeout is not None
-                    else 300.0,
+                    cargo_target=coordinate.parent.parent,
                 )
             )
         except (RuntimeError, OSError) as exc:
@@ -178,10 +176,13 @@ def _backend_ensure_success(
         identity = executable_content_identity(binary_path, label="backend executable")
     except (OSError, ValueError) as exc:
         return _backend_ensure_failure("backend_binary_identity", str(exc))
-    try:
-        record_backend_generation_use(coordinate, binary_path)
-    except (OSError, RuntimeError, ValueError) as exc:
-        return _backend_ensure_failure("backend_generation_store", str(exc))
+    # The selected generation of a written-once variant is never evicted, and
+    # the product store renews the whole entry, so admission writes nothing.
+    if not is_backend_generation(coordinate, binary_path):
+        return _backend_ensure_failure(
+            "backend_generation_store",
+            f"backend executable is not a generation of {coordinate}: {binary_path}",
+        )
     return _BackendBinaryEnsureResult(
         ok=True,
         cache_compiler_fingerprint=_backend_compiler_cache_fingerprint(
@@ -258,6 +259,12 @@ def _backend_fingerprint_path(
     artifact: Path,
     cargo_profile: str,
 ) -> Path:
+    """This checkout's identity memo for the backend variant ``artifact``.
+
+    It holds the source identity and the metadata that let a later build reuse
+    it without hashing sources. Selection and bytes live in the product store,
+    never here.
+    """
     return _artifact_state_path(
         project_root,
         artifact,
@@ -267,37 +274,178 @@ def _backend_fingerprint_path(
     )
 
 
-def _canonical_backend_candidate(
-    project_root: Path, backend_bin: Path, cargo_profile: str
-) -> tuple[Path, Path]:
-    """The canonical target's backend coordinate and its selecting receipt."""
-    binary = (
-        _canonical_target_root(project_root)
-        / _cargo_profile_dir(cargo_profile)
-        / backend_bin.name
-    )
-    receipt = _artifact_state_path_for_build_state_root(
-        _canonical_build_state_root(project_root),
-        binary,
-        subdir="backend_fingerprints",
-        stem_suffix=f"{cargo_profile}",
-        extension="fingerprint",
-    )
-    return binary, receipt
+def host_tool_store(project_root: Path) -> ProductStore:
+    """The product store every host-tool build of ``project_root`` uses."""
+    return ProductStore.of("host-tool", project_root)
 
 
-def _backend_probe_validation_path(
-    project_root: Path,
+def host_tool_identity(coordinate: Path, fingerprint: Mapping[str, Any]) -> str:
+    """The store key of the host tool ``coordinate`` names.
+
+    The source fingerprint names the tool's sources, lockfile, toolchain,
+    profile, features and product by content; the coordinate's name adds the
+    variant. No checkout path enters it.
+    """
+    source = _artifact_semantic_identity(fingerprint)
+    if any(source.get(key) is None for key in ("hash", "rustc", "meta_digest")):
+        raise CompilerIdentityError("host tool source identity is incomplete")
+    return canonical_json_sha256(
+        {
+            "schema": "molt.host-tool-identity.v1",
+            "tool": coordinate.name,
+            "source": source,
+        }
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class StoredHostTool:
+    """One store variant of a host tool: its receipt, probe evidence and generations.
+
+    ``coordinate`` names the variant's tool; its immutable generations live
+    beside it (``molt.cli.backend_generation``) and its receipt selects one.
+    """
+
+    coordinate: Path
+
+    @property
+    def receipt(self) -> Path:
+        return self.coordinate.with_name(f"{self.coordinate.name}.fingerprint")
+
+    @property
+    def probe_validation(self) -> Path:
+        return self.coordinate.with_name(f"{self.coordinate.name}.probe.json")
+
+
+def stored_host_tool(
+    store: ProductStore,
+    identity: str,
     coordinate: Path,
-    cargo_profile: str,
-) -> Path:
-    return _artifact_state_path(
-        project_root,
-        coordinate,
-        subdir="backend_probe_validations",
-        stem_suffix=f"{cargo_profile}",
-        extension="json",
-    )
+    cargo_environment: CargoEnvironmentInputs,
+) -> StoredHostTool:
+    return StoredHostTool(store.variant(identity, cargo_environment) / coordinate.name)
+
+
+@dataclass(frozen=True, slots=True)
+class StoredHostToolAdmission:
+    """A stored host tool admitted for one checkout's identity and environment."""
+
+    stored: StoredHostTool
+    generation: Path
+    fingerprint: dict[str, Any]
+
+
+def stored_host_tools(
+    store: ProductStore,
+    identity: str,
+    coordinate: Path,
+    fingerprint: Mapping[str, Any],
+    *,
+    environment: ProcessEnvironment,
+) -> tuple[StoredHostToolAdmission, ...]:
+    """The published variants of ``identity`` built under ``environment``.
+
+    A variant whose receipt has not appeared is a publication in progress. A
+    reader admits only its own variant, the one whose receipt records a Cargo
+    environment that matches ``environment``, and checks no other variant's
+    bytes, so a corrupt variant of another environment never fails it. Its
+    own variant, when it exists but does not verify, raises
+    ``ProductStoreError``. A receipt that cannot be read names no
+    environment; if it is this reader's, the publication that follows the
+    miss finds it (``_require_unpublished_host_tool``).
+    """
+    admitted = []
+    for variant in store.variants(identity):
+        stored = StoredHostTool(variant / coordinate.name)
+        try:
+            stored.receipt.lstat()
+        except FileNotFoundError:
+            continue
+        receipt = _read_runtime_fingerprint(stored.receipt)
+        if receipt is None or "artifact_content_identity" not in receipt:
+            continue
+        try:
+            recorded = CargoEnvironmentInputs.from_dict(
+                receipt.get("cargo_environment")
+            )
+        except (TypeError, ValueError):
+            continue
+        if recorded.digest != variant.name:
+            continue
+        try:
+            recorded.verify(environment)
+        except ValueError:
+            continue
+        if _artifact_semantic_identity(receipt) != _artifact_semantic_identity(
+            fingerprint
+        ):
+            raise ProductStoreError(
+                store, identity, "it holds another host tool identity", variant=variant
+            )
+        generation = selected_backend_generation(stored.coordinate, receipt)
+        if generation is None or not _runtime_artifact_fingerprint_matches(
+            generation,
+            dict(fingerprint),
+            stored.receipt,
+            environment=environment,
+            require_artifact_digest=True,
+        ):
+            raise ProductStoreError(
+                store,
+                identity,
+                "its executable differs from its receipt",
+                variant=variant,
+            )
+        admitted.append(
+            StoredHostToolAdmission(
+                stored,
+                generation,
+                _admitted_runtime_fingerprint(dict(fingerprint), receipt),
+            )
+        )
+    return tuple(admitted)
+
+
+def _require_unpublished_host_tool(
+    store: ProductStore, identity: str, stored: StoredHostTool
+) -> None:
+    """Refuse to publish over a variant whose receipt already exists.
+
+    The caller holds the identity's lock and admitted no variant for its
+    environment, so an existing receipt for the environment it built under is
+    its own variant, corrupt. A variant is written once.
+    """
+    if stored.receipt.exists():
+        raise ProductStoreError(
+            store,
+            identity,
+            "a receipt for this environment exists but does not verify",
+            variant=stored.coordinate.parent,
+        )
+
+
+def _remember_backend_identity(
+    memo: Path, stored: Mapping[str, Any] | None, fingerprint: Mapping[str, Any]
+) -> None:
+    """Keep this checkout's identity memo current; a failed write costs a rehash."""
+    current = {key: fingerprint.get(key) for key in _BACKEND_IDENTITY_MEMO_KEYS}
+    if stored is not None and all(
+        stored.get(key) == value for key, value in current.items()
+    ):
+        return
+    try:
+        _atomic_write_json(memo, _fingerprint_payload(current), indent=2)
+    except OSError:
+        pass
+
+
+_BACKEND_IDENTITY_MEMO_KEYS = (
+    "hash",
+    "rustc",
+    "inputs_digest",
+    "meta_digest",
+    "source_state",
+)
 
 
 def _backend_probe_validation_payload(
@@ -463,33 +611,6 @@ def _current_backend_fingerprint(
     )
 
 
-def _selected_backend_generation_matches(
-    coordinate: Path,
-    fingerprint: dict[str, Any] | None,
-    receipt: Path,
-    *,
-    environment: ProcessEnvironment,
-) -> Path | None:
-    """The generation ``receipt`` selects for ``coordinate`` when it is admitted.
-
-    A match needs the receipt's source identity and the generation's bytes. The
-    receipt can name a newer selection by the time the bytes are compared; the
-    comparison then fails, and the generation this returned stays unchanged.
-    """
-    generation = selected_backend_generation(
-        coordinate, _read_runtime_fingerprint(receipt)
-    )
-    if generation is None or not _runtime_artifact_fingerprint_matches(
-        generation,
-        fingerprint,
-        receipt,
-        environment=environment,
-        require_artifact_digest=True,
-    ):
-        return None
-    return generation
-
-
 def admitted_backend_binary(
     project_root: Path,
     *,
@@ -498,11 +619,10 @@ def admitted_backend_binary(
     backend_features: tuple[str, ...],
     rust_cpu: RustCpuPolicy,
 ) -> tuple[Path, Path]:
-    """The backend generation and receipt a build of this checkout reuses.
+    """The stored backend generation and receipt a build of this checkout reuses.
 
-    Candidates are the selected coordinate and the canonical one, in the order
-    a build consults them. A candidate counts only when its receipt matches this
-    checkout's backend identity and binds the selected generation's content.
+    The store entry must hold this checkout's freshly computed backend identity,
+    built under its observed Cargo environment, with the selected bytes.
     """
     build_admission = backend_build_admission(
         project_root, backend_features, cargo_profile, os.environ, rust_cpu=rust_cpu
@@ -514,63 +634,79 @@ def admitted_backend_binary(
         backend_features=backend_features,
         build_admission=build_admission,
     )
-    for coordinate, receipt in (
-        (binary, _backend_fingerprint_path(project_root, binary, cargo_profile)),
-        _canonical_backend_candidate(project_root, binary, cargo_profile),
-    ):
-        generation = _selected_backend_generation_matches(
-            coordinate,
+    store = host_tool_store(project_root)
+    identity = host_tool_identity(binary, fingerprint)
+    # Renewed before the read, so no eviction races it (design 56, 2.8).
+    if store.record_use(identity):
+        for admission in stored_host_tools(
+            store,
+            identity,
+            binary,
             fingerprint,
-            receipt,
             environment=build_admission.plan.environment,
-        )
-        if generation is not None:
-            return generation, receipt
-    raise ValueError(f"no backend compiler admitted for this checkout: {binary}")
+        ):
+            return admission.generation, admission.stored.receipt
+    raise ValueError(
+        f"no backend compiler is stored for this checkout's inputs "
+        f"({identity} in {store.root}): {binary}"
+    )
 
 
 def _publish_backend_generation_from(
-    coordinate: Path,
-    source: Path,
-    *,
-    label: str,
-    expected_identity: StableRegularFileIdentity | None = None,
-) -> tuple[StableRegularFileIdentity, StableRegularFileIdentity]:
+    coordinate: Path, source: Path, *, label: str
+) -> StableRegularFileIdentity:
     """Publish an executable's bytes as a generation of ``coordinate``.
 
-    Returns the source identity the copy was bound to and the generation.
     A generation is the exact source bytes: a copy keeps the linker signature
     valid, and re-signing would only rewrite the bytes (and the compiler
     identity) on every build.
     """
-    with stable_executable_probe(source, label=label, identity=expected_identity) as (
-        _entrypoint,
-        identity,
-    ):
-        generation = publish_backend_generation(
-            coordinate, identity.path, observed=identity
-        )
-    return identity, generation
+    with stable_executable_probe(source, label=label) as (_entrypoint, identity):
+        return publish_backend_generation(coordinate, identity.path, observed=identity)
+
+
+def _stored_receipt_identity(fingerprint: Mapping[str, Any]) -> dict[str, Any]:
+    """The identity a store receipt names: the product's, never a checkout's.
+
+    Source timestamps and clean-head states are one checkout's fast-path
+    metadata; they live in that checkout's identity memo, not in an entry
+    every checkout reads.
+    """
+    return {
+        key: value
+        for key, value in _artifact_semantic_identity(fingerprint).items()
+        if value is not None
+    }
 
 
 def _select_backend_generation(
     receipt: Path,
     generation: StableRegularFileIdentity,
     *,
-    fingerprint: dict[str, Any],
+    fingerprint: Mapping[str, Any],
     cargo_environment: CargoEnvironmentInputs,
 ) -> None:
-    """Point a coordinate's ``receipt`` at ``generation``: the selection switch.
+    """Write a store variant's ``receipt``, which selects ``generation``.
 
-    The receipt names the source identity and the generation's bytes. Only
-    this file changes; the generation, and every other one, stays as it was.
+    The receipt names the product's source identity, the observed Cargo
+    environment and the generation's bytes. A variant's receipt is written
+    once: it appears after its generation and probe evidence, and nothing
+    rewrites it while readers may hold what it selects.
     """
     verify_stable_regular_file_identity(generation, label="backend selection")
     content_identity = artifact_content_identity(generation.path, observed=generation)
-    _write_runtime_fingerprint(
+    payload = _fingerprint_payload(
+        {
+            **_stored_receipt_identity(fingerprint),
+            "artifact_content_identity": content_identity,
+            "cargo_environment": cargo_environment.to_dict(),
+        }
+    )
+    # Exclusive: an existing receipt is never replaced.
+    atomic_write_bytes(
         receipt,
-        {**fingerprint, "artifact_content_identity": content_identity},
-        cargo_environment=cargo_environment,
+        json.dumps(payload, indent=2, allow_nan=False).encode() + b"\n",
+        exclusive=True,
     )
     verify_stable_regular_file_identity(generation, label="backend selection")
 
@@ -585,12 +721,14 @@ def import_backend_binary(
     executable: Path,
     receipt: Path,
 ) -> Path:
-    """Admit another checkout's backend as this checkout's canonical candidate.
+    """Publish another host's backend into this host's store, through admission.
 
     The transported receipt must carry this checkout's freshly hashed backend
-    identity and bind the executable's content. The executable becomes one
-    generation of the canonical coordinate, which a build then hydrates
-    exactly as it hydrates one built locally.
+    identity and bind the executable's content, and its observed Cargo
+    environment must match this one. The executable becomes the stored
+    generation of that identity and environment, which a build then admits
+    exactly as it admits one built on this host. A variant this host already
+    holds is returned as it is: a published variant is never rewritten.
     """
     transported = _read_runtime_fingerprint(receipt)
     if transported is None or "artifact_content_identity" not in transported:
@@ -616,38 +754,59 @@ def import_backend_binary(
         transported.get("cargo_environment")
     )
     cargo_environment.verify(build_admission.plan.environment)
-    canonical_binary, canonical_receipt = _canonical_backend_candidate(
-        project_root, binary, cargo_profile
-    )
-    with _backend_admission_lock(project_root, cargo_profile):
+    store = host_tool_store(project_root)
+    identity = host_tool_identity(binary, fingerprint)
+    stored = stored_host_tool(store, identity, binary, cargo_environment)
+    with store.single_flight(identity):
         build_admission.verify()
+        for admission in stored_host_tools(
+            store,
+            identity,
+            binary,
+            fingerprint,
+            environment=build_admission.plan.environment,
+        ):
+            if admission.stored == stored:
+                # This host already holds the product; a published variant is
+                # never rewritten, so the transported copy is not needed.
+                return admission.generation
+        _require_unpublished_host_tool(store, identity, stored)
         with stable_executable_probe(executable, label="transported backend") as (
             _entrypoint,
-            identity,
+            observed,
         ):
             if (
-                artifact_content_identity(identity.path, observed=identity)
+                artifact_content_identity(observed.path, observed=observed)
                 != transported["artifact_content_identity"]
             ):
                 raise ValueError("transported backend differs from its receipt")
             generation = publish_backend_generation(
-                canonical_binary, identity.path, observed=identity
+                stored.coordinate, observed.path, observed=observed
             )
         build_admission.verify()
         _select_backend_generation(
-            canonical_receipt,
+            stored.receipt,
             generation,
             fingerprint=fingerprint,
             cargo_environment=cargo_environment,
         )
-        admitted = _selected_backend_generation_matches(
-            canonical_binary,
-            fingerprint,
-            canonical_receipt,
-            environment=build_admission.plan.environment,
-        )
-        if admitted is None or admitted.resolve() != generation.path.resolve():
+        admitted = [
+            admission
+            for admission in stored_host_tools(
+                store,
+                identity,
+                binary,
+                fingerprint,
+                environment=build_admission.plan.environment,
+            )
+            if admission.stored == stored
+        ]
+        if (
+            not admitted
+            or admitted[0].generation.resolve() != generation.path.resolve()
+        ):
             raise ValueError("imported backend failed its own admission")
+    store.retain(identity)
     return generation.path
 
 
@@ -676,69 +835,72 @@ def _is_cargo_output_coordinate(
     return coordinate == coordinate.parent / _host_tool_output_name(product)
 
 
-def _admit_published_backend(
+def _admit_stored_backend(
     backend_bin: Path,
     *,
     project_root: Path,
     cargo_profile: str,
     build_admission: BackendBuildAdmission,
     backend_features: tuple[str, ...],
-    fingerprint_path: Path,
-    probe_validation_path: Path,
+    memo_path: Path,
     product: HostToolProduct = HostToolProduct.BACKEND,
-) -> _BackendBinaryEnsureResult | None:
-    """Admit a published feature lane by reads alone, or return None.
+) -> tuple[_BackendBinaryEnsureResult | None, dict[str, Any] | None]:
+    """Admit a stored host tool by reads alone, or return None.
 
     The build lock serializes Cargo's shared output and publication, which
     only a build or a republication needs. Every check here binds content: the
-    receipt names the source identity and the selected generation's bytes, and
-    the probe evidence names those bytes. A concurrent publication can make a
-    check fail but never pass for other bytes, and any failure takes the
-    locked path, which repairs it. So reusing one lane never waits out another
-    lane's cold build.
+    store receipt names the source identity and the selected generation's
+    bytes, and the probe evidence names those bytes. Any failure to admit takes
+    the locked path, so reusing one variant never waits out another build. A
+    store entry that exists but does not verify fails loud instead.
+
+    The source identity computed to key the store is returned beside the
+    result, so a miss's locked path rechecks metadata instead of rehashing.
     """
+    fingerprint: dict[str, Any] | None = None
     try:
         build_admission.verify()
-        stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
-        if stored_fingerprint is None:
-            return None
+        memo = _read_runtime_fingerprint(memo_path)
         fingerprint = _backend_fingerprint(
             project_root,
             cargo_profile=cargo_profile,
             build_admission=build_admission,
             backend_features=backend_features,
-            stored_fingerprint=stored_fingerprint,
+            stored_fingerprint=memo,
             product=product,
         )
-        generation = _selected_backend_generation_matches(
-            backend_bin,
-            fingerprint,
-            fingerprint_path,
-            environment=build_admission.plan.environment,
+        store = host_tool_store(project_root)
+        identity = host_tool_identity(backend_bin, fingerprint)
+        admissions = (
+            stored_host_tools(
+                store,
+                identity,
+                backend_bin,
+                fingerprint,
+                environment=build_admission.plan.environment,
+            )
+            if store.record_use(identity)
+            else ()
         )
-        if generation is None:
-            return None
-        fingerprint = _admitted_runtime_fingerprint(
-            fingerprint, _read_runtime_fingerprint(fingerprint_path)
-        )
-        CargoEnvironmentInputs.from_dict(fingerprint.get("cargo_environment")).verify(
-            build_admission.plan.environment
-        )
-        if _runtime_fingerprint_metadata_needs_refresh(stored_fingerprint, fingerprint):
-            return None
-        if not _backend_probe_validation_matches(
-            probe_validation_path,
-            binary_path=generation,
+    except ProductStoreError as exc:
+        return _backend_ensure_failure("product_store", str(exc)), fingerprint
+    except (CompilerIdentityError, OSError, ValueError):
+        return None, fingerprint
+    for admission in admissions:
+        if _backend_probe_validation_matches(
+            admission.stored.probe_validation,
+            binary_path=admission.generation,
             probe_target=_backend_probe_target(backend_features, product),
             backend_features=backend_features,
-            fingerprint=fingerprint,
+            fingerprint=admission.fingerprint,
         ):
-            return None
-    except (CompilerIdentityError, OSError, ValueError):
-        return None
-    return _backend_ensure_success(
-        coordinate=backend_bin, binary_path=generation, fingerprint=fingerprint
-    )
+            _remember_backend_identity(memo_path, memo, fingerprint)
+            return _backend_ensure_success(
+                coordinate=admission.stored.coordinate,
+                binary_path=admission.generation,
+                fingerprint=admission.fingerprint,
+            ), fingerprint
+    return None, fingerprint
 
 
 @_structured_backend_lock_failure
@@ -755,16 +917,19 @@ def _ensure_backend_binary(
     product: HostToolProduct = HostToolProduct.BACKEND,
     environment: Mapping[str, str] | None = None,
 ) -> _BackendBinaryEnsureResult:
-    """Admit one selected host-tool generation, publishing one if needed.
+    """Admit one stored host-tool generation, building and publishing it once.
 
-    ``backend_bin`` is the variant's coordinate. Success names the immutable
-    generation the build runs; the coordinate itself is never an executable.
+    ``backend_bin`` is the variant's coordinate in this checkout's target: its
+    name names the variant and its directory holds Cargo's output. Success
+    names the immutable generation in the host's product store that the build
+    runs (``molt.cli.product_store``); the coordinate itself is never an
+    executable.
     """
     if not isinstance(product, HostToolProduct):
         return _backend_ensure_failure("host_tool_product", "Unknown host tool product")
     tool_label = product.label
     # Installed compilers are immutable release inputs, never Cargo outputs.
-    # Admit before every developer skip/hydration/rebuild path.
+    # Admit before every developer store/rebuild path.
     try:
         installed = installed_compiler_admission(
             project_root,
@@ -818,38 +983,34 @@ def _ensure_backend_binary(
         )
     except CompilerIdentityError as exc:
         return _backend_ensure_failure("backend_source_identity", str(exc))
-    fingerprint_path = _backend_fingerprint_path(
-        project_root, backend_bin, cargo_profile
-    )
-    probe_validation_path = _backend_probe_validation_path(
-        project_root, backend_bin, cargo_profile
-    )
+    memo_path = _backend_fingerprint_path(project_root, backend_bin, cargo_profile)
     stage_start = time.perf_counter()
-    published = _admit_published_backend(
+    stored, unlocked_fingerprint = _admit_stored_backend(
         backend_bin,
         project_root=project_root,
         cargo_profile=cargo_profile,
         build_admission=build_admission,
         backend_features=backend_features,
-        fingerprint_path=fingerprint_path,
-        probe_validation_path=probe_validation_path,
+        memo_path=memo_path,
         product=product,
     )
-    if published is not None:
+    if stored is not None:
         _record_backend_binary_stage_ms(
             stage_timings_ms, "backend_binary_published_admission", stage_start
         )
-        return published
-    # Every feature lane publishes from the same Cargo output under this lock.
-    with _backend_admission_lock(
-        project_root, cargo_profile, cargo_timeout=cargo_timeout
+        return stored
+    # Every feature lane publishes from the same Cargo output under this lock;
+    # the store's identity lock then admits one builder per input on the host.
+    with (
+        _backend_admission_lock(project_root, backend_bin, cargo_profile),
+        ExitStack() as held,
     ):
         try:
             build_admission.verify()
         except CompilerIdentityError as exc:
             return _backend_ensure_failure("backend_source_identity", str(exc))
         stage_start = time.perf_counter()
-        stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
+        memo = _read_runtime_fingerprint(memo_path)
         _record_backend_binary_stage_ms(
             stage_timings_ms,
             "backend_binary_read_fingerprint",
@@ -857,14 +1018,19 @@ def _ensure_backend_binary(
         )
         stage_start = time.perf_counter()
         try:
+            # The identity the store lookup just computed serves as the memo,
+            # so the sources are rehashed only if their metadata moved since.
             fingerprint = _backend_fingerprint(
                 project_root,
                 cargo_profile=cargo_profile,
                 build_admission=build_admission,
                 backend_features=backend_features,
-                stored_fingerprint=stored_fingerprint,
+                stored_fingerprint=memo
+                if unlocked_fingerprint is None
+                else unlocked_fingerprint,
                 product=product,
             )
+            identity = host_tool_identity(backend_bin, fingerprint)
         except (OSError, ValueError) as exc:
             return _backend_ensure_failure("backend_source_identity", str(exc))
         _record_backend_binary_stage_ms(
@@ -872,29 +1038,21 @@ def _ensure_backend_binary(
             "backend_binary_compute_fingerprint",
             stage_start,
         )
+        store = host_tool_store(project_root)
+        try:
+            # A waiter waits while the build it waits for holds the lock:
+            # Cargo, the capability probe and publication (design 56, 2.8).
+            held.enter_context(store.single_flight(identity))
+        except BuildLockAcquisitionError as exc:
+            return _backend_ensure_failure("backend_build_lock", str(exc))
         cargo_output = backend_bin.parent / _host_tool_output_name(product)
-
-        def _publish_cargo_output_receipt(
-            identity: StableRegularFileIdentity,
-            cargo_environment: CargoEnvironmentInputs,
-        ) -> None:
-            assert fingerprint is not None
-            verify_stable_regular_file_identity(identity, label="backend publication")
-            content_identity = artifact_content_identity(
-                identity.path, observed=identity
-            )
-            verify_stable_regular_file_identity(identity, label="backend publication")
-            _write_runtime_fingerprint(
-                _backend_fingerprint_path(project_root, cargo_output, cargo_profile),
-                {**fingerprint, "artifact_content_identity": content_identity},
-                cargo_environment=cargo_environment,
-            )
-            verify_stable_regular_file_identity(identity, label="backend publication")
 
         def _probe_backend_binary_support(
             probe_target: str,
             *,
             binary: Path,
+            validation_path: Path,
+            admitted: Mapping[str, Any],
             identity: StableRegularFileIdentity | None = None,
         ) -> _BackendBinaryEnsureResult:
             stage_start = time.perf_counter()
@@ -947,7 +1105,7 @@ def _ensure_backend_binary(
                         binary_identity=probed,
                         probe_target=probe_target,
                         backend_features=backend_features,
-                        fingerprint=fingerprint,
+                        fingerprint=dict(admitted),
                     )
                     # The probe is the first run of a newly built backend, and a
                     # first run can wait on the operating system's check of a new
@@ -998,7 +1156,7 @@ def _ensure_backend_binary(
             stdout = probe.stdout.decode(errors="replace")
             if probe.returncode == 0 and payload is not None:
                 try:
-                    _atomic_write_json(probe_validation_path, payload, indent=2)
+                    _atomic_write_json(validation_path, payload, indent=2)
                 except (OSError, ValueError) as exc:
                     _record_backend_binary_stage_ms(
                         stage_timings_ms,
@@ -1023,223 +1181,87 @@ def _ensure_backend_binary(
                 binary=binary,
             )
 
-        def _select_admitted_cargo_output(
-            probe_target: str,
-        ) -> _BackendBinaryEnsureResult | None:
-            """Select an admitted Cargo output that the selection does not name."""
-            nonlocal fingerprint
-            if not cargo_output.exists():
-                return None
-            candidate_fingerprint_path = _backend_fingerprint_path(
-                project_root, cargo_output, cargo_profile
+        def _admitted(
+            admission: StoredHostToolAdmission,
+        ) -> _BackendBinaryEnsureResult:
+            _remember_backend_identity(memo_path, memo, fingerprint)
+            return _backend_ensure_success(
+                coordinate=admission.stored.coordinate,
+                binary_path=admission.generation,
+                fingerprint=admission.fingerprint,
             )
-            try:
-                with stable_executable_probe(
-                    cargo_output, label="admitted Cargo backend output"
-                ) as (_entrypoint, cargo_identity):
-                    if not _runtime_artifact_fingerprint_matches(
-                        cargo_output,
-                        fingerprint,
-                        candidate_fingerprint_path,
-                        environment=build_admission.plan.environment,
-                        require_artifact_digest=True,
-                    ):
-                        return None
-                    if fingerprint is None:
-                        raise ValueError("Backend source identity missing")
-                    fingerprint = _admitted_runtime_fingerprint(
-                        fingerprint,
-                        _read_runtime_fingerprint(candidate_fingerprint_path),
-                    )
-                    CargoEnvironmentInputs.from_dict(
-                        fingerprint.get("cargo_environment")
-                    ).verify(build_admission.plan.environment)
-                    selected = _selected_backend_generation_matches(
-                        backend_bin,
-                        fingerprint,
-                        fingerprint_path,
-                        environment=build_admission.plan.environment,
-                    )
-                    if (
-                        selected is not None
-                        and selected.parent.name == cargo_identity.sha256
-                    ):
-                        return None
-                    _source, generation = _publish_backend_generation_from(
-                        backend_bin,
-                        cargo_output,
-                        label="admitted Cargo backend output",
-                        expected_identity=cargo_identity,
-                    )
-                probe_result = _probe_backend_binary_support(
-                    probe_target, binary=generation.path, identity=generation
-                )
-                if not probe_result:
-                    # A rejected capability probe is not source admission.
-                    # Let the normal receipt/hydration/Cargo paths repair it;
-                    # publication failures remain terminal.
-                    return (
-                        probe_result
-                        if probe_result.phase == "backend_probe_publication"
-                        else None
-                    )
-                _select_backend_generation(
-                    fingerprint_path,
-                    generation,
-                    fingerprint=fingerprint,
-                    cargo_environment=CargoEnvironmentInputs.from_dict(
-                        fingerprint.get("cargo_environment")
-                    ),
-                )
-            except (OSError, RuntimeError, ValueError) as exc:
-                return _backend_ensure_failure(
-                    "backend_selection_publication", str(exc)
-                )
-            return None
 
-        if stored_fingerprint is None:
-            stage_start = time.perf_counter()
-            stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
-            _record_backend_binary_stage_ms(
-                stage_timings_ms,
-                "backend_binary_read_fingerprint",
-                stage_start,
-            )
         _quick_target = _backend_probe_target(backend_features, product)
-        probe_failure: _BackendBinaryEnsureResult | None = None
-        selection_failure = _select_admitted_cargo_output(_quick_target)
-        if selection_failure is not None:
-            return selection_failure
+        probe_failure: tuple[Path, _BackendBinaryEnsureResult] | None = None
+        # Another checkout with these inputs may have published while this
+        # build waited for the identity's lock: read the store again.
         stage_start = time.perf_counter()
-        selected_generation = _selected_backend_generation_matches(
-            backend_bin,
-            fingerprint,
-            fingerprint_path,
-            environment=build_admission.plan.environment,
-        )
-        if selected_generation is not None:
-            # A temporarily unavailable rustc must not rename an admitted
-            # compiler. Fill only unknown semantic coordinates from the receipt
-            # whose source and artifact bytes just matched under this lock.
-            try:
-                if fingerprint is None:
-                    raise ValueError("Backend source identity missing")
-                fingerprint = _admitted_runtime_fingerprint(
-                    fingerprint, _read_runtime_fingerprint(fingerprint_path)
-                )
-                CargoEnvironmentInputs.from_dict(
-                    fingerprint.get("cargo_environment")
-                ).verify(build_admission.plan.environment)
-            except ValueError as exc:
-                return _backend_ensure_failure("backend_receipt_identity", str(exc))
-            _record_backend_binary_stage_ms(
-                stage_timings_ms,
-                "backend_binary_artifact_freshness",
-                stage_start,
+        try:
+            admissions = stored_host_tools(
+                store,
+                identity,
+                backend_bin,
+                fingerprint,
+                environment=build_admission.plan.environment,
             )
-            if fingerprint is not None and _runtime_fingerprint_metadata_needs_refresh(
-                stored_fingerprint, fingerprint
-            ):
-                # Only fast-path metadata moves here (a same-content touch or
-                # stash); an unwritable receipt just costs the next run a rehash.
-                # The refresh still refuses to change the identity matched above.
-                try:
-                    _refresh_runtime_fingerprint_metadata(
-                        fingerprint_path,
-                        fingerprint,
-                    )
-                except OSError:
-                    pass
-                except ValueError as exc:
-                    return _backend_ensure_failure(
-                        "backend_receipt_refresh",
-                        f"Backend receipt changed during admission: {exc}",
-                    )
+        except ProductStoreError as exc:
+            return _backend_ensure_failure("product_store", str(exc))
+        except (OSError, ValueError) as exc:
+            return _backend_ensure_failure("backend_receipt_identity", str(exc))
+        _record_backend_binary_stage_ms(
+            stage_timings_ms,
+            "backend_binary_artifact_freshness",
+            stage_start,
+        )
+        for admission in admissions:
             # Force a real compile-path probe. An empty stdin-only probe can
             # miss feature-lane poisoning because it never exercises output
             # emission for the requested target.
             stage_start = time.perf_counter()
-            if _backend_probe_validation_matches(
-                probe_validation_path,
-                binary_path=selected_generation,
+            validated = _backend_probe_validation_matches(
+                admission.stored.probe_validation,
+                binary_path=admission.generation,
                 probe_target=_quick_target,
                 backend_features=backend_features,
-                fingerprint=fingerprint,
-            ):
-                _record_backend_binary_stage_ms(
-                    stage_timings_ms,
-                    "backend_binary_probe_validation",
-                    stage_start,
-                )
-                return _backend_ensure_success(
-                    coordinate=backend_bin,
-                    binary_path=selected_generation,
-                    fingerprint=fingerprint,
-                )
+                fingerprint=admission.fingerprint,
+            )
             _record_backend_binary_stage_ms(
                 stage_timings_ms,
                 "backend_binary_probe_validation",
                 stage_start,
             )
+            if validated:
+                return _admitted(admission)
             _probe_result = _probe_backend_binary_support(
-                _quick_target, binary=selected_generation
+                _quick_target,
+                binary=admission.generation,
+                validation_path=admission.stored.probe_validation,
+                admitted=admission.fingerprint,
             )
             if _probe_result:
-                return _backend_ensure_success(
-                    coordinate=backend_bin,
-                    binary_path=selected_generation,
-                    fingerprint=fingerprint,
-                )
+                return _admitted(admission)
             if _probe_result.phase in _PROBE_TERMINAL_PHASES:
                 return _probe_result
-            probe_failure = _probe_result
-        else:
-            _record_backend_binary_stage_ms(
-                stage_timings_ms,
-                "backend_binary_artifact_freshness",
-                stage_start,
+            probe_failure = (admission.generation, _probe_result)
+        if probe_failure is not None:
+            # A published variant is never rebuilt over: the same inputs build
+            # the same compiler, and other builds may hold this one.
+            failed, result = probe_failure
+            detail = (
+                f"Stored {tool_label} {failed} failed its capability probe; "
+                "rebuilding the same inputs cannot change it."
             )
-        canonical_backend_bin, canonical_fingerprint_path = (
-            _canonical_backend_candidate(project_root, backend_bin, cargo_profile)
-        )
-        stage_start = time.perf_counter()
-        hydrated = _hydrate_canonical_backend_generation(
-            backend_bin,
-            fingerprint_path,
-            canonical_backend_bin,
-            canonical_fingerprint_path,
-            fingerprint=fingerprint,
-            environment=build_admission.plan.environment,
-        )
-        _record_backend_binary_stage_ms(
-            stage_timings_ms,
-            "backend_binary_canonical_hydrate",
-            stage_start,
-        )
-        if hydrated is not None:
-            hydrated_generation, fingerprint = hydrated
-            _probe_target = _backend_probe_target(backend_features, product)
-            _probe_result = _probe_backend_binary_support(
-                _probe_target,
-                binary=hydrated_generation.path,
-                identity=hydrated_generation,
+            if result.detail:
+                detail += f"\n{result.detail}"
+            return _backend_ensure_failure(
+                "backend_feature_probe",
+                detail,
+                returncode=result.returncode,
+                command=result.command,
             )
-            if _probe_result:
-                return _backend_ensure_success(
-                    coordinate=backend_bin,
-                    binary_path=hydrated_generation.path,
-                    fingerprint=fingerprint,
-                )
-            if _probe_result.phase in _PROBE_TERMINAL_PHASES:
-                return _probe_result
-            probe_failure = _probe_result
         if reason := source_build_disabled_reason(
             product.value, environment=admission_environment
         ):
-            if probe_failure is not None and probe_failure.detail:
-                reason += (
-                    f"\n{tool_label} capability probe failed: {probe_failure.detail}"
-                )
             return _backend_ensure_failure("rebuild-policy", reason)
         # Raw Cargo outputs and source-only sidecars do not establish provenance.
         # Confirm the source/feature build before publishing content-bound receipts.
@@ -1388,11 +1410,14 @@ def _ensure_backend_binary(
                 f"Refusing to publish the {tool_label}: {uncovered}",
                 command=cmd,
             )
+        stored = stored_host_tool(store, identity, backend_bin, reads.environment)
         try:
-            rebuilt_source_identity, rebuilt_generation = (
-                _publish_backend_generation_from(
-                    backend_bin, cargo_output, label="rebuilt Cargo backend output"
-                )
+            _require_unpublished_host_tool(store, identity, stored)
+        except ProductStoreError as exc:
+            return _backend_ensure_failure("product_store", str(exc), command=cmd)
+        try:
+            rebuilt_generation = _publish_backend_generation_from(
+                stored.coordinate, cargo_output, label="rebuilt Cargo backend output"
             )
         except (OSError, RuntimeError, ValueError) as exc:
             return _backend_ensure_failure("backend_artifact", str(exc))
@@ -1403,6 +1428,8 @@ def _ensure_backend_binary(
         _probe_result = _probe_backend_binary_support(
             _probe_target,
             binary=rebuilt_generation.path,
+            validation_path=stored.probe_validation,
+            admitted=fingerprint,
             identity=rebuilt_generation,
         )
         if _probe_result.phase in _PROBE_TERMINAL_PHASES and not _probe_result:
@@ -1417,85 +1444,23 @@ def _ensure_backend_binary(
                 returncode=_probe_result.returncode,
                 command=_probe_result.command,
             )
-        if fingerprint is not None:
-            try:
-                _publish_cargo_output_receipt(
-                    rebuilt_source_identity, reads.environment
-                )
-                _select_backend_generation(
-                    fingerprint_path,
-                    rebuilt_generation,
-                    fingerprint=fingerprint,
-                    cargo_environment=reads.environment,
-                )
-            except (OSError, ValueError) as exc:
-                return _backend_ensure_failure(
-                    "backend_artifact_publication",
-                    f"{tool_label} artifact provenance publication failed: {exc}",
-                    command=cmd,
-                )
+        try:
+            _select_backend_generation(
+                stored.receipt,
+                rebuilt_generation,
+                fingerprint=fingerprint,
+                cargo_environment=reads.environment,
+            )
+            store.retain(identity)
+        except (OSError, ValueError) as exc:
+            return _backend_ensure_failure(
+                "backend_artifact_publication",
+                f"{tool_label} artifact provenance publication failed: {exc}",
+                command=cmd,
+            )
+        _remember_backend_identity(memo_path, memo, fingerprint)
         return _backend_ensure_success(
-            coordinate=backend_bin,
+            coordinate=stored.coordinate,
             binary_path=rebuilt_generation.path,
             fingerprint=fingerprint,
         )
-
-
-def _hydrate_canonical_backend_generation(
-    backend_bin: Path,
-    fingerprint_path: Path,
-    canonical_backend_bin: Path,
-    canonical_fingerprint_path: Path,
-    *,
-    fingerprint: dict[str, Any] | None,
-    environment: ProcessEnvironment,
-) -> tuple[StableRegularFileIdentity, dict[str, Any]] | None:
-    """Publish the canonical target's admitted generation into this target.
-
-    The canonical selection must match this checkout's source identity and
-    bind its generation's bytes. The copy becomes this coordinate's own
-    generation and selection; the canonical one is only read. Returns the
-    generation and the admitted fingerprint, or None when nothing matches.
-    """
-    if fingerprint is None or backend_bin.resolve() == canonical_backend_bin.resolve():
-        return None
-    stored = _read_runtime_fingerprint(canonical_fingerprint_path)
-    candidate = selected_backend_generation(canonical_backend_bin, stored)
-    if (
-        stored is None
-        or candidate is None
-        or not _runtime_artifact_fingerprint_matches(
-            candidate,
-            fingerprint,
-            canonical_fingerprint_path,
-            environment=environment,
-            require_artifact_digest=True,
-        )
-    ):
-        return None
-    try:
-        admitted = _admitted_runtime_fingerprint(fingerprint, stored)
-        CargoEnvironmentInputs.from_dict(admitted.get("cargo_environment")).verify(
-            environment
-        )
-        _source, generation = _publish_backend_generation_from(
-            backend_bin, candidate, label="canonical backend generation"
-        )
-        # The copy binds the bytes it read; they must be the bytes the
-        # canonical receipt selected, or nothing is selected here.
-        if (
-            artifact_content_identity(generation.path, observed=generation)
-            != stored["artifact_content_identity"]
-        ):
-            return None
-        _select_backend_generation(
-            fingerprint_path,
-            generation,
-            fingerprint=admitted,
-            cargo_environment=CargoEnvironmentInputs.from_dict(
-                admitted.get("cargo_environment")
-            ),
-        )
-    except (OSError, RuntimeError, ValueError):
-        return None
-    return generation, admitted

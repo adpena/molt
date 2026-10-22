@@ -531,7 +531,6 @@ def _start_backend_daemon_under_lock(
         with _build_lock(
             project_root,
             f"backend-daemon.{cargo_profile}",
-            default_timeout_s=startup_timeout if startup_timeout is not None else 300.0,
         ):
             ready = _start_backend_daemon(
                 backend_bin,

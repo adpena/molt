@@ -175,14 +175,21 @@ def _build_state_root_cached(
     return root
 
 
-def _build_state_root(project_root: Path) -> Path:
+def _build_state_root(project_root: Path, cargo_target: Path | None = None) -> Path:
+    """The build-control root of ``cargo_target``, by default the project's target.
+
+    State that guards one target's outputs (a lock over Cargo's output
+    directory) names that target, so a build whose outputs live in another
+    target never contends with this project's builds.
+    """
+    target = _cargo_target_root(project_root) if cargo_target is None else cargo_target
     root = _build_state_root_cached(
         os.fspath(project_root),
         os.environ.get("MOLT_BUILD_STATE_DIR"),
-        os.fspath(_cargo_target_root(project_root)),
+        os.fspath(target),
         configured_artifact_root_text(os.environ),
     )
-    _claim_checkout_state(root, cargo_target=_cargo_target_root(project_root))
+    _claim_checkout_state(root, cargo_target=target)
     return root
 
 
