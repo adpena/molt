@@ -5,8 +5,12 @@ raised limit and raises RecursionError. A Molt native program recurses on the
 native stack, which runs out first; with no handler installed, as in a C
 program, the process ends with SIGSEGV. The development JIT runner must not
 add Rust's stack-overflow handler, which aborts with a message instead (HF-371).
+
+The pinned Molt outcome, for both tiers: Molt ends with SIGSEGV (exit -11) and
+prints nothing. Any other ending, or two tiers that end differently, fails the
+case.
 """
-# MOLT_META: expect_fail=molt expect_fail_reason=native_stack_exhaustion
+# MOLT_META: expect_fail=molt expect_fail_reason=native_stack_exhaustion expect_molt_returncode=-11 expect_molt_stdout_sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 
 import sys
 

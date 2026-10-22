@@ -3613,6 +3613,55 @@ def _record_backend_result(
     )
 
 
+def _expected_failure_pin_failure(
+    meta: test_policy.TestMetadata,
+    per_backend: dict[str, compat_backends.BackendResult],
+) -> tuple[str, str] | None:
+    """Why an expected failure did not end the exact way it pins, or None.
+
+    An expected failure passes only when every backend ends with the pinned
+    exit status and stdout; any other ending is a new failure. Exact twins
+    must pin it, or two tiers that fail the same new way would read as the
+    known gap.
+    """
+    if meta.expected_molt_returncode is not None:
+        endings = []
+        for name, outcome in sorted(per_backend.items()):
+            stdout = outcome.stdout
+            digest = (
+                None
+                if stdout is None
+                else hashlib.sha256(
+                    stdout.encode("utf-8", errors="surrogateescape")
+                ).hexdigest()
+            )
+            if (
+                outcome.returncode != meta.expected_molt_returncode
+                or digest != meta.expected_molt_stdout_sha256
+            ):
+                endings.append(
+                    f"{name} exited {outcome.returncode} with stdout "
+                    f"{stdout!r:.120} (sha256 {digest})"
+                )
+        if endings:
+            return "pinned_outcome_mismatch", (
+                f"the pin is exit {meta.expected_molt_returncode} with stdout "
+                f"sha256 {meta.expected_molt_stdout_sha256}; " + "; ".join(endings)
+            )
+        return None
+    if meta.expect_molt_fail and any(
+        compat_backends.exact_twins(first, second)
+        for first in per_backend
+        for second in per_backend
+        if first < second
+    ):
+        return "unpinned_expected_failure", (
+            "an expected failure compared as exact twins must pin how Molt fails "
+            "(expect_molt_returncode and expect_molt_stdout_sha256)"
+        )
+    return None
+
+
 def diff_test(
     file_path,
     python_exe: PythonCommand = sys.executable,
@@ -3949,10 +3998,23 @@ def diff_test(
         divergence_detail = _cross_backend_divergence(
             per_backend, stdout_mode=stdout_mode, stderr_mode=stderr_mode
         )
+        # A divergence fails whatever the file expects: an expected-failure
+        # mark covers a known Molt-vs-CPython gap, never two backends that
+        # disagree (HF-371 review v4).
         if divergence_detail is not None:
             print(f"[FAIL] {file_path} CROSS-BACKEND DIVERGENCE")
             print(f"  {divergence_detail}")
-            return _finalize_status("fail")
+            record["raw_status"] = record["resolved_status"] = "fail"
+            record["reason_tag"] = "cross_backend_divergence"
+            return
+        pin_failure = _expected_failure_pin_failure(meta, per_backend)
+        if pin_failure is not None:
+            tag, detail = pin_failure
+            print(f"[FAIL] {file_path} {tag.upper().replace('_', ' ')}")
+            print(f"  {detail}")
+            record["raw_status"] = record["resolved_status"] = "fail"
+            record["reason_tag"] = tag
+            return
 
         if any_cpython_fail:
             return _finalize_status("fail")

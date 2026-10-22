@@ -10,9 +10,13 @@ Both native code owners then differ from CPython the same way: the runtime
 opens /dev/null at start, and with fd 2 closed that descriptor becomes fd 2,
 so the child sees stderr open. The twins must agree on that until the runtime
 keeps a closed fd 2 closed (HF-455).
+
+The pinned Molt outcome, for both tiers: Molt exits 0 and prints "rc 0" and
+"child ran, stderr open". Any other ending, or two tiers that end differently,
+fails the case.
 """
 # MOLT_ENV: MOLT_CAPABILITIES=process.exec,env.read,fs.read
-# MOLT_META: expect_fail=molt expect_fail_reason=closed_stderr_reused_by_runtime
+# MOLT_META: expect_fail=molt expect_fail_reason=closed_stderr_reused_by_runtime expect_molt_returncode=0 expect_molt_stdout_sha256=e15a6f107fc2dec693de3efbf1918a921665d2c81336012ebc9974df56c7555d
 
 import os
 import subprocess

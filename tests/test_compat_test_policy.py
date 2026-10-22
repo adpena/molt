@@ -901,3 +901,53 @@ def test_invalid_fixture_role_or_policy_override_fails_closed(tmp_path, declarat
     path.write_text("# MOLT_META: " + declaration + "\n", encoding="utf-8")
     with pytest.raises(ValueError):
         test_policy.parse_metadata(path)
+
+
+_EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
+
+
+def test_an_expected_failure_pins_the_exact_molt_outcome(tmp_path: Path) -> None:
+    path = _source(
+        tmp_path,
+        "expect_fail=molt expect_fail_reason=sigpipe_default_disposition "
+        f"expect_molt_returncode=-13 expect_molt_stdout_sha256={_EMPTY_SHA256}",
+    )
+    meta = test_policy.parse_metadata(path)
+    assert (meta.expected_molt_returncode, meta.expected_molt_stdout_sha256) == (
+        -13,
+        _EMPTY_SHA256,
+    )
+    assert meta.as_record()["expect_molt_returncode"] == -13
+
+
+@pytest.mark.parametrize(
+    "tokens,message",
+    [
+        (
+            f"expect_molt_returncode=-13 expect_molt_stdout_sha256={_EMPTY_SHA256}",
+            "expect_fail=molt",
+        ),
+        (
+            "expect_fail=molt expect_fail_reason=gap expect_molt_returncode=-13",
+            "together",
+        ),
+        (
+            f"expect_fail=molt expect_fail_reason=gap expect_molt_stdout_sha256={_EMPTY_SHA256}",
+            "together",
+        ),
+        (
+            f"expect_fail=molt expect_fail_reason=gap expect_molt_returncode=x expect_molt_stdout_sha256={_EMPTY_SHA256}",
+            "integer",
+        ),
+        (
+            "expect_fail=molt expect_fail_reason=gap expect_molt_returncode=0 expect_molt_stdout_sha256=ABC",
+            "hex",
+        ),
+    ],
+)
+def test_a_pin_without_its_expected_failure_or_its_pair_is_refused(
+    tmp_path: Path, tokens: str, message: str
+) -> None:
+    path = _source(tmp_path, tokens)
+    with pytest.raises(ValueError, match=message):
+        test_policy.parse_metadata(path)
