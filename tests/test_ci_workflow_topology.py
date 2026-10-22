@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import dataclass
 from fnmatch import fnmatchcase
 import glob
 import json
@@ -60,22 +61,47 @@ def _default_python_version() -> str:
     return version
 
 
-# A step's `run` script is read as the POSIX shell reads it: shlex splits
-# words and the operators that separate simple commands, a newline ends one,
-# and `#` starts a comment. GitHub substitutes `${{ ... }}` before any shell
-# runs, so each becomes one word.
+# A step's `run` script is read as the POSIX shell reads it: comments (a `#`
+# at the start of a word, outside quotes, up to the newline it leaves in
+# place), heredoc bodies (not commands; a body that runs molt marks its
+# command), line continuations, then shlex words and the operators between
+# simple commands. GitHub substitutes `${{ ... }}` before any shell runs:
+# `${{ github.workspace }}` is the workspace, any other expression one word.
+_WORKSPACE_EXPRESSION = re.compile(r"\$\{\{\s*github\.workspace\s*\}\}")
 _GITHUB_EXPRESSION = re.compile(r"\$\{\{.*?\}\}")
-_COMMAND_SEPARATORS = frozenset({"\n", ";", ";;", "&", "&&", "|", "||", "(", ")"})
+_HEREDOC = re.compile(r"<<(-?)[ \t]*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2")
+_HEREDOC_RUNS_MOLT = "MOLT-HEREDOC-RUNS-MOLT"
+_MOLT_MODULE_TEXT = re.compile(r"-m\s*molt\b")
+_OPERATORS = (
+    "<<<", "<<-", "&&", "||", ";;", "|&", ">>", "<<", ">&", "<&", "&>",
+    ";", "&", "|", "(", ")", "<", ">",
+)  # fmt: skip
+_COMMAND_SEPARATORS = frozenset({"\n", ";", ";;", "&", "&&", "|", "||", "|&"})
+_RESERVED_WORDS = frozenset(
+    {"if", "then", "elif", "else", "fi", "do", "done", "while", "until", "!", "{", "}"}
+)
 _ASSIGNMENT = re.compile(r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)=(?P<value>.*)", re.S)
 _PYTHON_EXECUTABLE = re.compile(r"python[0-9.]*")
 _VARIABLE = re.compile(r"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?")
+_SHELLS = frozenset({"sh", "bash", "dash", "zsh"})
 # CPython's command line: these options take an argument, attached or next.
 _PYTHON_OPTIONS_WITH_ARGUMENT = frozenset("WX")
 # -I implies -E; both make the interpreter ignore PYTHONPATH.
 _PYTHON_IGNORES_PYTHONPATH = frozenset("IE")
-# Commands that run the rest of their words as a command, and how many of
-# their own words (beyond options) precede it.
-_COMMAND_WRAPPERS = {"time": 0, "nice": 0, "nohup": 0, "timeout": 1}
+# Commands that run the rest of their words as a command: how many of their
+# own operands precede it, and which of their options take a value.
+_COMMAND_WRAPPERS = {
+    "time": (0, frozenset({"-f", "-o"})),
+    "nice": (0, frozenset({"-n"})),
+    "nohup": (0, frozenset()),
+    "timeout": (1, frozenset({"-s", "-k", "--signal", "--kill-after"})),
+    "exec": (0, frozenset({"-a"})),
+}
+# Spellings of the repository's `src` in a PYTHONPATH entry: relative ones
+# hold only while the script has not changed directory.
+_WORKSPACE_SRC = frozenset({"$GITHUB_WORKSPACE/src", "${GITHUB_WORKSPACE}/src"})
+_RELATIVE_SRC = frozenset({"src", "./src", "$PWD/src", "${PWD}/src"})
+_TRUE = frozenset({"1", "true", "yes", "on"})
 # `uv run` options that take a value (`uv run --help`, uv 0.13.5).
 _UV_RUN_VALUE_OPTIONS = frozenset(
     {
@@ -94,25 +120,97 @@ _UV_RUN_VALUE_OPTIONS = frozenset(
         "--project", "--config-file",
     }
 )  # fmt: skip
+# `uv run` options that leave the project out of the environment.
+_UV_RUN_WITHOUT_PROJECT = frozenset({"--no-project", "--only-dev", "--only-group"})
 
 
-def _simple_commands(run: str) -> list[list[str]]:
-    """The words of each simple command in a `run` script."""
-    lexer = shlex.shlex(
-        _GITHUB_EXPRESSION.sub("GITHUB_EXPRESSION", run.replace("\\\n", " ")),
-        posix=True,
-        punctuation_chars=True,
+def _shell_text(run: str) -> str:
+    """``run`` with comments, continuations and heredoc bodies removed."""
+    text = _GITHUB_EXPRESSION.sub(
+        "GITHUB_EXPRESSION", _WORKSPACE_EXPRESSION.sub("$GITHUB_WORKSPACE", run)
     )
+    out: list[str] = []
+    pending: list[tuple[str, bool]] = []
+    quote: str | None = None
+    word_start = True
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if quote == "'":
+            out.append(char)
+            quote = None if char == "'" else quote
+            index += 1
+            continue
+        if char == "\\" and index + 1 < len(text):
+            if text[index + 1] == "\n" and quote is None:
+                index += 2  # a line continuation joins the lines
+                continue
+            out.append(text[index : index + 2])
+            index += 2
+            word_start = False
+            continue
+        if quote == '"':
+            out.append(char)
+            quote = None if char == '"' else quote
+            index += 1
+            continue
+        if char in "'\"":
+            quote = char
+            out.append(char)
+            word_start = False
+            index += 1
+            continue
+        if char == "#" and word_start:
+            while index < len(text) and text[index] != "\n":
+                index += 1
+            continue
+        heredoc = _HEREDOC.match(text, index) if char == "<" else None
+        if heredoc is not None and not text.startswith("<<<", index):
+            pending.append((heredoc[3], heredoc[1] == "-"))
+            out.append(text[index : heredoc.end()])
+            index = heredoc.end()
+            word_start = False
+            continue
+        if char == "\n":
+            index += 1
+            for delimiter, strip_tabs in pending:
+                body: list[str] = []
+                while index < len(text):
+                    end = text.find("\n", index)
+                    end = len(text) if end < 0 else end
+                    line = text[index:end]
+                    index = end + 1
+                    if (line.lstrip("\t") if strip_tabs else line) == delimiter:
+                        break
+                    body.append(line)
+                if _MOLT_MODULE_TEXT.search("\n".join(body)):
+                    out.append(f" {_HEREDOC_RUNS_MOLT}")
+            pending.clear()
+            out.append("\n")
+            word_start = True
+            continue
+        out.append(char)
+        word_start = char in " \t;&|()<>"
+        index += 1
+    return "".join(out)
+
+
+def _shell_words(run: str) -> list[str]:
+    """The words and operators of ``run``, operators split one by one."""
+    lexer = shlex.shlex(_shell_text(run), posix=True, punctuation_chars=True)
     lexer.whitespace = " \t\r"
     lexer.wordchars += "${}"
-    lexer.commenters = "#"
-    commands: list[list[str]] = [[]]
+    lexer.commenters = ""
+    words: list[str] = []
     for word in lexer:
-        if word in _COMMAND_SEPARATORS:
-            commands.append([])
+        if word and all(char in "();<>|&" for char in word):
+            while word:
+                operator = next(op for op in _OPERATORS if word.startswith(op))
+                words.append(operator)
+                word = word[len(operator) :]
         else:
-            commands[-1].append(word)
-    return [command for command in commands if command]
+            words.append(word)
+    return words
 
 
 def _python_module(words: list[str]) -> tuple[str | None, bool]:
@@ -142,88 +240,197 @@ def _python_module(words: list[str]) -> tuple[str | None, bool]:
     return None, ignores_pythonpath
 
 
-def _names_src(pythonpath: object) -> bool:
-    """Whether a PYTHONPATH value has an entry whose last component is `src`."""
+def _is_molt(module: str | None) -> bool:
+    return module is not None and (module == "molt" or module.startswith("molt."))
+
+
+def _names_src(pythonpath: object, *, relative_ok: bool) -> bool:
+    """Whether a PYTHONPATH value has an entry naming the repository's `src`.
+
+    A value from YAML env still holds GitHub's expressions; they read as the
+    script's do.
+    """
+    value = _GITHUB_EXPRESSION.sub(
+        "GITHUB_EXPRESSION",
+        _WORKSPACE_EXPRESSION.sub("$GITHUB_WORKSPACE", str(pythonpath or "")),
+    )
     return any(
-        entry.rstrip("/").rsplit("/", 1)[-1] == "src"
-        for entry in str(pythonpath or "").split(":")
+        entry in _WORKSPACE_SRC or (relative_ok and entry in _RELATIVE_SRC)
+        for entry in (part.rstrip("/") for part in value.split(":"))
     )
 
 
+@dataclass
+class _ShellState:
+    """What one shell scope holds: exported and plain variables, and whether
+    it may have left the workspace directory."""
+
+    exported: dict[str, object]
+    variables: dict[str, object]
+    moved: bool
+
+    def copy(self) -> _ShellState:
+        return _ShellState(dict(self.exported), dict(self.variables), self.moved)
+
+
 def _molt_module_runs(
-    run: str, env: dict[str, object], *, project_synced: bool
+    run: str,
+    env: dict[str, object],
+    *,
+    project_synced: bool,
+    moved: bool = False,
 ) -> list[tuple[str, bool]]:
     """Each simple command that runs molt as a module, and whether molt can
-    be imported there: `uv run` (it syncs the project; with `--no-sync`, only
-    an earlier sync in the job or script provides it) or a PYTHONPATH entry
-    naming `src` that the interpreter honors. An assignment before a command
-    applies to it; `export` and `unset` apply to the rest of the script, and
-    the step, job and workflow env come first."""
-    exported = dict(env)
+    be imported there: `uv run` with the project (with `--no-sync`, only after
+    a sync earlier in the job or script) or a PYTHONPATH entry naming the
+    repository's `src` that the interpreter honors. Assignments before a
+    command apply to it; `export`, `export -n`, `unset` and a reassignment of
+    an exported variable apply to the rest of its scope, and a `( ... )`
+    subshell's changes end with it; the step, job and workflow env come first.
+    A string a shell runs (`sh -c`, `eval`, `<<<`) is read as a script; a
+    molt run this reading cannot attribute to an interpreter (`sudo`, a
+    heredoc fed to a shell) is reported as unprovided, never passed."""
     found: list[tuple[str, bool]] = []
-    for words in _simple_commands(run):
-        if words[:2] == ["uv", "sync"]:
-            project_synced = True
-        if words[0] in {"export", "unset"}:
-            for word in words[1:]:
-                assignment = _ASSIGNMENT.fullmatch(word)
-                if words[0] == "unset":
-                    exported.pop(word, None)
-                elif assignment is not None:
-                    exported[assignment["name"]] = assignment["value"]
+    scopes = [_ShellState(dict(env), {}, moved)]
+    words = _shell_words(run)
+    commands: list[list[str]] = [[]]
+    for word in words:
+        if word in _COMMAND_SEPARATORS:
+            commands.append([])
+        elif word in {"(", ")"}:
+            commands.append([word])
+            commands.append([])
+        else:
+            commands[-1].append(word)
+    for command in commands:
+        if command == ["("]:
+            scopes.append(scopes[-1].copy())
             continue
-        local = dict(exported)
-        original = words
-        while words:
-            if assignment := _ASSIGNMENT.fullmatch(words[0]):
+        if command == [")"]:
+            if len(scopes) > 1:
+                scopes.pop()
+            continue
+        state = scopes[-1]
+        words = [word for word in command if word not in _RESERVED_WORDS]
+        argv: list[str] = []
+        redirects: list[tuple[str, str]] = []
+        index = 0
+        while index < len(words):
+            if words[index] in _OPERATORS:
+                target = words[index + 1] if index + 1 < len(words) else ""
+                redirects.append((words[index], target))
+                index += 2
+            else:
+                argv.append(words[index])
+                index += 1
+        if not argv and not redirects:
+            continue
+        if argv[:2] == ["uv", "sync"]:
+            project_synced = True
+        if argv[:1] == ["cd"]:
+            state.moved |= argv[1:] not in ([], ["."], ["$GITHUB_WORKSPACE"])
+            continue
+        if argv[:1] in (["export"], ["unset"]):
+            unexport = argv[0] == "export" and "-n" in argv[1:]
+            for word in argv[1:]:
+                if word.startswith("-"):
+                    continue
+                assignment = _ASSIGNMENT.fullmatch(word)
+                name = assignment["name"] if assignment else word
+                if argv[0] == "unset":
+                    state.exported.pop(name, None)
+                    state.variables.pop(name, None)
+                elif unexport:
+                    if name in state.exported:
+                        state.variables[name] = state.exported.pop(name)
+                elif assignment is not None:
+                    state.exported[name] = assignment["value"]
+                elif name in state.variables:
+                    state.exported[name] = state.variables.pop(name)
+            continue
+        if argv and all(_ASSIGNMENT.fullmatch(word) for word in argv):
+            for word in argv:
+                assignment = _ASSIGNMENT.fullmatch(word)
+                assert assignment is not None
+                target = (
+                    state.exported
+                    if assignment["name"] in state.exported
+                    else state.variables
+                )
+                target[assignment["name"]] = assignment["value"]
+            continue
+        local = dict(state.exported)
+        original = argv
+        while argv:
+            if assignment := _ASSIGNMENT.fullmatch(argv[0]):
                 local[assignment["name"]] = assignment["value"]
-                words = words[1:]
-            elif words[0] == "env":
-                words = words[1:]
-                while words and words[0].startswith("-"):
-                    option = words.pop(0)
+                argv = argv[1:]
+            elif argv[0] == "env":
+                argv = argv[1:]
+                while argv and argv[0].startswith("-"):
+                    option = argv.pop(0)
                     if option in {"-i", "-", "--ignore-environment"}:
                         local.clear()
-                    elif option in {"-u", "--unset"} and words:
-                        local.pop(words.pop(0), None)
-            elif words[0] in _COMMAND_WRAPPERS:
-                skip = _COMMAND_WRAPPERS[words[0]]
-                words = words[1:]
-                while words and words[0].startswith("-"):
-                    words = words[1:]
-                words = words[skip:]
+                    elif option in {"-u", "--unset"} and argv:
+                        local.pop(argv.pop(0), None)
+            elif argv[0] in _COMMAND_WRAPPERS:
+                operands, valued = _COMMAND_WRAPPERS[argv[0]]
+                argv = argv[1:]
+                while argv and argv[0].startswith("-"):
+                    argv = argv[2:] if argv[0] in valued else argv[1:]
+                argv = argv[operands:]
             else:
                 break
-        synced = False
-        if words[:2] == ["uv", "run"]:
-            rest = words[2:]
-            synced = True
+        script: str | None = None
+        if argv[:1] == ["eval"]:
+            script = " ".join(argv[1:])
+        elif argv and argv[0].rsplit("/", 1)[-1] in _SHELLS:
+            options = [word for word in argv[1:] if word.startswith("-")]
+            if any(
+                "c" in option[1:] for option in options if not option.startswith("--")
+            ):
+                operands = [word for word in argv[1:] if not word.startswith("-")]
+                script = operands[0] if operands else ""
+            else:
+                strings = [target for op, target in redirects if op == "<<<"]
+                script = strings[0] if strings else None
+        if script is not None:
+            found += _molt_module_runs(
+                script, local, project_synced=project_synced, moved=state.moved
+            )
+            if _HEREDOC_RUNS_MOLT in original:
+                found.append((shlex.join(original), False))
+            continue
+        uv_synced = False
+        if argv[:2] == ["uv", "run"]:
+            rest = argv[2:]
+            uv_synced = str(local.get("UV_NO_PROJECT", "")).lower() not in _TRUE
+            no_sync = str(local.get("UV_NO_SYNC", "")).lower() in _TRUE
             module = None
             while rest and rest[0].startswith("-"):
                 option = rest.pop(0)
                 if option in {"-m", "--module"}:
                     module = rest[0] if rest else None
                     break
-                synced &= option != "--no-project"
-                synced &= option != "--no-sync" or project_synced
+                uv_synced &= option not in _UV_RUN_WITHOUT_PROJECT
+                no_sync |= option == "--no-sync"
                 if option in _UV_RUN_VALUE_OPTIONS and rest:
                     rest.pop(0)
+            uv_synced &= project_synced or not no_sync
             if module is not None:
-                if module == "molt" or module.startswith("molt."):
-                    found.append((shlex.join(words), synced))
+                if _is_molt(module):
+                    found.append((shlex.join(argv), uv_synced))
                 continue
-            words = rest
-        if words[:1] == ["py"]:  # the Windows launcher, as `py -3.12`
-            words = words[1:]
-            if words and re.fullmatch(r"-[0-9.]+(-[0-9]+)?", words[0]):
-                words = words[1:]
-        elif not words or not (
-            _PYTHON_EXECUTABLE.fullmatch(words[0].rsplit("/", 1)[-1])
-            or _VARIABLE.fullmatch(words[0])
+            argv = rest
+        if argv[:1] == ["py"]:  # the Windows launcher, as `py -3.12`
+            argv = argv[1:]
+            if argv and re.fullmatch(r"-[0-9.]+(-[0-9]+)?", argv[0]):
+                argv = argv[1:]
+        elif not argv or not (
+            _PYTHON_EXECUTABLE.fullmatch(argv[0].rsplit("/", 1)[-1])
+            or _VARIABLE.fullmatch(argv[0])
         ):
-            # A molt module run this reading cannot attribute to an
-            # interpreter is reported, never silently passed.
-            if any(
+            if _HEREDOC_RUNS_MOLT in original or any(
                 (word == "-m" and following.split(".")[0] == "molt")
                 or word == "-mmolt"
                 or word.startswith("-mmolt.")
@@ -232,29 +439,68 @@ def _molt_module_runs(
                 found.append((shlex.join(original), False))
             continue
         else:
-            words = words[1:]
-        module, ignores_pythonpath = _python_module(words)
-        if module is None or not (module == "molt" or module.startswith("molt.")):
+            argv = argv[1:]
+        module, ignores_pythonpath = _python_module(argv)
+        if not _is_molt(module):
             continue
-        provided = synced or (
-            not ignores_pythonpath and _names_src(local.get("PYTHONPATH"))
+        provided = uv_synced or (
+            not ignores_pythonpath
+            and _names_src(local.get("PYTHONPATH"), relative_ok=not state.moved)
         )
-        found.append((shlex.join(words), provided))
+        found.append((shlex.join(argv), provided))
     return found
 
 
-def _step_runs_with_env(
-    payload: dict[str, object],
-) -> list[tuple[str, str, dict[str, object], bool]]:
-    """(step name, run text, effective env, whether an earlier step synced the
-    project) of each workflow or composite step. setup-project syncs when its
-    `sync` input is true; a step that runs `uv sync` syncs too."""
+def _github_env_writes(run: str) -> dict[str, str]:
+    """`NAME=VALUE` lines a step appends to $GITHUB_ENV, which later steps of
+    the job receive as env."""
+    written: dict[str, str] = {}
+    words = _shell_words(run)
+    command: list[str] = []
+    for word in [*words, "\n"]:
+        if word not in _COMMAND_SEPARATORS:
+            command.append(word)
+            continue
+        if (
+            command[:1] == ["echo"]
+            and len(command) == 4
+            and command[2] == ">>"
+            and command[3] in {"$GITHUB_ENV", "${GITHUB_ENV}"}
+            and (assignment := _ASSIGNMENT.fullmatch(command[1]))
+        ):
+            written[assignment["name"]] = assignment["value"]
+        command = []
+    return written
+
+
+# A composite action's step that runs only when the action's `sync` input is
+# true (its `if` requires it) runs after the action's sync step.
+_SYNC_INPUT_CONDITION = re.compile(
+    r"\b(?:inputs|steps\.inputs\.outputs)\.sync\s*==\s*'true'"
+)
+_WORKSPACE_DIRECTORIES = frozenset(
+    {"", ".", "$GITHUB_WORKSPACE", "${{ github.workspace }}"}
+)
+
+
+@dataclass(frozen=True)
+class _StepRun:
+    name: str
+    run: str
+    env: dict[str, object]
+    project_synced: bool
+    moved: bool
+
+
+def _step_runs_with_env(payload: dict[str, object]) -> list[_StepRun]:
+    """Each workflow or composite step's run script, with the env GitHub gives
+    it (workflow, job, step, and what earlier steps appended to $GITHUB_ENV),
+    whether the project was synced before it (setup-project with `sync: true`
+    or a `uv sync` in a job; the action's sync input in a composite action's
+    `if`), and whether `working-directory` moves it off the workspace."""
     top = dict(payload.get("env") or {})
-    found: list[tuple[str, str, dict[str, object], bool]] = []
+    found: list[_StepRun] = []
     jobs = payload.get("jobs") or {}
-    # (env, steps, synced at the start): a job starts unsynced; a composite
-    # action's own `uv run --no-sync` steps carry its sync input in their
-    # `if`, so they run only after its sync step (setup-project).
     groups = [
         ({**top, **dict(job.get("env") or {})}, job.get("steps") or [], False)
         for job in jobs.values()
@@ -262,21 +508,32 @@ def _step_runs_with_env(
     runs = payload.get("runs")
     if isinstance(runs, dict):
         groups.append((top, runs.get("steps") or [], True))
-    for env, steps, synced in groups:
+    for env, steps, composite in groups:
+        synced = False
+        appended: dict[str, object] = {}
         for step in steps:
             run = step.get("run")
             if isinstance(run, str):
+                condition = str(step.get("if") or "")
+                directory = str(step.get("working-directory") or "").rstrip("/")
                 found.append(
-                    (
+                    _StepRun(
                         str(step.get("name")),
                         run,
-                        {**env, **dict(step.get("env") or {})},
-                        synced,
+                        {**env, **appended, **dict(step.get("env") or {})},
+                        synced
+                        or (
+                            composite and bool(_SYNC_INPUT_CONDITION.search(condition))
+                        ),
+                        directory not in _WORKSPACE_DIRECTORIES,
                     )
                 )
+                words = _shell_words(run)
                 synced |= any(
-                    words[:2] == ["uv", "sync"] for words in _simple_commands(run)
+                    words[index : index + 2] == ["uv", "sync"]
+                    for index in range(len(words))
                 )
+                appended.update(_github_env_writes(run))
             elif step.get("uses") == "./.github/actions/setup-project":
                 synced |= str((step.get("with") or {}).get("sync")).lower() == "true"
     return found
@@ -300,12 +557,17 @@ def test_every_step_that_runs_a_molt_module_can_import_molt() -> None:
     checked = 0
     for path in files:
         payload = yaml.safe_load(path.read_text(encoding="utf-8"))
-        for name, run, env, synced in _step_runs_with_env(payload):
-            for command, provided in _molt_module_runs(run, env, project_synced=synced):
+        for step in _step_runs_with_env(payload):
+            for command, provided in _molt_module_runs(
+                step.run,
+                step.env,
+                project_synced=step.project_synced,
+                moved=step.moved,
+            ):
                 checked += 1
                 if not provided:
                     offenders.append(
-                        f"{path.relative_to(REPO_ROOT)}: {name}: {command}"
+                        f"{path.relative_to(REPO_ROOT)}: {step.name}: {command}"
                     )
     assert checked
     assert offenders == []
@@ -346,6 +608,39 @@ _MOLT_RUN_CASES = [
     ("timeout 60 env PYTHONPATH=src python3 -m molt.x", True, False),
     ("PYTHONPATH='${{ github.workspace }}/src' python3 -m molt.x", True, False),
     ("python3 --check-hash-based-pycs always -m molt.x", False, True),
+    # Follow-up review v2: comments, strings a shell runs, heredocs, scopes.
+    ("export FOO=1 # note\npython3 -m molt.x", False, True),
+    ("export PYTHONPATH=src\nunset PYTHONPATH # gone\npython3 -m molt.x", False, True),
+    ("echo hi # comment\nPYTHONPATH=src python3 -m molt.x", True, True),
+    ("echo a#b; PYTHONPATH=src python3 -m molt.x", True, True),
+    ("bash -c 'python3 -m molt.x'", False, True),
+    ("bash -ec 'PYTHONPATH=src python3 -m molt.x'", True, True),
+    ('eval "python3 -m molt.x"', False, True),
+    ("bash <<< 'python3 -m molt.x'", False, True),
+    (
+        "cat > /dev/null <<EOF\nexport PYTHONPATH=src\nEOF\npython3 -m molt.x",
+        False,
+        True,
+    ),
+    # Conservative: a heredoc fed to a shell is reported though bash imports.
+    ("bash <<'EOF'\nPYTHONPATH=src python3 -m molt.x\nEOF", False, False),
+    ("( export PYTHONPATH=src ); python3 -m molt.x", False, True),
+    ("(export PYTHONPATH=src); python3 -m molt.x", False, True),
+    ("( export PYTHONPATH=src && python3 -m molt.x )", True, True),
+    ("mkdir -p sub && cd sub && PYTHONPATH=src python3 -m molt.x", False, True),
+    ("PYTHONPATH=vendor/src python3 -m molt.x", False, True),
+    ("PYTHONPATH=$PWD/src python3 -m molt.x", True, True),
+    ("PYTHONPATH=$GITHUB_WORKSPACE/src python3 -m molt.x", True, True),
+    ("export PYTHONPATH=src\nPYTHONPATH=/opt\npython3 -m molt.x", False, True),
+    ("PYTHONPATH=src\nexport PYTHONPATH\npython3 -m molt.x", True, True),
+    ("PYTHONPATH=src\npython3 -m molt.x", False, True),
+    ("export PYTHONPATH=src\nexport -n PYTHONPATH\npython3 -m molt.x", False, True),
+    ("UV_NO_PROJECT=1 uv run python3 -m molt.x", False, False),
+    ("uv run --only-dev python3 -m molt.x", False, False),
+    ("if PYTHONPATH=src python3 -m molt.x; then :; fi", True, True),
+    ("{ PYTHONPATH=src python3 -m molt.x; }", True, True),
+    ("exec env PYTHONPATH=src python3 -m molt.x", True, True),
+    ("nice -n 5 env PYTHONPATH=src python3 -m molt.x", True, True),
     # A wrapper this reading does not know is reported, never passed.
     ("sudo python3 -m molt.x", False, False),
     ("python3 -m moltlib.thing", None, True),
@@ -369,12 +664,26 @@ def test_molt_module_run_recognizes_each_spelling(
 @pytest.mark.parametrize(
     ("run", "env", "provided"),
     [
-        ("python3 -m molt.x", {"PYTHONPATH": "/w/src"}, True),
+        ("python3 -m molt.x", {"PYTHONPATH": "${{ github.workspace }}/src"}, True),
         ("python3 -m molt.x", {"PYTHONPATH": "/w/srcs"}, False),
-        ("python3 -I -m molt.x", {"PYTHONPATH": "/w/src"}, False),
-        ("PYTHONPATH=/opt/lib python3 -m molt.x", {"PYTHONPATH": "/w/src"}, False),
-        ("unset PYTHONPATH\npython3 -m molt.x", {"PYTHONPATH": "/w/src"}, False),
-        ("env -u PYTHONPATH python3 -m molt.x", {"PYTHONPATH": "/w/src"}, False),
+        ("python3 -m molt.x", {"PYTHONPATH": "/opt/elsewhere/src"}, False),
+        ("python3 -m molt.x", {"PYTHONPATH": "src"}, True),
+        ("python3 -I -m molt.x", {"PYTHONPATH": "${{ github.workspace }}/src"}, False),
+        (
+            "PYTHONPATH=/opt/lib python3 -m molt.x",
+            {"PYTHONPATH": "${{ github.workspace }}/src"},
+            False,
+        ),
+        (
+            "unset PYTHONPATH\npython3 -m molt.x",
+            {"PYTHONPATH": "${{ github.workspace }}/src"},
+            False,
+        ),
+        (
+            "env -u PYTHONPATH python3 -m molt.x",
+            {"PYTHONPATH": "${{ github.workspace }}/src"},
+            False,
+        ),
     ],
 )
 def test_a_step_job_or_workflow_pythonpath_provides_molt(
@@ -409,10 +718,50 @@ def test_uv_run_without_sync_needs_an_earlier_sync() -> None:
             }
         }
     )
-    assert [(name, synced) for name, _run, _env, synced in steps] == [
+    assert [(step.name, step.project_synced) for step in steps] == [
         ("before", False),
         ("after", True),
     ]
+
+
+def test_github_env_and_working_directory_reach_later_steps() -> None:
+    """$GITHUB_ENV appends become later steps' env; a `working-directory`
+    off the workspace makes a relative `src` name another directory."""
+    run = "python3 -m molt.x"
+    steps = _step_runs_with_env(
+        {
+            "jobs": {
+                "job": {
+                    "steps": [
+                        {"name": "before", "run": run},
+                        {
+                            "name": "export",
+                            "run": 'echo "PYTHONPATH=${{ github.workspace }}/src" >> "$GITHUB_ENV"',
+                        },
+                        {"name": "after", "run": run},
+                        {
+                            "name": "moved",
+                            "run": "PYTHONPATH=src python3 -m molt.x",
+                            "working-directory": "sub",
+                        },
+                    ]
+                }
+            }
+        }
+    )
+    found = {
+        step.name: [
+            provided
+            for _command, provided in _molt_module_runs(
+                step.run,
+                step.env,
+                project_synced=step.project_synced,
+                moved=step.moved,
+            )
+        ]
+        for step in steps
+    }
+    assert found == {"before": [False], "export": [], "after": [True], "moved": [False]}
 
 
 @pytest.mark.skipif(os.name == "nt", reason="the oracle runs POSIX shell scripts")
@@ -441,6 +790,7 @@ def test_molt_module_runs_match_real_execution(tmp_path: Path) -> None:
         (shims / name).symlink_to(base)
     environment = {
         "PATH": f"{shims}:/usr/bin:/bin",
+        "GITHUB_WORKSPACE": str(tmp_path),
         "PYTHON": str(shims / "python3"),
         "VENV_PY": str(shims / "python3"),
         "PYTHONNOUSERSITE": "1",
