@@ -13,6 +13,9 @@ it. Build request resolution already admitted the cell
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any
 
 from molt.backend_environment import request_environment_inputs
 from molt.cli import backend_ir as _backend_ir
@@ -43,7 +46,29 @@ from molt.cli.runtime_callable_symbols import (
 from molt.cli.runtime_native_codegen import native_runtime_codegen_environment
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.compilation_target import Target
+from molt.default_paths import _default_molt_cache
 from molt.native_target import NativeTargetSpec, resolve_native_target_spec
+
+
+def jit_image_header(
+    *,
+    runtime_image: Path,
+    backend_environment: Mapping[str, str],
+    launch: Mapping[str, Any],
+) -> dict[str, Any]:
+    """The JIT image header ``runtime/molt-jit/src/image.rs`` reads."""
+    return {
+        "runtime_image": str(runtime_image),
+        "backend_environment": dict(sorted(backend_environment.items())),
+        "compiler_diagnostics": (
+            "stream" if _env_requests_backend_diagnostics(os.environ) else "on_failure"
+        ),
+        # The runner's environment and current directory are the program's, so
+        # the CLI names the cache root it resolved; the runner keeps its TIR
+        # cache under it.
+        "tir_cache_root": str(_default_molt_cache()),
+        "launch": dict(launch),
+    }
 
 
 def _run_jit_pipeline(
@@ -187,16 +212,11 @@ def _run_jit_pipeline(
         publish_jit_image(
             image,
             runner=runner,
-            header={
-                "runtime_image": str(runtime_image),
-                "backend_environment": dict(sorted(backend_environment.items())),
-                "compiler_diagnostics": (
-                    "stream"
-                    if _env_requests_backend_diagnostics(os.environ)
-                    else "on_failure"
-                ),
-                "launch": plan.image_header_payload(),
-            },
+            header=jit_image_header(
+                runtime_image=runtime_image,
+                backend_environment=backend_environment,
+                launch=plan.image_header_payload(),
+            ),
             ir=prepared_backend_ir.ir,
         )
     except (OSError, ValueError) as exc:

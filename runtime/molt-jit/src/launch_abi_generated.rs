@@ -13,7 +13,7 @@ pub(crate) const ALLOCATOR_RESTART_FLAG: &str = "--allocator-restarted";
 /// What the runner writes to its start receipt right before the program starts.
 pub(crate) const START_RECEIPT: &str = "{\"schema\":\"molt.jit-start.v1\"}\n";
 /// The second line of a JIT image starts with this marker.
-pub(crate) const IMAGE_MARKER: &str = "#molt.jit-image.v2";
+pub(crate) const IMAGE_MARKER: &str = "#molt.jit-image.v3";
 
 /// The runtime entry points a native program's launch calls, in the order
 /// `runtime/native_launch_abi.toml` declares, with the C signatures the AOT

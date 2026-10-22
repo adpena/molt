@@ -231,6 +231,7 @@ impl SimpleBackend {
             import_ids: BTreeMap::new(),
             skip_ir_passes: false,
             skip_shared_stdlib_partition: false,
+            tir_cache: crate::tir::pipeline_cache::TirCacheLocation::ProcessRoot,
             emit_app_callable_resolver: true,
             app_callable_manifest: None,
             external_function_names: std::collections::BTreeSet::new(),

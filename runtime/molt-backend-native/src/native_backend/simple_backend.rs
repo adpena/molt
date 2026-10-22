@@ -75,6 +75,9 @@ pub struct SimpleBackend {
     pub(crate) import_ids: BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     pub skip_ir_passes: bool,
     pub skip_shared_stdlib_partition: bool,
+    /// Where the persistent TIR cache lives: the backend process's own root,
+    /// unless the caller names one (the JIT runner names its image's).
+    pub tir_cache: crate::tir::pipeline_cache::TirCacheLocation,
     /// Whether this object emits the per-app `molt_app_resolve_callable` resolver.
     /// Exactly one object per final binary must emit it (the one main_stub.c
     /// registers): the main application object. Stdlib-cache batch objects and all

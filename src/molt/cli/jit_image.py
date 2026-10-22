@@ -4,7 +4,7 @@
 and ``runtime/molt-jit/src/image.rs`` reads it. The layout is::
 
     #!<runner> --image
-    #molt.jit-image.v2 <header bytes> <program bytes>
+    #molt.jit-image.v3 <header bytes> <program bytes>
     <header: JSON>
     <program: backend IR, MessagePack>
 

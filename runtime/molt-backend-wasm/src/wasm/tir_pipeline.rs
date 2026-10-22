@@ -29,7 +29,7 @@ pub(super) fn run_tir_pipeline(
             crate::tir::pipeline_cache::TirPipelineRunOptions {
                 target_info: target_info.clone(),
                 cache_flavor: crate::tir::pipeline_cache::TirPipelineCacheFlavor::Wasm,
-                cache_dir: None,
+                cache: crate::tir::pipeline_cache::TirCacheLocation::ProcessRoot,
                 process_externs: false,
                 verify_lir: false,
                 tir_dump,
