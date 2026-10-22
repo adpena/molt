@@ -5861,6 +5861,20 @@ pytest = [
   "tests/cli/test_runtime_source_closure.py",
 ]
 
+# --- Luau backend Rust --------------------------------------------------
+[[rule]]
+name = "backend-luau"
+toolchains = ["python", "rustc", "cargo"]
+description = "Exercise Luau lowering and capability admission in its small owning crate, without compiling a native code generator."
+globs = [
+  "runtime/molt-backend-luau/**/*.rs",
+  "runtime/molt-backend-luau/Cargo.toml",
+  "runtime/molt-ir/src/tir/op_kinds.toml",
+]
+gates = [
+  "cargo test --locked --profile dev-fast -p molt-backend-luau --features luau-backend --lib --no-fail-fast",
+]
+
 # --- LLVM backend Rust (adds the +llvm lib test lane) --------------------
 
 [[rule]]

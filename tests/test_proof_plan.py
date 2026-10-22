@@ -7488,6 +7488,36 @@ def test_native_import_collection_fixtures_declare_compilers_for_each_execution_
         assert {"hosted-clang", "rustc"} <= set(PLAN.required_toolchains(command))
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "runtime/molt-backend-luau/src/luau/op_maps.rs",
+        "runtime/molt-backend-luau/src/luau/tests/core.rs",
+        "runtime/molt-backend-luau/Cargo.toml",
+        "runtime/molt-ir/src/tir/op_kinds.toml",
+    ],
+)
+def test_luau_lowering_changes_select_owning_library_without_native_codegen(
+    path: str,
+) -> None:
+    from tools import molt_dev
+
+    config = molt_dev.GateConfig.load(PLAN.path)
+    rule = next(rule for rule in config.rules if rule.name == "backend-luau")
+    isolated = replace(config, rules=[rule], always=[])
+    gates, matched = isolated.select([path])
+    assert [selected.name for selected in matched] == ["backend-luau"]
+    (gate,) = gates
+    argv = shlex.split(gate.command)
+    assert argv[:2] == ["cargo", "test"]
+    assert "--lib" in argv
+    assert [
+        argv[index + 1] for index, token in enumerate(argv[:-1]) if token == "-p"
+    ] == ["molt-backend-luau"]
+    assert {"rustc", "cargo"} <= set(PLAN.toolchain_closure(gate.toolchains))
+    assert isolated.select(["README.md"]) == ([], [])
+
+
 def test_native_fixture_compiler_capability_keeps_llvm_abi_pin_separate() -> None:
     policies = {policy.name: policy for policy in PLAN.toolchain_policies}
     fixture = policies["hosted-clang"]
