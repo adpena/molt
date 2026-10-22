@@ -38,9 +38,19 @@ from tools.release.git_source_snapshot import immutable_git_environment
 from tools.venv_exec import venv_python
 
 SCHEMA = "molt.integration-controller.v1"
-# The driver's repository modules, and the project, lock and interpreter
-# version that define its environment.
-CONTROLLER_PATHS = ("tools", "src/molt", "pyproject.toml", "uv.lock", ".python-version")
+# The driver's repository modules, the data they read from the checkout they
+# run from (``config``: tool release pins and policy tables, 1.9 MB), and the
+# project, lock and interpreter version that define its environment. A lane
+# start provisions through molt.dx, which reads config/tool_releases.toml
+# from the controller (HF-468 review v2, B-1).
+CONTROLLER_PATHS = (
+    "tools",
+    "src/molt",
+    "config",
+    "pyproject.toml",
+    "uv.lock",
+    ".python-version",
+)
 DRIVER = ("tools", "molt_dev.py")
 RECORD_NAME = ".molt-controller.json"
 ENVIRONMENT_NAME = ".venv"
