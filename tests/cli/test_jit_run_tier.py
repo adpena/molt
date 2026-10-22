@@ -735,3 +735,36 @@ def test_a_jit_image_names_the_cache_root_the_cli_resolved(
     assert root() == str(tmp_path / "xdg" / "molt")
     monkeypatch.setenv("MOLT_CACHE", "relative-cache")
     assert root() == str(work / "relative-cache")
+
+
+def test_a_cached_jit_launch_renews_its_runner_in_the_product_store(
+    tmp_path: Path,
+) -> None:
+    """The runner is a stored host tool (HF-390): a cached launch renews its
+    store entry, the unit of retention, and an evicted entry is a miss."""
+    import hashlib
+
+    from molt.cli.backend_generation import backend_generation_path
+    from molt.cli.generation_store import GenerationEvicted
+    from molt.cli.jit_runner_tool import record_jit_runner_use
+    from molt.cli.product_store import ProductStore
+
+    store = ProductStore(tmp_path / "store" / "host-tool")
+    identity = "a" * 64
+    variant = store.entry(identity) / ("b" * 64)
+    runner = backend_generation_path(
+        variant / "molt-jit", hashlib.sha256(b"runner").hexdigest()
+    )
+    runner.parent.mkdir(parents=True)
+    runner.write_bytes(b"runner")
+
+    record_jit_runner_use(runner)
+    ledger = store.root / ".product-store.json"
+    assert identity in ledger.read_text(encoding="utf-8")
+
+    # Eviction (idle or `molt cache evict`) removes the entry and its record.
+    assert store.evict(identity)
+    with pytest.raises(GenerationEvicted):
+        record_jit_runner_use(runner)
+    with pytest.raises(ValueError, match="not a JIT runner generation"):
+        record_jit_runner_use(tmp_path / "molt-jit")
