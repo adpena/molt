@@ -177,10 +177,6 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                     return native_call
                 if func_id == "field" and allowlist_key == "dataclasses":
                     return self._emit_dataclasses_field_call(allowlist_key, node)
-                if allowlist_key == "statistics" and func_id in {"mean", "stdev"}:
-                    lowered_stats = self._lower_statistics_slice_call(func_id, node)
-                    if lowered_stats is not None:
-                        return lowered_stats
                 original_attr = self._imported_attr_name(func_id)
                 known_func_hint = self._known_module_function_type_hint(
                     allowlist_key, original_attr

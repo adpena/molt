@@ -1515,20 +1515,6 @@ impl SimpleBackend {
                         &nbc,
                     );
                 }
-                // handle_statistics_op family — extracted to fc::statistics (M1)
-                _ if op_family == Some(fc::NativeOpFamily::Statistics) => {
-                    fc::statistics::handle_statistics_op(
-                        &op,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        &nbc,
-                    );
-                }
                 // handle_type_conversion family — extracted to fc::type_conversions (M1)
                 _ if op_family == Some(fc::NativeOpFamily::TypeConversions) => {
                     fc::type_conversions::handle_type_conversion(

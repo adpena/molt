@@ -208,7 +208,14 @@ pub unsafe fn string_len(ptr: *mut u8) -> usize {
 
 /// Extended float extraction: returns the f64 value for both inline floats
 /// AND heap-allocated NaN floats (TYPE_ID_FLOAT).
+#[inline]
 pub fn as_float_extended(obj: MoltObject) -> Option<f64> {
+    if let Some(value) = obj.as_float() {
+        return Some(value);
+    }
+    if !obj.is_ptr() {
+        return None;
+    }
     let mut out: f64 = 0.0;
     let ok = unsafe { __molt_math_as_float_extended(obj.bits(), &mut out) };
     if ok != 0 { Some(out) } else { None }
@@ -377,8 +384,15 @@ pub fn to_f64(obj: MoltObject) -> Option<f64> {
     if ok != 0 { Some(out) } else { None }
 }
 
+#[inline]
 pub fn to_bigint(obj: MoltObject) -> Option<num_bigint::BigInt> {
     use num_bigint::{BigInt, Sign};
+    if let Some(value) = obj.as_int() {
+        return Some(BigInt::from(value));
+    }
+    if let Some(value) = obj.as_bool() {
+        return Some(BigInt::from(u8::from(value)));
+    }
     let mut out_sign: i32 = 0;
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
@@ -692,15 +706,14 @@ pub unsafe fn list_len(ptr: *mut u8) -> usize {
 /// # Safety
 ///
 /// `ptr` must refer to a live Molt list or tuple for the duration of this call.
-pub unsafe fn seq_snapshot(ptr: *mut u8) -> OwnedBridgeHandleSnapshot {
+pub unsafe fn seq_snapshot(ptr: *mut u8) -> Option<OwnedBridgeHandleSnapshot> {
     let mut out_ptr: *const u64 = std::ptr::null();
     let mut out_len = 0usize;
     let ok = unsafe { __molt_math_seq_snapshot(ptr, &mut out_ptr, &mut out_len) };
     if ok == 0 {
-        out_ptr = std::ptr::null();
-        out_len = 0;
+        return None;
     }
-    unsafe { bridge_owned_handle_snapshot(out_ptr, out_len) }
+    Some(unsafe { bridge_owned_handle_snapshot(out_ptr, out_len) })
 }
 
 pub fn list_swap(list_bits: u64, left: usize, right: usize) -> bool {
@@ -789,4 +802,34 @@ pub fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
 
 pub fn alloc_bytes(_py: &PyToken, data: &[u8]) -> *mut u8 {
     unsafe { __molt_math_alloc_bytes(data.as_ptr(), data.len()) }
+}
+
+// Guarded statistics kernels only inspect exact builtin storage. These predicates
+// use canonical runtime classes and never execute a user protocol.
+unsafe extern "C" {
+    fn __molt_math_exact_builtin_sequence(bits: u64) -> bool;
+    fn __molt_math_exact_builtin_real(bits: u64) -> bool;
+    fn __molt_math_not_implemented_bits() -> u64;
+    fn __molt_math_molt_add(a: u64, b: u64) -> u64;
+    fn __molt_math_molt_div(a: u64, b: u64) -> u64;
+}
+pub fn exact_builtin_sequence(_py: &PyToken, bits: u64) -> bool {
+    unsafe { __molt_math_exact_builtin_sequence(bits) }
+}
+#[inline]
+pub fn exact_builtin_real(_py: &PyToken, bits: u64) -> bool {
+    let value = obj_from_bits(bits);
+    if value.is_int() || value.is_bool() || value.as_float().is_some() {
+        return true;
+    }
+    unsafe { __molt_math_exact_builtin_real(bits) }
+}
+pub fn not_implemented_bits(_py: &PyToken) -> u64 {
+    unsafe { __molt_math_not_implemented_bits() }
+}
+pub fn molt_add(_py: &PyToken, a: u64, b: u64) -> u64 {
+    unsafe { __molt_math_molt_add(a, b) }
+}
+pub fn molt_div(_py: &PyToken, a: u64, b: u64) -> u64 {
+    unsafe { __molt_math_molt_div(a, b) }
 }

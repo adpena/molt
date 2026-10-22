@@ -2,6 +2,7 @@
 // Always stores in lowest terms with denominator > 0.
 
 use crate::bridge::*;
+use molt_runtime_core::numeric_ratio::{RatioFloatError, ratio_to_f64};
 use molt_runtime_core::prelude::*;
 use num_bigint::BigInt;
 use num_integer::Integer;
@@ -91,17 +92,6 @@ impl FractionHandle {
         FractionHandle {
             numer: self.numer.abs(),
             denom: self.denom.clone(),
-        }
-    }
-
-    fn to_f64(&self) -> f64 {
-        // compute as string for precision then parse
-        if self.denom.is_one() {
-            self.numer.to_f64().unwrap_or(f64::NAN)
-        } else {
-            let n = self.numer.to_f64().unwrap_or(f64::NAN);
-            let d = self.denom.to_f64().unwrap_or(f64::NAN);
-            n / d
         }
     }
 
@@ -446,38 +436,6 @@ pub extern "C" fn molt_fraction_mod(a_bits: u64, b_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_fraction_pow(a_bits: u64, exp_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let Ok(base) = fraction_from_obj_bits(_py, a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "expected Fraction handle");
-        };
-        let Some(exp) = to_i64(obj_from_bits(exp_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "exponent must be int");
-        };
-        let result = if exp == 0 {
-            FractionHandle {
-                numer: BigInt::one(),
-                denom: BigInt::one(),
-            }
-        } else if exp > 0 {
-            let n = base.numer.pow(exp as u32);
-            let d = base.denom.pow(exp as u32);
-            FractionHandle::new(n, d).unwrap()
-        } else {
-            // negative exponent: (num/den)^-k = den^k/num^k
-            let k = (-exp) as u32;
-            let n = base.denom.pow(k);
-            let d = base.numer.pow(k);
-            match FractionHandle::new(n, d) {
-                Ok(h) => h,
-                Err(msg) => return raise_exception::<u64>(_py, "ZeroDivisionError", msg),
-            }
-        };
-        fraction_bits(result)
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_fraction_neg(a_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Ok(a) = fraction_from_obj_bits(_py, a_bits) else {
@@ -567,7 +525,17 @@ pub extern "C" fn molt_fraction_to_float(a_bits: u64) -> u64 {
         let Ok(a) = fraction_from_obj_bits(_py, a_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "expected Fraction handle");
         };
-        MoltObject::from_float(a.to_f64()).bits()
+        match ratio_to_f64(&a.numer, &a.denom) {
+            Ok(value) => MoltObject::from_float(value).bits(),
+            Err(RatioFloatError::Overflow) => raise_exception::<u64>(
+                _py,
+                "OverflowError",
+                "integer division result too large for a float",
+            ),
+            Err(RatioFloatError::ZeroDenominator) => {
+                raise_exception::<u64>(_py, "ZeroDivisionError", "division by zero")
+            }
+        }
     })
 }
 

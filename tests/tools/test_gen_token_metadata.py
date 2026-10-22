@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 from dataclasses import replace
+import re
 import pytest
 
 from molt.target_python import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
@@ -72,7 +73,6 @@ def test_all_token_projections_match_the_pinned_module_oracle(
     metadata = gen.derive_metadata(snapshot)
     constants, exact, exports = _module_oracle(snapshot)
     assert metadata.python == version
-    assert metadata.revision == snapshot.revision
     assert metadata.constants == constants
     assert metadata.exact_types == exact
     assert metadata.base_exports == exports
@@ -90,6 +90,83 @@ def test_source_is_parsed_without_executing_the_pinned_module(snapshots) -> None
         'raise AssertionError("pinned source must never execute")\n# Auto-generated',
     )
     assert gen.derive_metadata(changed) == gen.derive_metadata(snapshot)
+
+
+def test_projection_tracks_semantics_without_repeating_source_provenance(
+    snapshots, tmp_path, monkeypatch
+) -> None:
+    snapshot = snapshots["3.12"]
+    monkeypatch.setattr(sources, "PINS_PATH", tmp_path / "pins.toml")
+    monkeypatch.setattr(sources, "SNAPSHOT_PATH", tmp_path / "snapshot.json")
+    monkeypatch.setattr(gen, "SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS", ("3.12",))
+    monkeypatch.setattr(gen, "OUTPUT", tmp_path / "tokens.rs")
+
+    def no_network(*_args, **_kwargs):
+        pytest.fail("semantic projection must use the admitted source receipt")
+
+    monkeypatch.setattr(sources, "_git", no_network)
+
+    def project(current):
+        # Re-seal edited source bytes, then use the real receipt/pin admission.
+        current = replace(
+            current,
+            inputs=tuple(
+                replace(
+                    item,
+                    git_object=sources._git_blob_id(item.text.encode("utf-8")),
+                )
+                if item.role != "public_headers"
+                else item
+                for item in current.inputs
+            ),
+        )
+        sources.PINS_PATH.write_text(
+            'schema = "molt.cpython-regrtest-sources.v1"\n[[source]]\n'
+            f'python = "{current.python}"\ntag = "{current.tag}"\n'
+            f'revision = "{current.revision}"\n'
+            'git_url = "https://github.com/python/cpython.git"\n',
+            encoding="utf-8",
+        )
+        sources.SNAPSHOT_PATH.write_text(
+            sources.render_snapshot({current.python: current}), encoding="utf-8"
+        )
+        assert sources.pinned_snapshots((current.python,))[current.python] == current
+        return gen.generated_outputs()[gen.OUTPUT]
+
+    before = project(snapshot)
+    micro = int(snapshot.tag.rsplit(".", 1)[1]) + 1
+    tag = f"v{snapshot.python}.{micro}"
+    release = next(item for item in snapshot.inputs if item.role == "release")
+    release_text, replacements = re.subn(
+        r"(?m)^(#define\s+PY_MICRO_VERSION\s+)\d+\b",
+        lambda match: match[1] + str(micro),
+        release.text,
+    )
+    assert replacements == 1
+    release_text = release_text.replace(
+        snapshot.tag.removeprefix("v"), tag.removeprefix("v")
+    )
+    advanced = replace(
+        snapshot,
+        tag=tag,
+        revision="f" * 40,
+        inputs=tuple(
+            replace(item, text=release_text) if item is release else item
+            for item in snapshot.inputs
+        ),
+    )
+    assert advanced.revision != snapshot.revision
+    assert _module_oracle(advanced) == _module_oracle(snapshot)
+    assert project(advanced) == before
+
+    changed = _edit_source(
+        advanced, "token_generator", "NT_OFFSET = 256", "NT_OFFSET = 257"
+    )
+    changed = _edit_source(
+        changed, "token_module", "NT_OFFSET = 256", "NT_OFFSET = 257"
+    )
+    assert dict(_module_oracle(changed)[0])["NT_OFFSET"] == 257
+    assert project(changed) != before
 
 
 @pytest.mark.parametrize(
@@ -218,7 +295,5 @@ def test_generated_output_is_current_idempotent_and_excludes_pending_sources(
     assert gen.OUTPUT.read_bytes() == first[gen.OUTPUT].encode("utf-8")
     assert "(3, 15) =>" not in first[gen.OUTPUT]
     for version in SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS:
-        assert (
-            f"// CPython {version}, commit {captured[version].revision}."
-            in first[gen.OUTPUT]
-        )
+        assert f"// CPython {version}." in first[gen.OUTPUT]
+        assert captured[version].revision not in first[gen.OUTPUT]

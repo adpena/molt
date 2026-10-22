@@ -1994,8 +1994,8 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert imports["pipe_transport_drop"]["runtime_feature"] == "stdlib_asyncio"
     assert imports["email_message_drop"]["runtime_feature"] == "stdlib_email"
     assert imports["xml_element_drop"]["runtime_feature"] == "stdlib_xml"
-    assert imports["statistics_mean_slice"]["runtime_feature"] == "stdlib_math"
-    assert imports["statistics_stdev_slice"]["runtime_feature"] == "stdlib_math"
+    assert imports["statistics_mean"]["runtime_feature"] == "stdlib_math"
+    assert imports["statistics_stdev"]["runtime_feature"] == "stdlib_math"
     assert not any(name.startswith("sqlite3_") for name in imports)
     for reserved in data["reserved_runtime_callable"]:
         reserved_import = imports[reserved["import_name"]]

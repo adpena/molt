@@ -9064,11 +9064,6 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 1,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_fraction_pow",
-        import: WasmRuntimeImport::FractionPow,
-        arity: 2,
-    },
-    RuntimeCallableImportSpec {
         runtime_name: "molt_fraction_sub",
         import: WasmRuntimeImport::FractionSub,
         arity: 2,
@@ -14643,7 +14638,6 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_fraction_neg" => Some(WasmRuntimeImport::FractionNeg),
         "molt_fraction_new" => Some(WasmRuntimeImport::FractionNew),
         "molt_fraction_numerator" => Some(WasmRuntimeImport::FractionNumerator),
-        "molt_fraction_pow" => Some(WasmRuntimeImport::FractionPow),
         "molt_fraction_sub" => Some(WasmRuntimeImport::FractionSub),
         "molt_fraction_to_float" => Some(WasmRuntimeImport::FractionToFloat),
         "molt_fraction_to_str" => Some(WasmRuntimeImport::FractionToStr),

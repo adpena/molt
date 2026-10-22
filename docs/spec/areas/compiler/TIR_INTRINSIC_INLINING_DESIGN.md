@@ -507,8 +507,6 @@ All 373 unique `molt_*` functions imported via `Linkage::Import`, organized by c
 | `molt_buffer2d_get` | 1 | Low | |
 | `molt_buffer2d_set` | 1 | Low | |
 | `molt_buffer2d_matmul` | 1 | Low | |
-| `molt_statistics_mean_slice` | 1 | Low | |
-| `molt_statistics_stdev_slice` | 1 | Low | |
 
 ### Top-20 Hottest Functions (Inlining Priority Order)
 

@@ -11600,13 +11600,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         python_name: None,
     },
     IntrinsicSpec {
-        name: "molt_fraction_pow",
-        symbol: "molt_fraction_pow",
-        arity: 2,
-        defaults: &[],
-        python_name: None,
-    },
-    IntrinsicSpec {
         name: "molt_fraction_sub",
         symbol: "molt_fraction_sub",
         arity: 2,

@@ -10,24 +10,24 @@ schema = "molt.cpython-regrtest-sources.v1"
 
 [[source]]
 python = "3.12"
-revision = "3bb231a6a5dc02b95658877318bf61501a7209e9"
-tag = "v3.12.13"
+revision = "e848e4b09ca4bc67c0041c9ce7526dae471d4c36"
+tag = "v3.12.15"
 git_url = "https://github.com/python/cpython.git"
 
 [[source]]
 python = "3.13"
-revision = "cbc944f4bc59639a444dd971c737788ba2283a91"
-tag = "v3.13.16"
+revision = "64e080d38154391ff2d2caa1161c298bb7cd8f30"
+tag = "v3.13.17"
 git_url = "https://github.com/python/cpython.git"
 
 [[source]]
 python = "3.14"
-revision = "8e6e75d9102e39bed2a2b279203a396741180f12"
-tag = "v3.14.8"
+revision = "ead82c07db1f111d613926ed1b6667411d768125"
+tag = "v3.14.9"
 git_url = "https://github.com/python/cpython.git"
 
 [[source]]
 python = "3.15"
-revision = "d220409a13b77de7a6c30abe16ea90db01528edc"
-tag = "v3.15.0"
+revision = "c37e74cb6bcdadcd5f46f289498f6b3298ddee61"
+tag = "v3.15.1"
 git_url = "https://github.com/python/cpython.git"
