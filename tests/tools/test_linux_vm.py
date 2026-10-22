@@ -1,13 +1,22 @@
-"""tools/linux_vm.py: VM definitions, drift, pinned-file release and apply.
+"""tools/linux_vm.py: VM definitions, drift, push, pinned-file release, apply.
 
-The fake host emulates the two external tools the module reads. Its lsof
-applies lsof's own selection rules (selections OR unless ``-a``; ``+L`` with
-no number adds link counts, ``+L1`` selects unlinked files) and lists files of
+The fake host emulates the external tools the module reads. Its lsof applies
+lsof's own selection rules (selections OR unless ``-a``; ``+L`` with no number
+adds link counts, ``+L1`` selects unlinked files) and lists files of
 processes that are not VMs, so a parser that trusts the argv to filter, or
-counts the wrong descriptors, reports the wrong numbers. Its guest drops only
-the inodes no guest process holds, as ``drop_caches`` does, so a release that
-claims to free open files fails. Lima's own validator is the oracle for the
-rendered YAML when ``limactl`` is installed.
+counts the wrong descriptors, reports the wrong numbers.
+
+Its guest and virtiofs server follow what the real VMs showed
+(docs/design/linux_vm_apparatus.md, "Mechanism"): a lookup opens a host
+descriptor; ``drop_caches`` makes the guest forget every inode no guest
+process uses; the server closes forgotten descriptors only when its 64th
+pending forget arrives. So a release that only drops caches frees nothing
+here, as it freed nothing on the real VMs. ``SERVER_FORGET_BATCH`` is the
+measured number, kept apart from the module's constant. The opt-in test at
+the end checks the release against a real guest.
+
+Lima's own validator is the oracle for the rendered YAML when ``limactl`` is
+installed; real Git is the oracle for ``push``.
 """
 
 from __future__ import annotations
@@ -17,12 +26,18 @@ from dataclasses import dataclass, field
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
+import sys
 import time
+import uuid
 
 import pytest
 
+from molt.process_environment import ProcessEnvironment
 from tools import linux_vm
+from tests.process_guard_common import run_guarded_test_process
+from tools.molt_dev_common import _run_fast_captured_command
 
 ROOT = Path(__file__).resolve().parents[2]
 VZ_BINARY = (
@@ -31,6 +46,9 @@ VZ_BINARY = (
     "com.apple.Virtualization.VirtualMachine"
 )
 DEAD_PID = 2**31  # beyond every POSIX pid, so never alive
+# Measured on macOS 26.4 (Darwin 25.4.0), Lima 2.2.1, guests on Linux 6.8 and
+# 7.0: the server closed forgotten descriptors at every 64th FUSE_FORGET.
+SERVER_FORGET_BATCH = 64
 
 
 # --------------------------------------------------------------------------
@@ -59,13 +77,19 @@ class FakeVm:
     memory: int = 12 << 30
     disk: int = 225 << 30
     vz_pid: int | None = 9001
-    # Host files the guest caches (inodes it has not evicted): dropped by
-    # drop_caches. `held_open` are files a guest process has open: kept.
+    # Host files whose inode the guest caches and no guest process uses: a
+    # drop makes the guest forget them.
     cached: list[HostFile] = field(default_factory=list)
+    # Host files a guest process holds open: a drop keeps them.
     held_open: list[HostFile] = field(default_factory=list)
+    # Forgotten files whose descriptors the server has not closed yet.
+    forgotten: list[HostFile] = field(default_factory=list)
     guest_uid: int = 501
-    processes: list[tuple[int, int, int, str]] = field(default_factory=list)
+    guest_user: str = "molt"
+    subuid: str = "molt:524288:65536"
+    processes: list[tuple[int, int, int, str, str]] = field(default_factory=list)
     probe_shell: int = 4000
+    next_fd: int = 100
 
     def json(self) -> str:
         return json.dumps(
@@ -91,7 +115,47 @@ class FakeVm:
             HostFile(str(self.directory / "disk"), self.disk, 1, "3"),
             HostFile(str(self.directory / "cidata.iso"), 4096, 1, "4"),
         ]
-        return files + self.cached + self.held_open
+        return files + self.cached + self.held_open + self.forgotten
+
+    def forget(self, files: Sequence[HostFile]) -> None:
+        for item in files:
+            self.forgotten.append(item)
+            if len(self.forgotten) == SERVER_FORGET_BATCH:
+                self.forgotten = []
+
+    def look_up(self, guest_glob: str) -> bool:
+        """`stat -- <dir>/*` in the guest: one host descriptor per file."""
+        assert guest_glob.endswith("/*"), guest_glob
+        guest_dir = Path(guest_glob[:-2])
+        for raw in self.config.get("mounts") or ():
+            point, location = Path(raw["mountPoint"]), Path(raw["location"])
+            if guest_dir.is_relative_to(point):
+                host_dir = location / guest_dir.relative_to(point)
+                break
+        else:
+            return False
+        if not host_dir.is_dir():
+            return False
+        for path in sorted(host_dir.iterdir()):
+            self.next_fd += 1
+            self.cached.append(
+                HostFile(str(path), path.stat().st_size, 1, str(self.next_fd))
+            )
+        return True
+
+    def run_guest(self, script: str) -> bool:
+        """The guest commands a release runs, step by step."""
+        for step in script.split(" && "):
+            if step == "echo 2 > /proc/sys/vm/drop_caches":
+                self.forget(self.cached)
+                self.cached = []
+            elif step.startswith("stat -- ") and step.endswith(" >/dev/null"):
+                words = shlex.split(step[len("stat -- ") : -len(" >/dev/null")])
+                if not all(self.look_up(word) for word in words):
+                    return False
+            else:
+                raise AssertionError(f"unexpected guest step {step!r}")
+        return True
 
 
 @dataclass
@@ -122,7 +186,9 @@ class FakeHost:
         self.validated: list[str] = []
         # Lima reads an instance's config from its lima.yaml on every list.
         self.configs_by_text: dict[str, dict[str, object]] = {}
-        self.start_rc = 0
+        self.start_rcs: list[int] = []
+        self.started_with: list[str] = []
+        self.commits: dict[str, str] = {}
 
     def _listed(self, vm: FakeVm) -> str:
         text = (vm.directory / "lima.yaml").read_text(encoding="utf-8")
@@ -164,23 +230,30 @@ class FakeHost:
                 "-c",
                 script,
             ):
-                assert script == linux_vm.DROP_GUEST_CACHES, script
                 vm = self.vms[name]
                 assert vm.status == "Running"
-                if self.drop_rc == 0:
-                    vm.cached = []
-                return linux_vm.Completed(
-                    self.drop_rc,
-                    "",
-                    "" if self.drop_rc == 0 else "sudo: a password is required",
-                )
+                if self.drop_rc:
+                    return linux_vm.Completed(
+                        self.drop_rc, "", "sudo: a password is required"
+                    )
+                ok = vm.run_guest(script)
+                return linux_vm.Completed(0 if ok else 1, "", "" if ok else "stat")
             case ("limactl", "shell", "--workdir", "/", name, "sh", "-c", script):
-                assert script == linux_vm.IDLE_PROBE, script
                 vm = self.vms[name]
-                lines = [str(vm.guest_uid), str(vm.probe_shell)]
+                if script.startswith("git -C "):
+                    return linux_vm.Completed(0, "", "")
+                assert script == linux_vm.IDLE_PROBE, script
+                lines = [
+                    str(vm.guest_uid),
+                    vm.guest_user,
+                    str(vm.probe_shell),
+                    "--- subuid",
+                    vm.subuid,
+                    "--- ps",
+                ]
                 lines += [
-                    f"{pid} {ppid} {uid} {comm}"
-                    for pid, ppid, uid, comm in vm.processes
+                    f"{pid} {ppid} {uid} {comm} {cgroup}"
+                    for pid, ppid, uid, comm, cgroup in vm.processes
                 ]
                 return linux_vm.Completed(0, "\n".join(lines) + "\n", "")
             case ("limactl", "stop", name):
@@ -188,13 +261,21 @@ class FakeHost:
                 return linux_vm.Completed(0, "", "")
             case ("limactl", "start", "--tty=false", name):
                 vm = self.vms[name]
-                if self.start_rc:
-                    return linux_vm.Completed(self.start_rc, "", "vz: boot failed")
+                self.started_with.append(
+                    (vm.directory / "lima.yaml").read_text(encoding="utf-8")
+                )
+                if self.start_rcs and self.start_rcs.pop(0):
+                    return linux_vm.Completed(1, "", "vz: boot failed")
                 vm.status = "Running"
                 (vm.directory / "ha.pid").write_text("1\n", encoding="utf-8")
                 os.utime(vm.directory / "ha.pid", (time.time() + 5, time.time() + 5))
                 if self.on_start is not None:
                     self.on_start(vm)
+                return linux_vm.Completed(0, "", "")
+            case ("git", "-C", _repo, "rev-parse", "--verify", "--quiet", rev):
+                commit = self.commits.get(rev.removesuffix("^{commit}"), "")
+                return linux_vm.Completed(0 if commit else 1, commit + "\n", "")
+            case ("git", "-C", _repo, "-c", _ssh, "push", *_rest):
                 return linux_vm.Completed(0, "", "")
             case ("lsof", *options):
                 return self._lsof(options)
@@ -279,15 +360,13 @@ class FakeHost:
 def lima_filled(rendered: dict[str, object]) -> dict[str, object]:
     """What `limactl list --json` shows for an instance made from `rendered`.
 
-    Written from `limactl validate --fill` output (Lima 2.2.1): Lima adds
-    mountPoint and the sshfs/9p blocks to each mount and drops `ignore:
-    false`; every other rendered key survives as given.
+    Written from `limactl validate --fill` output (Lima 2.2.1): an empty
+    `mounts` list disappears, Lima drops `ignore: false`, and every other
+    rendered key survives as given.
     """
     config = json.loads(json.dumps(rendered))
-    for mount in config.get("mounts", []):
-        mount["mountPoint"] = mount["location"]
-        mount["sshfs"] = {"cache": True, "followSymlinks": False, "sftpDriver": ""}
-        mount["9p"] = {"securityModel": "none", "cache": "fscache"}
+    if config.get("mounts") == []:
+        del config["mounts"]
     for rule in config.get("portForwards", []):
         if rule.get("ignore") is False:
             del rule["ignore"]
@@ -298,20 +377,32 @@ def lima_filled(rendered: dict[str, object]) -> dict[str, object]:
     return config
 
 
+def mounted(location: Path, point: Path | None = None) -> dict[str, object]:
+    """A virtiofs mount as `limactl list --json` shows it."""
+    return {
+        "location": str(location),
+        "mountPoint": str(point or location),
+        "writable": False,
+        "sshfs": {"cache": True, "followSymlinks": False, "sftpDriver": ""},
+        "9p": {"securityModel": "none", "cache": "fscache"},
+    }
+
+
 @pytest.fixture
 def definitions() -> linux_vm.Definitions:
     return linux_vm.load_definitions()
 
 
 def make_instance_dir(
-    base: Path, name: str, *, started_after_config: bool = True
+    base: Path, name: str, *, started_after_config: bool = True, text: str = ""
 ) -> Path:
     directory = base / name
     directory.mkdir(parents=True)
     (directory / "lima.yaml").write_text(
-        '# hand-made\nmounts:\n- location: "~"\n', encoding="utf-8"
+        text or '# hand-made\nmounts:\n- location: "~"\n', encoding="utf-8"
     )
     (directory / "ha.pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
+    (directory / "ssh.config").write_text(f"Host lima-{name}\n", encoding="utf-8")
     now = time.time()
     config_time, start_time = (
         (now - 100, now - 50) if started_after_config else (now - 50, now - 100)
@@ -325,12 +416,11 @@ def matching_vm(
     definitions: linux_vm.Definitions,
     name: str,
     base: Path,
-    custody: Path,
     **overrides: object,
 ) -> FakeVm:
     vm = definitions.vms[name]
     rendered = linux_vm.lima_config(
-        vm, custody=custody, minimum_lima_version=definitions.minimum_lima_version
+        vm, minimum_lima_version=definitions.minimum_lima_version
     )
     fake = FakeVm(
         name=name,
@@ -349,56 +439,45 @@ def instance_of(fake: FakeVm) -> linux_vm.Instance:
     return linux_vm.list_instances(FakeHost([fake]))[0]
 
 
+def deleted_names(host: FakeHost, vm: FakeVm) -> list[str]:
+    """The deleted regular files the VM process holds, by name, from lsof."""
+    completed = host.run(
+        ["lsof", "-n", "-P", "-a", "+L1", "-p", str(vm.vz_pid), "-F", "ftn"],
+        timeout=10.0,
+    )
+    names, kind = [], ""
+    for line in completed.stdout.splitlines():
+        if line.startswith("t"):
+            kind = line[1:]
+        elif line.startswith("n") and kind == "REG":
+            names.append(line[1:])
+    return sorted(set(names) - {"/Library/Preferences/Logging/.plist-cache.X"})
+
+
 # --------------------------------------------------------------------------
 # Definitions
 # --------------------------------------------------------------------------
 
 
-def test_checked_in_vms_mount_only_the_custody_root_read_only_and_forward_nothing(
+def test_checked_in_vms_mount_nothing_forward_nothing_and_name_a_clone(
     definitions: linux_vm.Definitions,
 ) -> None:
     assert set(definitions.vms) == {"molt-linux", "molt-x86"}
     for vm in definitions.vms.values():
-        assert vm.mounts == (
-            linux_vm.MountDefinition(linux_vm.MountSource.CUSTODY_ROOT, writable=False),
-        )
+        assert linux_vm.lima_config(vm, minimum_lima_version="2.0.0")["mounts"] == []
         assert vm.port_forwards == ()
         assert linux_vm.port_rules(vm)[-1] == linux_vm.IGNORE_EVERY_GUEST_PORT
+        assert vm.clone == "molt-main"
     assert definitions.vms["molt-x86"].rosetta
     assert not definitions.vms["molt-linux"].rosetta
+    # A shim runs only while a container runs: it is work, not idleness.
+    assert "containerd-shim" not in definitions.idle_guest_processes
     text = linux_vm.DEFINITIONS_PATH.read_text(encoding="utf-8")
     assert "/Users/" not in text and "/home/" not in text, "no personal host path"
 
 
-def _linked_worktree(main: Path, checkout: Path, name: str) -> None:
-    admin = main / ".git" / "worktrees" / name
-    admin.mkdir(parents=True)
-    (admin / "HEAD").write_text("ref: refs/heads/lane\n", encoding="utf-8")
-    (admin / "commondir").write_text("../..\n", encoding="utf-8")
-    checkout.mkdir(parents=True)
-    (checkout / ".git").write_text(f"gitdir: {admin}\n", encoding="utf-8")
-
-
-def test_every_checkout_of_a_family_mounts_the_same_custody_root(
-    tmp_path: Path,
-) -> None:
-    root = tmp_path / "Molt"
-    main = root / "molt-src"
-    (main / ".git").mkdir(parents=True)
-    (main / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
-    lane = root / "worktrees" / "lane"
-    _linked_worktree(main, lane, "lane")
-    # A worktree outside the family layout, named like a main checkout.
-    foreign = tmp_path / "codex" / "task" / "molt-src"
-    _linked_worktree(main, foreign, "task")
-    expected = root.resolve()
-    assert linux_vm.family_custody_root(main) == expected
-    assert linux_vm.family_custody_root(lane) == expected
-    assert linux_vm.family_custody_root(foreign) == expected
-
-
 _VALID = """\
-schema = 1
+schema = 2
 minimum_lima_version = "2.0.0"
 idle_guest_processes = ["systemd"]
 maintenance_guest_processes = ["dpkg"]
@@ -412,10 +491,9 @@ memory = "4GiB"
 disk = "20GiB"
 rosetta = false
 containerd_user = false
-mount_type = "virtiofs"
 params = {}
-mounts = [{ source = "custody-root", writable = false }]
 port_forwards = []
+clone = "molt-main"
 
 [vm.a.image]
 location = "https://example.invalid/a.img"
@@ -428,16 +506,11 @@ digest = "sha256:%s"
     [
         ("cpus = 2", "cpus = 2\nextra = 1", "unknown ['extra']"),
         ('memory = "4GiB"', 'memory = "4GB"', "must look like 12GiB"),
-        ('source = "custody-root"', 'source = "home"', "must be one of: custody-root"),
+        # The schema no longer declares mounts: a definition cannot add one.
         (
-            "writable = false }]",
-            'writable = false }, { source = "custody-root", writable = true }]',
-            "names one source twice",
-        ),
-        (
-            'mount_type = "virtiofs"',
-            'mount_type = "reverse-sshfs"',
-            "must be one of: virtiofs",
+            "port_forwards = []",
+            'port_forwards = []\nmounts = [{ source = "custody-root" }]',
+            "unknown ['mounts']",
         ),
         (
             "port_forwards = []",
@@ -449,8 +522,10 @@ digest = "sha256:%s"
             'port_forwards = [{ guest_port = 80, host_port = 8080, proto = "any" }]',
             "must be one of: tcp, udp",
         ),
+        ('clone = "molt-main"', 'clone = "../escape"', "without '..'"),
+        ('clone = "molt-main"', 'clone = "/abs/path"', "without '..'"),
         ('digest = "sha256:', 'digest = "md5:', "sha256:<64 hex>"),
-        ("schema = 1", "schema = 2", "schema must be 1"),
+        ("schema = 2", "schema = 1", "schema must be 2"),
     ],
 )
 def test_definition_schema_rejects_what_it_does_not_define(
@@ -484,7 +559,7 @@ def test_rendered_rules_put_declared_forwards_before_the_rule_that_ignores_the_r
         encoding="utf-8",
     )
     vm = linux_vm.load_definitions(path).vms["a"]
-    config = linux_vm.lima_config(vm, custody=tmp_path, minimum_lima_version="2.0.0")
+    config = linux_vm.lima_config(vm, minimum_lima_version="2.0.0")
     assert config["portForwards"] == [
         {
             "guestIP": "127.0.0.1",
@@ -504,8 +579,8 @@ def test_rendered_rules_put_declared_forwards_before_the_rule_that_ignores_the_r
             "ignore": True,
         },
     ]
-    assert config["mounts"] == [{"location": str(tmp_path), "writable": False}]
-    text = linux_vm.render(vm, custody=tmp_path, minimum_lima_version="2.0.0")
+    text = linux_vm.render(vm, minimum_lima_version="2.0.0")
+    assert "\nmounts: []\n" in text
     assert '  - guestIP: "127.0.0.1"\n' in text
     assert "    ignore: true\n" in text
     assert text.index("18080") < text.index("ignore: true")
@@ -516,27 +591,25 @@ def test_rendered_rules_put_declared_forwards_before_the_rule_that_ignores_the_r
 def test_lima_parses_the_rendered_config_as_the_definition_says(
     definitions: linux_vm.Definitions, tmp_path: Path, name: str
 ) -> None:
-    """Lima's own parser (`limactl validate --fill`) reads the rendered YAML."""
+    """Lima's own parser (`limactl validate --fill`) reads the rendered YAML.
+
+    Lima adds no mount of its own (its template's home and /tmp/lima mounts
+    apply only when a config omits `mounts`).
+    """
     vm = definitions.vms[name]
-    custody = tmp_path / "custody root"
     path = tmp_path / f"{name}.yaml"
     path.write_text(
-        linux_vm.render(
-            vm, custody=custody, minimum_lima_version=definitions.minimum_lima_version
-        ),
+        linux_vm.render(vm, minimum_lima_version=definitions.minimum_lima_version),
         encoding="utf-8",
     )
-    filled = linux_vm.LocalHost(os.environ).run(
+    filled = linux_vm.LocalHost({**os.environ, "LIMA_HOME": str(tmp_path)}).run(
         ["limactl", "validate", "--fill", str(path)], timeout=60.0
     )
     assert filled.returncode == 0, filled.stderr
     text = filled.stdout
     assert f"cpus: {vm.cpus}\n" in text
     assert f"memory: {vm.memory.text}\n" in text
-    assert "mountType: virtiofs\n" in text
-    assert (
-        f"- location: {custody}\n  mountPoint: {custody}\n  writable: false\n" in text
-    )
+    assert "\nmounts:" not in text and "mountPoint" not in text
     assert "  proto: any\n  ignore: true\n" in text
     assert text.count("ignore: true") == 1
     assert ("binfmt: true" in text) == vm.rosetta
@@ -573,12 +646,8 @@ _DELETE = object()
     [
         ("molt-linux", None, set()),
         ("molt-x86", None, set()),
-        # An undeclared mountType is virtiofs under vz.
-        ("molt-linux", _set("mountType", _DELETE), set()),
-        ("molt-linux", _set("mountType", "reverse-sshfs"), {"mount_type"}),
-        ("molt-linux", _set("mounts.0.writable", True), {"mounts"}),
-        ("molt-linux", _set("mounts.0.location", "/"), {"mounts"}),
-        ("molt-linux", _set("mounts.0.mountPoint", "/mnt/molt"), {"mounts"}),
+        ("molt-linux", _set("mounts", [mounted(Path("/Users/x"))]), {"mounts"}),
+        ("molt-x86", _set("mounts", [mounted(Path("/Users/x/Molt"))]), {"mounts"}),
         ("molt-linux", _set("portForwards", None), {"port_forwards"}),
         (
             "molt-linux",
@@ -599,19 +668,17 @@ def test_compare_names_exactly_the_fields_that_differ(
     edit: Callable[[dict[str, object]], None] | None,
     fields: set[str],
 ) -> None:
-    custody = tmp_path / "custody"
-    fake = matching_vm(definitions, name, tmp_path / "lima", custody)
+    fake = matching_vm(definitions, name, tmp_path / "lima")
     if edit is not None:
         edit(fake.config)
-    drift = linux_vm.compare(definitions.vms[name], instance_of(fake), custody=custody)
+    drift = linux_vm.compare(definitions.vms[name], instance_of(fake))
     assert {str(item.field) for item in drift} == fields
 
 
 def test_compare_reads_an_extra_forward_rule_ahead_of_the_ignore_rule_as_drift(
     definitions: linux_vm.Definitions, tmp_path: Path
 ) -> None:
-    custody = tmp_path / "custody"
-    fake = matching_vm(definitions, "molt-linux", tmp_path / "lima", custody)
+    fake = matching_vm(definitions, "molt-linux", tmp_path / "lima")
     fake.config["portForwards"].insert(  # type: ignore[union-attr]
         0,
         {
@@ -623,9 +690,7 @@ def test_compare_reads_an_extra_forward_rule_ahead_of_the_ignore_rule_as_drift(
             "proto": "tcp",
         },
     )
-    drift = linux_vm.compare(
-        definitions.vms["molt-linux"], instance_of(fake), custody=custody
-    )
+    drift = linux_vm.compare(definitions.vms["molt-linux"], instance_of(fake))
     assert [item.field for item in drift] == [linux_vm.DriftField.PORT_FORWARDS]
     assert "4226" in drift[0].effective
 
@@ -633,19 +698,15 @@ def test_compare_reads_an_extra_forward_rule_ahead_of_the_ignore_rule_as_drift(
 def test_compare_reads_resources_from_the_instance(
     definitions: linux_vm.Definitions, tmp_path: Path
 ) -> None:
-    custody = tmp_path / "custody"
     fake = matching_vm(
         definitions,
         "molt-x86",
         tmp_path / "lima",
-        custody,
         cpus=2,
         memory=7 << 30,
         disk=100 << 30,
     )
-    drift = linux_vm.compare(
-        definitions.vms["molt-x86"], instance_of(fake), custody=custody
-    )
+    drift = linux_vm.compare(definitions.vms["molt-x86"], instance_of(fake))
     assert {(d.field, d.declared, d.effective) for d in drift} == {
         (linux_vm.DriftField.CPUS, "4", "2"),
         (linux_vm.DriftField.MEMORY, "8GiB", "7GiB"),
@@ -664,17 +725,12 @@ def test_a_config_edited_after_start_is_drift_until_the_vm_restarts(
     started_after_config: bool,
     pending: bool,
 ) -> None:
-    custody = tmp_path / "custody"
-    fake = matching_vm(
-        definitions, "molt-linux", tmp_path / "lima", custody, status=status
-    )
+    fake = matching_vm(definitions, "molt-linux", tmp_path / "lima", status=status)
     shutil.rmtree(fake.directory)
     fake.directory = make_instance_dir(
         tmp_path / "lima", "molt-linux", started_after_config=started_after_config
     )
-    drift = linux_vm.compare(
-        definitions.vms["molt-linux"], instance_of(fake), custody=custody
-    )
+    drift = linux_vm.compare(definitions.vms["molt-linux"], instance_of(fake))
     assert [item.field for item in drift] == (
         [linux_vm.DriftField.RESTART_PENDING] if pending else []
     )
@@ -688,15 +744,14 @@ def test_a_config_edited_after_start_is_drift_until_the_vm_restarts(
 def two_vms(
     definitions: linux_vm.Definitions, tmp_path: Path
 ) -> tuple[FakeVm, FakeVm, Path]:
+    """Two running VMs that still mount host paths, as before `apply`."""
     custody = tmp_path / "custody"
     custody.mkdir()
-    linux = matching_vm(
-        definitions, "molt-linux", tmp_path / "lima", custody, vz_pid=9200
-    )
-    x86 = matching_vm(definitions, "molt-x86", tmp_path / "lima", custody, vz_pid=9100)
-    # molt-x86 mounts the custody root; molt-linux has drifted to its parent.
-    linux.config["mounts"][0]["location"] = str(tmp_path)  # type: ignore[index]
-    linux.config["mounts"][0]["mountPoint"] = str(tmp_path)  # type: ignore[index]
+    linux = matching_vm(definitions, "molt-linux", tmp_path / "lima", vz_pid=9200)
+    x86 = matching_vm(definitions, "molt-x86", tmp_path / "lima", vz_pid=9100)
+    # molt-x86 mounts the custody root; molt-linux mounts its parent.
+    x86.config["mounts"] = [mounted(custody)]
+    linux.config["mounts"] = [mounted(tmp_path)]
     linux.cached = [
         HostFile(str(custody / "worktrees/old/a.py"), 100, 0, "10"),
         HostFile("/3f1c0ffee", 1000, 0, "11"),  # lsof's partial name of a deleted file
@@ -712,7 +767,8 @@ def two_vms(
 def test_held_files_maps_each_vm_process_by_its_disk_and_counts_only_share_pins(
     definitions: linux_vm.Definitions, tmp_path: Path
 ) -> None:
-    linux, x86, _custody = two_vms(definitions, tmp_path)
+    linux, x86, custody = two_vms(definitions, tmp_path)
+    x86.cached.append(HostFile(str(custody / linux_vm.FORGET_SET / "00"), 0, 1, "30"))
     foreign_vm = OtherProcess(
         9050,
         linux_vm.VZ_COMMAND,
@@ -733,6 +789,7 @@ def test_held_files_maps_each_vm_process_by_its_disk_and_counts_only_share_pins(
         "molt-linux": linux_vm.Held(
             pid=9200, deleted_files=3, deleted_bytes=1107, open_under_mounts=2
         ),
+        # The forget set's live files are the release's own.
         "molt-x86": linux_vm.Held(
             pid=9100, deleted_files=0, deleted_bytes=0, open_under_mounts=1
         ),
@@ -741,38 +798,99 @@ def test_held_files_maps_each_vm_process_by_its_disk_and_counts_only_share_pins(
 
 
 # --------------------------------------------------------------------------
-# Release
+# Release: the mechanism
 # --------------------------------------------------------------------------
 
 
-def test_release_frees_cached_pins_keeps_open_files_and_never_stops_a_vm(
+def test_a_drop_alone_frees_nothing_and_the_release_frees_every_cached_pin(
     definitions: linux_vm.Definitions, tmp_path: Path
 ) -> None:
-    linux, x86, _custody = two_vms(definitions, tmp_path)
-    stopped = matching_vm(
-        definitions, "molt-x86", tmp_path / "other", tmp_path, status="Stopped"
+    """The server closes forgotten descriptors only at its 64th forget.
+
+    A bare `drop_caches` makes the guest forget three deleted files, and the
+    server keeps all three; HF-463's first release stopped there. The release
+    adds 64 forgets of its own, so every deleted file the guest does not hold
+    open is freed; the one a guest process holds stays.
+    """
+    linux, x86, custody = two_vms(definitions, tmp_path)
+    host = FakeHost([linux, x86])
+    pinned = [
+        str(custody / "worktrees/old/a.py"),
+        "/3f1c0ffee",
+        str(custody / "tmp/log"),
+    ]
+    assert deleted_names(host, linux) == sorted(pinned)
+    bare = host.run(
+        [
+            "limactl",
+            "shell",
+            "--workdir",
+            "/",
+            "molt-linux",
+            "sudo",
+            "-n",
+            "sh",
+            "-c",
+            linux_vm.DROP_GUEST_CACHES,
+        ],
+        timeout=10.0,
     )
-    stopped.name = "stopped-vm"
-    host = FakeHost([linux, x86, stopped])
+    assert bare.returncode == 0
+    assert deleted_names(host, linux) == sorted(pinned), "a drop alone frees nothing"
     results = linux_vm.release(host, linux_vm.list_instances(host))
+    assert deleted_names(host, linux) == [str(custody / "tmp/log")]
     by_name = {result.name: result for result in results}
-    assert set(by_name) == {"molt-linux", "molt-x86"}
     assert by_name["molt-linux"].before.deleted_files == 3
     assert by_name["molt-linux"].after == linux_vm.Held(
         pid=9200, deleted_files=1, deleted_bytes=7, open_under_mounts=0
     )
     assert by_name["molt-x86"].after.open_under_mounts == 0
     assert all(result.error is None for result in results)
-    drops = [call for call in host.calls if call[:2] == ("limactl", "shell")]
-    assert sorted(call[4] for call in drops) == ["molt-linux", "molt-x86"]
-    assert all(
-        call[5:] == ("sudo", "-n", "sh", "-c", "echo 2 > /proc/sys/vm/drop_caches")
-        for call in drops
+    # Each mount got its forget set on the host.
+    for location in (tmp_path, custody):
+        assert sorted(os.listdir(location / linux_vm.FORGET_SET)) == [
+            f"{index:02d}" for index in range(linux_vm.FORGET_BATCH)
+        ]
+
+
+@pytest.mark.parametrize("pending", [0, 1, 40, 63])
+def test_the_release_frees_pins_whatever_the_server_already_has_pending(
+    definitions: linux_vm.Definitions, tmp_path: Path, pending: int
+) -> None:
+    """Earlier forgets leave 0 to 63 pending; the release must not depend on it."""
+    linux, x86, custody = two_vms(definitions, tmp_path)
+    linux.forgotten = [
+        HostFile(str(custody / f"old/{index}"), 1, 1, str(500 + index))
+        for index in range(pending)
+    ]
+    host = FakeHost([linux, x86])
+    linux_vm.release(host, linux_vm.list_instances(host, ["molt-linux"]))
+    assert deleted_names(host, linux) == [str(custody / "tmp/log")]
+    assert not any(
+        item.name.startswith(str(custody / "old")) for item in linux.forgotten
     )
+
+
+def test_release_skips_vms_that_mount_nothing_and_never_stops_a_vm(
+    definitions: linux_vm.Definitions, tmp_path: Path
+) -> None:
+    linux, x86, _custody = two_vms(definitions, tmp_path)
+    applied = matching_vm(definitions, "molt-x86", tmp_path / "other")
+    applied.name = "applied-vm"
+    stopped = matching_vm(
+        definitions, "molt-x86", tmp_path / "stopped", status="Stopped"
+    )
+    stopped.name = "stopped-vm"
+    stopped.config["mounts"] = [mounted(tmp_path)]
+    host = FakeHost([linux, x86, applied, stopped])
+    results = linux_vm.release(host, linux_vm.list_instances(host))
+    assert {result.name for result in results} == {"molt-linux", "molt-x86"}
+    guest = [call for call in host.calls if call[:2] == ("limactl", "shell")]
+    assert sorted(call[4] for call in guest) == ["molt-linux", "molt-x86"]
     assert not [call for call in host.calls if call[1:2] in (("stop",), ("start",))]
 
 
-def test_release_command_reports_a_failed_drop(
+def test_release_command_reports_a_failed_guest_command(
     definitions: linux_vm.Definitions,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -787,6 +905,17 @@ def test_release_command_reports_a_failed_drop(
     assert "password is required" in row["error"]
     assert row["before"]["deleted_files"] == row["after"]["deleted_files"] == 3
     assert linux_vm.release_command(host=host, names=["nope"], as_json=False) == 2
+
+
+def test_release_reports_a_mount_whose_forget_set_cannot_be_written(
+    definitions: linux_vm.Definitions, tmp_path: Path
+) -> None:
+    linux, x86, _custody = two_vms(definitions, tmp_path)
+    linux.config["mounts"] = [mounted(tmp_path / "missing")]
+    host = FakeHost([linux, x86])
+    [result] = linux_vm.release(host, linux_vm.list_instances(host, ["molt-linux"]))
+    assert result.error is not None and "forget set" in result.error
+    assert not [call for call in host.calls if call[1:2] == ("shell",)]
 
 
 # --------------------------------------------------------------------------
@@ -818,6 +947,44 @@ def test_the_hook_spawns_nothing_without_a_live_hostagent(
     assert host.calls == []
 
 
+def _applied(definitions: linux_vm.Definitions, home: Path, name: str) -> FakeVm:
+    text = linux_vm.render(
+        definitions.vms[name], minimum_lima_version=definitions.minimum_lima_version
+    )
+    fake = matching_vm(definitions, name, home)
+    shutil.rmtree(fake.directory)
+    fake.directory = make_instance_dir(home, name, text=text)
+    return fake
+
+
+def test_the_hook_spawns_nothing_when_every_live_vm_runs_its_definition(
+    definitions: linux_vm.Definitions, tmp_path: Path
+) -> None:
+    """After `apply` the VMs mount nothing, so retirement costs file reads."""
+    home = tmp_path / "lima"
+    linux = _applied(definitions, home, "molt-linux")
+    x86 = _applied(definitions, home, "molt-x86")
+    host = FakeHost([linux, x86])
+    environment = {"LIMA_HOME": str(home)}
+    assert (
+        linux_vm.release_for_paths([tmp_path], environment=environment, host=host) == ()
+    )
+    assert host.calls == []
+    # Any doubt asks Lima: a config edited after start, a shared Lima config,
+    # or an instance no definition names.
+    os.utime(linux.directory / "lima.yaml", (time.time() + 60, time.time() + 60))
+    assert (
+        linux_vm.release_for_paths([tmp_path], environment=environment, host=host) == ()
+    )
+    assert host.calls == [("limactl", "list", "--json")]
+    os.utime(linux.directory / "lima.yaml", (time.time() - 600, time.time() - 600))
+    (home / "_config").mkdir()
+    (home / "_config" / "override.yaml").write_text("mounts: []\n", encoding="utf-8")
+    host.calls.clear()
+    linux_vm.release_for_paths([tmp_path], environment=environment, host=host)
+    assert host.calls == [("limactl", "list", "--json")]
+
+
 def test_the_hook_does_not_inspect_vms_that_do_not_mount_the_path(
     definitions: linux_vm.Definitions, tmp_path: Path
 ) -> None:
@@ -833,7 +1000,7 @@ def test_the_hook_does_not_inspect_vms_that_do_not_mount_the_path(
     assert host.calls == [("limactl", "list", "--json")]
 
 
-def test_the_hook_skips_the_drop_when_no_covering_vm_holds_files_there(
+def test_the_hook_skips_the_release_when_no_covering_vm_holds_files_there(
     definitions: linux_vm.Definitions, tmp_path: Path
 ) -> None:
     linux, x86, custody = two_vms(definitions, tmp_path)
@@ -857,7 +1024,7 @@ def test_the_hook_releases_only_covering_vms_that_hold_files_under_the_path(
 ) -> None:
     linux, x86, _custody = two_vms(definitions, tmp_path)
     host = FakeHost([linux, x86])
-    # Only molt-linux's drifted mount (the custody root's parent) covers it.
+    # Only molt-linux's mount (the custody root's parent) covers it.
     doomed = tmp_path / "elsewhere.txt"
     results = linux_vm.release_for_paths(
         [doomed], environment={"LIMA_HOME": str(tmp_path / "lima")}, host=host
@@ -876,22 +1043,31 @@ def test_the_hook_releases_only_covering_vms_that_hold_files_under_the_path(
     ]
 
 
-def test_the_hook_releases_a_vm_that_caches_files_under_the_path_and_pins_nothing(
+def test_a_retirement_after_a_release_runs_nothing_in_a_guest(
     definitions: linux_vm.Definitions, tmp_path: Path
 ) -> None:
+    """B2: a release that frees its pins leaves later retirements nothing to do.
+
+    The first release frees every deleted file but the one a guest process
+    holds; with that process gone, a retirement of a path the guest never
+    read spawns no guest command.
+    """
     linux, x86, custody = two_vms(definitions, tmp_path)
-    linux.vz_pid = None
+    linux.held_open = []
     host = FakeHost([linux, x86])
-    # molt-x86 caches custody/molt-src/x and holds no deleted file yet.
-    results = linux_vm.release_for_paths(
-        [custody / "molt-src"],
-        environment={"LIMA_HOME": str(tmp_path / "lima")},
-        host=host,
+    environment = {"LIMA_HOME": str(tmp_path / "lima")}
+    first = linux_vm.release_for_paths(
+        [custody / "worktrees" / "old"], environment=environment, host=host
     )
-    assert [
-        (r.name, r.before.open_under_paths, r.after.open_under_paths) for r in results
-    ] == [("molt-x86", 1, 0)]
-    assert not x86.cached
+    assert [(r.name, r.after.deleted_files) for r in first] == [("molt-linux", 0)]
+    host.calls.clear()
+    assert (
+        linux_vm.release_for_paths(
+            [custody / "worktrees" / "fresh"], environment=environment, host=host
+        )
+        == ()
+    )
+    assert [call[0] for call in host.calls] == ["limactl", "lsof"]
 
 
 def test_the_hook_also_frees_deleted_files_a_covering_vm_already_pins(
@@ -912,90 +1088,269 @@ def test_the_hook_also_frees_deleted_files_a_covering_vm_already_pins(
 
 
 # --------------------------------------------------------------------------
+# Push
+# --------------------------------------------------------------------------
+
+
+def test_push_sends_the_resolved_commit_over_limas_ssh_and_checks_it_out(
+    definitions: linux_vm.Definitions,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fake = matching_vm(definitions, "molt-linux", tmp_path / "lima")
+    host = FakeHost([fake])
+    host.commits["HEAD"] = "c" * 40
+    rc = linux_vm.push(
+        "molt-linux",
+        rev="HEAD",
+        ref="from-host",
+        checkout=True,
+        definitions=definitions,
+        host=host,
+        repo=tmp_path / "repo",
+    )
+    assert rc == 0, capsys.readouterr().out
+    push_call = next(call for call in host.calls if "push" in call)
+    config = shlex.quote(str(fake.directory / "ssh.config"))
+    assert push_call == (
+        "git",
+        "-C",
+        str(tmp_path / "repo"),
+        "-c",
+        f"core.sshCommand=ssh -F {config}",
+        "push",
+        "--force",
+        "--no-verify",
+        "--quiet",
+        "lima-molt-linux:molt-main",
+        f"{'c' * 40}:refs/heads/from-host",
+    )
+    checkout = host.calls[-1]
+    assert checkout[:5] == ("limactl", "shell", "--workdir", "/", "molt-linux")
+    assert checkout[-1] == (
+        f'git -C "$HOME"/molt-main checkout --quiet --detach {"c" * 40}'
+    )
+
+
+@pytest.mark.parametrize(
+    ("change", "rc"),
+    [("stopped", 1), ("no-commit", 2), ("bad-ref", 2), ("undefined", 2)],
+)
+def test_push_refuses_before_it_sends_anything(
+    definitions: linux_vm.Definitions, tmp_path: Path, change: str, rc: int
+) -> None:
+    fake = matching_vm(definitions, "molt-linux", tmp_path / "lima")
+    host = FakeHost([fake])
+    host.commits["HEAD"] = "c" * 40
+    name, ref, rev = "molt-linux", "from-host", "HEAD"
+    if change == "stopped":
+        fake.status = "Stopped"
+    elif change == "no-commit":
+        rev = "nope"
+    elif change == "bad-ref":
+        ref = "../x"
+    else:
+        name = "molt-other"
+    assert (
+        linux_vm.push(
+            name,
+            rev=rev,
+            ref=ref,
+            checkout=False,
+            definitions=definitions,
+            host=host,
+            repo=tmp_path,
+        )
+        == rc
+    )
+    assert not [call for call in host.calls if "push" in call]
+
+
+class GitHost(FakeHost):
+    """Runs `git` for real, with a fake `ssh` first on PATH."""
+
+    def __init__(self, vms: Sequence[FakeVm], path: str) -> None:
+        super().__init__(vms)
+        self.path = path
+
+    def run(self, argv: Sequence[str], *, timeout: float) -> linux_vm.Completed:
+        if argv[0] != "git":
+            return super().run(argv, timeout=timeout)
+        self.calls.append(tuple(argv))
+        # A real push through the fake `ssh`: the guarded test runner, not
+        # the plumbing helper, whose transfer bound waits for progress.
+        completed = run_guarded_test_process(
+            list(argv),
+            env=ProcessEnvironment(os.environ).updated({"PATH": self.path}),
+            timeout=timeout,
+        )
+        return linux_vm.Completed(
+            completed.returncode, completed.stdout, completed.stderr
+        )
+
+
+def test_push_moves_a_commit_into_the_guest_clone_through_real_git(
+    definitions: linux_vm.Definitions, tmp_path: Path
+) -> None:
+    """Real Git runs the push; a fake `ssh` runs the guest side in a directory.
+
+    The oracle is the guest clone's own ref, read by Git after the push.
+    """
+    git = [
+        "git",
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "init.defaultBranch=main",
+        "-c",
+        "core.hooksPath=/dev/null",
+    ]
+
+    def run_git(*args: str) -> str:
+        completed = _run_fast_captured_command([*git, *args])
+        assert completed.returncode == 0, completed.stderr
+        return completed.stdout.strip()
+
+    repo, home = tmp_path / "repo", tmp_path / "guest-home"
+    for directory in (repo, home / "molt-main"):
+        run_git("init", "-q", str(directory))
+    (repo / "a.txt").write_text("a\n", encoding="utf-8")
+    run_git("-C", str(repo), "add", "a.txt")
+    run_git("-C", str(repo), "commit", "-qm", "a")
+    head = run_git("-C", str(repo), "rev-parse", "HEAD")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    # OpenSSH's form: options, the host, then the remote command.
+    (bin_dir / "ssh").write_text(
+        f"""#!{sys.executable}
+import subprocess, sys
+args = sys.argv[1:]
+if "-G" in args:
+    # Git probes the ssh variant with `ssh -G <host>`; OpenSSH prints the
+    # resolved configuration and exits 0.
+    sys.exit(0)
+while args[0].startswith("-"):
+    args = args[2:] if args[0] in ("-F", "-o", "-p") else args[1:]
+host, command = args[0], " ".join(args[1:])
+assert host == "lima-molt-linux", host
+sys.exit(subprocess.run(["sh", "-c", command], cwd={str(home)!r}).returncode)
+""",
+        encoding="utf-8",
+    )
+    (bin_dir / "ssh").chmod(0o755)
+    fake = matching_vm(definitions, "molt-linux", tmp_path / "lima")
+    host = GitHost([fake], f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    assert (
+        linux_vm.push(
+            "molt-linux",
+            rev="HEAD",
+            ref="from-host",
+            checkout=False,
+            definitions=definitions,
+            host=host,
+            repo=repo,
+        )
+        == 0
+    )
+    pushed = run_git("-C", str(home / "molt-main"), "rev-parse", "refs/heads/from-host")
+    assert pushed == head
+
+
+# --------------------------------------------------------------------------
 # Apply
 # --------------------------------------------------------------------------
 
+USER = "0::/user.slice/user-501.slice/user@501.service"
+SESSION_CGROUP = "0::/user.slice/user-501.slice/session-4.scope"
 SESSION = [
-    (1, 0, 0, "systemd"),
-    (300, 1, 0, "lima-guestagent"),
-    (310, 1, 0, "unattended-upgr"),  # unattended-upgrade-shutdown, resident
-    (900, 1, 501, "systemd"),
-    (901, 900, 501, "(sd-pam)"),
-    (950, 900, 501, "containerd-shim"),  # containerd-shim-runc-v2, truncated
-    (3900, 1, 0, "sshd-session"),
-    (3901, 3900, 501, "sshd-session"),
-    (3950, 3901, 501, "bash"),  # this probe's login shell
-    (4000, 3950, 501, "sh"),  # the probe shell
-    (4001, 4000, 501, "ps"),
+    (1, 0, 0, "systemd", "0::/init.scope"),
+    (300, 1, 0, "lima-guestagent", "0::/system.slice/lima-guestagent.service"),
+    # unattended-upgrade-shutdown, resident
+    (310, 1, 0, "unattended-upgr", "0::/system.slice/unattended-upgrades.service"),
+    (320, 1, 0, "cron", "0::/system.slice/cron.service"),
+    (900, 1, 501, "systemd", f"{USER}/init.scope"),
+    (901, 900, 501, "(sd-pam)", f"{USER}/init.scope"),
+    (950, 900, 501, "containerd", f"{USER}/app.slice/containerd.service"),
+    (3900, 1, 0, "sshd-session", SESSION_CGROUP),
+    (3901, 3900, 501, "sshd-session", SESSION_CGROUP),
+    (3950, 3901, 501, "bash", SESSION_CGROUP),  # this probe's login shell
+    (4000, 3950, 501, "sh", SESSION_CGROUP),  # the probe shell
+    (4001, 4000, 501, "ps", SESSION_CGROUP),
 ]
+
+
+def _probe(processes: list[tuple[int, int, int, str, str]]) -> str:
+    return (
+        "501\nmolt\n4000\n--- subuid\nother:100000:65536\nmolt:524288:65536\n--- ps\n"
+        + "".join(f"{p} {pp} {u} {c} {g}\n" for p, pp, u, c, g in processes)
+    )
 
 
 def test_busy_guest_processes_exempts_this_session_and_guest_daemons(
     definitions: linux_vm.Definitions,
 ) -> None:
-    def probe(processes: list[tuple[int, int, int, str]]) -> str:
-        return "501\n4000\n" + "".join(
-            f"{p} {pp} {u} {c}\n" for p, pp, u, c in processes
-        )
-
-    assert linux_vm.busy_guest_processes(probe(SESSION), definitions) == ()
+    assert linux_vm.busy_guest_processes(_probe(SESSION), definitions) == ()
     busy = SESSION + [
-        (5000, 1, 501, "sleep"),  # a detached loop of another session
-        (5100, 1, 0, "dpkg"),  # a package upgrade as root
-        (5200, 1, 0, "cron"),  # root daemons are not the guest user's work
-        (5300, 5299, 501, "cargo"),
-        (5400, 1, 501, "python3"),  # any other process of the guest user
+        (5000, 1, 501, "sleep", SESSION_CGROUP),  # a detached loop of a session
+        (5100, 1, 0, "dpkg", "0::/system.slice/apt.service"),  # an upgrade
+        (5200, 3901, 0, "sudo", SESSION_CGROUP),  # root work from a session
+        (5201, 5200, 0, "make", SESSION_CGROUP),
+        (5300, 5299, 501, "cargo", f"{USER}/app.slice/x.service"),
+        (5400, 1, 501, "python3", "0::/"),  # any other process of the user
+        # A rootless container's non-root user runs as a subordinate id.
+        (5500, 950, 524288 + 1000, "postgres", f"{USER}/user.slice/nerdctl-1.scope"),
+        (5600, 950, 501, "containerd-shim", f"{USER}/app.slice/containerd.service"),
+        # Root daemons and another user's subordinate ids are not work.
+        (5700, 1, 0, "rsyslogd", "0::/system.slice/rsyslog.service"),
+        (5800, 1, 100500, "other", "0::/system.slice/x.service"),
+        # A program named like a daemon is idle only by that name.
+        (5900, 3901, 501, "My Tool", SESSION_CGROUP),
     ]
-    assert {p.pid for p in linux_vm.busy_guest_processes(probe(busy), definitions)} == {
-        5000,
-        5100,
-        5300,
-        5400,
-    }
+    assert {
+        p.pid for p in linux_vm.busy_guest_processes(_probe(busy), definitions)
+    } == {5000, 5100, 5200, 5201, 5300, 5400, 5500, 5600, 5900}
     with pytest.raises(linux_vm.LimaError, match="own shell"):
-        linux_vm.busy_guest_processes("501\n4242\n1 0 0 systemd\n", definitions)
+        linux_vm.busy_guest_processes(
+            "501\nmolt\n4242\n--- subuid\n--- ps\n1 0 0 systemd -\n", definitions
+        )
+    with pytest.raises(linux_vm.LimaError, match="unreadable"):
+        linux_vm.busy_guest_processes("501\n4000\n", definitions)
 
 
 def apply_setup(
     definitions: linux_vm.Definitions, tmp_path: Path, **host_options: object
-) -> tuple[FakeHost, FakeVm, Path, str]:
-    custody = tmp_path / "custody"
-    fake = matching_vm(definitions, "molt-linux", tmp_path / "lima", custody)
-    fake.config["mounts"][0]["location"] = str(tmp_path)  # type: ignore[index]
+) -> tuple[FakeHost, FakeVm, str]:
+    fake = matching_vm(definitions, "molt-linux", tmp_path / "lima")
+    fake.config["mounts"] = [mounted(tmp_path)]
     fake.config["portForwards"] = None
     fake.processes = list(SESSION)
     rendered = linux_vm.lima_config(
         definitions.vms["molt-linux"],
-        custody=custody,
         minimum_lima_version=definitions.minimum_lima_version,
     )
-
     text = linux_vm.render(
         definitions.vms["molt-linux"],
-        custody=custody,
         minimum_lima_version=definitions.minimum_lima_version,
     )
     host = FakeHost([fake], **host_options)
     host.configs_by_text[text] = lima_filled(rendered)
     original = (fake.directory / "lima.yaml").read_text(encoding="utf-8")
-    return host, fake, custody, original
+    return host, fake, original
 
 
-def run_apply(definitions, host, custody, *, confirm: bool = True) -> int:
+def run_apply(definitions, host, *, confirm: bool = True) -> int:
     return linux_vm.apply(
-        "molt-linux",
-        definitions=definitions,
-        host=host,
-        custody=custody,
-        confirm_restart=confirm,
+        "molt-linux", definitions=definitions, host=host, confirm_restart=confirm
     )
 
 
 def test_apply_refuses_without_confirmation_and_runs_nothing(
     definitions: linux_vm.Definitions, tmp_path: Path
 ) -> None:
-    host, fake, custody, original = apply_setup(definitions, tmp_path)
-    assert run_apply(definitions, host, custody, confirm=False) == 1
+    host, fake, original = apply_setup(definitions, tmp_path)
+    assert run_apply(definitions, host, confirm=False) == 1
     assert host.calls == []
     assert (fake.directory / "lima.yaml").read_text(encoding="utf-8") == original
 
@@ -1005,10 +1360,10 @@ def test_apply_refuses_a_busy_guest_and_leaves_the_vm_running(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    host, fake, custody, original = apply_setup(definitions, tmp_path)
-    fake.processes.append((6000, 3950, 501, "cargo"))
-    assert run_apply(definitions, host, custody) == 1
-    assert "busy: cargo (pid 6000, uid 501)" in capsys.readouterr().out
+    host, fake, original = apply_setup(definitions, tmp_path)
+    fake.processes.append((6000, 3901, 0, "sudo", SESSION_CGROUP))
+    assert run_apply(definitions, host) == 1
+    assert "busy: sudo (pid 6000, uid 0)" in capsys.readouterr().out
     assert fake.status == "Running"
     assert not [call for call in host.calls if call[1] in ("stop", "start")]
     assert (fake.directory / "lima.yaml").read_text(encoding="utf-8") == original
@@ -1018,8 +1373,8 @@ def test_apply_refuses_a_busy_guest_and_leaves_the_vm_running(
 def test_apply_refuses_a_config_lima_rejects_before_touching_the_guest(
     definitions: linux_vm.Definitions, tmp_path: Path
 ) -> None:
-    host, fake, custody, original = apply_setup(definitions, tmp_path, validate_rc=1)
-    assert run_apply(definitions, host, custody) == 1
+    host, fake, original = apply_setup(definitions, tmp_path, validate_rc=1)
+    assert run_apply(definitions, host) == 1
     assert [call[1] for call in host.calls] == ["list", "validate"]
     assert (fake.directory / "lima.yaml").read_text(encoding="utf-8") == original
     assert not (fake.directory / linux_vm.NEXT_CONFIG).exists()
@@ -1028,17 +1383,17 @@ def test_apply_refuses_a_config_lima_rejects_before_touching_the_guest(
 def test_apply_refuses_a_change_only_a_new_vm_can_make(
     definitions: linux_vm.Definitions, tmp_path: Path
 ) -> None:
-    host, fake, custody, _original = apply_setup(definitions, tmp_path)
+    host, fake, _original = apply_setup(definitions, tmp_path)
     fake.vm_type = "qemu"
-    assert run_apply(definitions, host, custody) == 1
+    assert run_apply(definitions, host) == 1
     assert [call[1] for call in host.calls] == ["list"]
 
 
 def test_apply_installs_the_definition_into_an_idle_vm_and_restarts_it(
     definitions: linux_vm.Definitions, tmp_path: Path
 ) -> None:
-    host, fake, custody, original = apply_setup(definitions, tmp_path)
-    assert run_apply(definitions, host, custody) == 0
+    host, fake, original = apply_setup(definitions, tmp_path)
+    assert run_apply(definitions, host) == 0
     verbs = [call[1] for call in host.calls]
     assert verbs == ["list", "validate", "shell", "stop", "start", "list"]
     assert host.validated == [
@@ -1050,20 +1405,17 @@ def test_apply_installs_the_definition_into_an_idle_vm_and_restarts_it(
     ) == original
     assert not (fake.directory / linux_vm.NEXT_CONFIG).exists()
     assert fake.status == "Running"
-    assert (
-        linux_vm.compare(
-            definitions.vms["molt-linux"], instance_of(fake), custody=custody
-        )
-        == ()
-    )
+    assert linux_vm.compare(definitions.vms["molt-linux"], instance_of(fake)) == ()
+    # The applied VM runs its definition: retirement now reads files only.
+    assert linux_vm.runs_its_definition(fake.directory, definitions, tmp_path / "lima")
 
 
 def test_apply_to_a_stopped_vm_installs_the_config_without_starting_it(
     definitions: linux_vm.Definitions, tmp_path: Path
 ) -> None:
-    host, fake, custody, original = apply_setup(definitions, tmp_path)
+    host, fake, original = apply_setup(definitions, tmp_path)
     fake.status = "Stopped"
-    assert run_apply(definitions, host, custody) == 0
+    assert run_apply(definitions, host) == 0
     assert [call[1] for call in host.calls] == ["list", "validate", "list"]
     assert fake.status == "Stopped"
     assert (fake.directory / linux_vm.PREVIOUS_CONFIG).read_text(
@@ -1071,15 +1423,40 @@ def test_apply_to_a_stopped_vm_installs_the_config_without_starting_it(
     ) == original
 
 
-def test_apply_reports_a_failed_start_and_keeps_the_previous_config(
+def test_a_failed_start_restores_and_restarts_the_replaced_config(
     definitions: linux_vm.Definitions,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    host, fake, custody, original = apply_setup(definitions, tmp_path)
-    host.start_rc = 1
-    assert run_apply(definitions, host, custody) == 1
-    assert "boot failed" in capsys.readouterr().out
+    """B4: the VM comes back on the config it ran, and the original survives."""
+    host, fake, original = apply_setup(definitions, tmp_path)
+    host.start_rcs = [1, 0]
+    assert run_apply(definitions, host) == 1
+    out = capsys.readouterr().out
+    assert "boot failed" in out and "restarted it with the replaced config" in out
+    rendered = host.validated[0]
+    assert host.started_with == [rendered, original]
+    assert (fake.directory / "lima.yaml").read_text(encoding="utf-8") == original
+    assert fake.status == "Running"
+    assert (fake.directory / linux_vm.PREVIOUS_CONFIG).read_text(
+        encoding="utf-8"
+    ) == original
+    # A retry fails the same way and still keeps the hand-made original.
+    host.start_rcs = [1, 1]
+    assert run_apply(definitions, host) == 1
+    assert "its start failed too" in capsys.readouterr().out
+    assert (fake.directory / "lima.yaml").read_text(encoding="utf-8") == original
+    assert (fake.directory / linux_vm.PREVIOUS_CONFIG).read_text(
+        encoding="utf-8"
+    ) == original
+
+
+def test_a_second_apply_keeps_the_first_replaced_config(
+    definitions: linux_vm.Definitions, tmp_path: Path
+) -> None:
+    host, fake, original = apply_setup(definitions, tmp_path)
+    assert run_apply(definitions, host) == 0
+    assert run_apply(definitions, host) == 0
     assert (fake.directory / linux_vm.PREVIOUS_CONFIG).read_text(
         encoding="utf-8"
     ) == original
@@ -1095,24 +1472,116 @@ def test_check_exits_one_on_drift_and_zero_when_every_vm_matches(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    linux, x86, custody = two_vms(definitions, tmp_path)
+    linux, x86, _custody = two_vms(definitions, tmp_path)
+    x86.config.pop("mounts")
+    x86.cached = []
     host = FakeHost([linux, x86])
-    assert linux_vm.main(["check", "--json"], host=host, custody=custody) == 1
+    assert linux_vm.main(["check", "--json"], host=host) == 1
     report = json.loads(capsys.readouterr().out)
     assert report["schema"] == linux_vm.CHECK_SCHEMA
     rows = {row["name"]: row for row in report["vms"]}
     assert [d["field"] for d in rows["molt-linux"]["drift"]] == ["mounts"]
     assert rows["molt-x86"]["drift"] == []
     assert rows["molt-linux"]["held"]["deleted_files"] == 3
+    # A VM that mounts nothing pins nothing: no held-file report.
+    assert rows["molt-x86"]["held"] is None
     assert not [call for call in host.calls if call[1:2] == ("shell",)], (
         "check runs nothing in a guest"
     )
-    linux.config["mounts"][0]["location"] = str(custody)  # type: ignore[index]
-    linux.config["mounts"][0]["mountPoint"] = str(custody)  # type: ignore[index]
-    assert linux_vm.main(["check"], host=host, custody=custody) == 0
+    linux.config.pop("mounts")
+    host.calls.clear()
+    assert linux_vm.main(["check"], host=host) == 0
+    assert [call[0] for call in host.calls] == ["limactl"], "no lsof without mounts"
 
 
-def test_check_without_lima_has_nothing_to_check(tmp_path: Path) -> None:
+def test_check_without_lima_has_nothing_to_check() -> None:
     host = FakeHost(lima=False)
-    assert linux_vm.main(["check"], host=host, custody=tmp_path) == 0
+    assert linux_vm.main(["check"], host=host) == 0
     assert host.calls == []
+
+
+# --------------------------------------------------------------------------
+# The real guests (opt-in)
+# --------------------------------------------------------------------------
+
+REAL_VMS = os.environ.get("MOLT_LINUX_VM_TESTS") == "1"
+
+
+@pytest.mark.skipif(
+    not REAL_VMS,
+    reason=(
+        "acts on the developer's running Lima VMs (drops their caches, starts a "
+        "short guest reader); set MOLT_LINUX_VM_TESTS=1 to run it"
+    ),
+)
+def test_release_frees_what_a_real_guest_pinned() -> None:
+    """The oracle is the real VM process's descriptors, read by lsof.
+
+    For each running VM that mounts a host path: write probe files under the
+    mount, have the guest read, stat, list and mmap them, keep one open in a
+    guest process, delete them on the host, and release. Every deleted probe
+    file is freed but the open one; once its reader exits, a release frees it.
+    """
+    environment = {**os.environ, "LIMA_HOME": str(Path.home() / ".lima")}
+    host = linux_vm.LocalHost(environment)
+    if host.which("limactl") is None:
+        pytest.skip("Lima is not installed")
+    instances = linux_vm._pinning(linux_vm.list_instances(host))
+    if not instances:
+        pytest.skip("no running Lima VM mounts a host path (all applied)")
+    for instance in instances:
+        location, point, _writable = instance.mounts()[0]
+        name = f".molt-linux-vm-test-{uuid.uuid4().hex[:12]}"
+        probe, guest = location / name, point / name
+        probe.mkdir()
+        kinds = ("read", "stat", "listed", "mmap", "open")
+        try:
+            for kind in kinds:
+                (probe / f"{kind}.bin").write_bytes(os.urandom(4096))
+            g = shlex.quote(str(guest))
+            reader = host.run(
+                [
+                    "limactl",
+                    "shell",
+                    "--workdir",
+                    "/",
+                    instance.name,
+                    "sh",
+                    "-c",
+                    f"cat {g}/read.bin >/dev/null && stat {g}/stat.bin >/dev/null"
+                    f" && ls {g} >/dev/null && python3 -c 'import mmap,sys;"
+                    f' f=open(sys.argv[1],"rb");'
+                    f" mmap.mmap(f.fileno(),0,prot=mmap.PROT_READ)[:1]' {g}/mmap.bin"
+                    f" && (nohup setsid sh -c 'exec 3< {g}/open.bin; sleep 8'"
+                    " >/dev/null 2>&1 &) && sleep 1",
+                ],
+                timeout=60.0,
+            )
+            assert reader.returncode == 0, reader.stderr
+        finally:
+            for kind in kinds:
+                (probe / f"{kind}.bin").unlink(missing_ok=True)
+            probe.rmdir()
+
+        def held_probes() -> set[str]:
+            listed = host.run(
+                ["lsof", "-n", "-P", "-a", "+L1", "-p", str(pid), "-F", "n"],
+                timeout=60.0,
+            )
+            return {
+                Path(line[1:]).name
+                for line in listed.stdout.splitlines()
+                if line.startswith(f"n{probe}/")
+            }
+
+        pid = linux_vm.held_files(host, [instance])[instance.name].pid
+        assert held_probes() == {f"{kind}.bin" for kind in kinds}, (
+            "the deleted probe files are pinned before the release"
+        )
+        [result] = linux_vm.release(host, [instance])
+        assert result.error is None, result.error
+        assert held_probes() == {"open.bin"}, "the release frees all but the open file"
+        time.sleep(9)
+        [result] = linux_vm.release(host, [instance])
+        assert result.error is None, result.error
+        assert held_probes() == set(), "a release after the reader exits frees it"

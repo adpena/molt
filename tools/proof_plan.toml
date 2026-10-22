@@ -5731,7 +5731,7 @@ pytest = [
 [[rule]]
 name = "linux-vm-apparatus"
 toolchains = ["python"]
-description = "Molt's Lima VMs render from one definition; check reports drift, release frees the host files guests pin, apply restarts only an idle guest; lane retirement releases before removal."
+description = "Molt's Lima VMs render from one definition that mounts no host path; check reports drift, push sends commits over Lima's SSH, release frees the host files a mounting VM pins (drop, 64 forgets, drop), apply restarts only an idle guest and restores a config that fails to start; lane retirement releases before removal."
 globs = [
   "tools/linux_vm.py",
   "tools/linux_vm.toml",

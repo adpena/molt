@@ -1211,16 +1211,17 @@ sys.exit(molt_dev_retire.cleanup_worktree(
     assert not target.exists() and not uv_environment.exists()
 
 
-def test_cleanup_makes_a_running_vm_drop_its_caches_of_the_worktree_first(
+def test_cleanup_makes_a_running_vm_release_its_pins_of_the_worktree_first(
     origin_and_clone, tmp_path
 ):
-    """A Linux VM that caches files of the retiring checkout drops them first.
+    """A Linux VM that pins files of the retiring checkout releases them first.
 
     The landing runs inside the checkout it removes, with every later import
     refused, as in the test above. Fake `limactl` and `lsof` executables model
-    one running vz VM whose process holds a file of the checkout until its
-    guest drops its caches; the drop must come before the removal, while the
-    checkout's sources can still guard a command.
+    one running vz VM that mounts the checkout's parent and whose process
+    holds a file of the checkout until its guest runs the release; the release
+    must come before the removal, while the checkout's sources can still
+    guard a command.
     """
     origin, _work = origin_and_clone
     wt = _worktree_off(origin, tmp_path, "wt_vm_pins")
@@ -1258,8 +1259,8 @@ from pathlib import Path
 args = sys.argv[1:]
 if args == ["list", "--json"]:
     print({json.dumps(json.dumps(row))})
-elif args == ["shell", "--workdir", "/", "vm", "sudo", "-n", "sh", "-c",
-              "echo 2 > /proc/sys/vm/drop_caches"]:
+elif (args[:8] == ["shell", "--workdir", "/", "vm", "sudo", "-n", "sh", "-c"]
+      and args[8].startswith("echo 2 > /proc/sys/vm/drop_caches && stat -- ")):
     Path({str(dropped)!r}).write_text(str(Path({str(wt)!r}).exists()))
 else:
     sys.exit(f"unexpected limactl {{args}}")
@@ -1328,10 +1329,51 @@ sys.exit(molt_dev_retire.cleanup_worktree(
     )
     assert completed.returncode == 0, completed.stderr
     assert not wt.exists()
-    assert f"vm dropped its caches of {wt}: 1 host files released" in (
+    assert f"vm released its pins of {wt}: 1 host files released" in (
         completed.stderr
     ), completed.stderr
-    assert dropped.read_text(encoding="utf-8") == "True", "drop before removal"
+    assert dropped.read_text(encoding="utf-8") == "True", "release before removal"
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ImportError("tools.linux_vm"),
+        ValueError("bad definition"),
+        TypeError("bad Lima JSON"),
+        KeyError("dir"),
+        RuntimeError("limactl list failed"),
+        OSError("lsof"),
+        subprocess.TimeoutExpired("lsof", 60),
+    ],
+    ids=lambda error: type(error).__name__,
+)
+def test_the_guest_release_never_aborts_a_cleanup(
+    drv, origin_and_clone, tmp_path, monkeypatch, capsys, error
+):
+    """B5: whatever the release raises, the checkout is still removed."""
+    from tools import linux_vm
+
+    origin, _work = origin_and_clone
+    wt = _worktree_off(origin, tmp_path, "wt_release_raises")
+
+    def fail(*_args, **_kwargs):
+        raise error
+
+    if isinstance(error, ImportError):
+        # `from tools import linux_vm` itself fails.
+        import tools
+
+        monkeypatch.delattr(tools, "linux_vm")
+        monkeypatch.setitem(sys.modules, "tools.linux_vm", None)
+    else:
+        monkeypatch.setattr(linux_vm, "release_for_paths", fail)
+    rc = molt_dev_retire.cleanup_worktree(
+        drv.Git(wt), wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=None
+    )
+    assert rc == drv.EXIT_OK
+    assert not wt.exists()
+    assert f"Linux VMs may keep files of {wt}" in capsys.readouterr().err
 
 
 def test_failed_worktree_removal_keeps_the_checkouts_state(
@@ -1521,7 +1563,7 @@ def test_retirement_binds_complete_checkout_inventory_independent_of_caller_sele
                 "kind": kind,
             }
     assert foreign_bytes() == before
-    # Linux VMs drop their caches of the checkout and its state roots once,
+    # Linux VMs release their pins of the checkout and its state roots once,
     # just before the removal, while they still exist (HF-463).
     [(released, checkout_present)] = guest_releases
     assert checkout_present
