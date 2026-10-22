@@ -38,7 +38,7 @@ from molt.cli.setup_readiness import (
     _required_llvm_backend_pin,
 )
 from molt.llvm_toolchain import llvm_bootstrap_command
-from molt.tool_releases import pinned_executable
+from molt.tool_releases import pinned_executable, run_command
 
 
 class _MaintenanceStep(NamedTuple):
@@ -221,8 +221,7 @@ def _planned_update_steps(
                 _MaintenanceStep(
                     f"npm-update-{directory}",
                     [
-                        "corepack",
-                        "npm",
+                        *run_command("npm"),
                         "update",
                         "--package-lock-only",
                         "--ignore-scripts",

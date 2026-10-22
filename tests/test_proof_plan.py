@@ -2151,6 +2151,17 @@ def test_toolchain_projection_names_one_closed_provider() -> None:
         "git: a tool-release projection needs its executable" in error
         for error in with_projection("git", "tool-release")
     )
+    # The projection names the kind of release: npm runs on Node, Node is native.
+    assert any(
+        "npm: a tool-release projection needs its executable" in error
+        and "as a native tool" in error
+        for error in with_projection("npm", "tool-release")
+    )
+    assert any(
+        "node: a runtime-tool-release projection needs its executable" in error
+        and "as a runtime tool" in error
+        for error in with_projection("node", "runtime-tool-release")
+    )
 
 
 def test_linker_process_helper_policy_requires_unique_basenames() -> None:
@@ -9029,12 +9040,16 @@ def test_edgebox_sources_select_the_actual_locked_typescript_check(path: str) ->
         "--timeout",
         "120",
         "--",
-        "corepack",
+        "python",
+        "-m",
+        "molt.tool_releases",
+        "run",
         "npm",
+        "--",
         "run",
         "check",
     ]
-    assert {"python", "node", "corepack", "edgebox-typescript"} <= set(
+    assert {"python", "node", "npm", "edgebox-typescript"} <= set(
         PLAN.toolchain_closure(gate.toolchains)
     )
     assert isolated.select(["README.md"]) == ([], [])
@@ -9081,7 +9096,7 @@ def test_a_toolchain_claim_covers_the_policies_it_depends_on():
         {"name": "x", "plan_entities": ["toolchain_policy:edgebox-typescript"]}
     )
     assert errors == []
-    assert plan_claim_matches(claims, [("toolchain_policy", "corepack")])
+    assert plan_claim_matches(claims, [("toolchain_policy", "npm")])
     assert plan_claim_matches(claims, [("toolchain_policy", "node")])
     assert not plan_claim_matches(claims, [("toolchain_policy", "uv")])
     # A change to a whole section reaches every claim inside it.
@@ -9093,3 +9108,197 @@ def test_a_toolchain_claim_covers_the_policies_it_depends_on():
         "x: plan_entities names no entry 'toolchain_policy:absent'",
         "x: plan_entities names unknown section 'nonsense'",
     ]
+
+
+def test_admission_provisions_a_selected_runtime_tool_and_refuses_offline_with_its_cause(
+    tmp_path, monkeypatch
+) -> None:
+    """Admission itself provisions npm (HF-456 A-N4) and, offline, refuses
+    with the provisioning failure, never a raw URLError, and never claims
+    that it does not download (A-N3)."""
+    import urllib
+    import urllib.error
+    import urllib.request
+
+    from molt import tool_releases
+    from tests.process_guard_common import install_module_view
+
+    attempts = []
+
+    class Offline:
+        def open(self, request, timeout=None):
+            attempts.append(request.full_url)
+            raise urllib.error.URLError(ConnectionRefusedError(61, "refused"))
+
+    install_module_view(
+        monkeypatch,
+        "urllib",
+        urllib,
+        tool_releases,
+        request=SimpleNamespace(
+            Request=urllib.request.Request, build_opener=lambda *handlers: Offline()
+        ),
+    )
+    monkeypatch.setattr(proof_plan, "_RUNTIME_COMMANDS", {})
+    environ = {"PATH": "/usr/bin", "MOLT_TARGET_ROOT": str(tmp_path / "target-root")}
+    with pytest.raises(ValueError) as refused:
+        proof_plan.admit_toolchains(
+            PLAN.toolchain_policies, ("npm",), environ=environ, root=proof_plan.ROOT
+        )
+    message = str(refused.value)
+    npm = tool_releases.tool_release("npm", proof_plan.ROOT)
+    assert attempts == [tool_releases.host_asset(npm).url]
+    assert f"npm: cannot provision archive {attempts[0]}" in message, message
+    assert "admission's provisioning failed" in message
+    assert "never downloads" not in message
+
+
+def test_a_long_lived_runner_verifies_again_when_a_pin_or_an_installation_moves(
+    tmp_path, monkeypatch
+) -> None:
+    """The landing runner admits batch after batch in one process (HF-456 A-N2).
+
+    A batch may move npm's pin or Node's, or re-provision either tree; the
+    cached command must then be verified again, never served stale.
+    """
+    import os
+
+    from molt import tool_releases
+    from molt.dx import canonical_toolchain_root
+
+    root = tmp_path / "repo"
+    (root / "config").mkdir(parents=True)
+    manifest = root / "config" / "tool_releases.toml"
+    manifest.write_text(
+        (proof_plan.ROOT / "config" / "tool_releases.toml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    environ = {"PATH": "", "MOLT_TARGET_ROOT": str(tmp_path / "target-root")}
+    toolchain_root = canonical_toolchain_root(
+        root, environ, require_exists=False, cwd=root
+    )
+    verified = []
+
+    def pinned(tool, repo_root, **kwargs):
+        verified.append(tool)
+        return object()
+
+    monkeypatch.setattr(tool_releases, "pinned_command", pinned)
+    monkeypatch.setattr(proof_plan, "_RUNTIME_COMMANDS", {})
+
+    def admit():
+        return proof_plan._runtime_command("npm", root, environ, root)
+
+    def changed() -> bool:
+        before = len(verified)
+        command = admit()
+        assert admit() is command, "an unchanged state is served from the cache"
+        return len(verified) == before + 1
+
+    assert changed()
+    for name in ("node", "npm"):
+        # A pin bump moves the asset digest; the version and URL move with it.
+        digest = tool_releases.host_asset(tool_releases.tool_release(name, root))
+        text = manifest.read_text(encoding="utf-8")
+        assert text.count(digest.sha256) == 1
+        manifest.write_text(
+            text.replace(
+                digest.sha256, "f" * 64 if digest.sha256 != "f" * 64 else "e" * 64
+            ),
+            encoding="utf-8",
+        )
+        assert changed(), name
+    for name in ("node", "npm"):
+        prefix = tool_releases.tool_prefix(
+            toolchain_root, tool_releases.tool_release(name, root)
+        )
+        prefix.mkdir(parents=True)
+        attestation = prefix / tool_releases.TOOL_ATTESTATION_FILENAME
+        attestation.write_text("{}", encoding="utf-8")
+        assert changed(), f"{name} provisioned"
+        replacement = prefix / "replacement.json"
+        replacement.write_text('{"again": true}', encoding="utf-8")
+        os.replace(replacement, attestation)
+        assert changed(), f"{name} re-provisioned"
+
+
+def test_a_runtime_tool_is_admitted_by_its_attested_installation(
+    tmp_path, monkeypatch
+) -> None:
+    from molt import tool_releases
+
+    policies = {policy.name: policy for policy in PLAN.toolchain_policies}
+    npm, node = policies["npm"], policies["node"]
+    assert (npm.projection, node.projection) == ("runtime-tool-release", "tool-release")
+
+    def installed(name, path, digest, tree=None):
+        release = tool_releases.tool_release(name, proof_plan.ROOT)
+        return tool_releases.ToolDiscovery(
+            release=release,
+            prefix=path.parent,
+            executable=path,
+            executable_sha256=digest,
+            asset=next(iter(release.assets.values())),
+            tree_sha256=tree,
+        )
+
+    command = tool_releases.PinnedCommand(
+        installed("npm", tmp_path / "npm-cli.js", "a" * 64, "b" * 64),
+        installed("node", tmp_path / "node", "c" * 64),
+    )
+    monkeypatch.setattr(proof_plan, "_RUNTIME_COMMANDS", {})
+    calls = []
+
+    def pinned(*args, **kwargs):
+        calls.append(kwargs.get("provision", False))
+        return command
+
+    monkeypatch.setattr(tool_releases, "pinned_command", pinned)
+    probes = []
+
+    def probe(name, argv, **kwargs):
+        probes.append(list(argv))
+        return SimpleNamespace(stdout="12.2.1\n", stderr="")
+
+    monkeypatch.setattr(proof_plan.toolchain_probe, "run_toolchain_probe", probe)
+    # Admission provisions a selected runtime tool, as it provisions a
+    # checkout input, then verifies it once for the whole admission.
+    assert (
+        proof_plan._provision_runtime_tools(
+            PLAN.toolchain_policies, ("npm",), root=proof_plan.ROOT, environment={}
+        )
+        is None
+    )
+    identity = proof_plan._version_fingerprint(npm, environment={"PATH": ""})
+    projected = proof_plan.project_toolchains(
+        PLAN.toolchain_policies, ("npm",), environ={"PATH": "/usr/bin"}
+    )
+    assert calls == [True]
+    assert not any(entry.startswith("npm:") for entry in projected.missing)
+    assert probes == [
+        [str(tmp_path / "node"), str(tmp_path / "npm-cli.js"), "--version"]
+    ]
+    assert identity["version"] == "12.2.1"
+    assert (identity["tree_sha256"], identity["launcher_sha256"]) == (
+        "b" * 64,
+        "c" * 64,
+    )
+    assert identity["executable_sha256"] == "a" * 64
+    # The launched file is the runtime; the content is the entrypoint.
+    assert identity["path"] == identity["launcher_path"] == str(tmp_path / "node")
+    assert identity["content_path"] == str(tmp_path / "npm-cli.js")
+
+    def missing(*args, **kwargs):
+        raise tool_releases.ToolReleaseError("not provisioned")
+
+    monkeypatch.setattr(tool_releases, "pinned_command", missing)
+    monkeypatch.setattr(proof_plan, "_RUNTIME_COMMANDS", {})
+    assert proof_plan._version_fingerprint(npm, environment={"PATH": ""}) is None
+    assert "npm: not provisioned" in proof_plan._provision_runtime_tools(
+        PLAN.toolchain_policies, ("npm",), root=proof_plan.ROOT, environment={}
+    )
+    projected = proof_plan.project_toolchains(
+        PLAN.toolchain_policies, ("npm",), environ={"PATH": "/usr/bin"}
+    )
+    assert "npm: python3 -m molt.tool_releases provision npm" in projected.missing
+    assert str(tmp_path) not in projected.delta.get("PATH", "")
