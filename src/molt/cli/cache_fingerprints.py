@@ -48,16 +48,10 @@ def _backend_crate_source_closure(
         project_root=project_root,
         crate_root=project_root / "runtime" / product.value,
         crate_features=backend_features,
-        extra_source_paths=(project_root / "Cargo.toml",)
-        + (
-            (
-                # Rust embeds these authorities from outside its Cargo crate root.
-                project_root / "src" / "molt" / "backend_environment.json",
-                project_root / "src" / "molt" / "backend_daemon_protocol_version.txt",
-            )
-            if product is HostToolProduct.BACKEND
-            else ()
-        ),
+        # Each crate in the closure adds the files outside it that its build
+        # reads (package.metadata.molt.build-inputs): molt-ir's catalog reaches
+        # every product built on molt-ir, the backend's and the runner's alike.
+        extra_source_paths=(project_root / "Cargo.toml",),
     )
 
 

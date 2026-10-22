@@ -1,8 +1,9 @@
 # Cargo input authority
 
-Status: native file coverage guard and observed Cargo environment inputs
-implemented (HF-300, HF-302). Replacing guessed file roots with the complete
-content record remains open. Owner: build speed and artifact identity.
+Status: file coverage guard (native runtime, backend compiler and JIT runner
+publication), crate-declared build inputs and observed Cargo environment inputs
+implemented (HF-300, HF-302, HF-371). Replacing guessed file roots with the
+complete content record remains open. Owner: build speed and artifact identity.
 
 ## Problem
 
@@ -15,8 +16,9 @@ ordinary Cargo Fresh behavior cannot establish consumed-byte attestation either;
 include it when applying the complete file-input policy to source-built assets.
 To decide whether a stored compiler/runtime build is current,
 Molt hashes every file under the crate roots it guesses from the Cargo
-manifests (`cargo_source_closure._crate_source_paths`), plus hand-listed
-extras. The guess was wrong in both directions, and slow:
+manifests (`cargo_source_closure._crate_source_paths`), plus the files outside
+each crate that its build reads. The guess was wrong in both directions, and
+slow:
 
 - **It missed inputs.** The native runtime identity omitted `include/molt/molt.h` and the
   23 `include/molt/shared` headers that build scripts compile the C API shims
@@ -110,10 +112,25 @@ publication. Candidate selection uses the same decoder. File URI authorities
 remain part of UNC package roots. Build-script lines use Cargo's whitespace
 trimming before directive recognition.
 
-### The native coverage guard
+### Declared build inputs
 
-Native runtime publication refuses a build with a file or watched directory
-outside its identity roots. Covering only a directory's present files is
+A crate declares the files outside its root that its build script,
+`include_str!` or `#[path]` modules read, in `[package.metadata.molt]
+build-inputs`, relative to the crate as `cargo:rerun-if-changed` paths are.
+The closure walker adds them for every crate it reaches, so the fact lives
+beside the code that reads it and every product that builds the crate keys it.
+Before this, the extras were hand-listed per product, and the JIT runner's key
+missed `src/molt/backend_environment.json`, which `molt-ir`'s build embeds
+(HF-371 review). A declared input that does not exist, or that escapes the
+source root, is refused. Only the workspace's `Cargo.toml` and `Cargo.lock`
+stay caller inputs.
+
+### The coverage guard
+
+Native runtime, backend compiler and JIT runner publication refuse a build with
+a file or watched directory outside their identity roots
+(`cargo_build_reads.uncovered_build_inputs`); the refusal names the paths and
+the declaration that would cover them. Covering only a directory's present files is
 insufficient: adding its first header could otherwise leave the identity
 unchanged. The parser is itself part of the runtime tooling identity.
 
@@ -297,7 +314,7 @@ fails on a stat-cache disagreement, as rustc's `-Zincremental-verify-ich` does.
 
 - The crate-root walk as an identity source (`_crate_source_paths`,
   `runtime_source_roots`, the source part of `RuntimeTreeIndex` captures) and
-  the hand-listed extras in `runtime_source_paths`.
+  the crate-declared build inputs.
 - The backend source walks and the walk inside `CompilerSourceGeneration`.
 The fixed build-script environment allowlists are already retired by the
 observed environment migration. Typed Cargo/rustc, C-tool and configuration
@@ -309,8 +326,9 @@ Link fingerprints walk link inputs, which are artifacts; they are unchanged.
 
 Each slice is one contract, migrated whole with its consumers and tests:
 
-1. **Coverage guard**: `cargo_build_reads`, native runtime
-   publication, the roots fix.
+1. **Coverage guard (implemented)**: `cargo_build_reads`, native runtime,
+   backend compiler and JIT runner publication, and crate-declared build
+   inputs in place of the hand-listed extras.
 2. **Environment observation (implemented).** Native runtime, WASM pair,
    CPython ABI, backend and proof supervisor produce and consume the same typed
    record in their existing receipts. Source admission re-verifies; installed

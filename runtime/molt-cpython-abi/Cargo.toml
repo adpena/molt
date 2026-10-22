@@ -7,6 +7,17 @@ rust-version.workspace = true
 license = "Apache-2.0"
 description = "CPython binary ABI compatibility shim for Molt — enables dlopen-loading real CPython C extensions"
 
+[package.metadata.molt]
+# Files outside this crate that its build reads, relative to this crate as
+# cargo:rerun-if-changed paths are. Every source closure that reaches the
+# crate keys them, and Cargo's own reads verify the list after each build.
+# build.rs compiles build_support and the C shims against the shared headers.
+build-inputs = [
+  "../build_support",
+  "../../src/molt/wasi_c_abi_protocol.txt",
+  "../../include/molt/shared",
+]
+
 [lib]
 name = "molt_cpython_abi"
 crate-type = ["rlib", "cdylib"]

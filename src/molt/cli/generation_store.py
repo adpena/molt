@@ -31,6 +31,10 @@ GENERATION_STORE_IDLE_SECONDS = 24 * 60 * 60
 _LOCK_TIMEOUT_SECONDS = 300.0
 
 
+class GenerationEvicted(FileNotFoundError):
+    """A store entry a caller wants to use was removed (a cache miss)."""
+
+
 @dataclass(frozen=True)
 class GenerationStoreLayout:
     """What one kind of store names, and how it removes one idle entry."""
@@ -54,12 +58,23 @@ class GenerationStore:
     last_used: dict[str, float] = field(default_factory=dict)
 
     def use(self, *names: str) -> None:
+        """Renew each entry's window, or miss when eviction removed it.
+
+        Eviction runs under the same lock, so an entry present here stays for
+        the whole idle window after this call: a caller that checked a path
+        before taking the lock learns here whether it is still there.
+        """
+        missing = [name for name in names if not (self.root / name).exists()]
+        if missing:
+            raise GenerationEvicted(
+                f"{self.layout.label} entries are gone: {', '.join(missing)}"
+            )
         for name in names:
             self.last_used[name] = self.now
 
     def select(self, *names: str) -> None:
         # A reader may hold the selection this replaces; give it a full window.
-        self.use(*self.selected)
+        self.use(*(name for name in self.selected if (self.root / name).exists()))
         self.selected = names
         self.use(*self.selected)
 

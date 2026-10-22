@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tomllib
 from pathlib import Path
 from typing import Any, Sequence
@@ -14,6 +15,43 @@ def _dedupe_source_paths(paths: Sequence[Path]) -> list[Path]:
         seen.add(path)
         deduped.append(path)
     return deduped
+
+
+def _crate_build_inputs(
+    crate_root: Path, data: dict[str, Any], project_root: Path
+) -> tuple[Path, ...]:
+    """The files outside a crate that its build script or ``include_str!`` reads.
+
+    The crate declares them in ``[package.metadata.molt] build-inputs``,
+    relative to its root as ``cargo:rerun-if-changed`` paths are, so the fact
+    lives beside the code that reads it and every closure that reaches the
+    crate carries it. Cargo's own reads verify the declaration after each
+    build (``cargo_build_reads.uncovered_build_inputs``).
+    """
+    package = data.get("package", {})
+    metadata = package.get("metadata", {}) if isinstance(package, dict) else {}
+    molt = metadata.get("molt", {}) if isinstance(metadata, dict) else {}
+    declared = molt.get("build-inputs", []) if isinstance(molt, dict) else []
+    if not isinstance(declared, list) or not all(
+        isinstance(item, str) and item for item in declared
+    ):
+        raise ValueError(
+            f"{crate_root / 'Cargo.toml'}: package.metadata.molt.build-inputs "
+            "must be a list of paths"
+        )
+    inputs: list[Path] = []
+    for item in declared:
+        path = Path(os.path.normpath(crate_root / item))
+        if not Path(os.path.realpath(path)).is_relative_to(project_root):
+            raise ValueError(
+                f"{crate_root / 'Cargo.toml'}: build input escapes the source root: {item}"
+            )
+        if not path.exists():
+            raise ValueError(
+                f"{crate_root / 'Cargo.toml'}: declared build input does not exist: {item}"
+            )
+        inputs.append(path)
+    return tuple(inputs)
 
 
 def _crate_source_paths(crate_root: Path) -> tuple[Path, ...]:
@@ -313,6 +351,9 @@ def _cargo_crate_source_closure(
         seen.add(key)
         source_paths.extend(_crate_source_paths(current_root))
         data = _read_cargo_document(current_root / "Cargo.toml")
+        source_paths.extend(
+            _crate_build_inputs(current_root, data, project_root_resolved)
+        )
         selected_optional_deps, child_features = _feature_dependency_selection(
             data, current_features
         )

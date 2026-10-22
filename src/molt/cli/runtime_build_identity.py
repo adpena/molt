@@ -1290,12 +1290,7 @@ def resolve_wasm_cpython_abi_build_identity(
         project_root=root,
         crate_root=crate_root,
         crate_features=(),
-        extra_source_paths=(
-            root / "Cargo.toml",
-            root / "Cargo.lock",
-            root / "runtime" / "build_support",
-            root / "include" / "molt" / "shared",
-        ),
+        extra_source_paths=(root / "Cargo.toml", root / "Cargo.lock"),
     )
     source_roots: list[tuple[str, Path]] = []
     for path in source_paths:

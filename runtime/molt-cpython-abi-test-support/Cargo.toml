@@ -7,6 +7,16 @@ rust-version = "1.99.1"
 license = "Apache-2.0"
 build = "build.rs"
 
+[package.metadata.molt]
+# Files outside this crate that its build reads, relative to this crate as
+# cargo:rerun-if-changed paths are. Every source closure that reaches the
+# crate keys them, and Cargo's own reads verify the list after each build.
+# build.rs compiles build_support and its probes against the public headers.
+build-inputs = [
+  "../build_support",
+  "../../include",
+]
+
 [lib]
 name = "molt_cpython_abi_test_support"
 
