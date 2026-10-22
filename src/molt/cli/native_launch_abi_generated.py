@@ -9,6 +9,8 @@ same command line and image format from it.
 
 # The JIT runner's command line: [<receipt flag> <path>] <image flag> <image> [args...].
 JIT_RUNNER_IMAGE_FLAG = "--image"
+# Alone, this flag runs the runner's executable-memory admission probe.
+JIT_RUNNER_PROBE_FLAG = "--probe"
 JIT_RUNNER_START_RECEIPT_FLAG = "--start-receipt"
 # What the runner writes to its start receipt right before the program starts.
 JIT_START_RECEIPT = '{"schema":"molt.jit-start.v1"}\n'

@@ -11,14 +11,17 @@ schema = 1
 
 # The JIT runner's command line and its image format:
 #   molt-jit [<start_receipt_flag> <path>] <image_flag> <image> [args...]
+#   molt-jit <probe_flag>
 # A JIT image's first line is `#!<runner> <image_flag>`, so execve of the image
 # runs that command; its second line starts with `image_marker`. With a start
 # receipt the runner creates `<path>` holding `start_receipt` right before the
 # program starts. `allocator_restart_flag` is the runner's own: it restarts
 # itself with it once on macOS (runtime/molt-jit/src/main.rs), and no caller
-# passes it.
+# passes it. `probe_flag` alone runs one compiled function in executable
+# memory: the CLI's admission probe (src/molt/cli/backend_binary.py).
 [runner]
 image_flag = "--image"
+probe_flag = "--probe"
 start_receipt_flag = "--start-receipt"
 allocator_restart_flag = "--allocator-restarted"
 start_receipt = "{\"schema\":\"molt.jit-start.v1\"}\n"
