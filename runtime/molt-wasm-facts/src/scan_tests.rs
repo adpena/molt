@@ -59,6 +59,8 @@ fn section_publication_preserves_empty_and_deferred_code_bytes() {
             vec![Instruction::Nop],
             vec![Instruction::I32Const(23), Instruction::Drop],
         ],
+        // Both the body count and section size require multi-byte LEB encodings.
+        vec![vec![Instruction::Nop]; 128],
     ] {
         let original = module_with_bodies(&bodies);
         let mut published = Module::new();

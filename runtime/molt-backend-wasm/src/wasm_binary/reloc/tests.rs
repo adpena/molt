@@ -44,7 +44,10 @@ fn code_body_ranges(wasm: &[u8]) -> (u64, Vec<std::ops::Range<u64>>) {
     let mut ranges = Vec::new();
     for payload in Parser::new(0).parse_all(wasm) {
         match payload.expect("valid wasm payload") {
-            Payload::CodeSectionStart { range, .. } => {
+            Payload::CodeSectionStart {
+                unchecked_range: range,
+                ..
+            } => {
                 code_start = Some(range.start);
             }
             Payload::CodeSectionEntry(body) => {

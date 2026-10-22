@@ -7791,6 +7791,7 @@
         "tir::",
         "wasm::",
         "wasm_abi::",
+        "wasm_binary::reloc::tests::",
         "async_rt::channels::",
         "async_rt::net_stubs::",
         "concurrency::gil::tests::",

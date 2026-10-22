@@ -895,7 +895,11 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
                     }
                 }
             }
-            Payload::CodeSectionStart { count, range, .. } => {
+            Payload::CodeSectionStart {
+                count,
+                unchecked_range: range,
+                ..
+            } => {
                 if pending_code_section.is_some() {
                     return Err("nested code section publication state".to_string());
                 }
