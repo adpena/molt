@@ -14,6 +14,7 @@ pub mod float_repr;
 pub mod host_capabilities_generated;
 pub mod integer_decimal;
 pub mod numeric_error_policy_generated;
+pub mod numeric_ratio;
 pub mod text_storage;
 
 // ---------------------------------------------------------------------------

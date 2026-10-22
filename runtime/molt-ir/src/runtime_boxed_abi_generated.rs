@@ -4554,11 +4554,6 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
-        symbol: "molt_fraction_pow",
-        arity: 2,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
         symbol: "molt_fraction_sub",
         arity: 2,
         result: RuntimeBoxedReturn::OwnedValue,
@@ -10659,11 +10654,6 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
-        symbol: "molt_statistics_mean_slice",
-        arity: 5,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
         symbol: "molt_statistics_median",
         arity: 1,
         result: RuntimeBoxedReturn::OwnedValue,
@@ -10746,11 +10736,6 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_statistics_stdev",
         arity: 2,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_statistics_stdev_slice",
-        arity: 5,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
@@ -13074,14 +13059,14 @@ pub fn runtime_boxed_op_abi(kind: &str) -> Option<&'static RuntimeBoxedAbi> {
         "bytes_find_slice" => Some(&RUNTIME_BOXED_ABIS[241]),
         "bytes_startswith" => Some(&RUNTIME_BOXED_ABIS[247]),
         "bytes_startswith_slice" => Some(&RUNTIME_BOXED_ABIS[248]),
-        "string_count" => Some(&RUNTIME_BOXED_ABIS[2162]),
-        "string_count_slice" => Some(&RUNTIME_BOXED_ABIS[2163]),
-        "string_endswith" => Some(&RUNTIME_BOXED_ABIS[2164]),
-        "string_endswith_slice" => Some(&RUNTIME_BOXED_ABIS[2165]),
-        "string_find" => Some(&RUNTIME_BOXED_ABIS[2167]),
-        "string_find_slice" => Some(&RUNTIME_BOXED_ABIS[2168]),
-        "string_startswith" => Some(&RUNTIME_BOXED_ABIS[2190]),
-        "string_startswith_slice" => Some(&RUNTIME_BOXED_ABIS[2191]),
+        "string_count" => Some(&RUNTIME_BOXED_ABIS[2159]),
+        "string_count_slice" => Some(&RUNTIME_BOXED_ABIS[2160]),
+        "string_endswith" => Some(&RUNTIME_BOXED_ABIS[2161]),
+        "string_endswith_slice" => Some(&RUNTIME_BOXED_ABIS[2162]),
+        "string_find" => Some(&RUNTIME_BOXED_ABIS[2164]),
+        "string_find_slice" => Some(&RUNTIME_BOXED_ABIS[2165]),
+        "string_startswith" => Some(&RUNTIME_BOXED_ABIS[2187]),
+        "string_startswith_slice" => Some(&RUNTIME_BOXED_ABIS[2188]),
         _ => None,
     }
 }

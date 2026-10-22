@@ -10,4 +10,5 @@ license = "Apache-2.0"
 crc32fast = "1.5"
 molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
 num-bigint = "0.5"
+num-integer = "0.1"
 num-traits = "0.2"

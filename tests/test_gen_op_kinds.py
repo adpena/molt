@@ -1014,11 +1014,6 @@ def test_audit_llvm_decomposition_sources_real_coverage_authorities() -> None:
     audit = _audit()
     res = audit.run_audit()
 
-    for kind in ("statistics_mean_slice", "statistics_stdev_slice"):
-        row = res.rows[kind]
-        assert row.llvm_runtime_fallback_eligible
-        assert row.llvm_covered
-
     for kind in ("vec_sum", "vec_prod", "vec_min", "vec_max"):
         row = res.rows[kind]
         assert row.llvm_runtime_fallback_eligible

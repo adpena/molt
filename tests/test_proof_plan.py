@@ -900,6 +900,7 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
         "molt-runtime",
         "molt-runtime-regex",
         "molt-runtime-core",
+        "molt-runtime-math",
         "molt-stdlib-text",
         "molt-runtime-platform",
         "molt-gpu-runtime",
@@ -953,6 +954,8 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
         "async_rt::channels::",
         "async_rt::net_stubs::",
         "concurrency::gil::tests::",
+        "numeric_ratio::",
+        "math::statistics_reduction_tests::",
         "intrinsics::registry::",
     } <= set(filters)
     assert {
@@ -1000,6 +1003,7 @@ def test_compression_export_proofs_select_both_feature_coordinates() -> None:
         "molt-passes/test-util",
         "molt-backend-wasm/test-util",
         "molt-runtime/stdlib_micro",
+        "molt-runtime/stdlib_math",
         "molt-runtime/builtin_complex",
         "molt-runtime/builtin_set",
         "molt-runtime/molt_gpu_primitives",

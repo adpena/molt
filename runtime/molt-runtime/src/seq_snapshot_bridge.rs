@@ -189,6 +189,47 @@ mod tests {
                 assert_eq!(len, 0);
                 assert_eq!(owners(value), 3, "failed export must not retain handles");
                 crate::test_support::assert_and_clear_emergency_memory_error(py);
+                #[cfg(feature = "stdlib_math")]
+                {
+                    // The satellite must preserve failure as a distinct value,
+                    // never reinterpret it as an empty sequence or guard miss.
+                    assert!(unsafe { molt_runtime_math::bridge::seq_snapshot(sequence) }.is_none());
+                    crate::test_support::assert_and_clear_emergency_memory_error(py);
+                    let reductions: [(&str, fn(u64) -> u64); 8] = [
+                        ("mean", |data| crate::molt_statistics_mean(data)),
+                        ("variance", |data| {
+                            crate::molt_statistics_variance(data, MoltObject::none().bits())
+                        }),
+                        ("stdev", |data| {
+                            crate::molt_statistics_stdev(data, MoltObject::none().bits())
+                        }),
+                        ("quantiles", |data| {
+                            crate::molt_statistics_quantiles(
+                                data,
+                                MoltObject::from_int(4).bits(),
+                                MoltObject::from_bool(false).bits(),
+                            )
+                        }),
+                        ("harmonic_mean", |data| {
+                            crate::molt_statistics_harmonic_mean(data)
+                        }),
+                        ("median", |data| crate::molt_statistics_median(data)),
+                        ("median_low", |data| crate::molt_statistics_median_low(data)),
+                        ("median_high", |data| {
+                            crate::molt_statistics_median_high(data)
+                        }),
+                    ];
+                    for (name, reduce) in reductions {
+                        let result = reduce(MoltObject::from_ptr(sequence).bits());
+                        assert_eq!(
+                            result,
+                            MoltObject::none().bits(),
+                            "{name} must return the error sentinel, not NotImplemented or a numeric result"
+                        );
+                        crate::test_support::assert_and_clear_emergency_memory_error(py);
+                        assert_eq!(owners(value), 3, "{name} must release temporary ownership");
+                    }
+                }
                 drop(reset);
 
                 assert_eq!(molt_seq_snapshot(sequence, &mut ptr, &mut len), 1);
