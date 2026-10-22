@@ -383,6 +383,14 @@ dispatch. Callback exceptions propagate with the already completed mutations.
 
 ### Shared tee storage
 
+Physical shape declarations in `runtime/heap_kinds.toml` explicitly state whether
+their payload reserves shared class fields and a dictionary tail. The generated
+`ObjectShapeId::has_class_fields` policy controls field access, reset and tracing;
+logical class membership cannot turn a native capture, counter or pointer into
+instance storage. Iterator and task payloads own all their words. Native shapes
+with reserved dictionary tails and the separate native-instance field owner
+retain their existing storage contracts.
+
 `itertools.tee` readers own a `(block, offset)` cursor. Each block is a separate
 GC-tracked runtime object owning its source iterator, up to 57 cached values,
 and its successor. `runtime/heap_kinds.toml` declares both shapes;

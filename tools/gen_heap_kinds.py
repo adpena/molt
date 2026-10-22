@@ -331,6 +331,7 @@ def load_object_shapes(path: Path = TABLE) -> list[dict[str, object]]:
         shape_id = row.get("id")
         family = row.get("family")
         resource_slot0 = row.get("resource_slot0")
+        class_fields = row.get("class_fields")
         if not isinstance(name, str) or re.fullmatch(r"[A-Z][A-Z0-9_]*", name) is None:
             raise ValueError(f"invalid object-shape name: {name!r}")
         if not isinstance(shape_id, int) or not (0 <= shape_id <= 0xFFFF):
@@ -339,6 +340,10 @@ def load_object_shapes(path: Path = TABLE) -> list[dict[str, object]]:
             raise ValueError(f"duplicate object-shape name or id: {name}={shape_id}")
         if family not in OBJECT_SHAPE_FAMILIES:
             raise ValueError(f"invalid object-shape family for {name}: {family!r}")
+        if not isinstance(class_fields, bool):
+            raise ValueError(
+                f"invalid object-shape class_fields for {name}: {class_fields!r}"
+            )
         if resource_slot0 not in OBJECT_SHAPE_RESOURCE_SLOTS:
             raise ValueError(
                 f"invalid object-shape resource_slot0 for {name}: {resource_slot0!r}"
@@ -395,7 +400,18 @@ def render_object_shapes(shapes: list[dict[str, object]]) -> str:
         lines.append(
             f"            {row['id']} => Self::{_variant(str(row['name']).lower())},\n"
         )
-    lines.append("            _ => return None,\n        })\n    }\n}\n\n")
+    lines.append("            _ => return None,\n        })\n    }\n\n")
+    lines.append(
+        "    /// Whether the physical payload reserves shared class fields and a dictionary tail.\n"
+        "    #[inline(always)]\n    pub const fn has_class_fields(self) -> bool {\n"
+        "        match self {\n"
+    )
+    for row in shapes:
+        lines.append(
+            f"            Self::{_variant(str(row['name']).lower())} => "
+            f"{str(row['class_fields']).lower()},\n"
+        )
+    lines.append("        }\n    }\n}\n\n")
     lines.append(
         "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n"
         "pub enum ObjectShapeLifecycleFamily {\n"

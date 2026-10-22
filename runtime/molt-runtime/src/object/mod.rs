@@ -1504,14 +1504,13 @@ pub(crate) fn heap_kind_has_class_shape(type_id: u32) -> bool {
     heap_shape_policy(type_id) == Some(HeapShapePolicy::Class)
 }
 
-/// A logical class edge does not change a task's physical capture payload.
-/// Its typed lifecycle owns every capture word, including the last word; none
-/// belongs to managed class fields or the shared instance-dictionary tail.
+/// Admit shared fields only when the immutable physical shape reserves them.
+/// Logical class membership cannot turn a native payload word into a dictionary.
+/// Native classes with real reserved tails remain admitted by generated policy.
 #[inline]
 pub(crate) unsafe fn object_has_class_shape(ptr: *mut u8) -> bool {
     unsafe {
-        heap_kind_has_class_shape(object_type_id(ptr))
-            && !object_shape_is_task(object_shape_id(ptr))
+        heap_kind_has_class_shape(object_type_id(ptr)) && object_shape_id(ptr).has_class_fields()
     }
 }
 
@@ -2544,8 +2543,8 @@ pub(crate) unsafe fn instance_dict_bits_ptr(ptr: *mut u8) -> *mut u64 {
             };
         }
         // The physical kind admits class layout only when its immutable
-        // subshape does too. Classed poll adapters retain a capture in their
-        // final word; their logical class must never reinterpret it as __dict__.
+        // subshape does too. Native payloads may own their final word; logical
+        // class membership must never reinterpret that storage as __dict__.
         if !object_has_class_shape(ptr) || object_class_bits(ptr) == 0 {
             return std::ptr::null_mut();
         }

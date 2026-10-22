@@ -3011,6 +3011,9 @@ pub extern "C" fn molt_itertools_tee(iterable_bits: u64, n_bits: u64) -> u64 {
             // CPython gets the iterable's iterator, then constructs a tee from
             // that iterator. Both __iter__ calls and their exceptions matter.
             let iterator_bits = molt_iter(py, iterable_bits);
+            if obj_from_bits(iterator_bits).is_none() {
+                return raise_not_iterable(py, iterable_bits);
+            }
             let iterator = unsafe { OwnedRuntimeValue::from_owned_bits(py, iterator_bits) };
             if exception_pending(py) {
                 return MoltObject::none().bits();
@@ -3043,6 +3046,9 @@ pub extern "C" fn molt_itertools_tee(iterable_bits: u64, n_bits: u64) -> u64 {
 pub extern "C" fn molt_itertools_tee_new(iterable_bits: u64) -> u64 {
     with_core_gil!(py, {
         let iterator_bits = molt_iter(py, iterable_bits);
+        if obj_from_bits(iterator_bits).is_none() {
+            return raise_not_iterable(py, iterable_bits);
+        }
         let iterator = unsafe { OwnedRuntimeValue::from_owned_bits(py, iterator_bits) };
         if exception_pending(py) {
             return MoltObject::none().bits();
