@@ -39,7 +39,7 @@ from molt.windows_process_snapshot import (
     windows_process_resident_kb,
 )
 
-from molt.windows_process_api import process_is_alive
+from molt.windows_process_api import process_is_alive, valid_windows_pid
 
 
 # These are conservative host-protection signatures, never Molt ownership.
@@ -811,7 +811,9 @@ def _linux_proc_stat_row(
 
     The identity is (parent, group, start marker, comm). Field 24 carries the
     same resident-set counter that `status` reports as `VmRSS`, so one read
-    serves both the ancestry sample and the memory accounting.
+    serves both the ancestry sample and the memory accounting. A process that
+    has exited and awaits its reap (``_linux_stat_exited``) has no row, as
+    Darwin's samplers drop ``SZOMB`` rows: it is no live member of any tree.
     """
 
     if pid <= 0 or (
@@ -834,6 +836,8 @@ def _linux_proc_stat_row(
     except (IndexError, OSError, ValueError):
         return None
     if start_ticks < 0 or ticks_per_second <= 0:
+        return None
+    if _linux_stat_exited(tail):
         return None
     identity = (
         max(0, ppid),
@@ -1631,29 +1635,40 @@ def process_started_at_ns(pid: int) -> int | None:
 
 # ``kill(2)`` takes a ``pid_t``, a C ``int`` on every POSIX host Molt targets.
 _POSIX_PID_MAX = 0x7FFFFFFF
-# proc(5) states of a process that exited: ``Z`` zombie, ``X``/``x`` dead.
-_LINUX_EXITED_STATES = frozenset({b"Z", b"X", b"x"})
+# proc(5) states of a task that exited: ``Z`` zombie, ``X``/``x`` dead.
+_LINUX_EXITED_STATES = frozenset({"Z", "X", "x"})
+
+
+def valid_pid(pid: object) -> bool:
+    """Whether ``pid`` can name a process on this host: a positive ``int``
+    (never a ``bool``) within the OS's process-ID width. Windows keeps its
+    ``DWORD`` rule in the leaf ``windows_process_api``, which its own process
+    queries share."""
+
+    if os.name == "nt":
+        return valid_windows_pid(pid)
+    return type(pid) is int and 0 < pid <= _POSIX_PID_MAX
 
 
 def pid_alive(pid: int) -> bool:
     """Whether ``pid`` names a process that has not exited.
 
     A zombie (exited and not yet reaped by its parent) is not alive. The probe
-    never reaps it, so a ``Popen`` owner keeps its child's exit status. A
+    never reaps it, so a ``Popen`` owner keeps its child's exit status. On
+    Linux every thread must have exited: a leader that called
+    ``pthread_exit`` reads ``Z`` while another thread still runs. A
     process this caller may not signal is alive while the kernel lists it.
-    Unknown native observations raise OSError; only a proven exit returns False.
-    Windows asks the process object: there ``os.kill(pid, 0)`` sends
-    ``CTRL_C_EVENT`` to a console process group instead of probing.
+    Unknown native observations raise OSError. An invalid pid names no process
+    and returns False, so a caller that may act only on a proven exit checks
+    ``valid_pid`` first. Windows asks the process object: there
+    ``os.kill(pid, 0)`` sends ``CTRL_C_EVENT`` to a console process group
+    instead of probing.
     """
 
-    if type(pid) is not int or pid <= 0:
+    if not valid_pid(pid):
         return False
     if os.name == "nt":
-        if pid > 0xFFFFFFFF:
-            return False
         return process_is_alive(pid)
-    if pid > _POSIX_PID_MAX:
-        return False
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -1674,21 +1689,42 @@ def _posix_pid_is_zombie(pid: int) -> bool:
         row = _darwin_proc_kernel_row(pid)
         return row is not None and row.status == _DARWIN_SZOMB
     if sys.platform.startswith("linux"):
-        return _linux_proc_state(pid) in _LINUX_EXITED_STATES
+        return _linux_stat_exited(_linux_stat_fields(pid))
     return False
 
 
-def _linux_proc_state(pid: int, proc_root: Path = Path("/proc")) -> bytes | None:
-    """The one-byte state field of ``/proc/<pid>/stat``; None when unreadable."""
+def _linux_stat_fields(pid: int, proc_root: Path = Path("/proc")) -> list[str] | None:
+    """The fields of ``/proc/<pid>/stat`` after the command name; None when unreadable."""
 
     try:
-        raw = (proc_root / str(pid) / "stat").read_bytes()
-        # The state follows the command name, which may hold spaces and ")".
-        state_at = raw.rindex(b")") + 2
+        raw = (proc_root / str(pid) / "stat").read_text(
+            encoding="utf-8", errors="surrogateescape"
+        )
+        # The command name may hold spaces and ")".
+        return raw[raw.rindex(")") + 2 :].split()
     except (OSError, ValueError):
         return None
-    state = raw[state_at : state_at + 1]
-    return state or None
+
+
+def _linux_stat_exited(fields: Sequence[str] | None) -> bool:
+    """True only when one stat row proves every task of its process exited.
+
+    ``fields`` follow the command name. The state alone proves nothing: a
+    leader that called ``pthread_exit`` reads ``Z`` while its other threads
+    run and write. ``num_threads`` (field 20) counts every thread of the
+    group until the kernel releases it, and a new thread counts before it
+    runs, so an exited leader that counts at most itself has no task left.
+    Both fields come from one read, so a pid reaped and reused in between
+    cannot mix two processes. An unreadable or short row leaves the process
+    unknown, never exited.
+    """
+
+    if not fields or fields[0] not in _LINUX_EXITED_STATES:
+        return False
+    try:
+        return int(fields[17]) <= 1
+    except (IndexError, ValueError):
+        return False
 
 
 def parse_windows_process_snapshot_rows(

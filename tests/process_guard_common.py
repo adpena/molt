@@ -672,6 +672,25 @@ def start_owned_test_process(
     )
 
 
+def child_exited_unreaped(process: subprocess.Popen[Any]) -> bool:
+    """Whether the kernel reports this POSIX child exited; never reaps it.
+
+    Both oracles are independent of ``molt.process_model``, and the child
+    stays a zombie for its owner. Linux asks the kernel's own wait
+    (``waitid`` with ``WNOWAIT``), which reports a thread group only when every
+    thread has exited, not when its leader has. Python 3.12 has no ``waitid``
+    on macOS, so Darwin reads the state ``ps(1)`` reports.
+    """
+
+    if sys.platform == "darwin":
+        state = check_output_custody_subject_process(
+            ["ps", "-o", "stat=", "-p", str(process.pid)], text=True
+        )
+        return state.strip().startswith("Z")
+    flags = os.WEXITED | os.WNOWAIT | os.WNOHANG
+    return os.waitid(os.P_PID, process.pid, flags) is not None
+
+
 def close_owned_test_process(process: subprocess.Popen[Any]) -> None:
     """Close exactly the process group created by start_owned_test_process."""
 

@@ -19,7 +19,11 @@ from types import SimpleNamespace
 from typing import TypeAlias
 
 from molt.backend_executable_names import is_host_tool_executable_name
-from molt.windows_process_api import bind_process_query_api, process_query_api
+from molt.windows_process_api import (
+    bind_process_query_api,
+    process_query_api,
+    valid_windows_pid,
+)
 
 
 DEFAULT_WINDOWS_PROCESS_SNAPSHOT_TIMEOUT_SEC = 5.0
@@ -259,7 +263,7 @@ def windows_process_handle_rss_kb(handle: object) -> int | None:
 def windows_process_resident_kb(pid: int, expected_birth_ns: int | None) -> int:
     """Size one sampled instance through one birth-checked process handle."""
 
-    if os.name != "nt" or type(pid) is not int or not 0 < pid <= 0xFFFFFFFF:
+    if os.name != "nt" or not valid_windows_pid(pid):
         return 0
     if type(expected_birth_ns) is not int or expected_birth_ns <= 0:
         return 0
@@ -771,7 +775,7 @@ def windows_job_command_context(
     path. Failure/denial means unknown. The caller must retain Job membership
     custody; this query alone never grants ownership of a host process.
     """
-    if os.name != "nt" or type(pid) is not int or not 0 < pid <= 0xFFFFFFFF:
+    if os.name != "nt" or not valid_windows_pid(pid):
         return None
     if type(expected_birth_ns) is not int or expected_birth_ns <= 0:
         return None
