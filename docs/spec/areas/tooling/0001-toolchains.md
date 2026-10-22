@@ -854,8 +854,11 @@ after publication (`molt.cli.backend_generation`). A checkout whose inputs
 match an entry runs its generation without Cargo. The receipt names the
 source identity, the observed environment and the generation's bytes, and is
 written once: a stored compiler that fails its capability probe fails the
-build instead of being rebuilt over, and changed or missing stored bytes fail
-loud as a corrupt entry. A build resolves its generation once and runs it for
+build instead of being rebuilt over, and changed or missing stored bytes of
+the reader's own variant fail loud as a corrupt entry, naming
+`molt cache evict host-tool <identity>`. A reader checks only the variant
+whose receipt records its own Cargo environment, so another environment's
+corrupt variant never fails it. A build resolves its generation once and runs it for
 every later step (dispatch, daemon, WASM facts scanning, link admission), so a
 concurrent build's publication never changes the bytes or the path that an
 earlier build captured. Bazel and Nix publish outputs the same way. Cargo's

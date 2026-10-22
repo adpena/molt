@@ -849,9 +849,23 @@ tests that place their target in a temporary directory.
   appears, and eviction moves an entry aside before deleting it, so readers
   see an entry whole or not at all. A receipt that exists but does not verify
   is therefore corruption: the build fails at stage `product-store` and names
-  the entry; it never rebuilds over it silently.
-- A variant is written once. Nothing rewrites its receipt while readers may
-  hold what it selects: a stored compiler that fails its capability probe
+  the entry and `molt cache evict <kind> <identity>`, the tested tool that
+  removes it the way idle eviction does (it waits for the identity's builder,
+  then moves the entry aside under the ledger lock). It never rebuilds over
+  it silently, and a hand deletion under live readers would break the
+  whole-or-nothing rule.
+- A reader reads only its own variant: it reads each receipt's recorded Cargo
+  environment (one small JSON read for the runtime's manifest, the receipt
+  itself for a host tool), skips the variants of other environments, and
+  verifies the bytes of the one that matches. A corrupt variant of another
+  environment therefore never fails it. A receipt too damaged to name an
+  environment names no reader's; if it is the reader's own, the reader misses,
+  builds, and its publication finds the existing receipt and fails with the
+  same eviction message (one wasted build in that rare case, against
+  blocking every other environment).
+- A variant is written once, enforced by an exclusive (no-replace) receipt
+  publication. Nothing rewrites its receipt while readers may hold what it
+  selects: a stored compiler that fails its capability probe
   fails the build (the same inputs build the same compiler), and an import
   of a variant the host already holds returns the stored one. Probe evidence
   is a cached check beside the receipt, so a stale one is probed again.
@@ -902,8 +916,12 @@ tests that place their target in a temporary directory.
   the runtime and one for the backend.
 - Lock order is fixed: a build takes its checkout's build lock first (for
   the backend it guards Cargo's one output that every feature variant
-  publishes from), then the identity's lock. Imports take only the identity's
-  lock, so no order inverts.
+  publishes from), then the identity's lock, then the ledger lock briefly.
+  Imports and `molt cache evict` take only the identity's lock and then the
+  ledger lock, so no order inverts. The identity's lock lives at
+  `<kind>/.locks/<identity>.lock`, outside the entry, and is never deleted,
+  as Cargo keeps its lock files: eviction moves an entry aside while a waiter
+  may hold the lock's inode, and a lock inside the entry would move with it.
 
 The native runtime and every host tool (each backend feature variant and the
 WASM facts tool, store kind `host-tool`) read and publish only the store; the

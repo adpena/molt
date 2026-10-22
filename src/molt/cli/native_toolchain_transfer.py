@@ -37,7 +37,7 @@ from molt.cli.runtime_native_build import (
 from molt.cli.runtime_native_generation import (
     import_native_runtime_generation,
     native_runtime_generation_path,
-    native_runtime_store_generations,
+    native_runtime_store_generation,
 )
 from molt.cli.runtime_paths import _runtime_lib_path
 from molt.cli.rust_cpu_policy import RustCpuPolicy, resolve_rust_cpu_policy
@@ -156,46 +156,39 @@ def export_native_toolchain(
     identity = inputs.build_identity
     store = native_runtime_store(selection.project_root)
     try:
-        generations = native_runtime_store_generations(
+        # Renewed before the read, so no eviction races the export.
+        store.record_use(identity.digest)
+        generation = native_runtime_store_generation(
             store,
             identity,
+            inputs.environment,
             runtime_name=selection.runtime_lib.name,
             cargo_profile=selection.runtime_cargo_profile,
             target_triple=None,
         )
-    except ProductStoreError as exc:
+    except (OSError, ProductStoreError) as exc:
         raise NativeToolchainTransferError(str(exc)) from exc
-    members: list[TransferMember] | None = None
-    checked: list[str] = []
-    for generation in generations:
-        try:
-            generation.cargo_environment.verify(inputs.environment)
-        except ValueError as exc:
-            checked.append(str(exc))
-            continue
-        coordinate = (
-            store.variant(identity.digest, generation.cargo_environment)
-            / selection.runtime_lib.name
-        )
-        members = [
-            TransferMember(
-                RUNTIME_SELECTION_ROLE,
-                native_runtime_generation_path(coordinate),
-                executable=False,
-            ),
-            *(
-                TransferMember(role, member.path, executable=False)
-                for role, member in generation.members
-            ),
-        ]
-        break
-    if members is None:
+    if generation is None:
         raise NativeToolchainTransferError(
             f"no native runtime generation is stored for this checkout's inputs "
-            f"({identity.digest} in {store.root}); build "
+            f"and Cargo environment ({identity.digest} in {store.root}); build "
             f"{selection.runtime_lib.name} first"
-            + (f" ({'; '.join(checked)})" if checked else "")
         )
+    coordinate = (
+        store.variant(identity.digest, generation.cargo_environment)
+        / selection.runtime_lib.name
+    )
+    members = [
+        TransferMember(
+            RUNTIME_SELECTION_ROLE,
+            native_runtime_generation_path(coordinate),
+            executable=False,
+        ),
+        *(
+            TransferMember(role, member.path, executable=False)
+            for role, member in generation.members
+        ),
+    ]
     try:
         backend, receipt = admitted_backend_binary(
             selection.project_root,

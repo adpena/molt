@@ -387,6 +387,21 @@ molt cache prune --max-gb 10 --json      # A smaller budget, as JSON
 molt cache prune --cache-dir PATH        # Another cache root (default: MOLT_CACHE)
 ```
 
+#### `molt cache evict`
+
+Remove one entry of the host's product store, the store of built native
+runtimes and host tools that every checkout of one artifact root shares. A
+build that finds a corrupt entry fails at stage `product-store` and names this
+command with the entry's kind and identity. The command waits for a build of
+that identity, moves the entry aside and deletes it, so no reader sees it
+partial; the next build of those inputs rebuilds it. Deleting the directory by
+hand gives readers no such guarantee.
+
+```bash
+molt cache evict native-runtime <identity>   # As the build failure names it
+molt cache evict host-tool <identity> --json
+```
+
 #### `molt doctor`
 
 Check that the Molt toolchain is installed and configured correctly.

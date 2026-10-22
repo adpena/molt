@@ -149,7 +149,7 @@ def _published_files(consumer) -> dict[Path, tuple[int, int, bytes]]:
     for store in (consumer.runtime_store, consumer.backend_store):
         for path in sorted(store.root.rglob("*")):
             if path.is_file() and not path.name.startswith(".product-store"):
-                if path.name == ".build.lock":
+                if path.parent == store.root / ".locks":
                     continue
                 stat = path.stat()
                 files[path] = (stat.st_ino, stat.st_mtime_ns, path.read_bytes())

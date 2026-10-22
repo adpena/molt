@@ -678,7 +678,7 @@ def test_prewarm_fails_closed_when_admission_publishes_no_receipt(
     # A successful admission result cannot substitute for retained receipts.
     # Inject lost publication after valid source and executable admission.
     monkeypatch.setattr(
-        cli_backend_binary, "_write_runtime_fingerprint", lambda *_args, **_kwargs: None
+        cli_backend_binary, "atomic_write_bytes", lambda *_args, **_kwargs: None
     )
 
     rc = _dispatch(["internal-backend-build", "--target", "wasm", "--json"])

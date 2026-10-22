@@ -20,6 +20,7 @@ from molt.cli.build_output_layout import (
 )
 from molt.cli.config_resolution import STDLIB_PROFILE_CHOICES
 from molt.cli.dx_cli import add_dx_parser
+from molt.cli.product_kinds import PRODUCT_KINDS
 from molt.cli.source_extension_invocation import (
     SOURCE_EXTENSION_ABI_TIERS,
     add_source_extension_set_build_arguments,
@@ -2143,6 +2144,22 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true", help="Report what would be removed."
     )
     cache_prune_parser.add_argument(
+        "--json", action="store_true", help="Emit JSON output for tooling."
+    )
+    cache_evict_parser = cache_subparsers.add_parser(
+        "evict",
+        help=(
+            "Remove one product store entry (a corrupt one a build named); "
+            "the next build rebuilds it"
+        ),
+    )
+    cache_evict_parser.add_argument(
+        "kind", choices=PRODUCT_KINDS, help="The entry's product kind."
+    )
+    cache_evict_parser.add_argument(
+        "identity", help="The entry's identity digest, as the build named it."
+    )
+    cache_evict_parser.add_argument(
         "--json", action="store_true", help="Emit JSON output for tooling."
     )
 

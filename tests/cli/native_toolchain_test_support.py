@@ -8,6 +8,8 @@ are substituted.
 
 from __future__ import annotations
 
+from molt.process_environment import ProcessEnvironment
+
 from tests.runtime_build_identity_helper import runtime_cargo_environment_inputs
 
 from dataclasses import dataclass
@@ -118,14 +120,16 @@ class Checkout:
         return sorted(root.glob("[0-9a-f]" * 64 + "/" + "[0-9a-f]" * 64))
 
     def stored_runtimes(self, seed: str | None = None) -> tuple:
-        """The admitted store generations of this checkout's runtime identity."""
-        return generations.native_runtime_store_generations(
+        """This environment's admitted store generation of the runtime identity."""
+        generation = generations.native_runtime_store_generation(
             self.runtime_store,
             runtime_identity(self.runtime_seed if seed is None else seed),
+            ProcessEnvironment(os.environ),
             runtime_name=self.selection.runtime_lib.name,
             cargo_profile=RUNTIME_PROFILE,
             target_triple=None,
         )
+        return () if generation is None else (generation,)
 
     def build(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Leave what ``molt build`` admits: a stored runtime and a backend."""

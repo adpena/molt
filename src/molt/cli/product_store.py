@@ -39,9 +39,9 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 import re
-from typing import Literal, get_args
 
 from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
+from molt.cli.product_kinds import PRODUCT_KINDS, ProductKind
 from molt.cli.generation_store import (
     GenerationStoreLayout,
     generation_store,
@@ -50,8 +50,6 @@ from molt.cli.generation_store import (
 from molt.dx import product_store_dir
 from molt.file_deletion import delete_path
 
-ProductKind = Literal["native-runtime", "host-tool"]
-PRODUCT_KINDS: tuple[ProductKind, ...] = get_args(ProductKind)
 LAYOUT_VERSION = "v1"
 # Go's build cache trims entries no build used for five days
 # (cmd/go/internal/cache, trimLimit); a publication applies the same window.
@@ -62,18 +60,37 @@ PRODUCT_STORE_IDLE_SECONDS = 5 * 24 * 60 * 60.0
 PRODUCT_STORE_RENEWAL_SECONDS = 60 * 60.0
 _DIGEST = re.compile(r"[0-9a-f]{64}")
 _ASIDE_PREFIX = ".evicted-"
-_BUILD_LOCK = ".build.lock"
+# Identity locks live outside the entries they guard and are never deleted, as
+# Cargo keeps its lock files: eviction moves an entry aside while a waiter may
+# hold the lock's inode, and a lock inside the entry would move with it.
+_LOCKS = ".locks"
 
 
 class ProductStoreError(ValueError):
-    """A published product store entry exists but does not verify."""
+    """A published product store entry exists but does not verify.
 
-    def __init__(self, entry: Path, reason: str) -> None:
+    The message names the tool that removes the entry (``molt cache evict``),
+    which keeps the store's invariant that readers see an entry whole or not
+    at all; removing it by hand under live readers does not.
+    """
+
+    def __init__(
+        self,
+        store: ProductStore,
+        identity: str,
+        reason: str,
+        *,
+        variant: Path | None = None,
+    ) -> None:
+        entry = store.entry(identity)
         super().__init__(
-            f"product store entry {entry} is corrupt: {reason}. It is regenerable: "
-            "remove that directory and the next build rebuilds it"
+            f"product store entry {variant or entry} is corrupt: {reason}. It is "
+            f"regenerable: `molt cache evict {store.kind} {identity}` removes it "
+            "and the next build rebuilds it"
         )
         self.entry = entry
+        self.kind = store.kind
+        self.identity = identity
 
 
 def _remove_entry(path: Path) -> None:
@@ -113,10 +130,20 @@ class ProductStore:
         store = product_store_dir(project_root, os.environ if env is None else env)
         return cls(store / LAYOUT_VERSION / kind)
 
+    @property
+    def kind(self) -> str:
+        """The product kind this store holds (its directory's name)."""
+        return self.root.name
+
     def entry(self, identity: str) -> Path:
         if not _DIGEST.fullmatch(identity):
             raise ValueError(f"product identity must be a SHA-256 digest: {identity!r}")
         return self.root / identity
+
+    def build_lock(self, identity: str) -> Path:
+        """The lock one builder of ``identity`` holds (``single_flight``)."""
+        self.entry(identity)
+        return self.root / _LOCKS / f"{identity}.lock"
 
     def variant(self, identity: str, environment: CargoEnvironmentInputs) -> Path:
         """The variant of ``identity`` built under ``environment``."""
@@ -178,17 +205,46 @@ class ProductStore:
         notice naming the holder. The lock is an OS file lock, so a dead
         holder never blocks a waiter.
         """
-        from molt.cli.build_locks import BuildLockAcquisitionError, held_build_lock
+        from molt.cli.build_locks import BuildLockAcquisitionError
 
-        entry = self.entry(identity)
         try:
             # Renewed first: an entry a builder holds is never idle.
             self.record_use(identity)
-            entry.mkdir(parents=True, exist_ok=True)
+            self.entry(identity).mkdir(parents=True, exist_ok=True)
         except (OSError, RuntimeError) as exc:
             raise BuildLockAcquisitionError(str(exc)) from exc
+        with self._held(identity):
+            yield
+
+    @contextmanager
+    def _held(self, identity: str) -> Generator[None]:
+        from molt.cli.build_locks import held_build_lock
+
         with held_build_lock(
-            entry / _BUILD_LOCK,
-            purpose=f"product store ({self.root.name} {identity[:12]})",
+            self.build_lock(identity),
+            purpose=f"product store ({self.kind} {identity[:12]})",
         ):
             yield
+
+    def evict(self, identity: str) -> bool:
+        """Remove ``identity``'s entry now: the operator's tool for a corrupt one.
+
+        It waits for the identity's builder, so no publication is in flight,
+        then moves the entry aside and deletes it under the ledger lock, as an
+        idle eviction does: a reader sees the entry whole or not at all, and
+        the next build of those inputs rebuilds it. It returns False when the
+        store holds no such entry, and creates nothing then.
+        """
+        entry = self.entry(identity)
+        if not entry.exists():
+            return False
+        with self._held(identity):
+            try:
+                with generation_store(self.root, _LEDGER) as ledger:
+                    if not entry.exists():
+                        return False
+                    _remove_entry(entry)
+                    ledger.last_used.pop(identity, None)
+            except RuntimeError as exc:  # the ledger lock timed out
+                raise OSError(str(exc)) from exc
+        return True

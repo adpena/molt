@@ -636,8 +636,13 @@ def test_ensure_backend_binary_reuses_exact_probe_validation_token(
         assert new_payload != old_payload
         changed.write_bytes(new_payload)
     else:
-        # An admitted new build selects new bytes with current source/content
-        # provenance; the previous feature-probe receipt must not authorize it.
+        # A variant is written once, so new bytes for these inputs need the
+        # old entry evicted first; its probe evidence goes with it and never
+        # authorizes the new bytes.
+        store = cli_backend_binary.host_tool_store(tmp_path)
+        assert store.evict(
+            cli_backend_binary.host_tool_identity(backend_bin, fingerprint)
+        )
         publish_backend(
             backend_bin,
             b"backend-v2" if mutation == "same-size" else b"backend-v2-changed",
@@ -1131,21 +1136,19 @@ def test_generation_replaced_during_selection_cannot_acquire_provenance(
             artifact=cargo_output,
             cargo_environment=compiler_environment_inputs(),
         )
-    write_fingerprint = cli_backend_binary._write_runtime_fingerprint
+    write_receipt = cli_backend_binary.atomic_write_bytes
 
-    def replace_before_selection(
-        path: Path, payload: dict[str, object], **kwargs: object
-    ) -> None:
+    def replace_before_selection(path: Path, data: bytes, **kwargs: object) -> None:
         if path == selection_receipt:
             metadata = generation.stat()
             replacement = generation.with_name("replacement")
             replacement.write_bytes(b"backend-v2")
             os.replace(replacement, generation)
             os.utime(generation, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
-        write_fingerprint(path, payload, **kwargs)
+        write_receipt(path, data, **kwargs)
 
     monkeypatch.setattr(
-        cli_backend_binary, "_write_runtime_fingerprint", replace_before_selection
+        cli_backend_binary, "atomic_write_bytes", replace_before_selection
     )
     monkeypatch.setattr(
         cli_backend_binary, "_backend_fingerprint", lambda *_a, **_k: fingerprint
@@ -1665,8 +1668,10 @@ def test_a_store_receipt_whose_observation_changed_is_corrupt(tmp_path, monkeypa
         lambda *_a, **_k: pytest.fail("a corrupt entry must not invoke Cargo"),
     )
     result = _ensure(coordinate, tmp_path, ("wasm-backend",), profile="release")
+    # The receipt names no environment of its variant, so no reader admits
+    # it; this build's own publication finds it and names the eviction tool.
     assert not result and result.phase == "product_store"
-    assert "Cargo environment differs from its name" in result.message
+    assert "molt cache evict host-tool" in result.message
     assert generation.read_bytes() == b"#!/bin/sh\n# v1\n"
 
 
@@ -1761,3 +1766,52 @@ def test_a_build_that_reads_outside_its_source_closure_is_never_published(
     assert "build-inputs" in result.message
     assert not probes
     assert not generation.exists()
+
+
+def test_a_corrupt_host_tool_variant_of_another_environment_never_fails_a_reader(
+    tmp_path, monkeypatch
+):
+    """A reader checks only its own variant's bytes; another's are not its own."""
+    from tests.compiler_identity_helper import BACKEND_FIXTURE_INPUT
+
+    monkeypatch.setenv(BACKEND_FIXTURE_INPUT, "one")
+    coordinate, ensure = _two_generation_fixture(tmp_path, monkeypatch)
+    one = ensure("v1")
+    one.chmod(0o755)
+    one.write_bytes(b"#!/bin/sh\n# corrupt\n")
+    monkeypatch.setenv(BACKEND_FIXTURE_INPUT, "two")
+    two = ensure("v1")
+    assert two != one and two.read_bytes() == b"#!/bin/sh\n# v1\n"
+    # The corrupt variant still fails its own environment and names the tool.
+    monkeypatch.setenv(BACKEND_FIXTURE_INPUT, "one")
+    result = _ensure(coordinate, tmp_path, ("wasm-backend",), profile="release")
+    assert not result and result.phase == "product_store"
+    identity = cli_backend_binary.host_tool_identity(
+        coordinate, ensure.fingerprint("v1")
+    )
+    assert f"molt cache evict host-tool {identity}" in result.message
+
+
+def test_a_host_tool_receipt_is_written_once(tmp_path: Path) -> None:
+    """Readers may hold what a receipt selects, so nothing replaces it."""
+    backend_bin = tmp_path / "target" / "release" / "molt-backend.native_backend"
+    fingerprint = _fingerprint()
+    first = publish_backend(
+        backend_bin,
+        b"#!/bin/sh\n# first\n",
+        project_root=tmp_path,
+        fingerprint=fingerprint,
+        cargo_environment=compiler_environment_inputs(),
+    )
+    receipt = _stored(tmp_path, backend_bin, fingerprint).receipt
+    selected = receipt.read_bytes()
+    with pytest.raises(FileExistsError):
+        publish_backend(
+            backend_bin,
+            b"#!/bin/sh\n# second\n",
+            project_root=tmp_path,
+            fingerprint=fingerprint,
+            cargo_environment=compiler_environment_inputs(),
+        )
+    assert receipt.read_bytes() == selected
+    assert first.read_bytes() == b"#!/bin/sh\n# first\n"
