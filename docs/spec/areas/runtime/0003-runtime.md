@@ -291,10 +291,23 @@ struct MoltHeader {
   the peer. Both exports remain live through comparison and release in that
   order. Buffer acquisition, contiguous-span admission and writable admission
   share one scoped owner; capability checks never acquire an export.
-- **Strings**: UTF-8 surrogatepass buffers use the same inline length/data/NUL storage as
-  bytes. Embedded NULs remain ordinary content. Allocation and unique-owner
-  append initialize the trailing NUL through `InlineBytesStorage`; native
-  subclass slots and dictionaries start after the terminator and alignment.
+- **Strings**: UTF-8 surrogatepass buffers retain the inline length/data/NUL
+  prefix and own one atomic classification byte after the NUL. `StringStorage`
+  owns the complete extent and the Unknown/Ascii/NonAscii fact; bytes storage
+  and generated length/data offsets are unchanged. Embedded NULs remain content.
+  `InlineBytesStorage::set_len` initializes the NUL and resets the string fact
+  under exclusive construction or resize authority. Native string fields begin
+  after the classification trailer and alignment. Allocation rounding may move
+  a string to the next size class despite the one-byte logical increase.
+  No-intern and direct-fill constructors do no classification scan. First use
+  scans unknown content once; warm reads are constant work. Ordinary allocation
+  reuses its existing ASCII check after filling bytes. Concurrent first readers
+  may compute the same immutable fact and publish it with Release/Acquire;
+  no global classification cache or lock is introduced. Whole-string UTF-8
+  consumers share the fact, while sliced/unkeyed byte inputs retain their own
+  classification. Unique append and the C-API Unicode construction commit reset
+  the fact and retire hash/UTF-8 state; C-API raw writes remain governed by the
+  existing open construction transaction, not ordinary immutable mutation.
   `find/split/replace/startswith/endswith/count/join` use ASCII fast paths with
   codepoint indexing for non-ASCII.
   Runtime core's `text_storage` owns code-point iteration and encoding; adjacent
@@ -383,6 +396,17 @@ dispatch. Callback exceptions propagate with the already completed mutations.
 
 ### Immediate synchronous iterator invocation
 
+Exception ownership remains explicit across iterator callbacks: `molt_raise`
+borrows its argument, while `record_exception_owned` transfers an owned error.
+Constructor helpers retain and retire their kind, message, args and error owners
+and determine construction failure from the operation's own result; a preexisting
+raised exception is not evidence that a successful constructor failed.
+
+Native pickle validation uses the canonical exception classes exported by its
+public facade, while exceptions raised by user callbacks propagate unchanged.
+Reduce iterator slots use the canonical iterator-capability predicate, without
+calling `__iter__` merely to probe the supplied value.
+
 Generic synchronous iterator steps use the shared owned `SpecialIterationStep`
 result. The public boxed ABI wraps successful values in its public `(value, done)`
 tuple; the unboxed API transfers the value directly and retires exhaustion
@@ -399,6 +423,27 @@ receiver stay pinned across callbacks, class mutation and reentry. Errors from
 binding and invocation share the existing iteration exception transaction.
 Foreign receiver lookup retains its C-API descriptor contract.
 
+Ordinary native iterator classes declare `__iter__` and `__next__` together in
+one method-family table, which drives class lookup and namespace publication.
+Both are unary wrapper descriptors whose declaring class owns receiver
+admission; `__next__` uses the same result and exception owner as public `next()`.
+Generator and asynchronous suspension adapters retain their distinct protocols.
+Native iterators preselect the existing inline common class lane before GC
+publication. String iterators leave that initialized lane empty until a public
+type/descriptor query or live source retirement resolves and pins their class.
+Other source-dependent iterator types initialize it eagerly. One resolver owns
+query, exhaustion and nonterminal cycle-clear publication; committed terminal
+cleanup never resolves a discarded prefix iterator. Thus construction, prefix
+advance and drop do not scan an unknown string. An explicit first class query
+can cost O(n); complete traversal plus final classification stays O(n). Dropping
+an exhausted source cannot change its class or invalidate a bound descriptor. No iterator
+payload field or extra class side table is required. String class selection
+uses the shared object-owned ASCII fact, so repeated acquisitions do not
+rescan immutable content. CPython likewise keeps
+[list iterator type identity independent of its source](https://github.com/python/cpython/blob/v3.12.15/Objects/listobject.c#L2997-L3081)
+and publishes unary iteration wrappers through its
+[slot definitions](https://github.com/python/cpython/blob/v3.12.15/Objects/typeobject.c#L8890-L8893).
+
 This follows CPython's `slot_tp_iternext`/`vectorcall_method` path in
 [3.12.15](https://github.com/python/cpython/blob/v3.12.15/Objects/typeobject.c)
 and [3.15.1](https://github.com/python/cpython/blob/v3.15.1/Objects/typeobject.c).
@@ -406,6 +451,15 @@ For warmed direct-function or admitted native-method calls whose callback
 allocates nothing, unboxed successful steps require no runtime heap allocation,
 while the boxed API requires its result tuple. Public `next()` also transfers
 the raw owned value and introduces no status tuple.
+The public exception policy follows CPython's
+[`builtin_next`](https://github.com/python/cpython/blob/v3.12.15/Python/bltinmodule.c):
+a successful owned item transfers to the caller; a default normalizes only
+StopIteration, and absent a default the original pending exception survives.
+Its [`zip_next`](https://github.com/python/cpython/blob/v3.12.15/Python/bltinmodule.c)
+also pins a uniquely reusable result before source callbacks and publishes each
+slot before retiring its old item. These semantic controls govern the shared
+native and WASM ownership paths; interpreter oracles run on the development
+side and do not provide a runtime fallback.
 Descriptor callbacks and foreign binding can still allocate. The owning test
 measures both public APIs independently and checks exact result ownership.
 This is an allocation contract, not a throughput claim; target execution and

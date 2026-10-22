@@ -27,7 +27,7 @@ pub(super) unsafe extern "C" fn hook_unicode_new(len: usize, maxchar: u32) -> Ow
         unsafe {
             let data = crate::string_bytes(ptr) as *mut u8;
             std::ptr::write_bytes(data, 0, capacity + 1);
-            *(ptr.cast::<usize>()) = len;
+            crate::object::layout::InlineBytesStorage::set_len(ptr, len);
         }
         OwnedHandleResult::ok(MoltObject::from_ptr(ptr).bits())
     })
@@ -50,8 +50,9 @@ pub(super) unsafe extern "C" fn hook_unicode_commit(
             );
             return -1;
         };
-        let capacity = unsafe { crate::object::object_payload_size(ptr) }
-            .saturating_sub(std::mem::size_of::<usize>() + 1);
+        let capacity = crate::object::layout::StringStorage::capacity(unsafe {
+            crate::object::object_payload_size(ptr)
+        });
         if len > capacity || (len != 0 && data.is_null()) {
             crate::raise_exception::<()>(
                 &py,
@@ -68,7 +69,7 @@ pub(super) unsafe extern "C" fn hook_unicode_commit(
                 std::ptr::copy_nonoverlapping(data, target, len);
             }
             *target.add(len) = 0;
-            *(ptr.cast::<usize>()) = len;
+            crate::object::layout::InlineBytesStorage::set_len(ptr, len);
         }
         crate::object::object_set_state(ptr, 0);
         crate::object::ops_string::utf8_cache_remove(&py, ptr as usize);
@@ -129,6 +130,12 @@ mod tests {
                 assert_eq!(strings::PyUnicode_GetLength(text), 4);
                 assert_eq!(strings::PyUnicode_Check(text), 1);
                 assert_eq!(strings::PyUnicode_CheckExact(text), 1);
+                let initial_bits = GLOBAL_BRIDGE
+                    .observed_handle_for_pyobj(text)
+                    .unwrap()
+                    .bits();
+                let initial_ptr = crate::obj_from_bits(initial_bits).as_ptr().unwrap();
+                assert!(crate::object::layout::StringStorage::is_ascii(initial_ptr));
                 let data = strings::molt_capi_unicode_data(text).cast::<u32>();
                 assert!(!data.is_null());
                 // The same raw writes emitted by PyUnicode_WRITE on both headers.
@@ -139,6 +146,7 @@ mod tests {
                 assert_eq!(*data.add(4), 0);
                 let expected = b"\xed\xa0\x80\xed\xbf\xbf\0\xf0\x9f\x98\x80";
                 assert_eq!(runtime_text(text), expected);
+                assert!(!crate::object::layout::StringStorage::is_ascii(initial_ptr));
                 let bits = GLOBAL_BRIDGE
                     .observed_handle_for_pyobj(text)
                     .unwrap()

@@ -194,21 +194,66 @@ fn io_constructor_bits(py: &PyToken<'_>, class: u64, is_new: bool) -> Option<u64
 /// Routing is shared by direct lookup and requested-owner namespace publication.
 /// The method arms, not a second list of spellings, define each public surface.
 macro_rules! native_method_families {
-    ($( $field:ident => $lookup:path, $publish:path; )*) => {
+    (@lookup $py:ident, $name:ident) => { Ok(None) };
+    (@lookup $py:ident, $name:ident, $lookup:path) => { $lookup($py, $name) };
+    (@publish $py:ident) => { true };
+    (@publish $py:ident, $publish:path) => { $publish($py) };
+    (iterators { $( $iterator:ident $(=> $iter_lookup:path, $iter_publish:path)?; )* }
+     ordinary { $( $field:ident => $lookup:path, $publish:path; )* }) => {
         fn declared_method(py: &PyToken<'_>, class: u64, name: &str) -> Result<Option<u64>, ()> {
             let classes = builtin_classes(py);
+            $(if class == classes.$iterator {
+                if let Some(method) = native_iterator_method_bits(py, class, name)? {
+                    return Ok(Some(method));
+                }
+                return native_method_families!(@lookup py, name $(, $iter_lookup)?);
+            })*
             $(if class == classes.$field { return $lookup(py, name); })*
             Ok(None)
         }
         fn publish_declared_methods(py: &PyToken<'_>, class: u64) -> bool {
             let classes = builtin_classes(py);
+            $(if class == classes.$iterator {
+                if !publish_native_iterator_methods(py, class) { return false; }
+                return native_method_families!(@publish py $(, $iter_publish)?);
+            })*
             $(if class == classes.$field { return $publish(py); })*
             true
         }
     };
 }
 
+// A single declaration owns both lookup and class namespace publication. The
+// descriptor owner is the routed class; admission uses NativeCallableSpec's
+// ordinary receiver check before entering the shared native iteration engine.
+super::native_method_table!(native_iterator_method_bits, publish_native_iterator_methods,
+    py, name, [class], {}, {
+    "__iter__" => Some(super::builtin_func_bits(py,
+        NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, class, "__iter__")
+            .with_text_signature("($self, /)"),
+        fn_addr!(crate::object::ops_iter::builtin_iter_slot), 1)),
+    "__next__" => Some(super::builtin_func_bits(py,
+        NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, class, "__next__")
+            .with_text_signature("($self, /)"),
+        fn_addr!(crate::object::ops_iter::builtin_next_slot), 1)),
+});
+
 native_method_families! {
+  iterators {
+    iterator;
+    callable_iterator;
+    bytes_iterator;
+    bytearray_iterator;
+    range_iterator;
+    longrange_iterator;
+    str_iterator;
+    str_ascii_iterator;
+    tuple_iterator;
+    enumerate;
+    reversed;
+    zip;
+    map;
+    filter;
     list_iterator => super::specialized::list_iterator_method_bits, super::specialized::publish_list_iterator_methods;
     list_reverseiterator => super::specialized::list_reverseiterator_method_bits, super::specialized::publish_list_reverseiterator_methods;
     dict_keyiterator => super::specialized::dict_keyiterator_method_bits, super::specialized::publish_dict_keyiterator_methods;
@@ -218,6 +263,8 @@ native_method_families! {
     dict_reversevalueiterator => super::specialized::dict_reversevalueiterator_method_bits, super::specialized::publish_dict_reversevalueiterator_methods;
     dict_reverseitemiterator => super::specialized::dict_reverseitemiterator_method_bits, super::specialized::publish_dict_reverseitemiterator_methods;
     set_iterator => super::specialized::set_iterator_method_bits, super::specialized::publish_set_iterator_methods;
+  }
+  ordinary {
     union_type => super::specialized::union_method_bits, super::specialized::publish_union_methods;
     dict_keys => super::specialized::dict_keys_method_bits, super::specialized::publish_dict_keys_methods;
     dict_items => super::specialized::dict_items_method_bits, super::specialized::publish_dict_items_methods;
@@ -251,6 +298,7 @@ native_method_families! {
     async_generator => super::specialized::asyncgen_method_bits, super::specialized::publish_asyncgen_methods;
     async_generator_asend => super::specialized::asyncgen_asend_method_bits, super::specialized::publish_asyncgen_asend_methods;
     async_generator_athrow => super::specialized::asyncgen_athrow_method_bits, super::specialized::publish_asyncgen_athrow_methods;
+  }
 }
 
 fn io_class(py: &PyToken<'_>, class: u64) -> bool {

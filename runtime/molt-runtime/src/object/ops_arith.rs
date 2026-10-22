@@ -427,7 +427,7 @@ pub extern "C" fn molt_inplace_add(a: u64, b: u64) -> u64 {
                             let r_len = string_len(r_ptr);
                             if let Some(content_len) = l_len.checked_add(r_len) {
                                 let Some(needed) =
-                                    super::layout::InlineBytesStorage::object_size(content_len)
+                                    super::layout::StringStorage::object_size(content_len)
                                 else {
                                     record_memory_error_without_allocation(_py);
                                     return MoltObject::none().bits();
@@ -440,6 +440,7 @@ pub extern "C" fn molt_inplace_add(a: u64, b: u64) -> u64 {
                                     std::ptr::copy_nonoverlapping(r_data, l_data.add(l_len), r_len);
                                     super::layout::InlineBytesStorage::set_len(ptr, content_len);
                                     super::object_set_state(ptr, 0); // invalidate hash
+                                    super::ops_string::utf8_cache_remove(_py, ptr as usize);
                                     inc_ref_bits(_py, a);
                                     return a;
                                 }

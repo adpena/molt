@@ -577,25 +577,19 @@ unsafe fn reversed_impl(_py: &PyToken<'_>, seq_bits: u64, builtin_only: bool) ->
                 let total = std::mem::size_of::<MoltHeader>()
                     + std::mem::size_of::<u64>()
                     + std::mem::size_of::<usize>();
-                let list_storage = native_list
-                    || matches!(type_id, TYPE_ID_LIST | TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL);
-                let rev_ptr = if list_storage {
-                    super::alloc_object_zeroed_unpublished_with_aux(
-                        _py,
-                        total,
-                        TYPE_ID_REVERSED,
-                        ObjectAuxPreselection::ClassInline,
-                    )
-                } else {
-                    alloc_object(_py, total, TYPE_ID_REVERSED)
-                };
+                let rev_ptr = super::alloc_object_zeroed_unpublished_with_aux(
+                    _py,
+                    total,
+                    TYPE_ID_REVERSED,
+                    ObjectAuxPreselection::ClassInline,
+                );
                 if rev_ptr.is_null() {
                     return MoltObject::none().bits();
                 }
                 inc_ref_bits(_py, seq_bits);
                 *(rev_ptr as *mut u64) = seq_bits;
                 reversed_set_index(rev_ptr, idx);
-                if list_storage && !publish_list_iterator(_py, rev_ptr, true) {
+                if !publish_native_iterator(_py, rev_ptr) {
                     return MoltObject::none().bits();
                 }
                 return MoltObject::from_ptr(rev_ptr).bits();
@@ -735,6 +729,11 @@ pub extern "C" fn molt_iter(iter_bits: u64) -> u64 {
     iter_impl(iter_bits, false)
 }
 
+/// Unary descriptor ABI; the public next builtin owns result and exception transfer.
+pub(crate) extern "C" fn builtin_next_slot(iter_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { molt_next_builtin(iter_bits, missing_bits(py)) })
+}
+
 pub(crate) extern "C" fn builtin_iter_slot(iter_bits: u64) -> u64 {
     iter_impl(iter_bits, true)
 }
@@ -811,7 +810,12 @@ fn iter_impl(iter_bits: u64, builtin_only: bool) -> u64 {
                                 + std::mem::size_of::<u64>()
                                 + std::mem::size_of::<usize>()
                                 + std::mem::size_of::<*mut u8>();
-                            let iter_ptr = alloc_object(_py, total, TYPE_ID_ITER);
+                            let iter_ptr = super::alloc_object_zeroed_unpublished_with_aux(
+                                _py,
+                                total,
+                                TYPE_ID_ITER,
+                                ObjectAuxPreselection::ClassInline,
+                            );
                             if iter_ptr.is_null() {
                                 return MoltObject::none().bits();
                             }
@@ -819,6 +823,9 @@ fn iter_impl(iter_bits: u64, builtin_only: bool) -> u64 {
                             *(iter_ptr as *mut u64) = args_bits;
                             iter_set_index(iter_ptr, 0);
                             iter_set_cached_tuple(iter_ptr, std::ptr::null_mut());
+                            if !publish_native_iterator(_py, iter_ptr) {
+                                return MoltObject::none().bits();
+                            }
                             return MoltObject::from_ptr(iter_ptr).bits();
                         }
                     }
@@ -847,19 +854,12 @@ fn iter_impl(iter_bits: u64, builtin_only: bool) -> u64 {
                             + std::mem::size_of::<u64>()
                             + std::mem::size_of::<usize>()
                             + std::mem::size_of::<*mut u8>();
-                        let list_storage =
-                            matches!(type_id, TYPE_ID_LIST | TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL)
-                                || crate::object::list_storage::native_list(iter_bits).is_some();
-                        let iter_ptr = if list_storage {
-                            super::alloc_object_zeroed_unpublished_with_aux(
-                                _py,
-                                total,
-                                TYPE_ID_ITER,
-                                ObjectAuxPreselection::ClassInline,
-                            )
-                        } else {
-                            alloc_object(_py, total, TYPE_ID_ITER)
-                        };
+                        let iter_ptr = super::alloc_object_zeroed_unpublished_with_aux(
+                            _py,
+                            total,
+                            TYPE_ID_ITER,
+                            ObjectAuxPreselection::ClassInline,
+                        );
                         if iter_ptr.is_null() {
                             return MoltObject::none().bits();
                         }
@@ -867,7 +867,7 @@ fn iter_impl(iter_bits: u64, builtin_only: bool) -> u64 {
                         *(iter_ptr as *mut u64) = iter_bits;
                         iter_set_index(iter_ptr, 0);
                         iter_set_cached_tuple(iter_ptr, std::ptr::null_mut());
-                        if list_storage && !publish_list_iterator(_py, iter_ptr, false) {
+                        if !publish_native_iterator(_py, iter_ptr) {
                             return MoltObject::none().bits();
                         }
                         return MoltObject::from_ptr(iter_ptr).bits();
@@ -919,7 +919,12 @@ fn iter_impl(iter_bits: u64, builtin_only: bool) -> u64 {
                         + std::mem::size_of::<u64>()
                         + std::mem::size_of::<usize>()
                         + std::mem::size_of::<*mut u8>();
-                    let iter_ptr = alloc_object(_py, total, TYPE_ID_ITER);
+                    let iter_ptr = super::alloc_object_zeroed_unpublished_with_aux(
+                        _py,
+                        total,
+                        TYPE_ID_ITER,
+                        ObjectAuxPreselection::ClassInline,
+                    );
                     if iter_ptr.is_null() {
                         return MoltObject::none().bits();
                     }
@@ -927,6 +932,9 @@ fn iter_impl(iter_bits: u64, builtin_only: bool) -> u64 {
                     *(iter_ptr as *mut u64) = iter_bits;
                     iter_set_index(iter_ptr, 0);
                     iter_set_cached_tuple(iter_ptr, std::ptr::null_mut());
+                    if !publish_native_iterator(_py, iter_ptr) {
+                        return MoltObject::none().bits();
+                    }
                     return MoltObject::from_ptr(iter_ptr).bits();
                 }
             }
@@ -1403,27 +1411,76 @@ unsafe fn hash_iterator_pair(
     }
 }
 
-/// Pin public list-iterator identity independently of its removable target.
-unsafe fn publish_list_iterator(py: &PyToken<'_>, ptr: *mut u8, reverse: bool) -> bool {
+/// Publish initialized iterator storage and eagerly pin constant-work classes.
+/// String class classification is deferred until observation or source retirement.
+unsafe fn publish_native_iterator(py: &PyToken<'_>, ptr: *mut u8) -> bool {
     unsafe {
-        let builtins = builtin_classes(py);
-        let class = if reverse {
-            builtins.list_reverseiterator
-        } else {
-            builtins.list_iterator
-        };
+        if object_type_id(ptr) == TYPE_ID_ITER
+            && obj_from_bits(iter_target_bits(ptr))
+                .as_ptr()
+                .is_some_and(|target| object_type_id(target) == TYPE_ID_STRING)
+        {
+            // The ClassInline word is initialized zero. A short prefix read
+            // must not classify all source bytes; type observation or live
+            // source retirement will fill this lane through the shared owner.
+            // Establish class anchors now, so later GC clear cannot allocate.
+            let _ = builtin_classes(py);
+            super::gc::gc_publish_initialized(py, ptr);
+            return true;
+        }
+        let class = crate::builtins::type_ops::type_of_bits(py, MoltObject::from_ptr(ptr).bits());
         if !super::object_init_class_edge_unpublished(
             py,
             ptr,
             class,
             super::ClassEdgeOwnership::Owned,
         ) {
-            raise_exception::<()>(py, "SystemError", "list iterator class publication failed");
+            raise_exception::<()>(
+                py,
+                "SystemError",
+                "native iterator class publication failed",
+            );
             dec_ref_bits(py, MoltObject::from_ptr(ptr).bits());
             return false;
         }
         super::gc::gc_publish_initialized(py, ptr);
         true
+    }
+}
+
+/// Resolve the sole deferred native class while its immutable source is live.
+/// ClassInline was selected and zero-initialized by construction, and class
+/// anchors already exist. Publication cannot allocate or invoke Python. A live
+/// type query and source retirement use this same owner; terminal destruction
+/// deliberately never calls it, keeping prefix-only iteration/drop scan-free.
+pub(crate) unsafe fn resolve_deferred_iterator_class(py: &PyToken<'_>, ptr: *mut u8) -> u64 {
+    unsafe {
+        debug_assert_eq!(object_type_id(ptr), TYPE_ID_ITER);
+        let existing = object_class_bits(ptr);
+        if existing != 0 {
+            return existing;
+        }
+        let Some(target) = obj_from_bits(iter_target_bits(ptr)).as_ptr() else {
+            return 0;
+        };
+        if object_type_id(target) != TYPE_ID_STRING {
+            return 0;
+        }
+        let builtins = builtin_classes(py);
+        let class = if super::layout::StringStorage::is_ascii(target) {
+            builtins.str_ascii_iterator
+        } else {
+            builtins.str_iterator
+        };
+        // The only deferred producer preselects this stable class lane. A
+        // missing lane or committed-dead receiver violates that internal proof.
+        assert!(super::object_replace_class_edge(
+            py,
+            ptr,
+            class,
+            super::ClassEdgeOwnership::Owned
+        ));
+        class
     }
 }
 
@@ -1513,6 +1570,7 @@ unsafe fn iter_pair_slot(iter_ptr: *mut u8) -> *mut *mut u8 {
 /// Retire the target before releasing any edge that can reenter the iterator.
 unsafe fn iter_finish(py: &PyToken<'_>, iter_ptr: *mut u8) {
     unsafe {
+        resolve_deferred_iterator_class(py, iter_ptr);
         let target = iter_target_bits(iter_ptr);
         crate::object::layout::iter_set_target_bits(iter_ptr, MoltObject::none().bits());
         iter_set_index(iter_ptr, ITER_EXHAUSTED);
