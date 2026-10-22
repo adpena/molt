@@ -6,15 +6,19 @@ every ordinary commit is represented by ancestry, Change-Id or patch-id, and
 no tracked change remains. Retirement stops the checkout's own
 daemons, binds the reclaim of its checkout state while the checkout still
 exists, steps out of it, removes it through ``git worktree remove`` from the
-surviving main checkout, and then reclaims its state (HF-313). ``integrate
---cleanup-worktree``, ``cleanup`` and ``lane retire`` share this one path.
+surviving main checkout, and then reclaims its state (HF-313). Just before
+the removal, each running Linux VM that still mounts host paths and holds
+files under the checkout or its state roots releases them, so the removal
+frees them at once (HF-463). ``integrate --cleanup-worktree``, ``cleanup``,
+``lane retire`` and ``drift_harvest --prune`` share this one path.
 """
 
 from __future__ import annotations
 
 import argparse
 import os
-from collections.abc import Callable
+import subprocess
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from types import ModuleType
 
@@ -114,7 +118,7 @@ def cleanup_worktree(
     # process's working directory (`Path.cwd()`) would find it deleted.
     if Path(os.getcwd()).resolve().is_relative_to(checkout):
         os.chdir(main_repo)
-    reclaim_checkout_state = prepare_checkout_state_retirement(checkout)
+    finish_retirement = prepare_checkout_retirement(checkout)
     remove_args = ["worktree", "remove"]
     # `git worktree remove` refuses (without --force) on ANY modified/untracked
     # file, including the ignored-set churn (e.g. legacy/keyed wasm sha sidecars) our OWN
@@ -141,19 +145,22 @@ def cleanup_worktree(
         )
         return EXIT_FAIL
     _ok(f"removed worktree {repo}")
-    if reclaim_checkout_state is not None:
-        reclaim_checkout_state()
+    finish_retirement()
     return EXIT_OK
 
 
-def prepare_checkout_state_retirement(checkout: Path) -> Callable[[], None] | None:
-    """Stamp a retiring checkout's state roots and bind their reclaim, now.
+def prepare_checkout_retirement(checkout: Path) -> Callable[[], None]:
+    """Prepare a checkout's removal while it exists; return what runs after.
 
-    Integration runs from the checkout it removes, so everything the reclaim
-    needs is imported here, while that checkout still exists: after `git
-    worktree remove` this process can import nothing from it. Returns None
-    when the artifact root cannot be resolved; the roots then stay for
-    `tools/disk_guard.py --gc`.
+    Integration runs from the checkout it removes, so everything the returned
+    callable needs is imported here: after `git worktree remove` this process
+    can import nothing from it, and it can launch no guarded command, whose
+    guard runs from the checkout's sources. So the Linux VM release runs now:
+    each running VM that mounts host paths and holds files under the checkout
+    or its state roots releases them (``tools/linux_vm.py``), and the removal
+    frees those files at once. The returned callable reclaims the state roots;
+    roots it cannot resolve stay for `tools/disk_guard.py --gc`. A failure
+    never fails the cleanup.
     """
     import molt.build_state_layout  # noqa: F401 - the owner-key rule loads lazily
     from molt.checkout_state import (
@@ -165,8 +172,10 @@ def prepare_checkout_state_retirement(checkout: Path) -> Callable[[], None] | No
     from molt.dx import DxConfigError, artifact_root
     from tools import disk_guard
 
+    environment = ProcessEnvironment(os.environ)
+    removed = [checkout]
+    state_root: Path | None = None
     try:
-        environment = ProcessEnvironment(os.environ)
         state_root = artifact_root(checkout, environment)
         # Retirement owns this checkout's complete known inventory. A normal
         # command stamps only its selected target; the caller may legitimately
@@ -178,11 +187,16 @@ def prepare_checkout_state_retirement(checkout: Path) -> Callable[[], None] | No
             pass
     except (OSError, ValueError, DxConfigError) as exc:
         _warn(f"state roots of {checkout} were not stamped ({exc}); they stay")
-        return None
+        state_root = None
+    else:
+        removed.extend(root.path for root in roots)
+    _release_guest_caches(checkout, removed, environment)
 
-    def reclaim() -> None:
+    def finish() -> None:
         # A root the guard defers (a held lock or a protected path) stays for
-        # a later `tools/disk_guard.py --gc`; a failure never fails cleanup.
+        # a later `tools/disk_guard.py --gc`.
+        if state_root is None:
+            return
         try:
             result = disk_guard.reclaim_checkout_state(
                 checkout, root=state_root, env=environment
@@ -197,7 +211,49 @@ def prepare_checkout_state_retirement(checkout: Path) -> Callable[[], None] | No
         for error in result.errors:
             _warn(f"state root not reclaimed: {error}")
 
-    return reclaim
+    return finish
+
+
+def _release_guest_caches(
+    checkout: Path, paths: list[Path], environment: Mapping[str, str]
+) -> None:
+    """Release the host files running Linux VMs pin under ``paths``.
+
+    Advisory: whatever the import, the definitions, Lima, lsof or a guest
+    raises is reported, and the cleanup goes on.
+    """
+    try:
+        from tools import linux_vm
+
+        releases = linux_vm.release_for_paths(
+            paths, environment=environment, host=linux_vm.LocalHost(environment)
+        )
+    except (
+        ImportError,
+        OSError,
+        ValueError,
+        TypeError,
+        KeyError,
+        RuntimeError,
+        subprocess.SubprocessError,
+    ) as exc:
+        _warn(
+            f"Linux VMs may keep files of {checkout} allocated after its removal "
+            f"({type(exc).__name__}: {exc}); run tools/linux_vm.py release"
+        )
+        return
+    for item in releases:
+        if item.error is not None or item.before is None or item.after is None:
+            _warn(f"{item.name} keeps its pins of {checkout}: {item.error}")
+            continue
+        _ok(
+            f"{item.name} released its pins of {checkout}: "
+            f"{item.before.open_under_paths - item.after.open_under_paths} host "
+            f"files released, {item.after.open_under_paths} open in the guest; "
+            f"{item.before.deleted_files - item.after.deleted_files} deleted "
+            f"files freed ({item.before.deleted_bytes - item.after.deleted_bytes} "
+            "bytes)"
+        )
 
 
 def retire_checkout_daemons(repo: Path) -> None:
