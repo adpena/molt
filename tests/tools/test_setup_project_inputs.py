@@ -533,6 +533,7 @@ def test_pinned_roles_resolve_from_their_one_authority(tmp_path: Path) -> None:
 
     assert normalized["rust-toolchain"] == _pinned_rust_channel()
     assert normalized["node-version"] == tool_releases.tool_release("node").version
+    assert normalized["uv-version"] == tool_releases.tool_release("uv").version
 
 
 def test_literal_versions_fail_closed(tmp_path: Path) -> None:
@@ -556,3 +557,25 @@ def test_literal_versions_fail_closed(tmp_path: Path) -> None:
         assert returncode == 2, (name, stderr)
         assert message in stderr, (name, stderr)
         assert outputs == {}, name
+
+
+@pytest.mark.parametrize("version", ["99.88.77", "latest", "1.2", "1.2.3\n4.5.6"])
+def test_uv_normalization_reads_exact_manifest_coordinate(
+    tmp_path, monkeypatch, version
+):
+    # Run the actual shell consumer against an independent authority fixture;
+    # a literal workflow pin or first-line-only read cannot pass this oracle.
+    config = tmp_path / "config"
+    config.mkdir()
+    (config / "tool_releases.toml").write_text(
+        f'[tools.uv]\nversion = "{version}"\n', encoding="utf-8"
+    )
+    monkeypatch.setattr(sys.modules[__name__], "ROOT", tmp_path)
+    code, error, outputs = _run_normalizer(tmp_path / "run", toolchain="")
+    if version == "99.88.77":
+        assert code == 0, error
+        assert outputs["uv-version"] == version
+    else:
+        assert code == 2
+        assert "must declare exactly one X.Y.Z" in error
+        assert outputs == {}

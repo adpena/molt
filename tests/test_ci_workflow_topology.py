@@ -1283,14 +1283,19 @@ def test_github_actions_pin_one_exact_release_per_action() -> None:
     assert divergent == {}
 
 
-def test_setup_uv_installs_the_plan_pinned_uv() -> None:
+def test_setup_uv_installs_the_manifest_pinned_uv() -> None:
     policy = {
         entry["name"]: entry
         for entry in tomllib.loads(_read("tools/proof_plan.toml"))["toolchain_policy"]
     }
     setup_project = _read(".github/actions/setup-project/action.yml")
     assert setup_project.count("astral-sh/setup-uv@") == 1
-    assert f'version: "{policy["uv"]["setup_value"]}"' in setup_project
+    release = tool_releases.tool_release("uv", REPO_ROOT)
+    assert policy["uv"]["projection"] == "tool-release"
+    assert policy["uv"]["setup_value"] == release.version
+    assert "version: ${{ steps.inputs.outputs.uv-version }}" in setup_project
+    normalizer = _read(".github/actions/setup-project/normalize-inputs.sh")
+    assert "config/tool_releases.toml [tools.uv] version" in normalizer
     for workflow in sorted(WORKFLOW_ROOT.glob("*.yml")):
         assert "astral-sh/setup-uv@" not in workflow.read_text("utf-8"), workflow
 

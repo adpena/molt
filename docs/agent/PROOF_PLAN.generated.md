@@ -121,7 +121,7 @@ Executable identities bind resolved path, version text, and the repository-relat
 | `posix-true` | `executable` | — | `^$` | `.` | `host POSIX utility` | 1 |
 | `posix-uname` | `executable` | — | `^.+$` | `.` | `host POSIX utility` | 1 |
 | `posix-file` | `executable` | — | `^file-[0-9]+\.` | `.` | `host file utility` | 1 |
-| `uv` | `executable` | — | `^uv 0\.13\.4\b` | `.` | `0.13.4` | 1 |
+| `uv` | `executable` | — | `^uv 0\.13\.5\b` | `.` | `0.13.5` | 2 |
 | `node` | `executable` | — | `^v26\.12\.1$` | `.` | `26.12.1` | 3 |
 | `target-pythons.3.12` | `executable` | — | `^Python 3\.12\.[0-9]+$` | `.` | `3.12` | 1 |
 | `target-pythons.3.13` | `executable` | — | `^Python 3\.13\.[0-9]+$` | `.` | `3.13` | 1 |
@@ -130,7 +130,7 @@ Executable identities bind resolved path, version text, and the repository-relat
 | `generators` | `group` | `target-pythons`, `rustfmt`, `browser-acorn` | `selection only` | — | — | — |
 | `browser-acorn` | `executable` | — | `^8\.19\.0$` | `tools/browser_asset_graph` | `8.19.0` | 1 |
 | `rustc` | `executable` | — | `^rustc 1\.99\.1\b` | `.` | `1.99.1` | 3 |
-| `lune` | `executable` | — | `^lune 0\.10\.5$` | `.` | `0.10.5` | 2 |
+| `lune` | `executable` | — | `^lune 0\.11\.1$` | `.` | `0.11.1` | 2 |
 | `build-python` | `executable` | `compiler:build-python` | `^Python 3\.[0-9]+\.[0-9]+.*$` | `.` | `effective Cargo build Python` | 1 |
 | `cargo` | `executable` | — | `^cargo 1\.99\.1\b` | `.` | `1.99.1` | 3 |
 | `git` | `executable` | — | `^git version 2\.` | `.` | `2.x` | 1 |
@@ -147,7 +147,7 @@ Executable identities bind resolved path, version text, and the repository-relat
 | `ld.lld` | `executable` | — | `\bLLD 22\.1\.8\b` | `.` | `22.1.8` | 1 |
 | `ld64.lld` | `executable` | — | `\bLLD 22\.1\.8\b` | `.` | `22.1.8` | 1 |
 | `lld-link` | `executable` | — | `\bLLD 22\.1\.8\b` | `.` | `22.1.8` | 1 |
-| `lean` | `executable` | — | `version 4\.34\.1\b` | `formal/lean` | `4.34.1` | 3 |
+| `lean` | `executable` | — | `version 4\.35\.0\b` | `formal/lean` | `4.35.0` | 3 |
 | `quint` | `executable` | — | `^(?:Quint\s+)?0\.33\.0$` | `.` | `0.33.0` | 1 |
 | `cargo-deny` | `executable` | — | `^cargo-deny 0\.20\.2\b` | `.` | `0.20.2` | 1 |
 | `cargo-audit` | `executable` | — | `^cargo-audit 0\.22\.2\b` | `.` | `0.22.2` | 1 |
@@ -157,7 +157,7 @@ Executable identities bind resolved path, version text, and the repository-relat
 | `llvm-strip` | `executable` | `compiler:native-strip` | `LLVM version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
 | `wasm-opt` | `executable` | `compiler:wasm-opt` | `^wasm-opt version 133(?: \(version_133\))?$` | `.` | `133` | 1 |
 | `wasm-ld` | `executable` | — | `\bLLD 23\.1\.0\b` | `.` | `23.1.0` | 2 |
-| `wasm-tools` | `executable` | — | `^wasm-tools 1\.261\.0(?: \([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\))?$` | `.` | `1.261.0` | 2 |
+| `wasm-tools` | `executable` | — | `^wasm-tools 1\.262\.0(?: \([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\))?$` | `.` | `1.262.0` | 2 |
 
 ## Cargo execution contracts
 

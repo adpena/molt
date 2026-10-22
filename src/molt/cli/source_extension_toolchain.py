@@ -69,7 +69,7 @@ from molt.source_root import compiler_source_root
 from molt.wasi_sdk_identity import WasiCAbiProjection, wasi_c_abi_projection
 from molt.wasi_sysroot import normalize_wasi_sysroot
 
-MOLT_PKGCONF_REQUIREMENT = "pkgconf==3.0.1.post0"
+MOLT_PKGCONF_REQUIREMENT = "pkgconf==3.0.7.post0"
 _SOURCE_EXTENSION_INCLUDE_FILE_SUFFIXES = {
     ".c",
     ".h",

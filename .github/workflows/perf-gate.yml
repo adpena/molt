@@ -120,7 +120,7 @@ jobs:
 
       - name: Upload scoreboard shard
         if: always() && hashFiles(format('bench/scoreboard/cpython_ci_{0}_shard{1}.json', matrix.backend, matrix.shard)) != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cpython-floor-shard-${{ matrix.backend }}-${{ matrix.shard }}
           path: |
@@ -153,7 +153,7 @@ jobs:
           sync-groups: bench, dev
 
       - name: Download scoreboard shards
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: cpython-floor-shard-${{ matrix.backend }}-*
           path: bench/scoreboard/shards
@@ -207,7 +207,7 @@ jobs:
 
       - name: Upload scoreboard + plane artifacts
         if: always() && hashFiles(format('bench/scoreboard/cpython_ci_{0}.json', matrix.backend)) != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cpython-floor-scoreboard-${{ matrix.backend }}
           path: |
@@ -241,7 +241,7 @@ jobs:
         run: python3 tools/proof_plan.py --tier scheduled --run-family runtime_candidate_costs --receipt proof-receipts/candidate-runtime-costs.json
       - name: Upload candidate cost evidence and rejected measurements
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: candidate-runtime-costs-${{ github.run_id }}-${{ github.run_attempt }}
           path: |

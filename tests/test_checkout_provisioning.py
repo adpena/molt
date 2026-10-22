@@ -108,6 +108,31 @@ def _runs(checkout: Path, log: str = "provision-runs.log") -> list[str]:
     return path.read_text(encoding="utf-8").splitlines() if path.exists() else []
 
 
+def test_locked_tree_command_cwd_is_owned_and_changes_the_action(
+    checkout: Path,
+) -> None:
+    spec = _tree(checkout)
+    nested = checkout / "nested"
+    nested.mkdir()
+    (nested / "provision.py").write_text(
+        "from pathlib import Path\n"
+        "assert Path.cwd().name == 'nested'\n"
+        "tree = Path('../tree')\n"
+        "tree.mkdir(exist_ok=True)\n"
+        "(tree / 'ready').write_text('nested', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    selected = dataclasses.replace(spec, command_cwd="nested")
+    assert cp.ensure_input(selected).provisioned
+    assert (checkout / "tree/ready").read_text(encoding="utf-8") == "nested"
+    assert cp.input_state(selected) == "current"
+    assert cp.input_state(spec) == "stale"
+    assert not cp.ensure_input(selected).provisioned
+    for invalid in ("../outside", str(checkout.resolve())):
+        with pytest.raises(ValueError, match="inside the checkout"):
+            dataclasses.replace(spec, command_cwd=invalid)
+
+
 def test_a_matching_stamp_runs_no_provisioner(checkout: Path) -> None:
     spec = _tree(checkout)
     assert cp.input_state(spec) == "absent"
@@ -302,6 +327,49 @@ def test_the_same_volume_store_is_the_one_dx_chooses(
     assert cp._dx_choice("UV_CACHE_DIR", spec) == ext_root / expected
 
 
+def test_default_and_explicit_inputs_use_the_same_real_provisioner(
+    checkout: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    (checkout / "named_provision.py").write_text(
+        "import sys\nfrom pathlib import Path\n"
+        "name = sys.argv[1]\n"
+        "tree = Path(name)\n"
+        "tree.mkdir(exist_ok=True)\n"
+        "(tree / 'ready').write_text('ready', encoding='utf-8')\n"
+        "with Path('provision-runs.log').open('a', encoding='utf-8') as log:\n"
+        "    log.write(name + '\\n')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        cp,
+        "checkout_input",
+        lambda name, *_args, **_kwargs: dataclasses.replace(
+            _tree(checkout),
+            name=name,
+            tree=checkout / name,
+            arguments=("named_provision.py", name),
+        ),
+    )
+    assert [item.name for item in cp.ensure_all(checkout)] == [
+        "uv-environment",
+        "browser-acorn",
+        "git-hooks",
+    ]
+    assert len(_runs(checkout)) == 3
+    assert cp.main(["status", "--checkout", str(checkout), "--json"]) == 0
+    assert set(json.loads(capsys.readouterr().out)) == {
+        "uv-environment",
+        "browser-acorn",
+        "git-hooks",
+    }
+    assert (
+        cp.main(["ensure", "edgebox-typescript", "--checkout", str(checkout), "--json"])
+        == 0
+    )
+    assert len(_runs(checkout)) == 4
+    assert "edgebox-typescript" in capsys.readouterr().out
+
+
 def test_ensure_all_reports_every_failure_and_keeps_each_success(
     checkout: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -374,6 +442,12 @@ def test_the_hook_input_agrees_with_the_installer_itself() -> None:
 
 
 def test_declared_inputs_name_their_locks_and_trees(tmp_path: Path) -> None:
+    assert cp.DEFAULT_CHECKOUT_INPUT_NAMES == (
+        "uv-environment",
+        "browser-acorn",
+        "git-hooks",
+    )
+    assert "edgebox-typescript" in cp.CHECKOUT_INPUT_NAMES
     environ = {"PATH": os.environ.get("PATH", "")}
     acorn = cp.checkout_input("browser-acorn", tmp_path, environ)
     assert isinstance(acorn, cp.LockedTree)
@@ -382,6 +456,25 @@ def test_declared_inputs_name_their_locks_and_trees(tmp_path: Path) -> None:
     assert acorn.arguments[-2:] == ("--prefix", "tools/browser_asset_graph")
     assert acorn.tree == tmp_path.resolve() / "tools/browser_asset_graph/node_modules"
     assert "tools/browser_asset_graph/package-lock.json" in acorn.lock_files
+
+    edgebox = cp.checkout_input("edgebox-typescript", tmp_path, environ)
+    assert isinstance(edgebox, cp.LockedTree)
+    assert edgebox.tool == "corepack"
+    assert edgebox.arguments == (
+        "npm",
+        "ci",
+        "--ignore-scripts",
+        "--prefer-offline",
+        "--no-audit",
+        "--no-fund",
+    )
+    assert edgebox.command_cwd == "examples/edgebox/packages/edgebox-cloudflare"
+    assert edgebox.tree == tmp_path.resolve() / edgebox.command_cwd / "node_modules"
+    assert edgebox.sentinel == "typescript/bin/tsc"
+    assert edgebox.lock_files == (
+        f"{edgebox.command_cwd}/package-lock.json",
+        f"{edgebox.command_cwd}/package.json",
+    )
 
     uv = cp.checkout_input("uv-environment", tmp_path, environ)
     assert isinstance(uv, cp.LockedTree)
@@ -555,7 +648,8 @@ def test_checkout_input_policies_keep_one_authority(row: dict, message: str) -> 
         proof_plan.load_toolchain_policies({"toolchain_policy": [row]}, root=REPO_ROOT)
 
 
-def test_the_committed_acorn_policy_is_the_checkout_input() -> None:
+@pytest.mark.parametrize("name", ["browser-acorn"])
+def test_the_committed_node_policy_is_the_checkout_input(name: str) -> None:
     import tomllib
 
     from tools import proof_plan
@@ -563,12 +657,10 @@ def test_the_committed_acorn_policy_is_the_checkout_input() -> None:
     data = tomllib.loads(
         (REPO_ROOT / "tools/proof_plan.toml").read_text(encoding="utf-8")
     )
-    policies = proof_plan.load_toolchain_policies(
-        data, root=REPO_ROOT, names=("browser-acorn",)
-    )
-    policy = next(policy for policy in policies if policy.name == "browser-acorn")
-    assert policy.data["setup_command"] == cp.provisioning_command("browser-acorn")
-    assert policy.data["package_lock"] in cp.locked_input_files("browser-acorn")
+    policies = proof_plan.load_toolchain_policies(data, root=REPO_ROOT, names=(name,))
+    policy = next(policy for policy in policies if policy.name == name)
+    assert policy.data["setup_command"] == cp.provisioning_command(name)
+    assert policy.data["package_lock"] in cp.locked_input_files(name)
 
 
 # The stub reports current only after it ran: its marker is the oracle for

@@ -1,8 +1,10 @@
 // box.ts -- EdgeBox Durable Object
 //
 // Each EdgeBox instance is keyed by a GitHub PR identifier (e.g. gh/owner/repo/pr/123).
-// It owns a SQLite database (via DO storage), loads a compiled Python WASM binary from
-// R2 on first use, and invokes it to handle each request.
+// It owns a SQLite database (via DO storage) and invokes the precompiled Python
+// WASM module shipped with this Worker to handle each request.
+
+import boxModule from "../../../dist/box.wasm";
 
 import {
   ProcExit,
@@ -13,18 +15,13 @@ import {
 } from "./db-bridge";
 
 interface Env {
-  ARTIFACTS: R2Bucket;
   BOX_SCHEMA_SQL: string;
 }
-
-// R2 key for the compiled Python box WASM binary
-const WASM_R2_KEY = "edgebox/box.wasm";
 
 export class EdgeBox implements DurableObject {
   private state: DurableObjectState;
   private env: Env;
   private schemaApplied = false;
-  private wasmModule: WebAssembly.Module | null = null;
 
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
@@ -57,24 +54,6 @@ export class EdgeBox implements DurableObject {
   }
 
   // -------------------------------------------------------------------------
-  // WASM module loading (cached in memory, fetched from R2)
-  // -------------------------------------------------------------------------
-
-  private async loadWasmModule(): Promise<WebAssembly.Module> {
-    if (this.wasmModule) return this.wasmModule;
-
-    // Fetch from R2
-    const obj = await this.env.ARTIFACTS.get(WASM_R2_KEY);
-    if (!obj) {
-      throw new Error(`WASM binary not found in R2 at key: ${WASM_R2_KEY}`);
-    }
-
-    const bytes = await obj.arrayBuffer();
-    this.wasmModule = await WebAssembly.compile(bytes);
-    return this.wasmModule;
-  }
-
-  // -------------------------------------------------------------------------
   // Run the WASM module with a given request context
   // -------------------------------------------------------------------------
 
@@ -85,7 +64,6 @@ export class EdgeBox implements DurableObject {
     headers: Record<string, string>,
     body: string,
   ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-    const module = await this.loadWasmModule();
     const bridge = createBridgeState(this.state.storage.sql);
 
     const stdoutChunks: string[] = [];
@@ -117,7 +95,7 @@ export class EdgeBox implements DurableObject {
 
     // Merge host stubs with live DB functions
     const hostStubs = createHostStubs();
-    const hostEnv: Record<string, unknown> = {
+    const hostEnv: WebAssembly.ModuleImports = {
       __indirect_function_table: new WebAssembly.Table({ initial: 8192, element: "anyfunc" }),
       ...hostStubs,
       // Override the DB stubs with live implementations
@@ -134,7 +112,7 @@ export class EdgeBox implements DurableObject {
 
     let exitCode = 0;
     try {
-      const instance = await WebAssembly.instantiate(module, imports);
+      const instance = await WebAssembly.instantiate(boxModule, imports);
       const exports = instance.exports as unknown as {
         memory: WebAssembly.Memory;
         molt_main?: () => void;

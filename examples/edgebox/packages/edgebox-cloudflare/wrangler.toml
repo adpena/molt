@@ -11,11 +11,6 @@ bindings = [
 tag = "v1"
 new_sqlite_classes = ["EdgeBox"]
 
-[r2_buckets]
-bindings = [
-  { name = "ARTIFACTS", bucket_name = "edgebox-artifacts" }
-]
-
 [vars]
 BOX_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS events (

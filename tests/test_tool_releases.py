@@ -45,14 +45,44 @@ def test_repository_manifest_pins_every_host_asset_of_wasm_tools() -> None:
     assert release.provenance.kind == tool_releases.PROVENANCE_GITHUB_RELEASE
 
 
+def test_repository_manifest_pins_uv_for_every_managed_host() -> None:
+    release = tool_releases.tool_release("uv", ROOT)
+    assert release.version == "0.13.5"
+    assert release.executable == "uv"
+    assert release.provenance.release_id == 420219944
+    assert release.provenance.url == (
+        "https://api.github.com/repos/astral-sh/uv/releases/tags/0.13.5"
+    )
+    assert set(release.assets) == {
+        f"{arch}-{system}"
+        for arch in ("x86_64", "aarch64")
+        for system in ("windows", "linux", "macos")
+    }
+    triples = {
+        "windows": "pc-windows-msvc",
+        "linux": "unknown-linux-musl",
+        "macos": "apple-darwin",
+    }
+    for key, asset in release.assets.items():
+        arch, system = key.split("-", 1)
+        stem = f"uv-{arch}-{triples[system]}"
+        suffix = "zip" if system == "windows" else "tar.gz"
+        assert asset.url == (
+            f"https://github.com/astral-sh/uv/releases/download/0.13.5/{stem}.{suffix}"
+        )
+        assert asset.archive_member == (
+            "uv.exe" if system == "windows" else f"{stem}/uv"
+        )
+
+
 def test_repository_manifest_pins_lune_for_every_ci_host() -> None:
     release = tool_releases.tool_release("lune", ROOT)
-    assert release.version == "0.10.5"
+    assert release.version == "0.11.1"
     assert release.executable == "lune"
     assert release.provenance.kind == tool_releases.PROVENANCE_GITHUB_RELEASE
-    assert release.provenance.release_id == 348167792
+    assert release.provenance.release_id == 419381043
     assert release.provenance.url == (
-        "https://api.github.com/repos/lune-org/lune/releases/tags/v0.10.5"
+        "https://api.github.com/repos/lune-org/lune/releases/tags/v0.11.1"
     )
     assert set(release.assets) == {
         f"{architecture}-{system}"
@@ -62,8 +92,8 @@ def test_repository_manifest_pins_lune_for_every_ci_host() -> None:
     for key, asset in release.assets.items():
         architecture, system = key.split("-", 1)
         assert asset.url == (
-            "https://github.com/lune-org/lune/releases/download/v0.10.5/"
-            f"lune-0.10.5-{system}-{architecture}.zip"
+            "https://github.com/lune-org/lune/releases/download/v0.11.1/"
+            f"lune-0.11.1-{system}-{architecture}.zip"
         )
         assert asset.archive_member == ("lune.exe" if system == "windows" else "lune")
         assert asset.size > 0

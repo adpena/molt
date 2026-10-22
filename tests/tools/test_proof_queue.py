@@ -17415,12 +17415,12 @@ def _write_current_scientific_seal(
         ],
         [
             ("meson", "1.9.0"),
-            ("cython", "3.2.8"),
+            ("cython", "3.2.9"),
             ("pybind11", "3.0.4"),
             ("pythran", "0.18.1"),
             ("numpy", "2.5.1"),
             ("ninja", "1.13.0"),
-            ("pkgconf", "3.0.1.post0"),
+            ("pkgconf", "3.0.7.post0"),
         ],
         dependency_group=extension_set.build_dependency_group,
     )
@@ -17485,7 +17485,7 @@ def _write_current_scientific_seal(
                                 "name": "pkg-config",
                                 "path": "pkg-config.exe",
                                 "distribution": "pkgconf",
-                                "version": "3.0.1.post0",
+                                "version": "3.0.7.post0",
                                 "sha256": "8" * 64,
                             },
                             {

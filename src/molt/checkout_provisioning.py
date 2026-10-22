@@ -23,6 +23,10 @@ same contract for every input it declares (docs/design/landing_queue.md,
   ``--prefer-offline`` reads the npm cache first, and ``--no-audit
   --no-fund`` skip two registry round trips (0.19 s instead of 0.37 s to
   0.55 s from a warm cache, measured 2026-10-20).
+- ``edgebox-typescript``: the Edgebox Worker's locked development tree.
+  Corepack selects npm from its ``packageManager``; the same guarded,
+  script-free ``npm ci`` and stamp contract as Acorn owns this tree. It is
+  selected explicitly by its proof, rather than installed for every lane.
 - ``git-hooks``: Molt's managed Git hooks in the Git common directory.
   ``tools/install_git_hooks.py`` owns their content and its own
   current/stale comparison (``--check``); this module only runs it. The
@@ -106,12 +110,23 @@ _PROBE_TIMEOUT_S = 60.0
 _MAX_STAMP_BYTES = 16 * 1024
 _OUTPUT_TAIL_CHARS = 4000
 
-CheckoutInputName = Literal["uv-environment", "browser-acorn", "git-hooks"]
+CheckoutInputName = Literal[
+    "uv-environment", "browser-acorn", "edgebox-typescript", "git-hooks"
+]
 CHECKOUT_INPUT_NAMES: tuple[CheckoutInputName, ...] = get_args(CheckoutInputName)
+# Lane setup and sandbox preparation keep the original checkout prerequisites.
+# Registered optional inputs are admitted only when a proof selects them; the
+# complete table still recognizes their stamps during preservation/retirement.
+DEFAULT_CHECKOUT_INPUT_NAMES: tuple[CheckoutInputName, ...] = (
+    "uv-environment",
+    "browser-acorn",
+    "git-hooks",
+)
 InputScope = Literal["checkout", "repository"]
 InputState = Literal["current", "stale", "absent"]
 
 ACORN_ROOT = "tools/browser_asset_graph"
+EDGEBOX_ROOT = "examples/edgebox/packages/edgebox-cloudflare"
 HOOK_INSTALLER = "tools/install_git_hooks.py"
 
 
@@ -128,9 +143,9 @@ def _require_guard_source_owner(owner: Path | None) -> None:
 class LockedTree:
     """A tree that one package-manager command builds from lock files.
 
-    Paths in ``lock_files`` and ``arguments`` are relative to ``checkout``,
-    which is also the command's working directory, so the action digest does
-    not depend on where the checkout lives.
+    Lock paths are relative to ``checkout``; command arguments are relative
+    to its ``command_cwd``. Both stay checkout-relative, so the action digest
+    does not depend on where the checkout lives.
     """
 
     name: str
@@ -142,6 +157,7 @@ class LockedTree:
     arguments: tuple[str, ...]
     environment: ProcessEnvironment
     scope: InputScope = "checkout"
+    command_cwd: str = "."
     # Variables the caller's tool would choose for itself, each with the tool
     # arguments that print that choice. The guarded command receives them
     # explicitly, so the memory guard's dx defaults cannot redirect it.
@@ -158,6 +174,9 @@ class LockedTree:
 
     def __post_init__(self) -> None:
         _require_guard_source_owner(self.guard_source_root)
+        directory = Path(self.command_cwd)
+        if directory.is_absolute() or ".." in directory.parts:
+            raise ValueError("command_cwd must remain inside the checkout")
 
     @property
     def stamp(self) -> Path:
@@ -270,6 +289,29 @@ def checkout_input(
                 ),
                 environment=environment,
             )
+        case "edgebox-typescript":
+            return LockedTree(
+                name=name,
+                guard_source_root=guard_source_root,
+                checkout=checkout,
+                lock_files=(
+                    f"{EDGEBOX_ROOT}/package-lock.json",
+                    f"{EDGEBOX_ROOT}/package.json",
+                ),
+                tree=checkout / EDGEBOX_ROOT / "node_modules",
+                sentinel="typescript/bin/tsc",
+                tool="corepack",
+                arguments=(
+                    "npm",
+                    "ci",
+                    "--ignore-scripts",
+                    "--prefer-offline",
+                    "--no-audit",
+                    "--no-fund",
+                ),
+                environment=environment,
+                command_cwd=EDGEBOX_ROOT,
+            )
         case "git-hooks":
             return OwnedInstallation(
                 name=name,
@@ -367,6 +409,10 @@ def _action_digest(spec: LockedTree, locks: Mapping[str, str]) -> str:
     digest = hashlib.sha256(SCHEMA.encode("ascii"))
     for part in (spec.name, spec.tool, *spec.arguments):
         digest.update(b"\0" + part.encode("utf-8"))
+    # Default-cwd actions keep their existing digest/stamp. Corepack needs
+    # the package directory to select its packageManager, not npm's --prefix.
+    if spec.command_cwd != ".":
+        digest.update(b"\2" + spec.command_cwd.encode("utf-8"))
     for relative, file_digest in locks.items():
         digest.update(b"\1" + relative.encode("utf-8") + b"\0")
         digest.update(file_digest.encode("ascii"))
@@ -545,17 +591,18 @@ def _provision_locked(spec: LockedTree) -> bool:
         spec.stamp.unlink(missing_ok=True)
         argv = [executable, *spec.arguments]
         started = time.monotonic()
+        command_cwd = spec.checkout / spec.command_cwd
         result = _run(
             spec.name,
             argv,
-            cwd=spec.checkout,
+            cwd=command_cwd,
             environment=environment,
             guarded=True,
             guard_source_root=spec.guard_source_root,
         )
         seconds = time.monotonic() - started
         if result.returncode != 0:
-            raise _failure(spec.name, argv, spec.checkout, result)
+            raise _failure(spec.name, argv, command_cwd, result)
         if not (spec.tree / spec.sentinel).is_file():
             raise ProvisioningError(
                 f"{spec.name}: `{_command_text(argv)}` exited 0 but "
@@ -692,7 +739,7 @@ def ensure(
 def ensure_all(
     checkout: Path,
     environ: Mapping[str, str] | None = None,
-    names: Iterable[CheckoutInputName] = CHECKOUT_INPUT_NAMES,
+    names: Iterable[CheckoutInputName] = DEFAULT_CHECKOUT_INPUT_NAMES,
     *,
     guard_source_root: Path | None = None,
 ) -> tuple[Ensured, ...]:
@@ -731,7 +778,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "inputs",
         nargs="*",
         metavar="INPUT",
-        help=f"one of {', '.join(CHECKOUT_INPUT_NAMES)} (default: all)",
+        help=f"one of {', '.join(CHECKOUT_INPUT_NAMES)} "
+        f"(default: {', '.join(DEFAULT_CHECKOUT_INPUT_NAMES)})",
     )
     parser.add_argument("--checkout", type=Path, default=compiler_source_root())
     parser.add_argument("--json", action="store_true")
@@ -739,8 +787,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     unknown = sorted(set(args.inputs) - set(CHECKOUT_INPUT_NAMES))
     if unknown:
         parser.error(f"unknown checkout input: {', '.join(unknown)}")
-    names = tuple(
-        name for name in CHECKOUT_INPUT_NAMES if not args.inputs or name in args.inputs
+    names = (
+        tuple(name for name in CHECKOUT_INPUT_NAMES if name in args.inputs)
+        if args.inputs
+        else DEFAULT_CHECKOUT_INPUT_NAMES
     )
     if args.action == "status":
         try:

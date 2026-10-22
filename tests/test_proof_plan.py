@@ -952,6 +952,7 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
         "wasm_abi::",
         "async_rt::channels::",
         "async_rt::net_stubs::",
+        "concurrency::gil::tests::",
         "intrinsics::registry::",
     } <= set(filters)
     assert {
@@ -2765,7 +2766,11 @@ def test_git_toolchain_declares_lossless_process_image_probe() -> None:
 
 
 def test_uv_toolchain_declares_platform_process_image_probe() -> None:
+    from molt.tool_releases import tool_release
+
     uv = next(policy for policy in PLAN.toolchain_policies if policy.name == "uv")
+    assert uv.projection == "tool-release"
+    assert uv.data["setup_value"] == tool_release("uv").version
 
     assert uv.data["version_args"] == ["--version"]
     # Catalogue-only listing detects the host platform without discovering or

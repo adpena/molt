@@ -12,87 +12,87 @@ schema_version = 2
 # the downloaded archive.
 
 [tools.wasm-tools]
-version = "1.261.0"
+version = "1.262.0"
 executable = "wasm-tools"
 
 [tools.wasm-tools.provenance]
 kind = "github-release"
-url = "https://api.github.com/repos/bytecodealliance/wasm-tools/releases/tags/v1.261.0"
-release_id = 401907799
+url = "https://api.github.com/repos/bytecodealliance/wasm-tools/releases/tags/v1.262.0"
+release_id = 412152331
 
 [tools.wasm-tools.assets.x86_64-windows]
-url = "https://github.com/bytecodealliance/wasm-tools/releases/download/v1.261.0/wasm-tools-1.261.0-x86_64-windows.zip"
-size = 4691103
-sha256 = "250c6ee7d8073865a5cb42e1077f4246c72516af9b09d41d8a2734985ae673fd"
-archive_member = "wasm-tools-1.261.0-x86_64-windows/wasm-tools.exe"
+url = "https://github.com/bytecodealliance/wasm-tools/releases/download/v1.262.0/wasm-tools-1.262.0-x86_64-windows.zip"
+size = 4697594
+sha256 = "a39100cadac426e174e449a80db669f191b6a2e14f27c369553580ca6e9ea7e3"
+archive_member = "wasm-tools-1.262.0-x86_64-windows/wasm-tools.exe"
 
 [tools.wasm-tools.assets.x86_64-linux]
-url = "https://github.com/bytecodealliance/wasm-tools/releases/download/v1.261.0/wasm-tools-1.261.0-x86_64-linux.tar.gz"
-size = 5954170
-sha256 = "ad62b2176037e93e1348cb65d6212d128ca9f097b63d155569f25215818ff7b1"
-archive_member = "wasm-tools-1.261.0-x86_64-linux/wasm-tools"
+url = "https://github.com/bytecodealliance/wasm-tools/releases/download/v1.262.0/wasm-tools-1.262.0-x86_64-linux.tar.gz"
+size = 5951367
+sha256 = "655b8df67d54c3ef9b52fc237c4e94bbfbb5f5f43825245cb0940a7002a9ed65"
+archive_member = "wasm-tools-1.262.0-x86_64-linux/wasm-tools"
 
 [tools.wasm-tools.assets.aarch64-linux]
-url = "https://github.com/bytecodealliance/wasm-tools/releases/download/v1.261.0/wasm-tools-1.261.0-aarch64-linux.tar.gz"
-size = 6016464
-sha256 = "6f19389a69e21c7dbd2a4e7ae72f807dc999988b48782c706c4102bad3e44487"
-archive_member = "wasm-tools-1.261.0-aarch64-linux/wasm-tools"
+url = "https://github.com/bytecodealliance/wasm-tools/releases/download/v1.262.0/wasm-tools-1.262.0-aarch64-linux.tar.gz"
+size = 6015840
+sha256 = "729dc47a114305ed60873ce6199d403eed1da89c3aa2367eef292da358b1e8d3"
+archive_member = "wasm-tools-1.262.0-aarch64-linux/wasm-tools"
 
 [tools.wasm-tools.assets.x86_64-macos]
-url = "https://github.com/bytecodealliance/wasm-tools/releases/download/v1.261.0/wasm-tools-1.261.0-x86_64-macos.tar.gz"
-size = 5630206
-sha256 = "354a84ffeede30ba11f29bc72de76875a977cf43bf1c5bdc3e91e2313e8a854b"
-archive_member = "wasm-tools-1.261.0-x86_64-macos/wasm-tools"
+url = "https://github.com/bytecodealliance/wasm-tools/releases/download/v1.262.0/wasm-tools-1.262.0-x86_64-macos.tar.gz"
+size = 5633028
+sha256 = "970b078911cad1a01a645c769de722cd44feee3355dcc4170c2ac3066154e5e9"
+archive_member = "wasm-tools-1.262.0-x86_64-macos/wasm-tools"
 
 [tools.wasm-tools.assets.aarch64-macos]
-url = "https://github.com/bytecodealliance/wasm-tools/releases/download/v1.261.0/wasm-tools-1.261.0-aarch64-macos.tar.gz"
-size = 5189154
-sha256 = "94c4fc9baeada6e793f0d4adeca537633b5d93e9dc6bf718be2f478f4afe0296"
-archive_member = "wasm-tools-1.261.0-aarch64-macos/wasm-tools"
+url = "https://github.com/bytecodealliance/wasm-tools/releases/download/v1.262.0/wasm-tools-1.262.0-aarch64-macos.tar.gz"
+size = 5191137
+sha256 = "801b237643cc0f4ab27ebd1745e7863e23bf194a038bc6ca8ce5618212e43669"
+archive_member = "wasm-tools-1.262.0-aarch64-macos/wasm-tools"
 
 [tools.lune]
-version = "0.10.5"
+version = "0.11.1"
 executable = "lune"
 
 [tools.lune.provenance]
 kind = "github-release"
-url = "https://api.github.com/repos/lune-org/lune/releases/tags/v0.10.5"
-release_id = 348167792
+url = "https://api.github.com/repos/lune-org/lune/releases/tags/v0.11.1"
+release_id = 419381043
 
 [tools.lune.assets.x86_64-windows]
-url = "https://github.com/lune-org/lune/releases/download/v0.10.5/lune-0.10.5-windows-x86_64.zip"
-size = 5178086
-sha256 = "ad0305f5cc6d7ff20996644b40bf7de0de613812f431ca241456e16f9fc89cda"
+url = "https://github.com/lune-org/lune/releases/download/v0.11.1/lune-0.11.1-windows-x86_64.zip"
+size = 5389923
+sha256 = "83f1dc29d9e35c494907521f2ca6561f6c204fdf6f1b06525d2e9fdd1e6b4301"
 archive_member = "lune.exe"
 
 [tools.lune.assets.aarch64-windows]
-url = "https://github.com/lune-org/lune/releases/download/v0.10.5/lune-0.10.5-windows-aarch64.zip"
-size = 4877541
-sha256 = "b98bc49ded9183951c1d01b428872cd8ce518f200b48824ea3b31e3d7dec28ae"
+url = "https://github.com/lune-org/lune/releases/download/v0.11.1/lune-0.11.1-windows-aarch64.zip"
+size = 5055785
+sha256 = "1b1394ca2ba4990ecde440cf787ff46f9c52b2c4318a39fa3373fc56b71e7d8a"
 archive_member = "lune.exe"
 
 [tools.lune.assets.x86_64-linux]
-url = "https://github.com/lune-org/lune/releases/download/v0.10.5/lune-0.10.5-linux-x86_64.zip"
-size = 5373877
-sha256 = "1fb5dee6a1afa1d300092805c6e660fe06144d29dd68c45cf6956f040667f791"
+url = "https://github.com/lune-org/lune/releases/download/v0.11.1/lune-0.11.1-linux-x86_64.zip"
+size = 5571590
+sha256 = "39859282ce677fce19e6eb45c37596a90a25c324c95b4e7e02d428b6cae294a1"
 archive_member = "lune"
 
 [tools.lune.assets.aarch64-linux]
-url = "https://github.com/lune-org/lune/releases/download/v0.10.5/lune-0.10.5-linux-aarch64.zip"
-size = 5279931
-sha256 = "176e1272d41ba3d9ea30087b528048a4a97e3d74cfa0eaa5d35d9e0d4122caa6"
+url = "https://github.com/lune-org/lune/releases/download/v0.11.1/lune-0.11.1-linux-aarch64.zip"
+size = 5463469
+sha256 = "f8d7d63384fad5edfaf5423b0ff1a1dbca9c44ec43beaa35c234b20a584aea66"
 archive_member = "lune"
 
 [tools.lune.assets.x86_64-macos]
-url = "https://github.com/lune-org/lune/releases/download/v0.10.5/lune-0.10.5-macos-x86_64.zip"
-size = 5140529
-sha256 = "f4b43cfd495994b7ef783ac2bb0aa24f1f940f3804b28018121bb3cc2171c1a7"
+url = "https://github.com/lune-org/lune/releases/download/v0.11.1/lune-0.11.1-macos-x86_64.zip"
+size = 5313225
+sha256 = "d083047e08a40bd73dbb1ae8af929536497c0d57021c0ead0f9c8571f228a5fa"
 archive_member = "lune"
 
 [tools.lune.assets.aarch64-macos]
-url = "https://github.com/lune-org/lune/releases/download/v0.10.5/lune-0.10.5-macos-aarch64.zip"
-size = 4944295
-sha256 = "bdb94f47bc1d3af3e3fe796cfce9c7f406042d4aada9cc41a1c53836f3e3b411"
+url = "https://github.com/lune-org/lune/releases/download/v0.11.1/lune-0.11.1-macos-aarch64.zip"
+size = 5099786
+sha256 = "0592c9b37c06f208f7d90e5d750e76101b9ba6191cd693ef34667f4f1f1063d4"
 archive_member = "lune"
 
 [tools.sccache]
@@ -180,3 +180,48 @@ url = "https://nodejs.org/dist/v26.12.1/node-v26.12.1-darwin-arm64.tar.gz"
 size = 58334853
 sha256 = "1901d539912c02afa10d1cc126943a8855a7eedebe830119463470db5e6c59e8"
 archive_member = "node-v26.12.1-darwin-arm64/bin/node"
+
+[tools.uv]
+version = "0.13.5"
+executable = "uv"
+
+[tools.uv.provenance]
+kind = "github-release"
+url = "https://api.github.com/repos/astral-sh/uv/releases/tags/0.13.5"
+release_id = 420219944
+
+[tools.uv.assets.x86_64-windows]
+url = "https://github.com/astral-sh/uv/releases/download/0.13.5/uv-x86_64-pc-windows-msvc.zip"
+size = 15264056
+sha256 = "a38b8d1902b7cfbc76b423ba1bb456f623f42064cdc72628b6075b89afd1019a"
+archive_member = "uv.exe"
+
+[tools.uv.assets.aarch64-windows]
+url = "https://github.com/astral-sh/uv/releases/download/0.13.5/uv-aarch64-pc-windows-msvc.zip"
+size = 15439089
+sha256 = "09f47edf90726084a70f9426f6e3ca4f46e9bf7cbf23b1716ec64d60b055fae3"
+archive_member = "uv.exe"
+
+[tools.uv.assets.x86_64-linux]
+url = "https://github.com/astral-sh/uv/releases/download/0.13.5/uv-x86_64-unknown-linux-musl.tar.gz"
+size = 18409974
+sha256 = "57ef9d9ccb01fb1bd998df995b0dd221b52f7d7841fbea93f2d4463bf61fb7a9"
+archive_member = "uv-x86_64-unknown-linux-musl/uv"
+
+[tools.uv.assets.aarch64-linux]
+url = "https://github.com/astral-sh/uv/releases/download/0.13.5/uv-aarch64-unknown-linux-musl.tar.gz"
+size = 17006090
+sha256 = "7906c79adb21c81abd559841ba76bb1d9af9d791acac7a041b2972e03ae16538"
+archive_member = "uv-aarch64-unknown-linux-musl/uv"
+
+[tools.uv.assets.x86_64-macos]
+url = "https://github.com/astral-sh/uv/releases/download/0.13.5/uv-x86_64-apple-darwin.tar.gz"
+size = 17167423
+sha256 = "b0f52b0e3945b4107d89024ea38e625683011fbfc05a0d98f9fa2d6dcee28c66"
+archive_member = "uv-x86_64-apple-darwin/uv"
+
+[tools.uv.assets.aarch64-macos]
+url = "https://github.com/astral-sh/uv/releases/download/0.13.5/uv-aarch64-apple-darwin.tar.gz"
+size = 14365303
+sha256 = "743f85035a1996ecb350659e01cd9faea9709829be09b1b4b03c73eaf3c9cd73"
+archive_member = "uv-aarch64-apple-darwin/uv"

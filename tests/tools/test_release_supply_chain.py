@@ -260,39 +260,48 @@ def test_release_target_and_download_authority_is_complete_and_exact() -> None:
 
 
 def test_release_and_deployment_python_tools_are_exact_hash_locked() -> None:
+    from packaging.requirements import Requirement
+
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    assert pyproject["build-system"]["requires"] == [
-        "setuptools==83.0.0",
-        "wheel==0.47.0",
-    ]
-    assert pyproject["dependency-groups"]["release"] == [
-        "auditwheel==6.8.2; sys_platform == 'linux'",
-        "build==1.5.0",
-        "delocate==0.13.0; sys_platform == 'darwin'",
-        "setuptools==83.0.0",
-        "wheel==0.47.0",
-    ]
-    assert pyproject["dependency-groups"]["deployment"] == ["modal==1.5.2"]
+    declared_groups = {
+        "build": pyproject["build-system"]["requires"],
+        "release": pyproject["dependency-groups"]["release"],
+        "deployment": pyproject["dependency-groups"]["deployment"],
+    }
+    expected_names = {
+        "build": {"setuptools", "wheel"},
+        "release": {"auditwheel", "build", "delocate", "setuptools", "wheel"},
+        "deployment": {"modal"},
+    }
     lock = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
     packages = {package["name"]: package for package in lock["package"]}
-    for name, version in {
-        "auditwheel": "6.8.2",
-        "build": "1.5.0",
-        "delocate": "0.13.0",
-        "modal": "1.5.2",
-        "setuptools": "83.0.0",
-        "wheel": "0.47.0",
-    }.items():
-        package = packages[name]
-        assert package["version"] == version
-        distributions = [package.get("sdist"), *package.get("wheels", [])]
-        assert distributions
-        assert all(
-            distribution
-            and str(distribution.get("hash", "")).startswith("sha256:")
-            and distribution.get("size", 0) > 0
-            for distribution in distributions
-        )
+    for group, requirements in declared_groups.items():
+        parsed = [Requirement(requirement) for requirement in requirements]
+        assert {requirement.name for requirement in parsed} == expected_names[group]
+        assert len(parsed) == len(expected_names[group])
+        for requirement in parsed:
+            specifiers = list(requirement.specifier)
+            assert len(specifiers) == 1
+            specifier = specifiers[0]
+            assert specifier.operator == "==" and "*" not in specifier.version
+            assert requirement.url is None and not requirement.extras
+            expected_marker = {
+                "auditwheel": 'sys_platform == "linux"',
+                "delocate": 'sys_platform == "darwin"',
+            }.get(requirement.name)
+            assert (
+                str(requirement.marker) if requirement.marker else None
+            ) == expected_marker
+            package = packages[requirement.name]
+            assert package["version"] == specifier.version
+            distributions = [package.get("sdist"), *package.get("wheels", [])]
+            assert distributions
+            assert all(
+                distribution
+                and str(distribution.get("hash", "")).startswith("sha256:")
+                and distribution.get("size", 0) > 0
+                for distribution in distributions
+            )
 
 
 class _Response:
@@ -1621,7 +1630,7 @@ def test_release_topology_has_one_atomic_promotion_and_separate_deployments() ->
     assert re.search(r'^\s+wranglerVersion: "\d+\.\d+\.\d+"$', cloudflare, re.M)
     assert "release:" in modal and "environment: modal-production" in modal
     assert "pip install modal" not in modal
-    assert pyproject["dependency-groups"]["deployment"] == ["modal==1.5.2"]
+    assert pyproject["dependency-groups"]["deployment"] == ["modal==1.6.2"]
     assert "elan/master" not in lean
     assert "release_supply_chain.toml" in lean or "fetch_pinned_tool" in lean
 

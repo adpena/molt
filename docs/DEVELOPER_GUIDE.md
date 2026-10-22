@@ -192,7 +192,12 @@ molt update
 
 This installs the Rust toolchain pinned by `rust-toolchain.toml`, ensures the
 checked-in WASM Rust targets exist, installs missing cargo-hosted helper tools
-such as `wasm-tools`/`wasm-pack`, and refreshes the repo lockfiles.
+such as `wasm-tools`/`wasm-pack`, and refreshes the root uv lock plus every
+tracked Cargo workspace and npm project lock. The inventory is shared with
+Dependabot and the Cargo security audit; fixture projects retain their pins.
+The npm steps use `corepack npm` in each project so its `packageManager` selects
+the writer, update only lockfiles, and disable lifecycle scripts and implicit
+audit/funding requests.
 
 Python dependency resolution is uv-owned and future-forward. The project floor
 is CPython `>=3.12` with no artificial upper cap; run floor checks with
@@ -205,27 +210,32 @@ For a deliberate maintainer sweep that also upgrades direct Rust dependency requ
 molt update --all
 ```
 
-Treat `--all` as a coordinated change: rebuild the touched crates and rerun the backend/runtime verification matrix in the same session.
+`--all` upgrades requirements in every tracked Cargo workspace. npm respects
+the existing manifest ranges; incompatible npm majors require a deliberate
+manifest and API migration. Command success means its planned steps completed,
+not that all upstream latest versions fit those ranges. Treat the sweep as a
+coordinated change: verify the touched backend/runtime and JavaScript consumers.
 
 Node package surfaces are package-manager pinned. Use Corepack so the
 `packageManager` field in each `package.json` selects the lockfile writer and
 audit engine, rather than whatever stale global `npm` happens to be on PATH:
 
 Molt's JavaScript tooling is future-forward with a hard floor, not an upper cap:
-Node `>=24.18.0` (current Active LTS floor) and npm `>=11.17.0`. The preferred
-maintainer lane tracks the current Node release line as it appears; on
-2026-06-25 that is Node `26.4.0` with npm `11.17.0`. Keep package manifests'
-`engines` and `packageManager` fields aligned with that policy.
+Node `>=24.18.0`, with no upper cap. The preferred maintainer lane tracks the
+current Node release through `config/tool_releases.toml`; each npm project's
+`engines` and exact `packageManager` declare the compatible floor and writer.
 
 ```bash
 corepack npm install --package-lock-only
 corepack npm audit
 ```
 
-The current Cloudflare package authorities are
+The package authorities are `tools/browser_asset_graph/package.json`,
 `deploy/cloudflare/package.json` and
 `examples/edgebox/packages/edgebox-cloudflare/package.json`; keep their v3
-lockfiles committed with the manifest change.
+lockfiles committed with the manifest change. Workers types v5 exposes only
+current runtime types; its type check does not qualify deployment against an
+older `compatibility_date` or replace a live Worker check.
 
 ## Differential Suite Controls
 - **Memory profiling**: native RSS profiling is opt-in with `MOLT_DIFF_MEASURE_RSS=1` or a positive `MOLT_DIFF_MAX_RSS_KB` threshold; explicit profiling-off conflicts with an active threshold. The mandatory memory guard remains active. See [Operations](OPERATIONS.md) for metric scope and proof-custody limits.

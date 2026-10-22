@@ -63,7 +63,7 @@ jobs:
 
       - name: Upload repository policy receipt
         if: always() && hashFiles('proof-receipts/repository_policy.json') != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: proof-receipt-repository-policy
           path: proof-receipts/repository_policy.json
@@ -73,7 +73,7 @@ jobs:
       # receipts that release-exit assembly consumes.
       - name: Upload E4 release criterion receipts
         if: always() && hashFiles('proof-receipts/evidence/e4/*.json') != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-e4-receipts-${{ github.sha }}
           path: |
@@ -188,7 +188,7 @@ jobs:
 
       - name: Upload platform portability receipt
         if: always() && hashFiles(format('proof-receipts/platform-portability-{0}.json', matrix.cell)) != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: proof-receipt-platform-portability-${{ matrix.cell }}
           path: proof-receipts/platform-portability-${{ matrix.cell }}.json
@@ -196,7 +196,7 @@ jobs:
 
       - name: Upload platform portability command diagnostics
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: proof-diagnostics-platform-portability-${{ matrix.cell }}
           path: |
@@ -261,7 +261,7 @@ jobs:
 
       - name: Upload Python static receipt
         if: always() && hashFiles('proof-receipts/python_static.json') != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: proof-receipt-python-static
           path: proof-receipts/python_static.json
@@ -300,7 +300,7 @@ jobs:
           --matrix-cell "${{ matrix.cell }}"
       - name: Upload Python unit receipt
         if: always() && hashFiles(format('proof-receipts/python-unit-{0}.json', matrix.cell)) != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: proof-receipt-python-unit-${{ matrix.cell }}
           path: proof-receipts/python-unit-${{ matrix.cell }}.json
@@ -336,7 +336,7 @@ jobs:
           --matrix-cell "${{ matrix.cell }}"
       - name: Upload Python unit collection receipt
         if: always() && hashFiles(format('proof-receipts/python-unit-collection-{0}.json', matrix.cell)) != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: proof-receipt-python-unit-collection-${{ matrix.cell }}
           path: proof-receipts/python-unit-collection-${{ matrix.cell }}.json
@@ -378,14 +378,14 @@ jobs:
         run: python3 tools/proof_plan.py --run-family native_integration --receipt proof-receipts/native_integration.json
       - name: Upload native integration receipt
         if: always() && hashFiles('proof-receipts/native_integration.json') != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: proof-receipt-native-integration
           path: proof-receipts/native_integration.json
           if-no-files-found: error
       - name: Upload native integration command diagnostics
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: proof-diagnostics-native-integration
           path: |
@@ -424,7 +424,7 @@ jobs:
         run: python3 tools/proof_plan.py --run-family browser_simd --receipt proof-receipts/browser-simd.json
       - name: Upload browser SIMD receipt
         if: always() && hashFiles('proof-receipts/browser-simd.json') != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: proof-receipt-browser-simd
           path: proof-receipts/browser-simd.json
@@ -468,7 +468,7 @@ jobs:
 
       - name: Upload Rust receipt
         if: always() && hashFiles('proof-receipts/rust.json') != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: proof-receipt-rust
           path: |
@@ -478,7 +478,7 @@ jobs:
 
       - name: Upload Rust command diagnostics
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: proof-diagnostics-rust
           path: |
@@ -536,7 +536,7 @@ jobs:
 
       - name: Upload LLVM/MLIR/linker receipt
         if: always() && hashFiles('proof-receipts/llvm.json') != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: proof-receipt-llvm
           path: |
@@ -548,7 +548,7 @@ jobs:
 
       - name: Upload LLVM command diagnostics
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: proof-diagnostics-llvm
           path: |
@@ -597,7 +597,7 @@ jobs:
           cache-uv: "false"
       - name: Download executable proof receipts
         if: needs.classify-changes.outputs.selected != '[]'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: proof-receipt-*
           path: proof-receipts
