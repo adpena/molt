@@ -205,8 +205,10 @@ every process that starts the program again pays the same cost. Measured on macO
 arm64 at host load 8-16: `import os, sys` compiles 832 functions in 6.8-10.2 s at
 0.7-0.8 GB peak RSS per start, where the AOT executable starts in 0.27-0.35 s at
 23 MB; and a no-change `molt run` takes 9.2-10.1 s against 1.6 s. Once the program
-runs, the compiler's memory is gone from its footprint (73-75 MB against 6.7 MB for
-a program that imports `subprocess`). [design/dev_jit_tier.md](design/dev_jit_tier.md)
+runs, the compiler's memory is gone from its footprint (72-75 MB against 6.7 MB for
+a program that imports `subprocess`): on macOS the runner turns off libc's
+large-block cache for the whole program, which makes C code that churns large
+`malloc` blocks much slower; set `MallocLargeCache=1` to keep the cache. [design/dev_jit_tier.md](design/dev_jit_tier.md)
 ("Costs") breaks these down by phase.
 
 A JIT image is a development artifact. Its header names this checkout's `molt-jit`

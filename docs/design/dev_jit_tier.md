@@ -75,27 +75,35 @@ function into a `cranelift_module::Module`; only the module that owns the code d
 
    Compiler stderr appears only when compilation fails or backend diagnostics were
    requested, as `molt run` shows a backend's stderr. While it compiles, the runner points
-   file descriptor 2 at a pipe that a forked keeper process holds in memory; the runner
-   then tells the keeper to discard or to write the text. A runner that dies while it
-   compiles, by any signal or exit, never gives a verdict, and the keeper writes the text.
-   The keeper is reaped before the program starts. The capture never changes how the
-   program starts: with fd 2 closed there is nothing to capture, so the runner compiles
-   with it closed, as an AOT executable runs with it closed; every descriptor the capture
-   opens sits above fd 2 and closes on exec, so a closed fd 0 or 1 stays closed; and if
-   another process kills the keeper, writes to its pipes fail with `EPIPE` instead of
-   raising `SIGPIPE` (macOS `F_SETNOSIGPIPE`; on Linux the runner blocks `SIGPIPE` while
-   it captures and discards what is pending), and the runner names the lost output on the
-   restored stderr and goes on.
+   file descriptor 2 at an unlinked capture file that it and a forked keeper process both
+   hold. When the compile ends, the runner discards the text or writes it to the restored
+   stderr itself, and releases the keeper. A runner that dies while it compiles, by any
+   signal or exit, never releases it, and the keeper writes the text. The keeper is
+   reaped before the program starts. The capture never changes how the program starts:
+   with fd 2 closed there is nothing to capture, so the runner compiles with it closed,
+   as an AOT executable runs with it closed; every descriptor the capture opens sits
+   above fd 2 and closes on exec, so a closed fd 0 or 1 stays closed; and compiler
+   writes go to a regular file, never to a pipe. The compiler prints a progress line with
+   `eprintln!` every few functions, and `eprintln!` panics on a write error, so a pipe
+   whose keeper another process killed would stop the compile; with the file, killing
+   only the keeper changes nothing for the runner and the program. Only the one-byte
+   release goes through a pipe, and a dead keeper makes that write fail with `EPIPE`
+   instead of raising `SIGPIPE` (macOS `F_SETNOSIGPIPE`; on Linux the runner blocks
+   `SIGPIPE` while it captures and discards what is pending). `runner_launch.rs` kills
+   only the keeper while the real compiler prints progress for 20,000 functions; the
+   program starts and exits 0 (with the earlier pipe capture, the runner exited 125).
 
    macOS's allocator keeps freed large blocks in a cache, so the compiler's freed heap
-   would stay in the program's footprint (885 MB for a program that imports
+   would stay in the program's footprint (522-570 MB for a program that imports
    `subprocess`, against 6.7 MB under AOT). `malloc_zone_pressure_relief` releases none
    of it, and libmalloc reads its settings only at process start. The runner therefore
-   restarts itself once with `execv` (same pid, argv, descriptors, signal mask and
-   dispositions) with `MallocLargeCache=0`, and removes that setting and its own marker
-   before anything else runs; a caller's own `MallocLargeCache` stays. On glibc the
+   restarts itself once with `execv` (same pid, descriptors, signal mask and
+   dispositions) with `MallocLargeCache=0` and its own first argument
+   `--allocator-restarted`, and drops both before anything else runs. The marker travels
+   in argv, so no variable a caller passes can stand for it; a caller that sets
+   `MallocLargeCache` itself keeps its own setting and gets no restart. On glibc the
    runner calls `malloc_trim(0)` before the program starts. The image bytes are dropped
-   first.
+   first. The setting holds for the whole program, a named trade ("Costs").
 3. **Runtime symbols.** Generated code imports runtime functions through
    `Linkage::Import`. The runner loads the runtime as a shared image and resolves every
    import with `dlsym` on that image, as cg_clif resolves dependency symbols in their
@@ -183,9 +191,13 @@ as an AOT executable's path does. `subprocess.run([sys.executable, ...])` and sp
 `multiprocessing` (which executes `sys.argv[0]`) therefore work; each such start compiles
 the program again, a cost the AOT tier does not pay. `molt run` and the differential
 harness start the runner with the same command (`run_tier.jit_runner_argv`), adding
-`--start-receipt`. The kernel splits an interpreter line at whitespace and reads only its
-first bytes (256 on Linux, 512 on macOS), so publication refuses a runner path that is
-relative, holds whitespace or makes the line too long.
+`--start-receipt`. The runner's flags, its start receipt and the image marker come from
+one declaration, the `[runner]` table of `runtime/native_launch_abi.toml`, which
+`tools/gen_native_launch_abi.py` projects into Python and Rust as it does the launch
+entries. The kernel ends an interpreter path at whitespace (and macOS's parser also at
+`#`) and reads only the line's first bytes (256 on Linux, 512 on macOS), so publication
+refuses a runner path that is relative, holds whitespace, `#` or a NUL, or makes the line
+too long.
 
 Two differences from a directly started AOT executable remain, both from how the kernel
 starts an interpreter: `argv[0]` is the path the kernel executed (absolute when a shell
@@ -273,7 +285,8 @@ reuses compiled stdlib code, as an AOT build does.
   process that starts the image again (a spawned `multiprocessing` worker, a
   `subprocess` of `sys.executable`). On macOS the runner restarts itself once to turn off
   the allocator's large-block cache, so the compiler's freed heap leaves the program's
-  footprint; that costs about 0.3 s of compile time per start.
+  footprint. That is a named trade: about 0.3 s of compile time per start, and libc's
+  large blocks lose their cache for the whole program (below).
 - Not removed: frontend lowering on edited modules, backend IR preparation (HF-266) and
   toolchain probes (HF-357).
 
@@ -296,7 +309,21 @@ image, by cost bucket (`MOLT_BACKEND_TIMING=1`, `/usr/bin/time -l`; three starts
 While a program that imports `subprocess` runs (2026-10-22, release runner, five
 interleaved starts each at load 8-12, `vmmap --summary`): its physical footprint is
 72.9-74.8 MB under JIT with the allocator restart, 875-895 MB without it, and 6.7 MB
-under AOT. The restart cost 0.28 s of compile time for `import os, sys` (median 7.33 s
+under AOT. With the v4 runner, which also captures compiler output in a file, the
+footprint is 72-74 MB with the restart and 522-570 MB when the caller keeps the cache
+(`MallocLargeCache=1`), at load 60-180.
+
+The large-block cache is off for the whole program, not only for the compiler. Molt's
+own heap does not use libc `malloc` (the runtime image allocates through mimalloc):
+churning `bytearray`s of 128 KiB, 1 MiB and 8 MiB costs the same under JIT with the
+restart, under JIT with the cache kept, and under AOT (2.9-3.4, 7.5-11.2 and 38-49 us
+each, load 117-180). libc `malloc` does use it: C extensions and `PyMem_Malloc` blocks.
+A C loop that mallocs, touches and frees one block costs 5.9-7.3 us against 0.1 us at
+128 KiB, 45-55 us against 0.3-0.5 us at 1 MiB, and 427-498 us against 2.3-2.5 us at
+8 MiB with the cache off. The JIT tier admits no external native package artifacts
+today, so no admitted program pays this; a program that loads C extensions under the
+JIT tier must set `MallocLargeCache=1` to keep the cache, or the restart must give way to
+a compiler heap of its own. The restart cost 0.28 s of compile time for `import os, sys` (median 7.33 s
 against 7.05 s), lowered its peak RSS from 796-849 MiB to 694-767 MiB, and added nothing
 measurable to `print(42)` (0.90-1.06 s against 0.86-1.08 s). `ps` still reports about
 1.0 GB of RSS under JIT (28 MB under AOT): macOS counts freed pages the allocator marked
@@ -361,14 +388,18 @@ stdlib set into the runtime image and compile only the application partition.
   generated launch ABI, that the start receipt exists before `molt_runtime_init`, that the
   runtime binds the runner's `molt_isolate_bootstrap`, and that a program that cannot
   compile leaves no receipt. `compiler_output.rs` tests the keeper: a successful compile
-  discards compiler stderr, a failed one replays it first, and a runner killed while it
-  compiles still shows it.
+  discards compiler stderr, a failed one replays it first, a runner killed while it
+  compiles still shows it, and a keeper killed alone changes nothing.
 - Steps 2-5: the JIT-versus-AOT differential. `tests/molt_diff.py --target native,jit`
   treats the two as exact twins (`EXACT_TWIN_BACKENDS`): they must agree on exit status,
   on stdout under the file's stdout comparison mode, and on stderr exactly after removing
   the text any two runs of one program differ in (heap addresses in default reprs, the OS
   thread id of a Rust panic), whatever the file's CPython law; and a build that succeeds
-  for one twin must succeed for the other. The CPython oracle applies as today. The JIT
+  for one twin must succeed for the other. A divergence between any two backends fails
+  the file whatever its `expect_fail` says. An expected failure passes only when every
+  backend ends exactly the way the file pins (`expect_molt_returncode` and
+  `expect_molt_stdout_sha256`); any other ending fails it, and exact twins require the
+  pin, so two tiers that fail the same new way never read as the known gap. The CPython oracle applies as today. The JIT
   tier compiles when it runs, so a run that leaves no start receipt counts as its failed
   build; a timeout or guard failure counts as unknown, not as a divergence. The twins
   share the frontend, TIR, the Cranelift code generator and the runtime bytes, so the
@@ -397,7 +428,13 @@ stdlib set into the runtime image and compile only the application partition.
   The lane now runs those 480 and two more process-state cases, `closed_stderr_start.py`
   and `reexec_keeps_parent_environment.py`. On the lane tip (2026-10-22, main 80a5dc469,
   104 min at load 10-52) all 482 pass under both tiers; one native build first failed on a
-  120 s backend-daemon lock timeout (HF-388) and passed on a recheck.
+  120 s backend-daemon lock timeout (HF-388) and passed on a recheck. Each full run so far
+  lost one or two cases to an HF-388 lock timeout (2 in the v3 run, 1 in the v4 run), so
+  a full run is usually red until HF-388 lands, and its timeouts need a recheck. The proof
+  queue cannot run the lane on macOS, its only admitted host: the macOS proof supervisor
+  refuses every process-closure mode (HF-07), so the queue refused `native.jit-aot-twins`
+  with "native supervisor prelaunch refused" (2026-10-22). The lane argv runs detached
+  with `REAPER_KEEPALIVE=1` and a kept log until HF-07 admits a macOS closure.
   The local proof-queue lane `native.jit-aot-twins` runs the 480 passing cases;
   `native.jit-code-owner` runs the molt-jit tests.
 - Latency: edit-run of a small program, new and after a one-line edit, AOT against JIT
