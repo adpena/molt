@@ -21,10 +21,14 @@ cp manifests/github-pr.yaml manifests/my-box.yaml
 
 # 5. Deploy to Cloudflare Workers
 cd packages/edgebox-cloudflare
-corepack npm ci --ignore-scripts
-corepack npm run check
-corepack npm run deploy
+npm ci --ignore-scripts
+npm run check
+npm run deploy
 ```
+
+Use the npm version that `packages/edgebox-cloudflare/package.json` names in
+`packageManager`. Inside a Molt checkout, `python -m molt.tool_releases run npm
+-- ci --ignore-scripts` runs exactly that npm on Molt's pinned Node.
 
 After a successful deployment, point an AI agent at
 `https://your-worker.workers.dev/mcp` to discover its tools.
@@ -261,9 +265,9 @@ Create a YAML manifest in `manifests/` to declare your box's identity, runtime, 
 ```bash
 molt build my_box.py --target wasm --output "$PWD/dist/box.wasm"
 cd packages/edgebox-cloudflare
-corepack npm ci --ignore-scripts
-corepack npm run check
-corepack npm run deploy
+npm ci --ignore-scripts
+npm run check
+npm run deploy
 ```
 
 ## Configuration

@@ -453,7 +453,8 @@ def test_declared_inputs_name_their_locks_and_trees(tmp_path: Path) -> None:
     environ = {"PATH": os.environ.get("PATH", "")}
     acorn = cp.checkout_input("browser-acorn", tmp_path, environ)
     assert isinstance(acorn, cp.LockedTree)
-    assert acorn.tool == "npm"
+    assert acorn.tool == "npm" and acorn.pinned
+    assert acorn.package_manifest == "tools/browser_asset_graph/package.json"
     assert acorn.arguments[:3] == ("ci", "--ignore-scripts", "--prefer-offline")
     assert acorn.arguments[-2:] == ("--prefix", "tools/browser_asset_graph")
     assert acorn.tree == tmp_path.resolve() / "tools/browser_asset_graph/node_modules"
@@ -461,9 +462,9 @@ def test_declared_inputs_name_their_locks_and_trees(tmp_path: Path) -> None:
 
     edgebox = cp.checkout_input("edgebox-typescript", tmp_path, environ)
     assert isinstance(edgebox, cp.LockedTree)
-    assert edgebox.tool == "corepack"
+    assert edgebox.tool == "npm" and edgebox.pinned
+    assert edgebox.package_manifest == f"{edgebox.command_cwd}/package.json"
     assert edgebox.arguments == (
-        "npm",
         "ci",
         "--ignore-scripts",
         "--prefer-offline",
@@ -862,3 +863,93 @@ def test_provisioning_guard_owner_is_distinct_from_content_and_compiler_inputs(
         dataclasses.replace(spec, guard_source_root=Path("relative-owner"))
     assert spec.stamp.read_bytes() == before
     assert not cp.ensure_input(spec).provisioned
+
+
+# A pinned tool's entrypoint, run by its runtime: it records the first PATH
+# entry its children would search and the arguments it received.
+_PINNED_ENTRYPOINT = """\
+import os
+import sys
+from pathlib import Path
+if sys.argv[1:] == ["--version"]:
+    print("9.9.9")
+    raise SystemExit(0)
+first = os.environ["PATH"].split(os.pathsep)[0]
+Path("pinned-run.log").write_text(first + "\\n" + " ".join(sys.argv[1:]) + "\\n")
+tree = Path("tree")
+tree.mkdir(exist_ok=True)
+(tree / "ready").write_text("ok")
+"""
+
+
+def test_a_pinned_tool_runs_on_its_runtime_never_from_path(
+    checkout: Path, monkeypatch
+) -> None:
+    from molt import tool_releases
+
+    entrypoint = checkout / "npm-cli.py"
+    entrypoint.write_text(_PINNED_ENTRYPOINT, encoding="utf-8")
+    manifest = checkout / "package.json"
+    manifest.write_text(json.dumps({"packageManager": "npm@9.9.9"}), encoding="utf-8")
+    runtime = Path(sys.executable)
+
+    def installed(name: str, path: Path) -> tool_releases.ToolDiscovery:
+        release = tool_releases.ToolRelease(
+            name=name,
+            version="9.9.9",
+            executable=name,
+            provenance=tool_releases.ToolProvenance(
+                "checksum-manifest", "https://example.org/SHASUMS256.txt"
+            ),
+            assets={},
+        )
+        return tool_releases.ToolDiscovery(
+            release=release,
+            prefix=path.parent,
+            executable=path,
+            executable_sha256="0" * 64,
+            asset=tool_releases.ToolAsset("any", "https://example.org/a", 1, "0" * 64),
+        )
+
+    command = tool_releases.PinnedCommand(
+        installed("npm", entrypoint), installed("node", runtime)
+    )
+    requested = []
+
+    def pinned(name, root, **kwargs):
+        requested.append((name, kwargs["provision"]))
+        return command
+
+    monkeypatch.setattr(tool_releases, "pinned_command", pinned)
+    monkeypatch.setattr(
+        tool_releases, "tool_release", lambda name, root: command.tool.release
+    )
+    # No npm and no runtime on PATH: a PATH lookup could only fail.
+    tree = dataclasses.replace(
+        _tree(checkout),
+        tool="npm",
+        pinned=True,
+        package_manifest="package.json",
+        arguments=("ci",),
+        environment=ProcessEnvironment(os.environ).updated({"PATH": "/usr/bin"}),
+    )
+    assert cp.ensure_input(tree)
+    assert requested and all(entry == ("npm", True) for entry in requested)
+    first, arguments = (
+        (checkout / "pinned-run.log").read_text(encoding="utf-8").splitlines()
+    )
+    assert (first, arguments) == (str(runtime.parent), "ci")
+    stamp = json.loads(tree.stamp.read_text(encoding="utf-8"))
+    assert stamp["tool"] == {
+        "name": "npm",
+        "command": list(command.argv),
+        "version": "9.9.9",
+    }
+
+    # A packageManager that names another npm is refused before anything runs.
+    manifest.write_text(json.dumps({"packageManager": "npm@1.0.0"}), encoding="utf-8")
+    (checkout / "fixture.lock").write_text("v2\n", encoding="utf-8")
+    (checkout / "pinned-run.log").unlink()
+    with pytest.raises(cp.ProvisioningError, match="pins npm@9.9.9"):
+        cp.ensure_input(tree)
+    assert not (checkout / "pinned-run.log").exists()

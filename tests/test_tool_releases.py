@@ -130,7 +130,7 @@ def test_checksum_manifest_assets_must_live_in_the_manifest_directory(
         manifest.write_text(
             "\n".join(
                 [
-                    "schema_version = 2",
+                    f"schema_version = {tool_releases.TOOL_RELEASES_SCHEMA_VERSION}",
                     "[tools.demo]",
                     'version = "1.2.3"',
                     'executable = "demo"',
@@ -176,7 +176,7 @@ def _write_manifest(
 ) -> None:
     (root / "config").mkdir(parents=True, exist_ok=True)
     lines = [
-        "schema_version = 2",
+        f"schema_version = {tool_releases.TOOL_RELEASES_SCHEMA_VERSION}",
         f"[tools.{tool}]",
         'version = "1.2.3"',
         f'executable = "{tool}"',
@@ -979,3 +979,343 @@ def test_tool_cli_provision_and_discover_share_selected_state(tmp_path, monkeypa
     # This is a warm actual provisioner call, using the already-attested fixture.
     assert tool_releases.main(["provision", "demo"]) == 0
     assert tool_releases.require_pinned_tool("demo", tmp_path) == discovery
+
+
+# Runtime tools: a package (npm) that a pinned native tool (Node) runs.
+
+
+def test_repository_manifest_pins_npm_as_a_runtime_tool_on_the_pinned_node() -> None:
+    releases = tool_releases.load_tool_releases(ROOT)
+    npm = releases["npm"]
+    assert (npm.runtime, npm.entrypoint) == ("node", "bin/npm-cli.js")
+    assert releases["node"].runtime is None
+    (asset,) = npm.assets.values()
+    assert asset.key == tool_releases.NOARCH_ASSET_KEY
+    assert (asset.archive_tree, asset.archive_member) == ("package", None)
+    assert asset.url == tool_releases.npm_registry_tarball_url(npm.provenance)
+    assert npm.provenance.url == f"https://registry.npmjs.org/npm/{npm.version}"
+    assert tool_releases.host_asset(npm) is asset
+
+
+def _npm_tarball(path: Path, files: dict[str, bytes], *, links: tuple[str, ...] = ()):
+    with tarfile.open(path, "w:gz") as archive:
+        for name, payload in files.items():
+            entry = tarfile.TarInfo(name)
+            entry.size = len(payload)
+            entry.mode = 0o755 if name.endswith("-cli.js") else 0o644
+            archive.addfile(entry, io.BytesIO(payload))
+        for name in links:
+            entry = tarfile.TarInfo(name)
+            entry.type = tarfile.SYMTYPE
+            entry.linkname = "/etc/passwd"
+            archive.addfile(entry)
+
+
+def _runtime_root(tmp_path: Path, npm_files=None, *, links=()) -> Path:
+    """A root pinning a native `node` and an npm package that runs on it, with
+    both archives already in the toolchain root's download cache."""
+    root = tmp_path / "repo"
+    downloads = tmp_path / "target-root" / TOOLCHAINS_DIRNAME / "downloads"
+    downloads.mkdir(parents=True)
+    node = downloads / "node-1.0.0.zip"
+    node_member = "node-1.0.0/" + ("node.exe" if os.name == "nt" else "node")
+    _zip_archive(node, node_member, b"node runtime")
+    npm = downloads / "npm-1.2.3.tgz"
+    files = {
+        "package/package.json": b'{"name": "npm", "version": "1.2.3"}',
+        "package/bin/npm-cli.js": b"#!/usr/bin/env node\nrequire('../lib/cli')\n",
+        "package/lib/cli.js": b"module.exports = 1\n",
+    }
+    _npm_tarball(npm, files if npm_files is None else npm_files, links=links)
+    (root / "config").mkdir(parents=True)
+    host = tool_releases.host_asset_key()
+    (root / "config" / "tool_releases.toml").write_text(
+        "\n".join(
+            [
+                f"schema_version = {tool_releases.TOOL_RELEASES_SCHEMA_VERSION}",
+                "[tools.node]",
+                'version = "1.0.0"',
+                'executable = "node"',
+                "[tools.node.provenance]",
+                'kind = "github-release"',
+                'url = "https://api.github.com/repos/o/node/releases/tags/v1.0.0"',
+                "release_id = 7",
+                f"[tools.node.assets.{host}]",
+                'url = "https://github.com/o/node/releases/download/v1.0.0/node-1.0.0.zip"',
+                f"size = {node.stat().st_size}",
+                f'sha256 = "{_sha256(node.read_bytes())}"',
+                f'archive_member = "{node_member}"',
+                "[tools.npm]",
+                'version = "1.2.3"',
+                'executable = "npm"',
+                'runtime = "node"',
+                'entrypoint = "bin/npm-cli.js"',
+                "[tools.npm.provenance]",
+                'kind = "npm-registry"',
+                'url = "https://registry.npmjs.org/npm/1.2.3"',
+                "[tools.npm.assets.any]",
+                'url = "https://registry.npmjs.org/npm/-/npm-1.2.3.tgz"',
+                f"size = {npm.stat().st_size}",
+                f'sha256 = "{_sha256(npm.read_bytes())}"',
+                'archive_tree = "package"',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return root
+
+
+def test_runtime_tool_manifest_rules(tmp_path: Path) -> None:
+    root = _runtime_root(tmp_path)
+    manifest = root / "config" / "tool_releases.toml"
+    good = manifest.read_text(encoding="utf-8")
+    assert tool_releases.load_tool_releases(root)["npm"].runtime == "node"
+    for old, new, message in (
+        ('entrypoint = "bin/npm-cli.js"\n', "", "both runtime and entrypoint"),
+        ('entrypoint = "bin/npm-cli.js"', 'entrypoint = "../npm-cli.js"', "escapes"),
+        ('runtime = "node"', 'runtime = "nodejs"', "must be a pinned native tool"),
+        ('runtime = "node"', 'runtime = "npm"', "must be a pinned native tool"),
+        ('archive_tree = "package"', 'archive_member = "package"', "archive_tree"),
+        ("[tools.npm.assets.any]", "[tools.npm.assets.x86_64-linux]", "exactly one"),
+        ("npm/-/npm-1.2.3.tgz", "npm/-/npm-1.2.4.tgz", "registry tarball"),
+        ("registry.npmjs.org/npm/1.2.3", "example.com/npm/1.2.3", "npm registry"),
+    ):
+        manifest.write_text(good.replace(old, new), encoding="utf-8")
+        with pytest.raises(tool_releases.ToolReleaseError, match=message):
+            tool_releases.load_tool_releases(root)
+    # A native tool may not claim the host-independent asset.
+    manifest.write_text(
+        good.replace(
+            f"[tools.node.assets.{tool_releases.host_asset_key()}]",
+            "[tools.node.assets.any]",
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(tool_releases.ToolReleaseError, match="unknown host asset key"):
+        tool_releases.load_tool_releases(root)
+
+
+def test_runtime_tool_runs_its_attested_package_on_its_runtime_without_path(
+    tmp_path, monkeypatch
+) -> None:
+    root = _runtime_root(tmp_path)
+    toolchain_root = tmp_path / "target-root"
+    monkeypatch.setenv("MOLT_TARGET_ROOT", str(toolchain_root))
+    # An empty PATH proves no lookup: there is nothing on it to find.
+    # Not provisioned yet: discovery never installs, and says how to.
+    bare = {"PATH": "", "MOLT_TARGET_ROOT": str(toolchain_root)}
+    with pytest.raises(tool_releases.ToolReleaseError, match="provision npm"):
+        tool_releases.pinned_command("npm", root, environ=bare)
+
+    command = tool_releases.pinned_command("npm", root, environ=bare, provision=True)
+    package = toolchain_root / TOOLCHAINS_DIRNAME / "npm-1.2.3" / "package"
+    assert command.argv == (
+        str(command.runtime.executable),
+        str(package / "bin" / "npm-cli.js"),
+    )
+    assert command.runtime.release.name == "node"
+    assert (package / "lib" / "cli.js").read_bytes() == b"module.exports = 1\n"
+    if os.name != "nt":
+        assert os.access(package / "bin" / "npm-cli.js", os.X_OK)
+    assert command.tool.tree_sha256 == tool_releases.tree_sha256(package)
+    # Attested: discovery alone now finds both, still without PATH.
+    again = tool_releases.pinned_command("npm", root, environ=bare)
+    assert again == command
+
+    # The package's children find the pinned runtime first on PATH, once.
+    runtime_bin = str(command.runtime.executable.parent)
+    environment = command.environment(
+        {"PATH": os.pathsep.join(["/elsewhere", runtime_bin]), "KEEP": "1"}
+    )
+    assert environment["PATH"].split(os.pathsep) == [runtime_bin, "/elsewhere"]
+    assert environment["KEEP"] == "1"
+
+    # Any changed file of the package, not only the entrypoint, undoes the
+    # attestation; provisioning restores the exact tree.
+    (package / "lib" / "cli.js").write_bytes(b"tampered")
+    release = tool_releases.tool_release("npm", root)
+    assert tool_releases.discover_tool(release, toolchain_root) is None
+    (package / "extra.js").write_bytes(b"")
+    restored = tool_releases.pinned_command("npm", root, provision=True)
+    assert restored.tool == command.tool
+    assert not (package / "extra.js").exists()
+
+
+@pytest.mark.parametrize(
+    ("files", "links", "message"),
+    [
+        ({"package/lib/cli.js": b"x"}, (), "has no entrypoint"),
+        (
+            {"package/bin/npm-cli.js": b"x", "package/../evil.js": b"x"},
+            (),
+            "escapes",
+        ),
+        ({"package/bin/npm-cli.js": b"x"}, ("package/lib/link",), "not a regular file"),
+        ({"other/bin/npm-cli.js": b"x"}, (), "no files under package/"),
+    ],
+)
+def test_runtime_tool_package_admits_only_its_own_regular_files(
+    tmp_path, monkeypatch, files, links, message
+) -> None:
+    root = _runtime_root(tmp_path, files, links=links)
+    monkeypatch.setenv("MOLT_TARGET_ROOT", str(tmp_path / "target-root"))
+    with pytest.raises(tool_releases.ToolReleaseError, match=message):
+        tool_releases.pinned_command("npm", root, provision=True)
+    assert not (tmp_path / "evil.js").exists()
+
+
+def test_runner_starts_a_runtime_tool_on_its_attested_runtime(tmp_path, monkeypatch):
+    root = _runtime_root(tmp_path)
+    monkeypatch.setenv("MOLT_TARGET_ROOT", str(tmp_path / "target-root"))
+    command = tool_releases.pinned_command("npm", root, provision=True)
+    seen = []
+
+    def run(argv, **kwargs):
+        seen.append((argv, kwargs))
+        return "ran"
+
+    result = tool_releases.run_pinned_tool(
+        "npm",
+        ["ci"],
+        run=run,
+        repo_root=root,
+        env={"PATH": "/usr/bin", "MOLT_TARGET_ROOT": str(tmp_path / "target-root")},
+        timeout=5,
+    )
+    assert result == "ran"
+    ((argv, kwargs),) = seen
+    assert argv == [*command.argv, "ci"]
+    assert kwargs["timeout"] == 5
+    assert kwargs["env"]["PATH"].split(os.pathsep) == [
+        str(command.runtime.executable.parent),
+        "/usr/bin",
+    ]
+
+
+def test_cli_run_provisions_and_forwards_the_tool_arguments(monkeypatch) -> None:
+    seen = []
+
+    def fake(name, arguments, **kwargs):
+        seen.append((name, list(arguments), kwargs["provision"]))
+        return type("Completed", (), {"returncode": 3})()
+
+    monkeypatch.setattr(tool_releases, "run_pinned_tool", fake)
+    assert tool_releases.main(["run", "npm", "--", "ci", "--ignore-scripts"]) == 3
+    assert seen == [("npm", ["ci", "--ignore-scripts"], True)]
+    assert tool_releases.run_command("npm")[-3:] == ("run", "npm", "--")
+
+
+def _provisioned_npm(tmp_path, monkeypatch):
+    root = _runtime_root(tmp_path)
+    toolchain_root = tmp_path / "target-root"
+    monkeypatch.setenv("MOLT_TARGET_ROOT", str(toolchain_root))
+    command = tool_releases.pinned_command("npm", root, provision=True)
+    release = tool_releases.tool_release("npm", root)
+    return root, toolchain_root, command, release
+
+
+@pytest.mark.parametrize("change", ["rename", "add", "symlink", "exec-bit"])
+def test_every_tree_component_undoes_the_attestation(
+    tmp_path, monkeypatch, change
+) -> None:
+    root, toolchain_root, command, release = _provisioned_npm(tmp_path, monkeypatch)
+    package = command.tool.prefix / tool_releases.PACKAGE_DIRNAME
+    if change == "rename":
+        (package / "lib" / "cli.js").rename(package / "lib" / "cli2.js")
+    elif change == "add":
+        (package / "lib" / "extra.js").write_bytes(b"")
+    elif change == "symlink":
+        (package / "lib" / "link.js").symlink_to(package / "lib" / "cli.js")
+    else:
+        if os.name == "nt":
+            pytest.skip("Windows binds no executable bit")
+        (package / "lib" / "cli.js").chmod(0o755)
+    assert tool_releases.discover_tool(release, toolchain_root) is None
+    assert (
+        tool_releases.pinned_command("npm", root, provision=True).tool == command.tool
+    )
+
+
+def test_tree_extraction_refuses_hard_links_and_case_collisions(
+    tmp_path, monkeypatch
+) -> None:
+    def tarball(path: Path, entries) -> None:
+        with tarfile.open(path, "w:gz") as archive:
+            for name, kind in entries:
+                entry = tarfile.TarInfo(name)
+                if kind == "link":
+                    entry.type = tarfile.LNKTYPE
+                    entry.linkname = "package/bin/npm-cli.js"
+                    archive.addfile(entry)
+                elif kind == "dir":
+                    entry.type = tarfile.DIRTYPE
+                    archive.addfile(entry)
+                else:
+                    entry.size = 1
+                    archive.addfile(entry, io.BytesIO(b"x"))
+
+    for entries, message in (
+        ([("package/bin/npm-cli.js", "file"), ("package/lib/a.js", "link")], "regular"),
+        (
+            [
+                ("package/bin/npm-cli.js", "file"),
+                ("package/Lib/a.js", "file"),
+                ("package/lib/b.js", "file"),
+            ],
+            "only in case",
+        ),
+        (
+            [("package/bin/npm-cli.js", "file"), ("package/bin/npm-cli.js", "file")],
+            "only in case|cannot extract",
+        ),
+        # A directory member that clashes with a file fails as a refusal too.
+        (
+            [("package/bin/npm-cli.js", "file"), ("package/bin/npm-cli.js", "dir")],
+            "cannot extract",
+        ),
+        (
+            [("package/bin/npm-cli.js", "file"), ("package/bin/npm-cli.js/x", "dir")],
+            "cannot extract",
+        ),
+    ):
+        case = tmp_path / f"case-{len(list(tmp_path.iterdir()))}"
+        case.mkdir()
+        root = _runtime_root(case)
+        npm = case / "target-root" / TOOLCHAINS_DIRNAME / "downloads" / "npm-1.2.3.tgz"
+        tarball(npm, entries)
+        manifest = root / "config" / "tool_releases.toml"
+        text = manifest.read_text(encoding="utf-8")
+        old = text.split("[tools.npm.assets.any]", 1)[1]
+        new = old.replace(
+            old.split("size = ", 1)[1].split("\n", 1)[0], str(npm.stat().st_size), 1
+        ).replace(
+            old.split('sha256 = "', 1)[1].split('"', 1)[0], _sha256(npm.read_bytes()), 1
+        )
+        manifest.write_text(text.replace(old, new), encoding="utf-8")
+        monkeypatch.setenv("MOLT_TARGET_ROOT", str(case / "target-root"))
+        with pytest.raises(tool_releases.ToolReleaseError, match=message):
+            tool_releases.pinned_command("npm", root, provision=True)
+
+
+def test_provisioning_reclaims_staging_a_killed_provisioner_left(
+    tmp_path, monkeypatch
+) -> None:
+    root = _runtime_root(tmp_path)
+    toolchain_root = tmp_path / "target-root"
+    monkeypatch.setenv("MOLT_TARGET_ROOT", str(toolchain_root))
+    release = tool_releases.tool_release("npm", root)
+    prefix = tool_releases.tool_prefix(toolchain_root, release)
+    orphan = prefix / "molt-tool-killed" / "tree"
+    orphan.mkdir(parents=True)
+    (orphan / "half.js").write_bytes(b"")
+    # A native tool stages its executable in its bin directory.
+    node = tool_releases.tool_prefix(
+        toolchain_root, tool_releases.tool_release("node", root)
+    )
+    native_orphan = node / "bin" / "molt-tool-killed"
+    native_orphan.mkdir(parents=True)
+    (native_orphan / "executable").write_bytes(b"")
+    tool_releases.pinned_command("npm", root, provision=True)
+    assert not (prefix / "molt-tool-killed").exists()
+    assert not native_orphan.exists()

@@ -52,24 +52,3 @@ version = "10.3.1"
 until = 2026-10-28T20:01:37Z
 cites = "HF-62"
 reason = "adopted in a9f61e4f3 before the rule landed"
-
-[[pin]]
-name = "npm (deploy/cloudflare)"
-version = "12.2.1"
-until = 2026-10-22T17:40:09Z
-cites = "HF-62"
-reason = "adopted in a9f61e4f3 before the rule landed"
-
-[[pin]]
-name = "npm (examples/edgebox/packages/edgebox-cloudflare)"
-version = "12.2.1"
-until = 2026-10-22T17:40:09Z
-cites = "HF-62"
-reason = "adopted in a9f61e4f3 before the rule landed"
-
-[[pin]]
-name = "npm (tools/browser_asset_graph)"
-version = "12.2.1"
-until = 2026-10-22T17:40:09Z
-cites = "HF-62"
-reason = "adopted in a9f61e4f3 before the rule landed"

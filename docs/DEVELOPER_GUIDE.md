@@ -195,8 +195,8 @@ checked-in WASM Rust targets exist, installs missing cargo-hosted helper tools
 such as `wasm-tools`/`wasm-pack`, and refreshes the root uv lock plus every
 tracked Cargo workspace and npm project lock. The inventory is shared with
 Dependabot and the Cargo security audit; fixture projects retain their pins.
-The npm steps use `corepack npm` in each project so its `packageManager` selects
-the writer, update only lockfiles, and disable lifecycle scripts and implicit
+The npm steps run the pinned npm (`python -m molt.tool_releases run npm --`) in
+each project, update only lockfiles, and disable lifecycle scripts and implicit
 audit/funding requests. uv and npm apply the release-age rule (below) on each of
 these steps, and the last step audits every lock for advisories.
 
@@ -217,9 +217,15 @@ manifest and API migration. Command success means its planned steps completed,
 not that all upstream latest versions fit those ranges. Treat the sweep as a
 coordinated change: verify the touched backend/runtime and JavaScript consumers.
 
-Node package surfaces are package-manager pinned. Use Corepack so the
-`packageManager` field in each `package.json` selects the lockfile writer and
-audit engine, rather than whatever stale global `npm` happens to be on PATH:
+Node package surfaces are package-manager pinned. `config/tool_releases.toml`
+pins npm itself, as a runtime tool: Molt runs the registry tarball's
+`bin/npm-cli.js` on the pinned Node, never an npm, Node or Corepack from PATH
+(Node 25 and later ship no Corepack). Each project's `packageManager` names
+that version, so other tools that honour the field select the same npm.
+`tools/pin_freshness.py --update npm` moves the pin, the proof-plan policy and
+every `packageManager` together, after checking the tarball against the
+registry's SHA-512 `integrity`; checkout provisioning refuses a project whose
+`packageManager` disagrees:
 
 Molt's JavaScript tooling is future-forward with a hard floor, not an upper cap:
 Node `>=24.18.0`, with no upper cap. The preferred maintainer lane tracks the
@@ -227,8 +233,8 @@ current Node release through `config/tool_releases.toml`; each npm project's
 `engines` and exact `packageManager` declare the compatible floor and writer.
 
 ```bash
-corepack npm install --package-lock-only
-corepack npm audit
+python -m molt.tool_releases run npm -- install --package-lock-only
+python -m molt.tool_releases run npm -- audit
 ```
 
 The package authorities are `tools/browser_asset_graph/package.json`,
