@@ -58,7 +58,7 @@ from tools.molt_dev_common import (
     _say,
     _step,
 )
-from tools import drift_harvest, molt_dev_retire
+from tools import drift_harvest, molt_dev_controller, molt_dev_retire
 from tools.molt_dev_change_ids import landing_representation
 from tools.release.git_source_snapshot import immutable_git_environment
 
@@ -1037,6 +1037,16 @@ def cmd_lane_list(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _add_controller_arguments(parser: argparse.ArgumentParser) -> None:
+    """Lane start and retire run main's driver (molt_dev_controller)."""
+    parser.add_argument(
+        "--candidate-controller",
+        action="store_true",
+        help="run this checkout's own driver instead of main's pinned controller",
+    )
+    molt_dev_controller.add_pinned_controller_arguments(parser)
+
+
 def add_lane_arguments(
     lane: argparse.ArgumentParser,
     *,
@@ -1060,6 +1070,7 @@ def add_lane_arguments(
     )
     add_repo_arg(start)
     add_remote_branch(start)
+    _add_controller_arguments(start)
     start.set_defaults(func=cmd_lane_start)
 
     retire = commands.add_parser(
@@ -1074,6 +1085,7 @@ def add_lane_arguments(
     retire.add_argument("--ignore", action="append", help="extra ignore glob")
     add_repo_arg(retire)
     add_remote_branch(retire)
+    _add_controller_arguments(retire)
     retire.set_defaults(func=cmd_lane_retire)
 
     listing = commands.add_parser("list", help="each lane's state")
