@@ -31,10 +31,10 @@ _PROVISIONER = """\
 import sys
 from pathlib import Path
 name = sys.argv[1]
-with open(f"{name}.runs", "a", encoding="utf-8") as log:
-    log.write("run\\n")
 tree = Path(f"{name}-tree")
 tree.mkdir(exist_ok=True)
+with (tree / "runs").open("a", encoding="utf-8") as log:
+    log.write("run\\n")
 (tree / "ready").write_text(Path("fixture.lock").read_text(encoding="utf-8"), encoding="utf-8")
 """
 
@@ -64,7 +64,7 @@ def family(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         ("provision.py", _PROVISIONER),
         ("fixture.lock", "v1\n"),
         ("tools/install_git_hooks.py", _INSTALLER),
-        (".gitignore", "*-tree/\n*.runs\n"),
+        (".gitignore", "*-tree/\n"),
     ):
         (seed / relative).write_text(text, encoding="utf-8")
     _git(seed, "add", "--", ".")
@@ -183,7 +183,9 @@ def test_lane_start_creates_branch_worktree_record_and_inputs(family: Path) -> N
             encoding="utf-8"
         ) == "v1\n"
         assert (worktree / f"{name}-tree" / cp.STAMP_NAME).is_file()
-        assert (worktree / f"{name}.runs").read_text(encoding="utf-8") == "run\n"
+        assert (worktree / f"{name}-tree" / "runs").read_text(
+            encoding="utf-8"
+        ) == "run\n"
     assert (main / ".git" / "molt-fixture-hook.txt").is_file()
 
     with pytest.raises(DriverError, match="already exists"):
@@ -271,7 +273,7 @@ def test_lane_retire_removes_a_landed_lane_completely(family: Path) -> None:
 
 
 def _replay_onto_advanced_main(family: Path, commits: list[str], amend: bool) -> None:
-    """Land lane commits as a queue does: replayed onto a moved main."""
+    """Historical replay/amend landings remain represented after main moves."""
     main = family / "molt-src"
     _git(main, "pull", "-q", "--ff-only", "origin", "main")
     _commit_file(main, "other.txt", "other\n", "main moved on")
@@ -353,6 +355,57 @@ def test_landing_representation_rules(family: Path) -> None:
     assert trivial.landed and trivial.commits == ()
 
 
+def test_merge_resolution_requires_ancestry_before_lane_retirement(
+    family: Path,
+) -> None:
+    main = family / "molt-src"
+    worktree = _start(family, "merge-rules")
+    ordinary = _commit_file(
+        worktree, "ordinary.txt", "ordinary\n", f"ordinary\n\nChange-Id: {CHANGE_A}"
+    )
+    side = _commit_file(main, "main.txt", "main\n", "main advanced")
+    _git(worktree, "merge", "--no-ff", "--no-commit", side)
+    resolution = "unique manual merge resolution\n"
+    merge = _commit_file(
+        worktree,
+        "resolution-only.txt",
+        resolution,
+        f"manual resolution\n\nChange-Id: {CHANGE_B}",
+    )
+    _git(main, "cherry-pick", ordinary)
+    _git(
+        main,
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        f"same label, no resolution\n\nChange-Id: {CHANGE_B}",
+    )
+    _git(main, "push", "-q", "origin", "HEAD:main")
+    git = molt_dev.Git(main)
+    git.fetch("origin", "main")
+    represented = landing_representation(git, merge, "origin/main")
+    assert represented.unrepresented == (merge,)
+    with pytest.raises(DriverError, match="not landed: 1 commit"):
+        lanes.cmd_lane_retire(_args(family, slug="merge-rules"))
+    assert (worktree / "resolution-only.txt").read_text(encoding="utf-8") == resolution
+    assert _ref(main, "refs/heads/lane/merge-rules") == merge
+
+    _git(main, "merge", "--no-ff", "--no-edit", merge)
+    # Amending the final integration commit must retain the original lane
+    # merge as an ancestor, just as resolving a landing citation does.
+    (main / "citation.txt").write_text("resolved citation\n", encoding="utf-8")
+    _git(main, "add", "--", "citation.txt")
+    _git(main, "commit", "-q", "--amend", "--no-edit")
+    _git(main, "push", "-q", "origin", "HEAD:main")
+    assert lanes.cmd_lane_retire(_args(family, slug="merge-rules")) == molt_dev.EXIT_OK
+    assert not worktree.exists()
+    assert _git(main, "show", "origin/main:resolution-only.txt").stdout == resolution
+    assert (
+        _git(main, "merge-base", "--is-ancestor", merge, "origin/main").returncode == 0
+    )
+
+
 @pytest.mark.parametrize("change", ["tracked", "untracked"])
 def test_lane_retire_refuses_a_dirty_worktree(family: Path, change: str) -> None:
     worktree = _start(family, "dirty")
@@ -415,9 +468,7 @@ def test_queue_provisions_its_sandbox_and_retires_a_landed_lane(family: Path) ->
     worktree = _start(family, "queued")
     tip = _commit_file(worktree, "queued.txt", "queued\n", "queued work")
     paths = queue.queue_paths(main)
-    request = queue.enqueue(
-        paths, head=tip, worktree=worktree, branch="lane/queued", retire=True
-    )
+    request = queue.enqueue(paths, head=tip, worktree=worktree, branch="lane/queued")
 
     args = molt_dev.build_parser().parse_args(
         ["queue", "run", "--repo", str(main), "--candidate-controller"]
@@ -433,3 +484,208 @@ def test_queue_provisions_its_sandbox_and_retires_a_landed_lane(family: Path) ->
     assert not worktree.exists()
     assert _ref(main, "refs/heads/lane/queued") is None
     assert _record(family, "queued")["status"] == "landed"
+
+
+@pytest.mark.parametrize(
+    "hold",
+    [
+        "ignored",
+        "stale-input",
+        "provisioning-error",
+        "locked",
+        "advanced",
+        "record",
+        "cleanup",
+        "shared-branch",
+        "malformed-lock",
+    ],
+)
+def test_published_lane_retirement_holds_preserve_signal_and_fail_waiter(
+    family: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    hold: str,
+) -> None:
+    from tools import molt_dev_queue as queue
+
+    main = family / "molt-src"
+    worktree = _start(family, "held")
+    tip = _commit_file(worktree, "work.txt", "landed\n", "landed work")
+    _git(worktree, "push", "-q", "origin", "HEAD:main")
+    paths = queue.queue_paths(main)
+    request = queue.enqueue(paths, head=tip, worktree=worktree, branch="lane/held")
+    sentinel = worktree / "work.txt"
+    if hold == "ignored":
+        _git(worktree, "config", "core.excludesFile", str(family / "ignore"))
+        (family / "ignore").write_text("private-notes/\n", encoding="utf-8")
+        sentinel = worktree / "private-notes" / "unharvested.patch"
+        sentinel.parent.mkdir()
+        sentinel.write_text("unique source and evidence\n", encoding="utf-8")
+    elif hold == "stale-input":
+        (worktree / "uv-environment-tree" / "ready").unlink()
+    elif hold == "provisioning-error":
+
+        def unreadable_state(_spec):
+            raise cp.ProvisioningError("declared lock is unreadable")
+
+        monkeypatch.setattr(cp, "input_state", unreadable_state)
+    elif hold == "shared-branch":
+        sibling = family / "worktrees" / "other-owner"
+        _git(main, "worktree", "add", "--force", "-q", str(sibling), "lane/held")
+    elif hold == "malformed-lock":
+        from molt.artifact_publication import publication_locks, _publication_lock_path
+
+        with publication_locks([sentinel]):
+            pass
+        lock = _publication_lock_path(worktree)
+        _git(worktree, "config", "core.excludesFile", str(family / "ignore"))
+        (family / "ignore").write_text(lock.name + "\n", encoding="utf-8")
+        lock.write_text("unique data is not lock metadata\n", encoding="utf-8")
+        sentinel = lock
+    elif hold == "locked":
+        _git(main, "worktree", "lock", str(worktree))
+    elif hold == "advanced":
+        _commit_file(worktree, "next.txt", "not enrolled\n", "later work")
+    elif hold == "record":
+        record_path = lanes._record_path(main, "held")
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        record["lane"]["worktree"] = str(family / "another-owner")
+        record_path.write_text(json.dumps(record), encoding="utf-8")
+    else:
+
+        def fail_cleanup(*_args, **_kwargs):
+            assert queue.read_result(paths, request.id) is None, "no premature success"
+            return molt_dev.EXIT_FAIL
+
+        monkeypatch.setattr(lanes.molt_dev_retire, "cleanup_worktree", fail_cleanup)
+    before = sentinel.read_bytes()
+    args = molt_dev.build_parser().parse_args(
+        ["queue", "run", "--repo", str(main), "--candidate-controller"]
+    )
+    # Already published requests must still pass retirement, without another gate run.
+    assert args.func(args) == molt_dev.EXIT_OK
+    result = queue.read_result(paths, request.id)
+    assert result["schema"] == "molt.landing-result.v2"
+    assert result["status"] == "landed_retirement_failed"
+    assert result["landed"] == tip
+    assert "lane retire held" in result["detail"]
+    assert queue._await_landing(paths, request.id) == molt_dev.EXIT_FAIL
+    assert sentinel.read_bytes() == before
+    assert worktree in _registered(main)
+    assert _ref(main, "refs/heads/lane/held") is not None
+    assert not paths.sandbox.exists(), "published source requires no rebuild"
+    if hold == "shared-branch":
+        assert (sibling / "work.txt").read_bytes() == before
+        assert sibling in _registered(main)
+
+
+def test_already_published_lane_retires_and_replay_uses_closed_custody(
+    family: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tools import molt_dev_queue as queue
+
+    main = family / "molt-src"
+    worktree = _start(family, "published")
+    tip = _commit_file(worktree, "work.txt", "published\n", "published work")
+    _git(worktree, "push", "-q", "origin", "HEAD:main")
+    # Real generator publication creates persistent metadata outside LockedTrees.
+    from molt.artifact_publication import publication_locks, _publication_lock_path
+
+    with publication_locks([worktree / "work.txt"]):
+        pass
+    lock = _publication_lock_path(worktree)
+    assert lock.is_file() and lock.read_bytes() == b""
+    _git(worktree, "config", "core.excludesFile", str(family / "ignore"))
+    (family / "ignore").write_text(lock.name + "\n", encoding="utf-8")
+    paths = queue.queue_paths(main)
+    started = []
+    monkeypatch.setattr(
+        queue, "_start_queue_runner", lambda _paths, repo, _args: started.append(repo)
+    )
+    land = molt_dev.build_parser().parse_args(
+        ["land", "--repo", str(worktree), "--candidate-controller"]
+    )
+    assert land.func(land) == molt_dev.EXIT_OK
+    assert started == [main]
+    [request] = queue.pending(paths)
+    args = molt_dev.build_parser().parse_args(
+        ["queue", "run", "--repo", str(main), "--candidate-controller"]
+    )
+    assert args.func(args) == molt_dev.EXIT_OK
+    assert queue._await_landing(paths, request.id) == molt_dev.EXIT_OK
+    assert not worktree.exists()
+    assert not paths.sandbox.exists()
+    # A crash after retirement but before queue-result publication is idempotent
+    # only with the exact recorded tip and path, not merely a missing branch.
+    assert (
+        lanes.cmd_lane_retire(
+            _args(family, slug="published"),
+            expected_tip=tip,
+            expected_worktree=worktree,
+        )
+        == molt_dev.EXIT_OK
+    )
+    with pytest.raises(DriverError, match="reconcile its retirement receipt"):
+        lanes.cmd_lane_retire(
+            _args(family, slug="published"),
+            expected_tip="f" * 40,
+            expected_worktree=worktree,
+        )
+
+
+@pytest.mark.parametrize("disposition", ["landed", "abandoned"])
+def test_lane_retirement_recovers_failed_final_record_write(
+    family: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    disposition: str,
+) -> None:
+    from tools import agent_coordination
+
+    main = family / "molt-src"
+    worktree = _start(family, "receipt")
+    tip = _commit_file(worktree, "work.txt", "published\n", "published work")
+    if disposition == "landed":
+        _git(
+            worktree,
+            "push",
+            "-q",
+            "origin",
+            "HEAD:main",
+            "HEAD:refs/heads/lane/receipt",
+        )
+    update = agent_coordination.update_task
+
+    def fail_completion(*args, **kwargs):
+        if "lane_retired" in kwargs.get("fields", {}):
+            record = _record(family, "receipt")
+            assert record["status"] == "running"
+            assert record["lane_retirement"]["tip"] == tip
+            assert not worktree.exists()
+            assert _ref(main, "refs/heads/lane/receipt") is None
+            raise OSError("terminal record publication interrupted")
+        return update(*args, **kwargs)
+
+    monkeypatch.setattr(agent_coordination, "update_task", fail_completion)
+    with pytest.raises(OSError, match="terminal record"):
+        lanes.cmd_lane_retire(
+            _args(family, slug="receipt", abandon=disposition == "abandoned")
+        )
+    record = _record(family, "receipt")
+    assert "lane_retired" not in record
+    assert record["status"] == "running"
+    monkeypatch.setattr(agent_coordination, "update_task", update)
+    with pytest.raises(DriverError, match="custody changed"):
+        lanes.cmd_lane_retire(
+            _args(family, slug="receipt"),
+            expected_tip=tip,
+            expected_worktree=family / "wrong-owner",
+        )
+    with pytest.raises(DriverError, match="reconcile its retirement receipt"):
+        lanes.cmd_lane_retire(
+            _args(family, slug="receipt"),
+            expected_tip="f" * 40,
+            expected_worktree=worktree,
+        )
+    assert lanes.cmd_lane_retire(_args(family, slug="receipt")) == molt_dev.EXIT_OK
+    assert _record(family, "receipt")["status"] == disposition
+    assert _record(family, "receipt")["lane_retired"]["tip"] == tip

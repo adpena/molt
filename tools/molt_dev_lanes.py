@@ -55,7 +55,6 @@ from tools.molt_dev_common import (
     _run_fast_captured_command,
     _say,
     _step,
-    _warn,
 )
 from tools import molt_dev_retire
 from tools.molt_dev_change_ids import landing_representation
@@ -181,6 +180,120 @@ def _record_status(main: Path, slug: str) -> str | None:
     except (OSError, ValueError) as exc:
         raise DriverError(f"coordination record {path} is unreadable: {exc}") from exc
     return str(payload.get("status") or "") if isinstance(payload, dict) else None
+
+
+def _managed_record(main: Path, slug: str) -> dict[str, Any]:
+    path = _record_path(main, slug)
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise DriverError(f"managed lane custody unavailable at {path}: {exc}") from exc
+    if (
+        not isinstance(record, dict)
+        or record.get("task") != lane_task(slug)
+        or not isinstance(record.get("lane"), dict)
+    ):
+        raise DriverError(f"managed lane custody is invalid at {path}")
+    return record
+
+
+def _unharvested_ignored_paths(git: Any) -> list[str]:
+    """Only current, declared checkout inputs are reproducible ignored trees.
+
+    Git ignores are not a source/evidence disposal policy. Inspect names only;
+    the provisioning authority verifies its lock stamp and sentinel, without
+    launching tools or reading the tree's payloads.
+    """
+    from molt.artifact_publication import is_publication_lock_file
+
+    owned: list[Path] = []
+    for name in checkout_provisioning.CHECKOUT_INPUT_NAMES:
+        spec = checkout_provisioning.checkout_input(
+            name, git.repo, guard_source_root=_COMMANDS.repo_root
+        )
+        if (
+            isinstance(spec, checkout_provisioning.LockedTree)
+            and spec.scope == "checkout"
+            and not spec.tree.is_symlink()
+            and host_path_is_within(spec.tree.resolve(), git.repo.resolve())
+            and spec.tree.resolve() != git.repo.resolve()
+            and checkout_provisioning.declares(spec)
+            and checkout_provisioning.input_state(spec) == "current"
+        ):
+            owned.append(spec.tree.resolve())
+    paths = git._run(
+        ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"]
+    ).stdout.split("\0")
+    unknown: list[str] = []
+    for path in paths:
+        if not path:
+            continue
+        named = git.repo / path
+        if any(host_path_is_within(named.resolve(), tree) for tree in owned):
+            continue
+        # Stable, empty publication metadata may leave only with its whole
+        # checkout under retirement custody. Never unlink a lock to clean a lane.
+        if is_publication_lock_file(named):
+            continue
+        unknown.append(path)
+    return unknown
+
+
+def validate_lane_handoff(
+    git: Any,
+    branch: str,
+    worktree: Path,
+    tip: str,
+    *,
+    ignore_globs: tuple[str, ...] = (),
+) -> None:
+    """Bind cooperative queue custody to the existing managed lane record."""
+    slug = lane_slug(branch.removeprefix(LANE_BRANCH_PREFIX))
+    worktrees = _worktrees(git)
+    main = _main_checkout(worktrees)
+    record = _managed_record(main, slug)
+    lane = record["lane"]
+    if (
+        lane.get("branch") != branch
+        or lane.get("worktree") != str(worktree.resolve())
+        or record.get("repo_root") != str(worktree.resolve())
+        or record.get("branch") != branch
+        or worktree.resolve() == main.resolve()
+    ):
+        raise DriverError(f"managed lane record does not bind {branch} to {worktree}")
+    if _ref_sha(git, f"refs/heads/{branch}") != tip:
+        raise DriverError(
+            f"{branch} advanced or disappeared after enrollment; reconcile its tip"
+        )
+    registrations = [row for row in worktrees if row["branch"] == branch]
+    if len(registrations) != 1:
+        raise DriverError(
+            f"{branch} has {len(registrations)} registrations; shared custody must be reconciled"
+        )
+    listed = registrations[0]
+    if Path(listed["path"]).resolve() != worktree.resolve():
+        raise DriverError(
+            f"{branch} no longer occupies its enrolled worktree {worktree}"
+        )
+    if listed["locked"]:
+        raise DriverError(f"{worktree} is locked; its owner must release custody first")
+    source = _driver().Git(worktree)
+    dirty = _dirty_paths(source, ignore_globs)
+    if dirty:
+        raise DriverError(
+            f"{worktree} is dirty; harvest or commit first: " + ", ".join(dirty)
+        )
+    try:
+        unknown = _unharvested_ignored_paths(source)
+    except (checkout_provisioning.ProvisioningError, ValueError) as exc:
+        raise DriverError(
+            f"{worktree} generated metadata custody is invalid: {exc}"
+        ) from exc
+    if unknown:
+        raise DriverError(
+            f"{worktree} holds unharvested ignored signal; reconcile and preserve it "
+            "outside the lane before retirement: " + ", ".join(unknown)
+        )
 
 
 # --------------------------------------------------------------------------
@@ -342,7 +455,47 @@ def write_lane_bundle(
     return path
 
 
-def cmd_lane_retire(args: argparse.Namespace) -> int:
+def _verify_retirement_absence(
+    git: Any, branch: str, worktree: Path, remote: str
+) -> None:
+    ref = f"refs/heads/{branch}"
+    if (
+        worktree.exists()
+        or worktree.is_symlink()
+        or any(
+            row["branch"] == branch or Path(row["path"]).resolve() == worktree
+            for row in _worktrees(git)
+        )
+        or _ref_sha(git, ref) is not None
+        or _remote_lane_tip(git, remote, ref) is not None
+    ):
+        raise DriverError(f"{branch} retirement still has resources; reconcile custody")
+
+
+def _complete_retirement(main: Path, slug: str, receipt: dict[str, Any]) -> None:
+    from tools import agent_coordination
+
+    agent_coordination.update_task(
+        main,
+        lane_task(slug),
+        status=receipt["disposition"],
+        fields={
+            "lane_retired": {
+                **receipt,
+                "at_utc": datetime.now(UTC).isoformat(timespec="seconds"),
+            }
+        },
+        note=f"tip={receipt['tip']}",
+    )
+    _ok(f"closed {_record_path(main, slug)} ({receipt['disposition']})")
+
+
+def cmd_lane_retire(
+    args: argparse.Namespace,
+    *,
+    expected_tip: str | None = None,
+    expected_worktree: Path | None = None,
+) -> int:
     from tools import agent_coordination
 
     driver = _driver()
@@ -357,9 +510,53 @@ def cmd_lane_retire(args: argparse.Namespace) -> int:
     ignore_globs = tuple(driver.DEFAULT_IGNORE_GLOBS) + tuple(args.ignore or ())
 
     tip = _ref_sha(git, ref)
+    record = _managed_record(main, slug)
+    recorded_worktree = Path(record["lane"].get("worktree", "")).resolve()
+    if (
+        record["lane"].get("branch") != branch
+        or record.get("branch") != branch
+        or record.get("repo_root") != str(recorded_worktree)
+        or recorded_worktree == main.resolve()
+    ):
+        raise DriverError(f"managed lane custody is invalid for {branch}")
+    if (
+        expected_worktree is not None
+        and recorded_worktree != expected_worktree.resolve()
+    ):
+        raise DriverError(f"{branch} custody changed after enrollment")
     if tip is None:
-        raise DriverError(f"no lane branch {branch}")
+        receipt = record.get("lane_retired") or record.get("lane_retirement")
+        if (
+            not isinstance(receipt, dict)
+            or not isinstance(receipt.get("tip"), str)
+            or receipt.get("worktree") != str(recorded_worktree)
+            or receipt.get("disposition") not in {"landed", "abandoned"}
+            or (expected_tip is not None and receipt["tip"] != expected_tip)
+        ):
+            raise DriverError(
+                f"no lane branch {branch}; reconcile its retirement receipt"
+            )
+        _verify_retirement_absence(git, branch, recorded_worktree, args.remote)
+        if receipt["disposition"] == "abandoned":
+            bundle = receipt.get("bundle")
+            if not bundle:
+                raise DriverError(f"{branch} retirement bundle is unavailable")
+            git._run(["bundle", "verify", "--quiet", str(bundle)])
+            if f"{receipt['tip']} {ref}" not in _bundle_heads(git, Path(bundle)):
+                raise DriverError(
+                    f"{branch} retirement bundle does not hold its exact tip/ref"
+                )
+        _complete_retirement(main, slug, receipt)
+        return EXIT_OK
+    if expected_tip is not None and tip != expected_tip:
+        raise DriverError(f"{branch} advanced after enrollment; reconcile its tip")
     worktree = _lane_worktree(worktrees, branch)
+    if worktree is not None:
+        validate_lane_handoff(git, branch, worktree, tip, ignore_globs=ignore_globs)
+    elif recorded_worktree.exists():
+        raise DriverError(
+            f"{recorded_worktree} exists outside its managed Git registration"
+        )
     if worktree is not None:
         for label, path in (
             # This module and the driver run from one checkout.
@@ -410,6 +607,22 @@ def cmd_lane_retire(args: argparse.Namespace) -> int:
         _ok(f"bundle {bundle} holds {len(landing.commits)} commit(s)")
         print(bundle, flush=True)
 
+    retirement = {
+        "at_utc": datetime.now(UTC).isoformat(timespec="seconds"),
+        "tip": tip,
+        "worktree": str(recorded_worktree),
+        "disposition": "landed" if landing.landed else "abandoned",
+        "bundle": None if bundle is None else str(bundle),
+    }
+    # Durable intent precedes deletion. It is not a terminal task status: a
+    # failed final record write can resume from these exact identities.
+    agent_coordination.update_task(
+        main,
+        lane_task(slug),
+        status="running",
+        fields={"lane_retirement": retirement},
+        note=f"retiring tip={tip}",
+    )
     if worktree is not None:
         _step(f"remove worktree {worktree}")
         rc = molt_dev_retire.cleanup_worktree(
@@ -442,25 +655,8 @@ def cmd_lane_retire(args: argparse.Namespace) -> int:
     git._run(["update-ref", "-d", ref, tip])
     _ok(f"deleted {branch} ({git.short(tip)})")
 
-    disposition = "landed" if landing.landed else "abandoned"
-    if _record_status(main, slug) is None:
-        _warn(f"{branch} has no coordination record at {_record_path(main, slug)}")
-    else:
-        agent_coordination.update_task(
-            main,
-            lane_task(slug),
-            status=disposition,
-            fields={
-                "lane_retired": {
-                    "at_utc": datetime.now(UTC).isoformat(timespec="seconds"),
-                    "tip": tip,
-                    "disposition": disposition,
-                    "bundle": None if bundle is None else str(bundle),
-                }
-            },
-            note=f"tip={tip}" + ("" if bundle is None else f" bundle={bundle}"),
-        )
-        _ok(f"closed {_record_path(main, slug)} ({disposition})")
+    _verify_retirement_absence(git, branch, recorded_worktree, args.remote)
+    _complete_retirement(main, slug, retirement)
     return EXIT_OK
 
 

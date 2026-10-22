@@ -45,7 +45,7 @@ CHANGE_ID = re.compile(r"I[0-9a-f]{40}")
 
 
 def commit_change_ids(
-    run_git: Callable[[list[str]], str], revision_range: str, *, merges: bool = True
+    run_git: Callable[[list[str]], str], revision_range: str
 ) -> list[tuple[str, frozenset[str]]]:
     """Each commit of the range, newest first, with its well-formed Change-Ids."""
 
@@ -53,7 +53,6 @@ def commit_change_ids(
         [
             "log",
             "-z",
-            *(() if merges else ("--no-merges",)),
             f"--format=%H%x1f%(trailers:key={CHANGE_ID_TRAILER},valueonly,separator=%x1e)",
             revision_range,
         ]
@@ -103,26 +102,33 @@ def landing_representation(
 ) -> LandingRepresentation:
     """The one landed predicate: every commit of `upstream..tip` is on upstream.
 
-    A queue replays a lane onto main and may amend its last commit, so a
-    landed tip need not be an ancestor of upstream. A commit is represented
+    Historical queue landings replayed lanes and amended their last commit,
+    so an ordinary landed tip need not be an ancestor of upstream. It is represented
     when its ``Change-Id:`` trailer appears on an upstream commit (Gerrit's
     rule), or when its patch-id matches one (``git cherry``'s rule). Both
-    searches cover only upstream's commits since the merge base. Merge commits
-    carry no patch of their own and are skipped, as ``git cherry`` skips them;
-    an empty commit needs a matching Change-Id or an empty upstream commit.
+    searches cover only upstream's commits since the merge base. A merge can
+    introduce resolution changes absent from either parent: only its actual
+    ancestry on upstream represents it, never a Change-Id or patch-id match.
+    An empty ordinary commit needs a matching Change-Id or empty upstream commit.
 
     Cost: one ``log`` of ``upstream..tip``, which is empty when the tip is on
-    upstream. Otherwise also one ``merge-base``, one ``log`` of upstream since
-    the merge base when a lane commit carries a Change-Id, and one ``cherry``
-    when a commit has no matching Change-Id. A Change-Id is ``I`` and 40 hex
-    digits, the managed commit-msg hook's format.
+    upstream. Otherwise also one ``rev-list`` of its merges, one ``merge-base``,
+    one ``log`` of upstream since the merge base when an ordinary lane commit
+    carries a Change-Id, and one ``cherry`` when an ordinary commit has no
+    matching Change-Id. A Change-Id is ``I`` and 40 hex digits, the managed
+    commit-msg hook's format.
     """
     commits = commit_change_ids(
-        lambda arguments: git._run(arguments).stdout, f"{upstream}..{tip}", merges=False
+        lambda arguments: git._run(arguments).stdout, f"{upstream}..{tip}"
     )
     if not commits:
         return LandingRepresentation(None, (), ())
     shas = tuple(sha for sha, _ids in commits)
+    # The range already excludes ancestors of upstream. Every remaining merge
+    # must stay pending even if an ordinary upstream commit repeats its trailer.
+    merges = frozenset(
+        git._run(["rev-list", "--min-parents=2", f"{upstream}..{tip}"]).stdout.split()
+    )
     base = git._run(["merge-base", upstream, tip], check=False)
     if base.returncode == 1:
         return LandingRepresentation(None, shas, shas)  # Unrelated histories.
@@ -133,7 +139,7 @@ def landing_representation(
         )
     merge_base = base.stdout.strip()
     upstream_ids: frozenset[str] = frozenset()
-    if any(ids for _sha, ids in commits):
+    if any(ids for sha, ids in commits if sha not in merges):
         upstream_ids = frozenset(
             change
             for _commit, ids in commit_change_ids(
@@ -142,13 +148,13 @@ def landing_representation(
             )
             for change in ids
         )
-    pending = [sha for sha, ids in commits if not ids & upstream_ids]
-    if pending:
+    pending = [sha for sha, ids in commits if sha in merges or not ids & upstream_ids]
+    if any(sha not in merges for sha in pending):
         cherry = git._run(["cherry", upstream, tip]).stdout
         on_upstream = {
             line[2:].strip() for line in cherry.splitlines() if line.startswith("- ")
         }
-        pending = [sha for sha in pending if sha not in on_upstream]
+        pending = [sha for sha in pending if sha in merges or sha not in on_upstream]
     return LandingRepresentation(merge_base, shas, tuple(pending))
 
 

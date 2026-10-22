@@ -37,7 +37,8 @@ The hazard inventory -> countermeasure map (the spec this file implements)
           the push command's exit code.
   3. Worktree cleanup loses work
        -> cleanup REFUSES when a commit of upstream..HEAD is not on upstream
-          by Change-Id or patch-id (molt_dev_change_ids.landing_representation)
+          (molt_dev_change_ids.landing_representation): source merges require
+          actual ancestry; ordinary commits also admit Change-Id or patch-id
           OR tracked staged/unstaged changes exist
           (excluding a configurable ignore set, default the legacy and keyed wasm sha256 files).
           --force requires NAMING the sha being abandoned (so an abandon is
@@ -1391,7 +1392,7 @@ def _integrate_exclusive(
     if args.expected_upstream is not None:
         require_git_object_id(args.expected_upstream, label="expected upstream")
         if upstream_before != args.expected_upstream:
-            raise DriverError(
+            raise PublicationRace(
                 "expected upstream changed; re-check ownership before integrating"
             )
     _assert_integration_source(git, head_before)

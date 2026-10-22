@@ -6,6 +6,9 @@ prefer live code, tests, measurements and explicit user direction over stale pro
 ## Own the outcome
 
 - Carry authorized work through implementation, integration, verification and cleanup; act when enough is known.
+- Follow through on authorized landings and their post-landing work without waiting for another
+  prompt. A confirmed landing and completed retirement are separate facts: resolve or report an
+  actionable custody blocker, and preserve the evidence until the integration owner closes it.
 - Questions and reviews authorize inspection; change requests authorize in-scope implementation
   and relevant local checks. Define completion and the integration owner for the current outcome.
 - Pause only for input the user alone can provide, a real scope change, or a destructive,
@@ -178,6 +181,11 @@ prefer live code, tests, measurements and explicit user direction over stale pro
   this in the `commit-msg` hook and in CI (the `repository_policy` proof-plan family).
 - Never use destructive Git operations or broad filesystem cleanup without explicit authorization
   and verified targets.
+- Before retiring old WIP, make at least two passes through its source, history and current owners,
+  including an independent pass when available. Harvest and land useful changes through current
+  authorities; identify what is already satisfied or intentionally superseded. Preserve unresolved
+  signal with an indexed recovery path and explicit owner or question. An archive alone is not
+  reconciliation, and age or a cache-like name is not evidence that source can be deleted.
 - Molt process cleanup may stop only a live-proved Molt-owned child or worker, never Codex, Claude,
   app/renderer/server helpers, MCP/plugin processes, shell hosts, Git pollers, ancestors or
   ambiguous host control-plane processes; keep evidence and repair custody if identity is unclear.

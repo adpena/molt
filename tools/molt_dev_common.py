@@ -68,7 +68,7 @@ class RebaseConflict(DriverError):
 
 
 class PublicationRace(DriverError):
-    """Upstream moved between the gates and the push confirmation."""
+    """Upstream moved after the candidate's upstream was selected."""
 
 
 def _run_driver_command(
