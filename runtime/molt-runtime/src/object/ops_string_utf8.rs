@@ -20,7 +20,7 @@ fn whole_string_is_ascii(bytes: &[u8], cache_key: Option<usize>) -> bool {
                 && string_bytes(object) == bytes.as_ptr()
                 && string_len(object) == bytes.len()
             {
-                return super::layout::StringStorage::is_ascii(object);
+                return crate::object::layout::StringStorage::is_ascii(object);
             }
         }
     }
