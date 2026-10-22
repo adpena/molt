@@ -32,8 +32,22 @@ enum PickleGlobal {
     Dict,
 }
 
-fn pickle_raise(_py: &crate::PyToken<'_>, message: &str) -> u64 {
-    raise_exception::<u64>(_py, "RuntimeError", message)
+/// Native pickle failures use the canonical module-owned hierarchy. Callback
+/// failures remain pending and never pass through this constructor.
+#[derive(Clone, Copy)]
+pub(crate) enum PickleError {
+    Pickling,
+    Unpickling,
+}
+
+impl PickleError {
+    fn raise(self, py: &crate::PyToken<'_>, message: &str) -> u64 {
+        let kind = match self {
+            Self::Pickling => "PicklingError",
+            Self::Unpickling => "UnpicklingError",
+        };
+        raise_exception::<u64>(py, kind, message)
+    }
 }
 
 fn pickle_decode_latin1(input: &[u8]) -> String {
@@ -197,7 +211,7 @@ fn pickle_resolve_global(module: &str, name: &str) -> Option<PickleGlobal> {
 
 fn pickle_global_callable_bits(_py: &crate::PyToken<'_>, global: PickleGlobal) -> Result<u64, u64> {
     match global {
-        PickleGlobal::CodecsEncode => Err(pickle_raise(
+        PickleGlobal::CodecsEncode => Err(PickleError::Unpickling.raise(
             _py,
             "pickle.loads: _codecs.encode cannot be materialized as a standalone callable",
         )),
@@ -239,7 +253,7 @@ fn pickle_encode_text(_py: &crate::PyToken<'_>, text: &str, encoding: &str) -> R
             for ch in text.chars() {
                 let code = ch as u32;
                 if code > 0xff {
-                    return Err(pickle_raise(
+                    return Err(PickleError::Unpickling.raise(
                         _py,
                         "pickle.loads: latin1 encoding failed for _codecs.encode payload",
                     ));
@@ -253,7 +267,7 @@ fn pickle_encode_text(_py: &crate::PyToken<'_>, text: &str, encoding: &str) -> R
             for ch in text.chars() {
                 let code = ch as u32;
                 if code > 0x7f {
-                    return Err(pickle_raise(
+                    return Err(PickleError::Unpickling.raise(
                         _py,
                         "pickle.loads: ascii encoding failed for _codecs.encode payload",
                     ));
@@ -267,7 +281,7 @@ fn pickle_encode_text(_py: &crate::PyToken<'_>, text: &str, encoding: &str) -> R
                 "pickle.loads: unsupported encoding {:?} for _codecs.encode",
                 encoding
             );
-            return Err(pickle_raise(_py, &message));
+            return Err(PickleError::Unpickling.raise(_py, &message));
         }
     };
     let out_ptr = crate::alloc_bytes(_py, &bytes);

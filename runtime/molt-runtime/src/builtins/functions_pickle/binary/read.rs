@@ -8,7 +8,7 @@ pub(crate) fn pickle_read_u8(
     _py: &crate::PyToken<'_>,
 ) -> Result<u8, u64> {
     if *idx >= data.len() {
-        return Err(pickle_raise(_py, "pickle.loads: unexpected end of stream"));
+        return Err(PickleError::Unpickling.raise(_py, "pickle.loads: unexpected end of stream"));
     }
     let byte = data[*idx];
     *idx += 1;
@@ -22,7 +22,7 @@ pub(crate) fn pickle_read_exact<'a>(
     _py: &crate::PyToken<'_>,
 ) -> Result<&'a [u8], u64> {
     if data.len().saturating_sub(*idx) < n {
-        return Err(pickle_raise(_py, "pickle.loads: unexpected end of stream"));
+        return Err(PickleError::Unpickling.raise(_py, "pickle.loads: unexpected end of stream"));
     }
     let start = *idx;
     let end = start + n;
@@ -36,11 +36,11 @@ pub(crate) fn pickle_read_line_bytes<'a>(
     _py: &crate::PyToken<'_>,
 ) -> Result<&'a [u8], u64> {
     if *idx > data.len() {
-        return Err(pickle_raise(_py, "pickle.loads: unexpected end of stream"));
+        return Err(PickleError::Unpickling.raise(_py, "pickle.loads: unexpected end of stream"));
     }
     let start = *idx;
     let Some(rel_end) = data[start..].iter().position(|b| *b == b'\n') else {
-        return Err(pickle_raise(_py, "pickle.loads: unexpected end of stream"));
+        return Err(PickleError::Unpickling.raise(_py, "pickle.loads: unexpected end of stream"));
     };
     let end = start + rel_end;
     *idx = end + 1;
@@ -84,10 +84,9 @@ pub(crate) fn pickle_parse_long_bytes_bits(
         return Ok(MoltObject::from_int(0).bits());
     }
     if raw.len() > 8 {
-        return Err(pickle_raise(
-            _py,
-            "pickle.loads: LONG payload exceeds Molt int range",
-        ));
+        return Err(
+            PickleError::Unpickling.raise(_py, "pickle.loads: LONG payload exceeds Molt int range")
+        );
     }
     let negative = (raw[raw.len() - 1] & 0x80) != 0;
     let mut bytes = if negative { [0xff; 8] } else { [0u8; 8] };
@@ -113,7 +112,7 @@ pub(crate) fn pickle_decode_utf8(
 ) -> Result<String, u64> {
     String::from_utf8(raw.to_vec()).map_err(|_| {
         let msg = format!("pickle.loads: invalid UTF-8 while decoding {ctx}");
-        pickle_raise(_py, &msg)
+        PickleError::Unpickling.raise(_py, &msg)
     })
 }
 
@@ -129,8 +128,19 @@ pub(crate) fn pickle_attr_optional(
     let value_bits = molt_getattr_builtin(obj_bits, name_bits, missing);
     dec_ref_bits(_py, name_bits);
     if exception_pending(_py) {
-        clear_exception(_py);
-        return Ok(None);
+        let error = crate::builtins::exceptions::ExceptionValue::adopt(
+            _py,
+            crate::molt_exception_last_pending(),
+        );
+        if crate::builtins::exceptions::exception_matches_builtin_name(
+            _py,
+            error.bits(),
+            "AttributeError",
+        ) {
+            clear_exception(_py);
+            return Ok(None);
+        }
+        return Err(MoltObject::none().bits());
     }
     if value_bits == missing {
         return Ok(None);
@@ -140,6 +150,7 @@ pub(crate) fn pickle_attr_optional(
 
 pub(crate) fn pickle_attr_required(
     _py: &crate::PyToken<'_>,
+    error: PickleError,
     obj_bits: u64,
     name: &[u8],
 ) -> Result<u64, u64> {
@@ -148,7 +159,7 @@ pub(crate) fn pickle_attr_required(
         None => {
             let name_text = std::str::from_utf8(name).unwrap_or("attribute");
             let msg = format!("pickle: missing required attribute {name_text}");
-            Err(pickle_raise(_py, &msg))
+            Err(error.raise(_py, &msg))
         }
     }
 }
@@ -166,14 +177,15 @@ pub(crate) fn pickle_decode_8bit_string(
         }
         return Ok(MoltObject::from_ptr(ptr).bits());
     }
-    let decoded = if encoding.eq_ignore_ascii_case("latin1")
-        || encoding.eq_ignore_ascii_case("latin-1")
-    {
-        raw.iter().map(|&b| char::from(b)).collect::<String>()
-    } else {
-        String::from_utf8(raw.to_vec())
-            .map_err(|_| pickle_raise(_py, "pickle.loads: unable to decode 8-bit string payload"))?
-    };
+    let decoded =
+        if encoding.eq_ignore_ascii_case("latin1") || encoding.eq_ignore_ascii_case("latin-1") {
+            raw.iter().map(|&b| char::from(b)).collect::<String>()
+        } else {
+            String::from_utf8(raw.to_vec()).map_err(|_| {
+                PickleError::Unpickling
+                    .raise(_py, "pickle.loads: unable to decode 8-bit string payload")
+            })?
+        };
     let ptr = alloc_string(_py, decoded.as_bytes());
     if ptr.is_null() {
         Err(MoltObject::none().bits())

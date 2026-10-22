@@ -739,6 +739,16 @@ const BUILTIN_EXCEPTION_SPECS: &[BuiltinExceptionSpec] = &[
     ),
     exception_spec("BufferError", ExceptionBaseSpec::One("Exception"), None),
     exception_spec("EOFError", ExceptionBaseSpec::One("Exception"), None),
+    exception_spec("PickleError", ExceptionBaseSpec::One("Exception"), None)
+        .with_heap_class("_pickle"),
+    exception_spec("PicklingError", ExceptionBaseSpec::One("PickleError"), None)
+        .with_heap_class("_pickle"),
+    exception_spec(
+        "UnpicklingError",
+        ExceptionBaseSpec::One("PickleError"),
+        None,
+    )
+    .with_heap_class("_pickle"),
     exception_spec(
         "ImportError",
         ExceptionBaseSpec::One("Exception"),
@@ -1325,6 +1335,9 @@ mod tests {
             std::collections::BTreeSet::from([
                 ("CancelledError", "asyncio.exceptions"),
                 ("StatisticsError", "statistics"),
+                ("PickleError", "_pickle"),
+                ("PicklingError", "_pickle"),
+                ("UnpicklingError", "_pickle"),
                 ("UnsupportedOperation", "_io"),
             ])
         );

@@ -104,16 +104,10 @@ _pickle_loads_core = _require_intrinsic("molt_pickle_loads_core")
 # reducer/API edge semantics, and exact diagnostic-text parity).
 
 
-class PickleError(Exception):
-    pass
-
-
-class PicklingError(PickleError):
-    pass
-
-
-class UnpicklingError(PickleError):
-    pass
+# Native construction and the public module export share one class identity.
+PickleError = _require_intrinsic("molt_builtin_class_lookup")("PickleError")
+PicklingError = _require_intrinsic("molt_builtin_class_lookup")("PicklingError")
+UnpicklingError = _require_intrinsic("molt_builtin_class_lookup")("UnpicklingError")
 
 
 class PickleBuffer:
@@ -254,17 +248,14 @@ def dumps(
     buffer_callback=None,
 ) -> bytes:
     normalized = _normalize_protocol(protocol)
-    try:
-        return _pickle_dumps_core(
-            obj,
-            normalized,
-            bool(fix_imports),
-            None,
-            buffer_callback,
-            _copyreg.dispatch_table,
-        )
-    except RuntimeError as exc:
-        raise PicklingError(str(exc)) from exc
+    return _pickle_dumps_core(
+        obj,
+        normalized,
+        bool(fix_imports),
+        None,
+        buffer_callback,
+        _copyreg.dispatch_table,
+    )
 
 
 def load(
@@ -293,18 +284,15 @@ def loads(
     errors: str = "strict",
     buffers=(),
 ) -> Any:
-    try:
-        return _pickle_loads_core(
-            data,
-            bool(fix_imports),
-            encoding,
-            errors,
-            None,
-            None,
-            buffers,
-        )
-    except RuntimeError as exc:
-        raise UnpicklingError(str(exc)) from exc
+    return _pickle_loads_core(
+        data,
+        bool(fix_imports),
+        encoding,
+        errors,
+        None,
+        None,
+        buffers,
+    )
 
 
 class Pickler:
@@ -332,17 +320,14 @@ class Pickler:
 
     def dump(self, obj: Any) -> None:
         dispatch_table = getattr(self, "dispatch_table", _copyreg.dispatch_table)
-        try:
-            payload = _pickle_dumps_core(
-                obj,
-                self.protocol,
-                self.fix_imports,
-                self.persistent_id,
-                self.buffer_callback,
-                dispatch_table,
-            )
-        except RuntimeError as exc:
-            raise PicklingError(str(exc)) from exc
+        payload = _pickle_dumps_core(
+            obj,
+            self.protocol,
+            self.fix_imports,
+            self.persistent_id,
+            self.buffer_callback,
+            dispatch_table,
+        )
         self._file.write(payload)
 
 
@@ -371,18 +356,15 @@ class Unpickler:
 
     def load(self) -> Any:
         data = self._file.read()
-        try:
-            return _pickle_loads_core(
-                data,
-                self.fix_imports,
-                self.encoding,
-                self.errors,
-                self.persistent_load,
-                self.find_class,
-                self.buffers,
-            )
-        except RuntimeError as exc:
-            raise UnpicklingError(str(exc)) from exc
+        return _pickle_loads_core(
+            data,
+            self.fix_imports,
+            self.encoding,
+            self.errors,
+            self.persistent_load,
+            self.find_class,
+            self.buffers,
+        )
 
 
 def _dump(obj: Any, file, protocol: int | None = None) -> None:
