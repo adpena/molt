@@ -28,7 +28,7 @@ Every verdict comes from Git plumbing exit codes and object ids (hazard 5).
 from __future__ import annotations
 
 import argparse
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -41,6 +41,7 @@ from types import ModuleType
 from typing import Any
 
 from molt import checkout_provisioning
+from molt.checkout_state import is_checkout_state_lock_file
 from molt.custody_layout import BUNDLES_DIRNAME, family_worktrees_root
 from molt.path_custody import host_path_is_within
 from molt.portable_paths import portable_path_component
@@ -198,46 +199,199 @@ def _managed_record(main: Path, slug: str) -> dict[str, Any]:
     return record
 
 
-def _unharvested_ignored_paths(git: Any) -> list[str]:
-    """Only current, declared checkout inputs are reproducible ignored trees.
+# The Cache Directory Tagging Specification (https://bford.info/cachedir/):
+# a directory whose CACHEDIR.TAG begins with this line holds only data its
+# writer regenerates. Cargo, Ruff, pytest and mypy tag their caches.
+_CACHEDIR_SIGNATURE = b"Signature: 8a477f597d28d172789f06886806bc55"
+# setuptools' `egg_info.writers` entry points, its SOURCES.txt manifest and
+# bdist_egg's zip-safety flags: everything `egg_info` writes for a project.
+_EGG_INFO_FILES = frozenset(
+    {
+        "PKG-INFO",
+        "SOURCES.txt",
+        "dependency_links.txt",
+        "eager_resources.txt",
+        "entry_points.txt",
+        "namespace_packages.txt",
+        "not-zip-safe",
+        "requires.txt",
+        "top_level.txt",
+        "zip-safe",
+    }
+)
 
-    Git ignores are not a source/evidence disposal policy. Inspect names only;
-    the provisioning authority verifies its lock stamp and sentinel, without
-    launching tools or reading the tree's payloads.
+
+# PEP 3147: CPython names a cache file `<module>.<tag>[.opt-N].pyc`, pytest's
+# assertion rewriter `<module>.<tag>-pytest-<version>.pyc`, and importlib
+# publishes each through a temporary `<file>.<id>`.
+_BYTECODE_NAME = re.compile(r".+\.pyc(?:\.[0-9]+)?")
+
+
+def _bytecode_file(name: str) -> bool:
+    return _BYTECODE_NAME.fullmatch(name) is not None
+
+
+def _only_files(directory: Path, keep: Callable[[str], bool]) -> bool:
+    try:
+        entries = list(os.scandir(directory))
+    except OSError:
+        return False
+    return all(
+        entry.is_file(follow_symlinks=False) and keep(entry.name) for entry in entries
+    )
+
+
+def _output_verdict(path: Path) -> bool | list[Path]:
+    """One path's verdict, or a plain directory's entries to judge instead."""
+    if path.is_symlink() or path.is_junction():
+        return False
+    if path.is_file():
+        from molt.artifact_publication import is_publication_lock_file
+
+        # Stable, empty lock metadata leaves only with its whole checkout
+        # under retirement custody; a lock is never unlinked to clean a lane.
+        return (
+            (path.parent.name == "__pycache__" and _bytecode_file(path.name))
+            or is_checkout_state_lock_file(path)
+            or is_publication_lock_file(path)
+        )
+    if not path.is_dir():
+        return False
+    if path.name == "__pycache__":
+        return _only_files(path, _bytecode_file)
+    if path.suffix == ".egg-info":
+        return _only_files(path, _EGG_INFO_FILES.__contains__)
+    try:
+        with (path / "CACHEDIR.TAG").open("rb") as tag:
+            if tag.read(len(_CACHEDIR_SIGNATURE)) == _CACHEDIR_SIGNATURE:
+                return True
+    except OSError:
+        pass
+    try:
+        return [Path(entry.path) for entry in os.scandir(path)]
+    except OSError:
+        return False
+
+
+def _regenerable_output(path: Path) -> bool:
+    """An ignored path that holds no signal, judged through its whole tree.
+
+    - bytecode in a PEP 3147 ``__pycache__``, or the whole directory when it
+      holds only bytecode files. The import system reads a cache file only
+      beside its source, so the directory is cache, as PEP 3147 says; this
+      releases the one trace of a module that was never committed and then
+      deleted. A ``.pyc`` outside ``__pycache__`` imports without its source
+      and stays signal;
+    - a directory tagged by the Cache Directory Tagging Specification;
+    - a setuptools ``*.egg-info`` that holds only the files ``egg_info``
+      writes; the editable build ``uv sync`` runs writes one into the checkout;
+    - an empty checkout-state or publication lock, which leaves only with
+      its checkout;
+    - a plain directory whose every entry is one of these, or that is empty.
+      Git names an untracked directory beside each ignored path inside it,
+      so such a directory is judged by what it holds, never by its name.
+
+    An explicit stack walks the tree, so no depth raises `RecursionError`.
     """
-    from molt.artifact_publication import is_publication_lock_file
+    pending = [path]
+    while pending:
+        verdict = _output_verdict(pending.pop())
+        if verdict is False:
+            return False
+        if isinstance(verdict, list):
+            pending.extend(verdict)
+    return True
 
-    owned: list[Path] = []
+
+def _lane_trees(
+    repo: Path,
+) -> list[
+    tuple[checkout_provisioning.CheckoutInputName, checkout_provisioning.LockedTree]
+]:
+    """The declared inputs a lane owns in its own tree, as the lane's commands
+    select them (`lane_environment`): the trees a handoff judges and `land`
+    makes current. Repository-scope inputs such as the Git hooks are not."""
+    trees = []
     for name in checkout_provisioning.CHECKOUT_INPUT_NAMES:
         spec = checkout_provisioning.checkout_input(
-            name, git.repo, guard_source_root=_COMMANDS.repo_root
+            name,
+            repo,
+            lane_environment(os.environ),
+            guard_source_root=_COMMANDS.repo_root,
         )
         if (
             isinstance(spec, checkout_provisioning.LockedTree)
             and spec.scope == "checkout"
             and not spec.tree.is_symlink()
-            and host_path_is_within(spec.tree.resolve(), git.repo.resolve())
-            and spec.tree.resolve() != git.repo.resolve()
+            and host_path_is_within(spec.tree.resolve(), repo.resolve())
+            and spec.tree.resolve() != repo.resolve()
             and checkout_provisioning.declares(spec)
-            and checkout_provisioning.input_state(spec) == "current"
         ):
-            owned.append(spec.tree.resolve())
-    paths = git._run(
-        ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"]
-    ).stdout.split("\0")
+            trees.append((name, spec))
+    return trees
+
+
+def _unharvested_ignored_paths(git: Any) -> tuple[list[str], list[str]]:
+    """Ignored content that no lock or writer regenerates is signal.
+
+    Returns the stale declared inputs and the unharvested paths. Git ignores
+    are not a source/evidence disposal policy. A declared checkout input
+    belongs to the provisioning authority alone: it is reproducible only while
+    current, which the authority verifies by lock stamp and sentinel without
+    launching tools or reading the tree's payloads, and a stale one is held
+    whatever its writer tagged. Outside the declared trees, only
+    `_regenerable_output` paths are disposable; it lists their entries and
+    reads one 43-byte tag per directory, never a payload.
+    """
+    declared = [
+        (
+            name,
+            spec.tree.resolve(),
+            checkout_provisioning.input_state(spec) == "current",
+        )
+        for name, spec in _lane_trees(git.repo)
+    ]
+    paths = [
+        path
+        for path in git._run(
+            [
+                "ls-files",
+                "--others",
+                "--ignored",
+                "--exclude-standard",
+                "--directory",
+                "-z",
+            ]
+        ).stdout.split("\0")
+        if path
+    ]
+    stale: list[str] = []
     unknown: list[str] = []
     for path in paths:
-        if not path:
-            continue
         named = git.repo / path
-        if any(host_path_is_within(named.resolve(), tree) for tree in owned):
+        trees = [
+            (name, current)
+            for name, tree, current in declared
+            if host_path_is_within(named.resolve(), tree)
+        ]
+        if trees:
+            stale.extend(name for name, current in trees if not current)
             continue
-        # Stable, empty publication metadata may leave only with its whole
-        # checkout under retirement custody. Never unlink a lock to clean a lane.
-        if is_publication_lock_file(named):
+        if _regenerable_output(named):
             continue
         unknown.append(path)
-    return unknown
+    return sorted(set(stale)), unknown
+
+
+def provision_lane(worktree: Path) -> tuple[checkout_provisioning.Ensured, ...]:
+    """Make every declared input of a lane current, as `uv run` syncs its
+    environment before it runs. A current locked tree costs one stamp check;
+    the Git hooks' check starts one child Python."""
+    return checkout_provisioning.ensure_all(
+        worktree,
+        lane_environment(os.environ),
+        guard_source_root=_COMMANDS.repo_root,
+    )
 
 
 def validate_lane_handoff(
@@ -247,8 +401,14 @@ def validate_lane_handoff(
     tip: str,
     *,
     ignore_globs: tuple[str, ...] = (),
-) -> None:
-    """Bind cooperative queue custody to the existing managed lane record."""
+    provision: bool = False,
+) -> tuple[checkout_provisioning.Ensured, ...]:
+    """Bind cooperative queue custody to the existing managed lane record.
+
+    With ``provision``, once the lane's custody checks pass, make the trees it
+    owns current before judging its content (`land`: a merged dependency
+    refresh leaves the lane's environment stale). Returns what it provisioned.
+    """
     slug = lane_slug(branch.removeprefix(LANE_BRANCH_PREFIX))
     worktrees = _worktrees(git)
     main = _main_checkout(worktrees)
@@ -278,6 +438,19 @@ def validate_lane_handoff(
         )
     if listed["locked"]:
         raise DriverError(f"{worktree} is locked; its owner must release custody first")
+    done: tuple[checkout_provisioning.Ensured, ...] = ()
+    if provision:
+        try:
+            done = checkout_provisioning.ensure_all(
+                worktree,
+                lane_environment(os.environ),
+                [name for name, _spec in _lane_trees(worktree)],
+                guard_source_root=_COMMANDS.repo_root,
+            )
+        except checkout_provisioning.ProvisioningError as exc:
+            raise DriverError(
+                f"{worktree} inputs could not be provisioned: {exc}"
+            ) from exc
     source = _driver().Git(worktree)
     dirty = _dirty_paths(source, ignore_globs)
     if dirty:
@@ -285,16 +458,23 @@ def validate_lane_handoff(
             f"{worktree} is dirty; harvest or commit first: " + ", ".join(dirty)
         )
     try:
-        unknown = _unharvested_ignored_paths(source)
+        stale, unknown = _unharvested_ignored_paths(source)
     except (checkout_provisioning.ProvisioningError, ValueError) as exc:
         raise DriverError(
             f"{worktree} generated metadata custody is invalid: {exc}"
         ) from exc
+    if stale:
+        raise DriverError(
+            f"{worktree} holds stale checkout inputs ({', '.join(stale)}); make "
+            f"them current with: uv run python -m molt.checkout_provisioning "
+            f"ensure --checkout {worktree} {' '.join(stale)}"
+        )
     if unknown:
         raise DriverError(
             f"{worktree} holds unharvested ignored signal; reconcile and preserve it "
             "outside the lane before retirement: " + ", ".join(unknown)
         )
+    return done
 
 
 # --------------------------------------------------------------------------
@@ -413,11 +593,7 @@ def cmd_lane_start(args: argparse.Namespace) -> int:
 
     _step(f"provision {worktree}")
     try:
-        done = checkout_provisioning.ensure_all(
-            worktree,
-            lane_environment(os.environ),
-            guard_source_root=_COMMANDS.repo_root,
-        )
+        done = provision_lane(worktree)
     except checkout_provisioning.ProvisioningError as exc:
         _fail(str(exc))
         _say(
