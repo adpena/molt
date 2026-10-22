@@ -9539,7 +9539,7 @@
       "local.import-symbol-gate.0": "python tools/import_symbol_gate.py",
       "local.import-symbol-gate.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/tools/test_import_symbol_gate.py",
       "local.installed-compiler-distribution.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/cli/test_installed_compiler.py tests/cli/test_installed_runtime.py tests/cli/test_installed_toolchain_rules.py tests/tools/test_release_installed_distribution.py tests/tools/test_release_native_build.py tests/tools/test_release_supply_chain.py",
-      "local.intrinsic-registry.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_gen_intrinsics.py tests/test_frontend_builtin_call_lowering.py::test_intrinsic_alias_preserves_declaration_and_canonical_executable tests/test_frontend_builtin_call_lowering.py::test_intrinsic_lowering_uses_isolated_python_package_without_runtime_sources tests/test_frontend_builtin_call_lowering.py::test_frontend_intrinsic_function_objects_use_runtime_default_authority tests/test_frontend_builtin_call_lowering.py::test_frontend_builtin_func_specs_are_wasm_manifest_backed tests/test_stdlib_intrinsic_registry.py tests/test_stdlib_inspect_coroutine_marking.py tests/cli/test_required_features_reachability.py tests/cli/test_wasm_runtime_exports.py tests/cli/test_cli_lowering_cache_tooling_scope.py::test_kept_analysis_and_intrinsic_edits_still_invalidate",
+      "local.intrinsic-registry.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_gen_intrinsics.py tests/test_frontend_builtin_call_lowering.py::test_intrinsic_alias_preserves_declaration_and_canonical_executable tests/test_frontend_builtin_call_lowering.py::test_intrinsic_lowering_uses_isolated_python_package_without_runtime_sources tests/test_frontend_builtin_call_lowering.py::test_frontend_intrinsic_function_objects_use_runtime_default_authority tests/test_frontend_builtin_call_lowering.py::test_frontend_builtin_func_specs_are_wasm_manifest_backed tests/test_stdlib_intrinsic_registry.py tests/test_stdlib_inspect_coroutine_marking.py tests/cli/test_required_features_reachability.py tests/cli/test_wasm_runtime_exports.py tests/cli/test_cli_lowering_cache_tooling_scope.py::test_unkeyed_edits_keep_the_key_and_keyed_edits_change_it",
       "local.llvm-runtime-abi.0": "python tools/llvm_runtime_abi_audit.py --check",
       "local.llvm-runtime-abi.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_llvm_runtime_abi_audit.py",
       "local.maintained-zlib-counters.0": "cargo test --locked --profile dev-fast -p zlib-rs@0.6.8 --lib --no-default-features --features rust-allocator,std,ZLIB_DEBUG -- counter_wrap --nocapture --test-threads=1",
@@ -10215,7 +10215,7 @@
           "tests/test_stdlib_inspect_coroutine_marking.py",
           "tests/cli/test_required_features_reachability.py",
           "tests/cli/test_wasm_runtime_exports.py",
-          "tests/cli/test_cli_lowering_cache_tooling_scope.py::test_kept_analysis_and_intrinsic_edits_still_invalidate"
+          "tests/cli/test_cli_lowering_cache_tooling_scope.py::test_unkeyed_edits_keep_the_key_and_keyed_edits_change_it"
         ],
         "toolchains": [
           "python",
