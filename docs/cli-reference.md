@@ -203,19 +203,20 @@ that imports `os`, until it reuses compiled stdlib code as an AOT build does
 (HF-371). Each start compiles the whole program, its stdlib closure included, and
 every process that starts the program again pays the same cost. Measured on macOS
 arm64 at host load 8-16: `import os, sys` compiles 832 functions in 6.8-10.2 s at
-0.94-1.01 GB peak RSS per start, where the AOT executable starts in 0.27-0.35 s at
-23 MB; a no-change `molt run` takes 9.2-10.1 s against 1.6 s; and the compiler's
-memory stays resident while the program runs (1.33 GB against 28 MB for a program
-that imports `subprocess`). [design/dev_jit_tier.md](design/dev_jit_tier.md)
+0.7-0.8 GB peak RSS per start, where the AOT executable starts in 0.27-0.35 s at
+23 MB; and a no-change `molt run` takes 9.2-10.1 s against 1.6 s. Once the program
+runs, the compiler's memory is gone from its footprint (73-75 MB against 6.7 MB for
+a program that imports `subprocess`). [design/dev_jit_tier.md](design/dev_jit_tier.md)
 ("Costs") breaks these down by phase.
 
 A JIT image is a development artifact. Its header names this checkout's `molt-jit`
 runner generation, runtime image and runtime callable-symbol table, and running the
 image renews none of them. `molt run --tier jit` and `molt build --emit jit` renew
 them. After 24 hours with neither, a later build may evict them, and removing the
-Cargo target directory removes them. The image then fails: `/bin/sh` cannot execute
-the runner (exit status 126 or 127, with the runner's path), or the runner cannot
-load the runtime image (exit status 125). Rebuild it with `molt build --emit jit`.
+Cargo target directory removes them. The image then fails: the kernel cannot start
+the runner its first line names, so a shell reports a bad interpreter (exit status
+126) and `subprocess` raises `FileNotFoundError`, or the runner cannot load the
+runtime image (exit status 125). Rebuild it with `molt build --emit jit`.
 
 #### `molt test`
 
