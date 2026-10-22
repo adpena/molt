@@ -398,9 +398,13 @@ dispatch. Callback exceptions propagate with the already completed mutations.
 
 Exception ownership remains explicit across iterator callbacks: `molt_raise`
 borrows its argument, while `record_exception_owned` transfers an owned error.
-Constructor helpers retain and retire their kind, message, args and error owners
-and determine construction failure from the operation's own result; a preexisting
-raised exception is not evidence that a successful constructor failed.
+Satellite diagnostic raising delegates to the canonical main-runtime exception
+constructor and its owned publication path. An empty diagnostic has no arguments;
+an explicit Python `StopIteration("")` retains its one empty-string argument.
+Canonical diagnostic construction selects failure from its returned pointer;
+a preexisting raised exception does not reject successful diagnostic construction.
+Explicit class/argument constructors retain their distinct argument semantics and
+temporary-owner obligations.
 
 Native pickle validation uses the canonical exception classes exported by its
 public facade, while exceptions raised by user callbacks propagate unchanged.

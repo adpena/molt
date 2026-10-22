@@ -334,6 +334,25 @@ crate::builtins::methods::native_method_table!(exception_group_method_bits, publ
         )),
 });
 
+/// Shared satellite diagnostic transport. Empty diagnostics have no arguments;
+/// explicit Python exception arguments remain owned by their constructors.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bridge_raise_exception(
+    kind_ptr: *const u8,
+    kind_len: usize,
+    msg_ptr: *const u8,
+    msg_len: usize,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let kind = unsafe {
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(kind_ptr, kind_len))
+        };
+        let msg =
+            unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg_ptr, msg_len)) };
+        raise_exception::<u64>(_py, kind, msg)
+    })
+}
+
 #[track_caller]
 pub(crate) fn raise_exception<T: ExceptionSentinel>(
     _py: &PyToken<'_>,
@@ -5045,6 +5064,69 @@ mod tests {
                     "bridge ownership regression: independently pinned message",
                 )
             });
+        });
+    }
+
+    #[test]
+    fn core_string_raise_empty_diagnostics_have_no_argument_owner() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            for kind in ["StopIteration", "RuntimeError"] {
+                super::raise_exception::<u64>(py, "ValueError", "prior raised error");
+                let prior = exception_last_pending_bits(py);
+                assert_eq!(
+                    molt_runtime_core::rt_raise_str(kind, ""),
+                    MoltObject::none().bits()
+                );
+                let error = exception_last_pending_bits(py);
+                assert_ne!(error, prior);
+                assert!(super::exception_matches_builtin_name(py, error, kind));
+                let error_ptr = obj_from_bits(error).as_ptr().unwrap();
+                let args_ptr = obj_from_bits(unsafe { super::exception_args_bits(error_ptr) })
+                    .as_ptr()
+                    .unwrap();
+                assert_eq!(unsafe { tuple_len(args_ptr) }, 0);
+                assert_eq!(
+                    unsafe { (*header_from_obj_ptr(error_ptr)).ref_count_snapshot() },
+                    2,
+                    "only the raised slot and this observer own the exception"
+                );
+                let prior_ptr = obj_from_bits(prior).as_ptr().unwrap();
+                assert_eq!(
+                    unsafe { (*header_from_obj_ptr(prior_ptr)).ref_count_snapshot() },
+                    1,
+                    "replacing a pending exception retires its raised owner"
+                );
+                clear_exception(py);
+                assert_eq!(
+                    unsafe { (*header_from_obj_ptr(error_ptr)).ref_count_snapshot() },
+                    1
+                );
+                dec_ref_bits(py, error);
+                dec_ref_bits(py, prior);
+                assert!(!exception_pending(py));
+            }
+            // An explicit Python empty-string argument is distinct from an
+            // absent diagnostic. The constructor must retain that argument.
+            let message = crate::alloc_string(py, b"");
+            assert!(!message.is_null());
+            let message = MoltObject::from_ptr(message).bits();
+            let args = crate::alloc_tuple(py, &[message]);
+            assert!(!args.is_null());
+            let args = MoltObject::from_ptr(args).bits();
+            let class = super::exception_type_bits_from_name(py, "StopIteration");
+            let error = super::molt_exception_new_from_class(class, args);
+            assert!(!exception_pending(py));
+            let ptr = obj_from_bits(error).as_ptr().expect("explicit exception");
+            let stored = super::exception_materialized_args_bits(py, ptr).unwrap();
+            let stored = obj_from_bits(stored).as_ptr().unwrap();
+            unsafe {
+                assert_eq!(tuple_len(stored), 1);
+                assert_eq!(crate::object::seq_access::item(stored, 0), Some(message));
+            }
+            dec_ref_bits(py, error);
+            dec_ref_bits(py, args);
+            dec_ref_bits(py, message);
         });
     }
 
