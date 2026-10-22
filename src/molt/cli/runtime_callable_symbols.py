@@ -101,8 +101,12 @@ def _runtime_callable_symbols_file(
             # creator may publish first; admit its bytes without replacing the file
             # already bound by that operation. Corruption and read failures fail
             # closed below rather than invalidating another operation's generation.
+            # The projection is added beside its archive's generation and never
+            # recreates one that eviction removed (HF-390 review v2, M1).
             try:
-                atomic_write_bytes(cache_path, content, exclusive=True)
+                atomic_write_bytes(
+                    cache_path, content, exclusive=True, create_parent=False
+                )
             except FileExistsError:
                 pass
             return (

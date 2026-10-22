@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Mapping
 import contextlib
 from dataclasses import dataclass, field
 from functools import lru_cache
 import errno
 import _thread
 import os
+import re
 import sys
 from pathlib import Path
 import threading
@@ -662,23 +663,66 @@ def _parse_lock_timeout(raw: str, *, default_s: float | None) -> float | None:
     return parsed if parsed > 0 else None
 
 
+LOCK_WAIT_ENV = "MOLT_BUILD_LOCK_TIMEOUT"
+# The head of every lock-wait timeout: callers embed the message in their own
+# failure lines (a build stage prefix, an evidence path after it) and may cut
+# its tail, so the head alone identifies it.
+_LOCK_WAIT_TIMEOUT = re.compile(r"Timed out after \d+(?:\.\d+)?s waiting for ")
+
+
+def lock_wait_timeout_message(wait_s: float, subject: str) -> str:
+    """What a bounded lock wait that gave up reports, in one spelling.
+
+    ``is_lock_wait_timeout`` reads it wherever it appears. The waiting notice
+    also names ``LOCK_WAIT_ENV`` when a bound is set, so the knob alone does
+    not identify a timeout.
+    """
+    return f"Timed out after {wait_s:.1f}s waiting for {subject} ({LOCK_WAIT_ENV})"
+
+
+def is_lock_wait_timeout(text: str) -> bool:
+    """Whether ``text`` reports a lock wait that ``lock_wait_timeout_message``
+    ended, wherever a caller placed it."""
+    return _LOCK_WAIT_TIMEOUT.search(text) is not None
+
+
+def lock_wait_s(environ: Mapping[str, str] | None = None) -> float | None:
+    """How long a waiter waits for a build or cache lock another process holds.
+
+    It waits while the holder holds the lock (None), as Cargo waits on its
+    build-directory and package-cache locks and Bazel on its output base
+    (``--block_for_lock``). The holder bounds its own work (its Cargo and
+    probe timeouts), and an OS lock dies with its holder, so a waiter's own
+    timer could only fail it while the build it waits for may still finish.
+    ``MOLT_BUILD_LOCK_TIMEOUT`` bounds the wait for an operator who prefers
+    to fail.
+    """
+    view = os.environ if environ is None else environ
+    return _parse_lock_timeout(view.get(LOCK_WAIT_ENV, ""), default_s=None)
+
+
 @contextlib.contextmanager
 def _shared_cache_lock(name: str, *, cache_root: Path | None = None):
     if cache_root is None:
         cache_root = _default_molt_cache()
     lock_path = shared_cache_lock_path(cache_root, name)
-    timeout_raw = os.environ.get("MOLT_BUILD_LOCK_TIMEOUT", "").strip()
-    lock_timeout = _parse_lock_timeout(timeout_raw, default_s=300.0)
-    timeout_label = "unbounded" if lock_timeout is None else f"{lock_timeout:.1f}s"
-    handle = _acquire_file_lock(
-        lock_path,
-        timeout_s=lock_timeout,
-        timeout_message=(
-            "Timed out waiting for shared cache lock "
-            f"{lock_path} after {timeout_label}. "
-            "Check for stale molt build/backend helper processes."
-        ),
-    )
+    handle = _try_acquire_file_lock(lock_path)
+    if handle is None:
+        wait = lock_wait_s()
+        print(
+            f"molt: Blocking waiting for the shared cache lock {lock_path}",
+            file=sys.stderr,
+            flush=True,
+        )
+        handle = _acquire_file_lock(
+            lock_path,
+            timeout_s=wait,
+            timeout_message=lock_wait_timeout_message(
+                wait, f"the shared cache lock {lock_path}"
+            )
+            if wait is not None
+            else "",
+        )
     try:
         yield
     finally:

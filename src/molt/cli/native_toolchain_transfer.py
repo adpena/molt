@@ -1,12 +1,13 @@
-"""Transfer of the native toolchain a source-checkout build reuses.
+"""Transfer of the native toolchain a source-checkout build reuses, across hosts.
 
 A ``molt build --target native --build-profile dev`` in a source checkout
-reuses two retained products without Cargo: the selected native runtime
-generation and the feature-tagged backend compiler with its fingerprint
-receipt. Export names their files where this checkout's build admitted them.
-Import admits copies into another checkout of the same commit at the
-canonical coordinates every build session consults. Each import passes the
-admission a build applies, against inputs captured in the importing
+reuses two retained products without Cargo: the native runtime generation in
+the host's product store (``molt.cli.product_store``) and the feature-tagged
+backend compiler with its fingerprint receipt. Every checkout on one host
+already shares the store; this transfer carries the products to another host.
+Export names the files of the store entry this checkout's inputs select.
+Import publishes copies into the importing host's store. Each import passes
+the admission a build applies, against inputs captured in the importing
 checkout, so a transport never derives or trusts a layout of its own.
 """
 
@@ -27,16 +28,16 @@ from molt.cli.cargo_profiles import _resolve_cargo_profile_name
 from molt.cli.native_link_custody import NativeLinkCustodyError
 from molt.cli.native_link_manifest import NativeLinkDependencyManifestError
 from molt.cli.runtime_build_python import build_python_scope
+from molt.cli.product_store import ProductStoreError
 from molt.cli.runtime_native_build import (
     NativeRuntimeBuildInputs,
-    canonical_native_runtime_coordinate,
     current_native_runtime_build_inputs,
-    native_runtime_generation_coordinates,
+    native_runtime_store,
 )
 from molt.cli.runtime_native_generation import (
     import_native_runtime_generation,
     native_runtime_generation_path,
-    read_native_runtime_generation,
+    native_runtime_store_generation,
 )
 from molt.cli.runtime_paths import _runtime_lib_path
 from molt.cli.rust_cpu_policy import RustCpuPolicy, resolve_rust_cpu_policy
@@ -153,52 +154,44 @@ def export_native_toolchain(
     """The admitted runtime generation and backend files, in transfer order."""
     inputs = selection.runtime_build_inputs()
     identity = inputs.build_identity
-    members: list[TransferMember] | None = None
-    checked: list[str] = []
-    for coordinate in native_runtime_generation_coordinates(
-        selection.runtime_lib,
-        project_root=selection.project_root,
-        cargo_profile=selection.runtime_cargo_profile,
-        target_triple=None,
-    ):
-        generation = read_native_runtime_generation(
-            coordinate,
-            cargo_profile=selection.runtime_cargo_profile,
-            target_triple=None,
-        )
-        checked.append(
-            f"{coordinate}: "
-            + (
-                "no admitted generation"
-                if generation is None
-                else "generation built from other inputs"
-                if generation.build_identity != identity
-                else "admitted"
+    store = native_runtime_store(selection.project_root)
+    try:
+        # Renewed before the read, so no eviction races the export.
+        generation = (
+            native_runtime_store_generation(
+                store,
+                identity,
+                inputs.environment,
+                runtime_name=selection.runtime_lib.name,
+                cargo_profile=selection.runtime_cargo_profile,
+                target_triple=None,
             )
+            if store.record_use(identity.digest)
+            else None
         )
-        if generation is not None and generation.build_identity == identity:
-            try:
-                generation.cargo_environment.verify(inputs.environment)
-            except ValueError as exc:
-                checked[-1] = f"{coordinate}: {exc}"
-                continue
-            members = [
-                TransferMember(
-                    RUNTIME_SELECTION_ROLE,
-                    native_runtime_generation_path(coordinate),
-                    executable=False,
-                ),
-                *(
-                    TransferMember(role, member.path, executable=False)
-                    for role, member in generation.members
-                ),
-            ]
-            break
-    if members is None:
+    except (OSError, ProductStoreError) as exc:
+        raise NativeToolchainTransferError(str(exc)) from exc
+    if generation is None:
         raise NativeToolchainTransferError(
-            "no native runtime generation is admitted for this checkout's inputs; "
-            f"build {selection.runtime_lib.name} first ({'; '.join(checked)})"
+            f"no native runtime generation is stored for this checkout's inputs "
+            f"and Cargo environment ({identity.digest} in {store.root}); build "
+            f"{selection.runtime_lib.name} first"
         )
+    coordinate = (
+        store.variant(identity.digest, generation.cargo_environment)
+        / selection.runtime_lib.name
+    )
+    members = [
+        TransferMember(
+            RUNTIME_SELECTION_ROLE,
+            native_runtime_generation_path(coordinate),
+            executable=False,
+        ),
+        *(
+            TransferMember(role, member.path, executable=False)
+            for role, member in generation.members
+        ),
+    ]
     try:
         backend, receipt = admitted_backend_binary(
             selection.project_root,
@@ -237,12 +230,8 @@ def import_native_toolchain(
     }
     try:
         import_native_runtime_generation(
-            canonical_native_runtime_coordinate(
-                selection.runtime_lib,
-                project_root=selection.project_root,
-                cargo_profile=selection.runtime_cargo_profile,
-                target_triple=None,
-            ),
+            native_runtime_store(selection.project_root),
+            runtime_name=selection.runtime_lib.name,
             selection=files[RUNTIME_SELECTION_ROLE],
             members=runtime_members,
             cargo_profile=selection.runtime_cargo_profile,

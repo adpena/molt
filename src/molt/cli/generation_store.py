@@ -145,6 +145,20 @@ def _read_store_ledger(
     return store
 
 
+def used_within(
+    root: Path, layout: GenerationStoreLayout, name: str, seconds: float
+) -> bool:
+    """Whether the ledger records a use of ``name`` in the last ``seconds``.
+
+    It reads the ledger without the store lock: publication replaces the
+    ledger file whole, so a reader sees one complete version. A missing or
+    unreadable ledger records no use.
+    """
+    now = time.time()
+    used = _read_store_ledger(layout, root, now).last_used.get(name)
+    return used is not None and now - used <= seconds
+
+
 @contextmanager
 def generation_store(
     root: Path, layout: GenerationStoreLayout

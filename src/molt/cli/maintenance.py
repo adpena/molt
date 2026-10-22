@@ -135,6 +135,43 @@ def cache_prune(
     return 1 if failed else 0
 
 
+def cache_evict(json_output: bool, *, kind: str, identity: str) -> int:
+    """Remove one product store entry, as a build of this checkout selects it.
+
+    A build that finds a corrupt entry names this command; it removes the
+    entry the way idle eviction does, so readers never see it partial
+    (``molt.cli.product_store``, design 56 section 2.8).
+    """
+    from molt.cli.product_kinds import product_kind
+    from molt.cli.product_store import ProductStore
+
+    root = compiler_source_root()
+    root_error = _require_molt_root(root, json_output, "cache evict")
+    if root_error is not None:
+        return root_error
+    assert root is not None
+    try:
+        store = ProductStore.of(product_kind(kind), root)
+        entry = store.entry(identity)
+        evicted = store.evict(identity)
+    except (OSError, ValueError, RuntimeError) as exc:
+        return _fail(str(exc), json_output, command="cache evict")
+    if json_output:
+        _emit_json(
+            _json_payload(
+                "cache evict",
+                "ok",
+                data={"entry": str(entry), "evicted": evicted},
+            ),
+            json_output=True,
+        )
+    elif evicted:
+        print(f"Evicted {entry}; the next build rebuilds it.")
+    else:
+        print(f"No entry {entry} in the product store.")
+    return 0
+
+
 def show_config(
     config_root: Path,
     config: Mapping[str, Any],

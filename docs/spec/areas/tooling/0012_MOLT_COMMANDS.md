@@ -123,7 +123,7 @@ Outputs:
   cache. A same-size rewrite with a restored timestamp is not the same compiler.
 - A manually built backend without a matching source-and-artifact receipt goes
   through Cargo provenance establishment before reuse; a newer timestamp is not
-  sufficient. Feature aliases and canonical hydration follow the same rule.
+  sufficient. Feature aliases and product store entries follow the same rule.
 
 Environment defaults:
 - `MOLT_HOME` (default `~/.molt`): base directory for Molt state, including build artifacts under `build/`.

@@ -194,6 +194,21 @@ def notice(message: str) -> None:
         active.notice(message)
 
 
+def blocking_notice(message: str) -> None:
+    """Tell a person this process waits on another, even beside JSON output.
+
+    Cargo prints "Blocking waiting for file lock" to stderr whatever its
+    message format; only quiet output silences it.
+    """
+    active = _ACTIVE.get()
+    if active is not None and active.quiet:
+        return
+    if active is None or active.mode == "off":
+        print(f"molt: {message}", file=sys.stderr, flush=True)
+    else:
+        active.notice(message)
+
+
 def background_task(function: Callable[_P, _R]) -> Callable[_P, _R]:
     """Carry presentation policy into a worker, without sharing its renderer.
 

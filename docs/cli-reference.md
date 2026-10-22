@@ -195,8 +195,9 @@ custody, and the discovered source closure. A cache hit is valid only when those
 facts and the output binary hash still match the manifest. A JIT launch never
 runs the backend compiler, so a JIT-tier key holds the `molt-jit` runner's source
 and dependency identity in place of the backend's. A JIT hit checks and renews,
-under each store's lock, the runner and runtime image the cached JIT image runs;
-one that eviction removed is a miss.
+under the product store's ledger lock, the entry of each file a JIT start reads:
+the runner, the runtime image and the runtime's callable-symbol table. One that
+eviction removed is a miss.
 
 **JIT tier costs and expiry.** The JIT tier is slower than `aot` for any program
 that imports `os`, until it reuses compiled stdlib code as an AOT build does
@@ -211,11 +212,12 @@ large-block cache for the whole program, which makes C code that churns large
 `malloc` blocks much slower; set `MallocLargeCache=1` to keep the cache. [design/dev_jit_tier.md](design/dev_jit_tier.md)
 ("Costs") breaks these down by phase.
 
-A JIT image is a development artifact. Its header names this checkout's `molt-jit`
-runner generation, runtime image and runtime callable-symbol table, and running the
-image renews none of them. `molt run --tier jit` and `molt build --emit jit` renew
-them. After 24 hours with neither, a later build may evict them, and removing the
-Cargo target directory removes them. The image then fails: the kernel cannot start
+A JIT image is a development artifact. Its header names the `molt-jit` runner,
+runtime image and runtime callable-symbol table in the host's product store, and
+running the image renews none of them. `molt run --tier jit` and `molt build --emit
+jit` renew them. After 5 days with neither, a later build may evict them; `molt
+cache evict` and removing the shared Cargo target directory remove them at once.
+The image then fails: the kernel cannot start
 the runner its first line names, so a shell reports a bad interpreter (exit status
 126) and `subprocess` raises `FileNotFoundError`, or the runner cannot load the
 runtime image (exit status 125). Rebuild it with `molt build --emit jit`.
@@ -385,6 +387,23 @@ molt cache prune --dry-run               # Report what the budget would remove
 molt cache prune                         # Apply MOLT_CACHE_MAX_GB / MOLT_CACHE_MAX_AGE_DAYS
 molt cache prune --max-gb 10 --json      # A smaller budget, as JSON
 molt cache prune --cache-dir PATH        # Another cache root (default: MOLT_CACHE)
+```
+
+#### `molt cache evict`
+
+Remove one entry of the host's product store, the store of built native
+runtimes, host tools and JIT runtime images (kinds `native-runtime`,
+`host-tool` and `jit-runtime-image`) that every checkout of one artifact root
+shares. A
+build that finds a corrupt entry fails at stage `product-store` and names this
+command with the entry's kind and identity. The command waits for a build of
+that identity, moves the entry aside and deletes it, so no reader sees it
+partial; the next build of those inputs rebuilds it. Deleting the directory by
+hand gives readers no such guarantee.
+
+```bash
+molt cache evict native-runtime <identity>   # As the build failure names it
+molt cache evict host-tool <identity> --json
 ```
 
 #### `molt doctor`

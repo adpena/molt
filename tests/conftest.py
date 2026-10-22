@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import os
 import sys
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from typing import TYPE_CHECKING
 
 import pytest
@@ -57,6 +59,38 @@ _INTRINSIC_BUILTINS = (
     "_molt_intrinsics_strict",
     "_molt_runtime",
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolated_product_stores(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[None]:
+    """In-process builds keep their products out of the host's product store.
+
+    The store keys entries by input identity (design 56, section 2.8), so a
+    test that fakes a product under a fixture identity would leave it for the
+    next run, and a test that expects a store miss would find it. Each test
+    re-roots every store it resolves below a directory of its own; distinct
+    stores stay distinct. Builds a test runs as a child process keep the host
+    store, where real products are worth reusing.
+
+    It patches through a private ``MonkeyPatch``: requesting the test's own
+    ``monkeypatch`` here would set it up before ``_restore_intrinsic_registry``
+    and so tear it down after that fixture, which then deletes the intrinsic
+    builtins a test patched before ``monkeypatch`` can restore them.
+    """
+    from molt.cli import product_store
+
+    resolve = product_store.product_store_dir
+    root = tmp_path_factory.getbasetemp() / "product-stores" / uuid.uuid4().hex
+
+    def isolated(project_root: Path, env: Mapping[str, str]) -> Path:
+        store = os.fspath(resolve(project_root, env))
+        return root / hashlib.sha256(store.encode()).hexdigest()[:16]
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(product_store, "product_store_dir", isolated)
+        yield
 
 
 @pytest.fixture(autouse=True)

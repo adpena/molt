@@ -398,7 +398,8 @@ def _maybe_collect_checkout_state(ext_root: Path, env: Mapping[str, str]) -> Non
     reclaimed = sum(len(result.reclaimed) for result in results)
     if reclaimed:
         print(
-            f"molt: reclaimed {reclaimed} idle root(s) under {ext_root}",
+            f"molt: reclaimed {reclaimed} idle root(s) or replaced layout "
+            f"entries under {ext_root}",
             file=sys.stderr,
         )
 
@@ -1188,13 +1189,8 @@ def project_cargo_target_dir(
     """
 
     project = Path(project_root)
-    raw = env.get("CARGO_TARGET_DIR", "").strip()
-    if raw:
-        target = Path(raw).expanduser()
-        if not target.is_absolute():
-            target = Path.cwd() / target
-        target = target.absolute()
-    else:
+    target = _explicit_cargo_target_dir(env)
+    if target is None:
         root = project_cargo_target_base(project, env)
         target = (
             cargo_target_dir_for_environment(root, env, source_root=project)
@@ -1203,6 +1199,17 @@ def project_cargo_target_dir(
         )
     _require_external_path("CARGO_TARGET_DIR", target, env, repo_root=project)
     return target
+
+
+def _explicit_cargo_target_dir(env: Mapping[str, str]) -> Path | None:
+    """``CARGO_TARGET_DIR`` as Cargo resolves it, or None when unset."""
+    raw = env.get("CARGO_TARGET_DIR", "").strip()
+    if not raw:
+        return None
+    target = Path(raw).expanduser()
+    if not target.is_absolute():
+        target = Path.cwd() / target
+    return target.absolute()
 
 
 def project_cargo_target_base(project_root: Path, env: Mapping[str, str]) -> Path:
@@ -1216,6 +1223,27 @@ def project_cargo_target_base(project_root: Path, env: Mapping[str, str]) -> Pat
     if development_artifacts_requested(env):
         return artifact_root(project, env, prefer_external=True)
     return project
+
+
+PRODUCT_STORE_DIRNAME = ".molt-products"
+
+
+def product_store_dir(project_root: Path, env: Mapping[str, str]) -> Path:
+    """Return the store of Rust build products a build of ``project_root`` uses.
+
+    Every checkout target and pinned session target in one shared ``target``
+    directory (`project_cargo_target_base`) uses that directory's store, as
+    every checkout of a user shares Go's build cache (``molt.cli.product_store``,
+    design 56 section 2.8). An explicit ``CARGO_TARGET_DIR`` outside it is
+    operator-owned, so it keeps a store of its own. It creates nothing.
+    """
+
+    project = Path(project_root)
+    shared = project_cargo_target_base(project, env) / "target"
+    explicit = _explicit_cargo_target_dir(env)
+    if explicit is not None and not host_path_is_within(explicit, shared):
+        return explicit / PRODUCT_STORE_DIRNAME
+    return shared / PRODUCT_STORE_DIRNAME
 
 
 @dataclass(frozen=True, slots=True)

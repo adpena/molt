@@ -1,15 +1,25 @@
-"""Atomic retention and selection of complete native runtime generations."""
+"""Complete native runtime generations: publication, selection and admission.
+
+A coordinate names one selection receipt and the immutable generations beside
+it. Builds use coordinates inside the host's product store
+(``molt.cli.product_store``): one entry per runtime build identity, one variant
+per observed Cargo environment (design 56, section 2.8). A receipt is written
+once: publication never replaces one, because a reader may hold what it
+selects.
+"""
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+import json
 from pathlib import Path
 import tempfile
 from typing import TypeVar, cast
 
-from molt.cli.atomic_io import _atomic_copy_file, _atomic_write_json
+from molt.cli.atomic_io import _atomic_copy_file
 from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
+from molt.cli.product_store import ProductStore, ProductStoreError
 from molt.cli.native_link_custody import (
     NativeLinkCustodyError,
     native_link_custody_archive_path,
@@ -30,6 +40,7 @@ from molt.cli.runtime_identity_schema import (
 from molt.cli.runtime_paths import _cargo_profile_dir
 from molt.exact_json import canonical_json_sha256, read_exact
 from molt.file_publication import (
+    atomic_write_bytes,
     durable_publish_directory_exclusive,
     is_link_like,
     resolve_owned_path,
@@ -191,30 +202,41 @@ def read_native_runtime_generation(
     cargo_profile: str,
     target_triple: str | None,
 ) -> NativeRuntimeGeneration | None:
-    """Admit a selected retained closure; partial, stale or corrupt selections miss.
+    """Admit the retained closure ``coordinate`` selects, or None for no selection.
+
+    A selection receipt is written only after its complete closure, so a
+    receipt that exists but does not admit (a partial, stale or mutated
+    member, a redirected digest) raises ValueError instead of missing.
 
     The returned build identity is provenance, not a current-input expectation.
     Its consumer must capture current inputs after this read, compare them, and
     close the returned member fences before accepting it.
     """
+    selection = native_runtime_generation_path(coordinate)
+    try:
+        selection.lstat()
+    except FileNotFoundError:
+        return None
+    try:
+        raw = read_exact(
+            selection,
+            max_bytes=RUNTIME_ARTIFACT_METADATA_MAX_BYTES,
+            label="native runtime generation selection",
+        )
+    except (OSError, ValueError, UnicodeError) as exc:
+        raise ValueError(f"unreadable selection receipt {selection}: {exc}") from exc
     try:
         payload = _selection_payload(
-            read_exact(
-                native_runtime_generation_path(coordinate),
-                max_bytes=RUNTIME_ARTIFACT_METADATA_MAX_BYTES,
-                label="native runtime generation selection",
-            ),
-            coordinate=coordinate,
-            cargo_profile=cargo_profile,
+            raw, coordinate=coordinate, cargo_profile=cargo_profile
         )
         if payload is None:
-            return None
+            raise ValueError("the receipt does not name its own material")
         profile_dir = _cargo_profile_dir(cargo_profile)
         root = (
             coordinate.parent / ".molt-native-generations" / str(payload["generation"])
         )
         if is_link_like(root) or is_link_like(root / profile_dir):
-            return None
+            raise ValueError("the selected generation is indirect")
         return _capture_generation(
             root / profile_dir / coordinate.name,
             build_identity=RuntimeBuildIdentity.from_dict(payload["build_identity"]),
@@ -229,8 +251,130 @@ def read_native_runtime_generation(
         UnicodeError,
         NativeLinkCustodyError,
         NativeLinkDependencyManifestError,
-    ):
+    ) as exc:
+        raise ValueError(f"selection {selection} does not admit: {exc}") from exc
+
+
+def _recorded_cargo_environment(
+    coordinate: Path, *, cargo_profile: str
+) -> CargoEnvironmentInputs | None:
+    """The Cargo environment ``coordinate``'s receipt records, by small reads.
+
+    None means no receipt: a publication in progress. A receipt whose
+    environment cannot be read raises ValueError.
+    """
+    selection = native_runtime_generation_path(coordinate)
+    try:
+        selection.lstat()
+    except FileNotFoundError:
         return None
+    payload = _selection_payload(
+        read_exact(
+            selection,
+            max_bytes=RUNTIME_ARTIFACT_METADATA_MAX_BYTES,
+            label="native runtime generation selection",
+        ),
+        coordinate=coordinate,
+        cargo_profile=cargo_profile,
+    )
+    if payload is None:
+        raise ValueError("the receipt does not name its own material")
+    runtime_lib = (
+        coordinate.parent
+        / ".molt-native-generations"
+        / str(payload["generation"])
+        / _cargo_profile_dir(cargo_profile)
+        / coordinate.name
+    )
+    manifest = read_native_link_dependency_manifest_payload(
+        native_link_dependency_manifest_path(runtime_lib)
+    )
+    return CargoEnvironmentInputs.from_dict(manifest.get("cargo_environment"))
+
+
+def native_runtime_store_generation(
+    store: ProductStore,
+    identity: RuntimeBuildIdentity,
+    environment: ProcessEnvironment,
+    *,
+    runtime_name: str,
+    cargo_profile: str,
+    target_triple: str | None,
+) -> NativeRuntimeGeneration | None:
+    """The stored variant of ``identity`` built under ``environment``, admitted.
+
+    A variant whose receipt has not appeared yet is a publication in progress.
+    A reader admits only its own variant, the one whose recorded Cargo
+    environment matches ``environment``, and reads no other variant's bytes,
+    so a corrupt variant of another environment never fails it. Its own
+    variant, when it exists but does not admit, raises ``ProductStoreError``.
+    A variant whose receipt cannot be read names no environment; if it is
+    this reader's, the publication that follows a miss finds its receipt
+    and fails there (``require_unpublished_variant``).
+    """
+    for variant in store.variants(identity.digest):
+        coordinate = variant / runtime_name
+        try:
+            recorded = _recorded_cargo_environment(
+                coordinate, cargo_profile=cargo_profile
+            )
+        except (
+            OSError,
+            ValueError,
+            TypeError,
+            UnicodeError,
+            NativeLinkDependencyManifestError,
+        ):
+            continue
+        if recorded is None or recorded.digest != variant.name:
+            continue
+        try:
+            recorded.verify(environment)
+        except ValueError:
+            continue
+        try:
+            generation = read_native_runtime_generation(
+                coordinate, cargo_profile=cargo_profile, target_triple=target_triple
+            )
+        except ValueError as exc:
+            raise ProductStoreError(
+                store, identity.digest, str(exc), variant=variant
+            ) from exc
+        if generation is None or generation.build_identity != identity:
+            raise ProductStoreError(
+                store,
+                identity.digest,
+                "it holds another build identity",
+                variant=variant,
+            )
+        if generation.cargo_environment != recorded:
+            raise ProductStoreError(
+                store,
+                identity.digest,
+                "its Cargo environment differs from its receipt",
+                variant=variant,
+            )
+        return generation
+    return None
+
+
+def require_unpublished_variant(
+    store: ProductStore, identity: str, coordinate: Path
+) -> None:
+    """Refuse to publish over a variant whose receipt already exists.
+
+    The caller holds the identity's lock and found no admissible variant for
+    its environment, so an existing receipt at the coordinate it built for
+    is its own variant, corrupt: a variant is written once, and the tool that
+    removes it is named instead of rebuilding over it.
+    """
+    if native_runtime_generation_path(coordinate).exists():
+        raise ProductStoreError(
+            store,
+            identity,
+            "a receipt for this environment exists but does not admit",
+            variant=coordinate.parent,
+        )
 
 
 def _select_staged_generation(
@@ -269,10 +413,17 @@ def _select_staged_generation(
         admit=admit,
     )
     published.verify()
-    _atomic_write_json(
+    # A variant's receipt is written once; readers may hold what it selects.
+    atomic_write_bytes(
         native_runtime_generation_path(coordinate),
-        {**material, "generation": digest},
-        sort_keys=True,
+        json.dumps(
+            {**material, "generation": digest},
+            indent=2,
+            sort_keys=True,
+            allow_nan=False,
+        ).encode()
+        + b"\n",
+        exclusive=True,
     )
     published.verify()
     return published
@@ -337,8 +488,9 @@ def publish_native_runtime_generation(
 
 
 def import_native_runtime_generation(
-    coordinate: Path,
+    store: ProductStore,
     *,
+    runtime_name: str,
     selection: Path,
     members: Mapping[str, Path],
     cargo_profile: str,
@@ -346,13 +498,16 @@ def import_native_runtime_generation(
     build_identity: RuntimeBuildIdentity,
     environment: ProcessEnvironment,
 ) -> NativeRuntimeGeneration:
-    """Select a generation another checkout published, through local admission.
+    """Publish a generation another host built into ``store``, through admission.
 
     ``selection`` and ``members`` (keyed by role) are copies of another
-    checkout's selection receipt and generation files. ``build_identity`` is
+    host's selection receipt and generation files. ``build_identity`` is
     this checkout's current capture: a generation built from other inputs is
     refused before anything is published, and the republished closure must
-    reproduce the receipt's generation digest.
+    reproduce the receipt's generation digest. The closure lands in the
+    variant of its recorded Cargo environment, which must match this one.
+    A variant this host already holds is returned as it is: a published
+    variant is never rewritten.
     """
     payload = _selection_payload(
         read_exact(
@@ -360,7 +515,7 @@ def import_native_runtime_generation(
             max_bytes=RUNTIME_ARTIFACT_METADATA_MAX_BYTES,
             label="transported native runtime generation selection",
         ),
-        coordinate=coordinate,
+        coordinate=Path(runtime_name),
         cargo_profile=cargo_profile,
     )
     if payload is None:
@@ -381,43 +536,62 @@ def import_native_runtime_generation(
     manifest = read_native_link_dependency_manifest_payload(
         members["native_link_manifest"]
     )
-    CargoEnvironmentInputs.from_dict(manifest.get("cargo_environment")).verify(
-        environment
+    cargo_environment = CargoEnvironmentInputs.from_dict(
+        manifest.get("cargo_environment")
     )
+    cargo_environment.verify(environment)
+    coordinate = store.variant(build_identity.digest, cargo_environment) / runtime_name
     profile_dir = _cargo_profile_dir(cargo_profile)
-    generations = coordinate.parent / ".molt-native-generations"
-    generations.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(
-        prefix=".native-runtime-", dir=generations
-    ) as temp:
-        stage = Path(temp) / "members"
-        (stage / profile_dir).mkdir(parents=True)
-        for record in records:
-            name = portable_path_component(record.get("name"))
-            digest = record.get("sha256")
-            if not isinstance(digest, str):
-                raise ValueError("transported native runtime member digest is invalid")
-            _atomic_copy_file(
-                members[str(record["role"])],
-                stage / profile_dir / name,
-                expected_sha256=digest,
+    with store.single_flight(build_identity.digest):
+        existing = native_runtime_store_generation(
+            store,
+            build_identity,
+            environment,
+            runtime_name=runtime_name,
+            cargo_profile=cargo_profile,
+            target_triple=target_triple,
+        )
+        if existing is not None and existing.cargo_environment == cargo_environment:
+            # This host already holds the product; a published variant is
+            # never rewritten, so the transported copy is not needed.
+            return existing
+        require_unpublished_variant(store, build_identity.digest, coordinate)
+        generations = coordinate.parent / ".molt-native-generations"
+        generations.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(
+            prefix=".native-runtime-", dir=generations
+        ) as temp:
+            stage = Path(temp) / "members"
+            (stage / profile_dir).mkdir(parents=True)
+            for record in records:
+                name = portable_path_component(record.get("name"))
+                digest = record.get("sha256")
+                if not isinstance(digest, str):
+                    raise ValueError(
+                        "transported native runtime member digest is invalid"
+                    )
+                _atomic_copy_file(
+                    members[str(record["role"])],
+                    stage / profile_dir / name,
+                    expected_sha256=digest,
+                )
+            staged = _capture_generation(
+                stage / profile_dir / coordinate.name,
+                build_identity=build_identity,
+                cargo_profile=cargo_profile,
+                target_triple=target_triple,
+                expected_records=records,
             )
-        staged = _capture_generation(
-            stage / profile_dir / coordinate.name,
-            build_identity=build_identity,
-            cargo_profile=cargo_profile,
-            target_triple=target_triple,
-            expected_records=records,
-        )
-        staged.cargo_environment.verify(environment)
-        published = _select_staged_generation(
-            coordinate,
-            stage=stage,
-            staged=staged,
-            cargo_profile=cargo_profile,
-            target_triple=target_triple,
-            inputs_are_current=lambda: True,
-            expected_generation=payload["generation"],
-        )
+            staged.cargo_environment.verify(environment)
+            published = _select_staged_generation(
+                coordinate,
+                stage=stage,
+                staged=staged,
+                cargo_profile=cargo_profile,
+                target_triple=target_triple,
+                inputs_are_current=lambda: True,
+                expected_generation=payload["generation"],
+            )
     assert published is not None
+    store.retain(build_identity.digest)
     return published

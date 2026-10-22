@@ -2130,3 +2130,180 @@ def test_structural_use_scope_never_adopts_an_owner_or_deletion_permission(
     assert (selected / "payload").read_bytes() == b"caller data"
     if not retained:
         assert dg._is_reclaimable(selected, tmp_path, ("*",)) is None
+
+
+def _superseded_fixture(tmp_path: Path):
+    """A live checkout whose target and build control hold the replaced layout.
+
+    Returns the artifact root, its environment, the entries the GC must
+    retire and the entries it must keep.
+    """
+    import time
+
+    from molt import checkout_state
+
+    ext, projects, env = _checkout_family(tmp_path)
+    checkout = projects / "alpha"
+    checkout.mkdir()
+    roots = _checkout_state(ext, checkout)
+    checkout_state.stamp_checkout_state(checkout, env)
+    target, control = roots["cargo-target"], roots["build-control"]
+    digest, sha = "a" * 64, "b" * 64
+
+    def write(path: Path, data: bytes = b"x") -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        return path
+
+    native = target / "dev-fast" / ".molt-native-generations"
+    write(native / digest / "dev-fast" / "libmolt_runtime.stdlib_micro.a")
+    receipt = write(
+        target / "dev-fast" / "libmolt_runtime.stdlib_micro.a.generation.json"
+    )
+    backend = target / "release" / ".molt-backend-generations"
+    write(backend / "molt-backend.native_backend" / sha / "molt-backend.native_backend")
+    triple = target / "aarch64-apple-darwin" / "dev-fast" / ".molt-native-generations"
+    write(triple / digest / "dev-fast" / "libmolt_runtime.stdlib_full.a")
+    write(triple.parent / "libmolt_runtime.stdlib_full.a.generation.json")
+    probes = control / "backend_probe_validations"
+    write(probes / "molt-backend.native_backend.release.0123456789abcdef.json")
+    cargo_receipt = write(
+        control
+        / "backend_fingerprints"
+        / "molt-backend.release.0123456789abcdef.fingerprint"
+    )
+    retire = [
+        receipt,
+        native,
+        backend,
+        triple.parent / "libmolt_runtime.stdlib_full.a.generation.json",
+        triple,
+        cargo_receipt,
+        probes,
+    ]
+    keep = [
+        write(target / "dev-fast" / "libmolt_runtime.a"),
+        write(target / "dev-fast" / "deps" / "molt_runtime-1.rlib"),
+        write(target / "molt-runtime-wasm" / "molt_runtime.generation.json"),
+        # The WASM pair's receipt name, beside a replaced generation directory.
+        write(target / "dev-fast" / "molt_runtime.generation.json"),
+        write(
+            control
+            / "backend_fingerprints"
+            / "molt-backend.native_backend.release.0123456789abcdef.fingerprint"
+        ),
+        write(control / "runtime_fingerprints" / "runtime.fingerprint"),
+    ]
+    # A replaced entry written within the protection window stays this pass.
+    recent = target / "release-fast" / ".molt-native-generations"
+    write(recent / digest / "x")
+    keep.append(recent)
+    # Everything is idle except the recent entry, so only the frozen names
+    # tell a replaced entry from a live one.
+    old = time.time() - 3 * HOUR
+    for path in (*retire, *keep[:-1]):
+        for entry in (path, *(path.rglob("*") if path.is_dir() else ())):
+            os.utime(entry, (old, old))
+    return ext, env, target, retire, keep
+
+
+def test_the_gc_retires_the_replaced_per_target_layout_inside_live_roots(tmp_path):
+    """Design 56, 2.8: the product store replaced the per-target generations.
+
+    The daily GC removes the replaced entries from roots that stay live, and
+    nothing else: Cargo's outputs, the WASM pair, identity memos, and a
+    replaced entry used within the protection window stay.
+    """
+    import time
+
+    ext, env, target, retire, keep = _superseded_fixture(tmp_path)
+    now = time.time()
+    dry = dg.gc(
+        root=ext, config=_cfg(), env=env, now_fn=lambda: now, apply=False, log=False
+    )
+    assert {row["path"] for row in dry.reclaimed} == {str(p) for p in retire}
+    assert all(path.exists() for path in retire)
+
+    result = _gc(ext, env, now)
+
+    reclaimed = {row["path"] for row in result.reclaimed}
+    assert reclaimed == {str(path) for path in retire}
+    assert {row["kind"] for row in result.reclaimed} == {"superseded-layout"}
+    assert not result.errors
+    assert not any(path.exists() for path in retire)
+    assert all(path.exists() for path in keep)
+    assert target.is_dir()
+    assert _gc(ext, env, now).reclaimed == []
+
+
+def test_a_build_using_the_root_keeps_its_replaced_layout(tmp_path):
+    """Old code in a checkout that has not taken the change may still read it.
+
+    A managed build holds its target's use for its whole run, and raw Cargo
+    holds a profile lock; either keeps every entry of that root.
+    """
+    import time
+
+    from molt import checkout_state
+
+    ext, env, target, retire, _keep = _superseded_fixture(tmp_path)
+    now = time.time()
+    with checkout_state.checkout_state_use(((target, None),)):
+        result = _gc(ext, env, now)
+    target_entries = [path for path in retire if path.is_relative_to(target)]
+    assert all(path.exists() for path in target_entries)
+    assert {"path": str(target), "reason": "state-in-use"} in result.skipped
+    if os.name == "nt":
+        return
+    import fcntl
+
+    with open(target / "dev-fast" / ".cargo-lock", "a+b") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        result = _gc(ext, env, now)
+    assert all(path.exists() for path in target_entries)
+    assert {"path": str(target), "reason": "lock-held"} in result.skipped
+
+
+def test_only_the_frozen_layout_names_pass_the_layout_choke_point(tmp_path):
+    ext, env, target, retire, keep = _superseded_fixture(tmp_path)
+    owner = ext.resolve()
+    for path in retire:
+        root = target if path.is_relative_to(target) else path.parent
+        if root != target:
+            root = next(p for p in path.parents if p.parent.name == "build-control")
+        kind = "cargo-target" if root == target else "build-control"
+        dg.assert_safe_to_retire_layout(path, root, owner, kind, dg.DEFAULT_LANE_GLOBS)
+    # The last kept entry is a replaced one used within the window: its name
+    # passes, and only the idle rule keeps it.
+    for path in keep[:-1]:
+        with pytest.raises(ValueError):
+            dg.assert_safe_to_retire_layout(
+                path, target, owner, "cargo-target", dg.DEFAULT_LANE_GLOBS
+            )
+    with pytest.raises(ValueError, match="allow-set"):
+        dg.assert_safe_to_retire_layout(
+            retire[0], target.parent, owner, "cargo-target", dg.DEFAULT_LANE_GLOBS
+        )
+
+
+def test_a_miscomputed_layout_entry_never_deletes_outside_its_root(
+    tmp_path, monkeypatch
+):
+    """The layout choke point holds even if the entry list were wrong."""
+    import time
+
+    ext, env, target, _retire, _keep = _superseded_fixture(tmp_path)
+    stranger = target.parent / "not-a-layout-entry"
+    stranger.write_bytes(b"live data beside the target")
+    old = time.time() - 3 * HOUR
+    os.utime(stranger, (old, old))
+    listed = dg.superseded_layout_paths
+
+    def wrong(root, kind):
+        found = listed(root, kind)
+        return [stranger, *found] if Path(root) == target else found
+
+    monkeypatch.setattr(dg, "superseded_layout_paths", wrong)
+    result = _gc(ext, env, time.time())
+    assert stranger.exists()
+    assert any("outside its root" in error for error in result.errors)
