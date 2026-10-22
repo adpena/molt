@@ -15,7 +15,7 @@ JIT_RUNNER_START_RECEIPT_FLAG = "--start-receipt"
 # What the runner writes to its start receipt right before the program starts.
 JIT_START_RECEIPT = '{"schema":"molt.jit-start.v1"}\n'
 # The second line of a JIT image starts with this marker.
-JIT_IMAGE_MARKER = "#molt.jit-image.v2"
+JIT_IMAGE_MARKER = "#molt.jit-image.v3"
 
 # Called in this order before the program's entry.
 NATIVE_LAUNCH_START_SEQUENCE = (

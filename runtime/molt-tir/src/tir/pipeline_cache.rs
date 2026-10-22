@@ -129,10 +129,25 @@ impl TirPipelineInput<'_> {
     }
 }
 
+/// Where the persistent TIR cache lives.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TirCacheLocation {
+    /// The running backend binary's namespace under the process's cache root:
+    /// `MOLT_CACHE`, else `.molt_cache` in the current directory. That is the
+    /// backend process's own configuration.
+    ProcessRoot,
+    /// The running backend binary's namespace under this root. The JIT
+    /// runner's root comes from its image: the runner's environment and
+    /// current directory are the program's.
+    Root(std::path::PathBuf),
+    /// Exactly this directory, with no namespace.
+    Directory(std::path::PathBuf),
+}
+
 pub struct TirPipelineRunOptions<'a> {
     pub target_info: TargetInfo,
     pub cache_flavor: TirPipelineCacheFlavor,
-    pub cache_dir: Option<std::path::PathBuf>,
+    pub cache: TirCacheLocation,
     pub process_externs: bool,
     pub verify_lir: bool,
     pub tir_dump: bool,
@@ -595,10 +610,13 @@ where
         && !options.tir_stats
         && !molt_ir::backend_environment::compilation_diagnostics_requested();
     let mut cached_tir_custody = CachedTirCustody::new();
-    let mut tir_cache = options.cache_dir.clone().map_or_else(
-        CompilationCache::open_backend_namespace,
-        CompilationCache::open,
-    );
+    let mut tir_cache = match &options.cache {
+        TirCacheLocation::ProcessRoot => CompilationCache::open_backend_namespace(),
+        TirCacheLocation::Root(root) => {
+            CompilationCache::open_backend_namespace_under(root.clone())
+        }
+        TirCacheLocation::Directory(directory) => CompilationCache::open(directory.clone()),
+    };
     let work_items: Vec<TirPreparationWorkItem> = input
         .functions()
         .iter()
@@ -1171,7 +1189,7 @@ mod tests {
         TirPipelineRunOptions {
             target_info: TargetInfo::native_release_fast(),
             cache_flavor: TirPipelineCacheFlavor::FactGraph,
-            cache_dir: Some(cache_dir.to_path_buf()),
+            cache: TirCacheLocation::Directory(cache_dir.to_path_buf()),
             process_externs: false,
             verify_lir: false,
             tir_dump: false,
@@ -2018,7 +2036,7 @@ mod tests {
         let options = |cache_dir: &std::path::Path| TirPipelineRunOptions {
             target_info: target_info.clone(),
             cache_flavor: TirPipelineCacheFlavor::FactGraph,
-            cache_dir: Some(cache_dir.to_path_buf()),
+            cache: TirCacheLocation::Directory(cache_dir.to_path_buf()),
             process_externs: false,
             verify_lir: false,
             tir_dump: false,
@@ -2149,7 +2167,7 @@ mod tests {
         let options = |cache_dir: &std::path::Path| TirPipelineRunOptions {
             target_info: target_info.clone(),
             cache_flavor: TirPipelineCacheFlavor::FactGraph,
-            cache_dir: Some(cache_dir.to_path_buf()),
+            cache: TirCacheLocation::Directory(cache_dir.to_path_buf()),
             process_externs: false,
             verify_lir: false,
             tir_dump: false,
@@ -2217,7 +2235,7 @@ mod tests {
             TirPipelineRunOptions {
                 target_info: target_info.clone(),
                 cache_flavor: TirPipelineCacheFlavor::FactGraph,
-                cache_dir: Some(cache_dir.clone()),
+                cache: TirCacheLocation::Directory(cache_dir.clone()),
                 process_externs: false,
                 verify_lir: false,
                 tir_dump: false,

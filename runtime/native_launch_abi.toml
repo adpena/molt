@@ -25,7 +25,7 @@ probe_flag = "--probe"
 start_receipt_flag = "--start-receipt"
 allocator_restart_flag = "--allocator-restarted"
 start_receipt = "{\"schema\":\"molt.jit-start.v1\"}\n"
-image_marker = "#molt.jit-image.v2"
+image_marker = "#molt.jit-image.v3"
 
 # Called in this order, after the launch environment is installed and before
 # the program's entry (`molt_main`).

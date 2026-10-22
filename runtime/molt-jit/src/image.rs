@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! #!<runner> --image
-//! #molt.jit-image.v2 <header bytes> <program bytes>
+//! #molt.jit-image.v3 <header bytes> <program bytes>
 //! <header: JSON>
 //! <program: backend IR, MessagePack>
 //! ```
@@ -38,7 +38,26 @@ pub(crate) struct ImageHeader {
     pub(crate) backend_environment: serde_json::Map<String, serde_json::Value>,
     /// Whether compiler stderr streams or appears only on failure.
     pub(crate) compiler_diagnostics: CompilerDiagnostics,
+    /// The Molt cache root the CLI chose. The persistent TIR cache lives in
+    /// the runner's namespace under it; the runner never takes a cache root
+    /// from its environment or its current directory, which are the
+    /// program's. Parsing refuses a relative root: the runner would resolve
+    /// it against the program's current directory.
+    #[serde(deserialize_with = "absolute_path")]
+    pub(crate) tir_cache_root: PathBuf,
     pub(crate) launch: LaunchPlan,
+}
+
+fn absolute_path<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<PathBuf, D::Error> {
+    let path = PathBuf::deserialize(deserializer)?;
+    if path.is_absolute() {
+        Ok(path)
+    } else {
+        Err(serde::de::Error::custom(format!(
+            "{} is not an absolute path",
+            path.display()
+        )))
+    }
 }
 
 /// One program image read from disk.
@@ -125,7 +144,7 @@ mod tests {
         bytes
     }
 
-    const HEADER: &str = r#"{"runtime_image":"/r.dylib","backend_environment":{},"compiler_diagnostics":"on_failure","launch":{"environment":{},"runtime_module_roots":[],"compiled_source_paths":[]}}"#;
+    const HEADER: &str = r#"{"runtime_image":"/r.dylib","backend_environment":{},"compiler_diagnostics":"on_failure","tir_cache_root":"/cache","launch":{"environment":{},"runtime_module_roots":[],"compiled_source_paths":[]}}"#;
 
     #[test]
     fn an_image_splits_into_its_header_and_its_program() {
@@ -135,7 +154,31 @@ mod tests {
             parsed.header.compiler_diagnostics,
             CompilerDiagnostics::OnFailure
         );
+        assert_eq!(parsed.header.tir_cache_root, PathBuf::from("/cache"));
         assert_eq!(&parsed.bytes[parsed.program_start..], b"\x93program");
+    }
+
+    #[test]
+    fn a_header_without_a_tir_cache_root_is_refused() {
+        let header = HEADER.replace(r#""tir_cache_root":"/cache","#, "");
+        let error = JitImage::parse(image(&header, b"program"))
+            .err()
+            .expect("refused");
+        assert!(error.contains("tir_cache_root"), "{error}");
+    }
+
+    #[test]
+    fn a_relative_tir_cache_root_is_refused() {
+        for root in ["relative/cache", ".molt_cache", ""] {
+            let header = HEADER.replace(
+                r#""tir_cache_root":"/cache""#,
+                &format!(r#""tir_cache_root":"{root}""#),
+            );
+            let error = JitImage::parse(image(&header, b"program"))
+                .err()
+                .expect("refused");
+            assert!(error.contains("not an absolute path"), "{root}: {error}");
+        }
     }
 
     #[test]
@@ -166,8 +209,13 @@ mod tests {
                 b"#!/runner --image\n#molt.jit-image.v1 1 1\n{}".to_vec(),
                 "marker",
             ),
+            // The v2 header had no TIR cache root.
             (
-                b"#!/runner --image\n#molt.jit-image.v2 2\n{}".to_vec(),
+                b"#!/runner --image\n#molt.jit-image.v2 1 1\n{}".to_vec(),
+                "marker",
+            ),
+            (
+                b"#!/runner --image\n#molt.jit-image.v3 2\n{}".to_vec(),
                 "program length",
             ),
         ] {

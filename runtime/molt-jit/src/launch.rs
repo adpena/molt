@@ -28,7 +28,7 @@ pub(crate) struct LaunchPlan {
 const LAUNCH_ENVIRONMENT_FAILURE: i32 = 125;
 
 fn launch_failure(message: &str) -> ! {
-    eprintln!("molt: {message}");
+    crate::report(format_args!("molt: {message}"));
     // SAFETY: `_exit` ends the process without unwinding, as the stub does.
     unsafe { libc::_exit(LAUNCH_ENVIRONMENT_FAILURE) }
 }
@@ -144,7 +144,10 @@ unsafe fn finish(api: &RuntimeLaunchApi) -> ! {
         if std::env::var("MOLT_DEBUG_MAIN_EXCEPTION")
             .is_ok_and(|value| !value.is_empty() && value != "0")
         {
-            eprintln!("molt main finish pending={}", i32::from(pending != 0));
+            crate::report(format_args!(
+                "molt main finish pending={}",
+                i32::from(pending != 0)
+            ));
         }
         if pending != 0 {
             let exception = (api.molt_exception_last_pending)();

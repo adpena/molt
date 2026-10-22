@@ -24,6 +24,13 @@
 //! handlers with alternate signal stacks, and the program would inherit both.
 //! Compilation runs on its own thread, and every compiler thread has exited
 //! before the program starts on the main thread.
+//!
+//! Nothing the runner writes for itself can stop the program: its own lines
+//! ignore write errors (`report`), compiler output goes to a capture whose
+//! writes cannot fail (`compiler_output.rs`), and while it works the runner
+//! ignores `SIGPIPE` and `SIGXFSZ` (`RunnerSignals`), as CPython does for its
+//! whole life. A write to a broken pipe, past the file size limit or to a full
+//! disk then fails only that write.
 
 // The test harness brings its own `main`; the runner exports `process_entry`
 // as the C `main` everywhere else.
@@ -36,7 +43,7 @@ mod launch;
 mod launch_abi;
 mod runtime_image;
 
-use compiler_output::{CapturedStderr, CompilerDiagnostics};
+use compiler_output::CapturedStderr;
 use image::JitImage;
 use molt_ir::backend_environment::{self, BackendEnv, BackendEnvironment};
 use runtime_image::{RuntimeImage, RuntimeLaunchApi};
@@ -58,6 +65,65 @@ const EXIT_USAGE: i32 = 2;
 // build (src/molt/cli/run_tier.py).
 use launch_abi::{IMAGE_FLAG, PROBE_FLAG, START_RECEIPT, START_RECEIPT_FLAG};
 
+/// Write one line to stderr, ignoring a failed write: the runner's own
+/// messages never stop it, where `eprintln!` would panic. The line goes out
+/// in one write.
+pub(crate) fn report(message: std::fmt::Arguments<'_>) {
+    use std::io::Write;
+    let line = format!("{message}\n");
+    let _ = std::io::stderr().write_all(line.as_bytes());
+}
+
+/// The signals the runner ignores while it works. Each would end the process
+/// on a write that should only fail: `SIGPIPE` on a broken pipe (a forwarded
+/// diagnostic, a replay), `SIGXFSZ` past the file size limit (the TIR cache,
+/// the start receipt). The program starts with the dispositions the runner
+/// inherited.
+#[cfg(unix)]
+struct RunnerSignals(Vec<(libc::c_int, libc::sigaction)>);
+
+#[cfg(unix)]
+impl RunnerSignals {
+    const IGNORED: [libc::c_int; 2] = [libc::SIGPIPE, libc::SIGXFSZ];
+
+    /// # Safety
+    /// The process must be single-threaded.
+    unsafe fn ignore() -> Self {
+        let mut replaced = Vec::with_capacity(Self::IGNORED.len());
+        // SAFETY: plain signal-set and disposition calls on owned values.
+        unsafe {
+            let mut pending = std::mem::zeroed::<libc::sigset_t>();
+            libc::sigemptyset(&mut pending);
+            libc::sigpending(&mut pending);
+            for signal in Self::IGNORED {
+                // A pending signal is a blocked one the program must still
+                // receive; ignoring it would discard it. Blocked, it cannot
+                // end the runner either.
+                if libc::sigismember(&pending, signal) == 1 {
+                    continue;
+                }
+                let mut ignore = std::mem::zeroed::<libc::sigaction>();
+                ignore.sa_sigaction = libc::SIG_IGN;
+                libc::sigemptyset(&mut ignore.sa_mask);
+                let mut previous = std::mem::zeroed::<libc::sigaction>();
+                if libc::sigaction(signal, &ignore, &mut previous) == 0 {
+                    replaced.push((signal, previous));
+                }
+            }
+        }
+        Self(replaced)
+    }
+
+    /// # Safety
+    /// The process must be single-threaded.
+    unsafe fn restore(self) {
+        for (signal, previous) in self.0 {
+            // SAFETY: `previous` is the disposition `ignore` replaced.
+            unsafe { libc::sigaction(signal, &previous, std::ptr::null_mut()) };
+        }
+    }
+}
+
 /// The compiled program's `molt_isolate_bootstrap`, published before the
 /// runtime starts. The runtime image imports the symbol from this executable.
 static PROGRAM_ISOLATE_BOOTSTRAP: AtomicUsize = AtomicUsize::new(0);
@@ -65,9 +131,9 @@ static PROGRAM_ISOLATE_BOOTSTRAP: AtomicUsize = AtomicUsize::new(0);
 unsafe extern "C" fn program_isolate_bootstrap() -> u64 {
     let address = PROGRAM_ISOLATE_BOOTSTRAP.load(Ordering::Acquire);
     if address == 0 {
-        eprintln!(
+        report(format_args!(
             "MOLT_APP_BOOTSTRAP_UNAVAILABLE: molt-jit: no program is loaded; molt_isolate_bootstrap cannot initialize a native isolate"
-        );
+        ));
         std::process::abort();
     }
     // SAFETY: the address is the finalized `molt_isolate_bootstrap` of the
@@ -83,7 +149,7 @@ molt_runtime_core::declare_app_bootstrap!(
 );
 
 fn fail(message: impl std::fmt::Display) -> i32 {
-    eprintln!("molt-jit: {message}");
+    report(format_args!("molt-jit: {message}"));
     EXIT_RUNNER_FAILURE
 }
 
@@ -264,7 +330,7 @@ fn runner_main(invocation: Invocation) -> i32 {
     match invocation {
         Invocation::Probe => match molt_backend_native::probe_jit_execution() {
             Ok(()) => {
-                eprintln!("molt-jit: executable memory probe passed");
+                report(format_args!("molt-jit: executable memory probe passed"));
                 0
             }
             Err(error) => fail(format_args!("executable memory probe failed: {error}")),
@@ -281,9 +347,9 @@ fn runner_main(invocation: Invocation) -> i32 {
 }
 
 fn usage() -> i32 {
-    eprintln!(
+    report(format_args!(
         "usage: molt-jit [{START_RECEIPT_FLAG} <path>] {IMAGE_FLAG} <image> [args...]\n       molt-jit {PROBE_FLAG}"
-    );
+    ));
     EXIT_USAGE
 }
 
@@ -323,6 +389,8 @@ fn run(
     start_receipt: Option<&Path>,
     argv: &[OsString],
 ) -> Result<std::convert::Infallible, String> {
+    // SAFETY: the runner has started no thread yet.
+    let signals = unsafe { RunnerSignals::ignore() };
     let image = JitImage::read(image_path)?;
     let request = Arc::new(
         BackendEnvironment::from_request(&image.header.backend_environment)
@@ -333,17 +401,24 @@ fn run(
         backend_environment::var(BackendEnv::MOLT_BACKEND_TIMING)
             .is_ok_and(|value| !value.is_empty() && value != "0")
     };
-    let capture = match image.header.compiler_diagnostics {
-        CompilerDiagnostics::Stream => None,
-        // SAFETY: the runner has started no thread yet.
-        CompilerDiagnostics::OnFailure => unsafe { CapturedStderr::begin() }?,
+    // SAFETY: the runner has started no thread yet.
+    let capture = match unsafe { CapturedStderr::begin(image.header.compiler_diagnostics) } {
+        Ok(capture) => Some(capture),
+        // The program still starts; only compiler output goes to stderr.
+        Err(reason) => {
+            report(format_args!(
+                "molt-jit: compiler output goes to stderr: {reason}"
+            ));
+            None
+        }
     };
     let removed = RemovedBackendEnvironment::capture();
     // SAFETY: the runner is still single-threaded. Backend settings now come
     // only from this compilation's request scope.
     unsafe { backend_environment::serve_requests() };
     let compiled = load_and_compile(&image, request, timing);
-    // Every compiler thread has exited: the process holds only this thread.
+    // Every compiler thread has exited; `finish` joins the capture's thread,
+    // so the process then holds only this thread.
     if let Some(capture) = capture {
         capture.finish(compiled.is_err());
     }
@@ -359,7 +434,10 @@ fn run(
     }
     // SAFETY: compilation is over and no other thread exists; the runtime
     // starts below, on this thread.
-    unsafe { removed.restore() };
+    unsafe {
+        removed.restore();
+        signals.restore();
+    }
     PROGRAM_ISOLATE_BOOTSTRAP.store(entry.isolate_bootstrap as usize, Ordering::Release);
     // The program's code lives for the rest of the process.
     std::mem::forget(program);
@@ -395,13 +473,16 @@ fn load_and_compile(
     let api = runtime.launch_api()?;
     let loaded = started.elapsed();
     let document = image.program()?;
+    let tir_cache_root = image.header.tir_cache_root.clone();
     let decoded = started.elapsed();
     let compiler = std::thread::Builder::new()
         .name("molt-jit-compile".to_string())
         .stack_size(molt_backend_native::tir::pipeline_cache::COMPILE_THREAD_STACK_BYTES)
         .spawn(move || {
             let _scope = backend_environment::enter(request);
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| compile(document, &runtime)))
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                compile(document, &runtime, tir_cache_root)
+            }))
         })
         .map_err(|error| format!("cannot start the compiler thread: {error}"))?;
     let compiled = compiler.join();
@@ -411,7 +492,7 @@ fn load_and_compile(
     })??;
     if timing {
         let compiled = started.elapsed();
-        eprintln!(
+        report(format_args!(
             "MOLT_JIT_TIMING: runtime image load {:.2?}, program decode {:.2?}, compile {:.2?}, large-block cache {}",
             loaded,
             decoded - loaded,
@@ -421,7 +502,7 @@ fn load_and_compile(
             } else {
                 "on"
             }
-        );
+        ));
     }
     Ok((api, program))
 }
@@ -439,10 +520,13 @@ fn write_start_receipt(path: &Path) -> Result<(), String> {
         .map_err(|error| format!("cannot write start receipt {}: {error}", path.display()))
 }
 
-/// Compile the whole program into executable memory against `image`.
+/// Compile the whole program into executable memory against `image`, with
+/// the persistent TIR cache under `tir_cache_root` (the image's, never the
+/// program's environment or current directory).
 fn compile(
     document: molt_ir::ir::BackendIrDocument,
     image: &Arc<RuntimeImage>,
+    tir_cache_root: PathBuf,
 ) -> Result<molt_backend_native::JitProgram, String> {
     let molt_ir::ir::BackendIrDocument {
         mut ir,
@@ -462,6 +546,8 @@ fn compile(
     }));
     // The JIT owns the whole program: no shared-stdlib partition exists.
     backend.skip_shared_stdlib_partition = true;
+    backend.tir_cache =
+        molt_backend_native::tir::pipeline_cache::TirCacheLocation::Root(tir_cache_root);
     backend.module_registry = module_registry;
     backend.code_slots = Some(code_slots);
     backend.compile_jit(ir).map_err(|error| error.to_string())

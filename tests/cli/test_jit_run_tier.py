@@ -281,6 +281,7 @@ _HEADER = {
     "runtime_image": "/runtime/libmolt_runtime.dylib",
     "backend_environment": {"MOLT_BACKEND": "cranelift"},
     "compiler_diagnostics": "on_failure",
+    "tir_cache_root": "/cache/molt",
     "launch": {
         "environment": {"MOLT_EXECUTION_TARGET": "native"},
         "runtime_module_roots": [],
@@ -496,7 +497,10 @@ def test_runtime_images_are_retired_by_last_use(monkeypatch, tmp_path: Path) -> 
     # Each runtime generation links a 37 MiB image. Images no build or cached
     # launch used for the idle window leave at the next publication; an image
     # a cached launch still runs stays.
+    import time
+
     from molt.cli import generation_store, jit_runtime_image
+    from tests.process_guard_common import install_module_view
 
     monkeypatch.setattr(
         native_link_command,
@@ -510,7 +514,9 @@ def test_runtime_images_are_retired_by_last_use(monkeypatch, tmp_path: Path) -> 
 
     monkeypatch.setattr(jit_runtime_image, "_run_completed_command", link)
     now = {"t": 1_000.0}
-    monkeypatch.setattr(generation_store.time, "time", lambda: now["t"])
+    install_module_view(
+        monkeypatch, "time", time, generation_store, time=lambda: now["t"]
+    )
     idle = generation_store.GENERATION_STORE_IDLE_SECONDS
     root = tmp_path / "runtime"
     root.mkdir()
@@ -698,3 +704,34 @@ def test_a_refused_runner_stops_the_jit_build_before_any_runtime_work(
     )
     assert status != 0
     assert "blocks W^X" in capsys.readouterr().err
+
+
+@_POSIX_ONLY
+def test_a_jit_image_names_the_cache_root_the_cli_resolved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The runner's environment and current directory are the program's, so
+    # the image names the TIR cache root by the CLI's rules (MOLT_CACHE, else
+    # XDG_CACHE_HOME/molt, else ~/.cache/molt), resolved where the build ran
+    # (HF-371 review v5).
+    from molt.cli.jit_pipeline import jit_image_header
+
+    work = tmp_path / "work"
+    work.mkdir()
+    monkeypatch.chdir(work)
+    for name in ("MOLT_CACHE", "MOLT_EXT_ROOT", "XDG_CACHE_HOME"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    def root() -> str:
+        return jit_image_header(
+            runtime_image=Path("/runtime/libmolt_runtime.dylib"),
+            backend_environment={},
+            launch={},
+        )["tir_cache_root"]
+
+    assert root() == str(tmp_path / "home" / ".cache" / "molt")
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
+    assert root() == str(tmp_path / "xdg" / "molt")
+    monkeypatch.setenv("MOLT_CACHE", "relative-cache")
+    assert root() == str(work / "relative-cache")

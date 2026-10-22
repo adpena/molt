@@ -157,7 +157,7 @@ impl SimpleBackend {
                 crate::tir::pipeline_cache::TirPipelineRunOptions {
                     target_info: llvm_tti.clone(),
                     cache_flavor: crate::tir::pipeline_cache::TirPipelineCacheFlavor::Llvm,
-                    cache_dir: None,
+                    cache: self.tir_cache.clone(),
                     process_externs: false,
                     verify_lir: false,
                     tir_dump: env_setting(BackendEnv::TIR_DUMP).as_deref() == Some("1"),

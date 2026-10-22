@@ -33,8 +33,14 @@ fn fake_runtime_source() -> String {
         r#"
 use std::io::Write;
 
+/// Append `line` to the log file, or write it to stdout when the log is
+/// `-` (a start under a file size limit writes no file).
 fn log(line: &str) {{
     let path = std::env::var_os("FAKE_RUNTIME_LOG").expect("FAKE_RUNTIME_LOG");
+    if path == "-" {{
+        println!("{{line}}");
+        return;
+    }}
     let mut file = std::fs::OpenOptions::new().append(true).create(true).open(path).unwrap();
     writeln!(file, "{{line}}").unwrap();
 }}
@@ -43,6 +49,7 @@ unsafe extern "C" {{
     fn molt_isolate_bootstrap() -> u64;
     fn signal(signal: i32, handler: usize) -> usize;
     fn sigaltstack(new: *const u8, old: *mut AltStack) -> i32;
+    fn sigpending(set: *mut u64) -> i32;
 }}
 
 #[cfg(target_os = "macos")]
@@ -53,6 +60,7 @@ struct AltStack {{ sp: usize, size: usize, flags: i32 }}
 struct AltStack {{ sp: usize, flags: i32, size: usize }}
 const SS_DISABLE: i32 = if cfg!(target_os = "macos") {{ 4 }} else {{ 2 }};
 const SIGBUS: i32 = if cfg!(target_os = "macos") {{ 10 }} else {{ 7 }};
+const SIGXFSZ: i32 = 25;
 
 /// The disposition of `number`, read by swapping it out and back.
 fn disposition(number: i32) -> &'static str {{
@@ -122,16 +130,23 @@ pub extern "C" fn molt_runtime_init() -> u64 {{
         std::env::var_os("MallocLargeCache"),
         std::env::var_os("MOLT_JIT_ALLOCATOR_RESTART")
     ));
-    // The process state a C `main` gives a program: inherited dispositions,
-    // no stack-overflow handler, no alternate signal stack, one thread.
+    // The process state a C `main` gives a program: inherited dispositions
+    // (the runner ignores SIGPIPE and SIGXFSZ only while it works), no
+    // stack-overflow handler, no alternate signal stack, one thread.
     log(&format!(
-        "process sigpipe={{}} sigsegv={{}} sigbus={{}} altstack={{}} threads={{}}",
+        "process sigpipe={{}} sigxfsz={{}} sigsegv={{}} sigbus={{}} altstack={{}} threads={{}}",
         disposition(13),
+        disposition(SIGXFSZ),
         disposition(11),
         disposition(SIGBUS),
         altstack(),
         threads()
     ));
+    // A signal pending when the runner started stays pending (sigset_t is a
+    // 32-bit mask on macOS and starts with a 64-bit word on Linux).
+    let mut pending = [0_u64; 16];
+    unsafe {{ sigpending(pending.as_mut_ptr()) }};
+    log(&format!("pending sigxfsz={{}}", (pending[0] >> (SIGXFSZ - 1)) & 1 == 1));
     0
 }}
 #[unsafe(no_mangle)]
@@ -302,7 +317,8 @@ enum Diagnostics {
     OnFailure,
 }
 
-/// The JIT image layout `src/molt/cli/jit_image.py` writes.
+/// The JIT image layout `src/molt/cli/jit_image.py` writes, with its TIR
+/// cache in `tir-cache` beside the image.
 fn write_image(path: &Path, runtime_image: &Path, program: &[u8], diagnostics: Diagnostics) {
     let (backend_environment, compiler_diagnostics) = match diagnostics {
         Diagnostics::Timing => (serde_json::json!({"MOLT_BACKEND_TIMING": "1"}), "stream"),
@@ -312,6 +328,7 @@ fn write_image(path: &Path, runtime_image: &Path, program: &[u8], diagnostics: D
         "runtime_image": runtime_image,
         "backend_environment": backend_environment,
         "compiler_diagnostics": compiler_diagnostics,
+        "tir_cache_root": tir_cache_root(path),
         "launch": {
             "environment": {"MOLT_EXECUTION_TARGET": "native"},
             "runtime_module_roots": [],
@@ -332,6 +349,11 @@ fn write_image(path: &Path, runtime_image: &Path, program: &[u8], diagnostics: D
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
         .expect("make the JIT image executable");
+}
+
+/// The TIR cache root `write_image` names for the image at `image`.
+fn tir_cache_root(image: &Path) -> PathBuf {
+    image.with_file_name("tir-cache")
 }
 
 /// How the test starts the program.
@@ -448,7 +470,7 @@ fn the_runner_starts_a_program_in_the_aot_stub_order() {
         .log
         .iter()
         .map(|line| line.split(' ').next().unwrap_or_default())
-        .filter(|name| *name != "process" && *name != "env")
+        .filter(|name| !matches!(*name, "process" | "env" | "pending"))
         .collect();
     // The declared start sequence, then the program's own exit: a program
     // leaves through `molt_runtime_exit` from its entry.
@@ -492,7 +514,7 @@ fn the_runner_starts_a_program_in_the_aot_stub_order() {
     // alternate signal stack are absent, and no compiler thread remains.
     assert_eq!(
         line("process"),
-        "process sigpipe=default sigsegv=default sigbus=default altstack=off threads=1"
+        "process sigpipe=default sigxfsz=default sigsegv=default sigbus=default altstack=off threads=1"
     );
     // The runner restarted itself with its allocator setting (macOS) and
     // removed it again: the program sees only what its caller passed.
@@ -630,4 +652,190 @@ fn a_keeper_killed_alone_leaves_the_program_running() {
     let calls = std::fs::read_to_string(&log).unwrap_or_default();
     assert!(calls.contains("molt_runtime_exit 0"), "{calls}\n{stderr}");
     assert_eq!(stderr, "", "a discarded compile writes nothing");
+}
+
+/// A JIT image of `program` (diagnostics on failure) beside a fresh runtime
+/// image, with an empty current directory for the program: `(image, cwd)`.
+fn image_with_empty_directory(
+    artifacts: &CargoTestArtifacts,
+    program: &[u8],
+) -> (PathBuf, PathBuf) {
+    let runtime = fake_runtime(artifacts);
+    let image = artifacts.path().join("app_molt.jit");
+    write_image(&image, &runtime, program, Diagnostics::OnFailure);
+    let directory = artifacts.path().join("cwd");
+    std::fs::create_dir(&directory).expect("create the program's directory");
+    (image, directory)
+}
+
+/// What `directory` holds, by name.
+fn entries(directory: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(directory)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
+/// Start the image as `subprocess` would: no receipt, the program's log on
+/// stdout (`-`), MOLT_CACHE unset and TMPDIR unusable.
+fn start_image(image: &Path, directory: &Path) -> Command {
+    let mut command = Command::new(image);
+    command
+        .current_dir(directory)
+        .env("FAKE_RUNTIME_LOG", "-")
+        .env("FAKE_RUNTIME_RECEIPT", directory.join("no-receipt"))
+        .env("TMPDIR", "/nonexistent/molt-jit-tmp")
+        .env_remove("MOLT_CACHE")
+        .env_remove("MOLT_EXECUTION_TARGET");
+    command
+}
+
+#[test]
+fn a_start_uses_only_the_images_cache_and_no_temporary_directory() {
+    // An AOT executable starts without a usable TMPDIR and writes no file. The
+    // runner keeps its TIR cache under the root the image names; the
+    // program's environment (no MOLT_CACHE) and current directory are not the
+    // runner's to use (HF-371 review v5).
+    let artifacts =
+        CargoTestArtifacts::new("jit-start-file-state").expect("Cargo test artifact root");
+    let (image, directory) = image_with_empty_directory(&artifacts, &program(None, 64));
+    let output = start_image(&image, &directory)
+        .output()
+        .expect("run the image");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(0), "{stdout}\n{stderr}");
+    assert!(stdout.contains("molt_runtime_exit 0"), "{stdout}");
+    assert_eq!(stderr, "", "a discarded compile writes nothing");
+    assert_eq!(entries(&directory), Vec::<String>::new());
+    assert!(
+        !entries(&tir_cache_root(&image)).is_empty(),
+        "the runner's TIR cache namespace lives under the image's root"
+    );
+}
+
+#[test]
+fn a_file_size_limit_of_zero_does_not_stop_the_start() {
+    // With `ulimit -f 0` and SIGXFSZ at its default, any file write past the
+    // limit ends the process. The runner writes no capture file, and its cold
+    // TIR cache writes must fail quietly: it ignores SIGXFSZ while it works
+    // and gives the program back the default.
+    let artifacts = CargoTestArtifacts::new("jit-start-fsize").expect("Cargo test artifact root");
+    let (image, directory) = image_with_empty_directory(&artifacts, &program(None, 64));
+    let mut command = start_image(&image, &directory);
+    // SAFETY: the closure runs in the forked child before exec and only
+    // calls async-signal-safe functions.
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        command.pre_exec(|| {
+            libc::signal(libc::SIGXFSZ, libc::SIG_DFL);
+            let mut limit = std::mem::zeroed::<libc::rlimit>();
+            libc::getrlimit(libc::RLIMIT_FSIZE, &mut limit);
+            limit.rlim_cur = 0;
+            if libc::setrlimit(libc::RLIMIT_FSIZE, &limit) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let output = command.output().expect("run the image");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(0), "{stdout}\n{stderr}");
+    assert!(
+        stdout.contains("process sigpipe=default sigxfsz=default "),
+        "{stdout}"
+    );
+    assert!(stdout.contains("molt_runtime_exit 0"), "{stdout}");
+    assert_eq!(stderr, "");
+    assert_eq!(entries(&directory), Vec::<String>::new());
+}
+
+#[test]
+fn a_runner_that_cannot_capture_compiler_output_streams_it_and_starts() {
+    // With one free descriptor the capture's socket pair cannot exist. The
+    // runner must say so and stream compiler output, as with diagnostics,
+    // not refuse the program (HF-371 review v5).
+    let artifacts =
+        CargoTestArtifacts::new("jit-start-no-capture").expect("Cargo test artifact root");
+    let (image, directory) = image_with_empty_directory(&artifacts, &program(None, 64));
+    let mut command = start_image(&image, &directory);
+    // SAFETY: the closure runs in the forked child before exec and only
+    // calls async-signal-safe functions.
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        command.pre_exec(|| {
+            // fds 0-2 and one more: the image read, the runtime image load
+            // and the program's own files each need one at a time.
+            let mut limit = std::mem::zeroed::<libc::rlimit>();
+            libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit);
+            limit.rlim_cur = 4;
+            if libc::setrlimit(libc::RLIMIT_NOFILE, &limit) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let output = command.output().expect("run the image");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(0), "{stdout}\n{stderr}");
+    assert!(stdout.contains("molt_runtime_exit 0"), "{stdout}");
+    assert!(
+        stderr.starts_with("molt-jit: compiler output goes to stderr: "),
+        "{stderr}"
+    );
+    assert!(stderr.contains("MOLT_BACKEND"), "{stderr}");
+}
+
+#[test]
+fn a_runner_whose_stderr_is_a_broken_pipe_still_fails_with_its_status() {
+    // The runner's own messages ignore write errors: with stderr a pipe
+    // nobody reads, a program that cannot compile still ends with the
+    // runner's failure status, not a panic's abort or SIGPIPE.
+    let artifacts = CargoTestArtifacts::new("jit-broken-stderr").expect("Cargo test artifact root");
+    let (image, directory) =
+        image_with_empty_directory(&artifacts, &program(Some("molt_missing_helper"), 0));
+    let mut child = start_image(&image, &directory)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("start the image");
+    drop(child.stderr.take());
+    let status = child.wait().expect("wait for the image");
+    assert_eq!(status.code(), Some(125), "{status:?}");
+}
+
+#[test]
+fn a_signal_pending_at_start_is_still_pending_for_the_program() {
+    // The runner ignores SIGXFSZ while it works; ignoring a pending signal
+    // would discard it. A caller that blocked SIGXFSZ and left one pending
+    // must hand it to the program, as an AOT executable receives it.
+    let artifacts = CargoTestArtifacts::new("jit-start-pending").expect("Cargo test artifact root");
+    let (image, directory) = image_with_empty_directory(&artifacts, &program(None, 0));
+    let mut command = start_image(&image, &directory);
+    // SAFETY: the closure runs in the forked child before exec and only
+    // calls async-signal-safe functions.
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        command.pre_exec(|| {
+            let mut blocked = std::mem::zeroed::<libc::sigset_t>();
+            libc::sigemptyset(&mut blocked);
+            libc::sigaddset(&mut blocked, libc::SIGXFSZ);
+            libc::sigprocmask(libc::SIG_BLOCK, &blocked, std::ptr::null_mut());
+            libc::raise(libc::SIGXFSZ);
+            Ok(())
+        });
+    }
+    let output = command.output().expect("run the image");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(0), "{stdout}\n{stderr}");
+    assert!(stdout.contains("pending sigxfsz=true"), "{stdout}");
 }
