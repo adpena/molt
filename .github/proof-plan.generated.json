@@ -105,6 +105,7 @@
     "src/molt/metric_ratios.py",
     "src/molt/node_runtime.py",
     "src/molt/target_python.py",
+    "src/molt/compiler_analysis/python_syntax.py",
     "tests/tools/test_check_perf_gate_wiring.py",
     "tests/tools/test_perf_authority.py",
     "tests/tools/test_perf_profile_selection.py",
