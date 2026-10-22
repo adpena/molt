@@ -457,6 +457,9 @@ class SelectedGate:
     concurrent: bool = False
     # The merged pytest session or one pytest_select cohort.
     pytest: bool = False
+    # Selected node admission; unfiltered cohorts collect only explicit nodes.
+    # Successful collection never replaces this gate's mandatory execution.
+    collection_command: tuple[str, ...] | None = None
 
     @property
     def precheck(self) -> bool:
@@ -652,7 +655,7 @@ class GateConfig:
         to the merged pytest invocation supply its tools; each selector cohort
         keeps its own. Command binding happens after this policy selection.
         """
-        from tools.proof_plan import local_pytest_argv
+        from tools.proof_plan import local_pytest_argv, local_pytest_collection_argv
 
         selected: list[SelectedGate] = []
         indices: dict[str, int] = {}
@@ -672,6 +675,7 @@ class GateConfig:
             *,
             concurrent: bool = False,
             pytest: bool = False,
+            collection_command: tuple[str, ...] | None = None,
         ) -> None:
             key = command_key(command)
             if key in indices:
@@ -681,10 +685,13 @@ class GateConfig:
                     prior,
                     toolchains=tuple(dict.fromkeys((*prior.toolchains, *tools))),
                     pytest=prior.pytest or pytest,
+                    collection_command=prior.collection_command or collection_command,
                 )
             else:
                 indices[key] = len(selected)
-                selected.append(SelectedGate(command, tools, concurrent, pytest))
+                selected.append(
+                    SelectedGate(command, tools, concurrent, pytest, collection_command)
+                )
 
         def tools(identifier: str) -> tuple[str, ...]:
             return self.prerequisites[identifier][1]
@@ -712,6 +719,11 @@ class GateConfig:
                     command,
                     tools(f"{owner}.pytest-select-{index}"),
                     pytest=True,
+                    collection_command=(
+                        local_pytest_collection_argv(command)
+                        if any("::" in target for target in targets)
+                        else None
+                    ),
                 )
             for target in rule.pytest:
                 if target not in seen_pytest:
@@ -738,8 +750,24 @@ class GateConfig:
                 pytest_targets, memory_units=self.pytest_memory_units
             )
             pytest_commands.add(command_key(command))
+            # File-only targets already have a validated path. Admit named nodes
+            # without importing every file in the merged mandatory cohort again.
+            named_targets = tuple(target for target in pytest_targets if "::" in target)
             size = len(selected)
-            add(command, tuple(pytest_tools), pytest=True)
+            add(
+                command,
+                tuple(pytest_tools),
+                pytest=True,
+                collection_command=(
+                    local_pytest_collection_argv(
+                        local_pytest_argv(
+                            named_targets, memory_units=self.pytest_memory_units
+                        )
+                    )
+                    if named_targets
+                    else None
+                ),
+            )
             if len(selected) != size:
                 selected.insert(pytest_index, selected.pop())
         # Run declared source/metadata and compilation controls before Python

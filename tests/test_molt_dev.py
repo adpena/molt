@@ -7021,3 +7021,218 @@ def test_land_has_no_optional_retirement_flag(drv):
     with pytest.raises(SystemExit) as error:
         drv.build_parser().parse_args(["land", "--retire"])
     assert error.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "missing",
+        "missing_parameter",
+        "import_error",
+        "named",
+        "parameter",
+        "body_failure",
+    ],
+)
+def test_selected_pytest_nodes_collect_before_build_and_still_execute(
+    drv,
+    tmp_path,
+    case,
+):
+    from dataclasses import replace
+    from tools import molt_dev_gates
+
+    (tmp_path / "tests").mkdir()
+    # This is a real isolated checkout: admit the same repository custody and
+    # memory-capacity plugins, rather than faking the canonical pytest option.
+    (tmp_path / "pytest.ini").write_text(
+        "[pytest]\naddopts = -p molt.pytest_memory_guard_config_plugin "
+        "-p molt.pytest_capacity_plugin\nmarkers = excluded: selector control\n",
+        encoding="utf-8",
+    )
+    test_file = tmp_path / "tests/test_selected.py"
+    executed = tmp_path / "executed.txt"
+    if case == "import_error":
+        source = "raise RuntimeError('independent collection import failure')\n"
+    else:
+        source = (
+            "import pytest\nfrom pathlib import Path\n"
+            "@pytest.mark.parametrize('value', [1], ids=['space & quote'])\n"
+            "def test_one(value):\n"
+            f"    Path({str(executed)!r}).write_text('executed', encoding='utf-8')\n"
+            f"    assert {case != 'body_failure'!r}\n"
+        )
+    test_file.write_text(source, encoding="utf-8")
+    suffix = {
+        "missing": "test_missing",
+        "missing_parameter": "test_one[missing]",
+        "parameter": "test_one[space & quote]",
+    }.get(case, "test_one")
+    target = "tests/test_selected.py::" + suffix
+    selection = 'm = "not excluded"' if case == "named" else 'k = "one or missing"'
+    policy = (
+        'always = []\n[[rule]]\nname = "selected"\nglobs = ["source.py"]\n'
+        'gates = ["mock-rust-build"]\ntoolchains = ["python"]\n'
+        + "pytest_select = [{targets = ["
+        + json.dumps(target)
+        + "], "
+        + selection
+        + "}]\n"
+    )
+    config = drv.GateConfig.parse(policy, "real collection boundary", root=tmp_path)
+    gates, _ = config.select(["source.py"])
+    assert gates[0].command == "mock-rust-build"
+    cohort = next(gate for gate in gates if gate.pytest)
+    assert cohort.collection_command is not None
+    expected = list(cohort.command)
+    expected[expected.index("-n") + 1] = "0"
+    expected.append("--collect-only")
+    assert list(cohort.collection_command) == expected
+
+    observed = []
+    progress = []
+
+    class Progress:
+        def emit(self, event, **details):
+            progress.append((event, details))
+
+    def execute(command, repo, env, cancelled, streams=None):
+        observed.append(command)
+        if command == "mock-rust-build":
+            assert not executed.exists(), "collection executed test bodies"
+            return molt_dev_gates.GateOutcome(0, "mock Rust completed", "", None)
+        # Use real selected Python, pytest and canonical guard. No fake collector
+        # verdict, shell parsing, host env mutation, or actual Rust compilation.
+        return drv.run_captured_gate(command, repo, env, cancelled, streams)
+
+    runtime = replace(
+        _gate_runtime_fixture(
+            molt_dev_gates, tmp_path, {}, output_dir=tmp_path / "logs"
+        ),
+        environments={
+            ("python",): ProcessEnvironment(os.environ).updated(
+                {
+                    "MOLT_VENV": sys.prefix,
+                    "PYTEST_XDIST_AUTO_NUM_WORKERS": "1",
+                }
+            )
+        },
+        run_captured_gate=execute,
+        progress=Progress(),
+    )
+    timings = []
+    succeeds = case in {"named", "parameter"}
+    if succeeds:
+        molt_dev_gates.run_selected_gates(gates, runtime, timings, host_limit=lambda: 1)
+    else:
+        with pytest.raises(GateFailure):
+            molt_dev_gates.run_selected_gates(
+                gates, runtime, timings, host_limit=lambda: 1
+            )
+    assert observed[0] == cohort.collection_command
+    collection_failure = case in {"missing", "missing_parameter", "import_error"}
+    if collection_failure:
+        assert observed == [cohort.collection_command]
+        assert not executed.exists() and not timings
+        output = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in (tmp_path / "logs/collection").glob("*.log")
+        )
+        assert (
+            "independent collection import failure"
+            if case == "import_error"
+            else "not found"
+        ) in output
+    else:
+        assert observed == [
+            cohort.collection_command,
+            "mock-rust-build",
+            cohort.command,
+        ]
+        assert executed.read_text(encoding="utf-8") == "executed"
+        assert len(timings) == len(gates)
+        assert any(event == "collection_finished" for event, _ in progress)
+        assert any(event == "gate_finished" for event, _ in progress)
+    # A passing collection cannot conceal the later real assertion failure.
+    if case == "body_failure":
+        assert progress[-1][1]["returncode"] != 0
+
+
+def test_file_only_pytest_cohort_keeps_single_execution_without_collection(
+    drv, tmp_path
+):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/test_file.py").write_text(
+        "def test_one(): pass\n", encoding="utf-8"
+    )
+    config = drv.GateConfig.parse(
+        'always=[]\n[[rule]]\nname="file"\nglobs=["source.py"]\ngates=[]\n'
+        'pytest=["tests/test_file.py"]\ntoolchains=["python"]\n',
+        "file-only",
+        root=tmp_path,
+    )
+    gates, _ = config.select(["source.py"])
+    assert len(gates) == 1 and gates[0].pytest
+    assert gates[0].collection_command is None
+
+
+def test_merged_pytest_collection_admits_only_explicit_nodes(drv, tmp_path):
+    # Synthetic 52-target cohort: 47 whole files and five nodes across two files.
+    # Whole-file imports can be expensive or have side effects; they belong only
+    # to the later mandatory run, not to named-node admission.
+    (tmp_path / "tests").mkdir()
+    files = [f"tests/test_file_{index}.py" for index in range(47)]
+    nodes = [
+        f"tests/test_nodes_{index % 2}.py::test_case_{index}" for index in range(5)
+    ]
+    for target in [*files, *nodes]:
+        (tmp_path / target.split("::", 1)[0]).touch()
+    policy = (
+        'always=[]\n[[rule]]\nname="merged"\nglobs=["source.py"]\ngates=[]\n'
+        + "pytest="
+        + json.dumps([*files, *nodes])
+        + '\ntoolchains=["python"]\n'
+    )
+    config = drv.GateConfig.parse(policy, "synthetic mixed cohort", root=tmp_path)
+    gates, _ = config.select(["source.py"])
+    assert len(gates) == 1
+    gate = gates[0]
+    assert gate.pytest and gate.toolchains == ("python",)
+    assert isinstance(gate.command, tuple)
+    assert gate.command[-52:] == tuple([*files, *nodes])
+    assert gate.command[:6] == ("python", "-m", "pytest", "-q", "-n", "auto")
+    admission = gate.collection_command
+    assert admission is not None
+    assert admission[:6] == ("python", "-m", "pytest", "-q", "-n", "0")
+    assert admission[-6:] == (*nodes, "--collect-only")
+    assert not set(files).intersection(admission)
+    assert len(admission) == len(gate.command) - len(files) + 1
+
+
+def test_filtered_pytest_collection_retains_whole_selected_envelope(drv, tmp_path):
+    # A selector applies to its whole cohort. Keep this declared envelope intact
+    # rather than silently narrowing -k/-m to just its explicit-node members.
+    (tmp_path / "tests").mkdir()
+    for name in ("tests/test_file.py", "tests/test_nodes.py"):
+        (tmp_path / name).touch()
+    config = drv.GateConfig.parse(
+        'always=[]\n[[rule]]\nname="filtered"\nglobs=["source.py"]\ngates=[]\n'
+        'pytest_select=[{targets=["tests/test_file.py", "tests/test_nodes.py::test_one"], '
+        'k="one or another"}]\ntoolchains=["python"]\n',
+        "filtered mixed cohort",
+        root=tmp_path,
+    )
+    gates, _ = config.select(["source.py"])
+    assert len(gates) == 1
+    gate = gates[0]
+    expected = list(gate.command)
+    expected[expected.index("-n") + 1] = "0"
+    expected.append("--collect-only")
+    assert gate.collection_command == tuple(expected)
+    assert tuple(expected[-5:]) == (
+        "-k",
+        "one or another",
+        "tests/test_file.py",
+        "tests/test_nodes.py::test_one",
+        "--collect-only",
+    )
