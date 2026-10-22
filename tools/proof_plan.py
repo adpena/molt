@@ -682,8 +682,197 @@ def toolchain_closure(
 
 
 _LOCAL_RULE_FIELDS = frozenset(
-    {"name", "description", "globs", "gates", "pytest", "pytest_select", "toolchains"}
+    {
+        "name",
+        "description",
+        "globs",
+        "gates",
+        "pytest",
+        "pytest_select",
+        "toolchains",
+        "plan_entities",
+    }
 )
+
+# The proof plan's top-level sections and the key that names each entry of a
+# table section; a section without one changes as a whole. A local rule claims
+# the parts of the plan it reads with `plan_entities`, never by globbing the
+# plan file, so an edit selects only the consumers of the entries it changed
+# (HF-457), as a Bazel BUILD-file edit invalidates only the targets it changes.
+PLAN_SECTIONS: Mapping[str, str | None] = MappingProxyType(
+    {
+        "schema": None,
+        "authority_inputs": None,
+        "always_toolchains": None,
+        "always": None,
+        "receipt_schema": None,
+        "executor_max_workers": None,
+        "inventory_hash_workers": None,
+        "resource_policy": "name",
+        "toolchain_policy": "name",
+        "matrix_cell": "id",
+        "ci_family": "name",
+        "scheduled_family": "name",
+        "command": "id",
+        "rule": "name",
+        "named_lane": "id",
+        "gate_flip": "name",
+    }
+)
+PLAN_PATH = "tools/proof_plan.toml"
+# (section, entry name); None names the whole section.
+PlanEntity = tuple[str, str | None]
+
+
+def plan_entities(data: Mapping[str, Any]) -> dict[PlanEntity, object]:
+    """Every entry of a plan, by section and name; unknown sections fail."""
+    unknown = sorted(set(data) - set(PLAN_SECTIONS))
+    if unknown:
+        raise ValueError("unknown proof plan sections: " + ", ".join(unknown))
+    entities: dict[PlanEntity, object] = {}
+    for section, value in data.items():
+        key = PLAN_SECTIONS[section]
+        if key is None:
+            entities[(section, None)] = value
+            continue
+        if not isinstance(value, list):
+            raise ValueError(f"proof plan section {section!r} must be a table list")
+        for entry in value:
+            name = entry.get(key) if isinstance(entry, dict) else None
+            if not isinstance(name, str) or not name:
+                raise ValueError(f"{section}: every entry needs a string {key!r}")
+            if (section, name) in entities:
+                raise ValueError(f"{section}: duplicate {key} {name!r}")
+            entities[(section, name)] = entry
+    return entities
+
+
+def changed_plan_entities(
+    before: Mapping[str, Any] | None, after: Mapping[str, Any]
+) -> frozenset[PlanEntity]:
+    """The entries an edit added, removed or changed. A table section whose
+    entries changed order changed as a whole: rule order is gate order.
+    Without a prior plan every entry is new."""
+    new = plan_entities(after)
+    if before is None:
+        return frozenset(new)
+    old = plan_entities(before)
+    changed = {
+        entity
+        for entity in old.keys() | new.keys()
+        if old.get(entity) != new.get(entity)
+    }
+
+    def order(entities: Mapping[PlanEntity, object], section: str) -> list[str]:
+        return [name for kind, name in entities if kind == section and name is not None]
+
+    for section, key in PLAN_SECTIONS.items():
+        if key is None:
+            continue
+        kept = set(order(old, section)) & set(order(new, section))
+        if [n for n in order(old, section) if n in kept] != [
+            n for n in order(new, section) if n in kept
+        ]:
+            changed.add((section, None))
+    return frozenset(changed)
+
+
+class PlanClaims:
+    """Resolve local rules' `plan_entities` against one plan, read once.
+
+    `section` claims every entry of a section and `section:name` one entry; a
+    toolchain policy also claims the policies it depends on, since a change to
+    any of them changes what it admits.
+    """
+
+    def __init__(self, data: Mapping[str, Any], *, root: Path = ROOT) -> None:
+        self._data = data
+        self._root = root
+        # Read on the first claim of a named entry: most rules claim none.
+        self._entities: dict[PlanEntity, object] | None = None
+        self._policies: tuple[ToolchainPolicy, ...] | None = None
+
+    def claims(
+        self, rule: Mapping[str, Any]
+    ) -> tuple[list[str], frozenset[PlanEntity]]:
+        """A rule's claims as (errors, the entities a change to which selects it)."""
+        name = rule.get("name", "local rule")
+        raw = rule.get("plan_entities", [])
+        if not isinstance(raw, list) or not all(isinstance(item, str) for item in raw):
+            return [f"{name}: plan_entities must be a list of str"], frozenset()
+        errors: list[str] = []
+        claims: set[PlanEntity] = set()
+        for item in raw:
+            section, separator, entry = item.partition(":")
+            if section not in PLAN_SECTIONS:
+                errors.append(
+                    f"{name}: plan_entities names unknown section {section!r}"
+                )
+                continue
+            if not separator:
+                claims.add((section, None))
+                continue
+            if self._entities is None:
+                self._entities = plan_entities(self._data)
+            if PLAN_SECTIONS[section] is None or (section, entry) not in self._entities:
+                errors.append(f"{name}: plan_entities names no entry {item!r}")
+                continue
+            claims.add((section, entry))
+            if section == "toolchain_policy":
+                if self._policies is None:
+                    self._policies = load_toolchain_policies(
+                        self._data, root=self._root
+                    )
+                for dependency in toolchain_closure(self._policies, (entry,)):
+                    claims.add((section, dependency))
+        return errors, frozenset(claims)
+
+
+def plan_claim_matches(
+    claims: Collection[PlanEntity], changed: Iterable[PlanEntity]
+) -> bool:
+    """Whether a change to any of ``changed`` reaches one of ``claims``: the
+    same entry, a claim of its whole section, or a change to a whole section
+    that holds a claimed entry."""
+    sections = {section for section, _entry in claims}
+    return any(
+        entity in claims
+        or (entity[0], None) in claims
+        or (entity[1] is None and entity[0] in sections)
+        for entity in changed
+    )
+
+
+def plan_policy_errors(data: Mapping[str, Any]) -> list[str]:
+    """The committed plan's selection invariants (HF-457): every section is
+    claimed whole by some rule, so an edit to it selects a consumer, and no
+    rule globs the plan file, which would select it for every edit."""
+    from tools.dirty_tree_policy import is_ignored
+
+    try:
+        plan_entities(data)
+    except ValueError as exc:
+        return [str(exc)]
+    resolver = PlanClaims(data, root=ROOT)
+    errors: list[str] = []
+    claimed: set[str] = set()
+    for rule in data.get("rule", []):
+        rule_errors, claims = resolver.claims(rule)
+        errors.extend(rule_errors)
+        claimed.update(section for section, entry in claims if entry is None)
+        if is_ignored(PLAN_PATH, tuple(rule.get("globs", []))):
+            errors.append(
+                f"{rule.get('name')}: claim the plan entries the rule reads with "
+                f"plan_entities; a glob of {PLAN_PATH} selects it for any edit"
+            )
+    if unclaimed := sorted(set(PLAN_SECTIONS) - claimed):
+        errors.append(
+            "no local rule claims these proof plan sections, so an edit to them "
+            "selects no consumer: " + ", ".join(unclaimed)
+        )
+    return errors
+
+
 _LOCAL_PYTEST_PREFIX = ("python", "-m", "pytest", "-q")
 # The selection options a `pytest_select` entry may name, by its table key.
 _LOCAL_PYTEST_SELECTORS = {"k": "-k", "m": "-m"}
@@ -1261,7 +1450,7 @@ class ProofPlan:
             always=tuple(data.get("always", [])),
             always_toolchains=tuple(data.get("always_toolchains", [])),
         )
-        errors = plan.validate()
+        errors = plan.validate() + plan_policy_errors(data)
         if errors:
             raise ValueError("invalid proof plan:\n- " + "\n- ".join(errors))
         _resolve_ci_command_test_inputs(plan.families, plan.commands)

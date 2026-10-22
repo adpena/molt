@@ -62,6 +62,27 @@ precisely for most compiler changes, and it cannot see platform-only
 failures. Selection by family stays the unit; the graph can later trim
 within a family once conftest imports are lazy.
 
+## Selecting by plan entry, not by the plan file (HF-457)
+
+`tools/proof_plan.toml` is a shared input: 361 KB of rules, toolchain
+policies and CI commands. Three rules globbed the whole file, so any edit to
+it ran their suites. On 2026-10-22 a dependency landing changed one CI command
+and nothing else in the plan; `dev-tooling` and `source-extension-proof-policy`
+matched only through the glob and cost 278 s of its 347 s of gates, 84% of it
+the landing driver's own end-to-end tests. Of the 12 commits before it that
+edited the plan, each changed one to five entries.
+
+The plan's sections are a closed set (`proof_plan.PLAN_SECTIONS`); a table
+section changes entry by entry, by its `name` or `id`. Selection diffs the
+upstream and candidate plans into changed entries
+(`changed_plan_entities`). A rule claims what it reads with
+`plan_entities` (`"section"` or `"section:name"`; a toolchain policy also
+claims the policies it depends on) and matches when an entry it claims
+changes; a changed rule selects itself, so its new tests run. A plan that
+cannot be read selects every rule. `ProofPlan.load` refuses a rule that globs
+the plan file and a section that no rule claims whole. Bazel invalidates
+only the targets a BUILD-file edit changes for the same reason.
+
 ## Prior art
 
 - **bors and homu** (Rust): the "not rocket science rule": main always passes
