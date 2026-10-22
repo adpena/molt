@@ -244,20 +244,6 @@ def test_cli_compiler_profile_is_explicit_and_independent_of_build_profile(
     if compiler_profile is not None:
         command.extend(["--compiler-profile", compiler_profile])
 
-    # A guarded no-op in its own artifact root: what one launch leaves.
-    baseline_root = tmp_path / "baseline-artifacts"
-    baseline = run_guarded_test_process(
-        [sys.executable, "-B", "-c", "pass"],
-        env={
-            **env,
-            "MOLT_EXT_ROOT": str(baseline_root),
-            "MOLT_DIFF_ROOT": str(baseline_root / "diff"),
-        },
-        capture_output=True,
-        timeout=15,
-    )
-    assert baseline.returncode == 0
-    guard_footprint = _footprint(baseline_root)
     result = run_guarded_test_process(
         command, env=env, capture_output=True, text=True, timeout=15
     )
@@ -268,8 +254,21 @@ def test_cli_compiler_profile_is_explicit_and_independent_of_build_profile(
         assert "argument --compiler-profile: invalid choice" in result.stderr
         assert "conflicts with explicit artifact paths" not in result.stderr
         # Only the guarded launch itself left state under the artifact root:
-        # a guarded no-op with the same environment leaves the same shape.
-        assert _footprint(artifact_root) == guard_footprint
+        # a guarded no-op with the same environment, in its own artifact
+        # root, leaves the same shape.
+        baseline_root = tmp_path / "baseline-artifacts"
+        baseline = run_guarded_test_process(
+            [sys.executable, "-B", "-c", "pass"],
+            env={
+                **env,
+                "MOLT_EXT_ROOT": str(baseline_root),
+                "MOLT_DIFF_ROOT": str(baseline_root / "diff"),
+            },
+            capture_output=True,
+            timeout=15,
+        )
+        assert baseline.returncode == 0
+        assert _footprint(artifact_root) == _footprint(baseline_root)
         assert not (tmp_path / "tools").exists()
     else:
         assert "conflicts with explicit artifact paths" in result.stderr
