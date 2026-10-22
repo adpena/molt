@@ -7,6 +7,7 @@ names the construct (``docs/design/dev_jit_tier.md``).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from enum import StrEnum
 from pathlib import Path
 
@@ -29,14 +30,31 @@ class RunTier(StrEnum):
 
 DEFAULT_RUN_TIER = RunTier.AOT
 
-# A JIT build publishes a launch manifest and the program's backend IR beside
-# it, both named after the executable an AOT build would publish.
-JIT_LAUNCH_SUFFIX = ".jit.json"
-JIT_PROGRAM_SUFFIX = ".jit.msgpack"
+# A JIT build publishes one executable JIT image, named after the executable
+# an AOT build would publish (src/molt/cli/jit_image.py).
+JIT_IMAGE_SUFFIX = ".jit"
 
 # What `molt-jit --start-receipt <path>` writes after the program compiled,
 # immediately before the program starts (runtime/molt-jit/src/main.rs).
 JIT_START_RECEIPT = '{"schema":"molt.jit-start.v1"}\n'
+
+
+def jit_runner_argv(
+    runner: str,
+    image: str,
+    program_arguments: Sequence[str],
+    *,
+    start_receipt: str | None = None,
+) -> list[str]:
+    """The runner command that starts the program in ``image``.
+
+    ``image`` is also the program's argv[0], so ``sys.executable`` names the
+    image, which re-runs the program as an AOT executable's path does.
+    """
+    argv = [runner, "--launch", image]
+    if start_receipt is not None:
+        argv += ["--start-receipt", start_receipt]
+    return [*argv, "--", image, *program_arguments]
 
 
 def jit_program_started(receipt: Path) -> bool:

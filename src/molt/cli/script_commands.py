@@ -62,7 +62,7 @@ from molt.cli.command_runtime import (
 )
 from molt.cli.env_paths import _base_env
 from molt.cli.build_request import BuildProfile
-from molt.cli.run_tier import DEFAULT_RUN_TIER, RunTier
+from molt.cli.run_tier import DEFAULT_RUN_TIER, RunTier, jit_runner_argv
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import fail as _fail
 from molt.cli.output import json_payload as _json_payload
@@ -757,23 +757,15 @@ def run_script(
         return build_error
     assert build_contract is not None
     if tier is RunTier.JIT:
-        launch_manifest = build_contract.consumer_output
+        image = build_contract.consumer_output
         runner = build_contract.artifacts.get("runner")
-        if runner is None or not runner.is_file() or not launch_manifest.is_file():
+        if runner is None or not runner.is_file() or not image.is_file():
             return _fail(
-                f"The JIT build published no runnable launch at {launch_manifest}.",
+                f"The JIT build published no runnable image at {image}.",
                 json_output,
                 command="run",
             )
-        # argv[0] names the program image, as an AOT executable's path does.
-        program_command = [
-            str(runner),
-            "--launch",
-            str(launch_manifest),
-            "--",
-            str(launch_manifest),
-            *script_args,
-        ]
+        program_command = jit_runner_argv(str(runner), str(image), script_args)
     else:
         output_binary = _resolve_binary_output(str(build_contract.consumer_output))
         if output_binary is None:

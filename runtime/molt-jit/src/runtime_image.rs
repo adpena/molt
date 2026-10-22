@@ -6,7 +6,7 @@
 //! runtime archive, so the image defines exactly the symbols an AOT link
 //! resolves against, and generated code imports resolve in it alone.
 
-use std::ffi::{CStr, CString, c_char, c_void};
+use std::ffi::{CStr, CString, c_void};
 use std::path::Path;
 
 /// A loaded runtime image. It is never unloaded: generated code and the
@@ -81,51 +81,14 @@ fn last_dl_error() -> String {
 }
 
 /// The runtime entry points the AOT main stub calls, resolved in one image.
-pub(crate) struct RuntimeLaunchApi {
-    pub(crate) register_compiled_sources: unsafe extern "C" fn(*const *const c_char, u64),
-    pub(crate) set_app_callable_resolver: unsafe extern "C" fn(u64) -> u64,
-    pub(crate) module_registry_install: unsafe extern "C" fn(*const u8) -> u64,
-    pub(crate) runtime_init: unsafe extern "C" fn() -> u64,
-    pub(crate) runtime_ensure_gil: unsafe extern "C" fn(),
-    pub(crate) set_argv: unsafe extern "C" fn(i32, *const *const c_char),
-    pub(crate) exception_pending: unsafe extern "C" fn() -> u64,
-    pub(crate) exception_last_pending: unsafe extern "C" fn() -> u64,
-    pub(crate) exception_report_uncaught: unsafe extern "C" fn(u64) -> u64,
-    pub(crate) dec_ref_obj: unsafe extern "C" fn(u64),
-    pub(crate) runtime_exit: unsafe extern "C" fn(u64) -> u64,
-}
+/// `runtime/native_launch_abi.toml` declares them for the stub and the runner.
+pub(crate) use crate::launch_abi::RuntimeLaunchApi;
 
-impl RuntimeLaunchApi {
-    /// Resolve every launch entry point, naming the first one missing.
-    pub(crate) fn resolve(image: &RuntimeImage) -> Result<Self, String> {
-        Ok(Self {
-            register_compiled_sources: entry(image, "molt_register_compiled_sources")?,
-            set_app_callable_resolver: entry(image, "molt_set_app_callable_resolver")?,
-            module_registry_install: entry(image, "molt_module_registry_install")?,
-            runtime_init: entry(image, "molt_runtime_init")?,
-            runtime_ensure_gil: entry(image, "molt_runtime_ensure_gil")?,
-            set_argv: entry(image, "molt_set_argv")?,
-            exception_pending: entry(image, "molt_exception_pending")?,
-            exception_last_pending: entry(image, "molt_exception_last_pending")?,
-            exception_report_uncaught: entry(image, "molt_exception_report_uncaught")?,
-            dec_ref_obj: entry(image, "molt_dec_ref_obj")?,
-            runtime_exit: entry(image, "molt_runtime_exit")?,
-        })
+impl RuntimeImage {
+    /// Resolve every launch entry in this image, naming the first one missing.
+    pub(crate) fn launch_api(&self) -> Result<RuntimeLaunchApi, String> {
+        // SAFETY: the image was linked from the AOT runtime archive, which
+        // defines each launch entry with the C signature the stub declares.
+        unsafe { RuntimeLaunchApi::resolve(|name| self.symbol(name)) }
     }
-}
-
-/// One runtime function as the C function pointer type `F`.
-///
-/// `F` must be the exact `unsafe extern "C" fn` type the runtime exports
-/// `name` with, as the AOT main stub declares it.
-fn entry<F: Copy>(image: &RuntimeImage, name: &str) -> Result<F, String> {
-    const {
-        assert!(std::mem::size_of::<F>() == std::mem::size_of::<*const u8>());
-    }
-    let address = image
-        .symbol(name)
-        .ok_or_else(|| format!("the runtime image defines no `{name}`"))?;
-    // SAFETY: `F` is a function pointer type of pointer size (checked above),
-    // and the runtime defines `name` with that C signature.
-    Ok(unsafe { std::mem::transmute_copy::<*const u8, F>(&address) })
 }

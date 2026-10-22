@@ -2,33 +2,29 @@
 
 The JIT tier (HF-371, ``docs/design/dev_jit_tier.md``) skips object emission,
 the system link and executable publication. After the shared frontend and
-backend IR preparation, this pipeline publishes the program's backend IR and a
-launch manifest, admits the runtime image and the ``molt-jit`` runner, and
-returns. ``molt run --tier jit`` then runs the runner on the manifest; the
-runner compiles the program into its own memory and starts it.
+backend IR preparation, this pipeline admits the runtime image and the
+``molt-jit`` runner and publishes one JIT image (``jit_image.py``) that holds
+the program and how to start it. ``molt run --tier jit`` then runs the runner
+on the image; the runner compiles the program into its own memory and starts
+it.
 """
 
 from __future__ import annotations
 
-import hashlib
 import os
-from pathlib import Path
-from typing import Any, BinaryIO
 
-from molt import file_publication
 from molt.backend_environment import request_environment_inputs
 from molt.cli import backend_ir as _backend_ir
 from molt.cli import frontend_pipeline as _frontend_pipeline
 from molt.cli import runtime_features as _runtime_features
-from molt.cli.atomic_io import _atomic_write_json
 from molt.cli.backend_diagnostics import _env_requests_backend_diagnostics
 from molt.cli.backend_execution import _backend_request_environment
-from molt.cli.backend_ir_transport import write_backend_ir
 from molt.cli.build_request import BuildProfile
 from molt.cli.build_results import (
     _build_common_build_json_data,
     _emit_build_result_json,
 )
+from molt.cli.jit_image import publish_jit_image
 from molt.cli.jit_runner_tool import ensure_jit_runner
 from molt.cli.jit_runtime_image import ensure_jit_runtime_image
 from molt.cli.models import (
@@ -44,23 +40,9 @@ from molt.cli.runtime_callable_symbols import (
     _stage_runtime_callable_symbols_for_native_codegen,
 )
 from molt.cli.runtime_native_codegen import native_runtime_codegen_environment
-from molt.cli.run_tier import JIT_LAUNCH_SUFFIX, JIT_PROGRAM_SUFFIX
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.compilation_target import Target, TargetKind
 from molt.native_target import NativeTargetSpec, resolve_native_target_spec
-
-JIT_LAUNCH_SCHEMA = "molt.jit-launch.v1"
-
-
-def jit_program_path(launch_manifest: Path) -> Path:
-    """The backend IR beside a launch manifest."""
-    name = launch_manifest.name
-    stem = (
-        name.removesuffix(JIT_LAUNCH_SUFFIX)
-        if name.endswith(JIT_LAUNCH_SUFFIX)
-        else name
-    )
-    return launch_manifest.with_name(stem + JIT_PROGRAM_SUFFIX)
 
 
 # The (os, arch) hosts where the JIT-AOT twin gate ran (HF-371). Any other
@@ -92,35 +74,6 @@ def _unsupported_jit_construct(
     if has_external_native_artifacts:
         return "external native package artifacts (they need the system linker)"
     return None
-
-
-class _HashingWriter:
-    """Hash every byte on its way to the file."""
-
-    def __init__(self, handle: BinaryIO) -> None:
-        self._handle = handle
-        self.digest = hashlib.sha256()
-
-    def write(self, data: bytes) -> int:
-        self.digest.update(data)
-        return self._handle.write(data)
-
-
-def _publish_program(path: Path, ir: Any) -> str:
-    staged = file_publication.staged_file_path(
-        path, purpose="jit-program", suffix=JIT_PROGRAM_SUFFIX
-    )
-    try:
-        with staged.open("xb") as handle:
-            writer = _HashingWriter(handle)
-            write_backend_ir(writer, ir)
-            handle.flush()
-            os.fsync(handle.fileno())
-        file_publication.durable_namespace_replace(staged, path)
-    except BaseException:
-        staged.unlink(missing_ok=True)
-        raise
-    return writer.digest.hexdigest()
 
 
 def _run_jit_pipeline(
@@ -256,8 +209,7 @@ def _run_jit_pipeline(
         )
     except (OSError, RuntimeError, ValueError) as exc:
         return _fail(str(exc), json_output, command="build")
-    launch_manifest = output_layout.output_artifact
-    program = jit_program_path(launch_manifest)
+    image = output_layout.output_artifact
     plan = NativeLaunchPlan.for_program(
         resolved_capability_policy=prepared_build_config.resolved_capability_policy,
         compiled_source_paths=(
@@ -269,13 +221,10 @@ def _run_jit_pipeline(
     try:
         # The published program must be the one these sources lowered to.
         prepared_frontend_pipeline_bundle.module_source_catalog.validate()
-        program_sha256 = _publish_program(program, prepared_backend_ir.ir)
-        _atomic_write_json(
-            launch_manifest,
-            {
-                "schema": JIT_LAUNCH_SCHEMA,
-                "program": str(program),
-                "program_sha256": program_sha256,
+        publish_jit_image(
+            image,
+            runner=runner,
+            header={
                 "runtime_image": str(runtime_image),
                 "backend_environment": dict(sorted(backend_environment.items())),
                 "compiler_diagnostics": (
@@ -285,17 +234,17 @@ def _run_jit_pipeline(
                 ),
                 "launch": plan.manifest_payload(),
             },
-            indent=2,
+            ir=prepared_backend_ir.ir,
         )
     except (OSError, ValueError) as exc:
         return _fail(
-            f"Cannot publish the JIT program: {exc}", json_output, command="build"
+            f"Cannot publish the JIT image: {exc}", json_output, command="build"
         )
     data = _build_common_build_json_data(
         target=target,
         target_triple=output_layout.target_triple,
         source_path=resolved_build_entry.source_path,
-        output=launch_manifest,
+        output=image,
         deterministic=deterministic,
         trusted=trusted,
         resolved_capability_policy=prepared_build_config.resolved_capability_policy,
@@ -308,11 +257,10 @@ def _run_jit_pipeline(
             prepared_build_preamble.rust_cpu is RustCpuPolicy.NATIVE
         ),
     )
-    data["consumer_output"] = str(launch_manifest)
-    data["messages"] = [f"Prepared JIT program {launch_manifest}"]
+    data["consumer_output"] = str(image)
+    data["messages"] = [f"Prepared JIT image {image}"]
     data["artifacts"] = {
-        "launch_manifest": str(launch_manifest),
-        "program": str(program),
+        "jit_image": str(image),
         "runner": str(runner),
         "runtime_image": str(runtime_image),
     }

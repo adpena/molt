@@ -16,14 +16,16 @@ impl NativeApplicationStats {
 pub(crate) fn prepare_native_application_ir(
     ir: &mut SimpleIR,
     options: &NativeApplicationArtifactOptions<'_>,
-) {
-    // One application sequence for direct backend runs, daemon requests and
-    // the development JIT runner.
+) -> std::io::Result<()> {
+    // One admission and application sequence for direct backend runs, daemon
+    // requests and the development JIT runner.
     molt_backend::prepare_native_application_ir(
         ir,
         options.module_registry.as_ref(),
+        &options.code_slots,
         options.stdlib_split_enabled,
-    );
+    )
+    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error.to_string()))
 }
 
 pub(crate) fn native_application_stats(ir: &SimpleIR) -> NativeApplicationStats {

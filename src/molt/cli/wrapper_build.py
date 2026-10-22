@@ -35,7 +35,7 @@ from molt.cli.cache_fingerprints import (
 )
 from molt.cli.compiler_identity import CompilerIdentityError
 from molt.cli.rust_cpu_policy import resolve_rust_cpu_policy
-from molt.cli.run_tier import JIT_LAUNCH_SUFFIX, RunTier
+from molt.cli.run_tier import JIT_IMAGE_SUFFIX, RunTier
 from molt.backend_executable_names import backend_features_for_target
 from molt.cli.command_runtime import _CLI_MEMORY_GUARD_PREFIX, _run_completed_command
 from molt.cli.config_resolution import (
@@ -121,18 +121,18 @@ def _wrapper_build_default_binary_path(
 def _wrapper_build_default_consumer_path(
     resolved_build_entry: _ResolvedBuildEntry, *, tier: RunTier
 ) -> Path:
-    """The default artifact a run tier consumes: an executable or a JIT launch."""
+    """The default artifact a run tier consumes: an executable or a JIT image."""
     binary = _wrapper_build_default_binary_path(resolved_build_entry)
     match tier:
         case RunTier.AOT:
             return binary
         case RunTier.JIT:
-            return binary.with_name(binary.name + JIT_LAUNCH_SUFFIX)
+            return binary.with_name(binary.name + JIT_IMAGE_SUFFIX)
 
 
-# The files a cached JIT launch runs besides its manifest. A cached launch is
-# valid only while every one still exists.
-_JIT_LAUNCH_ARTIFACTS = ("program", "runner", "runtime_image")
+# The files a cached JIT image runs besides itself. A cached launch is valid
+# only while every one still exists.
+_JIT_LAUNCH_ARTIFACTS = ("runner", "runtime_image")
 
 
 def _wrapper_build_cache_semantic_env(env: Mapping[str, str]) -> dict[str, str]:

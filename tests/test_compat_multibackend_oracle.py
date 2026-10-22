@@ -1057,13 +1057,13 @@ def test_jit_adapter_counts_a_runner_that_never_started_as_a_failed_build(
             compat_backends.TimeoutPolicy.from_environment({}), None
         ),
     )
-    launch = tmp_path / "case_molt.jit.json"
+    image = tmp_path / f"case_molt{run_tier.JIT_IMAGE_SUFFIX}"
     runs: list[list[str]] = []
 
     def guarded(command, **kwargs):
         if kwargs["prefix"] == "MOLT_COMPAT_JIT_BUILD":
-            assert command[command.index("--output") + 1] == str(launch)
-            launch.write_text("{}", encoding="utf-8")
+            assert command[command.index("--output") + 1] == str(image)
+            image.write_text("#!/bin/sh\n", encoding="utf-8")
             payload = {"data": {"artifacts": {"runner": "/bin/molt-jit"}}}
             return compat_backends.BackendResult(json.dumps(payload), "", 0)
         assert kwargs["prefix"] == "MOLT_COMPAT_JIT_RUN"
@@ -1077,7 +1077,8 @@ def test_jit_adapter_counts_a_runner_that_never_started_as_a_failed_build(
     result = compat_backends.JitAdapter()._build_and_run_owned(
         "case.py", context=context, out_dir=tmp_path
     )
-    assert len(runs) == 1 and runs[0][-2:] == ["--", str(launch)]
+    # argv[0] is the image, so the program's sys.executable re-runs it.
+    assert len(runs) == 1 and runs[0][-2:] == ["--", str(image)]
     assert result.returncode == 125
     assert result.build_failed is not started
     assert "molt-jit: refused" in result.stderr

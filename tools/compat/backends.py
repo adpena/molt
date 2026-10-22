@@ -66,7 +66,11 @@ from molt.llvm_toolchain import (
     verify_available_llvm_toolchain,
 )
 from molt.capability_policy import expand_capabilities, split_capability_tokens
-from molt.cli.run_tier import jit_program_started
+from molt.cli.run_tier import (
+    JIT_IMAGE_SUFFIX,
+    jit_program_started,
+    jit_runner_argv,
+)
 from molt.dx import scratch_dir
 from molt.target_python import TargetPythonVersion, _parse_target_python_version
 from molt.wasm_artifact import wasm_runtime_manifest_path
@@ -1147,14 +1151,14 @@ class JitAdapter:
         self, file_path: str, *, context: BackendExecutionContext, out_dir: Path
     ) -> BackendResult:
         env = _cross_build_env(context)
-        launch = out_dir / f"{Path(file_path).stem}_molt.jit.json"
+        image = out_dir / f"{Path(file_path).stem}_molt{JIT_IMAGE_SUFFIX}"
         build = _guarded_run(
             _build_cmd(
                 file_path,
                 "native",
                 out_dir,
                 context,
-                extra_build_args=["--emit", "jit", "--output", str(launch), "--json"],
+                extra_build_args=["--emit", "jit", "--output", str(image), "--json"],
             ),
             prefix="MOLT_COMPAT_JIT_BUILD",
             env=env,
@@ -1176,22 +1180,14 @@ class JitAdapter:
             )
             candidate = artifacts.get("runner") if isinstance(artifacts, dict) else None
             runner = candidate if isinstance(candidate, str) else None
-        if build.returncode != 0 or runner is None or not launch.exists():
+        if build.returncode != 0 or runner is None or not image.exists():
             return build.as_build_failure(
-                detail="jit build produced no launch manifest",
+                detail="jit build produced no JIT image",
                 fallback="jit build failed",
             )
         receipt = out_dir / "jit-start-receipt.json"
         run = _guarded_run(
-            [
-                runner,
-                "--launch",
-                str(launch),
-                "--start-receipt",
-                str(receipt),
-                "--",
-                str(launch),
-            ],
+            jit_runner_argv(runner, str(image), [], start_receipt=str(receipt)),
             prefix="MOLT_COMPAT_JIT_RUN",
             env=env,
             budget=context.budget,
