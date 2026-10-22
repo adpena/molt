@@ -32,6 +32,7 @@ from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import fail as _fail
 from molt.cli.output import json_payload as _json_payload
 from molt.default_paths import _default_molt_cache
+from molt.python_environment_location import environment_python_path
 
 MOLT_VENV_DIR = ".molt-venv"
 _CLI_MEMORY_GUARD_PREFIX = _process_guard.CLI_MEMORY_GUARD_PREFIX
@@ -255,7 +256,10 @@ def _ensure_molt_venv(
     if not venv.resolve().is_relative_to(project_root.resolve()):
         raise RuntimeError(f"Project environment leaves its project root: {venv}")
     if venv.exists():
-        if not (venv / "pyvenv.cfg").is_file() or not _molt_venv_python(venv).is_file():
+        if (
+            not (venv / "pyvenv.cfg").is_file()
+            or not environment_python_path(venv).is_file()
+        ):
             raise RuntimeError(f"Invalid project environment: {venv}")
         return venv, False
     uv = _ensure_uv()
@@ -285,11 +289,6 @@ def _ensure_molt_venv(
             f"uv venv creation failed (exit {result.returncode}):\n{result.stderr}"
         )
     return venv, True
-
-
-def _molt_venv_python(venv: Path) -> Path:
-    # The compiler host, not the guest target, owns the dependency environment.
-    return venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
 
 def _project_dependency_env(venv: Path) -> ProcessEnvironment:
@@ -359,7 +358,7 @@ def install(
             "pip",
             "sync" if synchronize else "install",
             "--python",
-            str(_molt_venv_python(venv)),
+            str(environment_python_path(venv)),
         ]
         env = _project_dependency_env(venv)
         # uv owns includes, constraints, hashes, markers and transitive closure.
@@ -377,7 +376,7 @@ def install(
                         "--project",
                         str(project_root),
                         "--python",
-                        str(_molt_venv_python(venv)),
+                        str(environment_python_path(venv)),
                         "--no-default-groups",
                         "--no-emit-project",
                         "--output-file",
@@ -406,7 +405,7 @@ def install(
                         "pip",
                         "compile",
                         "--python",
-                        str(_molt_venv_python(venv)),
+                        str(environment_python_path(venv)),
                         "--output-file",
                         str(locked),
                         str(project_lock),
@@ -500,7 +499,7 @@ def install_add(
             "--project",
             str(project_root),
             "--python",
-            str(_molt_venv_python(venv)),
+            str(environment_python_path(venv)),
             "--no-install-project",
             *packages,
         ]

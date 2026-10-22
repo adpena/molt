@@ -118,6 +118,10 @@ prefer live code, tests, measurements and explicit user direction over stale pro
 - Generated files are projections; change the source or generator and regenerate in the same arc.
 - Reuse project commands, repairing stale, ambiguous or wasteful helpers. The frontend is CPython 3.12+, including 3.15;
   reuse uv selection and record its version separately from the CLI/project target (`docs/getting-started.md`).
+- Resolve versioned CPython oracles through the interpreter/source authorities and verify the exact
+  reference identity. Never use project-scoped `uv run --python` to switch minors in an active
+  checkout: it replaces the shared environment. Extra environments need an explicitly owned
+  `UV_PROJECT_ENVIRONMENT`; close existing readers before changing an environment.
 - Keep operational history, incidents, long procedures and tutorials out of this always-loaded file;
   put durable detail in the owning design, spec, runbook, skill, test or live board. Keep per-run
   logs, scratch plans and worker handoffs out of tracked source (`docs/ROOT_LAYOUT.md`); preserve
