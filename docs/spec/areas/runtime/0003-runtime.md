@@ -387,9 +387,14 @@ Physical shape declarations in `runtime/heap_kinds.toml` explicitly state whethe
 their payload reserves shared class fields and a dictionary tail. The generated
 `ObjectShapeId::has_class_fields` policy controls field access, reset and tracing;
 logical class membership cannot turn a native capture, counter or pointer into
-instance storage. Iterator and task payloads own all their words. Native shapes
-with reserved dictionary tails and the separate native-instance field owner
-retain their existing storage contracts.
+instance storage. Task captures and the typed tee cursor/cache block own their
+complete payloads and reserve no dictionary tail. Iterator shapes with a reserved
+eight-byte tail after their native prefix retain that tail under the common
+class lifecycle, even when Python attribute creation is disabled. In particular,
+groupby's five owned values, state word and borrowed active-grouper identity
+precede its dictionary at byte 56 of the 64-byte payload; the borrowed identity
+must never become a dictionary owner. Other native shapes with reserved tails
+and the separate native-instance field owner retain their storage contracts.
 
 `itertools.tee` readers own a `(block, offset)` cursor. Each block is a separate
 GC-tracked runtime object owning its source iterator, up to 57 cached values,

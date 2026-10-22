@@ -963,133 +963,133 @@ name = "ITERTOOLS_CHAIN"
 id = 96
 family = "itertools"
 resource_slot0 = "none"
-class_fields = false
+class_fields = true
 
 [[object_shape]]
 name = "ITERTOOLS_ISLICE"
 id = 97
 family = "itertools"
 resource_slot0 = "none"
-class_fields = false
+class_fields = true
 
 [[object_shape]]
 name = "ITERTOOLS_REPEAT"
 id = 98
 family = "itertools"
 resource_slot0 = "none"
-class_fields = false
+class_fields = true
 
 [[object_shape]]
 name = "ITERTOOLS_COUNT"
 id = 99
 family = "itertools"
 resource_slot0 = "none"
-class_fields = false
+class_fields = true
 
 [[object_shape]]
 name = "ITERTOOLS_CYCLE"
 id = 100
 family = "itertools"
 resource_slot0 = "none"
-class_fields = false
+class_fields = true
 
 [[object_shape]]
 name = "ITERTOOLS_ACCUMULATE"
 id = 101
 family = "itertools"
 resource_slot0 = "none"
-class_fields = false
+class_fields = true
 
 [[object_shape]]
 name = "ITERTOOLS_BATCHED"
 id = 102
 family = "itertools"
 resource_slot0 = "none"
-class_fields = false
+class_fields = true
 
 [[object_shape]]
 name = "ITERTOOLS_COMBINATIONS"
 id = 103
 family = "itertools"
 resource_slot0 = "none"
-class_fields = false
+class_fields = true
 
 [[object_shape]]
 name = "ITERTOOLS_COMBINATIONS_WITH_REPLACEMENT"
 id = 104
 family = "itertools"
 resource_slot0 = "none"
-class_fields = false
+class_fields = true
 
 [[object_shape]]
 name = "ITERTOOLS_COMPRESS"
 id = 105
 family = "itertools"
 resource_slot0 = "none"
-class_fields = false
+class_fields = true
 
 [[object_shape]]
 name = "ITERTOOLS_DROPWHILE"
 id = 106
 family = "itertools"
 resource_slot0 = "none"
-class_fields = false
+class_fields = true
 
 [[object_shape]]
 name = "ITERTOOLS_FILTERFALSE"
 id = 107
 family = "itertools"
 resource_slot0 = "none"
-class_fields = false
+class_fields = true
 
 [[object_shape]]
 name = "ITERTOOLS_PAIRWISE"
 id = 108
 family = "itertools"
 resource_slot0 = "none"
-class_fields = false
+class_fields = true
 
 [[object_shape]]
 name = "ITERTOOLS_GROUPBY"
 id = 109
 family = "itertools"
 resource_slot0 = "none"
-class_fields = false
+class_fields = true
 
 [[object_shape]]
 name = "ITERTOOLS_GROUPBY_ITER"
 id = 110
 family = "itertools"
 resource_slot0 = "none"
-class_fields = false
+class_fields = true
 
 [[object_shape]]
 name = "ITERTOOLS_PRODUCT"
 id = 111
 family = "itertools"
 resource_slot0 = "none"
-class_fields = false
+class_fields = true
 
 [[object_shape]]
 name = "ITERTOOLS_PERMUTATIONS"
 id = 112
 family = "itertools"
 resource_slot0 = "none"
-class_fields = false
+class_fields = true
 
 [[object_shape]]
 name = "ITERTOOLS_STARMAP"
 id = 113
 family = "itertools"
 resource_slot0 = "none"
-class_fields = false
+class_fields = true
 
 [[object_shape]]
 name = "ITERTOOLS_TAKEWHILE"
 id = 114
 family = "itertools"
 resource_slot0 = "none"
-class_fields = false
+class_fields = true
 
 [[object_shape]]
 name = "ITERTOOLS_TEE"
@@ -1103,7 +1103,7 @@ name = "ITERTOOLS_ZIP_LONGEST"
 id = 116
 family = "itertools"
 resource_slot0 = "none"
-class_fields = false
+class_fields = true
 
 [[object_shape]]
 name = "ITERTOOLS_TEE_BLOCK"
