@@ -9515,7 +9515,7 @@
       "local.dev-tooling.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/tools/test_setup_project_inputs.py tests/test_molt_dev.py tests/tools/test_claim_lane.py tests/test_molt_dev_lanes.py tests/test_checkout_provisioning.py tests/tools/test_rust_toolchain_contract.py tests/tools/test_check_rustfmt.py tests/tools/test_check_changed_clippy.py tests/test_cargo_workspace.py",
       "local.docs-architecture.0": "python tools/check_docs_architecture.py",
       "local.ecosystem-compat.0": "python tools/check_ecosystem_compat.py",
-      "local.edgebox-typescript.0": "python tools/guarded_exec.py --prefix MOLT_TEST --cwd examples/edgebox/packages/edgebox-cloudflare --timeout 120 -- corepack npm run check",
+      "local.edgebox-typescript.0": "python tools/guarded_exec.py --cwd examples/edgebox/packages/edgebox-cloudflare --timeout 120 -- corepack npm run check",
       "local.encoding-diagnostics.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_encoding_gate.py",
       "local.environment-registry-audit.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/tools/test_check_environment_registry.py",
       "local.findings-registry.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_findings_registry.py",
@@ -11694,7 +11694,7 @@
         ],
         "description": "Type-check the actual Edgebox Worker API against its locked dependencies.",
         "gates": [
-          "python tools/guarded_exec.py --prefix MOLT_TEST --cwd examples/edgebox/packages/edgebox-cloudflare --timeout 120 -- corepack npm run check"
+          "python tools/guarded_exec.py --cwd examples/edgebox/packages/edgebox-cloudflare --timeout 120 -- corepack npm run check"
         ],
         "globs": [
           "examples/edgebox/packages/edgebox-cloudflare/**",
