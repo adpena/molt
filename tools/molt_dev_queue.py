@@ -616,13 +616,17 @@ def _runner_may_land(state: Path, *, newest: bool) -> bool:
     ``pid`` once the supervisor runs; before that only the newest runner can
     still be starting. The supervisor is the launching ``land`` process's
     child, so after it dies it stays an unreaped zombie of the process that
-    waits here: the probe counts a zombie dead and never reaps.
+    waits here: the probe counts a zombie dead and never reaps. A ``pid`` file
+    that names no process (0, negative, beyond the OS width) proves no exit,
+    so it reads as one not yet written.
     """
     if (state / "rc").is_file():
         return False
     try:
         pid = int((state / "pid").read_text(encoding="utf-8"))
     except (OSError, ValueError):
+        return newest
+    if not process_model.valid_pid(pid):
         return newest
     try:
         if not process_model.pid_alive(pid):
@@ -744,6 +748,8 @@ def _land_one_batch(args: argparse.Namespace, git, paths) -> None:
             return
         (request,) = candidate.included
         record_result(paths, request, status=LandingStatus.FAILED, detail=str(exc))
+        # The runner's log is where an operator looks first: say why.
+        _fail(f"{request.id} failed: {exc}")
         retire_batch_plan(paths, batch)
         return
     landed = drv.require_git_object_id(sandbox.head_sha(), label="landed batch")

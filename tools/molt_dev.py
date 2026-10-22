@@ -141,7 +141,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -164,7 +164,6 @@ from tools.molt_dev_common import (  # noqa: E402
     EXIT_FAIL,
     EXIT_OK,
     EXIT_USAGE,
-    CandidateFailure,
     DriverError,
     PublicationRace,
     RebaseConflict,
@@ -183,7 +182,6 @@ from tools.molt_dev_common import (  # noqa: E402
 from tools import molt_dev_change_ids, molt_dev_controller, molt_dev_retire  # noqa: E402
 
 from tools.git_identity import (  # noqa: E402
-    changed_paths,
     clean_checkout_status_arguments,
     require_git_object_id,
 )
@@ -205,9 +203,6 @@ from tools.molt_dev_queue import add_queue_arguments  # noqa: E402
 from tools import venv_exec  # noqa: E402
 from tools.memory_guard_core.repro_context import argv_head  # noqa: E402
 from tools.molt_dev_gates import (  # noqa: E402
-    GateConfig,
-    GateRule,
-    SelectedGate,
     GateOutcome,
     GateRuntime,
     admit_selected_output_capacity,
@@ -219,6 +214,7 @@ from tools.molt_dev_gates import (  # noqa: E402
     retire_gate_logs,
     run_selected_gates,
 )
+from tools.molt_dev_policy import GateConfig, select_landing_gates  # noqa: E402
 from tools.dirty_tree_policy import (  # noqa: E402
     DEFAULT_DIRTY_TREE_IGNORE_GLOBS as DEFAULT_IGNORE_GLOBS,
     is_ignored as _is_ignored,
@@ -227,8 +223,6 @@ from tools.dirty_tree_policy import (  # noqa: E402
 # --------------------------------------------------------------------------
 # Constants / locations
 # --------------------------------------------------------------------------
-
-GATES_CONFIG_NAME = "proof_plan.toml"
 
 # Recovery marker prefix for secure-wip commits, greppable so a salvaged WIP is
 # never mistaken for a deliberate landing.
@@ -421,7 +415,7 @@ def _tracked_dirty(git: Git, ignore_globs: tuple[str, ...]) -> list[tuple[str, s
 
 
 # --------------------------------------------------------------------------
-# Content marker byte membership
+# Gate manifest (change-class -> required gates)
 # --------------------------------------------------------------------------
 
 
@@ -858,47 +852,6 @@ def _restore_unpublished_citations(repo: Path, progress: _IntegrationProgress) -
         return
     git._run(["reset", "--quiet", "--keep", original])
     _warn(f"landing failed: restored {git.short(original)} with its change citations")
-
-
-def select_landing_gates(
-    git: Git,
-    repo: Path,
-    commit: str,
-    upstream: str,
-    *,
-    extra: list[str],
-) -> tuple[str, GateConfig, list[str], list[SelectedGate], list[GateRule]]:
-    """The policy, touched paths and bound gates of ``commit`` over ``upstream``.
-
-    Policy comes from the same immutable commit whose clean source executes it.
-    """
-    policy = git._run(["show", f"{commit}:tools/{GATES_CONFIG_NAME}"]).stdout
-    try:
-        config = GateConfig.parse(
-            policy, f"{commit}:tools/{GATES_CONFIG_NAME}", root=repo
-        )
-    except DriverError as exc:
-        # The selected commit's own gate policy is invalid.
-        raise CandidateFailure(str(exc), code=exc.code) from exc
-    touched = changed_paths(
-        upstream, commit, run_git=lambda arguments: git._run(arguments).stdout
-    )
-    gates, matched_rules = config.select(touched, extra=extra)
-    from tools.proof_plan import bind_local_gate_command
-
-    try:
-        gates = [
-            replace(
-                gate,
-                command=bind_local_gate_command(gate.command, upstream_commit=upstream),
-            )
-            for gate in gates
-        ]
-    except ValueError as exc:
-        raise CandidateFailure(
-            f"invalid local gate binding; executed=0: {exc}"
-        ) from exc
-    return policy, config, touched, gates, matched_rules
 
 
 def gate_environment(repo: Path, *, session_id: str) -> ProcessEnvironmentBuilder:

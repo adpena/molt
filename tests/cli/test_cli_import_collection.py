@@ -29527,7 +29527,7 @@ def test_backend_codegen_env_digest_tracks_codegen_knobs(
     assert link_a["hash"] != link_b["hash"]
 
 
-def test_backend_daemon_config_digest_and_socket_path_include_config(
+def test_backend_daemon_socket_path_follows_process_settings_only(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -29537,10 +29537,16 @@ def test_backend_daemon_config_digest_and_socket_path_include_config(
     digest_a = BACKEND_EXECUTION._backend_daemon_config_digest(
         tmp_path, "dev-fast", env=compiler_env
     )
-    digest_b = BACKEND_EXECUTION._backend_daemon_config_digest(
+    # Codegen settings travel in each request, so one daemon serves both.
+    shared = BACKEND_EXECUTION._backend_daemon_config_digest(
         tmp_path,
         "dev-fast",
         env={**compiler_env, "MOLT_BACKEND_MIN_FUNCTION_ALIGNMENT_LOG2": "2"},
+    )
+    assert shared == digest_a
+    # Another compiler is another process.
+    digest_b = BACKEND_EXECUTION._backend_daemon_config_digest(
+        tmp_path, "dev-fast", env={"MOLT_BACKEND_COMPILER_FINGERPRINT": "b" * 64}
     )
     assert digest_a != digest_b
 
@@ -29566,7 +29572,7 @@ def test_backend_daemon_config_digest_and_socket_path_include_config(
     assert linker_digest_a == linker_digest_b
 
 
-def test_backend_daemon_config_digest_tracks_batch_op_budget(
+def test_backend_daemon_config_digest_ignores_request_batch_op_budget(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -29576,7 +29582,7 @@ def test_backend_daemon_config_digest_tracks_batch_op_budget(
     monkeypatch.setenv("MOLT_BACKEND_BATCH_OP_BUDGET", "8192")
     digest_b = BACKEND_EXECUTION._backend_daemon_config_digest(tmp_path, "dev-fast")
 
-    assert digest_a != digest_b
+    assert digest_a == digest_b
 
 
 def test_backend_daemon_config_digest_tracks_backend_freshness(

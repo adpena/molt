@@ -12,6 +12,23 @@ from tools.proof_queue_pkg import custody
 from tests.process_guard_common import install_module_view
 
 
+@pytest.mark.parametrize(
+    ("pid", "valid"),
+    [
+        (1, True),
+        (2**31, True),
+        (0xFFFFFFFF, True),
+        (0, False),
+        (-1, False),
+        (True, False),
+        (1.0, False),
+        (0x100000000, False),
+    ],
+)
+def test_a_windows_pid_is_a_positive_int_within_a_dword(pid, valid) -> None:
+    assert windows_process_api.valid_windows_pid(pid) is valid
+
+
 def test_process_query_api_rejects_non_windows_before_loading(monkeypatch) -> None:
     windows_process_api.process_query_api.cache_clear()
     install_module_view(monkeypatch, "sys", sys, windows_process_api, platform="linux")
@@ -258,7 +275,9 @@ def test_queue_liveness_retains_unknown_native_query(
     monkeypatch.setattr(custody.process_model, "pid_alive", query)
     assert custody._guard_process_live(123, None) is expected
     assert queries == [123]
-    assert not custody._guard_process_live(0, None)
+    # A corrupt pid proves no exit: the row keeps its run, and nothing is asked.
+    for corrupt in (0, -5, 2**32, 2**63):
+        assert custody._guard_process_live(corrupt, None)
     assert queries == [123]
 
 

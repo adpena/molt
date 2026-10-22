@@ -105,7 +105,10 @@ controller  →  fetch  →  rebase  →  verify-commits  →  cite  →  marker
    post-rebase tree via python file ops. A mismatch fails before push.
 6. **gates (hazard 10)** — the set of touched paths selects gate commands from
    the selected commit's `tools/proof_plan.toml` (change-class → gates). Always
-   gates and every matching rule run. A non-zero gate or source/HEAD drift halts
+   gates and every matching rule run. An edit to the plan file itself selects
+   the rules that claim an entry it changed (`plan_entities`) and every rule it
+   changed ([design](../design/landing_queue.md#selecting-by-plan-entry-not-by-the-plan-file-hf-457)).
+   A non-zero gate or source/HEAD drift halts
    the run **before push**. `--extra-gate` only adds arc-specific gates. There is
    no gate-skipping or alternate-manifest landing route.
    Prerequisite failures are reported together. Content-resolver and version-query

@@ -180,6 +180,20 @@ def codegen_environment_inputs(
     )
 
 
+def daemon_process_environment_inputs(env: Mapping[str, str]) -> dict[str, str | bool]:
+    """Project the settings that fix one backend daemon process.
+
+    The daemon strips every request-scoped setting from its environment when
+    it starts (``serve_requests``) and reads each request's settings from that
+    request, so one daemon serves any mix of programs and codegen settings.
+    Only process-scoped roles may name it: a request-scoped value in its
+    identity starts one daemon per value, such as one per entry module.
+    """
+    return _role_inputs(
+        env, [role for role in _CATALOG.values() if not role.request_scoped]
+    )
+
+
 def native_object_environment_inputs(env: Mapping[str, str]) -> dict[str, str | bool]:
     """Project the settings one self-contained native object job reads.
 
@@ -212,10 +226,12 @@ class CodegenSelection:
     """Backend-process inputs that molt resolves from flags and configuration.
 
     The CLI never writes these to ``os.environ``. A build carries one selection
-    and projects it into the backend process environment, and into every cache
-    key and daemon identity that binds that environment, through
-    ``environment``. An unset optional field leaves the caller's value of that
-    variable in place: ``MOLT_PORTABLE=0`` still opts in to host-CPU code.
+    and projects it into the backend's request environment, and into every
+    cache key that binds that environment, through ``environment``. These
+    settings are request-scoped, so they never name a daemon process
+    (``daemon_process_environment_inputs``). An unset optional field leaves
+    the caller's value of that variable in place: ``MOLT_PORTABLE=0`` still
+    opts in to host-CPU code.
     The projection always names the backend's debug artifact directory
     (`backend_debug_artifact_dir`); the backend never derives one itself.
     """
