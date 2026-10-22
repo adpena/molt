@@ -283,7 +283,7 @@ def capture_observations(target: str, executable: Path) -> dict[str, object]:
     completed = CommandExecutor.for_file(__file__).run(
         [str(executable), "-I", "-c", OBSERVATION_PROGRAM],
         capture_output=True,
-        text=True,
+        encoding="utf-8",
         check=True,
         timeout=30,
     )
