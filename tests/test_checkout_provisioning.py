@@ -330,6 +330,8 @@ def test_the_same_volume_store_is_the_one_dx_chooses(
 def test_default_and_explicit_inputs_use_the_same_real_provisioner(
     checkout: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
+    # This fixture provisions generic trees, without an editable distribution.
+    (checkout / "pyproject.toml").write_text("[tool.fixture]\n", encoding="utf-8")
     (checkout / "named_provision.py").write_text(
         "import sys\nfrom pathlib import Path\n"
         "name = sys.argv[1]\n"

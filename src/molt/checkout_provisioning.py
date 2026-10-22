@@ -627,7 +627,7 @@ def _uv_editable_project(spec: LockedTree) -> str | None:
     if not (spec.tree / spec.sentinel).is_file():
         return None
     from molt.python_environment_identity import python_identity_probe_arguments
-    from molt.cli.deps import _molt_venv_python
+    from molt.python_environment_location import environment_python_path
 
     try:
         project = tomllib.loads(
@@ -637,7 +637,7 @@ def _uv_editable_project(spec: LockedTree) -> str | None:
         if not isinstance(name, str):
             return None
         argv = [
-            str(_molt_venv_python(spec.tree)),
+            str(environment_python_path(spec.tree)),
             *python_identity_probe_arguments(
                 ("--editable-project", str(spec.tree), name), no_site=True
             ),

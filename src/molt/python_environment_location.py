@@ -23,6 +23,15 @@ from molt.python_native_locations import loaded_native_module_paths
 PYTHON_ENVIRONMENT_LOCATION_SCHEMA = "molt.python-environment-location.v1"
 
 
+def environment_python_path(root: Path) -> Path:
+    """The host interpreter entrypoint of a standard Python environment.
+
+    The environment entrypoint preserves its prefix and installed packages;
+    resolving its symlink would select the base interpreter instead.
+    """
+    return root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+
+
 def editable_direct_url_path(data: bytes, *, distribution: str) -> Path:
     """Decode one strict local editable PEP 610 source authority."""
 
