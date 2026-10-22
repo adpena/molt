@@ -139,7 +139,9 @@ uv run --python 3.12 molt compare examples/hello.py
 macOS, and Linux invocation, see
 [build and run](docs/getting-started.md#build-and-run-hello-world). On macOS
 arm64, `molt run --tier jit` runs the program from memory with no object file,
-link or native executable; see [the JIT tier](docs/getting-started.md#run-from-memory-jit-tier).
+link or native executable. It compiles the whole program on every start, so it is
+slower than the default AOT tier for any program that imports `os`; see
+[the JIT tier](docs/getting-started.md#run-from-memory-jit-tier).
 
 Final-link reuse checks the complete output family against its receipt. Linked
 WASM deployment files are published together; failed builds preserve the previous

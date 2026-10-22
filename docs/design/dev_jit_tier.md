@@ -1,7 +1,8 @@
 # Development JIT tier: run without building
 
 Status: steps 1-3 and 5 implemented, 2026-10-21 (HF-371). Step 4 (lazy compilation) and
-"Incremental patching" remain. Verified cell: macOS arm64.
+"Incremental patching" remain. Verified cell: macOS arm64. The tier is slower than AOT
+for any program that imports `os` ("Costs"), so it stays opt-in.
 
 ## Problem
 
@@ -98,14 +99,20 @@ function into a `cranelift_module::Module`; only the module that owns the code d
    Rust executable dead-strips every unreferenced `#[no_mangle]` runtime function, so the
    runtime cannot be linked into the runner and found by name. A closed, generated
    registry of backend runtime imports remains the structural fix for the first gap.
-4. **Lazy compilation.** Not implemented. The runner compiles the whole program before it
-   runs it, as cg_clif's current JIT mode does. Measured on the hello program (100
-   functions, 62,046 source ops, release runner): TIR and module preparation 556 ms,
-   Cranelift IR construction and machine code 292 ms, finalization 1.5 ms. Laziness can
-   save at most part of the 292 ms, for functions the run never reaches; module
-   initializers, the bulk of a small program, always run. Without JIT redefinition,
-   laziness needs Molt-owned call slots, the mechanism "Patched calls" needs too; it is
-   built once, there.
+4. **Lazy compilation.** Not implemented. It is the structural fix for the per-start
+   cost ("Costs"). The runner compiles the whole program, its stdlib closure included,
+   before it runs it, as cg_clif's current JIT mode does. `import os, sys` lowers to 832
+   functions (517,441 source ops); each start spends 4.1-5.2 s in IR passes and 2.7-2.8 s
+   in Cranelift (macOS arm64, load 10-12), mostly on functions the run never calls.
+   Leading JITs compile a function only when it is first called: HotSpot compiles no
+   method before it runs, V8 compiles JavaScript functions lazily and WebAssembly
+   functions with lazy Liftoff compilation on first call, and cg_clif's former lazy JIT
+   mode gave each function a Cranelift stub that compiled it on its first call. They
+   then reuse compiled code across starts through a content-keyed cache: V8's code cache
+   and Wasmtime's compilation cache key machine code by the bytes it was compiled from.
+   Molt needs both: call slots that Molt owns and a first call fills (`cranelift-jit`
+   0.137.0 has no redefinition, and "Patched calls" needs the same slots), and a cache of
+   each function's machine code keyed by its IR and the code generator's identity.
 5. **CLI.** `molt run --tier jit` (or `[tool.molt.run] tier = "jit"`) selects the JIT
    tier (`RunTier`); `aot` stays the default and `molt build` stays AOT. `molt build
    --emit jit` publishes one JIT image, `<name>_molt.jit`, after the shared frontend and
@@ -117,11 +124,27 @@ function into a `cranelift_module::Module`; only the module that owns the code d
    build's native-artifact custody check, which runs on the import plan before the
    frontend. WASM already runs under wasmtime, which is a JIT.
 
-   A `molt run` cache hit reuses a JIT image only while its key matches. The key adds
-   the runner's own source and locked-dependency identity (`_cache_fingerprint` for
-   `HostToolProduct.JIT`) to the backend and runtime identity an AOT key holds, so an
-   edit to the runner or its `cranelift-jit` stack rebuilds. A hit renews the retention
-   of the runner generation and the runtime image it runs.
+   A `molt run` cache hit reuses a JIT image only while its key matches. A JIT launch
+   runs the runner and never the backend compiler, so its key holds the runner's source
+   and locked-dependency identity (`_cache_fingerprint` for `HostToolProduct.JIT`) with
+   the runtime's, in place of the backend's an AOT key holds: an edit to the runner, its
+   `cranelift-jit` stack, a crate it builds on or a file such a crate's build reads
+   (`package.metadata.molt.build-inputs`, below) rebuilds. One fingerprint per key costs
+   271-320 ms warm (median, load 11), where the AOT key's costs 433-464 ms; the earlier
+   key, which added the runner's fingerprint to the backend's, cost 661-867 ms. A hit
+   checks and renews, under each store's lock, the runner generation and the runtime
+   image it runs; an entry that eviction removed is a miss.
+
+   **Build inputs outside a crate.** A crate declares the files outside its root that its
+   build script, `include_str!` or `#[path]` modules read in `[package.metadata.molt]
+   build-inputs`, relative to the crate as `cargo:rerun-if-changed` paths are
+   (`runtime/molt-ir/Cargo.toml` declares `src/molt/backend_environment.json`). Every
+   source closure that reaches the crate keys them: the runner, the backend, the native
+   runtime and the CPython ABI. After each build, Cargo's own reads (rustc dep-info and
+   build-script `rerun-if-changed` lines, `cargo_build_reads`) must lie inside the
+   closure, or the backend, runner or runtime generation is not published
+   (`uncovered_build_inputs`), as Bazel refuses an undeclared inclusion
+   (`docs/design/cargo_input_authority.md`).
 
 **JIT image.** A JIT image is one executable file (`src/molt/cli/jit_image.py` writes it,
 `runtime/molt-jit/src/image.rs` reads it):
@@ -135,13 +158,31 @@ exec <runner> --launch "$0" -- "$0" "$@"
 ```
 
 The CLI publishes it with one rename, so a header always belongs to its own program, even
-when two builds publish the same name at once. Its first two lines make it a program
+when two builds publish the same name at once. It is created executable through the umask,
+as a linker creates an AOT executable (0o777 less the umask). Its first two lines make it a program
 `execve` can start: `argv[0]`, and so `sys.executable`, names the image, which starts the
 same program again, as an AOT executable's path does. `subprocess.run([sys.executable,
 ...])` and spawn-mode `multiprocessing` (which executes `sys.argv[0]`) therefore work; each
 such start compiles the program again, a cost the AOT tier does not pay. `molt run` and the
 differential harness start the runner directly with the same command shape
 (`run_tier.jit_runner_argv`), adding `--start-receipt`.
+
+A directly started image runs `/bin/sh` first, so its program does not start in exactly
+the process state an AOT executable gets (HF-371 review v3, open until the runner becomes
+the image's interpreter): the shell sets `PWD` (to `/` when the inherited value is stale,
+and then drops `OLDPWD`) and increments `SHLVL`; `argv[0]` is the path the shell received
+(absolute when found through `PATH`, where an AOT executable keeps the name it was started
+by); and `ps` names the runner, not the image. `molt run` and the harness start the runner
+directly and see none of these differences.
+
+An image is a development artifact tied to the checkout that built it. Its header names
+the runner generation, the runtime image and the runtime callable-symbol table in that
+checkout's Cargo target directory, and running the image renews none of them. `molt run
+--tier jit` and `molt build --emit jit` renew them; after 24 hours with neither, a later
+build may evict them, and removing the Cargo target directory removes them. The image
+then fails: `/bin/sh`
+cannot execute the runner (exit 126 or 127, naming it), or the runner cannot load the
+runtime image (exit 125). `tests/cli/test_jit_run_tier.py` proves the first case.
 
 **Launch.** `NativeLaunchPlan` owns a program's launch facts: the resolved capability
 environment and `MOLT_EXECUTION_TARGET`, external runtime module roots, and the compiled
@@ -192,6 +233,10 @@ because the JIT tier already owns its program's call graph:
 
 ## Costs
 
+The JIT tier is slower than the AOT tier for any program that imports `os`, and it holds
+about 1 GB more memory while the program runs. It stays opt-in (`--tier jit`) until it
+reuses compiled stdlib code, as an AOT build does.
+
 - Removed per edit-run: object emission, the runtime-archive link, output publication,
   output signing, and first-link work for new programs.
 - Added once per toolchain: the runner build (the same order as the backend binary).
@@ -199,39 +244,62 @@ because the JIT tier already owns its program's call graph:
   `stdlib_micro` dev archive on macOS arm64; 37 MiB image). The images of one runtime
   directory form a generation store (`generation_store.py`): an image no build or cached
   launch used for 24 hours leaves at the next image publication.
-- Per run: process start, one read of the JIT image, the keeper fork when compiler
-  output is captured, runtime image load (3.5 ms), program decode (13 ms for the 1.1 MB
-  hello program) and compilation of the whole program, stdlib included (852 ms for
-  hello). An AOT build reuses a cached shared-stdlib object; the JIT tier compiles those
-  functions on every run, and again in every process that re-runs the image (a spawned
-  `multiprocessing` worker, a `subprocess` of `sys.executable`).
+- Per start: process start, one read of the JIT image, the keeper fork when compiler
+  output is captured, the runtime image load, the program decode, and compilation of the
+  whole program, its stdlib closure included. An AOT build reuses a cached shared-stdlib
+  object; the JIT tier compiles those functions on every start, and again in every
+  process that starts the image again (a spawned `multiprocessing` worker, a
+  `subprocess` of `sys.executable`). The compiler's heap and the image bytes stay resident
+  while the program runs.
 - Not removed: frontend lowering on edited modules, backend IR preparation (HF-266) and
-  toolchain probes (HF-357). Those lanes run in parallel with this one.
+  toolchain probes (HF-357).
 
-Measured on macOS arm64, 2026-10-21, warm toolchain, host load average 10-14, five runs
-each (medians):
+Measured on macOS arm64, 2026-10-21, release runner, warm toolchain. Per start of one
+image, by cost bucket (`MOLT_BACKEND_TIMING=1`, `/usr/bin/time -l`; three starts at load
+10-12, and the v3 review's starts at load 8-16):
 
-| `molt run` of a 13-line program | AOT | JIT |
+| Bucket, per start | `print(42)` (100 functions, 62,046 ops) | `import os, sys` (832 functions, 517,441 ops) |
 | --- | --- | --- |
-| After a one-line edit, wall | 8.52 s | 6.20 s |
-| of it, build phase | 6.03 s | 3.38 s |
-| of it, run phase | 0.43 s | 1.17 s |
-| New program, wall | 7.95 s | 6.68 s |
+| Runtime image load | 3.5 ms | 3-154 ms (154 ms cold) |
+| Program decode | 13 ms | 85-118 ms |
+| IR passes (TIR, module preparation) | 556 ms | 4.11-5.24 s |
+| Cranelift codegen | 292 ms | 2.71-2.78 s |
+| JIT finalize (link) | 1.5 ms | 13 ms |
+| Compile, total | 0.73-1.13 s | 6.84-8.02 s (9.42-10.17 s at load 8-16) |
+| Start to exit, wall | 0.86-1.92 s | 7.36-9.34 s (10.0-10.7 s at load 8-16) |
+| Peak RSS | 168 MB | 0.94-0.97 GB (0.97-1.01 GB) |
+| The AOT executable, wall and peak RSS | | 0.27-0.35 s, 23 MB |
 
-The rest of each wall time (2.1 s AOT, 1.7 s JIT) falls outside the timed build and run
-phases; this lane did not attribute it. The JIT tier removes the backend
-object, link and publication work from the build phase and pays the program's compilation
-in the run phase.
+Steady RSS while a program that imports `subprocess` runs: 1,331,712 KiB under JIT,
+28,416 KiB under AOT (v3 review). Through `molt run` (v3 review, `import os, sys`, load
+9-16):
 
-The per-run compile does not scale yet. A basic program that imports `traceback` and
-`pprint` lowers to 2,119 functions (1.32 M source ops); one JIT run spent 49-76 s
-compiling it at load average 20-40, with 2.0-2.5 GB peak RSS. The TIR function cache halved
-its IR preparation on the second run (63.7 s to 32.2 s); the module phase and Cranelift
-(12-17 s) recompile every run. An AOT build of the same program reuses the cached
-shared-stdlib objects. The next step is to give the JIT tier the same reuse: link the AOT
-shared-stdlib archive for the program's stdlib set into its runtime image and compile only
-the application partition, as an AOT build does, and then add Cranelift's incremental
-cache for the edited functions.
+| `molt run` | AOT | JIT |
+| --- | --- | --- |
+| New program, wall | 28.45 s | 17.01 s |
+| No-change re-run (cache hit), wall | 1.59-1.61 s | 9.23-10.06 s |
+| of it, run phase | 0.34-0.36 s | 7.80-8.49 s |
+| After a one-line edit, wall | 7.90-11.45 s | 14.76-38.00 s |
+| of it, build phase (frontend, IR, output) | 5.60-8.67 s | 2.79-3.81 s |
+
+The JIT build phase after an edit (frontend lowering, backend IR preparation and the
+image write) is 2.8-3.8 s, against 5.6-8.7 s for an AOT build; this lane has not yet
+split it by phase. The launch key adds 271-320 ms warm ("CLI"). A program without stdlib
+imports is the one case the JIT tier wins: a 13-line program ran in 6.20 s after a
+one-line edit against 8.52 s under AOT (medians of five runs, load 10-14).
+
+The per-start compile does not scale. A basic program that imports `traceback` and
+`pprint` lowers to 2,119 functions (1.32 M source ops); one JIT start spent 49-76 s
+compiling it at load average 20-40, with 2.0-2.5 GB peak RSS. The TIR function cache
+halved its IR preparation on the second start (63.7 s to 32.2 s); the module phase and
+Cranelift (12-17 s) recompile every start.
+
+The structural path (HF-371) is to compile each function lazily on its first call and to
+reuse machine code through a content-keyed cache ("Lazy compilation"). A shorter step uses
+what the AOT tier already has: link the AOT shared-stdlib archive for the program's
+stdlib set into the runtime image and compile only the application partition. The runner
+should also free the compiler's memory and the image bytes before the program starts;
+that change and its before-and-after RSS wait for the next runner build.
 
 ## Platform cells
 
@@ -281,8 +349,8 @@ cache for the edited functions.
   no shared code-generation defect. Process-state cases pin what a Rust `main` broke:
   `closed_pipe_write_signal.py` (a closed pipe ends both tiers with `SIGPIPE`),
   `native_stack_exhaustion.py` (stack exhaustion ends both with `SIGSEGV`), and
-  `multiprocessing_pool_apply_async.py` (spawn-mode workers execute `sys.argv[0]`, the
-  image, and so start the program again). The harness sets `sys.executable` to the
+  `multiprocessing_pool_imap.py` (spawn-mode workers execute `sys.argv[0]`, the image,
+  and so start the program again). The harness sets `sys.executable` to the
   CPython oracle for every compiled program, so `tests/cli/test_jit_run_tier.py` proves
   the `sys.executable` path: executing an image starts its runner with the image as
   argv[0] and the new arguments.
@@ -294,6 +362,7 @@ cache for the edited functions.
   classes); one diverges: `multiprocessing_pool_apply_async.py` waits 5 s for a result,
   and its spawned JIT worker is still compiling the program. Two programs that first
   failed on a runtime build lock timeout at cold start (HF-388) passed on a recheck.
+  These counts come from main 9e0f94f11; the run on the rebased tip is open (HF-371).
   The local proof-queue lane `native.jit-aot-twins` runs the 480 passing cases;
   `native.jit-code-owner` runs the molt-jit tests.
 - Latency: edit-run of a small program, new and after a one-line edit, AOT against JIT
