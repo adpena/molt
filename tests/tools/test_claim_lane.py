@@ -104,11 +104,15 @@ def _integration_seed(
 
 
 def _copy_repo(tmp_path: Path, seed: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    # These repositories run generic shell gates, not the caller's venv: the
-    # session's dx environment names this checkout's managed env, which may
-    # not exist, and integrate refuses an explicit selection that is broken.
+    # These temporary repositories borrow the test runner's environment. Merely
+    # deleting UV_PROJECT_ENVIRONMENT is insufficient: the outer guard supplies
+    # its own checkout's managed default before launching the temporary driver.
     for key in ("MOLT_VENV", "UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV"):
         monkeypatch.delenv(key, raising=False)
+    # The guard reintroduces DX defaults. These shell-policy fixtures borrow
+    # their already-running interpreter; they must never sync a temporary
+    # editable checkout into the parent test environment.
+    monkeypatch.setenv("MOLT_VENV", sys.prefix)
     # Clone (copy-on-write), never hardlink: each test mutates refs and objects.
     clone_tree(seed / "remote.git", tmp_path / "remote.git")
     clone_tree(seed / "work", tmp_path / "work")
