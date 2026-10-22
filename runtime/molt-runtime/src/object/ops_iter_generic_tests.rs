@@ -197,17 +197,74 @@ fn generic_iteration_preserves_exception_identity_and_releases_completion_payloa
     });
 }
 
+extern "C" fn generic_iteration_token_next(receiver: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let name = MoltObject::from_ptr(alloc_string(py, b"token")).bits();
+        let value = molt_getattr_builtin(receiver, name, missing_bits(py));
+        dec_ref_bits(py, name);
+        value
+    })
+}
+
 #[test]
 fn zip_partial_result_lives_in_cache_and_aliases_stay_immutable() {
     let _guard = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
             let token = MoltObject::from_ptr(alloc_string(py, b"zip partial token")).bits();
-            let source = MoltObject::from_ptr(alloc_tuple(py, &[token, token])).bits();
+            // A native tuple iterator legitimately retains its boxed status
+            // cache. Use a raw generic source to isolate zip's owned row edge.
+            let class_name = MoltObject::from_ptr(alloc_string(py, b"ZipTokenSource")).bits();
+            let class = crate::molt_class_new(class_name);
+            let iter_function =
+                MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
+                    py,
+                    crate::provenance::abi::expose_function_address(
+                        generic_iteration_identity_next as *const (),
+                    ),
+                    1,
+                ))
+                .bits();
+            let next_function =
+                MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
+                    py,
+                    crate::provenance::abi::expose_function_address(
+                        generic_iteration_token_next as *const (),
+                    ),
+                    1,
+                ))
+                .bits();
+            let iter_name = MoltObject::from_ptr(alloc_string(py, b"__iter__")).bits();
+            let next_name = MoltObject::from_ptr(alloc_string(py, b"__next__")).bits();
+            let token_name = MoltObject::from_ptr(alloc_string(py, b"token")).bits();
+            crate::molt_set_attr_name(class, iter_name, iter_function);
+            crate::molt_set_attr_name(class, next_name, next_function);
+            let source =
+                crate::alloc_instance_for_class(py, obj_from_bits(class).as_ptr().unwrap());
+            crate::molt_set_attr_name(source, token_name, token);
+            assert!(!exception_pending(py));
             let empty = MoltObject::from_ptr(alloc_tuple(py, &[])).bits();
             let token_ptr = obj_from_bits(token).as_ptr().unwrap();
             let refs = || (*header_from_obj_ptr(token_ptr)).owned_ref_count_snapshot();
             let baseline = refs();
+            assert_eq!(
+                baseline, 2,
+                "local token and source attribute are the only owners"
+            );
+            // Independently establish the source's transfer contract before
+            // checking zip: neither direct nor public next retains a result.
+            for public in [false, true] {
+                let value = if public {
+                    molt_next_builtin(source, missing_bits(py))
+                } else {
+                    call_callable1(py, next_function, source)
+                };
+                assert!(!exception_pending(py));
+                assert_eq!(value, token);
+                assert_eq!(refs(), baseline + 1);
+                dec_ref_bits(py, value);
+                assert_eq!(refs(), baseline, "source retains no status-cache owner");
+            }
             let zip = zip_new_impl(py, &[source, empty], false);
             let result = molt_next_builtin(zip, missing_bits(py));
             assert!(exception_pending(py));
@@ -235,7 +292,19 @@ fn zip_partial_result_lives_in_cache_and_aliases_stay_immutable() {
             dec_ref_bits(py, first);
             dec_ref_bits(py, zip);
             assert_eq!(refs(), baseline);
-            for bits in [empty, source, token] {
+            dec_ref_bits(py, source);
+            assert_eq!(refs(), 1, "all iterator and cache owners retired");
+            for bits in [
+                empty,
+                token,
+                token_name,
+                next_name,
+                iter_name,
+                next_function,
+                iter_function,
+                class,
+                class_name,
+            ] {
                 dec_ref_bits(py, bits);
             }
         }
