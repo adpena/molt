@@ -21,7 +21,8 @@ identity and execution budget; commands without one remain unchanged:
 Each selected command runs with its declared toolchains projected exactly as
 tools/toolchain_env.py projects them, so the gate and CI lint the same cells.
 Cargo replays cached results for unchanged crates; a warm target pays only for
-the reached crates.
+the reached crates. A successful gate runs every selected cell; the first
+failed cell stops the gate without launching later cells.
 """
 
 from __future__ import annotations
@@ -353,7 +354,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"changed-clippy: {command.id} ({reason})")
     if args.dry_run:
         return 0
-    failed: list[str] = []
     for command, _reason in selected:
         print(f"changed-clippy: running {' '.join(command.argv)}", flush=True)
         try:
@@ -362,10 +362,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"changed-clippy: {command.id}: {exc}", file=sys.stderr)
             return 2
         if returncode != 0:
-            failed.append(command.id)
-    if failed:
-        print(f"changed-clippy: FAILED {', '.join(failed)}", file=sys.stderr)
-        return 1
+            print(f"changed-clippy: FAILED {command.id}", file=sys.stderr)
+            return 1
     print(f"changed-clippy: OK ({len(selected)} command(s))")
     return 0
 
