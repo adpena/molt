@@ -116,3 +116,40 @@ Linux (Lima aarch64 VM, 145 processes, guarded `/bin/sleep 2`, 3 runs each):
 sampler CPU 0.235-0.254 s over 69-70 polls before, 0.037-0.041 s over 76-78
 polls after; rows per poll 145 before, 6 after; observer CPU 0.29-0.31 s
 before, 0.08-0.10 s after.
+
+
+## Operator cancellation and nested-generation closure
+
+The low-level guard publishes a structured terminal result after cleanup.
+Subprocess-compatible callers propagate its actual `guard_signal`, including
+when `check=False`: SIGINT raises `KeyboardInterrupt`; other operator signals
+raise `SystemExit(128 + signal)`. The exception retains `guarded_result`, including
+any secondary closure failure. A child's ordinary exit 130 or 143 does not imply
+operator cancellation. Direct serial measurement consumers use the same signal
+boundary; explicit suite and proof-owner stop protocols retain their own authority.
+
+A stopped inline guard may have published another child generation during signal
+grace. Closing its original process group or old marker does not close that later
+child. Final POSIX scratch closure reads active and retired marker generations for
+the captured producer PID/birth pairs after the producers stop, and follows exact
+recorded child identities whose custody is closed. A live child, unpublished launch,
+unreadable record or unavailable producer birth holds closure. This observation
+never signals a replacement or infers ownership from a current numeric PID.
+Windows continues to use its exact Job completion authority.
+
+`ProcessTreeTracker.closure_identities()` includes current captured identities and
+identities retired specifically when a poll proves PID reuse. Multiple births of
+the same PID remain distinct. Retired identities never rejoin live admission or
+signaling membership. Explicit receiver transfer removes that instance from this
+tracker's custody without retaining it as a retired lifetime; the receiver owns
+its closure. This keeps an earlier poll from erasing the only link to a former
+publisher's late child generation.
+
+The high-level signal check is constant work. Tracking reuse adds one set insertion
+only when an observed lifetime retires, with storage bounded by retired lifetimes
+within one tracker. Final closure performs at most two directory listings per
+traversed generation depth. PID names are filtered before sorting or reading, so
+cost is O(directory entries + matching records log matching records) per depth,
+and only matching-family payloads are read. No global process scanner, extra
+process, signal or per-poll directory read is added. These are developer-process
+custody costs; compiled user binaries do not carry them.

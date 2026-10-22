@@ -499,3 +499,46 @@ def test_successful_startup_rejects_invalid_child_clock():
                     stderr="",
                 ),
             )
+
+
+def test_serial_startup_samples_propagate_operator_signal_only(monkeypatch, tmp_path):
+    import pytest
+    import signal
+
+    calls = []
+    terminal = SimpleNamespace(
+        returncode=143,
+        guard_signal=None,
+        timed_out=False,
+        elapsed_s=0.01,
+        stdout="",
+        stderr="child failed",
+    )
+
+    def guarded(command, **kwargs):
+        calls.append(command)
+        return terminal
+
+    audit = output_startup_size_audit
+    monkeypatch.setattr(
+        audit.harness_memory_guard, "guarded_completed_process", guarded
+    )
+    result = audit._measure_cpython(
+        tmp_path / "probe.py",
+        samples=2,
+        env=ProcessEnvironment({}),
+        timeout=1,
+    )
+    assert len(calls) == 2 and not result["ok"]
+    assert [r["returncode"] for r in result["records"]] == [143, 143]
+    calls.clear()
+    terminal.guard_signal = signal.SIGTERM
+    with pytest.raises(SystemExit) as caught:
+        audit._measure_cpython(
+            tmp_path / "probe.py",
+            samples=2,
+            env=ProcessEnvironment({}),
+            timeout=1,
+        )
+    assert caught.value.guarded_result is terminal
+    assert len(calls) == 1

@@ -315,6 +315,10 @@ class ProcessTreeTracker:
     # Live admission evidence, frozen with the admitted process birth. It is
     # descriptive custody only, never an additional termination authority.
     known_ancestry: dict[int, ProcessAncestry] | None = None
+    # A reused pid revokes live custody, but the former process may have
+    # published guard generations. Keep those exact births until this tracker
+    # retires; they are closure evidence, never admission or signal authority.
+    retired_identities: set[tuple[int, ProcessIdentity]] | None = None
 
     def __post_init__(self) -> None:
         if self.known_pids is None:
@@ -331,6 +335,8 @@ class ProcessTreeTracker:
             self.released_identities = {}
         if self.known_ancestry is None:
             self.known_ancestry = {}
+        if self.retired_identities is None:
+            self.retired_identities = set()
 
     def update(
         self,
@@ -371,6 +377,8 @@ class ProcessTreeTracker:
                 # recovers the creation marker.
                 continue
             elif known_identity != identity:
+                assert self.retired_identities is not None
+                self.retired_identities.add((pid, known_identity))
                 self.known_pids.remove(pid)
                 self.known_identities.pop(pid, None)
                 self.known_ancestry.pop(pid, None)
@@ -548,6 +556,17 @@ class ProcessTreeTracker:
             for pid in pids
             if (identity := self.known_identities.get(pid)) is not None
         }
+
+    def closure_identities(self) -> set[tuple[int, ProcessIdentity]]:
+        """Captured current and PID-reused births for non-actuating closure.
+
+        Multiple admitted lifetimes can share a pid. Explicit receiver transfer
+        removes current custody without retiring that birth here; its receiving
+        owner proves closure instead. Live/signaling callers use custody_identities.
+        """
+        assert self.known_identities is not None
+        assert self.retired_identities is not None
+        return self.retired_identities | set(self.known_identities.items())
 
     def cut_ancestry_at(
         self, identities: Mapping[int, ProcessIdentity], *, observed_at_ns: int

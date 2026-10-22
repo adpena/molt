@@ -373,7 +373,7 @@ def _summary_guard_marker(
     matches: list[MarkerRecord] = []
     unreadable = False
     try:
-        candidates = guard_marker_records(marker_dir, guard_pid)
+        candidates = guard_marker_records(marker_dir, (guard_pid,))
     except (OSError, ValueError):
         return "unavailable", None, None, None
     for record in candidates:

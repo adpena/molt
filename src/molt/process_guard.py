@@ -6,6 +6,7 @@ __molt_neutral_authority__ = True
 
 import os
 import shlex
+import signal
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
@@ -83,17 +84,35 @@ def guard_infrastructure_exit_code() -> int:
     return int(load_harness_memory_guard(None).memory_guard.INFRASTRUCTURE_RETURN_CODE)
 
 
+def raise_for_guard_signal(result: Any) -> None:
+    """Resume an operator interruption after the guard publishes its receipt.
+
+    A child's exit code, including 130 or 143, never establishes cancellation.
+    Low-level guard users still receive structured outcomes; command and serial
+    measurement callers propagate only the guard's recorded operator signal.
+    """
+    signum = getattr(result, "guard_signal", None)
+    if signum is None:
+        return
+    error = KeyboardInterrupt() if signum == signal.SIGINT else SystemExit(128 + signum)
+    setattr(error, "guarded_result", result)
+    raise error
+
+
 def raise_for_guard_outcome(
     command: Sequence[str], result: Any, *, timeout: float | None
 ) -> None:
     """Raise for outcomes the guard owns, so returncode stays the child's.
 
+    An actual operator signal takes precedence and propagates even with
+    check=False; its attached record retains any secondary cleanup failure.
     The guard reports a timeout as 124 and its own failure as 125. A caller of
     a subprocess-compatible runner must never read either as the child's exit
     status, so both become exceptions here: ``subprocess.TimeoutExpired`` and
     ``GuardInfrastructureError``. Each carries the guard's terminal record as
     ``guarded_result`` (Cargo test receipts and benchmarks read its RSS samples).
     """
+    raise_for_guard_signal(result)
     command = [str(part) for part in command]
     if bool(getattr(result, "timed_out", False)):
         if timeout is None:
