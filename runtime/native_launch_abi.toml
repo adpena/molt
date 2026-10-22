@@ -1,0 +1,67 @@
+# The native launch ABI: the runtime entry points a native program's launch
+# calls, in call order. The AOT main stub (src/molt/cli/native_main_stub.py)
+# and the development JIT runner (runtime/molt-jit/src/launch.rs) both follow
+# it; tools/gen_native_launch_abi.py generates their declarations.
+#
+# Types: u64 (unsigned long long), i32 (int), argv (const char**),
+# c_string_array (const char* const*), bytes (const unsigned char*).
+schema = 1
+
+# Called in this order, after the launch environment is installed and before
+# the program's entry (`molt_main`).
+[[start]]
+name = "molt_register_compiled_sources"
+returns = "void"
+params = ["c_string_array", "u64"]
+
+[[start]]
+name = "molt_set_app_callable_resolver"
+returns = "u64"
+params = ["u64"]
+
+[[start]]
+name = "molt_module_registry_install"
+returns = "u64"
+params = ["bytes"]
+
+[[start]]
+name = "molt_runtime_init"
+returns = "u64"
+params = []
+
+[[start]]
+name = "molt_runtime_ensure_gil"
+returns = "void"
+params = []
+
+[[start]]
+name = "molt_set_argv"
+returns = "void"
+params = ["i32", "argv"]
+
+# Called after the entry returns (the stub's `molt_finish`): if an exception
+# is pending, report it and release it; then leave through the runtime's exit.
+[[finish]]
+name = "molt_exception_pending"
+returns = "u64"
+params = []
+
+[[finish]]
+name = "molt_exception_last_pending"
+returns = "u64"
+params = []
+
+[[finish]]
+name = "molt_exception_report_uncaught"
+returns = "u64"
+params = ["u64"]
+
+[[finish]]
+name = "molt_dec_ref_obj"
+returns = "void"
+params = ["u64"]
+
+[[finish]]
+name = "molt_runtime_exit"
+returns = "u64"
+params = ["u64"]

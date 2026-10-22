@@ -8,6 +8,7 @@ archive without dead-stripping any runtime symbol.
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -16,14 +17,13 @@ import pytest
 from molt.capability_manifest import CapabilityManifest
 from molt.cli import native_link_command
 from molt.cli.build_output_layout import _resolve_build_output_layout
-from molt.cli.jit_pipeline import _unsupported_jit_construct, jit_program_path
+from molt.cli.jit_pipeline import _unsupported_jit_construct
 from molt.cli.native_launch_plan import NativeLaunchPlan
 from molt.cli.native_main_stub import _render_native_main_stub
 from molt.cli.run_tier import JIT_START_RECEIPT, jit_program_started
 from molt.cli.run_tier import (
     DEFAULT_RUN_TIER,
-    JIT_LAUNCH_SUFFIX,
-    JIT_PROGRAM_SUFFIX,
+    JIT_IMAGE_SUFFIX,
     RunTier,
 )
 from molt.compilation_target import TargetKind, admit_target
@@ -95,7 +95,7 @@ def test_launch_plan_resolves_runtime_module_roots_once(tmp_path: Path) -> None:
     assert plan.runtime_module_roots == (str(root.resolve()),)
 
 
-def test_jit_emit_publishes_its_launch_beside_the_executable_name(
+def test_jit_emit_publishes_its_image_beside_the_executable_name(
     tmp_path: Path,
 ) -> None:
     aot = _layout(tmp_path, target=TargetKind.NATIVE, emit=None)
@@ -103,10 +103,7 @@ def test_jit_emit_publishes_its_launch_beside_the_executable_name(
     assert aot.output_binary == tmp_path / "bin" / "app_molt"
     assert jit.emit_mode == "jit"
     assert jit.output_binary is None
-    assert jit.output_artifact == tmp_path / "bin" / f"app_molt{JIT_LAUNCH_SUFFIX}"
-    assert jit_program_path(jit.output_artifact) == (
-        tmp_path / "bin" / f"app_molt{JIT_PROGRAM_SUFFIX}"
-    )
+    assert jit.output_artifact == tmp_path / "bin" / f"app_molt{JIT_IMAGE_SUFFIX}"
 
 
 @pytest.mark.parametrize("target", ["luau", "rust", "mlir", "wasm"])
@@ -249,3 +246,79 @@ def test_only_the_exact_start_receipt_proves_the_program_started(
     assert not jit_program_started(receipt)
     receipt.write_text(JIT_START_RECEIPT, encoding="utf-8")
     assert jit_program_started(receipt)
+
+
+_POSIX_ONLY = pytest.mark.skipif(
+    os.name == "nt", reason="the JIT image is a POSIX shell program"
+)
+
+
+def _fake_runner(tmp_path: Path) -> Path:
+    """A runner that records the argv it was started with."""
+    runner = tmp_path / "runner's dir" / "molt-jit"
+    runner.parent.mkdir()
+    runner.write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$@" > "$FAKE_RUNNER_ARGV"\n', encoding="utf-8"
+    )
+    runner.chmod(0o755)
+    return runner
+
+
+_HEADER = {
+    "runtime_image": "/runtime/libmolt_runtime.dylib",
+    "backend_environment": {"MOLT_BACKEND": "cranelift"},
+    "compiler_diagnostics": "on_failure",
+    "launch": {
+        "environment": {"MOLT_EXECUTION_TARGET": "native"},
+        "runtime_module_roots": [],
+        "compiled_source_paths": ["/src/app.py"],
+    },
+}
+
+
+@_POSIX_ONLY
+def test_a_jit_image_holds_its_header_and_program_in_one_file(tmp_path: Path) -> None:
+    import json
+
+    import msgspec
+
+    from molt.cli.jit_image import JIT_IMAGE_MARKER, publish_jit_image
+
+    image = tmp_path / f"app_molt{JIT_IMAGE_SUFFIX}"
+    ir = {"functions": [], "profile": None}
+    publish_jit_image(image, runner=_fake_runner(tmp_path), header=_HEADER, ir=ir)
+    shebang, launch, marker, rest = image.read_bytes().split(b"\n", 3)
+    assert shebang == b"#!/bin/sh" and launch.startswith(b"exec ")
+    name, header_len, program_len = marker.decode().split(" ")
+    assert name == JIT_IMAGE_MARKER
+    assert len(rest) == int(header_len) + int(program_len)
+    assert json.loads(rest[: int(header_len)]) == _HEADER
+    assert msgspec.msgpack.decode(rest[int(header_len) :]) == ir
+    assert os.access(image, os.X_OK)
+
+
+@_POSIX_ONLY
+def test_executing_a_jit_image_re_runs_its_program_under_its_runner(
+    tmp_path: Path,
+) -> None:
+    # A program's sys.executable is its argv[0], the image. Spawn-mode
+    # multiprocessing and subprocess.run([sys.executable, ...]) execute it;
+    # the image must start the same program again, with the new arguments.
+    from molt.cli.jit_image import publish_jit_image
+    from tests.process_guard_common import run_guarded_test_process
+
+    runner = _fake_runner(tmp_path)
+    image = tmp_path / f"app_molt{JIT_IMAGE_SUFFIX}"
+    publish_jit_image(image, runner=runner, header=_HEADER, ir={"functions": []})
+    recorded = tmp_path / "argv.txt"
+    arguments = ["two words", "it's", "$HOME", ""]
+    run_guarded_test_process(
+        [str(image), *arguments],
+        env={**os.environ, "FAKE_RUNNER_ARGV": str(recorded)},
+        check=True,
+    )
+    received = recorded.read_text(encoding="utf-8").split("\n")[:-1]
+    # The runner launches the image, and the program sees the image as its
+    # argv[0] followed by exactly the arguments the image was started with.
+    assert received[:2] == ["--launch", str(image)]
+    assert received[received.index("--") + 1 :] == [str(image), *arguments]

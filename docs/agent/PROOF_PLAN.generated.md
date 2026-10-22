@@ -434,6 +434,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `builtin-binding-guard-authority` | 9 | 1 |
 | `wasm-optimizer-policy` | 6 | 1 |
 | `native-callable-abi` | 20 | 1 |
+| `native-launch-abi` | 9 | 1 |
 | `runtime-regex` | 11 | 2 |
 | `stringprep-leaf` | 2 | 1 |
 | `cpython-abi-authorities` | 2 | 1 |

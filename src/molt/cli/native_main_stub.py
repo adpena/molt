@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Sequence
 
 from molt.capability_manifest import ResolvedRuntimePolicy
+from molt.cli.native_launch_abi_generated import NATIVE_LAUNCH_C_DECLARATIONS
 from molt.cli.native_launch_plan import NativeLaunchPlan
 
 
@@ -189,20 +190,14 @@ static void molt_set_runtime_module_roots() {{
 #ifdef _WIN32
 #include <wchar.h>
 #endif
-extern unsigned long long molt_runtime_init();
-extern void molt_runtime_ensure_gil();
+/* The launch ABI (runtime/native_launch_abi.toml). */
+/* MOLT_NATIVE_LAUNCH_DECLARATIONS */
 extern unsigned long long molt_runtime_shutdown();
-extern unsigned long long molt_runtime_exit(unsigned long long code);
-extern void molt_set_argv(int argc, const char** argv);
 #ifdef _WIN32
 extern void molt_set_argv_utf16(int argc, const wchar_t** argv);
 #endif
 extern void molt_main();
-extern unsigned long long molt_exception_pending();
-extern unsigned long long molt_exception_last_pending();
-extern unsigned long long molt_exception_report_uncaught(unsigned long long exc_bits);
 extern void molt_dec_ref(unsigned long long bits);
-extern void molt_dec_ref_obj(unsigned long long bits);
 extern int molt_json_parse_scalar(const char* ptr, long len, unsigned long long* out);
 extern int molt_msgpack_parse_scalar(const char* ptr, long len, unsigned long long* out);
 extern int molt_cbor_parse_scalar(const char* ptr, long len, unsigned long long* out);
@@ -232,16 +227,12 @@ static int molt_env_enabled(const char* name) {
  * callables dead-strippable. This MUST be registered before molt_runtime_init()
  * so the resolver is in place before any lookup runs. */
 extern unsigned long long molt_app_resolve_callable(const char* name, unsigned long long len);
-extern unsigned long long molt_set_app_callable_resolver(unsigned long long fn_ptr);
 /* Per-build module registry blob (import bedrock, design doc 69): the backend
  * emits the registry (module identity, MODULE_INIT_TABLE function pointers,
  * sorted name table) into the application object as one relocated data
  * symbol. It MUST be installed before molt_runtime_init() so module identity
  * resolution and molt_module_ensure are in place before any import runs. */
 extern const unsigned char molt_module_registry_blob[];
-extern unsigned long long molt_module_registry_install(const unsigned char* blob);
-extern void molt_register_compiled_sources(
-    const char* const* paths, unsigned long long count);
 /* MOLT_CAPABILITY_POLICY_SNIPPET */
 /* MOLT_RUNTIME_MODULE_ROOTS_SNIPPET */
 /* MOLT_COMPILED_SOURCES_SNIPPET */
@@ -290,6 +281,9 @@ int main(int argc, char** argv) {
 }
 #endif
 """
+    main_c_content = main_c_content.replace(
+        "/* MOLT_NATIVE_LAUNCH_DECLARATIONS */", NATIVE_LAUNCH_C_DECLARATIONS
+    )
     main_c_content = main_c_content.replace(
         "/* MOLT_CAPABILITY_POLICY_SNIPPET */", capability_policy_snippet
     )

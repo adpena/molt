@@ -591,6 +591,7 @@
         "tests/test_gen_codecs.py/**",
         "tests/test_gen_host_capabilities.py/**",
         "tests/test_gen_native_callable_abi.py/**",
+        "tests/test_gen_native_launch_abi.py/**",
         "tests/test_gen_runtime_profile_schema.py/**",
         "tests/test_gen_stringprep_tables.py/**",
         "tests/test_proof_plan.py/**",
@@ -3691,6 +3692,7 @@
         "tests/test_gen_codecs.py",
         "tests/test_gen_host_capabilities.py",
         "tests/test_gen_native_callable_abi.py",
+        "tests/test_gen_native_launch_abi.py",
         "tests/test_gen_runtime_profile_schema.py",
         "tests/test_gen_stringprep_tables.py",
         "tests/test_proof_plan.py",
@@ -9559,6 +9561,8 @@
       "local.memory-graph.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_memory_graph.py",
       "local.native-callable-abi.0": "cargo test --locked --profile dev-fast -p molt-ir -p molt-backend-native -p molt-backend-wasm --features molt-backend-wasm/test-util --lib native_callable --no-fail-fast",
       "local.native-callable-abi.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/test_gen_native_callable_abi.py",
+      "local.native-launch-abi.0": "cargo test --locked --profile dev-fast -p molt-jit --test runner_launch",
+      "local.native-launch-abi.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/test_gen_native_launch_abi.py",
       "local.native-object-emission.0": "cargo test --locked --profile dev-fast -p object@0.40.0 -p cranelift-object@0.137.0 -p molt-backend --no-default-features --features molt-backend/native-backend --test integration --test basic --test native_extern_linkage --no-fail-fast -- --skip read::coff::coff_extended_relocations --skip read::elf::get_buildid_bad_elf --skip read::elf::get_buildid_less_bad_elf --skip read::elf::zero_sized_section_works --skip read::macho::test_macho_entry_point --skip read::macho::test_go_macho --skip read::macho::test_macho_load_command_offset",
       "local.op-kind-registry.0": "python tools/audit_op_kinds.py --check",
       "local.op-kind-registry.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_frontend_op_kind_registry.py tests/test_gen_op_kinds.py",
@@ -12303,6 +12307,38 @@
       },
       {
         "command_ids": [
+          "local.native-launch-abi.0",
+          "local.native-launch-abi.pytest"
+        ],
+        "description": "Native launch ABI: one declared sequence generates the AOT main stub's C declarations and the JIT runner's entry table; the stub type-checks and calls the entries in order, and the runner calls them in order against a recording runtime image.",
+        "gates": [
+          "cargo test --locked --profile dev-fast -p molt-jit --test runner_launch"
+        ],
+        "globs": [
+          "runtime/native_launch_abi.toml",
+          "tools/gen_native_launch_abi.py",
+          "src/molt/cli/native_launch_abi_generated.py",
+          "src/molt/cli/native_main_stub.py",
+          "runtime/molt-jit/src/launch_abi_generated.rs",
+          "runtime/molt-jit/src/launch.rs",
+          "runtime/molt-jit/src/runtime_image.rs",
+          "runtime/molt-jit/tests/runner_launch.rs",
+          "tests/test_gen_native_launch_abi.py"
+        ],
+        "name": "native-launch-abi",
+        "pytest": [
+          "tests/test_gen_native_launch_abi.py"
+        ],
+        "toolchains": [
+          "python",
+          "rustc",
+          "cargo",
+          "rustfmt",
+          "hosted-clang"
+        ]
+      },
+      {
+        "command_ids": [
           "local.runtime-regex.0",
           "local.runtime-regex.1",
           "local.runtime-regex.pytest"
@@ -12990,6 +13026,22 @@
         "rustfmt",
         "node",
         "wasm-ld"
+      ],
+      "local.native-launch-abi.0": [
+        "python",
+        "rustc",
+        "cargo",
+        "git",
+        "rustfmt",
+        "hosted-clang"
+      ],
+      "local.native-launch-abi.pytest": [
+        "python",
+        "rustc",
+        "cargo",
+        "git",
+        "rustfmt",
+        "hosted-clang"
       ],
       "local.native-object-emission.0": [
         "python",

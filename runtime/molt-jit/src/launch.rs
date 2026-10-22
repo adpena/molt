@@ -1,36 +1,15 @@
-//! The launch manifest the CLI writes for one program, and the AOT main stub's
-//! launch sequence performed in process.
+//! The AOT main stub's launch sequence, performed in process.
 //!
-//! `src/molt/cli/native_launch_plan.py` owns the manifest schema and the facts
-//! in it; `src/molt/cli/native_main_stub.py` renders the same facts as the C
-//! `main` of an AOT executable. The order below is that stub's order.
+//! `src/molt/cli/native_launch_plan.py` owns the launch facts; the JIT image
+//! header carries them (`image.rs`), and `src/molt/cli/native_main_stub.py`
+//! renders the same facts as the C `main` of an AOT executable. The order
+//! below is that stub's order.
 
 use crate::runtime_image::RuntimeLaunchApi;
 use molt_backend_native::JitEntryPoints;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::ffi::{CString, OsString, c_char};
-use std::path::{Path, PathBuf};
-
-pub(crate) const LAUNCH_MANIFEST_SCHEMA: &str = "molt.jit-launch.v1";
-
-/// One program's launch manifest.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct LaunchManifest {
-    pub(crate) schema: String,
-    /// The program's backend IR document (MessagePack, the backend lease format).
-    pub(crate) program: PathBuf,
-    /// SHA-256 of `program`, so a stale or replaced document fails closed.
-    pub(crate) program_sha256: String,
-    /// The runtime as a shared image, linked from the AOT runtime archive.
-    pub(crate) runtime_image: PathBuf,
-    /// Request-scoped backend settings for this compilation.
-    pub(crate) backend_environment: serde_json::Map<String, serde_json::Value>,
-    /// Whether compiler stderr streams or appears only on failure.
-    pub(crate) compiler_diagnostics: crate::compiler_output::CompilerDiagnostics,
-    pub(crate) launch: LaunchPlan,
-}
 
 /// The facts the AOT main stub bakes into `main`.
 #[derive(Debug, Deserialize)]
@@ -43,23 +22,6 @@ pub(crate) struct LaunchPlan {
     pub(crate) runtime_module_roots: Vec<String>,
     /// The program's own source files, for tracebacks without `fs.read`.
     pub(crate) compiled_source_paths: Vec<String>,
-}
-
-impl LaunchManifest {
-    pub(crate) fn read(path: &Path) -> Result<Self, String> {
-        let file = molt_artifact_publish::open_regular_artifact(path)
-            .map_err(|error| format!("cannot open launch manifest {}: {error}", path.display()))?;
-        let manifest: Self = serde_json::from_reader(std::io::BufReader::new(file))
-            .map_err(|error| format!("invalid launch manifest {}: {error}", path.display()))?;
-        if manifest.schema != LAUNCH_MANIFEST_SCHEMA {
-            return Err(format!(
-                "launch manifest {} has schema {:?}; this runner reads {LAUNCH_MANIFEST_SCHEMA:?}",
-                path.display(),
-                manifest.schema
-            ));
-        }
-        Ok(manifest)
-    }
 }
 
 /// The stub's exit status when it cannot install the launch environment.
@@ -95,7 +57,9 @@ const MODULE_ROOTS_SEPARATOR: &str = ";";
 #[cfg(not(windows))]
 const MODULE_ROOTS_SEPARATOR: &str = ":";
 
-/// Run the program: the stub's `main` and `molt_finish`, in order.
+/// Run the program: the stub's `main` and `molt_finish`, in the order
+/// `runtime/native_launch_abi.toml` declares (its `start` entries, the entry,
+/// then its `finish` entries).
 ///
 /// # Safety
 /// `entry` must come from a program compiled against the runtime image `api`
@@ -148,7 +112,7 @@ pub(crate) unsafe fn run_program(
     // SAFETY: every function pointer was resolved in `runtime` with the C
     // signature the stub declares; `entry` belongs to this runtime's program.
     unsafe {
-        (api.register_compiled_sources)(
+        (api.molt_register_compiled_sources)(
             if source_pointers.is_empty() {
                 std::ptr::null()
             } else {
@@ -156,11 +120,11 @@ pub(crate) unsafe fn run_program(
             },
             source_pointers.len() as u64,
         );
-        (api.set_app_callable_resolver)(entry.app_callable_resolver as u64);
-        (api.module_registry_install)(entry.module_registry_blob);
-        (api.runtime_init)();
-        (api.runtime_ensure_gil)();
-        (api.set_argv)(argc, argument_pointers.as_ptr());
+        (api.molt_set_app_callable_resolver)(entry.app_callable_resolver as u64);
+        (api.molt_module_registry_install)(entry.module_registry_blob);
+        (api.molt_runtime_init)();
+        (api.molt_runtime_ensure_gil)();
+        (api.molt_set_argv)(argc, argument_pointers.as_ptr());
         let main: unsafe extern "C" fn() = std::mem::transmute(entry.main);
         main();
         finish(api)
@@ -172,7 +136,7 @@ pub(crate) unsafe fn run_program(
 unsafe fn finish(api: &RuntimeLaunchApi) -> ! {
     // SAFETY: the runtime is initialized and this thread holds its GIL.
     unsafe {
-        let pending = (api.exception_pending)();
+        let pending = (api.molt_exception_pending)();
         #[expect(
             clippy::disallowed_methods,
             reason = "MOLT_DEBUG_MAIN_EXCEPTION is the stub's own debug switch"
@@ -183,13 +147,13 @@ unsafe fn finish(api: &RuntimeLaunchApi) -> ! {
             eprintln!("molt main finish pending={}", i32::from(pending != 0));
         }
         if pending != 0 {
-            let exception = (api.exception_last_pending)();
-            let exit_code = (api.exception_report_uncaught)(exception);
-            (api.dec_ref_obj)(exception);
-            (api.runtime_exit)(exit_code);
+            let exception = (api.molt_exception_last_pending)();
+            let exit_code = (api.molt_exception_report_uncaught)(exception);
+            (api.molt_dec_ref_obj)(exception);
+            (api.molt_runtime_exit)(exit_code);
             libc::_exit(1)
         }
-        (api.runtime_exit)(0);
+        (api.molt_runtime_exit)(0);
         libc::_exit(0)
     }
 }

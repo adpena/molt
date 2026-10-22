@@ -434,8 +434,8 @@ def _resolve_build_output_layout(
     if emit_mode == "jit" and (linked or split_runtime):
         raise ValueError("emit=jit publishes no linked or split artifact")
 
-    # A JIT launch manifest is no backend artifact: the runner compiles the
-    # program's IR in its own memory.
+    # A JIT image is no backend artifact: the runner compiles the program's IR
+    # in its own memory.
     artifact_suffix = (
         ""
         if emit_mode == "jit"
@@ -487,11 +487,11 @@ def _resolve_build_output_layout(
                     project_root=project_root,
                 )
     elif emit_mode == "jit":
-        from molt.cli.run_tier import JIT_LAUNCH_SUFFIX
+        from molt.cli.run_tier import JIT_IMAGE_SUFFIX
 
         output_artifact = _resolve_output_path(
             output,
-            bin_root / f"{output_base}_molt{JIT_LAUNCH_SUFFIX}",
+            bin_root / f"{output_base}_molt{JIT_IMAGE_SUFFIX}",
             out_dir=out_dir_path,
             project_root=project_root,
         )

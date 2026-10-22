@@ -418,6 +418,23 @@ pub const COMPILE_THREAD_STACK_BYTES: usize = 64 << 20;
 /// concurrent requests plan different thread counts.
 const MAX_COMPILE_THREAD_POOLS: usize = 4;
 
+static COMPILE_THREAD_POOLS: std::sync::Mutex<Vec<(usize, std::sync::Arc<rayon::ThreadPool>)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Compiler pool threads that have not exited yet. A pool counts its threads
+/// when it is built; each thread uncounts itself on its way out.
+static LIVE_COMPILE_THREADS: (std::sync::Mutex<usize>, std::sync::Condvar) =
+    (std::sync::Mutex::new(0), std::sync::Condvar::new());
+
+fn compile_thread_exited(_index: usize) {
+    let (count, exited) = &LIVE_COMPILE_THREADS;
+    let mut count = count
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *count = count.saturating_sub(1);
+    exited.notify_all();
+}
+
 /// The compiler pool with exactly `threads` workers, shared by every compile
 /// in this process. A daemon running several compiles at once then keeps one
 /// thread per planned worker instead of one pool per compile: the bound that
@@ -425,10 +442,8 @@ const MAX_COMPILE_THREAD_POOLS: usize = 4;
 /// recently used pool leaves when a new width needs a slot; its threads exit
 /// once the compiles that hold it finish.
 pub fn compile_thread_pool(threads: usize) -> std::sync::Arc<rayon::ThreadPool> {
-    static POOLS: std::sync::Mutex<Vec<(usize, std::sync::Arc<rayon::ThreadPool>)>> =
-        std::sync::Mutex::new(Vec::new());
     let threads = threads.max(1);
-    let mut pools = POOLS
+    let mut pools = COMPILE_THREAD_POOLS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let pool = match pools.iter().position(|(width, _)| *width == threads) {
@@ -437,18 +452,45 @@ pub fn compile_thread_pool(threads: usize) -> std::sync::Arc<rayon::ThreadPool> 
             if pools.len() == MAX_COMPILE_THREAD_POOLS {
                 pools.remove(0);
             }
-            std::sync::Arc::new(
-                rayon::ThreadPoolBuilder::new()
-                    .num_threads(threads)
-                    .stack_size(COMPILE_THREAD_STACK_BYTES)
-                    .thread_name(|index| format!("molt-compile-{index}"))
-                    .build()
-                    .expect("Failed to build compiler thread pool"),
-            )
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .stack_size(COMPILE_THREAD_STACK_BYTES)
+                .thread_name(|index| format!("molt-compile-{index}"))
+                .exit_handler(compile_thread_exited)
+                .build()
+                .expect("Failed to build compiler thread pool");
+            *LIVE_COMPILE_THREADS
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) += threads;
+            std::sync::Arc::new(pool)
         }
     };
     pools.push((threads, std::sync::Arc::clone(&pool)));
     pool
+}
+
+/// Drop every compiler pool and wait until each of their threads has exited.
+///
+/// A process that compiles and then runs other code in itself (the JIT
+/// runner, `runtime/molt-jit`) calls this between the two, so the code it
+/// runs starts with no compiler threads beside it, as an AOT executable does.
+/// The caller must hold no pool: a held pool keeps its threads alive and this
+/// call would wait for them forever.
+pub fn retire_compile_thread_pools() {
+    COMPILE_THREAD_POOLS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clear();
+    let (count, exited) = &LIVE_COMPILE_THREADS;
+    let mut count = count
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    while *count > 0 {
+        count = exited
+            .wait(count)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    }
 }
 
 /// The compiler pool for the current request's CPU limit
