@@ -2498,3 +2498,148 @@ def test_native_child_failure_is_reported_once_without_recovery(
             "MOLT_DIFF_FORCE_REBUILD",
         ]
     }
+
+
+# --- Expected failures under exact twins (HF-371 review v4) -----------------
+
+_PINNED_SIGPIPE = (
+    "# MOLT_META: expect_fail=molt expect_fail_reason=sigpipe_default_disposition "
+    "expect_molt_returncode=-13 expect_molt_stdout_sha256="
+    + hashlib.sha256(b"").hexdigest()
+    + "\nprint(42)\n"
+)
+
+
+def _twin_record(fake_test_file, install_fake_registry, source, native, jit, cpython):
+    fake_test_file.write_text(source, encoding="utf-8")
+    install_fake_registry({"native": native, "jit": jit}, cpython=cpython)
+    return molt_diff.diff_test(str(fake_test_file), targets=("native", "jit"))
+
+
+def test_a_twin_divergence_fails_even_on_an_expected_failure(
+    fake_test_file, install_fake_registry
+):
+    # closed_pipe_write_signal.py with the v2 bug back in the JIT tier only:
+    # AOT dies by SIGPIPE, JIT prints what CPython prints.
+    record = _twin_record(
+        fake_test_file,
+        install_fake_registry,
+        _PINNED_SIGPIPE,
+        native=compat_backends.BackendResult("", "", -13),
+        jit=compat_backends.BackendResult("BrokenPipeError\n", "", 0),
+        cpython=("BrokenPipeError\n", "", 0),
+    )
+    assert record["resolved_status"] == "fail"
+    assert record["reason_tag"] == "cross_backend_divergence"
+
+
+def test_twins_that_agree_on_an_unpinned_failure_fail(
+    fake_test_file, install_fake_registry
+):
+    # Both tiers fail the same new way (a crash at start), not the pinned way.
+    record = _twin_record(
+        fake_test_file,
+        install_fake_registry,
+        _PINNED_SIGPIPE,
+        native=compat_backends.BackendResult("", "Segmentation fault", -11),
+        jit=compat_backends.BackendResult("", "Segmentation fault", -11),
+        cpython=("BrokenPipeError\n", "", 0),
+    )
+    assert record["resolved_status"] == "fail"
+    assert record["reason_tag"] == "pinned_outcome_mismatch"
+
+
+def test_closed_stderr_start_with_the_keeper_bug_in_the_jit_tier_fails(
+    fake_test_file, install_fake_registry
+):
+    # closed_stderr_start.py if the JIT child refused to start (v3: exit 125).
+    source = (
+        "# MOLT_META: expect_fail=molt expect_fail_reason=closed_stderr_reused_by_runtime"
+        " expect_molt_returncode=0 expect_molt_stdout_sha256="
+        + hashlib.sha256(b"rc 0\nchild ran, stderr open\n").hexdigest()
+        + "\nprint(42)\n"
+    )
+    record = _twin_record(
+        fake_test_file,
+        install_fake_registry,
+        source,
+        native=compat_backends.BackendResult("rc 0\nchild ran, stderr open\n", "", 0),
+        jit=compat_backends.BackendResult("rc 125\n", "", 0),
+        cpython=("rc 0\nchild ran, stderr closed\n", "", 0),
+    )
+    assert record["resolved_status"] == "fail"
+    assert record["reason_tag"] == "cross_backend_divergence"
+
+
+def test_twins_that_end_the_pinned_way_are_the_expected_failure(
+    fake_test_file, install_fake_registry
+):
+    record = _twin_record(
+        fake_test_file,
+        install_fake_registry,
+        _PINNED_SIGPIPE,
+        native=compat_backends.BackendResult("", "", -13),
+        jit=compat_backends.BackendResult("", "", -13),
+        cpython=("BrokenPipeError\n", "", 0),
+    )
+    assert (record["resolved_status"], record["reason_tag"]) == ("pass", "xfail")
+
+
+@pytest.mark.parametrize("targets", [("native", "jit"), ("native",)])
+def test_an_expected_failure_needs_a_pin_only_under_exact_twins(
+    targets, fake_test_file, install_fake_registry
+):
+    fake_test_file.write_text(
+        "# MOLT_META: expect_fail=molt expect_fail_reason=semantic_gap\nprint(42)\n",
+        encoding="utf-8",
+    )
+    failing = compat_backends.BackendResult("", "", -13)
+    install_fake_registry(
+        {name: failing for name in targets}, cpython=("BrokenPipeError\n", "", 0)
+    )
+    record = molt_diff.diff_test(str(fake_test_file), targets=targets)
+    if len(targets) == 2:
+        assert (record["resolved_status"], record["reason_tag"]) == (
+            "fail",
+            "unpinned_expected_failure",
+        )
+    else:
+        assert (record["resolved_status"], record["reason_tag"]) == ("pass", "xfail")
+
+
+def test_a_divergence_between_any_backends_cannot_be_xfailed(
+    fake_test_file, install_fake_registry
+):
+    # As a timeout cannot (test_timeout_cannot_be_xfailed_...): two backends
+    # that disagree are never the expected Molt-versus-CPython gap.
+    fake_test_file.write_text(
+        "# MOLT_META: expect_fail=molt expect_fail_reason=semantic_gap\nprint(42)\n",
+        encoding="utf-8",
+    )
+    install_fake_registry(
+        {
+            "native": compat_backends.BackendResult("1\n", "", 0),
+            "wasm": compat_backends.BackendResult("2\n", "", 0),
+        },
+        cpython=("42\n", "", 0),
+    )
+    record = molt_diff.diff_test(str(fake_test_file), targets=("native", "wasm"))
+    assert record["resolved_status"] == "fail"
+    assert record["reason_tag"] == "cross_backend_divergence"
+
+
+def test_twins_with_the_pinned_status_but_other_output_fail(
+    fake_test_file, install_fake_registry
+):
+    # The same exit status is not the pinned ending when the output differs:
+    # here both tiers print before dying by SIGPIPE.
+    record = _twin_record(
+        fake_test_file,
+        install_fake_registry,
+        _PINNED_SIGPIPE,
+        native=compat_backends.BackendResult("written\n", "", -13),
+        jit=compat_backends.BackendResult("written\n", "", -13),
+        cpython=("BrokenPipeError\n", "", 0),
+    )
+    assert record["resolved_status"] == "fail"
+    assert record["reason_tag"] == "pinned_outcome_mismatch"
