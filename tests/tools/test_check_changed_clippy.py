@@ -122,6 +122,49 @@ def test_all_selected_boundaries_are_checked_before_the_first_clippy(
     assert gate.main(["--dry-run"]) == 0
 
 
+@pytest.mark.parametrize(
+    ("failed_index", "unprovisioned", "exitcode"),
+    [(0, False, 1), (1, False, 1), (None, False, 0), (1, True, 2)],
+    ids=["first-failure", "middle-failure", "all-pass", "not-provisioned"],
+)
+def test_selected_cells_stop_on_failure_and_all_run_on_success(
+    workspace, monkeypatch, capsys, failed_index, unprovisioned, exitcode
+):
+    monkeypatch.setattr(gate, "ROOT", workspace.root)
+    monkeypatch.setattr(gate, "changed_paths", lambda _base: ["rust-toolchain.toml"])
+    monkeypatch.setattr(gate, "local_clippy_commands", lambda _plan: COMMANDS)
+    plan = object()
+    monkeypatch.setattr(gate.ProofPlan, "load", lambda: plan)
+    calls = []
+
+    def run(command, actual_plan):
+        index = len(calls)
+        assert failed_index is None or index <= failed_index, (
+            "a failed selected cell must prevent later launches"
+        )
+        assert actual_plan is plan
+        assert command is COMMANDS[index]
+        calls.append(command)
+        if index == failed_index:
+            if unprovisioned:
+                raise gate.ToolchainNotProvisioned("provider absent")
+            return 42
+        return 0
+
+    monkeypatch.setattr(gate, "run", run)
+    assert gate.main([]) == exitcode
+    count = len(COMMANDS) if failed_index is None else failed_index + 1
+    assert calls == list(COMMANDS[:count])
+    output = capsys.readouterr()
+    if failed_index is None:
+        assert "changed-clippy: OK (4 command(s))" in output.out
+        assert not output.err
+    else:
+        assert "changed-clippy: OK" not in output.out
+        assert COMMANDS[failed_index].id in output.err
+        assert ("provider absent" if unprovisioned else "FAILED") in output.err
+
+
 def test_change_reaches_its_member_and_every_dependent(workspace) -> None:
     change = gate.reach(workspace, ["crates/core/src/lib.rs"])
     assert change.packages == {"core", "runtime", "backend", "tool"}
