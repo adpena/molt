@@ -113,12 +113,11 @@ mod native {
         let value = value
             .to_u64()
             .and_then(|value| libc::uid_t::try_from(value).ok());
-        if let Some(value) = value {
-            if value != libc::uid_t::MAX
-                || std::mem::size_of::<libc::c_long>() > std::mem::size_of::<libc::uid_t>()
-            {
-                return Some(value);
-            }
+        if let Some(value) = value
+            && (value != libc::uid_t::MAX
+                || std::mem::size_of::<libc::c_long>() > std::mem::size_of::<libc::uid_t>())
+        {
+            return Some(value);
         }
         raise_exception::<()>(py, "KeyError", "getpwuid(): uid not found");
         None
