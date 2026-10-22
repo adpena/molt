@@ -365,16 +365,23 @@ def run_from_pinned_controller(args: argparse.Namespace, argv: list[str]) -> int
 
 
 def runs_from_pinned_controller(args: argparse.Namespace) -> bool:
-    """A landing, a queued landing, the queue runner and a withdrawal run
-    main's driver.
+    """A landing, a queued landing, the queue runner, a withdrawal, and a
+    lane's start and retirement run main's driver.
 
     ``land`` and ``queue withdraw`` write queue state and start the runner, so
-    a candidate's stale driver would decide both.
+    a candidate's stale driver would decide both. ``lane start`` provisions a
+    lane at main and ``lane retire`` judges whether a lane's ignored trees are
+    current; a driver at another commit reads their manifests with another
+    schema (HF-468: a lane's driver failed to provision a new lane, and an
+    old main's driver judged a landed lane's tree stale).
     """
     pinned = args.command in {"integrate", "land"} and not getattr(
         args, "dry_run", False
     )
     pinned = pinned or (
         args.command == "queue" and args.queue_command in {"run", "withdraw"}
+    )
+    pinned = pinned or (
+        args.command == "lane" and args.lane_command in {"start", "retire"}
     )
     return pinned and not (args.candidate_controller or args.pinned_controller)

@@ -4471,6 +4471,41 @@ def test_subcommand_identity_destinations_never_alias_payloads(drv):
     check(drv.build_parser(), set())
 
 
+@pytest.mark.parametrize(
+    ("argv", "pinned"),
+    [
+        (["lane", "start", "feature"], True),
+        (["lane", "retire", "feature"], True),
+        (["lane", "start", "feature", "--candidate-controller"], False),
+        (["lane", "retire", "feature", "--candidate-controller"], False),
+        (["lane", "list"], False),
+        # The handoff itself: main's controller receives these and runs it.
+        (
+            [
+                "lane",
+                "start",
+                "feature",
+                "--repo",
+                "/repo",
+                "--pinned-controller",
+                "a" * 32,
+                "--controller-cwd",
+                "/repo",
+            ],
+            False,
+        ),
+        (["land"], True),
+        (["queue", "status"], False),
+    ],
+)
+def test_lane_start_and_retire_run_mains_driver(drv, argv, pinned) -> None:
+    """HF-468: a lane's start provisions it at main and its retirement judges
+    its trees against main, so both run main's pinned driver, as land does;
+    a driver at another commit read their manifests with another schema."""
+    parsed = drv.build_parser().parse_args(argv)
+    assert molt_dev.molt_dev_controller.runs_from_pinned_controller(parsed) is pinned
+
+
 def test_detached_run_completes_and_records_rc(drv, tmp_path, capsys):
     state_root = tmp_path / "detached"
     # Exercise the complete dispatcher, not only the detached handler: payload

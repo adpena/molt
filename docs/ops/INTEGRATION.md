@@ -214,11 +214,21 @@ integration speedup.
 | `detached-run` | Spawn a command as a `setsid` daemon with a state dir (hazard 11). `--name`, `--cwd`, `--env K=V`, `--replace`, `--state-dir`, `--json`, `-- cmd…`. The spawning tool call itself must run unsandboxed; verify in a *later* call. |
 | `detached-verify` | Prove the daemon outlived its spawning call: `running` / `done(rc)` / `died-silent`. `--name`, `--min-age-s`, `--state-dir`, `--json`. Exit 0 only for `running` past min-age or `done` rc 0. |
 | `cleanup` | Standalone hazard-3 worktree cleanup gate. `--ignore`, `--force SHA`. |
-| `lane start <slug>` | Create `lane/<slug>` and its worktree at the fetched base, write its coordination record, and provision its checkout inputs. `--base`, `--root`. |
-| `lane retire <slug>` | Remove a landed lane completely: worktree, local and remote branch, checkout state, and record. `--abandon` first writes a verified bundle. `--ignore`. |
+| `lane start <slug>` | Create `lane/<slug>` and its worktree at the fetched base, write its coordination record, and provision its checkout inputs. Runs main's pinned controller. `--base`, `--root`, `--candidate-controller`. |
+| `lane retire <slug>` | Remove a landed lane completely: worktree, local and remote branch, checkout state, and record. Runs main's pinned controller. `--abandon` first writes a verified bundle. `--ignore`, `--candidate-controller`. |
 | `lane list` | Each lane's tip, base, commits ahead and behind, landed, dirty and provisioned state. `--json`, `--no-fetch`. |
 
 ### Lanes (`lane start | retire | list`)
+
+`lane start` and `lane retire` run main's pinned controller, as `land` does:
+they fetch, then hand the command to the driver at the fetched main
+(`molt_dev_controller.runs_from_pinned_controller`). A lane starts at main and
+is provisioned by main's code; a landed lane's trees are judged by the code
+that landed them. A driver from another commit reads their manifests with
+another schema (HF-468): on 2026-10-22 `lane start` run from a lane at
+tool-release schema 3 failed to provision a new lane at schema 2, and `lane
+retire` run from an older main judged a landed lane's Edgebox tree stale.
+`--candidate-controller` runs the calling checkout's own driver.
 
 The driver owns each lane's lifecycle (design: `docs/design/landing_queue.md`,
 "Orchestrator-owned lanes"). A lane is the branch `lane/<slug>` and its
