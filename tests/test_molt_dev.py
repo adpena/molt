@@ -3193,6 +3193,11 @@ def test_lane_start_and_retire_run_through_mains_controller_by_default(
     (controller,) = (work / ".git" / "molt" / "controllers").iterdir()
     assert f"pinned controller {controller.name}" in output, output
     assert returncode in {molt_dev.EXIT_OK, molt_dev.EXIT_FAIL}, output
+    if returncode == molt_dev.EXIT_FAIL:
+        # Only the inputs the fixture lacks may fail; a failed start prints
+        # failures alone, so any other input's name means it failed.
+        assert "the lane exists; finish provisioning" in output, output
+        assert "uv-environment:" not in output, output
     record_path = work / "logs" / "agents" / "lane-handoff" / "coordination.json"
     assert record_path.is_file(), output
     record = json.loads(record_path.read_text(encoding="utf-8"))

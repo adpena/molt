@@ -38,7 +38,7 @@ controller  →  fetch  →  rebase  →  verify-commits  →  cite  →  marker
 ```
 
 0. **controller** — a live `integrate` fetches, then runs the driver of main's
-   tip, never the candidate's. It extracts `tools/`, `src/molt`,
+   tip, never the candidate's. It extracts `tools/`, `src/molt`, `config/`,
    `pyproject.toml`, `uv.lock` and `.python-version` from that commit into
    `<git-common-dir>/molt/controllers/<key>` (the key is the digest of those
    trees, so a landing that changes none of them reuses the extraction), runs
@@ -231,9 +231,15 @@ lane at tool-release schema 3 failed to provision a new lane at schema 2, and
 stale. Where main's code cannot read a lane's state, retirement refuses
 before it bundles or removes anything (`validate_lane_handoff`), so no signal
 is lost. `--candidate-controller` runs the calling checkout's own driver. A
-start that cannot write its lane's record removes the worktree and branch it
-just created (neither removal forces), so no lane exists that `lane retire`
-would refuse.
+start that stops before its lane's record (a failed `git worktree add`, a
+failed record, an interrupt) undoes what it created: the worktree while Git
+finds it clean, then the branch once no worktree holds it and while it still
+points at its base. When Git refuses either, it keeps both and names the
+commands that finish by hand. The record names the controller that started
+the lane. The record's environment wires the sccache the running driver pins
+(main's), while provisioning reads the lane's own pins; the two differ only
+for a `--base` lane whose sccache pin differs, and either sccache serves its
+builds.
 
 The driver owns each lane's lifecycle (design: `docs/design/landing_queue.md`,
 "Orchestrator-owned lanes"). A lane is the branch `lane/<slug>` and its
