@@ -1,11 +1,28 @@
 # The native launch ABI: the runtime entry points a native program's launch
-# calls, in call order. The AOT main stub (src/molt/cli/native_main_stub.py)
-# and the development JIT runner (runtime/molt-jit/src/launch.rs) both follow
-# it; tools/gen_native_launch_abi.py generates their declarations.
+# calls, in call order, and how the development JIT runner is started. The AOT
+# main stub (src/molt/cli/native_main_stub.py) and the JIT runner
+# (runtime/molt-jit/src/launch.rs) both follow it; tools/gen_native_launch_abi.py
+# generates their declarations and the runner's command line and image format
+# for Python (run_tier.py, jit_image.py) and Rust (runtime/molt-jit).
 #
 # Types: u64 (unsigned long long), i32 (int), argv (const char**),
 # c_string_array (const char* const*), bytes (const unsigned char*).
 schema = 1
+
+# The JIT runner's command line and its image format:
+#   molt-jit [<start_receipt_flag> <path>] <image_flag> <image> [args...]
+# A JIT image's first line is `#!<runner> <image_flag>`, so execve of the image
+# runs that command; its second line starts with `image_marker`. With a start
+# receipt the runner creates `<path>` holding `start_receipt` right before the
+# program starts. `allocator_restart_flag` is the runner's own: it restarts
+# itself with it once on macOS (runtime/molt-jit/src/main.rs), and no caller
+# passes it.
+[runner]
+image_flag = "--image"
+start_receipt_flag = "--start-receipt"
+allocator_restart_flag = "--allocator-restarted"
+start_receipt = "{\"schema\":\"molt.jit-start.v1\"}\n"
+image_marker = "#molt.jit-image.v2"
 
 # Called in this order, after the launch environment is installed and before
 # the program's entry (`molt_main`).

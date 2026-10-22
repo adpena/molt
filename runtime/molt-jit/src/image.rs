@@ -22,10 +22,11 @@ use serde::Deserialize;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-/// The interpreter line starts `#!` and ends with the runner's image flag.
+use crate::launch_abi::{IMAGE_FLAG, IMAGE_MARKER};
+
+/// The interpreter line starts `#!` and ends with ` ` and the runner's image
+/// flag (runtime/native_launch_abi.toml).
 pub(crate) const IMAGE_INTERPRETER_PREFIX: &str = "#!";
-pub(crate) const IMAGE_INTERPRETER_FLAG: &str = " --image";
-pub(crate) const IMAGE_MARKER: &str = "#molt.jit-image.v2";
 
 /// What the runner needs besides the program.
 #[derive(Debug, Deserialize)]
@@ -60,10 +61,10 @@ impl JitImage {
         let mut lines = bytes.splitn(3, |byte| *byte == b'\n');
         let interpreter = lines.next().unwrap_or_default();
         if !interpreter.starts_with(IMAGE_INTERPRETER_PREFIX.as_bytes())
-            || !interpreter.ends_with(IMAGE_INTERPRETER_FLAG.as_bytes())
+            || !interpreter.ends_with(format!(" {IMAGE_FLAG}").as_bytes())
         {
             return Err(format!(
-                "its first line is not `{IMAGE_INTERPRETER_PREFIX}<runner>{IMAGE_INTERPRETER_FLAG}`"
+                "its first line is not `{IMAGE_INTERPRETER_PREFIX}<runner> {IMAGE_FLAG}`"
             ));
         }
         let marker = lines.next().ok_or("it has no image marker")?;
@@ -115,7 +116,7 @@ mod tests {
 
     fn image(header: &str, program: &[u8]) -> Vec<u8> {
         let mut bytes = format!(
-            "#!/runner{IMAGE_INTERPRETER_FLAG}\n{IMAGE_MARKER} {} {}\n{header}",
+            "#!/runner {IMAGE_FLAG}\n{IMAGE_MARKER} {} {}\n{header}",
             header.len(),
             program.len()
         )

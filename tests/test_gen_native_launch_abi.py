@@ -31,7 +31,7 @@ def _gen():
 
 def test_generated_outputs_are_byte_exact() -> None:
     gen = _gen()
-    for path, expected in gen.render_all(gen.load_entries()).items():
+    for path, expected in gen.render_all(gen.load_entries(), gen.load_runner()).items():
         assert path.read_bytes() == expected.encode("utf-8"), (
             f"{path} is stale; run `python tools/gen_native_launch_abi.py --write`"
         )
@@ -92,3 +92,33 @@ def test_the_generated_declarations_type_check_against_the_stub(
         ["cc", "-fsyntax-only", "-std=c11", "-Werror", "-Wall", str(source)]
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_the_runner_command_and_image_format_come_from_the_declaration() -> None:
+    # The CLI and the runner read the runner's flags, its start receipt and
+    # the image marker from the launch ABI's one declaration (HF-371 review v4).
+    import tomllib
+
+    from molt.cli import jit_image, run_tier
+
+    gen = _gen()
+    with gen.SOURCE.open("rb") as handle:
+        declared = tomllib.load(handle)["runner"]
+    assert run_tier.jit_runner_argv("runner", "app.jit", ["x"], start_receipt="r") == [
+        "runner",
+        declared["start_receipt_flag"],
+        "r",
+        declared["image_flag"],
+        "app.jit",
+        "x",
+    ]
+    assert run_tier.JIT_START_RECEIPT == declared["start_receipt"]
+    assert jit_image.JIT_IMAGE_MARKER == declared["image_marker"]
+    rust = gen.OUT_RUST.read_text(encoding="utf-8")
+    for key, constant in (
+        ("image_flag", "IMAGE_FLAG"),
+        ("start_receipt_flag", "START_RECEIPT_FLAG"),
+        ("allocator_restart_flag", "ALLOCATOR_RESTART_FLAG"),
+        ("image_marker", "IMAGE_MARKER"),
+    ):
+        assert f'pub(crate) const {constant}: &str = "{declared[key]}";' in rust

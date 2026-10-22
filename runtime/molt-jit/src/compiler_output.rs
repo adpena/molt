@@ -3,21 +3,29 @@
 //! An AOT backend runs in its own process, and `molt run` shows its stderr
 //! only when the build fails or when backend diagnostics were requested
 //! (`src/molt/cli/wrapper_build.py`). The runner compiles in the program's
-//! process, so while it compiles it points file descriptor 2 at a pipe that a
-//! forked keeper process drains into memory. The runner then tells the keeper
-//! to discard the text (the program compiled) or to write it to the original
-//! stderr (compilation failed). If the runner dies first, by any signal or
-//! exit, the keeper sees its pipes close without a verdict and writes the text,
+//! process, so while it compiles it points file descriptor 2 at an unlinked
+//! capture file. Both the runner and a forked keeper process hold that file.
+//! When the compile ends, the runner discards the text (the program compiled)
+//! or writes it to the original stderr itself (compilation failed), and tells
+//! the keeper to exit. If the runner dies first, by any signal or exit, the
+//! keeper sees the control pipe close without a verdict and writes the text,
 //! as the CLI shows a crashed backend's stderr.
 //!
 //! The capture must not change how the program starts, whatever state the
-//! runner inherited. A closed fd 2 has nothing to capture, so the runner
-//! compiles with it closed, as an AOT executable runs with it closed. Every
-//! descriptor the capture opens sits above fd 2 and closes on exec, so a closed
-//! fd 0 or 1 stays closed. If the keeper dies early, writes to its pipes fail
-//! with `EPIPE` instead of raising `SIGPIPE` (macOS `F_SETNOSIGPIPE`; on Linux
-//! the runner blocks `SIGPIPE` while it captures and discards what is pending),
-//! and `finish` names the keeper's end on the restored stderr.
+//! runner inherited or whatever happens to the keeper:
+//! - A closed fd 2 has nothing to capture, so the runner compiles with it
+//!   closed, as an AOT executable runs with it closed.
+//! - Every descriptor the capture opens sits above fd 2 and closes on exec,
+//!   so a closed fd 0 or 1 stays closed.
+//! - Compiler writes go to a regular file, never to a pipe, so they cannot
+//!   fail with `EPIPE`: the compiler's `eprintln!` progress lines panic on a
+//!   write error, and a pipe whose keeper another process killed would turn
+//!   every later line into one. The keeper is needed only if the runner dies;
+//!   if the keeper dies instead, the runner still holds the text, and the
+//!   program starts as it would have. Only the one-byte verdict goes through
+//!   a pipe, and a dead keeper makes that write fail with `EPIPE` instead of
+//!   raising `SIGPIPE` (macOS `F_SETNOSIGPIPE`; on Linux the runner blocks
+//!   `SIGPIPE` while it captures and discards what is pending).
 
 use serde::Deserialize;
 
@@ -31,15 +39,17 @@ pub(crate) enum CompilerDiagnostics {
     OnFailure,
 }
 
-/// The keeper's verdicts. A closed control pipe with no verdict means the
-/// runner died, which the keeper treats as [`REPLAY`].
-const DISCARD: u8 = b'd';
-const REPLAY: u8 = b'r';
+/// The verdict a live runner sends: it handles the text itself, so the keeper
+/// exits without writing. A control pipe that closes with no verdict means the
+/// runner died, and the keeper writes the text.
+const RUNNER_ALIVE: u8 = b'd';
 
-/// File descriptor 2, captured by a keeper process until `finish`.
+/// File descriptor 2, captured into a file until `finish`.
 pub(crate) struct CapturedStderr {
     #[cfg(unix)]
     saved: libc::c_int,
+    #[cfg(unix)]
+    capture: libc::c_int,
     #[cfg(unix)]
     control: libc::c_int,
     #[cfg(unix)]
@@ -63,9 +73,18 @@ fn above_stdio(fd: libc::c_int) -> Result<libc::c_int, String> {
     // SAFETY: `fd` is open; F_DUPFD_CLOEXEC returns a new descriptor.
     let moved = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, FIRST_PRIVATE_FD) };
     let error = (moved < 0).then(|| os_error("cannot move a compiler output descriptor"));
-    // SAFETY: `fd` is this call's to close; `moved` now holds the pipe end.
+    // SAFETY: `fd` is this call's to close; `moved` now holds the same file.
     unsafe { libc::close(fd) };
     error.map_or(Ok(moved), Err)
+}
+
+/// Close every descriptor in `fds`.
+#[cfg(unix)]
+fn close_all(fds: &[libc::c_int]) {
+    for fd in fds {
+        // SAFETY: each descriptor is the caller's to close.
+        unsafe { libc::close(*fd) };
+    }
 }
 
 /// A pipe whose ends sit above fd 2 and close on exec. When fd 0 or 1 is
@@ -87,24 +106,44 @@ fn pipe() -> Result<[libc::c_int; 2], String> {
                 .into_iter()
                 .flatten()
             {
-                // SAFETY: an end this call opened.
-                unsafe { libc::close(*end) };
+                close_all(&[*end]);
             }
             Err(read.err().or(write.err()).unwrap_or_default())
         }
     }
 }
 
+/// An unlinked, close-on-exec file above fd 2 in the temporary directory, to
+/// hold what the compiler writes. Only its open descriptors keep it alive.
+#[cfg(unix)]
+fn capture_file() -> Result<libc::c_int, String> {
+    use std::os::unix::ffi::OsStrExt;
+    let template = std::env::temp_dir().join("molt-jit-compiler-output.XXXXXX");
+    let mut path = template.as_os_str().as_bytes().to_vec();
+    path.push(0);
+    // SAFETY: `path` is a writable NUL-terminated template; mkstemp fills in
+    // its X's and opens the file it names.
+    let fd = unsafe { libc::mkstemp(path.as_mut_ptr().cast()) };
+    if fd < 0 {
+        return Err(os_error(&format!(
+            "cannot create a compiler output file in {}",
+            std::env::temp_dir().display()
+        )));
+    }
+    // SAFETY: `path` now names the file `fd` opened; nothing else uses it.
+    unsafe { libc::unlink(path.as_ptr().cast()) };
+    above_stdio(fd)
+}
+
 /// Writes to `fd` fail with `EPIPE` instead of raising `SIGPIPE` once its
-/// reader is gone (macOS sets this on the open file, so it holds through the
-/// fd 2 copy too).
+/// reader is gone.
 #[cfg(target_os = "macos")]
 fn without_sigpipe(fd: libc::c_int) -> Result<(), String> {
-    /// `<sys/fcntl.h>`; the locked libc (0.2.190) does not export it yet.
-    const F_SETNOSIGPIPE: libc::c_int = 73;
     // SAFETY: `fd` is open; F_SETNOSIGPIPE takes an int flag.
-    if unsafe { libc::fcntl(fd, F_SETNOSIGPIPE, 1) } < 0 {
-        return Err(os_error("cannot keep SIGPIPE off a compiler output pipe"));
+    if unsafe { libc::fcntl(fd, libc::F_SETNOSIGPIPE, 1) } < 0 {
+        return Err(os_error(
+            "cannot keep SIGPIPE off the compiler output keeper",
+        ));
     }
     Ok(())
 }
@@ -190,43 +229,46 @@ fn read_to_end(fd: libc::c_int, output: &mut Vec<u8>) {
     }
 }
 
-/// The keeper: hold the captured text, then discard or write it.
+/// Write the whole capture file, from its start, to `fd`.
+#[cfg(unix)]
+fn replay(capture: libc::c_int, fd: libc::c_int) {
+    let mut buffer = [0_u8; 16 * 1024];
+    let mut offset: libc::off_t = 0;
+    loop {
+        // SAFETY: `buffer` is writable for its whole length; `capture` is
+        // open. `pread` leaves the shared file offset alone.
+        let read =
+            unsafe { libc::pread(capture, buffer.as_mut_ptr().cast(), buffer.len(), offset) };
+        if read > 0 {
+            if !write_all(fd, &buffer[..read as usize]) {
+                return;
+            }
+            offset += read as libc::off_t;
+        } else if read < 0
+            && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
+        {
+            continue;
+        } else {
+            return;
+        }
+    }
+}
+
+/// The keeper: wait for the runner's verdict; if none comes, the runner died,
+/// so write what the compiler wrote.
 ///
 /// # Safety
 /// Runs in the child of `fork` in a single-threaded process and never
 /// returns.
 #[cfg(unix)]
 unsafe fn keep(capture: libc::c_int, control: libc::c_int) -> ! {
-    let mut captured = Vec::new();
-    read_to_end(capture, &mut captured);
     let mut verdict = Vec::new();
     read_to_end(control, &mut verdict);
-    if verdict.first() != Some(&DISCARD) {
-        let _ = write_all(libc::STDERR_FILENO, &captured);
+    if verdict.first() != Some(&RUNNER_ALIVE) {
+        replay(capture, libc::STDERR_FILENO);
     }
     // SAFETY: `_exit` ends the keeper without running the runner's exit hooks.
     unsafe { libc::_exit(0) }
-}
-
-/// Close every descriptor in `fds`.
-#[cfg(unix)]
-fn close_all(fds: &[libc::c_int]) {
-    for fd in fds {
-        // SAFETY: each descriptor is the caller's to close.
-        unsafe { libc::close(*fd) };
-    }
-}
-
-/// How a keeper that did not exit cleanly ended, for the runner's warning.
-#[cfg(unix)]
-fn keeper_end(status: libc::c_int) -> Option<String> {
-    if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0 {
-        None
-    } else if libc::WIFSIGNALED(status) {
-        Some(format!("signal {}", libc::WTERMSIG(status)))
-    } else {
-        Some(format!("status {status:#x}"))
-    }
 }
 
 impl CapturedStderr {
@@ -244,13 +286,10 @@ impl CapturedStderr {
             return Ok(None);
         }
         let _ = std::io::stderr().flush();
-        let [capture_read, capture_write] = pipe()?;
-        let [control_read, control_write] = pipe().inspect_err(|_| {
-            close_all(&[capture_read, capture_write]);
-        })?;
-        let opened = [capture_read, capture_write, control_read, control_write];
-        if let Err(error) = without_sigpipe(capture_write).and(without_sigpipe(control_write)) {
-            close_all(&opened);
+        let capture = capture_file()?;
+        let [control_read, control_write] = pipe().inspect_err(|_| close_all(&[capture]))?;
+        if let Err(error) = without_sigpipe(control_write) {
+            close_all(&[capture, control_read, control_write]);
             return Err(error);
         }
         #[cfg(not(target_os = "macos"))]
@@ -259,7 +298,7 @@ impl CapturedStderr {
         let keeper = unsafe { libc::fork() };
         if keeper < 0 {
             let error = os_error("cannot start the compiler output keeper");
-            close_all(&opened);
+            close_all(&[capture, control_read, control_write]);
             #[cfg(not(target_os = "macos"))]
             sigpipe.restore();
             return Err(error);
@@ -267,41 +306,38 @@ impl CapturedStderr {
         if keeper == 0 {
             // SAFETY: these are this child's copies; fd 2 stays the original
             // stderr, and stdin and stdout are not the keeper's to hold. Every
-            // pipe end sits above fd 2, so closing fds 0 and 1 closes none.
+            // descriptor of the capture sits above fd 2, so closing fds 0 and
+            // 1 closes none of them.
             unsafe {
-                libc::close(capture_write);
                 libc::close(control_write);
                 libc::close(libc::STDIN_FILENO);
                 libc::close(libc::STDOUT_FILENO);
-                keep(capture_read, control_read)
+                keep(capture, control_read)
             }
         }
-        // The read ends belong to the keeper now.
-        close_all(&[capture_read, control_read]);
+        // The control read end belongs to the keeper now.
+        close_all(&[control_read]);
         // SAFETY: fd 2 is open (checked above); the copy sits above fd 2.
         let saved =
             unsafe { libc::fcntl(libc::STDERR_FILENO, libc::F_DUPFD_CLOEXEC, FIRST_PRIVATE_FD) };
         // SAFETY: both descriptors are open; `dup2` atomically replaces fd 2.
-        if saved < 0 || unsafe { libc::dup2(capture_write, libc::STDERR_FILENO) } < 0 {
+        if saved < 0 || unsafe { libc::dup2(capture, libc::STDERR_FILENO) } < 0 {
             let error = os_error("cannot redirect stderr");
-            // Closing every descriptor this call opened releases the keeper,
-            // which then writes nothing and exits.
             if saved >= 0 {
                 close_all(&[saved]);
             }
-            close_all(&[capture_write]);
-            let _ = write_all(control_write, &[DISCARD]);
-            close_all(&[control_write]);
+            // The verdict releases the keeper, which then writes nothing.
+            let _ = write_all(control_write, &[RUNNER_ALIVE]);
+            close_all(&[capture, control_write]);
             // SAFETY: `keeper` is this process's child.
             unsafe { libc::waitpid(keeper, std::ptr::null_mut(), 0) };
             #[cfg(not(target_os = "macos"))]
             sigpipe.restore();
             return Err(error);
         }
-        // fd 2 now holds the write end.
-        close_all(&[capture_write]);
         Ok(Some(Self {
             saved,
+            capture,
             control: control_write,
             keeper,
             #[cfg(not(target_os = "macos"))]
@@ -314,46 +350,43 @@ impl CapturedStderr {
         Err("compiler output capture needs a Unix file descriptor table".to_string())
     }
 
-    /// Restore fd 2 and wait for the keeper: it writes what the compiler
-    /// wrote when `replay` is true and discards it otherwise. The process has
-    /// no keeper child afterwards. A keeper that ended before its verdict
-    /// (another process killed it) is named on the restored stderr, with the
-    /// output it held lost; the runner itself continues.
+    /// Restore fd 2, release the keeper and, when `replay` is true, write
+    /// what the compiler wrote to the restored stderr. The process has no
+    /// keeper child afterwards. A keeper that another process killed changes
+    /// nothing here: the runner holds the text itself.
     pub(crate) fn finish(self, replay: bool) {
         #[cfg(unix)]
         {
             use std::io::Write;
             let Self {
                 saved,
+                capture,
                 control,
                 keeper,
                 #[cfg(not(target_os = "macos"))]
                 sigpipe,
             } = self;
             let _ = std::io::stderr().flush();
-            let delivered = write_all(control, &[if replay { REPLAY } else { DISCARD }]);
-            let mut status = 0;
-            // SAFETY: `saved` is the original fd 2; restoring it closes the
-            // last write end of the capture pipe, so the keeper reads to its
-            // end, then reads the verdict and exits.
+            // A dead keeper makes this fail with EPIPE; nothing depends on it.
+            let _ = write_all(control, &[RUNNER_ALIVE]);
+            // SAFETY: `saved` is the original fd 2; `keeper` is this
+            // process's child, which exits once it reads the verdict or EOF.
             unsafe {
                 libc::close(control);
                 libc::dup2(saved, libc::STDERR_FILENO);
                 libc::close(saved);
+                let mut status = 0;
                 while libc::waitpid(keeper, &mut status, 0) < 0
                     && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
                 {
                 }
             }
+            if replay {
+                self::replay(capture, libc::STDERR_FILENO);
+            }
+            close_all(&[capture]);
             #[cfg(not(target_os = "macos"))]
             sigpipe.restore();
-            let ended = keeper_end(status).or_else(|| (!delivered).then(|| "early".to_string()));
-            if let Some(ended) = ended {
-                let _ = writeln!(
-                    std::io::stderr(),
-                    "molt-jit: the compiler output keeper (pid {keeper}) ended before the compiler finished ({ended}); the compiler output it held is lost"
-                );
-            }
         }
         #[cfg(not(unix))]
         let _ = replay;
@@ -466,38 +499,58 @@ mod tests {
         );
     }
 
+    /// Kill only the keeper and wait until it is gone; `finish` reaps it.
+    fn kill_keeper(capture: &CapturedStderr) {
+        // SAFETY: the keeper is this child's child; WNOWAIT leaves it for
+        // `finish` to reap.
+        unsafe {
+            libc::kill(capture.keeper, libc::SIGKILL);
+            let mut info = std::mem::zeroed::<libc::siginfo_t>();
+            libc::waitid(
+                libc::P_PID,
+                capture.keeper as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WNOWAIT,
+            );
+        }
+    }
+
     #[test]
-    fn a_keeper_killed_early_is_named_and_the_runner_lives() {
-        // Another process kills only the keeper. The runner's writes to the
-        // capture and its verdict must fail with EPIPE, not end it by SIGPIPE,
-        // and the restored stderr must say what was lost.
-        let (stderr, status) = stderr_of_child(|| {
-            let capture = begin();
-            // SAFETY: the keeper is this child's child; WNOWAIT leaves it for
-            // `finish` to reap.
-            unsafe {
-                libc::kill(capture.keeper, libc::SIGKILL);
-                let mut info = std::mem::zeroed::<libc::siginfo_t>();
-                libc::waitid(
-                    libc::P_PID,
-                    capture.keeper as libc::id_t,
-                    &mut info,
-                    libc::WEXITED | libc::WNOWAIT,
-                );
-            }
-            require(!write_all(libc::STDERR_FILENO, b"compiler: warning\n"), 4);
-            capture.finish(false);
-            let _ = write_all(libc::STDERR_FILENO, b"after\n");
-        });
-        assert!(
-            libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
-            "status {status:#x}, stderr {stderr:?}"
-        );
-        assert!(
-            stderr.starts_with("molt-jit: the compiler output keeper (pid ")
-                && stderr.ends_with("(signal 9); the compiler output it held is lost\nafter\n"),
-            "{stderr:?}"
-        );
+    fn a_keeper_killed_alone_changes_nothing_for_the_runner() {
+        // Another process kills only the keeper. The compiler's later writes
+        // must still succeed (its eprintln! would panic on EPIPE), and the
+        // runner must still discard or replay the whole text itself.
+        for replay in [false, true] {
+            let body: fn() = if replay {
+                || {
+                    let capture = begin();
+                    let _ = write_all(libc::STDERR_FILENO, b"before\n");
+                    kill_keeper(&capture);
+                    require(write_all(libc::STDERR_FILENO, b"compiler: warning\n"), 4);
+                    capture.finish(true);
+                    let _ = write_all(libc::STDERR_FILENO, b"after\n");
+                }
+            } else {
+                || {
+                    let capture = begin();
+                    kill_keeper(&capture);
+                    require(write_all(libc::STDERR_FILENO, b"compiler: warning\n"), 4);
+                    capture.finish(false);
+                    let _ = write_all(libc::STDERR_FILENO, b"after\n");
+                }
+            };
+            let (stderr, status) = stderr_of_child(body);
+            assert!(
+                libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
+                "status {status:#x}, stderr {stderr:?}"
+            );
+            let expected = if replay {
+                "before\ncompiler: warning\nafter\n"
+            } else {
+                "after\n"
+            };
+            assert_eq!(stderr, expected);
+        }
     }
 
     #[test]
