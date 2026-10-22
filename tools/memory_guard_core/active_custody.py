@@ -150,6 +150,8 @@ class MarkerRecord:
     path: Path
     identity: StableRegularFileIdentity | None = None
     payload: dict[str, object] | None = None
+    # A validated publisher identity can survive an invalid custody body. It
+    # binds observation to a process lifetime, never authorizes retirement.
     guard: MarkerProcessIdentity | None = None
     child: MarkerProcessIdentity | None = None
     error: str | None = None
@@ -348,7 +350,7 @@ def _process_identity(value: object) -> MarkerProcessIdentity:
     return MarkerProcessIdentity(value["pid"], birth, pgid)
 
 
-def _parse_payload(path: Path, payload: object) -> MarkerRecord:
+def _parse_guard_identity(path: Path, payload: object) -> MarkerProcessIdentity:
     if not isinstance(payload, dict):
         raise ActiveCustodyError("marker_payload_not_object")
     match = _MARKER_NAME.fullmatch(path.name)
@@ -359,6 +361,15 @@ def _parse_payload(path: Path, payload: object) -> MarkerRecord:
         or payload.get("token") != match[2]
     ):
         raise ActiveCustodyError("marker_identity_invalid")
+    guard = _process_identity(payload.get("guard_process"))
+    if guard.pid != payload["pid"]:
+        raise ActiveCustodyError("guard_identity_disagrees_with_marker")
+    return guard
+
+
+def _parse_payload(path: Path, payload: object) -> MarkerRecord:
+    guard = _parse_guard_identity(path, payload)
+    assert isinstance(payload, dict)
     if (
         type(payload.get("schema_version")) is not int
         or payload["schema_version"] != ACTIVE_GUARD_MARKER_SCHEMA_VERSION
@@ -367,9 +378,6 @@ def _parse_payload(path: Path, payload: object) -> MarkerRecord:
     status = payload.get("status")
     if not isinstance(status, str) or status not in _STATUSES:
         raise ActiveCustodyError("marker_status_invalid")
-    guard = _process_identity(payload.get("guard_process"))
-    if guard.pid != payload["pid"]:
-        raise ActiveCustodyError("guard_identity_disagrees_with_marker")
     child_value = payload.get("child_process")
     child = None if child_value is None else _process_identity(child_value)
     launch = payload.get("child_launch_state")
@@ -492,10 +500,20 @@ def read_marker_record(path: Path) -> MarkerRecord:
         record = _parse_payload(path, payload)
         return replace(record, identity=identity)
     except (OSError, ValueError) as exc:
+        # Invalid schemas and incomplete bodies remain protective records. A
+        # separately validated publisher can still prove which process lifetime
+        # they concern; numeric PID coincidence alone cannot bind another run.
+        guard = None
+        if identity is not None:
+            try:
+                guard = _parse_guard_identity(path, payload)
+            except ActiveCustodyError:
+                pass
         return MarkerRecord(
             path,
             identity,
             payload if isinstance(payload, dict) else None,
+            guard=guard,
             error=str(exc),
         )
 
@@ -541,8 +559,10 @@ def guard_marker_records(
     """Read these guard pids' generations in active and retired custody.
 
     One pair of directory listings serves the whole captured process family.
-    Match the pid namespace before reading files, retaining malformed records
-    within that namespace so unreadable evidence cannot mean closure.
+    Match the pid namespace before reading files. Malformed records remain
+    protective for global artifact custody. Run closure may exclude them only
+    when a validated publisher birth proves a different lifetime; an unknown
+    relationship remains protective for that run too.
     """
     names = {str(pid) for pid in guard_pids}
     if not names:

@@ -646,6 +646,56 @@ def test_mixed_legacy_native_writers_are_not_eviction_candidates(tmp_path):
     assert result["legacy_native_state"]
 
 
+def test_legacy_retention_preserves_an_open_lock_inode_and_active_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt.file_locks import _release_file_lock, _try_acquire_file_lock
+
+    module = _load_molt_cache_prune()
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    archive = cache / ("stdlib_shared_" + "a" * 64 + ".a")
+    lock = archive.with_name(archive.name + ".publish.lock")
+    stage = cache / ("." + archive.name + ".123.456.objects.tmp") / "job.json"
+    stage.parent.mkdir()
+    archive.write_bytes(b"old writer's required archive")
+    stage.write_bytes(b"old compilation still owns this stage")
+    lock.write_bytes(b"")
+    now = 100 * 86400.0
+    clock = install_module_view(monkeypatch, "time", time, module, time=lambda: now)
+    old = cache / ("b" * 64 + ".artifact-" + "c" * 64 + ".a")
+    hot = cache / ("d" * 64 + ".artifact-" + "e" * 64 + ".a")
+    old.write_bytes(b"optional inactive current artifact")
+    hot.write_bytes(b"optional recently used current artifact")
+    for path in (archive, stage, stage.parent, lock, old):
+        os.utime(path, (1, 1))
+    os.utime(hot, (now, now))
+    payloads = {path: path.read_bytes() for path in (archive, stage, hot)}
+    identity = lock.stat()
+    # A waiter can open the old inode before its current holder releases it.
+    # No lock held now does not imply no descriptor can acquire that inode.
+    with lock.open("rb") as waiting:
+        handle = _try_acquire_file_lock(lock, create=False)
+        assert handle is not None
+        try:
+            result = module._prune(
+                cache, max_bytes=None, max_age_days=7, dry_run=False
+            )
+            assert result["entries_removed"] == 1 and not old.exists()
+            assert os.path.samestat(identity, os.fstat(waiting.fileno()))
+            assert os.path.samestat(identity, lock.stat())
+        finally:
+            _release_file_lock(handle)
+        clock.time = lambda: now + 3600
+        result = module._prune(
+            cache, max_bytes=None, max_age_days=7, dry_run=False
+        )
+        assert result["entries_removed"] == 0
+        assert os.path.samestat(identity, lock.stat())
+        assert os.path.samestat(lock.stat(), os.fstat(waiting.fileno()))
+        assert {path: path.read_bytes() for path in payloads} == payloads
+
+
 @pytest.mark.parametrize("family", ["module_analysis", "module_lowering"])
 def test_frontend_retention_evicts_old_immutable_leaves_to_budget(tmp_path, family):
     module = _load_molt_cache_prune()

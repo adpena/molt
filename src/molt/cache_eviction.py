@@ -140,9 +140,12 @@ def _is_direct_directory(path: Path) -> bool:
 
 
 def _legacy_native_entry(path: Path) -> bool:
-    # Old compilation scratch is not covered by its final publication lock.
-    # Never use age/PID/open-file absence as permission to remove a live writer.
-    # These names are no longer produced or read by the current cache protocol.
+    # Pre-e9b0b9be8 writers may keep required outputs and compilation scratch
+    # here; the final publication lock does not cover their whole lifetime.
+    # Current standalone publishers still create *.publish.lock. Keep that
+    # inode/name even when unheld: an already-open waiter may acquire it later.
+    # Age or one successful lock attempt cannot retire this shared protocol.
+    # HF-282 requires a versioned namespace or an explicitly quiescent purge.
     name = path.name
     return (
         name.startswith(("stdlib_shared_", ".stdlib_shared_"))

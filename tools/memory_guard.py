@@ -536,32 +536,41 @@ def _temporary_artifact_descendant_closure(
             following: dict[int, set[int | None]] = {}
             for record in records:
                 row: dict[str, object] = {"path": str(record.path)}
-                if record.error is not None or record.guard is None:
+                guard = record.guard
+                if guard is None:
                     row["error"] = record.error or "guard identity unavailable"
                     closed = False
+                elif None in pending[guard.pid] or guard.started_at_ns is None:
+                    # A missing birth on either side leaves the relationship
+                    # unknown. The marker cannot supply our historical birth.
+                    row["error"] = "guard birth unavailable"
+                    closed = False
+                elif guard.started_at_ns not in pending[guard.pid]:
+                    # A validated publisher envelope proves this is a different
+                    # lifetime, even when the custody body is unreadable. Keep
+                    # that record protective without importing its uncertainty.
+                    row["disposition"] = "foreign"
+                    row["reason"] = "publisher_birth_differs_from_owned_tree"
+                    if record.error is not None:
+                        row["error"] = record.error
+                elif record.error is not None:
+                    row["error"] = record.error
+                    closed = False
                 else:
-                    expected = pending[record.guard.pid]
-                    if None in expected or record.guard.started_at_ns is None:
-                        row["error"] = "guard birth unavailable"
+                    observation = observe_custody(
+                        record, final_samples, now_s=observed_at
+                    )
+                    row["disposition"] = observation.state
+                    row["reason"] = observation.reason
+                    if observation.state != "closed":
                         closed = False
-                    elif record.guard.started_at_ns not in expected:
-                        # This numeric pid belongs to a different lifetime.
-                        continue
-                    else:
-                        observation = observe_custody(
-                            record, final_samples, now_s=observed_at
-                        )
-                        row["disposition"] = observation.state
-                        row["reason"] = observation.reason
-                        if observation.state != "closed":
-                            closed = False
-                        elif record.child is not None:
-                            child = record.child
-                            identity = (child.pid, child.started_at_ns)
-                            if identity not in examined:
-                                following.setdefault(child.pid, set()).add(
-                                    child.started_at_ns
-                                )
+                    elif record.child is not None:
+                        child = record.child
+                        identity = (child.pid, child.started_at_ns)
+                        if identity not in examined:
+                            following.setdefault(child.pid, set()).add(
+                                child.started_at_ns
+                            )
                 generations.append(row)
             if not closed:
                 break
