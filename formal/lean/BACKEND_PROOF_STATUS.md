@@ -22,7 +22,7 @@ Updated: 2026-04-23 (Luau backend proof/code correspondence and `LuauCorrect.lea
 
 **Total sorrys across all 12 files: 0**
 
-Status checked 2026-10-14 against Lean 4.34.1 and the Lake roots in `lakefile.lean`: only files the default target builds are proven. The Rust backend model and the cross-backend theorems sit outside the roots and no longer compile against the current TIR syntax (`RustEmit` misses `BinOp.and_`/`or_`, `RustSemantics` uses removed `Int.land`/`lor`/`xor`); HF-63 tracks them. `LuauTargetSemantics` and `RustSyntax` build and are now Lake roots.
+Status checked 2026-10-22 against Lean 4.35.0 and the Lake roots in `lakefile.lean`: only files the default target builds are proven. The Rust backend model and the cross-backend theorems sit outside the roots and no longer compile against the current TIR syntax (`RustEmit` misses `BinOp.and_`/`or_`, `RustSemantics` uses removed `Int.land`/`lor`/`xor`); HF-63 tracks them. `LuauTargetSemantics` and `RustSyntax` build and are now Lake roots.
 **Total axioms across backend files: 1** (`ieee754_basic_ops_deterministic` in CrossPlatform.lean)
 
 ## Codebase-Wide Axiom Count
