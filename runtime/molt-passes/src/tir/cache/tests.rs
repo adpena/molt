@@ -93,6 +93,7 @@ fn env_lock() -> &'static Mutex<()> {
 }
 
 const CACHE_ENV_NAMES: &[&str] = &[
+    "MOLT_CACHE",
     "MOLT_BACKEND_TIR_CACHE_MEMORY_MB",
     "MOLT_BACKEND_MEMORY_AVAILABLE_GB",
     "MOLT_BACKEND_MAX_PROCESS_RSS_GB",
@@ -241,7 +242,7 @@ fn backend_cache_dir_uses_env_root_and_version_namespace() {
     let _guard = env_lock().lock().expect("env lock");
     let root = tmp_cache_dir();
     unsafe { std::env::set_var("MOLT_CACHE", &root) };
-    let dir = backend_cache_dir();
+    let dir = backend_cache_dir().expect("MOLT_CACHE names a root");
     unsafe { std::env::remove_var("MOLT_CACHE") };
     assert!(
         dir.starts_with(&root),
@@ -251,6 +252,140 @@ fn backend_cache_dir_uses_env_root_and_version_namespace() {
         dir, root,
         "backend cache dir should use a versioned namespace below the root"
     );
+}
+
+#[test]
+fn without_molt_cache_the_backend_keeps_no_persistent_cache() {
+    // HF-443: the backend fell back to `.molt_cache` in its current
+    // directory: the compiler checkout for a daemon, the crate for a test.
+    let _guard = env_lock().lock().expect("env lock");
+    let _env = EnvRestore::apply(&[]);
+    assert_eq!(backend_cache_dir(), None);
+    assert!(CompilationCache::open_backend_namespace().is_none());
+    let _env = EnvRestore::apply(&[("MOLT_CACHE", "")]);
+    assert_eq!(backend_cache_dir(), None);
+}
+
+const CACHEDIR_SIGNATURE: &[u8] = b"Signature: 8a477f597d28d172789f06886806bc55\n";
+
+#[test]
+fn the_first_write_tags_the_cache_directory_never_the_root() {
+    // https://bford.info/cachedir/: the signature line starts the file.
+    let root = tmp_cache_dir();
+    let mut cache = CompilationCache::open_backend_namespace_under(root.clone());
+    assert!(!root.exists(), "opening a cache performs no I/O");
+    cache
+        .put(&fixture_hash("first", b"body"), b"artifact")
+        .expect("first write");
+    let namespace = cache.cache_dir.clone();
+    let tag = namespace.join("CACHEDIR.TAG");
+    let text = std::fs::read(&tag).expect("the namespace carries a cache directory tag");
+    assert!(text.starts_with(CACHEDIR_SIGNATURE));
+    // The Molt cache root also holds durable state (home/: installed tools,
+    // MOLT_BIN), so a backup or a lane retirement must not treat it as a cache.
+    assert!(!root.join("CACHEDIR.TAG").exists());
+    // The tag and the artifact stage in functions/.
+    for directory in [namespace.clone(), namespace.join("functions")] {
+        let names = std::fs::read_dir(&directory)
+            .expect("cache directory")
+            .map(|entry| {
+                entry
+                    .expect("entry")
+                    .file_name()
+                    .into_string()
+                    .expect("utf-8")
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(
+            names.iter().all(|name| !name.contains(".tmp.")),
+            "no stage is left behind in {}: {names:?}",
+            directory.display()
+        );
+    }
+
+    // A directory that already has a tag keeps it.
+    let custom = b"Signature: 8a477f597d28d172789f06886806bc55\n# kept\n";
+    std::fs::write(&tag, custom).expect("custom tag");
+    let mut again = CompilationCache::open_backend_namespace_under(root.clone());
+    again
+        .put(&fixture_hash("second", b"body"), b"artifact")
+        .expect("second write");
+    assert_eq!(std::fs::read(&tag).expect("tag"), custom);
+
+    // An explicitly placed cache tags its own directory, not its parent.
+    let parent = tmp_cache_dir();
+    let mut placed = CompilationCache::open(parent.join("placed"));
+    placed
+        .put(&fixture_hash("placed", b"body"), b"artifact")
+        .expect("placed write");
+    assert!(!parent.join("CACHEDIR.TAG").exists());
+    assert!(
+        std::fs::read(parent.join("placed").join("CACHEDIR.TAG"))
+            .expect("placed tag")
+            .starts_with(CACHEDIR_SIGNATURE)
+    );
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&parent);
+}
+
+#[test]
+fn a_trim_that_creates_the_namespace_tags_it() {
+    let directory = tmp_cache_dir();
+    let mut cache = CompilationCache::open(directory.clone());
+    cache.trim().expect("trim");
+    let tag = std::fs::read(directory.join("CACHEDIR.TAG")).expect("tag");
+    assert!(tag.starts_with(CACHEDIR_SIGNATURE));
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn installing_a_tag_never_replaces_one_already_there() {
+    // The race the presence check cannot close: another writer's tag lands
+    // between the check and the install.
+    let directory = tmp_cache_dir();
+    let staging = directory.join("functions");
+    std::fs::create_dir_all(&staging).expect("staging");
+    let tag = directory.join("CACHEDIR.TAG");
+    let theirs = b"Signature: 8a477f597d28d172789f06886806bc55\n# theirs\n";
+    std::fs::write(&tag, theirs).expect("their tag");
+    install_tag(&staging, &tag).expect("install");
+    assert_eq!(std::fs::read(&tag).expect("tag"), theirs);
+    assert_eq!(std::fs::read_dir(&staging).expect("staging").count(), 0);
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn concurrent_first_writers_leave_one_whole_tag() {
+    let directory = tmp_cache_dir();
+    std::thread::scope(|scope| {
+        for writer in 0..8 {
+            let directory = directory.clone();
+            scope.spawn(move || {
+                let mut cache = CompilationCache::open(directory);
+                cache
+                    .put(
+                        &fixture_hash(&format!("writer-{writer}"), b"body"),
+                        b"artifact",
+                    )
+                    .expect("write");
+            });
+        }
+    });
+    let tag = std::fs::read(directory.join("CACHEDIR.TAG")).expect("tag");
+    assert!(tag.starts_with(CACHEDIR_SIGNATURE));
+    let staged = std::fs::read_dir(directory.join("functions"))
+        .expect("functions")
+        .filter(|entry| {
+            entry
+                .as_ref()
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .contains(".tmp.")
+        })
+        .count();
+    assert_eq!(staged, 0, "every writer's stage was renamed or removed");
+    let _ = std::fs::remove_dir_all(&directory);
 }
 
 #[test]

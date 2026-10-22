@@ -2,6 +2,7 @@ from molt.compilation_target import admit_target
 from molt.cli.cache_keys import FunctionDigests
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -447,3 +448,39 @@ def test_only_process_scoped_roles_name_a_daemon(tmp_path, monkeypatch):
                 assert digest != baseline, (name, key)
                 process_scoped += 1
     assert process_scoped
+
+
+def test_every_backend_gets_one_absolute_cache_root_from_molt(tmp_path, monkeypatch):
+    """HF-443: the backend never picks a cache root; resolving one creates nothing.
+
+    The Rust TIR cache used to fall back to `.molt_cache` in the backend's
+    current directory, the compiler checkout for a daemon, while molt kept
+    its own caches under the root molt.default_paths resolves.
+    """
+    monkeypatch.chdir(tmp_path)
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+
+    rooted = CodegenSelection().environment({"MOLT_EXT_ROOT": str(artifact_root)})
+    relative = CodegenSelection().environment({"MOLT_CACHE": "rel/cache"})
+    explicit = CodegenSelection().environment({"MOLT_CACHE": str(tmp_path / "x")})
+
+    assert rooted["MOLT_CACHE"] == str(artifact_root / ".molt_cache")
+    # A daemon with another working directory resolves the same root.
+    assert relative["MOLT_CACHE"] == str(tmp_path / "rel" / "cache")
+    assert explicit["MOLT_CACHE"] == str(tmp_path / "x")
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["artifacts"]
+    assert not any(artifact_root.iterdir())
+    assert "MOLT_CACHE" in environment_keys("cache")
+
+    # Daemon housekeeping (no environment) and a build name one daemon, and a
+    # build with another root starts its own.
+    monkeypatch.delenv("MOLT_CACHE", raising=False)
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact_root))
+    build = CodegenSelection().environment(os.environ)
+    assert _daemon_digest(tmp_path, monkeypatch, None) == _daemon_digest(
+        tmp_path, monkeypatch, build
+    )
+    assert _daemon_digest(
+        tmp_path, monkeypatch, {**build, "MOLT_CACHE": str(tmp_path / "other")}
+    ) != _daemon_digest(tmp_path, monkeypatch, build)

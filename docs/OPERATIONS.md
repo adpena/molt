@@ -606,6 +606,20 @@ uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic/exec_
   flushes (20 ms median each on the build volume), so parallel compiles ran one
   at a time. `CompilationCacheStats.telemetry` counts hits, writes, reuses,
   quarantines, trims and evictions.
+- **Backend TIR cache root**: molt resolves the cache root once
+  (`molt.default_paths`) and passes it, absolute, to every backend process as
+  `MOLT_CACHE` (`molt.backend_environment.backend_process_environment`); the
+  JIT runner takes it from its image. The process-scoped `cache` group of
+  `src/molt/backend_environment.json` holds the root and the TIR and daemon
+  cache limits, so a daemon serves only builds that share them. A backend
+  started without `MOLT_CACHE` (a Rust test, a direct run) keeps no
+  persistent TIR cache. It no longer falls back to `.molt_cache` in its current
+  directory, which for a daemon was the compiler checkout (HF-443). Each TIR
+  cache writes `CACHEDIR.TAG` into its own directory when it first creates it
+  (a write or a trim), without replacing a tag already there, so backup tools
+  and lane retirement treat it as regenerable; the Molt cache root
+  is never tagged, since it also holds durable state (`home/`: installed tools
+  and `MOLT_BIN`).
 - **One-shot backend stdin limit**: non-daemon backend IR reads from stdin are
   bounded by `MOLT_BACKEND_STDIN_REQUEST_LIMIT_BYTES` and default to the same
   512 MiB ceiling as daemon requests. Msgpack and NDJSON stdin paths stream
