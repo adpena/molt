@@ -398,7 +398,8 @@ def _maybe_collect_checkout_state(ext_root: Path, env: Mapping[str, str]) -> Non
     reclaimed = sum(len(result.reclaimed) for result in results)
     if reclaimed:
         print(
-            f"molt: reclaimed {reclaimed} idle root(s) under {ext_root}",
+            f"molt: reclaimed {reclaimed} idle root(s) or replaced layout "
+            f"entries under {ext_root}",
             file=sys.stderr,
         )
 

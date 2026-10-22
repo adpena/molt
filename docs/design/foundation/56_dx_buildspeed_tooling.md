@@ -948,6 +948,31 @@ fresh. The cross-host transfer
 (`molt.cli.native_toolchain_transfer`, used by the Nightly bundle) exports a
 store entry and imports into the importing host's store.
 
+The store replaced a layout that live targets still held: per profile
+directory, `.molt-native-generations`, `.molt-backend-generations` and the
+runtime selection receipts (`libmolt_runtime.stdlib_*.a.generation.json`), and
+per build control `backend_probe_validations/` and the receipt beside Cargo's
+backend output. On 2026-10-22 a dry run of the integrator Mac's artifact root
+found 3,382 such entries, 12.5 GB, most of them in the targets of live
+worktrees, which no root retirement reaches. Nothing on current code reads,
+renews or evicts them, so the daily GC (section 2.6) retires them inside the
+roots that stay: `molt.checkout_state.superseded_layout_paths` lists the frozen
+names (two directory levels of a target, never a profile's `deps`; two names
+in a build control), and `tools/disk_guard.py` deletes an entry once it is idle
+past the protection window, no build lock is held below its root, and it holds
+the root's exclusive retirement lock, which every managed build holds shared
+for its whole run. That custody matters because a worktree that has not taken
+this change still runs the old code: if it builds, the guard skips the root;
+if it builds later, it misses and rebuilds once (receipts go before their
+generations, so it never reads a partial entry). Measured on that root: the
+whole GC dry run took 3.7 s warm (22 s cold) with the layout pass 2.0 s of it
+while 3,382 entries wait; once they are gone, the pass reads directory
+listings only (about 0.15 s for 75 targets and 6,374 build controls, warm).
+The artifact root's own `target/<profile>` (0.34 GB here, from an old canonical
+target) and a plain clone's `<checkout>/target` are not roots the guard owns,
+so no use protocol proves them idle; they stay for an operator purge, as
+section 2.9 item 4 requires.
+
 The runtime WASM pair already lives in one host directory
 (`<MOLT_EXT_ROOT>/wasm`, `molt.cli.runtime_wasm_generation`) keyed by a
 location-independent identity, so it is built once per input on a host that
