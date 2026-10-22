@@ -128,7 +128,9 @@ def test_an_entry_a_builder_holds_is_renewed_before_its_lock(tmp_path: Path) -> 
     identity = _digest("a")
     with store.single_flight(identity):
         assert _ledger(store)["last_used"][identity] >= time.time() - 60
-        assert (store.entry(identity) / ".build.lock").is_file()
+        # The lock lives outside the entry, so eviction never moves it.
+        assert store.build_lock(identity).is_file()
+        assert not store.build_lock(identity).is_relative_to(store.entry(identity))
 
 
 def test_one_builder_per_identity_and_the_other_reuses_its_publication(
@@ -258,3 +260,83 @@ def test_the_renewal_interval_is_far_inside_the_idle_window() -> None:
         products.PRODUCT_STORE_RENEWAL_SECONDS * 24
         < products.PRODUCT_STORE_IDLE_SECONDS
     )
+
+
+def test_evict_waits_for_the_builder_and_removes_the_entry_whole(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The operator's tool for a corrupt entry keeps the store's invariants.
+
+    It waits for a builder of the identity, moves the entry aside and deletes
+    it under the ledger lock, and keeps the identity's lock, which a waiter
+    may hold.
+    """
+    monkeypatch.delenv("MOLT_BUILD_LOCK_TIMEOUT", raising=False)
+    store = products.ProductStore(tmp_path / "store")
+    identity, other = _digest("a"), _digest("b")
+    for name in (identity, other):
+        variant = store.variant(name, _environment("x"))
+        variant.mkdir(parents=True)
+        (variant / "receipt").write_text("corrupt", encoding="utf-8")
+        store.record_use(name)
+    held, release = threading.Event(), threading.Event()
+    released_at: list[float] = []
+
+    def builder() -> None:
+        with store.single_flight(identity):
+            held.set()
+            release.wait(timeout=10)
+            released_at.append(time.monotonic())
+
+    thread = threading.Thread(target=builder)
+    thread.start()
+    assert held.wait(timeout=10)
+    threading.Timer(0.3, release.set).start()
+    try:
+        assert store.evict(identity)
+        evicted_at = time.monotonic()
+    finally:
+        release.set()
+        thread.join(timeout=10)
+    assert released_at and evicted_at >= released_at[0]
+    assert not store.entry(identity).exists()
+    assert store.entry(other).is_dir()
+    assert not list(store.root.glob(".evicted-*"))
+    assert set(_ledger(store)["last_used"]) == {other}
+    assert store.build_lock(identity).is_file()
+    # Nothing left to evict, and an absent store is not created.
+    assert not store.evict(identity)
+    absent = products.ProductStore(tmp_path / "absent")
+    assert not absent.evict(identity) and not absent.root.exists()
+
+
+def test_the_cache_evict_command_removes_the_entry_a_build_named(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import sys
+
+    from molt.cli import entrypoint
+    from molt.source_root import compiler_source_root
+
+    store = products.ProductStore.of("host-tool", compiler_source_root())
+    identity = _digest("c")
+    store.variant(identity, _environment("x")).mkdir(parents=True)
+    error = products.ProductStoreError(store, identity, "a fixture corruption")
+    assert f"`molt cache evict host-tool {identity}`" in str(error)
+    for evicted in (True, False):
+        monkeypatch.setattr(
+            sys, "argv", ["molt", "cache", "evict", "host-tool", identity, "--json"]
+        )
+        assert entrypoint.main() == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["command"] == "cache evict" and payload["status"] == "ok"
+        assert payload["data"] == {
+            "entry": str(store.entry(identity)),
+            "evicted": evicted,
+        }
+    assert not store.entry(identity).exists()
+    monkeypatch.setattr(
+        sys, "argv", ["molt", "cache", "evict", "host-tool", "not-a-digest", "--json"]
+    )
+    assert entrypoint.main() != 0
+    assert "SHA-256" in capsys.readouterr().out

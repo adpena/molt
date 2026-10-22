@@ -3,18 +3,21 @@
 A coordinate names one selection receipt and the immutable generations beside
 it. Builds use coordinates inside the host's product store
 (``molt.cli.product_store``): one entry per runtime build identity, one variant
-per observed Cargo environment (design 56, section 2.8).
+per observed Cargo environment (design 56, section 2.8). A receipt is written
+once: publication never replaces one, because a reader may hold what it
+selects.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+import json
 from pathlib import Path
 import tempfile
 from typing import TypeVar, cast
 
-from molt.cli.atomic_io import _atomic_copy_file, _atomic_write_json
+from molt.cli.atomic_io import _atomic_copy_file
 from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
 from molt.cli.product_store import ProductStore, ProductStoreError
 from molt.cli.native_link_custody import (
@@ -37,6 +40,7 @@ from molt.cli.runtime_identity_schema import (
 from molt.cli.runtime_paths import _cargo_profile_dir
 from molt.exact_json import canonical_json_sha256, read_exact
 from molt.file_publication import (
+    atomic_write_bytes,
     durable_publish_directory_exclusive,
     is_link_like,
     resolve_owned_path,
@@ -251,40 +255,126 @@ def read_native_runtime_generation(
         raise ValueError(f"selection {selection} does not admit: {exc}") from exc
 
 
-def native_runtime_store_generations(
+def _recorded_cargo_environment(
+    coordinate: Path, *, cargo_profile: str
+) -> CargoEnvironmentInputs | None:
+    """The Cargo environment ``coordinate``'s receipt records, by small reads.
+
+    None means no receipt: a publication in progress. A receipt whose
+    environment cannot be read raises ValueError.
+    """
+    selection = native_runtime_generation_path(coordinate)
+    try:
+        selection.lstat()
+    except FileNotFoundError:
+        return None
+    payload = _selection_payload(
+        read_exact(
+            selection,
+            max_bytes=RUNTIME_ARTIFACT_METADATA_MAX_BYTES,
+            label="native runtime generation selection",
+        ),
+        coordinate=coordinate,
+        cargo_profile=cargo_profile,
+    )
+    if payload is None:
+        raise ValueError("the receipt does not name its own material")
+    runtime_lib = (
+        coordinate.parent
+        / ".molt-native-generations"
+        / str(payload["generation"])
+        / _cargo_profile_dir(cargo_profile)
+        / coordinate.name
+    )
+    manifest = read_native_link_dependency_manifest_payload(
+        native_link_dependency_manifest_path(runtime_lib)
+    )
+    return CargoEnvironmentInputs.from_dict(manifest.get("cargo_environment"))
+
+
+def native_runtime_store_generation(
     store: ProductStore,
     identity: RuntimeBuildIdentity,
+    environment: ProcessEnvironment,
     *,
     runtime_name: str,
     cargo_profile: str,
     target_triple: str | None,
-) -> tuple[NativeRuntimeGeneration, ...]:
-    """Every published variant of ``identity`` in ``store``, admitted.
+) -> NativeRuntimeGeneration | None:
+    """The stored variant of ``identity`` built under ``environment``, admitted.
 
     A variant whose receipt has not appeared yet is a publication in progress.
-    A variant that exists but does not admit is corrupt: it raises
-    ``ProductStoreError`` instead of missing, so a store miss never hides it.
+    A reader admits only its own variant, the one whose recorded Cargo
+    environment matches ``environment``, and reads no other variant's bytes,
+    so a corrupt variant of another environment never fails it. Its own
+    variant, when it exists but does not admit, raises ``ProductStoreError``.
+    A variant whose receipt cannot be read names no environment; if it is
+    this reader's, the publication that follows a miss finds its receipt
+    and fails there (``require_unpublished_variant``).
     """
-    admitted = []
     for variant in store.variants(identity.digest):
+        coordinate = variant / runtime_name
+        try:
+            recorded = _recorded_cargo_environment(
+                coordinate, cargo_profile=cargo_profile
+            )
+        except (
+            OSError,
+            ValueError,
+            TypeError,
+            UnicodeError,
+            NativeLinkDependencyManifestError,
+        ):
+            continue
+        if recorded is None or recorded.digest != variant.name:
+            continue
+        try:
+            recorded.verify(environment)
+        except ValueError:
+            continue
         try:
             generation = read_native_runtime_generation(
-                variant / runtime_name,
-                cargo_profile=cargo_profile,
-                target_triple=target_triple,
+                coordinate, cargo_profile=cargo_profile, target_triple=target_triple
             )
         except ValueError as exc:
-            raise ProductStoreError(variant, str(exc)) from exc
-        if generation is None:
-            continue
-        if generation.build_identity != identity:
-            raise ProductStoreError(variant, "it holds another build identity")
-        if generation.cargo_environment.digest != variant.name:
             raise ProductStoreError(
-                variant, "its Cargo environment differs from its name"
+                store, identity.digest, str(exc), variant=variant
+            ) from exc
+        if generation is None or generation.build_identity != identity:
+            raise ProductStoreError(
+                store,
+                identity.digest,
+                "it holds another build identity",
+                variant=variant,
             )
-        admitted.append(generation)
-    return tuple(admitted)
+        if generation.cargo_environment != recorded:
+            raise ProductStoreError(
+                store,
+                identity.digest,
+                "its Cargo environment differs from its receipt",
+                variant=variant,
+            )
+        return generation
+    return None
+
+
+def require_unpublished_variant(
+    store: ProductStore, identity: str, coordinate: Path
+) -> None:
+    """Refuse to publish over a variant whose receipt already exists.
+
+    The caller holds the identity's lock and found no admissible variant for
+    its environment, so an existing receipt at the coordinate it built for
+    is its own variant, corrupt: a variant is written once, and the tool that
+    removes it is named instead of rebuilding over it.
+    """
+    if native_runtime_generation_path(coordinate).exists():
+        raise ProductStoreError(
+            store,
+            identity,
+            "a receipt for this environment exists but does not admit",
+            variant=coordinate.parent,
+        )
 
 
 def _select_staged_generation(
@@ -323,10 +413,17 @@ def _select_staged_generation(
         admit=admit,
     )
     published.verify()
-    _atomic_write_json(
+    # A variant's receipt is written once; readers may hold what it selects.
+    atomic_write_bytes(
         native_runtime_generation_path(coordinate),
-        {**material, "generation": digest},
-        sort_keys=True,
+        json.dumps(
+            {**material, "generation": digest},
+            indent=2,
+            sort_keys=True,
+            allow_nan=False,
+        ).encode()
+        + b"\n",
+        exclusive=True,
     )
     published.verify()
     return published
@@ -446,17 +543,19 @@ def import_native_runtime_generation(
     coordinate = store.variant(build_identity.digest, cargo_environment) / runtime_name
     profile_dir = _cargo_profile_dir(cargo_profile)
     with store.single_flight(build_identity.digest):
-        for existing in native_runtime_store_generations(
+        existing = native_runtime_store_generation(
             store,
             build_identity,
+            environment,
             runtime_name=runtime_name,
             cargo_profile=cargo_profile,
             target_triple=target_triple,
-        ):
-            if existing.cargo_environment.digest == cargo_environment.digest:
-                # This host already holds the product; a published variant is
-                # never rewritten, so the transported copy is not needed.
-                return existing
+        )
+        if existing is not None and existing.cargo_environment == cargo_environment:
+            # This host already holds the product; a published variant is
+            # never rewritten, so the transported copy is not needed.
+            return existing
+        require_unpublished_variant(store, build_identity.digest, coordinate)
         generations = coordinate.parent / ".molt-native-generations"
         generations.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(

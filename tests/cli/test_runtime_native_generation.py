@@ -67,19 +67,22 @@ def stored_selector(store: ProductStore, generation) -> Path:
     )
 
 
-def test_native_selection_retains_complete_generations_and_ignores_cargo_alias(
-    tmp_path,
-):
+def test_native_selection_is_written_once_and_ignores_cargo_alias(tmp_path):
+    """A receipt is never replaced: a reader may hold what it selects."""
     coordinate = tmp_path / "dev-fast" / "libmolt_runtime.micro.a"
     first = publish(coordinate)
     assert first is not None and first.runtime_lib != coordinate
     assert not coordinate.exists()
-    second = publish(coordinate, seed="two")
-    assert second is not None and second.runtime_lib != first.runtime_lib
+    receipt = generations.native_runtime_generation_path(coordinate).read_bytes()
+    with pytest.raises(FileExistsError):
+        publish(coordinate, seed="two")
     first.verify()
-    assert read(coordinate).runtime_lib == second.runtime_lib
+    assert generations.native_runtime_generation_path(coordinate).read_bytes() == (
+        receipt
+    )
+    assert read(coordinate).runtime_lib == first.runtime_lib
     write_test_static_archive(coordinate, payload=b"untrusted alias")
-    assert read(coordinate).runtime_lib == second.runtime_lib
+    assert read(coordinate).runtime_lib == first.runtime_lib
 
 
 @pytest.mark.parametrize("member", ["archive", "manifest"])
@@ -118,12 +121,11 @@ def test_native_generation_rejects_partial_or_mutated_members(
 
 
 @pytest.mark.parametrize("failure", ["inputs", "manifest", "directory", "selector"])
-def test_failed_native_publication_keeps_previous_complete_selection(
+def test_a_failed_native_publication_leaves_no_selection(
     tmp_path, monkeypatch, failure
 ):
+    first = publish(tmp_path / "first" / "dev-fast" / "libmolt_runtime.micro.a")
     coordinate = tmp_path / "dev-fast" / "libmolt_runtime.micro.a"
-    first = publish(coordinate)
-    before = generations.native_runtime_generation_path(coordinate).read_bytes()
 
     def fail(*_args, **_kwargs):
         raise OSError("publication fault")
@@ -133,14 +135,15 @@ def test_failed_native_publication_keeps_previous_complete_selection(
     elif failure == "directory":
         monkeypatch.setattr(generations, "durable_publish_directory_exclusive", fail)
     elif failure == "selector":
-        monkeypatch.setattr(generations, "_atomic_write_json", fail)
+        monkeypatch.setattr(generations, "atomic_write_bytes", fail)
     if failure == "inputs":
         assert publish(coordinate, seed="two", inputs_are_current=lambda: False) is None
     else:
         with pytest.raises(OSError, match="publication fault"):
             publish(coordinate, seed="two")
-    assert generations.native_runtime_generation_path(coordinate).read_bytes() == before
-    assert read(coordinate).runtime_lib == first.runtime_lib
+    assert not generations.native_runtime_generation_path(coordinate).exists()
+    assert read(coordinate) is None
+    first.verify()
 
 
 def test_native_selection_does_not_admit_incomplete_or_redirected_receipt(tmp_path):
@@ -557,8 +560,7 @@ def test_a_waiter_outwaits_its_own_cargo_timeout_while_the_holder_builds(
 
     @contextlib.contextmanager
     def single_flight(self, identity):
-        lock = self.entry(identity) / ".build.lock"
-        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock = self.build_lock(identity)
         thread = threading.Thread(target=holder, args=(lock,))
         thread.start()
         assert held.wait(timeout=10)
@@ -597,9 +599,44 @@ def test_a_corrupt_stored_generation_fails_loud_without_cargo(native_build, corr
         selector.write_text(json.dumps(payload), encoding="utf-8")
     ok, state, _timings = native_build.run()
     assert not ok
-    assert state.native_runtime_build_failure.stage == "product-store"
-    assert "is corrupt" in state.native_runtime_build_failure.summary
-    assert len(native_build.cargo_runs) == 1
+    failure = state.native_runtime_build_failure
+    assert failure.stage == "product-store"
+    assert "is corrupt" in failure.summary
+    assert f"molt cache evict native-runtime {generation.build_identity.digest}" in (
+        failure.summary
+    )
+    # A receipt whose environment can be read is this build's own variant and
+    # fails before Cargo; one that cannot names no environment, so the build
+    # runs and its publication finds the receipt it would have written.
+    assert len(native_build.cargo_runs) == (1 if corruption == "archive" else 2)
+    # The named tool removes the entry and the next build publishes it again.
+    assert native_build.store.evict(generation.build_identity.digest)
+    ok, rebuilt, _timings = native_build.run()
+    assert ok and rebuilt.native_runtime_generation is not None
+    assert len(native_build.cargo_runs) == (2 if corruption == "archive" else 3)
+
+
+def test_a_corrupt_variant_of_another_environment_never_fails_a_reader(
+    native_build,
+):
+    """Only a reader's own variant is read; another's corruption is not its own."""
+    native_build.current.environment[RUNTIME_FIXTURE_INPUT] = "one"
+    ok, one, _timings = native_build.run()
+    assert ok
+    write_test_static_archive(
+        one.native_runtime_generation.runtime_lib, payload=b"corrupt entry"
+    )
+    native_build.current.environment[RUNTIME_FIXTURE_INPUT] = "two"
+    ok, two, _timings = native_build.run()
+    assert ok and len(native_build.cargo_runs) == 2
+    ok, warm, _timings = native_build.run()
+    assert ok and warm.runtime_lib == two.runtime_lib
+    assert len(native_build.cargo_runs) == 2
+    # The corrupt variant still fails its own environment, before Cargo.
+    native_build.current.environment[RUNTIME_FIXTURE_INPUT] = "one"
+    ok, again, _timings = native_build.run()
+    assert not ok and again.native_runtime_build_failure.stage == "product-store"
+    assert len(native_build.cargo_runs) == 2
 
 
 @pytest.mark.parametrize("state", ["valid", "missing", "stale", "partial"])
@@ -620,10 +657,9 @@ def test_disabled_native_rebuild_still_requires_a_complete_current_generation(
     assert ok == (state == "valid")
     assert len(native_build.cargo_runs) == 1
     if not ok:
-        # A partial published entry is corrupt; it fails before rebuild policy.
-        assert current.native_runtime_build_failure.stage == (
-            "product-store" if state == "partial" else "rebuild-policy"
-        )
+        # A variant without its manifest names no environment, so it is
+        # not this build's; the rebuild it would need is refused by policy.
+        assert current.native_runtime_build_failure.stage == "rebuild-policy"
 
 
 def test_unreceipted_alias_never_authorizes_native_reuse(native_build):
@@ -680,13 +716,15 @@ def _identity(seed: str = "one"):
 
 
 def _stored(store: ProductStore, seed: str = "one"):
-    return generations.native_runtime_store_generations(
+    generation = generations.native_runtime_store_generation(
         store,
         _identity(seed),
+        ProcessEnvironment(os.environ),
         runtime_name=_RUNTIME_NAME,
         cargo_profile="dev-fast",
         target_triple=None,
     )
+    return () if generation is None else (generation,)
 
 
 def _import(store: ProductStore, selection: Path, members, *, seed: str = "one"):

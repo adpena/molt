@@ -82,8 +82,9 @@ from molt.cli.runtime_features import (
 from molt.cli.product_store import ProductStore, ProductStoreError
 from molt.cli.runtime_native_generation import (
     NativeRuntimeGeneration,
-    native_runtime_store_generations,
+    native_runtime_store_generation,
     publish_native_runtime_generation,
+    require_unpublished_variant,
 )
 from molt.cli.runtime_paths import (
     _cargo_target_root,
@@ -813,15 +814,17 @@ def admit_stored_native_runtime(
     """The stored generation built from this plan's inputs and environment.
 
     The entry is renewed before it is read, so no eviction races the read. A
-    variant built under another observed Cargo environment is not this one. A
-    corrupt variant raises ``ProductStoreError``.
+    variant built under another observed Cargo environment is not this one
+    and is not read. This plan's own variant, when corrupt, raises
+    ``ProductStoreError``.
     """
     started = time.perf_counter()
     try:
         plan.store.record_use(plan.build_identity.digest)
-        generations = native_runtime_store_generations(
+        return native_runtime_store_generation(
             plan.store,
             plan.build_identity,
+            plan.cargo_plan.environment,
             runtime_name=plan.runtime_lib.name,
             cargo_profile=plan.cargo_profile,
             target_triple=plan.target_triple,
@@ -830,13 +833,6 @@ def admit_stored_native_runtime(
         _record_runtime_build_stage_ms(
             plan.stage_timings_ms, "runtime_lib_generation_read", started
         )
-    for generation in generations:
-        try:
-            generation.cargo_environment.verify(plan.cargo_plan.environment)
-        except ValueError:
-            continue
-        return generation
-    return None
 
 
 def _prepare_native_runtime_build(
@@ -1074,11 +1070,23 @@ def _publish_native_runtime_build(
         )
     started = time.perf_counter()
     assert reads is not None
+    identity = plan.build_identity.digest
+    coordinate = plan.store.variant(identity, reads.environment) / plan.runtime_lib.name
+    try:
+        require_unpublished_variant(plan.store, identity, coordinate)
+    except ProductStoreError as exc:
+        return _record_native_runtime_failure(
+            plan.runtime_state,
+            project_root=plan.project_root,
+            stage="product-store",
+            summary=f"Native runtime product store: {exc}",
+            command=plan.cmd,
+            emit_diagnostic=not plan.json_output,
+        )
     try:
         reads.environment.verify(plan.cargo_plan.environment)
-        identity = plan.build_identity.digest
         generation = publish_native_runtime_generation(
-            plan.store.variant(identity, reads.environment) / plan.runtime_lib.name,
+            coordinate,
             source_archive=_runtime_cargo_scratch_lib_path(
                 plan.runtime_lib, plan.target_triple
             ),

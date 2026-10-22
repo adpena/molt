@@ -57,6 +57,7 @@ from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.cli.static_archive_identity import artifact_content_identity
 from molt.exact_json import canonical_json_sha256, read_exact
 from molt import input_report as _input_report
+from molt.file_publication import atomic_write_bytes
 from molt.file_hashing import (
     _hash_source_tree_metadata,
     _hash_source_tree_paths,
@@ -344,11 +345,16 @@ def stored_host_tools(
     *,
     environment: ProcessEnvironment,
 ) -> tuple[StoredHostToolAdmission, ...]:
-    """Every published variant of ``identity`` built under ``environment``.
+    """The published variants of ``identity`` built under ``environment``.
 
-    A variant whose receipt has not appeared is a publication in progress; one
-    built under another observed environment is not this one. A variant that
-    exists but does not verify raises ``ProductStoreError``.
+    A variant whose receipt has not appeared is a publication in progress. A
+    reader admits only its own variant, the one whose receipt records a Cargo
+    environment that matches ``environment``, and checks no other variant's
+    bytes, so a corrupt variant of another environment never fails it. Its
+    own variant, when it exists but does not verify, raises
+    ``ProductStoreError``. A receipt that cannot be read names no
+    environment; if it is this reader's, the publication that follows the
+    miss finds it (``_require_unpublished_host_tool``).
     """
     admitted = []
     for variant in store.variants(identity):
@@ -359,20 +365,25 @@ def stored_host_tools(
             continue
         receipt = _read_runtime_fingerprint(stored.receipt)
         if receipt is None or "artifact_content_identity" not in receipt:
-            raise ProductStoreError(variant, "its receipt does not verify")
-        if _artifact_semantic_identity(receipt) != _artifact_semantic_identity(
-            fingerprint
-        ):
-            raise ProductStoreError(variant, "it holds another host tool identity")
-        recorded = CargoEnvironmentInputs.from_dict(receipt.get("cargo_environment"))
-        if recorded.digest != variant.name:
-            raise ProductStoreError(
-                variant, "its Cargo environment differs from its name"
+            continue
+        try:
+            recorded = CargoEnvironmentInputs.from_dict(
+                receipt.get("cargo_environment")
             )
+        except (TypeError, ValueError):
+            continue
+        if recorded.digest != variant.name:
+            continue
         try:
             recorded.verify(environment)
         except ValueError:
             continue
+        if _artifact_semantic_identity(receipt) != _artifact_semantic_identity(
+            fingerprint
+        ):
+            raise ProductStoreError(
+                store, identity, "it holds another host tool identity", variant=variant
+            )
         generation = selected_backend_generation(stored.coordinate, receipt)
         if generation is None or not _runtime_artifact_fingerprint_matches(
             generation,
@@ -381,7 +392,12 @@ def stored_host_tools(
             environment=environment,
             require_artifact_digest=True,
         ):
-            raise ProductStoreError(variant, "its executable differs from its receipt")
+            raise ProductStoreError(
+                store,
+                identity,
+                "its executable differs from its receipt",
+                variant=variant,
+            )
         admitted.append(
             StoredHostToolAdmission(
                 stored,
@@ -390,6 +406,24 @@ def stored_host_tools(
             )
         )
     return tuple(admitted)
+
+
+def _require_unpublished_host_tool(
+    store: ProductStore, identity: str, stored: StoredHostTool
+) -> None:
+    """Refuse to publish over a variant whose receipt already exists.
+
+    The caller holds the identity's lock and admitted no variant for its
+    environment, so an existing receipt for the environment it built under is
+    its own variant, corrupt. A variant is written once.
+    """
+    if stored.receipt.exists():
+        raise ProductStoreError(
+            store,
+            identity,
+            "a receipt for this environment exists but does not verify",
+            variant=stored.coordinate.parent,
+        )
 
 
 def _remember_backend_identity(
@@ -672,13 +706,18 @@ def _select_backend_generation(
     """
     verify_stable_regular_file_identity(generation, label="backend selection")
     content_identity = artifact_content_identity(generation.path, observed=generation)
-    _write_runtime_fingerprint(
-        receipt,
+    payload = _fingerprint_payload(
         {
             **_stored_receipt_identity(fingerprint),
             "artifact_content_identity": content_identity,
-        },
-        cargo_environment=cargo_environment,
+            "cargo_environment": cargo_environment.to_dict(),
+        }
+    )
+    # Exclusive: an existing receipt is never replaced.
+    atomic_write_bytes(
+        receipt,
+        json.dumps(payload, indent=2, allow_nan=False).encode() + b"\n",
+        exclusive=True,
     )
     verify_stable_regular_file_identity(generation, label="backend selection")
 
@@ -742,6 +781,7 @@ def import_backend_binary(
                 # This host already holds the product; a published variant is
                 # never rewritten, so the transported copy is not needed.
                 return admission.generation
+        _require_unpublished_host_tool(store, identity, stored)
         with stable_executable_probe(executable, label="transported backend") as (
             _entrypoint,
             observed,
@@ -1207,6 +1247,7 @@ def _ensure_backend_binary(
                     stored = stored_host_tool(
                         store, identity, backend_bin, cargo_environment
                     )
+                    _require_unpublished_host_tool(store, identity, stored)
                     _source, generation = _publish_backend_generation_from(
                         stored.coordinate,
                         cargo_output,
@@ -1236,6 +1277,8 @@ def _ensure_backend_binary(
                     cargo_environment=cargo_environment,
                 )
                 store.retain(identity)
+            except ProductStoreError as exc:
+                return _backend_ensure_failure("product_store", str(exc))
             except (OSError, RuntimeError, ValueError) as exc:
                 return _backend_ensure_failure(
                     "backend_selection_publication", str(exc)
@@ -1470,6 +1513,10 @@ def _ensure_backend_binary(
                 command=cmd,
             )
         stored = stored_host_tool(store, identity, backend_bin, reads.environment)
+        try:
+            _require_unpublished_host_tool(store, identity, stored)
+        except ProductStoreError as exc:
+            return _backend_ensure_failure("product_store", str(exc), command=cmd)
         try:
             rebuilt_source_identity, rebuilt_generation = (
                 _publish_backend_generation_from(
