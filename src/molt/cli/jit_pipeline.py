@@ -6,7 +6,8 @@ backend IR preparation, this pipeline admits the runtime image and the
 ``molt-jit`` runner and publishes one JIT image (``jit_image.py``) that holds
 the program and how to start it. ``molt run --tier jit`` then runs the runner
 on the image; the runner compiles the program into its own memory and starts
-it.
+it. Build request resolution already admitted the cell
+(``run_tier.jit_tier_refusal``).
 """
 
 from __future__ import annotations
@@ -41,39 +42,8 @@ from molt.cli.runtime_callable_symbols import (
 )
 from molt.cli.runtime_native_codegen import native_runtime_codegen_environment
 from molt.cli.rust_cpu_policy import RustCpuPolicy
-from molt.compilation_target import Target, TargetKind
+from molt.compilation_target import Target
 from molt.native_target import NativeTargetSpec, resolve_native_target_spec
-
-
-# The (os, arch) hosts where the JIT-AOT twin gate ran (HF-371). Any other
-# host fails here, before its unverified runtime image link and loader run.
-VERIFIED_JIT_HOSTS = frozenset({("macos", "aarch64")})
-
-
-def _unsupported_jit_construct(
-    *,
-    target: Target,
-    codegen_backend: str,
-    has_external_native_artifacts: bool,
-    host: NativeTargetSpec | None = None,
-) -> str | None:
-    """Name the first construct the JIT tier cannot run, or None."""
-    if isinstance(target, NativeTargetSpec):
-        if not target.is_host:
-            return f"the cross target {target.triple} (the JIT tier runs on the host)"
-    elif target is not TargetKind.NATIVE:
-        return f"the {target.value} target (the JIT tier runs native host code)"
-    host = resolve_native_target_spec(None) if host is None else host
-    if (host.os, host.arch) not in VERIFIED_JIT_HOSTS:
-        return (
-            f"the {host.triple} host (the JIT tier is verified only on aarch64 "
-            "macOS; HF-371 tracks the other hosts)"
-        )
-    if codegen_backend != "cranelift":
-        return f"the {codegen_backend} code generator (the JIT tier uses Cranelift)"
-    if has_external_native_artifacts:
-        return "external native package artifacts (they need the system linker)"
-    return None
 
 
 def _run_jit_pipeline(
@@ -92,18 +62,6 @@ def _run_jit_pipeline(
 ) -> int:
     output_layout = prepared_frontend_pipeline_bundle.output_layout
     native_artifact_plan = prepared_frontend_pipeline_bundle.native_artifact_plan
-    unsupported = _unsupported_jit_construct(
-        target=target,
-        codegen_backend=prepared_build_config.codegen.backend,
-        has_external_native_artifacts=bool(native_artifact_plan.artifacts),
-    )
-    if unsupported is not None:
-        return _fail(
-            f"The JIT tier does not support {unsupported}. "
-            "Run it with `molt run --tier aot` or build it with `molt build`.",
-            json_output,
-            command="build",
-        )
     module_graph = prepared_frontend_pipeline_bundle.module_graph
     # The AOT backend pipeline's one source of logical paths (HF-372).
     logical_source_path_by_module = prepared_frontend_pipeline_bundle.prepared_frontend_run_ticket.frontend_layer_execution_context.module_graph_metadata.logical_source_path_by_module

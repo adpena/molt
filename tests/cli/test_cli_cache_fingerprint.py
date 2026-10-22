@@ -127,7 +127,7 @@ def isolated_compiler_source(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
     monkeypatch.setattr(
         CACHE_FINGERPRINTS,
         "_backend_source_paths",
-        lambda root, backend_features: [source],
+        lambda root, backend_features, *, product: [source],
     )
     monkeypatch.setattr(
         RUNTIME_SOURCE_CLOSURE, "runtime_source_paths", lambda root, **_kwargs: []
@@ -183,7 +183,7 @@ def test_cache_fingerprint_threads_selected_backend_and_runtime_features(
     seen_runtime_features: list[tuple[str, ...]] = []
 
     def backend_source_paths(
-        source_root: Path, backend_features: tuple[str, ...]
+        source_root: Path, backend_features: tuple[str, ...], *, product
     ) -> list[Path]:
         assert source_root == root
         seen_backend_features.append(tuple(backend_features))
@@ -234,7 +234,7 @@ def test_cache_fingerprint_can_exclude_runtime_implementation_sources(
     monkeypatch.setattr(
         CACHE_FINGERPRINTS,
         "_backend_source_paths",
-        lambda source_root, backend_features: [backend_source],
+        lambda source_root, backend_features, *, product: [backend_source],
     )
     monkeypatch.setattr(
         RUNTIME_SOURCE_CLOSURE, "runtime_source_paths", runtime_source_paths
@@ -260,7 +260,7 @@ def test_cache_fingerprint_custodies_backend_concurrency_feature(
     monkeypatch.setattr(
         CACHE_FINGERPRINTS,
         "_backend_source_paths",
-        lambda source_root, backend_features: [backend_source],
+        lambda source_root, backend_features, *, product: [backend_source],
     )
 
     default = CACHE_FINGERPRINTS._cache_fingerprint(
@@ -443,6 +443,57 @@ def test_backend_source_fingerprint_tracks_selected_leaf_sources(
 
     native_second = _backend_source_fingerprint(root, ("native-backend",))
     assert native_second != native_after_wasm
+
+
+def test_jit_runner_fingerprint_tracks_the_runner_crate_and_its_codegen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A cached JIT launch runs molt-jit, a second compiler product: its key
+    # must change when the runner's own sources change (HF-371 review), and
+    # the backend key must not.
+    from molt.host_tool_products import HostToolProduct
+
+    stub_compiler_admission(monkeypatch)
+    root = tmp_path / "repo"
+    sources = _write_backend_identity_fixture(root)
+    runner = root / "runtime" / "molt-jit" / "src" / "main.rs"
+    runner.parent.mkdir(parents=True)
+    runner.write_text("fn main() {}\n", encoding="utf-8")
+    (root / "runtime" / "molt-jit" / "Cargo.toml").write_text(
+        '[package]\nname = "molt-jit"\nversion = "0.1.0"\n'
+        "[dependencies]\n"
+        'molt-backend-native = { path = "../molt-backend-native" }\n',
+        encoding="utf-8",
+    )
+    with (root / "Cargo.lock").open("a", encoding="utf-8") as lock:
+        lock.write('[[package]]\nname = "molt-jit"\nversion = "0.1.0"\n')
+    monkeypatch.setenv("MOLT_SOURCE_ROOT", str(root))
+
+    def fingerprints() -> tuple[str, str]:
+        return tuple(  # type: ignore[return-value]
+            CACHE_FINGERPRINTS._cache_fingerprint(
+                backend_features=(
+                    None
+                    if product is HostToolProduct.BACKEND
+                    else product.required_features
+                ),
+                include_runtime_sources=False,
+                rust_cpu=RustCpuPolicy.BASELINE,
+                product=product,
+            )
+            for product in (HostToolProduct.BACKEND, HostToolProduct.JIT)
+        )
+
+    backend, jit = fingerprints()
+    assert backend != jit
+    runner.write_text('fn main() { println!("changed"); }\n', encoding="utf-8")
+    backend_after_runner, jit_after_runner = fingerprints()
+    assert backend_after_runner == backend
+    assert jit_after_runner != jit
+    sources["native"].write_text("pub const NATIVE: u8 = 2;\n", encoding="utf-8")
+    backend_after_codegen, jit_after_codegen = fingerprints()
+    assert backend_after_codegen != backend_after_runner
+    assert jit_after_codegen != jit_after_runner
 
 
 @pytest.mark.parametrize("feature", ["native-backend", "wasm-backend"])

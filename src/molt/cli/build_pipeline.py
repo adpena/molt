@@ -91,6 +91,19 @@ def _run_build_pipeline(
     prepared_frontend_run_ticket = (
         prepared_frontend_pipeline_bundle.prepared_frontend_run_ticket
     )
+    output_layout: _BuildOutputLayout = prepared_frontend_pipeline_bundle.output_layout
+    native_artifact_plan = prepared_frontend_pipeline_bundle.native_artifact_plan
+    # The import plan already names every external native artifact, so an
+    # output that cannot carry them is refused before the frontend runs.
+    native_artifact_custody_error = _external_native_artifact_output_custody_error(
+        native_artifact_plan=native_artifact_plan,
+        output_layout=output_layout,
+        target=target,
+    )
+    if native_artifact_custody_error is not None:
+        return return_after_build_diagnostics(
+            _fail(native_artifact_custody_error, json_output, command="build")
+        )
     _progress.phase("frontend")
     frontend_run_start = time.perf_counter()
     frontend_layer_error = _run_frontend_pipeline(
@@ -111,17 +124,6 @@ def _run_build_pipeline(
     # MLIR target: run the frontend to produce TIR, then shell out to the
     # standalone molt-backend-mlir binary. This bypasses the standard backend
     # pipeline entirely because the MLIR crate is out-of-workspace.
-    output_layout: _BuildOutputLayout = prepared_frontend_pipeline_bundle.output_layout
-    native_artifact_plan = prepared_frontend_pipeline_bundle.native_artifact_plan
-    native_artifact_custody_error = _external_native_artifact_output_custody_error(
-        native_artifact_plan=native_artifact_plan,
-        output_layout=output_layout,
-        target=target,
-    )
-    if native_artifact_custody_error is not None:
-        return return_after_build_diagnostics(
-            _fail(native_artifact_custody_error, json_output, command="build")
-        )
     if output_layout.emit_mode == "jit":
         if fact_graph_request is not None:
             return return_after_build_diagnostics(

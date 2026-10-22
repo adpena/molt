@@ -42,7 +42,6 @@ from __future__ import annotations
 import json
 import os
 import math
-import sys
 import time
 import re
 import shutil
@@ -66,10 +65,12 @@ from molt.llvm_toolchain import (
     verify_available_llvm_toolchain,
 )
 from molt.capability_policy import expand_capabilities, split_capability_tokens
+from molt.compilation_target import TargetKind
 from molt.cli.run_tier import (
     JIT_IMAGE_SUFFIX,
     jit_program_started,
     jit_runner_argv,
+    jit_tier_refusal,
 )
 from molt.dx import scratch_dir
 from molt.target_python import TargetPythonVersion, _parse_target_python_version
@@ -1123,10 +1124,13 @@ class JitAdapter:
     name: str = "jit"
 
     def availability(self, budget: ItemBudget | None = None) -> BackendAvailability:
-        if sys.platform not in {"darwin", "linux"}:
+        # The JIT tier's one admission (molt.cli.run_tier), for this host.
+        refusal = jit_tier_refusal(
+            target=TargetKind.NATIVE, codegen_backend="cranelift"
+        )
+        if refusal is not None:
             return BackendAvailability(
-                available=False,
-                reason=f"the JIT runner loads its runtime with dlopen; {sys.platform} is not supported",
+                available=False, reason=f"the JIT tier does not support {refusal}"
             )
         return BackendAvailability(available=True)
 

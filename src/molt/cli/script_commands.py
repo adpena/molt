@@ -13,6 +13,7 @@ import json
 import shlex
 import shutil
 import sys
+import tempfile
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -62,7 +63,12 @@ from molt.cli.command_runtime import (
 )
 from molt.cli.env_paths import _base_env
 from molt.cli.build_request import BuildProfile
-from molt.cli.run_tier import DEFAULT_RUN_TIER, RunTier, jit_runner_argv
+from molt.cli.run_tier import (
+    DEFAULT_RUN_TIER,
+    RunTier,
+    jit_program_started,
+    jit_runner_argv,
+)
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import fail as _fail
 from molt.cli.output import json_payload as _json_payload
@@ -756,6 +762,7 @@ def run_script(
     if build_error is not None:
         return build_error
     assert build_contract is not None
+    start_receipt: Path | None = None
     if tier is RunTier.JIT:
         image = build_contract.consumer_output
         runner = build_contract.artifacts.get("runner")
@@ -765,7 +772,13 @@ def run_script(
                 json_output,
                 command="run",
             )
-        program_command = jit_runner_argv(str(runner), str(image), script_args)
+        start_receipt = Path(tempfile.mkdtemp(prefix="molt-jit-start-")) / "started"
+        program_command = jit_runner_argv(
+            str(runner),
+            str(image),
+            script_args,
+            start_receipt=str(start_receipt),
+        )
     else:
         output_binary = _resolve_binary_output(str(build_contract.consumer_output))
         if output_binary is None:
@@ -775,53 +788,91 @@ def run_script(
                 command="run",
             )
         program_command = [str(output_binary), *script_args]
-    if timing:
-        run_res = _run_command_timed(
+    try:
+        return _run_program(
             program_command,
             env=env,
             cwd=project_root,
+            json_output=json_output,
             verbose=verbose,
-            capture_output=json_output,
-            memory_guard_prefix=_CLI_MEMORY_GUARD_PREFIX,
+            timing=timing,
+            build_duration_s=build_duration_s,
+            start_receipt=start_receipt,
         )
-        if json_output:
-            data: dict[str, Any] = {
-                "returncode": run_res.returncode,
-                "timing": {
-                    "build_s": build_duration_s,
-                    "run_s": run_res.duration_s,
-                    "total_s": build_duration_s + run_res.duration_s,
-                },
-            }
-            if run_res.stdout:
-                data["stdout"] = run_res.stdout
-            if run_res.stderr:
-                data["stderr"] = run_res.stderr
-            payload = _json_payload(
-                "run",
-                "ok" if run_res.returncode == 0 else "error",
-                data=data,
-            )
-            _emit_json(payload, json_output=True)
-        else:
-            print("Timing (compiled):", file=sys.stderr)
-            print(f"- build: {_format_duration(build_duration_s)}", file=sys.stderr)
-            print(
-                f"- run: {_format_duration(run_res.duration_s)}",
-                file=sys.stderr,
-            )
-            total = build_duration_s + run_res.duration_s
-            print(f"- total: {_format_duration(total)}", file=sys.stderr)
-        return run_res.returncode
-    return _run_command(
+    finally:
+        if start_receipt is not None:
+            shutil.rmtree(start_receipt.parent, ignore_errors=True)
+
+
+# `molt run`'s status when the JIT runner exits before its program starts:
+# the status `molt build` returns for a failed compilation.
+_JIT_BUILD_FAILURE_STATUS = 1
+
+
+def _run_program(
+    program_command: list[str],
+    *,
+    env: ProcessEnvironment,
+    cwd: Path,
+    json_output: bool,
+    verbose: bool,
+    timing: bool,
+    build_duration_s: float,
+    start_receipt: Path | None,
+) -> int:
+    """Run a built program and report it.
+
+    A JIT run that leaves no start receipt never started its program: the
+    runner failed to compile it, which ``molt run`` reports as a failed build,
+    not as the program's exit status.
+    """
+    run_res = _run_command_timed(
         program_command,
         env=env,
-        cwd=project_root,
-        json_output=json_output,
-        verbose=verbose,
-        label="run",
+        cwd=cwd,
+        verbose=verbose and not json_output,
+        capture_output=json_output,
         memory_guard_prefix=_CLI_MEMORY_GUARD_PREFIX,
     )
+    if start_receipt is not None and not jit_program_started(start_receipt):
+        # As a failed AOT build reports its compiler's stderr (wrapper_build).
+        return _fail(
+            "The JIT tier could not compile the program"
+            + (
+                "; see build_stderr."
+                if json_output
+                else "; the runner's diagnostics are above."
+            ),
+            json_output,
+            code=_JIT_BUILD_FAILURE_STATUS,
+            command="run",
+            data={"build_stderr": run_res.stderr} if run_res.stderr else None,
+        )
+    if json_output:
+        data: dict[str, Any] = {"returncode": run_res.returncode}
+        if timing:
+            data["timing"] = {
+                "build_s": build_duration_s,
+                "run_s": run_res.duration_s,
+                "total_s": build_duration_s + run_res.duration_s,
+            }
+        if run_res.stdout:
+            data["stdout"] = run_res.stdout
+        if run_res.stderr:
+            data["stderr"] = run_res.stderr
+        _emit_json(
+            _json_payload(
+                "run", "ok" if run_res.returncode == 0 else "error", data=data
+            ),
+            json_output=True,
+        )
+    elif timing:
+        print("Timing (compiled):", file=sys.stderr)
+        print(f"- build: {_format_duration(build_duration_s)}", file=sys.stderr)
+        print(f"- run: {_format_duration(run_res.duration_s)}", file=sys.stderr)
+        total = build_duration_s + run_res.duration_s
+        print(f"- total: {_format_duration(total)}", file=sys.stderr)
+    return run_res.returncode
 
 
 def compare(
