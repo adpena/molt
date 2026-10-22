@@ -618,7 +618,13 @@ pub(crate) fn raise_unicode_encode_error<T: ExceptionSentinel>(
     T::exception_sentinel()
 }
 
+/// Supply the missing-iteration diagnostic only when acquisition has not already
+/// selected an error. Raw `molt_iter` uses the same None sentinel for an absent
+/// protocol and a failing callback; do not replace the latter or format its type.
 pub(crate) fn raise_not_iterable<T: ExceptionSentinel>(_py: &PyToken<'_>, bits: u64) -> T {
+    if exception_pending(_py) || molt_cpython_abi::api::errors::raised_error_pending() {
+        return T::exception_sentinel();
+    }
     let msg = if obj_from_bits(bits).is_none() {
         "'NoneType' object is not iterable".to_string()
     } else {
