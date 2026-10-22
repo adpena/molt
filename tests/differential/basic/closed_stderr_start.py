@@ -2,9 +2,9 @@
 
 A shell's `2>&-` starts a program with file descriptor 2 closed. CPython runs
 with sys.stderr set to None, and a native AOT executable starts with fd 2 closed. The
-development JIT runner captures compiler output on fd 2 while it compiles; it
-must compile with nothing to capture and start the program with fd 2 still
-closed, not refuse to start (HF-371).
+development JIT runner points fd 2 at its compiler output capture while it
+compiles; it must close fd 2 again before the program starts, not refuse to
+start (HF-371).
 
 Both native code owners then differ from CPython the same way: the runtime
 opens /dev/null at start, and with fd 2 closed that descriptor becomes fd 2,
@@ -16,7 +16,7 @@ The pinned Molt outcome, for both tiers: Molt exits 0 and prints "rc 0" and
 fails the case.
 """
 # MOLT_ENV: MOLT_CAPABILITIES=process.exec,env.read,fs.read
-# MOLT_META: expect_fail=molt expect_fail_reason=closed_stderr_reused_by_runtime expect_molt_returncode=0 expect_molt_stdout_sha256=e15a6f107fc2dec693de3efbf1918a921665d2c81336012ebc9974df56c7555d
+# MOLT_META: backends=jit,native platforms=linux,macos expect_fail=molt expect_fail_reason=closed_stderr_reused_by_runtime expect_molt_returncode=0 expect_molt_stdout_sha256=e15a6f107fc2dec693de3efbf1918a921665d2c81336012ebc9974df56c7555d
 
 import os
 import subprocess
