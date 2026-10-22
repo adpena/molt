@@ -32,6 +32,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use molt_ir::content_digest::CompilationCacheKey;
 use sha2::{Digest, Sha256};
 
@@ -46,6 +47,14 @@ const CACHE_ARTIFACT_FIXED_BYTES: usize =
 const CACHE_FUNCTIONS_DIR: &str = "functions";
 const CACHE_TRIM_STAMP_FILE: &str = "trim.txt";
 const CACHE_TRIM_LOCK_FILE: &str = ".trim.lock";
+/// The Cache Directory Tagging Specification (https://bford.info/cachedir/):
+/// backup and archive tools skip a directory whose `CACHEDIR.TAG` starts with
+/// the signature line, and lane retirement treats it as regenerable. Cargo
+/// writes the same file into `target/`.
+const CACHEDIR_TAG_FILE: &str = "CACHEDIR.TAG";
+const CACHEDIR_TAG: &[u8] = b"Signature: 8a477f597d28d172789f06886806bc55\n\
+# This file is a cache directory tag created by Molt.\n\
+# For information about cache directory tags see https://bford.info/cachedir/\n";
 /// Minimum time between trims of one namespace.
 const CACHE_TRIM_INTERVAL: Duration = Duration::from_secs(60 * 60);
 /// Granularity of on-disk recency: a hit rewrites an artifact's modification
@@ -74,6 +83,8 @@ pub struct CompilationCache {
     /// Root of the backend namespaces whose stale siblings trimming retires.
     /// `None` for an explicitly placed cache, which owns only itself.
     namespace_root: Option<PathBuf>,
+    /// Whether the first write still has to tag `cache_dir`.
+    tag_pending: bool,
 
     /// Resident ownership: payloads, keys, quarantine paths and entry storage.
     resident: ResidentCache<Arc<str>, ResidentEntry>,
@@ -169,10 +180,10 @@ impl CompilationCache {
     }
 
     /// Open the namespace of the running backend binary under the process's
-    /// cache root (see [`backend_cache_dir`]). Its trims also retire stale
-    /// sibling namespaces.
-    pub fn open_backend_namespace() -> Self {
-        Self::open_backend_namespace_under(backend_cache_root())
+    /// cache root (see [`backend_cache_dir`]), or `None` when the process has
+    /// no root. Its trims also retire stale sibling namespaces.
+    pub fn open_backend_namespace() -> Option<Self> {
+        backend_cache_root().map(Self::open_backend_namespace_under)
     }
 
     /// Open the namespace of the running backend binary under `root`, for a
@@ -208,6 +219,7 @@ impl CompilationCache {
             cache_dir,
             functions_dir,
             namespace_root: None,
+            tag_pending: true,
             resident: ResidentCache::new(Some(max_memory_bytes)),
             max_entries,
             max_persistent_bytes,
@@ -338,11 +350,29 @@ impl CompilationCache {
                 self.functions_dir.display()
             ))
         })?;
+        self.tag_once();
         let published = self.publish(content_hash, &temp, &artifact_path, &poison_path, artifact);
         let _ = std::fs::remove_file(&temp);
         published?;
         self.store_memory_data(content_hash, Arc::from(artifact));
         Ok(())
+    }
+
+    /// Tag this cache's own directory as a cache directory on its first
+    /// write, as Cargo tags `target/`: it holds only entries the compiler
+    /// regenerates. The Molt cache root above a namespace is never tagged: it
+    /// also holds durable state (`home/`: installed tools and `MOLT_BIN`). A
+    /// failed tag costs only backup and retirement hints, so the write goes on.
+    fn tag_once(&mut self) {
+        if !std::mem::take(&mut self.tag_pending) {
+            return;
+        }
+        if let Err(error) = tag_cache_directory(&self.cache_dir, &self.functions_dir) {
+            eprintln!(
+                "MOLT_CACHE: cannot tag cache directory {}: {error}",
+                self.cache_dir.display()
+            );
+        }
     }
 
     /// Link the staged envelope into place without replacing an incumbent.
@@ -498,6 +528,8 @@ impl CompilationCache {
                 self.cache_dir.display()
             )
         })?;
+        // A trim can create the namespace before any write does.
+        self.tag_once();
         let lock_path = self.cache_dir.join(CACHE_TRIM_LOCK_FILE);
         let lock = std::fs::OpenOptions::new()
             .read(true)
@@ -811,6 +843,28 @@ fn install_poison_sidecar(
     }
 }
 
+/// Write `directory`'s `CACHEDIR.TAG` unless it has one.
+fn tag_cache_directory(directory: &Path, staging: &Path) -> std::io::Result<()> {
+    let tag = directory.join(CACHEDIR_TAG_FILE);
+    if tag.is_file() {
+        return Ok(());
+    }
+    install_tag(staging, &tag)
+}
+
+/// Install the tag without replacing one: a no-clobber hard link from a stage
+/// in `functions/` (whose trim retires a stage a crash leaves), as `publish`
+/// installs artifacts. A tag another writer installed first stays.
+fn install_tag(staging: &Path, tag: &Path) -> std::io::Result<()> {
+    let staged = write_unique_temp_file(staging, CACHEDIR_TAG_FILE, CACHEDIR_TAG)?;
+    let linked = match std::fs::hard_link(&staged, tag) {
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        linked => linked,
+    };
+    let _ = std::fs::remove_file(&staged);
+    linked
+}
+
 fn write_unique_temp_file(directory: &Path, stem: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(directory)?;
     loop {
@@ -1022,16 +1076,14 @@ fn retire_cache_file(path: &std::path::Path) -> Result<(), String> {
     }
 }
 
-/// Root of every backend binary's cache namespace: `MOLT_CACHE` when
-/// configured, `.molt_cache` otherwise.
-#[expect(
-    clippy::disallowed_methods,
-    reason = "TIR cache placement and limits are process configuration, outside the backend catalog"
-)]
-fn backend_cache_root() -> PathBuf {
-    std::env::var_os("MOLT_CACHE")
+/// Root of every backend binary's cache namespace: `MOLT_CACHE`, which molt
+/// resolves and passes, absolute, to every backend process. Without it there
+/// is no persistent cache: the backend never falls back to its current
+/// directory, which for a daemon is the compiler checkout (HF-443).
+fn backend_cache_root() -> Option<PathBuf> {
+    backend_env::var_os(BackendEnv::MOLT_CACHE)
+        .filter(|root| !root.is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(".molt_cache"))
 }
 
 /// Resolve the canonical cache namespace for the current backend binary.
@@ -1039,8 +1091,8 @@ fn backend_cache_root() -> PathBuf {
 /// The namespace lives under [`backend_cache_root`] and is salted with the
 /// current executable path, mtime and build identity, so cached optimized IR
 /// is invalidated automatically when the backend binary changes.
-pub fn backend_cache_dir() -> PathBuf {
-    backend_cache_dir_under(&backend_cache_root())
+pub fn backend_cache_dir() -> Option<PathBuf> {
+    backend_cache_root().map(|root| backend_cache_dir_under(&root))
 }
 
 fn backend_cache_dir_under(root: &Path) -> PathBuf {
@@ -1142,7 +1194,7 @@ fn platform_os_str_identity(value: &OsStr) -> (&'static [u8], Vec<u8>) {
 }
 
 fn default_memory_cache_limit_bytes() -> usize {
-    if let Some(mib) = env_cache_limit_bytes("MOLT_BACKEND_TIR_CACHE_MEMORY_MB") {
+    if let Some(mib) = env_cache_limit::<usize>(BackendEnv::MOLT_BACKEND_TIR_CACHE_MEMORY_MB) {
         return mib.saturating_mul(1024 * 1024);
     }
     if let Some(bytes) = crate::memory_budget::backend_memory_limit_bytes()
@@ -1164,34 +1216,22 @@ fn default_memory_cache_limit_bytes() -> usize {
 }
 
 fn default_persistent_cache_max_entries() -> usize {
-    env_cache_limit_bytes("MOLT_BACKEND_TIR_CACHE_MAX_ENTRIES")
+    env_cache_limit::<usize>(BackendEnv::MOLT_BACKEND_TIR_CACHE_MAX_ENTRIES)
         .unwrap_or(DEFAULT_PERSISTENT_CACHE_MAX_ENTRIES)
 }
 
 fn default_persistent_cache_max_bytes() -> u64 {
-    env_cache_limit_u64("MOLT_BACKEND_TIR_CACHE_DISK_MB")
+    env_cache_limit::<u64>(BackendEnv::MOLT_BACKEND_TIR_CACHE_DISK_MB)
         .and_then(|mib| mib.checked_mul(1024 * 1024))
         .unwrap_or(DEFAULT_PERSISTENT_CACHE_MAX_BYTES)
 }
 
-#[expect(
-    clippy::disallowed_methods,
-    reason = "TIR cache placement and limits are process configuration, outside the backend catalog"
-)]
-fn env_cache_limit_bytes(name: &str) -> Option<usize> {
-    std::env::var(name)
+/// A cache limit from the process-scoped `cache` catalog group: fixed for
+/// the process, so a daemon serves only builds that share it.
+fn env_cache_limit<T: std::str::FromStr>(key: BackendEnv) -> Option<T> {
+    backend_env::var(key)
         .ok()
-        .and_then(|raw| raw.trim().parse::<usize>().ok())
-}
-
-#[expect(
-    clippy::disallowed_methods,
-    reason = "TIR cache placement and limits are process configuration, outside the backend catalog"
-)]
-fn env_cache_limit_u64(name: &str) -> Option<u64> {
-    std::env::var(name)
-        .ok()
-        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .and_then(|raw| raw.trim().parse::<T>().ok())
 }
 
 #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]

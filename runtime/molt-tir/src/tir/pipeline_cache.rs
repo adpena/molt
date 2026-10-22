@@ -132,9 +132,9 @@ impl TirPipelineInput<'_> {
 /// Where the persistent TIR cache lives.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TirCacheLocation {
-    /// The running backend binary's namespace under the process's cache root:
-    /// `MOLT_CACHE`, else `.molt_cache` in the current directory. That is the
-    /// backend process's own configuration.
+    /// The running backend binary's namespace under the process's cache root,
+    /// `MOLT_CACHE`, which molt passes to every backend process. Without it
+    /// there is no persistent cache, never one in the current directory.
     ProcessRoot,
     /// The running backend binary's namespace under this root. The JIT
     /// runner's root comes from its image: the runner's environment and
@@ -613,9 +613,9 @@ where
     let mut tir_cache = match &options.cache {
         TirCacheLocation::ProcessRoot => CompilationCache::open_backend_namespace(),
         TirCacheLocation::Root(root) => {
-            CompilationCache::open_backend_namespace_under(root.clone())
+            Some(CompilationCache::open_backend_namespace_under(root.clone()))
         }
-        TirCacheLocation::Directory(directory) => CompilationCache::open(directory.clone()),
+        TirCacheLocation::Directory(directory) => Some(CompilationCache::open(directory.clone())),
     };
     let work_items: Vec<TirPreparationWorkItem> = input
         .functions()
@@ -668,7 +668,8 @@ where
                 let index = prepared.index;
                 let content_hash = &prepared.prepared_function.content_hash;
                 if cache_reuse_allowed
-                    && let Some(cached_bytes) = tir_cache.get(content_hash)
+                    && let Some(cached_bytes) =
+                        tir_cache.as_mut().and_then(|cache| cache.get(content_hash))
                     && let Some(cached_tir_func) =
                         super::serialize::deserialize_tir_function(&cached_bytes)
                 {
@@ -750,7 +751,10 @@ where
                             output.tir_func.name
                         )
                     });
-                if let Err(error) = tir_cache.put(&output.content_hash, &bytes) {
+                if let Some(Err(error)) = tir_cache
+                    .as_mut()
+                    .map(|cache| cache.put(&output.content_hash, &bytes))
+                {
                     match error {
                         CompilationCacheWriteError::Integrity(error) => {
                             panic!(
@@ -777,7 +781,7 @@ where
         }
     }
 
-    if let Err(error) = tir_cache.trim_if_due() {
+    if let Some(Err(error)) = tir_cache.as_mut().map(CompilationCache::trim_if_due) {
         eprintln!("MOLT_CACHE: persistent TIR cache trim failed: {error}");
     }
     TirPipelineRun {

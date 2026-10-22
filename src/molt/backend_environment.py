@@ -17,6 +17,7 @@ from molt.backend_executable_names import (
     DEFAULT_CODEGEN_BACKEND,
     CodegenBackend,
 )
+from molt.default_paths import _default_molt_cache
 from molt.dx import scratch_dir
 from molt.source_root import compiler_source_root
 
@@ -221,6 +222,21 @@ def backend_debug_artifact_dir(env: Mapping[str, str]) -> Path:
     return scratch_dir(compiler_source_root(), DEBUG_ARTIFACT_SCRATCH_PURPOSE, env)
 
 
+def backend_process_environment(base: Mapping[str, str]) -> dict[str, str]:
+    """Return a copy of ``base`` with the settings molt fixes per backend process.
+
+    The backend keeps its caches under the Molt cache root, as an absolute
+    path, and never chooses one itself: a backend started without
+    ``MOLT_CACHE`` keeps no persistent cache. The root is in the
+    process-scoped ``cache`` group, so it names the daemon that serves it
+    (``daemon_process_environment_inputs``): two roots never share a daemon.
+    Pure: resolving the root creates nothing.
+    """
+    env = dict(base)
+    env["MOLT_CACHE"] = os.fspath(_default_molt_cache(environ=base))
+    return env
+
+
 @dataclass(frozen=True, slots=True)
 class CodegenSelection:
     """Backend-process inputs that molt resolves from flags and configuration.
@@ -233,7 +249,8 @@ class CodegenSelection:
     the caller's value of that variable in place: ``MOLT_PORTABLE=0`` still
     opts in to host-CPU code.
     The projection always names the backend's debug artifact directory
-    (`backend_debug_artifact_dir`); the backend never derives one itself.
+    (`backend_debug_artifact_dir`) and carries the process settings of
+    `backend_process_environment`; the backend never derives either itself.
     """
 
     backend: CodegenBackend = DEFAULT_CODEGEN_BACKEND
@@ -257,7 +274,7 @@ class CodegenSelection:
             # may replace it with its own allocation at child launch. Suite
             # daemons remove it before acquiring their longer-lived temp root.
             guard_scratch(base)
-        env = dict(base)
+        env = backend_process_environment(base)
         if profile in ("release-size", "wasm-release"):
             env.setdefault("MOLT_BACKEND_OPT_LEVEL", "speed_and_size")
         env["MOLT_BACKEND"] = self.backend

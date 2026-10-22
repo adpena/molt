@@ -1539,7 +1539,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_CACHE",
       "output_neutral": false,
       "owner": "src/molt/default_paths.py",
-      "summary": "Molt cache directory for build outputs, installed tool roots, and the backend TIR cache; a relative path resolves against the current directory, unset uses <MOLT_EXT_ROOT>/.molt_cache when that directory exists, else LOCALAPPDATA/Molt on Windows or XDG_CACHE_HOME/molt (default ~/.cache/molt), while molt-backend alone falls back to ./.molt_cache, and molt dx sets <artifact root>/.molt_cache.",
+      "summary": "Molt cache directory for build outputs, installed tool roots, and the backend TIR cache; a relative path resolves against the current directory, unset uses <MOLT_EXT_ROOT>/.molt_cache when that directory exists, else LOCALAPPDATA/Molt on Windows or XDG_CACHE_HOME/molt (default ~/.cache/molt), and molt dx sets <artifact root>/.molt_cache. molt passes the resolved absolute root to every backend process and binds it into the daemon identity; a backend started without it keeps no persistent TIR cache, and each TIR cache namespace tags itself with CACHEDIR.TAG (the root is never tagged: home/ under it is durable).",
       "values": []
     },
     {
