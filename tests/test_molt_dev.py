@@ -3130,9 +3130,11 @@ def _counting_policy(work: Path, counter: Path, check: str = "true") -> None:
 
 
 def _lane(work: Path, name: str, files: dict[str, str]) -> str:
+    # An ordinary source checkout; managed lane custody is exercised by
+    # test_molt_dev_lanes using lane start and its real coordination owner.
     lane = work.parent / f"lane-{name}"
     _git(work, "fetch", "-q", "origin")
-    _git(work, "worktree", "add", "-q", "-b", f"lane/{name}", str(lane), "origin/main")
+    _git(work, "worktree", "add", "-q", "-b", f"codex/{name}", str(lane), "origin/main")
     for rel, content in files.items():
         tip = _commit_file(lane, rel, content, f"lane {name}: {rel}")
     return tip
@@ -3186,6 +3188,86 @@ def test_queue_lands_ready_lanes_in_one_batch_with_one_gate_run(
     assert queue.pending(paths) == [] and not paths.plan.exists()
 
 
+@pytest.mark.parametrize("advance_before_integrate", [False, True])
+def test_queue_preserves_source_merges_and_resolves_their_citations(
+    drv, origin_and_clone, tmp_path, monkeypatch, advance_before_integrate
+):
+    _, work = origin_and_clone
+    counter = tmp_path / "gate-runs.txt"
+    _counting_policy(work, counter)
+    ordinary = _lane(work, "merged", {"feature.py": "value = 1\n"})
+    lane = work.parent / "lane-merged"
+    _commit_file(work, "incoming.txt", "main advanced\n", "advance main")
+    _git(work, "push", "-q", "origin", "HEAD:main")
+    _git(lane, "fetch", "-q", "origin")
+    upstream = _git(lane, "rev-parse", "origin/main").stdout.strip()
+    _git(lane, "merge", "--no-ff", "--no-commit", upstream)
+    change = "I" + "72" * 20
+    note = lane / "docs" / "merge.md"
+    note.parent.mkdir()
+    note.write_text(f"The source merge: change:{change}\n", encoding="utf-8")
+    _git(lane, "add", "docs/merge.md")
+    merged = _commit_file(
+        lane,
+        "resolution-only.txt",
+        "manual resolution absent from both parents\n",
+        f"resolve the source merge\n\nChange-Id: {change}",
+    )
+    for parent in (ordinary, upstream):
+        assert (
+            _git(
+                work, "cat-file", "-e", f"{parent}:resolution-only.txt", check=False
+            ).returncode
+            != 0
+        )
+    paths, requests = _enqueue(drv, work, merged)
+    if advance_before_integrate:
+        from tools import molt_dev_queue as queue
+
+        provision = queue._provision_landing_sandbox
+        moved = False
+
+        def advance_after_provision(sandbox):
+            nonlocal moved
+            provision(sandbox)
+            if not moved:
+                moved = True
+                _commit_file(
+                    work,
+                    "late-main.txt",
+                    "published after batch selection\n",
+                    "late main",
+                )
+                _git(work, "push", "-q", "origin", "HEAD:main")
+
+        monkeypatch.setattr(
+            queue, "_provision_landing_sandbox", advance_after_provision
+        )
+    commands = _record_driver_git_commands(drv, monkeypatch)
+
+    assert _run_queue(drv, work) == drv.EXIT_OK
+
+    assert _statuses(paths, requests) == ["landed"]
+    _git(work, "fetch", "-q", "origin")
+    assert (
+        _git(work, "merge-base", "--is-ancestor", merged, "origin/main").returncode == 0
+    )
+    assert _git(work, "show", "origin/main:resolution-only.txt").stdout == (
+        "manual resolution absent from both parents\n"
+    )
+    assert _git(work, "show", "origin/main:docs/merge.md").stdout == (
+        f"The source merge: {merged[:9]}\n"
+    )
+    assert counter.read_text(encoding="utf-8").splitlines() == ["run"]
+    if advance_before_integrate:
+        assert moved
+        assert _git(work, "show", "origin/main:late-main.txt").stdout == (
+            "published after batch selection\n"
+        )
+    assert not any(args[0] in {"cherry-pick", "rebase"} for args in commands)
+    _assert_no_patch_diff_work(commands)
+
+
 def test_queue_bisects_a_failed_batch_and_lands_the_rest(
     drv, origin_and_clone, tmp_path
 ):
@@ -3195,9 +3277,19 @@ def test_queue_bisects_a_failed_batch_and_lands_the_rest(
     heads = [
         _lane(work, "a", {"a.py": "a = 1\n"}),
         _lane(work, "b", {"b.py": "b = 1\n"}),
-        _lane(work, "c", {"broken.txt": "breaks the gate\n"}),
+        _lane(work, "c", {"c.py": "c = 1\n"}),
         _lane(work, "d", {"d.py": "d = 1\n"}),
     ]
+    # The failing payload exists only in a real source merge, so flattening
+    # ordinary commits would incorrectly admit this lane instead of bisecting.
+    lane = work.parent / "lane-c"
+    _git(lane, "checkout", "-qb", "source-side", "origin/main")
+    side = _commit_file(lane, "side.txt", "side\n", "source side")
+    _git(lane, "checkout", "-q", "codex/c")
+    _git(lane, "merge", "--no-ff", "--no-commit", side)
+    heads[2] = _commit_file(
+        lane, "broken.txt", "breaks the gate\n", "manual resolution"
+    )
     paths, requests = _enqueue(drv, work, *heads)
 
     assert _run_queue(drv, work) == drv.EXIT_OK
@@ -3219,13 +3311,15 @@ def test_queue_leaves_a_conflicting_lane_out_of_its_batch(
     _counting_policy(work, tmp_path / "gate-runs.txt")
     first = _lane(work, "first", {"shared.txt": "first\n"})
     second = _lane(work, "second", {"shared.txt": "second\n"})
-    paths, requests = _enqueue(drv, work, first, second)
+    third = _lane(work, "third", {"third.txt": "third\n"})
+    paths, requests = _enqueue(drv, work, first, second, third)
 
     assert _run_queue(drv, work) == drv.EXIT_OK
 
-    assert _statuses(paths, requests) == ["landed", "conflict"]
+    assert _statuses(paths, requests) == ["landed", "conflict", "landed"]
     _git(work, "fetch", "-q", "origin")
     assert _git(work, "show", "origin/main:shared.txt").stdout == "first\n"
+    assert _git(work, "show", "origin/main:third.txt").stdout == "third\n"
     from tools import molt_dev_queue as queue
 
     detail = queue.read_result(paths, requests[1].id)["detail"]
@@ -3391,7 +3485,7 @@ def test_land_waits_for_a_real_runner_through_the_pinned_controller(
     _git(work, "commit", "-q", "--no-verify", "-m", "main driver")
     _git(work, "push", "-q", "origin", "HEAD:main")
     lane = tmp_path / "lane"
-    _git(work, "worktree", "add", "-q", "-b", "lane/queued", str(lane))
+    _git(work, "worktree", "add", "-q", "-b", "codex/queued", str(lane))
     tip = _commit_file(lane, "queued.txt", "queued\n", "queued work")
 
     # Integrate's gates export the candidate's import roots, as here. `land`
@@ -3768,7 +3862,18 @@ def test_queue_retires_old_runner_logs_and_results_only(tmp_path):
         result = paths.results / f"{request.id}.json"
         os.utime(result, (now - age_days * 86400, now - age_days * 86400))
 
+    held = queue.enqueue(paths, head="4" * 40, worktree=tmp_path, branch=None)
+    queue.record_result(
+        paths,
+        held,
+        status=queue.LandingStatus.LANDED_RETIREMENT_FAILED,
+        detail="unharvested signal",
+        landed="4" * 40,
+    )
+    held_path = paths.results / f"{held.id}.json"
+    os.utime(held_path, (0, 0))
     queue.retire_old_records(paths, now=now)
+    assert queue.read_result(paths, held.id)["detail"] == "unharvested signal"
 
     kept = sorted(entry.name for entry in paths.runners.iterdir())
     expected = [f"runner-{index:03d}" for index in range(queue.RUNNER_LOGS_KEPT)]
@@ -6256,3 +6361,27 @@ def test_queue_results_read_in_the_order_they_closed(tmp_path, monkeypatch):
     assert [row["request"]["id"] for row in queue.recorded_results(paths, limit=1)] == [
         early.id
     ]
+
+
+def test_queue_refuses_old_requests_without_removing_them(tmp_path):
+    from tools import molt_dev_queue as queue
+
+    paths = queue.QueuePaths(tmp_path)
+    request = queue.enqueue(paths, head="1" * 40, worktree=tmp_path, branch=None)
+    path = paths.requests / f"{request.id}.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    assert record["schema"] == "molt.landing-request.v2"
+    assert "retire" not in record
+    record.update(schema="molt.landing-request.v1", retire=False)
+    path.write_text(json.dumps(record), encoding="utf-8")
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="preserve it.*runner lock"):
+        queue.pending(paths)
+    assert path.read_bytes() == before
+    assert not paths.results.exists()
+
+
+def test_land_has_no_optional_retirement_flag(drv):
+    with pytest.raises(SystemExit) as error:
+        drv.build_parser().parse_args(["land", "--retire"])
+    assert error.value.code == 2

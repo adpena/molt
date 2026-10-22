@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Worktree retirement for the canonical Molt dev driver (hazard 3).
 
-A worktree leaves only when every commit is on upstream (by Change-Id or
-patch-id) and no tracked change remains. Retirement stops the checkout's own
+A landed worktree leaves only when every source merge is ancestral to upstream,
+every ordinary commit is represented by ancestry, Change-Id or patch-id, and
+no tracked change remains. Retirement stops the checkout's own
 daemons, binds the reclaim of its checkout state while the checkout still
 exists, steps out of it, removes it through ``git worktree remove`` from the
 surviving main checkout, and then reclaims its state (HF-313). ``integrate
@@ -50,8 +51,9 @@ def cleanup_worktree(
     """Remove the worktree at `repo` ONLY when safe (hazard 3).
 
     REFUSES when:
-      * a commit of upstream_ref..HEAD is not on upstream by Change-Id or
-        patch-id (`landing_representation`), OR
+      * a commit of upstream_ref..HEAD is not represented on upstream
+        (`landing_representation`): merges require actual ancestry; ordinary
+        commits also admit Change-Id or patch-id, OR
       * tracked staged/unstaged (non-ignored) changes exist.
     --force (force_sha set) overrides BOTH, but only when force_sha names the
     exact HEAD being abandoned (so an abandon is deliberate + auditable).

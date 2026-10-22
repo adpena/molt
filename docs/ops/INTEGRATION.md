@@ -231,22 +231,38 @@ worktree. A slug is 1 to 64 lower-case letters, digits, `.`, `_` or `-`.
   failure keeps the lane and prints the command that finishes it.
 - **`lane retire <slug>`** fetches, then accepts the lane only when it is
   landed. *Landed* is one predicate, `molt_dev_change_ids.landing_representation`:
-  every non-merge commit of `origin/main..lane/<slug>` is on `origin/main`
+  every ordinary commit of `origin/main..lane/<slug>` is on `origin/main`
   since the merge base, by its `Change-Id:` trailer or by its patch-id
-  (`git cherry`). A tip that is an ancestor of `origin/main` is the trivial
+  (`git cherry`). A merge commit requires actual ancestry on upstream: its
+  resolution-only edits cannot be proved by matching a trailer or parent patches. A tip that is an ancestor of `origin/main` is the trivial
   case; a lane replayed by the queue, with its last commit amended, is
   landed too. `--abandon` accepts an unlanded lane after it writes
   `origin/main..lane/<slug>` to `<root>/drift-bundles/lane-<slug>-<tip>.bundle`
   (where `tools/drift_harvest.py` keeps bundles), verifies it and prints its
-  path. Retirement refuses a dirty worktree (tracked changes or untracked
-  files, outside the ignore set) and names each path. It refuses to remove
+  path. Retirement binds the canonical managed record to its checkout and branch,
+  refuses locked or dirty worktrees (tracked changes or untracked files, outside
+  an explicitly supplied ignore set), and names each path. Automatic retirement
+  additionally requires the enrolled tip and path, so later work is retained.
+  Multiple registrations sharing the branch are held. Ignored payloads are
+  removable only inside current checkout inputs verified by
+  `molt.checkout_provisioning` (lock stamp and sentinel). The artifact-publication
+  owner also recognizes its direct, empty persistent lock metadata, which leaves
+  only with the whole checkout under retirement custody; locks are never unlinked
+  to make a lane look clean. Malformed reserved leaves and other ignored notes,
+  logs, or source are held for harvest and indexed preservation outside the lane. It refuses to remove
   the checkout that runs the driver or holds the current directory, and a
   remote lane branch that holds commits in neither the lane nor main. Then it
   removes the worktree through the hazard-3 cleanup (which retires the
   checkout's backend daemons and reclaims its checkout state, HF-313),
   deletes `origin/lane/<slug>` with a lease and confirms it with
   `ls-remote`, deletes the local branch with `update-ref -d <ref> <tip>`, and
-  closes the record as `landed` or `abandoned`.
+  closes the record as `landed` or `abandoned`. Exact-tip/path retirement intent
+  is written to the existing record before deletion, without a terminal status.
+  If the final record write fails, an explicit retry verifies the worktree,
+  registration, local and remote branch are all absent before recording completion.
+  Existing checkout-state locks and
+  process custody protect owned proofs and daemons; enrollment is not a global
+  process lease and cannot protect writers that ignore the handoff.
 - **`lane list`** shows each `lane/*` branch: tip, merge base, commits ahead
   and behind, landed, dirty paths and per-input provisioning state, plus the
   repository's hook state. Read-only Git plumbing (`merge-base`, `rev-list`,
@@ -285,8 +301,11 @@ no Cargo build) run in the lane against its merge base with main, through the
 same selection, environment and executor as `integrate`. A failing gate stops
 `land` before it queues anything. It then writes one request under
 `<git-common-dir>/molt/landing-queue/requests/` and returns; the request pins
-the commit, so later work on the branch does not join it. `land --retire`
-also retires the lane (`lane retire`) once it lands. A runner starts through
+the commit. Enrollment of a managed `lane/<slug>` is a cooperative handoff:
+stop editing it until the request closes. Its canonical lane record, exact
+worktree and tip must match. The runner automatically retires the managed lane
+through `lane retire` after publication. Ordinary branches and detached
+checkouts remain intact; a lane-prefixed branch without managed custody is refused. A runner starts through
 the detached-run protocol below, under a unique name, from the main worktree,
 which outlives every lane it retires; the runner's OS file lock, not the
 process table, decides which runner works.
@@ -295,17 +314,22 @@ The runner always runs main's pinned controller. Each batch takes the
 bisection plan's next group, else the oldest `MAX_BATCH` (8) requests:
 
 1. Reset the queue's own sandbox worktree
-   (`<git-common-dir>/molt/landing-sandbox`) to main's tip and replay each
-   lane's commits since its merge-base in queue order. A lane that does not
-   apply leaves the batch with result `conflict`.
+   (`<git-common-dir>/molt/landing-sandbox`) to main's tip and merge each
+   requested tip in queue order with `--no-ff`. This preserves source history and
+   manual merge resolutions, including through the final citation amendment.
+   A conflicting lane is aborted back to the preceding candidate and leaves the
+   batch with result `conflict`; inability to restore that candidate stops the runner.
 2. Provision the sandbox's declared checkout-scoped inputs (its uv
    environment and the Acorn tree) through `molt.checkout_provisioning`.
    Run `integrate` on the sandbox, waiting for the repository integration lock
    held by any other integrator. The union of the batch's selected gates runs
    once; change citations resolve across the batch.
-3. On success every lane in the batch records `landed` with the published
-   commit; the runner then refreshes the shared hooks from the published main
-   and retires the lanes that asked for it. A candidate failure (a gate, the committed gate policy or binding,
+3. On publication the runner refreshes shared hooks from published main and
+   retires each managed lane. Only completed retirement records `landed` with
+   the published commit. A hold or cleanup failure records
+   `landed_retirement_failed`, retaining that commit and an actionable follow-up;
+   `land --wait` exits nonzero. Requests already represented on main take the same
+   retirement path without repeating gates. A candidate failure (a gate, the committed gate policy or binding,
    a change citation) splits a batch of two or more into halves, first half
    next; a lone lane records `failed` with the reason. A moved main
    (`RebaseConflict`, `PublicationRace`) rebuilds the batch. Any other driver
@@ -316,10 +340,19 @@ handoff, so each batch runs under the driver of the main it lands on. Before
 it works, it drops inherited `MOLT_VENV`, `UV_PROJECT_ENVIRONMENT` and
 `VIRTUAL_ENV`: the sandbox's gates use the sandbox's environment. Results
 older than 30 days and finished runner logs beyond the newest 20 retire when a
-runner starts.
+runner starts; retirement-failure results remain as evidence. The integration
+owner follows a failed retirement through the existing `lane retire` command
+from a surviving checkout, after reconciling the named custody or signal. Do not
+repeat successful landing gates to repair cleanup. The original failure result
+remains historical evidence; the lane coordination record records completion.
+
+New requests use `molt.landing-request.v2` and results use `molt.landing-result.v2`; the retired opt-in is not a compatibility
+flag. Deployment drains the old runner and pending requests before publishing the
+controller update. Any late v1 request is refused and preserved for explicit
+reconciliation under the existing runner lock, never silently reinterpreted.
 
 Each result records one status from a closed set (`LandingStatus` in
-`tools/molt_dev_queue.py`): `landed`, `failed`, `conflict` or `withdrawn`.
+`tools/molt_dev_queue.py`): `landed`, `landed_retirement_failed`, `failed`, `conflict` or `withdrawn`.
 `queue withdraw <request-id>... --reason TEXT` closes pending requests without
 testing them and records the reason as the result's detail. It takes the
 runner lock, which a runner holds for each batch, so it never edits a batch

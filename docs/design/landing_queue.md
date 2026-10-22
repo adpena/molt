@@ -201,12 +201,48 @@ The driver creates, provisions and retires each lane.
   provisions it. `lane retire <slug>` accepts a landed lane, or an abandoned
   one after it writes a Git bundle. It removes the worktree, the branches and
   the checkout state (HF-313), and closes the record. `lane list` shows each
-  lane's state. The queue retires each lane it lands.
+  lane's state. The queue automatically retires each managed lane it lands,
+  including requests already represented on main. Enrollment transfers a clean,
+  exact tip/path under its existing coordination record; the owner stops editing.
+  Primary and ordinary source checkouts are retained. Locked, advanced, dirty,
+  mismatched or unharvested lanes are held, not force-removed. Ignored content is
+  disposable only within current provisioning-owned trees, verified through the
+  existing lock-stamp/sentinel authority; unknown ignored signal requires harvest.
+  Persistent publication locks are classified by their canonical owner and leave
+  only with the whole checkout, never by a lock-deletion cleanup step. Multiple
+  Git registrations of one lane branch are shared custody and block retirement.
+  Checkout-state/process custody still protects owned work, without claiming a
+  global lease over arbitrary writers. Exact-tip/path retirement intent is
+  durable in the existing coordination record before deletion; a failed terminal
+  record write can resume only after all owned resources are confirmed absent.
+  Bulk idle retention, cache policy and WIP limits belong to the
+  [DX tooling design](foundation/56_dx_buildspeed_tooling.md); this boundary
+  closes the already-published managed lane and adds no TTL or retention registry.
+
+  Publication and retirement are separate outcomes. A request reports `landed`
+  only after its managed retirement completes; `landed_retirement_failed`
+  retains the published SHA and instructs the integration owner to finish the
+  existing retirement command, without retesting publication. Failed receipts
+  remain evidence even after the lane record records a later completion. V2
+  requests remove the old opt-in; deployment drains old requests before the
+  controller update, and any late v1 record is preserved and refused explicitly.
+
+  This adapts the owner-driven completion principle in Google's
+  [Deprecation chapter](https://abseil.io/resources/swe-book/html/ch15.html):
+  migration includes consumer closure and removal, not only an announcement.
+  For old WIP, two source/history passes (an independent pass when available)
+  establish whether an idea is useful now, already satisfied, or superseded for
+  a verified reason. Harvest useful work into current owners and land it first;
+  preserve unresolved evidence with an indexed path and an explicit owner or
+  question. Archiving alone does not close reconciliation.
 - **Cost.** The same Git and provisioning work an agent does by hand now,
   without the forgotten steps.
 - **Landed (slice 3).** `tools/molt_dev_lanes.py` implements `lane start`,
   `lane retire` and `lane list`. A lane is landed when every commit is on
-  main by Change-Id or patch-id, so a replayed and amended lane retires.
+  main by ancestry, or (for ordinary commits only) Change-Id or patch-id.
+  Historical ordinary replay/amend landings remain represented. Merge commits
+  require ancestry because manual resolution changes have no equivalent parent
+  patch; matching a merge trailer cannot authorize retirement.
 
 ### 5. A queue with speculative batches and bisection
 
@@ -229,9 +265,11 @@ One runner owns main. Agents enqueue and continue.
   starts the runner if none holds the runner lock. `land` and the runner run from the pinned
   controller: a lane branched before a driver fix once queued itself with
   its own old driver, which started a runner that could not import `tools`.
-  It builds a candidate in its own sandbox worktree: main's tip, then each
-  ready lane in queue order. A lane that conflicts leaves the batch with a
-  report. The runner resolves change ids, takes the repository integration
+  It builds a candidate in its own sandbox worktree: main's tip, then a
+  `--no-ff` merge of each ready lane tip in queue order, preserving source DAGs
+  and resolution-only changes through the final citation amendment. A conflicting
+  merge is aborted and the preceding candidate verified before proceeding;
+  a failed restoration stops the runner. The conflicting lane leaves with a report. The runner resolves change ids, takes the repository integration
   lock, runs the union of the batch's selected gates once, pushes and
   confirms. A failed batch splits into halves: a passing first half lands,
   and the rest retest on the new tip. A single failing lane leaves the queue
@@ -276,8 +314,12 @@ One runner owns main. Agents enqueue and continue.
   the slowest, `python.unit.surface-contracts.macos`, now exceeds its 600 s
   budget (HF-263). The makespan is the slowest cell, not the sum, when the
   executor overlaps commands within the host's capacity.
-- Agents do not wait: enqueueing returns at once, and the lane is retired
-  when its commit lands.
+- Enqueueing returns at once, transferring managed lane custody. Retirement
+  adds Git identity/status checks and a metadata-only ignored-path census; it
+  checks the finite provisioning inventory without spawning provisioners or
+  reading artifact payloads. This work is cold and scales with checkout path
+  metadata, not per-user executable work. A held lane remains recoverable and
+  its terminal result identifies the remaining integration-owner action.
 - This replaces three-day red stretches of main, each repaired by hand after
   the fact, with one bounded run per candidate.
 

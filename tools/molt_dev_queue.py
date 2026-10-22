@@ -62,8 +62,8 @@ def _driver() -> ModuleType:
     return molt_dev
 
 
-REQUEST_SCHEMA = "molt.landing-request.v1"
-RESULT_SCHEMA = "molt.landing-result.v1"
+REQUEST_SCHEMA = "molt.landing-request.v2"
+RESULT_SCHEMA = "molt.landing-result.v2"
 PLAN_SCHEMA = "molt.landing-plan.v1"
 # A batch larger than this costs more in bisection than one more gate run.
 MAX_BATCH = 8
@@ -78,6 +78,7 @@ class LandingStatus(StrEnum):
     """How a landing request closed; each result records exactly one."""
 
     LANDED = "landed"
+    LANDED_RETIREMENT_FAILED = "landed_retirement_failed"
     FAILED = "failed"
     CONFLICT = "conflict"
     # The integrator withdrew it before any batch tested it (`queue withdraw`).
@@ -91,21 +92,21 @@ class LandingRequest:
     worktree: str
     branch: str | None
     enqueued_at: str
-    # Retire the lane (worktree, branches, record, state) once it lands.
-    retire: bool = False
 
     @classmethod
     def load(cls, path: Path) -> "LandingRequest":
         data = json.loads(path.read_text(encoding="utf-8"))
         if data.get("schema") != REQUEST_SCHEMA:
-            raise ValueError(f"{path} is not a {REQUEST_SCHEMA} record")
+            raise ValueError(
+                f"{path} is not a {REQUEST_SCHEMA} record; preserve it and reconcile "
+                "the old request under the queue runner lock before retrying"
+            )
         return cls(
             id=str(data["id"]),
             head=str(data["head"]),
             worktree=str(data["worktree"]),
             branch=data["branch"],
             enqueued_at=str(data["enqueued_at"]),
-            retire=bool(data["retire"]),
         )
 
 
@@ -167,7 +168,6 @@ def enqueue(
     head: str,
     worktree: Path,
     branch: str | None,
-    retire: bool = False,
 ) -> LandingRequest:
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     request = LandingRequest(
@@ -176,7 +176,6 @@ def enqueue(
         worktree=str(worktree),
         branch=branch,
         enqueued_at=_now(),
-        retire=retire,
     )
     _write_json(
         paths.requests / f"{request.id}.json",
@@ -368,7 +367,7 @@ class GitResult:
 def build_candidate(
     run_git: GitRunner, upstream: str, batch: Sequence[LandingRequest]
 ) -> Candidate:
-    """Replay each lane onto upstream in queue order in the sandbox.
+    """Merge each immutable lane tip onto upstream in queue order.
 
     A lane that does not apply on top of the lanes ahead of it is reported and
     left out; the rest keep their order. The sandbox belongs to the queue, so
@@ -390,14 +389,24 @@ def build_candidate(
     included: list[LandingRequest] = []
     conflicted: list[tuple[LandingRequest, str]] = []
     for request in batch:
-        base = git("merge-base", request.head, upstream).stdout.strip()
-        commits = git("rev-list", "--reverse", f"{base}..{request.head}").stdout.split()
-        if not commits:
-            conflicted.append((request, "has no commits beyond main"))
-            continue
-        replay = run_git(["cherry-pick", "--empty=drop", *commits])
+        before = git("rev-parse", "HEAD").stdout.strip()
+        # Preserve the source DAG and manual merge resolutions. A forced merge
+        # also keeps request.head ancestral when integrate amends the batch tip
+        # to resolve its change citations.
+        replay = run_git(["merge", "--no-ff", "--no-edit", request.head])
         if replay.returncode != 0:
-            run_git(["cherry-pick", "--abort"])
+            merging = run_git(["rev-parse", "--quiet", "--verify", "MERGE_HEAD"])
+            if merging.returncode == 0:
+                git("merge", "--abort")
+            elif merging.returncode != 1:
+                raise DriverError("cannot inspect failed merge in the landing sandbox")
+            if (
+                git("rev-parse", "HEAD").stdout.strip() != before
+                or git("status", "--porcelain").stdout.strip()
+            ):
+                raise DriverError(
+                    "failed merge did not restore the preceding candidate"
+                )
             conflicted.append(
                 (
                     request,
@@ -424,7 +433,9 @@ def retire_old_records(paths: QueuePaths, *, now: float) -> None:
     if paths.results.is_dir():
         for result in paths.results.glob("*.json"):
             if now - result.stat().st_mtime > RESULT_DAYS * 86400:
-                result.unlink()
+                record = json.loads(result.read_text(encoding="utf-8"))
+                if record.get("status") != LandingStatus.LANDED_RETIREMENT_FAILED:
+                    result.unlink()
 
 
 # --------------------------------------------------------------------------
@@ -452,16 +463,20 @@ def cmd_land(args: argparse.Namespace) -> int:
     drv._assert_integration_source(git, head)
     git.fetch(args.remote, args.branch)
     upstream = git.rev_parse(f"{args.remote}/{args.branch}")
-    if git.is_ancestor(head, upstream):
-        _ok(f"{git.short(head)} is already on {args.remote}/{args.branch}")
-        return EXIT_OK
     paths = queue_paths(repo)
     branch = git.symbolic_head()
-    if args.retire and not (branch or "").startswith("lane/"):
-        raise DriverError(
-            "--retire needs a lane/<slug> branch (`molt_dev.py lane start`)"
+    managed = (branch or "").startswith("lane/")
+    already_landed = git.is_ancestor(head, upstream)
+    if managed:
+        from tools.molt_dev_lanes import validate_lane_handoff
+
+        validate_lane_handoff(git, branch, repo, head)
+    elif already_landed:
+        _ok(
+            f"{git.short(head)} is already on {args.remote}/{args.branch}; checkout retained"
         )
-    if not args.no_precheck:
+        return EXIT_OK
+    if not already_landed and not args.no_precheck:
         from tools.molt_dev_precheck import precheck_landing
 
         precheck_landing(
@@ -471,11 +486,11 @@ def cmd_land(args: argparse.Namespace) -> int:
             upstream=upstream,
             session_id=os.environ.get("MOLT_SESSION_ID", "devtool"),
         )
-    request = enqueue(
-        paths, head=head, worktree=repo, branch=branch, retire=args.retire
-    )
+    request = enqueue(paths, head=head, worktree=repo, branch=branch)
     position = [item.id for item in pending(paths)].index(request.id) + 1
     _ok(f"queued {request.id} (position {position}); the runner lands it")
+    if managed:
+        _step("lane custody handed to the runner; stop editing until its result closes")
     main_checkout = drv._main_worktree(git)
     if main_checkout is None:
         raise DriverError(
@@ -643,12 +658,15 @@ def _land_one_batch(args: argparse.Namespace, git, paths) -> None:
         git.rev_parse(f"{args.remote}/{args.branch}"), label="queue upstream"
     )
     ready = pending(paths)
-    for request in ready:
-        if git.is_ancestor(request.head, upstream):
-            record_result(
-                paths, request, status=LandingStatus.LANDED, landed=upstream,
-                detail="already on main when the runner took it",
-            )  # fmt: skip
+    from tools.molt_dev_change_ids import landing_representation
+
+    already_landed = [
+        request
+        for request in ready
+        if landing_representation(git, request.head, upstream).landed
+    ]
+    if already_landed:
+        _after_landing(git.repo, already_landed, args, paths, upstream)
     ready = pending(paths)
     if not ready:
         return
@@ -677,6 +695,8 @@ def _land_one_batch(args: argparse.Namespace, git, paths) -> None:
             args.remote,
             "--branch",
             args.branch,
+            "--expected-upstream",
+            upstream,
             "--wait-for-lock",
             *(
                 ["--pinned-controller", args.pinned_controller]
@@ -701,13 +721,8 @@ def _land_one_batch(args: argparse.Namespace, git, paths) -> None:
         retire_batch_plan(paths, batch)
         return
     landed = drv.require_git_object_id(sandbox.head_sha(), label="landed batch")
-    for request in candidate.included:
-        record_result(
-            paths, request, status=LandingStatus.LANDED, landed=landed,
-            detail=f"landed with {len(candidate.included)} lane(s)",
-        )  # fmt: skip
+    _after_landing(sandbox.repo, candidate.included, args, paths, landed)
     retire_batch_plan(paths, batch)
-    _after_landing(sandbox.repo, candidate.included, args)
 
 
 def _provision_landing_sandbox(sandbox: Path) -> None:
@@ -737,10 +752,12 @@ def _provision_landing_sandbox(sandbox: Path) -> None:
         raise DriverError(f"landing sandbox provisioning failed: {exc}") from exc
 
 
-def _after_landing(sandbox: Path, landed, args: argparse.Namespace) -> None:
+def _after_landing(
+    sandbox: Path, requests, args: argparse.Namespace, paths, landed: str
+) -> None:
     """Refresh the shared hooks from the published main; retire landed lanes.
 
-    The landing is already published: a failure here warns and keeps going.
+    Publish terminal success only after the managed lane retirement finishes.
     """
     drv = _driver()
     from molt import checkout_provisioning as provisioning
@@ -753,26 +770,46 @@ def _after_landing(sandbox: Path, landed, args: argparse.Namespace) -> None:
             provisioning.ensure_input(hooks)
     except provisioning.ProvisioningError as exc:
         _warn(f"managed hooks not refreshed after the landing: {exc}")
-    for request in landed:
-        if not request.retire or not (request.branch or "").startswith("lane/"):
-            continue
-        retire = drv.build_parser().parse_args(
-            [
-                "lane",
-                "retire",
-                request.branch.removeprefix("lane/"),
-                "--repo",
-                str(sandbox),
-                "--remote",
-                args.remote,
-                "--branch",
-                args.branch,
-            ]
-        )
-        try:
-            retire.func(retire)
-        except DriverError as exc:
-            _warn(f"{request.id} landed; its lane was not retired: {exc}")
+    from tools import molt_dev_lanes
+
+    for request in requests:
+        status = LandingStatus.LANDED
+        detail = "published; unmanaged checkout retained"
+        if (request.branch or "").startswith("lane/"):
+            slug = request.branch.removeprefix("lane/")
+            retire = drv.build_parser().parse_args(
+                [
+                    "lane",
+                    "retire",
+                    slug,
+                    "--repo",
+                    str(sandbox),
+                    "--remote",
+                    args.remote,
+                    "--branch",
+                    args.branch,
+                ]
+            )
+            try:
+                rc = molt_dev_lanes.cmd_lane_retire(
+                    retire,
+                    expected_tip=request.head,
+                    expected_worktree=Path(request.worktree),
+                )
+                if rc != EXIT_OK:
+                    raise DriverError(
+                        f"lane retire exited {rc}; inspect its preserved evidence"
+                    )
+                detail = "published; managed lane retirement complete"
+            except (DriverError, OSError) as exc:
+                status = LandingStatus.LANDED_RETIREMENT_FAILED
+                detail = (
+                    f"source landed in {landed}; retirement failed: {exc}. "
+                    f"Integration owner: reconcile custody, then run `molt_dev.py lane "
+                    f"retire {slug}` from a surviving checkout; do not rerun landing gates."
+                )
+                _warn(detail)
+        record_result(paths, request, status=status, landed=landed, detail=detail)
 
 
 def cmd_queue_run(args: argparse.Namespace) -> int:
@@ -885,12 +922,7 @@ def add_queue_arguments(
     p_land.add_argument(
         "--wait",
         action="store_true",
-        help="wait for the result; exit 0 only when the commit landed",
-    )
-    p_land.add_argument(
-        "--retire",
-        action="store_true",
-        help="retire this lane (worktree, branches, record, state) once it lands",
+        help="wait for landing and managed lane retirement; stop editing the enrolled lane",
     )
     p_land.add_argument(
         "--candidate-controller",
