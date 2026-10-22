@@ -31,7 +31,7 @@ from molt.cli.cache_fingerprints import (
     _backend_source_identity_inputs,
     _backend_source_paths,
 )
-from molt.cli.cargo_build_reads import cargo_build_reads
+from molt.cli.cargo_build_reads import cargo_build_reads, uncovered_build_inputs
 from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
 from molt.cli.cargo_execution import (
     CargoPlanExecutionError,
@@ -1367,11 +1367,25 @@ def _ensure_backend_binary(
                 ),
                 environment=environment,
             )
+            uncovered = uncovered_build_inputs(
+                reads,
+                project_root,
+                _backend_source_paths(project_root, backend_features, product=product),
+                identity=product.value,
+            )
             build_admission.verify()
             source_generation.verify()
         except (OSError, ValueError) as exc:
             return _backend_ensure_failure(
                 "backend_source_identity", str(exc), command=cmd
+            )
+        if uncovered is not None:
+            # The generation is keyed by the source closure. A read outside it
+            # would let a later run adopt this build after that input changed.
+            return _backend_ensure_failure(
+                "backend_build_input_coverage",
+                f"Refusing to publish the {tool_label}: {uncovered}",
+                command=cmd,
             )
         try:
             rebuilt_source_identity, rebuilt_generation = (

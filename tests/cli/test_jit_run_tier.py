@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 from pathlib import Path
 
 import pytest
@@ -475,66 +476,14 @@ def test_runtime_images_are_retired_by_last_use(monkeypatch, tmp_path: Path) -> 
     # selected, and d is selected.
     assert not a.parent.exists()
     assert b.is_file() and c.is_file() and d.is_file()
-
-
-def test_a_cached_jit_launch_is_keyed_by_the_runner_identity(
-    monkeypatch, tmp_path: Path
-) -> None:
-    # A cache hit runs the cached image under its recorded runner. The key
-    # must change when the runner's own sources change, or a hit would run a
-    # stale runner; AOT keys must not depend on the runner.
-    from dataclasses import replace
-    from types import SimpleNamespace
-
-    from molt.cli import wrapper_build
-    from molt.cli.build_request_resolution import resolve_build_arguments
-    from molt.host_tool_products import HostToolProduct
-    from molt.target_python import _parse_target_python_version
-
-    source = tmp_path / "main.py"
-    source.write_text("pass\n", encoding="utf-8")
-    entry = SimpleNamespace(
-        source_path=source,
-        entry_module="main",
-        target_python=_parse_target_python_version("3.12"),
-        external_module_roots=(),
-    )
-    monkeypatch.setattr(
-        wrapper_build,
-        "_wrapper_build_dependency_fingerprints",
-        lambda **kw: ([], {"image": {}}),
-    )
-    monkeypatch.setattr(wrapper_build, "_cache_tooling_fingerprint", lambda: "tooling")
-    runner = {"identity": "runner-a"}
-    monkeypatch.setattr(
-        wrapper_build,
-        "_cache_fingerprint",
-        lambda **kw: (
-            runner["identity"]
-            if kw.get("product") is HostToolProduct.JIT
-            else "backend"
-        ),
-    )
-    aot_request = resolve_build_arguments(
-        [], file_path=str(source), module=None, project_root=tmp_path, env={}
-    )
-
-    def key(request) -> str:
-        cache_input = wrapper_build._wrapper_build_cache_input(
-            resolved_build_entry=entry,
-            request=request,
-            build_args=[],
-            env={},
-            project_root=tmp_path,
-        )
-        assert cache_input is not None
-        return cache_input[1]
-
-    jit_request = replace(aot_request, emit="jit")
-    jit_before, aot_before = key(jit_request), key(aot_request)
-    runner["identity"] = "runner-b"
-    assert key(jit_request) != jit_before
-    assert key(aot_request) == aot_before
+    # A cached launch that still names a is a miss: its use checks the entry
+    # under the store lock, where eviction runs (HF-371 review v3, finding 6).
+    with pytest.raises(generation_store.GenerationEvicted, match=a.parent.name):
+        jit_runtime_image.record_jit_runtime_image_use(a)
+    # Selection survives a selected entry removed by hand.
+    shutil.rmtree(d.parent)
+    e = ensure(b"e")
+    assert e.is_file() and b.is_file()
 
 
 def test_the_differential_jit_adapter_uses_the_one_admission(monkeypatch) -> None:

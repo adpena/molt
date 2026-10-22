@@ -324,29 +324,28 @@ def _wrapper_build_cache_input(
         "build_args": list(build_args),
         "semantic_env": _wrapper_build_cache_semantic_env(env),
         "capability_config_digest": capability_config_digest,
-        "runtime_backend_fingerprint": _cache_fingerprint(
-            env=env,
-            backend_features=backend_features_for_target(
-                is_wasm=is_wasm_target(target),
-                is_luau_transpile=target is TargetKind.LUAU,
-                is_rust_transpile=target is TargetKind.RUST,
-                codegen_backend=request.codegen_backend,
-            ),
-            rust_cpu=rust_cpu,
-        ),
-        # A JIT launch runs the molt-jit runner, a second compiler product.
-        **(
-            {
-                "jit_runner_fingerprint": _cache_fingerprint(
-                    env=env,
-                    backend_features=HostToolProduct.JIT.required_features,
-                    include_runtime_sources=False,
-                    rust_cpu=rust_cpu,
-                    product=HostToolProduct.JIT,
-                )
-            }
+        # The compiler product this tier runs, with the runtime it links. A JIT
+        # launch runs the molt-jit runner and never the backend compiler, so
+        # its key hashes the runner's closure in place of the backend's: one
+        # fingerprint per tier, not two (HF-371 review v3, finding 9).
+        "runtime_backend_fingerprint": (
+            _cache_fingerprint(
+                env=env,
+                backend_features=HostToolProduct.JIT.required_features,
+                rust_cpu=rust_cpu,
+                product=HostToolProduct.JIT,
+            )
             if request.emit == RunTier.JIT.build_emit
-            else {}
+            else _cache_fingerprint(
+                env=env,
+                backend_features=backend_features_for_target(
+                    is_wasm=is_wasm_target(target),
+                    is_luau_transpile=target is TargetKind.LUAU,
+                    is_rust_transpile=target is TargetKind.RUST,
+                    codegen_backend=request.codegen_backend,
+                ),
+                rust_cpu=rust_cpu,
+            )
         ),
         "frontend_tooling_fingerprint": _cache_tooling_fingerprint(),
         "python_cache_tag": sys.implementation.cache_tag,
@@ -400,19 +399,21 @@ def _read_wrapper_build_cache_contract(
             if isinstance(key, str) and isinstance(value, str):
                 artifacts[key] = Path(value)
     if tier is RunTier.JIT:
-        if not all(
-            name in artifacts and artifacts[name].is_file()
-            for name in _JIT_LAUNCH_ARTIFACTS
-        ):
+        if not all(name in artifacts for name in _JIT_LAUNCH_ARTIFACTS):
             return None
         from molt.cli.jit_runner_tool import record_jit_runner_use
         from molt.cli.jit_runtime_image import record_jit_runtime_image_use
 
         try:
             # A hit binds both generations, as the build that wrote it did.
+            # Each use checks its entry under the store lock and renews it, so
+            # eviction cannot remove it during the run; an evicted entry is a
+            # miss (GenerationEvicted).
             record_jit_runner_use(artifacts["runner"])
             record_jit_runtime_image_use(artifacts["runtime_image"])
         except (OSError, ValueError):
+            return None
+        if not all(artifacts[name].is_file() for name in _JIT_LAUNCH_ARTIFACTS):
             return None
     bundle_root = manifest.get("bundle_root")
     return _WrapperBuildContract(

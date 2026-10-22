@@ -1446,3 +1446,83 @@ def test_backend_admission_verifies_the_observation_it_carries_after_receipt_rac
     assert not result and result.phase == "rebuild-policy"
     assert reads >= 3
     assert generation.read_bytes() == b"#!/bin/sh\n# v1\n"
+
+
+@pytest.mark.parametrize("product", [HostToolProduct.BACKEND, HostToolProduct.JIT])
+@pytest.mark.parametrize("read", ["declared", "undeclared"])
+def test_a_build_that_reads_outside_its_source_closure_is_never_published(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    product: HostToolProduct,
+    read: str,
+) -> None:
+    # The generation is keyed by the product's source closure. A file the
+    # build read outside it (here an include_str! of README.md) would let a
+    # later run adopt this build after that file changed (HF-371 review v3).
+    # Declared inputs (package.metadata.molt.build-inputs) are covered.
+    write_compiler_source(tmp_path, product=product)
+    stub_compiler_admission(monkeypatch)
+    suffix = ".exe" if os.name == "nt" else ""
+    cargo_output = tmp_path / "target" / "dev-fast" / f"{product.value}{suffix}"
+    coordinate = cargo_output.with_name(f"{product.value}.variant{suffix}")
+    cargo_output.parent.mkdir(parents=True)
+    readme = tmp_path / "README.md"
+    readme.write_text("not a build input\n", encoding="utf-8")
+    declared = tmp_path / "src" / "molt" / "declared_input.txt"
+    declared.parent.mkdir(parents=True, exist_ok=True)
+    declared.write_text("1\n", encoding="utf-8")
+    manifest = tmp_path / "runtime" / product.value / "Cargo.toml"
+    manifest.write_text(
+        f'[package]\nname = "{product.value}"\nversion = "0.1.0"\n'
+        "[package.metadata.molt]\n"
+        'build-inputs = ["../../src/molt/declared_input.txt"]\n',
+        encoding="utf-8",
+    )
+    extra = declared if read == "declared" else readme
+    probes: list[tuple[str, ...]] = []
+
+    def fake_cargo(cmd, **_kwargs):
+        cargo_output.write_bytes(b"built")
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            compiler_cargo_stdout(
+                tmp_path,
+                cargo_output,
+                cmd.environment,
+                product=product,
+                extra_reads=(extra,),
+            ),
+            "",
+        )
+
+    def probe(cmd, **_kwargs):
+        probes.append(tuple(cmd))
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+    monkeypatch.setattr(
+        cli_backend_binary, "_backend_fingerprint", lambda *_a, **_k: _fingerprint()
+    )
+    monkeypatch.setattr(cli_backend_binary, "_run_resolved_cargo_plan", fake_cargo)
+    monkeypatch.setattr(
+        cli_backend_binary,
+        "_hydrate_canonical_backend_generation",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        cli_backend_binary, "_run_subprocess_captured_to_tempfiles", probe
+    )
+
+    result = _ensure(coordinate, tmp_path, product.required_features, product=product)
+
+    generation = _generation(coordinate, b"built")
+    if read == "declared":
+        assert result, result.message
+        assert generation.read_bytes() == b"built"
+        return
+    assert not result
+    assert result.phase == "backend_build_input_coverage"
+    assert "README.md" in result.message
+    assert "build-inputs" in result.message
+    assert not probes
+    assert not generation.exists()

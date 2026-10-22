@@ -311,6 +311,8 @@ def _write_backend_identity_fixture(
         root,
         "molt-backend",
         '[package]\nname = "molt-backend"\nversion = "0.1.0"\n'
+        "[package.metadata.molt]\n"
+        'build-inputs = ["../../src/molt/backend_daemon_protocol_version.txt"]\n'
         "[dependencies]\n"
         'molt-ir = { path = "../molt-ir" }\n'
         'molt-tir = { path = "../molt-tir" }\n'
@@ -376,6 +378,8 @@ def _write_backend_identity_fixture(
         root,
         "molt-ir",
         '[package]\nname = "molt-ir"\nversion = "0.1.0"\n'
+        "[package.metadata.molt]\n"
+        'build-inputs = ["../../src/molt/backend_environment.json"]\n'
         "[features]\ndefault = []\nwasm-backend = []\n",
     )
     _write_crate(
@@ -456,17 +460,7 @@ def test_jit_runner_fingerprint_tracks_the_runner_crate_and_its_codegen(
     stub_compiler_admission(monkeypatch)
     root = tmp_path / "repo"
     sources = _write_backend_identity_fixture(root)
-    runner = root / "runtime" / "molt-jit" / "src" / "main.rs"
-    runner.parent.mkdir(parents=True)
-    runner.write_text("fn main() {}\n", encoding="utf-8")
-    (root / "runtime" / "molt-jit" / "Cargo.toml").write_text(
-        '[package]\nname = "molt-jit"\nversion = "0.1.0"\n'
-        "[dependencies]\n"
-        'molt-backend-native = { path = "../molt-backend-native" }\n',
-        encoding="utf-8",
-    )
-    with (root / "Cargo.lock").open("a", encoding="utf-8") as lock:
-        lock.write('[[package]]\nname = "molt-jit"\nversion = "0.1.0"\n')
+    runner = _write_runner_crate(root)
     monkeypatch.setenv("MOLT_SOURCE_ROOT", str(root))
 
     def fingerprints() -> tuple[str, str]:
@@ -496,16 +490,50 @@ def test_jit_runner_fingerprint_tracks_the_runner_crate_and_its_codegen(
     assert jit_after_codegen != jit_after_runner
 
 
-@pytest.mark.parametrize("feature", ["native-backend", "wasm-backend"])
-@pytest.mark.parametrize("authority", ["catalog", "protocol"])
-def test_backend_fingerprints_track_embedded_authorities(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, feature: str, authority: str
-) -> None:
-    stub_compiler_admission(monkeypatch)
-    from molt.cli import backend_binary
+def _write_runner_crate(root: Path) -> Path:
+    """molt-jit as the repository builds it: on the native backend, so on molt-ir."""
+    runner = root / "runtime" / "molt-jit" / "src" / "main.rs"
+    runner.parent.mkdir(parents=True)
+    runner.write_text("fn main() {}\n", encoding="utf-8")
+    (root / "runtime" / "molt-jit" / "Cargo.toml").write_text(
+        '[package]\nname = "molt-jit"\nversion = "0.1.0"\n'
+        "[dependencies]\n"
+        'molt-backend-native = { path = "../molt-backend-native" }\n',
+        encoding="utf-8",
+    )
+    with (root / "Cargo.lock").open("a", encoding="utf-8") as lock:
+        lock.write('[[package]]\nname = "molt-jit"\nversion = "0.1.0"\n')
+    return runner
 
+
+@pytest.mark.parametrize(
+    "product,feature",
+    [
+        ("backend", "native-backend"),
+        ("backend", "wasm-backend"),
+        ("jit", None),
+    ],
+)
+@pytest.mark.parametrize("authority", ["catalog", "protocol"])
+def test_compiler_fingerprints_track_the_build_inputs_their_crates_declare(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    product: str,
+    feature: str | None,
+    authority: str,
+) -> None:
+    # molt-ir's build embeds the catalog, so every product built on molt-ir
+    # keys it, the runner included (HF-371 review v3). Only molt-backend embeds
+    # the daemon protocol, and the runner does not link molt-backend.
+    from molt.cli import backend_binary
+    from molt.host_tool_products import HostToolProduct
+
+    stub_compiler_admission(monkeypatch)
+    tool = HostToolProduct(f"molt-{product}")
+    features = (feature,) if feature else tool.required_features
     root = tmp_path / "repo"
     sources = _write_backend_identity_fixture(root)
+    _write_runner_crate(root)
     monkeypatch.setattr(
         backend_binary, "_compiler_clean_source_state", lambda *args: None
     )
@@ -514,24 +542,143 @@ def test_backend_fingerprints_track_embedded_authorities(
         return backend_binary._backend_fingerprint(
             root,
             cargo_profile="dev-fast",
-            build_admission=compiler_build_admission(environment={"RUSTFLAGS": ""}),
-            backend_features=(feature,),
+            build_admission=compiler_build_admission(
+                environment={"RUSTFLAGS": ""}, product=tool
+            ),
+            backend_features=features,
             stored_fingerprint=stored,
+            product=tool,
         )
 
-    source_before = _backend_source_fingerprint(root, (feature,))
-    binary_before = binary_fingerprint()
-    assert binary_before is not None
+    before = binary_fingerprint()
     sources[authority].write_text(
         '{"schema": 1, "diagnostic": ["MOLT_DUMP_IR"]}\n'
         if authority == "catalog"
         else "3\n",
         encoding="utf-8",
     )
-    assert _backend_source_fingerprint(root, (feature,)) != source_before
-    binary_after = binary_fingerprint(binary_before)
-    assert binary_after is not None
-    assert binary_after["hash"] != binary_before["hash"]
+    after = binary_fingerprint(before)
+    reads_it = authority == "catalog" or tool is HostToolProduct.BACKEND
+    assert (after["hash"] != before["hash"]) == reads_it
+
+
+def test_a_cached_launch_misses_when_an_input_of_its_tier_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A cache hit runs the cached program under the compiler product its tier
+    # runs. Each edit below changes one real input file; the launch key of
+    # every tier that reads it must change, so the next run misses and
+    # rebuilds. A JIT launch never runs molt-backend, so a backend-only edit
+    # keeps its key (and costs it no fingerprint).
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from molt.cli import runtime_source_closure, wrapper_build
+    from molt.cli.build_request_resolution import resolve_build_arguments
+    from molt.target_python import _parse_target_python_version
+
+    stub_compiler_admission(monkeypatch)
+    root = tmp_path / "repo"
+    sources = _write_backend_identity_fixture(root)
+    runner = _write_runner_crate(root)
+    runtime = root / "runtime" / "runtime_fixture.rs"
+    runtime.write_text("pub const RUNTIME: u8 = 1;\n", encoding="utf-8")
+    monkeypatch.setenv("MOLT_SOURCE_ROOT", str(root))
+    monkeypatch.setattr(
+        runtime_source_closure, "runtime_source_paths", lambda *_a, **_k: (runtime,)
+    )
+    monkeypatch.setattr(
+        wrapper_build,
+        "_wrapper_build_dependency_fingerprints",
+        lambda **_kw: ([], {"image": {}}),
+    )
+    monkeypatch.setattr(wrapper_build, "_cache_tooling_fingerprint", lambda: "tooling")
+    app = tmp_path / "app"
+    app.mkdir()
+    program = app / "main.py"
+    program.write_text("pass\n", encoding="utf-8")
+    entry = SimpleNamespace(
+        source_path=program,
+        entry_module="main",
+        target_python=_parse_target_python_version("3.12"),
+        external_module_roots=(),
+    )
+    aot = resolve_build_arguments(
+        [], file_path=str(program), module=None, project_root=app, env={}
+    )
+    jit = replace(aot, emit="jit")
+
+    def keys() -> dict[str, str]:
+        result = {}
+        for name, request in (("aot", aot), ("jit", jit)):
+            cache_input = wrapper_build._wrapper_build_cache_input(
+                resolved_build_entry=entry,
+                request=request,
+                build_args=[],
+                env={},
+                project_root=app,
+            )
+            assert cache_input is not None
+            result[name] = cache_input[1]
+        return result
+
+    edits = (
+        (
+            sources["catalog"],
+            '{"schema": 1, "diagnostic": ["MOLT_DUMP_IR"]}\n',
+            {"aot", "jit"},
+        ),
+        (runner, 'fn main() { println!("changed"); }\n', {"jit"}),
+        (sources["backend"], "pub const BACKEND_EDIT: u8 = 2;\n", {"aot"}),
+        (runtime, "pub const RUNTIME: u16 = 300;\n", {"aot", "jit"}),
+    )
+    before = keys()
+    for path, text, readers in edits:
+        path.write_text(text, encoding="utf-8")
+        after = keys()
+        assert {name for name in after if after[name] != before[name]} == readers, path
+        before = after
+
+
+def test_the_real_closures_key_what_their_crates_read_outside_themselves() -> None:
+    # The repository's own declarations, checked on its own crate graph: the
+    # runner keys molt-ir's catalog (the v3 review found it missing), the
+    # backend keys both authorities, and the runtime keys what its build
+    # scripts, include_str! and #[path] modules read.
+    from molt.cli.runtime_source_closure import runtime_source_paths
+    from molt.host_tool_products import HostToolProduct
+
+    root = Path(__file__).resolve().parents[2]
+
+    def relative(paths) -> set[str]:
+        return {Path(path).resolve().relative_to(root).as_posix() for path in paths}
+
+    runner = relative(
+        CACHE_FINGERPRINTS._backend_source_paths(
+            root,
+            HostToolProduct.JIT.required_features,
+            product=HostToolProduct.JIT,
+        )
+    )
+    backend = relative(
+        CACHE_FINGERPRINTS._backend_source_paths(root, ("native-backend",))
+    )
+    runtime = relative(runtime_source_paths(root))
+    assert {"runtime/molt-ir", "src/molt/backend_environment.json"} <= runner
+    assert "src/molt/backend_daemon_protocol_version.txt" not in runner
+    assert {
+        "src/molt/backend_environment.json",
+        "src/molt/backend_daemon_protocol_version.txt",
+    } <= backend
+    assert {
+        "LICENSE",
+        "include/molt",
+        "include/molt/shared",
+        "runtime/build_support",
+        "runtime/wasm_table_layout.inc",
+        "runtime/molt-runtime-path/src/pathlib.rs",
+        "src/molt/wasi_c_abi_protocol.txt",
+    } <= runtime
 
 
 def test_source_graphs_follow_preserved_stat_transitive_manifest_replacements(

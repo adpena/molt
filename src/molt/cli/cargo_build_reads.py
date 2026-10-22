@@ -510,6 +510,31 @@ def paths_outside(
     )
 
 
+def uncovered_build_inputs(
+    reads: CargoBuildReads,
+    workspace_root: Path,
+    roots: Iterable[Path],
+    *,
+    identity: str,
+) -> str | None:
+    """Why an identity over ``roots`` cannot vouch for this build, or None.
+
+    A file or watched directory the build read outside the identity's roots
+    would let a later build adopt this generation after that input changed, so
+    publication refuses it, as Bazel refuses an undeclared inclusion. Every
+    Cargo product that keys its generation by a source closure checks here.
+    """
+    uncovered = paths_outside((*reads.files, *reads.directories), workspace_root, roots)
+    if not uncovered:
+        return None
+    return (
+        f"the {identity} identity does not cover build inputs: "
+        + ", ".join(uncovered[:8])
+        + (f" and {len(uncovered) - 8} more" if len(uncovered) > 8 else "")
+        + " (declare them in the reading crate's package.metadata.molt.build-inputs)"
+    )
+
+
 def _messages(cargo_stdout: str) -> Iterator[Mapping[str, object]]:
     """Read a complete successful Cargo build, preserving arbitrary tool text.
 
