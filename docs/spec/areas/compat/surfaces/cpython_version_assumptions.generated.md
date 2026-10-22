@@ -31,7 +31,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `src/molt/cli/wasm_final_link_cache.py` | 1 | operational-tooling | `sys.version_info` |
 | `src/molt/compiler_analysis/python_binding_flow.py` | 4 | authority-routed | `3.14` |
 | `src/molt/compiler_analysis/python_call_arguments.py` | 1 | scattered-assumption | `3.12` |
-| `src/molt/compiler_analysis/python_imports.py` | 2 | authority-routed | `3.15` |
+| `src/molt/compiler_analysis/python_imports.py` | 1 | authority-routed | `3.15` |
 | `src/molt/compiler_analysis/python_lexical_scope.py` | 2 | authority-routed | `3.12` |
 | `src/molt/compiler_analysis/python_syntax.py` | 1 | authority-routed | `3.15` |
 | `src/molt/debug/contracts.py` | 2 | operational-tooling | `sys.version_info` |

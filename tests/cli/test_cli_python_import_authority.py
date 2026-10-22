@@ -2917,3 +2917,155 @@ def test_eager_dependency_comprehension_keeps_target_effects(tmp_path, comprehen
         LocalPythonModuleResolver((tmp_path,)),
         PythonImportPolicy(True, False, True, purpose="source_dependency"),
     ) == {"package.target"}
+
+
+@pytest.mark.parametrize("version", [(3, 12), (3, 13), (3, 14), (3, 15)])
+def test_eager_relative_protocol_preserves_package_and_runtime_obligations(version):
+    # CPython v3.15.0 d220409 Python/import.c:resolve_name, unchanged from
+    # admitted targets: metadata candidates never erase callbacks or warnings.
+    known = StaticMetadataValue.known
+    for package, parent, module, error, runtime in (
+        (known("pkg"), known("other"), "pkg.child", None, True),
+        (NONE_VALUE, known("pkg"), "pkg.child", None, False),
+        (INVALID_VALUE, known("pkg"), None, "invalid_package", False),
+        (NONE_VALUE, INVALID_VALUE, None, "invalid_spec", False),
+        (known("pkg"), python_imports.UNKNOWN_VALUE, "pkg.child", None, True),
+        (NONE_VALUE, NONE_VALUE, "fallback.child", None, True),
+    ):
+        context = ModuleImportContext(
+            "fallback.entry",
+            False,
+            target_python=version,
+            state=ModuleImportState(package, parent, known("fallback.entry"), False),
+        )
+        result = resolve_relative_import("child", 1, context)
+        assert (result.module, result.error, result.requires_runtime) == (
+            module,
+            error,
+            runtime,
+        )
+        if module is not None:
+            assert python_imports.effective_relative_package(context) == known(
+                module.rpartition(".")[0]
+            )
+
+
+def test_cpython_eager_relative_protocol_callbacks_warnings_and_errors(monkeypatch):
+    import sys
+    import types
+    import warnings
+
+    for prefix in ("_molt_pkg", "_molt_other", "_molt_fallback"):
+        module = types.ModuleType(prefix + ".child")
+        module.marker = prefix
+        monkeypatch.setitem(sys.modules, module.__name__, module)
+    marker = ValueError("parent callback")
+    events = []
+
+    class Spec:
+        def __init__(self, value):
+            self.value = value
+
+        @property
+        def parent(self):
+            events.append("parent")
+            if self.value is marker:
+                raise marker
+            return self.value
+
+    # Independent real __import__ oracle, harvested from the pinned 3.15
+    # reference; no Molt resolver or policy supplies the expected observations.
+    for package, spec, expected, error, categories, callbacks in (
+        (
+            "_molt_pkg",
+            Spec("_molt_other"),
+            "_molt_pkg",
+            None,
+            [DeprecationWarning],
+            ["parent"],
+        ),
+        (None, Spec("_molt_pkg"), "_molt_pkg", None, [], ["parent"]),
+        (42, Spec("_molt_pkg"), None, TypeError, [], []),
+        (None, Spec(42), None, TypeError, [], ["parent"]),
+        ("_molt_pkg", Spec(marker), None, ValueError, [], ["parent"]),
+        (None, None, "_molt_fallback", None, [ImportWarning], []),
+    ):
+        events.clear()
+        namespace = {
+            "__package__": package,
+            "__spec__": spec,
+            "__name__": "_molt_fallback.entry",
+        }
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            if error is None:
+                result = __import__("child", namespace, None, ("marker",), 1)
+                assert result.marker == expected
+            else:
+                with pytest.raises(error) as observed:
+                    __import__("child", namespace, None, ("marker",), 1)
+                assert type(observed.value) is error
+                if error is ValueError:
+                    assert observed.value is marker
+        assert [warning.category for warning in caught] == categories
+        assert events == callbacks
+
+
+@pytest.mark.parametrize("source", ["import pkg", "from pkg import item"])
+def test_import_fact_and_direct_visitor_gateways_preserve_syntax_admission(source):
+    from molt.target_python import (
+        SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS,
+        TargetPythonVersion,
+    )
+
+    for version in ((3, 12), (3, 14), (3, 15), (4, 0)):
+        for flag in (1, True, "lazy", -1):
+            for dead in (False, True):
+                tree = ast.parse("if False:\n    " + source if dead else source)
+                statement = tree.body[0].body[0] if dead else tree.body[0]
+                statement.is_lazy = flag
+                # Model the 3.15 declared AST field on older parser hosts too.
+                if "is_lazy" not in statement._fields:
+                    statement._fields = (*statement._fields, "is_lazy")
+                message = (
+                    "invalid import is_lazy metadata"
+                    if type(flag) not in (bool, int) or flag not in (0, 1)
+                    else "lazy imports"
+                )
+                with pytest.raises(SyntaxError, match=message):
+                    analyze_module_import_flow(
+                        tree, ModuleImportContext("entry", False, target_python=version)
+                    )
+                with pytest.raises(SyntaxError, match=message):
+                    _source_import_scan._collect_imports(
+                        tree, "entry", target_python=TargetPythonVersion(*version, 0)
+                    )
+                if (
+                    f"{version[0]}.{version[1]}"
+                    not in SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
+                ):
+                    with pytest.raises(
+                        ValueError, match="outside the supported target set"
+                    ):
+                        SimpleTIRGenerator(target_python=version)
+                    continue
+                generator = SimpleTIRGenerator(
+                    source_path="entry.py",
+                    module_name="entry",
+                    known_modules={"pkg"},
+                    target_python=version,
+                )
+                before_ops = tuple(generator.current_ops)
+                with pytest.raises(SyntaxError, match=message):
+                    if isinstance(statement, ast.Import):
+                        generator.visit_Import(statement)
+                    else:
+                        generator.visit_ImportFrom(statement)
+                assert tuple(generator.current_ops) == before_ops
+    for flag in (None, 0, False):
+        tree = ast.parse(source)
+        statement = tree.body[0]
+        statement.is_lazy = flag
+        if "is_lazy" not in statement._fields:
+            statement._fields = (*statement._fields, "is_lazy")
+        assert "pkg" in _source_import_scan._collect_imports(tree, "entry")
