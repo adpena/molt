@@ -753,23 +753,63 @@ def test_a_store_miss_hashes_this_checkouts_sources_once(
     assert memos[1]["inputs_digest"] == fingerprint["inputs_digest"]
 
 
-@pytest.mark.parametrize("cargo_timeout", [None, 7.0])
-def test_a_waiter_waits_as_long_as_the_compiler_build_it_waits_for(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cargo_timeout: float | None
+@pytest.mark.parametrize("held", ["checkout", "identity"])
+def test_a_waiter_outwaits_its_own_cargo_timeout_while_the_holder_builds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    held: str,
 ) -> None:
-    """The identity lock is bounded by the build's own Cargo timeout, if any."""
+    """Both backend locks wait while their holder builds, probes and publishes.
+
+    The holder keeps the lock six times this build's Cargo timeout. A waiter
+    bounded by that timeout would fail at backend_build_lock; this one waits,
+    names the holder once and reaches its own Cargo run.
+    """
+    import contextlib
+    import threading
+
     write_compiler_source(tmp_path)
     stub_compiler_admission(monkeypatch)
     monkeypatch.delenv("MOLT_BUILD_LOCK_TIMEOUT", raising=False)
     backend_bin = tmp_path / "target" / "release-fast" / "molt-backend.native_backend"
-    original = ProductStore.single_flight
-    waits: list[float | None] = []
+    holding, release = threading.Event(), threading.Event()
+    threads: list[threading.Thread] = []
 
-    def single_flight(self, identity, *, default_timeout_s):
-        waits.append(default_timeout_s)
-        return original(self, identity, default_timeout_s=default_timeout_s)
+    def contend(acquire):
+        def holder() -> None:
+            with acquire():
+                holding.set()
+                release.wait(timeout=30)
 
-    monkeypatch.setattr(ProductStore, "single_flight", single_flight)
+        thread = threading.Thread(target=holder)
+        thread.start()
+        threads.append(thread)
+        assert holding.wait(timeout=10)
+        threading.Timer(0.6, release.set).start()
+
+    if held == "checkout":
+        original_lock = cli_backend_binary._build_lock
+
+        @contextlib.contextmanager
+        def checkout_lock(*args, **kwargs):
+            if not threads:
+                contend(lambda: original_lock(*args, **kwargs))
+            with original_lock(*args, **kwargs):
+                yield
+
+        monkeypatch.setattr(cli_backend_binary, "_build_lock", checkout_lock)
+    else:
+        original_flight = ProductStore.single_flight
+
+        @contextlib.contextmanager
+        def single_flight(self, identity):
+            if not threads:
+                contend(lambda: original_flight(self, identity))
+            with original_flight(self, identity):
+                yield
+
+        monkeypatch.setattr(ProductStore, "single_flight", single_flight)
     monkeypatch.setattr(
         cli_backend_binary, "_backend_fingerprint", lambda *_a, **_k: _fingerprint()
     )
@@ -778,17 +818,25 @@ def test_a_waiter_waits_as_long_as_the_compiler_build_it_waits_for(
         "_run_resolved_cargo_plan",
         lambda cmd, **_kwargs: subprocess.CompletedProcess(cmd, 101, "", "refused"),
     )
-    result = cli_backend_binary._ensure_backend_binary(
-        backend_bin,
-        cargo_timeout=cargo_timeout,
-        json_output=True,
-        cargo_profile="release-fast",
-        project_root=tmp_path,
-        backend_features=("native-backend",),
-        rust_cpu=RustCpuPolicy.BASELINE,
-    )
-    assert not result and result.phase == "backend_cargo_build"
-    assert waits == [cargo_timeout]
+    try:
+        result = cli_backend_binary._ensure_backend_binary(
+            backend_bin,
+            cargo_timeout=0.1,
+            json_output=True,
+            cargo_profile="release-fast",
+            project_root=tmp_path,
+            backend_features=("native-backend",),
+            rust_cpu=RustCpuPolicy.BASELINE,
+        )
+    finally:
+        release.set()
+        for thread in threads:
+            thread.join(timeout=30)
+    assert not result and result.phase == "backend_cargo_build", result
+    notices = [
+        line for line in capsys.readouterr().err.splitlines() if "Blocking" in line
+    ]
+    assert len(notices) == 1 and f"pid {os.getpid()}," in notices[0]
 
 
 def test_ensure_backend_binary_returns_cargo_failure_detail(

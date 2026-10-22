@@ -57,7 +57,11 @@ def test_wasm_benchmark_preserves_one_admitted_build_attempt(
         return bench_wasm._RunResult(
             returncode=1 if outcome in {"timeout", "lock", "compile"} else 0,
             timed_out=outcome == "timeout",
-            stderr="Timed out waiting for build lock" if outcome == "lock" else "",
+            stderr=(
+                "Timed out after 1.0s waiting for the build lock (MOLT_BUILD_LOCK_TIMEOUT)"
+                if outcome == "lock"
+                else ""
+            ),
         )
 
     monkeypatch.setattr(bench_wasm, "_run_cmd", run)

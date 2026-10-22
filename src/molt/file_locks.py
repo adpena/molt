@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Mapping
 import contextlib
 from dataclasses import dataclass, field
 from functools import lru_cache
 import errno
+import json
 import _thread
 import os
 import sys
@@ -662,24 +663,196 @@ def _parse_lock_timeout(raw: str, *, default_s: float | None) -> float | None:
     return parsed if parsed > 0 else None
 
 
+LOCK_WAIT_ENV = "MOLT_BUILD_LOCK_TIMEOUT"
+
+
+def lock_wait_s(environ: Mapping[str, str] | None = None) -> float | None:
+    """How long a waiter waits for a build or cache lock another process holds.
+
+    It waits while the holder holds the lock (None), as Cargo waits on its
+    build-directory and package-cache locks and Bazel on its output base
+    (``--block_for_lock``). The holder bounds its own work (its Cargo and
+    probe timeouts), and an OS lock dies with its holder, so a waiter's own
+    timer could only fail it while the build it waits for may still finish.
+    ``MOLT_BUILD_LOCK_TIMEOUT`` bounds the wait for an operator who prefers
+    to fail.
+    """
+    view = os.environ if environ is None else environ
+    return _parse_lock_timeout(view.get(LOCK_WAIT_ENV, ""), default_s=None)
+
+
+@dataclass(frozen=True, slots=True)
+class LockHolder:
+    """The process a lock's holder record names."""
+
+    pid: int
+    started_at_ns: int | None
+
+    def describe(self) -> str:
+        if self.started_at_ns is None:
+            return f"pid {self.pid}"
+        started = time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.started_at_ns / 1_000_000_000)
+        )
+        return f"pid {self.pid}, started {started}"
+
+
+_HOLDER_SCHEMA = "molt.lock-holder.v1"
+_HOLDER_MAX_BYTES = 512
+# pid -> the kernel's start marker of that process, read once per process.
+_OWN_START: dict[int, int | None] = {}
+
+
+def lock_holder_path(lock_path: Path) -> Path:
+    """Where the holder of ``lock_path`` records itself for waiters to read.
+
+    The record sits beside the lock, never in it: lock ownership is the OS
+    region and the in-process mutex, and lock files stay empty metadata. Like
+    the lock, it persists; it is empty while no one holds the lock.
+    """
+    return lock_path.with_name(f"{lock_path.name}.holder")
+
+
+def _own_start_marker() -> int | None:
+    pid = os.getpid()
+    if pid not in _OWN_START:
+        from molt.process_model import process_started_at_ns
+
+        _OWN_START[pid] = process_started_at_ns(pid)
+    return _OWN_START[pid]
+
+
+def _record_lock_holder(lock_path: Path) -> int | None:
+    """Name this process beside a lock it holds, for people to read.
+
+    The record is process-lifetime state, as Bazel's ``pid=`` line in its
+    output-base lock is: no barrier, and a torn or stale record only makes a
+    waiter's notice say less. Its descriptor stays open for the hold, so
+    clearing it at release is one ``ftruncate``: 25-35 us per acquisition
+    on the integrator Mac, against about 400 us to create and unlink a file
+    on its external volume. Writing it never fails the lock.
+    """
+    payload = {
+        "schema": _HOLDER_SCHEMA,
+        "pid": os.getpid(),
+        "started_at_ns": _own_start_marker(),
+    }
+    data = json.dumps(payload, sort_keys=True).encode("utf-8")
+    try:
+        descriptor = os.open(
+            lock_holder_path(lock_path), os.O_WRONLY | os.O_CREAT, 0o666
+        )
+    except OSError:
+        return None
+    try:
+        os.write(descriptor, data)
+        os.ftruncate(descriptor, len(data))
+    except OSError:
+        _clear_lock_holder(descriptor)
+        return None
+    return descriptor
+
+
+def _clear_lock_holder(descriptor: int | None) -> None:
+    """Leave the record empty, which names no holder, and close it."""
+    if descriptor is None:
+        return
+    try:
+        with contextlib.suppress(OSError):
+            os.ftruncate(descriptor, 0)
+    finally:
+        os.close(descriptor)
+
+
+def read_lock_holder(lock_path: Path) -> LockHolder | None:
+    """The live holder ``lock_path``'s record names, or None when unknown.
+
+    A record whose process has exited, or another process now has its pid,
+    names no holder: its writer died before it could clear it.
+    """
+    try:
+        with open(lock_holder_path(lock_path), "rb") as record:
+            raw = record.read(_HOLDER_MAX_BYTES + 1)
+        payload = json.loads(raw) if len(raw) <= _HOLDER_MAX_BYTES else None
+    except (OSError, ValueError):
+        return None
+    if not isinstance(payload, dict) or payload.get("schema") != _HOLDER_SCHEMA:
+        return None
+    pid, started = payload.get("pid"), payload.get("started_at_ns")
+    if type(pid) is not int or pid <= 0:
+        return None
+    if started is not None and type(started) is not int:
+        return None
+    from molt.process_model import process_started_at_ns
+
+    observed = process_started_at_ns(pid)
+    if observed is not None and observed != started:
+        return None
+    return LockHolder(pid, started)
+
+
+def _print_lock_notice(message: str) -> None:
+    print(f"molt: {message}", file=sys.stderr, flush=True)
+
+
+def _holder_text(lock_path: Path) -> str:
+    holder = read_lock_holder(lock_path)
+    return (
+        f"held by {holder.describe()}"
+        if holder is not None
+        else "its holder has not recorded itself"
+    )
+
+
+@contextlib.contextmanager
+def held_file_lock(
+    lock_path: Path,
+    *,
+    purpose: str,
+    notice: Callable[[str], None] | None = None,
+) -> Generator[_FileLockHandle]:
+    """Hold ``lock_path`` exclusively, waiting by the one wait policy.
+
+    A waiter prints one notice naming the lock and its holder, as Cargo's
+    "Blocking waiting for file lock" and Bazel's "Another command (pid=...) is
+    running" do, then waits as ``lock_wait_s`` says. The holder records
+    itself beside the lock while it holds it.
+    """
+    handle = _try_acquire_file_lock(lock_path)
+    if handle is None:
+        wait = lock_wait_s()
+        bound = (
+            "until it is released"
+            if wait is None
+            else f"at most {wait:.1f}s ({LOCK_WAIT_ENV})"
+        )
+        (notice or _print_lock_notice)(
+            f"Blocking waiting for the {purpose} lock {lock_path}, "
+            f"{_holder_text(lock_path)}; waiting {bound}"
+        )
+        try:
+            handle = _acquire_file_lock(
+                lock_path, timeout_s=wait, timeout_message="lock wait timed out"
+            )
+        except FileLockTimeout:
+            assert wait is not None
+            raise FileLockTimeout(
+                f"Timed out after {wait:.1f}s waiting for the {purpose} lock "
+                f"{lock_path}, {_holder_text(lock_path)} ({LOCK_WAIT_ENV})"
+            ) from None
+    record = _record_lock_holder(lock_path)
+    try:
+        yield handle
+    finally:
+        _clear_lock_holder(record)
+        _release_file_lock(handle)
+
+
 @contextlib.contextmanager
 def _shared_cache_lock(name: str, *, cache_root: Path | None = None):
     if cache_root is None:
         cache_root = _default_molt_cache()
-    lock_path = shared_cache_lock_path(cache_root, name)
-    timeout_raw = os.environ.get("MOLT_BUILD_LOCK_TIMEOUT", "").strip()
-    lock_timeout = _parse_lock_timeout(timeout_raw, default_s=300.0)
-    timeout_label = "unbounded" if lock_timeout is None else f"{lock_timeout:.1f}s"
-    handle = _acquire_file_lock(
-        lock_path,
-        timeout_s=lock_timeout,
-        timeout_message=(
-            "Timed out waiting for shared cache lock "
-            f"{lock_path} after {timeout_label}. "
-            "Check for stale molt build/backend helper processes."
-        ),
-    )
-    try:
+    with held_file_lock(
+        shared_cache_lock_path(cache_root, name), purpose="shared cache"
+    ):
         yield
-    finally:
-        _release_file_lock(handle)

@@ -1,13 +1,15 @@
-"""Build-state path and timeout policy over the shared file-lock authority."""
+"""Build-state lock paths over the shared file-lock authority."""
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from collections.abc import Generator
+from contextlib import ExitStack, contextmanager
 import functools
 import os
 from pathlib import Path
 
-from molt.file_locks import _acquire_file_lock, _release_file_lock, _parse_lock_timeout
+from molt.cli import progress as _progress
+from molt.file_locks import held_file_lock
 from molt.cli.runtime_paths import _build_state_root
 
 
@@ -21,11 +23,30 @@ class BuildLockAcquisitionError(RuntimeError):
 
 
 @contextmanager
+def held_build_lock(lock_path: Path, *, purpose: str) -> Generator[None]:
+    """Hold one build lock by the one wait policy (``molt.file_locks``).
+
+    A waiter waits while the build it waits for holds the lock, prints one
+    notice naming the lock and its holder, and fails only past an operator's
+    ``MOLT_BUILD_LOCK_TIMEOUT``.
+    """
+    with ExitStack() as held:
+        try:
+            held.enter_context(
+                held_file_lock(
+                    lock_path, purpose=purpose, notice=_progress.blocking_notice
+                )
+            )
+        except (OSError, RuntimeError) as exc:
+            raise BuildLockAcquisitionError(str(exc)) from exc
+        yield
+
+
+@contextmanager
 def _build_lock(
     project_root: Path,
     name: str,
     *,
-    default_timeout_s: float = 300.0,
     cargo_target: Path | None = None,
 ):
     """Hold ``name`` in the build control of ``cargo_target`` (the project's)."""
@@ -36,24 +57,5 @@ def _build_lock(
     # The build-state root already carries target/session isolation. When an
     # operator explicitly shares a target/build-state root, mutable Cargo
     # artifacts must share the same lock regardless of MOLT_SESSION_ID.
-    lock_path = lock_dir / f"{name}.lock"
-    lock_timeout = _parse_lock_timeout(
-        os.environ.get("MOLT_BUILD_LOCK_TIMEOUT", ""),
-        default_s=default_timeout_s,
-    )
-    timeout_label = "unbounded" if lock_timeout is None else f"{lock_timeout:.1f}s"
-    try:
-        handle = _acquire_file_lock(
-            lock_path,
-            timeout_s=lock_timeout,
-            timeout_message=(
-                f"Timed out waiting for build lock {lock_path} after {timeout_label}. "
-                "Check for stale molt build/backend helper processes."
-            ),
-        )
-    except (OSError, RuntimeError) as exc:
-        raise BuildLockAcquisitionError(str(exc)) from exc
-    try:
+    with held_build_lock(lock_dir / f"{name}.lock", purpose=f"build ({name})"):
         yield
-    finally:
-        _release_file_lock(handle)

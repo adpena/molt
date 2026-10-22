@@ -1045,9 +1045,6 @@ def _ensure_runtime_wasm_both(
                 with _build_lock(
                     ctx.project_root,
                     f"runtime.{ctx.cargo_profile}.wasm32-wasip1.pair",
-                    default_timeout_s=ctx.cargo_timeout
-                    if ctx.cargo_timeout is not None
-                    else 300.0,
                 ):
                     outcome = _materialize_runtime_wasm_pair(ctx)
                     if outcome is _PairBuildOutcome.FAILED:

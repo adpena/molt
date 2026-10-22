@@ -49,7 +49,6 @@ from molt.cli.generation_store import (
 )
 from molt.dx import product_store_dir
 from molt.file_deletion import delete_path
-from molt.file_locks import _acquire_file_lock, _parse_lock_timeout, _release_file_lock
 
 ProductKind = Literal["native-runtime", "host-tool"]
 PRODUCT_KINDS: tuple[ProductKind, ...] = get_args(ProductKind)
@@ -169,41 +168,27 @@ class ProductStore:
         return evicted
 
     @contextmanager
-    def single_flight(
-        self, identity: str, *, default_timeout_s: float | None
-    ) -> Generator[None]:
+    def single_flight(self, identity: str) -> Generator[None]:
         """Hold ``identity``'s build lock while building it.
 
         A second checkout with the same inputs waits here, then finds the
-        entry the first one published. ``MOLT_BUILD_LOCK_TIMEOUT`` bounds the
-        wait as it bounds the per-checkout build lock; otherwise
-        ``default_timeout_s`` does, and None waits until the holder exits, as
-        Cargo's build-directory lock and Bazel's output-base lock do. The lock
-        is an OS file lock, so a dead holder never blocks a waiter.
+        entry the first one published. It waits by the one build-lock policy
+        (``molt.file_locks.lock_wait_s``): while the holder builds, as Cargo's
+        build-directory lock and Bazel's output-base lock wait, with one
+        notice naming the holder. The lock is an OS file lock, so a dead
+        holder never blocks a waiter.
         """
-        from molt.cli.build_locks import BuildLockAcquisitionError
+        from molt.cli.build_locks import BuildLockAcquisitionError, held_build_lock
 
         entry = self.entry(identity)
-        lock = entry / _BUILD_LOCK
-        timeout = _parse_lock_timeout(
-            os.environ.get("MOLT_BUILD_LOCK_TIMEOUT", ""), default_s=default_timeout_s
-        )
-        label = "unbounded" if timeout is None else f"{timeout:.1f}s"
         try:
             # Renewed first: an entry a builder holds is never idle.
             self.record_use(identity)
             entry.mkdir(parents=True, exist_ok=True)
-            handle = _acquire_file_lock(
-                lock,
-                timeout_s=timeout,
-                timeout_message=(
-                    f"Timed out after {label} waiting for another build of the "
-                    f"same product ({lock})."
-                ),
-            )
         except (OSError, RuntimeError) as exc:
             raise BuildLockAcquisitionError(str(exc)) from exc
-        try:
+        with held_build_lock(
+            entry / _BUILD_LOCK,
+            purpose=f"product store ({self.root.name} {identity[:12]})",
+        ):
             yield
-        finally:
-            _release_file_lock(handle)

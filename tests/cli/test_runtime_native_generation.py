@@ -169,7 +169,7 @@ def native_build(tmp_path, runtime_fixture_root, monkeypatch):
     current = SimpleNamespace(coordinate=None, environment={})
 
     @contextlib.contextmanager
-    def lock(_root, _name, *, default_timeout_s: float = 300.0):
+    def lock(_root, _name):
         events.append("lock")
         yield
 
@@ -516,13 +516,13 @@ def test_a_build_that_waited_for_the_lock_reuses_what_the_holder_published(
     contended = []
 
     @contextlib.contextmanager
-    def single_flight(self, identity, *, default_timeout_s):
+    def single_flight(self, identity):
         if not contended:
             contended.append(identity)
             # Another checkout with the same inputs builds and publishes
             # while this build waits for the identity's lock.
             assert native_build.run(coordinate=other)[0]
-        with original(self, identity, default_timeout_s=default_timeout_s):
+        with original(self, identity):
             yield
 
     monkeypatch.setattr(ProductStore, "single_flight", single_flight)
@@ -532,27 +532,53 @@ def test_a_build_that_waited_for_the_lock_reuses_what_the_holder_published(
     assert state.runtime_lib.is_relative_to(native_build.store.root)
 
 
-@pytest.mark.parametrize("cargo_timeout", [None, 7.0])
-def test_a_waiter_waits_as_long_as_the_build_it_waits_for(
-    native_build, monkeypatch, cargo_timeout
+def test_a_waiter_outwaits_its_own_cargo_timeout_while_the_holder_builds(
+    native_build, monkeypatch, capsys
 ):
-    """The identity lock is bounded by the build's own Cargo timeout, if any.
+    """The identity lock waits while its holder builds (design 56, 2.8).
 
-    A waiter behind another checkout's cold build must not give up before that
-    build may finish; with no Cargo timeout it waits until the holder exits.
+    The holder here keeps the lock six times this build's Cargo timeout, as a
+    backend build holds it for Cargo, its probe and publication. A waiter
+    bounded by its Cargo timeout would fail at stage build-lock; this one
+    waits, says once whom it waits for, and then builds.
     """
+    import threading
+
+    from molt.cli.build_locks import held_build_lock
+
     monkeypatch.delenv("MOLT_BUILD_LOCK_TIMEOUT", raising=False)
     original = ProductStore.single_flight
-    waits = []
+    held, release = threading.Event(), threading.Event()
 
-    def single_flight(self, identity, *, default_timeout_s):
-        waits.append(default_timeout_s)
-        return original(self, identity, default_timeout_s=default_timeout_s)
+    def holder(lock: Path) -> None:
+        with held_build_lock(lock, purpose="the other checkout's build"):
+            held.set()
+            release.wait(timeout=30)
+
+    @contextlib.contextmanager
+    def single_flight(self, identity):
+        lock = self.entry(identity) / ".build.lock"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        thread = threading.Thread(target=holder, args=(lock,))
+        thread.start()
+        assert held.wait(timeout=10)
+        timer = threading.Timer(0.6, release.set)
+        timer.start()
+        try:
+            with original(self, identity):
+                yield
+        finally:
+            timer.join()
+            thread.join(timeout=30)
 
     monkeypatch.setattr(ProductStore, "single_flight", single_flight)
-    ok, _state, _timings = native_build.run(cargo_timeout=cargo_timeout)
-    assert ok and len(native_build.cargo_runs) == 1
-    assert waits == [cargo_timeout]
+    ok, state, _timings = native_build.run(cargo_timeout=0.1)
+    assert ok, state.native_runtime_build_failure
+    assert len(native_build.cargo_runs) == 1
+    notices = [
+        line for line in capsys.readouterr().err.splitlines() if "Blocking" in line
+    ]
+    assert len(notices) == 1 and f"pid {os.getpid()}," in notices[0]
 
 
 @pytest.mark.parametrize("corruption", ["archive", "manifest", "receipt"])

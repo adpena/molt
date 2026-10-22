@@ -133,15 +133,13 @@ def _backend_admission_lock(
     project_root: Path,
     coordinate: Path,
     cargo_profile: str,
-    *,
-    cargo_timeout: float | None = None,
 ):
     """Hold the lock over the Cargo output ``coordinate``'s variants publish from.
 
     Every feature variant of one target publishes from Cargo's one output in
     ``coordinate``'s profile directory, so the lock lives in that target's
-    build control. A default waiter must tolerate one bounded cold build;
-    operator overrides retain authority in ``_build_lock``.
+    build control. A waiter waits while the holder builds, probes and
+    publishes, by the one build-lock policy (``molt.file_locks.lock_wait_s``).
     """
     with ExitStack() as stack:
         try:
@@ -149,9 +147,6 @@ def _backend_admission_lock(
                 _build_lock(
                     project_root,
                     f"backend.{cargo_profile}",
-                    default_timeout_s=cargo_timeout
-                    if cargo_timeout is not None
-                    else 300.0,
                     cargo_target=coordinate.parent.parent,
                 )
             )
@@ -734,7 +729,7 @@ def import_backend_binary(
     store = host_tool_store(project_root)
     identity = host_tool_identity(binary, fingerprint)
     stored = stored_host_tool(store, identity, binary, cargo_environment)
-    with store.single_flight(identity, default_timeout_s=300.0):
+    with store.single_flight(identity):
         build_admission.verify()
         for admission in stored_host_tools(
             store,
@@ -975,9 +970,7 @@ def _ensure_backend_binary(
     # Every feature lane publishes from the same Cargo output under this lock;
     # the store's identity lock then admits one builder per input on the host.
     with (
-        _backend_admission_lock(
-            project_root, backend_bin, cargo_profile, cargo_timeout=cargo_timeout
-        ),
+        _backend_admission_lock(project_root, backend_bin, cargo_profile),
         ExitStack() as held,
     ):
         try:
@@ -1015,11 +1008,9 @@ def _ensure_backend_binary(
         )
         store = host_tool_store(project_root)
         try:
-            held.enter_context(
-                # A waiter waits as long as the build it waits for may run:
-                # the Cargo timeout, else until the builder exits.
-                store.single_flight(identity, default_timeout_s=cargo_timeout)
-            )
+            # A waiter waits while the build it waits for holds the lock:
+            # Cargo, the capability probe and publication (design 56, 2.8).
+            held.enter_context(store.single_flight(identity))
         except BuildLockAcquisitionError as exc:
             return _backend_ensure_failure("backend_build_lock", str(exc))
         cargo_output = backend_bin.parent / _host_tool_output_name(product)

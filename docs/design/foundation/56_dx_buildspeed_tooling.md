@@ -862,13 +862,35 @@ tests that place their target in a temporary directory.
   identity memo, so a later build of that checkout skips hashing its sources.
 - One builder per input: a miss takes the entry's lock (`single_flight`) and
   reads the store again under it, so a second checkout with the same inputs
-  waits and then reuses the first one's publication. The waiter waits as long
-  as the build it waits for may run: the build's Cargo timeout, else until
-  the holder exits, as Cargo's build-directory lock and Bazel's output-base
-  lock wait (`MOLT_BUILD_LOCK_TIMEOUT` still bounds it). A fixed 300 s wait
-  would fail a waiter behind a cold release backend build, which took 267 s
-  of Cargo at load 20 on this host. CPU admission across builds stays with
-  `molt.host_capacity` ([host capacity](../host_capacity.md), design item 6).
+  waits and then reuses the first one's publication. CPU admission across
+  builds stays with `molt.host_capacity` ([host capacity](../host_capacity.md),
+  design item 6).
+- One wait policy covers the checkout's build locks, the identity's lock and
+  the shared cache locks (`molt.file_locks.lock_wait_s`): a waiter waits while
+  the holder holds the lock. Cargo waits on its build-directory and
+  package-cache locks the same way, and Bazel on its output base
+  (`--block_for_lock`, on by default). The holder bounds its own work (Cargo
+  and the capability probe each by `MOLT_CARGO_TIMEOUT`), and an OS lock dies
+  with its holder, so a waiter's own timer can only fail it while the build
+  it waits for may still finish. Before, the checkout lock waited 300 s and
+  the identity lock the build's Cargo timeout, so a waiter behind a cold
+  release backend build (267 s of Cargo at load 20 on this host) failed, and
+  with `MOLT_CARGO_TIMEOUT=T` a backend holder could hold the lock for Cargo,
+  the probe and publication, longer than its waiters' T.
+  `MOLT_BUILD_LOCK_TIMEOUT` bounds every wait for an operator who prefers to
+  fail. The holder records its pid and start time in `<lock>.holder` beside
+  the lock (the lock file stays empty metadata) and empties it on release; a
+  waiter prints one notice naming the lock and that holder, as Cargo prints
+  "Blocking waiting for file lock" and Bazel "Another command (pid=...) is
+  running", so a stopped holder (a suspended `molt build`) is visible, not a
+  silent hang. A record whose pid no longer has the recorded start time names
+  no holder. The record is process-lifetime state with no barrier (section
+  2.7): one write, and one `ftruncate` on the descriptor it keeps for the
+  hold. Measured on the integrator Mac (2026-10-22, median of 7 x 400): an
+  uncontended acquire and release took 72 us against 47 us without the
+  record on the external volume, and 82 us against 48 us on the internal
+  disk; creating and unlinking a record file instead took about 440 us on
+  the external volume. A warm build takes two or three build locks.
 - Retention follows last use, as Go's does: an admission renews its entry in
   the store's ledger before reading it, and each publication evicts entries no
   build used for 5 days. The native runtime's per-target generations had no

@@ -270,7 +270,6 @@ def _ensure_wasm_cpython_abi_staticlib(
             with _build_lock(
                 root,
                 lock_name,
-                default_timeout_s=cargo_timeout if cargo_timeout is not None else 300.0,
             ):
                 stage = "pre-build-identity"
                 pre_identity = resolve_identity()
