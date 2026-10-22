@@ -36,6 +36,7 @@ import json
 import os
 from pathlib import Path
 import re
+import time
 from types import ModuleType
 from typing import Any
 
@@ -56,7 +57,7 @@ from tools.molt_dev_common import (
     _say,
     _step,
 )
-from tools import molt_dev_retire
+from tools import drift_harvest, molt_dev_retire
 from tools.molt_dev_change_ids import landing_representation
 from tools.release.git_source_snapshot import immutable_git_environment
 
@@ -301,6 +302,40 @@ def validate_lane_handoff(
 # --------------------------------------------------------------------------
 
 
+#: A lane untouched this long is named when the work-in-progress limit refuses
+#: a new one (design 56 section 2.9, item 5).
+IDLE_LANE_HOURS = 48.0
+
+
+def work_in_progress_refusal(repo: Path, *, now: float) -> str | None:
+    """Why a new lane may not start, or None.
+
+    A new lane may not take the live worktree count past ``drift_harvest``'s
+    limit. The refusal names the idle worktrees that land or retire first;
+    only a refusal pays for that classification.
+    """
+    live = drift_harvest.live_worktree_count(repo)
+    limit = drift_harvest.MAX_LIVE_WORKTREES
+    if live < limit:
+        return None
+    idle = [
+        row
+        for row in drift_harvest.classify(IDLE_LANE_HOURS, now, root=repo)
+        if row["state"] in ("SIGNAL", "SUPERSEDED")
+    ]
+    lines = [
+        f"{live} live worktrees: a new lane would pass the limit of {limit}. "
+        "Land or retire one first; `lane retire <slug> --abandon` keeps a "
+        "verified bundle."
+    ]
+    lines += [
+        f"  idle over {IDLE_LANE_HOURS:.0f} h ({row['state'].lower()}): "
+        f"{row['branch'] or '(detached)'} {row['path']}"
+        for row in idle
+    ]
+    return "\n".join(lines)
+
+
 def cmd_lane_start(args: argparse.Namespace) -> int:
     from tools import agent_coordination
 
@@ -324,6 +359,9 @@ def cmd_lane_start(args: argparse.Namespace) -> int:
             f"{_record_path(main, slug)} is an active record without its branch; "
             "close it before reusing the slug"
         )
+    refusal = work_in_progress_refusal(repo, now=time.time())
+    if refusal is not None:
+        raise DriverError(refusal)
 
     _step(f"fetch {args.remote}/{args.branch}")
     git.fetch(args.remote, args.branch)
