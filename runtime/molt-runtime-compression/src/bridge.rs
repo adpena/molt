@@ -22,15 +22,6 @@ unsafe extern "C" {
     -> i64;
 
     // -- Exceptions -----------------------------------------------------------
-    /// `raise_exception::<u64>(_py, kind, msg) -> u64`
-    /// Both `kind` and `msg` are passed as ptr+len UTF-8 slices.
-    pub fn molt_bridge_raise_exception(
-        kind_ptr: *const u8,
-        kind_len: usize,
-        msg_ptr: *const u8,
-        msg_len: usize,
-    ) -> u64;
-
     /// `exception_pending(_py) -> bool`
     pub fn molt_bridge_exception_pending() -> bool;
 
@@ -111,7 +102,7 @@ pub fn runtime_state_get_or_init(
 /// Raise an exception and return a sentinel u64.
 #[inline]
 pub fn raise_exception(_py: &PyToken, kind: &str, msg: &str) -> u64 {
-    unsafe { molt_bridge_raise_exception(kind.as_ptr(), kind.len(), msg.as_ptr(), msg.len()) }
+    molt_runtime_core::rt_raise_str(kind, msg)
 }
 
 /// Check whether an exception is currently pending.

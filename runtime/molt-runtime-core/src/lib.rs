@@ -492,6 +492,15 @@ pub mod ffi {
 
         // -- Exception machinery (builtins/exceptions.rs) --------------------
 
+        /// Raise the canonical diagnostic exception. Empty messages carry no
+        /// arguments; nonempty messages carry one string argument.
+        pub fn molt_bridge_raise_exception(
+            kind_ptr: *const u8,
+            kind_len: usize,
+            msg_ptr: *const u8,
+            msg_len: usize,
+        ) -> u64;
+
         /// Create a new exception object.
         /// `kind_bits`: NaN-boxed string for the exception class name.
         /// `args_bits`: NaN-boxed tuple of arguments.
@@ -910,34 +919,15 @@ pub fn rt_raise(exc_bits: u64) -> u64 {
     unsafe { ffi::molt_raise(exc_bits) }
 }
 
-/// Create and raise an exception from kind name + message strings.
-/// Retire every constructor temporary; stop on each constructor failure.
-/// A preexisting raised error does not imply this construction failed.
-/// Returns None bits (the caller should return early on exception).
+/// Raise a diagnostic through the runtime's canonical exception constructor.
+/// Empty diagnostics produce no arguments; nonempty diagnostics produce one
+/// string argument. Explicit Python arguments use the exception constructors.
+/// Construction and raised-owner transfer remain in the runtime authority.
+#[inline]
 pub fn rt_raise_str(kind: &str, message: &str) -> u64 {
-    // Keep one GIL scope across construction and retirement. Each FFI
-    // constructor returns an owner; tuple construction and raising borrow.
-    let guard = CoreGilGuard::new();
-    let py = unsafe { guard.__token_unchecked() };
-    let kind = unsafe { OwnedRuntimeValue::from_owned_bits(&py, rt_string_from(kind)) };
-    if obj_from_bits(kind.bits()).is_none() {
-        return MoltObject::none().bits();
+    unsafe {
+        ffi::molt_bridge_raise_exception(kind.as_ptr(), kind.len(), message.as_ptr(), message.len())
     }
-    let text = unsafe { OwnedRuntimeValue::from_owned_bits(&py, rt_string_from(message)) };
-    if obj_from_bits(text.bits()).is_none() {
-        return MoltObject::none().bits();
-    }
-    let args = unsafe { OwnedRuntimeValue::from_owned_bits(&py, rt_tuple(&[text.bits()])) };
-    if obj_from_bits(args.bits()).is_none() {
-        return MoltObject::none().bits();
-    }
-    let error = unsafe {
-        OwnedRuntimeValue::from_owned_bits(&py, ffi::molt_exception_new(kind.bits(), args.bits()))
-    };
-    if obj_from_bits(error.bits()).is_none() {
-        return MoltObject::none().bits();
-    }
-    rt_raise(error.bits())
 }
 
 /// Raise the owning module's actual exception class, retaining each temporary
