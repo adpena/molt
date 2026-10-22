@@ -3456,6 +3456,10 @@ def main(
             summary_json=args.summary_json,
             incident_pid=result.violation.pid if result.violation is not None else None,
         )
+    # The summary holds the repro record whenever there is an incident; once
+    # it is written, the terminal report names it instead of repeating it.
+    repro_record: str | None = None
+    summary_failed = False
     if args.summary_json:
         try:
             _write_summary_json(
@@ -3472,10 +3476,13 @@ def main(
                 result=result,
             )
         except OSError as exc:
+            # The report below still prints the reason, with the repro whole.
             print(f"memory_guard: failed to write summary JSON: {exc}", file=sys.stderr)
-            return 2 if result.returncode == 0 else result.returncode
-        if closure_progress is not None:
-            closure_progress("summary_published")
+            summary_failed = True
+        else:
+            repro_record = args.summary_json
+            if closure_progress is not None:
+                closure_progress("summary_published")
     elif incident is not None:
         incident_summary_path = _default_incident_summary_path(current_env)
         try:
@@ -3495,6 +3502,7 @@ def main(
             _prune_default_incident_summaries(incident_summary_path.parent)
             if repro_payload is not None:
                 repro_payload["summary_json"] = str(incident_summary_path)
+            repro_record = str(incident_summary_path)
             print(
                 f"memory_guard: incident summary: path={incident_summary_path}",
                 file=sys.stderr,
@@ -3512,7 +3520,10 @@ def main(
         repro_payload=repro_payload,
         signal_payload=_exit_signal_payload,
         stderr=sys.stderr,
+        repro_record=repro_record,
     )
+    if summary_failed:
+        return 2 if result.returncode == 0 else result.returncode
     return result.returncode
 
 

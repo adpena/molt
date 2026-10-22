@@ -91,6 +91,31 @@ RUNTIME_GENERATION_MANIFEST = "wasm/molt_runtime.generation.json"
 CUSTOM_IGNORED_PATH = "tmp/operator-scratch.txt"
 
 
+def _captured_gate(fake):
+    """Adapt an exit-code gate fake to the captured runner every gate uses."""
+    from tools.molt_dev_gates import GateOutcome
+
+    def run(command, repo, env, cancelled, streams=None):
+        del cancelled, streams
+        return GateOutcome(fake(command, repo, env), "", "", None)
+
+    return run
+
+
+def _writing_gate(outcomes):
+    """A captured-gate fake that writes each stream to its file, as the
+    guarded child does, and returns the outcome."""
+
+    def run(command, repo, env, cancelled, streams=None):
+        outcome = outcomes[command]
+        if streams is not None:
+            streams[0].write_text(outcome.stdout, encoding="utf-8")
+            streams[1].write_text(outcome.stderr, encoding="utf-8")
+        return outcome
+
+    return run
+
+
 @pytest.fixture
 def drv():
     return molt_dev
@@ -2521,29 +2546,46 @@ def _wait_for(marker: str, *, then: str) -> str:
     )
 
 
+def kept_gate_stdout(out: str) -> list[str]:
+    """Each finished gate's stdout, read from the file its event names, in
+    event order. A passing gate's output goes only to that file."""
+    events = [
+        json.loads(line)
+        for line in out.splitlines()
+        if line.startswith("{") and '"gate_finished"' in line
+    ]
+    assert all("output_error" not in event for event in events), events
+    return [Path(event["stdout_path"]).read_text(encoding="utf-8") for event in events]
+
+
 def test_integrate_always_gates_run_together_and_report_in_declared_order(
     drv, origin_and_clone, monkeypatch, capfd
 ):
     _, work = origin_and_clone
     marker = str(work.parent / "second-ran")
-    first = _wait_for(marker, then="print('first-gate-output')")
+    first = _wait_for(marker, then="print('first' + '-gate-output')")
     second = _integration_python(
-        f"import pathlib; pathlib.Path({marker!r}).touch(); print('second-gate-output')"
+        f"import pathlib; pathlib.Path({marker!r}).touch(); print('second' + '-gate-output')"
     )
     _commit_integration_policy(work, [first, second])
     monkeypatch.setattr(drv, "concurrent_gate_limit", lambda: 2)
     assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True)) == 0
     output = capfd.readouterr()
-    # The first gate finished last, yet its output and events come first.
-    assert output.out.index("first-gate-output") < output.out.index(
-        "second-gate-output"
-    )
+    # The first gate finished last, yet its event comes first, and each
+    # event names the file that holds that gate's own output.
     finished = [
         json.loads(line)["gate_ordinal"]
         for line in output.out.splitlines()
         if line.startswith("{") and '"gate_finished"' in line
     ]
     assert finished == [1, 2]
+    assert kept_gate_stdout(output.out) == [
+        "first-gate-output\n",
+        "second-gate-output\n",
+    ]
+    assert "first-gate-output" not in output.out, (
+        "a passing gate's output stays in its file"
+    )
     # The proof executor ran the block and left a landing receipt.
     summary = next(
         line for line in output.err.splitlines() if "gate block: 2 gates in" in line
@@ -2631,7 +2673,7 @@ def test_gate_block_blames_the_candidate_only_for_a_gate_exit(drv, tmp_path, cau
     changes: list[tuple[str, ...]] = [()]
     ran: list[object] = []
 
-    def run_captured_gate(command, repo, environment, cancelled):
+    def run_captured_gate(command, repo, environment, cancelled, streams=None):
         ran.append(command)
         if cause == "outside writer":
             changes[0] = ("?? stray.txt",)
@@ -2657,7 +2699,7 @@ def test_gate_block_blames_the_candidate_only_for_a_gate_exit(drv, tmp_path, cau
         resource_limits={},
         toolchains={},
         receipt_path=tmp_path / "receipt.json",
-        run_gate=lambda *args: pytest.fail("no gate streams live"),
+        output_dir=tmp_path / "receipt.d" / "run",
         run_captured_gate=run_captured_gate,
         observe_capacity=lambda *args, **kwargs: (),
         say=lambda message: None,
@@ -2680,6 +2722,237 @@ def test_gate_block_blames_the_candidate_only_for_a_gate_exit(drv, tmp_path, cau
         assert "stray.txt" in str(exc.value)
     # One gate at a time: the second never starts after either cause.
     assert ran == [("gate", "1")]
+
+
+def test_gate_block_keeps_every_stream_and_shows_a_failure_briefly(
+    drv, tmp_path, capsys
+):
+    # A failure must say why, and a passing gate must cost the caller nothing:
+    # every stream is kept beside the receipt, which names it, and the
+    # terminal gets the failed gate's bounded tail and the file's path.
+    from tools import molt_dev_gates
+
+    huge = "x" * 34_000
+    streams = {
+        ("gate", "1"): molt_dev_gates.GateOutcome(0, "chatty\n" * 1000, "", None),
+        ("gate", "2"): molt_dev_gates.GateOutcome(
+            1, "", f"{huge}\nruff format failed: timed out after 60 s\n", None
+        ),
+    }
+
+    class Progress:
+        def emit(self, event, **details):
+            pass
+
+    receipt = tmp_path / "receipt.json"
+    runtime = molt_dev_gates.GateRuntime(
+        repo=tmp_path,
+        environments={("python",): ProcessEnvironment(os.environ)},
+        cargo_outputs={},
+        capacity_requirements={},
+        progress=Progress(),
+        check_source=lambda: None,
+        source_changes=lambda: (),
+        source_identity=lambda: {"commit": "0" * 40, "tree": "1" * 40},
+        policy_text="",
+        executor_max_workers=None,
+        resource_limits={},
+        toolchains={},
+        receipt_path=receipt,
+        output_dir=tmp_path / "receipt.d" / "run",
+        run_captured_gate=_writing_gate(streams),
+        observe_capacity=lambda *args, **kwargs: (),
+        say=lambda message: None,
+        ok=lambda message: None,
+    )
+    gates = [
+        drv.SelectedGate(
+            command=("gate", str(index)), toolchains=("python",), concurrent=True
+        )
+        for index in (1, 2)
+    ]
+    with pytest.raises(GateFailure, match=r"gate failed \(exit 1\)"):
+        molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 1)
+
+    records = json.loads(receipt.read_text(encoding="utf-8"))["commands"]
+    kept = {
+        tuple(r["argv"]): (Path(r["stdout_path"]), Path(r["stderr_path"]))
+        for r in records
+    }
+    for command, outcome in streams.items():
+        stdout, stderr = kept[command]
+        assert stdout.read_text(encoding="utf-8") == outcome.stdout
+        assert stderr.read_text(encoding="utf-8") == outcome.stderr
+    shown = capsys.readouterr().err
+    assert f"full stderr: {kept[('gate', '2')][1]}" in shown
+    assert "ruff format failed: timed out after 60 s" in shown
+    assert "... (34000 chars)" in shown and huge not in shown
+    assert "chatty" not in shown and len(shown) < 4096
+
+
+def _gate_runtime_fixture(molt_dev_gates, tmp_path, outcomes, *, output_dir):
+    class Progress:
+        def emit(self, event, **details):
+            pass
+
+    return molt_dev_gates.GateRuntime(
+        repo=tmp_path,
+        environments={("python",): ProcessEnvironment(os.environ)},
+        cargo_outputs={},
+        capacity_requirements={},
+        progress=Progress(),
+        check_source=lambda: None,
+        source_changes=lambda: (),
+        source_identity=lambda: {"commit": "0" * 40, "tree": "1" * 40},
+        policy_text="",
+        executor_max_workers=None,
+        resource_limits={},
+        toolchains={},
+        receipt_path=tmp_path / "receipt.json",
+        output_dir=output_dir,
+        run_captured_gate=_writing_gate(outcomes),
+        observe_capacity=lambda *args, **kwargs: (),
+        say=lambda message: None,
+        ok=lambda message: None,
+    )
+
+
+@pytest.mark.parametrize("concurrent", [True, False])
+def test_unkept_gate_output_never_changes_the_verdict_or_hides_the_reason(
+    drv, tmp_path, capsys, concurrent
+):
+    # A log that cannot be written must not turn a pass into a runner fault
+    # or a failure into silence: the failed gate's streams print whole.
+    from tools import molt_dev_gates
+
+    blocked = tmp_path / "not-a-directory"
+    blocked.write_text("", encoding="utf-8")
+    outcomes = {
+        ("gate", "1"): molt_dev_gates.GateOutcome(0, "fine\n", "", None),
+        ("gate", "2"): molt_dev_gates.GateOutcome(2, "", "the real reason\n", None),
+    }
+    runtime = _gate_runtime_fixture(
+        molt_dev_gates, tmp_path, outcomes, output_dir=blocked / "run"
+    )
+    gates = [
+        drv.SelectedGate(
+            command=("gate", str(index)), toolchains=("python",), concurrent=concurrent
+        )
+        for index in (1, 2)
+    ]
+    with pytest.raises(GateFailure, match=r"gate failed \(exit 2\)"):
+        molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 2)
+    shown = capsys.readouterr().err
+    assert "gate output not kept (" in shown and "the real reason" in shown
+
+
+def test_serial_gate_keeps_its_streams_and_names_them_in_the_failure(
+    drv, tmp_path, capsys
+):
+    from tools import molt_dev_gates
+
+    outcomes = {
+        ("gate", "1"): molt_dev_gates.GateOutcome(
+            1, "", "x" * 5000 + "\nserial reason\n", None
+        )
+    }
+    output_dir = tmp_path / "receipt.d" / "run"
+    runtime = _gate_runtime_fixture(
+        molt_dev_gates, tmp_path, outcomes, output_dir=output_dir
+    )
+    gate = drv.SelectedGate(
+        command=("gate", "1"), toolchains=("python",), concurrent=False
+    )
+    with pytest.raises(GateFailure) as failure:
+        molt_dev_gates.run_selected_gates([gate], runtime, [], host_limit=lambda: 1)
+    log = output_dir / "gate-001.stderr.log"
+    assert "serial reason" in log.read_text(encoding="utf-8")
+    assert f"full stderr: {log}" in str(failure.value)
+    shown = capsys.readouterr().err
+    assert "serial reason" in shown and "... (5000 chars)" in shown
+
+
+def test_a_gate_writes_its_streams_to_files_while_it_runs(drv, tmp_path):
+    # The guarded child writes each stream to its file; the outcome holds
+    # only the bounded end, and the files hold everything.
+    from tools import molt_dev_common
+
+    streams = (tmp_path / "gate.stdout.log", tmp_path / "gate.stderr.log")
+    lines = 20_000
+    script = (
+        f"import sys\nfor i in range({lines}): print('line', i)\n"
+        "print('the reason', file=sys.stderr)\nraise SystemExit(3)\n"
+    )
+    outcome = drv.run_captured_gate(
+        (sys.executable, "-c", script),
+        tmp_path,
+        ProcessEnvironment(os.environ),
+        lambda: False,
+        streams,
+    )
+    assert outcome.returncode == 3
+    full = streams[0].read_text(encoding="utf-8")
+    assert full.count("\n") == lines and full.endswith(f"line {lines - 1}\n")
+    assert len(outcome.stdout) <= molt_dev_common.GATE_STREAM_TAIL_BYTES
+    assert outcome.stdout.endswith(f"line {lines - 1}\n")
+    assert streams[1].read_text(encoding="utf-8") == "the reason\n"
+
+
+def test_idle_gate_runs_retire_and_recent_ones_stay(tmp_path):
+    from tools import molt_dev_gates
+
+    now = 10_000_000.0
+    window = molt_dev_gates.NAMED_RECORD_MIN_AGE_S
+    runs = {"old": window + 60, "recent": window - 60}
+    for name, age in runs.items():
+        run = tmp_path / "abc.gates.d" / name
+        run.mkdir(parents=True)
+        (run / "gate-001.stdout.log").write_text("x", encoding="utf-8")
+        os.utime(run, (now - age, now - age))
+    gone = tmp_path / "def.precheck.d" / "old"
+    gone.mkdir(parents=True)
+    os.utime(gone, (now - window - 60, now - window - 60))
+    molt_dev_gates.retire_gate_logs(tmp_path, now=now)
+    assert [p.name for p in (tmp_path / "abc.gates.d").iterdir()] == ["recent"]
+    # A receipt directory its last run leaves empty goes with it.
+    assert not (tmp_path / "def.precheck.d").exists()
+
+
+def test_a_gate_log_that_cannot_retire_says_so(tmp_path, monkeypatch, capsys):
+    from tools import molt_dev_gates
+
+    now = 10_000_000.0
+    run = tmp_path / "abc.gates.d" / "old"
+    run.mkdir(parents=True)
+    age = molt_dev_gates.NAMED_RECORD_MIN_AGE_S + 60
+    os.utime(run, (now - age, now - age))
+
+    def refuse(path):
+        raise PermissionError(13, "Permission denied", str(path))
+
+    from tests.process_guard_common import install_module_view
+
+    install_module_view(monkeypatch, "shutil", shutil, molt_dev_gates, rmtree=refuse)
+    molt_dev_gates.retire_gate_logs(tmp_path, now=now)
+    err = capsys.readouterr().err
+    assert "1 idle gate log run(s) could not be retired" in err
+    assert f"{run}: PermissionError" in err
+
+
+def test_the_keepalive_label_names_only_the_gate_commands_first_words(drv, monkeypatch):
+    seen = []
+
+    def fake(cmd, **kwargs):
+        seen.append(kwargs["label"])
+        return 0, "", "", None
+
+    monkeypatch.setattr(drv, "_run_captured_gate", fake)
+    monkeypatch.setattr(drv, "_gate_environment", lambda cmd, repo, env: (cmd, env))
+    drv.run_captured_gate(
+        "python tools/a.py --one --two --three", Path("."), None, lambda: False
+    )
+    drv.run_captured_gate(("cargo", "test"), Path("."), None, lambda: False)
+    assert seen == ["gate python tools/a.py --one --two ...", "gate cargo test"]
 
 
 def test_concurrent_gate_limit_comes_from_host_capacity(drv, monkeypatch):
@@ -4117,7 +4390,7 @@ def test_integrate_lock_covers_fetch_gates_push_confirmation_and_cleanup(
         return drv.EXIT_OK
 
     monkeypatch.setattr(drv.Git, "_run", git_run)
-    monkeypatch.setattr(drv, "run_gate", gate)
+    monkeypatch.setattr(drv, "run_captured_gate", _captured_gate(gate))
     # Cleanup's own destructive/dirty-tree contract has separate real-worktree
     # tests above; this seam asserts the integration lock remains held at entry.
     monkeypatch.setattr(molt_dev_retire, "cleanup_worktree", cleanup)
@@ -4150,7 +4423,7 @@ def test_integrate_gates_build_into_the_checkouts_cargo_target(
         targets.append((env["CARGO_TARGET_DIR"], dict(env)))
         return 0
 
-    monkeypatch.setattr(drv, "run_gate", gate)
+    monkeypatch.setattr(drv, "run_captured_gate", _captured_gate(gate))
     assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work))) == drv.EXIT_OK
     assert targets
     for target, env in targets:
@@ -4193,7 +4466,7 @@ def test_integration_progress_preserves_gate_outcomes(
                 return 7
         return 0
 
-    monkeypatch.setattr(drv, "run_gate", run_gate)
+    monkeypatch.setattr(drv, "run_captured_gate", _captured_gate(run_gate))
     monkeypatch.setenv("MOLT_EVENT_SECRET_CONTROL", "must-not-appear-in-events")
     args = _integrate_ns(drv, repo=str(work), no_push=True)
     if outcome == "interrupt":
@@ -4852,7 +5125,7 @@ def test_integrate_binds_the_fetched_upstream_for_every_change_gate(
             + "assert set(clippy.changed_paths(sys.argv[1])) == {'feature.rs', 'tools/proof_plan.toml'}; "
             + "assert rustfmt._changed_rust_paths(sys.argv[1]) == (Path('feature.rs'),); "
             + f"assert sys.argv[1] == {expected!r}; "
-            + "print('selected-upstream-path-gates-passed')"
+            + "print('selected-upstream-path' + '-gates-passed')"
         )
         + f" {upstream}"
     )
@@ -4880,7 +5153,7 @@ def test_integrate_binds_the_fetched_upstream_for_every_change_gate(
     else:
         assert drv.cmd_integrate(ns) == drv.EXIT_OK
     output = capfd.readouterr()
-    assert "selected-upstream-path-gates-passed" in output.out
+    assert kept_gate_stdout(output.out)[0] == "selected-upstream-path-gates-passed\n"
     if attributed:
         assert feature[:12] in output.err
     assert _git(work, "rev-parse", f"{remote}/main").stdout.strip() == selected
@@ -4897,7 +5170,11 @@ def test_integrate_rejects_unknown_gate_binding_before_admission_or_spawn(
         "admit",
         lambda *args, **kwargs: pytest.fail("invalid policy admitted"),
     )
-    monkeypatch.setattr(drv, "run_gate", lambda *args: pytest.fail("invalid gate ran"))
+    monkeypatch.setattr(
+        drv,
+        "run_captured_gate",
+        _captured_gate(lambda *args: pytest.fail("invalid gate ran")),
+    )
     with pytest.raises(drv.DriverError, match="unknown local gate placeholder"):
         drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
 
@@ -5403,7 +5680,9 @@ version_pattern = '^ok$'
 
     monkeypatch.setattr(proof_plan, "_version_fingerprint", probe)
     monkeypatch.setattr(
-        drv, "run_gate", lambda *args: pytest.fail("gate ran before admission")
+        drv,
+        "run_captured_gate",
+        _captured_gate(lambda *args: pytest.fail("gate ran before admission")),
     )
     with pytest.raises(drv.DriverError) as caught:
         drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
@@ -5463,7 +5742,9 @@ def test_integrate_selected_output_capacity_refuses_before_gate_prefix(
     monkeypatch.delenv("MOLT_DISK_GUARD_HIGH_WATER_GB", raising=False)
     _capacity_measurement(monkeypatch, lambda path: 25 * 1024**3 - 1)
     monkeypatch.setattr(
-        drv, "run_gate", lambda *args: pytest.fail("expensive prefix started")
+        drv,
+        "run_captured_gate",
+        _captured_gate(lambda *args: pytest.fail("expensive prefix started")),
     )
     with pytest.raises(drv.DriverError, match="capacity failed; executed=0") as caught:
         drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
@@ -5495,7 +5776,7 @@ def test_integrate_capacity_observes_interval_without_campaign_guarantee(
             return gate_rc
         return 0
 
-    monkeypatch.setattr(drv, "run_gate", gate)
+    monkeypatch.setattr(drv, "run_captured_gate", _captured_gate(gate))
     if gate_rc:
         with pytest.raises(drv.DriverError, match="gate failed \\(exit 19\\)"):
             drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
@@ -5547,7 +5828,9 @@ def test_integrate_no_cargo_or_dry_run_has_no_new_capacity_requirement(
 
     monkeypatch.setattr(disk_capacity, "require_build_capacity", forbidden)
     monkeypatch.setattr(disk_capacity, "probe_capacity", forbidden)
-    monkeypatch.setattr(drv, "run_gate", forbidden if dry else lambda *args: 0)
+    monkeypatch.setattr(
+        drv, "run_captured_gate", _captured_gate(forbidden if dry else lambda *args: 0)
+    )
     assert (
         drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True, dry_run=dry))
         == 0
@@ -5588,7 +5871,7 @@ def test_integrate_capacity_observer_failure_preserves_gate_result(
         return 0
 
     monkeypatch.setattr(disk_capacity, "probe_capacity", observe)
-    monkeypatch.setattr(drv, "run_gate", gate)
+    monkeypatch.setattr(drv, "run_captured_gate", _captured_gate(gate))
     if gate_rc:
         with pytest.raises(drv.DriverError, match="gate failed \\(exit 19\\)"):
             drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
@@ -5817,8 +6100,10 @@ python_versions = "supported-targets"
     monkeypatch.setattr(proof_plan, "_version_fingerprint", probe)
     monkeypatch.setattr(
         drv,
-        "run_gate",
-        lambda *args: pytest.fail("gate began before selected catalog admission"),
+        "run_captured_gate",
+        _captured_gate(
+            lambda *args: pytest.fail("gate began before selected catalog admission")
+        ),
     )
     with pytest.raises(drv.DriverError) as caught:
         drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))

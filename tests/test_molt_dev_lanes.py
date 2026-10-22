@@ -206,6 +206,26 @@ def test_lane_start_refuses_bad_slugs_and_unlaid_roots(
     assert _ref(plain, "refs/heads/lane/x") is None
 
 
+def test_lane_start_refuses_past_the_work_in_progress_limit(
+    family: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tools import drift_harvest
+
+    main = family / "molt-src"
+    _start(family, "first")
+    live = len(_registered(main))
+    # At the limit a new lane would pass it: refused, nothing created.
+    monkeypatch.setattr(drift_harvest, "MAX_LIVE_WORKTREES", live)
+    with pytest.raises(
+        DriverError, match=rf"{live} live worktrees: .* limit of {live}"
+    ):
+        lanes.cmd_lane_start(_args(family, slug="second"))
+    assert _ref(main, "refs/heads/lane/second") is None
+    # One under it, a lane starts.
+    monkeypatch.setattr(drift_harvest, "MAX_LIVE_WORKTREES", live + 1)
+    _start(family, "second")
+
+
 def test_lane_retire_refuses_an_unlanded_lane(family: Path) -> None:
     worktree = _start(family, "unlanded")
     tip = _commit_file(worktree, "work.txt", "work\n", "unlanded work")
