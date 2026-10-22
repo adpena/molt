@@ -57,8 +57,8 @@ def _base_interpreter(entrypoint: Path) -> Path:
     A POSIX virtualenv links its interpreter, so resolving the path already
     reaches the base. A Windows virtualenv (and ``venv --copies``) holds a
     launcher copy in ``Scripts``, whose path differs per checkout; its
-    ``pyvenv.cfg`` names the base, by ``executable`` (CPython's venv, 3.11+)
-    or by its ``home`` directory (uv). Build scripts run the interpreter with
+    ``pyvenv.cfg`` names the base, by ``executable`` (CPython's venv) or by
+    its ``home`` directory (uv). Build scripts run the interpreter with
     ``-B -I -S``, which imports no virtualenv site, so the base runs the same.
     A base that cannot be found keeps the launcher's own path.
     """

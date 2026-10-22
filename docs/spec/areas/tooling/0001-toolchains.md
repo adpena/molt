@@ -857,7 +857,7 @@ the source identity, and inside it one variant per observed Cargo environment
 holds the receipt, the probe evidence and the generation
 `.molt-backend-generations/<variant>/<sha256>/<variant>`, which never changes
 after publication (`molt.cli.backend_generation`). A checkout whose inputs
-match an entry runs its generation without Cargo. The receipt names the
+match an entry runs its generation without a Cargo build. The receipt names the
 source identity, the observed environment and the generation's bytes, and is
 written once: a stored compiler that fails its capability probe fails the
 build instead of being rebuilt over, and changed or missing stored bytes of

@@ -813,7 +813,7 @@ works at the product level:
   ([rust.rs @v0.18.0](https://github.com/mozilla/sccache/blob/v0.18.0/src/compiler/rust.rs),
   [#2652](https://github.com/mozilla/sccache/issues/2652)). On this host the
   build server hit 6 of 855 Rust requests (0.70%) against 95.5% for C/C++,
-  with its 10 GiB cache at capacity (HF-391).
+  with its 10 GiB cache at capacity.
 - Cargo's `build.build-dir` (1.91) moves intermediates but does not share them;
   the cross-workspace cache is a design and a draft
   ([#5931](https://github.com/rust-lang/cargo/issues/5931),
@@ -839,7 +839,17 @@ tests that place their target in a temporary directory.
 - An entry is named by the product's existing identity digest, which names
   sources by content and logical root and never by checkout path. A store miss
   builds once in the checkout's own target and publishes; every later build of
-  the same inputs on the host reuses the entry with no Cargo run.
+  the same inputs on the host reuses the entry with no Cargo build. "The same
+  inputs" is narrower than "unchanged Rust": the identity also covers the
+  toolchain content root, and the runtime's covers about 116 Python tooling
+  files (`runtime_build_tooling_paths`), so a lane that edits only, say,
+  `src/molt/dx.py` rebuilds the runtime cold, and a clone with its own toolchain root shares nothing
+  (one such clone's first build took 710.2 s with four Cargo runs, against the
+  330.8 s baseline). Measured after this change on the integrator Mac
+  (2026-10-21, another session and load than the baseline, so not a paired
+  comparison): a second clone of one commit and toolchain built
+  `examples/hello.py` in 39.4 s with no Cargo build; one 1.3 s Cargo probe and
+  three `rustc` version probes still ran.
 - A variant inside an entry holds what one observed Cargo environment
   (`CargoEnvironmentInputs`) produced, named by its digest. A build-script
   variable can change bytes without changing the declared identity, so a
@@ -876,7 +886,14 @@ tests that place their target in a temporary directory.
   identity memo, so a later build of that checkout skips hashing its sources.
 - One builder per input: a miss takes the entry's lock (`single_flight`) and
   reads the store again under it, so a second checkout with the same inputs
-  waits and then reuses the first one's publication. CPU admission across
+  waits and then reuses the first one's publication. Proven at the lock: two
+  interpreters with one identity build it once
+  (`tests/cli/test_product_store.py`). Not yet proven with two real builds:
+  in the one concurrent run on record the two checkouts ran different code
+  (one carried an edited `runtime/molt-backend/src/main.rs`) and one build
+  failed at `build-input-coverage`, so it showed neither reuse nor
+  serialization by this lock; a rerun with two worktrees at one commit is
+  open. CPU admission across
   builds stays with `molt.host_capacity` ([host capacity](../host_capacity.md),
   design item 6).
 - One wait policy covers the checkout's build locks, the identity's lock and
@@ -979,6 +996,19 @@ location-independent identity, so it is built once per input on a host that
 sets an artifact root; it has its own store and retention. Folding it into
 this store is open.
 
+Host-wide build state keeps three retention policies, one per kind of
+content; section 2.9 item 4's single table will carry the same rows (HF-434).
+Sizes are the integrator Mac's on 2026-10-22.
+
+| Store | Holds | Last use | Retires | Bytes | Why this policy |
+| --- | --- | --- | --- | --- | --- |
+| Product store, `<target base>/target/.molt-products` | reusable runtimes and host tools, one entry per input identity | ledger; every read renews, at most hourly | 5 days unused, at each publication; `molt cache evict` on demand | no budget; 334 MB | Every checkout reuses an entry, so reuse decides. Go trims its build cache by 5 days of non-use, a limit chosen from measured reuse, and sets no size bound either. |
+| WASM pair store, `<MOLT_EXT_ROOT>/wasm` (else the target's `molt-runtime-wasm`) | one target's selected runtime pair and the generations it replaced | ledger; publication and binding | a replaced generation 24 h unused, at each publication; the selected one never | no budget; 519 MB and 624 MB in two roots | A replaced generation has no reuse; only a build that bound it before the switch reads it, and a build ends well inside 24 h. |
+| `MOLT_CACHE` (module, link and stdlib caches; the result cache of its lane lives here too) | entries keyed by program and compiler inputs | entry mtime, refreshed on use | 30 days unused, then oldest first past 30 GiB; daily after a build, `molt cache prune` on demand | 30 GiB; 72 GB and 6.3 GB in two roots | Entries scale with the programs built, so a byte budget bounds them; 30 days is Cargo's limit for recreatable data. |
+
+Host-tool generations inside a store variant are written once and retire
+with their entry; they need no policy of their own.
+
 Cargo's PATH no longer carries the caller's PATH (HF-385): the plan derives it
 from its typed selections (the managed LLVM `bin`, each captured executable's
 directory, POSIX `confstr(_CS_PATH)`), so `uv run molt` and `.venv/bin/molt`
@@ -1045,7 +1075,8 @@ The design extends `molt.checkout_state`; it adds no second authority.
    window is a rename back; nothing goes through the user's Trash.
 4. **One cache policy** (HF-434). One host cache root. Each store (module
    caches, the product store, the result cache, the WASM pairs) declares its
-   last-use stamp and byte budget in one table. Only generations whose
+   last-use stamp and byte budget in one table. Section 2.8 records today's
+   three policies and the reason each differs; the table takes those rows. Only generations whose
    producer, reader and evictor share that ownership protocol may retire
    automatically. The pre-e9b0b9be8 native archive/scratch layouts remain the
    HF-282 shared-writer compatibility boundary: old builds can still require
