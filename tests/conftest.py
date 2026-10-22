@@ -543,14 +543,16 @@ def _ensure_pytest_process_scope() -> None:
         os.environ["MOLT_SESSION_ID_GENERATED"] = "1"
 
 
-def _assert_pytest_memory_guard_active() -> None:
+def _assert_pytest_memory_guard_active(config: pytest.Config) -> None:
     from molt import pytest_memory_guard_bootstrap
 
-    pytest_args = pytest_memory_guard_bootstrap.python_pytest_invocation_args()
+    # pytest's own invocation arguments: the command line, or the list an
+    # in-process pytest.main() received, which sys.argv does not show.
     try:
         pytest_memory_guard_bootstrap.validate_pytest_guardable_env(
             os.environ,
-            args=pytest_args if pytest_args is not None else tuple(sys.argv[1:]),
+            args=tuple(str(value) for value in config.invocation_params.args),
+            invocation_dir=Path(config.invocation_params.dir),
         )
     except SystemExit as exc:
         raise pytest.UsageError(str(exc)) from exc
@@ -583,9 +585,9 @@ def _keep_hypothesis_storage_in_scratch() -> None:
     )
 
 
-def pytest_configure() -> None:
+def pytest_configure(config: pytest.Config) -> None:
     _bind_repository_import_path()
-    _assert_pytest_memory_guard_active()
+    _assert_pytest_memory_guard_active(config)
     _ensure_pytest_process_scope()
     _keep_hypothesis_storage_in_scratch()
     _SESSION_ENVIRONMENT.clear()

@@ -317,7 +317,7 @@ def test_exception_diagnostics_are_mandatory_harness_and_portability_proofs():
         "portability.cargo-custody.windows",
     ):
         command = commands[identifier]
-        assert "tests/test_exception_diagnostics.py" in command["argv"]
+        assert "tests/test_exception_diagnostics.py" in command["pytest"]
         assert {"pr", "main"} <= set(command["tiers"])
     assert {
         "src/molt/exception_diagnostics.py",

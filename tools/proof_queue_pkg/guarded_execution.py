@@ -43,7 +43,7 @@ from molt import disk_capacity  # noqa: E402
 from molt.exact_json import read_exact  # noqa: E402
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder  # noqa: E402
 from molt.python_environment_identity import python_capture_authority_paths  # noqa: E402
-from tools import proof_plan, proof_receipts  # noqa: E402
+from tools import proof_command_argv, proof_plan, proof_receipts  # noqa: E402
 from tools.proof_queue_pkg import (  # noqa: E402
     command_admission as admission,
     command_identity,
@@ -554,7 +554,7 @@ def execute_guarded_request(request_path: Path) -> int:
             output_layout.validate(protected_roots=located_roots)
         python_authority = envelope.get("python")
         python_has_payload = isinstance(python_authority, Mapping) and (
-            admission.parse_python_invocation(
+            proof_command_argv.parse_python_invocation(
                 admission._python_invocation_argv(
                     [str(value) for value in envelope["argv"]], python_authority
                 )
@@ -566,7 +566,8 @@ def execute_guarded_request(request_path: Path) -> int:
             if python_has_payload
             else (
                 "node"
-                if admission._basename(str(envelope["argv"][0])) in {"node", "node.exe"}
+                if proof_command_argv._basename(str(envelope["argv"][0]))
+                in {"node", "node.exe"}
                 else None
             )
         )

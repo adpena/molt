@@ -8,6 +8,7 @@ from typing import Mapping
 
 from molt.process_environment import NameRule
 
+from tools import proof_command_argv
 from tools.proof_queue_pkg import (
     command_admission,
     custody,
@@ -143,25 +144,16 @@ def _proof_command_policy_error(command: list[str]) -> str | None:
     prefix = python.get("prefix")
     if not isinstance(prefix, list):
         return "proof queue refuses `uv run` without a typed launch prefix"
-    prefix = [str(value) for value in prefix]
-    missing = []
-    if "--active" not in prefix:
-        missing.append("--active")
-    if command_admission._uv_option_values(prefix, "--project") != ["."]:
-        missing.append("--project .")
-    if command_admission._uv_option_values(prefix, "--python") != ["3.12"]:
-        missing.append("--python 3.12")
-    if "--no-sync" not in prefix:
-        missing.append("--no-sync")
-    if "--no-config" not in prefix:
-        missing.append("--no-config")
+    missing = proof_command_argv.uv_project_contract_gaps(
+        [str(value) for value in prefix], root=state.ROOT
+    )
     if not missing:
         return None
     return (
         "proof queue refuses `uv run` commands without the active project "
         "interpreter contract; missing "
         + ", ".join(missing)
-        + ". Use `uv run --active --project . --python 3.12 --no-sync --no-config ...`."
+        + f". Use `{' '.join(proof_command_argv.uv_project_contract(state.ROOT))} ...`."
     )
 
 
@@ -298,20 +290,7 @@ def _named_spec_env_overrides(
 
 
 def _uv_active_python_command(*args: str) -> list[str]:
-    command = [
-        "uv",
-        "run",
-        "--active",
-        "--project",
-        ".",
-        "--python",
-        "3.12",
-        "--no-sync",
-        "--no-config",
-    ]
-    command.append("python")
-    command.extend(args)
-    return command
+    return [*proof_command_argv.uv_project_contract(state.ROOT), "python", *args]
 
 
 def _cargo_package_for_contention(cargo_args: list[str]) -> str:

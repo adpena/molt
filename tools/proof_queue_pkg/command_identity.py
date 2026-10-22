@@ -35,7 +35,7 @@ from molt.python_environment_identity import (
 )
 from molt.source_extension_link_inputs import SOURCE_EXTENSION_LINK_INPUTS_ENV
 from molt.cargo_execution_policy import cargo_native_dependency_environment_name
-from tools import proof_plan
+from tools import proof_command_argv, proof_plan
 from tools.proof_queue_pkg import command_admission as admission
 from tools.proof_queue_pkg import process_image_capture, toolchain_capture
 from tools.toolchain_probe import resolve_single_file_path
@@ -408,7 +408,7 @@ def _bound_tool_payload(
         isinstance(owner.get("python"), Mapping)
         or not isinstance(submitted, list)
         or not submitted
-        or admission._basename(str(submitted[0]))
+        or proof_command_argv._basename(str(submitted[0]))
         not in admission._executable_registry_names(requested)
     ):
         return None
@@ -476,16 +476,16 @@ def _exact_command(
     argv[0] = str(
         _cargo_executable_path(envelope, argv, cwd=cwd, env=env, token=argv[0])
         if not isinstance(python, Mapping)
-        and admission._basename(argv[0])
+        and proof_command_argv._basename(argv[0])
         in admission._executable_registry_names("cargo")
         else _resolve_outer_executable(argv[0], cwd=cwd, env=env)
     )
     if isinstance(python, Mapping) and python.get("kind") == "uv-console-script":
         prefix = python.get("prefix")
         assert isinstance(prefix, list)
-        console = admission._basename(str(python["console_script"]))
+        console = proof_command_argv._basename(str(python["console_script"]))
         payload_index = len(prefix)
-        module = admission._PYTHON_CONSOLE_MODULES.get(console)
+        module = proof_command_argv._PYTHON_CONSOLE_MODULES.get(console)
         if module is not None:
             argv = [
                 *argv[:payload_index],
@@ -508,8 +508,8 @@ def _payload_executable_identity(
     python = envelope.get("python")
     if not isinstance(python, Mapping) or python.get("kind") != "uv-console-script":
         return None
-    console = admission._basename(str(python.get("console_script") or ""))
-    if console in admission._PYTHON_CONSOLE_MODULES:
+    console = proof_command_argv._basename(str(python.get("console_script") or ""))
+    if console in proof_command_argv._PYTHON_CONSOLE_MODULES:
         return None
     prefix = python.get("prefix")
     if not isinstance(prefix, list):
@@ -579,7 +579,7 @@ def _bind_delegated_command(
         _cargo_executable_path(
             envelope, exact, cwd=cwd, env=env, token=exact[delegated_index]
         )
-        if admission._basename(str(delegated["argv"][0]))  # type: ignore[index]
+        if proof_command_argv._basename(str(delegated["argv"][0]))  # type: ignore[index]
         in admission._executable_registry_names("cargo")
         else _which_in_command_environment(
             exact[delegated_index], envelope, exact, cwd=cwd, env=env
@@ -1061,7 +1061,7 @@ def _rust_target(
     selected_command = owner.get("argv")
     if not isinstance(selected_command, list) or not selected_command:
         raise ValueError("Rust target selection requires an admitted command envelope")
-    if admission._basename(str(selected_command[0])) in {"cargo", "cargo.exe"}:
+    if proof_command_argv._basename(str(selected_command[0])) in {"cargo", "cargo.exe"}:
         from molt.cli.runtime_cargo_plan import (
             capture_cargo_configuration_inputs,
             cargo_requested_target,
@@ -1091,7 +1091,7 @@ def _rust_target(
     # Python payload such as `molt extension produce-set --target wasm` names a
     # Molt target alias, which must never reach rustc as a triple.
     is_rust_tool = bool(selected_command) and (
-        admission._basename(str(selected_command[0])) in _RUST_TOOL_NAMES
+        proof_command_argv._basename(str(selected_command[0])) in _RUST_TOOL_NAMES
     )
     if not is_rust_tool:
         index = len(selected_command)

@@ -2607,7 +2607,7 @@ def test_windows_sampler_family_is_in_mandatory_portability_proofs():
     ):
         assert (
             "tests/tools/test_memory_guard_windows_sampling.py"
-            in commands[identifier]["argv"]
+            in commands[identifier]["pytest"]
         )
     assert {
         "src/molt/windows_process_snapshot.py",

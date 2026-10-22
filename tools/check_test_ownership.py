@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Fail when a pytest file has no CI owner beyond the recorded backlog.
 
-CI runs only what the proof plan's commands name, so a test file that no
-command names never runs in CI and can rot unseen. A file is owned when a plan
-command's argv names it or a directory that contains it. A node selection
-(``path::node``) runs only that node, so it does not own the rest of its file.
-The baseline records the files without an owner; it may only shrink. A new
-test file must join a plan command, and a file that gains an owner (or is
-deleted) must leave the baseline.
+CI runs only what the proof plan's commands select, so a test file that no
+command selects never runs in CI and can rot unseen. A file is owned when a
+plan command's declared ``pytest`` targets name it or a directory that contains
+it (HF-179). The plan declares targets as data, so option values and tools that
+are not pytest never own a test file, and this gate imports nothing but the
+standard library. A node target (``path::node``) runs only that node, so it
+does not own the rest of its file. The baseline records the files without an
+owner; it may only shrink. A new test file must join a plan command, and a file
+that gains an owner (or is deleted) must leave the baseline.
 """
 
 from __future__ import annotations
@@ -37,28 +39,24 @@ def test_files(root: Path) -> set[str]:
 
 
 def plan_targets(root: Path) -> set[str]:
-    """Every whole file or directory under tests/ that a plan command names."""
+    """Every whole test file or directory that a plan command declares."""
     plan = tomllib.loads((root / "tools" / "proof_plan.toml").read_text("utf-8"))
-    targets = set()
-    for command in plan.get("command", []):
-        for argument in command.get("argv", []):
-            if (
-                isinstance(argument, str)
-                and argument.startswith("tests")
-                and "::" not in argument
-            ):
-                targets.add(argument.rstrip("/"))
-    return targets
+    return {
+        target
+        for command in plan.get("command", [])
+        for target in command.get("pytest", [])
+        if "::" not in target
+    }
 
 
 def unowned(root: Path) -> set[str]:
     targets = plan_targets(root)
-    result = set()
-    for file in test_files(root):
-        parents = {str(parent) for parent in PurePosixPath(file).parents}
-        if file not in targets and not parents & targets:
-            result.add(file)
-    return result
+    return {
+        file
+        for file in test_files(root)
+        if file not in targets
+        and not {str(parent) for parent in PurePosixPath(file).parents} & targets
+    }
 
 
 def read_baseline(root: Path) -> set[str] | None:

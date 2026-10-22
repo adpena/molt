@@ -9,7 +9,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path, WindowsPath
 import sys
 import time
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 if TYPE_CHECKING:
     from pytest import Config
@@ -54,20 +54,8 @@ PYTEST_GUARD_PLUGIN_NAMES = frozenset(
         "molt.pytest_memory_guard_config_plugin",
     }
 )
-SAFE_CONF_CUT_DIRS = frozenset({SOURCE_ROOT, SOURCE_ROOT / "tests"})
-SAFE_CONFIG_FILES = frozenset({SOURCE_ROOT / "pyproject.toml"})
 PYTHON_OPTIONS_WITH_ARGUMENT = frozenset({"-W", "-X"})
 MAX_CURRENT_TEST_TEXT = 4096
-
-
-def _truthy_env(value: str | None) -> bool:
-    return value is not None and value.strip().lower() not in {
-        "",
-        "0",
-        "false",
-        "no",
-        "off",
-    }
 
 
 def _bind_confirmed_test_repository() -> None:
@@ -167,13 +155,6 @@ def python_pytest_invocation_args(
     return None
 
 
-def _resolve_cli_path(raw: str) -> Path:
-    path = Path(raw).expanduser()
-    if not path.is_absolute():
-        path = Path.cwd() / path
-    return path.resolve()
-
-
 def current_test_file_path(
     *, pid: int | None = None, environ: Mapping[str, str] | None = None
 ) -> Path:
@@ -247,43 +228,6 @@ def _bounded_text(value: object) -> str:
     if len(text) <= MAX_CURRENT_TEST_TEXT:
         return text
     return f"{text[:MAX_CURRENT_TEST_TEXT]}...<truncated>"
-
-
-def _guard_plugin_disable_reason(raw: str) -> str | None:
-    value = raw.strip().lower()
-    if not value.startswith("no:"):
-        return None
-    plugin_name = value[3:]
-    if plugin_name in PYTEST_GUARD_PLUGIN_NAMES:
-        return plugin_name
-    return None
-
-
-def _pytest_plugin_enable_name(raw: str) -> str | None:
-    value = raw.strip()
-    if not value or value.lower().startswith("no:"):
-        return None
-    return value
-
-
-def _pytest_args_enable_guard_config_plugin(args: Sequence[str]) -> bool:
-    idx = 0
-    while idx < len(args):
-        arg = args[idx]
-        plugin_name: str | None = None
-        if arg == "-p":
-            if idx + 1 >= len(args):
-                return False
-            plugin_name = _pytest_plugin_enable_name(args[idx + 1])
-            idx += 2
-        elif arg.startswith("-p") and arg != "-p":
-            plugin_name = _pytest_plugin_enable_name(arg[2:].lstrip("="))
-            idx += 1
-        else:
-            idx += 1
-        if plugin_name == "molt.pytest_memory_guard_config_plugin":
-            return True
-    return False
 
 
 def _pytest_args_disable_cacheprovider(args: Sequence[str]) -> bool:
@@ -430,35 +374,6 @@ def install_pytest_custody_roots() -> bool:
     return True
 
 
-def _repo_pytest_addopts() -> tuple[str, ...]:
-    try:
-        import tomllib
-
-        payload = tomllib.loads(
-            (SOURCE_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-        )
-    except (OSError, tomllib.TOMLDecodeError):
-        return ()
-    tool = payload.get("tool")
-    if not isinstance(tool, dict):
-        return ()
-    pytest_section = tool.get("pytest")
-    if not isinstance(pytest_section, dict):
-        return ()
-    ini_options = pytest_section.get("ini_options")
-    if not isinstance(ini_options, dict):
-        return ()
-    addopts = ini_options.get("addopts")
-    if isinstance(addopts, list) and all(isinstance(item, str) for item in addopts):
-        return tuple(addopts)
-    if isinstance(addopts, str):
-        try:
-            return tuple(shlex.split(addopts))
-        except ValueError:
-            return ()
-    return ()
-
-
 def _pytest_addopts_from_env(environ: Mapping[str, str]) -> tuple[str, ...]:
     raw = environ.get("PYTEST_ADDOPTS", "")
     if not raw.strip():
@@ -469,93 +384,371 @@ def _pytest_addopts_from_env(environ: Mapping[str, str]) -> tuple[str, ...]:
         raise SystemExit(f"Invalid PYTEST_ADDOPTS: {exc}") from exc
 
 
-def validate_pytest_guardable_args(args: Sequence[str]) -> None:
-    idx = 0
-    while idx < len(args):
-        arg = args[idx]
-        if arg == "-c":
-            if idx + 1 >= len(args):
-                raise SystemExit("pytest -c requires a config path")
-            config_path = _resolve_cli_path(args[idx + 1])
-            if config_path not in SAFE_CONFIG_FILES:
-                raise SystemExit(
-                    "Molt pytest custody requires the repo pytest config; "
-                    f"unsafe -c {args[idx + 1]!r} is not allowed."
-                )
-            idx += 2
-            continue
-        if arg.startswith("-c") and arg != "-c":
-            raw = arg[2:].lstrip("=")
-            config_path = _resolve_cli_path(raw)
-            if config_path not in SAFE_CONFIG_FILES:
-                raise SystemExit(
-                    "Molt pytest custody requires the repo pytest config; "
-                    f"unsafe -c {raw!r} is not allowed."
-                )
-        if arg == "--noconftest":
-            raise SystemExit(
-                "Molt pytest custody requires tests/conftest.py; "
-                "--noconftest is not allowed. Run under tools/memory_guard.py "
-                "and the repo pytest hooks instead."
+# Startup probes execute this source outside sys.modules, and sitecustomize
+# imports it in every process, so these records are NamedTuples, not dataclasses.
+class PytestTarget(NamedTuple):
+    """One test path that a pytest argv selects, optionally narrowed to a node.
+
+    ``path`` is pytest's spelling of the file or directory, relative to the
+    invocation directory unless absolute, without a ``./`` prefix or a trailing
+    slash. ``node`` is the text after the first ``::``, where pytest splits it
+    (a parametrization may hold more ``::``), or None for the whole path.
+    """
+
+    path: str
+    node: str | None
+
+    @classmethod
+    def from_argument(cls, value: str) -> PytestTarget:
+        path, separator, node = value.partition("::")
+        while path.startswith("./"):
+            path = path[2:]
+        return cls(path.rstrip("/") or path, node if separator else None)
+
+    def __str__(self) -> str:
+        return self.path if self.node is None else f"{self.path}::{self.node}"
+
+
+class PytestArguments(NamedTuple):
+    """pytest's own reading of one argument list, before any configuration."""
+
+    targets: tuple[PytestTarget, ...]
+    pyargs: bool
+    override_ini: tuple[str, ...]
+    inifile: str | None
+    rootdir: str | None
+    plugins: tuple[str, ...]
+    noconftest: bool
+    confcutdir: str | None
+    basetemp: str | None
+
+
+class PytestRun(NamedTuple):
+    """What one pytest invocation reads, and what Molt custody refuses in it.
+
+    ``effective`` is the argument list pytest parses after it reads its
+    configuration: the selected file's ``addopts`` (with ``-o`` applied), then
+    ``PYTEST_ADDOPTS``, then the argv. It is None when custody refused the run
+    before it could be read without side effects.
+    """
+
+    inipath: Path | None
+    effective: PytestArguments | None
+    violations: tuple[str, ...]
+
+
+# The plugins that the repository's addopts load for pytest custody.
+PYTEST_CUSTODY_PLUGINS = (
+    "molt.pytest_memory_guard_config_plugin",
+    "molt.pytest_capacity_plugin",
+)
+
+
+@functools.lru_cache(maxsize=2)
+def _pytest_argument_parser(plugin_options: bool) -> Any:
+    """pytest's own argument parser: its builtin options, and plugin options on request.
+
+    Only pytest knows which of its options take a value, so its parser tells
+    targets from option values. pytest selects its configuration file from a
+    parse that knows only its builtin options (``Config._preparse`` loads
+    plugins afterwards), so the builtin parser reads configuration exactly.
+    ``plugin_options`` adds the options of every installed ``pytest11`` plugin
+    and of the custody plugins, such as ``--molt-worker-memory-gb``, so that an
+    option's separate value never reads as a target. That imports the plugins.
+    In a process that then runs pytest, the import would precede pytest's
+    assertion-rewrite hook, which could no longer rewrite them and would warn,
+    so only a caller outside pytest asks for it. An option this parser does not
+    know leaves its separate value as one more target.
+    """
+    # pytest exposes no public parser constructor; get_config is the entry its
+    # own plugin bootstrap uses.
+    from _pytest.config import get_config
+
+    config = get_config()
+    if plugin_options:
+        config.pluginmanager.load_setuptools_entrypoints("pytest11")
+        for name in PYTEST_CUSTODY_PLUGINS:
+            config.pluginmanager.import_plugin(name)
+    return config._parser
+
+
+def parse_pytest_arguments(
+    arguments: Sequence[str], *, plugin_options: bool
+) -> PytestArguments:
+    """Read one pytest argument list with pytest's own parser (HF-179).
+
+    ``plugin_options`` is ``_pytest_argument_parser``'s. Callers refuse ``@``
+    arguments first: the parser would read such a file.
+    """
+    from _pytest.config.exceptions import UsageError
+
+    values = [str(value) for value in arguments]
+    if any(value.startswith("@") for value in values):
+        raise ValueError("pytest @-files are read only after custody refuses them")
+    try:
+        parser = _pytest_argument_parser(plugin_options)
+        namespace, _unknown = parser.parse_known_and_unknown_args(values)
+    except UsageError as exc:
+        raise ValueError(f"invalid pytest arguments: {exc}") from exc
+    return PytestArguments(
+        targets=tuple(
+            PytestTarget.from_argument(str(value))
+            for value in getattr(namespace, "file_or_dir", None) or ()
+        ),
+        pyargs=bool(getattr(namespace, "pyargs", False)),
+        override_ini=tuple(getattr(namespace, "override_ini", None) or ()),
+        inifile=getattr(namespace, "inifilename", None) or None,
+        rootdir=getattr(namespace, "rootdir", None) or None,
+        plugins=tuple(
+            str(value) for value in getattr(namespace, "plugins", None) or ()
+        ),
+        noconftest=bool(getattr(namespace, "noconftest", False)),
+        confcutdir=getattr(namespace, "confcutdir", None) or None,
+        basetemp=getattr(namespace, "basetemp", None) or None,
+    )
+
+
+def configured_pytest_addopts(
+    arguments: PytestArguments, *, invocation_dir: Path
+) -> tuple[Path | None, tuple[str, ...]]:
+    """The configuration file pytest selects in ``invocation_dir``, and its addopts.
+
+    pytest's own ``determine_setup`` chooses the file from ``-c``,
+    ``--rootdir`` and the targets and applies ``-o`` over it. Relative
+    spellings are anchored at ``invocation_dir``, not at this process's working
+    directory.
+    """
+    from _pytest.config.exceptions import UsageError
+    from _pytest.config.findpaths import determine_setup
+    from _pytest.outcomes import Failed
+
+    def anchored(value: str) -> str:
+        path = Path(value)
+        return str(path if path.is_absolute() else invocation_dir / path)
+
+    try:
+        _rootpath, inipath, inicfg, _ignored = determine_setup(
+            inifile=anchored(arguments.inifile) if arguments.inifile else None,
+            override_ini=arguments.override_ini,
+            args=[anchored(target.path) for target in arguments.targets],
+            rootdir_cmd_arg=(
+                anchored(os.path.expandvars(arguments.rootdir))
+                if arguments.rootdir
+                else None
+            ),
+            invocation_dir=invocation_dir,
+        )
+    except (OSError, UsageError, Failed) as exc:
+        raise ValueError(
+            f"pytest configuration in {invocation_dir} is unreadable: {exc}"
+        ) from exc
+    configured = inicfg.get("addopts")
+    if configured is None:
+        return inipath, ()
+    value = configured.value
+    if isinstance(value, str) and configured.mode == "ini":
+        return inipath, tuple(shlex.split(value))
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return inipath, tuple(value)
+    raise ValueError(f"pytest addopts in {inipath} must be a string or a string list")
+
+
+def _within(path: Path, directory: Path) -> bool:
+    return path == directory or directory in path.parents
+
+
+def _file_identity(path: Path) -> tuple[int, int] | None:
+    try:
+        found = path.stat()
+    except OSError:
+        return None
+    return found.st_dev, found.st_ino
+
+
+def _lies_in_or_holds(path: Path, root: Path) -> bool:
+    """Whether ``path``, as given or resolved, lies in ``root`` or holds it.
+
+    Text and file identity both decide: a case-insensitive filesystem
+    (macOS's default) spells one directory many ways, and a mount without
+    stable inode numbers defeats identity alone.
+    """
+    root_identity = _file_identity(root)
+    holders = {_file_identity(holder) for holder in (root, *root.parents)}
+    holders.discard(None)
+    for candidate in (path, path.resolve()):
+        if _within(candidate, root) or _within(root, candidate):
+            return True
+        if _file_identity(candidate) in holders:
+            return True
+        if root_identity is not None and any(
+            _file_identity(ancestor) == root_identity for ancestor in candidate.parents
+        ):
+            return True
+    return False
+
+
+def read_pytest_run(
+    args: Sequence[str],
+    *,
+    environ: Mapping[str, str],
+    invocation_dir: Path,
+    plugin_options: bool,
+    repository_root: Path = SOURCE_ROOT,
+) -> PytestRun:
+    """Read one pytest invocation as pytest will, and check Molt custody on it.
+
+    This is the one custody check over the effective arguments, shared by the
+    sitecustomize bootstrap and proof-queue admission (HF-179). It refuses
+    ``@`` argument files, which pytest reads outside every source snapshot,
+    and an ``addopts`` override, which drops the repository addopts that load
+    the custody plugins. A run in the repository must use the repository's
+    configuration with its custody plugins enabled and its conftest kept. An
+    explicit ``--basetemp`` must lie outside the checkout: pytest deletes that
+    directory before the run.
+
+    The configuration is selected from the builtin options, as pytest selects
+    it. ``plugin_options`` also reads the plugins' options in the effective
+    arguments, so their targets are exact; only a caller outside the pytest
+    process passes it (``_pytest_argument_parser``). Without it, a plugin
+    option's separate value is one more target, which can only place the run
+    in the repository and never relaxes custody.
+    """
+    env_addopts = _pytest_addopts_from_env(environ)
+    argfiles = [value for value in (*env_addopts, *args) if str(value).startswith("@")]
+    if argfiles:
+        return PytestRun(
+            None,
+            None,
+            (
+                "Molt pytest custody refuses pytest argument files; pytest reads "
+                f"{', '.join(map(str, argfiles))} outside every source snapshot. "
+                "Pass the arguments directly.",
+            ),
+        )
+    violations: list[str] = []
+    # Arguments pytest itself rejects end the run before any test; custody
+    # reports them instead of failing with a traceback.
+    try:
+        submitted = parse_pytest_arguments((*env_addopts, *args), plugin_options=False)
+    except ValueError as exc:
+        return PytestRun(None, None, (str(exc),))
+    overrides = [
+        item
+        for item in submitted.override_ini
+        if item.split("=", 1)[0].strip() == "addopts"
+    ]
+    if overrides:
+        violations.append(
+            "Molt pytest custody requires the repo pytest config; "
+            f"-o/--override-ini {', '.join(overrides)!r} replaces the addopts "
+            "that load its custody plugins and is not allowed."
+        )
+    try:
+        inipath, configured = configured_pytest_addopts(
+            submitted, invocation_dir=invocation_dir
+        )
+    except ValueError as exc:
+        return PytestRun(None, None, (*violations, str(exc)))
+    if any(value.startswith("@") for value in configured):
+        return PytestRun(
+            inipath,
+            None,
+            (
+                *violations,
+                f"Molt pytest custody refuses argument files in the addopts of {inipath}.",
+            ),
+        )
+    try:
+        effective = parse_pytest_arguments(
+            (*configured, *env_addopts, *args), plugin_options=plugin_options
+        )
+    except ValueError as exc:
+        return PytestRun(inipath, None, (*violations, str(exc)))
+    root = repository_root.resolve()
+    repository_config = root / "pyproject.toml"
+    selected = inipath.resolve() if inipath is not None else None
+    invocation = invocation_dir.resolve()
+    in_repository = _within(invocation, root) or any(
+        _within((invocation / target.path).resolve(), root)
+        for target in submitted.targets
+    )
+    if submitted.inifile is not None and selected != repository_config:
+        violations.append(
+            "Molt pytest custody requires the repo pytest config; "
+            f"unsafe -c {submitted.inifile!r} is not allowed."
+        )
+    elif in_repository and selected != repository_config:
+        violations.append(
+            "Molt pytest custody requires the repo pytest config; a run in the "
+            f"repository reads {selected or 'no pytest configuration file'}."
+        )
+    if effective.noconftest:
+        violations.append(
+            "Molt pytest custody requires tests/conftest.py; "
+            "--noconftest is not allowed. Run under tools/memory_guard.py "
+            "and the repo pytest hooks instead."
+        )
+    if effective.confcutdir is not None:
+        confcutdir = (invocation / Path(effective.confcutdir).expanduser()).resolve()
+        if confcutdir not in {root, root / "tests"}:
+            violations.append(
+                "Molt pytest custody requires the repo pytest hooks; "
+                f"unsafe --confcutdir={effective.confcutdir!r} is not allowed."
             )
-        if arg == "--confcutdir":
-            if idx + 1 >= len(args):
-                raise SystemExit("pytest --confcutdir requires a path")
-            confcutdir = _resolve_cli_path(args[idx + 1])
-            if confcutdir not in SAFE_CONF_CUT_DIRS:
-                raise SystemExit(
-                    "Molt pytest custody requires the repo pytest hooks; "
-                    f"unsafe --confcutdir={args[idx + 1]!r} is not allowed."
-                )
-            idx += 2
-            continue
-        if arg.startswith("--confcutdir="):
-            raw = arg.split("=", 1)[1]
-            confcutdir = _resolve_cli_path(raw)
-            if confcutdir not in SAFE_CONF_CUT_DIRS:
-                raise SystemExit(
-                    "Molt pytest custody requires the repo pytest hooks; "
-                    f"unsafe --confcutdir={raw!r} is not allowed."
-                )
-        if arg == "-p":
-            if idx + 1 >= len(args):
-                raise SystemExit("pytest -p requires a plugin name")
-            disabled = _guard_plugin_disable_reason(args[idx + 1])
-            if disabled is not None:
-                raise SystemExit(
-                    "Molt pytest custody requires the memory-guard pytest "
-                    f"plugins; disabling {disabled!r} is not allowed."
-                )
-            idx += 2
-            continue
-        if arg.startswith("-p") and arg != "-p":
-            disabled = _guard_plugin_disable_reason(arg[2:].lstrip("="))
-            if disabled is not None:
-                raise SystemExit(
-                    "Molt pytest custody requires the memory-guard pytest "
-                    f"plugins; disabling {disabled!r} is not allowed."
-                )
-        idx += 1
+    if effective.basetemp is not None:
+        # pytest deletes a given basetemp before the run, at the path
+        # os.path.abspath gives it: no `~` expansion, and a symlink is the
+        # path itself. Scratch never lies in the checkout
+        # (molt.custody_layout.scratch_root), so neither may that path or
+        # the directory it reaches, however the filesystem spells them; and
+        # a basetemp that holds the checkout would delete it with every
+        # sibling worktree.
+        basetemp = Path(os.path.abspath(invocation / effective.basetemp))
+        if _lies_in_or_holds(basetemp, root):
+            violations.append(
+                "Molt pytest custody keeps pytest's deleted --basetemp apart from "
+                f"the checkout; --basetemp={effective.basetemp!r} lies in or holds {root}. "
+                "Use a directory under the run's scratch root."
+            )
+    custody_names = PYTEST_GUARD_PLUGIN_NAMES | set(PYTEST_CUSTODY_PLUGINS)
+    for plugin in effective.plugins:
+        name = plugin.strip()
+        if name.lower().startswith("no:") and name[3:].strip() in custody_names:
+            violations.append(
+                "Molt pytest custody requires the memory-guard pytest "
+                f"plugins; disabling {name[3:].strip()!r} is not allowed."
+            )
+    if selected == repository_config:
+        missing = [
+            name for name in PYTEST_CUSTODY_PLUGINS if name not in effective.plugins
+        ]
+        if missing:
+            violations.append(
+                "Molt pytest custody requires the custody plugins that the repo "
+                f"addopts load; {', '.join(missing)} would not load."
+            )
+    return PytestRun(selected, effective, tuple(violations))
 
 
 def validate_pytest_guardable_env(
     environ: Mapping[str, str],
     *,
     args: Sequence[str] = (),
+    invocation_dir: Path | None = None,
 ) -> None:
-    env_addopts = _pytest_addopts_from_env(environ)
-    if env_addopts:
-        validate_pytest_guardable_args(env_addopts)
-    if not _truthy_env(environ.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD")):
-        return
-    combined_args = tuple(args) + env_addopts + _repo_pytest_addopts()
-    validate_pytest_guardable_args(combined_args)
-    if not _pytest_args_enable_guard_config_plugin(combined_args):
-        raise SystemExit(
-            "Molt pytest custody requires the explicit "
-            "molt.pytest_memory_guard_config_plugin plugin when "
-            "PYTEST_DISABLE_PLUGIN_AUTOLOAD is set."
-        )
+    """Refuse a pytest run that Molt custody cannot hold (``read_pytest_run``).
+
+    This runs in the pytest process before pytest starts, so it imports no
+    plugin: pytest imports its plugins itself.
+    """
+    run = read_pytest_run(
+        args,
+        environ=environ,
+        invocation_dir=Path.cwd() if invocation_dir is None else invocation_dir,
+        plugin_options=False,
+    )
+    if run.violations:
+        raise SystemExit("\n".join(run.violations))
 
 
 def _guard_pid_from_env(environ: Mapping[str, str]) -> int | None:
@@ -968,7 +1161,6 @@ def ensure_pytest_memory_guard(
     if args is None:
         return False
     _bind_confirmed_test_repository()
-    validate_pytest_guardable_args(args)
     source = os.environ if environ is None else environ
     validate_pytest_guardable_env(source, args=args)
     if outer_memory_guard_active(source):

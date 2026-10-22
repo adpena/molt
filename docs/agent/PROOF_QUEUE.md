@@ -1241,8 +1241,28 @@ declared toolchains. The generated command registry covers every proof-plan
 argv; identical matrix argv retain every owning command ID and must agree on
 one toolchain set. A plan entrypoint with one registered argv is exact-only, so
 changing one selector cannot downgrade its Cargo, Node, Quint, Lean, or other
-declared closure to generic Python custody. Shared entrypoints such as pytest
-remain typed command families. There is no untyped or empty-toolchain executable lane:
+declared closure to generic Python custody. A Python console script is its
+module: `uv run pytest` and `python -m pytest` (directly, through `uv run` or
+a wrapper) are one entrypoint, so every spelling meets the same rule. A pytest
+argv that is not an exact plan command is a focused proof (HF-179). The
+pytest custody check (`read_pytest_run` in
+`src/molt/pytest_memory_guard_bootstrap.py`) reads it with pytest's own parser
+as pytest will in the plan's checkout, from the selected configuration's
+`addopts` and the argv; the sitecustomize bootstrap runs the same check when
+pytest starts. Admission refuses what custody refuses: `@` argument files, an
+`addopts` override such as `-o addopts=...`, another configuration file,
+`--noconftest`, a `--basetemp` in the checkout, and a run that
+would not load the custody plugins. Each
+selected path needs a proof-plan command or named lane that declares it in
+`pytest = [...]`, declares a directory holding it, or declares a node in it.
+The proof admits the toolchains and native units of every row whose targets lie
+on, above or inside a selection, with their child processes, and the one
+`cargo_build_python` role those rows declare; owners that disagree on that role
+are refused. A focused proof that names no test path, uses `--pyargs`, or
+selects a path outside the checkout or one no row owns is refused, and its
+receipt never stands in for an owner's. CI selection, pytest memory units and
+`tools/check_test_ownership.py` read the plan rows' declared `pytest` targets
+and `pytest_worker_memory_gb` as data, so they import no pytest. There is no untyped or empty-toolchain executable lane:
 unknown binaries reject before execution. Opaque shells, unmodeled `uv`
 options, ambiguous console scripts, and noncanonical Rust wrappers are also
 rejected before execution. The same recursive parser recognizes
