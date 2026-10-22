@@ -43,6 +43,7 @@ from typing import Any, Callable, Collection, Iterator, Mapping, Sequence, cast
 
 import msgpack
 import pytest
+from tests.module_isolation import forget_module
 
 from molt.backend_environment import CodegenSelection
 from molt.backend_protocol import BACKEND_DAEMON_PROTOCOL_VERSION
@@ -540,7 +541,7 @@ def _load_generated_importer(
     intrinsics_mod.require_intrinsic = require_intrinsic
     monkeypatch.setitem(sys.modules, "_intrinsics", intrinsics_mod)
     module_name = "molt_test_generated_importer"
-    monkeypatch.delitem(sys.modules, module_name, raising=False)
+    forget_module(monkeypatch, module_name)
     spec = importlib.util.spec_from_file_location(module_name, importer_path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
