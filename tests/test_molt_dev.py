@@ -1246,7 +1246,7 @@ def test_committed_source_checks_precede_complete_native_build_selection(drv):
     )
     gates = [gate.command for gate in gates]
     # These independent families must survive reordering, including every
-    # native build owner and its complete Cargo test/build requirements.
+    # affected backend owner and its complete Cargo test/build requirements.
     source_names = {
         "op-kind-registry",
         "source-extension-package-sets",
@@ -1254,7 +1254,12 @@ def test_committed_source_checks_precede_complete_native_build_selection(drv):
         "dev-tooling",
         "ci-wiring",
     }
-    build_names = ["backend-native", "native-object-emission", "tir-midend"]
+    build_names = [
+        "backend-native",
+        "native-object-emission",
+        "backend-luau",
+        "tir-midend",
+    ]
     lint_gate = (
         "python tools/check_changed_clippy.py --base {integration_upstream_commit}"
     )
@@ -1297,6 +1302,7 @@ def test_committed_gate_manifest_selects_molt_ir_op_kind_registry(drv):
     assert [r.name for r in matched] == [
         "op-kind-registry",
         "rust-clippy-changed",
+        "backend-luau",
         "tir-midend",
     ]
     assert gates.count("python tools/generators.py check") == 1

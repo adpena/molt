@@ -19,8 +19,6 @@ from pathlib import Path
 from typing import Iterable, Mapping
 from xml.etree import ElementTree
 
-from packaging.version import InvalidVersion, Version
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TOOLS_ROOT = REPO_ROOT / "tools"
 SRC_ROOT = REPO_ROOT / "src"
@@ -31,6 +29,8 @@ if str(_REPO_ROOT) not in sys.path:
 from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
+from packaging.version import InvalidVersion, Version  # noqa: E402
+
 from molt import host_capacity  # noqa: E402
 
 from tools.command_execution import CommandExecutor  # noqa: E402
