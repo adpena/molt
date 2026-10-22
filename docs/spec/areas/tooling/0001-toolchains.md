@@ -1096,7 +1096,33 @@ in estimated purgeable capacity is not evidence that Molt reclaimed bytes.
 Registered proof entrypoints require an exact registered argv, regardless of how
 many variants exist. A transport or payload near-match cannot become a Python
 leaf and lose its declared child tools. Parameterized commands require their
-existing typed family authority.
+existing typed family authority: prepared and selected-differential named
+lanes, the source-extension producer, and focused pytest proofs (HF-179).
+Every spelling of pytest (`uv run pytest`, `python -m pytest`, a typed wrapper)
+is one entrypoint, and a pytest argv that is not an exact plan row is a focused
+proof. A plan row declares its test targets as data (`pytest = [...]`, with
+`pytest_worker_memory_gb` for its measured xdist unit), as local rules do, and
+its executed argv appends them; loading the plan imports no pytest. Each target
+has one spelling, which plan validation enforces: a relative POSIX path with no
+empty, `.` or `..` segment or trailing slash, whose names match the checkout
+exactly in case, then an optional `::node`; CI selection, focused admission and
+the ownership gate compare targets as text. Only a
+focused proof is read with pytest's own parser: the pytest custody check in
+`src/molt/pytest_memory_guard_bootstrap.py` reads it as pytest will in the
+plan's checkout, from the selected configuration's `addopts` and the argv. That
+check, shared with the sitecustomize bootstrap and the repository conftest
+(which reads pytest's own invocation arguments, so an in-process `pytest.main()`
+meets it too), refuses `@` argument files, an `addopts` override
+(`-o addopts=...`), another configuration file, `--noconftest`, a `--basetemp`
+in the checkout (pytest deletes the basetemp first, and scratch never lies in
+the checkout), and any run that would not load the custody plugins. An in-process
+`pytest.main()` that passes both an `addopts` override and `--noconftest` runs
+no repository code inside pytest, so no check sees it; that gap remains. Each
+selection needs a plan row that declares it, a directory holding it, or a node
+in it. The proof admits the union of the toolchains, native units and one
+`cargo_build_python` role of every row whose targets lie on, above or inside a
+selection, so it discards no authority those rows declare. It never stands in
+for a row's receipt.
 
 ### Native C/C++ processes in development proofs
 

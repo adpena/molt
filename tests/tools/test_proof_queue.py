@@ -29,7 +29,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tools import proof_plan
+from tools import proof_command_argv, proof_plan
 from molt.cargo_execution_policy import normalize_cargo_environment
 from molt.process_environment import NameRule, ProcessEnvironment
 from molt.file_hashing import _sha256_file
@@ -1024,9 +1024,605 @@ def test_guarded_exec_spelling_in_payload_data_does_not_delegate(command) -> Non
     envelope = command_admission.envelope_for_command(command)
     assert envelope["guarded_exec"] is None
     assert envelope["delegated"] is None
+    # A focused pytest proof (HF-179) and a registered Node program may start
+    # their declared toolchains; every other unregistered payload is a leaf.
+    focused = (envelope["typed_command"] or {}).get("family") == "focused-pytest"
     assert envelope["process_closure"]["descendants"] == (
-        "declared-toolchains" if command[0] == "node" else "forbidden"
+        "declared-toolchains" if command[0] == "node" or focused else "forbidden"
     )
+
+
+_FOCUSED_TEST = "tests/tools/test_proof_queue.py"
+_FOCUSED_NODE = (
+    f"{_FOCUSED_TEST}::test_uv_console_script_binds_to_exact_project_interpreter_prefix"
+)
+_UV_ACTIVE = [
+    "uv",
+    "run",
+    "--active",
+    "--project",
+    ".",
+    "--python",
+    "3.12",
+    "--no-sync",
+    "--no-config",
+]
+# Two small, owned test files with light imports for pytest's own collection.
+_INJECTED_TESTS = "tests/tools/test_check_gate_flips.py"
+_NAMED_TESTS = "tests/tools/test_determinism_perf_gate.py"
+
+
+def _rows_naming(path: str, *, nodes: bool = True) -> set[str]:
+    """Independent oracle: plan rows that declare ``path``, a parent, or a node in it.
+
+    Authority is declared per row, so a row that declares one node of a file
+    owns that file for focused admission (HF-179); ``nodes=False`` counts only
+    rows that declare the whole path.
+    """
+    names = {path, *(str(parent) for parent in Path(path).parents if parent.parts)}
+    plan = proof_plan.ProofPlan.load()
+    return {
+        row.id
+        for row in (*plan.commands, *plan.named_lanes)
+        if any(
+            target.split("::", 1)[0] in names and (nodes or "::" not in target)
+            for target in row.data.get("pytest", ())
+        )
+    }
+
+
+def _focused_plan(monkeypatch, *rows, root: Path | None = None) -> None:
+    """Judge focused proofs against a plan holding only ``rows``.
+
+    Each row is ``(id, targets, toolchains)`` or ``(id, targets, toolchains,
+    data)``; it runs ``python -m pytest`` on its declared targets. ``root``
+    moves the plan, and with it the checkout that focused admission resolves
+    selections in.
+    """
+    commands = []
+    for row_id, targets, toolchains, *data in rows:
+        commands.append(
+            proof_plan.ProofCommand(
+                row_id,
+                {
+                    "argv": ["python", "-m", "pytest"],
+                    "pytest": list(targets),
+                    "toolchains": list(toolchains),
+                    **dict(*data),
+                },
+            )
+        )
+    registry = copy.copy(command_admission._proof_command_registry())
+    plan = registry["plan"]
+    registry["plan"] = replace(
+        plan,
+        path=plan.path if root is None else root / "tools" / "proof_plan.toml",
+        commands=tuple(commands),
+        named_lanes=(),
+    )
+    monkeypatch.setattr(command_admission, "_proof_command_registry", lambda: registry)
+
+
+def _custody_checkout(root: Path, *addopts: str) -> None:
+    """A checkout whose pytest configuration loads the Molt custody plugins."""
+    options = [
+        "-p",
+        "molt.pytest_memory_guard_config_plugin",
+        "-p",
+        "molt.pytest_capacity_plugin",
+        *addopts,
+    ]
+    (root / "pyproject.toml").write_text(
+        f"[tool.pytest.ini_options]\naddopts = {json.dumps(options)}\n",
+        encoding="utf-8",
+    )
+
+
+def _collected_files(arguments: list[str], *, cwd: Path) -> set[str]:
+    """pytest's actual collection: the files whose tests ``pytest --co`` lists."""
+    completed = run_guarded_test_process(
+        [sys.executable, "-m", "pytest", "--co", "-q", "-p", "no:cacheprovider"]
+        + arguments,
+        cwd=cwd,
+        env={
+            name: value
+            for name, value in os.environ.items()
+            if name != "PYTEST_ADDOPTS"
+        },
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    return {
+        line.split("::", 1)[0]
+        for line in completed.stdout.splitlines()
+        if "::" in line and not line.startswith(" ")
+    }
+
+
+def _pytest_configuration(arguments: list[str], *, cwd: Path) -> dict[str, object]:
+    """Independent oracle: what pytest's own Config makes of ``arguments``.
+
+    The probe parses the arguments with pytest's ``Config.parse`` in a plain
+    Python process, which the custody bootstrap does not guard, so it shows
+    what pytest would run if custody let it.
+    """
+    script = (
+        "import json, sys\n"
+        "from _pytest.config import get_config\n"
+        "args = sys.argv[1:]\n"
+        "config = get_config(args)\n"
+        "config.parse(args)\n"
+        "print(json.dumps({\n"
+        "    'args': [str(value) for value in config.args],\n"
+        "    'inipath': None if config.inipath is None else str(config.inipath),\n"
+        "    'noconftest': config.known_args_namespace.noconftest,\n"
+        "    'plugins': sorted(\n"
+        "        name for name, plugin in config.pluginmanager.list_name_plugin()\n"
+        "        if name and plugin is not None\n"
+        "    ),\n"
+        "    'worker_memory_gb': config.getoption('molt_worker_memory_gb', None),\n"
+        "}))\n"
+    )
+    completed = run_guarded_test_process(
+        [sys.executable, "-c", script, *arguments],
+        cwd=cwd,
+        env={
+            name: value
+            for name, value in os.environ.items()
+            if name != "PYTEST_ADDOPTS"
+        },
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    return json.loads(completed.stdout.splitlines()[-1])
+
+
+def _bootstrap_refusal(arguments: list[str], *, cwd: Path) -> str:
+    """Start a real pytest run; the custody bootstrap must refuse it."""
+    completed = run_guarded_test_process(
+        [sys.executable, "-m", "pytest", "--co", "-q", *arguments],
+        cwd=cwd,
+        env={
+            name: value
+            for name, value in os.environ.items()
+            if name != "PYTEST_ADDOPTS"
+        },
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert completed.returncode != 0, completed.stdout + completed.stderr
+    assert "collected" not in completed.stdout
+    return completed.stdout + completed.stderr
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        [*_UV_ACTIVE, "pytest"],
+        [*_UV_ACTIVE, "python", "-m", "pytest"],
+        ["python", "-m", "pytest"],
+        ["python", "tools/venv_exec.py", "--", "python", "-m", "pytest"],
+    ],
+    ids=["uv-console", "uv-module", "direct-module", "wrapped-module"],
+)
+def test_focused_pytest_admission_is_one_rule_for_every_spelling(spelling) -> None:
+    # HF-179: pytest is one program however it is launched. An ad hoc run is a
+    # focused proof admitted with every toolchain of the rows that own the file
+    # it selects, node rows included, and it never counts as one of their proofs.
+    envelope = command_admission.envelope_for_command([*spelling, _FOCUSED_NODE, "-q"])
+    owners = _rows_naming(_FOCUSED_TEST)
+    node_only = owners - _rows_naming(_FOCUSED_TEST, nodes=False)
+    plan = proof_plan.ProofPlan.load()
+
+    assert node_only, "the oracle file must keep a node-only owner"
+    assert envelope["typed_command"]["family"] == "focused-pytest"
+    assert envelope["typed_command"]["selections"] == [_FOCUSED_TEST]
+    assert set(envelope["typed_command"]["owners"]) == owners
+    assert envelope["proof_plan_command_ids"] == []
+    assert envelope["process_closure"]["descendants"] == "declared-toolchains"
+    for command in plan.commands:
+        if command.id in owners:
+            assert set(plan.required_toolchains(command)) <= set(envelope["toolchains"])
+
+
+def test_focused_pytest_option_values_are_never_selections(tmp_path) -> None:
+    # pytest's own parser decides which options take a value: the config file,
+    # keyword, plugin, temporary root, ignore and worker values are not test
+    # paths, even when a value names a checkout directory.
+    envelope = command_admission.envelope_for_command(
+        [
+            *_UV_ACTIVE,
+            "pytest",
+            "-c",
+            "pyproject.toml",
+            "-k",
+            "tools",
+            "-p",
+            "no:cacheprovider",
+            "--basetemp",
+            str(tmp_path / "basetemp"),
+            "--ignore",
+            "tools",
+            "-n",
+            "2",
+            "--deselect",
+            _INJECTED_TESTS,
+            _FOCUSED_TEST,
+        ]
+    )
+    assert envelope["typed_command"]["selections"] == [_FOCUSED_TEST]
+
+
+def test_focused_pytest_reads_the_custody_plugins_options() -> None:
+    # Review v3, finding 7. The custody plugins' options are known to the
+    # reader, so the separate value of `--molt-worker-memory-gb 3` is the
+    # option's value, as pytest's own Config reads it, and never a target.
+    arguments = ["--molt-worker-memory-gb", "3", _NAMED_TESTS]
+    oracle = _pytest_configuration(arguments, cwd=state.ROOT)
+    assert oracle["worker_memory_gb"] == 3.0
+    assert oracle["args"] == [_NAMED_TESTS]
+    from molt.pytest_memory_guard_bootstrap import parse_pytest_arguments
+
+    plugin_read = parse_pytest_arguments(arguments, plugin_options=True)
+    assert [str(target) for target in plugin_read.targets] == [_NAMED_TESTS]
+    envelope = command_admission.envelope_for_command(
+        ["python", "-m", "pytest", *arguments]
+    )
+    assert envelope["typed_command"]["selections"] == [_NAMED_TESTS]
+
+
+def test_focused_pytest_refuses_a_basetemp_in_the_checkout(tmp_path) -> None:
+    # Review v4, finding 4: pytest deletes a given --basetemp first, and
+    # scratch never lies in the checkout, so a focused proof places it outside.
+    for basetemp in ("src", "tmp/pytest-focused"):
+        with pytest.raises(ValueError, match="basetemp"):
+            command_admission.envelope_for_command(
+                ["python", "-m", "pytest", f"--basetemp={basetemp}", _NAMED_TESTS]
+            )
+    envelope = command_admission.envelope_for_command(
+        ["python", "-m", "pytest", f"--basetemp={tmp_path / 'bt'}", _NAMED_TESTS]
+    )
+    assert envelope["typed_command"]["selections"] == [_NAMED_TESTS]
+
+
+def test_focused_pytest_reads_installed_plugin_options() -> None:
+    # Admission runs outside pytest, so it also reads the installed plugins'
+    # options. The value of `--hypothesis-profile tests` names a directory in
+    # the checkout, yet pytest's own Config reads it as the option's value; a
+    # reader without the plugin's options would select the whole tree.
+    arguments = ["--hypothesis-profile", "tests", _NAMED_TESTS]
+    oracle = _pytest_configuration(arguments, cwd=state.ROOT)
+    assert oracle["args"] == [_NAMED_TESTS]
+    envelope = command_admission.envelope_for_command(
+        ["python", "-m", "pytest", *arguments]
+    )
+    assert envelope["typed_command"]["selections"] == [_NAMED_TESTS]
+
+
+@pytest.mark.parametrize(
+    "override,expected",
+    [
+        (["-o", f"addopts={_INJECTED_TESTS}"], "injects"),
+        ([f"--override-ini=addopts={_INJECTED_TESTS}"], "injects"),
+        (["-o", "addopts=--noconftest"], "noconftest"),
+        (["-oaddopts=-p no:molt.pytest_capacity_plugin"], "uncustodied"),
+    ],
+    ids=["short", "long", "noconftest", "plugin"],
+)
+def test_focused_pytest_and_the_bootstrap_refuse_an_addopts_override(
+    override, expected
+) -> None:
+    # Review v3, finding 3. The oracle is pytest's own Config: an addopts
+    # override replaces the repository addopts, so it injects targets, unloads
+    # the conftest or drops the custody plugins. Admission and the custody
+    # bootstrap read the same effective arguments and both refuse it.
+    arguments = [*override, _NAMED_TESTS]
+    oracle = _pytest_configuration(arguments, cwd=state.ROOT)
+    assert "molt.pytest_memory_guard_config_plugin" not in oracle["plugins"]
+    if expected == "injects":
+        assert _INJECTED_TESTS in oracle["args"]
+    elif expected == "noconftest":
+        assert oracle["noconftest"] is True
+    with pytest.raises(ValueError, match="override-ini"):
+        command_admission.envelope_for_command(["python", "-m", "pytest", *arguments])
+    assert "override-ini" in _bootstrap_refusal(arguments, cwd=state.ROOT)
+
+
+def test_focused_pytest_and_the_bootstrap_refuse_an_argument_file(tmp_path) -> None:
+    # Review v3, finding 4. pytest reads an @file as arguments (the oracle is
+    # its own Config), outside every source snapshot, and the file can change
+    # between admission and launch. Both readers refuse it before reading it.
+    from _pytest.config import get_config
+
+    argfile = tmp_path / "arguments.txt"
+    argfile.write_text(f"--noconftest\n{_NAMED_TESTS}\n", encoding="utf-8")
+    namespace, _unknown = get_config()._parser.parse_known_and_unknown_args(
+        [f"@{argfile}"]
+    )
+    assert namespace.noconftest is True
+    assert namespace.file_or_dir == [_NAMED_TESTS]
+    with pytest.raises(ValueError, match="argument files"):
+        command_admission.envelope_for_command(
+            ["python", "-m", "pytest", f"@{argfile}"]
+        )
+    assert "argument files" in _bootstrap_refusal([f"@{argfile}"], cwd=state.ROOT)
+
+
+def test_focused_pytest_refuses_a_run_that_names_no_target_under_testpaths() -> None:
+    # pytest reads testpaths only when no target is named; a focused proof
+    # must name its targets, so an overridden testpaths cannot select one.
+    assert _collected_files(["-o", f"testpaths={_INJECTED_TESTS}"], cwd=state.ROOT) == {
+        _INJECTED_TESTS
+    }
+    with pytest.raises(ValueError, match="must name the test files"):
+        command_admission.envelope_for_command(
+            ["python", "-m", "pytest", "-o", f"testpaths={_INJECTED_TESTS}"]
+        )
+
+
+def test_focused_pytest_admits_strictness_flags_that_pytest_spells_as_overrides() -> (
+    None
+):
+    # pytest 9 implements --strict-config, --strict-markers and --strict as ini
+    # overrides; they select nothing and replace no addopts.
+    envelope = command_admission.envelope_for_command(
+        [*_UV_ACTIVE, "pytest", "--strict-config", "--strict-markers", _NAMED_TESTS]
+    )
+    assert envelope["typed_command"]["selections"] == [_NAMED_TESTS]
+
+
+def test_focused_pytest_collection_keys_stay_inside_the_selected_path(
+    monkeypatch, tmp_path
+) -> None:
+    # A collection key such as python_files chooses tests only inside a
+    # selected path, whose owners cover them; pytest's own collection confirms.
+    suite = tmp_path / "tests" / "suite"
+    suite.mkdir(parents=True)
+    (suite / "test_a.py").write_text("def test_a():\n    pass\n", encoding="utf-8")
+    (suite / "helper.py").write_text("def test_helper():\n    pass\n", encoding="utf-8")
+    _custody_checkout(tmp_path)
+    _focused_plan(
+        monkeypatch, ("fixture.suite", ["tests/suite"], ["python", "uv"]), root=tmp_path
+    )
+    widened = ["-o", "python_files=*.py", "tests/suite"]
+    collected = _collected_files(widened, cwd=tmp_path)
+    assert collected == {"tests/suite/test_a.py", "tests/suite/helper.py"}
+    envelope = command_admission.envelope_for_command(
+        ["python", "-m", "pytest", *widened]
+    )
+    assert envelope["typed_command"]["selections"] == ["tests/suite"]
+
+
+def test_focused_pytest_reads_the_checkout_configuration_as_pytest_does(
+    tmp_path,
+) -> None:
+    # pytest puts its configuration's addopts before the argv; the oracle is
+    # pytest's own collection in the same checkout.
+    (tmp_path / "tests").mkdir()
+    for name in ("a", "b"):
+        (tmp_path / "tests" / f"test_{name}.py").write_text(
+            f"def test_{name}():\n    pass\n", encoding="utf-8"
+        )
+    _custody_checkout(tmp_path, "tests/test_b.py")
+    collected = _collected_files(["tests/test_a.py"], cwd=tmp_path)
+
+    assert collected == {"tests/test_a.py", "tests/test_b.py"}
+    assert (
+        set(
+            proof_command_argv.pytest_run_selections(["tests/test_a.py"], root=tmp_path)
+        )
+        == collected
+    )
+    _custody_checkout(tmp_path, "--pyargs")
+    with pytest.raises(ValueError, match="--pyargs"):
+        proof_command_argv.pytest_run_selections(["tests/test_a.py"], root=tmp_path)
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\naddopts = ["tests/test_b.py"]\n', encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="custody plugins"):
+        proof_command_argv.pytest_run_selections(["tests/test_a.py"], root=tmp_path)
+
+
+def test_focused_pytest_selects_the_configuration_as_pytest_does(tmp_path) -> None:
+    # pytest selects its configuration file before it loads any plugin, so a
+    # plugin option's separate value counts there as one more path. The value
+    # `docs` lifts the paths' common ancestor to the checkout, whose
+    # configuration loads custody; without it pytest would read sub/pytest.ini.
+    # The oracle is pytest's own Config.
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "sub" / "tests").mkdir(parents=True)
+    (tmp_path / "sub" / "tests" / "test_a.py").write_text(
+        "def test_a():\n    pass\n", encoding="utf-8"
+    )
+    (tmp_path / "sub" / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
+    _custody_checkout(tmp_path)
+    arguments = ["--hypothesis-profile", "docs", "sub/tests/test_a.py"]
+    oracle = _pytest_configuration(arguments, cwd=tmp_path)
+    assert oracle["inipath"] == str(tmp_path / "pyproject.toml")
+    assert oracle["args"] == ["sub/tests/test_a.py"]
+    assert proof_command_argv.pytest_run_selections(arguments, root=tmp_path) == (
+        "sub/tests/test_a.py",
+    )
+
+
+def test_focused_pytest_owners_include_a_node_id_only_row(monkeypatch) -> None:
+    # Review finding 2: a row that selects one node declares authority for its
+    # file, so a focused proof of any part of that file admits the row.
+    file = "tests/tools/test_check_test_ownership.py"
+    node = f"{file}::test_a_new_unowned_file_fails_and_cannot_be_baselined"
+    _focused_plan(monkeypatch, ("fixture.node-only", [node], ["python", "uv", "git"]))
+    for selected in (
+        file,
+        node,
+        f"{file}::test_a_file_that_gains_an_owner_must_leave_the_baseline",
+    ):
+        envelope = command_admission.envelope_for_command(
+            ["python", "-m", "pytest", selected]
+        )
+        assert envelope["typed_command"]["owners"] == ["fixture.node-only"]
+        assert "git" in envelope["toolchains"]
+
+
+def test_focused_pytest_owners_include_a_named_lane_that_runs_pytest() -> None:
+    # A named lane that runs pytest declares authority for the files it
+    # selects, as a proof-plan command does.
+    plan = proof_plan.ProofPlan.load()
+    lane = plan.named_lane("native.capability-cache-policy")
+    node = next(target for target in lane.pytest_targets if "::" in target)
+    envelope = command_admission.envelope_for_command(["python", "-m", "pytest", node])
+
+    assert lane.id in envelope["typed_command"]["owners"]
+    assert set(plan.toolchain_closure(lane.toolchains)) <= set(envelope["toolchains"])
+
+
+def test_focused_pytest_directory_admits_the_rows_inside_it(monkeypatch) -> None:
+    # A run of a directory executes every row inside it, so it needs a row that
+    # selects the whole directory and admits the rows below as well.
+    inner = (
+        "tests/tools/test_check_test_ownership.py"
+        "::test_a_new_unowned_file_fails_and_cannot_be_baselined"
+    )
+    _focused_plan(
+        monkeypatch,
+        ("fixture.directory", ["tests/tools"], ["python", "uv"]),
+        ("fixture.inner-node", [inner], ["python", "uv", "git"]),
+    )
+    envelope = command_admission.envelope_for_command(
+        ["python", "-m", "pytest", "tests/tools"]
+    )
+    assert set(envelope["typed_command"]["owners"]) == {
+        "fixture.directory",
+        "fixture.inner-node",
+    }
+    assert "git" in envelope["toolchains"]
+    with pytest.raises(ValueError, match="tests has no owning proof-plan command"):
+        command_admission.envelope_for_command(["python", "-m", "pytest", "tests"])
+
+
+def test_focused_pytest_resolves_selections_in_the_plans_checkout(
+    monkeypatch, tmp_path
+) -> None:
+    # Review finding 3: selections and owners resolve against one checkout, the
+    # plan's, never the tree that runs admission.
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_only_here.py").write_text(
+        "def test_here():\n    pass\n", encoding="utf-8"
+    )
+    _custody_checkout(tmp_path)
+    _focused_plan(
+        monkeypatch,
+        (
+            "fixture.checkout",
+            ["tests/test_only_here.py", _NAMED_TESTS],
+            ["python", "uv"],
+        ),
+        root=tmp_path,
+    )
+    envelope = command_admission.envelope_for_command(
+        ["python", "-m", "pytest", "tests/test_only_here.py"]
+    )
+    assert envelope["typed_command"]["selections"] == ["tests/test_only_here.py"]
+    # The admitting tree has this file; the plan's checkout does not.
+    assert (state.ROOT / _NAMED_TESTS).is_file()
+    with pytest.raises(ValueError, match="must name the test files"):
+        command_admission.envelope_for_command(["python", "-m", "pytest", _NAMED_TESTS])
+    # Execution confines every typed command, a focused proof among them, to
+    # the checkout that admitted it, so no row runs it in another tree.
+    with pytest.raises(ValueError, match="differs from its bootstrap checkout"):
+        execution_environment.validate_typed_source_root(
+            envelope, {"root": str(tmp_path.resolve())}
+        )
+
+
+def test_focused_pytest_carries_its_owners_cargo_build_python(monkeypatch) -> None:
+    # Review finding 5: the payload carries the one build-Python role its Cargo
+    # owners declare, as an exact row does.
+    plan = proof_plan.ProofPlan.load()
+    owner = next(row for row in plan.commands if row.id == "browser-simd.contract")
+    assert owner.data["cargo_build_python"] is False
+    assert "cargo" in owner.toolchains
+    envelope = command_admission.envelope_for_command(
+        ["python", "-m", "pytest", "tests/tools/test_build_browser_simd.py"]
+    )
+    assert envelope["typed_command"]["owners"] == ["browser-simd.contract"]
+    assert envelope["typed_command"]["cargo_build_python"] is False
+    assert not command_admission.cargo_build_python_required(envelope)
+    assert "build-python" not in envelope["toolchains"]
+
+    cargo = ["python", "uv", "cargo", "rustc"]
+    _focused_plan(
+        monkeypatch,
+        ("fixture.generator", [_NAMED_TESTS], cargo, {"cargo_build_python": True}),
+        ("fixture.no-generator", [_NAMED_TESTS], cargo, {"cargo_build_python": False}),
+    )
+    with pytest.raises(ValueError, match="disagree on the Cargo build Python"):
+        command_admission.envelope_for_command(["python", "-m", "pytest", _NAMED_TESTS])
+
+
+@pytest.mark.parametrize(
+    "arguments,message",
+    [
+        (["-q"], "must name the test files"),
+        (["--pyargs", "tools"], "--pyargs"),
+        (["tests"], "tests has no owning proof-plan command"),
+    ],
+    ids=["no-selection", "pyargs", "whole-tree"],
+)
+def test_focused_pytest_refuses_what_no_owner_declares(arguments, message) -> None:
+    with pytest.raises(ValueError, match=re.escape(message)):
+        command_admission.envelope_for_command(
+            [*_UV_ACTIVE, "python", "-m", "pytest", *arguments]
+        )
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [["uv", "run", "pip-audit"], ["uv", "run", "python", "-m", "pip_audit"]],
+    ids=["console", "module"],
+)
+def test_console_script_near_match_keeps_the_registered_authority(spelling) -> None:
+    # `uv run pip-audit` is registered (security.python.audit). A console
+    # script is its module, so an altered spelling of either form is the same
+    # near-match, never a generic Python run without the command's authority.
+    with pytest.raises(ValueError, match="near-match would discard"):
+        command_admission.envelope_for_command([*spelling, "--strict"])
+
+
+def test_focused_pytest_refuses_a_file_that_no_command_owns(monkeypatch) -> None:
+    owners = _rows_naming(_FOCUSED_TEST)
+    registry = copy.copy(command_admission._proof_command_registry())
+    plan = registry["plan"]
+    registry["plan"] = replace(
+        plan,
+        commands=tuple(
+            command for command in plan.commands if command.id not in owners
+        ),
+        named_lanes=tuple(lane for lane in plan.named_lanes if lane.id not in owners),
+    )
+    monkeypatch.setattr(command_admission, "_proof_command_registry", lambda: registry)
+    with pytest.raises(ValueError, match=f"{_FOCUSED_TEST} has no owning proof-plan"):
+        command_admission.envelope_for_command([*_UV_ACTIVE, "pytest", _FOCUSED_NODE])
+
+
+def test_focused_pytest_refuses_a_selection_outside_the_checkout(tmp_path) -> None:
+    outside = tmp_path / "test_outside.py"
+    outside.write_text("def test_x():\n    pass\n", encoding="utf-8")
+    # Under the checkout's configuration the selection itself is refused.
+    with pytest.raises(ValueError, match="outside the checkout"):
+        command_admission.envelope_for_command(
+            ["python", "-m", "pytest", "-c", "pyproject.toml", str(outside)]
+        )
+    # Without it pytest would pick no configuration and load no custody plugin.
+    with pytest.raises(ValueError, match="repo pytest config"):
+        command_admission.envelope_for_command(["python", "-m", "pytest", str(outside)])
 
 
 def test_uv_console_script_binds_to_exact_project_interpreter_prefix() -> None:
@@ -1161,10 +1757,13 @@ def test_exact_wasm_e2e_commands_own_declared_child_toolchains(
         "toolchains": _admitted_plan_toolchains(plan, command),
     }
 
-    with pytest.raises(
-        ValueError, match="near-match would discard toolchain authority"
-    ):
-        command_admission.envelope_for_command([*command.argv, "--tb=short"])
+    # An altered argv is a focused proof: it keeps every toolchain the exact
+    # command declares, and its receipt never stands in for the command's.
+    focused = command_admission.envelope_for_command([*command.argv, "--tb=short"])
+    assert focused["proof_plan_command_ids"] == []
+    assert command_id in focused["typed_command"]["owners"]
+    assert set(_admitted_plan_toolchains(plan, command)) <= set(focused["toolchains"])
+    assert focused["process_closure"]["descendants"] == "declared-toolchains"
 
 
 @pytest.mark.parametrize(
@@ -4544,7 +5143,7 @@ def test_python_leaf_blocks_cargo_and_node_children_before_launch(
 
 
 def test_python_bootstrap_parser_preserves_interpreter_options_and_payload() -> None:
-    invocation = command_admission.parse_python_invocation(
+    invocation = proof_command_argv.parse_python_invocation(
         [
             "python",
             "-S",
@@ -19143,7 +19742,9 @@ def test_multiple_registered_variants_never_turn_transport_changes_into_leaves(
         ),
     ]
     ids = ["fixture.full", "fixture.macos"]
-    entrypoint = command_admission._command_entrypoint(commands[0])
+    entrypoint = proof_command_argv._command_entrypoint(
+        commands[0], root=command_admission._REPO_ROOT
+    )
     registry["entrypoints"][entrypoint] = list(ids)
     # Each fixture row projects every registered field the real registry does,
     # including its Cargo build-generator declaration (a compiling driver).
@@ -19220,7 +19821,7 @@ def test_cargo_check_rejects_compiler_forwarding():
 def test_python_invocation_grouped_consumed_option_boundaries(
     prefix, options, mode, target, arguments
 ):
-    invocation = command_admission.parse_python_invocation(["python", *prefix])
+    invocation = proof_command_argv.parse_python_invocation(["python", *prefix])
     assert invocation.interpreter_options == options
     assert (invocation.mode, invocation.target, invocation.arguments) == (
         mode,
@@ -19232,7 +19833,7 @@ def test_python_invocation_grouped_consumed_option_boundaries(
 @pytest.mark.parametrize("flag", ["R", "E", "I", "B", "x"])
 @pytest.mark.parametrize("option", ["-W", "-X", "-BW", "-BX"])
 def test_python_option_values_never_become_interpreter_flags(flag, option):
-    invocation = command_admission.parse_python_invocation(
+    invocation = proof_command_argv.parse_python_invocation(
         ["python", option, "-" + flag, "-c", "pass"]
     )
     assert command_admission._interpreter_flag_present(
@@ -19252,7 +19853,7 @@ def test_python_option_values_never_become_interpreter_flags(flag, option):
 )
 def test_python_grouped_options_require_their_actual_value(prefix):
     with pytest.raises(ValueError, match="requires"):
-        command_admission.parse_python_invocation(["python", *prefix])
+        proof_command_argv.parse_python_invocation(["python", *prefix])
 
 
 @pytest.mark.parametrize(

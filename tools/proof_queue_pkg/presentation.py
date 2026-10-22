@@ -3,32 +3,42 @@
 from __future__ import annotations
 
 import argparse
+import json
+
+from tools import proof_command_argv
+from tools.proof_queue_pkg import state
+
+
+def _uv() -> tuple[str, ...]:
+    """The queue's `uv run` contract, so every printed command passes policy."""
+    return proof_command_argv.uv_project_contract(state.ROOT)
 
 
 def _cmd_quickstart(args: argparse.Namespace) -> int:
     del args
+    uv = " ".join(_uv())
     print(
         "molt queue status\n"
         "molt queue run --detach --queue-size 3\n"
         "molt queue retention\n"
-        "uv run --active --project . --python 3.12 python tools/proof_queue.py status\n"
-        "uv run --active --project . --python 3.12 python tools/proof_queue.py cargo "
+        f"{uv} python tools/proof_queue.py status\n"
+        f"{uv} python tools/proof_queue.py cargo "
         '--id focused-cargo-proof --reason "why this proves the Rust contract" '
         "--cargo-output-lifetime terminal-success "
         '--scope runtime/molt-cpython-abi/src --note "change: moved the Rust authority; test: proving the complete C-API crate shard" --timeout 900 -- '
         "test -p molt-cpython-abi --lib\n"
-        "uv run --active --project . --python 3.12 python tools/proof_queue.py exec "
+        f"{uv} python tools/proof_queue.py exec "
         '--id focused-proof --reason "why this proves the changed contract" '
         '--resource-family python --contention-key python:focused --note "change: moved the shared authority; test: proving the focused invariant" --timeout 240 -- '
-        "uv run --active --project . --python 3.12 pytest tests/path.py -q"
+        f"{uv} pytest tests/path.py -q"
         "\n"
-        "uv run --active --project . --python 3.12 python tools/proof_queue.py note "
+        f"{uv} python tools/proof_queue.py note "
         '<run-id> --kind observation --note "what happened, what it means, and the next bounded action"'
         "\n"
-        "uv run --active --project . --python 3.12 python tools/proof_queue.py diagnose "
+        f"{uv} python tools/proof_queue.py diagnose "
         "<run-id> --append-note"
         "\n"
-        "uv run --active --project . --python 3.12 python tools/proof_queue.py link "
+        f"{uv} python tools/proof_queue.py link "
         '<child-run-id> --parent <parent-run-id> --kind derives_from --note "why this edge exists"'
     )
     return 0
@@ -36,6 +46,7 @@ def _cmd_quickstart(args: argparse.Namespace) -> int:
 
 def _cmd_template(args: argparse.Namespace) -> int:
     del args
+    command = json.dumps([*_uv(), "pytest", "tests/path.py", "-q"])
     print(
         "[[proof]]\n"
         'id = "focused-proof"\n'
@@ -49,7 +60,7 @@ def _cmd_template(args: argparse.Namespace) -> int:
         'edge_kind = "derives_from"\n'
         'edge_note = "Narrows the previous failing proof to the generated selector contract."\n'
         'env = { MOLT_EXTERNAL_STATIC_PACKAGES = "numpy scipy" }\n'
-        'command = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "pytest", "tests/path.py", "-q"]\n'
+        f"command = {command}\n"
     )
     return 0
 
@@ -57,7 +68,7 @@ def _cmd_template(args: argparse.Namespace) -> int:
 def _cmd_cargo_template(args: argparse.Namespace) -> int:
     del args
     print(
-        "uv run --active --project . --python 3.12 python tools/proof_queue.py cargo \\\n"
+        f"{' '.join(_uv())} python tools/proof_queue.py cargo \\\n"
         "  --id runtime-focused-proof \\\n"
         "  --cargo-output-lifetime terminal-success \\\n"
         '  --reason "Prove the changed Rust runtime contract." \\\n'

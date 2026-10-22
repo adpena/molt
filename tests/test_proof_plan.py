@@ -30,6 +30,7 @@ from molt.python_environment_identity import python_capture_authority_paths
 from tools import (
     check_subprocess_guard_coverage,
     gen_proof_plan,
+    proof_command_argv,
     proof_plan,
     proof_receipts,
     toolchain_probe,
@@ -474,7 +475,8 @@ def test_local_gate_binding_has_a_closed_template_contract(command) -> None:
 
     with pytest.raises(ValueError, match="placeholder"):
         proof_plan.local_gate_commands(
-            {"always": [command]}, memory_units=proof_plan.PytestMemoryUnits(())
+            {"always": [command]},
+            memory_units=proof_plan.PytestMemoryUnits(()),
         )
     with pytest.raises(molt_dev.DriverError, match="placeholder"):
         molt_dev.GateConfig.parse(
@@ -526,7 +528,8 @@ def test_local_pytest_targets_are_existing_test_paths(target, message) -> None:
 def test_local_pytest_targets_project_one_command_per_rule() -> None:
     rule = next(rule for rule in PLAN.local_rules if rule.get("pytest"))
     commands = proof_plan.local_gate_commands(
-        {"rule": [rule]}, memory_units=proof_plan.PytestMemoryUnits(())
+        {"rule": [rule]},
+        memory_units=proof_plan.PytestMemoryUnits(()),
     )
     command, tools = commands[f"local.{rule['name']}.pytest"]
     assert shlex.split(command) == [
@@ -565,7 +568,8 @@ def test_local_pytest_selections_name_one_selection_and_tests(entry, message) ->
 def test_local_pytest_selections_size_workers_per_host() -> None:
     rule = next(rule for rule in PLAN.local_rules if rule.get("pytest_select"))
     commands = proof_plan.local_gate_commands(
-        {"rule": [rule]}, memory_units=proof_plan.PytestMemoryUnits(())
+        {"rule": [rule]},
+        memory_units=proof_plan.PytestMemoryUnits(()),
     )
     for index, entry in enumerate(rule["pytest_select"]):
         (key,) = set(entry) - {"targets"}
@@ -587,70 +591,21 @@ def test_local_pytest_selections_size_workers_per_host() -> None:
 
 def test_local_pytest_units_preserve_path_and_node_ownership_boundaries() -> None:
     commands = [
+        {"pytest": ["tests/light/"], "pytest_worker_memory_gb": 0.5},
+        {"pytest": ["tests/nodes.py"], "pytest_worker_memory_gb": 0.75},
         {
-            "argv": [
-                "python",
-                "-m",
-                "pytest",
-                "--molt-worker-memory-gb=0.5",
-                "tests/light/",
-            ]
+            "pytest": ["tests/nodes.py::Case::test_heavy"],
+            "pytest_worker_memory_gb": 6.25,
         },
         {
-            "argv": [
-                "python",
-                "-m",
-                "pytest",
-                "--molt-worker-memory-gb",
-                "0.75",
-                "tests/nodes.py",
-            ]
+            "pytest": [
+                "tests/nodes.py::test_special[x::y & 'quotes' {value} [nested]]"
+            ],
+            "pytest_worker_memory_gb": 4.0,
         },
-        {
-            "argv": [
-                "python",
-                "-m",
-                "pytest",
-                "--molt-worker-memory-gb=6.25",
-                "tests/nodes.py::Case::test_heavy",
-            ]
-        },
-        {
-            "argv": [
-                "python",
-                "-m",
-                "pytest",
-                "--molt-worker-memory-gb=4",
-                "tests/nodes.py::test_special[x::y & 'quotes' {value} [nested]]",
-            ]
-        },
-        {
-            "argv": [
-                "python",
-                "-m",
-                "pytest",
-                "--molt-worker-memory-gb=1",
-                "tests/sibling.py",
-            ]
-        },
-        {
-            "argv": [
-                "python",
-                "-m",
-                "pytest",
-                "--molt-worker-memory-gb=0.5",
-                "tests/sibling.py",
-            ]
-        },
-        {
-            "argv": [
-                "python",
-                "-m",
-                "pytest",
-                "--molt-worker-memory-gb=0.5",
-                "tests/partial.py::test_one",
-            ]
-        },
+        {"pytest": ["tests/sibling.py"], "pytest_worker_memory_gb": 1.0},
+        {"pytest": ["tests/sibling.py"], "pytest_worker_memory_gb": 0.5},
+        {"pytest": ["tests/partial.py::test_one"], "pytest_worker_memory_gb": 0.5},
     ]
     units = proof_plan.PytestMemoryUnits(iter(commands))
     cases = [
@@ -669,26 +624,175 @@ def test_local_pytest_units_preserve_path_and_node_ownership_boundaries() -> Non
         (["tests/light/", "tests/unowned.py"], 2.5),
         (["tests"], 6.25),
     ]
-    # The index owns its derived observation; queries never rescan command argv.
+    # The index owns its derived observation; queries never rescan the rows.
     commands.clear()
     for targets, expected in cases:
         assert units.memory_gb(iter(targets)) == expected
 
 
-def test_local_pytest_cohort_keeps_literal_selection_and_parameter_argv() -> None:
-    target = "tests/nodes.py::test_literal[x::y & 'quotes' {value} [nested]]"
+def test_pytest_memory_units_read_the_declared_unit_and_targets() -> None:
+    # A row declares its worker unit and targets as data (HF-179), so neither a
+    # spelled option nor a separate option value can become a target: the
+    # review's `--molt-worker-memory-gb 3 tests/x.py` grew a `3` node.
     units = proof_plan.PytestMemoryUnits(
         [
             {
-                "argv": [
-                    "python",
-                    "-m",
-                    "pytest",
-                    "--molt-worker-memory-gb=4",
-                    "tests/nodes.py",
-                ]
-            }
+                "argv": ["python", "-m", "pytest", "--deselect", "tests/light.py::t"],
+                "pytest": ["tests/heavy.py"],
+                "pytest_worker_memory_gb": 6.0,
+            },
+            {"argv": ["python", "-m", "pytest", "--molt-worker-memory-gb", "3"]},
         ]
+    )
+    default = proof_plan.host_capacity.DEFAULT_PYTEST_WORKER_MEMORY_GB
+    assert default not in {3, 6}
+    assert units.memory_gb(["tests/heavy.py"]) == 6
+    for target in ("tests/light.py::t", "3"):
+        assert units.memory_gb([target]) == default, target
+
+
+@pytest.mark.parametrize(
+    "data,message",
+    [
+        (
+            {"argv": ["python", "-m", "pytest", "--molt-worker-memory-gb", "3"]},
+            "declare the worker unit as pytest_worker_memory_gb",
+        ),
+        (
+            {"argv": ["python", "-m", "pytest", "--molt-worker-memory-gb=3"]},
+            "declare the worker unit as pytest_worker_memory_gb",
+        ),
+        (
+            {"argv": ["python", "-m", "pytest"], "pytest_worker_memory_gb": 1.0},
+            "requires pytest targets",
+        ),
+        (
+            {
+                "argv": ["python", "-m", "pytest"],
+                "pytest": ["tests/test_proof_plan.py"],
+                "pytest_worker_memory_gb": True,
+            },
+            "positive finite byte count",
+        ),
+        (
+            {"argv": ["python", "-m", "pytest"], "pytest": ["tests/no_such_test.py"]},
+            "pytest target does not exist",
+        ),
+        (
+            {"argv": ["python", "-m", "pytest"], "pytest": ["tests/tools::test_x"]},
+            "node id must name a file",
+        ),
+        (
+            {"argv": ["python", "-m", "pytest"], "pytest": ["@tests/args.txt"]},
+            "non-empty list of test paths",
+        ),
+        (
+            {
+                "argv": ["python", "-m", "pytest"],
+                "pytest": ["tests/test_proof_plan.py", "tests/test_proof_plan.py"],
+            },
+            "targets must be unique",
+        ),
+    ],
+)
+def test_pytest_declarations_are_checked_without_pytest(data, message) -> None:
+    errors = proof_plan.pytest_declaration_errors("row", data, root=proof_plan.ROOT)
+    assert any(message in error for error in errors), errors
+
+
+@pytest.mark.parametrize(
+    "spelling,names",
+    [
+        ("tests//test_x.py", "tests/test_x.py"),
+        ("./tests/test_x.py", None),
+        ("tests/./test_x.py", "tests/test_x.py"),
+        ("tests/sub/../test_x.py", "tests/test_x.py"),
+        ("tests/sub/", None),
+        ("TESTS/test_x.py", "tests/test_x.py"),
+        ("tests/TEST_X.py", "tests/test_x.py"),
+        ("tests\\test_x.py", None),
+        ("tests/test_x.py::", None),
+    ],
+)
+def test_pytest_targets_have_one_canonical_spelling(
+    tmp_path, spelling: str, names: str | None
+) -> None:
+    # Review v4, finding 2. CI selection, focused admission and the ownership
+    # gate compare declared targets as text. The oracle is CI selection: each
+    # canonical target selects its owner when the test it names changes, and
+    # most other spellings of that test (a case-insensitive file system accepts
+    # another case too) select nothing. CI selection forgives `./` and a
+    # trailing slash, but admission and the ownership gate do not, so
+    # validation refuses every other spelling, on every host.
+    (tmp_path / "tests" / "sub").mkdir(parents=True)
+    (tmp_path / "tests" / "test_x.py").write_text(
+        "def test_x():\n    pass\n", encoding="utf-8"
+    )
+    (tmp_path / "tests" / "sub" / "test_y.py").write_text(
+        "def test_y():\n    pass\n", encoding="utf-8"
+    )
+
+    def selects(target: str, changed: str) -> bool:
+        family = proof_plan.ProofFamily("owner", {"inputs": [], "dependencies": []})
+        row = proof_plan.ProofCommand(
+            "row",
+            {"family": "owner", "argv": ["python", "-m", "pytest"], "pytest": [target]},
+        )
+        proof_plan._resolve_ci_command_test_inputs((family,), (row,))
+        return any(proof_plan._matches(changed, pattern) for pattern in family.inputs)
+
+    canonical = {
+        "tests/test_x.py": "tests/test_x.py",
+        "tests/sub": "tests/sub/test_y.py",
+        "tests/test_x.py::test_x": "tests/test_x.py",
+    }
+    for target, changed in canonical.items():
+        data = {"pytest": [target]}
+        assert proof_plan.pytest_declaration_errors("row", data, root=tmp_path) == []
+        assert selects(target, changed), target
+    assert (
+        proof_plan.local_pytest_target_errors(
+            "rule", ["tests/test_x.py", "tests/test_x.py::test_x"], root=tmp_path
+        )
+        == []
+    )
+    if names is not None:
+        assert not selects(spelling, names)
+    errors = proof_plan.pytest_declaration_errors(
+        "row", {"pytest": [spelling]}, root=tmp_path
+    )
+    assert errors, spelling
+    if not spelling.endswith("/") and spelling.startswith("tests/"):
+        assert proof_plan.local_pytest_target_errors(
+            "rule", [spelling], root=tmp_path
+        ), spelling
+
+
+def test_a_plan_pytest_row_executes_its_declared_targets() -> None:
+    row = proof_plan.ProofCommand(
+        "row",
+        {
+            "argv": ["python", "-m", "pytest", "-q"],
+            "pytest": ["tests/a.py", "tests/b.py::test_x"],
+            "pytest_worker_memory_gb": 0.75,
+        },
+    )
+    assert row.argv == (
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "--molt-worker-memory-gb=0.75",
+        "tests/a.py",
+        "tests/b.py::test_x",
+    )
+    assert row.pytest_targets == ("tests/a.py", "tests/b.py::test_x")
+
+
+def test_local_pytest_cohort_keeps_literal_selection_and_parameter_argv() -> None:
+    target = "tests/nodes.py::test_literal[x::y & 'quotes' {value} [nested]]"
+    units = proof_plan.PytestMemoryUnits(
+        [{"pytest": ["tests/nodes.py"], "pytest_worker_memory_gb": 4.0}]
     )
     argv = proof_plan.local_pytest_argv(
         iter([target]), ("-k", "literal or 'other'"), memory_units=units
@@ -715,17 +819,7 @@ def test_local_pytest_cohort_keeps_literal_selection_and_parameter_argv() -> Non
 
 def test_local_pytest_unit_projection_does_not_round_down_its_envelope() -> None:
     units = proof_plan.PytestMemoryUnits(
-        [
-            {
-                "argv": [
-                    "python",
-                    "-m",
-                    "pytest",
-                    "--molt-worker-memory-gb=1.0000004",
-                    "tests/precise.py",
-                ]
-            }
-        ]
+        [{"pytest": ["tests/precise.py"], "pytest_worker_memory_gb": 1.0000004}]
     )
     argv = proof_plan.local_pytest_argv(["tests/precise.py"], memory_units=units)
     assert "--molt-worker-memory-gb=1.0000004" in argv
@@ -2481,11 +2575,12 @@ def test_finally_pending_parity_runs_each_target_in_its_own_budget() -> None:
         row = by_id[f"wasm.test.finally-pending-observer-parity.{target}"]
         # One parametrized case per row: a sibling target's cold build can
         # never spend this row's budget. The file has no other test, so the
-        # two `-k` selections partition it exactly.
+        # two `-k` selections partition it exactly. The executed argv runs the
+        # prefix, then the declared targets.
         assert row.argv[6:] == (
-            "tests/test_finally_pending_observer_parity.py",
             "-k",
             target,
+            "tests/test_finally_pending_observer_parity.py",
         )
         assert (row.data["timeout_budget"], row.data["timeout_seconds"]) == (
             "integration",
@@ -2610,9 +2705,9 @@ def test_wasm_e2e_commands_bind_complete_child_toolchain_closure() -> None:
     )
     for row, target in ((native, "native"), (wasm, "wasm")):
         assert row.argv[-3:] == (
-            "tests/test_finally_pending_observer_parity.py",
             "-k",
             target,
+            "tests/test_finally_pending_observer_parity.py",
         )
     assert {"clang", "lld-link"}.issubset(PLAN.required_toolchains(native))
     assert {"clang", "lld-link", "wasm-ld", "wasm-tools"}.issubset(
@@ -3635,23 +3730,25 @@ def test_command_target_subtrees_are_literal_and_resolved_without_scanning(
             "dependencies": [],
         },
     )
-    argv = [
-        "python",
-        "-m",
-        "pytest",
-        "tests/probes/",
+    # Declared targets are canonical (validation refuses a trailing slash), so
+    # a directory reads as its subtree without any spelling repair.
+    targets = [
+        "tests/probes",
         "tests/probes/case.py::test[a::b]",
         "tests/literal[0].py::test[quoted::parameter]",
         "tests/whole_file.py::test_case",
         "tests/whole_file.py::test_other",
     ]
     commands = tuple(
-        proof_plan.ProofCommand(str(index), {"family": owner, "argv": targets})
-        for index, (owner, targets) in enumerate(
+        proof_plan.ProofCommand(
+            str(index),
+            {"family": owner, "argv": ["python", "-m", "pytest"], "pytest": declared},
+        )
+        for index, (owner, declared) in enumerate(
             (
-                ("owner", argv),
-                ("scheduled", ["pytest", "tests/scheduled.py"]),
-                ("unknown", ["pytest", "tests/unknown.py"]),
+                ("owner", targets),
+                ("scheduled", ["tests/scheduled.py"]),
+                ("unknown", ["tests/unknown.py"]),
             )
         )
     )
@@ -3667,8 +3764,8 @@ def test_command_target_subtrees_are_literal_and_resolved_without_scanning(
         "tests/literal[0].py/**",
         "tests/whole_file.py/**",
     )
-    # Selection reads the resolved authority, without walking command argv.
-    argv.clear()
+    # Selection reads the resolved authority, without walking command targets.
+    targets.clear()
     plan = replace(PLAN, authority_inputs=(), families=(family,), commands=())
     for path in (
         "tests/probes",
@@ -3687,6 +3784,92 @@ def test_command_target_subtrees_are_literal_and_resolved_without_scanning(
         "tests/unknown.py",
     ):
         assert not plan.select([path]).selected
+
+
+def test_ci_test_inputs_are_declared_targets_or_the_paths_other_tools_name() -> None:
+    # A pytest row's inputs are its declared targets (HF-179): a node selects
+    # its file, and a path in its options (--ignore) selects nothing. A tool
+    # that is not pytest declares no targets; the tests paths it names are its
+    # inputs, whether operands or option values.
+    family = proof_plan.ProofFamily("owner", {"inputs": [], "dependencies": []})
+    commands = (
+        proof_plan.ProofCommand(
+            "unit",
+            {
+                "family": "owner",
+                "argv": ["python", "-m", "pytest", "--ignore", "tests/ignored.py"],
+                "pytest": ["tests/selected.py::test_kept"],
+            },
+        ),
+        proof_plan.ProofCommand(
+            "tool",
+            {
+                "family": "owner",
+                "argv": ["python", "tools/runner.py", "--dir", "tests/cases"],
+            },
+        ),
+    )
+    proof_plan._resolve_ci_command_test_inputs((family,), commands)
+    assert family.inputs == ("tests/selected.py/**", "tests/cases/**")
+
+
+def test_plan_pytest_rows_declare_exactly_what_pytest_selects() -> None:
+    # The oracle is pytest itself: its parser, with its plugins' options as
+    # focused admission reads them, reads each row's executed argv after the
+    # checkout's addopts. This test runs in pytest, which has already imported
+    # those plugins. A row that runs pytest declares exactly those targets, in
+    # order, and passes custody; a row that runs another tool declares none.
+    # This also holds the checkout's addopts to selecting nothing.
+    from molt.pytest_memory_guard_bootstrap import read_pytest_run
+
+    pytest_rows = 0
+    for row in (*PLAN.commands, *PLAN.named_lanes):
+        arguments = proof_command_argv.pytest_arguments(
+            list(row.argv), root=proof_plan.ROOT
+        )
+        if arguments is None:
+            assert not row.pytest_targets, row.id
+            continue
+        pytest_rows += 1
+        # A row without targets would run the whole testpaths tree.
+        assert row.pytest_targets, row.id
+        run = read_pytest_run(
+            arguments,
+            environ={},
+            invocation_dir=proof_plan.ROOT,
+            plugin_options=True,
+        )
+        assert run.violations == (), (row.id, run.violations)
+        assert run.effective is not None
+        selected = [str(target) for target in run.effective.targets]
+        assert selected == list(row.pytest_targets), row.id
+    assert pytest_rows > 50
+
+
+def test_plan_loading_and_its_gates_import_no_pytest() -> None:
+    # CI loads the plan with the pinned bare CPython, which has no pytest
+    # (review v3, finding 1). The oracle is that interpreter itself.
+    base = sys._base_executable
+    root = str(proof_plan.ROOT)
+    probe = run_guarded_test_process(
+        [base, "-I", "-c", "import _pytest"], cwd=root, check=False
+    )
+    assert probe.returncode != 0 and "_pytest" in probe.stderr, probe.stderr
+    for command in (
+        [base, "-I", "tools/proof_plan.py", "--check"],
+        [base, "-I", "tools/check_test_ownership.py"],
+        [
+            base,
+            "-I",
+            "-c",
+            "import sys; sys.path.insert(0, '.')\n"
+            "from pathlib import Path\n"
+            "from tools.molt_dev import GateConfig\n"
+            "GateConfig.load(Path('tools/proof_plan.toml'))",
+        ],
+    ):
+        completed = run_guarded_test_process(command, cwd=root, check=False)
+        assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
 def test_command_directory_ownership_and_dependency_globs_select_ci() -> None:
@@ -4004,7 +4187,7 @@ def test_header_changes_execute_real_windows_data_imports(path: str) -> None:
     assert set(command.data["tiers"]) == {"pr", "main"}
     assert (
         "tests/cli/test_c_api_headers.py::test_optimize_flag_headers_share_data_across_translation_units"
-        in command.data["argv"]
+        in command.pytest_targets
     )
     assert "hosted-clang-cl" in PLAN.required_toolchains(command)
 
@@ -4045,7 +4228,7 @@ def test_windows_process_binding_selects_and_executes_portability_proof(
     ]
     assert len(commands) == 3
     assert all(
-        "tests/tools/test_windows_process_api.py" in command.data["argv"]
+        "tests/tools/test_windows_process_api.py" in command.pytest_targets
         for command in commands
     )
 
@@ -6723,17 +6906,17 @@ def test_pull_requests_skip_main_only_commands_but_keep_their_dependencies() -> 
         assert command_id in pr_ids - main_ids
         command = next(c for c in PLAN.commands if c.id == command_id)
         assert command.data["cell"] == cell
-        assert selector in command.data["argv"]
+        assert selector in command.pytest_targets
         assert (
             "tests/tools/test_proof_queue.py::"
             "test_python_selection_location_join_preserves_coordinate_and_content"
-        ) in command.data["argv"]
+        ) in command.pytest_targets
         assert command.data["timeout_seconds"] == (180 if host == "windows" else 120)
         assert {"python", "uv", "rustc", "cargo"} <= set(command.toolchains)
         main_command = next(
             c for c in PLAN.commands if c.id == f"portability.queue.{host}"
         )
-        assert main_command.data["argv"].count("tests/tools/test_proof_queue.py") == 1
+        assert main_command.pytest_targets.count("tests/tools/test_proof_queue.py") == 1
     for family in {command.family for command in PLAN.commands}:
         ran = proof_plan._topological_commands(PLAN, family=family, tier="pr")
         ran_ids = {command.id for command in ran}

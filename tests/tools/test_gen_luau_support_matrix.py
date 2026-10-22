@@ -379,7 +379,7 @@ def test_luau_classifier_source_family_and_regressions_are_mandatory():
     commands = {command["id"]: command for command in plan["command"]}
     assert (
         "tests/tools/test_gen_luau_support_matrix.py"
-        in commands["repository.docs-tests"]["argv"]
+        in commands["repository.docs-tests"]["pytest"]
     )
     assert {
         "tools/gen_luau_support_matrix.py",

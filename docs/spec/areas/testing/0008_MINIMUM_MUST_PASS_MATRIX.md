@@ -21,11 +21,15 @@ coverage required there.
   collection. Installed Molt registers no global pytest entry point; the
   repository's explicit plugin also works with plugin autoload disabled.
   Unguarded pytest re-execs through `tools/memory_guard.py`, forged guard env
-  markers fail closed unless a live repo memory-guard ancestor is verified, and
-  `--noconftest` / unsafe `--confcutdir` / unsafe pytest `-c` /
-  guard-plugin disabling through argv or `PYTEST_ADDOPTS` are rejected before
-  tests can run. `PYTEST_DISABLE_PLUGIN_AUTOLOAD` requires the explicit repo
-  guard config plugin.
+  markers fail closed unless a live repo memory-guard ancestor is verified.
+  One custody check reads the effective arguments (repo addopts, `-o`
+  overrides, `PYTEST_ADDOPTS`, argv) as pytest will, for the bootstrap and for
+  proof-queue admission alike. It rejects `@` argument files, an `addopts`
+  override, another pytest configuration file, `--noconftest`, unsafe
+  `--confcutdir`, a `--basetemp` in the checkout, and any run
+  that disables or does not load the custody plugins, before tests can run; the
+  plugins load through the repo addopts, so
+  `PYTEST_DISABLE_PLUGIN_AUTOLOAD` needs no separate rule.
   Python interpreter-option forms and programmatic `pytest.main()` launches use
   pytest's own initial hook args as the custody authority. Guarded pytest runs
   keep a bounded `MOLT_PYTEST_CURRENT_TEST_FILE` current-node snapshot so RSS

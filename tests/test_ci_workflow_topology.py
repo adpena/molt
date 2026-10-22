@@ -1437,7 +1437,16 @@ def test_platform_portability_is_one_generated_cross_os_authority() -> None:
     commands = [command for command in commands if command["cell"] in cells]
     queue_commands = [command for command in commands if ".queue." in command["id"]]
     ir_commands = [command for command in commands if ".ir." in command["id"]]
-    assert len({tuple(command["argv"]) for command in queue_commands}) == 1
+    # A row runs its argv prefix, then its typed pytest declaration.
+    declarations = {
+        (
+            tuple(command["argv"]),
+            tuple(command["pytest"]),
+            command.get("pytest_worker_memory_gb"),
+        )
+        for command in queue_commands
+    }
+    assert len(declarations) == 1
     assert {command["cell"] for command in ir_commands} == {
         "macos-arm64-py312-queue-portability",
         "windows-x86_64-py312-queue-portability",
@@ -1453,9 +1462,9 @@ def test_shell_completion_qualification_requires_actual_shells_in_existing_linux
     assert command["cell"] == "linux-x86_64-py312-queue-portability"
     assert set(command["tiers"]) == {"pr", "main"}
     assert {"bash", "fish", "zsh"} <= set(command["toolchains"])
-    assert command["argv"][-1] == (
+    assert command["pytest"] == [
         "tests/cli/test_cli_smoke.py::test_cli_completion_uses_parser_commands_flags_and_positional_semantics"
-    )
+    ]
     policies = {row["name"]: row for row in plan["toolchain_policy"]}
     for shell in ("bash", "fish", "zsh"):
         assert policies[shell]["executable"] == shell

@@ -544,10 +544,10 @@ def test_profile_regressions_and_producer_closure_are_mandatory_proofs():
         "tests/tools/test_perf_schema.py",
         "tests/tools/test_check_perf_gate_wiring.py",
         "tests/tools/test_perf_authority.py",
-    } <= set(docs["argv"])
+    } <= set(docs["pytest"])
     assert (
         "tests/tools/test_release_matrix_acceptance.py"
-        in commands["repository.release-supply-chain"]["argv"]
+        in commands["repository.release-supply-chain"]["pytest"]
     )
     from tools import perf_methodology
 
@@ -555,7 +555,7 @@ def test_profile_regressions_and_producer_closure_are_mandatory_proofs():
         "config/perf_methodology.toml",
         "tools/perf_methodology.py",
     } <= set(plan["authority_inputs"])
-    assert "tests/tools/test_perf_methodology.py" in docs["argv"]
+    assert "tests/tools/test_perf_methodology.py" in docs["pytest"]
     assert {
         "tests/tools/test_perf_profile_selection.py",
         "tools/perf_scoreboard_build_profiles.py",

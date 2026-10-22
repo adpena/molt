@@ -206,9 +206,10 @@ root. Volume choice still requires measurement per machine.
    from the current-test records the workers publish), and every receipt
    carries `worker_peaks`, the largest worker subtree and the tests with the
    largest peaks. `molt.pytest_capacity_plugin` resolves `-n auto`; every
-   plan command that runs xdist declares `--molt-worker-memory-gb`, its
-   measured worker peak times 1.25 (the guard samples about every 2 s and can
-   miss a short peak), rounded up to a quarter GiB. Measured units on macOS
+   plan command that runs xdist declares `pytest_worker_memory_gb` (its argv
+   projects it as `--molt-worker-memory-gb`), its measured worker peak times
+   1.25 (the guard samples about every 2 s and can miss a short peak), rounded
+   up to a quarter GiB. Measured units on macOS
    arm64 run from 0.22 GiB to 4.94 GiB, so no single default fits. The proof
    executor divides the memory beyond the reserve by the maximum simultaneous
    commands allowed by the selected resource classes and the executor ceiling,

@@ -13,9 +13,9 @@ from tools.proof_queue_pkg import command_admission, command_identity, policy
 def _admit_exact_fixture_rows(monkeypatch, *commands):
     """Register each argv as an exact proof-plan row.
 
-    Pytest is a registered spawning entrypoint, so the real registry refuses
-    an unregistered pytest argv as a near-match. Count obligations follow the
-    payload of an admitted row.
+    An ad hoc pytest argv is admitted only for owned repository tests (a
+    focused proof, HF-179), so fixture commands register exact rows. Count
+    obligations follow the payload of an admitted row.
     """
     registry = copy.deepcopy(command_admission._proof_command_registry())
     for index, command in enumerate(commands):

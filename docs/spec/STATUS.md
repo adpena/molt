@@ -596,10 +596,12 @@ the separate [packaging acceptance contract](../../packaging/PACKAGING.md).
   `tools/memory_guard.py`,
   interpreter-option and programmatic `pytest.main()` launches use pytest's
   initial hook args as the re-exec authority, forged guard markers fail closed
-  unless the live ancestor chain contains this repo's memory guard, and
-  `--noconftest`, unsafe `--confcutdir`, unsafe pytest `-c`, memory-guard
-  plugin disabling through argv or `PYTEST_ADDOPTS`, and autoload-disabled runs
-  without the explicit repo guard config plugin are rejected before tests can
+  unless the live ancestor chain contains this repo's memory guard, and one
+  custody check over the effective arguments (repo addopts, `-o` overrides,
+  `PYTEST_ADDOPTS`, argv) rejects `@` argument files, an `addopts` override,
+  another pytest configuration file, `--noconftest`, unsafe `--confcutdir`, a
+  `--basetemp` in the checkout, and any run that disables or does
+  not load the custody plugins before tests can
   run. Direct `tests/**.py` scripts and `python -m tests.*` module launches now
   share the same fail-closed re-exec path through path-local `tests/*/sitecustomize.py`
   routers plus project `src/sitecustomize.py` for `uv run`/editable project
