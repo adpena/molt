@@ -9153,13 +9153,68 @@ def test_admission_provisions_a_selected_runtime_tool_and_refuses_offline_with_i
     assert "never downloads" not in message
 
 
+def test_tool_release_kinds_follow_the_manifest_not_the_root(tmp_path) -> None:
+    """The landing runner validates each batch in one sandbox path; a batch
+    that changes the manifest must not be judged by an earlier one's
+    (HF-456 v3 review A3-5)."""
+    root = tmp_path / "repo"
+    (root / "config").mkdir(parents=True)
+    manifest = root / "config" / "tool_releases.toml"
+    text = (proof_plan.ROOT / "config" / "tool_releases.toml").read_text(
+        encoding="utf-8"
+    )
+    manifest.write_text(text, encoding="utf-8")
+    assert proof_plan._tool_release_kinds(root)["npm"] == "runtime-tool-release"
+    without_npm = text[: text.index("[tools.npm]")]
+    manifest.write_text(without_npm, encoding="utf-8")
+    assert "npm" not in proof_plan._tool_release_kinds(root)
+
+
+def test_a_failed_checkout_input_never_claims_admission_does_not_download(
+    monkeypatch,
+) -> None:
+    """A checkout input (the Acorn tree) provisions npm itself; when that
+    fails, the refusal must not say the command never downloads (HF-456 v3
+    review A3-1)."""
+    monkeypatch.setattr(proof_plan, "_provision_runtime_tools", lambda *a, **k: None)
+    monkeypatch.setattr(
+        proof_plan,
+        "_provision_checkout_inputs",
+        lambda *a, **k: "browser-acorn: cannot provision archive: offline",
+    )
+    monkeypatch.setattr(
+        proof_plan,
+        "project_toolchains",
+        lambda *a, **k: proof_plan.ToolchainProjection(
+            delta={}, missing=("npm: python -m molt.tool_releases provision npm",)
+        ),
+    )
+
+    def refuse(*_args, **_kwargs):
+        raise ValueError("npm: not admitted")
+
+    monkeypatch.setattr(proof_plan, "toolchain_fingerprints", refuse)
+    with pytest.raises(ValueError) as refused:
+        proof_plan.admit_toolchains(
+            PLAN.toolchain_policies,
+            ("browser-acorn",),
+            environ={"PATH": ""},
+            root=proof_plan.ROOT,
+        )
+    message = str(refused.value)
+    assert "browser-acorn: cannot provision archive: offline" in message
+    assert "admission's provisioning failed" in message
+    assert "never downloads" not in message
+
+
 def test_a_long_lived_runner_verifies_again_when_a_pin_or_an_installation_moves(
     tmp_path, monkeypatch
 ) -> None:
     """The landing runner admits batch after batch in one process (HF-456 A-N2).
 
     A batch may move npm's pin or Node's, or re-provision either tree; the
-    cached command must then be verified again, never served stale.
+    cached command must then be verified again, never served stale. The
+    stand-in provisions as the real one does: it writes each attestation.
     """
     import os
 
@@ -9177,10 +9232,24 @@ def test_a_long_lived_runner_verifies_again_when_a_pin_or_an_installation_moves(
     toolchain_root = canonical_toolchain_root(
         root, environ, require_exists=False, cwd=root
     )
+
+    def attestation(name: str) -> Path:
+        release = tool_releases.tool_release(name, root)
+        prefix = tool_releases.tool_prefix(toolchain_root, release)
+        return prefix / tool_releases.TOOL_ATTESTATION_FILENAME
+
     verified = []
+    retire_after_verifying = []
 
     def pinned(tool, repo_root, **kwargs):
         verified.append(tool)
+        for name in ("npm", "node"):
+            path = attestation(name)
+            if not path.exists():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("{}", encoding="utf-8")
+        for name in retire_after_verifying:
+            attestation(name).unlink()
         return object()
 
     monkeypatch.setattr(tool_releases, "pinned_command", pinned)
@@ -9195,31 +9264,38 @@ def test_a_long_lived_runner_verifies_again_when_a_pin_or_an_installation_moves(
         assert admit() is command, "an unchanged state is served from the cache"
         return len(verified) == before + 1
 
+    # The first admission provisions; its command is keyed by what it wrote.
     assert changed()
     for name in ("node", "npm"):
         # A pin bump moves the asset digest; the version and URL move with it.
         digest = tool_releases.host_asset(tool_releases.tool_release(name, root))
         text = manifest.read_text(encoding="utf-8")
         assert text.count(digest.sha256) == 1
-        manifest.write_text(
-            text.replace(
-                digest.sha256, "f" * 64 if digest.sha256 != "f" * 64 else "e" * 64
-            ),
-            encoding="utf-8",
-        )
+        replacement = "f" * 64 if digest.sha256 != "f" * 64 else "e" * 64
+        manifest.write_text(text.replace(digest.sha256, replacement), encoding="utf-8")
         assert changed(), name
     for name in ("node", "npm"):
-        prefix = tool_releases.tool_prefix(
-            toolchain_root, tool_releases.tool_release(name, root)
-        )
-        prefix.mkdir(parents=True)
-        attestation = prefix / tool_releases.TOOL_ATTESTATION_FILENAME
-        attestation.write_text("{}", encoding="utf-8")
-        assert changed(), f"{name} provisioned"
-        replacement = prefix / "replacement.json"
-        replacement.write_text('{"again": true}', encoding="utf-8")
-        os.replace(replacement, attestation)
+        # A re-provision publishes the same bytes as a new file; only its
+        # identity (the inode) shows the swap.
+        path = attestation(name)
+        before = path.stat()
+        staged = path.with_name("replacement.json")
+        staged.write_bytes(path.read_bytes())
+        os.utime(staged, ns=(before.st_atime_ns, before.st_mtime_ns))
+        os.replace(staged, path)
         assert changed(), f"{name} re-provisioned"
+    # A tree retired between verification and keying is not cached: the next
+    # admission verifies (and provisions) again instead of serving it. A pin
+    # move makes the lookup miss, so the stand-in runs and then retires.
+    text = manifest.read_text(encoding="utf-8")
+    assert "f" * 64 in text
+    manifest.write_text(text.replace("f" * 64, "d" * 64, 1), encoding="utf-8")
+    retire_after_verifying.append("node")
+    before = len(verified)
+    admit()
+    retire_after_verifying.clear()
+    admit()
+    assert len(verified) == before + 2
 
 
 def test_a_runtime_tool_is_admitted_by_its_attested_installation(
