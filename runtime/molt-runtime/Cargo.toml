@@ -13,7 +13,8 @@ build = "build.rs"
 # crate keys them, and Cargo's own reads verify the list after each build.
 # build.rs compiles build_support (which embeds the WASI C ABI protocol) and
 # reads molt.h; sitebuiltins embeds LICENSE; builtins compiles four sibling-crate
-# files through #[path] in every lane, even where their crates are not dependencies.
+# files through #[path] in every lane, even where their crates are not dependencies;
+# build.rs reads molt-cpython-abi's variadic export list.
 build-inputs = [
   "../build_support",
   "../../src/molt/wasi_c_abi_protocol.txt",
@@ -23,6 +24,7 @@ build-inputs = [
   "../molt-runtime-itertools/src/itertools.rs",
   "../molt-runtime-path/src/os_ext.rs",
   "../molt-runtime-path/src/pathlib.rs",
+  "../molt-cpython-abi/shims/pyarg_variadic.exports",
 ]
 
 [lib]
