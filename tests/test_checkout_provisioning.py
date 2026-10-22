@@ -648,7 +648,7 @@ def test_checkout_input_policies_keep_one_authority(row: dict, message: str) -> 
         proof_plan.load_toolchain_policies({"toolchain_policy": [row]}, root=REPO_ROOT)
 
 
-@pytest.mark.parametrize("name", ["browser-acorn"])
+@pytest.mark.parametrize("name", ["browser-acorn", "edgebox-typescript"])
 def test_the_committed_node_policy_is_the_checkout_input(name: str) -> None:
     import tomllib
 

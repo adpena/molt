@@ -779,6 +779,12 @@ const BUILTIN_EXCEPTION_SPECS: &[BuiltinExceptionSpec] = &[
     exception_spec("SystemError", ExceptionBaseSpec::One("Exception"), None),
     exception_spec("TypeError", ExceptionBaseSpec::One("Exception"), None),
     exception_spec("ValueError", ExceptionBaseSpec::One("Exception"), None),
+    exception_spec(
+        "StatisticsError",
+        ExceptionBaseSpec::One("ValueError"),
+        None,
+    )
+    .with_heap_class("statistics"),
     exception_spec("Warning", ExceptionBaseSpec::One("Exception"), None),
     exception_spec(
         "FloatingPointError",
@@ -1006,8 +1012,11 @@ impl BuiltinExceptionSpec {
     /// Public Python 3 namespace availability, using target rather than host facts.
     /// Runtime layout and canonical identity remain available independently of
     /// whether the target Python version and platform expose this binding.
-    pub const fn public_name(&self, target_minor: u32, is_windows: bool) -> Option<&'static str> {
-        if target_minor < self.minimum_python_minor || (self.windows_only && !is_windows) {
+    pub fn public_name(&self, target_minor: u32, is_windows: bool) -> Option<&'static str> {
+        if self.module != "builtins"
+            || target_minor < self.minimum_python_minor
+            || (self.windows_only && !is_windows)
+        {
             None
         } else {
             Some(self.name)
@@ -1101,7 +1110,9 @@ mod tests {
                 assert!(names.contains("OSError"));
                 for spec in builtin_exception_specs() {
                     assert_eq!(builtin_exception_spec(spec.name()), Some(spec));
-                    if !matches!(spec.name(), "PythonFinalizationError" | "WindowsError") {
+                    if spec.module() != "builtins" {
+                        assert!(!names.contains(spec.name()));
+                    } else if !matches!(spec.name(), "PythonFinalizationError" | "WindowsError") {
                         assert!(names.contains(spec.name()));
                     }
                 }
@@ -1300,7 +1311,23 @@ mod tests {
             builtin_exception_spec("IOError").unwrap().canonical().name,
             "OSError"
         );
-        assert_eq!(builtin_exception_specs().len(), 73);
+        assert_eq!(
+            builtin_exception_spec("StatisticsError").map(|spec| spec.bases()),
+            Some(ExceptionBaseSpec::One("ValueError"))
+        );
+        let module_exceptions: std::collections::BTreeSet<_> = builtin_exception_specs()
+            .iter()
+            .filter(|spec| spec.module() != "builtins")
+            .map(|spec| (spec.name(), spec.module()))
+            .collect();
+        assert_eq!(
+            module_exceptions,
+            std::collections::BTreeSet::from([
+                ("CancelledError", "asyncio.exceptions"),
+                ("StatisticsError", "statistics"),
+                ("UnsupportedOperation", "_io"),
+            ])
+        );
         assert_eq!(
             builtin_exception_spec("SyntaxError").and_then(|spec| spec.introduced_layout_root()),
             Some(ExceptionLayoutRoot::SyntaxError)

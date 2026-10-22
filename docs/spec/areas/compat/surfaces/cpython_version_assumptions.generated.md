@@ -135,7 +135,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `src/molt/stdlib/sqlite3/dbapi2.py` | 4 | scattered-assumption | `version_info` |
 | `src/molt/stdlib/sqlite3/dump.py` | 1 | scattered-assumption | `3.12` |
 | `src/molt/stdlib/stat.py` | 2 | operational-tooling | `sys.version_info` |
-| `src/molt/stdlib/statistics.py` | 3 | operational-tooling | `3.14` |
+| `src/molt/stdlib/statistics.py` | 6 | operational-tooling | `3.14` |
 | `src/molt/stdlib/string/templatelib.py` | 1 | scattered-assumption | `3.14` |
 | `src/molt/stdlib/stringprep.py` | 1 | scattered-assumption | `3.2` |
 | `src/molt/stdlib/sys.py` | 7 | operational-tooling | `version_info` |

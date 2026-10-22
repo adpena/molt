@@ -144,8 +144,7 @@ __all__ = [
 ]
 
 
-class StatisticsError(ValueError):
-    pass
+StatisticsError = _require_intrinsic("molt_builtin_class_lookup")("StatisticsError")
 
 
 class LinearRegression:
@@ -185,10 +184,7 @@ class NormalDist:
     __slots__ = ("_mu", "_sigma")
 
     def __init__(self, mu: float = 0.0, sigma: float = 1.0):
-        try:
-            mu_out, sigma_out = _MOLT_STATISTICS_NORMAL_DIST_NEW(mu, sigma)
-        except ValueError as exc:
-            raise StatisticsError(str(exc)) from None
+        mu_out, sigma_out = _MOLT_STATISTICS_NORMAL_DIST_NEW(mu, sigma)
         self._mu = float(mu_out)
         self._sigma = float(sigma_out)
 
@@ -199,18 +195,15 @@ class NormalDist:
     def samples(self, n: int, *, seed: _Any = None) -> list[float]:
         # CPython switched NormalDist.samples implementation in 3.14.
         if sys.version_info >= (3, 14):
-            try:
-                return list(
-                    _MOLT_STATISTICS_NORMAL_DIST_SAMPLES(
-                        self._mu,
-                        self._sigma,
-                        n,
-                        ("__statistics_inv_cdf_mode__", seed),
-                        random.random,
-                    )
+            return list(
+                _MOLT_STATISTICS_NORMAL_DIST_SAMPLES(
+                    self._mu,
+                    self._sigma,
+                    n,
+                    ("__statistics_inv_cdf_mode__", seed),
+                    random.random,
                 )
-            except ValueError:
-                raise ValueError("inv_cdf undefined for these parameters") from None
+            )
         return list(
             _MOLT_STATISTICS_NORMAL_DIST_SAMPLES(
                 self._mu, self._sigma, n, seed, random.gauss
@@ -218,22 +211,13 @@ class NormalDist:
         )
 
     def pdf(self, x: _Any) -> float:
-        try:
-            return float(_MOLT_STATISTICS_NORMAL_DIST_PDF(self._mu, self._sigma, x))
-        except ValueError as exc:
-            raise StatisticsError(str(exc)) from None
+        return float(_MOLT_STATISTICS_NORMAL_DIST_PDF(self._mu, self._sigma, x))
 
     def cdf(self, x: _Any) -> float:
-        try:
-            return float(_MOLT_STATISTICS_NORMAL_DIST_CDF(self._mu, self._sigma, x))
-        except ValueError as exc:
-            raise StatisticsError(str(exc)) from None
+        return float(_MOLT_STATISTICS_NORMAL_DIST_CDF(self._mu, self._sigma, x))
 
     def inv_cdf(self, p: _Any) -> float:
-        try:
-            return float(_MOLT_STATISTICS_NORMAL_DIST_INV_CDF(p, self._mu, self._sigma))
-        except ValueError as exc:
-            raise StatisticsError(str(exc)) from None
+        return float(_MOLT_STATISTICS_NORMAL_DIST_INV_CDF(p, self._mu, self._sigma))
 
     def quantiles(self, n: int = 4) -> list[float]:
         return [self.inv_cdf(i / n) for i in range(1, n)]
@@ -241,20 +225,14 @@ class NormalDist:
     def overlap(self, other: _Any) -> float:
         if not isinstance(other, NormalDist):
             raise TypeError("Expected another NormalDist instance")
-        try:
-            return float(
-                _MOLT_STATISTICS_NORMAL_DIST_OVERLAP(
-                    self._mu, self._sigma, other._mu, other._sigma
-                )
+        return float(
+            _MOLT_STATISTICS_NORMAL_DIST_OVERLAP(
+                self._mu, self._sigma, other._mu, other._sigma
             )
-        except ValueError as exc:
-            raise StatisticsError(str(exc)) from None
+        )
 
     def zscore(self, x: _Any) -> float:
-        try:
-            return float(_MOLT_STATISTICS_NORMAL_DIST_ZSCORE(self._mu, self._sigma, x))
-        except ValueError as exc:
-            raise StatisticsError(str(exc)) from None
+        return float(_MOLT_STATISTICS_NORMAL_DIST_ZSCORE(self._mu, self._sigma, x))
 
     @property
     def mean(self) -> float:
@@ -365,10 +343,7 @@ _MOLT_STATISTICS_NORMAL_DIST_OVERLAP = _require_intrinsic(
 
 
 def mean(data: _Any) -> float:
-    try:
-        result = _MOLT_STATISTICS_MEAN(data)
-    except ValueError as exc:
-        raise StatisticsError(str(exc)) from None
+    result = _MOLT_STATISTICS_MEAN(data)
     if isinstance(result, float):
         truncated = int(result)
         if result == truncated:
@@ -377,73 +352,43 @@ def mean(data: _Any) -> float:
 
 
 def fmean(data: _Any) -> float:
-    try:
-        return float(_MOLT_STATISTICS_FMEAN(data))
-    except ValueError as exc:
-        raise StatisticsError(str(exc)) from None
+    return float(_MOLT_STATISTICS_FMEAN(data))
 
 
 def stdev(data: _Any, xbar: _Any = None) -> float:
-    try:
-        return float(_MOLT_STATISTICS_STDEV(data, xbar))
-    except ValueError as exc:
-        raise StatisticsError(str(exc)) from None
+    return float(_MOLT_STATISTICS_STDEV(data, xbar))
 
 
 def variance(data: _Any, xbar: _Any = None) -> float:
-    try:
-        return float(_MOLT_STATISTICS_VARIANCE(data, xbar))
-    except ValueError as exc:
-        raise StatisticsError(str(exc)) from None
+    return float(_MOLT_STATISTICS_VARIANCE(data, xbar))
 
 
 def pvariance(data: _Any, mu: _Any = None) -> float:
-    try:
-        return float(_MOLT_STATISTICS_PVARIANCE(data, mu))
-    except ValueError as exc:
-        raise StatisticsError(str(exc)) from None
+    return float(_MOLT_STATISTICS_PVARIANCE(data, mu))
 
 
 def pstdev(data: _Any, mu: _Any = None) -> float:
-    try:
-        return float(_MOLT_STATISTICS_PSTDEV(data, mu))
-    except ValueError as exc:
-        raise StatisticsError(str(exc)) from None
+    return float(_MOLT_STATISTICS_PSTDEV(data, mu))
 
 
 def median(data: _Any) -> float:
-    try:
-        return float(_MOLT_STATISTICS_MEDIAN(data))
-    except ValueError as exc:
-        raise StatisticsError(str(exc)) from None
+    return float(_MOLT_STATISTICS_MEDIAN(data))
 
 
 def median_low(data: _Any) -> _Any:
-    try:
-        return _MOLT_STATISTICS_MEDIAN_LOW(data)
-    except ValueError as exc:
-        raise StatisticsError(str(exc)) from None
+    return _MOLT_STATISTICS_MEDIAN_LOW(data)
 
 
 def median_high(data: _Any) -> _Any:
-    try:
-        return _MOLT_STATISTICS_MEDIAN_HIGH(data)
-    except ValueError as exc:
-        raise StatisticsError(str(exc)) from None
+    return _MOLT_STATISTICS_MEDIAN_HIGH(data)
 
 
 def median_grouped(data: _Any, interval: float = 1.0) -> float:
-    try:
-        return float(_MOLT_STATISTICS_MEDIAN_GROUPED(data, interval))
-    except ValueError as exc:
-        raise StatisticsError(str(exc)) from None
+    return float(_MOLT_STATISTICS_MEDIAN_GROUPED(data, interval))
 
 
 def mode(data: _Any) -> _Any:
-    try:
-        return _MOLT_STATISTICS_MODE(data)
-    except ValueError as exc:
-        raise StatisticsError(str(exc)) from None
+    return _MOLT_STATISTICS_MODE(data)
 
 
 def multimode(data: _Any) -> list[_Any]:
@@ -455,48 +400,39 @@ def quantiles(data: _Any, n: int = 4, *, method: str = "exclusive") -> list[floa
         raise StatisticsError("n must be at least 1")
     if method not in {"exclusive", "inclusive"}:
         raise StatisticsError("method must be 'exclusive' or 'inclusive'")
-    try:
-        return list(_MOLT_STATISTICS_QUANTILES(data, n, method == "inclusive"))
-    except ValueError as exc:
-        raise StatisticsError(str(exc)) from None
+    return list(_MOLT_STATISTICS_QUANTILES(data, n, method == "inclusive"))
 
 
 def harmonic_mean(data: _Any) -> float:
-    try:
-        return float(_MOLT_STATISTICS_HARMONIC_MEAN(data))
-    except ValueError as exc:
-        raise StatisticsError(str(exc)) from None
+    return float(_MOLT_STATISTICS_HARMONIC_MEAN(data))
 
 
 def geometric_mean(data: _Any) -> float:
-    try:
-        return float(_MOLT_STATISTICS_GEOMETRIC_MEAN(data))
-    except ValueError as exc:
-        raise StatisticsError(str(exc)) from None
+    # CPython 3.12 deliberately translates ValueError from the entire operation.
+    # From 3.13 onward, callback exceptions retain their original identity.
+    if sys.version_info < (3, 13):
+        try:
+            return float(_MOLT_STATISTICS_GEOMETRIC_MEAN(data))
+        except ValueError:
+            raise StatisticsError(
+                "geometric mean requires a non-empty dataset containing positive numbers"
+            ) from None
+    return float(_MOLT_STATISTICS_GEOMETRIC_MEAN(data))
 
 
 def covariance(x: _Any, y: _Any) -> float:
-    try:
-        return float(_MOLT_STATISTICS_COVARIANCE(x, y))
-    except ValueError as exc:
-        raise StatisticsError(str(exc)) from None
+    return float(_MOLT_STATISTICS_COVARIANCE(x, y))
 
 
 def correlation(x: _Any, y: _Any) -> float:
-    try:
-        return float(_MOLT_STATISTICS_CORRELATION(x, y))
-    except ValueError as exc:
-        raise StatisticsError(str(exc)) from None
+    return float(_MOLT_STATISTICS_CORRELATION(x, y))
 
 
 def linear_regression(
     x: _Any, y: _Any, /, *, proportional: bool = False
 ) -> LinearRegression:
-    try:
-        slope, intercept = _MOLT_STATISTICS_LINEAR_REGRESSION(x, y, proportional)
-        return LinearRegression(float(slope), float(intercept))
-    except ValueError as exc:
-        raise StatisticsError(str(exc)) from None
+    slope, intercept = _MOLT_STATISTICS_LINEAR_REGRESSION(x, y, proportional)
+    return LinearRegression(float(slope), float(intercept))
 
 
 globals().pop("_require_intrinsic", None)

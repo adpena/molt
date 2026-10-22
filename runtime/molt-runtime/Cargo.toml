@@ -249,7 +249,7 @@ tempfile = { version = "3", optional = true }
 # but does not link the bundled native SQLite amalgamation.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 molt-db = { package = "molt-db", path = "../molt-db", optional = true }
-parking_lot = "0.12"
+parking_lot = "0.13"
 mimalloc = { version = "0.1", default-features = false }
 simdutf = { version = "0.7", optional = true }
 getrandom = "0.4"

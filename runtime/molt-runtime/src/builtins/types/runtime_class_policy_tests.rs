@@ -196,6 +196,7 @@ fn module_exception_identity_survives_mutation_and_does_not_follow_names() {
         for (name, module) in [
             ("CancelledError", "asyncio.exceptions"),
             ("UnsupportedOperation", "_io"),
+            ("StatisticsError", "statistics"),
         ] {
             let class = exception_type_bits_from_name(py, name);
             assert_namespace_mutability(py, class, false);

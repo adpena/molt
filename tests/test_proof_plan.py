@@ -8985,3 +8985,44 @@ def test_browser_simd_changes_have_a_standalone_source_build_proof(path: str) ->
     )
     assert "wasm-ld" not in PLAN.required_toolchains(contract)
     assert proof_plan.cargo_build_python(contract.data) is False
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "examples/edgebox/packages/edgebox-cloudflare/src/box.ts",
+        "examples/edgebox/packages/edgebox-cloudflare/src/index.ts",
+        "examples/edgebox/packages/edgebox-cloudflare/src/db-bridge.ts",
+        "examples/edgebox/packages/edgebox-cloudflare/src/wasm.d.ts",
+        "examples/edgebox/packages/edgebox-cloudflare/package-lock.json",
+    ],
+)
+def test_edgebox_sources_select_the_actual_locked_typescript_check(path: str) -> None:
+    from tools import molt_dev
+
+    config = molt_dev.GateConfig.load(PLAN.path)
+    rule = next(rule for rule in config.rules if rule.name == "edgebox-typescript")
+    isolated = replace(config, rules=[rule], always=[])
+    gates, matched = isolated.select([path])
+    assert [selected.name for selected in matched] == ["edgebox-typescript"]
+    (gate,) = gates
+    argv = shlex.split(gate.command)
+    assert argv == [
+        "python",
+        "tools/guarded_exec.py",
+        "--prefix",
+        "MOLT_TEST",
+        "--cwd",
+        "examples/edgebox/packages/edgebox-cloudflare",
+        "--timeout",
+        "120",
+        "--",
+        "corepack",
+        "npm",
+        "run",
+        "check",
+    ]
+    assert {"python", "node", "corepack", "edgebox-typescript"} <= set(
+        PLAN.toolchain_closure(gate.toolchains)
+    )
+    assert isolated.select(["README.md"]) == ([], [])

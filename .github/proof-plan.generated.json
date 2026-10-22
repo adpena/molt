@@ -9515,6 +9515,7 @@
       "local.dev-tooling.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/tools/test_setup_project_inputs.py tests/test_molt_dev.py tests/tools/test_claim_lane.py tests/test_molt_dev_lanes.py tests/test_checkout_provisioning.py tests/tools/test_rust_toolchain_contract.py tests/tools/test_check_rustfmt.py tests/tools/test_check_changed_clippy.py tests/test_cargo_workspace.py",
       "local.docs-architecture.0": "python tools/check_docs_architecture.py",
       "local.ecosystem-compat.0": "python tools/check_ecosystem_compat.py",
+      "local.edgebox-typescript.0": "python tools/guarded_exec.py --prefix MOLT_TEST --cwd examples/edgebox/packages/edgebox-cloudflare --timeout 120 -- corepack npm run check",
       "local.encoding-diagnostics.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_encoding_gate.py",
       "local.environment-registry-audit.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/tools/test_check_environment_registry.py",
       "local.findings-registry.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_findings_registry.py",
@@ -11689,6 +11690,24 @@
       },
       {
         "command_ids": [
+          "local.edgebox-typescript.0"
+        ],
+        "description": "Type-check the actual Edgebox Worker API against its locked dependencies.",
+        "gates": [
+          "python tools/guarded_exec.py --prefix MOLT_TEST --cwd examples/edgebox/packages/edgebox-cloudflare --timeout 120 -- corepack npm run check"
+        ],
+        "globs": [
+          "examples/edgebox/packages/edgebox-cloudflare/**",
+          "src/molt/checkout_provisioning.py"
+        ],
+        "name": "edgebox-typescript",
+        "toolchains": [
+          "python",
+          "edgebox-typescript"
+        ]
+      },
+      {
+        "command_ids": [
           "local.browser-simd.pytest"
         ],
         "description": "Source-built browser SIMD, independent numerical oracles and the actual browser ABI consumer.",
@@ -12753,6 +12772,12 @@
       ],
       "local.ecosystem-compat.0": [
         "python"
+      ],
+      "local.edgebox-typescript.0": [
+        "python",
+        "edgebox-typescript",
+        "node",
+        "corepack"
       ],
       "local.encoding-diagnostics.pytest": [
         "python"
@@ -13846,6 +13871,51 @@
         "require(\"./node_modules/acorn/package.json\").version"
       ],
       "version_pattern": "^8\\.19\\.0$"
+    },
+    {
+      "dependencies": [
+        "node"
+      ],
+      "executable": "corepack",
+      "name": "corepack",
+      "setup_command": "npm install --ignore-scripts --prefix \"$MOLT_TARGET_ROOT/toolchains/corepack\" corepack; put its node_modules/.bin on PATH",
+      "setup_evidence": [
+        "examples/edgebox/packages/edgebox-cloudflare/package.json::packageManager"
+      ],
+      "setup_value": "Corepack npm packageManager launcher",
+      "version_args": [
+        "--version"
+      ],
+      "version_pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    {
+      "checkout_input": "edgebox-typescript",
+      "content_path_command": [
+        "node",
+        "--input-type=module",
+        "-e",
+        "import {fileURLToPath} from 'node:url';import {createRequire} from 'node:module';console.log(createRequire(import.meta.url).resolve(\"typescript\"))"
+      ],
+      "dependencies": [
+        "node",
+        "corepack"
+      ],
+      "executable": "node",
+      "name": "edgebox-typescript",
+      "node_package": "typescript",
+      "package_lock": "examples/edgebox/packages/edgebox-cloudflare/package-lock.json",
+      "probe_cwd": "examples/edgebox/packages/edgebox-cloudflare",
+      "selection_only": true,
+      "setup_command": "python -m molt.checkout_provisioning ensure edgebox-typescript",
+      "setup_evidence": [
+        "examples/edgebox/packages/edgebox-cloudflare/package-lock.json::\"version\": \"7.0.2\""
+      ],
+      "setup_value": "7.0.2",
+      "version_args": [
+        "-p",
+        "require(\"./node_modules/typescript/package.json\").version"
+      ],
+      "version_pattern": "^7\\.0\\.2$"
     },
     {
       "content_path_command": [
