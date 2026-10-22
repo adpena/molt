@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Iterable, Mapping
 from xml.etree import ElementTree
 
+from packaging.version import InvalidVersion, Version
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TOOLS_ROOT = REPO_ROOT / "tools"
 SRC_ROOT = REPO_ROOT / "src"
@@ -182,7 +184,19 @@ def load_cpython_sources(
             tag=str(row.get("tag", "")),
             git_url=str(row.get("git_url", "")),
         )
-        if re.fullmatch(r"3\.\d+", source.python) is None:
+        # Source discovery may precede target admission, including a new major.
+        # Use the same version parser as target_python, without its support gate.
+        try:
+            version = Version(source.python)
+        except InvalidVersion as error:
+            raise ValueError(
+                f"invalid CPython version authority: {source.python!r}"
+            ) from error
+        if (
+            version.epoch != 0
+            or len(version.release) != 2
+            or version.base_version != source.python
+        ):
             raise ValueError(f"invalid CPython version authority: {source.python!r}")
         if re.fullmatch(r"[0-9a-f]{40}", source.revision) is None:
             raise ValueError(

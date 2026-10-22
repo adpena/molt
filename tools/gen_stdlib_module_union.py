@@ -42,8 +42,9 @@ import os
 import re
 import sys
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Literal
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
@@ -70,7 +71,10 @@ from tools.generator_io import (  # noqa: E402
 )
 
 from molt.verified_subset import capture_verified_subset_policy  # noqa: E402
-from molt.toolchain_identity import capture_stable_regular_file  # noqa: E402
+from molt.toolchain_identity import (  # noqa: E402
+    capture_stable_regular_file,
+    verify_stable_regular_file_identity,
+)
 
 from molt.target_python import (  # noqa: E402
     SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS,
@@ -888,6 +892,179 @@ def _source_change_detail(before: str, after: str) -> dict[str, object] | None:
     }
 
 
+@dataclass(frozen=True)
+class ModuleAssessment:
+    module: str
+    change: Literal["added", "removed", "changed"]
+    upstream_kind: Literal["package", "module"]
+    upstream_source: Literal["python", "native-or-builtin", "namespace"]
+    current_status: str | None
+    current_path: str | None
+    current_kind: Literal["package", "module"] | None
+    current_sha256: str | None
+    status_assessed: bool
+    missing: bool
+    kind_matches: bool | None
+    retention: Literal["retain-for-owning-version-review"] | None
+    owner: str = "UNKNOWN"
+    witness: str = "UNKNOWN"
+    execution_evidence: Literal["UNKNOWN"] = "UNKNOWN"
+
+
+@dataclass(frozen=True)
+class NumericAssessment:
+    context: str
+    operation: str
+    operand_kind: str
+    error_class: str
+    candidate: str
+    declared_observation: bool
+    message: str | None
+    owner: str = "tools/gen_python_numeric_errors.py"
+    witness: str = "UNKNOWN"
+    execution_evidence: Literal["UNKNOWN"] = "UNKNOWN"
+
+
+def _prerequisite_assessment(
+    before: VersionData, after: VersionData, candidate: str
+) -> dict[str, object]:
+    """Join existing implementation/declaration facts, never infer parity."""
+    from tools import check_stdlib_intrinsics as stdlib
+    from tools import gen_python_numeric_errors as numeric
+    from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
+
+    def namespace_paths() -> tuple[Path, ...]:
+        return tuple(
+            path
+            for path in sorted(stdlib.STDLIB_ROOT.rglob("*.py"))
+            if not path.name.startswith(".")
+        )
+
+    left = set(before.modules) | set(before.py_modules)
+    right = set(after.modules) | set(after.py_modules)
+
+    def membership(name: str, data: VersionData) -> tuple[bool, ...]:
+        return tuple(
+            name in getattr(data, field)
+            for field in ("modules", "packages", "py_modules", "py_packages")
+        )
+
+    changes = (
+        ("added", right - left, after),
+        ("removed", left - right, before),
+        (
+            "changed",
+            {
+                name
+                for name in left & right
+                if membership(name, before) != membership(name, after)
+            },
+            after,
+        ),
+    )
+    namespace = namespace_paths()
+    current_paths = {stdlib._module_name(path): path for path in namespace}
+    needs_status = any(
+        names & current_paths.keys()
+        for change, names, _ in changes
+        if change != "removed"
+    )
+    removed_paths = tuple(
+        current_paths[name] for name in sorted(left - right) if name in current_paths
+    )
+    # Absence needs only namespace membership; removed names need physical
+    # retention facts. Added/changed status needs the full namespace, once.
+    paths = (
+        (*namespace, stdlib.STDLIB_FULL_COVERAGE_MANIFEST, numeric.SOURCE)
+        if needs_status
+        else (*removed_paths, numeric.SOURCE)
+    )
+    identities = {
+        path: capture_stable_regular_file(path, label="source assessment input")[0]
+        for path in paths
+    }
+    statuses = stdlib.stdlib_module_statuses() if needs_status else {}
+    contexts = numeric.load_policy(numeric.SOURCE)
+    if namespace_paths() != namespace:
+        raise RuntimeError("current stdlib membership changed during source assessment")
+    rows = []
+    for change, names, upstream in changes:
+        for name in sorted(names):
+            package = name in upstream.packages or name in upstream.py_packages
+            source = (
+                "python"
+                if name in upstream.py_modules
+                else "namespace"
+                if package
+                else "native-or-builtin"
+            )
+            path = current_paths.get(name)
+            assessed = change != "removed" and path is not None
+            status = statuses[name][0] if assessed else "UNKNOWN" if path else None
+            current_kind = (
+                ("package" if path.name == "__init__.py" else "module")
+                if path
+                else None
+            )
+            expected_kind = "package" if package else "module"
+            rows.append(
+                ModuleAssessment(
+                    module=name,
+                    change=change,
+                    upstream_kind=expected_kind,
+                    upstream_source=source,
+                    current_status=status,
+                    current_path=stdlib._display_path(path) if path else None,
+                    current_kind=current_kind,
+                    current_sha256=identities[path].sha256 if path else None,
+                    status_assessed=assessed,
+                    missing=path is None,
+                    kind_matches=current_kind == expected_kind if path else None,
+                    retention="retain-for-owning-version-review"
+                    if change == "removed"
+                    else None,
+                )
+            )
+    index = numeric.TARGETS.index(candidate) if candidate in numeric.TARGETS else None
+    numeric_rows = [
+        NumericAssessment(
+            context=context.name,
+            operation=context.operation,
+            operand_kind=context.operand_kind,
+            error_class=context.error_class,
+            candidate=candidate,
+            declared_observation=index is not None,
+            message=context.messages[index] if index is not None else None,
+        )
+        for context in contexts
+    ]
+    for identity in identities.values():
+        verify_stable_regular_file_identity(
+            identity, label="source assessment input", hash_content=True
+        )
+    source_rows = [
+        {"path": stdlib._display_path(path), "sha256": identity.sha256}
+        for path, identity in identities.items()
+    ]
+    return {
+        "analysis_target": _DEFAULT_TARGET_PYTHON_VERSION.short,
+        "current_namespace_sha256": _sha256(
+            json.dumps([stdlib._display_path(path) for path in namespace]).encode(
+                "utf-8"
+            )
+        ),
+        "status_analysis_used": needs_status,
+        "current_source_inputs": source_rows,
+        "modules": [asdict(row) for row in rows],
+        "numeric_contexts": [asdict(row) for row in numeric_rows],
+        "interpretation": (
+            "Current-source status and declared observations are prerequisites, "
+            "not candidate-target execution or full-coverage attestations. "
+            "UNKNOWN owner, witness and execution evidence require owning review."
+        ),
+    }
+
+
 def source_comparison(base: str, candidate: str) -> dict[str, object]:
     """Compare pinned source facts without admitting or qualifying a target."""
     pins_identity, _ = capture_stable_regular_file(
@@ -949,6 +1126,11 @@ def source_comparison(base: str, candidate: str) -> dict[str, object]:
                 "changed_interval": _source_change_detail(a.text, b.text),
             }
         )
+    assessment = _prerequisite_assessment(left, right, candidate)
+    for identity in (pins_identity, snapshot_identity, reference_identity):
+        verify_stable_regular_file_identity(
+            identity, label="CPython comparison authority", hash_content=True
+        )
     return {
         "schema": "molt.cpython-source-comparison.v1",
         "custody": {
@@ -961,6 +1143,7 @@ def source_comparison(base: str, candidate: str) -> dict[str, object]:
         "after": coordinate(after),
         "stdlib_membership": membership,
         "source_inputs": evidence,
+        "prerequisites": assessment,
         "interpretation": "Source changes require owning-contract review; unchanged bytes are not behavioral qualification.",
     }
 

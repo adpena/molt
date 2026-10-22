@@ -676,15 +676,32 @@ def _comparison_reference_policy(root: Path, references: list[str]) -> Path:
     return path
 
 
+def _comparison_implementation(monkeypatch, tmp_path: Path) -> Path:
+    """Real source and canonical status classification, with a small namespace."""
+    from tools import check_stdlib_intrinsics as stdlib
+
+    root = tmp_path / "current-stdlib"
+    root.mkdir()
+    (root / "math.py").write_text("def existing():\n    return 41\n", encoding="utf-8")
+    (root / "new_api").mkdir()
+    (root / "new_api" / "__init__.py").write_text(
+        "def present():\n    return 42\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(stdlib, "STDLIB_ROOT", root)
+    return root
+
+
 def test_source_comparison_reports_literal_delta_and_reference_mismatch(
     fixture_authority, monkeypatch
 ):
+    _comparison_implementation(monkeypatch, fixture_authority)
     before = _snapshot()
     after = _snapshot(
         python="3.15",
         tag="v3.15.0",
         revision="c" * 40,
         header=tuple(line.replace('"abc",', '"new_api",') for line in FIXTURE_HEADER),
+        entries=tuple(path for path in FETCHED_ENTRIES if path != "email/__init__.py"),
     )
     after = replace(
         after,
@@ -730,12 +747,160 @@ def test_source_comparison_reports_literal_delta_and_reference_mismatch(
         == "Import(identifier name, int? is_lazy)"
     )
     assert ast_delta["changed_interval"]["before"]["head"] == "ast_schema fixture"
+    rows = report["prerequisites"]["modules"]
+    added = next(row for row in rows if row["module"] == "new_api")
+    assert added["current_status"] == "python-compiled"
+    assert added["current_kind"] == "package"
+    assert added["upstream_kind"] == "module"
+    assert added["kind_matches"] is False
+    assert added["missing"] is False
+    changed = next(row for row in rows if row["module"] == "email")
+    assert changed["change"] == "changed"
+    assert changed["upstream_kind"] == "package"
+    assert changed["upstream_source"] == "namespace"
+    assert (
+        added["owner"] == added["witness"] == added["execution_evidence"] == "UNKNOWN"
+    )
     out = fixture_authority / "comparison.json"
     assert gen.main(["--compare-sources", "3.12", "3.15", "--report", str(out)]) == 0
     first = out.read_bytes()
     assert json.loads(first) == report
     assert gen.main(["--compare-sources", "3.12", "3.15", "--report", str(out)]) == 0
     assert out.read_bytes() == first
+
+
+def test_source_comparison_assesses_real_delta_and_reuses_current_families(
+    tmp_path, monkeypatch
+):
+    from tools import check_stdlib_intrinsics as stdlib
+
+    root = _comparison_implementation(monkeypatch, tmp_path)
+    legacy = root / "sre_parse.py"
+    legacy.write_text("def retained():\n    return 41\n", encoding="utf-8")
+    capture = gen.capture_stable_regular_file
+
+    def only_used_source(path, **kwargs):
+        # These unchanged bodies cannot affect physical membership or the
+        # deliberately unassessed removed-module status.
+        assert not path.is_relative_to(root) or path == legacy
+        return capture(path, **kwargs)
+
+    monkeypatch.setattr(gen, "capture_stable_regular_file", only_used_source)
+    classify = stdlib.stdlib_module_statuses
+    calls = []
+
+    def observe():
+        calls.append(root)
+        return classify()
+
+    monkeypatch.setattr(stdlib, "stdlib_module_statuses", observe)
+    report = gen.source_comparison("3.14", "3.15")
+    assessment = report["prerequisites"]
+    rows = assessment["modules"]
+    added = {row["module"]: row for row in rows if row["change"] == "added"}
+    assert len(added) == 42
+    assert len([name for name in added if name.startswith("profiling")]) == 32
+    assert len([name for name in added if name.startswith("_pyrepl.")]) == 4
+    assert added["_math_integer"]["upstream_source"] == "native-or-builtin"
+    assert added["profiling"]["upstream_kind"] == "package"
+    assert added["profiling"]["upstream_source"] == "python"
+    assert all(row["missing"] for row in added.values())
+    assert "math" not in added  # Its existing family is reused, not relabeled new.
+    assert calls == []  # All42are absent: no source bodies or status analysis needed.
+    assert assessment["status_analysis_used"] is False
+    assert len(assessment["current_namespace_sha256"]) == 64
+    assert not any(
+        row["path"].endswith("math.py") for row in assessment["current_source_inputs"]
+    )
+    removed = next(row for row in rows if row["module"] == "sre_parse")
+    assert removed["change"] == "removed"
+    assert removed["current_status"] == "UNKNOWN"
+    assert removed["status_assessed"] is False
+    assert removed["missing"] is False
+    assert removed["current_kind"] == "module"
+    assert removed["retention"] == "retain-for-owning-version-review"
+    assert removed["current_sha256"] == gen._sha256(legacy.read_bytes())
+    assert assessment["analysis_target"] in gen.DEFAULT_PYTHONS
+    assert all(
+        not row["declared_observation"] for row in assessment["numeric_contexts"]
+    )
+    assert all(row["message"] is None for row in assessment["numeric_contexts"])
+    assert all(
+        row["execution_evidence"] == "UNKNOWN" for row in assessment["numeric_contexts"]
+    )
+    assert report == gen.source_comparison("3.14", "3.15")
+    unchanged = gen.source_comparison("3.14", "3.14")["prerequisites"]
+    assert unchanged["modules"] == []
+    assert unchanged["status_analysis_used"] is False
+    assert (
+        unchanged["current_namespace_sha256"] == assessment["current_namespace_sha256"]
+    )
+    modulo = next(
+        row for row in unchanged["numeric_contexts"] if row["context"] == "FloatModulo"
+    )
+    assert modulo["declared_observation"] is True
+    assert modulo["message"] == "division by zero"
+    assert modulo["execution_evidence"] == "UNKNOWN"
+
+
+def test_source_comparison_future_major_is_source_only(fixture_authority, monkeypatch):
+    from molt.target_python import _parse_target_python_version
+
+    _comparison_implementation(monkeypatch, fixture_authority)
+    snapshots = {
+        "3.12": _snapshot(),
+        "4.0": _snapshot(python="4.0", tag="v4.0.0", revision="c" * 40),
+        "4.12": _snapshot(python="4.12", tag="v4.12.0", revision="d" * 40),
+    }
+    _write_pins(
+        gen.PINS_PATH, {key: (row.tag, row.revision) for key, row in snapshots.items()}
+    )
+    gen.SNAPSHOT_PATH.write_text(gen.render_snapshot(snapshots), encoding="utf-8")
+    policy = _comparison_reference_policy(
+        fixture_authority, ["3.12.13", "3.13.11", "3.14.3"]
+    )
+    monkeypatch.setattr(gen, "REFERENCE_POLICY", policy)
+    for candidate in ("4.0", "4.12"):
+        report = gen.source_comparison("3.12", candidate)
+        assert report["after"]["python"] == candidate
+        assert report["after"]["admitted_target"] is False
+        assert report["after"]["configured_reference"] is None
+        assert all(
+            not row["declared_observation"]
+            for row in report["prerequisites"]["numeric_contexts"]
+        )
+        with pytest.raises(ValueError, match="unsupported Python target"):
+            _parse_target_python_version(candidate)
+
+
+@pytest.mark.parametrize("mutation", ["namespace", "classified_source"])
+def test_source_comparison_refuses_changed_current_source(
+    tmp_path, monkeypatch, mutation
+):
+    from tools import gen_python_numeric_errors as numeric
+
+    root = _comparison_implementation(monkeypatch, tmp_path)
+    if mutation == "classified_source":
+        (root / "_math_integer.py").write_text(
+            "def old():\n    return 41\n", encoding="utf-8"
+        )
+    load = numeric.load_policy
+
+    def change_source(path):
+        result = load(path)
+        (root / "_math_integer.py").write_text(
+            "def new():\n    return 42\n", encoding="utf-8"
+        )
+        return result
+
+    monkeypatch.setattr(numeric, "load_policy", change_source)
+    message = (
+        "membership changed"
+        if mutation == "namespace"
+        else "changed since identity capture"
+    )
+    with pytest.raises((ValueError, RuntimeError), match=message):
+        gen.source_comparison("3.14", "3.15")
 
 
 @pytest.mark.parametrize("mutation", ["missing", "role", "path", "text", "forged_hash"])
@@ -909,6 +1074,7 @@ def test_capture_refuses_a_pinned_source_without_grammar(tmp_path: Path) -> None
 def test_grammar_only_change_is_reported_when_ast_schema_is_identical(
     fixture_authority, monkeypatch
 ):
+    _comparison_implementation(monkeypatch, fixture_authority)
     before = _snapshot()
     after = _snapshot(python="3.15", tag="v3.15.0", revision="c" * 40)
 

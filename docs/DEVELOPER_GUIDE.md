@@ -817,7 +817,20 @@ The snapshot retains unmodified upstream text under the existing
    common-prefix/suffix interval with bounded excerpts and explicit omissions;
    the full hash-bound source remains in the snapshot. An interval is not a
    minimal edit script or a claim that every enclosed line changed. It neither
-   executes the target nor labels changes compatible. Review source changes through their
+   executes the target nor labels changes compatible. The same report joins changed
+   module names to the canonical current stdlib status, source path, package kind,
+   missing implementation and kind mismatches. Its numeric-context rows show whether
+   the existing policy declares a candidate-version observation; a declared message
+   is not an execution receipt. Current-status analysis uses the report's explicit
+   admitted analysis target, not an invented pending target. Every report binds
+   namespace membership and numeric declarations. Only a present added or changed
+   name needs the shared status analysis and its source-body/full-coverage input
+   hashes. Removed names retain their current physical path, kind and hash with
+   status `UNKNOWN`; removal from the candidate does not authorize deleting a
+   module still needed by another supported version. Unresolved semantic
+   owners, witnesses and execution evidence remain `UNKNOWN`. Pending minor or major
+   source pins can be assessed without admitting them as runtime targets.
+   Review source changes through their
    existing compiler/runtime/ABI owners; record unresolved work and qualification
    in the existing V1 handoff finding (V1-35 for 3.15), not another support matrix.
 4. Complete each affected producer/consumer family, including source and wheel
