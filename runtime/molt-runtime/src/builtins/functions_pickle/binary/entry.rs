@@ -140,11 +140,8 @@ pub extern "C" fn molt_pickle_loads_core(
             let text = match String::from_utf8(data.as_slice().to_vec()) {
                 Ok(value) => value,
                 Err(_) => {
-                    return raise_exception::<_>(
-                        _py,
-                        "RuntimeError",
-                        "pickle.loads: protocol 0/1 payload must be UTF-8",
-                    );
+                    return PickleError::Unpickling
+                        .raise(_py, "pickle.loads: protocol 0/1 payload must be UTF-8");
                 }
             };
             let text_ptr = alloc_string(_py, text.as_bytes());
@@ -169,7 +166,7 @@ pub extern "C" fn molt_pickle_loads_core(
                 PICKLE_OP_STOP => break,
                 PICKLE_OP_POP => {
                     if stack.pop().is_none() {
-                        return pickle_raise(_py, "pickle.loads: stack underflow");
+                        return PickleError::Unpickling.raise(_py, "pickle.loads: stack underflow");
                     }
                 }
                 PICKLE_OP_POP_MARK => {
@@ -181,7 +178,7 @@ pub extern "C" fn molt_pickle_loads_core(
                         }
                     }
                     if !found_mark {
-                        return pickle_raise(_py, "pickle.loads: mark not found");
+                        return PickleError::Unpickling.raise(_py, "pickle.loads: mark not found");
                     }
                 }
                 PICKLE_OP_PROTO => {
@@ -251,7 +248,10 @@ pub extern "C" fn molt_pickle_loads_core(
                     };
                     let line_text = match std::str::from_utf8(line) {
                         Ok(text) => text,
-                        Err(_) => return pickle_raise(_py, "pickle.loads: invalid INT payload"),
+                        Err(_) => {
+                            return PickleError::Unpickling
+                                .raise(_py, "pickle.loads: invalid INT payload");
+                        }
                     };
                     let bits = match pickle_parse_int_bits(_py, line_text) {
                         Ok(value) => value,
@@ -290,7 +290,10 @@ pub extern "C" fn molt_pickle_loads_core(
                     };
                     let line_text = match std::str::from_utf8(line) {
                         Ok(text) => text,
-                        Err(_) => return pickle_raise(_py, "pickle.loads: invalid LONG payload"),
+                        Err(_) => {
+                            return PickleError::Unpickling
+                                .raise(_py, "pickle.loads: invalid LONG payload");
+                        }
                     };
                     let bits = match pickle_parse_long_line_bits(_py, line_text) {
                         Ok(value) => value,
@@ -327,7 +330,10 @@ pub extern "C" fn molt_pickle_loads_core(
                     };
                     let line_text = match std::str::from_utf8(line) {
                         Ok(text) => text,
-                        Err(_) => return pickle_raise(_py, "pickle.loads: invalid FLOAT payload"),
+                        Err(_) => {
+                            return PickleError::Unpickling
+                                .raise(_py, "pickle.loads: invalid FLOAT payload");
+                        }
                     };
                     let bits = match pickle_parse_float_bits(_py, line_text) {
                         Ok(value) => value,
@@ -349,11 +355,14 @@ pub extern "C" fn molt_pickle_loads_core(
                     };
                     let text = match std::str::from_utf8(line) {
                         Ok(v) => v,
-                        Err(_) => return pickle_raise(_py, "pickle.loads: invalid STRING payload"),
+                        Err(_) => {
+                            return PickleError::Unpickling
+                                .raise(_py, "pickle.loads: invalid STRING payload");
+                        }
                     };
                     let parsed = match pickle_parse_string_literal(text) {
                         Ok(v) => v,
-                        Err(message) => return pickle_raise(_py, message),
+                        Err(message) => return PickleError::Unpickling.raise(_py, message),
                     };
                     let ptr = alloc_string(_py, parsed.as_bytes());
                     if ptr.is_null() {
@@ -591,7 +600,8 @@ pub extern "C" fn molt_pickle_loads_core(
                         values.push(bits);
                     }
                     if !values.len().is_multiple_of(2) {
-                        return pickle_raise(_py, "pickle.loads: dict has odd number of items");
+                        return PickleError::Unpickling
+                            .raise(_py, "pickle.loads: dict has odd number of items");
                     }
                     let ptr = alloc_dict_with_pairs(_py, values.as_slice());
                     if ptr.is_null() {
@@ -613,10 +623,12 @@ pub extern "C" fn molt_pickle_loads_core(
                         Err(err_bits) => return err_bits,
                     };
                     let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
-                        return pickle_raise(_py, "pickle.loads: setitem target is not dict");
+                        return PickleError::Unpickling
+                            .raise(_py, "pickle.loads: setitem target is not dict");
                     };
                     if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
-                        return pickle_raise(_py, "pickle.loads: setitem target is not dict");
+                        return PickleError::Unpickling
+                            .raise(_py, "pickle.loads: setitem target is not dict");
                     }
                     let completed =
                         unsafe { crate::dict_set_in_place(_py, dict_ptr, key_bits, value_bits) };
@@ -635,10 +647,12 @@ pub extern "C" fn molt_pickle_loads_core(
                         Err(err_bits) => return err_bits,
                     };
                     let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
-                        return pickle_raise(_py, "pickle.loads: setitems target is not dict");
+                        return PickleError::Unpickling
+                            .raise(_py, "pickle.loads: setitems target is not dict");
                     };
                     if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
-                        return pickle_raise(_py, "pickle.loads: setitems target is not dict");
+                        return PickleError::Unpickling
+                            .raise(_py, "pickle.loads: setitems target is not dict");
                     }
                     let mut values: Vec<u64> = Vec::with_capacity(items.len());
                     for item in items {
@@ -649,10 +663,8 @@ pub extern "C" fn molt_pickle_loads_core(
                         values.push(bits);
                     }
                     if !values.len().is_multiple_of(2) {
-                        return pickle_raise(
-                            _py,
-                            "pickle.loads: setitems has odd number of values",
-                        );
+                        return PickleError::Unpickling
+                            .raise(_py, "pickle.loads: setitems has odd number of values");
                     }
                     let mut pair_idx = 0usize;
                     while pair_idx + 1 < values.len() {
@@ -688,7 +700,8 @@ pub extern "C" fn molt_pickle_loads_core(
                         Err(err_bits) => return err_bits,
                     };
                     let Some(set_ptr) = obj_from_bits(set_bits).as_ptr() else {
-                        return pickle_raise(_py, "pickle.loads: additems target is not set");
+                        return PickleError::Unpickling
+                            .raise(_py, "pickle.loads: additems target is not set");
                     };
                     for item in items {
                         let bits = match pickle_vm_item_to_bits(_py, &item) {
@@ -781,10 +794,12 @@ pub extern "C" fn molt_pickle_loads_core(
                         Err(err_bits) => return err_bits,
                     };
                     let Some(module) = string_obj_to_owned(obj_from_bits(module_bits)) else {
-                        return pickle_raise(_py, "pickle.loads: STACK_GLOBAL module must be str");
+                        return PickleError::Unpickling
+                            .raise(_py, "pickle.loads: STACK_GLOBAL module must be str");
                     };
                     let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
-                        return pickle_raise(_py, "pickle.loads: STACK_GLOBAL name must be str");
+                        return PickleError::Unpickling
+                            .raise(_py, "pickle.loads: STACK_GLOBAL name must be str");
                     };
                     if let Some(global) = pickle_resolve_global(&module, &name) {
                         stack.push(PickleVmItem::Global(global));
@@ -802,7 +817,10 @@ pub extern "C" fn molt_pickle_loads_core(
                     };
                     let callable_item = match stack.pop() {
                         Some(v) => v,
-                        None => return pickle_raise(_py, "pickle.loads: stack underflow"),
+                        None => {
+                            return PickleError::Unpickling
+                                .raise(_py, "pickle.loads: stack underflow");
+                        }
                     };
                     match pickle_apply_reduce_vm(_py, callable_item, args_bits) {
                         Ok(bits) => stack.push(PickleVmItem::Value(bits)),
@@ -862,15 +880,24 @@ pub extern "C" fn molt_pickle_loads_core(
                     };
                     let text = match std::str::from_utf8(line) {
                         Ok(v) => v,
-                        Err(_) => return pickle_raise(_py, "pickle.loads: invalid PUT payload"),
+                        Err(_) => {
+                            return PickleError::Unpickling
+                                .raise(_py, "pickle.loads: invalid PUT payload");
+                        }
                     };
                     let index = match text.parse::<usize>() {
                         Ok(v) => v,
-                        Err(_) => return pickle_raise(_py, "pickle.loads: invalid memo key"),
+                        Err(_) => {
+                            return PickleError::Unpickling
+                                .raise(_py, "pickle.loads: invalid memo key");
+                        }
                     };
                     let item = match stack.last() {
                         Some(v) => v.clone(),
-                        None => return pickle_raise(_py, "pickle.loads: stack underflow"),
+                        None => {
+                            return PickleError::Unpickling
+                                .raise(_py, "pickle.loads: stack underflow");
+                        }
                     };
                     pickle_memo_set(_py, &mut memo, index, item);
                 }
@@ -881,7 +908,10 @@ pub extern "C" fn molt_pickle_loads_core(
                     };
                     let item = match stack.last() {
                         Some(v) => v.clone(),
-                        None => return pickle_raise(_py, "pickle.loads: stack underflow"),
+                        None => {
+                            return PickleError::Unpickling
+                                .raise(_py, "pickle.loads: stack underflow");
+                        }
                     };
                     pickle_memo_set(_py, &mut memo, index, item);
                 }
@@ -892,14 +922,20 @@ pub extern "C" fn molt_pickle_loads_core(
                     };
                     let item = match stack.last() {
                         Some(v) => v.clone(),
-                        None => return pickle_raise(_py, "pickle.loads: stack underflow"),
+                        None => {
+                            return PickleError::Unpickling
+                                .raise(_py, "pickle.loads: stack underflow");
+                        }
                     };
                     pickle_memo_set(_py, &mut memo, index, item);
                 }
                 PICKLE_OP_MEMOIZE => {
                     let item = match stack.last() {
                         Some(v) => v.clone(),
-                        None => return pickle_raise(_py, "pickle.loads: stack underflow"),
+                        None => {
+                            return PickleError::Unpickling
+                                .raise(_py, "pickle.loads: stack underflow");
+                        }
                     };
                     memo.push(Some(item));
                 }
@@ -910,11 +946,17 @@ pub extern "C" fn molt_pickle_loads_core(
                     };
                     let text = match std::str::from_utf8(line) {
                         Ok(v) => v,
-                        Err(_) => return pickle_raise(_py, "pickle.loads: invalid GET payload"),
+                        Err(_) => {
+                            return PickleError::Unpickling
+                                .raise(_py, "pickle.loads: invalid GET payload");
+                        }
                     };
                     let index = match text.parse::<usize>() {
                         Ok(v) => v,
-                        Err(_) => return pickle_raise(_py, "pickle.loads: invalid memo key"),
+                        Err(_) => {
+                            return PickleError::Unpickling
+                                .raise(_py, "pickle.loads: invalid memo key");
+                        }
                     };
                     match pickle_memo_get(_py, memo.as_slice(), index) {
                         Ok(item) => stack.push(item),
@@ -955,10 +997,8 @@ pub extern "C" fn molt_pickle_loads_core(
                     };
                     let Some(persistent_load_bits) = persistent_load else {
                         dec_ref_bits(_py, pid_bits);
-                        return pickle_raise(
-                            _py,
-                            "pickle.loads: persistent IDs require persistent_load",
-                        );
+                        return PickleError::Unpickling
+                            .raise(_py, "pickle.loads: persistent IDs require persistent_load");
                     };
                     let value_bits = unsafe { call_callable1(_py, persistent_load_bits, pid_bits) };
                     dec_ref_bits(_py, pid_bits);
@@ -973,10 +1013,8 @@ pub extern "C" fn molt_pickle_loads_core(
                         Err(err_bits) => return err_bits,
                     };
                     let Some(persistent_load_bits) = persistent_load else {
-                        return pickle_raise(
-                            _py,
-                            "pickle.loads: persistent IDs require persistent_load",
-                        );
+                        return PickleError::Unpickling
+                            .raise(_py, "pickle.loads: persistent IDs require persistent_load");
                     };
                     let value_bits = unsafe { call_callable1(_py, persistent_load_bits, pid_bits) };
                     if exception_pending(_py) {
@@ -1039,12 +1077,12 @@ pub extern "C" fn molt_pickle_loads_core(
                 }
                 _ => {
                     let msg = format!("pickle.loads: unsupported opcode 0x{op:02x}");
-                    return pickle_raise(_py, msg.as_str());
+                    return PickleError::Unpickling.raise(_py, msg.as_str());
                 }
             }
         }
         let Some(item) = stack.last() else {
-            return pickle_raise(_py, "pickle.loads: pickle stack empty");
+            return PickleError::Unpickling.raise(_py, "pickle.loads: pickle stack empty");
         };
         match pickle_vm_item_to_bits(_py, item) {
             Ok(bits) => bits,

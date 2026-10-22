@@ -197,6 +197,9 @@ fn module_exception_identity_survives_mutation_and_does_not_follow_names() {
             ("CancelledError", "asyncio.exceptions"),
             ("UnsupportedOperation", "_io"),
             ("StatisticsError", "statistics"),
+            ("PickleError", "_pickle"),
+            ("PicklingError", "_pickle"),
+            ("UnpicklingError", "_pickle"),
         ] {
             let class = exception_type_bits_from_name(py, name);
             assert_namespace_mutability(py, class, false);
@@ -207,6 +210,10 @@ fn module_exception_identity_survives_mutation_and_does_not_follow_names() {
             );
             assert!(is_canonical_runtime_class(py, class));
             assert!(is_builtin_exception_class_bits(py, class));
+            if matches!(name, "PicklingError" | "UnpicklingError") {
+                let base = exception_type_bits_from_name(py, "PickleError");
+                assert!(crate::issubclass_bits(class, base));
+            }
             let module_key = attr_name_bits_from_bytes(py, b"__module__").unwrap();
             let observed = crate::molt_get_attr_name(class, module_key);
             assert_eq!(

@@ -117,6 +117,7 @@ install_registry({{
     "molt_codecs_charmap_decode": lambda data, errors, mapping: (bytes(data).decode("latin-1"), len(bytes(data))),
     "molt_codecs_charmap_encode": lambda data, errors, mapping: (str(data).encode("latin-1"), len(str(data))),
     "molt_codecs_make_identity_dict": lambda chars: {{ord(ch): ord(ch) for ch in chars}},
+    "molt_builtin_class_lookup": lambda name: getattr(__import__("_pickle"), name),
     "molt_pickle_dumps_core": lambda obj, protocol, fix_imports, _persistent_id, buffer_callback, _dispatch_table: __import__('pickle').dumps(
         obj, protocol=protocol, fix_imports=fix_imports, buffer_callback=buffer_callback
     ),
