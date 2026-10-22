@@ -1469,7 +1469,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_BUILD_LOCK_TIMEOUT",
       "output_neutral": false,
       "owner": "src/molt/file_locks.py",
-      "summary": "Seconds molt waits for a build, product store or shared cache lock that another process holds; unset, empty, non-numeric, 0 or less waits while the holder holds the lock, as Cargo does, and the waiter prints one notice naming the lock and the holder's pid.",
+      "summary": "Seconds molt waits for a build, product store or shared cache lock that another process holds; unset, empty, non-numeric, 0 or less waits while the holder holds the lock, as Cargo does, and the waiter prints one notice naming the lock; for a build or product store lock it also names the pid its holder recorded.",
       "values": []
     },
     {

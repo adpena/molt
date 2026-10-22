@@ -998,6 +998,80 @@ def test_an_operator_bound_fails_the_wait_naming_the_holder(
     assert str(lock_path) in message and f"pid {holder.pid}," in message
 
 
+def test_a_record_naming_an_exited_process_names_no_holder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An exited process has no observable start time either (review v2, m2).
+
+    Its record must not name it as the live holder. Where no other process's
+    start time is observable (Windows), a running pid is named with that
+    caveat, because the pid may have been reused.
+    """
+    import json
+
+    from molt import process_model
+    from tests.process_guard_common import (
+        close_owned_test_process,
+        start_owned_test_process,
+    )
+
+    child = start_owned_test_process([sys.executable, "-c", "pass"])
+    child.wait(timeout=60)
+    close_owned_test_process(child)
+    lock_path = tmp_path / "build.lock"
+    record = cli_build_locks.lock_holder_path(lock_path)
+
+    def write(pid: int, started: int | None) -> None:
+        record.write_text(
+            json.dumps(
+                {"schema": "molt.lock-holder.v1", "pid": pid, "started_at_ns": started}
+            ),
+            encoding="utf-8",
+        )
+
+    write(child.pid, 1)
+    assert cli_build_locks.read_lock_holder(lock_path) is None
+
+    monkeypatch.setattr(process_model, "process_started_at_ns", lambda pid: None)
+    write(os.getpid(), None)
+    holder = cli_build_locks.read_lock_holder(lock_path)
+    assert holder == cli_build_locks.LockHolder(os.getpid(), None, start_verified=False)
+    assert "not observable" in holder.describe()
+    write(child.pid, None)
+    assert cli_build_locks.read_lock_holder(lock_path) is None
+
+
+def test_only_a_timeout_reads_as_a_lock_wait_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The waiting notice names the knob too (review v2, m3).
+
+    A build that waited and then failed for another reason is not a lock
+    timeout; only the line a wait that gave up writes is.
+    """
+    from molt import file_locks
+    from tests.process_guard_common import close_owned_test_process
+
+    monkeypatch.setenv(file_locks.LOCK_WAIT_ENV, "0.2")
+    lock_path = tmp_path / "build.lock"
+    release = tmp_path / "release"
+    holder = _start_holder(lock_path, release)
+    notices: list[str] = []
+    try:
+        with pytest.raises(cli_build_locks.BuildLockAcquisitionError) as raised:
+            with cli_build_locks.held_build_lock(
+                lock_path, purpose="test", notice=notices.append
+            ):
+                pass
+    finally:
+        release.touch()
+        close_owned_test_process(holder)
+    (notice,) = notices
+    assert file_locks.LOCK_WAIT_ENV in notice
+    assert not file_locks.is_lock_wait_timeout(notice + "\nerror: link failed")
+    assert file_locks.is_lock_wait_timeout(f"notice\nmolt: {raised.value}\n")
+
+
 def test_a_record_its_process_no_longer_backs_names_no_holder(tmp_path: Path) -> None:
     """A holder that died before clearing its record must not be named."""
     import json

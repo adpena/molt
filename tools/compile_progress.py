@@ -26,7 +26,7 @@ TOOLS_ROOT = Path(__file__).resolve().parent
 
 from tools import harness_memory_guard  # noqa: E402
 from molt.dx import artifact_root, configured_artifact_root, scratch_dir  # noqa: E402
-from molt.file_locks import LOCK_WAIT_ENV  # noqa: E402
+from molt.file_locks import LOCK_WAIT_ENV, is_lock_wait_timeout  # noqa: E402
 
 
 def _repo_root() -> Path:
@@ -195,8 +195,7 @@ def _is_retryable_failure(returncode: int, timed_out: bool, stderr: str) -> str 
         return "timeout_exit_124"
     if returncode in (143, -15):
         return "sigterm"
-    if returncode != 0 and f"({LOCK_WAIT_ENV})" in stderr:
-        # molt.file_locks names the knob in every bounded lock wait it gives up.
+    if returncode != 0 and is_lock_wait_timeout(stderr):
         return "build_lock_timeout"
     return None
 
