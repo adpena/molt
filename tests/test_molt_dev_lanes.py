@@ -325,13 +325,133 @@ def test_a_second_start_of_a_slug_refuses_while_the_first_runs(
     handle = _try_acquire_file_lock(lock)
     assert handle is not None
     try:
-        with pytest.raises(DriverError, match="another `lane start twin` is running"):
+        with pytest.raises(
+            DriverError,
+            match="another `lane start twin` or `lane retire twin` is running",
+        ):
             lanes.cmd_lane_start(_args(family, slug="twin"))
         assert _ref(main, "refs/heads/lane/twin") is None
         assert not (family / "worktrees" / "twin").exists()
     finally:
         _release_file_lock(handle)
     assert _start(family, "twin").is_dir()
+
+
+_LANE_START_CHILD = """
+import sys, time
+from pathlib import Path
+sys.path.insert(0, {root!r})
+from tests.test_molt_dev_lanes import _args
+from tools import molt_dev_lanes as lanes
+from tools.molt_dev_common import DriverError
+lanes.provision_lane = lambda worktree: []
+if {hold!r}:
+    real = lanes.work_in_progress_refusal
+    def held(repo, *, now):
+        Path({ready!r}).write_text("ready")
+        deadline = time.monotonic() + 60
+        while not Path({go!r}).exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        return real(repo, now=now)
+    lanes.work_in_progress_refusal = held
+try:
+    print("RESULT ok", lanes.cmd_lane_start(_args(Path({family!r}), slug={slug!r})), flush=True)
+except DriverError as exc:
+    print("RESULT refused", str(exc).replace(chr(10), " "), flush=True)
+"""
+
+
+def test_two_processes_starting_one_slug_never_undo_each_other(
+    family: Path, tmp_path: Path
+) -> None:
+    """The review v4 race with two real processes and the OS lock: the first
+    holds its checks open, the second refuses at once, and the first's
+    worktree, branch and record survive (review v5, A-1: an in-process test
+    stops at the in-process mutex and never reaches the OS lock)."""
+    import subprocess
+    import time
+
+    from tests.process_guard_common import (
+        close_owned_test_process,
+        start_owned_test_process,
+    )
+
+    main = family / "molt-src"
+    ready, go = tmp_path / "ready", tmp_path / "go"
+    root = str(Path(__file__).resolve().parents[1])
+
+    def child(hold: bool) -> subprocess.Popen[str]:
+        code = _LANE_START_CHILD.format(
+            root=root, hold=hold, ready=str(ready), go=str(go),
+            family=str(family), slug="twin",
+        )  # fmt: skip
+        return start_owned_test_process(
+            [sys.executable, "-B", "-c", code],
+            cwd=root,
+            env=dict(os.environ),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
+    first = child(hold=True)
+    try:
+        deadline = time.monotonic() + 60
+        while not ready.exists() and first.poll() is None:
+            assert time.monotonic() < deadline, (
+                "the first start never reached its checks"
+            )
+            time.sleep(0.02)
+        second = child(hold=False)
+        try:
+            second_out, second_err = second.communicate(timeout=60)
+        finally:
+            close_owned_test_process(second)
+        go.write_text("go")
+        first_out, first_err = first.communicate(timeout=60)
+    finally:
+        go.write_text("go")
+        close_owned_test_process(first)
+    assert "another `lane start twin`" in second_out, second_out + second_err
+    assert "RESULT ok 0" in first_out, first_out + first_err
+    worktree = family / "worktrees" / "twin"
+    assert any(path.resolve() == worktree.resolve() for path in _registered(main))
+    assert _ref(main, "refs/heads/lane/twin") == _ref(main, "refs/remotes/origin/main")
+
+
+def test_a_retirement_waits_for_no_start_and_a_start_for_no_retirement(
+    family: Path,
+) -> None:
+    """`lane retire` holds the slug's lock too: it refuses while a start of
+    the slug runs, including its provisioning (review v5, A-5)."""
+    from molt.file_locks import _release_file_lock, _try_acquire_file_lock
+
+    main = family / "molt-src"
+    _start(family, "held")
+    common = Path(_git(main, "rev-parse", "--git-common-dir").stdout.strip())
+    if not common.is_absolute():
+        common = main / common
+    handle = _try_acquire_file_lock(common / "molt" / "lane-start" / "held.lock")
+    assert handle is not None
+    try:
+        with pytest.raises(DriverError, match="`lane retire held` is running"):
+            lanes.cmd_lane_retire(_args(family, slug="held"))
+        assert (family / "worktrees" / "held").is_dir()
+    finally:
+        _release_file_lock(handle)
+
+
+def test_a_branch_without_a_record_names_its_hand_removal(family: Path) -> None:
+    """A branch a stopped start or a hand left has no record, so `lane retire`
+    cannot take it; `lane start` and `lane retire` name the hand commands
+    (review v5, A-4)."""
+    main = family / "molt-src"
+    _git(main, "branch", "lane/orphaned", "origin/main")
+    with pytest.raises(DriverError, match="git branch -D lane/orphaned") as raised:
+        lanes.cmd_lane_start(_args(family, slug="orphaned"))
+    assert "no lane record" in str(raised.value)
+    with pytest.raises(DriverError, match="git branch -D lane/orphaned"):
+        lanes.cmd_lane_retire(_args(family, slug="orphaned"))
 
 
 def test_an_undo_names_how_to_finish_what_it_keeps(

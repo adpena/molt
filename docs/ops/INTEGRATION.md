@@ -231,11 +231,19 @@ lane at tool-release schema 3 failed to provision a new lane at schema 2, and
 stale. Where main's code cannot read a lane's state, retirement refuses
 before it bundles or removes anything (`validate_lane_handoff`), so no signal
 is lost. `--candidate-controller` runs the calling checkout's own driver. A
-start that stops before its lane's record (a failed `git worktree add`, a
-failed record, an interrupt) undoes what it created: the worktree while Git
-finds it clean, then the branch once no worktree holds it and while it still
-points at its base. When Git refuses either, it keeps both and names the
-commands that finish by hand. The record names the controller that started
+start and a retirement of one slug never run together: each holds the
+slug's lock (`<git-common-dir>/molt/lane-start/<slug>.lock`), a start from
+its checks through provisioning and a retirement for its whole run, and the
+second refuses at once. A start that stops before its lane's record (a failed
+`git worktree add`, a failed record, an interrupt) undoes what it created:
+the worktree while Git finds it clean, then the branch once no worktree holds
+it and while it still points at its base. A path that exists but is no
+registered worktree was made by another process after the checks, so it is
+kept while the branch this start made goes. When Git refuses a removal, it
+keeps what Git refused and names the commands that finish by hand. The lock
+covers only `lane start` and `lane retire`: a hand `git worktree add -b
+lane/<slug>` at the lane's path in the same instant can still meet a start's
+undo. The record names the controller that started
 the lane. The record's environment wires the sccache the running driver pins
 (main's), while provisioning reads the lane's own pins; the two differ only
 for a `--base` lane whose sccache pin differs, and either sccache serves its
@@ -255,8 +263,10 @@ worktree. A slug is 1 to 64 lower-case letters, digits, `.`, `_` or `-`.
   (`molt.checkout_provisioning`): the uv environment `<lane>/.venv`, the Acorn
   tree, and the managed Git hooks. An inherited `UV_PROJECT_ENVIRONMENT`
   names the caller's environment, so provisioning drops it. It refuses an
-  existing branch, an existing path and an active record. A provisioning
-  failure keeps the lane and prints the command that finishes it.
+  existing branch, an existing path and an active record, and a branch with
+  no record (a start that stopped, or a branch made by hand) with the Git
+  commands that remove it. A provisioning failure keeps the lane and prints
+  the command that finishes it.
 - **`lane retire <slug>`** fetches, then accepts the lane only when it is
   landed. *Landed* is one predicate, `molt_dev_change_ids.landing_representation`:
   every ordinary commit of `origin/main..lane/<slug>` is on `origin/main`

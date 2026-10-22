@@ -193,7 +193,12 @@ def _managed_record(main: Path, slug: str) -> dict[str, Any]:
     try:
         record = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        raise DriverError(f"managed lane custody unavailable at {path}: {exc}") from exc
+        raise DriverError(
+            f"managed lane custody unavailable at {path}: {exc}; a lane with no "
+            "record (a start that stopped, or a branch made by hand) is not "
+            "`lane retire`'s to remove: inspect it, then `git worktree remove "
+            f"<path>` and `git branch -D {lane_branch(slug)}`"
+        ) from exc
     if (
         not isinstance(record, dict)
         or record.get("task") != lane_task(slug)
@@ -521,8 +526,13 @@ def work_in_progress_refusal(repo: Path, *, now: float) -> str | None:
 
 
 @contextmanager
-def _lane_start_lock(repo: Path, slug: str) -> Generator[None]:
-    """Hold ``slug``'s start lock, or refuse: another start of it is running."""
+def _lane_slug_lock(repo: Path, slug: str) -> Generator[None]:
+    """Hold ``slug``'s lock, or refuse: a start or retirement of it is running.
+
+    `lane start` holds it from its checks through provisioning and `lane
+    retire` for its whole run, so neither meets the other's half-made or
+    half-removed lane (HF-468 reviews v4 and v5).
+    """
     common = _driver()._git_common_directory(repo)
     if common is None:
         raise DriverError(f"cannot resolve the Git common directory of {repo}")
@@ -531,8 +541,8 @@ def _lane_start_lock(repo: Path, slug: str) -> Generator[None]:
     handle = _try_acquire_file_lock(path)
     if handle is None:
         raise DriverError(
-            f"another `lane start {slug}` is running in this repository; wait "
-            "for it, or choose another slug"
+            f"another `lane start {slug}` or `lane retire {slug}` is running in "
+            "this repository; wait for it, or choose another slug"
         )
     try:
         yield
@@ -615,11 +625,20 @@ def cmd_lane_start(args: argparse.Namespace) -> int:
     # One start per slug at a time, from its checks through its record: a
     # second start of the slug refuses, so no start's undo can meet another
     # start's worktree or branch (review v4).
-    with _lane_start_lock(repo, slug):
+    with _lane_slug_lock(repo, slug):
         if _ref_sha(git, f"refs/heads/{branch}") is not None:
+            if _record_status(main, slug) in agent_coordination.ACTIVE_STATUSES:
+                raise DriverError(
+                    f"{branch} already exists; retire it (lane retire {slug}) or "
+                    "choose another slug"
+                )
+            holder = _lane_worktree(_worktrees(git), branch)
             raise DriverError(
-                f"{branch} already exists; retire it (lane retire {slug}) or choose "
-                "another slug"
+                f"{branch} exists with no lane record (a start that stopped, or a "
+                "branch made by hand), so `lane retire` cannot take it; inspect "
+                "it, then "
+                + (f"`git worktree remove {holder}` and " if holder else "")
+                + f"`git branch -D {branch}`, or choose another slug"
             )
         if worktree.exists() or worktree.is_symlink():
             raise DriverError(
@@ -693,21 +712,21 @@ def cmd_lane_start(args: argparse.Namespace) -> int:
             raise
         _ok(f"recorded {_record_path(main, slug)} ({record['status']})")
 
-    _step(f"provision {worktree}")
-    try:
-        done = provision_lane(worktree)
-    except checkout_provisioning.ProvisioningError as exc:
-        _fail(str(exc))
-        _say(
-            f"    the lane exists; finish provisioning with: cd {worktree} && "
-            "uv run python -m molt.checkout_provisioning ensure"
-        )
-        return EXIT_FAIL
-    for item in done:
-        action = "provisioned" if item.provisioned else "current"
-        _ok(f"{item.name}: {action} ({item.seconds:.2f} s)")
-    print(worktree, flush=True)
-    return EXIT_OK
+        _step(f"provision {worktree}")
+        try:
+            done = provision_lane(worktree)
+        except checkout_provisioning.ProvisioningError as exc:
+            _fail(str(exc))
+            _say(
+                f"    the lane exists; finish provisioning with: cd {worktree} && "
+                "uv run python -m molt.checkout_provisioning ensure"
+            )
+            return EXIT_FAIL
+        for item in done:
+            action = "provisioned" if item.provisioned else "current"
+            _ok(f"{item.name}: {action} ({item.seconds:.2f} s)")
+        print(worktree, flush=True)
+        return EXIT_OK
 
 
 # --------------------------------------------------------------------------
@@ -812,11 +831,23 @@ def cmd_lane_retire(
     expected_tip: str | None = None,
     expected_worktree: Path | None = None,
 ) -> int:
+    # A pinned claim must name the controller this process runs from.
+    molt_dev_controller.integration_controller(args)
+    with _lane_slug_lock(Path(args.repo).resolve(), lane_slug(args.slug)):
+        return _retire_lane(
+            args, expected_tip=expected_tip, expected_worktree=expected_worktree
+        )
+
+
+def _retire_lane(
+    args: argparse.Namespace,
+    *,
+    expected_tip: str | None,
+    expected_worktree: Path | None,
+) -> int:
     from tools import agent_coordination
 
     driver = _driver()
-    # A pinned claim must name the controller this process runs from.
-    molt_dev_controller.integration_controller(args)
     slug = lane_slug(args.slug)
     branch = lane_branch(slug)
     ref = f"refs/heads/{branch}"
