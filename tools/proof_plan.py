@@ -792,6 +792,18 @@ def local_pytest_argv(
     )
 
 
+def local_pytest_collection_argv(command: tuple[str, ...]) -> tuple[str, ...]:
+    """Collect a canonical selected target projection under its declared options.
+
+    Only the executor's worker count changes. Pytest itself validates node IDs,
+    parameter IDs and imports; collection never establishes a test result.
+    """
+    prefix = (*_LOCAL_PYTEST_PREFIX, "-n", "auto")
+    if command[: len(prefix)] != prefix:
+        raise ValueError("collection requires a canonical local pytest argv")
+    return (*_LOCAL_PYTEST_PREFIX, "-n", "0", *command[len(prefix) :], "--collect-only")
+
+
 def local_pytest_command(
     targets: Iterable[str],
     select: tuple[str, ...] = (),
