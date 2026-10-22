@@ -585,10 +585,10 @@ name = "uv"
 executable = "uv"
 version_args = ["--version"]
 process_image_probes = [["--offline", "--no-config", "--managed-python", "python", "list", "--only-downloads"]]
-version_pattern = '^uv 0\.13\.1\b'
-setup_value = "0.13.1"
+version_pattern = '^uv 0\.13\.4\b'
+setup_value = "0.13.4"
 setup_evidence = [
-  ".github/actions/setup-project/action.yml::version: \"0.13.1\"",
+  ".github/actions/setup-project/action.yml::version: \"0.13.4\"",
 ]
 
 [[toolchain_policy]]
