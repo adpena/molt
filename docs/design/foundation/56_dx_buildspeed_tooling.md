@@ -909,9 +909,10 @@ tests that place their target in a temporary directory.
   with `MOLT_CARGO_TIMEOUT=T` a backend holder could hold the lock for Cargo,
   the probe and publication, longer than its waiters' T.
   `MOLT_BUILD_LOCK_TIMEOUT` bounds every wait for an operator who prefers to
-  fail. The holder records its pid and start time in `<lock>.holder` beside
-  the lock (the lock file stays empty metadata) and empties it on release; a
-  waiter prints one notice naming the lock and that holder, as Cargo prints
+  fail. A build or product lock's holder (`molt.cli.build_locks`) records its
+  pid and start time in `<lock>.holder` beside the lock (the lock file stays
+  empty metadata) and empties it on release; a waiter prints one notice
+  naming the lock and that holder, as Cargo prints
   "Blocking waiting for file lock" and Bazel "Another command (pid=...) is
   running", so a stopped holder (a suspended `molt build`) is visible, not a
   silent hang. A record whose pid no longer has the recorded start time names
@@ -921,7 +922,11 @@ tests that place their target in a temporary directory.
   uncontended acquire and release took 72 us against 47 us without the
   record on the external volume, and 82 us against 48 us on the internal
   disk; creating and unlinking a record file instead took about 440 us on
-  the external volume. A warm build takes two or three build locks.
+  the external volume. A warm build takes two or three build locks. A shared
+  cache lock's waiter names the lock but not its holder: `molt.file_locks`
+  belongs to the Python capture closure
+  (`python_capture_authority_paths`), which must not import the process
+  model that reads another process's start time.
 - Retention follows last use, as Go's does: every read renews its entry in
   the store's ledger before it reads (build admission, the backend receipt
   check of `internal-backend-build`, the cross-host export), and each

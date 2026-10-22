@@ -1467,7 +1467,7 @@ def test_parallel_worker_state_uses_fresh_context_and_live_shared_stop():
 def test_pruning_a_stale_build_lock_takes_its_holder_record_along(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from molt.file_locks import lock_holder_path
+    from molt.cli.build_locks import lock_holder_path
 
     monkeypatch.setattr(molt_diff, "_diff_build_lock_root", lambda: tmp_path)
     monkeypatch.setenv("MOLT_DIFF_BUILD_LOCK_MAX_AGE_SEC", "60")

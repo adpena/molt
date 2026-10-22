@@ -431,7 +431,7 @@ def test_daemon_lock_failures_share_framing_and_timing(
     def unavailable(*args, **kwargs):
         raise RuntimeError("daemon lock timed out")
 
-    monkeypatch.setattr(build_locks, "held_file_lock", unavailable)
+    monkeypatch.setattr(build_locks, "_try_acquire_file_lock", unavailable)
     ready, error = backend_compile._start_backend_daemon_under_lock(
         tmp_path / "backend",
         tmp_path / "daemon.sock",
@@ -491,7 +491,7 @@ def test_wasm_member_lock_boundary_distinguishes_acquisition_from_work(
     if inside_work:
         monkeypatch.setattr(runtime_wasm_build, "_reuse_target_runtime_wasm", broken)
     else:
-        monkeypatch.setattr(build_locks, "held_file_lock", broken)
+        monkeypatch.setattr(build_locks, "_try_acquire_file_lock", broken)
 
     def run():
         return runtime_wasm_build._materialize_runtime_wasm_member_from_target(
