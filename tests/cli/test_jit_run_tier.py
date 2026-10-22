@@ -267,19 +267,14 @@ def test_only_the_exact_start_receipt_proves_the_program_started(
 
 
 _POSIX_ONLY = pytest.mark.skipif(
-    os.name == "nt", reason="the JIT image is a POSIX shell program"
+    os.name == "nt", reason="the JIT image is a POSIX interpreter-line program"
 )
 
 
-def _fake_runner(tmp_path: Path) -> Path:
-    """A runner that records the argv it was started with."""
-    runner = tmp_path / "runner's dir" / "molt-jit"
-    runner.parent.mkdir()
-    runner.write_text(
-        '#!/bin/sh\nprintf "%s\\n" "$@" > "$FAKE_RUNNER_ARGV"\n', encoding="utf-8"
-    )
-    runner.chmod(0o755)
-    return runner
+# A binary that prints the argv it was started with: the kernel starts an
+# interpreter-line image as `<runner> --image <image> [args...]`. A script
+# cannot stand in, because macOS refuses a script as an interpreter.
+_ECHO_RUNNER = Path("/bin/echo")
 
 
 _HEADER = {
@@ -304,9 +299,9 @@ def test_a_jit_image_holds_its_header_and_program_in_one_file(tmp_path: Path) ->
 
     image = tmp_path / f"app_molt{JIT_IMAGE_SUFFIX}"
     ir = {"functions": [], "profile": None}
-    publish_jit_image(image, runner=_fake_runner(tmp_path), header=_HEADER, ir=ir)
-    shebang, launch, marker, rest = image.read_bytes().split(b"\n", 3)
-    assert shebang == b"#!/bin/sh" and launch.startswith(b"exec ")
+    publish_jit_image(image, runner=_ECHO_RUNNER, header=_HEADER, ir=ir)
+    interpreter, marker, rest = image.read_bytes().split(b"\n", 2)
+    assert interpreter == b"#!/bin/echo --image"
     name, header_len, program_len = marker.decode().split(" ")
     assert name == JIT_IMAGE_MARKER
     assert len(rest) == int(header_len) + int(program_len)
@@ -327,7 +322,7 @@ def test_a_jit_image_is_executable_through_the_umask(
     previous = os.umask(umask)
     try:
         publish_jit_image(
-            image, runner=_fake_runner(tmp_path), header=_HEADER, ir={"functions": []}
+            image, runner=_ECHO_RUNNER, header=_HEADER, ir={"functions": []}
         )
     finally:
         os.umask(previous)
@@ -335,30 +330,48 @@ def test_a_jit_image_is_executable_through_the_umask(
 
 
 @_POSIX_ONLY
-def test_executing_a_jit_image_re_runs_its_program_under_its_runner(
+def test_executing_a_jit_image_starts_its_runner_with_no_shell(
     tmp_path: Path,
 ) -> None:
     # A program's sys.executable is its argv[0], the image. Spawn-mode
-    # multiprocessing and subprocess.run([sys.executable, ...]) execute it;
-    # the image must start the same program again, with the new arguments.
+    # multiprocessing and subprocess.run([sys.executable, ...]) execute it.
+    # The kernel starts the runner named on the image's first line, with no
+    # shell between, so no argument is expanded or reparsed.
     from molt.cli.jit_image import publish_jit_image
+    from molt.cli.run_tier import jit_runner_argv
     from tests.process_guard_common import run_guarded_test_process
 
-    runner = _fake_runner(tmp_path)
     image = tmp_path / f"app_molt{JIT_IMAGE_SUFFIX}"
-    publish_jit_image(image, runner=runner, header=_HEADER, ir={"functions": []})
-    recorded = tmp_path / "argv.txt"
-    arguments = ["two words", "it's", "$HOME", ""]
-    run_guarded_test_process(
-        [str(image), *arguments],
-        env={**os.environ, "FAKE_RUNNER_ARGV": str(recorded)},
-        check=True,
+    publish_jit_image(image, runner=_ECHO_RUNNER, header=_HEADER, ir={"functions": []})
+    arguments = ["it's", "$HOME", "--start-receipt", "*"]
+    completed = run_guarded_test_process(
+        [str(image), *arguments], capture_output=True, text=True, check=True
     )
-    received = recorded.read_text(encoding="utf-8").split("\n")[:-1]
-    # The runner launches the image, and the program sees the image as its
-    # argv[0] followed by exactly the arguments the image was started with.
-    assert received[:2] == ["--launch", str(image)]
-    assert received[received.index("--") + 1 :] == [str(image), *arguments]
+    # The kernel's command is the one molt run gives the runner, less the
+    # start receipt: one spelling of the runner command.
+    expected = jit_runner_argv(str(_ECHO_RUNNER), str(image), arguments)[1:]
+    assert completed.stdout == " ".join(expected) + "\n"
+    assert expected[:2] == ["--image", str(image)]
+
+
+@_POSIX_ONLY
+@pytest.mark.parametrize(
+    "runner,reason",
+    [
+        (Path("relative/molt-jit"), "not absolute"),
+        (Path("/runner dir/molt-jit"), "whitespace"),
+        (Path("/" + "r" * 600 + "/molt-jit"), "interpreter line"),
+    ],
+)
+def test_a_runner_path_the_kernel_cannot_start_is_refused(
+    tmp_path: Path, runner: Path, reason: str
+) -> None:
+    from molt.cli.jit_image import publish_jit_image
+
+    image = tmp_path / f"app_molt{JIT_IMAGE_SUFFIX}"
+    with pytest.raises(ValueError, match=reason):
+        publish_jit_image(image, runner=runner, header=_HEADER, ir={"functions": []})
+    assert not image.exists()
 
 
 @_POSIX_ONLY
@@ -366,9 +379,10 @@ def test_a_jit_image_stops_when_its_runner_generation_is_gone(
     tmp_path: Path,
 ) -> None:
     # The image names one runner generation of this checkout and does not
-    # renew it. After idle eviction or target removal, /bin/sh cannot run the
-    # runner: it names the runner and exits 126 (bash, macOS /bin/sh) or 127
-    # (dash and other POSIX shells) (docs/cli-reference.md, --emit jit).
+    # renew it. After idle eviction or target removal the kernel cannot start
+    # its interpreter: a shell reports a bad interpreter and exits 126 (bash
+    # names a prefix of the runner path), and execve itself fails with ENOENT
+    # (docs/cli-reference.md, --emit jit).
     from molt.cli.jit_image import publish_jit_image
     from tests.process_guard_common import run_guarded_test_process
 
@@ -376,10 +390,15 @@ def test_a_jit_image_stops_when_its_runner_generation_is_gone(
     image = tmp_path / f"app_molt{JIT_IMAGE_SUFFIX}"
     publish_jit_image(image, runner=runner, header=_HEADER, ir={"functions": []})
     completed = run_guarded_test_process(
-        [str(image)], capture_output=True, text=True, check=False
+        ["/bin/sh", "-c", '"$0"', str(image)],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert completed.returncode in (126, 127)
-    assert str(runner) in completed.stderr
+    assert "bad interpreter" in completed.stderr or "not found" in completed.stderr
+    with pytest.raises(FileNotFoundError):
+        run_guarded_test_process([str(image)], check=False)
 
 
 def _program_exits(

@@ -105,6 +105,11 @@ def jit_tier_refusal_message(refusal: str) -> str:
     )
 
 
+# The runner flag that names the image; everything after the image is the
+# program's. A JIT image's interpreter line ends with it (``jit_image.py``).
+JIT_RUNNER_IMAGE_FLAG = "--image"
+
+
 def jit_runner_argv(
     runner: str,
     image: str,
@@ -114,13 +119,15 @@ def jit_runner_argv(
 ) -> list[str]:
     """The runner command that starts the program in ``image``.
 
-    ``image`` is also the program's argv[0], so ``sys.executable`` names the
-    image, which re-runs the program as an AOT executable's path does.
+    It is the command ``execve`` of the image runs (``#!<runner> --image``),
+    with ``--start-receipt`` added. ``image`` is also the program's argv[0],
+    so ``sys.executable`` names the image, which re-runs the program as an
+    AOT executable's path does.
     """
-    argv = [runner, "--launch", image]
+    argv = [runner]
     if start_receipt is not None:
         argv += ["--start-receipt", start_receipt]
-    return [*argv, "--", image, *program_arguments]
+    return [*argv, JIT_RUNNER_IMAGE_FLAG, image, *program_arguments]
 
 
 def jit_program_started(receipt: Path) -> bool:

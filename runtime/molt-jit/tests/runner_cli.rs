@@ -23,11 +23,11 @@ fn a_launch_that_fails_before_the_program_starts_leaves_no_start_receipt() {
         .expect("Cargo test artifact root");
     let receipt = artifacts.path().join("started.json");
     let output = Command::new(RUNNER)
-        .arg("--launch")
-        .arg(artifacts.path().join("missing.jit.json"))
         .arg("--start-receipt")
         .arg(&receipt)
-        .args(["--", "program"])
+        .arg("--image")
+        .arg(artifacts.path().join("missing_molt.jit"))
+        .arg("program-argument")
         .output()
         .expect("run molt-jit");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -41,16 +41,20 @@ fn a_launch_that_fails_before_the_program_starts_leaves_no_start_receipt() {
 }
 
 #[test]
-fn a_start_receipt_option_needs_a_path_and_the_separator() {
+fn the_runner_needs_an_image_and_a_receipt_path() {
     for args in [
-        &["--launch", "a.jit.json", "--start-receipt"][..],
+        &["--start-receipt"][..],
+        &["--start-receipt", "r.json"][..],
+        &["--image"][..],
         &[
-            "--launch",
-            "a.jit.json",
             "--start-receipt",
             "r.json",
-            "program",
+            "--start-receipt",
+            "s.json",
+            "--image",
+            "a.jit",
         ][..],
+        &["program"][..],
     ] {
         let output = Command::new(RUNNER)
             .args(args)

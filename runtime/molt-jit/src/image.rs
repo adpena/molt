@@ -3,14 +3,15 @@
 //! `src/molt/cli/jit_image.py` writes it and owns its layout:
 //!
 //! ```text
-//! #!/bin/sh
-//! exec <runner> --launch "$0" -- "$0" "$@"
-//! #molt.jit-image.v1 <header bytes> <program bytes>
+//! #!<runner> --image
+//! #molt.jit-image.v2 <header bytes> <program bytes>
 //! <header: JSON>
 //! <program: backend IR, MessagePack>
 //! ```
 //!
-//! The first two lines make the image a program a shell can start, so
+//! The first line makes the runner the image's interpreter: `execve` of the
+//! image starts `<runner> --image <image> [args...]` with no shell between,
+//! so the program sees the environment its caller passed, and
 //! `sys.executable` (argv[0]) re-runs it, as an AOT executable's path does.
 //! The CLI publishes the whole file with one rename, so its header and its
 //! program always belong together.
@@ -21,8 +22,10 @@ use serde::Deserialize;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-pub(crate) const IMAGE_SHEBANG: &str = "#!/bin/sh";
-pub(crate) const IMAGE_MARKER: &str = "#molt.jit-image.v1";
+/// The interpreter line starts `#!` and ends with the runner's image flag.
+pub(crate) const IMAGE_INTERPRETER_PREFIX: &str = "#!";
+pub(crate) const IMAGE_INTERPRETER_FLAG: &str = " --image";
+pub(crate) const IMAGE_MARKER: &str = "#molt.jit-image.v2";
 
 /// What the runner needs besides the program.
 #[derive(Debug, Deserialize)]
@@ -40,7 +43,7 @@ pub(crate) struct ImageHeader {
 /// One program image read from disk.
 pub(crate) struct JitImage {
     pub(crate) header: ImageHeader,
-    bytes: Vec<u8>,
+    pub(crate) bytes: Vec<u8>,
     program_start: usize,
 }
 
@@ -54,17 +57,20 @@ impl JitImage {
     }
 
     fn parse(bytes: Vec<u8>) -> Result<Self, String> {
-        let mut lines = bytes.splitn(4, |byte| *byte == b'\n');
-        let shebang = lines.next().unwrap_or_default();
-        if shebang != IMAGE_SHEBANG.as_bytes() {
-            return Err(format!("it does not start with `{IMAGE_SHEBANG}`"));
+        let mut lines = bytes.splitn(3, |byte| *byte == b'\n');
+        let interpreter = lines.next().unwrap_or_default();
+        if !interpreter.starts_with(IMAGE_INTERPRETER_PREFIX.as_bytes())
+            || !interpreter.ends_with(IMAGE_INTERPRETER_FLAG.as_bytes())
+        {
+            return Err(format!(
+                "its first line is not `{IMAGE_INTERPRETER_PREFIX}<runner>{IMAGE_INTERPRETER_FLAG}`"
+            ));
         }
-        let _exec = lines.next().ok_or("it has no launch line")?;
         let marker = lines.next().ok_or("it has no image marker")?;
         let marker = std::str::from_utf8(marker).map_err(|_| "its image marker is not UTF-8")?;
         let mut fields = marker.split(' ');
         if fields.next() != Some(IMAGE_MARKER) {
-            return Err(format!("its third line is not a `{IMAGE_MARKER}` marker"));
+            return Err(format!("its second line is not a `{IMAGE_MARKER}` marker"));
         }
         let mut length = |what: &str| {
             fields
@@ -109,7 +115,7 @@ mod tests {
 
     fn image(header: &str, program: &[u8]) -> Vec<u8> {
         let mut bytes = format!(
-            "{IMAGE_SHEBANG}\nexec runner --launch \"$0\" -- \"$0\" \"$@\"\n{IMAGE_MARKER} {} {}\n{header}",
+            "#!/runner{IMAGE_INTERPRETER_FLAG}\n{IMAGE_MARKER} {} {}\n{header}",
             header.len(),
             program.len()
         )
@@ -146,13 +152,21 @@ mod tests {
     #[test]
     fn a_file_that_is_not_an_image_is_refused() {
         for (bytes, expected) in [
-            (b"{\"schema\":\"molt.jit-launch.v1\"}".to_vec(), "#!/bin/sh"),
             (
-                b"#!/bin/sh\nexec x\n#molt.jit-image.v2 1 1\n{}".to_vec(),
+                b"{\"schema\":\"molt.jit-launch.v1\"}".to_vec(),
+                "first line",
+            ),
+            // The v1 layout ran the runner through /bin/sh.
+            (
+                b"#!/bin/sh\nexec x\n#molt.jit-image.v1 1 1\n{}".to_vec(),
+                "first line",
+            ),
+            (
+                b"#!/runner --image\n#molt.jit-image.v1 1 1\n{}".to_vec(),
                 "marker",
             ),
             (
-                b"#!/bin/sh\nexec x\n#molt.jit-image.v1 2\n{}".to_vec(),
+                b"#!/runner --image\n#molt.jit-image.v2 2\n{}".to_vec(),
                 "program length",
             ),
         ] {
