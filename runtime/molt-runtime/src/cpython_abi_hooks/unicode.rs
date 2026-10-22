@@ -130,12 +130,14 @@ mod tests {
                 assert_eq!(strings::PyUnicode_GetLength(text), 4);
                 assert_eq!(strings::PyUnicode_Check(text), 1);
                 assert_eq!(strings::PyUnicode_CheckExact(text), 1);
+                assert!(GLOBAL_BRIDGE.unicode_is_open(text));
                 let initial_bits = GLOBAL_BRIDGE
-                    .observed_handle_for_pyobj(text)
+                    .molt_handle_for_pyobj(text)
                     .unwrap()
                     .bits();
                 let initial_ptr = crate::obj_from_bits(initial_bits).as_ptr().unwrap();
                 assert!(crate::object::layout::StringStorage::is_ascii(initial_ptr));
+                assert!(GLOBAL_BRIDGE.unicode_is_open(text));
                 let data = strings::molt_capi_unicode_data(text).cast::<u32>();
                 assert!(!data.is_null());
                 // The same raw writes emitted by PyUnicode_WRITE on both headers.
