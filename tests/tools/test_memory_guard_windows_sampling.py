@@ -21,6 +21,7 @@ import molt.pytest_memory_guard_bootstrap as pytest_memory_guard_bootstrap
 from tests.process_guard_common import (
     HUNG_CHILD_SOURCE,
     ModuleView,
+    child_exited_unreaped,
     close_owned_test_process,
     install_module_os_view,
     install_module_view,
@@ -533,16 +534,111 @@ def test_pid_alive_counts_an_exited_unreaped_child_dead_and_never_reaps_it() -> 
         close_owned_test_process(child)
 
 
-def test_linux_proc_state_reads_the_field_after_the_command_name(tmp_path) -> None:
+def test_linux_stat_fields_follow_the_command_name(tmp_path) -> None:
     stat = tmp_path / "41" / "stat"
     stat.parent.mkdir()
-    # The command name may hold spaces and ")": the state follows the last ")".
+    # The command name may hold spaces and ")": the fields follow the last ")".
     stat.write_text("41 (a) b) Z 1 41 41 0 -1 4194560\n", encoding="utf-8")
-    assert process_model._linux_proc_state(41, tmp_path) == b"Z"
-    assert process_model._LINUX_EXITED_STATES >= {b"Z", b"X", b"x"}
-    stat.write_text("41 (sleep) S 1 41 41 0 -1 4194560\n", encoding="utf-8")
-    assert process_model._linux_proc_state(41, tmp_path) == b"S"
-    assert process_model._linux_proc_state(42, tmp_path) is None
+    assert process_model._linux_stat_fields(41, tmp_path)[:2] == ["Z", "1"]
+    assert process_model._LINUX_EXITED_STATES >= {"Z", "X", "x"}
+    assert process_model._linux_stat_fields(42, tmp_path) is None
+
+
+def _write_linux_stat(stat: Path, pid: int, state: str, threads: int = 1) -> None:
+    # Fields after the comm: state, ppid, pgid (indexes 0-2), num_threads
+    # (index 17), starttime (index 19), vsize, rss pages (index 21).
+    stat.parent.mkdir(parents=True, exist_ok=True)
+    fields = [state, "1", "41", *["0"] * 14, str(threads), "0", "7000", "0", "3"]
+    stat.write_text(f"{pid} (rustc) {' '.join(fields)}\n", encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("state", "threads", "exited"),
+    [
+        pytest.param("Z", 1, True, id="every-task-exited"),
+        pytest.param("X", 1, True, id="being-released"),
+        pytest.param("Z", 2, False, id="leader-exited-thread-runs"),
+        pytest.param("Z", 3, False, id="thread-starting-another"),
+        pytest.param("R", 1, False, id="pid-reaped-and-reused"),
+        pytest.param("S", 0, False, id="live-state-wins"),
+    ],
+)
+def test_a_linux_process_exits_only_when_no_thread_remains(
+    tmp_path, state, threads, exited
+) -> None:
+    # A leader that called pthread_exit reads Z while its other threads run.
+    _write_linux_stat(tmp_path / "41" / "stat", 41, state, threads)
+    fields = process_model._linux_stat_fields(41, tmp_path)
+    assert process_model._linux_stat_exited(fields) is exited
+    # The stat row, which every Linux sampler reads, follows the same rule.
+    assert (process_model._linux_proc_stat_row(41, tmp_path) is None) is exited
+
+
+def test_an_unreadable_or_short_stat_row_never_proves_an_exit(tmp_path) -> None:
+    assert not process_model._linux_stat_exited(None)
+    assert not process_model._linux_stat_exited([])
+    assert not process_model._linux_stat_exited(["Z", "1", "41"])
+    assert not process_model._linux_stat_exited(["Z", *["0"] * 16, "many"])
+
+
+# The main thread exits through pthread_exit; a second thread keeps running
+# and writes once its input arrives.
+_LEADER_EXITS_WHILE_A_THREAD_RUNS = """
+import ctypes, os, threading
+def worker():
+    os.write(1, b"r")
+    os.read(0, 1)
+    os.write(1, b"w")
+threading.Thread(target=worker).start()
+ctypes.CDLL(None).pthread_exit(None)
+"""
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="Linux reports the leader's own state"
+)
+def test_a_process_whose_leader_exited_lives_while_a_thread_runs() -> None:
+    interest = process_model.CustodyInterest(tree_pids=frozenset({os.getpid()}))
+    child = start_owned_test_process(
+        [sys.executable, "-I", "-S", "-c", _LEADER_EXITS_WHILE_A_THREAD_RUNS],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+    )
+    try:
+        assert child.stdin is not None and child.stdout is not None
+        assert child.stdout.read(1) == b"r"
+        deadline = time.monotonic() + 30
+        while process_model._linux_stat_fields(child.pid)[0] != "Z":
+            assert time.monotonic() < deadline, "the leader thread never exited"
+            time.sleep(0.01)
+        # The leader reads Z, but the kernel's own wait sees no exit: a thread
+        # still runs, and the kernel counts it. Liveness and both samplers
+        # keep the process.
+        assert len(os.listdir(f"/proc/{child.pid}/task")) == 2
+        assert process_model._linux_stat_fields(child.pid)[17] == "2"
+        assert not child_exited_unreaped(child)
+        assert process_model.pid_alive(child.pid)
+        assert child.pid in process_model.sample_processes_posix()
+        assert child.pid in process_model.sample_processes_posix_custody(interest)
+        # The process the leader's state called exited still writes.
+        child.stdin.write(b"x")
+        child.stdin.flush()
+        assert child.stdout.read(1) == b"w"
+        # Its last thread exits; the kernel's wait now reports the exit, and
+        # the process stays an unreaped zombie.
+        while not child_exited_unreaped(child):
+            assert time.monotonic() < deadline, "the process never exited"
+            time.sleep(0.01)
+        assert process_model._linux_stat_fields(child.pid)[0] == "Z"
+        assert not process_model.pid_alive(child.pid)
+        assert child.pid not in process_model.sample_processes_posix()
+        assert child.pid not in process_model.sample_processes_posix_custody(interest)
+        assert process_model.process_started_at_ns(child.pid) is None
+    finally:
+        for stream in (child.stdin, child.stdout):
+            if stream is not None:
+                stream.close()
+        close_owned_test_process(child)
 
 
 class _WindowsLivenessApi:
@@ -671,6 +767,9 @@ def test_windows_pid_alive_rejects_pids_outside_a_dword(monkeypatch) -> None:
 
     assert not process_model.pid_alive(2**32)
     assert api.calls == []
+    # On Windows the host rule is the DWORD rule, wider than a POSIX pid_t.
+    assert process_model.valid_pid(2**31) and process_model.valid_pid(0xFFFFFFFF)
+    assert not process_model.valid_pid(2**32)
 
 
 def test_windows_process_snapshot_hard_timeout_kills_helper(monkeypatch) -> None:

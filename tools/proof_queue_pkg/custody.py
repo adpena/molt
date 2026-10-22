@@ -366,8 +366,10 @@ def _guard_process_live(pid: int | None, recorded_identity: str | None) -> bool:
     if pid is None:
         return False
     pid = int(pid)
-    if pid <= 0:
-        return False
+    if not process_model.valid_pid(pid):
+        # A corrupt row proves no exit, so it keeps its run; the running-age
+        # ceiling reclaims it, as it reclaims a row whose identity is unknown.
+        return True
     try:
         if not process_model.pid_alive(pid):
             return False
