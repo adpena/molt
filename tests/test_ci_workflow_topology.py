@@ -4,7 +4,9 @@ from pathlib import Path
 from fnmatch import fnmatchcase
 import glob
 import json
+import os
 import re
+import shlex
 import tomllib
 
 import pytest
@@ -58,63 +60,237 @@ def _default_python_version() -> str:
     return version
 
 
-# An interpreter (python, python3, python3.12, or a $PYTHON-like variable),
-# any flags, then `-m molt` or `-m molt.<module>`.
-_MOLT_MODULE_RUN = re.compile(
-    r"(?P<interpreter>\bpython[0-9.]*|\"?\$\{?[A-Za-z_]*PYTHON[A-Za-z_]*\}?\"?)"
-    r"(?:\s+-[A-Za-z]+)*\s+-m\s+molt(?:\.[\w.]+)?\b"
-)
-_SYNCED_RUN = re.compile(r"\buv\s+run\b")
-_SRC_PYTHONPATH = re.compile(r"\bPYTHONPATH=\S*src\b")
+# A step's `run` script is read as the POSIX shell reads it: shlex splits
+# words and the operators that separate simple commands, a newline ends one,
+# and `#` starts a comment. GitHub substitutes `${{ ... }}` before any shell
+# runs, so each becomes one word.
+_GITHUB_EXPRESSION = re.compile(r"\$\{\{.*?\}\}")
+_COMMAND_SEPARATORS = frozenset({"\n", ";", ";;", "&", "&&", "|", "||", "(", ")"})
+_ASSIGNMENT = re.compile(r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)=(?P<value>.*)", re.S)
+_PYTHON_EXECUTABLE = re.compile(r"python[0-9.]*")
+_VARIABLE = re.compile(r"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?")
+# CPython's command line: these options take an argument, attached or next.
+_PYTHON_OPTIONS_WITH_ARGUMENT = frozenset("WX")
+# -I implies -E; both make the interpreter ignore PYTHONPATH.
+_PYTHON_IGNORES_PYTHONPATH = frozenset("IE")
+# Commands that run the rest of their words as a command, and how many of
+# their own words (beyond options) precede it.
+_COMMAND_WRAPPERS = {"time": 0, "nice": 0, "nohup": 0, "timeout": 1}
+# `uv run` options that take a value (`uv run --help`, uv 0.13.5).
+_UV_RUN_VALUE_OPTIONS = frozenset(
+    {
+        "--extra", "--no-extra", "--group", "--no-group", "--only-group",
+        "--no-editable-package", "--env-file", "-w", "--with", "--with-editable",
+        "--with-requirements", "--package", "--python-platform", "--index",
+        "--default-index", "-i", "--index-url", "--extra-index-url", "-f",
+        "--find-links", "--index-strategy", "--keyring-provider", "-P",
+        "--upgrade-package", "--upgrade-group", "--resolution", "--prerelease",
+        "--prerelease-package", "--fork-strategy", "--exclude-newer",
+        "--exclude-newer-package", "--no-sources-package", "--reinstall-package",
+        "--link-mode", "-C", "--config-setting", "--config-settings-package",
+        "--no-build-isolation-package", "--no-build-package",
+        "--no-binary-package", "--cache-dir", "--refresh-package", "-p",
+        "--python", "--color", "--allow-insecure-host", "--directory",
+        "--project", "--config-file",
+    }
+)  # fmt: skip
 
 
-def _molt_module_runs(run: str) -> list[str]:
-    """Each logical shell line that runs a molt module, continuations joined."""
-    logical = re.sub(r"\\\n\s*", " ", run)
-    return [line for line in logical.splitlines() if _MOLT_MODULE_RUN.search(line)]
-
-
-def _molt_import_is_provided(line: str, env: dict[str, object]) -> bool:
-    """`uv run` syncs the project; otherwise `src` must be on PYTHONPATH."""
-    prefix = line[: _MOLT_MODULE_RUN.search(line).start()]  # type: ignore[union-attr]
-    return bool(
-        _SYNCED_RUN.search(prefix)
-        or _SRC_PYTHONPATH.search(prefix)
-        or "/src" in str(env.get("PYTHONPATH", ""))
+def _simple_commands(run: str) -> list[list[str]]:
+    """The words of each simple command in a `run` script."""
+    lexer = shlex.shlex(
+        _GITHUB_EXPRESSION.sub("GITHUB_EXPRESSION", run.replace("\\\n", " ")),
+        posix=True,
+        punctuation_chars=True,
     )
+    lexer.whitespace = " \t\r"
+    lexer.wordchars += "${}"
+    lexer.commenters = "#"
+    commands: list[list[str]] = [[]]
+    for word in lexer:
+        if word in _COMMAND_SEPARATORS:
+            commands.append([])
+        else:
+            commands[-1].append(word)
+    return [command for command in commands if command]
+
+
+def _python_module(words: list[str]) -> tuple[str | None, bool]:
+    """The module `-m` names after an interpreter's options, and whether an
+    option makes it ignore PYTHONPATH."""
+    ignores_pythonpath = False
+    index = 0
+    while index < len(words):
+        word = words[index]
+        if word == "--" or not word.startswith("-") or word == "-":
+            return None, ignores_pythonpath
+        if word.startswith("--"):
+            index += 2 if word == "--check-hash-based-pycs" else 1
+            continue
+        for position, option in enumerate(word[1:], start=1):
+            rest = word[position + 1 :]
+            if option == "m":
+                module = rest or (words[index + 1] if index + 1 < len(words) else "")
+                return module or None, ignores_pythonpath
+            if option == "c":
+                return None, ignores_pythonpath
+            if option in _PYTHON_OPTIONS_WITH_ARGUMENT:
+                index += 0 if rest else 1
+                break
+            ignores_pythonpath |= option in _PYTHON_IGNORES_PYTHONPATH
+        index += 1
+    return None, ignores_pythonpath
+
+
+def _names_src(pythonpath: object) -> bool:
+    """Whether a PYTHONPATH value has an entry whose last component is `src`."""
+    return any(
+        entry.rstrip("/").rsplit("/", 1)[-1] == "src"
+        for entry in str(pythonpath or "").split(":")
+    )
+
+
+def _molt_module_runs(
+    run: str, env: dict[str, object], *, project_synced: bool
+) -> list[tuple[str, bool]]:
+    """Each simple command that runs molt as a module, and whether molt can
+    be imported there: `uv run` (it syncs the project; with `--no-sync`, only
+    an earlier sync in the job or script provides it) or a PYTHONPATH entry
+    naming `src` that the interpreter honors. An assignment before a command
+    applies to it; `export` and `unset` apply to the rest of the script, and
+    the step, job and workflow env come first."""
+    exported = dict(env)
+    found: list[tuple[str, bool]] = []
+    for words in _simple_commands(run):
+        if words[:2] == ["uv", "sync"]:
+            project_synced = True
+        if words[0] in {"export", "unset"}:
+            for word in words[1:]:
+                assignment = _ASSIGNMENT.fullmatch(word)
+                if words[0] == "unset":
+                    exported.pop(word, None)
+                elif assignment is not None:
+                    exported[assignment["name"]] = assignment["value"]
+            continue
+        local = dict(exported)
+        original = words
+        while words:
+            if assignment := _ASSIGNMENT.fullmatch(words[0]):
+                local[assignment["name"]] = assignment["value"]
+                words = words[1:]
+            elif words[0] == "env":
+                words = words[1:]
+                while words and words[0].startswith("-"):
+                    option = words.pop(0)
+                    if option in {"-i", "-", "--ignore-environment"}:
+                        local.clear()
+                    elif option in {"-u", "--unset"} and words:
+                        local.pop(words.pop(0), None)
+            elif words[0] in _COMMAND_WRAPPERS:
+                skip = _COMMAND_WRAPPERS[words[0]]
+                words = words[1:]
+                while words and words[0].startswith("-"):
+                    words = words[1:]
+                words = words[skip:]
+            else:
+                break
+        synced = False
+        if words[:2] == ["uv", "run"]:
+            rest = words[2:]
+            synced = True
+            module = None
+            while rest and rest[0].startswith("-"):
+                option = rest.pop(0)
+                if option in {"-m", "--module"}:
+                    module = rest[0] if rest else None
+                    break
+                synced &= option != "--no-project"
+                synced &= option != "--no-sync" or project_synced
+                if option in _UV_RUN_VALUE_OPTIONS and rest:
+                    rest.pop(0)
+            if module is not None:
+                if module == "molt" or module.startswith("molt."):
+                    found.append((shlex.join(words), synced))
+                continue
+            words = rest
+        if words[:1] == ["py"]:  # the Windows launcher, as `py -3.12`
+            words = words[1:]
+            if words and re.fullmatch(r"-[0-9.]+(-[0-9]+)?", words[0]):
+                words = words[1:]
+        elif not words or not (
+            _PYTHON_EXECUTABLE.fullmatch(words[0].rsplit("/", 1)[-1])
+            or _VARIABLE.fullmatch(words[0])
+        ):
+            # A molt module run this reading cannot attribute to an
+            # interpreter is reported, never silently passed.
+            if any(
+                (word == "-m" and following.split(".")[0] == "molt")
+                or word == "-mmolt"
+                or word.startswith("-mmolt.")
+                for word, following in zip(original, [*original[1:], ""])
+            ):
+                found.append((shlex.join(original), False))
+            continue
+        else:
+            words = words[1:]
+        module, ignores_pythonpath = _python_module(words)
+        if module is None or not (module == "molt" or module.startswith("molt.")):
+            continue
+        provided = synced or (
+            not ignores_pythonpath and _names_src(local.get("PYTHONPATH"))
+        )
+        found.append((shlex.join(words), provided))
+    return found
 
 
 def _step_runs_with_env(
     payload: dict[str, object],
-) -> list[tuple[str, str, dict[str, object]]]:
-    """(step name, run text, effective env) of each workflow or composite step."""
+) -> list[tuple[str, str, dict[str, object], bool]]:
+    """(step name, run text, effective env, whether an earlier step synced the
+    project) of each workflow or composite step. setup-project syncs when its
+    `sync` input is true; a step that runs `uv sync` syncs too."""
     top = dict(payload.get("env") or {})
-    found: list[tuple[str, str, dict[str, object]]] = []
+    found: list[tuple[str, str, dict[str, object], bool]] = []
     jobs = payload.get("jobs") or {}
+    # (env, steps, synced at the start): a job starts unsynced; a composite
+    # action's own `uv run --no-sync` steps carry its sync input in their
+    # `if`, so they run only after its sync step (setup-project).
     groups = [
-        ({**top, **dict(job.get("env") or {})}, job.get("steps") or [])
+        ({**top, **dict(job.get("env") or {})}, job.get("steps") or [], False)
         for job in jobs.values()
     ]
     runs = payload.get("runs")
     if isinstance(runs, dict):
-        groups.append((top, runs.get("steps") or []))
-    for env, steps in groups:
+        groups.append((top, runs.get("steps") or [], True))
+    for env, steps, synced in groups:
         for step in steps:
             run = step.get("run")
             if isinstance(run, str):
                 found.append(
-                    (str(step.get("name")), run, {**env, **dict(step.get("env") or {})})
+                    (
+                        str(step.get("name")),
+                        run,
+                        {**env, **dict(step.get("env") or {})},
+                        synced,
+                    )
                 )
+                synced |= any(
+                    words[:2] == ["uv", "sync"] for words in _simple_commands(run)
+                )
+            elif step.get("uses") == "./.github/actions/setup-project":
+                synced |= str((step.get("with") or {}).get("sync")).lower() == "true"
     return found
 
 
 def test_every_step_that_runs_a_molt_module_can_import_molt() -> None:
     """A bare `python3 -m molt.<module>` finds molt only through PYTHONPATH.
 
-    Setup syncs no project environment, and molt lives in `src`, so such a
-    step needs `uv run` (which syncs), an inline `PYTHONPATH=src`, or a
-    step, job or workflow `PYTHONPATH` naming `src` (HF-456 review A-N1:
-    formal.yml's Quint install lost it when it moved to the pinned npm).
+    molt lives in `src`, and setup-project syncs the project only when its
+    `sync` input is true, so such a step needs `uv run` (which syncs; with
+    `--no-sync`, after a sync earlier in the job), an inline `PYTHONPATH`
+    naming `src`, or a step, job or workflow `PYTHONPATH` naming `src`
+    (HF-456 review A-N1: formal.yml's Quint install lost it when it moved
+    to the pinned npm).
     """
     files = [
         *sorted((REPO_ROOT / ".github/workflows").glob("*.yml")),
@@ -124,40 +300,174 @@ def test_every_step_that_runs_a_molt_module_can_import_molt() -> None:
     checked = 0
     for path in files:
         payload = yaml.safe_load(path.read_text(encoding="utf-8"))
-        for name, run, env in _step_runs_with_env(payload):
-            for line in _molt_module_runs(run):
+        for name, run, env, synced in _step_runs_with_env(payload):
+            for command, provided in _molt_module_runs(run, env, project_synced=synced):
                 checked += 1
-                if not _molt_import_is_provided(line, env):
-                    offenders.append(f"{path.relative_to(REPO_ROOT)}: {name}")
+                if not provided:
+                    offenders.append(
+                        f"{path.relative_to(REPO_ROOT)}: {name}: {command}"
+                    )
     assert checked
     assert offenders == []
 
 
+# (run script, whether molt can be imported there, or None when no command
+# runs molt as a module). `executable` marks the cases bash and this
+# interpreter can run, which test_molt_module_runs_match_real_execution does.
+_MOLT_RUN_CASES = [
+    ("python3 -m molt.tool_releases run npm", False, True),
+    ("python3 -B -u -m molt.tool_releases provision uv", False, True),
+    ("python3.12 -m molt build app.py", False, False),
+    ('"$PYTHON" -m molt.checkout_provisioning ensure', False, True),
+    ("${PYTHON} -m molt", False, True),
+    ("python3 \\\n  -m molt.tool_releases run npm", False, True),
+    ("cd . && PYTHONPATH=src python3 -m molt.llvm_toolchain", True, True),
+    ("uv run --no-sync python3 -m molt.tool_releases provision sccache", True, False),
+    ("uv run python3 -m molt.checkout_provisioning ensure", True, False),
+    ("uv run -m molt.x", True, False),
+    ("uv run --python python3.12 python -m molt.x", True, False),
+    # HF-456 follow-up review L-1: spellings the earlier matcher misread.
+    ("uv run --no-sync --no-project python3 -m molt.x", False, False),
+    ("echo PYTHONPATH=src; python3 -m molt.x", False, True),
+    ("uv run ruff check . && python3 -m molt.x", False, False),
+    ("PYTHONPATH=src python3 -I -m molt.x", False, True),
+    ("PYTHONPATH=src python3 -E -m molt.x", False, True),
+    ("PYTHONPATH=/opt/notsrc python3 -m molt.x", False, True),
+    ("PYTHONPATH=src python3 -X importtime -m molt.x", True, True),
+    ("PYTHONPATH=src python3 -W error -m molt.x", True, True),
+    ("PYTHONPATH=src python3 -mmolt.x", True, True),
+    ("PYTHONPATH=src py -3.12 -m molt.x", True, False),
+    ("PYTHONPATH=src $VENV_PY -m molt.x", True, True),
+    ("# python3 -m molt.x", None, True),
+    ("export PYTHONPATH=src\npython3 -m molt.x", True, True),
+    ("export PYTHONPATH=src\nunset PYTHONPATH\npython3 -m molt.x", False, True),
+    ("env PYTHONPATH=src python3 -m molt.x", True, True),
+    ("env -i PATH=$PATH python3 -m molt.x", False, True),
+    ("timeout 60 env PYTHONPATH=src python3 -m molt.x", True, False),
+    ("PYTHONPATH='${{ github.workspace }}/src' python3 -m molt.x", True, False),
+    ("python3 --check-hash-based-pycs always -m molt.x", False, True),
+    # A wrapper this reading does not know is reported, never passed.
+    ("sudo python3 -m molt.x", False, False),
+    ("python3 -m moltlib.thing", None, True),
+    ("python3 tools/proof_plan.py --check", None, False),
+]
+
+
+@pytest.mark.parametrize(("run", "provided", "executable"), _MOLT_RUN_CASES)
+def test_molt_module_run_recognizes_each_spelling(
+    run: str, provided, executable
+) -> None:
+    """The topology rule's reading of a step (HF-456 v3 review A3-2, L-1)."""
+    del executable
+    runs = _molt_module_runs(run, {}, project_synced=True)
+    if provided is None:
+        assert runs == []
+        return
+    assert [found for _command, found in runs] == [provided]
+
+
 @pytest.mark.parametrize(
-    ("run", "provided"),
+    ("run", "env", "provided"),
     [
-        ("python3 -m molt.tool_releases run npm", False),
-        ("python3 -B -u -m molt.tool_releases provision uv", False),
-        ("python3.12 -m molt build app.py", False),
-        ('"$PYTHON" -m molt.checkout_provisioning ensure', False),
-        ("${PYTHON} -m molt", False),
-        ("python3 \\\n  -m molt.tool_releases run npm", False),
-        ("cd x && PYTHONPATH=src python -m molt.llvm_toolchain", True),
-        ("uv run --no-sync python3 -m molt.tool_releases provision sccache", True),
-        ("uv run python3 -m molt.checkout_provisioning ensure", True),
-        ("python3 -m moltlib.thing", None),
-        ("python3 tools/proof_plan.py --check", None),
+        ("python3 -m molt.x", {"PYTHONPATH": "/w/src"}, True),
+        ("python3 -m molt.x", {"PYTHONPATH": "/w/srcs"}, False),
+        ("python3 -I -m molt.x", {"PYTHONPATH": "/w/src"}, False),
+        ("PYTHONPATH=/opt/lib python3 -m molt.x", {"PYTHONPATH": "/w/src"}, False),
+        ("unset PYTHONPATH\npython3 -m molt.x", {"PYTHONPATH": "/w/src"}, False),
+        ("env -u PYTHONPATH python3 -m molt.x", {"PYTHONPATH": "/w/src"}, False),
     ],
 )
-def test_molt_module_run_recognizes_each_spelling(run: str, provided) -> None:
-    """The topology rule's matcher (HF-456 v3 review A3-2)."""
-    lines = _molt_module_runs(run)
-    if provided is None:
-        assert lines == []
-        return
-    assert len(lines) == 1
-    assert _molt_import_is_provided(lines[0], {}) is provided
-    assert _molt_import_is_provided(lines[0], {"PYTHONPATH": "/w/src"})
+def test_a_step_job_or_workflow_pythonpath_provides_molt(
+    run: str, env: dict[str, object], provided: bool
+) -> None:
+    """The env GitHub gives a step, unless the script overrides or ignores it."""
+    assert [
+        found for _command, found in _molt_module_runs(run, env, project_synced=True)
+    ] == [provided]
+
+
+def test_uv_run_without_sync_needs_an_earlier_sync() -> None:
+    """`uv run --no-sync` uses the environment as it is: molt is there only
+    after setup-project's sync or a `uv sync` (follow-up review L-1)."""
+    run = "uv run --no-sync python3 -m molt.x"
+    assert _molt_module_runs(run, {}, project_synced=False)[0][1] is False
+    assert _molt_module_runs(run, {}, project_synced=True)[0][1] is True
+    assert _molt_module_runs(f"uv sync --frozen\n{run}", {}, project_synced=False)[0][1]
+    steps = _step_runs_with_env(
+        {
+            "jobs": {
+                "job": {
+                    "steps": [
+                        {"name": "before", "run": run},
+                        {
+                            "uses": "./.github/actions/setup-project",
+                            "with": {"sync": "true"},
+                        },
+                        {"name": "after", "run": run},
+                    ]
+                }
+            }
+        }
+    )
+    assert [(name, synced) for name, _run, _env, synced in steps] == [
+        ("before", False),
+        ("after", True),
+    ]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the oracle runs POSIX shell scripts")
+def test_molt_module_runs_match_real_execution(tmp_path: Path) -> None:
+    """An independent oracle: bash runs each executable case in a tree whose
+    `src/molt` prints a marker, so molt was importable exactly when it ran."""
+    import sys
+
+    from molt.process_environment import ProcessEnvironment
+    from tests.process_guard_common import run_guarded_test_process
+
+    package = tmp_path / "src" / "molt"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    marker = "print('molt-imported')\n"
+    for module in ("__main__", "x", "tool_releases", "checkout_provisioning",
+                   "llvm_toolchain"):  # fmt: skip
+        (package / f"{module}.py").write_text(marker, encoding="utf-8")
+    # Every interpreter the scripts reach is the base CPython through a shim
+    # outside any virtual environment, with no user site: the only molt it
+    # can import is this tree's src/molt, never the checkout's own.
+    shims = tmp_path / "bin"
+    shims.mkdir()
+    base = Path(os.path.realpath(sys.executable))
+    for name in ("python3", "python"):
+        (shims / name).symlink_to(base)
+    environment = {
+        "PATH": f"{shims}:/usr/bin:/bin",
+        "PYTHON": str(shims / "python3"),
+        "VENV_PY": str(shims / "python3"),
+        "PYTHONNOUSERSITE": "1",
+    }
+    probe = run_guarded_test_process(
+        [
+            str(shims / "python3"),
+            "-c",
+            "import importlib.util as u; print(u.find_spec('molt'))",
+        ],
+        cwd=tmp_path / "bin",
+        env=ProcessEnvironment(environment),
+        timeout=60,
+    )
+    assert probe.stdout.strip() == "None", probe.stdout + probe.stderr
+    for run, provided, executable in _MOLT_RUN_CASES:
+        if not executable:
+            continue
+        result = run_guarded_test_process(
+            ["/bin/bash", "-c", run],
+            cwd=tmp_path,
+            env=ProcessEnvironment(environment),
+            timeout=60,
+        )
+        imported = "molt-imported" in result.stdout
+        expected = bool(provided)
+        assert imported is expected, (run, result.stdout, result.stderr)
 
 
 def test_setup_project_callers_use_declared_inputs() -> None:

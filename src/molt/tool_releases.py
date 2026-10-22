@@ -269,12 +269,25 @@ def _require_asset_url(url: str, provenance: ToolProvenance, *, where: str) -> N
         )
 
 
-def load_tool_releases(root: Path | None = None) -> dict[str, ToolRelease]:
-    """Load and validate every pinned tool release."""
+def read_tool_releases_text(root: Path | None = None) -> tuple[Path, str]:
+    """The manifest's path and text, for one parse of exactly those bytes."""
     path = tool_releases_path(root)
     try:
-        payload = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
+        return path, path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise ToolReleaseError(f"cannot read tool releases {path}: {exc}") from exc
+
+
+def load_tool_releases(root: Path | None = None) -> dict[str, ToolRelease]:
+    """Load and validate every pinned tool release."""
+    return parse_tool_releases(*read_tool_releases_text(root))
+
+
+def parse_tool_releases(path: Path, text: str) -> dict[str, ToolRelease]:
+    """Validate every pinned tool release in ``text``, the manifest at ``path``."""
+    try:
+        payload = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
         raise ToolReleaseError(f"cannot read tool releases {path}: {exc}") from exc
     if payload.get("schema_version") != TOOL_RELEASES_SCHEMA_VERSION:
         raise ToolReleaseError(
