@@ -13,6 +13,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import py_compile
 import sys
 
 import pytest
@@ -35,6 +36,9 @@ tree = Path(f"{name}-tree")
 tree.mkdir(exist_ok=True)
 with (tree / "runs").open("a", encoding="utf-8") as log:
     log.write("run\\n")
+if name == "uv-environment":
+    # uv tags every environment it creates.
+    (tree / "CACHEDIR.TAG").write_text("Signature: 8a477f597d28d172789f06886806bc55\\n", encoding="utf-8")
 (tree / "ready").write_text(Path("fixture.lock").read_text(encoding="utf-8"), encoding="utf-8")
 """
 
@@ -90,12 +94,19 @@ def family(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
                 environment=environment,
             )
         python = Path(sys.executable)
+        # As uv does, an inherited UV_PROJECT_ENVIRONMENT names the tree.
+        named = environment.get("UV_PROJECT_ENVIRONMENT")
+        tree = (
+            Path(named)
+            if name == "uv-environment" and named
+            else checkout / f"{name}-tree"
+        )
         return cp.LockedTree(
             name=name,
             guard_source_root=guard_source_root,
             checkout=checkout,
             lock_files=("fixture.lock",),
-            tree=checkout / f"{name}-tree",
+            tree=tree,
             sentinel="ready",
             tool=python.stem,
             arguments=("provision.py", name),
@@ -506,6 +517,97 @@ def test_queue_provisions_its_sandbox_and_retires_a_landed_lane(family: Path) ->
     assert _record(family, "queued")["status"] == "landed"
 
 
+# The Cache Directory Tagging Specification's first line (bford.info/cachedir).
+CACHEDIR_TAG = "Signature: 8a477f597d28d172789f06886806bc55\n# a tool's cache\n"
+
+
+def _ignore(root: Path, worktree: Path, *patterns: str) -> None:
+    _git(worktree, "config", "core.excludesFile", str(root / "ignore"))
+    (root / "ignore").write_text("".join(f"{p}\n" for p in patterns), encoding="utf-8")
+
+
+def _bytecode(worktree: Path, source: str) -> Path:
+    """CPython's own bytecode for a source, at the PEP 3147 path beside it,
+    where import writes it without a pycache prefix. Landing gates set
+    PYTHONPYCACHEPREFIX, under which `cache_from_source` points outside the
+    lane, so the path is built from the cache tag instead."""
+    path = worktree / source
+    cache = (
+        path.parent / "__pycache__" / f"{path.stem}.{sys.implementation.cache_tag}.pyc"
+    )
+    return Path(py_compile.compile(str(path), cfile=str(cache), doraise=True))
+
+
+@pytest.mark.parametrize("bytecode_ignore", ["__pycache__/", "*.pyc"])
+def test_queue_retires_a_lane_whose_ignored_output_its_writers_regenerate(
+    family: Path, bytecode_ignore: str
+) -> None:
+    """`lane start` and any test run leave bytecode, tool caches and the
+    editable build's egg-info in a lane; none of it is signal, including the
+    bytecode of a module or package the lane deletes."""
+    from tools import molt_dev_queue as queue
+
+    main = family / "molt-src"
+    _commit_file(main, "tools/proof_plan.toml", 'always = ["true"]\n', "policy")
+    _git(main, "push", "-q", "origin", "HEAD:main")
+    worktree = _start(family, "built")
+    deleted = ("oldmod.py", "oldpkg/__init__.py", "oldpkg/v1.2.py")
+    for relative in deleted:
+        _commit_file(worktree, relative, "x = 1\n", f"add {relative}")
+    _ignore(
+        family,
+        worktree,
+        bytecode_ignore,
+        ".ruff_cache/",
+        "*.egg-info/",
+        "tmp/",
+        "target/",
+    )
+    for relative in deleted:
+        _bytecode(worktree, relative)
+    _git(worktree, "rm", "-q", "-r", "--", "oldmod.py", "oldpkg")
+    _git(worktree, "commit", "-q", "--no-verify", "-m", "delete the old modules")
+    tip = _commit_file(worktree, "built.txt", "built\n", "built work")
+    pycache = _bytecode(worktree, "provision.py").parent
+    assert pycache == worktree / "__pycache__", "the lane must hold the bytecode"
+    _bytecode(worktree, "tools/install_git_hooks.py")
+    # pytest's assertion rewriter names its bytecode after its own version.
+    (pycache / "provision.cpython-312-pytest-9.0.2.pyc").write_bytes(b"rewritten")
+    if bytecode_ignore == "__pycache__/":
+        # importlib publishes each file through a temporary `<file>.<id>`; a
+        # `*.pyc` ignore set leaves one untracked, and the dirty check holds it.
+        (pycache / "provision.cpython-313.pyc.4366061648").write_bytes(b"interrupted")
+    (worktree / ".ruff_cache" / "0.17.1").mkdir(parents=True)
+    (worktree / ".ruff_cache" / "CACHEDIR.TAG").write_text(
+        CACHEDIR_TAG, encoding="utf-8"
+    )
+    (worktree / ".ruff_cache" / "0.17.1" / "1147").write_bytes(b"lint state")
+    egg_info = worktree / "fixture.egg-info"
+    egg_info.mkdir()
+    for name in ("PKG-INFO", "SOURCES.txt", "top_level.txt", "requires.txt"):
+        (egg_info / name).write_text("generated\n", encoding="utf-8")
+    # pytest's cache inside a plain scratch directory (pyproject's cache_dir),
+    # an empty one, and the empty lock checkout_state writes per state root.
+    (worktree / "tmp" / "pytest-cache" / "v").mkdir(parents=True)
+    (worktree / "tmp" / "pytest-cache" / "CACHEDIR.TAG").write_text(
+        CACHEDIR_TAG, encoding="utf-8"
+    )
+    (worktree / "tmp" / "empty").mkdir()
+    locks = worktree / "target" / ".disk_guard" / "checkout-state-locks"
+    locks.mkdir(parents=True)
+    (locks / ("ab" * 32 + ".lock")).write_bytes(b"")
+    paths = queue.queue_paths(main)
+    request = queue.enqueue(paths, head=tip, worktree=worktree, branch="lane/built")
+
+    args = molt_dev.build_parser().parse_args(
+        ["queue", "run", "--repo", str(main), "--candidate-controller"]
+    )
+    assert args.func(args) == molt_dev.EXIT_OK
+    assert queue.read_result(paths, request.id)["status"] == "landed"
+    assert not worktree.exists()
+    assert _ref(main, "refs/heads/lane/built") is None
+
+
 @pytest.mark.parametrize(
     "hold",
     [
@@ -518,6 +620,14 @@ def test_queue_provisions_its_sandbox_and_retires_a_landed_lane(family: Path) ->
         "cleanup",
         "shared-branch",
         "malformed-lock",
+        "pycache-stranger",
+        "pycache-directory",
+        "legacy-bytecode",
+        "package-stranger",
+        "untagged-cache",
+        "egg-info-stranger",
+        "scratch-stranger",
+        "state-lock-with-data",
     ],
 )
 def test_published_lane_retirement_holds_preserve_signal_and_fail_waiter(
@@ -561,6 +671,68 @@ def test_published_lane_retirement_holds_preserve_signal_and_fail_waiter(
         (family / "ignore").write_text(lock.name + "\n", encoding="utf-8")
         lock.write_text("unique data is not lock metadata\n", encoding="utf-8")
         sentinel = lock
+    elif hold == "pycache-stranger":
+        _ignore(family, worktree, "__pycache__/")
+        # Only bytecode belongs in __pycache__; a hand file there holds the lane.
+        sentinel = _bytecode(worktree, "provision.py").parent / "provision.notes.txt"
+        sentinel.write_text("unique notes\n", encoding="utf-8")
+    elif hold == "pycache-directory":
+        # Bytecode is a file; a directory under its name is not cache.
+        _ignore(family, worktree, "__pycache__/")
+        named = _bytecode(worktree, "provision.py").parent / "provision.cpython-313.pyc"
+        named.mkdir()
+        sentinel = named / "notes.md"
+        sentinel.write_text("unique notes\n", encoding="utf-8")
+    elif hold == "legacy-bytecode":
+        # Outside __pycache__, CPython imports a .pyc without its source.
+        _ignore(family, worktree, "*.pyc")
+        sentinel = worktree / "sourceless.pyc"
+        py_compile.compile(
+            str(worktree / "provision.py"), cfile=str(sentinel), doraise=True
+        )
+    elif hold == "package-stranger":
+        # Git names an untracked package beside its ignored children; a hand
+        # file among them is judged on its own.
+        _ignore(family, worktree, "__pycache__/", "*.log")
+        (worktree / "oldpkg").mkdir()
+        (worktree / "oldpkg" / "__init__.py").write_text("x = 1\n", encoding="utf-8")
+        _bytecode(worktree, "oldpkg/__init__.py")
+        (worktree / "oldpkg" / "__init__.py").unlink()
+        sentinel = worktree / "oldpkg" / "notes.log"
+        sentinel.write_text("unique notes\n", encoding="utf-8")
+    elif hold == "scratch-stranger":
+        # A plain directory holds the lane when one entry is signal.
+        _ignore(family, worktree, "tmp/")
+        (worktree / "tmp" / "pytest-cache").mkdir(parents=True)
+        (worktree / "tmp" / "pytest-cache" / "CACHEDIR.TAG").write_text(
+            CACHEDIR_TAG, encoding="utf-8"
+        )
+        sentinel = worktree / "tmp" / "notes" / "findings.md"
+        sentinel.parent.mkdir()
+        sentinel.write_text("unique notes\n", encoding="utf-8")
+    elif hold == "state-lock-with-data":
+        # A lock is metadata only while it is empty.
+        _ignore(family, worktree, "target/")
+        sentinel = worktree / "target" / ".disk_guard" / "checkout-state-locks"
+        sentinel.mkdir(parents=True)
+        sentinel = sentinel / ("cd" * 32 + ".lock")
+        sentinel.write_text("unique data is not lock metadata\n", encoding="utf-8")
+    elif hold == "untagged-cache":
+        _ignore(family, worktree, ".tool_cache/")
+        (worktree / ".tool_cache").mkdir()
+        (worktree / ".tool_cache" / "CACHEDIR.TAG").write_text(
+            "Signature: not the specification's\n", encoding="utf-8"
+        )
+        sentinel = worktree / ".tool_cache" / "result.json"
+        sentinel.write_text('{"unique": true}\n', encoding="utf-8")
+    elif hold == "egg-info-stranger":
+        _ignore(family, worktree, "*.egg-info/")
+        (worktree / "fixture.egg-info").mkdir()
+        (worktree / "fixture.egg-info" / "PKG-INFO").write_text(
+            "generated\n", encoding="utf-8"
+        )
+        sentinel = worktree / "fixture.egg-info" / "notes.md"
+        sentinel.write_text("unique notes\n", encoding="utf-8")
     elif hold == "locked":
         _git(main, "worktree", "lock", str(worktree))
     elif hold == "advanced":
@@ -588,6 +760,10 @@ def test_published_lane_retirement_holds_preserve_signal_and_fail_waiter(
     assert result["status"] == "landed_retirement_failed"
     assert result["landed"] == tip
     assert "lane retire held" in result["detail"]
+    if hold == "stale-input":
+        # A stale input is named with the command that makes it current.
+        assert "stale checkout inputs (uv-environment)" in result["detail"]
+        assert "molt.checkout_provisioning ensure" in result["detail"]
     assert queue._await_landing(paths, request.id) == molt_dev.EXIT_FAIL
     assert sentinel.read_bytes() == before
     assert worktree in _registered(main)
@@ -651,6 +827,71 @@ def test_already_published_lane_retires_and_replay_uses_closed_custody(
             expected_tip="f" * 40,
             expected_worktree=worktree,
         )
+
+
+def test_land_makes_a_stale_lane_input_current_before_its_handoff(
+    family: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dependency refresh merged into a lane leaves its environment stale;
+    `land` provisions it, as `uv run` syncs before it runs."""
+    from tools import molt_dev_queue as queue
+
+    main = family / "molt-src"
+    worktree = _start(family, "refreshed")
+    _commit_file(worktree, "work.txt", "refreshed\n", "refreshed work")
+    tree = worktree / "uv-environment-tree"
+    before = (tree / "runs").read_text(encoding="utf-8").count("run")
+    (tree / "ready").unlink()
+    monkeypatch.setattr(queue, "_start_queue_runner", lambda *_args: None)
+    land = molt_dev.build_parser().parse_args(
+        ["land", "--repo", str(worktree), "--candidate-controller", "--no-precheck"]
+    )
+    assert land.func(land) == molt_dev.EXIT_OK
+    assert (tree / "runs").read_text(encoding="utf-8").count("run") == before + 1
+    assert (tree / "ready").is_file()
+    assert len(queue.pending(queue.queue_paths(main))) == 1
+
+
+def test_a_stale_lane_environment_is_held_whatever_the_shell_names(
+    family: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A shell that names another checkout's environment (the queue runner
+    drops it; a manual handoff may not) still sees the lane's own tree."""
+    main = family / "molt-src"
+    worktree = _start(family, "foreign")
+    tip = _commit_file(worktree, "work.txt", "foreign\n", "foreign work")
+    (worktree / "uv-environment-tree" / "ready").unlink()
+    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(main / ".venv"))
+    git = lanes._driver().Git(worktree)
+    with pytest.raises(DriverError, match=r"stale checkout inputs \(uv-environment\)"):
+        lanes.validate_lane_handoff(git, "lane/foreign", worktree, tip)
+
+
+def test_land_leaves_the_shared_hooks_to_lane_start(
+    family: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The hooks serve every worktree and install only from main's sources, so
+    `land` must not provision them: a lane that edits a hook, or that predates
+    main's newest hooks, still lands."""
+    from tools import molt_dev_queue as queue
+
+    main = family / "molt-src"
+    worktree = _start(family, "hooked")
+    _commit_file(worktree, "work.txt", "hooked\n", "hooked work")
+    ensure = cp.ensure
+
+    def refuse_hooks(name, *args, **kwargs):
+        if name == "git-hooks":
+            raise cp.ProvisioningError("git-hooks: the lane differs from origin/main")
+        return ensure(name, *args, **kwargs)
+
+    monkeypatch.setattr(cp, "ensure", refuse_hooks)
+    monkeypatch.setattr(queue, "_start_queue_runner", lambda *_args: None)
+    land = molt_dev.build_parser().parse_args(
+        ["land", "--repo", str(worktree), "--candidate-controller", "--no-precheck"]
+    )
+    assert land.func(land) == molt_dev.EXIT_OK
+    assert len(queue.pending(queue.queue_paths(main))) == 1
 
 
 @pytest.mark.parametrize("disposition", ["landed", "abandoned"])
