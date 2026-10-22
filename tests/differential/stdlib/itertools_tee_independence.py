@@ -199,6 +199,96 @@ def check_arguments():
     print("arguments-and-error-identity", True)
 
 
+
+def check_constructor_acquisition():
+    tee_type = type(itertools.tee(())[0])
+    failure = LookupError("acquisition sentinel")
+
+    class Failed:
+        def __iter__(self):
+            raise failure
+
+    class Missing:
+        pass
+
+    class Invalid:
+        def __iter__(self):
+            return 42
+
+    for construct in (itertools.tee, tee_type):
+        try:
+            construct(Failed())
+        except LookupError as exc:
+            assert exc is failure
+        else:
+            raise AssertionError("acquisition exception lost")
+        for source in (Missing(), Invalid()):
+            try:
+                iter(source)
+            except TypeError as exc:
+                diagnostic = str(exc)
+            else:
+                raise AssertionError("invalid direct iterator was accepted")
+            print("direct-acquisition-diagnostic", diagnostic)
+            try:
+                construct(source)
+            except TypeError as exc:
+                assert str(exc) == diagnostic
+            else:
+                raise AssertionError("invalid iterator acquisition accepted")
+
+    class SecondIterFails:
+        def __init__(self):
+            self.calls = 0
+
+        def __iter__(self):
+            self.calls += 1
+            if self.calls == 2:
+                raise failure
+            return self
+
+        def __next__(self):
+            return 17
+
+    source = SecondIterFails()
+    try:
+        itertools.tee(source)
+    except LookupError as exc:
+        assert exc is failure and source.calls == 2
+    else:
+        raise AssertionError("second acquisition exception lost")
+    left, right = itertools.tee(source)
+    assert next(left) == next(right) == 17
+    print("constructor-acquisition-identity", True)
+
+
+def check_native_attribute_storage():
+    # Nonzero counters and native pointers must never be interpreted as an
+    # instance dictionary when resolving an ordinary iterator attribute.
+    iterators = (
+        itertools.chain([1]), itertools.islice([1], 1), itertools.repeat(1, 2),
+        itertools.count(1), itertools.cycle([1]), itertools.accumulate([1]),
+        itertools.batched([1], 1), itertools.combinations([1], 1),
+        itertools.combinations_with_replacement([1], 1),
+        itertools.compress([1], [True]), itertools.dropwhile(bool, [0]),
+        itertools.filterfalse(bool, [0]), itertools.pairwise([1, 2]),
+        itertools.groupby([1]), itertools.product([1]),
+        itertools.permutations([1]), itertools.starmap(pow, [(1, 2)]),
+        itertools.takewhile(bool, [1]), itertools.zip_longest([1]),
+        itertools.tee([1])[0], next(itertools.groupby([1]))[1],
+    )
+    for iterator in iterators:
+        assert iterator.__iter__() is iterator
+        iterator.__next__()
+        try:
+            iterator.__dict__
+        except AttributeError:
+            pass
+        else:
+            raise AssertionError("native iterator exposed a dictionary")
+    print("native-iterator-attribute-storage", True)
+
+
 def check_long_lag_release():
     a, b = itertools.tee(range(20000))
     assert sum(a) == 199990000
@@ -213,6 +303,8 @@ check_bounded_retention()
 check_errors_and_resume()
 check_reentry_and_cycles()
 check_arguments()
+check_constructor_acquisition()
+check_native_attribute_storage()
 check_long_lag_release()
 
 
