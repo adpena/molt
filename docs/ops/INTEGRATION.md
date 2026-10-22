@@ -222,13 +222,18 @@ integration speedup.
 
 `lane start` and `lane retire` run main's pinned controller, as `land` does:
 they fetch, then hand the command to the driver at the fetched main
-(`molt_dev_controller.runs_from_pinned_controller`). A lane starts at main and
-is provisioned by main's code; a landed lane's trees are judged by the code
-that landed them. A driver from another commit reads their manifests with
-another schema (HF-468): on 2026-10-22 `lane start` run from a lane at
-tool-release schema 3 failed to provision a new lane at schema 2, and `lane
-retire` run from an older main judged a landed lane's Edgebox tree stale.
-`--candidate-controller` runs the calling checkout's own driver.
+(`molt_dev_controller.runs_from_pinned_controller`). Main's code provisions
+every lane, including one started at `--base <ref>`, and judges every
+retirement, landed or abandoned. A driver from another commit reads their
+manifests with another schema (HF-468): on 2026-10-22 `lane start` run from a
+lane at tool-release schema 3 failed to provision a new lane at schema 2, and
+`lane retire` run from an older main judged a landed lane's Edgebox tree
+stale. Where main's code cannot read a lane's state, retirement refuses
+before it bundles or removes anything (`validate_lane_handoff`), so no signal
+is lost. `--candidate-controller` runs the calling checkout's own driver. A
+start that cannot write its lane's record removes the worktree and branch it
+just created (neither removal forces), so no lane exists that `lane retire`
+would refuse.
 
 The driver owns each lane's lifecycle (design: `docs/design/landing_queue.md`,
 "Orchestrator-owned lanes"). A lane is the branch `lane/<slug>` and its
@@ -294,8 +299,14 @@ worktree. A slug is 1 to 64 lower-case letters, digits, `.`, `_` or `-`.
   probe without a memory guard: on 2026-10-20, 10 lanes took 5.8 s instead
   of 26.8 s.
 
-Cost: `lane start` pays one fetch, one `git worktree add` and the
-provisioners. `landing_representation` pays one `git log` when the tip is on
+Cost: through the pinned controller, `lane start` pays the handoff (one
+fetch, a controller extraction only when main's controller tree changed, one
+no-op `uv sync`, one exec), then its own fetch, one `git worktree add` and the
+provisioners. Each fetch of an unchanged GitHub origin took 0.26-0.34 s on
+2026-10-22. The second fetch stays: a command can wait for a lock between the
+handoff and its own fetch, so only its own fetch is current. `lane retire`
+took 3.2 s through the controller against 2.3 s with the candidate's driver
+(review of HF-468, 2026-10-22). `landing_representation` pays one `git log` when the tip is on
 main, and at most one `merge-base`, one more `log` and one `cherry` otherwise.
 
 ### Checkout provisioning

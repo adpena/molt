@@ -516,10 +516,32 @@ def work_in_progress_refusal(repo: Path, *, now: float) -> str | None:
     return "\n".join(lines)
 
 
+def _remove_unrecorded_lane(
+    repo: Path, worktree: Path, branch: str, base: str, env: dict[str, str]
+) -> None:
+    """Undo a lane start whose record failed: its fresh worktree and branch.
+
+    Neither removal forces: the worktree goes only while it is clean, and the
+    branch only while it still points at ``base``, so nothing anyone wrote
+    since is lost. A removal that refuses is reported, never retried harder.
+    """
+    for argv in (
+        ["git", "-C", str(repo), "worktree", "remove", str(worktree)],
+        ["git", "-C", str(repo), "update-ref", "-d", f"refs/heads/{branch}", base],
+    ):
+        proc = _run_fast_captured_command(
+            argv, env=ProcessEnvironment(env), timeout=_WORKTREE_ADD_TIMEOUT_S
+        )
+        if proc.returncode != 0:
+            _fail(f"{' '.join(argv[3:])} refused: {proc.stderr.strip()}")
+
+
 def cmd_lane_start(args: argparse.Namespace) -> int:
     from tools import agent_coordination
 
     driver = _driver()
+    # A pinned claim must name the controller this process runs from.
+    molt_dev_controller.integration_controller(args)
     slug = lane_slug(args.slug)
     branch = lane_branch(slug)
     repo = Path(args.repo).resolve()
@@ -574,21 +596,31 @@ def cmd_lane_start(args: argparse.Namespace) -> int:
         )
     _ok(f"created {worktree}")
 
-    record = agent_coordination.create_task(
-        registry_root=main,
-        source_root=worktree,
-        task=lane_task(slug),
-        lane=branch,
-        extra={
-            "lane": {
-                "slug": slug,
-                "branch": branch,
-                "base_ref": base_ref,
-                "base_commit": base,
-                "worktree": str(worktree),
-            }
-        },
-    )
+    try:
+        record = agent_coordination.create_task(
+            registry_root=main,
+            source_root=worktree,
+            task=lane_task(slug),
+            lane=branch,
+            extra={
+                "lane": {
+                    "slug": slug,
+                    "branch": branch,
+                    "base_ref": base_ref,
+                    "base_commit": base,
+                    "worktree": str(worktree),
+                }
+            },
+        )
+    except BaseException as exc:
+        # A lane without its record is one `lane retire` refuses; remove what
+        # this command just created, then report why it could not record.
+        _remove_unrecorded_lane(repo, worktree, branch, base, env)
+        if isinstance(exc, Exception):
+            raise DriverError(
+                f"cannot record {branch}: {exc}; removed its new worktree and branch"
+            ) from exc
+        raise
     _ok(f"recorded {_record_path(main, slug)} ({record['status']})")
 
     _step(f"provision {worktree}")
@@ -713,6 +745,8 @@ def cmd_lane_retire(
     from tools import agent_coordination
 
     driver = _driver()
+    # A pinned claim must name the controller this process runs from.
+    molt_dev_controller.integration_controller(args)
     slug = lane_slug(args.slug)
     branch = lane_branch(slug)
     ref = f"refs/heads/{branch}"

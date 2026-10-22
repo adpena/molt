@@ -134,6 +134,8 @@ def _args(root: Path, **values) -> argparse.Namespace:
         "ignore": None,
         "json": False,
         "no_fetch": False,
+        "candidate_controller": False,
+        "pinned_controller": None,
     }
     base.update(values)
     return argparse.Namespace(**base)
@@ -213,6 +215,35 @@ def test_lane_start_creates_branch_worktree_record_and_inputs(family: Path) -> N
 
     with pytest.raises(DriverError, match="already exists"):
         lanes.cmd_lane_start(_args(family, slug="feature"))
+
+
+def test_a_lane_start_that_cannot_record_leaves_no_worktree_or_branch(
+    family: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lane without its record is one `lane retire` refuses (review v2, B-1).
+
+    The command removes the worktree and branch it created, and the slug is
+    free for the next start.
+    """
+    from tools import agent_coordination
+
+    main = family / "molt-src"
+    create_task = agent_coordination.create_task
+
+    def refuse(**kwargs):
+        raise RuntimeError("tool releases unreadable")
+
+    monkeypatch.setattr(agent_coordination, "create_task", refuse)
+    with pytest.raises(
+        DriverError, match="cannot record lane/orphan: tool releases unreadable"
+    ):
+        lanes.cmd_lane_start(_args(family, slug="orphan"))
+    assert not (family / "worktrees" / "orphan").exists()
+    assert _ref(main, "refs/heads/lane/orphan") is None
+    assert not any(path.name == "orphan" for path in _registered(main))
+
+    monkeypatch.setattr(agent_coordination, "create_task", create_task)
+    assert _start(family, "orphan").is_dir()
 
 
 def test_lane_start_refuses_bad_slugs_and_unlaid_roots(
