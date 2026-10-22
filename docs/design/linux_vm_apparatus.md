@@ -132,14 +132,16 @@ virtiofs.
 
 macOS arm64, Lima 2.2.1, 2026-10-22, Molt's guarded command executor:
 
-- `check`: 0.30 s wall for both VMs, including Python startup.
-- `release` on `molt-linux`: the drop took 68 ms and freed 45 of 47 deleted
-  files (2.60 MB to 17 KB); open files under its mounts fell from 633 to 8. The
+- `check`: 0.24-0.30 s wall for both VMs, including Python startup.
+- A drop on `molt-linux` took 68 ms and freed 45 of 47 deleted files
+  (2.60 MB to 17 KB); open files under its mounts fell from 633 to 8. The
   host closed the files at once: samples 0.2 s to 2 s later were the same.
+  The two deleted files left (17 KB of Git objects) are still in use in the
+  guest; a later `release` (74 ms per VM) kept them, as it must.
 - One guarded command: `limactl list` 50 ms, `lsof` 81 ms, a guest drop 70 ms.
   `limactl shell` reuses Lima's SSH control master; the drop took 50-60 ms
   unguarded, not the 1-2 s once assumed.
-- Lane retirement: no live hostagent 0.010 ms; VMs running but not mounting
+- Lane retirement: no live hostagent 0.011 ms; VMs running but not mounting
   the checkout 51 ms; mounting it with nothing held about 131 ms; with a drop
   294 ms.
 
