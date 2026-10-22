@@ -4637,7 +4637,7 @@ pytest = [
   "tests/test_stdlib_inspect_coroutine_marking.py",
   "tests/cli/test_required_features_reachability.py",
   "tests/cli/test_wasm_runtime_exports.py",
-  "tests/cli/test_cli_lowering_cache_tooling_scope.py::test_kept_analysis_and_intrinsic_edits_still_invalidate",
+  "tests/cli/test_cli_lowering_cache_tooling_scope.py::test_unkeyed_edits_keep_the_key_and_keyed_edits_change_it",
 ]
 
 # --- Codec generated tables ----------------------------------------------
