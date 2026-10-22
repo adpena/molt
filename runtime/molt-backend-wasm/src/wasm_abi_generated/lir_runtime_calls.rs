@@ -1569,6 +1569,15 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::TupleCount],
             discard_result: false,
         }),
+        "dict_unpack" => Some(OpLoopRuntimeCallSpec {
+            import: WasmRuntimeImport::DictUnpack,
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            required_imports: &[WasmRuntimeImport::DictUnpack],
+            discard_result: false,
+        }),
         "dict_update" => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::DictUpdate,
             args: &[

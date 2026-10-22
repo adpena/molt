@@ -484,10 +484,12 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "DICT_UPDATE":
+        elif op.kind in {"DICT_UPDATE", "DICT_UNPACK"}:
             ctx.json_ops.append(
                 {
-                    "kind": "dict_update",
+                    "kind": "dict_unpack"
+                    if op.kind == "DICT_UNPACK"
+                    else "dict_update",
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }

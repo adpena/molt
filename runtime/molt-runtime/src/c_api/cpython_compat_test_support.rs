@@ -1193,16 +1193,11 @@ pub extern "C" fn PyDict_Update(a: u64, b: u64) -> i32 {
         let Some(storage) = c_dict_pointer(_py, a) else {
             return -1;
         };
-        let a = MoltObject::from_ptr(storage).bits();
-        let completed = unsafe {
-            crate::object::ops_dict::dict_update_apply(
-                _py,
-                a,
-                crate::object::ops_dict::dict_update_set_in_place,
-                b,
-            )
-        };
-        if completed { 0 } else { -1 }
+        match unsafe { crate::object::mapping_merge::unpack_dict(_py, storage, b) } {
+            crate::object::mapping_merge::MergeOutcome::Complete => 0,
+            crate::object::mapping_merge::MergeOutcome::Error => -1,
+            crate::object::mapping_merge::MergeOutcome::NotMapping => -1,
+        }
     })
 }
 

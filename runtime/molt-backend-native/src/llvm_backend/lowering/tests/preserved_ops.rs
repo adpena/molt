@@ -781,6 +781,7 @@ fn direct_and_preserved_boxed_calls_share_result_custody() {
     for opcode in [OpCode::Call, OpCode::Copy] {
         for (kind, symbol, arity, shape) in [
             ("dict_set", "molt_dict_set", 3, "borrowed"),
+            ("dict_unpack", "molt_dict_unpack", 2, "owned"),
             ("dict_update", "molt_dict_update", 2, "owned"),
             ("dict_update_kwstar", "molt_dict_update_kwstar", 2, "owned"),
             (
@@ -920,6 +921,7 @@ fn direct_and_preserved_boxed_calls_require_runtime_symbol_admission() {
     for opcode in [OpCode::Call, OpCode::Copy] {
         for (kind, symbol, arity) in [
             ("dict_set", "molt_dict_set", 3),
+            ("dict_unpack", "molt_dict_unpack", 2),
             ("dict_update", "molt_dict_update", 2),
             ("dict_update_kwstar", "molt_dict_update_kwstar", 2),
             ("dict_update_missing", "molt_dict_update_missing", 3),

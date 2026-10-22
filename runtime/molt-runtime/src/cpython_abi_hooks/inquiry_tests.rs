@@ -2895,3 +2895,54 @@ fn c_dict_known_hash_preserves_hash_value_borrowed_identity_and_reentrant_errors
         assert!(!crate::exception_pending(&py));
     });
 }
+
+#[test]
+fn c_dict_update_is_mapping_only_while_merge_from_seq2_accepts_pairs() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+    molt_cpython_abi_test_support::link();
+    with_gil(|py| unsafe {
+        use molt_cpython_abi::api::{errors, mapping};
+        let mut owners = Vec::new();
+        let target = mapping_owned(
+            &py,
+            &mut owners,
+            MoltObject::from_ptr(alloc_dict_with_pairs(&py, &[])).bits(),
+        );
+        let pair = mapping_owned(
+            &py,
+            &mut owners,
+            MoltObject::from_ptr(crate::alloc_tuple(
+                &py,
+                &[
+                    MoltObject::from_int(7).bits(),
+                    MoltObject::from_int(23).bits(),
+                ],
+            ))
+            .bits(),
+        );
+        let pairs = mapping_owned(
+            &py,
+            &mut owners,
+            MoltObject::from_ptr(crate::alloc_list(&py, &[pair])).bits(),
+        );
+        let target_view = mapping_view(target);
+        let pairs_view = mapping_view(pairs);
+        assert_eq!(
+            mapping::PyDict_Update(target_view.as_ptr(), pairs_view.as_ptr()),
+            -1
+        );
+        assert!(!errors::PyErr_Occurred().is_null());
+        errors::PyErr_Clear();
+        assert_eq!(mapping::PyDict_Size(target_view.as_ptr()), 0);
+        assert_eq!(
+            mapping::PyDict_MergeFromSeq2(target_view.as_ptr(), pairs_view.as_ptr(), 1),
+            0
+        );
+        assert_eq!(mapping::PyDict_Size(target_view.as_ptr()), 1);
+        assert_eq!(
+            crate::c_api::PyDict_GetItem(target, MoltObject::from_int(7).bits()),
+            MoltObject::from_int(23).bits()
+        );
+        assert!(!crate::exception_pending(&py));
+    });
+}

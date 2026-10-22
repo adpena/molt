@@ -4742,3 +4742,31 @@ def test_class_cell_reads_follow_cpython_symtable(source: str, lookup: str) -> N
         # Class creation fills the cell outside the analyzed flow: a read may
         # find it unbound, but is never proven unbound.
         assert fact.identities != int(PythonIdentity.UNBOUND)
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "[x for x in values]",
+        "{x for x in values}",
+        "{x: x for x in values}",
+        "(x for x in values)",
+    ],
+)
+@pytest.mark.parametrize("minor", [12, 13, 14])
+def test_direct_ast_comprehension_unpacking_requires_target315(expression, minor):
+    tree = ast.parse("if False:\n    result = " + expression)
+    comp = tree.body[0].body[0].value
+    if isinstance(comp, ast.DictComp):
+        comp.value = None
+    else:
+        comp.elt = ast.copy_location(
+            ast.Starred(value=comp.elt, ctx=ast.Load()), comp.elt
+        )
+    ast.fix_missing_locations(tree)
+    with pytest.raises(SyntaxError, match="unpacking cannot be used"):
+        python_binding_flow.analyze_python_bindings(
+            tree,
+            source_digest=python_ast_digest(tree),
+            policy=PythonBindingPolicy(target_python=(3, minor)),
+        )

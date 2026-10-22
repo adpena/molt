@@ -12,9 +12,9 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 
 - `compile-error`: `8`
 - `implemented-exact`: `191`
-- `implemented-target-limited`: `15`
+- `implemented-target-limited`: `16`
 - `not-admitted`: `187`
-- `total`: `401`
+- `total`: `402`
 
 ## Matrix
 
@@ -134,6 +134,7 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 | `dict_setdefault` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `dict_setdefault_empty_list` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `dict_str_int_inc` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
+| `dict_unpack` | `implemented-target-limited` | Pre-source admission requires canonical ordered-dict provenance; generic Python keys/getitem mappings are not implemented. |
 | `dict_update` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `dict_update_kwstar` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `dict_update_missing` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |

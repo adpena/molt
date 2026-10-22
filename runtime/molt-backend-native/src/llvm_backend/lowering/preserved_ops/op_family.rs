@@ -109,6 +109,7 @@ mod tests {
             ("dict_setdefault", 3),
             ("dict_setdefault_empty_list", 2),
             ("dict_get", 3),
+            ("dict_unpack", 2),
             ("dict_update", 2),
             ("dict_update_missing", 3),
             ("dict_update_kwstar", 2),

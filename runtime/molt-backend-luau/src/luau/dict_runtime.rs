@@ -496,6 +496,12 @@ local function molt_iterator_new(iterable: any): () -> {any}
 	error({__type="TypeError", __msg="object is not a deterministic Python iterable"})
 end
 
+local function molt_dict_unpack(dict: {[any]: any}, other: {[any]: any}): nil
+	molt_dict_require(dict)
+	molt_dict_scan(other, function(key, value) molt_dict_set(dict, key, value) end)
+	return nil
+end
+
 local function molt_dict_update(dict: {[any]: any}, other: {[any]: any}): nil
 	molt_dict_require(dict)
 	molt_dict_scan(other, function(key, value) molt_dict_set(dict, key, value) end)

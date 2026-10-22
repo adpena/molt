@@ -195,6 +195,7 @@ pub fn simpleir_kind_is_registered(kind: &str) -> bool {
             | "dict_setdefault"
             | "dict_setdefault_empty_list"
             | "dict_str_int_inc"
+            | "dict_unpack"
             | "dict_update"
             | "dict_update_kwstar"
             | "dict_update_missing"
@@ -1767,6 +1768,7 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "dict_new"
         | "dict_popitem"
         | "dict_set"
+        | "dict_unpack"
         | "dict_update"
         | "dict_update_kwstar"
         | "dict_update_missing"
@@ -2623,6 +2625,7 @@ pub fn copy_kind_mints_owned_value_table(kind: &str) -> bool {
             | "dict_setdefault"
             | "dict_setdefault_empty_list"
             | "dict_str_int_inc"
+            | "dict_unpack"
             | "dict_update"
             | "dict_update_kwstar"
             | "dict_values"
@@ -3611,7 +3614,7 @@ pub fn simpleir_kind_may_carry_async_work_poll_marker(kind: &str) -> bool {
 /// Luau operations requiring a proven canonical ordered mapping operand.
 #[inline]
 pub fn simpleir_kind_requires_luau_ordered_mapping(kind: &str) -> bool {
-    matches!(kind, "callargs_expand_kwstar")
+    matches!(kind, "callargs_expand_kwstar" | "dict_unpack")
 }
 
 /// Whether successful completion of this first-class opcode is a Python

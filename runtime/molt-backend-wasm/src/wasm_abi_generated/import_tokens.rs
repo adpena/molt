@@ -352,6 +352,7 @@ pub(crate) enum WasmRuntimeImport {
     DictSetitem,
     DictSetdefaultEmptyList,
     DictStrIntInc,
+    DictUnpack,
     DictUpdate,
     DictUpdateKwstar,
     DictUpdateMissing,

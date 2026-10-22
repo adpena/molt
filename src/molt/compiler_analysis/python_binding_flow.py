@@ -12,6 +12,7 @@ from __future__ import annotations
 from molt.compiler_analysis.python_function_kind import FunctionKind
 
 import ast
+from molt.compiler_analysis.python_comprehensions import require_comprehension_target
 from molt.python_private_names import (
     python_import_binding,
     resolve_python_private_names,
@@ -219,7 +220,7 @@ _USER_CALLABLE_IDENTITIES: Final = int(
 )
 
 
-_ANALYSIS_SCHEMA: Final = 60
+_ANALYSIS_SCHEMA: Final = 61
 _METADATA_NAMES: Final = frozenset({"__name__", "__package__", "__spec__", "__path__"})
 _RELEASE_CALLBACK_EFFECTS: Final[EffectMask] = (
     RELEASES_REFERENCE | RUNS_FINALIZER | RUNS_WEAKREF_CALLBACK
@@ -7693,13 +7694,19 @@ class _Analyzer:
             eager_annotations=self._eager_annotations,
             future_annotations=self._future_annotations,
         )
-        self._star_import_origins = frozenset(
-            python_node_source_key(alias)
-            for statement in ast.walk(tree)
-            if isinstance(statement, ast.ImportFrom)
-            for alias in statement.names
-            if alias.name == "*"
-        )
+        star_import_origins = set()
+        for statement in ast.walk(tree):
+            if isinstance(
+                statement, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+            ):
+                require_comprehension_target(statement, self.policy.target_python)
+            elif isinstance(statement, ast.ImportFrom):
+                star_import_origins.update(
+                    python_node_source_key(alias)
+                    for alias in statement.names
+                    if alias.name == "*"
+                )
+        self._star_import_origins = frozenset(star_import_origins)
         declarations = python_scope_declarations(
             tree.body, eager_annotations=self._eager_annotations
         )

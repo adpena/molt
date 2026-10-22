@@ -2114,6 +2114,10 @@ name = "dict_str_int_inc"
 type = 4
 
 [[import]]
+name = "dict_unpack"
+type = 3
+
+[[import]]
 name = "dict_update"
 type = 3
 
@@ -6397,6 +6401,7 @@ kinds = [
   "list_count",
   "list_index",
   "tuple_count",
+  "dict_unpack",
   "dict_update",
   "dict_setdefault_empty_list",
   "dict_update_kwstar",
