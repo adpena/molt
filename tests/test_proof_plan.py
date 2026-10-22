@@ -428,11 +428,11 @@ def test_local_change_gates_use_one_captured_integration_upstream() -> None:
 
 
 def test_local_gate_binding_keeps_raw_prerequisite_and_projection_identity() -> None:
-    from tools import molt_dev
+    from tools import molt_dev_common, molt_dev_policy
 
     upstream = "a" * 40
     raw = "echo {integration_upstream_commit}..HEAD"
-    cfg = molt_dev.GateConfig.parse(
+    cfg = molt_dev_policy.GateConfig.parse(
         "always = " + json.dumps([raw]) + "\n", "selected fixture"
     )
     commands, matched = cfg.select(["feature.rs"])
@@ -444,7 +444,7 @@ def test_local_gate_binding_keeps_raw_prerequisite_and_projection_identity() -> 
     assert cfg.prerequisites == {"local.always.0": (raw, ())}
     assert cfg.admit(["feature.rs"], matched, [raw], environ=os.environ) == {}
     with pytest.raises(
-        molt_dev.DriverError, match="lack declared prerequisite custody"
+        molt_dev_common.DriverError, match="lack declared prerequisite custody"
     ):
         cfg.admit(["feature.rs"], matched, [bound], environ=os.environ)
     literal = ("python", "-m", "pytest", "tests/test_proof_plan.py")
@@ -471,15 +471,15 @@ def test_local_gate_binding_keeps_raw_prerequisite_and_projection_identity() -> 
     ],
 )
 def test_local_gate_binding_has_a_closed_template_contract(command) -> None:
-    from tools import molt_dev
+    from tools import molt_dev_common, molt_dev_policy
 
     with pytest.raises(ValueError, match="placeholder"):
         proof_plan.local_gate_commands(
             {"always": [command]},
             memory_units=proof_plan.PytestMemoryUnits(()),
         )
-    with pytest.raises(molt_dev.DriverError, match="placeholder"):
-        molt_dev.GateConfig.parse(
+    with pytest.raises(molt_dev_common.DriverError, match="placeholder"):
+        molt_dev_policy.GateConfig.parse(
             "always = " + json.dumps([command]), "invalid fixture"
         )
 
@@ -834,7 +834,7 @@ def test_local_pytest_unit_projection_does_not_round_down_its_envelope() -> None
     ],
 )
 def test_local_rule_schema_rejects_unconsumed_fields(field, value) -> None:
-    from tools import molt_dev
+    from tools import molt_dev_common, molt_dev_policy
 
     first, *rest = PLAN.local_rules
     invalid = {**first, field: value}
@@ -850,9 +850,9 @@ def test_local_rule_schema_rejects_unconsumed_fields(field, value) -> None:
         + "\n"
     )
     with pytest.raises(
-        molt_dev.DriverError, match="unknown local rule fields.*" + field
+        molt_dev_common.DriverError, match="unknown local rule fields.*" + field
     ):
-        molt_dev.GateConfig.parse(source, "unconsumed policy fixture")
+        molt_dev_policy.GateConfig.parse(source, "unconsumed policy fixture")
 
 
 def test_every_cargo_fuzz_workspace_has_a_build_check() -> None:
@@ -1412,9 +1412,9 @@ def test_native_receipt_contract_selects_existing_integration_batch(path: str) -
     ],
 )
 def test_shared_string_storage_exercises_both_real_backends(changed: str) -> None:
-    from tools import molt_dev
+    from tools import molt_dev_policy
 
-    gates, _ = molt_dev.GateConfig.load(PLAN.path).select([changed])
+    gates, _ = molt_dev_policy.GateConfig.load(PLAN.path).select([changed])
     differential = [
         shlex.split(gate.command)
         for gate in gates
@@ -1463,9 +1463,9 @@ def test_shared_string_storage_exercises_both_real_backends(changed: str) -> Non
 def test_daemon_lifetime_and_diagnostics_select_their_consumers(
     changed: str, consumer: str
 ) -> None:
-    from tools import molt_dev
+    from tools import molt_dev_policy
 
-    gates, _ = molt_dev.GateConfig.load(PLAN.path).select([changed])
+    gates, _ = molt_dev_policy.GateConfig.load(PLAN.path).select([changed])
     assert any(
         consumer
         in (
@@ -1498,9 +1498,9 @@ def test_runtime_leaf_change_runs_rust_without_llvm_or_formal() -> None:
     ],
 )
 def test_installed_product_changes_select_complete_distribution_consumers(changed):
-    from tools import molt_dev
+    from tools import molt_dev_policy
 
-    config = molt_dev.GateConfig.load(PLAN.path)
+    config = molt_dev_policy.GateConfig.load(PLAN.path)
     rule = next(r for r in config.rules if r.name == "installed-compiler-distribution")
     gates, matched = replace(config, rules=[rule], always=[]).select([changed])
     assert [r.name for r in matched] == [rule.name]
@@ -1531,9 +1531,9 @@ def test_installed_product_changes_select_complete_distribution_consumers(change
     ],
 )
 def test_host_tool_identity_changes_select_measurement_consumers(changed) -> None:
-    from tools import molt_dev
+    from tools import molt_dev_policy
 
-    config = molt_dev.GateConfig.load(PLAN.path)
+    config = molt_dev_policy.GateConfig.load(PLAN.path)
     rule = next(r for r in config.rules if r.name == "performance-measurement")
     gates, matched = replace(config, rules=[rule], always=[]).select([changed])
     assert [r.name for r in matched] == [rule.name]
@@ -1553,9 +1553,11 @@ def test_host_tool_identity_changes_select_measurement_consumers(changed) -> Non
 
 
 def test_docs_architecture_local_gate_uses_project_python() -> None:
-    from tools import molt_dev
+    from tools import molt_dev_policy
 
-    gates, matched = molt_dev.GateConfig.load(PLAN.path).select(["docs/spec/STATUS.md"])
+    gates, matched = molt_dev_policy.GateConfig.load(PLAN.path).select(
+        ["docs/spec/STATUS.md"]
+    )
     assert any(rule.name == "docs-architecture" for rule in matched)
     # The driver activates the project environment for every local gate. The
     # Markdown parser is a project dependency; this needs no per-gate wrapper.
@@ -1581,7 +1583,7 @@ def test_docs_architecture_local_gate_uses_project_python() -> None:
     ],
 )
 def test_maintained_object_sources_select_owning_and_actual_consumers(path):
-    from tools import molt_dev
+    from tools import molt_dev_policy
 
     classes = _classes(path)
     assert classes["rust"] is True
@@ -1599,7 +1601,7 @@ def test_maintained_object_sources_select_owning_and_actual_consumers(path):
         if package["name"] in {"object", "cranelift-object"} and "source" not in package
     }
     assert {spec.split("@")[0] for spec in maintained} == {"object", "cranelift-object"}
-    gates, matched = molt_dev.GateConfig.load(PLAN.path).select([path])
+    gates, matched = molt_dev_policy.GateConfig.load(PLAN.path).select([path])
     rule = next(r for r in matched if r.name == "native-object-emission")
     assert set(rule.gates) <= {gate.command for gate in gates}
     for argv in (
@@ -1625,9 +1627,9 @@ def test_maintained_object_sources_select_owning_and_actual_consumers(path):
 def test_maintained_zlib_changes_prove_real_provider_and_consumer_custody(
     path: str,
 ) -> None:
-    from tools import molt_dev
+    from tools import molt_dev_policy
 
-    gates, matched = molt_dev.GateConfig.load(PLAN.path).select([path])
+    gates, matched = molt_dev_policy.GateConfig.load(PLAN.path).select([path])
     rule = next(rule for rule in matched if rule.name == "maintained-zlib-counters")
     assert _classes(path)["rust"] is True
     assert set(rule.gates) <= {gate.command for gate in gates}
@@ -3878,7 +3880,8 @@ def test_plan_loading_and_its_gates_import_no_pytest() -> None:
             "-c",
             "import sys; sys.path.insert(0, '.')\n"
             "from pathlib import Path\n"
-            "from tools.molt_dev import GateConfig\n"
+            "import tools.molt_dev  # the entry point binds the repository\n"
+            "from tools.molt_dev_policy import GateConfig\n"
             "GateConfig.load(Path('tools/proof_plan.toml'))",
         ],
     ):
@@ -7648,13 +7651,13 @@ def test_selected_sdk_fingerprint_roundtrips_through_actual_receipt_receiver(
 def test_native_import_collection_fixtures_declare_compilers_for_each_execution_owner(
     owner: str,
 ) -> None:
-    from tools import molt_dev
+    from tools import molt_dev_policy
 
     target = "tests/cli/test_cli_import_collection.py"
     if owner.startswith("local."):
         # Select this rule alone: an unrelated LLVM gate or the always gates
         # must not supply the compilers these real native fixtures require.
-        config = molt_dev.GateConfig.load(PLAN.path)
+        config = molt_dev_policy.GateConfig.load(PLAN.path)
         rule = next(rule for rule in config.rules if rule.name == owner[6:])
         isolated = replace(config, rules=[rule], always=[])
         selected, matched = isolated.select(["src/molt/cli/backend_daemon_logs.py"])
@@ -7697,9 +7700,9 @@ def test_native_import_collection_fixtures_declare_compilers_for_each_execution_
 def test_luau_lowering_changes_select_owning_library_without_native_codegen(
     path: str,
 ) -> None:
-    from tools import molt_dev
+    from tools import molt_dev_policy
 
-    config = molt_dev.GateConfig.load(PLAN.path)
+    config = molt_dev_policy.GateConfig.load(PLAN.path)
     rule = next(rule for rule in config.rules if rule.name == "backend-luau")
     isolated = replace(config, rules=[rule], always=[])
     gates, matched = isolated.select([path])
@@ -7730,9 +7733,9 @@ def test_native_fixture_compiler_capability_keeps_llvm_abi_pin_separate() -> Non
 
 @pytest.mark.parametrize("rule_name", ["tir-midend", "native-callable-abi"])
 def test_local_wasm_libtest_declares_its_actual_guest_tools(rule_name: str) -> None:
-    from tools import molt_dev
+    from tools import molt_dev_policy
 
-    config = molt_dev.GateConfig.load(PLAN.path)
+    config = molt_dev_policy.GateConfig.load(PLAN.path)
     rule = next(rule for rule in config.rules if rule.name == rule_name)
     isolated = replace(config, rules=[rule], always=[])
     gates, matched = isolated.select(
@@ -7758,9 +7761,9 @@ def test_local_wasm_libtest_declares_its_actual_guest_tools(rule_name: str) -> N
     "rule_name", ["backend-native", "backend-llvm", "native-callable-abi"]
 )
 def test_native_execution_helper_selects_all_compiled_consumers(rule_name: str) -> None:
-    from tools import molt_dev
+    from tools import molt_dev_policy
 
-    config = molt_dev.GateConfig.load(PLAN.path)
+    config = molt_dev_policy.GateConfig.load(PLAN.path)
     rule = next(rule for rule in config.rules if rule.name == rule_name)
     gates, matched = replace(config, rules=[rule], always=[]).select(
         ["runtime/test_support/native_object_execution.rs"]
@@ -7802,11 +7805,11 @@ def test_differential_proofs_select_their_host_compiler_profile_explicitly() -> 
         actual[command.id] = command.argv[command.argv.index("--compiler-profile") + 1]
         assert "MOLT_BACKEND_PROFILE" not in command.data.get("env", {})
     assert actual == expected
-    from tools import molt_dev
+    from tools import molt_dev_policy
 
     rule = next(
         rule
-        for rule in molt_dev.GateConfig.load(PLAN.path).rules
+        for rule in molt_dev_policy.GateConfig.load(PLAN.path).rules
         if rule.name == "runtime-regex"
     )
     (differential,) = [
@@ -9007,9 +9010,9 @@ def test_browser_simd_changes_have_a_standalone_source_build_proof(path: str) ->
     ],
 )
 def test_edgebox_sources_select_the_actual_locked_typescript_check(path: str) -> None:
-    from tools import molt_dev
+    from tools import molt_dev_policy
 
-    config = molt_dev.GateConfig.load(PLAN.path)
+    config = molt_dev_policy.GateConfig.load(PLAN.path)
     rule = next(rule for rule in config.rules if rule.name == "edgebox-typescript")
     isolated = replace(config, rules=[rule], always=[])
     gates, matched = isolated.select([path])
@@ -9033,3 +9036,58 @@ def test_edgebox_sources_select_the_actual_locked_typescript_check(path: str) ->
         PLAN.toolchain_closure(gate.toolchains)
     )
     assert isolated.select(["README.md"]) == ([], [])
+
+
+def test_changed_plan_entities_names_each_edit_by_section_and_entry():
+    from tools.proof_plan import changed_plan_entities
+
+    before = {
+        "schema": "molt.proof-plan.v6",
+        "command": [{"id": "a", "argv": ["x"]}, {"id": "b", "argv": ["y"]}],
+        "rule": [{"name": "r", "globs": ["x"]}],
+    }
+    after = {
+        "schema": "molt.proof-plan.v6",
+        "command": [{"id": "a", "argv": ["changed"]}, {"id": "b", "argv": ["y"]}],
+        "rule": [{"name": "r", "globs": ["x"]}, {"name": "new", "globs": ["y"]}],
+        "always": ["echo"],
+    }
+    assert changed_plan_entities(before, after) == {
+        ("command", "a"),
+        ("rule", "new"),
+        ("always", None),
+    }
+    assert changed_plan_entities(None, after) == {
+        ("schema", None),
+        ("command", "a"),
+        ("command", "b"),
+        ("rule", "r"),
+        ("rule", "new"),
+        ("always", None),
+    }
+    with pytest.raises(ValueError, match="unknown proof plan sections: stray"):
+        changed_plan_entities(None, {**after, "stray": 1})
+    with pytest.raises(ValueError, match="duplicate id 'a'"):
+        changed_plan_entities(None, {"command": [{"id": "a"}, {"id": "a"}]})
+
+
+def test_a_toolchain_claim_covers_the_policies_it_depends_on():
+    from tools.proof_plan import PlanClaims, plan_claim_matches
+
+    data = tomllib.loads(PLAN.path.read_text(encoding="utf-8"))
+    errors, claims = PlanClaims(data).claims(
+        {"name": "x", "plan_entities": ["toolchain_policy:edgebox-typescript"]}
+    )
+    assert errors == []
+    assert plan_claim_matches(claims, [("toolchain_policy", "corepack")])
+    assert plan_claim_matches(claims, [("toolchain_policy", "node")])
+    assert not plan_claim_matches(claims, [("toolchain_policy", "uv")])
+    # A change to a whole section reaches every claim inside it.
+    assert plan_claim_matches(claims, [("toolchain_policy", None)])
+    errors, _ = PlanClaims(data).claims(
+        {"name": "x", "plan_entities": ["toolchain_policy:absent", "nonsense"]}
+    )
+    assert errors == [
+        "x: plan_entities names no entry 'toolchain_policy:absent'",
+        "x: plan_entities names unknown section 'nonsense'",
+    ]
