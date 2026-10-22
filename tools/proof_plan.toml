@@ -5864,7 +5864,7 @@ pytest = [
 # --- Luau backend Rust --------------------------------------------------
 [[rule]]
 name = "backend-luau"
-toolchains = ["python", "rustc", "cargo"]
+toolchains = ["python", "rustc", "cargo", "lune"]
 description = "Exercise Luau lowering and capability admission in its small owning crate, without compiling a native code generator."
 globs = [
   "runtime/molt-backend-luau/**/*.rs",

@@ -830,6 +830,15 @@ The snapshot retains unmodified upstream text under the existing
    module still needed by another supported version. Unresolved semantic
    owners, witnesses and execution evidence remain `UNKNOWN`. Pending minor or major
    source pins can be assessed without admitting them as runtime targets.
+   Tracked syntax families come directly from shared AST admission metadata,
+   with the introducing version, PEP, admission disposition, owner and witness
+   paths. A digest binds the exact emitted metadata loaded by the analyzer;
+   owner paths are review pointers, not hashes of the loaded Python code.
+   The report distinguishes families introduced between the
+   selected pins from unchanged controls. This inventory covers known tracked
+   families only; other upstream source changes still require review, and a
+   witness path is not an execution receipt. Tuple version ordering also covers
+   a future major without a fixed number of supported versions.
    Review source changes through their
    existing compiler/runtime/ABI owners; record unresolved work and qualification
    in the existing V1 handoff finding (V1-35 for 3.15), not another support matrix.

@@ -569,3 +569,31 @@ def test_pep798_syntax_obeys_selected_target(source: str, minor: int) -> None:
         target_python=molt_target_python.TargetPythonVersion(3, minor, 0),
     )
     assert isinstance(control.body[0].value, ast.ListComp)
+
+
+@pytest.mark.parametrize("source", ["lazy import os", "lazy from os import path"])
+@pytest.mark.parametrize("minor", [12, 13, 14])
+def test_lazy_import_syntax_obeys_selected_target(source: str, minor: int) -> None:
+    import sys
+
+    if sys.version_info < (3, 15):
+        pytest.skip("requires the CPython 3.15 parser that admits PEP 810")
+    for text in (source, "if False:\n    " + source):
+        # Independent parser evidence: feature_version alone admits both forms.
+        tree = ast.parse(text, feature_version=(3, minor))
+        assert any(getattr(node, "is_lazy", 0) == 1 for node in ast.walk(tree))
+        with pytest.raises(
+            SyntaxError, match="lazy imports require Python 3.15"
+        ) as error:
+            molt_target_python._parse_source_for_target(
+                text,
+                filename="lazy_import.py",
+                target_python=molt_target_python.TargetPythonVersion(3, minor, 0),
+            )
+        assert error.value.filename == "lazy_import.py"
+        assert error.value.lineno == (2 if text.startswith("if") else 1)
+    control = molt_target_python._parse_source_for_target(
+        "import os as lazy\nfrom os import path",
+        target_python=molt_target_python.TargetPythonVersion(3, minor, 0),
+    )
+    assert [type(node) for node in control.body] == [ast.Import, ast.ImportFrom]
