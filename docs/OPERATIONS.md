@@ -814,7 +814,7 @@ port to the host. Design, measurements and costs:
 ```bash
 python3 tools/linux_vm.py check                      # drift from the definition: exit 1
 python3 tools/linux_vm.py push molt-linux --checkout # this checkout's HEAD into ~/molt-main
-python3 tools/linux_vm.py push molt-x86 origin/main  # a ref: refs/heads/from-host in the guest
+python3 tools/linux_vm.py push molt-x86 origin/main --ref main # as refs/heads/host/main
 python3 tools/linux_vm.py release                    # free host files a mounting VM pins
 python3 tools/linux_vm.py render molt-linux
 python3 tools/linux_vm.py apply molt-linux --confirm-restart
@@ -822,30 +822,43 @@ python3 tools/linux_vm.py apply molt-linux --confirm-restart
 
 - **Moving commits in.** `push <vm> [rev]` sends a commit of the checkout you
   run it from into the guest clone (`~/molt-main`) over Lima's SSH, as
-  `refs/heads/from-host`; `--checkout` also checks it out, detached. For a
-  writable tree, `git -C ~/molt-main archive from-host | tar -x -C /tmp/<x>`
-  in the guest. Copy a single file with `limactl copy <file> <vm>:/tmp/`.
-  A guest cannot fetch from a host path: nothing is mounted.
-- **Pinned host files.** A VM that still mounts host paths (not yet applied,
-  or made by hand) pins every host file its guest looked up, even after the
-  host deletes it. Apple's virtiofs server closes forgotten files only in
-  batches of 64, so `drop_caches` alone frees nothing. `release` makes the
-  guest forget its unused inodes and then 64 more, which frees every pin no
-  guest process holds open; lane retirement runs it for a VM that holds
-  files of the retiring checkout, or deleted files. `check` shows what each
-  mounting VM holds. `release` never stops a VM. It leaves
-  `<mount>/.molt-linux-vm-forget/` (64 empty files) under each mount; delete
-  that directory once no VM mounts the path.
-- **Apply.** `apply` restarts the VM. It refuses while the guest is busy: a
-  process of the guest user, or any process in a login session (`sudo` work
-  too), outside the session and daemon set in the definition; a process
-  under the user's subordinate ids (a container user) or a containerd shim (a
-  running container); or `apt`, `dpkg` or `cloud-init`. It does not see root
-  work outside a login session (a `systemd-run` unit, a cron job), and a
-  session that starts after its probe is stopped with the VM, so check by
-  hand on a shared VM. It keeps the first config it replaced as
-  `lima.yaml.molt-previous` and restores the replaced config if the VM does
-  not start.
+  `refs/heads/host/head` (`--ref <name>`: `refs/heads/host/<name>`). It writes
+  only that host-owned namespace, so a guest branch is never moved. With
+  `--checkout` it checks the exact commit out, detached, but refuses while the
+  clone has changes (untracked files too), a Git command holds its index, or
+  any guest process works in the clone; without it, it prints the checkout
+  command. For a writable tree,
+  `git -C ~/molt-main archive host/head | tar -x -C /tmp/<x>` in the guest.
+  Copy a single file with `limactl copy <file> <vm>:/tmp/`. A guest cannot
+  fetch from a host path: nothing is mounted, and the clones' `origin`
+  remotes, which still name `~/Molt/molt-src` on the host, no longer work.
+- **Pinned host files.** A VM that still mounts host paths (one made by
+  hand) pins every host file its guest looked up, even after the host
+  deletes it. Apple's virtiofs server closes forgotten files only in batches
+  of 64 per VM process, so `drop_caches` alone frees nothing. `release` makes
+  the guest forget its unused inodes and then 64 more, which frees every pin
+  no guest process holds open; lane retirement runs it for a VM that holds
+  files of the retiring checkout, or deleted files its last release did not
+  leave behind (those, a guest process holds open). `check` shows what each
+  mounting VM holds. `release` never stops a VM. It keeps
+  `<mount>/.molt-linux-vm-forget/` (64 empty files) under each mount while a
+  VM mounts it; `apply` removes the sets of the mounts it ends. A mount whose
+  set cannot be written is reported, and the others still release.
+- **Apply.** `apply` restarts the VM. It starts the VM as a service launch,
+  so Lima's hostagent outlives `limactl start` (HF-471), and it succeeds only
+  when Lima then lists the VM as running; otherwise it restores the replaced
+  config and restarts the VM on it. Run it from a plain shell: a memory guard
+  around `apply` itself would see the hostagent as its descendant too. It refuses
+  while the guest is busy: a process of the guest user, or any process in a
+  login session (`sudo` work too), whose executable is not one of the
+  definition's idle executables (read as root, so the guest needs Lima's
+  passwordless sudo); a process under the user's subordinate ids (a container
+  user) or a containerd shim (a running container); or `apt`, `dpkg` or
+  `cloud-init`. It does not see root work outside a login session (a
+  `systemd-run` unit, a cron job) or an idle executable a user runs by hand,
+  and a session that starts after its probe is stopped with the VM, so check
+  by hand on a shared VM. It keeps the first config it replaced as
+  `lima.yaml.molt-previous`.
 - **Disk.** VM disk images live in `~/.lima` on the boot volume, so guest
   builds use the Mac's free space.
 
