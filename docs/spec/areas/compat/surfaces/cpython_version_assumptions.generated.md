@@ -7,8 +7,8 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 ## Counts
 
 - `authority-routed` files: 66
-- `operational-tooling` files: 60
-- `scattered-assumption` files: 343
+- `operational-tooling` files: 61
+- `scattered-assumption` files: 345
 
 ## Files
 
@@ -100,6 +100,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `src/molt/stdlib/encodings/mac_romanian.py` | 4 | scattered-assumption | `3.0` |
 | `src/molt/stdlib/encodings/palmos.py` | 1 | scattered-assumption | `3.5` |
 | `src/molt/stdlib/enum.py` | 3 | scattered-assumption | `3.12` |
+| `src/molt/stdlib/fractions.py` | 9 | operational-tooling | `3.12` |
 | `src/molt/stdlib/functools.py` | 1 | scattered-assumption | `3.12` |
 | `src/molt/stdlib/gettext.py` | 1 | scattered-assumption | `3.12` |
 | `src/molt/stdlib/glob.py` | 3 | operational-tooling | `sys.version_info` |
@@ -135,7 +136,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `src/molt/stdlib/sqlite3/dbapi2.py` | 4 | scattered-assumption | `version_info` |
 | `src/molt/stdlib/sqlite3/dump.py` | 1 | scattered-assumption | `3.12` |
 | `src/molt/stdlib/stat.py` | 2 | operational-tooling | `sys.version_info` |
-| `src/molt/stdlib/statistics.py` | 6 | operational-tooling | `3.14` |
+| `src/molt/stdlib/statistics.py` | 11 | operational-tooling | `3.14` |
 | `src/molt/stdlib/string/templatelib.py` | 1 | scattered-assumption | `3.14` |
 | `src/molt/stdlib/stringprep.py` | 1 | scattered-assumption | `3.2` |
 | `src/molt/stdlib/sys.py` | 7 | operational-tooling | `version_info` |
@@ -333,7 +334,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `runtime/molt-runtime/src/object/ops/sequence_protocol_tests.rs` | 3 | scattered-assumption | `3.0` |
 | `runtime/molt-runtime/src/object/ops/subscript.rs` | 12 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/object/ops.rs` | 3 | scattered-assumption | `3.14` |
-| `runtime/molt-runtime/src/object/ops_arith.rs` | 8 | authority-routed | `3.12` |
+| `runtime/molt-runtime/src/object/ops_arith.rs` | 7 | authority-routed | `3.12` |
 | `runtime/molt-runtime/src/object/ops_builtins/builtin_collections.rs` | 4 | scattered-assumption | `3.14` |
 | `runtime/molt-runtime/src/object/ops_bytes/sequence_methods.rs` | 1 | scattered-assumption | `3.14` |
 | `runtime/molt-runtime/src/object/ops_bytes.rs` | 6 | scattered-assumption | `3.12` |
@@ -362,11 +363,13 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `runtime/molt-runtime-core/src/float_repr.rs` | 2 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime-core/src/host_capabilities_generated.rs` | 6 | operational-tooling | `3.12` |
 | `runtime/molt-runtime-core/src/lib.rs` | 6 | scattered-assumption | `3.14` |
+| `runtime/molt-runtime-core/src/numeric_ratio.rs` | 2 | scattered-assumption | `3.14` |
 | `runtime/molt-runtime-crypto/src/hashlib.rs` | 4 | scattered-assumption | `3.14` |
 | `runtime/molt-runtime-http/src/functions_http/client_core.rs` | 1 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime-http/src/functions_http/server_core.rs` | 1 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime-ipaddress/src/ipaddress.rs` | 4 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime-math/src/math/statistics_tail.rs` | 4 | scattered-assumption | `3.343` |
+| `runtime/molt-runtime-math/src/math.rs` | 2 | scattered-assumption | `3.0` |
 | `runtime/molt-runtime-math/src/random_mod.rs` | 5 | scattered-assumption | `3.4` |
 | `runtime/molt-runtime-platform/src/env_support.rs` | 2 | scattered-assumption | `3.15` |
 | `runtime/molt-runtime-platform/src/path_text.rs` | 2 | scattered-assumption | `3.12` |
