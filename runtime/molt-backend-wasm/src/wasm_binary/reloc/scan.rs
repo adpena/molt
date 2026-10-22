@@ -117,7 +117,10 @@ impl RelocScan {
                         }
                     }
                 }
-                Payload::CodeSectionStart { range, .. } => {
+                Payload::CodeSectionStart {
+                    unchecked_range: range,
+                    ..
+                } => {
                     scan.code_section_start = Some(range.start);
                     scan.code_section_index = payload_section_index;
                 }

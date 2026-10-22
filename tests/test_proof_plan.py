@@ -958,6 +958,7 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
     assert {
         "tir::",
         "wasm::",
+        "wasm_binary::reloc::tests::",
         "call::",
         "object::",
         "arena::",
