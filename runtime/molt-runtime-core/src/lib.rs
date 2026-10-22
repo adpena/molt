@@ -903,22 +903,41 @@ pub fn rt_exception_pending_fast() -> bool {
     unsafe { ffi::molt_exception_pending_fast() != 0 }
 }
 
-/// Raise an already-constructed exception. Returns None bits.
+/// Borrow an already-constructed exception and publish a retained raised owner.
+/// Returns None bits; the caller still owns its input reference.
 #[inline]
 pub fn rt_raise(exc_bits: u64) -> u64 {
     unsafe { ffi::molt_raise(exc_bits) }
 }
 
 /// Create and raise an exception from kind name + message strings.
+/// Retire every constructor temporary; stop on each constructor failure.
+/// A preexisting raised error does not imply this construction failed.
 /// Returns None bits (the caller should return early on exception).
 pub fn rt_raise_str(kind: &str, message: &str) -> u64 {
-    let kind_bits = rt_string_from(kind);
-    let msg_bits = rt_string_from(message);
-    let args_bits = rt_tuple(&[msg_bits]);
-    let exc_bits = unsafe { ffi::molt_exception_new(kind_bits, args_bits) };
-    rt_dec_ref(kind_bits);
-    rt_dec_ref(args_bits);
-    unsafe { ffi::molt_raise(exc_bits) }
+    // Keep one GIL scope across construction and retirement. Each FFI
+    // constructor returns an owner; tuple construction and raising borrow.
+    let guard = CoreGilGuard::new();
+    let py = unsafe { guard.__token_unchecked() };
+    let kind = unsafe { OwnedRuntimeValue::from_owned_bits(&py, rt_string_from(kind)) };
+    if obj_from_bits(kind.bits()).is_none() {
+        return MoltObject::none().bits();
+    }
+    let text = unsafe { OwnedRuntimeValue::from_owned_bits(&py, rt_string_from(message)) };
+    if obj_from_bits(text.bits()).is_none() {
+        return MoltObject::none().bits();
+    }
+    let args = unsafe { OwnedRuntimeValue::from_owned_bits(&py, rt_tuple(&[text.bits()])) };
+    if obj_from_bits(args.bits()).is_none() {
+        return MoltObject::none().bits();
+    }
+    let error = unsafe {
+        OwnedRuntimeValue::from_owned_bits(&py, ffi::molt_exception_new(kind.bits(), args.bits()))
+    };
+    if obj_from_bits(error.bits()).is_none() {
+        return MoltObject::none().bits();
+    }
+    rt_raise(error.bits())
 }
 
 /// Raise the owning module's actual exception class, retaining each temporary
