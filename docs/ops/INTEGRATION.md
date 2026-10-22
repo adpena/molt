@@ -248,8 +248,15 @@ worktree. A slug is 1 to 64 lower-case letters, digits, `.`, `_` or `-`.
   an explicitly supplied ignore set), and names each path. Automatic retirement
   additionally requires the enrolled tip and path, so later work is retained.
   Multiple registrations sharing the branch are held. Ignored payloads are
-  removable only inside current checkout inputs verified by
-  `molt.checkout_provisioning` (lock stamp and sentinel). The artifact-publication
+  removable inside current checkout inputs verified by
+  `molt.checkout_provisioning` (lock stamp and sentinel); `land` first makes the
+  trees a lane owns current, and a stale input is held with the command that
+  provisions it, whatever its writer tagged. Outside those trees, paths that
+  hold no signal also leave: PEP 3147 bytecode in `__pycache__`, a directory
+  tagged by the Cache Directory Tagging Specification, a setuptools
+  `*.egg-info` holding only `egg_info`'s files, an empty checkout-state lock,
+  and a plain directory that holds only these (docs/design/landing_queue.md).
+  The artifact-publication
   owner also recognizes its direct, empty persistent lock metadata, which leaves
   only with the whole checkout under retirement custody; locks are never unlinked
   to make a lane look clean. Malformed reserved leaves and other ignored notes,

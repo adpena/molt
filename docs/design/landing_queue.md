@@ -207,7 +207,22 @@ The driver creates, provisions and retires each lane.
   Primary and ordinary source checkouts are retained. Locked, advanced, dirty,
   mismatched or unharvested lanes are held, not force-removed. Ignored content is
   disposable only within current provisioning-owned trees, verified through the
-  existing lock-stamp/sentinel authority; unknown ignored signal requires harvest.
+  existing lock-stamp/sentinel authority (`land` first makes the trees a lane
+  owns current, as `uv run` syncs before it runs; a stale input is held, whatever
+  its writer tagged), or, outside the declared trees, when it holds no signal:
+  bytecode in a PEP 3147 `__pycache__` (the import system reads it only beside
+  its source, so it is cache even after its source is gone; this releases the
+  one trace of a module that was never committed and then deleted; a `.pyc`
+  outside `__pycache__` imports without its source and is held), a directory
+  tagged by the
+  [Cache Directory Tagging Specification](https://bford.info/cachedir/) (Cargo,
+  Ruff, pytest, mypy), a setuptools `*.egg-info` that holds only the files
+  `egg_info` writes, an empty checkout-state lock (`molt.checkout_state`, which
+  leaves only with its checkout), and a plain directory that holds only these.
+  `lane start` leaves bytecode and the editable build's egg-info behind; tool
+  runs add tagged caches. Git names an untracked directory beside each ignored
+  path inside it, and those paths are judged, not the directory's name.
+  Unknown ignored signal requires harvest.
   Persistent publication locks are classified by their canonical owner and leave
   only with the whole checkout, never by a lock-deletion cleanup step. Multiple
   Git registrations of one lane branch are shared custody and block retirement.

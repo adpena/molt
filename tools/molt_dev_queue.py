@@ -477,7 +477,10 @@ def cmd_land(args: argparse.Namespace) -> int:
     if managed:
         from tools.molt_dev_lanes import validate_lane_handoff
 
-        validate_lane_handoff(git, branch, repo, head)
+        # A merged dependency refresh leaves the lane's inputs stale.
+        for item in validate_lane_handoff(git, branch, repo, head, provision=True):
+            if item.provisioned:
+                _ok(f"{item.name}: provisioned ({item.seconds:.2f} s)")
     elif already_landed:
         _ok(
             f"{git.short(head)} is already on {args.remote}/{args.branch}; checkout retained"

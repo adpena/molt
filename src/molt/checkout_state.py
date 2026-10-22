@@ -23,6 +23,7 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 import re
+import stat
 import time
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal, get_args
@@ -258,6 +259,29 @@ def _managed_coordinate(root: Path) -> _ManagedStateRoot | None:
     return None
 
 
+# One lock per checkout-state root, named by its build-state address.
+_STATE_LOCK_DIR = ("target", ".disk_guard", "checkout-state-locks")
+_STATE_LOCK_NAME = re.compile(r"[0-9a-f]{64}\.lock")
+
+
+def is_checkout_state_lock_file(path: Path) -> bool:
+    """Recognize an empty lock that `_state_lock_plan` names, never data.
+
+    Like a publication lock, it leaves only with its whole checkout and is
+    never unlinked to make one look clean: a waiter may hold its inode.
+    """
+    if (
+        _STATE_LOCK_NAME.fullmatch(path.name) is None
+        or path.parent.parts[-len(_STATE_LOCK_DIR) :] != _STATE_LOCK_DIR
+    ):
+        return False
+    try:
+        found = path.lstat()
+    except OSError:
+        return False
+    return stat.S_ISREG(found.st_mode) and found.st_size == 0
+
+
 def _state_lock_plan(
     selections: Iterable[tuple[Path | _ManagedStateRoot, CheckoutOwner | None]],
 ) -> tuple[
@@ -301,12 +325,8 @@ def _state_lock_plan(
         for path in paths:
             known = qualify(path)
             if known is not None and known.root not in locks:
-                locks[known.root] = (
-                    known.artifact
-                    / "target"
-                    / ".disk_guard"
-                    / "checkout-state-locks"
-                    / (build_state_address(known.root) + ".lock")
+                locks[known.root] = known.artifact.joinpath(
+                    *_STATE_LOCK_DIR, build_state_address(known.root) + ".lock"
                 )
     return tuple(bound), locks
 
