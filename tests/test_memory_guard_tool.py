@@ -627,10 +627,17 @@ def test_temporary_artifact_posix_closure_requires_empty_group_and_final_sample(
         "different_birth",
         "unreadable",
         "pending",
+        "pending_foreign",
+        "legacy_owned",
+        "legacy_foreign",
+        "legacy_without_publisher",
+        "unknown_publisher_birth",
         "unknown_birth",
+        "unknown_birth_unreadable",
         "nested_live",
         "reused_publisher_live",
         "reused_publisher_absent",
+        "reused_publisher_legacy_foreign",
     ],
 )
 def test_temporary_artifact_closure_accounts_for_late_guard_generations(
@@ -673,15 +680,35 @@ def test_temporary_artifact_closure_accounts_for_late_guard_generations(
         active,
         "b" * 32,
         pid=202 if reused_publisher else 101,
-        birth=22 if reused_publisher else 99 if state == "different_birth" else 11,
+        birth=(
+            5
+            if state == "reused_publisher_legacy_foreign"
+            else 22
+            if reused_publisher
+            else 99
+            if state in {"different_birth", "pending_foreign", "legacy_foreign"}
+            else None
+            if state == "unknown_publisher_birth"
+            else 11
+        ),
         child=303,
         child_birth=33,
     )
-    if state == "unreadable":
+    if state in {"unreadable", "unknown_birth_unreadable"}:
         late.write_text("incomplete record", encoding="utf-8")
-    elif state == "pending":
+        if state == "unknown_birth_unreadable":
+            # Isolate the filename candidate; no valid publisher envelope can
+            # supply the missing birth of this owned process.
+            old.unlink()
+    elif state in {"pending", "pending_foreign"}:
         payload = json.loads(late.read_text(encoding="utf-8"))
         payload.update(child_process=None, child_launch_state="pending")
+        late.write_text(json.dumps(payload), encoding="utf-8")
+    elif state.startswith("legacy_") or state == "reused_publisher_legacy_foreign":
+        payload = json.loads(late.read_text(encoding="utf-8"))
+        payload["schema_version"] = 1
+        if state == "legacy_without_publisher":
+            payload.pop("guard_process")
         late.write_text(json.dumps(payload), encoding="utf-8")
     if state == "nested_live":
         marker(active, "c" * 32, pid=303, birth=33, child=404, child_birth=44)
@@ -707,7 +734,8 @@ def test_temporary_artifact_closure_accounts_for_late_guard_generations(
         lambda _pgid, *, grace: True,
     )
     child = dataclasses.replace(
-        _guarded_child(), started_at_ns=None if state == "unknown_birth" else 11
+        _guarded_child(),
+        started_at_ns=None if state.startswith("unknown_birth") else 11,
     )
     tracker = memory_guard.ProcessTreeTracker(101)
     if reused_publisher:
@@ -744,9 +772,40 @@ def test_temporary_artifact_closure_accounts_for_late_guard_generations(
     # persisted generation is the sole evidence of the replacement session.
     assert evidence["root_process_group_closed"]
     assert evidence["remaining_tracked_pids"] == []
-    assert closed is (state in {"absent", "different_birth", "reused_publisher_absent"})
+    assert closed is (
+        state
+        in {
+            "absent",
+            "different_birth",
+            "reused_publisher_absent",
+            "reused_publisher_legacy_foreign",
+            "pending_foreign",
+            "legacy_foreign",
+        }
+    )
     assert evidence["closed"] is closed
     assert {path: path.read_bytes() for path in before} == before
+    if state in {
+        "unreadable",
+        "legacy_without_publisher",
+        "unknown_publisher_birth",
+        "unknown_birth",
+        "unknown_birth_unreadable",
+    }:
+        # No missing identity can prove that a potentially owned late child is
+        # foreign. Preserve the original unknown-relationship refusal.
+        assert closed is False
+    if state in {
+        "pending_foreign",
+        "legacy_foreign",
+        "reused_publisher_legacy_foreign",
+    }:
+        # Proven foreign lifetime does not release its record or artifact hold.
+        assert active_custody.has_active_guard_marker(active)
+        assert any(
+            row.get("disposition") == "foreign" and row["path"] == str(late)
+            for row in evidence["guard_generations"]
+        )
     if state in {"live", "nested_live", "reused_publisher_live"}:
         assert any(
             row.get("disposition") == "live" for row in evidence["guard_generations"]

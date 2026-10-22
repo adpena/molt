@@ -829,10 +829,18 @@ The design extends `molt.checkout_state`; it adds no second authority.
    window is a rename back; nothing goes through the user's Trash.
 4. **One cache policy** (HF-434). One host cache root. Each store (module
    caches, the product store, the result cache, the WASM pairs) declares its
-   last-use stamp and byte budget in one table; retired legacy names retire
-   by last use like every other entry, because an old writer touches its
-   files; a `*.publish.lock` is a live name (current code writes it) and
-   retires only after a nonblocking lock attempt proves no writer holds it.
+   last-use stamp and byte budget in one table. Only generations whose
+   producer, reader and evictor share that ownership protocol may retire
+   automatically. The pre-e9b0b9be8 native archive/scratch layouts remain the
+   HF-282 shared-writer compatibility boundary: old builds can still require
+   their bytes after publication or compile outside their final lock. Retire
+   those layouts through a versioned root or an explicitly quiescent operator
+   purge, preserving the measured 4.26 GiB obligation until then. Current
+   standalone `*.publish.lock` names remain persistent: a successful
+   nonblocking lock attempt proves only that no lock is held at that instant,
+   not that an already-open waiter has released the old inode. Unlinking and
+   recreating the name would split mutual exclusion. Do not infer safety from
+   mtime, process scans or a one-time lock probe on either platform.
 5. **Lanes** (HF-436). `lane start` refuses when a new lane would take the
    live worktree count past `drift_harvest`'s limit (12, owner 2026-10-22), and names each
    worktree idle for 48 hours (unique or superseded commits) to land or

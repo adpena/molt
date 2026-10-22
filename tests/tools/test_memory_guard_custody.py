@@ -320,6 +320,42 @@ def test_invalid_terminal_records_fail_closed(tmp_path, mutate):
 
 
 @pytest.mark.parametrize(
+    ("mutation", "publisher"),
+    [
+        ({"schema_version": 1}, (10, 100)),
+        ({"schema_version": 3}, (10, 100)),
+        ({"status": "unrecognized"}, (10, 100)),
+        ({"token": "wrong"}, None),
+        ({"guard_process": {"pid": 11, "started_at_ns": 100}}, None),
+        ({"guard_process": {"pid": 10, "started_at_ns": True}}, None),
+    ],
+)
+def test_invalid_body_retains_only_validated_publisher_identity(
+    tmp_path, mutation, publisher
+):
+    active = _active(tmp_path)
+    marker = _marker(active, status="completed")
+    _rewrite(marker, lambda payload: payload.update(mutation))
+    before = marker.read_bytes()
+
+    record = custody.read_marker_record(marker)
+    assert record.error is not None
+    assert (
+        None if record.guard is None else (record.guard.pid, record.guard.started_at_ns)
+    ) == publisher
+    assert record.child is None
+    assert not record.terminal
+    assert not record.accepts_inherited_guard
+    assert custody.has_active_guard_marker(active)
+    # A valid publisher envelope never makes an invalid body safe to retire,
+    # even when every recorded process is absent from a complete snapshot.
+    report = custody.reconcile_active_guard_markers(active, _snapshot(), apply=True)
+    assert report.preserved == 1
+    assert report.retired == 0
+    assert marker.read_bytes() == before
+
+
+@pytest.mark.parametrize(
     "content", [b"{", b"[]", b"\xff", b'{"status":"completed","status":"completed"}']
 )
 def test_inexact_or_unreadable_json_is_protective(tmp_path, content):
