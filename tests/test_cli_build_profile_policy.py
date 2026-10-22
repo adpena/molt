@@ -16,6 +16,7 @@ from molt.cli import build_inputs as cli_build_inputs
 from molt.cli import script_commands as cli_commands
 from molt.cli import runtime_wasm_build_policy as cli_runtime_build
 from molt.cli import wrapper_build
+from molt.cli.process_execution import _TimedResult
 from molt.cli import output as cli_output
 from molt.cli import build_command as cli_build_command
 from molt.cli import arg_helpers as cli_arg_helpers
@@ -257,11 +258,12 @@ def test_nested_build_keeps_platform_profile_and_forwards_build_profile(
     # contracts live in test_cli_binary_image_closure and import-collection tests.
     monkeypatch.setattr(wrapper_build, "_wrapper_build_cache_input", lambda **_: None)
 
-    def fake_run_command(cmd: list[str], **_kwargs: object) -> int:
+    def fake_run_program(cmd: list[str], **_kwargs: object) -> _TimedResult:
         run_cmds.append(list(cmd))
-        return 0
+        return _TimedResult(0, "", "", 0.0)
 
-    monkeypatch.setattr(cli_commands, "_run_command", fake_run_command)
+    # `molt run` starts the built program through _run_command_timed.
+    monkeypatch.setattr(cli_commands, "_run_command_timed", fake_run_program)
     platform_args = ["--profile", platform_profile] if platform_profile else []
 
     rc = cli_commands.run_script(

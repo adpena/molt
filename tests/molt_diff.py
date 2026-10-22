@@ -966,6 +966,14 @@ def _prune_backend_daemons() -> None:
             )
 
 
+def _unlink_lock_holder(lock_path: Path) -> None:
+    """A pruned lock takes its holder record (molt.cli.build_locks) along."""
+    from molt.cli.build_locks import lock_holder_path
+
+    with contextlib.suppress(OSError):
+        lock_holder_path(lock_path).unlink()
+
+
 def _prune_stale_build_locks() -> None:
     lock_root = _diff_build_lock_root()
     if not lock_root.exists():
@@ -989,6 +997,7 @@ def _prune_stale_build_locks() -> None:
                 with contextlib.suppress(OSError):
                     lock_path.unlink()
                     removed += 1
+                    _unlink_lock_holder(lock_path)
     except OSError:
         return
 
@@ -1003,6 +1012,7 @@ def _prune_stale_build_locks() -> None:
             with contextlib.suppress(OSError):
                 lock_path.unlink()
                 removed += 1
+                _unlink_lock_holder(lock_path)
     if removed > 0:
         print(f"[INFO] Pruned {removed} stale build lock file(s) from {lock_root}")
 

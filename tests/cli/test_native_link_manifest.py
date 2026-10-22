@@ -27,6 +27,7 @@ from molt.cli import (
 from molt.cli import runtime_native_build as runtime_build
 from molt.cli import static_archive_identity as archive_identity
 from molt.cli.models import _RuntimeArtifactState
+from molt.cli.product_store import ProductStore
 from molt.cli.native_link_custody import copy_native_link_custody_archive
 from molt.cli.native_link_manifest import (
     NativeLinkDependencyManifestError,
@@ -1204,8 +1205,8 @@ def test_native_runtime_failure_reaches_cli_json_with_durable_evidence(
     )
     monkeypatch.setattr(
         runtime_build,
-        "_native_runtime_generation_candidates",
-        lambda *_args, **_kwargs: (),
+        "native_runtime_store",
+        lambda _root: ProductStore(tmp_path / "store" / "native-runtime"),
     )
     monkeypatch.setattr(
         runtime_build,

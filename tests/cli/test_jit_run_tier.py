@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 from pathlib import Path
 
 import pytest
@@ -493,66 +492,79 @@ def _runtime_image_binding(root: Path, payload: bytes):
     resolve_native_target_spec(None).object_format.value != "macho",
     reason="the Mach-O runtime image is the verified JIT cell",
 )
-def test_runtime_images_are_retired_by_last_use(monkeypatch, tmp_path: Path) -> None:
-    # Each runtime generation links a 37 MiB image. Images no build or cached
-    # launch used for the idle window leave at the next publication; an image
-    # a cached launch still runs stays.
+def test_runtime_images_are_product_store_entries(monkeypatch, tmp_path: Path) -> None:
+    # Each runtime generation links a 37 MiB image. An image is its own product
+    # store entry, never a write into the published runtime entry it links
+    # from (HF-390 review v2, M1). Images no build or cached launch used for
+    # the idle window leave at the next publication, and a cached launch of an
+    # evicted image is a miss.
+    import json
+    import subprocess
     import time
 
-    from molt.cli import generation_store, jit_runtime_image
-    from tests.process_guard_common import install_module_view
+    from molt.cli import jit_runtime_image, product_store
 
     monkeypatch.setattr(
         native_link_command,
         "_build_native_link_driver_command",
         lambda **kwargs: (["clang"], None, None),
     )
+    links: list[list[str]] = []
 
     def link(command, **kwargs):
+        links.append(command)
         Path(command[command.index("-o") + 1]).write_bytes(b"image")
-        return __import__("subprocess").CompletedProcess(command, 0, "", "")
+        return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(jit_runtime_image, "_run_completed_command", link)
-    now = {"t": 1_000.0}
-    install_module_view(
-        monkeypatch, "time", time, generation_store, time=lambda: now["t"]
-    )
-    idle = generation_store.GENERATION_STORE_IDLE_SECONDS
-    root = tmp_path / "runtime"
-    root.mkdir()
+    monkeypatch.delenv("MOLT_BUILD_LOCK_TIMEOUT", raising=False)
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    store_dir = tmp_path / ".molt-products"
+    store = product_store.ProductStore(store_dir / "v1" / "jit-runtime-image")
+
+    def renew(path: Path) -> bool:
+        return product_store.record_stored_file_use(path, store_dir)
 
     def ensure(payload: bytes) -> Path:
-        return jit_runtime_image.ensure_jit_runtime_image(
-            binding=_runtime_image_binding(root, payload),
+        binding = _runtime_image_binding(runtime, payload)
+        before = sorted(runtime.rglob("*"))
+        image = jit_runtime_image.ensure_jit_runtime_image(
+            store=store,
+            binding=binding,
             target=resolve_native_target_spec(None),
             sysroot_path=None,
             profile="dev",
             link_timeout=None,
         )
+        # Nothing is written into the runtime the image links from.
+        assert sorted(runtime.rglob("*")) == before
+        return image
 
     a = ensure(b"a")
-    now["t"] = 2_000.0
+    assert a.parent.parent == store.root and a.read_bytes() == b"image"
+    assert ensure(b"a") == a and len(links) == 1
+    assert renew(a)
+
+    ledger_path = store.root / ".product-store.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    ledger["last_used"][a.parent.name] = (
+        time.time() - product_store.PRODUCT_STORE_IDLE_SECONDS - 60
+    )
+    ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
     b = ensure(b"b")
-    # A cached launch runs image a well inside its window.
-    now["t"] = 50_000.0
-    jit_runtime_image.record_jit_runtime_image_use(a)
-    now["t"] = 2_000.0 + idle + 1
+    assert not a.parent.exists() and b.is_file()
+    assert not renew(a)
+
+    # The next builder clears what a dead builder left in the entry, and links.
     c = ensure(b"c")
-    assert a.is_file() and b.is_file() and c.is_file()
-    now["t"] = 50_000.0 + idle + 1
-    d = ensure(b"d")
-    # Only a went idle: b and c were each renewed when the next image was
-    # selected, and d is selected.
-    assert not a.parent.exists()
-    assert b.is_file() and c.is_file() and d.is_file()
-    # A cached launch that still names a is a miss: its use checks the entry
-    # under the store lock, where eviction runs (HF-371 review v3, finding 6).
-    with pytest.raises(generation_store.GenerationEvicted, match=a.parent.name):
-        jit_runtime_image.record_jit_runtime_image_use(a)
-    # Selection survives a selected entry removed by hand.
-    shutil.rmtree(d.parent)
-    e = ensure(b"e")
-    assert e.is_file() and b.is_file()
+    c.unlink()
+    (c.parent / ".staged").mkdir()
+    (c.parent / ".staged" / c.name).write_bytes(b"partial")
+    assert not renew(c)
+    assert ensure(b"c") == c and c.read_bytes() == b"image"
+    assert sorted(path.name for path in c.parent.iterdir()) == [c.name]
+    assert len(links) == 4
 
 
 def test_the_differential_jit_adapter_uses_the_one_admission(monkeypatch) -> None:
@@ -735,3 +747,91 @@ def test_a_jit_image_names_the_cache_root_the_cli_resolved(
     assert root() == str(tmp_path / "xdg" / "molt")
     monkeypatch.setenv("MOLT_CACHE", "relative-cache")
     assert root() == str(work / "relative-cache")
+
+
+def test_a_cache_hit_renews_every_store_entry_a_jit_start_reads(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A JIT start reads its runner, its runtime image and the runtime's
+    callable-symbol table, each in its own product store entry (HF-390). A
+    cache hit renews all three; the runtime entry is the one no other use
+    renews, so its eviction must be a miss, not a failed start."""
+    import hashlib
+    import json
+
+    from molt.cli import wrapper_build
+    from molt.cli.backend_generation import backend_generation_path
+    from molt.cli.product_store import LAYOUT_VERSION, ProductStore
+    from molt.dx import PRODUCT_STORE_DIRNAME
+
+    # The store a build of the compiler checkout uses under this artifact
+    # root; the cache reader must resolve the same one (review v4).
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifacts))
+    monkeypatch.setenv("MOLT_PREFER_EXTERNAL_ARTIFACTS", "1")
+    monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
+    root = artifacts / "target" / PRODUCT_STORE_DIRNAME / LAYOUT_VERSION
+    identity, variant = "a" * 64, "b" * 64
+    runtime = ProductStore(root / "native-runtime")
+    generation = runtime.entry(identity) / variant / ".molt-native-generations" / "c"
+    files = {
+        "runner": (
+            ProductStore(root / "host-tool"),
+            backend_generation_path(
+                ProductStore(root / "host-tool").entry(identity) / variant / "molt-jit",
+                hashlib.sha256(b"runner").hexdigest(),
+            ),
+        ),
+        "runtime_image": (
+            ProductStore(root / "jit-runtime-image"),
+            ProductStore(root / "jit-runtime-image").entry(identity)
+            / "libmolt_runtime.dylib",
+        ),
+        "callable_symbols": (
+            runtime,
+            generation / "dev-fast" / "libmolt_runtime.a.callable_symbols.v3.txt",
+        ),
+    }
+    for _store, path in files.values():
+        path.parent.mkdir(parents=True)
+        path.write_bytes(path.name.encode())
+    image = tmp_path / "app_molt.jit"
+    image.write_bytes(b"image")
+    monkeypatch.setattr(
+        wrapper_build,
+        "_wrapper_build_default_consumer_path",
+        lambda entry, *, tier: image,
+    )
+    from molt.dx import product_store_dir
+    from molt.source_root import compiler_source_root
+
+    assert product_store_dir(compiler_source_root(), os.environ) == root.parent
+    wrapper_build._wrapper_build_cache_manifest_path(image).write_text(
+        json.dumps(
+            {
+                "version": wrapper_build._WRAPPER_BUILD_CACHE_SCHEMA_VERSION,
+                "cache_key": "key",
+                "consumer_output": str(image),
+                "binary_sha256": hashlib.sha256(b"image").hexdigest(),
+                "output": str(image),
+                "artifacts": {name: str(path) for name, (_s, path) in files.items()},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def hit():
+        return wrapper_build._read_wrapper_build_cache_contract(
+            resolved_build_entry=None,
+            cache_input=({}, "key"),
+            tier=RunTier.JIT,
+        )
+
+    assert hit() is not None
+    for store, _path in files.values():
+        ledger = json.loads((store.root / ".product-store.json").read_text("utf-8"))
+        assert identity in ledger["last_used"], store.kind
+    # Eviction (idle or `molt cache evict`) removes the entry and its record.
+    assert runtime.evict(identity)
+    assert hit() is None

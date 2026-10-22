@@ -10,12 +10,14 @@ import subprocess
 import sys
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from molt import toolchain_identity
 from molt.cli import runtime_build_identity as identity
+from molt.cli.cargo_search_path import derives_cargo_search_path
 from molt.cli import runtime_native_build
 from molt.cli.runtime_build_python import bind_runtime_build_python
 from molt.cli.runtime_artifact_selection import (
@@ -966,6 +968,46 @@ def test_bind_build_python_signature_uses_admitted_identity_without_a_probe(
     assert bind_runtime_build_python(bound, captured) is bound
     assert bound.command == plan.command and bound.rustflags == plan.rustflags
     assert bound.toolchain_identity() == plan.toolchain_identity()
+
+
+@pytest.mark.skipif(
+    not derives_cargo_search_path(), reason="Windows keeps the caller's PATH"
+)
+def test_cargo_plan_path_is_derived_from_its_tools_not_its_caller(
+    identity_root: Path,
+) -> None:
+    """HF-385: `uv run molt` and `.venv/bin/molt` differ only in PATH."""
+    caller_only = identity_root / "caller-only-bin"
+    caller_only.mkdir()
+    base = {
+        "RUSTC": sys.executable,
+        "CARGO": sys.executable,
+        "CARGO_HOME": str(identity_root / "test-cargo-home"),
+    }
+    plans = [
+        _test_plan(identity_root, {**base, "PATH": path}, target_triple=None)
+        for path in (
+            os.environ["PATH"],
+            os.pathsep.join((str(caller_only), os.environ["PATH"])),
+        )
+    ]
+    first, second = (plan.environment["PATH"] for plan in plans)
+    assert first == second
+    entries = first.split(os.pathsep)
+    assert str(caller_only) not in entries
+    # The selected rustc's directory leads; POSIX's standard utilities close it.
+    assert entries[0] == str(Path(sys.executable).parent)
+    standard = [entry for entry in os.confstr("CS_PATH").split(os.pathsep) if entry]
+    assert [entry for entry in entries if entry in standard] == standard
+    assert set(entries) <= {
+        *standard,
+        *(str(path.parent) for path in plans[0].tools.values()),
+    }
+    stale = replace(
+        plans[0], environment=plans[0].environment.updated({"PATH": str(caller_only)})
+    )
+    with pytest.raises(ValueError, match="PATH differs from its selected tools"):
+        stale.verify()
 
 
 @pytest.mark.parametrize("producer", ["native", "wasm-cpython-abi"])

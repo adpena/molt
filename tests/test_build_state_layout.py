@@ -15,6 +15,7 @@ from molt.dx import (
     project_cargo_target_dir,
     proof_scratch_root,
 )
+from molt.cli import runtime_paths
 from molt.cli.runtime_paths import _build_state_root_cached
 from tools.build_control_path import build_control_output
 from tools.harness_memory_guard import canonical_harness_env
@@ -27,12 +28,17 @@ from tests.process_guard_common import install_module_view
 @pytest.mark.parametrize("explicit_state", [False, True])
 def test_ci_build_control_output_uses_admitted_consumer_root(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     target: str,
     explicit_state: bool,
     profile: str,
     pinned_session: bool,
 ):
     repo = Path(__file__).resolve().parents[1]
+    # A build that selects its build-state root records a use, which locks
+    # under the artifact root: the checkout itself when CARGO_TARGET_DIR is
+    # relative to it. This test compares paths only, so it records nothing.
+    monkeypatch.setattr(runtime_paths, "record_build_control_use", lambda *a, **k: None)
     env = {"MOLT_EXT_ROOT": str(tmp_path / "canonical")}
     if pinned_session:
         env["MOLT_SESSION_ID"] = "retained-ci-diagnostics"

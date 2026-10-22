@@ -18,7 +18,6 @@ import pytest
 
 from molt.cli import backend_binary
 from molt.cli import native_toolchain_transfer as transfer
-from molt.cli import runtime_native_build
 from molt.exact_json import encode_exact
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from tests.cli.native_toolchain_test_support import (
@@ -68,7 +67,11 @@ def _extract(archive: Path, consumer: Checkout, **expected):
 
 
 def _published_nothing(consumer: Checkout) -> bool:
-    return not (consumer.root / "target").exists()
+    return (
+        not (consumer.root / "target").exists()
+        and not consumer.runtime_store.root.exists()
+        and not consumer.stored_backend_variants()
+    )
 
 
 def _rewrite(archive: Path, edit) -> None:
@@ -110,12 +113,7 @@ def test_round_trip_delivers_what_the_consumer_build_admits_without_cargo(
     assert _extract(archive, consumer) == manifest
 
     selection = consumer.selection
-    candidates = runtime_native_build._native_runtime_generation_candidates(
-        selection.runtime_lib,
-        project_root=consumer.root,
-        cargo_profile=RUNTIME_PROFILE,
-        target_triple=None,
-    )
+    candidates = consumer.stored_runtimes()
     assert [generation.build_identity for generation in candidates] == [
         runtime_identity()
     ]

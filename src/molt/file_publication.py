@@ -861,19 +861,22 @@ def atomic_write_bytes(
     replace: FileReplace | None = None,
     durability: PublicationDurability = PublicationDurability.DURABLE,
     purpose: str = "write",
+    create_parent: bool = True,
 ) -> None:
     """Publish complete bytes atomically with the owner's durability policy.
 
     ``exclusive`` refuses an existing leaf with a no-replace rename under
     either durability. Only an absent stage is harmless cleanup. A cleanup
     failure propagates, or annotates an existing publication error without
-    replacing that error.
+    replacing that error. Without ``create_parent`` an absent parent raises
+    ``FileNotFoundError``: a write beside an immutable generation must not
+    recreate one that eviction removed.
     """
 
     _require_durability(durability)
     if durability is PublicationDurability.RECONSTRUCTIBLE and replace is not None:
         raise ValueError("a custom replacement must be durable")
-    destination = canonical_file_leaf(path, create_parent=True)
+    destination = canonical_file_leaf(path, create_parent=create_parent)
     if exclusive and destination.exists():
         raise FileExistsError(destination)
     staged = staged_file_path(destination, purpose=purpose)

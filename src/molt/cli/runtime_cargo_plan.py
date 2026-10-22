@@ -26,6 +26,7 @@ from molt.process_environment import (
 )
 from molt.cli import cargo_command as cargo_argv
 from molt.cli import rustc_probes
+from molt.cli.cargo_search_path import cargo_search_path, derives_cargo_search_path
 from molt.cargo_execution_policy import validate_cargo_native_dependency_environment
 from molt.cli.cargo_target_cfg import (
     RustcTargetMetadata,
@@ -1520,6 +1521,12 @@ class RuntimeCargoPlan:
                 raise ValueError(
                     "runtime Cargo execution differs from selected wrappers"
                 )
+        if derives_cargo_search_path() and self.environment.get(
+            "PATH"
+        ) != cargo_search_path(
+            self.environment, (*self.tools.values(), *self.wrappers.values())
+        ):
+            raise ValueError("runtime Cargo PATH differs from its selected tools")
         self.configuration_arguments()
         flag_plan = _resolve_rust_flag_resources(
             self.rustflags,
@@ -2269,6 +2276,11 @@ def resolve_runtime_cargo_plan(
             raise ValueError(
                 "WASI runtime linker differs from the selected SDK raw linker"
             )
+    if derives_cargo_search_path():
+        # Tools are final: the caller's PATH stops being a build input (HF-385).
+        environment["PATH"] = cargo_search_path(
+            environment, (*tools.values(), *wrappers.values())
+        )
     environment["CARGO_ENCODED_RUSTFLAGS"] = FlagStringRule.CARGO_ENCODED.encode(
         rustflags, variable="CARGO_ENCODED_RUSTFLAGS"
     )
