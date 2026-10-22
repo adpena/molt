@@ -516,32 +516,66 @@ def work_in_progress_refusal(repo: Path, *, now: float) -> str | None:
     return "\n".join(lines)
 
 
-def _remove_unrecorded_lane(
-    repo: Path, worktree: Path, branch: str, base: str, env: dict[str, str]
-) -> None:
-    """Undo a lane start whose record failed: its fresh worktree and branch.
+def _undo_lane_start(
+    git: Any, repo: Path, worktree: Path, branch: str, base: str, env: dict[str, str]
+) -> str:
+    """Undo what a lane start that stopped before its record created.
 
-    Neither removal forces: the worktree goes only while it is clean, and the
-    branch only while it still points at ``base``, so nothing anyone wrote
-    since is lost. A removal that refuses is reported, never retried harder.
+    A lane without its record is one `lane retire` refuses. Nothing here
+    forces: the worktree goes only while Git finds it clean, and the branch
+    only once no worktree holds it and only while it still points at
+    ``base``. It stops at the first refusal and says what it kept and how to
+    finish by hand.
     """
-    for argv in (
-        ["git", "-C", str(repo), "worktree", "remove", str(worktree)],
-        ["git", "-C", str(repo), "update-ref", "-d", f"refs/heads/{branch}", base],
-    ):
-        proc = _run_fast_captured_command(
-            argv, env=ProcessEnvironment(env), timeout=_WORKTREE_ADD_TIMEOUT_S
+
+    def git_in_repo(*argv: str):
+        return _run_fast_captured_command(
+            ["git", "-C", str(repo), *argv],
+            env=ProcessEnvironment(env),
+            timeout=_WORKTREE_ADD_TIMEOUT_S,
         )
+
+    resolved = worktree.resolve()
+    registered = any(
+        Path(record["path"]).resolve() == resolved for record in _worktrees(git)
+    )
+    removed: list[str] = []
+    if registered:
+        proc = git_in_repo("worktree", "remove", str(worktree))
         if proc.returncode != 0:
-            _fail(f"{' '.join(argv[3:])} refused: {proc.stderr.strip()}")
+            return (
+                f"kept {worktree} and {branch}: git worktree remove refused "
+                f"({proc.stderr.strip()}); inspect the worktree, then "
+                f"`git worktree remove --force {worktree}` and "
+                f"`git branch -D {branch}`"
+            )
+        removed.append(str(worktree))
+    elif worktree.exists():
+        return (
+            f"kept {worktree} and {branch}: {worktree} exists but is no "
+            "registered worktree; inspect it before removing either"
+        )
+    holder = _lane_worktree(_worktrees(git), branch)
+    if holder is not None:
+        return f"removed {', '.join(removed) or 'nothing'}; kept {branch}: {holder} holds it"
+    if _ref_sha(git, f"refs/heads/{branch}") is not None:
+        proc = git_in_repo("update-ref", "-d", f"refs/heads/{branch}", base)
+        if proc.returncode != 0:
+            return (
+                f"removed {', '.join(removed) or 'nothing'}; kept {branch}: it "
+                f"no longer points at {base[:12]} ({proc.stderr.strip()})"
+            )
+        removed.append(branch)
+    return f"removed {' and '.join(removed)}" if removed else "created nothing"
 
 
 def cmd_lane_start(args: argparse.Namespace) -> int:
     from tools import agent_coordination
 
     driver = _driver()
-    # A pinned claim must name the controller this process runs from.
-    molt_dev_controller.integration_controller(args)
+    # A pinned claim must name the controller this process runs from; the
+    # record keeps which driver started the lane.
+    controller = molt_dev_controller.integration_controller(args)
     slug = lane_slug(args.slug)
     branch = lane_branch(slug)
     repo = Path(args.repo).resolve()
@@ -574,29 +608,29 @@ def cmd_lane_start(args: argparse.Namespace) -> int:
     root.mkdir(parents=True, exist_ok=True)
     env = immutable_git_environment(os.environ)
     env["GIT_TERMINAL_PROMPT"] = "0"
-    proc = _run_fast_captured_command(
-        [
-            "git",
-            "-C",
-            str(repo),
-            "worktree",
-            "add",
-            "--no-track",
-            "-b",
-            branch,
-            str(worktree),
-            base,
-        ],
-        env=ProcessEnvironment(env),
-        timeout=_WORKTREE_ADD_TIMEOUT_S,
-    )
-    if proc.returncode != 0:
-        raise DriverError(
-            f"git worktree add failed (exit {proc.returncode}): {proc.stderr.strip()}"
-        )
-    _ok(f"created {worktree}")
-
     try:
+        proc = _run_fast_captured_command(
+            [
+                "git",
+                "-C",
+                str(repo),
+                "worktree",
+                "add",
+                "--no-track",
+                "-b",
+                branch,
+                str(worktree),
+                base,
+            ],
+            env=ProcessEnvironment(env),
+            timeout=_WORKTREE_ADD_TIMEOUT_S,
+        )
+        if proc.returncode != 0:
+            raise DriverError(
+                f"git worktree add failed (exit {proc.returncode}): "
+                f"{proc.stderr.strip()}"
+            )
+        _ok(f"created {worktree}")
         record = agent_coordination.create_task(
             registry_root=main,
             source_root=worktree,
@@ -609,17 +643,18 @@ def cmd_lane_start(args: argparse.Namespace) -> int:
                     "base_ref": base_ref,
                     "base_commit": base,
                     "worktree": str(worktree),
+                    "controller": controller,
                 }
             },
         )
     except BaseException as exc:
-        # A lane without its record is one `lane retire` refuses; remove what
-        # this command just created, then report why it could not record.
-        _remove_unrecorded_lane(repo, worktree, branch, base, env)
+        # `git worktree add` can fail after it made the branch (a hook, the
+        # deadline, an interrupt), and the record can fail after the add;
+        # either way undo what this command created before it reports.
+        undone = _undo_lane_start(git, repo, worktree, branch, base, env)
         if isinstance(exc, Exception):
-            raise DriverError(
-                f"cannot record {branch}: {exc}; removed its new worktree and branch"
-            ) from exc
+            raise DriverError(f"cannot start {branch}: {exc}; {undone}") from exc
+        _fail(f"interrupted; {undone}")
         raise
     _ok(f"recorded {_record_path(main, slug)} ({record['status']})")
 

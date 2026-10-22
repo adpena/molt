@@ -235,7 +235,9 @@ def test_a_lane_start_that_cannot_record_leaves_no_worktree_or_branch(
 
     monkeypatch.setattr(agent_coordination, "create_task", refuse)
     with pytest.raises(
-        DriverError, match="cannot record lane/orphan: tool releases unreadable"
+        DriverError,
+        match=r"cannot start lane/orphan: tool releases unreadable; removed "
+        r".*orphan and lane/orphan$",
     ):
         lanes.cmd_lane_start(_args(family, slug="orphan"))
     assert not (family / "worktrees" / "orphan").exists()
@@ -243,7 +245,83 @@ def test_a_lane_start_that_cannot_record_leaves_no_worktree_or_branch(
     assert not any(path.name == "orphan" for path in _registered(main))
 
     monkeypatch.setattr(agent_coordination, "create_task", create_task)
-    assert _start(family, "orphan").is_dir()
+    worktree = _start(family, "orphan")
+    record = json.loads(
+        (main / "logs/agents/lane-orphan/coordination.json").read_text("utf-8")
+    )
+    assert record["lane"]["controller"] == "candidate"
+    assert worktree.is_dir()
+
+
+def test_an_undo_that_git_refuses_keeps_the_branch_and_says_so(
+    family: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A worktree Git will not remove keeps its branch (review v3, A-1).
+
+    Deleting the branch under a kept worktree left a worktree whose HEAD named
+    no branch and a slug no command could free.
+    """
+    from tools import agent_coordination
+
+    main = family / "molt-src"
+
+    def write_then_refuse(**kwargs):
+        (kwargs["source_root"] / "notes.txt").write_text("mine\n", encoding="utf-8")
+        raise RuntimeError("record refused")
+
+    monkeypatch.setattr(agent_coordination, "create_task", write_then_refuse)
+    with pytest.raises(DriverError) as raised:
+        lanes.cmd_lane_start(_args(family, slug="dirty"))
+    message = str(raised.value)
+    worktree = family / "worktrees" / "dirty"
+    assert "kept" in message and "git worktree remove refused" in message
+    assert f"git worktree remove --force {worktree}" in message
+    assert "git branch -D lane/dirty" in message
+    assert (worktree / "notes.txt").read_text(encoding="utf-8") == "mine\n"
+    assert _ref(main, "refs/heads/lane/dirty") is not None
+    assert _git(worktree, "symbolic-ref", "HEAD").stdout.strip() == (
+        "refs/heads/lane/dirty"
+    )
+
+
+def test_a_worktree_add_that_fails_after_branching_is_undone(
+    family: Path,
+) -> None:
+    """`git worktree add` keeps the worktree and branch when its post-checkout
+    hook fails; the start removes both (review v3, A-2)."""
+    main = family / "molt-src"
+    hooks = family / "hooks"
+    hooks.mkdir()
+    hook = hooks / "post-checkout"
+    hook.write_text("#!/bin/sh\nexit 3\n", encoding="utf-8")
+    hook.chmod(0o755)
+    _git(main, "config", "core.hooksPath", str(hooks))
+    with pytest.raises(
+        DriverError,
+        match=r"cannot start lane/hooked: git worktree add failed .*; removed "
+        r".*hooked and lane/hooked$",
+    ):
+        lanes.cmd_lane_start(_args(family, slug="hooked"))
+    assert not (family / "worktrees" / "hooked").exists()
+    assert _ref(main, "refs/heads/lane/hooked") is None
+    _git(main, "config", "--unset", "core.hooksPath")
+    assert _start(family, "hooked").is_dir()
+
+
+def test_lane_commands_refuse_a_pinned_claim_for_another_controller(
+    family: Path,
+) -> None:
+    """A forged `--pinned-controller` runs nothing (review v3, A-3)."""
+    main = family / "molt-src"
+    claim = "0" * 32
+    with pytest.raises(DriverError, match="has no record"):
+        lanes.cmd_lane_start(_args(family, slug="forged", pinned_controller=claim))
+    assert _ref(main, "refs/heads/lane/forged") is None
+    assert not (family / "worktrees" / "forged").exists()
+    _start(family, "kept")
+    with pytest.raises(DriverError, match="has no record"):
+        lanes.cmd_lane_retire(_args(family, slug="kept", pinned_controller=claim))
+    assert (family / "worktrees" / "kept").is_dir()
 
 
 def test_lane_start_refuses_bad_slugs_and_unlaid_roots(
