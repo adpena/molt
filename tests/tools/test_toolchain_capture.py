@@ -12,6 +12,7 @@ import stat
 import subprocess
 import sys
 from types import SimpleNamespace
+from functools import cache
 
 from tests.executable_test_support import (
     custody_spelling,
@@ -2557,7 +2558,7 @@ def _native_build_capture_fixture(
         cwd=tmp_path,
         env=environment,
         target=captured_target,
-        rustc_version="rustc 1.99.0\nhost: x86_64-unknown-linux-gnu\n",
+        rustc_version=f"rustc {pinned_rust_release()}\nhost: x86_64-unknown-linux-gnu\n",
         command_argv=command,
         admitted_command=admitted_command,
         native_units=requirements,
@@ -2577,7 +2578,7 @@ def _native_build_capture_fixture(
         "content_path": str(tools["rustc"]),
         "launcher_sha256": compiler["sha256"],
         "executable_sha256": compiler["sha256"],
-        "version": "rustc 1.99.0",
+        "version": f"rustc {pinned_rust_release()}",
         "probe_cwd": str(tmp_path),
         "policy_sha256": "a" * 64,
         "configuration_files": [],
@@ -4210,6 +4211,19 @@ def test_registered_python_cargo_drivers_capture_validate_and_reuse(
     assert calls == before
 
 
+@cache
+def pinned_rust_release() -> str:
+    """The Rust release the canonical toolchain policy admits.
+
+    Fixtures whose versions reach policy validation read it here, so a pin
+    bump never leaves them claiming the old release.
+    """
+    from tools.proof_plan import ProofPlan
+
+    rustc = next(p for p in ProofPlan.load().toolchain_policies if p.name == "rustc")
+    return str(rustc.data["setup_value"])
+
+
 def _clippy_component_fixture(tmp_path, monkeypatch, *, proxy=False):
     from molt import process_guard
     from tools.proof_queue_pkg import command_identity
@@ -4239,9 +4253,10 @@ def _clippy_component_fixture(tmp_path, monkeypatch, *, proxy=False):
         "CARGO": str(tools["cargo"]),
         "RUSTC": str(tools["rustc"]),
     }
+    release = pinned_rust_release()
     version = (
-        "rustc 1.99.0 (123456789 2026-09-28)\n"
-        "host: x86_64-unknown-linux-gnu\nrelease: 1.99.0\n"
+        f"rustc {release} (123456789 2026-09-28)\n"
+        f"host: x86_64-unknown-linux-gnu\nrelease: {release}\n"
         + "commit-hash: "
         + "1" * 40
         + "\n"
