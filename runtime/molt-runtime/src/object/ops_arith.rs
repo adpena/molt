@@ -9,7 +9,7 @@ use molt_runtime_core::numeric_error_policy_generated::{
     NumericErrorContext, python_float_divmod, python_integer_divmod,
 };
 use molt_runtime_core::numeric_ratio::{RatioFloatError, ratio_to_f64, u64_is_exact_binary64};
-use num_bigint::{BigInt, BigUint, Sign};
+use num_bigint::{BigInt, BigUint};
 use num_integer::Integer;
 use num_traits::{Signed, ToPrimitive, Zero};
 

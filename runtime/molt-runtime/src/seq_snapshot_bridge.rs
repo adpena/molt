@@ -195,7 +195,8 @@ mod tests {
                     // never reinterpret it as an empty sequence or guard miss.
                     assert!(unsafe { molt_runtime_math::bridge::seq_snapshot(sequence) }.is_none());
                     crate::test_support::assert_and_clear_emergency_memory_error(py);
-                    let reductions: [(&str, fn(u64) -> u64); 8] = [
+                    type Reduction = fn(u64) -> u64;
+                    let reductions: [(&str, Reduction); 8] = [
                         ("mean", |data| crate::molt_statistics_mean(data)),
                         ("variance", |data| {
                             crate::molt_statistics_variance(data, MoltObject::none().bits())
