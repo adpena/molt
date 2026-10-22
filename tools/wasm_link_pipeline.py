@@ -586,62 +586,54 @@ def _normalize_linked_resources_stage(
 ) -> bool:
     """Normalize linked table/memory/export state with facts invalidation."""
 
+    linked_facts = artifact.facts()
     required_table_min = _edit._required_linked_table_min(
         artifact.data,
         output_table_min,
-        artifact.facts(),
+        linked_facts,
         facts_provider=artifact.facts_provider,
     )
+    try:
+        edit = artifact.section_edit()
+    except ValueError as exc:
+        print(f"Wasm link failed: {exc}", file=sys.stderr)
+        return False
     if required_table_min is not None:
         try:
-            updated = _edit._rewrite_table_import_min(artifact.data, required_table_min)
+            _edit._rewrite_table_import_min(edit, required_table_min)
         except ValueError as exc:
             print(f"Failed to rewrite linked table min: {exc}", file=sys.stderr)
             return False
-        if updated is not None:
-            artifact.replace(updated)
     if output_memory_min is not None:
         try:
-            updated = _edit._rewrite_memory_min(artifact.data, output_memory_min)
+            _edit._rewrite_memory_min(edit, output_memory_min)
         except ValueError as exc:
             print(f"Failed to rewrite linked memory min: {exc}", file=sys.stderr)
             return False
-        if updated is not None:
-            artifact.replace(updated)
+    # Minimum edits preserve resource counts and identities. Export decisions
+    # read the evolving export payload, never the source revision's exports.
     try:
-        updated = _format._ensure_table_export(
-            artifact.data, facts_provider=artifact.facts_provider
-        )
+        _format._ensure_table_export(edit, facts=linked_facts)
     except ValueError as exc:
         print(f"Failed to ensure table export: {exc}", file=sys.stderr)
         return False
-    if updated is not None:
-        artifact.replace(updated)
-    linked_facts = artifact.facts()
     if not any(entry.kind == 2 for entry in linked_facts.imports):
         try:
-            updated = _export_contract._ensure_defined_memory_export(
-                artifact.data,
-                facts=linked_facts,
-            )
+            _export_contract._ensure_defined_memory_export(edit, facts=linked_facts)
         except ValueError as exc:
             print(f"Failed to ensure memory export: {exc}", file=sys.stderr)
             return False
-        if updated is not None:
-            artifact.replace(updated)
-    if not split_runtime:
-        try:
-            artifact.replace(
-                _export_contract._strip_app_export_identity_markers(
-                    artifact.data,
-                    identity_exports=app_identity_exports,
-                    preserve_exports=set(preserved_output_exports),
-                    facts_provider=artifact.facts_provider,
-                )
+    try:
+        if not split_runtime:
+            _export_contract._strip_app_export_identity_markers(
+                edit,
+                identity_exports=app_identity_exports,
+                preserve_exports=set(preserved_output_exports),
             )
-        except ValueError as exc:
-            print(f"Wasm link failed: {exc}", file=sys.stderr)
-            return False
+        edit.commit(validate_facts=True)
+    except ValueError as exc:
+        print(f"Wasm link failed: {exc}", file=sys.stderr)
+        return False
     if freestanding:
         try:
             freestanding_bytes, n_stubbed = stub_wasi_imports(artifact.data)
@@ -1616,19 +1608,11 @@ def _optimize_split_app_stage(
     )
     artifact.persist()
     try:
-        updated = _edit._rewrite_table_import_min(
-            artifact.data,
-            prepared.required_table_min,
-        )
-        if updated is not None:
-            artifact.replace(updated)
+        edit = artifact.section_edit()
+        _edit._rewrite_table_import_min(edit, prepared.required_table_min)
         if plan.output_memory_min is not None:
-            updated = _edit._rewrite_memory_min(
-                artifact.data,
-                plan.output_memory_min,
-            )
-            if updated is not None:
-                artifact.replace(updated)
+            _edit._rewrite_memory_min(edit, plan.output_memory_min)
+        edit.commit()
         artifact.replace(
             _export_contract._restore_split_runtime_contract_exports(
                 artifact.data,
@@ -1647,14 +1631,13 @@ def _optimize_split_app_stage(
                 target_symbol_map=plan.target_identity_map,
                 facts_provider=facts_provider,
             )
-            artifact.replace(
-                _export_contract._strip_app_export_identity_markers(
-                    artifact.data,
-                    identity_exports=plan.identity_exports,
-                    preserve_exports=set(plan.contract_keep_set),
-                    facts_provider=facts_provider,
-                )
+            edit = artifact.section_edit()
+            _export_contract._strip_app_export_identity_markers(
+                edit,
+                identity_exports=plan.identity_exports,
+                preserve_exports=set(plan.contract_keep_set),
             )
+            edit.commit(validate_facts=True)
     except ValueError as exc:
         print(f"Failed to normalize optimized split app: {exc}", file=sys.stderr)
         return None
