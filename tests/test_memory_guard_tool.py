@@ -680,7 +680,7 @@ def test_temporary_artifact_closure_accounts_for_late_guard_generations(
     if state == "unreadable":
         late.write_text("incomplete record", encoding="utf-8")
     elif state == "pending":
-        payload = json.loads(late.read_text())
+        payload = json.loads(late.read_text(encoding="utf-8"))
         payload.update(child_process=None, child_launch_state="pending")
         late.write_text(json.dumps(payload), encoding="utf-8")
     if state == "nested_live":
