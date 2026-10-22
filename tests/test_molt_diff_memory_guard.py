@@ -1211,7 +1211,11 @@ def test_sentinel_retains_primary_and_stage_cleanup_failure(
     stage = tmp_path / ".molt-fixture.tmp"
     monkeypatch.setattr(module, "_diff_memory_guard_trip_file", lambda: marker)
     monkeypatch.setenv(module._DIFF_MEMORY_GUARD_TRIP_FILE_ENV, str(marker))
-    monkeypatch.setattr(file_publication, "staged_file_path", lambda destination: stage)
+    monkeypatch.setattr(
+        file_publication,
+        "staged_file_path",
+        lambda destination, *, purpose="write": stage,
+    )
     original_unlink = Path.unlink
 
     def publish(staged, destination):
