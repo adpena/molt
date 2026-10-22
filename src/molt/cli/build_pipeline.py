@@ -121,9 +121,6 @@ def _run_build_pipeline(
 
     _progress.phase("backend_pipeline")
 
-    # MLIR target: run the frontend to produce TIR, then shell out to the
-    # standalone molt-backend-mlir binary. This bypasses the standard backend
-    # pipeline entirely because the MLIR crate is out-of-workspace.
     if output_layout.emit_mode == "jit":
         if fact_graph_request is not None:
             return return_after_build_diagnostics(
@@ -148,6 +145,9 @@ def _run_build_pipeline(
                 stdlib_profile=stdlib_profile,
             )
         )
+    # MLIR target: run the frontend to produce TIR, then shell out to the
+    # standalone molt-backend-mlir binary. This bypasses the standard backend
+    # pipeline entirely because the MLIR crate is out-of-workspace.
     if fact_graph_request is not None and output_layout.is_mlir_emit:
         return return_after_build_diagnostics(
             _fail(

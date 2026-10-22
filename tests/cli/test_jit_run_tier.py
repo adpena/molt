@@ -81,7 +81,7 @@ def test_jit_launch_environment_is_the_aot_stub_environment(policy) -> None:
     installed = dict(re.findall(r'setenv\("([^"]+)", "([^"]*)", 1\)', stub))
     assert installed == dict(plan.environment)
     assert plan.environment["MOLT_EXECUTION_TARGET"] == "native"
-    assert plan.manifest_payload() == {
+    assert plan.image_header_payload() == {
         "environment": dict(plan.environment),
         "runtime_module_roots": [],
         "compiled_source_paths": list(sources),
@@ -316,6 +316,25 @@ def test_a_jit_image_holds_its_header_and_program_in_one_file(tmp_path: Path) ->
 
 
 @_POSIX_ONLY
+@pytest.mark.parametrize("umask,mode", [(0o077, 0o700), (0o022, 0o755), (0o002, 0o775)])
+def test_a_jit_image_is_executable_through_the_umask(
+    tmp_path: Path, umask: int, mode: int
+) -> None:
+    # As the linker creates an AOT executable: 0o777 less the umask.
+    from molt.cli.jit_image import publish_jit_image
+
+    image = tmp_path / f"app_molt{JIT_IMAGE_SUFFIX}"
+    previous = os.umask(umask)
+    try:
+        publish_jit_image(
+            image, runner=_fake_runner(tmp_path), header=_HEADER, ir={"functions": []}
+        )
+    finally:
+        os.umask(previous)
+    assert image.stat().st_mode & 0o777 == mode
+
+
+@_POSIX_ONLY
 def test_executing_a_jit_image_re_runs_its_program_under_its_runner(
     tmp_path: Path,
 ) -> None:
@@ -340,6 +359,27 @@ def test_executing_a_jit_image_re_runs_its_program_under_its_runner(
     # argv[0] followed by exactly the arguments the image was started with.
     assert received[:2] == ["--launch", str(image)]
     assert received[received.index("--") + 1 :] == [str(image), *arguments]
+
+
+@_POSIX_ONLY
+def test_a_jit_image_stops_when_its_runner_generation_is_gone(
+    tmp_path: Path,
+) -> None:
+    # The image names one runner generation of this checkout and does not
+    # renew it. After idle eviction or target removal, /bin/sh cannot run the
+    # runner: it names the runner and exits 126 (bash, macOS /bin/sh) or 127
+    # (dash and other POSIX shells) (docs/cli-reference.md, --emit jit).
+    from molt.cli.jit_image import publish_jit_image
+    from tests.process_guard_common import run_guarded_test_process
+
+    runner = tmp_path / "evicted" / "molt-jit"
+    image = tmp_path / f"app_molt{JIT_IMAGE_SUFFIX}"
+    publish_jit_image(image, runner=runner, header=_HEADER, ir={"functions": []})
+    completed = run_guarded_test_process(
+        [str(image)], capture_output=True, text=True, check=False
+    )
+    assert completed.returncode in (126, 127)
+    assert str(runner) in completed.stderr
 
 
 def _program_exits(
@@ -569,3 +609,69 @@ def test_an_output_that_cannot_carry_native_artifacts_fails_before_the_frontend(
     )
     assert result == 2
     assert failures == [reason]
+
+
+def test_a_refused_runner_stops_the_jit_build_before_any_runtime_work(
+    monkeypatch, capsys
+) -> None:
+    # The runner's probe refuses a host that blocks executable memory. That
+    # refusal must come before the runtime build and the 37 MiB image link
+    # (HF-371 review v3, finding 7).
+    from types import SimpleNamespace
+
+    from molt.cli import jit_pipeline
+
+    def runtime_work(*_args, **_kwargs):
+        raise AssertionError("runtime work ran before the runner was admitted")
+
+    def refuse(*_args, **_kwargs):
+        raise ValueError("JIT runner admission failed: the host blocks W^X")
+
+    monkeypatch.setattr(
+        jit_pipeline._backend_ir,
+        "_prepare_backend_ir",
+        lambda **_kwargs: (SimpleNamespace(required_link_features=(), ir={}), None),
+    )
+    monkeypatch.setattr(jit_pipeline, "ensure_jit_runner", refuse)
+    monkeypatch.setattr(
+        jit_pipeline, "_initialize_runtime_artifact_state", runtime_work
+    )
+    monkeypatch.setattr(jit_pipeline, "ensure_jit_runtime_image", runtime_work)
+    bundle = SimpleNamespace(
+        output_layout=SimpleNamespace(emit_ir_path=None, target_triple=None),
+        native_artifact_plan=None,
+        module_graph={},
+        prepared_frontend_run_ticket=SimpleNamespace(
+            frontend_layer_execution_context=SimpleNamespace(
+                module_graph_metadata=SimpleNamespace(logical_source_path_by_module={})
+            )
+        ),
+        known_modules=(),
+        stdlib_allowlist=(),
+        integration_state=None,
+        module_order=(),
+        runtime_import_dispatch_roots=(),
+        spawn_enabled=False,
+        module_source_catalog=SimpleNamespace(validate=lambda: None),
+    )
+    status = jit_pipeline._run_jit_pipeline(
+        prepared_build_preamble=SimpleNamespace(rust_cpu=None, warnings=[]),
+        prepared_build_roots=SimpleNamespace(molt_root=Path("."), sysroot_path=None),
+        prepared_build_config=SimpleNamespace(
+            pgo_profile_summary=None,
+            runtime_feedback_summary=None,
+            target_python=None,
+            backend_cargo_profile="dev-fast",
+            cargo_timeout=None,
+        ),
+        resolved_build_entry=SimpleNamespace(entry_module="main"),
+        prepared_frontend_pipeline_bundle=bundle,
+        profile="dev",
+        json_output=False,
+        target=None,
+        deterministic=True,
+        trusted=False,
+        stdlib_profile=None,
+    )
+    assert status != 0
+    assert "blocks W^X" in capsys.readouterr().err

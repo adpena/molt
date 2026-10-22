@@ -80,7 +80,14 @@ def publish_jit_image(
         destination, purpose="jit-image", suffix=".jit"
     )
     try:
-        with staged.open("xb") as handle:
+        # Create it executable through the umask, as a linker creates its
+        # output: under umask 077 the image is -rwx------, like the AOT binary.
+        descriptor = os.open(
+            staged,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0),
+            0o777,
+        )
+        with os.fdopen(descriptor, "wb") as handle:
             handle.write(prefix)
             length_offset = handle.tell()
             handle.write(b"0" * _LENGTH_WIDTH + b"\n")
@@ -90,7 +97,6 @@ def publish_jit_image(
             handle.seek(length_offset)
             handle.write(str(program.count).rjust(_LENGTH_WIDTH, "0").encode("ascii"))
             handle.flush()
-            os.fchmod(handle.fileno(), 0o755)
             os.fsync(handle.fileno())
         file_publication.durable_namespace_replace(staged, destination)
     except BaseException:

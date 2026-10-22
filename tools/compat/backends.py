@@ -1078,10 +1078,11 @@ class LlvmAdapter:
 # ---------------------------------------------------------------------------
 
 # Backend pairs that run the same frontend output, code generator and runtime
-# bytes and differ only in who owns the machine code. A twin pair must agree
-# exactly on stdout, stderr and exit status, whatever a file's CPython
-# comparison law, and a build that succeeds for one twin must succeed for the
-# other (Goose's TinyCC-versus-native rule, docs/design/dev_jit_tier.md).
+# bytes and differ only in who owns the machine code. A twin pair must agree on
+# stdout under the file's own comparison mode (tests/molt_diff.py), exactly on
+# stderr and exit status, after twin_stable_text removes run-to-run text; a
+# build that succeeds for one twin must succeed for the other
+# (docs/design/dev_jit_tier.md, "Verification").
 EXACT_TWIN_BACKENDS: frozenset[frozenset[str]] = frozenset(
     {frozenset({"native", "jit"})}
 )
