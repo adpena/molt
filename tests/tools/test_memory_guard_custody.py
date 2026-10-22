@@ -1537,6 +1537,8 @@ def test_a_crash_that_drops_marker_writes_resolves_or_names_its_release(
     if residue == "absent":
         # Nothing that still runs is unprotected; a stage is not a record.
         assert report.decisions == ()
+        assert report.stages_removed == 1 and report.stages_remaining == 0
+        assert not stage.exists() and not marker.with_suffix(".lock").exists()
         assert not custody.has_active_guard_marker(active)
         return
     (decision,) = report.decisions
@@ -1577,3 +1579,172 @@ def test_exit_sweep_gate_grows_with_the_records_that_stay(tmp_path, monkeypatch)
     _marker(active, pid=52)
     live.append(_sample(52, 100))
     assert custody.sweep_active_guard_markers(active, _snapshot(*live)).remaining == 43
+
+
+@pytest.mark.parametrize(
+    "condition",
+    ["closed", "live", "pending", "unknown", "changed", "symlink", "release"],
+)
+def test_partial_publication_stages_require_captured_custody(tmp_path, condition):
+    active = _active(tmp_path)
+    marker = _marker(active, child=False, status="guard_starting")
+    stage = file_publication.staged_file_path(marker)
+    stage.write_bytes(b'{"schema_version":')
+    if condition == "pending":
+        assert custody.update_active_guard_marker(
+            marker,
+            _payload(marker)["token"],
+            status="spawn_pending",
+            child_launch_state="pending",
+        )
+    if condition == "unknown":
+        marker.with_suffix(".lock").unlink()
+    if condition == "symlink":
+        stage.unlink()
+        stage.symlink_to(marker)
+    if condition == "release":
+        marker.write_bytes(b"unreadable")
+
+    def snapshot():
+        if condition == "changed":
+            stage.unlink()
+            stage.write_bytes(b"replacement signal")
+        return _snapshot(_sample(10, 100) if condition == "live" else _sample())()
+
+    report = custody.reconcile_active_guard_markers(
+        active, snapshot, apply=True, release=[marker] if condition == "release" else ()
+    )
+    if condition == "closed":
+        assert report.stages_removed == 1 and report.retired == 1
+        assert not stage.exists() and not marker.exists()
+    else:
+        assert report.stages_remaining == 1 and report.stages_removed == 0
+        assert stage.exists()
+        if condition != "unknown":
+            assert marker.exists()
+        assert any("HOLD" in step for step in report.next_steps())
+        if condition != "unknown":
+            assert marker.with_suffix(".lock").exists()
+    assert report.to_dict()["stages_remaining"] == report.stages_remaining
+
+
+def test_stage_only_exit_sweep_captures_generation_before_snapshot(tmp_path):
+    active = _active(tmp_path)
+    marker = _marker(active, child=False, status="guard_starting")
+    stage = file_publication.staged_file_path(marker)
+    stage.write_bytes(marker.read_bytes())
+    marker.unlink()
+    snapshots = []
+
+    def snapshot():
+        snapshots.append(True)
+        # A different writer generation created after capture must not be
+        # deleted using this process table, even if its PID is absent.
+        stage.unlink()
+        stage.write_bytes(b"new generation")
+        return _snapshot(_sample(os.getpid(), 1))()
+
+    report = custody.sweep_active_guard_markers(active, snapshot)
+    assert report is not None and report.stages_remaining == 1
+    assert report.stages[0].reason == "stage_changed"
+    assert stage.read_bytes() == b"new generation"
+    assert marker.with_suffix(".lock").exists()
+    assert custody.sweep_active_guard_markers(active, snapshot) is None
+    assert snapshots == [True]
+
+
+@pytest.mark.parametrize(
+    "purpose,present",
+    [("guard-launch", False), ("guard-launch", True), ("write", False)],
+)
+def test_partial_initial_stage_distinguishes_launch_from_lost_update(
+    tmp_path, purpose, present
+):
+    active = _active(tmp_path)
+    marker = _marker(active, child=False, status="guard_starting")
+    marker.unlink()
+    stage = file_publication.staged_file_path(marker, purpose=purpose)
+    stage.write_bytes(b"{")
+    report = custody.reconcile_active_guard_markers(
+        active, _snapshot(_sample(10, 999) if present else _sample()), apply=True
+    )
+    closed = purpose == "guard-launch" and not present
+    assert report.stages_removed == int(closed)
+    assert stage.exists() is not closed
+    assert marker.with_suffix(".lock").exists() is not closed
+    if not closed:
+        assert report.stages_remaining == 1 and report.next_steps()
+
+
+def test_stage_only_cli_reports_unknown_custody_without_marker_success(
+    tmp_path, monkeypatch, capsys
+):
+    active = _active(tmp_path)
+    active.mkdir(parents=True)
+    stage = file_publication.staged_file_path(active / "unknown.json")
+    stage.write_bytes(b"partial")
+    monkeypatch.setattr(cli, "sample_processes", _snapshot())
+    assert cli.main(["--active-dir", str(active), "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["remaining"] == 0 and payload["stages_remaining"] == 1
+    assert payload["next_steps"] and payload["stages"][0]["disposition"] == "preserve"
+    assert cli.main(["--active-dir", str(active)]) == 0
+    assert "stages_remaining=1" in capsys.readouterr().out
+    assert stage.read_bytes() == b"partial"
+
+
+@pytest.mark.parametrize("mode", ["normal", "orphans", "release"])
+def test_stage_key_collision_preserves_every_plausible_owner(
+    tmp_path, monkeypatch, mode
+):
+    active = _active(tmp_path)
+    markers = [
+        _marker(active, pid=pid, child=False, status="guard_starting")
+        for pid in (10, 11)
+    ]
+    stage = file_publication.staged_file_path(markers[0])
+    stage.write_bytes(b"partial signal")
+    key = file_publication.staging_destination_key(markers[0])
+    monkeypatch.setattr(custody, "staging_destination_key", lambda destination: key)
+    if mode == "orphans":
+        for marker in markers:
+            marker.unlink()
+    report = custody.reconcile_active_guard_markers(
+        active,
+        _snapshot(),
+        apply=True,
+        release=[markers[0]] if mode == "release" else (),
+    )
+    assert report.stages_remaining == 1 and report.stages_removed == 0
+    assert set(report.stages[0].markers) == {str(marker) for marker in markers}
+    assert report.retired == 0 and report.removed_locks == 0
+    assert stage.read_bytes() == b"partial signal"
+    assert all(marker.with_suffix(".lock").exists() for marker in markers)
+    if mode != "orphans":
+        assert all(marker.exists() for marker in markers)
+
+
+@pytest.mark.parametrize("phase", ["new-lock", "existing-lock", "committed"])
+def test_stage_created_during_snapshot_keeps_its_lock_and_record(tmp_path, phase):
+    active = _active(tmp_path)
+    active.mkdir(parents=True)
+    marker = active / f"guard-10-{10:032x}.json"
+    if phase != "new-lock":
+        _marker(active, child=False, status="guard_starting")
+        if phase == "existing-lock":
+            marker.unlink()
+    stage = file_publication.staged_file_path(marker, purpose="guard-launch")
+
+    def snapshot():
+        if phase == "new-lock":
+            _marker(active, child=False, status="guard_starting")
+            marker.unlink()
+        stage.write_bytes(b"{")
+        return _snapshot()()
+
+    report = custody.reconcile_active_guard_markers(active, snapshot, apply=True)
+    assert report.stages_remaining == 1
+    assert report.stages[0].reason == "stage_observed_after_snapshot"
+    assert report.retired == 0 and report.removed_locks == 0
+    assert stage.exists() and marker.with_suffix(".lock").exists()
+    assert marker.exists() is (phase == "committed")

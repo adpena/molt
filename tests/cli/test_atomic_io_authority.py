@@ -546,7 +546,11 @@ def test_atomic_write_cleanup_failure_preserves_primary_error(
     primary = primary_type("primary publication failed")
     cleanup = PermissionError("stage cleanup denied")
     original_unlink = Path.unlink
-    monkeypatch.setattr(file_publication, "staged_file_path", lambda destination: stage)
+    monkeypatch.setattr(
+        file_publication,
+        "staged_file_path",
+        lambda destination, *, purpose="write": stage,
+    )
 
     def fail_publish(*args, **kwargs):
         raise primary
@@ -583,7 +587,11 @@ def test_atomic_write_cleanup_failure_without_primary_remains_visible(
     stage = tmp_path / ".molt-fixture.tmp"
     cleanup = PermissionError("stage cleanup denied")
     original_unlink = Path.unlink
-    monkeypatch.setattr(file_publication, "staged_file_path", lambda destination: stage)
+    monkeypatch.setattr(
+        file_publication,
+        "staged_file_path",
+        lambda destination, *, purpose="write": stage,
+    )
 
     def publish(staged, final):
         final.write_bytes(staged.read_bytes())
@@ -609,7 +617,11 @@ def test_atomic_write_missing_stage_cleanup_is_ignored(
     destination = tmp_path / "destination"
     stage = tmp_path / ".molt-fixture.tmp"
     primary = OSError("primary publication failed")
-    monkeypatch.setattr(file_publication, "staged_file_path", lambda destination: stage)
+    monkeypatch.setattr(
+        file_publication,
+        "staged_file_path",
+        lambda destination, *, purpose="write": stage,
+    )
 
     def publish(staged, final):
         if publication_failed:
@@ -656,3 +668,24 @@ def test_signed_staged_copy_is_a_pure_function_of_bytes_and_destination(
             assert stage.name != destination.name
             produced.append(stage.read_bytes())
     assert produced[0] == produced[1]
+
+
+def test_stage_destination_key_is_routing_not_physical_custody(tmp_path):
+    destination = tmp_path / "結果.json"
+    stage = file_publication.staged_file_path(destination)
+    key = file_publication.staging_destination_key(destination)
+    assert (
+        file_publication.staged_file_destination_key(
+            stage, purpose="write", suffix=".tmp"
+        )
+        == key
+    )
+    assert file_publication.is_owned_staged_file_path(stage, destination)
+    assert file_publication.staged_file_destination_key(stage, purpose="other") is None
+    assert file_publication.staged_file_destination_key(stage, suffix=".json") is None
+    other = tmp_path / "other"
+    other.mkdir()
+    assert file_publication.staged_file_destination_key(other / stage.name) == key
+    assert not file_publication.is_owned_staged_file_path(
+        other / stage.name, destination
+    )

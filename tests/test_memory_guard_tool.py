@@ -1238,6 +1238,91 @@ def test_a_guarded_run_issues_no_fsync(
     assert flushes == []
 
 
+def test_real_guard_reuses_identical_path_validation(tmp_path, monkeypatch):
+    _use_real_scratch(monkeypatch)
+    scratch = memory_guard._temporary_artifacts
+    original_compare = scratch._same_owned_path
+    original_resolve = scratch.resolve_owned_path
+    resolutions = []
+    comparisons = []
+
+    def resolve(path):
+        resolutions.append(path)
+        return original_resolve(path)
+
+    def compare(expected, observed):
+        start = len(resolutions)
+        result = original_compare(expected, observed)
+        if isinstance(expected, str) and expected == observed:
+            comparisons.append(len(resolutions) - start)
+        return result
+
+    monkeypatch.setattr(
+        scratch, "resolve_owned_path", current_thread_only(resolve, original_resolve)
+    )
+    monkeypatch.setattr(
+        scratch, "_same_owned_path", current_thread_only(compare, original_compare)
+    )
+    result = _guarded_pass(tmp_path / "state")
+    assert result.returncode == 0 and result.descendants_closed
+    assert result.temporary_artifacts["state"] == "reclaimed"
+    assert comparisons and set(comparisons) == {1}
+
+
+@pytest.mark.parametrize("phase", ["initial", "update"])
+def test_real_guard_reclaims_partial_marker_publication_after_writer_crash(
+    tmp_path, monkeypatch, phase
+):
+    _use_real_scratch(monkeypatch)
+    state = tmp_path / "state"
+    script = r"""
+import os, sys
+from pathlib import Path
+from types import SimpleNamespace
+from molt import file_publication
+from tools import memory_guard
+from tools.memory_guard_core import active_custody
+state = Path(sys.argv[1])
+phase = sys.argv[2]
+env = dict(os.environ, MOLT_MEMORY_GUARD_STATE_ROOT=str(state))
+if phase == "update":
+    token, marker = memory_guard._write_active_guard_marker(os.getpid(), command=["never-launched"], cwd=None, environ=env)
+real_fdopen = os.fdopen
+class PartialStream:
+    def __init__(self, stream): self.stream = stream
+    def __enter__(self): return self
+    def __exit__(self, *args): self.stream.close()
+    def write(self, data):
+        self.stream.write(data[:1])
+        os._exit(23)
+file_publication.os = SimpleNamespace(**{name:getattr(os,name) for name in dir(os)})
+file_publication.os.fdopen = lambda *a, **kw: PartialStream(real_fdopen(*a, **kw))
+if phase == "initial":
+    memory_guard._write_active_guard_marker(os.getpid(), command=["never-launched"], cwd=None, environ=env)
+else:
+    active_custody.update_active_guard_marker(marker, token, status="launch_prepared")
+raise AssertionError("partial publication did not interrupt")
+"""
+    result = memory_guard.run_guarded(
+        [sys.executable, "-c", script, str(state), phase],
+        cwd=Path(memory_guard.__file__).resolve().parents[1],
+        env={**os.environ, "MOLT_MEMORY_GUARD_STATE_ROOT": str(state)},
+        max_rss_kb=512 * 1024,
+        max_total_rss_kb=1024 * 1024,
+        poll_interval=0.01,
+        timeout=10,
+        child_rlimit_kb=None,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 23, result.child_stderr
+    assert result.descendants_closed
+    assert not list((state / "active").glob(".molt-*.tmp"))
+    assert not list((state / "active").glob("*.lock"))
+    receipt = json.loads((state / "sweep.json").read_text(encoding="utf-8"))
+    assert receipt["stages_remaining"] == 0
+
+
 @pytest.mark.parametrize("text", [False, True])
 def test_completed_guard_retires_its_marker_lock_and_scratch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: bool
@@ -9029,8 +9114,33 @@ def test_spawn_failure_preserves_single_started_fd_close_authority(
     assert sum(call.count(started_fd) for call in close_calls) == 1
 
 
-def test_main_writes_summary_json(tmp_path) -> None:
+def test_main_writes_summary_json(tmp_path, monkeypatch) -> None:
     summary_path = tmp_path / "summary.json"
+    summary_path.write_text('{"prior":true}', encoding="utf-8")
+    published = []
+    original = file_publication.namespace_replace_once
+
+    def replace_summary(staged, destination, **kwargs):
+        if Path(destination) == summary_path:
+            old = json.loads(summary_path.read_text(encoding="utf-8"))
+            new = json.loads(Path(staged).read_text(encoding="utf-8"))
+            assert (
+                kwargs["durability"]
+                is file_publication.PublicationDurability.RECONSTRUCTIBLE
+            )
+            published.append((old, new))
+        return original(staged, destination, **kwargs)
+
+    monkeypatch.setattr(file_publication, "namespace_replace_once", replace_summary)
+    reporting._write_running_summary_payload(
+        str(summary_path), {"status": "running", "returncode": None}
+    )
+    assert reporting.write_worker_exit_summary_json(
+        str(summary_path), worker_returncode=23, signal_payload=lambda code: None
+    )
+    assert len(published) == 2
+    assert published[0][0] == {"prior": True}
+    assert published[1][1]["worker_returncode"] == 23
     rc = memory_guard.main(
         [
             "--max-rss-gb",
@@ -9067,6 +9177,9 @@ def test_main_writes_summary_json(tmp_path) -> None:
     assert payload["child_rlimit_gb"] is None
     assert payload["orphaned_process_groups"] == []
     assert payload["incident"] is None
+    assert len(published) >= 3
+    assert published[-1][1] == payload
+    assert not list(tmp_path.glob(".molt-*.tmp"))
 
 
 def test_run_guarded_keeps_windows_handle_peak_when_sampler_misses_child(

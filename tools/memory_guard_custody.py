@@ -93,7 +93,8 @@ def main(argv: list[str] | None = None) -> int:
         f"memory_guard_custody [{mode}] active_dir={report.active_dir} "
         f"snapshot_processes={report.snapshot_processes} "
         f"terminalized={report.terminalized} retired={report.retired} "
-        f"preserved={report.preserved} remaining={report.remaining}"
+        f"preserved={report.preserved} remaining={report.remaining} "
+        f"stages_removed={report.stages_removed} stages_remaining={report.stages_remaining}"
     )
     for decision in report.decisions:
         if decision.retired_to is not None:
@@ -104,6 +105,10 @@ def main(argv: list[str] | None = None) -> int:
         if decision.retirement is not None:
             detail += f"; stays active: {decision.retirement}"
         print(f"  {decision.disposition}: {decision.marker} ({detail})")
+    for stage in report.stages:
+        print(
+            f"  stage {stage.disposition}: {stage.stage} ({stage.reason}); removed={stage.removed}"
+        )
     for retention in report.scratch_retention:
         errors = retention.get("errors")
         for error in errors if isinstance(errors, list) else ():

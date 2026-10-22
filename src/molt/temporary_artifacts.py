@@ -55,6 +55,7 @@ from molt.file_locks import (
 from molt.file_publication import (
     PublicationDurability,
     is_link_like,
+    metadata_is_link_like,
     namespace_move_exclusive,
     namespace_publish_directory_exclusive,
     resolve_owned_path,
@@ -164,7 +165,11 @@ def _generation(root: Path, token: str) -> Path:
 
 def _identity(path: Path) -> dict[str, int]:
     metadata = path.lstat()
-    if not stat.S_ISDIR(metadata.st_mode) or is_link_like(path) or not metadata.st_ino:
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or metadata_is_link_like(metadata)
+        or not metadata.st_ino
+    ):
         raise ValueError("scratch target must be a direct directory")
     return {"device": metadata.st_dev, "inode": metadata.st_ino}
 
@@ -244,11 +249,12 @@ def _owner_mismatch(
 
 
 def _same_owned_path(expected: object, observed: object) -> bool:
-    return (
-        isinstance(expected, str)
-        and isinstance(observed, str)
-        and resolve_owned_path(Path(expected)) == resolve_owned_path(Path(observed))
-    )
+    if not isinstance(expected, str) or not isinstance(observed, str):
+        return False
+    canonical = resolve_owned_path(Path(expected))
+    # Identical spelling still crosses the custody validator once. Reusing its
+    # result within this comparison is not a cache across locks or mutations.
+    return expected == observed or canonical == resolve_owned_path(Path(observed))
 
 
 def _read_receipt(path: Path, *, label: str, absent_is_residue: bool = True) -> object:
