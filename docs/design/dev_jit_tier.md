@@ -74,24 +74,61 @@ function into a `cranelift_module::Module`; only the module that owns the code d
    starts with one thread, as a C `main` does.
 
    Compiler stderr appears only when compilation fails or backend diagnostics were
-   requested, as `molt run` shows a backend's stderr. While it compiles, the runner points
-   file descriptor 2 at an unlinked capture file that it and a forked keeper process both
-   hold. When the compile ends, the runner discards the text or writes it to the restored
-   stderr itself, and releases the keeper. A runner that dies while it compiles, by any
-   signal or exit, never releases it, and the keeper writes the text. The keeper is
-   reaped before the program starts. The capture never changes how the program starts:
-   with fd 2 closed there is nothing to capture, so the runner compiles with it closed,
-   as an AOT executable runs with it closed; every descriptor the capture opens sits
-   above fd 2 and closes on exec, so a closed fd 0 or 1 stays closed; and compiler
-   writes go to a regular file, never to a pipe. The compiler prints a progress line with
-   `eprintln!` every few functions, and `eprintln!` panics on a write error, so a pipe
-   whose keeper another process killed would stop the compile; with the file, killing
-   only the keeper changes nothing for the runner and the program. Only the one-byte
-   release goes through a pipe, and a dead keeper makes that write fail with `EPIPE`
-   instead of raising `SIGPIPE` (macOS `F_SETNOSIGPIPE`; on Linux the runner blocks
-   `SIGPIPE` while it captures and discards what is pending). `runner_launch.rs` kills
-   only the keeper while the real compiler prints progress for 20,000 functions; the
-   program starts and exits 0 (with the earlier pipe capture, the runner exited 125).
+   requested, as `molt run` shows a backend's stderr. Compiler output must never stop the
+   program: the compiler prints a progress line with `eprintln!` every few functions, and
+   `eprintln!` panics on a write error. While it compiles, the runner points file
+   descriptor 2 at one end of a socket pair. A runner thread drains the other end into
+   16 MiB of anonymous shared memory (the ring, which keeps the last 16 MiB and counts the
+   rest). The runner holds the reading end until the compile is over, so no compiler write
+   can fail (`EPIPE`, `EFBIG`, `ENOSPC`) or raise a signal, and the capture uses no file
+   system: not `TMPDIR`, not free disk, not the file size limit. When the compile ends,
+   the runner restores fd 2 and discards the text (it compiled) or writes it to the
+   restored stderr (it failed). A forked keeper process shares the ring and waits for a
+   control pipe to close; the runner never writes to it, so a keeper that another process
+   killed changes nothing for the program. If the runner dies while it compiles, the pipe
+   closes without the runner's record in the ring, and the keeper writes what nobody has
+   shown: the ring, then what is left in the socket. The thread copies each chunk with
+   `MSG_PEEK` before it takes it out of the socket and records both steps, so the last
+   line before a crash (an allocation failure's message before its abort) is not lost; a
+   crash between the record and the take can repeat one chunk. With diagnostics
+   requested, the keeper also forwards the ring to the original stderr every 10 ms at
+   most, so the process that shows text is the one that records what it showed, and a
+   runner crash shows no line twice; if another process kills the keeper, the runner
+   shows the rest when the compile ends. The forwarding keeper reads the ring while the
+   drain thread writes it, without a lock. A keeper a whole ring (16 MiB) behind can
+   therefore print a stretch the thread is overwriting, as mixed old and new bytes; those
+   are bytes the ring was about to drop. Only
+   diagnostics mode forwards, so the default mode never shows such text. Each record
+   follows its write, so a killed
+   process can repeat a chunk but never lose one. The keeper is reaped before the program
+   starts. The capture's unit tests run each scenario in a fresh copy of the test binary,
+   not in a fork of the multi-threaded test harness, where a lock another test thread
+   held at the fork (Rust's thread-start lock) hung the capture's thread.
+
+   The capture never changes how the program starts. A closed fd 2 stays closed for the
+   program, but the capture occupies it while the runner compiles, so no file the compiler
+   opens can become fd 2 and receive compiler output. Every descriptor the capture opens
+   sits above fd 2 and closes on exec, so a closed fd 0 or 1 stays closed. If the capture
+   cannot be set up (no descriptors, memory or thread), the runner says so on stderr and
+   the compiler writes to fd 2 directly, as with diagnostics: the program still starts.
+   Only then can an error on fd 2 reach the compiler. The runner's own lines ignore write
+   errors. While it works, the runner ignores `SIGPIPE` and `SIGXFSZ`, as CPython does for
+   its whole life, so a broken pipe or the file size limit fails only that write (a
+   forwarded diagnostic, a TIR cache file, the start receipt); it restores the
+   dispositions it inherited before the program starts, and leaves a pending signal
+   pending. The persistent TIR cache lives in the runner's namespace under the cache root
+   the CLI resolved and wrote into the image (`tir_cache_root`), never under the program's
+   `MOLT_CACHE` or current directory; the image parser refuses a relative root, which would
+   resolve against the program's current directory; a cache write that fails only loses that entry.
+   `runner_launch.rs` starts images with `TMPDIR` unusable and `MOLT_CACHE` unset (the
+   current directory stays empty), with a file size limit of zero and `SIGXFSZ` at its
+   default, with one free descriptor (the runner streams), with stderr a broken pipe, and
+   with only the keeper killed while the compiler prints progress for 20,000 functions;
+   each program starts and exits 0, and the failing compile still exits 125. The twin
+   case `start_ignores_caller_file_state.py` starts the same program under an unusable
+   `TMPDIR` and under `ulimit -f 0`, and checks its directory stays empty, on both tiers
+   and CPython. The v4 capture file failed the first two (exit 125, or the compiler's
+   panic), and left `.molt_cache` in the program's directory.
 
    macOS's allocator keeps freed large blocks in a cache, so the compiler's freed heap
    would stay in the program's footprint (522-570 MB for a program that imports
@@ -176,8 +213,9 @@ function into a `cranelift_module::Module`; only the module that owns the code d
 
 ```text
 #!<runner> --image
-#molt.jit-image.v2 <header bytes> <program bytes>
-<header: JSON: runtime image, backend environment, compiler diagnostics, launch plan>
+#molt.jit-image.v3 <header bytes> <program bytes>
+<header: JSON: runtime image, backend environment, compiler diagnostics, TIR cache root,
+         launch plan>
 <program: backend IR, MessagePack, the backend lease format>
 ```
 
@@ -191,8 +229,8 @@ as an AOT executable's path does. `subprocess.run([sys.executable, ...])` and sp
 `multiprocessing` (which executes `sys.argv[0]`) therefore work; each such start compiles
 the program again, a cost the AOT tier does not pay. `molt run` and the differential
 harness start the runner with the same command (`run_tier.jit_runner_argv`), adding
-`--start-receipt`. The runner's flags, its start receipt and the image marker come from
-one declaration, the `[runner]` table of `runtime/native_launch_abi.toml`, which
+`--start-receipt`. The runner's flags (`--probe` among them), its start receipt and the
+image marker come from one declaration, the `[runner]` table of `runtime/native_launch_abi.toml`, which
 `tools/gen_native_launch_abi.py` projects into Python and Rust as it does the launch
 entries. The kernel ends an interpreter path at whitespace (and macOS's parser also at
 `#`) and reads only the line's first bytes (256 on Linux, 512 on macOS), so publication
@@ -278,9 +316,10 @@ reuses compiled stdlib code, as an AOT build does.
   `stdlib_micro` dev archive on macOS arm64; 37 MiB image). The images of one runtime
   directory form a generation store (`generation_store.py`): an image no build or cached
   launch used for 24 hours leaves at the next image publication.
-- Per start: process start, one read of the JIT image, the keeper fork when compiler
-  output is captured, the runtime image load, the program decode, and compilation of the
-  whole program, its stdlib closure included. An AOT build reuses a cached shared-stdlib
+- Per start: process start, one read of the JIT image, the compiler output capture (a
+  socket pair, 16 MiB of shared memory touched only as far as the compiler writes, one
+  drain thread and the keeper fork), the runtime image load, the program decode, and
+  compilation of the whole program, its stdlib closure included. An AOT build reuses a cached shared-stdlib
   object; the JIT tier compiles those functions on every start, and again in every
   process that starts the image again (a spawned `multiprocessing` worker, a
   `subprocess` of `sys.executable`). On macOS the runner restarts itself once to turn off
@@ -289,6 +328,11 @@ reuses compiled stdlib code, as an AOT build does.
   large blocks lose their cache for the whole program (below).
 - Not removed: frontend lowering on edited modules, backend IR preparation (HF-266) and
   toolchain probes (HF-357).
+- Kept: the persistent TIR cache, written at start under the image's cache root. For a
+  program that imports `subprocess` (v4 runner, 2026-10-22, three starts each at load 9),
+  a warm start took 12.1-12.2 s, a start with no usable cache 14.3-14.5 s, and a cold
+  start, which writes 49 MB of cache, 15.2-15.3 s. The cache saves 2.2 s on every start
+  after the first and costs 0.9 s once.
 
 Measured on macOS arm64, 2026-10-21, release runner, warm toolchain. Per start of one
 image, by cost bucket (`MOLT_BACKEND_TIMING=1`, `/usr/bin/time -l`; three starts at load
