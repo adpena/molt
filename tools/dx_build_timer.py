@@ -62,6 +62,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 from tools import harness_memory_guard  # noqa: E402
 from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
+from molt.pytest_memory_guard_bootstrap import live_enclosing_guard_pid  # noqa: E402
 from tools.command_execution import CommandExecutor  # noqa: E402
 from tools.perf_authority import non_canonical_provenance  # noqa: E402
 from tools.throughput_measurement import elapsed_sec, phase_result  # noqa: E402
@@ -204,16 +205,10 @@ def _run_completed(
     return proc, elapsed
 
 
-def _outer_memory_guard_active(env: Mapping[str, str]) -> bool:
-    raw = env.get("MOLT_MEMORY_GUARD_ACTIVE") or os.environ.get(
-        "MOLT_MEMORY_GUARD_ACTIVE",
-        "",
-    )
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
-
-
 def _outer_memory_guard_reuse_enabled(env: Mapping[str, str]) -> bool:
-    if not _outer_memory_guard_active(env):
+    # Only a live guard closes the build's descendants; a dead guard's leftover
+    # variables name none, so the build then takes its own guard.
+    if live_enclosing_guard_pid({**os.environ, **env}) is None:
         return False
     explicit = env.get("MOLT_DX_BUILD_TIMER_REUSE_OUTER_GUARD", "")
     if explicit.strip().lower() in {"1", "true", "yes", "on"}:
