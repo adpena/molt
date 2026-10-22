@@ -369,7 +369,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `runtime/molt-runtime-http/src/functions_http/server_core.rs` | 1 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime-ipaddress/src/ipaddress.rs` | 4 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime-math/src/math/statistics_tail.rs` | 4 | scattered-assumption | `3.343` |
-| `runtime/molt-runtime-math/src/math.rs` | 2 | scattered-assumption | `3.0` |
+| `runtime/molt-runtime-math/src/math.rs` | 3 | scattered-assumption | `3.14` |
 | `runtime/molt-runtime-math/src/random_mod.rs` | 5 | scattered-assumption | `3.4` |
 | `runtime/molt-runtime-platform/src/env_support.rs` | 2 | scattered-assumption | `3.15` |
 | `runtime/molt-runtime-platform/src/path_text.rs` | 2 | scattered-assumption | `3.12` |
@@ -397,7 +397,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `config/cpython_stable_abi_3_12.toml` | 1262 | scattered-assumption | `3.2` |
 | `config/llvm_toolchain_releases.toml` | 1 | scattered-assumption | `3.20` |
 | `config/public_contract_v1.toml` | 1 | scattered-assumption | `3.12` |
-| `config/python_numeric_errors.toml` | 3 | scattered-assumption | `3.12` |
+| `config/python_numeric_errors.toml` | 4 | scattered-assumption | `3.12` |
 | `config/scientific_stack_versions.toml` | 2 | scattered-assumption | `3.12` |
 | `config/source_extension_package_sets.toml` | 2 | scattered-assumption | `3.12` |
 | `config/verified_subset.toml` | 3 | scattered-assumption | `3.12` |
