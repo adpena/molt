@@ -412,15 +412,18 @@ GC still uses the same per-object edge visitor and detach transaction.
 
 Cached reads cost one indexed load and result retain, without allocation or a
 scan of readers. A source fetch adds temporary block/iterator owners around one
-iterator call. Outside reentrant retirement, new storage costs one block per
-57 fetched values. Lockstep readers retain at most 57 cached values; with lag
+iterator call. Source dispatch can itself allocate temporary objects; measure
+that cost independently through the same iterator protocol. Outside reentrant
+retirement, tee cache storage costs one block per 57 fetched values. Lockstep
+readers retain at most 57 cached values; with lag
 `L`, retained blocks are bounded by `floor(L / 57) + 2`, plus reader cursors.
 Retirement work is linear in the number of blocks and values actually freed,
 with constant stack use along successor links. No syscalls, process spawns,
 serialization, or additional locks are introduced; runtime mutation uses the
 existing GIL custody. These are structural cost bounds, not measured speedups.
-The owning `itertools_class` tests expose heap allocation counts and verify
-retention and native/C-view retirement. The existing
+The owning `itertools_class` tests report total, source and cache allocation
+counts/bytes separately, require cached peer reads to allocate nothing, and
+verify retention and native/C-view retirement. The existing
 `itertools_tee_independence` differential witness covers Python-visible lifetime,
 copying, exceptions, callback reentry and cycles. Native/WASM and profile,
 free-threaded and performance acceptance require their actual consumer proofs.
