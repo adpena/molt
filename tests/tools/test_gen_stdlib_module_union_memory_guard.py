@@ -821,10 +821,10 @@ def test_source_comparison_assesses_real_delta_and_reuses_current_families(
     assert removed["retention"] == "retain-for-owning-version-review"
     assert removed["current_sha256"] == gen._sha256(legacy.read_bytes())
     assert assessment["analysis_target"] in gen.DEFAULT_PYTHONS
+    assert all(row["declared_observation"] for row in assessment["numeric_contexts"])
     assert all(
-        not row["declared_observation"] for row in assessment["numeric_contexts"]
+        isinstance(row["message"], str) for row in assessment["numeric_contexts"]
     )
-    assert all(row["message"] is None for row in assessment["numeric_contexts"])
     assert all(
         row["execution_evidence"] == "UNKNOWN" for row in assessment["numeric_contexts"]
     )

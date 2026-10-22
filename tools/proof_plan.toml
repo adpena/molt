@@ -3729,8 +3729,9 @@ timeout_budget = "shipping"
 cache_domain = "cargo-workspace"
 dependencies = []
 # Full default-feature shipping runtime: parallel remainder plus all gate-declared
-# fresh-process lifecycle/GIL witnesses. Performance probes remain explicit
-# unrun entries; no missing child or incomplete result accounting can pass.
+# fresh-process lifecycle/GIL witnesses plus declared core/math numeric libtests
+# in the same Cargo build. Other satellite tests and runtime performance probes
+# remain explicit unrun entries; incomplete child accounting cannot pass.
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tools/run_runtime_test_gate.py", "--profile", "release-output", "--build-timeout-seconds", "6300", "--child-timeout-seconds", "120", "--parallel-threads", "8"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 cargo_build_python = true
@@ -6085,10 +6086,12 @@ pytest = [
 [[rule]]
 name = "runtime-lib"
 toolchains = ["python", "rustc", "cargo"]
-description = "Runtime/object-model Rust: one default-feature image with ordinary and isolated lifecycle semantics; performance probes remain unrun. Clippy belongs to rust-clippy-changed."
+description = "Runtime/object-model Rust: one Cargo build owns default-feature lifecycle semantics and declared core/math numeric libtests; runtime performance probes remain unrun. Clippy belongs to rust-clippy-changed."
 globs = [
   "runtime/molt-runtime/**/*.rs",
   "runtime/molt-obj-model/**/*.rs",
+  "runtime/molt-runtime-core/src/numeric_ratio.rs",
+  "runtime/molt-runtime-math/src/math.rs",
   "runtime/**/Cargo.toml",
 ]
 gates = [

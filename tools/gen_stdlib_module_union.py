@@ -1028,7 +1028,6 @@ def _prerequisite_assessment(
                     else None,
                 )
             )
-    index = numeric.TARGETS.index(candidate) if candidate in numeric.TARGETS else None
     numeric_rows = [
         NumericAssessment(
             context=context.name,
@@ -1036,8 +1035,8 @@ def _prerequisite_assessment(
             operand_kind=context.operand_kind,
             error_class=context.error_class,
             candidate=candidate,
-            declared_observation=index is not None,
-            message=context.messages[index] if index is not None else None,
+            declared_observation=candidate in context.messages,
+            message=context.messages.get(candidate),
         )
         for context in contexts
     ]

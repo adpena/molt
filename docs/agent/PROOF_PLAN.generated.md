@@ -427,7 +427,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `wasm-host` | 5 | 1 |
 | `gpu-runtime` | 3 | 1 |
 | `runtime-vfs` | 4 | 2 |
-| `runtime-lib` | 3 | 1 |
+| `runtime-lib` | 5 | 1 |
 | `python-effect-capability-authority` | 6 | 1 |
 | `python-identity-catalog-authority` | 7 | 0 |
 | `builtin-binding-guard-authority` | 9 | 1 |
