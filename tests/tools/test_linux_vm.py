@@ -1119,7 +1119,6 @@ def test_push_sends_the_resolved_commit_over_limas_ssh_and_checks_it_out(
         "-c",
         f"core.sshCommand=ssh -F {config}",
         "push",
-        "--force",
         "--no-verify",
         "--quiet",
         "lima-molt-linux:molt-main",
@@ -1256,6 +1255,30 @@ sys.exit(subprocess.run(["sh", "-c", command], cwd={str(home)!r}).returncode)
     )
     pushed = run_git("-C", str(home / "molt-main"), "rev-parse", "refs/heads/from-host")
     assert pushed == head
+
+    # A guest-side commit is signal: ordinary transport must refuse to replace
+    # it, and must not proceed to checkout after the receiver rejects the push.
+    guest = home / "molt-main"
+    run_git("-C", str(guest), "checkout", "-q", "from-host")
+    (guest / "guest.txt").write_text("guest work\n", encoding="utf-8")
+    run_git("-C", str(guest), "add", "guest.txt")
+    run_git("-C", str(guest), "commit", "-qm", "guest work")
+    guest_head = run_git("-C", str(guest), "rev-parse", "HEAD")
+    # Detach the receive checkout so Git's checked-out-branch protection is not
+    # the rejection oracle; this must fail specifically as non-fast-forward.
+    run_git("-C", str(guest), "checkout", "--detach", "-q")
+    (repo / "host.txt").write_text("host work\n", encoding="utf-8")
+    run_git("-C", str(repo), "add", "host.txt")
+    run_git("-C", str(repo), "commit", "-qm", "host work")
+    host.calls.clear()
+    assert linux_vm.push(
+        "molt-linux", rev="HEAD", ref="from-host", checkout=True,
+        definitions=definitions, host=host, repo=repo,
+    ) == linux_vm.EXIT_FAIL
+    assert run_git("-C", str(guest), "rev-parse", "refs/heads/from-host") == guest_head
+    assert run_git("-C", str(guest), "rev-parse", "HEAD") == guest_head
+    assert (guest / "guest.txt").read_text(encoding="utf-8") == "guest work\n"
+    assert not [call for call in host.calls if call[0] == "limactl" and "shell" in call]
 
 
 # --------------------------------------------------------------------------
