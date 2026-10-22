@@ -879,6 +879,20 @@ tests that place their target in a temporary directory.
   fails the build (the same inputs build the same compiler), and an import
   of a variant the host already holds returns the stored one. Probe evidence
   is a cached check beside the receipt, so a stale one is probed again.
+- A variant's members never change. Two content-addressed derivations of the
+  runtime archive are added beside its published generation: the
+  callable-symbol projection (on the first native code generation) and the
+  extraction of the native-link custody archive (on the first link). Each is
+  published exclusively, never replaces a file, and never recreates a
+  generation that eviction removed (`atomic_write_bytes(create_parent=False)`;
+  the extraction stage is made with `parents=False`), so an entry stays whole
+  or absent, and both leave with their entry. The JIT tier's runtime image
+  (37 MiB) is not added to the runtime's entry: it is an entry of its own
+  kind, `jit-runtime-image`, keyed by the archive digest and the link command.
+  A cached JIT launch renews the image and the runner, not the runtime, and an
+  image written inside a runtime entry that later aged out recreated a variant
+  with no receipt, which the next publication of that runtime collided with
+  (HF-390 review v2, M1).
 - A receipt names the product, never the checkout that built it: the
   backend's store receipt keeps only the source identity (`hash`, `rustc`,
   `meta_digest`), the observed environment and the bytes. Each checkout keeps
@@ -916,7 +930,13 @@ tests that place their target in a temporary directory.
   "Blocking waiting for file lock" and Bazel "Another command (pid=...) is
   running", so a stopped holder (a suspended `molt build`) is visible, not a
   silent hang. A record whose pid no longer has the recorded start time names
-  no holder. The record is process-lifetime state with no barrier (section
+  no holder. Where another process's start time is not observable (Windows,
+  or a process that exited), a record names its pid only while that pid runs,
+  with a note that the pid may be reused; before, an exited holder's record
+  was named as the live holder (HF-390 review v2, m2). A bounded wait that
+  gives up writes one line (`molt.file_locks.lock_wait_timeout_message`);
+  `tools/compile_progress.py` retries only on that line, not on the waiting
+  notice, which names `MOLT_BUILD_LOCK_TIMEOUT` too (m3). The record is process-lifetime state with no barrier (section
   2.7): one write, and one `ftruncate` on the descriptor it keeps for the
   hold. Measured on the integrator Mac (2026-10-22, median of 7 x 400): an
   uncontended acquire and release took 72 us against 47 us without the
@@ -929,8 +949,14 @@ tests that place their target in a temporary directory.
   model that reads another process's start time.
 - Retention follows last use, as Go's does: every read renews its entry in
   the store's ledger before it reads (build admission, the backend receipt
-  check of `internal-backend-build`, the cross-host export), and each
-  publication evicts entries no build used for 5 days. Every removal, idle
+  check of `internal-backend-build`, the cross-host export, a cached JIT
+  launch's runner and image), and each publication evicts entries no build
+  used for 5 days. The check and the renewal hold the ledger lock, where
+  eviction runs. A read of an absent entry is a miss that creates and renews
+  nothing; the build that follows creates and renews the entry in one step
+  under the ledger lock, so no eviction falls between the two. Before, the
+  renewal of an absent entry raised, and every first build of a new runtime
+  identity failed at stage `product-store` (HF-390 review v2, B1). Every removal, idle
   eviction, `molt cache evict` and the sweep of an aside an interrupted
   eviction left, runs under the ledger lock, so no sweep deletes an aside
   another process is still removing. The native runtime's per-target generations had no
@@ -948,9 +974,17 @@ tests that place their target in a temporary directory.
   `<kind>/.locks/<identity>.lock`, outside the entry, and is never deleted,
   as Cargo keeps its lock files: eviction moves an entry aside while a waiter
   may hold the lock's inode, and a lock inside the entry would move with it.
+  Each identity ever built leaves two empty files (the lock and its holder
+  record), metadata with no data blocks: on the integrator Mac on 2026-10-22
+  the store held 8 such files for 4 built identities beside 16 entries, 0 KB
+  on disk. Deleting one safely would need every acquirer to compare the
+  locked descriptor's inode with the path's after locking and retry, or a
+  waiter on the unlinked inode and a later opener of a new one would both
+  hold the identity; the trade keeps the empty files.
 
-The native runtime and every host tool (each backend feature variant and the
-WASM facts tool, store kind `host-tool`) read and publish only the store; the
+The native runtime, every host tool (each backend feature variant, the JIT
+runner and the WASM facts tool, store kind `host-tool`) and the JIT runtime
+image (kind `jit-runtime-image`) read and publish only the store; the
 per-target selection receipts, the canonical-target candidates and the
 backend's canonical hydration are deleted. A host tool's entry is named by its
 executable name and source identity. Every publication, of a runtime or a
@@ -1007,7 +1041,7 @@ Sizes are the integrator Mac's on 2026-10-22.
 
 | Store | Holds | Last use | Retires | Bytes | Why this policy |
 | --- | --- | --- | --- | --- | --- |
-| Product store, `<target base>/target/.molt-products` | reusable runtimes and host tools, one entry per input identity | ledger; every read renews, at most hourly | 5 days unused, at each publication; `molt cache evict` on demand | no budget; 334 MB | Every checkout reuses an entry, so reuse decides. Go trims its build cache by 5 days of non-use, a limit chosen from measured reuse, and sets no size bound either. |
+| Product store, `<target base>/target/.molt-products` | reusable runtimes, host tools and JIT runtime images, one entry per input identity | ledger; every read renews, at most hourly | 5 days unused, at each publication; `molt cache evict` on demand | no budget; 334 MB | Every checkout reuses an entry, so reuse decides. Go trims its build cache by 5 days of non-use, a limit chosen from measured reuse, and sets no size bound either. |
 | WASM pair store, `<MOLT_EXT_ROOT>/wasm` (else the target's `molt-runtime-wasm`) | one target's selected runtime pair and the generations it replaced | ledger; publication and binding | a replaced generation 24 h unused, at each publication; the selected one never | no budget; 519 MB and 624 MB in two roots | A replaced generation has no reuse; only a build that bound it before the switch reads it, and a build ends well inside 24 h. |
 | `MOLT_CACHE` (module, link and stdlib caches; the result cache of its lane lives here too) | entries keyed by program and compiler inputs | entry mtime, refreshed on use | 30 days unused, then oldest first past 30 GiB; daily after a build, `molt cache prune` on demand | 30 GiB; 72 GB and 6.3 GB in two roots | Entries scale with the programs built, so a byte budget bounds them; 30 days is Cargo's limit for recreatable data. |
 

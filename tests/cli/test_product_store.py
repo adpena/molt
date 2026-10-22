@@ -228,7 +228,9 @@ def test_a_use_inside_the_renewal_interval_takes_no_lock_and_writes_nothing(
     monkeypatch.setattr(generation_store, "time", clock)
     store = products.ProductStore(tmp_path / "store")
     identity = _digest("a")
-    store.record_use(identity)
+    for name in (identity, _digest("b")):
+        store.entry(name).mkdir(parents=True)
+    assert store.record_use(identity)
     ledger = store.root / ".product-store.json"
     recorded = ledger.read_bytes()
     assert _ledger(store)["last_used"][identity] == clock.now
@@ -241,17 +243,117 @@ def test_a_use_inside_the_renewal_interval_takes_no_lock_and_writes_nothing(
 
     monkeypatch.setattr(generation_store, "_acquire_file_lock", counted)
     clock.now += products.PRODUCT_STORE_RENEWAL_SECONDS
-    store.record_use(identity)
+    assert store.record_use(identity)
     assert locks == [] and ledger.read_bytes() == recorded
 
     clock.now += 1
-    store.record_use(identity)
+    assert store.record_use(identity)
     assert len(locks) == 1
     assert _ledger(store)["last_used"][identity] == clock.now
     # Another identity has no recorded use, so its first use is written.
-    store.record_use(_digest("b"))
+    assert store.record_use(_digest("b"))
     assert len(locks) == 2
     assert _ledger(store)["last_used"][_digest("b")] == clock.now
+
+
+def test_a_use_of_an_absent_entry_is_a_miss_that_writes_nothing(
+    tmp_path: Path,
+) -> None:
+    """A build of new inputs reads the store before it builds (HF-390 review v2).
+
+    The read renews nothing it cannot find and creates nothing, so the caller
+    builds. An entry removed while its recent use is still recorded is a miss
+    too, though that renewal takes no lock.
+    """
+    store = products.ProductStore(tmp_path / "store")
+    assert not store.record_use(_digest("a"))
+    assert not store.root.exists()
+
+    store.entry(_digest("b")).mkdir(parents=True)
+    assert store.record_use(_digest("b"))
+    assert not store.record_use(_digest("a"))
+    assert set(_ledger(store)["last_used"]) == {_digest("b")}
+    assert sorted(path.name for path in store.root.iterdir()) == sorted(
+        [_digest("b"), ".product-store.json", ".product-store.lock"]
+    )
+
+    store.entry(_digest("b")).rmdir()
+    assert not store.record_use(_digest("b"))
+    assert not store.entry(_digest("b")).exists()
+
+
+def test_a_builder_creates_and_renews_its_entry_in_one_locked_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No eviction falls between a builder's entry and its renewal (review v2 m1).
+
+    An idle entry whose builder arrives just as another publication evicts
+    idle entries must still be there, renewed, while the builder holds it.
+    """
+    from contextlib import contextmanager
+
+    monkeypatch.delenv("MOLT_BUILD_LOCK_TIMEOUT", raising=False)
+    store = products.ProductStore(tmp_path / "store")
+    identity = _digest("a")
+    store.entry(identity).mkdir(parents=True)
+    assert store.record_use(identity)
+    ledger = _ledger(store)
+    ledger["last_used"][identity] = (
+        time.time() - products.PRODUCT_STORE_IDLE_SECONDS - 60
+    )
+    (store.root / ".product-store.json").write_text(json.dumps(ledger), "utf-8")
+    real = products.generation_store
+    evictions: list[tuple[str, ...]] = []
+
+    @contextmanager
+    def evicting_first(root, layout):
+        # A rival publication's eviction wins the ledger lock first.
+        if not evictions:
+            with real(root, layout) as rival:
+                evictions.append(rival.evict_idle(products.PRODUCT_STORE_IDLE_SECONDS))
+        with real(root, layout) as ledger:
+            yield ledger
+
+    monkeypatch.setattr(products, "generation_store", evicting_first)
+    with store.single_flight(identity):
+        assert store.entry(identity).is_dir()
+        assert _ledger(store)["last_used"][identity] >= time.time() - 60
+    assert evictions == [(identity,)]
+
+
+def test_a_stored_file_maps_to_its_entry_and_no_other_file_does(
+    tmp_path: Path,
+) -> None:
+    """A cached launch renews the entry that holds each file it runs.
+
+    Only ``<.molt-products>/<layout>/<known kind>/<digest>`` names an entry; a
+    file anywhere else (an installed toolchain's) is used as it is.
+    """
+    root = tmp_path / PRODUCT_STORE_DIRNAME / products.LAYOUT_VERSION
+    store = products.ProductStore(root / "native-runtime")
+    stored = store.entry(_digest("a")) / _digest("b") / ".gen" / "runtime.a"
+    assert products.ProductStore.entry_of(stored) == (store, _digest("a"))
+    for outside in (
+        tmp_path / "runtime.a",
+        tmp_path / "other" / products.LAYOUT_VERSION / "native-runtime" / _digest("a"),
+        tmp_path / PRODUCT_STORE_DIRNAME / "v0" / "native-runtime" / _digest("a"),
+        root / "unknown-kind" / _digest("a") / "runtime.a",
+        root / "native-runtime" / "not-a-digest" / "runtime.a",
+    ):
+        assert products.ProductStore.entry_of(outside) is None, outside
+
+    stored.parent.mkdir(parents=True)
+    stored.write_bytes(b"runtime")
+    assert products.record_stored_file_use(stored)
+    assert _digest("a") in _ledger(store)["last_used"]
+    installed = tmp_path / "installed" / "runtime.a"
+    installed.parent.mkdir()
+    installed.write_bytes(b"runtime")
+    assert products.record_stored_file_use(installed)
+    assert not products.record_stored_file_use(installed.with_name("missing.a"))
+    assert store.evict(_digest("a"))
+    assert not products.record_stored_file_use(stored)
+    assert not store.entry(_digest("a")).exists()
 
 
 def test_evict_waits_for_the_builder_and_removes_the_entry_whole(

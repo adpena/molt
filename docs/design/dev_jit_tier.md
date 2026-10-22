@@ -246,12 +246,12 @@ caller with a stale `PWD`, an `OLDPWD` and no `SHLVL`, and the twin case
 `reexec_keeps_parent_environment.py` restarts each tier by its own path with the same
 environment and checks that both see it unchanged.
 
-An image is a development artifact tied to the checkout that built it. Its header names
-the runner generation, the runtime image and the runtime callable-symbol table in that
-checkout's Cargo target directory, and running the image renews none of them. `molt run
---tier jit` and `molt build --emit jit` renew them; after 24 hours with neither, a later
-build may evict them, and removing the Cargo target directory removes them. The image
-then fails: the kernel cannot start its interpreter, so a shell reports a bad interpreter
+An image is a development artifact. Its header names the runner, the runtime image and
+the runtime callable-symbol table, three entries of the host's product store (design
+56, section 2.8), and running the image renews none of them. `molt run --tier jit` and
+`molt build --emit jit` renew all three (a cache hit too); after 5 days with neither, a
+later build may evict them, and `molt cache evict` or removing the shared Cargo target
+directory removes them at once. The image then fails: the kernel cannot start its interpreter, so a shell reports a bad interpreter
 (exit 126) and `execve` fails with `ENOENT` (Python raises `FileNotFoundError` naming the
 image), or the runner cannot load the runtime image (exit 125).
 `tests/cli/test_jit_run_tier.py` proves the first case.
@@ -313,9 +313,12 @@ reuses compiled stdlib code, as an AOT build does.
   output signing, and first-link work for new programs.
 - Added once per toolchain: the runner build (the same order as the backend binary).
 - Added once per runtime generation: the runtime image link (2.6 s for the 98 MiB
-  `stdlib_micro` dev archive on macOS arm64; 37 MiB image). The images of one runtime
-  directory form a generation store (`generation_store.py`): an image no build or cached
-  launch used for 24 hours leaves at the next image publication.
+  `stdlib_micro` dev archive on macOS arm64; 37 MiB image). Each image is a product store
+  entry of kind `jit-runtime-image`, keyed by the archive digest and the link command, and
+  never a write into the runtime's own entry: an image no build or cached launch used for
+  5 days leaves at the next publication. The store's 5-day window keeps up to 5 days of
+  images where the earlier per-runtime store kept 24 hours: 37 MiB per runtime generation
+  run under the JIT tier in that window, for one retention policy across the store.
 - Per start: process start, one read of the JIT image, the compiler output capture (a
   socket pair, 16 MiB of shared memory touched only as far as the compiler writes, one
   drain thread and the keeper fork), the runtime image load, the program decode, and

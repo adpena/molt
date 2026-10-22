@@ -21,12 +21,16 @@ places it beside the checkout targets of one artifact root.
   at all: publication completes a variant before its selection receipt
   appears, and eviction moves an entry aside before deleting it. So a
   receipt that exists but does not verify is corruption, and it fails loud.
+  The only later writes are content-addressed derivations of a runtime
+  archive (its callable-symbol projection and custody extraction), published
+  exclusively beside its generation; none recreates a removed generation.
 - One builder per identity: ``single_flight`` holds the entry's lock across
   the build, so concurrent checkouts with the same inputs build once.
 - Retention follows last use, as Go's trim does: each admission renews its
   entry in the store's ledger at most once per
   ``PRODUCT_STORE_RENEWAL_SECONDS``, and each publication evicts the entries
-  no build used for ``PRODUCT_STORE_IDLE_SECONDS``. A renewal inside the
+  no build used for ``PRODUCT_STORE_IDLE_SECONDS``. An admission of an absent
+  entry is a miss and writes nothing. A renewal inside the
   interval reads the ledger without the lock and writes nothing, so a warm
   build takes no store lock and makes no write.
 """
@@ -47,7 +51,7 @@ from molt.cli.generation_store import (
     generation_store,
     used_within,
 )
-from molt.dx import product_store_dir
+from molt.dx import PRODUCT_STORE_DIRNAME, product_store_dir
 from molt.file_deletion import delete_path
 
 LAYOUT_VERSION = "v1"
@@ -130,6 +134,24 @@ class ProductStore:
         store = product_store_dir(project_root, os.environ if env is None else env)
         return cls(store / LAYOUT_VERSION / kind)
 
+    @classmethod
+    def entry_of(cls, path: Path) -> tuple[ProductStore, str] | None:
+        """The store and identity of the entry that holds ``path``.
+
+        None outside every store: an installed toolchain's files are not the
+        store's to retain.
+        """
+        parts = path.parts
+        for index in range(len(parts) - 3):
+            if (
+                parts[index] == PRODUCT_STORE_DIRNAME
+                and parts[index + 1] == LAYOUT_VERSION
+                and parts[index + 2] in PRODUCT_KINDS
+                and _DIGEST.fullmatch(parts[index + 3])
+            ):
+                return cls(Path(*parts[: index + 3])), parts[index + 3]
+        return None
+
     @property
     def kind(self) -> str:
         """The product kind this store holds (its directory's name)."""
@@ -163,22 +185,29 @@ class ProductStore:
             and not child.is_symlink()
         )
 
-    def record_use(self, identity: str) -> None:
-        """Renew ``identity`` before reading it, so no eviction races the read.
+    def record_use(self, identity: str) -> bool:
+        """Renew ``identity`` before reading it; False when the store lacks it.
 
-        A use recorded within the renewal interval already keeps the entry for
-        the whole idle window less that interval, far longer than any read, so
-        it is left as it is.
+        The check and the renewal hold the ledger lock, where eviction runs, so
+        an entry renewed here stays for the whole idle window and no eviction
+        races the read. An absent entry is a miss: nothing is created or
+        renewed, and the caller builds. A use recorded within the renewal
+        interval already keeps the entry for the whole idle window less that
+        interval, far longer than any read, so it is left as it is.
         """
-        self.entry(identity)
+        entry = self.entry(identity)
         if used_within(self.root, _LEDGER, identity, PRODUCT_STORE_RENEWAL_SECONDS):
-            return
-        self.root.mkdir(parents=True, exist_ok=True)
+            return entry.is_dir()
+        if not entry.is_dir():
+            return False
         try:
             with generation_store(self.root, _LEDGER) as ledger:
+                if not entry.is_dir():
+                    return False
                 ledger.use(identity)
         except RuntimeError as exc:  # the ledger lock timed out
             raise OSError(str(exc)) from exc
+        return True
 
     def retain(self, identity: str) -> tuple[str, ...]:
         """Renew ``identity`` and evict the entries no build used for the window."""
@@ -209,13 +238,15 @@ class ProductStore:
         """
         from molt.cli.build_locks import BuildLockAcquisitionError
 
+        entry = self.entry(identity)
         try:
-            # The entry exists before it is renewed: a renewal of an absent
-            # entry is an eviction miss (GenerationStore.use). Renewed before
-            # the build: an entry a builder holds is never idle, and one the
-            # ledger has not seen starts its window now.
-            self.entry(identity).mkdir(parents=True, exist_ok=True)
-            self.record_use(identity)
+            # Created and renewed in one step under the ledger lock, where
+            # eviction runs: an entry a builder holds is never idle, and no
+            # eviction removes it between its creation and its renewal.
+            self.root.mkdir(parents=True, exist_ok=True)
+            with generation_store(self.root, _LEDGER) as ledger:
+                entry.mkdir(exist_ok=True)
+                ledger.use(identity)
         except (OSError, RuntimeError) as exc:
             raise BuildLockAcquisitionError(str(exc)) from exc
         with self._held(identity):
@@ -253,3 +284,19 @@ class ProductStore:
             except RuntimeError as exc:  # the ledger lock timed out
                 raise OSError(str(exc)) from exc
         return True
+
+
+def record_stored_file_use(path: Path) -> bool:
+    """Renew the store entry that holds ``path``; False when ``path`` is gone.
+
+    A cached launch runs files a build selected without admitting them again:
+    renewing their entries under the ledger lock keeps eviction from removing
+    them during the run, and an entry eviction already removed is a miss. A
+    file outside every store needs no renewal.
+    """
+    located = ProductStore.entry_of(path)
+    if located is not None:
+        store, identity = located
+        if not store.record_use(identity):
+            return False
+    return path.is_file()

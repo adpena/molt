@@ -259,12 +259,11 @@ def _backend_fingerprint_path(
     artifact: Path,
     cargo_profile: str,
 ) -> Path:
-    """This checkout's receipt for ``artifact``.
+    """This checkout's identity memo for the backend variant ``artifact``.
 
-    For a variant coordinate it is the identity memo: the source identity and
-    the metadata that let a later build reuse it without hashing sources. For
-    Cargo's own output it also binds that output's bytes. Selection lives in
-    the product store, never here.
+    It holds the source identity and the metadata that let a later build reuse
+    it without hashing sources. Selection and bytes live in the product store,
+    never here.
     """
     return _artifact_state_path(
         project_root,
@@ -638,15 +637,15 @@ def admitted_backend_binary(
     store = host_tool_store(project_root)
     identity = host_tool_identity(binary, fingerprint)
     # Renewed before the read, so no eviction races it (design 56, 2.8).
-    store.record_use(identity)
-    for admission in stored_host_tools(
-        store,
-        identity,
-        binary,
-        fingerprint,
-        environment=build_admission.plan.environment,
-    ):
-        return admission.generation, admission.stored.receipt
+    if store.record_use(identity):
+        for admission in stored_host_tools(
+            store,
+            identity,
+            binary,
+            fingerprint,
+            environment=build_admission.plan.environment,
+        ):
+            return admission.generation, admission.stored.receipt
     raise ValueError(
         f"no backend compiler is stored for this checkout's inputs "
         f"({identity} in {store.root}): {binary}"
@@ -872,13 +871,16 @@ def _admit_stored_backend(
         )
         store = host_tool_store(project_root)
         identity = host_tool_identity(backend_bin, fingerprint)
-        store.record_use(identity)
-        admissions = stored_host_tools(
-            store,
-            identity,
-            backend_bin,
-            fingerprint,
-            environment=build_admission.plan.environment,
+        admissions = (
+            stored_host_tools(
+                store,
+                identity,
+                backend_bin,
+                fingerprint,
+                environment=build_admission.plan.environment,
+            )
+            if store.record_use(identity)
+            else ()
         )
     except ProductStoreError as exc:
         return _backend_ensure_failure("product_store", str(exc)), fingerprint
