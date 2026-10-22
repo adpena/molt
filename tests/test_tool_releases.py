@@ -1319,3 +1319,13 @@ def test_provisioning_reclaims_staging_a_killed_provisioner_left(
     tool_releases.pinned_command("npm", root, provision=True)
     assert not (prefix / "molt-tool-killed").exists()
     assert not native_orphan.exists()
+
+
+def test_an_os_error_while_provisioning_is_a_tool_release_error(tmp_path) -> None:
+    """Provisioning I/O failures reach callers as ToolReleaseError (HF-456 v3
+    review A3-6): here the toolchain root is a file, so no prefix can exist."""
+    toolchain_root = tmp_path / "not-a-directory"
+    toolchain_root.write_text("", encoding="utf-8")
+    release = tool_releases.tool_release("uv", ROOT)
+    with pytest.raises(tool_releases.ToolReleaseError, match="cannot provision uv"):
+        tool_releases.provision_tool(release, toolchain_root)

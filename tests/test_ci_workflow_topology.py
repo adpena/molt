@@ -58,7 +58,30 @@ def _default_python_version() -> str:
     return version
 
 
-_MOLT_MODULE_RUN = re.compile(r"\bpython3? -m molt\.")
+# An interpreter (python, python3, python3.12, or a $PYTHON-like variable),
+# any flags, then `-m molt` or `-m molt.<module>`.
+_MOLT_MODULE_RUN = re.compile(
+    r"(?P<interpreter>\bpython[0-9.]*|\"?\$\{?[A-Za-z_]*PYTHON[A-Za-z_]*\}?\"?)"
+    r"(?:\s+-[A-Za-z]+)*\s+-m\s+molt(?:\.[\w.]+)?\b"
+)
+_SYNCED_RUN = re.compile(r"\buv\s+run\b")
+_SRC_PYTHONPATH = re.compile(r"\bPYTHONPATH=\S*src\b")
+
+
+def _molt_module_runs(run: str) -> list[str]:
+    """Each logical shell line that runs a molt module, continuations joined."""
+    logical = re.sub(r"\\\n\s*", " ", run)
+    return [line for line in logical.splitlines() if _MOLT_MODULE_RUN.search(line)]
+
+
+def _molt_import_is_provided(line: str, env: dict[str, object]) -> bool:
+    """`uv run` syncs the project; otherwise `src` must be on PYTHONPATH."""
+    prefix = line[: _MOLT_MODULE_RUN.search(line).start()]  # type: ignore[union-attr]
+    return bool(
+        _SYNCED_RUN.search(prefix)
+        or _SRC_PYTHONPATH.search(prefix)
+        or "/src" in str(env.get("PYTHONPATH", ""))
+    )
 
 
 def _step_runs_with_env(
@@ -102,16 +125,39 @@ def test_every_step_that_runs_a_molt_module_can_import_molt() -> None:
     for path in files:
         payload = yaml.safe_load(path.read_text(encoding="utf-8"))
         for name, run, env in _step_runs_with_env(payload):
-            for line in run.splitlines():
-                if not _MOLT_MODULE_RUN.search(line):
-                    continue
+            for line in _molt_module_runs(run):
                 checked += 1
-                if "uv run" in line or "PYTHONPATH=src" in line:
-                    continue
-                if "/src" not in str(env.get("PYTHONPATH", "")):
+                if not _molt_import_is_provided(line, env):
                     offenders.append(f"{path.relative_to(REPO_ROOT)}: {name}")
     assert checked
     assert offenders == []
+
+
+@pytest.mark.parametrize(
+    ("run", "provided"),
+    [
+        ("python3 -m molt.tool_releases run npm", False),
+        ("python3 -B -u -m molt.tool_releases provision uv", False),
+        ("python3.12 -m molt build app.py", False),
+        ('"$PYTHON" -m molt.checkout_provisioning ensure', False),
+        ("${PYTHON} -m molt", False),
+        ("python3 \\\n  -m molt.tool_releases run npm", False),
+        ("cd x && PYTHONPATH=src python -m molt.llvm_toolchain", True),
+        ("uv run --no-sync python3 -m molt.tool_releases provision sccache", True),
+        ("uv run python3 -m molt.checkout_provisioning ensure", True),
+        ("python3 -m moltlib.thing", None),
+        ("python3 tools/proof_plan.py --check", None),
+    ],
+)
+def test_molt_module_run_recognizes_each_spelling(run: str, provided) -> None:
+    """The topology rule's matcher (HF-456 v3 review A3-2)."""
+    lines = _molt_module_runs(run)
+    if provided is None:
+        assert lines == []
+        return
+    assert len(lines) == 1
+    assert _molt_import_is_provided(lines[0], {}) is provided
+    assert _molt_import_is_provided(lines[0], {"PYTHONPATH": "/w/src"})
 
 
 def test_setup_project_callers_use_declared_inputs() -> None:
