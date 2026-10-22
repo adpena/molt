@@ -4986,6 +4986,117 @@ mod tests {
     use molt_obj_model::MoltObject;
     use std::sync::atomic::Ordering;
 
+    fn assert_bridge_raise_owns_only_pending_and_observers(
+        py: &crate::PyToken<'_>,
+        raise: impl FnOnce() -> u64,
+    ) {
+        assert!(!exception_pending(py));
+        assert_eq!(raise(), MoltObject::none().bits());
+        assert!(exception_pending(py));
+        let error = exception_last_pending_bits(py);
+        let error_ptr = obj_from_bits(error).as_ptr().unwrap();
+        assert!(super::exception_matches_builtin_name(
+            py,
+            error,
+            "RuntimeError"
+        ));
+        assert_eq!(
+            unsafe { (*header_from_obj_ptr(error_ptr)).ref_count_snapshot() },
+            2,
+            "only the raised slot and this observer own the exception"
+        );
+        let args_ptr = obj_from_bits(unsafe { super::exception_args_bits(error_ptr) })
+            .as_ptr()
+            .unwrap();
+        let message = unsafe {
+            crate::object::seq_access::with_immutable_tuple_slice(args_ptr, |args| {
+                assert_eq!(args.len(), 1);
+                super::ExceptionValue::pin(py, args[0])
+            })
+        }
+        .unwrap();
+        assert_eq!(
+            string_obj_to_owned(obj_from_bits(message.bits())).as_deref(),
+            Some("bridge ownership regression: independently pinned message")
+        );
+        clear_exception(py);
+        assert_eq!(
+            unsafe { (*header_from_obj_ptr(error_ptr)).ref_count_snapshot() },
+            1,
+            "clearing the raised slot leaves only the observer"
+        );
+        dec_ref_bits(py, error);
+        let message_ptr = obj_from_bits(message.bits()).as_ptr().unwrap();
+        assert_eq!(
+            unsafe { (*header_from_obj_ptr(message_ptr)).ref_count_snapshot() },
+            1,
+            "retiring the exception and its args leaves only the message observer"
+        );
+        assert!(!exception_pending(py));
+    }
+
+    #[test]
+    fn core_string_raise_retires_constructor_temporaries() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            assert_bridge_raise_owns_only_pending_and_observers(py, || {
+                molt_runtime_core::rt_raise_str(
+                    "RuntimeError",
+                    "bridge ownership regression: independently pinned message",
+                )
+            });
+        });
+    }
+
+    #[test]
+    fn core_string_raise_replaces_only_the_prior_raised_owner() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            super::raise_exception::<u64>(py, "ValueError", "previous raised error");
+            let original = exception_last_pending_bits(py);
+            assert_eq!(
+                molt_runtime_core::rt_raise_str("RuntimeError", "replacement bridge error"),
+                MoltObject::none().bits()
+            );
+            let observed = exception_last_pending_bits(py);
+            assert_ne!(observed, original);
+            assert!(super::exception_matches_builtin_name(
+                py,
+                observed,
+                "RuntimeError"
+            ));
+            let original_ptr = obj_from_bits(original).as_ptr().unwrap();
+            assert_eq!(
+                unsafe { (*header_from_obj_ptr(original_ptr)).ref_count_snapshot() },
+                1,
+                "successful replacement must release the prior raised owner"
+            );
+            clear_exception(py);
+            let observed_ptr = obj_from_bits(observed).as_ptr().unwrap();
+            assert_eq!(
+                unsafe { (*header_from_obj_ptr(observed_ptr)).ref_count_snapshot() },
+                1
+            );
+            dec_ref_bits(py, observed);
+            dec_ref_bits(py, original);
+        });
+    }
+
+    #[cfg(feature = "stdlib_itertools")]
+    #[test]
+    fn itertools_bridge_raise_retires_constructor_temporaries() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            assert_bridge_raise_owns_only_pending_and_observers(py, || {
+                molt_runtime_itertools::bridge::raise_exception::<u64>(
+                    py.core_token(),
+                    "RuntimeError",
+                    "bridge ownership regression: independently pinned message",
+                )
+            });
+        });
+    }
+
     #[test]
     fn notes_dictionary_and_reserved_metadata_preserve_independent_ownership() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();

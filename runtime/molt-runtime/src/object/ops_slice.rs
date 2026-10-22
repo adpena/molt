@@ -505,13 +505,15 @@ fn raise_frozen_instance_error(_py: &PyToken<'_>, message: &str) -> u64 {
         return MoltObject::none().bits();
     }
     let message_bits = MoltObject::from_ptr(message_ptr).bits();
-    let exc_bits = unsafe { call_class_init_with_args(_py, class_ptr, &[message_bits]) };
+    let exception = crate::builtins::exceptions::ExceptionValue::adopt(_py, unsafe {
+        call_class_init_with_args(_py, class_ptr, &[message_bits])
+    });
     dec_ref_bits(_py, message_bits);
     dec_ref_bits(_py, class_bits);
     if exception_pending(_py) {
         return MoltObject::none().bits();
     }
-    crate::molt_raise(exc_bits)
+    crate::molt_raise(exception.bits())
 }
 
 unsafe fn validate_dataclass_class_target(

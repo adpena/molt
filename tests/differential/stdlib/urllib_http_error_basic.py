@@ -1,6 +1,8 @@
 # MOLT_ENV: MOLT_CAPABILITIES=net,thread.spawn,thread.shared
 """Purpose: differential coverage for urllib http error basic."""
 
+import gc
+import weakref
 import socket
 import threading
 import urllib.error
@@ -36,12 +38,39 @@ t = threading.Thread(target=server)
 t.start()
 ready.wait(timeout=1.0)
 
+class ErrorMarker:
+    pass
+
+
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+marker = ErrorMarker()
+observed_http = weakref.ref(marker)
 url = f"http://127.0.0.1:{port_holder[0]}/missing"
 try:
-    urllib.request.urlopen(url, timeout=1.0)
+    opener.open(url, timeout=1.0)
 except urllib.error.HTTPError as exc:
+    exc.marker = marker
     body = exc.read().decode()
     print(exc.code, exc.reason, body)
 
 
 t.join()
+
+# The HTTP error owns its stream and constructor payload only while reachable.
+del marker
+gc.collect()
+assert observed_http() is None
+
+# A missing host selects the URLError producer before any network operation.
+marker = ErrorMarker()
+observed_url = weakref.ref(marker)
+try:
+    opener.open("http:///missing", timeout=1.0)
+except urllib.error.URLError as exc:
+    exc.marker = marker
+else:
+    raise AssertionError("missing host did not raise URLError")
+del marker
+gc.collect()
+assert observed_url() is None
+print("urllib error owners released", True)
