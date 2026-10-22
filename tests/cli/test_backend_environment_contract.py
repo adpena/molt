@@ -381,3 +381,69 @@ def test_stdlib_constituent_authority_binds_object_inputs_not_program_context(
     monkeypatch.setenv("MOLT_BACKEND_REGALLOC_ALGORITHM", "single_pass")
     tuned = _native_cache_setup(tmp_path, stdlib_modules=("sys", "warnings"))
     assert constituent_authority(tuned) != constituent_authority(baseline)
+
+
+def _daemon_digest(tmp_path, monkeypatch, env):
+    from molt.cli import backend_execution
+
+    monkeypatch.setattr(
+        backend_execution, "_cache_tooling_fingerprint", lambda: "tooling"
+    )
+    return backend_execution._backend_daemon_config_digest(
+        tmp_path, "dev-fast", env=env
+    )
+
+
+def test_one_daemon_serves_every_program_of_a_build_configuration(
+    tmp_path, monkeypatch
+):
+    # af20d9c76 (2026-10-17) put each program's entry module into the
+    # environment that names the daemon. A 482-program differential run on
+    # 2026-10-22 then held one idle daemon per program: 98 identities with one
+    # binary, one profile and 98 digests, 9.0 GB of RSS across 105 daemons.
+    from molt.cli.backend_cache_setup import backend_operation_environment
+
+    def operation(entry_module):
+        return backend_operation_environment(
+            codegen=CodegenSelection(),
+            profile="dev",
+            native_runtime_codegen_binding=None,
+            backend_compiler_fingerprint="a" * 64,
+            entry_module=entry_module,
+            stdlib_module_symbols_json=None,
+            wasm_layout=None,
+        )
+
+    first, second = operation("app_one"), operation("app_two")
+    assert first["MOLT_ENTRY_MODULE"] != second["MOLT_ENTRY_MODULE"]
+    assert _daemon_digest(tmp_path, monkeypatch, first) == _daemon_digest(
+        tmp_path, monkeypatch, second
+    )
+    # The programs keep separate compile caches.
+    assert _backend_codegen_env_digest(
+        is_wasm=False, env=first
+    ) != _backend_codegen_env_digest(is_wasm=False, env=second)
+
+
+def test_only_process_scoped_roles_name_a_daemon(tmp_path, monkeypatch):
+    # runtime/molt-ir/build.rs generates the daemon's strip list from the same
+    # catalog: a request-scoped value is gone from the daemon's process before
+    # it serves, so it cannot distinguish two daemons.
+    catalog = json.loads(
+        (
+            Path(__file__).resolve().parents[2] / "src/molt/backend_environment.json"
+        ).read_text(encoding="utf-8")
+    )
+    base = {"MOLT_BACKEND_COMPILER_FINGERPRINT": "a" * 64}
+    baseline = _daemon_digest(tmp_path, monkeypatch, base)
+    process_scoped = 0
+    for name, group in catalog["groups"].items():
+        for key in group["keys"]:
+            value = "b" * 64 if key in base else "1"
+            digest = _daemon_digest(tmp_path, monkeypatch, {**base, key: value})
+            if group["request_scoped"]:
+                assert digest == baseline, (name, key)
+            else:
+                assert digest != baseline, (name, key)
+                process_scoped += 1
+    assert process_scoped
