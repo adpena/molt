@@ -8,8 +8,8 @@ same contract for every input it declares (docs/design/landing_queue.md,
 
 - ``uv-environment``: the project environment that ``uv sync --frozen``
   builds from ``uv.lock``. ``--frozen`` installs the lock as written and
-  resolves nothing, so the environment is a function of the lock; uv reads
-  every package from its cache and uses the network only for a package the
+  resolves nothing. Installed editable packages also bind their source
+  checkout; uv reads every package from its cache and uses the network only for a package the
   cache lacks. ``--locked`` would also re-resolve to check the lock against
   ``pyproject.toml``, which can need the index; that check belongs to the
   lock gate, not to provisioning. The sync is exact, as CI's setup is: it
@@ -49,13 +49,14 @@ the provisioner and writes it atomically after success, so a failed or
 interrupted run leaves no stamp, and the next ``ensure`` runs the provisioner
 again.
 
-The stamp is keyed on the lock, not on the tool binary. npm installs
-integrity-pinned bytes and uv installs the exact locked wheels, so the tree
-is a function of the lock. This host has two npm installations (the shell's
-and the pinned Node release that toolchain admission puts first on PATH); a
-key on the tool path would re-run ``npm ci`` at every switch and empty
-``node_modules`` under a concurrent reader. The tool and its version stay in
-the stamp as provenance.
+The stamp is keyed on the locked action, not on the tool binary. UV also
+binds the resolved checkout and rechecks its exact editable PEP 610 record;
+a foreign owner is refused rather than automatically rewritten. npm's
+integrity-pinned tree remains location-independent. This host has two npm
+installations (the shell's and the pinned Node release that toolchain
+admission puts first on PATH); a key on the tool path would re-run ``npm ci``
+at every switch and empty ``node_modules`` under a concurrent reader. The
+tool and its version stay in the stamp as provenance.
 
 Each provisioner runs under the memory guard, which fills unset variables
 with dx defaults: a managed ``UV_PROJECT_ENVIRONMENT`` and a ``UV_CACHE_DIR``
@@ -68,10 +69,16 @@ tree there would copy; when dx's artifact-volume cache shares the tree's
 filesystem, the command names that cache instead (2026-10-21, loaded USB
 volume: a 137 MB environment took 1.85 s as a clone and 81.5 s as a copy).
 
-Cost: a current input costs one read of the stamp, one read of each lock
+Cost: a current UV input additionally reads its recorded editable PEP 610
+metadata, when present, and validates its source path. It does not spawn a
+probe or enumerate installed distributions. A cold UV admission uses the
+selected interpreter with site startup disabled. The existing Git-scoped
+provisioner lock is unchanged: this admission is not a reader lease or a
+cross-checkout concurrent writer exclusion protocol.
+A current input otherwise costs one read of the stamp, one read of each lock
 file and one ``stat`` of the tree's sentinel file (0.07 ms for Acorn, 0.3 ms
-for the 0.5 MB ``uv.lock``, measured 2026-10-20). A stale input takes a lock
-in the checkout's Git directory, checks the stamp again under it, then runs
+for the 0.5 MB ``uv.lock``, measured 2026-10-20). A stale input takes its
+existing Git-scoped lock, checks the stamp again, then runs
 one guarded provisioner command. There is no retry, no offline-then-online
 sequence and no fallback: a failure raises `ProvisioningError` with the
 command and its output.
@@ -92,6 +99,7 @@ import shutil
 import subprocess
 import sys
 import time
+import tomllib
 from typing import Literal, assert_never, get_args
 
 from molt import process_guard
@@ -145,7 +153,7 @@ class LockedTree:
 
     Lock paths are relative to ``checkout``; command arguments are relative
     to its ``command_cwd``. Both stay checkout-relative, so the action digest
-    does not depend on where the checkout lives.
+    does not depend on where the checkout lives, except an editable uv project.
     """
 
     name: str
@@ -413,13 +421,16 @@ def _action_digest(spec: LockedTree, locks: Mapping[str, str]) -> str:
     # the package directory to select its packageManager, not npm's --prefix.
     if spec.command_cwd != ".":
         digest.update(b"\2" + spec.command_cwd.encode("utf-8"))
+    if spec.name == "uv-environment":
+        # Editable output depends on the source location, unlike locked npm trees.
+        digest.update(b"\3" + os.fsencode(spec.checkout.resolve()))
     for relative, file_digest in locks.items():
         digest.update(b"\1" + relative.encode("utf-8") + b"\0")
         digest.update(file_digest.encode("ascii"))
     return digest.hexdigest()
 
 
-def _stamp_digest(spec: LockedTree) -> str | None:
+def _stamp_record(spec: LockedTree) -> dict | None:
     try:
         value = read_exact(
             spec.stamp, max_bytes=_MAX_STAMP_BYTES, label=f"{spec.name} stamp"
@@ -433,16 +444,27 @@ def _stamp_digest(spec: LockedTree) -> str | None:
         or not isinstance(value.get("digest"), str)
     ):
         return None
-    return value["digest"]
+    return value
 
 
 def _locked_state(spec: LockedTree, digest: str | None = None) -> InputState:
-    recorded = _stamp_digest(spec)
-    if recorded is None:
+    record = _stamp_record(spec)
+    if record is None:
         return "absent"
     if digest is None:
         digest = _action_digest(spec, _lock_digests(spec))
-    if recorded != digest:
+    if spec.name == "uv-environment":
+        if record.get("checkout") != str(spec.checkout.resolve()):
+            return "stale"
+        if "editable_project" not in record:
+            return "stale"
+        editable = record["editable_project"]
+        if editable is not None:
+            try:
+                _require_editable_owner(spec, editable)
+            except (OSError, ValueError, ProvisioningError):
+                return "stale"
+    if record["digest"] != digest:
         return "stale"
     return "current" if (spec.tree / spec.sentinel).is_file() else "stale"
 
@@ -572,6 +594,74 @@ def _with_caller_choices(spec: LockedTree, executable: str) -> ProcessEnvironmen
     return spec.environment.updated(pinned) if pinned else spec.environment
 
 
+def _foreign_environment(spec: LockedTree, owner: str) -> ProvisioningError:
+    return ProvisioningError(
+        f"{spec.name}: {spec.tree} belongs to editable checkout {owner}, "
+        f"not {spec.checkout}; refusing to rewrite another checkout's environment. "
+        "Use MOLT_VENV to borrow it read-only, or select a distinct environment "
+        "with tools/uv_project_env.py --python <version> --purpose <purpose>."
+    )
+
+
+def _require_editable_owner(spec: LockedTree, relative: object) -> None:
+    from molt.python_environment_location import editable_direct_url_path
+    from molt.python_identity_common import _valid_relative_payload_path
+
+    if not isinstance(relative, str) or not _valid_relative_payload_path(relative):
+        raise ProvisioningError(f"{spec.name}: invalid editable metadata path")
+    metadata = spec.tree / relative
+    try:
+        if not metadata.resolve(strict=True).is_relative_to(spec.tree.resolve()):
+            raise ValueError("editable metadata escapes environment")
+        owner = editable_direct_url_path(metadata.read_bytes(), distribution="project")
+    except (OSError, ValueError) as exc:
+        raise ProvisioningError(
+            f"{spec.name}: cannot verify {metadata}: {exc}"
+        ) from exc
+    if owner != spec.checkout.resolve():
+        raise _foreign_environment(spec, str(owner))
+
+
+def _uv_editable_project(spec: LockedTree) -> str | None:
+    """Cold admission uses the existing isolated no-site Python probe."""
+    if not (spec.tree / spec.sentinel).is_file():
+        return None
+    from molt.python_environment_identity import python_identity_probe_arguments
+    from molt.cli.deps import _molt_venv_python
+
+    try:
+        project = tomllib.loads(
+            (spec.checkout / "pyproject.toml").read_text(encoding="utf-8")
+        )
+        name = project.get("project", {}).get("name")
+        if not isinstance(name, str):
+            return None
+        argv = [
+            str(_molt_venv_python(spec.tree)),
+            *python_identity_probe_arguments(
+                ("--editable-project", str(spec.tree), name), no_site=True
+            ),
+        ]
+        result = _run(
+            spec.name,
+            argv,
+            cwd=spec.checkout,
+            environment=spec.environment,
+            guarded=False,
+            guard_source_root=spec.guard_source_root,
+        )
+        if result.returncode != 0:
+            raise _failure(spec.name, argv, spec.checkout, result)
+        relative = json.loads(result.stdout)
+        if relative is not None:
+            _require_editable_owner(spec, relative)
+        return relative
+    except (OSError, ValueError) as exc:
+        raise ProvisioningError(
+            f"{spec.name}: editable-source admission failed: {exc}"
+        ) from exc
+
+
 def _provision_locked(spec: LockedTree) -> bool:
     """Make ``spec`` current; True when this call ran its provisioner."""
     if _locked_state(spec) == "current":
@@ -581,6 +671,10 @@ def _provision_locked(spec: LockedTree) -> bool:
         digest = _action_digest(spec, locks)
         if _locked_state(spec, digest) == "current":
             return False  # Another process provisioned it while we waited.
+        if spec.name == "uv-environment":
+            _uv_editable_project(
+                spec
+            )  # Refuse foreign/invalid metadata before mutation.
         executable = spec.executable()
         if executable is None:
             raise ProvisioningError(
@@ -613,10 +707,17 @@ def _provision_locked(spec: LockedTree) -> bool:
                 f"{spec.name}: {', '.join(spec.lock_files)} changed while "
                 f"`{_command_text(argv)}` ran; the tree was not stamped"
             )
+        source_binding = {}
+        if spec.name == "uv-environment":
+            source_binding = {
+                "checkout": str(spec.checkout.resolve()),
+                "editable_project": _uv_editable_project(spec),
+            }
         write_exact(
             spec.stamp,
             {
                 "schema": SCHEMA,
+                **source_binding,
                 "input": spec.name,
                 "digest": digest,
                 "locks": locks,

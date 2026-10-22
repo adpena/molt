@@ -185,6 +185,15 @@ A checkout's inputs come from its lock files, on demand, as `uv run` does.
   selected. Status and queue setup share the default selection; retirement
   recognizes all registered inputs so an explicitly provisioned tree keeps its
   custody.
+- **Editable-source custody.** The uv stamp also binds its resolved checkout.
+  A current editable environment rechecks its exact PEP 610 metadata path; a
+  foreign checkout is refused, even with identical lock bytes. Cold
+  unstamped admission uses the existing isolated no-site Python probe. Explicit
+  `MOLT_VENV` borrowing remains read-only; manual noneditable environments keep
+  their existing contract. The existing Git-scoped provisioning lock is unchanged.
+  This does not exclude simultaneous first writers from different checkouts,
+  arbitrary external `uv` writers, or same-checkout sync during reads: shared use
+  protects retirement, not content mutation.
 - **Cost.** 2.2 s for a new worktree (uv 1.5 s, npm 0.7 s, both from warm
   caches); about 1 ms per consumer afterwards.
 - **Landed (slice 3).** `src/molt/checkout_provisioning.py` holds the uv
