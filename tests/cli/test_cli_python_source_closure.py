@@ -15,6 +15,7 @@ from molt.cli.python_import_resolution import (
 )
 from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
 from tests.process_guard_common import install_module_view
+from tests.module_isolation import forget_module
 
 
 pytestmark = pytest.mark.usefixtures("isolated_molt_cache")
@@ -1456,7 +1457,7 @@ def test_unknown_relative_inventory_covers_failed_owner_execution(
         "importlib": importlib,
     }
     monkeypatch.syspath_prepend(str(tmp_path))
-    monkeypatch.delitem(sys.modules, "alternate", raising=False)
+    forget_module(monkeypatch, "alternate")
     try:
         with pytest.raises(ImportError):
             exec(
