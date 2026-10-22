@@ -3217,7 +3217,7 @@ def test_queue_preserves_source_merges_and_resolves_their_citations(
 
 
 def test_queue_bisects_a_failed_batch_and_lands_the_rest(
-    drv, origin_and_clone, tmp_path
+    drv, origin_and_clone, tmp_path, capsys
 ):
     _, work = origin_and_clone
     counter = tmp_path / "gate-runs.txt"
@@ -3243,6 +3243,9 @@ def test_queue_bisects_a_failed_batch_and_lands_the_rest(
     assert _run_queue(drv, work) == drv.EXIT_OK
 
     assert _statuses(paths, requests) == ["landed", "landed", "failed", "landed"]
+    # The runner's own output names the failed request and why, not only its
+    # result file.
+    assert f"FAIL: {requests[2].id} failed: " in capsys.readouterr().err
     # [a b c d] fails, [a b] lands, [c d] fails, [c] fails alone, [d] lands.
     assert len(counter.read_text(encoding="utf-8").splitlines()) == 5
     tree = _origin_tree(work)
