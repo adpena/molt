@@ -6,7 +6,9 @@
 //! and starts it, so the log is the runner's real call sequence. The test
 //! checks it against the AOT main stub's order (`native_launch_abi.toml`),
 //! and checks that the start receipt exists before the runtime starts and
-//! that a program that cannot compile leaves none.
+//! that a program that cannot compile leaves none. Executing the image itself
+//! starts the runner as its interpreter, with no shell between: the program
+//! sees the environment its caller passed.
 
 mod cargo_test_artifacts {
     include!(concat!(
@@ -110,6 +112,16 @@ pub extern "C" fn molt_runtime_init() -> u64 {{
     let started = std::path::Path::new(&receipt).exists();
     let bootstrap = unsafe {{ molt_isolate_bootstrap() }};
     log(&format!("molt_runtime_init receipt={{started}} bootstrap={{bootstrap:#x}}"));
+    // A shell between the caller and the runner would set PWD and SHLVL; the
+    // runner's allocator restart must leave no variable of its own behind.
+    log(&format!(
+        "env PWD={{:?}} SHLVL={{:?}} OLDPWD={{:?}} MallocLargeCache={{:?}} restart={{:?}}",
+        std::env::var_os("PWD"),
+        std::env::var_os("SHLVL"),
+        std::env::var_os("OLDPWD"),
+        std::env::var_os("MallocLargeCache"),
+        std::env::var_os("MOLT_JIT_ALLOCATOR_RESTART")
+    ));
     // The process state a C `main` gives a program: inherited dispositions,
     // no stack-overflow handler, no alternate signal stack, one thread.
     log(&format!(
@@ -280,8 +292,10 @@ fn program(extra_import: Option<&str>) -> Vec<u8> {
 fn write_image(path: &Path, runtime_image: &Path, program: &[u8]) {
     let header = serde_json::json!({
         "runtime_image": runtime_image,
-        "backend_environment": {},
-        "compiler_diagnostics": "on_failure",
+        // Backend timing is a diagnostic, so its output streams, as the CLI
+        // sets it (`_env_requests_backend_diagnostics`).
+        "backend_environment": {"MOLT_BACKEND_TIMING": "1"},
+        "compiler_diagnostics": "stream",
         "launch": {
             "environment": {"MOLT_EXECUTION_TARGET": "native"},
             "runtime_module_roots": [],
@@ -290,13 +304,25 @@ fn write_image(path: &Path, runtime_image: &Path, program: &[u8]) {
     })
     .to_string();
     let mut bytes = format!(
-        "#!/bin/sh\nexec molt-jit --launch \"$0\" -- \"$0\" \"$@\"\n#molt.jit-image.v1 {} {}\n{header}",
+        "#!{RUNNER} --image\n#molt.jit-image.v2 {} {}\n{header}",
         header.len(),
         program.len()
     )
     .into_bytes();
     bytes.extend_from_slice(program);
     std::fs::write(path, bytes).expect("write the JIT image");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+        .expect("make the JIT image executable");
+}
+
+/// How the test starts the program.
+enum Start {
+    /// As `molt run` does: the runner, with a start receipt.
+    Runner,
+    /// As `subprocess` or a spawned worker does: `execve` of the image, from
+    /// a caller whose PWD is stale and whose environment has no SHLVL.
+    Image,
 }
 
 struct Launch {
@@ -306,21 +332,37 @@ struct Launch {
     receipt: bool,
 }
 
-fn launch(label: &str, extra_import: Option<&str>) -> Launch {
+fn launch(label: &str, extra_import: Option<&str>, start: Start) -> Launch {
     let artifacts = CargoTestArtifacts::new(label).expect("Cargo test artifact root");
     let runtime = fake_runtime(&artifacts);
     let image = artifacts.path().join("app_molt.jit");
     write_image(&image, &runtime, &program(extra_import));
     let log = artifacts.path().join("calls.log");
     let receipt = artifacts.path().join("started.json");
-    let output = Command::new(RUNNER)
-        .arg("--launch")
-        .arg(&image)
-        .arg("--start-receipt")
-        .arg(&receipt)
-        .arg("--")
-        .arg(&image)
-        .args(["first", "second"])
+    let mut command = match start {
+        Start::Runner => {
+            let mut command = Command::new(RUNNER);
+            command
+                .arg("--start-receipt")
+                .arg(&receipt)
+                .arg("--image")
+                .arg(&image)
+                .args(["first", "second"]);
+            command
+        }
+        Start::Image => {
+            let mut command = Command::new(&image);
+            command
+                .args(["first", "two words"])
+                .env("PWD", "/stale/dir")
+                .env("OLDPWD", "/previous/dir")
+                // A caller's own allocator setting stays the program's.
+                .env("MallocLargeCache", "1")
+                .env_remove("SHLVL");
+            command
+        }
+    };
+    let output = command
         .env("FAKE_RUNTIME_LOG", &log)
         .env("FAKE_RUNTIME_RECEIPT", &receipt)
         .env_remove("MOLT_EXECUTION_TARGET")
@@ -356,14 +398,14 @@ fn declared_start_sequence() -> Vec<String> {
 
 #[test]
 fn the_runner_starts_a_program_in_the_aot_stub_order() {
-    let run = launch("jit-launch-order", None);
+    let run = launch("jit-launch-order", None, Start::Runner);
     assert_eq!(run.status.code(), Some(0), "{}", run.stderr);
     assert!(run.receipt);
     let called: Vec<&str> = run
         .log
         .iter()
         .map(|line| line.split(' ').next().unwrap_or_default())
-        .filter(|name| *name != "process")
+        .filter(|name| *name != "process" && *name != "env")
         .collect();
     // The declared start sequence, then the program's own exit: a program
     // leaves through `molt_runtime_exit` from its entry.
@@ -409,6 +451,16 @@ fn the_runner_starts_a_program_in_the_aot_stub_order() {
         line("process"),
         "process sigpipe=default sigsegv=default sigbus=default altstack=off threads=1"
     );
+    // The runner restarted itself with its allocator setting (macOS) and
+    // removed it again: the program sees only what its caller passed.
+    let env = line("env");
+    assert!(env.ends_with("MallocLargeCache=None restart=None"), "{env}");
+    #[cfg(target_os = "macos")]
+    assert!(
+        run.stderr.contains(", large-block cache off\n"),
+        "{}",
+        run.stderr
+    );
     // argv[0] is the image, so sys.executable re-runs the program.
     let argv = line("molt_set_argv");
     assert!(argv.ends_with("app_molt.jit first second"), "{argv}");
@@ -419,9 +471,48 @@ fn the_runner_starts_a_program_in_the_aot_stub_order() {
 fn a_program_that_cannot_compile_leaves_no_start_receipt() {
     // The fake runtime defines no `molt_missing_helper`: the runner refuses
     // the program before relocation, so nothing of the launch runs.
-    let run = launch("jit-launch-refused", Some("molt_missing_helper"));
+    let run = launch(
+        "jit-launch-refused",
+        Some("molt_missing_helper"),
+        Start::Runner,
+    );
     assert_eq!(run.status.code(), Some(125), "{}", run.stderr);
     assert!(run.stderr.contains("molt_missing_helper"), "{}", run.stderr);
     assert!(run.log.is_empty(), "{:?}", run.log);
     assert!(!run.receipt);
+}
+
+#[test]
+fn executing_the_image_starts_its_runner_with_no_shell_between() {
+    // subprocess.run([sys.executable]) and spawn-mode workers execute the
+    // image. The runner is its interpreter, so the program keeps its caller's
+    // environment (a shell would reset a stale PWD, drop OLDPWD and set SHLVL)
+    // and its argv is the image path the kernel was given, then the arguments.
+    let run = launch("jit-launch-direct", None, Start::Image);
+    assert_eq!(run.status.code(), Some(0), "{}", run.stderr);
+    assert!(!run.receipt);
+    let line = |name: &str| {
+        run.log
+            .iter()
+            .find(|line| line.starts_with(name))
+            .map(String::as_str)
+            .unwrap_or_default()
+    };
+    assert_eq!(
+        line("env"),
+        r#"env PWD=Some("/stale/dir") SHLVL=None OLDPWD=Some("/previous/dir") MallocLargeCache=Some("1") restart=None"#
+    );
+    let argv = line("molt_set_argv");
+    assert!(
+        argv.starts_with("molt_set_argv /") && argv.ends_with("/app_molt.jit first two words"),
+        "{argv}"
+    );
+    assert_eq!(line("molt_runtime_exit"), "molt_runtime_exit 0");
+    // The caller's own allocator setting stands: no restart.
+    #[cfg(target_os = "macos")]
+    assert!(
+        run.stderr.contains(", large-block cache on\n"),
+        "{}",
+        run.stderr
+    );
 }

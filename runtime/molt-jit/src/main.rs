@@ -8,9 +8,14 @@
 //! happens. Stdout, stderr and the exit status are the program's own.
 //!
 //! ```text
-//! molt-jit --launch <image> [--start-receipt <path>] -- <argv0> [args...]
+//! molt-jit [--start-receipt <path>] --image <image> [args...]
 //! molt-jit --probe
 //! ```
+//!
+//! The image's first line is `#!<runner> --image`, so `execve` of the image
+//! starts the runner directly, with no shell, as `<runner> --image <image>
+//! [args...]`; the program's argv is `<image> [args...]`. `molt run` and the
+//! differential harness use the same command, adding `--start-receipt`.
 //!
 //! The runner is a C `main`, as an AOT executable is, not a Rust `main`:
 //! Rust's start-up code ignores `SIGPIPE` and installs `SIGSEGV`/`SIGBUS`
@@ -44,7 +49,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 const EXIT_RUNNER_FAILURE: i32 = 125;
 const EXIT_USAGE: i32 = 2;
 
-const USAGE: &str = "usage: molt-jit --launch <image> [--start-receipt <path>] -- <argv0> [args...]\n       molt-jit --probe";
+const USAGE: &str =
+    "usage: molt-jit [--start-receipt <path>] --image <image> [args...]\n       molt-jit --probe";
 
 /// The exact contents of a start receipt (`--start-receipt`). The runner
 /// creates it after the program compiled, immediately before the program
@@ -96,7 +102,89 @@ pub unsafe extern "C" fn process_entry(
     std::hint::black_box(molt_isolate_bootstrap as unsafe extern "C" fn() -> u64);
     // SAFETY: the caller passes `argc` valid NUL-terminated strings.
     let arguments = unsafe { process_arguments(argc, argv) };
-    runner_main(arguments)
+    let Some(invocation) = parse_invocation(arguments) else {
+        return usage();
+    };
+    #[cfg(target_os = "macos")]
+    if matches!(invocation, Invocation::Run { .. }) {
+        // SAFETY: the process is single-threaded; `argv` is the process's own
+        // NUL-terminated vector.
+        if let Err(message) = unsafe { restart_without_large_block_cache(argv) } {
+            return fail(message);
+        }
+    }
+    runner_main(invocation)
+}
+
+/// libmalloc's setting the runner restarts itself with, and the marker that
+/// says this process is that restart.
+#[cfg(target_os = "macos")]
+const LARGE_BLOCK_CACHE: &str = "MallocLargeCache";
+#[cfg(target_os = "macos")]
+const RESTARTED: &str = "MOLT_JIT_ALLOCATOR_RESTART";
+
+/// Whether this process runs with the large-block cache off, for the timing
+/// line (`MOLT_BACKEND_TIMING`).
+static LARGE_BLOCK_CACHE_OFF: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Give the program a process without the compiler's freed heap.
+///
+/// macOS's allocator keeps freed large blocks in a cache for reuse. The
+/// compiler frees almost all it built, but the cache keeps those pages dirty,
+/// so a program that imports `subprocess` would run with an 0.9 GB footprint
+/// (38 MB under AOT). `malloc_zone_pressure_relief` releases none of them, and
+/// libmalloc reads its settings only when a process starts. So the runner
+/// restarts itself once, as the same process (`execv` keeps the pid, argv,
+/// descriptors, signal mask and dispositions), with `MallocLargeCache=0`, and
+/// the restarted runner removes both variables before anything else runs, so
+/// the program sees its caller's environment. Measured on macOS arm64 for that
+/// program: a 71 MB footprint, for 0.4 s more compile time (median of five).
+/// A caller that sets `MallocLargeCache` itself keeps its own setting.
+///
+/// # Safety
+/// The process must be single-threaded, and `argv` its NUL-terminated
+/// argument vector.
+#[cfg(target_os = "macos")]
+unsafe fn restart_without_large_block_cache(
+    argv: *const *const libc::c_char,
+) -> Result<(), String> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the runner reads the allocator setting its caller passed"
+    )]
+    let restarted = std::env::var_os(RESTARTED).is_some();
+    if restarted {
+        // SAFETY: the caller guarantees a single-threaded process.
+        unsafe {
+            std::env::remove_var(RESTARTED);
+            std::env::remove_var(LARGE_BLOCK_CACHE);
+        }
+        LARGE_BLOCK_CACHE_OFF.store(true, Ordering::Relaxed);
+        return Ok(());
+    }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the runner reads the allocator setting its caller passed"
+    )]
+    if std::env::var_os(LARGE_BLOCK_CACHE).is_some() {
+        return Ok(());
+    }
+    let executable = std::env::current_exe()
+        .map_err(|error| format!("cannot find the runner to restart it: {error}"))?;
+    let executable = std::ffi::CString::new(executable.as_os_str().as_encoded_bytes())
+        .map_err(|_| "the runner path contains a NUL byte".to_string())?;
+    // SAFETY: the caller guarantees a single-threaded process; `execv` gets
+    // the process's own NUL-terminated argv and returns only on failure.
+    unsafe {
+        std::env::set_var(LARGE_BLOCK_CACHE, "0");
+        std::env::set_var(RESTARTED, "1");
+        libc::execv(executable.as_ptr(), argv);
+    }
+    Err(format!(
+        "cannot restart the runner without the large-block cache: {}",
+        std::io::Error::last_os_error()
+    ))
 }
 
 /// The arguments after argv[0], as the OS passed them.
@@ -123,44 +211,60 @@ unsafe fn process_arguments(
     std::env::args_os().skip(1).collect()
 }
 
-fn runner_main(arguments: Vec<OsString>) -> i32 {
+/// What the command line asks for.
+enum Invocation {
+    Probe,
+    /// Start the program in `image`; `argv` is the program's, the image first.
+    Run {
+        image: PathBuf,
+        start_receipt: Option<PathBuf>,
+        argv: Vec<OsString>,
+    },
+}
+
+fn parse_invocation(arguments: Vec<OsString>) -> Option<Invocation> {
     let mut args = arguments.into_iter();
-    match args.next().as_ref().and_then(|arg| arg.to_str()) {
-        Some("--probe") if args.next().is_none() => {
-            match molt_backend_native::probe_jit_execution() {
-                Ok(()) => {
-                    eprintln!("molt-jit: executable memory probe passed");
-                    0
-                }
-                Err(error) => fail(format_args!("executable memory probe failed: {error}")),
+    let mut start_receipt = None;
+    loop {
+        match args.next().as_ref().and_then(|arg| arg.to_str()) {
+            Some("--probe") if start_receipt.is_none() && args.len() == 0 => {
+                return Some(Invocation::Probe);
             }
+            Some("--start-receipt") if start_receipt.is_none() => {
+                start_receipt = Some(PathBuf::from(args.next()?));
+            }
+            // Everything after the image is the program's, verbatim.
+            Some("--image") => {
+                let image = args.next()?;
+                let argv = std::iter::once(image.clone()).chain(args).collect();
+                return Some(Invocation::Run {
+                    image: PathBuf::from(image),
+                    start_receipt,
+                    argv,
+                });
+            }
+            _ => return None,
         }
-        Some("--launch") => {
-            let Some(image) = args.next().map(PathBuf::from) else {
-                return usage();
-            };
-            let mut start_receipt = None;
-            let mut separator = args.next();
-            if separator.as_ref().and_then(|arg| arg.to_str()) == Some("--start-receipt") {
-                let Some(path) = args.next().map(PathBuf::from) else {
-                    return usage();
-                };
-                start_receipt = Some(path);
-                separator = args.next();
+    }
+}
+
+fn runner_main(invocation: Invocation) -> i32 {
+    match invocation {
+        Invocation::Probe => match molt_backend_native::probe_jit_execution() {
+            Ok(()) => {
+                eprintln!("molt-jit: executable memory probe passed");
+                0
             }
-            if separator.as_ref().and_then(|arg| arg.to_str()) != Some("--") {
-                return usage();
-            }
-            let argv: Vec<OsString> = args.collect();
-            if argv.is_empty() {
-                return usage();
-            }
-            match run(&image, start_receipt.as_deref(), &argv) {
-                Ok(never) => match never {},
-                Err(message) => fail(message),
-            }
-        }
-        _ => usage(),
+            Err(error) => fail(format_args!("executable memory probe failed: {error}")),
+        },
+        Invocation::Run {
+            image,
+            start_receipt,
+            argv,
+        } => match run(&image, start_receipt.as_deref(), &argv) {
+            Ok(never) => match never {},
+            Err(message) => fail(message),
+        },
     }
 }
 
@@ -218,7 +322,7 @@ fn run(
     let capture = match image.header.compiler_diagnostics {
         CompilerDiagnostics::Stream => None,
         // SAFETY: the runner has started no thread yet.
-        CompilerDiagnostics::OnFailure => Some(unsafe { CapturedStderr::begin() }?),
+        CompilerDiagnostics::OnFailure => unsafe { CapturedStderr::begin() }?,
     };
     let removed = RemovedBackendEnvironment::capture();
     // SAFETY: the runner is still single-threaded. Backend settings now come
@@ -231,6 +335,11 @@ fn run(
     }
     let (api, program) = compiled?;
     let entry = program.entry_points().map_err(|error| error.to_string())?;
+    // The program runs with only its code, the runtime and its launch plan:
+    // the image bytes and the compiler's freed heap go back to the OS first.
+    let launch = image.header.launch;
+    drop(image.bytes);
+    release_compiler_memory();
     if let Some(path) = start_receipt {
         write_start_receipt(path)?;
     }
@@ -242,7 +351,22 @@ fn run(
     std::mem::forget(program);
     // SAFETY: `entry` belongs to a program compiled against the runtime image
     // `api` was resolved in; the environment is this thread's alone.
-    unsafe { launch::run_program(&api, entry, &image.header.launch, argv) }
+    unsafe { launch::run_program(&api, entry, &launch, argv) }
+}
+
+/// Return the compiler's freed heap to the OS before the program starts, where
+/// the allocator does not do so as it frees. glibc keeps freed pages in its
+/// arenas until `malloc_trim`. macOS needs no call here: the runner restarts
+/// itself with the large-block cache off (`restart_without_large_block_cache`).
+fn release_compiler_memory() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        unsafe extern "C" {
+            fn malloc_trim(pad: usize) -> libc::c_int;
+        }
+        // SAFETY: trims glibc's arenas; no other thread runs.
+        unsafe { malloc_trim(0) };
+    }
 }
 
 /// Load the runtime image, then compile the program against it on a compiler
@@ -274,10 +398,15 @@ fn load_and_compile(
     if timing {
         let compiled = started.elapsed();
         eprintln!(
-            "MOLT_JIT_TIMING: runtime image load {:.2?}, program decode {:.2?}, compile {:.2?}",
+            "MOLT_JIT_TIMING: runtime image load {:.2?}, program decode {:.2?}, compile {:.2?}, large-block cache {}",
             loaded,
             decoded - loaded,
-            compiled - decoded
+            compiled - decoded,
+            if LARGE_BLOCK_CACHE_OFF.load(Ordering::Relaxed) {
+                "off"
+            } else {
+                "on"
+            }
         );
     }
     Ok((api, program))
@@ -328,6 +457,25 @@ fn compile(
 mod tests {
     #[test]
     fn the_process_entry_refuses_a_command_line_it_does_not_know() {
+        for argv in [
+            vec![
+                c"molt-jit".as_ptr(),
+                c"--launch".as_ptr(),
+                c"a.jit".as_ptr(),
+            ],
+            vec![c"molt-jit".as_ptr(), c"--image".as_ptr()],
+            vec![c"molt-jit".as_ptr(), c"--start-receipt".as_ptr()],
+            vec![c"molt-jit".as_ptr(), c"--probe".as_ptr(), c"extra".as_ptr()],
+        ] {
+            let count = libc::c_int::try_from(argv.len()).unwrap();
+            // SAFETY: valid NUL-terminated strings.
+            let status = unsafe { super::process_entry(count, argv.as_ptr()) };
+            assert_eq!(status, super::EXIT_USAGE);
+        }
+    }
+
+    #[test]
+    fn the_process_entry_refuses_an_unknown_flag() {
         let argv = [c"molt-jit".as_ptr(), c"--bogus".as_ptr()];
         // SAFETY: two valid NUL-terminated strings.
         let status = unsafe { super::process_entry(2, argv.as_ptr()) };
