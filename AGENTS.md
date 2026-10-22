@@ -109,10 +109,9 @@ prefer live code, tests, measurements and explicit user direction over stale pro
 
 ## Work with the live repository
 
-- Start with `uv run --python 3.12 python tools/agent_coordination.py context` (`--json` for the
-  versioned model), `git status`, applicable nested instructions, and the current source/proof
-  state. For active multi-agent or Pact work, read only the relevant live sections of
-  `docs/agent/ORCHESTRATION.md`.
+- Start with `uv run --python 3.12 python tools/agent_coordination.py context` (`--json` for its
+  versioned model), `git status`, nested instructions and current source/proof state. For active
+  multi-agent or Pact work, read the relevant `docs/agent/ORCHESTRATION.md` sections.
 - Preserve user and parallel-agent work. Never reset, clean, overwrite, revert or broadly stage
   unrelated changes. Integrate with pathspecs and review every diff before commit or landing.
 - Generated files are projections; change the source or generator and regenerate in the same arc.
@@ -129,21 +128,18 @@ prefer live code, tests, measurements and explicit user direction over stale pro
 
 ## Delegate deliberately
 
-- Before designing, implementing or deleting, search canonical authority, relevant history/handoffs
-  and preserved WIP/donor trees. Report the invariant's owner and what to reuse, reconcile or retire.
-  Task messages and memories are leads to verify, not permission for a second implementation.
-  Ask the integrator when ownership or custody is unclear.
-- Use subagents for independent, bounded exploration, audits, log analysis, proof review, mechanical
-  migration and disjoint implementation. Keep working, redirect drifting lanes and integrate evidence.
-  Avoid overlapping writers and redundant proofs; the parent owns architecture, integration,
-  verification and cleanup.
+- Before designing, implementing or deleting, search canonical authority, history, handoffs and WIP.
+  Report the invariant's owner and what to reuse, reconcile or retire, including preserved donors.
+  Verify task messages and memory as leads; ask the integrator about unclear ownership or custody.
+- Use subagents for bounded exploration, audits, log analysis, review and disjoint/mechanical changes.
+  Keep working, redirect drifting lanes and integrate evidence. Avoid overlapping writers or proofs;
+  the parent owns architecture, integration, verification and cleanup.
 - Record active worker ownership and handoff state in the coordination records described in
   `docs/ops/MULTI_AGENT_COORDINATION.md`; task messages and worktree names are not source locks.
-- Match model and effort: strongest reasoning for load-bearing architecture/correctness, faster
-  workers for bounded scans and mechanical work. Respect operator concurrency limits for Codex
-  and external workers; use Astra for complex, mission-critical or long-running reasoning.
-  Claude Fable/Opus may independently design or review under the same search, ownership and evidence
-  discipline, without opening a second integration lane.
+- Match model and effort: strongest reasoning for architecture/correctness, faster workers for
+  bounded scans and mechanical work. Respect operator concurrency limits for all workers; use Astra
+  for complex, mission-critical or long-running reasoning. Claude Fable/Opus follows the same search,
+  ownership and evidence discipline for independent design/review, without a second integration lane.
 
 ## Verify the claim, not the ritual
 
