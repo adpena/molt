@@ -308,6 +308,74 @@ def test_a_worktree_add_that_fails_after_branching_is_undone(
     assert _start(family, "hooked").is_dir()
 
 
+def test_a_second_start_of_a_slug_refuses_while_the_first_runs(
+    family: Path,
+) -> None:
+    """Two starts of one slug once raced: the loser's undo removed the
+    winner's worktree and branch (review v4). One start per slug runs at a
+    time; the second refuses and creates nothing."""
+    from molt.file_locks import _release_file_lock, _try_acquire_file_lock
+
+    main = family / "molt-src"
+    common = Path(_git(main, "rev-parse", "--git-common-dir").stdout.strip())
+    if not common.is_absolute():
+        common = main / common
+    lock = common / "molt" / "lane-start" / "twin.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    handle = _try_acquire_file_lock(lock)
+    assert handle is not None
+    try:
+        with pytest.raises(DriverError, match="another `lane start twin` is running"):
+            lanes.cmd_lane_start(_args(family, slug="twin"))
+        assert _ref(main, "refs/heads/lane/twin") is None
+        assert not (family / "worktrees" / "twin").exists()
+    finally:
+        _release_file_lock(handle)
+    assert _start(family, "twin").is_dir()
+
+
+def test_an_undo_names_how_to_finish_what_it_keeps(
+    family: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A branch that moved before the record failed is kept with the commands
+    that finish by hand; a path another process made is kept while the
+    branch this start made goes (review v4)."""
+    from tools import agent_coordination
+
+    main = family / "molt-src"
+
+    def commit_then_refuse(**kwargs):
+        worktree = kwargs["source_root"]
+        _git(worktree, "config", "user.email", "dev@molt.test")
+        _git(worktree, "config", "user.name", "Molt Dev")
+        _commit_file(worktree, "work.txt", "kept\n", "work")
+        raise RuntimeError("record refused")
+
+    monkeypatch.setattr(agent_coordination, "create_task", commit_then_refuse)
+    with pytest.raises(DriverError) as raised:
+        lanes.cmd_lane_start(_args(family, slug="moved"))
+    message = str(raised.value)
+    assert "removed " in message and "kept lane/moved" in message
+    assert "git log " in message and "git branch -D lane/moved" in message
+    assert not (family / "worktrees" / "moved").exists()
+    assert _ref(main, "refs/heads/lane/moved") is not None
+
+    stranger = family / "worktrees" / "raced"
+
+    def make_the_path(*args, **kwargs):
+        stranger.mkdir(parents=True)
+        (stranger / "theirs.txt").write_text("theirs\n", encoding="utf-8")
+        return None
+
+    monkeypatch.setattr(lanes, "work_in_progress_refusal", make_the_path)
+    with pytest.raises(DriverError) as raised:
+        lanes.cmd_lane_start(_args(family, slug="raced"))
+    message = str(raised.value)
+    assert f"kept {stranger}" in message, message
+    assert (stranger / "theirs.txt").read_text(encoding="utf-8") == "theirs\n"
+    assert _ref(main, "refs/heads/lane/raced") is None, message
+
+
 def test_lane_commands_refuse_a_pinned_claim_for_another_controller(
     family: Path,
 ) -> None:
