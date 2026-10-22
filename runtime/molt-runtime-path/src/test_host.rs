@@ -286,14 +286,6 @@ pub extern "C" fn __molt_path_seq_snapshot(
     unexpected("__molt_path_seq_snapshot")
 }
 
-unexpected_u64!(__molt_path_molt_iter(bits: u64));
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_path_molt_iter_next(iter_bits: u64, out: *mut u64) -> i32 {
-    let _ = (iter_bits, out);
-    unexpected("__molt_path_molt_iter_next")
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_path_require_operation(
     operation_ptr: *const u8,

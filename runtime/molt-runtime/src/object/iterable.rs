@@ -9,6 +9,14 @@ pub(crate) enum SpecialIterationKind {
     SequenceItem(u64),
 }
 
+/// Public next() without a default preserves the exact raised exception.
+/// Loop/status consumers normalize StopIteration into an owned completion value.
+#[derive(Clone, Copy)]
+pub(crate) enum IterationExhaustion {
+    Normalize,
+    PreserveException,
+}
+
 /// Values and exhaustion payloads each transfer one owned reference.
 pub(crate) enum SpecialIterationStep {
     Item(u64),
@@ -22,74 +30,30 @@ pub(crate) fn special_iteration_step(
     py: &PyToken<'_>,
     receiver: u64,
     kind: SpecialIterationKind,
+    exhaustion: IterationExhaustion,
 ) -> Result<SpecialIterationStep, ()> {
-    exception_stack_push();
+    let frame = crate::builtins::exceptions::ExceptionStackScope::push(py);
     let name: &[u8] = match kind {
         SpecialIterationKind::Next => b"__next__",
         SpecialIterationKind::SequenceItem(_) => b"__getitem__",
     };
-    let callable = unsafe { crate::builtins::attr::lookup_special_method(py, receiver, name) };
-    let (callable, lookup_failed) = match callable {
-        Ok(callable) => (callable, false),
-        Err(()) => (None, true),
+    use crate::builtins::attr::DescriptorArguments;
+    let args = match kind {
+        SpecialIterationKind::Next => DescriptorArguments::Zero,
+        SpecialIterationKind::SequenceItem(index) => DescriptorArguments::One(index),
     };
-    let value = callable.map(|callable| {
-        let value = unsafe {
-            match kind {
-                SpecialIterationKind::Next => call_callable0(py, callable),
-                SpecialIterationKind::SequenceItem(index) => call_callable1(py, callable, index),
-            }
+    let (value, lookup_failed) =
+        match unsafe { crate::builtins::attr::invoke_special_method(py, receiver, name, args) } {
+            Ok(value) => (value, false),
+            Err(()) => (None, true),
         };
-        dec_ref_bits(py, callable);
-        value
-    });
     if lookup_failed || (value.is_some() && exception_pending(py)) {
         if let Some(value) = value {
             dec_ref_bits(py, value);
         }
-        let exception = molt_exception_last_pending();
-        let stop = crate::builtins::exceptions::exception_matches_builtin_name(
-            py,
-            exception,
-            "StopIteration",
-        );
-        let exhausted = stop
-            || (matches!(kind, SpecialIterationKind::SequenceItem(_))
-                && crate::builtins::exceptions::exception_matches_builtin_name(
-                    py,
-                    exception,
-                    "IndexError",
-                ));
-        if exhausted {
-            let payload = if stop && matches!(kind, SpecialIterationKind::Next) {
-                obj_from_bits(exception)
-                    .as_ptr()
-                    .and_then(|ptr| unsafe {
-                        (object_type_id(ptr) == TYPE_ID_EXCEPTION)
-                            .then(|| {
-                                crate::builtins::exceptions::exception_typed_field_get(
-                                    py,
-                                    ptr,
-                                    molt_obj_model::ExceptionTypedField::StopIterationValue,
-                                )
-                                .and_then(Result::ok)
-                            })
-                            .flatten()
-                    })
-                    .unwrap_or_else(|| MoltObject::none().bits())
-            } else {
-                MoltObject::none().bits()
-            };
-            molt_exception_clear();
-            exception_stack_pop(py);
-            dec_ref_bits(py, exception);
-            return Ok(SpecialIterationStep::Exhausted(payload));
-        }
-        exception_stack_pop_restore_last(py, exception);
-        dec_ref_bits(py, exception);
-        return Err(());
+        return finish_iteration_error(py, kind, exhaustion, frame);
     }
-    exception_stack_pop(py);
+    drop(frame);
     Ok(value
         .map(SpecialIterationStep::Item)
         .unwrap_or(SpecialIterationStep::Missing))
@@ -273,4 +237,54 @@ pub(crate) fn materialize_sequence<'a, 'py>(
             MoltObject::from_ptr(list).bits(),
         )
     })
+}
+
+/// Complete the active iteration exception transaction. Both native adapters
+/// and Python slots use this owner; only explicitly normalized consumers clear
+/// StopIteration/sequence IndexError and project an owned completion payload.
+pub(crate) fn finish_iteration_error(
+    py: &PyToken<'_>,
+    kind: SpecialIterationKind,
+    exhaustion: IterationExhaustion,
+    frame: crate::builtins::exceptions::ExceptionStackScope<'_, '_>,
+) -> Result<SpecialIterationStep, ()> {
+    let exception = molt_exception_last_pending();
+    let stop =
+        crate::builtins::exceptions::exception_matches_builtin_name(py, exception, "StopIteration");
+    let exhausted = stop
+        || (matches!(kind, SpecialIterationKind::SequenceItem(_))
+            && crate::builtins::exceptions::exception_matches_builtin_name(
+                py,
+                exception,
+                "IndexError",
+            ));
+    if exhausted && matches!(exhaustion, IterationExhaustion::Normalize) {
+        let payload = if stop && matches!(kind, SpecialIterationKind::Next) {
+            obj_from_bits(exception)
+                .as_ptr()
+                .and_then(|ptr| unsafe {
+                    (object_type_id(ptr) == TYPE_ID_EXCEPTION)
+                        .then(|| {
+                            crate::builtins::exceptions::exception_typed_field_get(
+                                py,
+                                ptr,
+                                molt_obj_model::ExceptionTypedField::StopIterationValue,
+                            )
+                            .and_then(Result::ok)
+                        })
+                        .flatten()
+                })
+                .unwrap_or_else(|| MoltObject::none().bits())
+        } else {
+            MoltObject::none().bits()
+        };
+        molt_exception_clear();
+        drop(frame);
+        dec_ref_bits(py, exception);
+        return Ok(SpecialIterationStep::Exhausted(payload));
+    }
+    drop(frame);
+    let _ = molt_exception_set_last(exception);
+    dec_ref_bits(py, exception);
+    Err(())
 }

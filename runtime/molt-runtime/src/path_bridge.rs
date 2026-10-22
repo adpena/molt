@@ -236,34 +236,6 @@ pub extern "C" fn __molt_path_seq_snapshot(
 // Iteration helpers
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_path_molt_iter(bits: u64) -> u64 {
-    crate::object::ops_iter::molt_iter(bits)
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_path_molt_iter_next(iter_bits: u64, out: *mut u64) -> i32 {
-    let result = crate::object::ops_iter::molt_iter_next(iter_bits);
-    let none_bits = MoltObject::none().bits();
-    if result == none_bits {
-        crate::with_gil_entry_nopanic!(_py, {
-            if exception_pending(_py) {
-                0 // StopIteration or error
-            } else {
-                unsafe {
-                    *out = result;
-                }
-                1
-            }
-        })
-    } else {
-        unsafe {
-            *out = result;
-        }
-        1
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Capability helpers
 // ---------------------------------------------------------------------------

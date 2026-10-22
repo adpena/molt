@@ -128,7 +128,9 @@ pub extern "C" fn molt_pickle_loads_core(
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
-            Some(iter_bits)
+            Some(unsafe {
+                molt_runtime_core::OwnedRuntimeValue::from_owned_bits(_py.core_token(), iter_bits)
+            })
         };
         if data
             .as_slice()
@@ -201,7 +203,7 @@ pub extern "C" fn molt_pickle_loads_core(
                     }
                 }
                 PICKLE_OP_NEXT_BUFFER => {
-                    let bits = match pickle_next_external_buffer_bits(_py, buffers_iter) {
+                    let bits = match pickle_next_external_buffer_bits(_py, buffers_iter.as_ref()) {
                         Ok(v) => v,
                         Err(err_bits) => return err_bits,
                     };

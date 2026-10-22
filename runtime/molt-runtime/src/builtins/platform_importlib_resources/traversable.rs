@@ -5,33 +5,17 @@ pub(super) fn importlib_reader_collect_unique_strings(
     values_bits: u64,
     _invalid_entry_message: &str,
 ) -> Result<Vec<String>, u64> {
-    let iter_bits = molt_iter(values_bits);
-    if exception_pending(_py) {
+    let Some(mut iterator) = crate::object::iterable::OwnedIterator::new(_py, values_bits) else {
         return Err(MoltObject::none().bits());
-    }
+    };
     let mut out: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     loop {
-        let pair_bits = molt_iter_next(iter_bits);
-        let Some(pair_ptr) = maybe_ptr_from_bits(pair_bits) else {
-            return Err(MoltObject::none().bits());
-        };
-        unsafe {
-            if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-                return Err(MoltObject::none().bits());
-            }
-        }
-        if unsafe { crate::object::seq_access::locked_len(pair_ptr) } < 2 {
-            return Err(MoltObject::none().bits());
-        }
-        let Some(done) = (unsafe { crate::object::seq_access::pin_item(_py, pair_ptr, 1) }) else {
-            return Err(MoltObject::none().bits());
-        };
-        if is_truthy(_py, obj_from_bits(done.bits())) {
+        let Some(bits) = iterator.next().map_err(|_| MoltObject::none().bits())? else {
             break;
-        }
-        let Some(value) = (unsafe { crate::object::seq_access::pin_item(_py, pair_ptr, 0) }) else {
-            return Err(MoltObject::none().bits());
+        };
+        let value = unsafe {
+            molt_runtime_core::OwnedRuntimeValue::from_owned_bits(_py.core_token(), bits)
         };
         let Some(entry) = string_obj_to_owned(obj_from_bits(value.bits())) else {
             // CPython ResourceReader handling is tolerant of non-string entries in
@@ -52,33 +36,17 @@ pub(super) fn importlib_reader_collect_unique_paths(
     values_bits: u64,
     invalid_entry_message: &str,
 ) -> Result<Vec<String>, u64> {
-    let iter_bits = molt_iter(values_bits);
-    if exception_pending(_py) {
+    let Some(mut iterator) = crate::object::iterable::OwnedIterator::new(_py, values_bits) else {
         return Err(MoltObject::none().bits());
-    }
+    };
     let mut out: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     loop {
-        let pair_bits = molt_iter_next(iter_bits);
-        let Some(pair_ptr) = maybe_ptr_from_bits(pair_bits) else {
-            return Err(MoltObject::none().bits());
-        };
-        unsafe {
-            if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-                return Err(MoltObject::none().bits());
-            }
-        }
-        if unsafe { crate::object::seq_access::locked_len(pair_ptr) } < 2 {
-            return Err(MoltObject::none().bits());
-        }
-        let Some(done) = (unsafe { crate::object::seq_access::pin_item(_py, pair_ptr, 1) }) else {
-            return Err(MoltObject::none().bits());
-        };
-        if is_truthy(_py, obj_from_bits(done.bits())) {
+        let Some(bits) = iterator.next().map_err(|_| MoltObject::none().bits())? else {
             break;
-        }
-        let Some(value) = (unsafe { crate::object::seq_access::pin_item(_py, pair_ptr, 0) }) else {
-            return Err(MoltObject::none().bits());
+        };
+        let value = unsafe {
+            molt_runtime_core::OwnedRuntimeValue::from_owned_bits(_py.core_token(), bits)
         };
         let path = match path_from_bits(_py, value.bits()) {
             Ok(path_buf) => path_buf.to_string_lossy().into_owned(),
@@ -191,37 +159,20 @@ pub(super) fn importlib_traversable_iterdir_names(
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
     }
-    let iter_bits = molt_iter(iterable_bits);
-    if !obj_from_bits(iterable_bits).is_none() {
-        dec_ref_bits(_py, iterable_bits);
-    }
-    if exception_pending(_py) {
+    let iterator = crate::object::iterable::OwnedIterator::new(_py, iterable_bits);
+    dec_ref_bits(_py, iterable_bits);
+    let Some(mut iterator) = iterator else {
         return Err(MoltObject::none().bits());
-    }
+    };
     let name_attr = intern_runtime_static_name(_py, b"name");
     let mut out: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     loop {
-        let pair_bits = molt_iter_next(iter_bits);
-        let Some(pair_ptr) = maybe_ptr_from_bits(pair_bits) else {
-            return Err(MoltObject::none().bits());
-        };
-        unsafe {
-            if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-                return Err(MoltObject::none().bits());
-            }
-        }
-        if unsafe { crate::object::seq_access::locked_len(pair_ptr) } < 2 {
-            return Err(MoltObject::none().bits());
-        }
-        let Some(done) = (unsafe { crate::object::seq_access::pin_item(_py, pair_ptr, 1) }) else {
-            return Err(MoltObject::none().bits());
-        };
-        if is_truthy(_py, obj_from_bits(done.bits())) {
+        let Some(bits) = iterator.next().map_err(|_| MoltObject::none().bits())? else {
             break;
-        }
-        let Some(entry) = (unsafe { crate::object::seq_access::pin_item(_py, pair_ptr, 0) }) else {
-            return Err(MoltObject::none().bits());
+        };
+        let entry = unsafe {
+            molt_runtime_core::OwnedRuntimeValue::from_owned_bits(_py.core_token(), bits)
         };
         let entry_bits = entry.bits();
         let missing = missing_bits(_py);

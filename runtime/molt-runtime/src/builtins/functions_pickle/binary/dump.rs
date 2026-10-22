@@ -314,21 +314,23 @@ fn pickle_external_buffer_to_memoryview(
 
 pub(crate) fn pickle_next_external_buffer_bits(
     _py: &crate::PyToken<'_>,
-    buffers_iter_bits: Option<u64>,
+    buffers_iterator: Option<&molt_runtime_core::OwnedRuntimeValue<'_>>,
 ) -> Result<u64, u64> {
-    let Some(iter_bits) = buffers_iter_bits else {
+    let Some(iterator) = buffers_iterator else {
         return Err(pickle_raise(
             _py,
             "pickle.loads: NEXT_BUFFER requires buffers argument",
         ));
     };
-    let (item_bits, done) = iter_next_pair(_py, iter_bits)?;
-    if done {
+    let Some(item_owner) = molt_runtime_core::iter_next_owned(_py.core_token(), iterator)
+        .map_err(|_| MoltObject::none().bits())?
+    else {
         return Err(pickle_raise(
             _py,
             "pickle.loads: not enough out-of-band buffers",
         ));
-    }
+    };
+    let item_bits = item_owner.bits();
     pickle_external_buffer_to_memoryview(_py, item_bits)
 }
 
@@ -477,6 +479,9 @@ fn pickle_dump_items_from_iterable(
     iterator_error_prefix: &str,
 ) -> Result<(), u64> {
     let iter_bits = molt_iter(values_bits);
+    let iterator_owner = unsafe {
+        molt_runtime_core::OwnedRuntimeValue::from_owned_bits(_py.core_token(), iter_bits)
+    };
     if exception_pending(_py) {
         clear_exception(_py);
         let value_type = type_name(_py, obj_from_bits(values_bits));
@@ -485,10 +490,13 @@ fn pickle_dump_items_from_iterable(
     }
     state.push(PICKLE_OP_MARK);
     loop {
-        let (item_bits, done) = iter_next_pair(_py, iter_bits)?;
-        if done {
+        let Some(item_owner) =
+            molt_runtime_core::iter_next_owned(_py.core_token(), &iterator_owner)
+                .map_err(|_| MoltObject::none().bits())?
+        else {
             break;
-        }
+        };
+        let item_bits = item_owner.bits();
         if dict_items {
             let Some(item_ptr) = obj_from_bits(item_bits).as_ptr() else {
                 return Err(raise_exception(

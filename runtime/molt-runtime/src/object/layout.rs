@@ -812,20 +812,36 @@ pub(crate) unsafe fn reversed_set_index(ptr: *mut u8, idx: usize) {
     }
 }
 
+/// One physical zip payload on every pointer width. The result tuple is an
+/// owned cache, distinct from the tracked iterator vector and strict flag.
+#[repr(C)]
+pub(crate) struct ZipPayload {
+    pub(crate) iterators: *mut Vec<u64>,
+    pub(crate) strict: u64,
+    pub(crate) result: u64,
+}
+
 pub(crate) unsafe fn zip_iters_ptr(ptr: *mut u8) -> *mut Vec<u64> {
-    unsafe { *(ptr as *mut *mut Vec<u64>) }
+    unsafe { std::ptr::addr_of!((*ptr.cast::<ZipPayload>()).iterators).read_unaligned() }
 }
 
 pub(crate) unsafe fn zip_strict_bits(ptr: *mut u8) -> u64 {
-    unsafe { std::ptr::read_unaligned(ptr.add(std::mem::size_of::<*mut Vec<u64>>()) as *const u64) }
+    unsafe { std::ptr::addr_of!((*ptr.cast::<ZipPayload>()).strict).read_unaligned() }
 }
 
 pub(crate) unsafe fn zip_set_strict_bits(ptr: *mut u8, bits: u64) {
     unsafe {
-        std::ptr::write_unaligned(
-            ptr.add(std::mem::size_of::<*mut Vec<u64>>()) as *mut u64,
-            bits,
-        );
+        std::ptr::addr_of_mut!((*ptr.cast::<ZipPayload>()).strict).write_unaligned(bits);
+    }
+}
+
+pub(crate) unsafe fn zip_result_bits(ptr: *mut u8) -> u64 {
+    unsafe { std::ptr::addr_of!((*ptr.cast::<ZipPayload>()).result).read_unaligned() }
+}
+
+pub(crate) unsafe fn zip_set_result_bits(ptr: *mut u8, bits: u64) {
+    unsafe {
+        std::ptr::addr_of_mut!((*ptr.cast::<ZipPayload>()).result).write_unaligned(bits);
     }
 }
 
@@ -3071,8 +3087,9 @@ pub(crate) unsafe fn dict_subclass_storage_slot(ptr: *mut u8) -> Option<*mut u64
 #[cfg(test)]
 mod tests {
     use super::{
-        ListIntStorage, ensure_function_code_bits, function_arity_usize, function_code_bits,
-        function_set_code_bits, zip_set_strict_bits, zip_strict_bits,
+        ListIntStorage, ZipPayload, ensure_function_code_bits, function_arity_usize,
+        function_code_bits, function_set_code_bits, zip_iters_ptr, zip_result_bits,
+        zip_set_result_bits, zip_set_strict_bits, zip_strict_bits,
     };
     use crate::object::header_from_obj_ptr;
     use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
@@ -3343,12 +3360,21 @@ mod tests {
 
     #[test]
     fn zip_strict_bits_unaligned_roundtrip() {
-        let mut buf = [0u8; 32];
+        let mut buf = [0u8; std::mem::size_of::<ZipPayload>() + 1];
         let ptr = unsafe { buf.as_mut_ptr().add(1) };
-        let value = 0xA5A5_5A5A_DEAD_BEEFu64;
+        let strict = 0xA5A5_5A5A_DEAD_BEEFu64;
+        let result = 0x1234_5678_ABCD_EF01u64;
         unsafe {
-            zip_set_strict_bits(ptr, value);
-            assert_eq!(zip_strict_bits(ptr), value);
+            ptr.cast::<ZipPayload>().write_unaligned(ZipPayload {
+                iterators: std::ptr::null_mut(),
+                strict: 0,
+                result: 0,
+            });
+            zip_set_strict_bits(ptr, strict);
+            zip_set_result_bits(ptr, result);
+            assert!(zip_iters_ptr(ptr).is_null());
+            assert_eq!(zip_strict_bits(ptr), strict);
+            assert_eq!(zip_result_bits(ptr), result);
         }
     }
 

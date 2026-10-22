@@ -519,6 +519,15 @@ pub(crate) unsafe fn replace_capi_item(
     Some(old_bits)
 }
 
+/// One exclusive-owner admission for C-API initialization and runtime caches.
+/// C-API writes deliberately admit their own physical ABI view; cache reuse adds
+/// an export barrier below because a C-visible result must remain immutable.
+unsafe fn tuple_is_exclusive(ptr: *mut u8) -> bool {
+    !ptr.is_null()
+        && unsafe { object_type_id(ptr) } == TYPE_ID_TUPLE
+        && unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() } == 1
+}
+
 /// Store one already-owned value into an exclusively-owned tuple slot.
 /// Ownership of `value_bits` transfers on success; no refcount round trip is
 /// performed.
@@ -527,11 +536,7 @@ pub(crate) unsafe fn replace_unique_item_owned(
     index: usize,
     value_bits: u64,
 ) -> Option<u64> {
-    if ptr.is_null() || unsafe { object_type_id(ptr) } != TYPE_ID_TUPLE {
-        return None;
-    }
-    let header = unsafe { header_from_obj_ptr(ptr) };
-    if unsafe { (*header).ref_count_snapshot() } != 1 {
+    if !unsafe { tuple_is_exclusive(ptr) } {
         return None;
     }
     let items = unsafe { tuple_slice_mut(ptr) };
@@ -541,34 +546,107 @@ pub(crate) unsafe fn replace_unique_item_owned(
     Some(old_bits)
 }
 
-/// Replace both slots of an exclusively cache-owned pair tuple.
-pub(crate) unsafe fn replace_unique_pair(
-    py: &PyToken<'_>,
-    ptr: *mut u8,
-    first_bits: u64,
-    second_bits: u64,
-) -> Option<(u64, u64)> {
-    if ptr.is_null() || unsafe { object_type_id(ptr) } != TYPE_ID_TUPLE {
-        return None;
-    }
-    let header = unsafe { header_from_obj_ptr(ptr) };
-    if unsafe { (*header).ref_count_snapshot() } != 1
-        || unsafe { (*header).load_synchronized_flags() } & HEADER_FLAG_HAS_ABI_VIEW != 0
-    {
-        return None;
-    }
-    let items = unsafe { tuple_slice_mut(ptr) };
-    if items.len() != 2 {
-        return None;
-    }
-    inc_ref_bits(py, first_bits);
-    inc_ref_bits(py, second_bits);
-    let old_first = std::mem::replace(&mut items[0], first_bits);
-    let old_second = std::mem::replace(&mut items[1], second_bits);
+/// Admission shared by fixed pairs and variable-length iterator result caches.
+/// A C-visible or aliased tuple remains immutable. The claim pins the result
+/// before any callback; reentry consequently cannot claim that same cache.
+unsafe fn tuple_cache_mutation_allowed(ptr: *mut u8, len: usize) -> bool {
     unsafe {
-        adjust_tuple_contains_refs(ptr, &[old_first, old_second], &[first_bits, second_bits])
-    };
-    Some((old_first, old_second))
+        tuple_is_exclusive(ptr)
+            && (*header_from_obj_ptr(ptr)).load_synchronized_flags() & HEADER_FLAG_HAS_ABI_VIEW == 0
+            && tuple_slice(ptr).len() == len
+    }
+}
+
+/// A scoped mutation claim on an existing owned tuple. The initial edge count
+/// is O(arity); each published slot replacement is O(1), including flag updates.
+/// Counting once avoids rescanning the result after every removed heap edge.
+
+pub(crate) struct TupleCacheMutation<'a, 'py> {
+    py: &'a PyToken<'py>,
+    owner: molt_runtime_core::OwnedRuntimeValue<'a>,
+    heap_edges: usize,
+}
+
+impl<'a, 'py> TupleCacheMutation<'a, 'py> {
+    pub(crate) unsafe fn claim(py: &'a PyToken<'py>, ptr: *mut u8, len: usize) -> Option<Self> {
+        if !unsafe { tuple_cache_mutation_allowed(ptr, len) } {
+            return None;
+        }
+        Some(Self {
+            py,
+            owner: molt_runtime_core::OwnedRuntimeValue::retain(
+                py.core_token(),
+                MoltObject::from_ptr(ptr).bits(),
+            ),
+            heap_edges: unsafe {
+                tuple_slice(ptr)
+                    .iter()
+                    .copied()
+                    .filter(|bits| crate::object::refcount_opt::is_heap_ref(*bits))
+                    .count()
+            },
+        })
+    }
+
+    pub(crate) unsafe fn from_owned(
+        py: &'a PyToken<'py>,
+        owner: molt_runtime_core::OwnedRuntimeValue<'a>,
+        len: usize,
+    ) -> Option<Self> {
+        let ptr = obj_from_bits(owner.bits()).as_ptr()?;
+        if !unsafe { tuple_cache_mutation_allowed(ptr, len) } {
+            return None;
+        }
+        let heap_edges = unsafe {
+            tuple_slice(ptr)
+                .iter()
+                .copied()
+                .filter(|bits| crate::object::refcount_opt::is_heap_ref(*bits))
+                .count()
+        };
+        Some(Self {
+            py,
+            owner,
+            heap_edges,
+        })
+    }
+
+    /// Transfer an item edge; retire the returned old edge only after mutation
+    /// is published. No payload borrow survives into Python callbacks.
+    pub(crate) fn replace_owned(&mut self, index: usize, value: u64) -> u64 {
+        let ptr = obj_from_bits(self.owner.bits())
+            .as_ptr()
+            .expect("tuple mutation owner");
+        unsafe {
+            let old = std::mem::replace(&mut tuple_slice_mut(ptr)[index], value);
+            self.heap_edges -= usize::from(crate::object::refcount_opt::is_heap_ref(old));
+            self.heap_edges += usize::from(crate::object::refcount_opt::is_heap_ref(value));
+            let header = header_from_obj_ptr(ptr);
+            if self.heap_edges != 0 {
+                (*header).fetch_or_flags(HEADER_FLAG_CONTAINS_REFS);
+                if !super::gc::gc_is_tracked(ptr)
+                    && super::heap_lifecycle::value_requires_tracking(value)
+                {
+                    // A prior collection may have demoted the cache while it
+                    // held only atomic values. Publish membership before an
+                    // old edge's finalizer can collect the newly formed cycle.
+                    super::gc::gc_track_if_cyclic(self.py, ptr, TYPE_ID_TUPLE);
+                }
+            } else if !super::native_instance::has_fields(ptr) {
+                (*header).fetch_and_flags(!HEADER_FLAG_CONTAINS_REFS);
+            }
+            old
+        }
+    }
+
+    pub(crate) fn replace_borrowed(&mut self, index: usize, value: u64) -> u64 {
+        inc_ref_bits(self.py, value);
+        self.replace_owned(index, value)
+    }
+
+    pub(crate) fn into_bits(self) -> u64 {
+        self.owner.into_bits()
+    }
 }
 
 pub(crate) unsafe fn detach_tuple_edges(ptr: *mut u8, mut detach: impl FnMut(u64)) {

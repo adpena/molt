@@ -381,6 +381,81 @@ tally primitive reuses a key's hash only when the receiver's actual get/store
 descriptors admit the native dictionary path; overridden methods retain normal
 dispatch. Callback exceptions propagate with the already completed mutations.
 
+### Immediate synchronous iterator invocation
+
+Generic synchronous iterator steps use the shared owned `SpecialIterationStep`
+result. The public boxed ABI wraps successful values in its public `(value, done)`
+tuple; the unboxed API transfers the value directly and retires exhaustion
+payloads before publishing its output. Native iterator pair caches retain their
+existing ownership and ABI. All satellite consumers continue through the same
+`molt_iter_next_unboxed` entry and `iter_next_owned` ownership projection.
+
+Special `__next__` and sequence-fallback `__getitem__` calls use raw type/MRO
+lookup and the existing descriptor invocation authority. Exact functions and
+admitted native method descriptors pass the receiver as a direct argument;
+arbitrary descriptors still bind and call their actual result. Instance shadows
+and custom `__getattribute__` do not participate. The selected callable and
+receiver stay pinned across callbacks, class mutation and reentry. Errors from
+binding and invocation share the existing iteration exception transaction.
+Foreign receiver lookup retains its C-API descriptor contract.
+
+This follows CPython's `slot_tp_iternext`/`vectorcall_method` path in
+[3.12.15](https://github.com/python/cpython/blob/v3.12.15/Objects/typeobject.c)
+and [3.15.1](https://github.com/python/cpython/blob/v3.15.1/Objects/typeobject.c).
+For warmed direct-function or admitted native-method calls whose callback
+allocates nothing, unboxed successful steps require no runtime heap allocation,
+while the boxed API requires its result tuple. Public `next()` also transfers
+the raw owned value and introduces no status tuple.
+Descriptor callbacks and foreign binding can still allocate. The owning test
+measures both public APIs independently and checks exact result ownership.
+This is an allocation contract, not a throughput claim; target execution and
+before/after cost measurements remain necessary for acceptance. Async
+`__anext__`, send and throw retain their distinct protocols; an await iterator's
+existing send(None) path shares this ordinary synchronous step.
+
+Public `next()` without a default preserves the original `StopIteration`
+instance, arguments and traceback. The typed exhaustion policy passes through
+map, filter, enumerate and non-strict zip; strict zip and tee normalize their
+sources. Loop/status consumers normalize exhaustion and retire its payload.
+The existing exception scope owns callback unwinding; one normalizer handles
+native adapters and Python special methods.
+
+Runtime collectors consume owned items and hold acquired iterators until every
+success, early return or error path has retired them. Serial string collection
+uses core `iter_next_owned`; RuntimeVtable ABI 10 removes its obsolete boxed-next
+slot. Both producer and subscriber use the shared version and size checks.
+The unused path iteration bridge and its generated test declarations are retired.
+
+### Iterator partial-result ownership
+
+Map retires partially collected arguments in source order when a later source
+fails. Zip instead owns one tuple cache of its arity, initially filled with
+`None`. When exclusive and without an exported ABI view, that tuple is pinned
+before invoking any source. Each new slot is published, its GC reference flag
+and membership are updated, and only then is the displaced item released.
+Reentrant iteration therefore allocates an independent result; an aliased or
+exported cache remains unchanged. A fresh partial result is released in reverse
+slot order, while an exclusive cached partial result survives until replacement
+or zip destruction. Strict zip stops at the first established mismatch.
+
+The shared tuple mutation claim is also used by existing fixed pair caches.
+C-API tuple initialization keeps its separate authorization to write through an
+ABI view; only runtime cache reuse applies the export barrier. Zip's `repr(C)`
+payload owns its iterator backing, strict flag and result edge with one extent
+and accessor authority on every pointer width. GC traces and clears the cached
+result, and destruction releases iterator references before the cache.
+
+This follows the lifetime, publication and retracking contracts of
+[CPython 3.12.15 zip_next and map_next](https://github.com/python/cpython/blob/v3.12.15/Python/bltinmodule.c).
+The cold cost is one cached tuple per zip. A row requires O(arity) source work
+and one O(arity) initial reference count over its slots; slot publication is
+O(1), with no per-slot full-tuple scan or additional temporary backing vector.
+Cache retention is bounded by one row. Aliased results require the independent
+tuples their observable lifetime demands. Existing boxed native iterator status
+results remain separate from the zero-temporary generic special-call contract.
+These are algorithmic bounds; compiled allocation and timing controls determine
+performance acceptance.
+
 ### Shared tee storage
 
 Physical shape declarations in `runtime/heap_kinds.toml` explicitly state whether
