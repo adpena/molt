@@ -12,8 +12,8 @@ cd molt/examples/edgebox
 # 2. Write your box (or use the built-in github-pr example)
 cat python/boxes/github_pr/box.py
 
-# 3. Compile to WebAssembly with Molt
-molt compile python/boxes/github_pr/box.py -o dist/github_pr.wasm
+# 3. Compile to the statically imported artifact path
+molt build python/boxes/github_pr/box.py --target wasm --output "$PWD/dist/box.wasm"
 
 # 4. Configure your deployment target
 cp manifests/github-pr.yaml manifests/my-box.yaml
@@ -21,10 +21,13 @@ cp manifests/github-pr.yaml manifests/my-box.yaml
 
 # 5. Deploy to Cloudflare Workers
 cd packages/edgebox-cloudflare
-npm run deploy
+corepack npm ci --ignore-scripts
+corepack npm run check
+corepack npm run deploy
 ```
 
-Your box is now live. Point an AI agent at `https://your-worker.workers.dev/mcp` and it will discover your tools automatically.
+After a successful deployment, point an AI agent at
+`https://your-worker.workers.dev/mcp` to discover its tools.
 
 ## Architecture
 
@@ -143,11 +146,19 @@ Community plugins are published to PyPI as `edgebox-plugin-*`. See [PLUGIN_AUTHO
 
 | Platform | Status | Notes |
 |----------|--------|-------|
-| **Cloudflare Workers** | Supported | Durable Objects + SQLite + R2 storage |
+| **Cloudflare Workers** | Deployment qualification required | Durable Objects + SQLite + precompiled Wasm module |
 | **Vercel Edge Functions** | Planned | -- |
 | **Local dev** | Planned | Native binary via `molt run` |
 
-The Cloudflare deployment uses Durable Objects for per-box isolation, SQLite for structured storage, and R2 buckets for blob/artifact storage. See `packages/edgebox-cloudflare/wrangler.toml` for the binding configuration.
+The Cloudflare deployment uses Durable Objects for per-box isolation and SQLite
+for structured storage. Wrangler imports `dist/box.wasm` as a precompiled module
+in the deployment; Workers cannot compile an R2 byte buffer at runtime. There is
+no R2 module loader or runtime-compilation fallback. The type check validates the
+Worker API boundary, not the generated Molt artifact's size, imports, behavior or
+deployment limits. Qualify those with the actual built artifact before claiming
+the deployment is supported. See `packages/edgebox-cloudflare/wrangler.toml` for
+the remaining bindings and [Cloudflare's Wasm module
+contract](https://developers.cloudflare.com/workers/runtime-apis/webassembly/).
 
 ## How MCP Integration Works
 
@@ -248,9 +259,11 @@ Create a YAML manifest in `manifests/` to declare your box's identity, runtime, 
 ### Deploy
 
 ```bash
-molt compile my_box.py -o dist/my_box.wasm
+molt build my_box.py --target wasm --output "$PWD/dist/box.wasm"
 cd packages/edgebox-cloudflare
-npm run deploy
+corepack npm ci --ignore-scripts
+corepack npm run check
+corepack npm run deploy
 ```
 
 ## Configuration

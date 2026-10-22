@@ -1,7 +1,8 @@
 # Lean Upgrade Plan
 
-**Current pin:** `leanprover/lean4:v4.34.1`
-**Status:** COMPLETE (4.28.0 -> 4.34.1, 2026-10-06)
+**Current pin:** `leanprover/lean4:v4.35.0`
+**Status:** 4.35.0 default `MoltTIR` target builds on macOS arm64; other cells remain unverified.
+The completed 4.28.0 -> 4.34.1 qualification below is dated 2026-10-06.
 **History:** 4.16.0 -> 4.28.0 (MOL-295, 2026-03-16); 4.28.0 -> 4.34.1 (2026-10-06)
 
 `formal/lean/lean-toolchain` is the one authority for the Lean version. This
@@ -9,8 +10,14 @@ file records how each upgrade went. It does not set the version.
 
 ## 1. Current State
 
-- **Lean version:** `leanprover/lean4:v4.34.1` (Lake 5.0.0)
+- **Lean version:** `leanprover/lean4:v4.35.0` (upstream commit `eb6cafb7290e8bd5f2937522d8d804f58f02bafc`).
+- **Current qualification:** `lake build` passed on macOS arm64 (100 jobs).
+  This checks the default `MoltTIR` target only. Linux, non-default libraries,
+  unreachable modules and the separate sorry baseline remain unverified.
 - **lakefile.lean:** Standard Lake DSL config, no Mathlib, no Lake packages
+
+Historical results on 4.34.1 (2026-10-06; not qualification of 4.35.0):
+
 - **Default target:** `lake build` builds the `MoltTIR` library: 88 jobs, 0 errors
 - **Other libraries:** `lake build MoltPython MoltLowering` builds 19 jobs, 0 errors
 - **Sorry count:** 13, measured by `tools/check_lean_sorry_count.py`
@@ -86,4 +93,5 @@ path. The manual proofs in `NanBoxCorrect.lean` are complete and sorry-free.
 | Repair or delete the 14 modules outside the Lake roots that fail on both 4.28.0 and 4.34.1 | P2 | Open |
 | Switch NanBox proofs to `bv_decide` (optional) | P4 | Drafted in NanBoxBV.lean |
 | Evaluate `bv_omega` for mixed BitVec/Int goals | P4 | Not started |
-| Track Lean releases after 4.34.1 | P4 | Monitoring |
+| Qualify the selected 4.35.0 pin with the owning Lean proofs | P1 | Default `MoltTIR` passes on macOS arm64; remaining cells unverified |
+| Track Lean releases after 4.35.0 | P4 | Monitoring |

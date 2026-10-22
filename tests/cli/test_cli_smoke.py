@@ -596,8 +596,27 @@ def test_cli_update_check_json() -> None:
             command[command.index("--manifest-path") + 1] for command in commands
         ] == [
             "Cargo.toml",
+            "deploy/browser/simd-ops-rs/Cargo.toml",
             "fuzz/Cargo.toml",
+            "runtime/molt-backend/fuzz/Cargo.toml",
+            "runtime/molt-backend-mlir/Cargo.toml",
+            "runtime/molt-runtime/fuzz/Cargo.toml",
+            "tools/proof_supervisor/Cargo.toml",
         ]
+    npm_steps = [
+        entry for entry in steps if entry["cmd"][:3] == ["corepack", "npm", "update"]
+    ]
+    assert [Path(entry["cwd"]).relative_to(ROOT).as_posix() for entry in npm_steps] == [
+        "deploy/cloudflare",
+        "examples/edgebox/packages/edgebox-cloudflare",
+        "tools/browser_asset_graph",
+    ]
+    assert all(
+        entry["cmd"][3:]
+        == ["--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund"]
+        for entry in npm_steps
+    )
+    assert any("not an attestation" in warning for warning in payload["warnings"])
 
 
 def test_required_llvm_backend_major_matches_manifest() -> None:

@@ -159,7 +159,11 @@ A checkout's inputs come from its lock files, on demand, as `uv run` does.
   matching stamp costs one `stat` and one small read; a mismatch runs
   `npm ci --ignore-scripts --prefer-offline` or `uv sync --frozen`, which read
   from the shared caches. `gen_browser_asset_graph.py` stops asking a person
-  to run a bootstrap script. `lane start` provisions every input at once.
+  to run a bootstrap script. `lane start` provisions the default prerequisites. Optional registered inputs,
+  such as the Edgebox TypeScript tree, are provisioned only when explicitly
+  selected. Status and queue setup share the default selection; retirement
+  recognizes all registered inputs so an explicitly provisioned tree keeps its
+  custody.
 - **Cost.** 2.2 s for a new worktree (uv 1.5 s, npm 0.7 s, both from warm
   caches); about 1 ms per consumer afterwards.
 - **Landed (slice 3).** `src/molt/checkout_provisioning.py` holds the uv

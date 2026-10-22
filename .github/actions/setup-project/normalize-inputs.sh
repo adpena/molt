@@ -70,6 +70,12 @@ read_exact_version() {
   printf '%s' "$version"
 }
 
+uv_version=""
+if [[ "$uv" == "true" ]]; then
+  uv_version=$(read_exact_version "config/tool_releases.toml [tools.uv] version" \
+    "$(sed -n '/^\[tools\.uv\]$/,/^\[/s/^version = "\(.*\)"$/\1/p' config/tool_releases.toml)")
+fi
+
 toolchain=${INPUT_RUST_TOOLCHAIN:-}
 case "$toolchain" in
   "") ;;
@@ -170,6 +176,7 @@ rust_cache_token=$(
 {
   printf 'python=%s\n' "$python"
   printf 'uv=%s\n' "$uv"
+  printf 'uv-version=%s\n' "$uv_version"
   printf 'cache-uv=%s\n' "$cache_uv"
   printf 'cache-cargo=%s\n' "$cache_cargo"
   printf 'cache-lean=%s\n' "$cache_lean"

@@ -1644,7 +1644,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         description=(
             "Refresh toolchains and dependency state.\n"
             "In a Molt source checkout this refreshes the rustup-managed pinned Rust\n"
-            "toolchain plus Cargo/uv lockfiles; --all also upgrades Rust dependency\n"
+            "toolchain plus all tracked Cargo, uv and npm lockfiles; --all also upgrades Rust dependency\n"
             "requirements in Cargo.toml. An installed Molt never uses or updates\n"
             "Rust: `molt update --no-locks` only provisions its pinned wasm-tools, and\n"
             "Molt itself is upgraded with its installer, package manager or pip."
@@ -1668,7 +1668,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         "--locks",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Refresh Cargo.lock and uv.lock (default: enabled).",
+        help="Refresh all tracked Cargo, uv and npm lockfiles (default: enabled).",
     )
     update_parser.add_argument(
         "--manifests",

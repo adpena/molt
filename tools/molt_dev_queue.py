@@ -763,7 +763,7 @@ def _provision_landing_sandbox(sandbox: Path) -> None:
         provisioning.checkout_input(
             name, sandbox, guard_source_root=_COMMANDS.repo_root
         )
-        for name in provisioning.CHECKOUT_INPUT_NAMES
+        for name in provisioning.DEFAULT_CHECKOUT_INPUT_NAMES
     ]
     names = [
         spec.name

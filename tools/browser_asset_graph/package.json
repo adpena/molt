@@ -3,6 +3,11 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "packageManager": "npm@12.2.1",
+  "engines": {
+    "node": ">=24.18.0",
+    "npm": ">=12.2.1"
+  },
   "dependencies": {
     "acorn": "8.19.0"
   }

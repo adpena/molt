@@ -7793,6 +7793,7 @@
         "wasm_abi::",
         "async_rt::channels::",
         "async_rt::net_stubs::",
+        "concurrency::gil::tests::",
         "intrinsics::registry::",
         "call::",
         "object::",
@@ -13669,14 +13670,17 @@
           "--only-downloads"
         ]
       ],
+      "projection": "tool-release",
+      "setup_command": "python -m molt.tool_releases provision uv",
       "setup_evidence": [
-        ".github/actions/setup-project/action.yml::version: \"0.13.4\""
+        "config/tool_releases.toml::version = \"0.13.5\"",
+        ".github/actions/setup-project/action.yml::steps.inputs.outputs.uv-version"
       ],
-      "setup_value": "0.13.4",
+      "setup_value": "0.13.5",
       "version_args": [
         "--version"
       ],
-      "version_pattern": "^uv 0\\.13\\.4\\b"
+      "version_pattern": "^uv 0\\.13\\.5\\b"
     },
     {
       "executable": "node",
@@ -13880,14 +13884,14 @@
       "name": "lune",
       "projection": "tool-release",
       "setup_evidence": [
-        "config/tool_releases.toml::version = \"0.10.5\"",
+        "config/tool_releases.toml::version = \"0.11.1\"",
         ".github/workflows/ci.yml::python3 -m molt.tool_releases provision lune"
       ],
-      "setup_value": "0.10.5",
+      "setup_value": "0.11.1",
       "version_args": [
         "--version"
       ],
-      "version_pattern": "^lune 0\\.10\\.5$"
+      "version_pattern": "^lune 0\\.11\\.1$"
     },
     {
       "compiler_tool_selector": "build-python",
@@ -14133,15 +14137,15 @@
       "name": "lean",
       "probe_cwd": "formal/lean",
       "setup_evidence": [
-        "formal/lean/lean-toolchain::leanprover/lean4:v4.34.1",
+        "formal/lean/lean-toolchain::leanprover/lean4:v4.35.0",
         ".github/actions/setup-lean/action.yml::toolchain install \"$toolchain\"",
         ".github/workflows/formal.yml::uses: ./.github/actions/setup-lean"
       ],
-      "setup_value": "4.34.1",
+      "setup_value": "4.35.0",
       "version_args": [
         "--version"
       ],
-      "version_pattern": "version 4\\.34\\.1\\b"
+      "version_pattern": "version 4\\.35\\.0\\b"
     },
     {
       "executable": "quint",
@@ -14266,14 +14270,14 @@
       "name": "wasm-tools",
       "projection": "tool-release",
       "setup_evidence": [
-        "config/tool_releases.toml::version = \"1.261.0\"",
+        "config/tool_releases.toml::version = \"1.262.0\"",
         ".github/workflows/molt-wasm-ci.yml::python3 -m molt.tool_releases provision wasm-tools"
       ],
-      "setup_value": "1.261.0",
+      "setup_value": "1.262.0",
       "version_args": [
         "--version"
       ],
-      "version_pattern": "^wasm-tools 1\\.261\\.0(?: \\([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\\))?$"
+      "version_pattern": "^wasm-tools 1\\.262\\.0(?: \\([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\\))?$"
     }
   ]
 }

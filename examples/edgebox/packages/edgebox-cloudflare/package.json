@@ -2,11 +2,17 @@
   "name": "edgebox-cloudflare",
   "version": "0.1.0",
   "private": true,
-  "packageManager": "npm@11.17.0",
+  "packageManager": "npm@12.2.1",
   "engines": {
     "node": ">=24.18.0",
-    "npm": ">=11.17.0"
+    "npm": ">=12.2.1"
   },
-  "scripts": { "deploy": "wrangler deploy" },
-  "devDependencies": { "@cloudflare/workers-types": "^4" }
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "check": "tsc --noEmit --target ES2022 --module ESNext --moduleResolution Bundler --lib ES2022 --types @cloudflare/workers-types src/wasm.d.ts src/index.ts src/box.ts src/db-bridge.ts"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261022.1",
+    "typescript": "7.0.2"
+  }
 }

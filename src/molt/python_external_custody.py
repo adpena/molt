@@ -46,16 +46,16 @@ PYTHON_IMPORT_FINDER_POLICY = (
 )
 
 # Reviewed upstream artifact, not a digest minted from the local environment.
-# https://github.com/astral-sh/uv/blob/0.13.1/crates/uv-virtualenv/src/_virtualenv.py
+# https://github.com/astral-sh/uv/blob/0.13.5/crates/uv-virtualenv/src/_virtualenv.py
 # The GitHub tag trees and immutable blob were independently fetched; uv 0.11.24,
-# 0.12.23 and 0.13.1 ship this same blob. Since uv 0.13 (`install_distutils_patch`
+# 0.12.23 and 0.13.5 ship this same blob. Since uv 0.13 (`install_distutils_patch`
 # in crates/uv-virtualenv/src/virtualenv.rs), uv writes it and `_virtualenv.pth`
 # only for Pythons older than 3.10, below Molt's supported range, so Molt's
 # environments carry no uv startup file; the capability remains for
 # environments made by older uv. New templates require review.
 _UV_BOOTSTRAP_PROVENANCE = {
     "project": "astral-sh/uv",
-    "version": "0.13.1",
+    "version": "0.13.5",
     "path": "crates/uv-virtualenv/src/_virtualenv.py",
     "git_blob_sha1": "c4af24d43878f22da47efa43a3ef7899c6a7c8aa",
     "sha256": "cfb3db86aaa53bb62b5ff764970bec2d71c9228590a0ebec57f6ec926cc0bf1a",
@@ -69,9 +69,9 @@ _UV_BOOTSTRAP_PROVENANCE = {
 _COVERAGE_RELEASE = {"project": "nedbat/coveragepy", "version": "7.16.2"}
 _SETUPTOOLS_WHEEL = {
     "project": "pypa/setuptools",
-    "version": "83.0.0",
-    "url": "https://files.pythonhosted.org/packages/5d/40/e1e72872c6354b306daef1703549e8e83b4d43cfea356311bf722a043752/setuptools-83.0.0-py3-none-any.whl",
-    "artifact_sha256": "29b23c360f22f414dc7336bb39178cc7bcbf6021ed2733cde173f09dba19abb3",
+    "version": "84.2.1",
+    "url": "https://files.pythonhosted.org/packages/ef/55/6dc6d6bb953bdfc52519a0059592c52b6e3b8ad51cf8256dffceb55b0610/setuptools-84.2.1-py3-none-any.whl",
+    "artifact_sha256": "ca140b45d5325a9478f880e351484f62fef15f336462e449ca0c03c873d589c2",
 }
 _STARTUP_CAPABILITIES: dict[str, dict[str, object]] = {
     "uv-virtualenv.v1": {
@@ -130,8 +130,8 @@ _STARTUP_CAPABILITIES: dict[str, dict[str, object]] = {
         "module_artifact": {
             **_SETUPTOOLS_WHEEL,
             "path": "_distutils_hack/__init__.py",
-            "sha256": "df81e6bcba34ee3e3952f776551fb669143b9490fdd6c4caeb32609f97e985b4",
-            "size": 6755,
+            "sha256": "ced72e54431ecf2d8d7dbd8a1e27724f1b171af3ca1503c304bf11c59a7fe861",
+            "size": 6800,
         },
         "finder": "DistutilsMetaFinder",
         "gate": {"SETUPTOOLS_USE_DISTUTILS": "local", "cwd_pybuilddir_file": False},

@@ -47,7 +47,7 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           workingDirectory: deploy/cloudflare
-          wranglerVersion: "4.148.0"
+          wranglerVersion: "4.151.3"
           command: deploy
 
       # /health answers 503 while the experimental edge model loads, so a bare

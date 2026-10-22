@@ -1245,19 +1245,28 @@ def test_cli_lint_uses_shared_dx_planner(monkeypatch: pytest.MonkeyPatch) -> Non
     assert calls == [["python3", "-m", "ruff", "check", "."]]
 
 
-def test_cli_update_steps_use_memory_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("failure", [False, True])
+def test_cli_update_steps_use_memory_guard(
+    monkeypatch: pytest.MonkeyPatch, capsys, failure: bool
+) -> None:
 
     calls: list[dict[str, object]] = []
-    step = _MaintenanceStep(
-        "probe",
-        ["python3", "-c", "print('ok')"],
-        ROOT,
-        "toolchain",
-    )
+    steps = [
+        _MaintenanceStep("probe", ["python3", "-c", "print('ok')"], ROOT, "toolchain"),
+        _MaintenanceStep(
+            "npm-update-project",
+            ["corepack", "npm", "update", "--package-lock-only", "--ignore-scripts"],
+            ROOT / "deploy/cloudflare",
+            "lock",
+        ),
+        _MaintenanceStep("later", ["uv", "lock", "-U"], ROOT, "lock"),
+    ]
 
     def fake_run_completed(cmd, **kwargs):
         calls.append({"cmd": list(cmd), **kwargs})
-        return subprocess.CompletedProcess(cmd, 0, "ok\n", "")
+        return subprocess.CompletedProcess(
+            cmd, 9 if failure and cmd[:2] == ["corepack", "npm"] else 0, "ok\n", ""
+        )
 
     monkeypatch.setattr(
         TOOLCHAIN_VALIDATION,
@@ -1268,7 +1277,7 @@ def test_cli_update_steps_use_memory_guard(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(
         TOOLCHAIN_VALIDATION,
         "_planned_update_steps",
-        lambda *_args, **_kwargs: ([step], []),
+        lambda *_args, **_kwargs: (steps, []),
         raising=True,
     )
     monkeypatch.setattr(
@@ -1278,16 +1287,123 @@ def test_cli_update_steps_use_memory_guard(monkeypatch: pytest.MonkeyPatch) -> N
         raising=True,
     )
 
-    assert TOOLCHAIN_VALIDATION.update_repo(json_output=True) == 0
+    assert TOOLCHAIN_VALIDATION.update_repo(json_output=True) == (9 if failure else 0)
     assert calls == [
         {
-            "cmd": ["python3", "-c", "print('ok')"],
-            "cwd": ROOT,
+            "cmd": step.cmd,
+            "cwd": step.cwd,
             "capture_output": True,
             "env": None,
             "memory_guard_prefix": "MOLT_CLI",
         }
+        for step in (steps[:2] if failure else steps)
     ]
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == ("error" if failure else "ok")
+    if failure:
+        assert payload["errors"] == ["npm-update-project failed with exit code 9"]
+        assert [row["name"] for row in payload["data"]["results"]] == [
+            "probe",
+            "npm-update-project",
+        ]
+
+
+def test_cli_update_check_does_not_execute_or_mutate_dependencies(monkeypatch, capsys):
+    projects = (
+        ROOT,
+        ROOT / "deploy/browser/simd-ops-rs",
+        ROOT / "fuzz",
+        ROOT / "runtime/molt-backend-mlir",
+        ROOT / "runtime/molt-backend/fuzz",
+        ROOT / "runtime/molt-runtime/fuzz",
+        ROOT / "tools/proof_supervisor",
+    )
+    npm_projects = (
+        ROOT / "deploy/cloudflare",
+        ROOT / "examples/edgebox/packages/edgebox-cloudflare",
+        ROOT / "tools/browser_asset_graph",
+    )
+    paths = [ROOT / "pyproject.toml", ROOT / "uv.lock"]
+    paths.extend(
+        project / name for project in projects for name in ("Cargo.toml", "Cargo.lock")
+    )
+    paths.extend(
+        project / name
+        for project in npm_projects
+        for name in ("package.json", "package-lock.json")
+    )
+    original = {path: path.read_bytes() for path in paths}
+    environment = dict(os.environ)
+    monkeypatch.setattr(TOOLCHAIN_VALIDATION, "compiler_source_root", lambda: ROOT)
+    monkeypatch.setattr(
+        TOOLCHAIN_VALIDATION,
+        "_run_completed_command",
+        lambda *_a, **_kw: pytest.fail("dry-run executed a dependency update"),
+    )
+    monkeypatch.setattr(
+        TOOLCHAIN_VALIDATION,
+        "_admitted_cargo_refusal",
+        lambda *_a, **_kw: pytest.fail("dry-run entered command admission"),
+    )
+    assert (
+        TOOLCHAIN_VALIDATION.update_repo(
+            json_output=True,
+            check_only=True,
+            include_toolchains=False,
+            include_locks=True,
+            include_manifests=True,
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["data"]["check_only"] is True
+    assert {path: path.read_bytes() for path in paths} == original
+    assert dict(os.environ) == environment
+
+
+@pytest.mark.parametrize("failure", ["missing-checkout", "missing-git", "unsafe-git"])
+def test_update_manifest_inventory_refuses_before_execution(
+    tmp_path, monkeypatch, capsys, failure
+):
+    from tools import dependency_manifests
+
+    root = tmp_path / "source"
+    for relative in (
+        "Cargo.toml",
+        "runtime/molt-runtime/Cargo.toml",
+        "runtime/molt-backend/Cargo.toml",
+        "src/molt/cli/__init__.py",
+    ):
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("", encoding="utf-8")
+    monkeypatch.setattr(TOOLCHAIN_VALIDATION, "compiler_source_root", lambda: root)
+    if failure != "missing-checkout":
+        error = (
+            FileNotFoundError("git executable missing")
+            if failure == "missing-git"
+            else subprocess.CalledProcessError(
+                128, ["git", "ls-files"], stderr="fatal: detected dubious ownership"
+            )
+        )
+
+        def refuse_inventory(*_a, **_kw):
+            raise error
+
+        monkeypatch.setattr(
+            dependency_manifests, "cargo_workspace_dirs", refuse_inventory
+        )
+    monkeypatch.setattr(
+        TOOLCHAIN_VALIDATION,
+        "_run_completed_command",
+        lambda *_a, **_kw: pytest.fail("inventory refusal executed an update"),
+    )
+    assert TOOLCHAIN_VALIDATION.update_repo(json_output=True, check_only=True) != 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "error" and payload["command"] == "update"
+    assert "accessible Git checkout and Git executable" in payload["errors"][0]
+    if failure == "unsafe-git":
+        assert "dubious ownership" in payload["errors"][0]
 
 
 def test_update_plan_bootstraps_missing_cargo_tool_helpers(

@@ -903,7 +903,7 @@ class LaneState:
 def _checkout_input_states(worktree: Path) -> dict[str, str]:
     environment = lane_environment(os.environ)
     states: dict[str, str] = {}
-    for name in checkout_provisioning.CHECKOUT_INPUT_NAMES:
+    for name in checkout_provisioning.DEFAULT_CHECKOUT_INPUT_NAMES:
         spec = checkout_provisioning.checkout_input(
             name, worktree, environment, guard_source_root=_COMMANDS.repo_root
         )
@@ -952,7 +952,7 @@ def lane_state(
 
 def _repository_input_states(checkout: Path) -> dict[str, str]:
     states: dict[str, str] = {}
-    for name in checkout_provisioning.CHECKOUT_INPUT_NAMES:
+    for name in checkout_provisioning.DEFAULT_CHECKOUT_INPUT_NAMES:
         spec = checkout_provisioning.checkout_input(
             name, checkout, guard_source_root=_COMMANDS.repo_root
         )

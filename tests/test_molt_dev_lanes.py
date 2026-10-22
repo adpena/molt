@@ -198,6 +198,18 @@ def test_lane_start_creates_branch_worktree_record_and_inputs(family: Path) -> N
             encoding="utf-8"
         ) == "run\n"
     assert (main / ".git" / "molt-fixture-hook.txt").is_file()
+    assert not (worktree / "edgebox-typescript-tree").exists()
+    assert lanes._checkout_input_states(worktree) == {
+        "uv-environment": "current",
+        "browser-acorn": "current",
+    }
+    # An explicitly selected optional tree remains recognized by preservation
+    # custody even though it is not a lane setup/status prerequisite.
+    cp.ensure("edgebox-typescript", worktree)
+    assert (worktree / "edgebox-typescript-tree/ready").is_file()
+    assert "edgebox-typescript-tree/" not in lanes._unharvested_ignored_paths(
+        molt_dev.Git(worktree)
+    )
 
     with pytest.raises(DriverError, match="already exists"):
         lanes.cmd_lane_start(_args(family, slug="feature"))
@@ -510,6 +522,7 @@ def test_queue_provisions_its_sandbox_and_retires_a_landed_lane(family: Path) ->
     # The sandbox's declared inputs were built before its gates ran.
     assert (paths.sandbox / "uv-environment-tree" / "ready").is_file()
     assert (paths.sandbox / "browser-acorn-tree" / "ready").is_file()
+    assert not (paths.sandbox / "edgebox-typescript-tree").exists()
     _git(main, "fetch", "-q", "origin")
     assert "queued.txt" in _git(main, "ls-tree", "--name-only", "origin/main").stdout
     assert not worktree.exists()

@@ -72,7 +72,6 @@ TIMEOUT_SECONDS = 60
 HOLDS = {
     "llvm": "HF-64",
     "python": "HF-65",
-    "uv": "HF-62",
 }
 
 FetchJson = Callable[[str], object]
@@ -187,6 +186,7 @@ def _toolchain_policies(root: Path) -> dict[str, str]:
 # Upstream repositories of `config/tool_releases.toml` tools published as
 # GitHub releases, with their tag prefix.
 GITHUB_TOOLS = {
+    "uv": ("astral-sh/uv", ""),
     "wasm-tools": ("bytecodealliance/wasm-tools", "v"),
     "lune": ("lune-org/lune", "v"),
     "sccache": ("mozilla/sccache", "v"),
@@ -228,7 +228,6 @@ def collect_pins(
             lambda: python_latest_patch(policies["python"], fetch),
         ),
         Pin("python", plan, policies["python"], lambda: python_latest(fetch)),
-        Pin("uv", plan, policies["uv"], github("astral-sh/uv", "")),
         Pin("node", manifest, tools["node"].version, lambda: node_latest(fetch)),
         Pin(
             "llvm",

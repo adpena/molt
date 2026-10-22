@@ -129,9 +129,9 @@ runs:
     # pass the repository's 10 GB quota and evict main's Cargo caches.
     - name: Install exact uv
       if: steps.inputs.outputs.uv == 'true'
-      uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa # v10.3.1
       with:
-        version: "0.13.4"
+        version: ${{ steps.inputs.outputs.uv-version }}
         enable-cache: ${{ steps.inputs.outputs.cache-uv }}
         save-cache: ${{ github.ref == 'refs/heads/main' }}
 
@@ -150,7 +150,7 @@ runs:
 
     - name: Install exact Node with npm cache
       if: steps.inputs.outputs.node-version != '' && inputs.node-cache-dependency-path != ''
-      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
       with:
         node-version: ${{ steps.inputs.outputs.node-version }}
         cache: npm
@@ -158,7 +158,7 @@ runs:
 
     - name: Install exact Node
       if: steps.inputs.outputs.node-version != '' && inputs.node-cache-dependency-path == ''
-      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
       with:
         node-version: ${{ steps.inputs.outputs.node-version }}
 

@@ -2,15 +2,15 @@
   "name": "falcon-ocr-worker",
   "version": "0.1.0",
   "private": true,
-  "packageManager": "npm@11.17.0",
+  "packageManager": "npm@12.2.1",
   "engines": {
     "node": ">=24.18.0",
-    "npm": ">=11.17.0"
+    "npm": ">=12.2.1"
   },
   "description": "Falcon-OCR Cloudflare Worker with Browser Rendering + Queue batch OCR",
   "type": "module",
   "main": "worker.js",
   "dependencies": {
-    "@cloudflare/puppeteer": "^1.1.0"
+    "@cloudflare/puppeteer": "^1.4.0"
   }
 }

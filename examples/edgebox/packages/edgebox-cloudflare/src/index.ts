@@ -7,7 +7,6 @@ export { EdgeBox };
 
 interface Env {
   EDGE_BOX: DurableObjectNamespace;
-  ARTIFACTS: R2Bucket;
   BOX_SCHEMA_SQL: string;
 }
 

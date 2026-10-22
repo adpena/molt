@@ -482,11 +482,11 @@ def _write_meson_metadata(
                 "name": "pkg-config",
                 "path": "pkg-config.exe",
                 "distribution": "pkgconf",
-                "version": "3.0.1.post0",
+                "version": "3.0.7.post0",
                 "sha256": "b" * 64,
             }
         ],
-        "pkg_config_requirement": "pkgconf==3.0.1.post0",
+        "pkg_config_requirement": "pkgconf==3.0.7.post0",
         "generated_inputs": [],
     }
 
@@ -2766,7 +2766,7 @@ def test_meson_pkg_config_is_pinned_and_attested(
         producer,
         "_run_process",
         lambda argv, **_kwargs: subprocess.CompletedProcess(
-            args=list(argv), returncode=0, stdout="3.0.1\n", stderr=""
+            args=list(argv), returncode=0, stdout="3.0.7\n", stderr=""
         ),
     )
     environment = _source_environment(payload, prefix=tmp_path)
@@ -2778,7 +2778,7 @@ def test_meson_pkg_config_is_pinned_and_attested(
         "name": "pkg-config",
         "path": tool.name,
         "distribution": "pkgconf",
-        "version": "3.0.1.post0",
+        "version": "3.0.7.post0",
         "sha256": hashlib.sha256(tool.read_bytes()).hexdigest(),
     }
     assert producer._source_build_config_tools(environment) == (config_tool,)

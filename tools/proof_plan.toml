@@ -582,13 +582,16 @@ setup_evidence = ["tests/differential/stdlib/platform_basic.py::platform.platfor
 
 [[toolchain_policy]]
 name = "uv"
+projection = "tool-release"
+setup_command = "python -m molt.tool_releases provision uv"
 executable = "uv"
 version_args = ["--version"]
 process_image_probes = [["--offline", "--no-config", "--managed-python", "python", "list", "--only-downloads"]]
-version_pattern = '^uv 0\.13\.4\b'
-setup_value = "0.13.4"
+version_pattern = '^uv 0\.13\.5\b'
+setup_value = "0.13.5"
 setup_evidence = [
-  ".github/actions/setup-project/action.yml::version: \"0.13.4\"",
+  "config/tool_releases.toml::version = \"0.13.5\"",
+  ".github/actions/setup-project/action.yml::steps.inputs.outputs.uv-version",
 ]
 
 [[toolchain_policy]]
@@ -646,9 +649,9 @@ name = "lune"
 projection = "tool-release"
 executable = "lune"
 version_args = ["--version"]
-version_pattern = '^lune 0\.10\.5$'
-setup_value = "0.10.5"
-setup_evidence = ["config/tool_releases.toml::version = \"0.10.5\"", ".github/workflows/ci.yml::python3 -m molt.tool_releases provision lune"]
+version_pattern = '^lune 0\.11\.1$'
+setup_value = "0.11.1"
+setup_evidence = ["config/tool_releases.toml::version = \"0.11.1\"", ".github/workflows/ci.yml::python3 -m molt.tool_releases provision lune"]
 
 # Cargo build scripts select this isolated generator independently of the proof
 # launcher. Queue command admission adds this contextual prerequisite; static
@@ -823,10 +826,10 @@ executable = "lean"
 probe_cwd = "formal/lean"
 version_args = ["--version"]
 content_path_command = ["elan", "which", "lean"]
-version_pattern = 'version 4\.34\.1\b'
-setup_value = "4.34.1"
+version_pattern = 'version 4\.35\.0\b'
+setup_value = "4.35.0"
 setup_evidence = [
-  "formal/lean/lean-toolchain::leanprover/lean4:v4.34.1",
+  "formal/lean/lean-toolchain::leanprover/lean4:v4.35.0",
   ".github/actions/setup-lean/action.yml::toolchain install \"$toolchain\"",
   ".github/workflows/formal.yml::uses: ./.github/actions/setup-lean",
 ]
@@ -920,9 +923,9 @@ name = "wasm-tools"
 projection = "tool-release"
 executable = "wasm-tools"
 version_args = ["--version"]
-version_pattern = '^wasm-tools 1\.261\.0(?: \([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\))?$'
-setup_value = "1.261.0"
-setup_evidence = ["config/tool_releases.toml::version = \"1.261.0\"", ".github/workflows/molt-wasm-ci.yml::python3 -m molt.tool_releases provision wasm-tools"]
+version_pattern = '^wasm-tools 1\.262\.0(?: \([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\))?$'
+setup_value = "1.262.0"
+setup_evidence = ["config/tool_releases.toml::version = \"1.262.0\"", ".github/workflows/molt-wasm-ci.yml::python3 -m molt.tool_releases provision wasm-tools"]
 
 [[matrix_cell]]
 id = "linux-x86_64-py312-repository-policy"
@@ -3687,7 +3690,7 @@ dependencies = []
 # exercises the borrowed view as well. All children use Cargo custody.
 # Emit assertion detail immediately; a later fatal ownership check must not
 # erase the earlier mismatch diagnostics held by libtest's output capture.
-argv = ["cargo", "test", "--locked", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.molt-runtime.opt-level=0", "--no-fail-fast", "--lib", "--test", "ownership_memory_contracts", "--test", "test_builtins", "-p", "molt-passes", "-p", "molt-backend-wasm", "-p", "molt-runtime", "-p", "molt-runtime-regex", "-p", "molt-runtime-core", "-p", "molt-stdlib-text", "-p", "molt-runtime-platform", "-p", "molt-gpu-runtime", "-p", "zlib-rs@0.6.8", "--no-default-features", "--features", "molt-passes/native-backend,molt-passes/wasm-backend,molt-passes/test-util,molt-backend-wasm/test-util,molt-runtime/stdlib_micro,molt-runtime/builtin_complex,molt-runtime/builtin_set,molt-runtime/molt_gpu_primitives,molt-runtime/molt_gpu_webgpu,zlib-rs/std,zlib-rs/rust-allocator,zlib-rs/ZLIB_DEBUG", "--", "errno_build_tests::", "socket_constants::tests::", "libc_compat::tests::synthetic_errno_", "counter_wrap", "memory_budget::", "tir::", "wasm::", "wasm_abi::", "async_rt::channels::", "async_rt::net_stubs::", "intrinsics::registry::", "call::", "object::", "arena::", "seq_snapshot_bridge::", "builtins::attr::", "builtins::classes::", "builtins::frames::", "builtins::types::", "builtins::modules::", "builtins::functions::function_abi::", "builtins::attributes::", "builtin_bootstrap_lookup", "test_raw_compression_c_exports_are_linkable", "gpu_runtime_tests::", "kernel_storage::", "regex::", "text_storage::", "--nocapture", "--test-threads=1"]
+argv = ["cargo", "test", "--locked", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.molt-runtime.opt-level=0", "--no-fail-fast", "--lib", "--test", "ownership_memory_contracts", "--test", "test_builtins", "-p", "molt-passes", "-p", "molt-backend-wasm", "-p", "molt-runtime", "-p", "molt-runtime-regex", "-p", "molt-runtime-core", "-p", "molt-stdlib-text", "-p", "molt-runtime-platform", "-p", "molt-gpu-runtime", "-p", "zlib-rs@0.6.8", "--no-default-features", "--features", "molt-passes/native-backend,molt-passes/wasm-backend,molt-passes/test-util,molt-backend-wasm/test-util,molt-runtime/stdlib_micro,molt-runtime/builtin_complex,molt-runtime/builtin_set,molt-runtime/molt_gpu_primitives,molt-runtime/molt_gpu_webgpu,zlib-rs/std,zlib-rs/rust-allocator,zlib-rs/ZLIB_DEBUG", "--", "errno_build_tests::", "socket_constants::tests::", "libc_compat::tests::synthetic_errno_", "counter_wrap", "memory_budget::", "tir::", "wasm::", "wasm_abi::", "async_rt::channels::", "async_rt::net_stubs::", "concurrency::gil::tests::", "intrinsics::registry::", "call::", "object::", "arena::", "seq_snapshot_bridge::", "builtins::attr::", "builtins::classes::", "builtins::frames::", "builtins::types::", "builtins::modules::", "builtins::functions::function_abi::", "builtins::attributes::", "builtin_bootstrap_lookup", "test_raw_compression_c_exports_are_linkable", "gpu_runtime_tests::", "kernel_storage::", "regex::", "text_storage::", "--nocapture", "--test-threads=1"]
 toolchains = ["rustc", "cargo", "node", "wasm-ld"]
 cargo_build_python = true
 

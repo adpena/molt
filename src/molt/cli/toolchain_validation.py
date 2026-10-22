@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import sys
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Mapping, Sequence, NamedTuple
 
 from molt.cargo_execution_policy import admit_cargo_build
@@ -89,6 +89,20 @@ def _planned_update_steps(
 ) -> tuple[list[_MaintenanceStep], list[str]]:
     steps: list[_MaintenanceStep] = []
     warnings: list[str] = []
+    cargo_directories: list[PurePosixPath] = []
+    npm_directories: list[PurePosixPath] = []
+    if include_locks or include_manifests:
+        from tools.dependency_manifests import (
+            cargo_workspace_dirs,
+            tracked_manifest_dirs,
+        )
+
+        cargo_directories = cargo_workspace_dirs(root)
+        npm_directories = (
+            tracked_manifest_dirs(root, "package-lock.json", "*/package-lock.json")
+            if include_locks
+            else []
+        )
 
     if include_toolchains:
         if pinned_executable("wasm-tools", root) is None:
@@ -175,28 +189,48 @@ def _planned_update_steps(
                 )
 
     if include_locks:
-        steps.extend(
-            [
+        for directory in cargo_directories:
+            label = "root" if str(directory) == "." else str(directory)
+            steps.append(
                 _MaintenanceStep(
-                    "cargo-update-root",
-                    ["cargo", "update", "--manifest-path", "Cargo.toml"],
+                    f"cargo-update-{label}",
+                    [
+                        "cargo",
+                        "update",
+                        "--manifest-path",
+                        str(directory / "Cargo.toml"),
+                    ],
                     root,
                     "lock",
-                ),
-                _MaintenanceStep(
-                    "cargo-update-fuzz",
-                    ["cargo", "update", "--manifest-path", "fuzz/Cargo.toml"],
-                    root,
-                    "lock",
-                ),
-                _MaintenanceStep(
-                    "uv-lock-upgrade",
-                    ["uv", "lock", "-U"],
-                    root,
-                    "lock",
-                ),
-            ]
+                )
+            )
+        steps.append(
+            _MaintenanceStep("uv-lock-upgrade", ["uv", "lock", "-U"], root, "lock")
         )
+        for directory in npm_directories:
+            steps.append(
+                _MaintenanceStep(
+                    f"npm-update-{directory}",
+                    [
+                        "corepack",
+                        "npm",
+                        "update",
+                        "--package-lock-only",
+                        "--ignore-scripts",
+                        "--no-audit",
+                        "--no-fund",
+                    ],
+                    root / directory,
+                    "lock",
+                )
+            )
+        if npm_directories:
+            warnings.append(
+                "npm updates respect package.json dependency ranges; incompatible "
+                "major releases require a reviewed manifest/API migration. "
+                "A successful update is not an attestation that every dependency "
+                "is at its newest release."
+            )
 
     if include_manifests:
         if shutil.which("cargo-upgrade") is None:
@@ -208,34 +242,22 @@ def _planned_update_steps(
                     "manifest",
                 )
             )
-        steps.extend(
-            [
+        for directory in cargo_directories:
+            label = "root" if str(directory) == "." else str(directory)
+            steps.append(
                 _MaintenanceStep(
-                    "cargo-upgrade-root",
+                    f"cargo-upgrade-{label}",
                     [
                         "cargo",
                         "upgrade",
                         "--incompatible",
                         "--manifest-path",
-                        "Cargo.toml",
+                        str(directory / "Cargo.toml"),
                     ],
                     root,
                     "manifest",
-                ),
-                _MaintenanceStep(
-                    "cargo-upgrade-fuzz",
-                    [
-                        "cargo",
-                        "upgrade",
-                        "--incompatible",
-                        "--manifest-path",
-                        "fuzz/Cargo.toml",
-                    ],
-                    root,
-                    "manifest",
-                ),
-            ]
-        )
+                )
+            )
 
     return steps, warnings
 
@@ -262,13 +284,25 @@ def update_repo(
             command="update",
         )
 
-    steps, warnings = _planned_update_steps(
-        root,
-        include_toolchains=include_toolchains,
-        include_locks=include_locks,
-        include_manifests=include_manifests,
-        source_checkout=installed_compiler(root) is None,
-    )
+    try:
+        steps, warnings = _planned_update_steps(
+            root,
+            include_toolchains=include_toolchains,
+            include_locks=include_locks,
+            include_manifests=include_manifests,
+            source_checkout=installed_compiler(root) is None,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        detail = str(exc)
+        if isinstance(exc, subprocess.CalledProcessError) and exc.stderr:
+            detail += f": {exc.stderr.strip()}"
+        return _fail(
+            f"Unable to plan dependency updates for {root}: {detail}. "
+            "Tracked manifest discovery requires an accessible Git checkout "
+            "and Git executable; no update commands were run.",
+            json_output,
+            command="update",
+        )
     step_rows = [
         {
             "name": step.name,

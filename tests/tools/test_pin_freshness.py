@@ -102,12 +102,11 @@ def _no_network(url: str) -> object:
 
 
 def test_every_pin_reads_its_authority_loader() -> None:
-    pins = {
-        pin.name: pin
-        for pin in pin_freshness.collect_pins(
-            ROOT, fetch=_no_network, fetch_text=_no_network
-        )
-    }
+    collected = pin_freshness.collect_pins(
+        ROOT, fetch=_no_network, fetch_text=_no_network
+    )
+    assert len({pin.name for pin in collected}) == len(collected)
+    pins = {pin.name: pin for pin in collected}
     tools = tool_releases.load_tool_releases(ROOT)
     for name, release in tools.items():
         assert pins[name].current == release.version
@@ -245,7 +244,9 @@ def _tool_upstream(release: tool_releases.ToolRelease, new: str) -> _Upstream:
         member = asset.archive_member.replace(release.version, new)
         blobs[url] = _zip(member) if url.endswith(".zip") else _tarball(member)
     return _Upstream(
-        f"v{new}", release.provenance.url.replace(release.version, new), blobs
+        release.provenance.url.rsplit("/", 1)[-1].replace(release.version, new),
+        release.provenance.url.replace(release.version, new),
+        blobs,
     )
 
 
@@ -265,23 +266,24 @@ def _changed_lines(before: str, after: str) -> list[tuple[str, str]]:
     ]
 
 
-def test_tool_update_verifies_every_asset_and_moves_its_policy(tmp_path) -> None:
+@pytest.mark.parametrize("tool", ["wasm-tools", "uv"])
+def test_tool_update_verifies_every_asset_and_moves_its_policy(tmp_path, tool) -> None:
     root = _pin_root(tmp_path)
-    release = tool_releases.load_tool_releases(root)["wasm-tools"]
+    release = tool_releases.load_tool_releases(root)[tool]
     upstream = _tool_upstream(release, "9.9.9")
     plan_before = (root / "tools/proof_plan.toml").read_text(encoding="utf-8")
 
-    message = pin_freshness.update(root, "wasm-tools", upstream.fetchers())
+    message = pin_freshness.update(root, tool, upstream.fetchers())
 
-    assert message.startswith(f"wasm-tools: {release.version} -> 9.9.9")
+    assert message.startswith(f"{tool}: {release.version} -> 9.9.9")
     moved = tool_releases.load_tool_releases(root)
-    assert moved["wasm-tools"].version == "9.9.9"
-    assert moved["wasm-tools"].provenance.release_id == 424242
-    for key, asset in moved["wasm-tools"].assets.items():
+    assert moved[tool].version == "9.9.9"
+    assert moved[tool].provenance.release_id == 424242
+    for key, asset in moved[tool].assets.items():
         assert asset.sha256 == hashlib.sha256(upstream.blobs[asset.url]).hexdigest()
         assert asset.size == len(upstream.blobs[asset.url]), key
     for name, other in tool_releases.load_tool_releases(ROOT).items():
-        if name != "wasm-tools":
+        if name != tool:
             assert moved[name] == other
     changed = _changed_lines(
         plan_before, (root / "tools/proof_plan.toml").read_text(encoding="utf-8")
@@ -473,10 +475,10 @@ def test_update_rejects_pins_it_does_not_own(tmp_path) -> None:
     root = _pin_root(tmp_path)
 
     def fetch(url: str) -> object:
-        return {"tag_name": "99.0.0"}
+        return {"tag_name": "v99.0.0"}
 
-    with pytest.raises(PinFreshnessError, match="uv moves at its own authority"):
-        pin_freshness.update(root, "uv", pin_freshness.Fetchers(fetch=fetch))
+    with pytest.raises(PinFreshnessError, match="lean moves at its own authority"):
+        pin_freshness.update(root, "lean", pin_freshness.Fetchers(fetch=fetch))
 
 
 def test_rewrite_toml_fields_requires_every_field() -> None:
