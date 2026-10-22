@@ -9371,6 +9371,7 @@
       "local.backend-environment-contract.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=6.25 -k 'backend_codegen or backend_daemon or backend_cache_setup or backend_setup or backend_compile or backend_pipeline or backend_dispatch or codegen_selection or fingerprint_env' tests/cli/test_cli_import_collection.py",
       "local.backend-ir-framing.0": "cargo test --locked --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor --bin molt-backend -- daemon backend_process::input::tests backend_process::cli_args::parse::tests --test-threads=1",
       "local.backend-llvm.0": "cargo test --locked --profile release-fast -p molt-backend-native -p molt-backend --features molt-backend/native-backend,molt-backend/llvm --lib --test ir_contract_validation --no-fail-fast",
+      "local.backend-luau.0": "cargo test --locked --profile dev-fast -p molt-backend-luau --features luau-backend --lib --no-fail-fast",
       "local.backend-native.0": "cargo test --locked --profile release-fast -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend,molt-backend/wasm-backend --lib --bins --no-fail-fast",
       "local.bootstrap-stdlib.0": "python tools/check_stdlib_intrinsics.py --critical-allowlist",
       "local.browser-loader-deployment.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_driver_layout.py tests/test_browser_asset_closure.py tests/test_driver_cloudflare_verify.py tests/test_driver_cloudflare_worker.py tests/test_falcon_ocr_prompt_contract.py",
@@ -11778,6 +11779,26 @@
       },
       {
         "command_ids": [
+          "local.backend-luau.0"
+        ],
+        "description": "Exercise Luau lowering and capability admission in its small owning crate, without compiling a native code generator.",
+        "gates": [
+          "cargo test --locked --profile dev-fast -p molt-backend-luau --features luau-backend --lib --no-fail-fast"
+        ],
+        "globs": [
+          "runtime/molt-backend-luau/**/*.rs",
+          "runtime/molt-backend-luau/Cargo.toml",
+          "runtime/molt-ir/src/tir/op_kinds.toml"
+        ],
+        "name": "backend-luau",
+        "toolchains": [
+          "python",
+          "rustc",
+          "cargo"
+        ]
+      },
+      {
+        "command_ids": [
           "local.backend-llvm.0"
         ],
         "description": "LLVM backend Rust: clippy + LLVM-feature lib tests.",
@@ -12511,6 +12532,12 @@
         "cargo",
         "git",
         "llvm-sdk"
+      ],
+      "local.backend-luau.0": [
+        "python",
+        "rustc",
+        "cargo",
+        "git"
       ],
       "local.backend-native.0": [
         "python",
