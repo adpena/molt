@@ -63,3 +63,4 @@ _FUNCTION_SET_FIXED_BUILTIN = _require_intrinsic("molt_function_set_fixed_builti
 _FUNCTION_SET_FIXED_BUILTIN(getpwuid, 1)
 _FUNCTION_SET_FIXED_BUILTIN(getpwnam, 1)
 _FUNCTION_SET_FIXED_BUILTIN(getpwall, 0)
+del _require_intrinsic, _FUNCTION_SET_FIXED_BUILTIN

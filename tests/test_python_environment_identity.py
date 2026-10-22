@@ -29,6 +29,7 @@ from molt.exact_json import canonical_json_sha256
 from molt.python_identity_common import PythonEnvironmentIdentityError
 from tests.python_environment_test_support import runtime_identity_manifest
 from tests.process_guard_common import install_module_view
+from tests.module_isolation import forget_module
 
 
 _COMMANDS = CommandExecutor.for_file(__file__)
@@ -1679,7 +1680,7 @@ def standalone_probe_source(tmp_path, monkeypatch):
     for name in tuple(sys.modules):
         if name == "molt" or name.startswith("molt."):
             monkeypatch.delitem(sys.modules, name)
-    monkeypatch.delitem(sys.modules, "_molt_package_import_custody", raising=False)
+    forget_module(monkeypatch, "_molt_package_import_custody")
     monkeypatch.setattr(sys, "path", list(sys.path))
     return (installed / "python_environment_identity.py").resolve()
 

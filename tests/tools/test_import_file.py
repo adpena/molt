@@ -14,6 +14,7 @@ from types import ModuleType
 import pytest
 
 from tests.process_guard_common import run_guarded_test_process
+from tests.module_isolation import forget_module
 from tools.import_file import (
     bind_repository_imports,
     load_module_from_path,
@@ -147,7 +148,7 @@ def test_bare_binder_import_is_refused_without_side_effects(
     canonical = sys.modules["tools.import_file"]
     custody = sys.modules[_ADMISSION_MODULE]
     monkeypatch.syspath_prepend(str(ROOT / "tools"))
-    monkeypatch.delitem(sys.modules, "import_file", raising=False)
+    forget_module(monkeypatch, "import_file")
 
     with pytest.raises(ImportError, match="as tools.import_file, not 'import_file'"):
         importlib.import_module("import_file")
