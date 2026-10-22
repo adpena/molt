@@ -40,6 +40,10 @@ pub use molt_ir::runtime_callable_symbols::{
 pub(crate) const GENERATED_OBJECT_ABI_ANCHOR_SYMBOL: &str = "__molt_generated_object_abi_anchor";
 #[cfg(any(feature = "native-backend", feature = "llvm"))]
 pub(crate) mod app_resolver_abi;
+#[cfg(feature = "native-backend")]
+mod application_ir;
+#[cfg(feature = "native-backend")]
+pub use application_ir::prepare_native_application_ir;
 #[cfg(any(feature = "native-backend", feature = "llvm"))]
 mod exception_observer_abi;
 #[cfg(feature = "llvm")]
@@ -60,6 +64,10 @@ pub use crate::native_backend::{
 pub(crate) use crate::native_backend::{
     DeferredDefine, VarValue, block_has_terminator, extend_unique_tracked,
     switch_to_block_tracking, unbox_int,
+};
+#[cfg(feature = "jit")]
+pub use crate::native_backend::{
+    JitCompileError, JitEntryPoints, JitProgram, JitSymbolLookup, probe_jit_execution,
 };
 pub use crate::passes::{
     apply_profile_order, build_const_int_map, compute_app_callable_manifest,

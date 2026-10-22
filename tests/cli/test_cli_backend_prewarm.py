@@ -367,11 +367,12 @@ def _fake_backend_toolchain(
     monkeypatch.setattr(compiler_identity, "backend_build_admission", admission)
     monkeypatch.setattr(cli_backend_binary, "_backend_fingerprint", fingerprint)
 
-    # The fixture has one source manifest; the live source-generation fence
-    # still captures it and Cargo.lock before/after every modeled build.
+    # The fixture has one crate; the live source-generation fence still
+    # captures it and Cargo.lock before/after every modeled build, and the
+    # build-input coverage check sees the main.rs its Cargo transcript reads.
     def source_paths(root, _features, *, product=HostToolProduct.BACKEND):
         assert product is HostToolProduct.BACKEND
-        return [root / "runtime/molt-backend/Cargo.toml"]
+        return [root / "runtime/molt-backend"]
 
     monkeypatch.setattr(cli_backend_binary, "_backend_source_paths", source_paths)
     monkeypatch.setattr(cli_backend_binary, "_run_resolved_cargo_plan", cargo)

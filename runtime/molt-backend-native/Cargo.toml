@@ -18,6 +18,8 @@ llvm-sys = { version = "221.0.1", optional = true }
 # documented x86_64 <-> aarch64 cross-compilation contract available everywhere.
 cranelift-codegen = { version = "0.137.0", optional = true, default-features = false, features = ["arm64", "host-arch", "std", "unwind", "x86"] }
 cranelift-frontend = { version = "0.137.0", optional = true }
+# The development JIT code owner (HF-371, docs/design/dev_jit_tier.md).
+cranelift-jit = { version = "0.137.0", optional = true }
 cranelift-module = { version = "0.137.0", optional = true }
 cranelift-object = { version = "0.137.0", optional = true }
 cranelift-native = { version = "0.137.0", optional = true }
@@ -80,5 +82,7 @@ native-backend = [
     "molt-ir/native-backend",
     "molt-tir/native-backend",
 ]
+# Emit Cranelift code into process memory instead of an object (molt-jit).
+jit = ["native-backend", "dep:cranelift-jit"]
 llvm = ["dep:inkwell", "inkwell/llvm22-1-force-static", "molt-ir/llvm", "molt-tir/llvm"]
 polly = ["llvm", "dep:llvm-sys"]

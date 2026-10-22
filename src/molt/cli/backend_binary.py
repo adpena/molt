@@ -31,7 +31,7 @@ from molt.cli.cache_fingerprints import (
     _backend_source_identity_inputs,
     _backend_source_paths,
 )
-from molt.cli.cargo_build_reads import cargo_build_reads
+from molt.cli.cargo_build_reads import cargo_build_reads, uncovered_build_inputs
 from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
 from molt.cli.cargo_execution import (
     CargoPlanExecutionError,
@@ -46,6 +46,7 @@ from molt.cli.compiler_identity import (
     backend_build_admission,
     installed_compiler_admission,
 )
+from molt.cli.native_launch_abi_generated import JIT_RUNNER_PROBE_FLAG
 from molt.cli.runtime_fingerprints import (
     _artifact_semantic_identity,
     _admitted_runtime_fingerprint,
@@ -654,7 +655,7 @@ def _backend_probe_target(
     backend_features: tuple[str, ...],
     product: HostToolProduct = HostToolProduct.BACKEND,
 ) -> str:
-    if product is HostToolProduct.WASM_FACTS:
+    if product is not HostToolProduct.BACKEND:
         return product.value
     if "wasm-backend" in backend_features:
         return "wasm"
@@ -761,7 +762,7 @@ def _ensure_backend_binary(
     """
     if not isinstance(product, HostToolProduct):
         return _backend_ensure_failure("host_tool_product", "Unknown host tool product")
-    tool_label = "Backend" if product is HostToolProduct.BACKEND else "WASM facts tool"
+    tool_label = product.label
     # Installed compilers are immutable release inputs, never Cargo outputs.
     # Admit before every developer skip/hydration/rebuild path.
     try:
@@ -771,6 +772,11 @@ def _ensure_backend_binary(
             cargo_profile if product is HostToolProduct.BACKEND else None,
         )
         if installed is not None:
+            if product is HostToolProduct.JIT:
+                raise ValueError(
+                    "Installed Molt ships no JIT runner; the JIT tier needs a "
+                    "source checkout"
+                )
             if rust_cpu is not RustCpuPolicy.BASELINE:
                 raise ValueError(
                     "Installed Molt ships a baseline-CPU backend compiler; "
@@ -917,6 +923,11 @@ def _ensure_backend_binary(
             if product is HostToolProduct.WASM_FACTS:
                 probe_ir = None
                 probe_cmd = [str(binary), "--scan-wasm-link-facts", str(probe_path)]
+            elif product is HostToolProduct.JIT:
+                # Compile and run one function in executable memory: the
+                # host's W^X policy must admit the runner before any program.
+                probe_ir = None
+                probe_cmd = [str(binary), JIT_RUNNER_PROBE_FLAG]
             elif probe_target == "wasm":
                 probe_cmd.extend(["--target", "wasm"])
             elif probe_target == "luau":
@@ -1357,11 +1368,25 @@ def _ensure_backend_binary(
                 ),
                 environment=environment,
             )
+            uncovered = uncovered_build_inputs(
+                reads,
+                project_root,
+                _backend_source_paths(project_root, backend_features, product=product),
+                identity=product.value,
+            )
             build_admission.verify()
             source_generation.verify()
         except (OSError, ValueError) as exc:
             return _backend_ensure_failure(
                 "backend_source_identity", str(exc), command=cmd
+            )
+        if uncovered is not None:
+            # The generation is keyed by the source closure. A read outside it
+            # would let a later run adopt this build after that input changed.
+            return _backend_ensure_failure(
+                "backend_build_input_coverage",
+                f"Refusing to publish the {tool_label}: {uncovered}",
+                command=cmd,
             )
         try:
             rebuilt_source_identity, rebuilt_generation = (

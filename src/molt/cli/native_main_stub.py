@@ -5,25 +5,23 @@ from pathlib import Path
 from typing import Sequence
 
 from molt.capability_manifest import ResolvedRuntimePolicy
+from molt.cli.native_launch_abi_generated import NATIVE_LAUNCH_C_DECLARATIONS
+from molt.cli.native_launch_plan import NativeLaunchPlan
 
 
 def _native_main_stub_snippets(
     *,
-    resolved_capability_policy: ResolvedRuntimePolicy,
+    plan: NativeLaunchPlan,
 ) -> tuple[str, str, str, str]:
-    runtime_environment = {
-        **resolved_capability_policy.to_env_vars(),
-        "MOLT_EXECUTION_TARGET": "native",
-    }
     windows_updates = "\n".join(
         f"    if (_putenv_s({json.dumps(key)}, {json.dumps(value)}) != 0) "
         "molt_capability_policy_env_failure();"
-        for key, value in sorted(runtime_environment.items())
+        for key, value in plan.environment.items()
     )
     posix_updates = "\n".join(
         f"    if (setenv({json.dumps(key)}, {json.dumps(value)}, 1) != 0) "
         "molt_capability_policy_env_failure();"
-        for key, value in sorted(runtime_environment.items())
+        for key, value in plan.environment.items()
     )
     policy_snippet = f"""
 static void molt_capability_policy_env_failure() {{
@@ -86,17 +84,21 @@ def _render_native_main_stub(
     compiled_source_paths: Sequence[str] = (),
     runtime_module_roots: Sequence[Path] = (),
 ) -> str:
+    """Render the program's ``NativeLaunchPlan`` as an AOT executable's C main."""
+    plan = NativeLaunchPlan.for_program(
+        resolved_capability_policy=resolved_capability_policy,
+        compiled_source_paths=compiled_source_paths,
+        runtime_module_roots=runtime_module_roots,
+    )
     runtime_module_roots_literals = tuple(
-        json.dumps(str(path.resolve())) for path in dict.fromkeys(runtime_module_roots)
+        json.dumps(root) for root in plan.runtime_module_roots
     )
     (
         capability_policy_snippet,
         capability_policy_call,
         module_roots_snippet,
         module_roots_call,
-    ) = _native_main_stub_snippets(
-        resolved_capability_policy=resolved_capability_policy,
-    )
+    ) = _native_main_stub_snippets(plan=plan)
     if runtime_module_roots_literals:
         roots_array = ", ".join(runtime_module_roots_literals)
         roots_count = len(runtime_module_roots_literals)
@@ -188,20 +190,14 @@ static void molt_set_runtime_module_roots() {{
 #ifdef _WIN32
 #include <wchar.h>
 #endif
-extern unsigned long long molt_runtime_init();
-extern void molt_runtime_ensure_gil();
+/* The launch ABI (runtime/native_launch_abi.toml). */
+/* MOLT_NATIVE_LAUNCH_DECLARATIONS */
 extern unsigned long long molt_runtime_shutdown();
-extern unsigned long long molt_runtime_exit(unsigned long long code);
-extern void molt_set_argv(int argc, const char** argv);
 #ifdef _WIN32
 extern void molt_set_argv_utf16(int argc, const wchar_t** argv);
 #endif
 extern void molt_main();
-extern unsigned long long molt_exception_pending();
-extern unsigned long long molt_exception_last_pending();
-extern unsigned long long molt_exception_report_uncaught(unsigned long long exc_bits);
 extern void molt_dec_ref(unsigned long long bits);
-extern void molt_dec_ref_obj(unsigned long long bits);
 extern int molt_json_parse_scalar(const char* ptr, long len, unsigned long long* out);
 extern int molt_msgpack_parse_scalar(const char* ptr, long len, unsigned long long* out);
 extern int molt_cbor_parse_scalar(const char* ptr, long len, unsigned long long* out);
@@ -231,16 +227,12 @@ static int molt_env_enabled(const char* name) {
  * callables dead-strippable. This MUST be registered before molt_runtime_init()
  * so the resolver is in place before any lookup runs. */
 extern unsigned long long molt_app_resolve_callable(const char* name, unsigned long long len);
-extern unsigned long long molt_set_app_callable_resolver(unsigned long long fn_ptr);
 /* Per-build module registry blob (import bedrock, design doc 69): the backend
  * emits the registry (module identity, MODULE_INIT_TABLE function pointers,
  * sorted name table) into the application object as one relocated data
  * symbol. It MUST be installed before molt_runtime_init() so module identity
  * resolution and molt_module_ensure are in place before any import runs. */
 extern const unsigned char molt_module_registry_blob[];
-extern unsigned long long molt_module_registry_install(const unsigned char* blob);
-extern void molt_register_compiled_sources(
-    const char* const* paths, unsigned long long count);
 /* MOLT_CAPABILITY_POLICY_SNIPPET */
 /* MOLT_RUNTIME_MODULE_ROOTS_SNIPPET */
 /* MOLT_COMPILED_SOURCES_SNIPPET */
@@ -290,6 +282,9 @@ int main(int argc, char** argv) {
 #endif
 """
     main_c_content = main_c_content.replace(
+        "/* MOLT_NATIVE_LAUNCH_DECLARATIONS */", NATIVE_LAUNCH_C_DECLARATIONS
+    )
+    main_c_content = main_c_content.replace(
         "/* MOLT_CAPABILITY_POLICY_SNIPPET */", capability_policy_snippet
     )
     main_c_content = main_c_content.replace(
@@ -302,7 +297,7 @@ int main(int argc, char** argv) {
         "/* MOLT_RUNTIME_MODULE_ROOTS_CALL */", module_roots_call
     )
     compiled_sources_snippet, compiled_sources_call = _compiled_sources_snippets(
-        compiled_source_paths
+        plan.compiled_source_paths
     )
     main_c_content = main_c_content.replace(
         "/* MOLT_COMPILED_SOURCES_SNIPPET */", compiled_sources_snippet

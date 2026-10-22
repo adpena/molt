@@ -966,6 +966,184 @@ def test_build_failed_backend_excluded_from_cross_check() -> None:
     )
 
 
+def test_exact_twins_compare_stderr_even_when_the_file_ignores_it() -> None:
+    # native and jit share frontend output, codegen and runtime bytes; only the
+    # code owner differs, so a stderr fork between them is a code-owner defect.
+    per_backend = {
+        "native": _outcome("42\n", stderr="Traceback: ValueError\n"),
+        "jit": _outcome("42\n", stderr="Traceback: KeyError\n"),
+    }
+    detail = molt_diff._cross_backend_divergence(
+        per_backend, stdout_mode="exact", stderr_mode="ignore"
+    )
+    assert detail is not None
+    assert "native != jit" in detail
+
+
+def test_non_twins_keep_the_file_stderr_law() -> None:
+    per_backend = {
+        "native": _outcome("42\n", stderr="native diagnostic\n"),
+        "wasm": _outcome("42\n", stderr="wasm diagnostic\n"),
+    }
+    assert (
+        molt_diff._cross_backend_divergence(
+            per_backend, stdout_mode="exact", stderr_mode="ignore"
+        )
+        is None
+    )
+
+
+def test_twins_agreeing_exactly_do_not_diverge() -> None:
+    per_backend = {
+        "native": _outcome("42\n", rc=3, stderr="same\n"),
+        "jit": _outcome("42\n", rc=3, stderr="same\n"),
+    }
+    assert (
+        molt_diff._cross_backend_divergence(
+            per_backend, stdout_mode="exact", stderr_mode="ignore"
+        )
+        is None
+    )
+
+
+def test_twin_that_fails_to_build_alone_is_a_divergence() -> None:
+    per_backend = {
+        "native": _outcome("42\n"),
+        "jit": compat_backends.BackendResult(
+            None, "jit build failed", 1, build_failed=True
+        ),
+    }
+    detail = molt_diff._cross_backend_divergence(
+        per_backend, stdout_mode="exact", stderr_mode="ignore"
+    )
+    assert detail is not None
+    assert "native built but its exact twin jit did not" in detail
+
+
+def test_a_twin_build_that_timed_out_is_unknown_not_a_divergence() -> None:
+    # Under load the JIT tier can spend its run budget compiling; the timeout
+    # fails the file against CPython but proves nothing about either build.
+    per_backend = {
+        "native": _outcome("42\n"),
+        "jit": compat_backends.BackendResult(
+            None, "jit compilation timed out", 124, build_failed=True, timed_out=True
+        ),
+    }
+    assert (
+        molt_diff._cross_backend_divergence(
+            per_backend, stdout_mode="exact", stderr_mode="ignore"
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("started", [True, False])
+def test_jit_adapter_counts_a_runner_that_never_started_as_a_failed_build(
+    started, tmp_path, monkeypatch
+):
+    # The JIT tier compiles when it runs, so only the runner's start receipt
+    # tells a compile failure from the program's own exit status 125. This
+    # isolates the adapter boundary; the twin gate runs the real runner.
+    import json
+
+    from molt.cli import run_tier
+
+    context = compat_backends.BackendExecutionContext(
+        target_python=TargetPythonVersion(3, 12, 0),
+        build_profile="dev",
+        capabilities="",
+        environment={},
+        budget=compat_backends.ItemBudget(
+            compat_backends.TimeoutPolicy.from_environment({}), None
+        ),
+    )
+    image = tmp_path / f"case_molt{run_tier.JIT_IMAGE_SUFFIX}"
+    runs: list[list[str]] = []
+
+    def guarded(command, **kwargs):
+        if kwargs["prefix"] == "MOLT_COMPAT_JIT_BUILD":
+            assert command[command.index("--output") + 1] == str(image)
+            image.write_text("#!/bin/molt-jit --image\n", encoding="utf-8")
+            payload = {"data": {"artifacts": {"runner": "/bin/molt-jit"}}}
+            return compat_backends.BackendResult(json.dumps(payload), "", 0)
+        assert kwargs["prefix"] == "MOLT_COMPAT_JIT_RUN"
+        runs.append(command)
+        receipt = Path(command[command.index("--start-receipt") + 1])
+        if started:
+            receipt.write_text(run_tier.JIT_START_RECEIPT, encoding="utf-8")
+        return compat_backends.BackendResult("partial\n", "molt-jit: refused\n", 125)
+
+    monkeypatch.setattr(compat_backends, "_guarded_run", guarded)
+    result = compat_backends.JitAdapter()._build_and_run_owned(
+        "case.py", context=context, out_dir=tmp_path
+    )
+    # The image is the program's argv[0], so its sys.executable re-runs it.
+    assert len(runs) == 1 and runs[0][-2:] == ["--image", str(image)]
+    assert result.returncode == 125
+    assert result.build_failed is not started
+    assert "molt-jit: refused" in result.stderr
+    assert (result.stdout == "partial\n") is started
+
+
+def test_twins_ignore_only_text_that_differs_between_runs_of_one_program() -> None:
+    # Two runs of one AOT executable already differ in heap addresses (ASLR)
+    # and in the OS thread id of a Rust panic; neither is a code-owner fact.
+    native = (
+        "Exception ignored in: <function C.__del__ at 0x5ce89121e18>\n"
+        "thread '<unnamed>' (352545897) panicked at src/a.rs:1:9:\n"
+    )
+    jit = (
+        "Exception ignored in: <function C.__del__ at 0x43cc4d22018>\n"
+        "thread '<unnamed>' (352576206) panicked at src/a.rs:1:9:\n"
+    )
+    agree = {
+        "native": _outcome("x\n", stderr=native),
+        "jit": _outcome("x\n", stderr=jit),
+    }
+    assert (
+        molt_diff._cross_backend_divergence(
+            agree, stdout_mode="exact", stderr_mode="ignore"
+        )
+        is None
+    )
+    moved = {
+        "native": _outcome("x\n", stderr=native),
+        "jit": _outcome("x\n", stderr=jit.replace("src/a.rs:1:9", "src/a.rs:2:9")),
+    }
+    assert molt_diff._cross_backend_divergence(
+        moved, stdout_mode="exact", stderr_mode="ignore"
+    )
+
+
+def test_twin_stable_text_rewrites_only_process_volatile_spans() -> None:
+    assert (
+        compat_backends.twin_stable_text(
+            "<object at 0xABCdef12> 0x10 thread 'main' (7) panicked"
+        )
+        == "<object at 0x...> 0x10 thread 'main' panicked"
+    )
+
+
+def test_jit_run_cap_covers_its_compilation() -> None:
+    policy = compat_backends.TimeoutPolicy.from_environment({})
+    assert policy.phase("jit", "run") == 600.0
+    assert policy.phase("llvm", "run") == 60.0
+
+
+def test_twins_compare_with_each_other_not_only_with_the_first_backend() -> None:
+    # wasm is listed first, so the twin pair is not the reference pair.
+    per_backend = {
+        "wasm": _outcome("42\n"),
+        "native": _outcome("42\n", stderr="a\n"),
+        "jit": _outcome("42\n", stderr="b\n"),
+    }
+    detail = molt_diff._cross_backend_divergence(
+        per_backend, stdout_mode="exact", stderr_mode="ignore"
+    )
+    assert detail is not None
+    assert "native != jit" in detail
+
+
 # ---------------------------------------------------------------------------
 # Full diff_test multi-backend path with a fake registry (no real build).
 # ---------------------------------------------------------------------------
@@ -2320,3 +2498,148 @@ def test_native_child_failure_is_reported_once_without_recovery(
             "MOLT_DIFF_FORCE_REBUILD",
         ]
     }
+
+
+# --- Expected failures under exact twins (HF-371 review v4) -----------------
+
+_PINNED_SIGPIPE = (
+    "# MOLT_META: expect_fail=molt expect_fail_reason=sigpipe_default_disposition "
+    "expect_molt_returncode=-13 expect_molt_stdout_sha256="
+    + hashlib.sha256(b"").hexdigest()
+    + "\nprint(42)\n"
+)
+
+
+def _twin_record(fake_test_file, install_fake_registry, source, native, jit, cpython):
+    fake_test_file.write_text(source, encoding="utf-8")
+    install_fake_registry({"native": native, "jit": jit}, cpython=cpython)
+    return molt_diff.diff_test(str(fake_test_file), targets=("native", "jit"))
+
+
+def test_a_twin_divergence_fails_even_on_an_expected_failure(
+    fake_test_file, install_fake_registry
+):
+    # closed_pipe_write_signal.py with the v2 bug back in the JIT tier only:
+    # AOT dies by SIGPIPE, JIT prints what CPython prints.
+    record = _twin_record(
+        fake_test_file,
+        install_fake_registry,
+        _PINNED_SIGPIPE,
+        native=compat_backends.BackendResult("", "", -13),
+        jit=compat_backends.BackendResult("BrokenPipeError\n", "", 0),
+        cpython=("BrokenPipeError\n", "", 0),
+    )
+    assert record["resolved_status"] == "fail"
+    assert record["reason_tag"] == "cross_backend_divergence"
+
+
+def test_twins_that_agree_on_an_unpinned_failure_fail(
+    fake_test_file, install_fake_registry
+):
+    # Both tiers fail the same new way (a crash at start), not the pinned way.
+    record = _twin_record(
+        fake_test_file,
+        install_fake_registry,
+        _PINNED_SIGPIPE,
+        native=compat_backends.BackendResult("", "Segmentation fault", -11),
+        jit=compat_backends.BackendResult("", "Segmentation fault", -11),
+        cpython=("BrokenPipeError\n", "", 0),
+    )
+    assert record["resolved_status"] == "fail"
+    assert record["reason_tag"] == "pinned_outcome_mismatch"
+
+
+def test_closed_stderr_start_with_the_keeper_bug_in_the_jit_tier_fails(
+    fake_test_file, install_fake_registry
+):
+    # closed_stderr_start.py if the JIT child refused to start (v3: exit 125).
+    source = (
+        "# MOLT_META: expect_fail=molt expect_fail_reason=closed_stderr_reused_by_runtime"
+        " expect_molt_returncode=0 expect_molt_stdout_sha256="
+        + hashlib.sha256(b"rc 0\nchild ran, stderr open\n").hexdigest()
+        + "\nprint(42)\n"
+    )
+    record = _twin_record(
+        fake_test_file,
+        install_fake_registry,
+        source,
+        native=compat_backends.BackendResult("rc 0\nchild ran, stderr open\n", "", 0),
+        jit=compat_backends.BackendResult("rc 125\n", "", 0),
+        cpython=("rc 0\nchild ran, stderr closed\n", "", 0),
+    )
+    assert record["resolved_status"] == "fail"
+    assert record["reason_tag"] == "cross_backend_divergence"
+
+
+def test_twins_that_end_the_pinned_way_are_the_expected_failure(
+    fake_test_file, install_fake_registry
+):
+    record = _twin_record(
+        fake_test_file,
+        install_fake_registry,
+        _PINNED_SIGPIPE,
+        native=compat_backends.BackendResult("", "", -13),
+        jit=compat_backends.BackendResult("", "", -13),
+        cpython=("BrokenPipeError\n", "", 0),
+    )
+    assert (record["resolved_status"], record["reason_tag"]) == ("pass", "xfail")
+
+
+@pytest.mark.parametrize("targets", [("native", "jit"), ("native",)])
+def test_an_expected_failure_needs_a_pin_only_under_exact_twins(
+    targets, fake_test_file, install_fake_registry
+):
+    fake_test_file.write_text(
+        "# MOLT_META: expect_fail=molt expect_fail_reason=semantic_gap\nprint(42)\n",
+        encoding="utf-8",
+    )
+    failing = compat_backends.BackendResult("", "", -13)
+    install_fake_registry(
+        {name: failing for name in targets}, cpython=("BrokenPipeError\n", "", 0)
+    )
+    record = molt_diff.diff_test(str(fake_test_file), targets=targets)
+    if len(targets) == 2:
+        assert (record["resolved_status"], record["reason_tag"]) == (
+            "fail",
+            "unpinned_expected_failure",
+        )
+    else:
+        assert (record["resolved_status"], record["reason_tag"]) == ("pass", "xfail")
+
+
+def test_a_divergence_between_any_backends_cannot_be_xfailed(
+    fake_test_file, install_fake_registry
+):
+    # As a timeout cannot (test_timeout_cannot_be_xfailed_...): two backends
+    # that disagree are never the expected Molt-versus-CPython gap.
+    fake_test_file.write_text(
+        "# MOLT_META: expect_fail=molt expect_fail_reason=semantic_gap\nprint(42)\n",
+        encoding="utf-8",
+    )
+    install_fake_registry(
+        {
+            "native": compat_backends.BackendResult("1\n", "", 0),
+            "wasm": compat_backends.BackendResult("2\n", "", 0),
+        },
+        cpython=("42\n", "", 0),
+    )
+    record = molt_diff.diff_test(str(fake_test_file), targets=("native", "wasm"))
+    assert record["resolved_status"] == "fail"
+    assert record["reason_tag"] == "cross_backend_divergence"
+
+
+def test_twins_with_the_pinned_status_but_other_output_fail(
+    fake_test_file, install_fake_registry
+):
+    # The same exit status is not the pinned ending when the output differs:
+    # here both tiers print before dying by SIGPIPE.
+    record = _twin_record(
+        fake_test_file,
+        install_fake_registry,
+        _PINNED_SIGPIPE,
+        native=compat_backends.BackendResult("written\n", "", -13),
+        jit=compat_backends.BackendResult("written\n", "", -13),
+        cpython=("BrokenPipeError\n", "", 0),
+    )
+    assert record["resolved_status"] == "fail"
+    assert record["reason_tag"] == "pinned_outcome_mismatch"
