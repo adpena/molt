@@ -558,7 +558,7 @@ uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic/exec_
   investigations.
 - **sccache auto-enable**: the CLI enables `sccache` automatically when available (`MOLT_USE_SCCACHE=auto`); set `MOLT_USE_SCCACHE=0` to disable. Cargo builds now auto-retry once without `RUSTC_WRAPPER` when a wrapper-level `sccache` failure is detected.
 - **sccache server temp dir**: the shared sccache server keeps the temporary directory of the client that starts it, and sccache has no setting of its own for it. Every Cargo child whose wrapper is sccache, and every direct CLI sccache client, therefore runs with `TMPDIR`, `TMP` and `TEMP` set to `$SCCACHE_DIR-tmp` (`$MOLT_EXT_ROOT/.sccache-tmp`), never a run's scratch directory (`src/molt/cargo_execution_policy.py`).
-- **sccache server endpoint**: sccache's default endpoint, TCP `127.0.0.1:4226`, is shared by every sccache on the host, including a VM's forwarded guest port; a foreign server there runs Molt's compiles in its own environment (2026-10-16: a Lima Linux guest's server made every macOS `rustc -vV` probe fail with "Compiler not supported"). Molt pins each cache's clients to a private server: `SCCACHE_SERVER_UDS=$SCCACHE_DIR-server.sock`, or `SCCACHE_SERVER_PORT` derived from the cache path where a socket path would exceed 103 bytes or on Windows. An endpoint the caller sets is kept, and `molt dx` exports the same endpoint, so `sccache --stop-server` and `-s` in those shells reach Molt's server.
+- **sccache server endpoint**: sccache's default endpoint, TCP `127.0.0.1:4226`, is shared by every sccache on the host, including a VM's forwarded guest port (Molt's own VMs forward none: [Linux VMs](#linux-vms-lima)); a foreign server there runs Molt's compiles in its own environment (2026-10-16: a Lima Linux guest's server made every macOS `rustc -vV` probe fail with "Compiler not supported"). Molt pins each cache's clients to a private server: `SCCACHE_SERVER_UDS=$SCCACHE_DIR-server.sock`, or `SCCACHE_SERVER_PORT` derived from the cache path where a socket path would exceed 103 bytes or on Windows. An endpoint the caller sets is kept, and `molt dx` exports the same endpoint, so `sccache --stop-server` and `-s` in those shells reach Molt's server.
 - **Dev profile routing**: `molt ... --profile dev` maps to Cargo profile `dev-fast` by default. Override with `MOLT_DEV_CARGO_PROFILE`; use `MOLT_RELEASE_CARGO_PROFILE` for release lane overrides.
 - **Runtime artifact stability**: runtime Cargo feature sets are stable for the selected stdlib profile and target. User import graphs and required WASM exports must not mutate the runtime Cargo command or fingerprint; they affect user-code lowering, linking/export validation, and user-artifact cache keys only. Shared and relocatable WASM runtimes publish as one manifest-last generation whose location-independent identity covers the exact source closure, immutable provisioned toolchain content, resolved profile/features/flags/link plan, and publication transforms for both members. Cache hydration, linker admission, and deployment require caller-trusted identities plus both exact hashes; adjacent checksum/receipt files, path freshness, and cross-profile substitution have no authority. Exact uncached identities are compared before and after Cargo, input mutation refuses publication, and a successful Cargo run without the matching `molt_runtime` artifact fails closed. Native static archives use an ordered semantic identity over linkable member names and contents, excluding only derived archive metadata and local Molt rustc CGU discriminators; candidates without that identity are rebuilt rather than hydrated.
 - **Native runtime archive aliases**: Cargo still produces scratch
@@ -801,6 +801,53 @@ results. Preserve its ownership evidence and use the existing guarded cleanup
 boundary; shell hosts and ambiguous processes still require explicit operator
 authorization. Do not start another inspection of the same family while its
 previous execution has unknown closure.
+
+## Linux VMs (Lima)
+
+On a macOS host, two Lima VMs reproduce Linux failures: `molt-linux`
+(aarch64) and `molt-x86` (x86_64 through Rosetta, with an x86_64 cross GCC and
+Lean). [`tools/linux_vm.toml`](../tools/linux_vm.toml) defines them; edit it,
+never `~/.lima/<vm>/lima.yaml`. They mount no host path and forward no guest
+port to the host. Design, measurements and costs:
+[design/linux_vm_apparatus.md](design/linux_vm_apparatus.md).
+
+```bash
+python3 tools/linux_vm.py check                      # drift from the definition: exit 1
+python3 tools/linux_vm.py push molt-linux --checkout # this checkout's HEAD into ~/molt-main
+python3 tools/linux_vm.py push molt-x86 origin/main  # a ref: refs/heads/from-host in the guest
+python3 tools/linux_vm.py release                    # free host files a mounting VM pins
+python3 tools/linux_vm.py render molt-linux
+python3 tools/linux_vm.py apply molt-linux --confirm-restart
+```
+
+- **Moving commits in.** `push <vm> [rev]` sends a commit of the checkout you
+  run it from into the guest clone (`~/molt-main`) over Lima's SSH, as
+  `refs/heads/from-host`; `--checkout` also checks it out, detached. For a
+  writable tree, `git -C ~/molt-main archive from-host | tar -x -C /tmp/<x>`
+  in the guest. Copy a single file with `limactl copy <file> <vm>:/tmp/`.
+  A guest cannot fetch from a host path: nothing is mounted.
+- **Pinned host files.** A VM that still mounts host paths (not yet applied,
+  or made by hand) pins every host file its guest looked up, even after the
+  host deletes it. Apple's virtiofs server closes forgotten files only in
+  batches of 64, so `drop_caches` alone frees nothing. `release` makes the
+  guest forget its unused inodes and then 64 more, which frees every pin no
+  guest process holds open; lane retirement runs it for a VM that holds
+  files of the retiring checkout, or deleted files. `check` shows what each
+  mounting VM holds. `release` never stops a VM. It leaves
+  `<mount>/.molt-linux-vm-forget/` (64 empty files) under each mount; delete
+  that directory once no VM mounts the path.
+- **Apply.** `apply` restarts the VM. It refuses while the guest is busy: a
+  process of the guest user, or any process in a login session (`sudo` work
+  too), outside the session and daemon set in the definition; a process
+  under the user's subordinate ids (a container user) or a containerd shim (a
+  running container); or `apt`, `dpkg` or `cloud-init`. It does not see root
+  work outside a login session (a `systemd-run` unit, a cron job), and a
+  session that starts after its probe is stopped with the VM, so check by
+  hand on a shared VM. It keeps the first config it replaced as
+  `lima.yaml.molt-previous` and restores the replaced config if the VM does
+  not start.
+- **Disk.** VM disk images live in `~/.lima` on the boot volume, so guest
+  builds use the Mac's free space.
 
 ## Logging and Benchmark Conventions
 Persistent sessions are only useful if output is durable and inspectable.

@@ -1,0 +1,90 @@
+# Molt's Linux VMs: the one authority for their Lima configuration.
+#
+# The VMs run on a macOS host under Lima's `vz` driver and reproduce Linux
+# failures on aarch64 (`molt-linux`) and x86_64 through Rosetta (`molt-x86`).
+# `tools/linux_vm.py` renders each [vm.<name>] into $LIMA_HOME/<name>/lima.yaml
+# (`apply`), compares each VM's effective configuration with it (`check`), and
+# sends commits into each guest's clone (`push`). Edit this file, never
+# lima.yaml. Design, measurements and prior art:
+# docs/design/linux_vm_apparatus.md.
+#
+# No VM mounts a host path. Apple's virtiofs server keeps a host file open for
+# every inode a guest has looked up and closes forgotten ones only in batches
+# of 64, so a mount pins files the host deletes (HF-463). Sources reach a guest
+# through `tools/linux_vm.py push`, which costs no more than the mount did.
+
+schema = 2
+minimum_lima_version = "2.0.0"
+
+# The guest's own session and daemon processes. `apply` restarts a VM only
+# when every process of the guest user, and every process in a login session
+# (`sudo` work too), is one of these (comm, truncated by Linux to 15
+# characters), no process runs under the user's subordinate ids (a container
+# user), and no maintenance process runs.
+idle_guest_processes = [
+  "systemd",
+  "(sd-pam)",
+  "sshd",
+  "sshd-session",
+  "sshd-auth",
+  "dbus-daemon",
+  # Lima's rootless containerd (containerd.user = true).
+  "rootlesskit",
+  "exe",
+  "containerd",
+  # Not containerd-shim-runc-v2: a shim runs only while a container runs.
+  "buildkitd",
+  "slirp4netns",
+  "bypass4netnsd",
+  "containerd-stargz-grpc",
+  "containerd-fuse-overlayfs-grpc",
+]
+# Processes of any user that a restart must not cut short: package installs
+# and first-boot provisioning. Ubuntu's resident unattended-upgrade-shutdown
+# daemon has the same 15-character comm as an unattended-upgrade run, so the
+# run counts only once it starts apt or dpkg.
+maintenance_guest_processes = [
+  "apt",
+  "apt-get",
+  "dpkg",
+  "cloud-init",
+]
+
+[vm.molt-linux]
+purpose = "aarch64 Linux reproduction (Ubuntu 26.04, GNU toolchain)"
+vm_type = "vz"
+arch = "aarch64"
+cpus = 6
+memory = "12GiB"
+disk = "225GiB"
+rosetta = false
+containerd_user = true
+# Ubuntu 26.04 renames its NIC on first boot (LP: #2136392); without this
+# parameter systemd-networkd-wait-online blocks boot for 120 s.
+params = { internal_netplanOptional = "true" }
+# `push` sends commits into this clone (relative to the guest user's home).
+clone = "molt-main"
+# Guest ports forwarded to the host. The renderer appends one rule that
+# ignores every other guest port (HF-F251, HF-463).
+port_forwards = []
+
+[vm.molt-linux.image]
+location = "https://cloud-images.ubuntu.com/releases/resolute/release-20260927/ubuntu-26.04-server-cloudimg-arm64.img"
+digest = "sha256:63a93bd5a8d76e33b15ceb5daa3657bd79be804748051ab178e643b0f5da22e7"
+
+[vm.molt-x86]
+purpose = "x86_64 Linux reproduction through Rosetta (Ubuntu 24.04, x86_64 cross GCC, Lean)"
+vm_type = "vz"
+arch = "aarch64"
+cpus = 4
+memory = "8GiB"
+disk = "40GiB"
+rosetta = true
+containerd_user = true
+params = {}
+clone = "molt-main"
+port_forwards = []
+
+[vm.molt-x86.image]
+location = "https://cloud-images.ubuntu.com/releases/noble/release-20260926/ubuntu-24.04-server-cloudimg-arm64.img"
+digest = "sha256:1d6bffe64b848468ac97f821d369a4846d983de1800ccf6b5ec8853e85cefc55"
