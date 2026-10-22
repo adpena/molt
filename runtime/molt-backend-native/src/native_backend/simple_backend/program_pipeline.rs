@@ -65,7 +65,7 @@ impl SimpleBackend {
                 crate::tir::pipeline_cache::TirPipelineRunOptions {
                     target_info: native_tti.clone(),
                     cache_flavor: crate::tir::pipeline_cache::TirPipelineCacheFlavor::Native,
-                    cache_dir: None,
+                    cache: self.tir_cache.clone(),
                     process_externs: false,
                     verify_lir: true,
                     tir_dump: env_setting(BackendEnv::TIR_DUMP).as_deref() == Some("1"),

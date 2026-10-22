@@ -29,6 +29,7 @@ _COMMAND_AUTHORITIES = {
         "diff",
         "parity_run",
         "run_script",
+        "_run_program",
     ),
     quality_commands: (
         "_internal_batch_build_server",

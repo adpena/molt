@@ -45,7 +45,13 @@ mod program_pipeline;
 mod program_slots;
 #[cfg(any(test, feature = "llvm"))]
 pub(crate) use program_pipeline::preprocess_backend_tir_input;
+mod code_owner;
+pub(crate) use code_owner::{CodeOwner, CodePlacement};
 mod compile_driver;
+#[cfg(feature = "jit")]
+mod jit;
+#[cfg(feature = "jit")]
+pub use jit::{JitCompileError, JitEntryPoints, JitProgram, JitSymbolLookup, probe_jit_execution};
 mod trampolines;
 
 /// Output of a native compilation pass.
@@ -62,13 +68,16 @@ pub struct CompileOutput {
 
 #[cfg(feature = "native-backend")]
 pub struct SimpleBackend {
-    pub(crate) module: ObjectModule,
+    pub(crate) module: CodeOwner,
     pub(crate) ctx: Context,
     // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
     pub(crate) trampoline_ids: BTreeMap<TrampolineKey, cranelift_module::FuncId>,
     pub(crate) import_ids: BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     pub skip_ir_passes: bool,
     pub skip_shared_stdlib_partition: bool,
+    /// Where the persistent TIR cache lives: the backend process's own root,
+    /// unless the caller names one (the JIT runner names its image's).
+    pub tir_cache: crate::tir::pipeline_cache::TirCacheLocation,
     /// Whether this object emits the per-app `molt_app_resolve_callable` resolver.
     /// Exactly one object per final binary must emit it (the one main_stub.c
     /// registers): the main application object. Stdlib-cache batch objects and all

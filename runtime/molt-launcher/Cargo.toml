@@ -6,6 +6,15 @@ rust-version.workspace = true
 publish = false
 license = "Apache-2.0"
 
+[package.metadata.molt]
+# Files outside this crate that its build reads, relative to this crate as
+# cargo:rerun-if-changed paths are. Every source closure that reaches the
+# crate keys them, and Cargo's own reads verify the list after each build.
+# main.rs embeds the bootstrap script with include_str!.
+build-inputs = [
+  "../../packaging/bootstrap.py",
+]
+
 [dependencies]
 dunce = "=1.0.5"
 

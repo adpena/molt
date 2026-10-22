@@ -39,6 +39,7 @@ law or the real backends' codegen.
 
 from __future__ import annotations
 
+import json
 import os
 import math
 import time
@@ -64,6 +65,13 @@ from molt.llvm_toolchain import (
     verify_available_llvm_toolchain,
 )
 from molt.capability_policy import expand_capabilities, split_capability_tokens
+from molt.compilation_target import TargetKind
+from molt.cli.run_tier import (
+    JIT_IMAGE_SUFFIX,
+    jit_program_started,
+    jit_runner_argv,
+    jit_tier_refusal,
+)
 from molt.dx import scratch_dir
 from molt.target_python import TargetPythonVersion, _parse_target_python_version
 from molt.wasm_artifact import wasm_runtime_manifest_path
@@ -277,13 +285,16 @@ class TimeoutPolicy:
         if build is None and run is not None:
             build = max(run * 2.0, 300.0)
         phases = [("native", build, run)]
-        for backend, default_build in (
-            ("wasm", 600.0),
-            ("llvm", 900.0),
-            ("luau", 600.0),
+        # The JIT tier compiles the whole program in its run phase, so its run
+        # cap also covers the compilation an AOT build does in its build phase.
+        for backend, default_build, default_run in (
+            ("wasm", 600.0, 60.0),
+            ("llvm", 900.0, 60.0),
+            ("luau", 600.0, 60.0),
+            ("jit", 600.0, 600.0),
         ):
             values = []
-            for phase, default in (("BUILD", default_build), ("RUN", 60.0)):
+            for phase, default in (("BUILD", default_build), ("RUN", default_run)):
                 value = harness_memory_guard.timeout_from_env(
                     f"MOLT_COMPAT_{backend.upper()}_{phase}", env, default=default
                 )
@@ -764,7 +775,7 @@ def _with_adapter_scratch(
     *,
     environment: Mapping[str, str],
 ) -> BackendResult:
-    if backend not in {"wasm", "llvm", "luau"}:
+    if backend not in {"wasm", "llvm", "luau", "jit"}:
         raise ValueError("unknown adapter scratch namespace")
     npath = test_policy.normalize_repo_relative(file_path)
     environment = dict(environment)
@@ -1063,6 +1074,143 @@ class LlvmAdapter:
 
 
 # ---------------------------------------------------------------------------
+# Exact twins
+# ---------------------------------------------------------------------------
+
+# Backend pairs that run the same frontend output, code generator and runtime
+# bytes and differ only in who owns the machine code. A twin pair must agree on
+# stdout under the file's own comparison mode (tests/molt_diff.py), exactly on
+# stderr and exit status, after twin_stable_text removes run-to-run text; a
+# build that succeeds for one twin must succeed for the other
+# (docs/design/dev_jit_tier.md, "Verification").
+EXACT_TWIN_BACKENDS: frozenset[frozenset[str]] = frozenset(
+    {frozenset({"native", "jit"})}
+)
+
+
+def exact_twins(first: str, second: str) -> bool:
+    return frozenset({first, second}) in EXACT_TWIN_BACKENDS
+
+
+# Text that differs between two runs of one executable, so it carries no
+# code-owner fact: heap addresses in default reprs (address-space layout
+# randomization) and the OS thread id that Rust prints for a panic.
+_PROCESS_VOLATILE_TEXT = (
+    (re.compile(r" at 0x[0-9a-fA-F]+>"), " at 0x...>"),
+    (re.compile(r"(thread '[^']*') \(\d+\) panicked"), r"\1 panicked"),
+)
+
+
+def twin_stable_text(text: str) -> str:
+    """``text`` without the parts any two runs of one program may differ in."""
+    for pattern, replacement in _PROCESS_VOLATILE_TEXT:
+        text = pattern.sub(replacement, text)
+    return text
+
+
+# ---------------------------------------------------------------------------
+# JIT adapter (development JIT tier, HF-371)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class JitAdapter:
+    """The native program run from memory by molt-jit: no object, no link.
+
+    The JIT tier shares the native frontend, backend IR, code generator and
+    runtime bytes with the native adapter; only the code owner differs. Its
+    divergence from the native adapter is therefore a code-owner defect.
+    """
+
+    name: str = "jit"
+
+    def availability(self, budget: ItemBudget | None = None) -> BackendAvailability:
+        # The JIT tier's one admission (molt.cli.run_tier), for this host.
+        refusal = jit_tier_refusal(
+            target=TargetKind.NATIVE, codegen_backend="cranelift"
+        )
+        if refusal is not None:
+            return BackendAvailability(
+                available=False, reason=f"the JIT tier does not support {refusal}"
+            )
+        return BackendAvailability(available=True)
+
+    def build_and_run(
+        self,
+        file_path: str,
+        *,
+        context: BackendExecutionContext,
+    ) -> BackendResult:
+        if context.budget.expired():
+            return context.budget.exhausted_result(build_failed=True)
+        return _with_adapter_scratch(
+            self.name,
+            file_path,
+            lambda out_dir: self._build_and_run_owned(
+                file_path, context=context, out_dir=out_dir
+            ),
+            environment=context.environment,
+        )
+
+    def _build_and_run_owned(
+        self, file_path: str, *, context: BackendExecutionContext, out_dir: Path
+    ) -> BackendResult:
+        env = _cross_build_env(context)
+        image = out_dir / f"{Path(file_path).stem}_molt{JIT_IMAGE_SUFFIX}"
+        build = _guarded_run(
+            _build_cmd(
+                file_path,
+                "native",
+                out_dir,
+                context,
+                extra_build_args=["--emit", "jit", "--output", str(image), "--json"],
+            ),
+            prefix="MOLT_COMPAT_JIT_BUILD",
+            env=env,
+            budget=context.budget,
+            backend=self.name,
+            phase="build",
+            cwd=str(_REPO_ROOT),
+        )
+        runner: str | None = None
+        if build.returncode == 0 and build.stdout:
+            try:
+                payload = json.loads(build.stdout)
+            except json.JSONDecodeError:
+                payload = None
+            artifacts = (
+                payload.get("data", {}).get("artifacts", {})
+                if isinstance(payload, dict)
+                else {}
+            )
+            candidate = artifacts.get("runner") if isinstance(artifacts, dict) else None
+            runner = candidate if isinstance(candidate, str) else None
+        if build.returncode != 0 or runner is None or not image.exists():
+            return build.as_build_failure(
+                detail="jit build produced no JIT image",
+                fallback="jit build failed",
+            )
+        receipt = out_dir / "jit-start-receipt.json"
+        run = _guarded_run(
+            jit_runner_argv(runner, str(image), [], start_receipt=str(receipt)),
+            prefix="MOLT_COMPAT_JIT_RUN",
+            env=env,
+            budget=context.budget,
+            backend=self.name,
+            phase="run",
+            cwd=str(_REPO_ROOT),
+        )
+        if jit_program_started(receipt):
+            return run
+        # The runner compiles the program before it starts it. A failure there
+        # is a failed build, as an AOT build that fails in code generation is.
+        return run.as_build_failure(
+            detail="molt-jit did not start the program",
+            fallback="jit compilation failed",
+        )
+
+
+# ---------------------------------------------------------------------------
 # Luau adapter
 # ---------------------------------------------------------------------------
 
@@ -1153,6 +1301,7 @@ def build_registry(run_molt: RunMoltCallable) -> dict[str, BackendAdapter]:
         "wasm": WasmAdapter(),
         "llvm": LlvmAdapter(),
         "luau": LuauAdapter(),
+        "jit": JitAdapter(),
     }
 
 

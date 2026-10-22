@@ -6,5 +6,14 @@ rust-version.workspace = true
 publish = false
 license = "Apache-2.0"
 
+[package.metadata.molt]
+# Files outside this crate that its build reads, relative to this crate as
+# cargo:rerun-if-changed paths are. Every source closure that reaches the
+# crate keys them, and Cargo's own reads verify the list after each build.
+# include_str! embeds the WASM table layout.
+build-inputs = [
+  "../wasm_table_layout.inc",
+]
+
 [lib]
 path = "src/lib.rs"

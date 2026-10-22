@@ -48,16 +48,10 @@ def _backend_crate_source_closure(
         project_root=project_root,
         crate_root=project_root / "runtime" / product.value,
         crate_features=backend_features,
-        extra_source_paths=(project_root / "Cargo.toml",)
-        + (
-            (
-                # Rust embeds these authorities from outside its Cargo crate root.
-                project_root / "src" / "molt" / "backend_environment.json",
-                project_root / "src" / "molt" / "backend_daemon_protocol_version.txt",
-            )
-            if product is HostToolProduct.BACKEND
-            else ()
-        ),
+        # Each crate in the closure adds the files outside it that its build
+        # reads (package.metadata.molt.build-inputs): molt-ir's catalog reaches
+        # every product built on molt-ir, the backend's and the runner's alike.
+        extra_source_paths=(project_root / "Cargo.toml",),
     )
 
 
@@ -599,7 +593,14 @@ def _cache_fingerprint(
     env: Mapping[str, str] | None = None,
     cargo_profile: str | None = None,
     rust_cpu: RustCpuPolicy,
+    product: HostToolProduct = HostToolProduct.BACKEND,
 ) -> str:
+    """The identity of one compiler product's sources, Cargo build and runtime.
+
+    ``product`` selects the host tool whose crate closure and locked
+    dependencies are hashed: a JIT run executes ``HostToolProduct.JIT``, so its
+    cached launch must change when the runner's sources do.
+    """
     from molt.cli.compiler_identity import (
         CompilerIdentityError,
         backend_build_admission,
@@ -621,10 +622,12 @@ def _cache_fingerprint(
         if installed is not None:
             return installed.fingerprint
         admission = backend_build_admission(
-            root, selected_features, profile, source, rust_cpu=rust_cpu
+            root, selected_features, profile, source, rust_cpu=rust_cpu, product=product
         )
         source_paths, lock_digest = _backend_source_identity_inputs(
-            root, _backend_source_paths(root, selected_features)
+            root,
+            _backend_source_paths(root, selected_features, product=product),
+            product=product,
         )
         if include_runtime_sources:
             from molt.cli.runtime_source_closure import runtime_source_paths

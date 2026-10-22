@@ -3444,7 +3444,34 @@ def _cross_backend_divergence(
     used against CPython. Build-failed backends are excluded from this check
     (their CPython verdict already covers them); a divergence among the rest is a
     molt-internal backend fork and is always a FAIL.
+
+    Exact twins (``compat_backends.EXACT_TWIN_BACKENDS``) share everything but
+    the code owner, so they compare stderr exactly, after removing the text any
+    two runs of one program may differ in (``twin_stable_text``), and a build
+    that fails for only one twin is itself a divergence.
     """
+    mismatches: list[str] = []
+    for first, first_outcome in per_backend.items():
+        for second, second_outcome in per_backend.items():
+            if first >= second or not compat_backends.exact_twins(first, second):
+                continue
+            # A timeout or a guard failure says nothing about the build; the
+            # CPython verdict already fails the file.
+            unknown = any(
+                outcome.timed_out or outcome.infrastructure_failure is not None
+                for outcome in (first_outcome, second_outcome)
+            )
+            if (
+                not unknown
+                and first_outcome.build_failed != second_outcome.build_failed
+            ):
+                failed, built = (
+                    (first, second) if first_outcome.build_failed else (second, first)
+                )
+                mismatches.append(
+                    f"{built} built but its exact twin {failed} did not: "
+                    f"{per_backend[failed].stderr!r:.200}"
+                )
     ran = {
         name: outcome
         for name, outcome in per_backend.items()
@@ -3452,30 +3479,38 @@ def _cross_backend_divergence(
         and not outcome.timed_out
         and outcome.infrastructure_failure is None
     }
-    if len(ran) < 2:
+    if len(ran) < 2 and not mismatches:
         return None
     names = list(ran)
-    reference_name = names[0]
-    reference = ran[reference_name]
-    mismatches: list[str] = []
-    for name in names[1:]:
-        candidate = ran[name]
-        verdict = compat_comparison.compare_outputs(
-            compat_comparison.Outputs(
-                reference.stdout, reference.child_stderr or "", reference.returncode
-            ),
-            compat_comparison.Outputs(
-                candidate.stdout, candidate.child_stderr or "", candidate.returncode
-            ),
-            mode=stdout_mode,
-            stderr_mode=stderr_mode,
-        )
-        if not verdict.equal:
-            mismatches.append(
-                f"{reference_name} != {name} ({verdict.detail}); "
-                f"{reference_name} stdout={reference.stdout!r:.120} rc={reference.returncode}; "
-                f"{name} stdout={candidate.stdout!r:.120} rc={candidate.returncode}"
+    for index, reference_name in enumerate(names):
+        reference = ran[reference_name]
+        for name in names[index + 1 :]:
+            # Every backend is compared with the first; twins also with each other.
+            if index > 0 and not compat_backends.exact_twins(reference_name, name):
+                continue
+            candidate = ran[name]
+            twins = compat_backends.exact_twins(reference_name, name)
+            stable = compat_backends.twin_stable_text if twins else str
+            verdict = compat_comparison.compare_outputs(
+                compat_comparison.Outputs(
+                    stable(reference.stdout),
+                    stable(reference.child_stderr or ""),
+                    reference.returncode,
+                ),
+                compat_comparison.Outputs(
+                    stable(candidate.stdout),
+                    stable(candidate.child_stderr or ""),
+                    candidate.returncode,
+                ),
+                mode=stdout_mode,
+                stderr_mode="exact" if twins else stderr_mode,
             )
+            if not verdict.equal:
+                mismatches.append(
+                    f"{reference_name} != {name} ({verdict.detail}); "
+                    f"{reference_name} stdout={reference.stdout!r:.120} rc={reference.returncode}; "
+                    f"{name} stdout={candidate.stdout!r:.120} rc={candidate.returncode}"
+                )
     if not mismatches:
         return None
     return " | ".join(mismatches)
@@ -3576,6 +3611,55 @@ def _record_backend_result(
             ).hexdigest(),
         }
     )
+
+
+def _expected_failure_pin_failure(
+    meta: test_policy.TestMetadata,
+    per_backend: dict[str, compat_backends.BackendResult],
+) -> tuple[str, str] | None:
+    """Why an expected failure did not end the exact way it pins, or None.
+
+    An expected failure passes only when every backend ends with the pinned
+    exit status and stdout; any other ending is a new failure. Exact twins
+    must pin it, or two tiers that fail the same new way would read as the
+    known gap.
+    """
+    if meta.expected_molt_returncode is not None:
+        endings = []
+        for name, outcome in sorted(per_backend.items()):
+            stdout = outcome.stdout
+            digest = (
+                None
+                if stdout is None
+                else hashlib.sha256(
+                    stdout.encode("utf-8", errors="surrogateescape")
+                ).hexdigest()
+            )
+            if (
+                outcome.returncode != meta.expected_molt_returncode
+                or digest != meta.expected_molt_stdout_sha256
+            ):
+                endings.append(
+                    f"{name} exited {outcome.returncode} with stdout "
+                    f"{stdout!r:.120} (sha256 {digest})"
+                )
+        if endings:
+            return "pinned_outcome_mismatch", (
+                f"the pin is exit {meta.expected_molt_returncode} with stdout "
+                f"sha256 {meta.expected_molt_stdout_sha256}; " + "; ".join(endings)
+            )
+        return None
+    if meta.expect_molt_fail and any(
+        compat_backends.exact_twins(first, second)
+        for first in per_backend
+        for second in per_backend
+        if first < second
+    ):
+        return "unpinned_expected_failure", (
+            "an expected failure compared as exact twins must pin how Molt fails "
+            "(expect_molt_returncode and expect_molt_stdout_sha256)"
+        )
+    return None
 
 
 def diff_test(
@@ -3914,10 +3998,23 @@ def diff_test(
         divergence_detail = _cross_backend_divergence(
             per_backend, stdout_mode=stdout_mode, stderr_mode=stderr_mode
         )
+        # A divergence fails whatever the file expects: an expected-failure
+        # mark covers a known Molt-vs-CPython gap, never two backends that
+        # disagree (HF-371 review v4).
         if divergence_detail is not None:
             print(f"[FAIL] {file_path} CROSS-BACKEND DIVERGENCE")
             print(f"  {divergence_detail}")
-            return _finalize_status("fail")
+            record["raw_status"] = record["resolved_status"] = "fail"
+            record["reason_tag"] = "cross_backend_divergence"
+            return
+        pin_failure = _expected_failure_pin_failure(meta, per_backend)
+        if pin_failure is not None:
+            tag, detail = pin_failure
+            print(f"[FAIL] {file_path} {tag.upper().replace('_', ' ')}")
+            print(f"  {detail}")
+            record["raw_status"] = record["resolved_status"] = "fail"
+            record["reason_tag"] = tag
+            return
 
         if any_cpython_fail:
             return _finalize_status("fail")
