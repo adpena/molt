@@ -50,6 +50,60 @@ def test_cpython_source_authority_is_commit_pinned() -> None:
     assert next(iter(sources)) == "3.12"
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    [None, "version", "revision", "tag", "url", "duplicate"],
+)
+def test_pending_major_source_keeps_exact_pin_validation(tmp_path, mutation):
+    from molt.target_python import _parse_target_python_version
+
+    row = {
+        "python": "4.0",
+        "revision": "a" * 40,
+        "tag": "v4.0.0",
+        "git_url": "https://github.com/python/cpython.git",
+    }
+    if mutation == "version":
+        row["python"] = "04.0"
+    elif mutation == "revision":
+        row["revision"] = "main"
+    elif mutation == "tag":
+        row["tag"] = "v4.1.0"
+    elif mutation == "url":
+        row["git_url"] = "https://example.invalid/cpython.git"
+    text = ['schema = "molt.cpython-regrtest-sources.v1"']
+    for _ in range(2 if mutation == "duplicate" else 1):
+        text += [
+            "",
+            "[[source]]",
+            *(f"{key} = {json.dumps(value)}" for key, value in row.items()),
+        ]
+    path = tmp_path / "sources.toml"
+    path.write_text("\n".join(text) + "\n", encoding="utf-8")
+    if mutation is not None:
+        with pytest.raises(ValueError):
+            cpython_regrtest.load_cpython_sources(path)
+    else:
+        assert cpython_regrtest.load_cpython_sources(path)["4.0"].revision == "a" * 40
+        with pytest.raises(ValueError, match="unsupported Python target"):
+            _parse_target_python_version("4.0")
+
+
+@pytest.mark.parametrize(
+    "version", ["4", "4.0.0", "4.0rc1", "4.0+local", "4.0.dev1", "v4.0", "1!4.0"]
+)
+def test_cpython_source_version_requires_canonical_major_minor(tmp_path, version):
+    path = tmp_path / "sources.toml"
+    path.write_text(
+        'schema = "molt.cpython-regrtest-sources.v1"\n[[source]]\n'
+        f'python = "{version}"\nrevision = "{"a" * 40}"\n'
+        'tag = "v4.0.0"\ngit_url = "https://github.com/python/cpython.git"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="invalid CPython version authority"):
+        cpython_regrtest.load_cpython_sources(path)
+
+
 def test_existing_cpython_checkout_fails_closed_on_revision_drift(
     tmp_path: Path,
     monkeypatch,
