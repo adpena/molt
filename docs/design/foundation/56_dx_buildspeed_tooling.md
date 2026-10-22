@@ -905,9 +905,13 @@ tests that place their target in a temporary directory.
   record on the external volume, and 82 us against 48 us on the internal
   disk; creating and unlinking a record file instead took about 440 us on
   the external volume. A warm build takes two or three build locks.
-- Retention follows last use, as Go's does: an admission renews its entry in
-  the store's ledger before reading it, and each publication evicts entries no
-  build used for 5 days. The native runtime's per-target generations had no
+- Retention follows last use, as Go's does: every read renews its entry in
+  the store's ledger before it reads (build admission, the backend receipt
+  check of `internal-backend-build`, the cross-host export), and each
+  publication evicts entries no build used for 5 days. Every removal, idle
+  eviction, `molt cache evict` and the sweep of an aside an interrupted
+  eviction left, runs under the ledger lock, so no sweep deletes an aside
+  another process is still removing. The native runtime's per-target generations had no
   eviction at all (12 generations, 1.5 GB, in one live checkout's dev-fast).
   Like Go, which renews an entry's mtime at most hourly, an admission renews
   at most once an hour: inside the hour it reads the ledger without the lock

@@ -795,3 +795,44 @@ def test_import_refuses_an_unportable_member_name_under_a_valid_digest(tmp_path)
         _import(store, selection, members)
     assert not any(store.root.rglob("escaped.json"))
     assert not _stored(store)
+
+
+class _Clock:
+    def __init__(self, now: float) -> None:
+        self.now = now
+
+    def time(self) -> float:
+        return self.now
+
+
+def test_a_reused_runtime_is_renewed_and_outlives_the_idle_window(
+    native_build, monkeypatch
+):
+    """Reuse renews an entry (Go's trim), so one that builds keep reusing stays.
+
+    The runtime is published on day 0 and reused on day 4. On day 6 another
+    identity's publication evicts entries no build used for 5 days: the
+    reused entry stays, and the next build reuses it without Cargo.
+    """
+    from molt.cli import generation_store, product_store
+
+    day = 24 * 60 * 60.0
+    clock = _Clock(1_000_000_000.0)
+    monkeypatch.setattr(generation_store, "time", clock)
+    ok, first, _timings = native_build.run(profile="micro")
+    assert ok and len(native_build.cargo_runs) == 1
+    entry = native_build.store.entry(
+        first.native_runtime_generation.build_identity.digest
+    )
+    clock.now += 4 * day
+    ok, reused, _timings = native_build.run(profile="micro")
+    assert ok and reused.runtime_lib == first.runtime_lib
+    assert len(native_build.cargo_runs) == 1
+    clock.now += 2 * day
+    assert 6 * day > product_store.PRODUCT_STORE_IDLE_SECONDS
+    ok, _other, _timings = native_build.run(profile="full")
+    assert ok and len(native_build.cargo_runs) == 2
+    assert entry.is_dir()
+    ok, again, _timings = native_build.run(profile="micro")
+    assert ok and again.runtime_lib == first.runtime_lib
+    assert len(native_build.cargo_runs) == 2

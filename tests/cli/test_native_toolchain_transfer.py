@@ -11,6 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 import shutil
 import subprocess
+import time
 
 import pytest
 
@@ -276,3 +277,39 @@ def test_export_requires_a_backend_admitted_for_this_checkout(
 
     with pytest.raises(transfer.NativeToolchainTransferError, match="backend"):
         transfer.export_native_toolchain(producer.selection)
+
+
+def test_export_renews_both_entries_before_it_reads_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A read renews its entry first, so no eviction can race the export.
+
+    Both entries were last used 30 s inside the idle window, where the next
+    publication's eviction could remove them during the export's read; the
+    export renews them to now before it reads.
+    """
+    import json
+
+    from molt.cli import product_store
+
+    producer = checkout(tmp_path, monkeypatch, "producer")
+    producer.build(monkeypatch)
+    stores = (producer.runtime_store, producer.backend_store)
+    aged = time.time() - product_store.PRODUCT_STORE_IDLE_SECONDS + 30
+    entries = {}
+    for store in stores:
+        (entry,) = store.root.glob("[0-9a-f]" * 64)
+        identity = entry.name
+        store.record_use(identity)
+        ledger_path = store.root / ".product-store.json"
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        ledger["last_used"][identity] = aged
+        ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+        entries[store] = identity
+
+    transfer.export_native_toolchain(producer.selection)
+
+    for store, identity in entries.items():
+        ledger = json.loads((store.root / ".product-store.json").read_bytes())
+        assert ledger["last_used"][identity] > aged + 60
+        assert store.entry(identity).is_dir()

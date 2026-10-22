@@ -111,6 +111,8 @@ def _verified_backend_receipts(
     )
     store = _backend_binary.host_tool_store(molt_root)
     key = _backend_binary.host_tool_identity(selection.binary, current)
+    # Renewed before the read, so no eviction races it (design 56, 2.8).
+    store.record_use(key)
     admission = next(
         (
             stored

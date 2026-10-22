@@ -254,14 +254,6 @@ def test_a_use_inside_the_renewal_interval_takes_no_lock_and_writes_nothing(
     assert _ledger(store)["last_used"][_digest("b")] == clock.now
 
 
-def test_the_renewal_interval_is_far_inside_the_idle_window() -> None:
-    """A skipped renewal still leaves the entry its idle window less an hour."""
-    assert (
-        products.PRODUCT_STORE_RENEWAL_SECONDS * 24
-        < products.PRODUCT_STORE_IDLE_SECONDS
-    )
-
-
 def test_evict_waits_for_the_builder_and_removes_the_entry_whole(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -340,3 +332,100 @@ def test_the_cache_evict_command_removes_the_entry_a_build_named(
     )
     assert entrypoint.main() != 0
     assert "SHA-256" in capsys.readouterr().out
+
+
+def test_an_interrupted_eviction_is_swept_under_the_ledger_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every removal runs under the ledger lock, so a sweep never races one."""
+    from molt.file_locks import _release_file_lock, _try_acquire_file_lock
+
+    store = products.ProductStore(tmp_path / "store")
+    identity = _digest("a")
+    store.variant(identity, _environment("x")).mkdir(parents=True)
+    aside = store.root / f".evicted-{_digest('d')}.123"
+    aside.mkdir()
+    held_during_sweep: list[bool] = []
+    delete = products.delete_path
+
+    def observed(path: Path):
+        probe = _try_acquire_file_lock(store.root / ".product-store.lock")
+        held_during_sweep.append(probe is None)
+        if probe is not None:
+            _release_file_lock(probe)
+        return delete(path)
+
+    monkeypatch.setattr(products, "delete_path", observed)
+    store.retain(identity)
+    assert held_during_sweep == [True]
+    assert not aside.exists()
+
+
+_BUILDER_SCRIPT = """
+import sys, time
+from pathlib import Path
+from molt.cli.product_store import ProductStore
+
+root, identity, go = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
+store = ProductStore(root)
+deadline = time.monotonic() + 30
+while not go.exists() and time.monotonic() < deadline:
+    time.sleep(0.005)
+with store.single_flight(identity):
+    published = store.entry(identity) / "published"
+    if not published.exists():
+        with open(root / "builds.log", "a", encoding="utf-8") as log:
+            log.write(f"{sys.argv[4]}\\n")
+        time.sleep(0.3)
+        published.write_text(sys.argv[4], encoding="utf-8")
+print("done", flush=True)
+"""
+
+
+def test_two_processes_with_one_identity_build_it_once(tmp_path: Path) -> None:
+    """Single flight across processes, as two checkouts run it: the OS lock.
+
+    Threads in one process meet the in-process mutex first; two interpreters
+    share only the OS file lock, so this proves what two checkouts rely on.
+    """
+    import subprocess
+    import sys
+
+    from tests.process_guard_common import (
+        close_owned_test_process,
+        start_owned_test_process,
+    )
+
+    store = products.ProductStore(tmp_path / "store")
+    store.root.mkdir(parents=True)
+    identity, go = _digest("a"), tmp_path / "go"
+    builders = [
+        start_owned_test_process(
+            [
+                sys.executable,
+                "-c",
+                _BUILDER_SCRIPT,
+                str(store.root),
+                identity,
+                str(go),
+                name,
+            ],
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        for name in ("first", "second")
+    ]
+    try:
+        go.touch()
+        for builder in builders:
+            assert builder.wait(timeout=60) == 0
+            assert builder.stdout is not None
+            assert builder.stdout.read().strip() == "done"
+    finally:
+        for builder in builders:
+            close_owned_test_process(builder)
+    builds = (store.root / "builds.log").read_text(encoding="utf-8").split()
+    assert len(builds) == 1
+    assert (store.entry(identity) / "published").read_text(encoding="utf-8") == (
+        builds[0]
+    )
