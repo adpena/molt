@@ -1,6 +1,6 @@
 schema = "molt.verified-subset.v2"
 build_profiles = ["dev", "release"]
-reference_cpython = ["3.12.13", "3.13.11", "3.14.3"]
+reference_cpython = ["3.12.15", "3.13.17", "3.14.9"]
 excluded_verification_scopes = ["capability_policy", "dynamic_execution_policy"]
 differential_suites = [
   { cpython_equivalence_floor = 841, path = "tests/differential/basic", recursive = false },

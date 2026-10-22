@@ -17,6 +17,8 @@ read through its one authority's loader, with its upstream:
 
 A pin may trail upstream only under a hold that names an open row of the
 findings ledger; a hold on a current pin, or on a closed row, is an error.
+Executable reference pins derive from `config/verified_subset.toml`; each
+admitted line is checked against its latest patch without admitting a new line.
 Pins outside `config/tool_releases.toml` move at their own authority. No
 third-party packages; set GITHUB_TOKEN to raise the GitHub API rate limit.
 """
@@ -58,6 +60,7 @@ from molt.llvm_toolchain import (  # noqa: E402
     load_llvm_releases,
 )
 from molt.rust_toolchain import rust_channel  # noqa: E402
+from molt.verified_subset import load_verified_subset_policy  # noqa: E402
 from molt.wasi_sdk_identity import (  # noqa: E402
     WasiSdkIdentityError,
     read_wasi_sdk_version_identity,
@@ -266,6 +269,19 @@ def collect_pins(
             lambda: npm_latest("@informalsystems/quint", fetch),
         ),
     ]
+    reference_authority = Path("config/verified_subset.toml")
+    references = load_verified_subset_policy(root / reference_authority)
+    for line, reference in zip(
+        references.python_versions, references.reference_cpython, strict=True
+    ):
+        pins.append(
+            Pin(
+                f"reference-python-{line}",
+                str(reference_authority),
+                reference,
+                lambda current=reference: python_latest_patch(current, fetch),
+            )
+        )
     for crate in ("cargo-deny", "cargo-audit"):
         pins.append(
             Pin(crate, plan, policies[crate], lambda c=crate: crate_latest(c, fetch))
