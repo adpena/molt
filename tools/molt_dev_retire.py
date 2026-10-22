@@ -243,6 +243,8 @@ def _release_guest_caches(
         )
         return
     for item in releases:
+        for problem in item.mount_errors:
+            _warn(f"{item.name}: {problem}")
         if item.error is not None or item.before is None or item.after is None:
             _warn(f"{item.name} keeps its pins of {checkout}: {item.error}")
             continue

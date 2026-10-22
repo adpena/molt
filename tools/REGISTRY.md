@@ -111,9 +111,10 @@ self-commits or invents an external scheduling authority.
 - `tools/linux_vm.py check|push|release|render|apply` — Molt's Lima Linux VMs
   on a macOS host. `tools/linux_vm.toml` is their one definition, which
   mounts no host path: `check` reports drift (exit 1), `push` sends a commit
-  into a guest clone over Lima's SSH, `release` frees the host files a VM
-  that still mounts host paths pins, and `apply` installs a definition and
-  restarts only an idle guest. Lane retirement releases first.
+  into a guest clone over Lima's SSH under `refs/heads/host/`, `release` frees
+  the host files a VM that still mounts host paths pins, and `apply` installs
+  a definition and restarts only an idle guest, starting it as a service
+  launch that Lima's hostagent outlives. Lane retirement releases first.
 - `tests/molt_diff.py <files> --jobs 1` — the CPython differential (serial until the
   collective-budget-pool lands; parallel gives false FAILs). `--target native,wasm,llvm,luau`
   (or `all`) runs the MULTI-BACKEND oracle (doc 66): every backend is compared vs CPython AND

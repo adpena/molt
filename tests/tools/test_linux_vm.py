@@ -35,6 +35,7 @@ import uuid
 import pytest
 
 from molt.process_environment import ProcessEnvironment
+from molt.process_model import pid_alive
 from tools import linux_vm
 from tests.process_guard_common import run_guarded_test_process
 from tools.molt_dev_common import _run_fast_captured_command
@@ -87,8 +88,10 @@ class FakeVm:
     guest_uid: int = 501
     guest_user: str = "molt"
     subuid: str = "molt:524288:65536"
-    processes: list[tuple[int, int, int, str, str]] = field(default_factory=list)
+    # (pid, ppid, uid, comm, cgroup, executable or "-")
+    processes: list[tuple[int, int, int, str, str, str]] = field(default_factory=list)
     probe_shell: int = 4000
+    probe_rc: int = 0
     next_fd: int = 100
 
     def json(self) -> str:
@@ -158,6 +161,30 @@ class FakeVm:
         return True
 
 
+def probe_text(
+    uid: int,
+    user: str,
+    shell: int,
+    subuid: Sequence[str],
+    processes: Sequence[tuple[int, int, int, str, str, str]],
+) -> str:
+    """What `IDLE_PROBE` prints in a guest with these processes."""
+    lines = [str(uid), user, str(shell), "--- subuid", *subuid, "--- exe"]
+    lines += [f"{pid:>7} {exe}" for pid, _pp, _u, _c, _g, exe in processes]
+    lines.append("--- ps")
+    lines += [
+        f"{pid:>7} {ppid:>7} {uid:>5} {comm:<15} {cgroup}"
+        for pid, ppid, uid, comm, cgroup, _exe in processes
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def probe_output(vm: FakeVm) -> str:
+    return probe_text(
+        vm.guest_uid, vm.guest_user, vm.probe_shell, [vm.subuid], vm.processes
+    )
+
+
 @dataclass
 class OtherProcess:
     pid: int
@@ -183,12 +210,19 @@ class FakeHost:
         self.drop_rc = drop_rc
         self.on_start = on_start
         self.calls: list[tuple[str, ...]] = []
+        # Commands run through `start_service`, in order (also in `calls`).
+        self.services: list[tuple[str, ...]] = []
+        self.env_overrides: list[dict[str, str]] = []
         self.validated: list[str] = []
         # Lima reads an instance's config from its lima.yaml on every list.
         self.configs_by_text: dict[str, dict[str, object]] = {}
-        self.start_rcs: list[int] = []
+        # Each `limactl start`: its exit status and the status Lima then
+        # lists. A hostagent that dies after the command returns leaves
+        # (0, "Stopped"), as on 2026-10-22 (HF-471).
+        self.start_outcomes: list[tuple[int, str]] = []
         self.started_with: list[str] = []
         self.commits: dict[str, str] = {}
+        self.checkout = linux_vm.Completed(0, "", "")
 
     def _listed(self, vm: FakeVm) -> str:
         text = (vm.directory / "lima.yaml").read_text(encoding="utf-8")
@@ -201,9 +235,45 @@ class FakeHost:
             return None
         return f"/fake/bin/{name}"
 
-    def run(self, argv: Sequence[str], *, timeout: float) -> linux_vm.Completed:
+    def start_service(
+        self, argv: Sequence[str], *, timeout: float
+    ) -> linux_vm.Completed:
         argv = tuple(argv)
         self.calls.append(argv)
+        self.services.append(argv)
+        assert timeout > 0
+        match argv:
+            case ("limactl", "start", "--tty=false", name):
+                vm = self.vms[name]
+                self.started_with.append(
+                    (vm.directory / "lima.yaml").read_text(encoding="utf-8")
+                )
+                rc, status = (
+                    self.start_outcomes.pop(0)
+                    if self.start_outcomes
+                    else (0, "Running")
+                )
+                vm.status = status
+                if status == "Running":
+                    (vm.directory / "ha.pid").write_text("1\n", encoding="utf-8")
+                    later = time.time() + 5
+                    os.utime(vm.directory / "ha.pid", (later, later))
+                    if self.on_start is not None:
+                        self.on_start(vm)
+                stderr = "" if rc == 0 else "INFO starting\nvz: boot failed\n"
+                return linux_vm.Completed(rc, "", stderr)
+        raise AssertionError(f"unexpected service {argv}")
+
+    def run(
+        self,
+        argv: Sequence[str],
+        *,
+        timeout: float,
+        env_overrides: dict[str, str] | None = None,
+    ) -> linux_vm.Completed:
+        argv = tuple(argv)
+        self.calls.append(argv)
+        self.env_overrides.append(dict(env_overrides or {}))
         assert timeout > 0
         match argv:
             case ("limactl", "list", "--json", *names):
@@ -240,42 +310,21 @@ class FakeHost:
                 return linux_vm.Completed(0 if ok else 1, "", "" if ok else "stat")
             case ("limactl", "shell", "--workdir", "/", name, "sh", "-c", script):
                 vm = self.vms[name]
-                if script.startswith("git -C "):
-                    return linux_vm.Completed(0, "", "")
+                if script.startswith("set -u\n"):
+                    return self.checkout
                 assert script == linux_vm.IDLE_PROBE, script
-                lines = [
-                    str(vm.guest_uid),
-                    vm.guest_user,
-                    str(vm.probe_shell),
-                    "--- subuid",
-                    vm.subuid,
-                    "--- ps",
-                ]
-                lines += [
-                    f"{pid} {ppid} {uid} {comm} {cgroup}"
-                    for pid, ppid, uid, comm, cgroup in vm.processes
-                ]
-                return linux_vm.Completed(0, "\n".join(lines) + "\n", "")
+                if vm.probe_rc:
+                    return linux_vm.Completed(
+                        vm.probe_rc, "", "sudo: a password is required"
+                    )
+                return linux_vm.Completed(0, probe_output(vm), "")
             case ("limactl", "stop", name):
                 self.vms[name].status = "Stopped"
-                return linux_vm.Completed(0, "", "")
-            case ("limactl", "start", "--tty=false", name):
-                vm = self.vms[name]
-                self.started_with.append(
-                    (vm.directory / "lima.yaml").read_text(encoding="utf-8")
-                )
-                if self.start_rcs and self.start_rcs.pop(0):
-                    return linux_vm.Completed(1, "", "vz: boot failed")
-                vm.status = "Running"
-                (vm.directory / "ha.pid").write_text("1\n", encoding="utf-8")
-                os.utime(vm.directory / "ha.pid", (time.time() + 5, time.time() + 5))
-                if self.on_start is not None:
-                    self.on_start(vm)
                 return linux_vm.Completed(0, "", "")
             case ("git", "-C", _repo, "rev-parse", "--verify", "--quiet", rev):
                 commit = self.commits.get(rev.removesuffix("^{commit}"), "")
                 return linux_vm.Completed(0 if commit else 1, commit + "\n", "")
-            case ("git", "-C", _repo, "-c", _ssh, "push", *_rest):
+            case ("git", "-C", _repo, "push", *_rest):
                 return linux_vm.Completed(0, "", "")
             case ("lsof", *options):
                 return self._lsof(options)
@@ -470,16 +519,18 @@ def test_checked_in_vms_mount_nothing_forward_nothing_and_name_a_clone(
         assert vm.clone == "molt-main"
     assert definitions.vms["molt-x86"].rosetta
     assert not definitions.vms["molt-linux"].rosetta
-    # A shim runs only while a container runs: it is work, not idleness.
-    assert "containerd-shim" not in definitions.idle_guest_processes
+    # Idle by executable path; a shim runs only while a container runs: it
+    # is work, not idleness.
+    assert all(path.startswith("/") for path in definitions.idle_guest_executables)
+    assert not any("shim" in path for path in definitions.idle_guest_executables)
     text = linux_vm.DEFINITIONS_PATH.read_text(encoding="utf-8")
     assert "/Users/" not in text and "/home/" not in text, "no personal host path"
 
 
 _VALID = """\
-schema = 2
+schema = 3
 minimum_lima_version = "2.0.0"
-idle_guest_processes = ["systemd"]
+idle_guest_executables = ["/usr/lib/systemd/systemd"]
 maintenance_guest_processes = ["dpkg"]
 
 [vm.a]
@@ -525,7 +576,20 @@ digest = "sha256:%s"
         ('clone = "molt-main"', 'clone = "../escape"', "without '..'"),
         ('clone = "molt-main"', 'clone = "/abs/path"', "without '..'"),
         ('digest = "sha256:', 'digest = "md5:', "sha256:<64 hex>"),
-        ("schema = 2", "schema = 1", "schema must be 2"),
+        ("schema = 3", "schema = 2", "schema must be 3"),
+        # A process name proves nothing: idleness is an executable path.
+        ('["/usr/lib/systemd/systemd"]', '["systemd"]', "not an absolute path"),
+        ('["/usr/lib/systemd/systemd"]', '["/usr/../tmp/x"]', "contains '..'"),
+        (
+            '["/usr/lib/systemd/systemd"]',
+            '["/usr/lib/systemd/systemd", "/usr/lib/systemd/systemd"]',
+            "lists a path twice",
+        ),
+        (
+            "idle_guest_executables",
+            "idle_guest_processes",
+            "unknown ['idle_guest_processes']",
+        ),
     ],
 )
 def test_definition_schema_rejects_what_it_does_not_define(
@@ -907,15 +971,44 @@ def test_release_command_reports_a_failed_guest_command(
     assert linux_vm.release_command(host=host, names=["nope"], as_json=False) == 2
 
 
-def test_release_reports_a_mount_whose_forget_set_cannot_be_written(
+def test_an_unwritable_mount_fails_alone_and_the_others_release(
+    definitions: linux_vm.Definitions,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A-5: one mount without a forget set does not stop the VM's release.
+
+    The server counts forgets per VM process, so the other mount's 64
+    forgets free every pin; the failed mount is still reported, and the
+    command exits 1.
+    """
+    linux, x86, custody = two_vms(definitions, tmp_path)
+    missing = tmp_path / "missing"
+    linux.config["mounts"] = [mounted(missing), mounted(tmp_path)]
+    host = FakeHost([linux, x86])
+    [result] = linux_vm.release(host, linux_vm.list_instances(host, ["molt-linux"]))
+    assert result.error is None
+    assert len(result.mount_errors) == 1 and str(missing) in result.mount_errors[0]
+    [guest] = [call for call in host.calls if call[1:2] == ("shell",)]
+    assert f"{tmp_path}/{linux_vm.FORGET_SET}/*" in guest[-1]
+    assert str(missing) not in guest[-1]
+    assert deleted_names(host, linux) == [str(custody / "tmp/log")]
+    assert linux_vm.release_command(host=host, names=["molt-linux"], as_json=True) == 1
+    [row] = json.loads(capsys.readouterr().out)["vms"]
+    assert row["error"] is None and str(missing) in row["mount_errors"][0]
+
+
+def test_a_vm_with_no_writable_mount_runs_nothing_in_the_guest(
     definitions: linux_vm.Definitions, tmp_path: Path
 ) -> None:
     linux, x86, _custody = two_vms(definitions, tmp_path)
     linux.config["mounts"] = [mounted(tmp_path / "missing")]
     host = FakeHost([linux, x86])
     [result] = linux_vm.release(host, linux_vm.list_instances(host, ["molt-linux"]))
-    assert result.error is not None and "forget set" in result.error
+    assert result.error == "no mount has a forget set"
+    assert len(result.mount_errors) == 1
     assert not [call for call in host.calls if call[1:2] == ("shell",)]
+    assert not (linux.directory / linux_vm.RELEASE_RECORD).exists()
 
 
 # --------------------------------------------------------------------------
@@ -1087,6 +1180,54 @@ def test_the_hook_also_frees_deleted_files_a_covering_vm_already_pins(
     ] == [("molt-x86", 4096, 0)]
 
 
+def test_the_hook_skips_a_release_that_cannot_free_what_a_guest_holds_open(
+    definitions: linux_vm.Definitions, tmp_path: Path
+) -> None:
+    """A-1: a deleted file a guest process holds open survives every release.
+
+    The first release records what it left. A later retirement whose VM
+    holds exactly that skips the release; a new pin, a closed file or a new
+    VM process each make the release worth running again.
+    """
+    linux, x86, custody = two_vms(definitions, tmp_path)
+    x86.vz_pid = None
+    log = HostFile(str(custody / "tmp/log"), 7, 0, "15")
+    log2 = HostFile(str(custody / "tmp/log2"), 9, 0, "17")
+    linux.held_open = [log, log2]
+    host = FakeHost([linux, x86])
+    environment = {"LIMA_HOME": str(tmp_path / "lima")}
+
+    def retire(path: str) -> list[str]:
+        host.calls.clear()
+        linux_vm.release_for_paths(
+            [custody / "worktrees" / path], environment=environment, host=host
+        )
+        return [call[1] if call[0] == "limactl" else call[0] for call in host.calls]
+
+    assert retire("one") == ["list", "lsof", "shell", "lsof"]
+    assert deleted_names(host, linux) == sorted([log.name, log2.name])
+    record = json.loads(
+        (linux.directory / linux_vm.RELEASE_RECORD).read_text(encoding="utf-8")
+    )
+    assert record["pid"] == 9200 and len(record["deleted"]) == 2
+    # Nothing changed: no guest command.
+    assert retire("two") == ["list", "lsof"]
+    # A new pin: release, and the new record holds the open files again.
+    linux.cached.append(HostFile(str(custody / "worktrees/two/x"), 3, 0, "40"))
+    assert retire("three") == ["list", "lsof", "shell", "lsof"]
+    assert retire("four") == ["list", "lsof"]
+    # The guest closed one file: fewer descriptors, so its lookup can go.
+    linux.held_open = [log]
+    assert retire("five") == ["list", "lsof", "shell", "lsof"]
+    assert retire("six") == ["list", "lsof"]
+    # A restarted VM process holds new descriptors: the record is stale.
+    linux.vz_pid = 9300
+    assert retire("seven") == ["list", "lsof", "shell", "lsof"]
+    # An unreadable record never skips a release.
+    (linux.directory / linux_vm.RELEASE_RECORD).write_text("{", encoding="utf-8")
+    assert retire("eight") == ["list", "lsof", "shell", "lsof"]
+
+
 # --------------------------------------------------------------------------
 # Push
 # --------------------------------------------------------------------------
@@ -1103,33 +1244,81 @@ def test_push_sends_the_resolved_commit_over_limas_ssh_and_checks_it_out(
     rc = linux_vm.push(
         "molt-linux",
         rev="HEAD",
-        ref="from-host",
+        ref=linux_vm.DEFAULT_PUSH_REF,
         checkout=True,
         definitions=definitions,
         host=host,
         repo=tmp_path / "repo",
     )
     assert rc == 0, capsys.readouterr().out
-    push_call = next(call for call in host.calls if "push" in call)
+    [push_index] = [i for i, call in enumerate(host.calls) if "push" in call]
     config = shlex.quote(str(fake.directory / "ssh.config"))
-    assert push_call == (
+    assert host.calls[push_index] == (
         "git",
         "-C",
         str(tmp_path / "repo"),
-        "-c",
-        f"core.sshCommand=ssh -F {config}",
         "push",
         "--force",
         "--no-verify",
         "--quiet",
         "lima-molt-linux:molt-main",
-        f"{'c' * 40}:refs/heads/from-host",
+        f"{'c' * 40}:refs/heads/host/head",
     )
+    # GIT_SSH_COMMAND outranks every other ssh setting Git reads.
+    assert host.env_overrides[push_index] == {
+        "GIT_SSH_COMMAND": f"ssh -F {config}",
+        "GIT_SSH_VARIANT": "ssh",
+    }
     checkout = host.calls[-1]
     assert checkout[:5] == ("limactl", "shell", "--workdir", "/", "molt-linux")
-    assert checkout[-1] == (
-        f'git -C "$HOME"/molt-main checkout --quiet --detach {"c" * 40}'
+    assert checkout[-1] == linux_vm.checkout_script("molt-main", "c" * 40)
+
+
+def test_push_reports_a_refused_checkout_with_the_exact_commit(
+    definitions: linux_vm.Definitions,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fake = matching_vm(definitions, "molt-linux", tmp_path / "lima")
+    host = FakeHost([fake])
+    host.commits["HEAD"] = "c" * 40
+    host.checkout = linux_vm.Completed(
+        linux_vm.CHECKOUT_REFUSED, "processes work in /home/m/molt-main (pid 7)\n", ""
     )
+    common = dict(rev="HEAD", ref="lane/x", definitions=definitions, host=host)
+    assert linux_vm.push("molt-linux", checkout=True, **common) == 1
+    out = capsys.readouterr().out
+    assert "REFUSED: checkout in molt-linux: processes work" in out
+    assert "waits as refs/heads/host/lane/x" in out
+    assert linux_vm.push("molt-linux", checkout=False, **common) == 0
+    assert f"git -C ~/molt-main checkout --detach {'c' * 40}" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("ref", "full"),
+    [
+        ("head", "refs/heads/host/head"),
+        ("lane/vm-followups", "refs/heads/host/lane/vm-followups"),
+        ("v1.0_rc-2", "refs/heads/host/v1.0_rc-2"),
+        ("../x", None),
+        ("a..b", None),
+        (".hidden", None),
+        ("x.lock", None),
+        ("x.", None),
+        ("x/", None),
+        ("/x", None),
+        ("a//b", None),
+        ("-x", None),
+        ("", None),
+        ("x y", None),
+        ("x@{1}", None),
+    ],
+)
+def test_push_confines_every_ref_to_the_host_namespace(
+    ref: str, full: str | None
+) -> None:
+    """A-3: a forced push can move only a branch the host owns."""
+    assert linux_vm.push_ref(ref) == full
 
 
 @pytest.mark.parametrize(
@@ -1142,7 +1331,7 @@ def test_push_refuses_before_it_sends_anything(
     fake = matching_vm(definitions, "molt-linux", tmp_path / "lima")
     host = FakeHost([fake])
     host.commits["HEAD"] = "c" * 40
-    name, ref, rev = "molt-linux", "from-host", "HEAD"
+    name, ref, rev = "molt-linux", linux_vm.DEFAULT_PUSH_REF, "HEAD"
     if change == "stopped":
         fake.status = "Stopped"
     elif change == "no-commit":
@@ -1167,52 +1356,94 @@ def test_push_refuses_before_it_sends_anything(
 
 
 class GitHost(FakeHost):
-    """Runs `git` for real, with a fake `ssh` first on PATH."""
+    """Runs `git` and the guest's checkout command for real.
 
-    def __init__(self, vms: Sequence[FakeVm], path: str) -> None:
+    `git` runs with a fake `ssh` first on PATH; the guest command runs in a
+    shell whose HOME is the guest's home, with a fake `sudo` whose `find`
+    prints the `/proc/<pid>/cwd` listing in ``proc`` (macOS has no /proc).
+    ``environment`` is the host environment `run` overrides from.
+    """
+
+    def __init__(
+        self, vms: Sequence[FakeVm], environment: dict[str, str], home: Path
+    ) -> None:
         super().__init__(vms)
-        self.path = path
+        self.environment = environment
+        self.home = home
+        self.proc = home.parent / "proc-cwd.txt"
+        self.proc.write_text("", encoding="utf-8")
 
-    def run(self, argv: Sequence[str], *, timeout: float) -> linux_vm.Completed:
-        if argv[0] != "git":
-            return super().run(argv, timeout=timeout)
-        self.calls.append(tuple(argv))
-        # A real push through the fake `ssh`: the guarded test runner, not
-        # the plumbing helper, whose transfer bound waits for progress.
+    def _real(
+        self, argv: list[str], env: dict[str, str], timeout: float
+    ) -> linux_vm.Completed:
+        # The guarded test runner, not the plumbing helper, whose transfer
+        # bound waits for progress.
         completed = run_guarded_test_process(
-            list(argv),
-            env=ProcessEnvironment(os.environ).updated({"PATH": self.path}),
-            timeout=timeout,
+            argv, env=ProcessEnvironment(env), timeout=timeout
         )
         return linux_vm.Completed(
             completed.returncode, completed.stdout, completed.stderr
         )
 
+    def run(
+        self,
+        argv: Sequence[str],
+        *,
+        timeout: float,
+        env_overrides: dict[str, str] | None = None,
+    ) -> linux_vm.Completed:
+        argv = list(argv)
+        if argv[0] == "git":
+            self.calls.append(tuple(argv))
+            self.env_overrides.append(dict(env_overrides or {}))
+            return self._real(
+                argv, {**self.environment, **(env_overrides or {})}, timeout
+            )
+        if argv[:5] == ["limactl", "shell", "--workdir", "/", "molt-linux"] and (
+            argv[-1].startswith("set -u\n")
+        ):
+            self.calls.append(tuple(argv))
+            guest = {
+                **self.environment,
+                "HOME": str(self.home),
+                "FAKE_PROC_CWD": str(self.proc),
+            }
+            # The guests' /bin/sh is dash; macOS ships one too.
+            shell = shutil.which("dash") or "sh"
+            return self._real([shell, "-c", argv[-1]], guest, timeout)
+        return super().run(argv, timeout=timeout, env_overrides=env_overrides)
 
-def test_push_moves_a_commit_into_the_guest_clone_through_real_git(
+
+_GIT = [
+    "git",
+    "-c",
+    "user.name=t",
+    "-c",
+    "user.email=t@t",
+    "-c",
+    "init.defaultBranch=main",
+    "-c",
+    "core.hooksPath=/dev/null",
+]
+
+
+def run_git(*args: str) -> str:
+    completed = _run_fast_captured_command([*_GIT, *args])
+    assert completed.returncode == 0, completed.stderr
+    return completed.stdout.strip()
+
+
+def git_guest(
     definitions: linux_vm.Definitions, tmp_path: Path
-) -> None:
-    """Real Git runs the push; a fake `ssh` runs the guest side in a directory.
+) -> tuple[GitHost, Path, Path, str]:
+    """A host repository with one commit and a guest home with an empty clone.
 
-    The oracle is the guest clone's own ref, read by Git after the push.
+    The fake `ssh` takes OpenSSH's form (options, the host, the remote
+    command) and requires the instance's ssh.config; the fake `sudo` serves
+    `sudo -n true` and the checkout's `sudo -n find /proc ...`. The push runs
+    under the guard, whose Git transfer bound wraps `GIT_SSH_COMMAND`
+    (tools/git_transfer.py) and keeps the command it wraps.
     """
-    git = [
-        "git",
-        "-c",
-        "user.name=t",
-        "-c",
-        "user.email=t@t",
-        "-c",
-        "init.defaultBranch=main",
-        "-c",
-        "core.hooksPath=/dev/null",
-    ]
-
-    def run_git(*args: str) -> str:
-        completed = _run_fast_captured_command([*git, *args])
-        assert completed.returncode == 0, completed.stderr
-        return completed.stdout.strip()
-
     repo, home = tmp_path / "repo", tmp_path / "guest-home"
     for directory in (repo, home / "molt-main"):
         run_git("init", "-q", str(directory))
@@ -1222,7 +1453,7 @@ def test_push_moves_a_commit_into_the_guest_clone_through_real_git(
     head = run_git("-C", str(repo), "rev-parse", "HEAD")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    # OpenSSH's form: options, the host, then the remote command.
+    ssh_config = tmp_path / "lima" / "molt-linux" / "ssh.config"
     (bin_dir / "ssh").write_text(
         f"""#!{sys.executable}
 import subprocess, sys
@@ -1231,6 +1462,10 @@ if "-G" in args:
     # Git probes the ssh variant with `ssh -G <host>`; OpenSSH prints the
     # resolved configuration and exits 0.
     sys.exit(0)
+# The guard's transfer bound may put its own -o options first.
+assert args[args.index("-F") + 1] == {str(ssh_config)!r}, args
+# TortoisePlink's flag; OpenSSH would read it as `-b atch`.
+assert "-batch" not in args, args
 while args[0].startswith("-"):
     args = args[2:] if args[0] in ("-F", "-o", "-p") else args[1:]
 host, command = args[0], " ".join(args[1:])
@@ -1239,14 +1474,52 @@ sys.exit(subprocess.run(["sh", "-c", command], cwd={str(home)!r}).returncode)
 """,
         encoding="utf-8",
     )
-    (bin_dir / "ssh").chmod(0o755)
+    (bin_dir / "sudo").write_text(
+        """#!/bin/sh
+[ "$1" = -n ] || exit 1
+shift
+case "$1" in
+  true) exit 0 ;;
+  find) [ "$2" = /proc ] || exit 1; cat "$FAKE_PROC_CWD" ;;
+  *) exit 1 ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    for tool in ("ssh", "sudo"):
+        (bin_dir / tool).chmod(0o755)
     fake = matching_vm(definitions, "molt-linux", tmp_path / "lima")
-    host = GitHost([fake], f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    environment = {
+        **os.environ,
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+    }
+    return GitHost([fake], environment, home), repo, home / "molt-main", head
+
+
+def test_push_moves_a_commit_into_the_guest_clone_through_real_git(
+    definitions: linux_vm.Definitions, tmp_path: Path
+) -> None:
+    """Real Git runs the push; a fake `ssh` runs the guest side in a directory.
+
+    The oracle is the guest clone's own refs, read by Git after the push. A
+    `GIT_SSH_COMMAND` or `GIT_SSH_VARIANT` in the caller's environment
+    outranks `core.sshCommand` (A-2); the push sets its own.
+    """
+    host, repo, clone, head = git_guest(definitions, tmp_path)
+    host.environment.update(
+        {"GIT_SSH_COMMAND": "false", "GIT_SSH_VARIANT": "tortoiseplink"}
+    )
+    # A guest branch of the same name is not the host's to move (A-3).
+    (clone / "g.txt").write_text("g\n", encoding="utf-8")
+    run_git("-C", str(clone), "add", "g.txt")
+    run_git("-C", str(clone), "commit", "-qm", "guest work")
+    guest_main = run_git("-C", str(clone), "rev-parse", "refs/heads/main")
+    run_git("-C", str(clone), "checkout", "-q", "--detach")
     assert (
         linux_vm.push(
             "molt-linux",
             rev="HEAD",
-            ref="from-host",
+            ref="main",
             checkout=False,
             definitions=definitions,
             host=host,
@@ -1254,8 +1527,77 @@ sys.exit(subprocess.run(["sh", "-c", command], cwd={str(home)!r}).returncode)
         )
         == 0
     )
-    pushed = run_git("-C", str(home / "molt-main"), "rev-parse", "refs/heads/from-host")
-    assert pushed == head
+    assert run_git("-C", str(clone), "rev-parse", "refs/heads/host/main") == head
+    assert run_git("-C", str(clone), "rev-parse", "refs/heads/main") == guest_main
+
+
+@pytest.mark.parametrize(
+    "state", ["clean", "untracked", "modified", "index-lock", "cwd", "no-sudo"]
+)
+def test_push_checks_out_the_exact_commit_only_into_a_clean_idle_clone(
+    definitions: linux_vm.Definitions,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    state: str,
+) -> None:
+    """A-4: the guest's own checkout command, run for real against a clone.
+
+    Untracked or modified files, a held index lock, or a process whose
+    working directory lies in the clone each refuse the checkout and leave
+    the clone where it was; a guest without passwordless sudo fails it. Only
+    a clean, idle clone moves, detached, to the pushed commit.
+    """
+    host, repo, clone, head = git_guest(definitions, tmp_path)
+    (clone / "g.txt").write_text("g\n", encoding="utf-8")
+    run_git("-C", str(clone), "add", "g.txt")
+    run_git("-C", str(clone), "commit", "-qm", "guest base")
+    before = run_git("-C", str(clone), "rev-parse", "HEAD")
+    resolved = clone.resolve()
+    # Processes elsewhere, one in a sibling whose path shares the prefix.
+    lines = ["/proc/1 /", f"/proc/2 {resolved}-other", "/proc/3 /tmp"]
+    if state == "untracked":
+        (clone / "scratch.txt").write_text("x\n", encoding="utf-8")
+    elif state == "modified":
+        (clone / "g.txt").write_text("changed\n", encoding="utf-8")
+    elif state == "index-lock":
+        (clone / ".git" / "index.lock").write_text("", encoding="utf-8")
+    elif state == "cwd":
+        lines.append(f"/proc/4242 {resolved}/target/debug")
+    elif state == "no-sudo":
+        (tmp_path / "bin" / "sudo").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    host.proc.write_text("".join(line + "\n" for line in lines), encoding="utf-8")
+    rc = linux_vm.push(
+        "molt-linux",
+        rev="HEAD",
+        ref=linux_vm.DEFAULT_PUSH_REF,
+        checkout=True,
+        definitions=definitions,
+        host=host,
+        repo=repo,
+    )
+    out = capsys.readouterr().out
+    assert run_git("-C", str(clone), "rev-parse", "refs/heads/host/head") == head
+    after = run_git("-C", str(clone), "rev-parse", "HEAD")
+    if state == "clean":
+        assert rc == 0, out
+        assert after == head
+        detached = _run_fast_captured_command(
+            ["git", "-C", str(clone), "symbolic-ref", "-q", "HEAD"]
+        )
+        assert detached.returncode == 1, "the checkout is detached"
+        return
+    assert rc == 1, out
+    assert after == before
+    expected = {
+        "untracked": "scratch.txt",
+        "modified": "g.txt",
+        "index-lock": "index.lock exists",
+        "cwd": "(pid 4242)",
+        "no-sudo": "FAILED: checkout in molt-linux",
+    }[state]
+    assert expected in out, out
+    if state != "no-sudo":
+        assert "REFUSED: checkout in molt-linux" in out
 
 
 # --------------------------------------------------------------------------
@@ -1264,27 +1606,95 @@ sys.exit(subprocess.run(["sh", "-c", command], cwd={str(home)!r}).returncode)
 
 USER = "0::/user.slice/user-501.slice/user@501.service"
 SESSION_CGROUP = "0::/user.slice/user-501.slice/session-4.scope"
+SYSTEMD = "/usr/lib/systemd/systemd"
+SSHD_SESSION = "/usr/lib/openssh/sshd-session"
+# What both guests showed on 2026-10-22, as root sees it: Lima's SSH session,
+# the user's systemd and its rootless containerd stack.
 SESSION = [
-    (1, 0, 0, "systemd", "0::/init.scope"),
-    (300, 1, 0, "lima-guestagent", "0::/system.slice/lima-guestagent.service"),
+    (1, 0, 0, "systemd", "0::/init.scope", SYSTEMD),
+    (2, 0, 0, "kthreadd", "0::/", "-"),
+    (
+        300,
+        1,
+        0,
+        "lima-guestagent",
+        "0::/system.slice/lima-guestagent.service",
+        "/usr/local/bin/lima-guestagent",
+    ),
     # unattended-upgrade-shutdown, resident
-    (310, 1, 0, "unattended-upgr", "0::/system.slice/unattended-upgrades.service"),
-    (320, 1, 0, "cron", "0::/system.slice/cron.service"),
-    (900, 1, 501, "systemd", f"{USER}/init.scope"),
-    (901, 900, 501, "(sd-pam)", f"{USER}/init.scope"),
-    (950, 900, 501, "containerd", f"{USER}/app.slice/containerd.service"),
-    (3900, 1, 0, "sshd-session", SESSION_CGROUP),
-    (3901, 3900, 501, "sshd-session", SESSION_CGROUP),
-    (3950, 3901, 501, "bash", SESSION_CGROUP),  # this probe's login shell
-    (4000, 3950, 501, "sh", SESSION_CGROUP),  # the probe shell
-    (4001, 4000, 501, "ps", SESSION_CGROUP),
+    (
+        310,
+        1,
+        0,
+        "unattended-upgr",
+        "0::/system.slice/unattended-upgrades.service",
+        "/usr/bin/python3.12",
+    ),
+    (320, 1, 0, "cron", "0::/system.slice/cron.service", "/usr/sbin/cron"),
+    (900, 1, 501, "systemd", f"{USER}/init.scope", SYSTEMD),
+    (
+        901,
+        900,
+        501,
+        "(sd-pam)",
+        f"{USER}/init.scope",
+        "/usr/lib/systemd/systemd-executor",
+    ),
+    (
+        940,
+        900,
+        501,
+        "rootlesskit",
+        f"{USER}/app.slice/containerd.service",
+        "/usr/local/bin/rootlesskit",
+    ),
+    # rootlesskit's child re-executes /proc/self/exe: its name is `exe`.
+    (
+        945,
+        940,
+        501,
+        "exe",
+        f"{USER}/app.slice/containerd.service",
+        "/usr/local/bin/rootlesskit",
+    ),
+    (
+        950,
+        945,
+        501,
+        "containerd",
+        f"{USER}/app.slice/containerd.service",
+        "/usr/local/bin/containerd",
+    ),
+    (
+        960,
+        900,
+        501,
+        "buildkitd",
+        f"{USER}/app.slice/default-buildkit.service",
+        "/usr/local/bin/buildkitd",
+    ),
+    (
+        961,
+        900,
+        501,
+        "containerd-star",
+        f"{USER}/app.slice/stargz-snapshotter.service",
+        "/usr/local/bin/containerd-stargz-grpc",
+    ),
+    (3900, 1, 0, "sshd-session", SESSION_CGROUP, SSHD_SESSION),
+    (3901, 3900, 501, "sshd-session", SESSION_CGROUP, SSHD_SESSION),
+    (3950, 3901, 501, "bash", SESSION_CGROUP, "/usr/bin/bash"),  # login shell
+    (4000, 3950, 501, "sh", SESSION_CGROUP, "/usr/bin/dash"),  # the probe shell
+    # The probe's own commands: `sudo ps` and its child, then `ps`.
+    (4001, 4000, 0, "sudo", SESSION_CGROUP, "/usr/bin/sudo"),
+    (4002, 4001, 0, "ps", SESSION_CGROUP, "/usr/bin/ps"),
+    (4003, 4000, 501, "ps", SESSION_CGROUP, "/usr/bin/ps"),
 ]
 
 
-def _probe(processes: list[tuple[int, int, int, str, str]]) -> str:
-    return (
-        "501\nmolt\n4000\n--- subuid\nother:100000:65536\nmolt:524288:65536\n--- ps\n"
-        + "".join(f"{p} {pp} {u} {c} {g}\n" for p, pp, u, c, g in processes)
+def _probe(processes: Sequence[tuple[int, int, int, str, str, str]]) -> str:
+    return probe_text(
+        501, "molt", 4000, ["other:100000:65536", "molt:524288:65536"], processes
     )
 
 
@@ -1292,31 +1702,95 @@ def test_busy_guest_processes_exempts_this_session_and_guest_daemons(
     definitions: linux_vm.Definitions,
 ) -> None:
     assert linux_vm.busy_guest_processes(_probe(SESSION), definitions) == ()
+    shell = "/usr/bin/bash"
     busy = SESSION + [
-        (5000, 1, 501, "sleep", SESSION_CGROUP),  # a detached loop of a session
-        (5100, 1, 0, "dpkg", "0::/system.slice/apt.service"),  # an upgrade
-        (5200, 3901, 0, "sudo", SESSION_CGROUP),  # root work from a session
-        (5201, 5200, 0, "make", SESSION_CGROUP),
-        (5300, 5299, 501, "cargo", f"{USER}/app.slice/x.service"),
-        (5400, 1, 501, "python3", "0::/"),  # any other process of the user
+        (5000, 1, 501, "sleep", SESSION_CGROUP, "/usr/bin/sleep"),  # detached
+        (5100, 1, 0, "dpkg", "0::/system.slice/apt.service", "/usr/bin/dpkg"),
+        # Root work from a session.
+        (5200, 3901, 0, "sudo", SESSION_CGROUP, "/usr/bin/sudo"),
+        (5201, 5200, 0, "make", SESSION_CGROUP, "/usr/bin/make"),
+        (
+            5300,
+            900,
+            501,
+            "cargo",
+            f"{USER}/app.slice/x.service",
+            "/home/m/.cargo/cargo",
+        ),
+        (5400, 1, 501, "python3", "0::/", "/usr/bin/python3.12"),
         # A rootless container's non-root user runs as a subordinate id.
-        (5500, 950, 524288 + 1000, "postgres", f"{USER}/user.slice/nerdctl-1.scope"),
-        (5600, 950, 501, "containerd-shim", f"{USER}/app.slice/containerd.service"),
+        (
+            5500,
+            950,
+            524288 + 1000,
+            "postgres",
+            f"{USER}/user.slice/nerdctl-1.scope",
+            "/usr/lib/postgresql/bin/postgres",
+        ),
+        (
+            5600,
+            950,
+            501,
+            "containerd-shim",
+            f"{USER}/app.slice/containerd.service",
+            "/usr/local/bin/containerd-shim-runc-v2",
+        ),
         # Root daemons and another user's subordinate ids are not work.
-        (5700, 1, 0, "rsyslogd", "0::/system.slice/rsyslog.service"),
-        (5800, 1, 100500, "other", "0::/system.slice/x.service"),
-        # A program named like a daemon is idle only by that name.
-        (5900, 3901, 501, "My Tool", SESSION_CGROUP),
+        (
+            5700,
+            1,
+            0,
+            "rsyslogd",
+            "0::/system.slice/rsyslog.service",
+            "/usr/sbin/rsyslogd",
+        ),
+        (5800, 1, 100500, "other", "0::/system.slice/x.service", "/usr/bin/other"),
+        # A-8: a name proves nothing. Programs called like daemons, and
+        # anything that re-executes /proc/self/exe, are busy unless their
+        # executable is a declared one.
+        (5900, 3901, 501, "exe", SESSION_CGROUP, "/home/m/build/exe"),
+        (5901, 3950, 501, "containerd", SESSION_CGROUP, "/home/m/go/bin/containerd"),
+        (5902, 900, 501, "systemd", f"{USER}/app.slice/y.service", "/tmp/systemd"),
+        (5903, 1, 501, "sshd", "0::/", "/home/m/sshd"),
+        # An executable no one can read is not idle.
+        (5904, 3901, 501, "sshd-session", SESSION_CGROUP, "-"),
+        # Another SSH session's processes run declared executables: idle,
+        # also when apt replaced the binary under a running sshd.
+        (6000, 1, 0, "sshd-session", SESSION_CGROUP, f"{SSHD_SESSION} (deleted)"),
+        (6001, 6000, 501, "sshd-session", SESSION_CGROUP, SSHD_SESSION),
+        # Its shell is work, like any process of the user.
+        (6002, 6001, 501, "bash", SESSION_CGROUP, shell),
     ]
     assert {
         p.pid for p in linux_vm.busy_guest_processes(_probe(busy), definitions)
-    } == {5000, 5100, 5200, 5201, 5300, 5400, 5500, 5600, 5900}
+    } == {
+        5000,
+        5100,
+        5200,
+        5201,
+        5300,
+        5400,
+        5500,
+        5600,
+        5900,
+        5901,
+        5902,
+        5903,
+        5904,
+        6002,
+    }
     with pytest.raises(linux_vm.LimaError, match="own shell"):
         linux_vm.busy_guest_processes(
-            "501\nmolt\n4242\n--- subuid\n--- ps\n1 0 0 systemd -\n", definitions
+            "501\nmolt\n4242\n--- subuid\n--- exe\n--- ps\n1 0 0 systemd -\n",
+            definitions,
         )
     with pytest.raises(linux_vm.LimaError, match="unreadable"):
         linux_vm.busy_guest_processes("501\n4000\n", definitions)
+    # A probe without the executable listing (an older probe) is unreadable.
+    with pytest.raises(linux_vm.LimaError, match="unreadable"):
+        linux_vm.busy_guest_processes(
+            "501\nmolt\n4000\n--- subuid\n--- ps\n4000 1 501 sh -\n", definitions
+        )
 
 
 def apply_setup(
@@ -1361,7 +1835,7 @@ def test_apply_refuses_a_busy_guest_and_leaves_the_vm_running(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     host, fake, original = apply_setup(definitions, tmp_path)
-    fake.processes.append((6000, 3901, 0, "sudo", SESSION_CGROUP))
+    fake.processes.append((6000, 3901, 0, "sudo", SESSION_CGROUP, "/usr/bin/sudo"))
     assert run_apply(definitions, host) == 1
     assert "busy: sudo (pid 6000, uid 0)" in capsys.readouterr().out
     assert fake.status == "Running"
@@ -1389,6 +1863,20 @@ def test_apply_refuses_a_change_only_a_new_vm_can_make(
     assert [call[1] for call in host.calls] == ["list"]
 
 
+def test_apply_refuses_when_the_guest_cannot_list_every_executable(
+    definitions: linux_vm.Definitions,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Without passwordless sudo the probe cannot read root's executables."""
+    host, fake, original = apply_setup(definitions, tmp_path)
+    fake.probe_rc = 3
+    assert run_apply(definitions, host) == 1
+    assert "cannot list molt-linux's processes: sudo" in capsys.readouterr().out
+    assert [call[1] for call in host.calls] == ["list", "validate", "shell"]
+    assert (fake.directory / "lima.yaml").read_text(encoding="utf-8") == original
+
+
 def test_apply_installs_the_definition_into_an_idle_vm_and_restarts_it(
     definitions: linux_vm.Definitions, tmp_path: Path
 ) -> None:
@@ -1396,6 +1884,9 @@ def test_apply_installs_the_definition_into_an_idle_vm_and_restarts_it(
     assert run_apply(definitions, host) == 0
     verbs = [call[1] for call in host.calls]
     assert verbs == ["list", "validate", "shell", "stop", "start", "list"]
+    # HF-471: the start is a service launch; the fake's guarded `run` has no
+    # `limactl start` at all.
+    assert host.services == [("limactl", "start", "--tty=false", "molt-linux")]
     assert host.validated == [
         (fake.directory / "lima.yaml").read_text(encoding="utf-8")
     ]
@@ -1430,25 +1921,114 @@ def test_a_failed_start_restores_and_restarts_the_replaced_config(
 ) -> None:
     """B4: the VM comes back on the config it ran, and the original survives."""
     host, fake, original = apply_setup(definitions, tmp_path)
-    host.start_rcs = [1, 0]
+    host.start_outcomes = [(1, "Stopped"), (0, "Running")]
     assert run_apply(definitions, host) == 1
     out = capsys.readouterr().out
     assert "boot failed" in out and "restarted it with the replaced config" in out
     rendered = host.validated[0]
     assert host.started_with == [rendered, original]
+    assert len(host.services) == 2, "the rollback start is a service launch too"
     assert (fake.directory / "lima.yaml").read_text(encoding="utf-8") == original
     assert fake.status == "Running"
     assert (fake.directory / linux_vm.PREVIOUS_CONFIG).read_text(
         encoding="utf-8"
     ) == original
     # A retry fails the same way and still keeps the hand-made original.
-    host.start_rcs = [1, 1]
+    host.start_outcomes = [(1, "Stopped"), (1, "Stopped")]
     assert run_apply(definitions, host) == 1
-    assert "its start failed too" in capsys.readouterr().out
+    assert "does not run with that config either" in capsys.readouterr().out
     assert (fake.directory / "lima.yaml").read_text(encoding="utf-8") == original
     assert (fake.directory / linux_vm.PREVIOUS_CONFIG).read_text(
         encoding="utf-8"
     ) == original
+
+
+def test_a_vm_that_stops_after_its_start_fails_apply(
+    definitions: linux_vm.Definitions,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """HF-471: `limactl start` exited 0 and the hostagent died in that second.
+
+    The exit status alone said the VM started; Lima's listing says it is
+    stopped. apply fails, restores the replaced config, restarts the VM and
+    checks the listing again; when that VM stops too, it says so.
+    """
+    host, fake, original = apply_setup(definitions, tmp_path)
+    host.start_outcomes = [(0, "Stopped"), (0, "Running")]
+    assert run_apply(definitions, host) == 1
+    out = capsys.readouterr().out
+    assert (
+        "limactl start molt-linux exited 0, but Lima lists molt-linux as Stopped" in out
+    )
+    assert "restarted it with the replaced config" in out
+    assert "OK:" not in out
+    assert (fake.directory / "lima.yaml").read_text(encoding="utf-8") == original
+    assert fake.status == "Running"
+    host.start_outcomes = [(0, "Stopped"), (0, "Broken")]
+    assert run_apply(definitions, host) == 1
+    out = capsys.readouterr().out
+    assert "does not run with that config either" in out
+    assert "but Lima lists molt-linux as Broken" in out
+    assert (fake.directory / "lima.yaml").read_text(encoding="utf-8") == original
+
+
+def test_a_start_that_fails_on_a_running_vm_is_reported_not_rolled_back(
+    definitions: linux_vm.Definitions,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """limactl failed (a timeout, a degraded requirement) but the VM runs.
+
+    A rollback would need another stop; apply reports the failure and the
+    config the VM runs.
+    """
+    host, fake, _original = apply_setup(definitions, tmp_path)
+    host.start_outcomes = [(1, "Running")]
+    assert run_apply(definitions, host) == 1
+    out = capsys.readouterr().out
+    assert "exited 1: INFO starting | vz: boot failed" in out
+    assert "molt-linux runs the installed definition" in out
+    assert len(host.started_with) == 1
+    installed = (fake.directory / "lima.yaml").read_text(encoding="utf-8")
+    assert installed == host.validated[0]
+
+
+def test_apply_removes_the_forget_sets_of_the_mounts_it_ends(
+    definitions: linux_vm.Definitions,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A-5: a release's forget set lives as long as its mount.
+
+    The applied VM mounts nothing, so the set under its old mount goes; a
+    set under a location another VM still mounts stays, and so does a set
+    directory holding anything the release did not create.
+    """
+    host, fake, _original = apply_setup(definitions, tmp_path)
+    other, deep, kept = tmp_path / "other", tmp_path / "deep", tmp_path / "kept"
+    nested = deep / "nested"
+    for location in (other, nested, kept):
+        location.mkdir(parents=True)
+        fake.config["mounts"].append(mounted(location))  # type: ignore[union-attr]
+    for location in (tmp_path, other, nested, kept):
+        linux_vm.forget_set(location)
+    (kept / linux_vm.FORGET_SET / "notes.txt").write_text("x", encoding="utf-8")
+    # A stopped VM still mounts `other`, and `deep`, the parent of `nested`.
+    x86 = matching_vm(definitions, "molt-x86", tmp_path / "lima", status="Stopped")
+    x86.config["mounts"] = [mounted(other), mounted(deep)]
+    host.vms["molt-x86"] = x86
+    # A release record of the mounting VM ends with its mounts too.
+    (fake.directory / linux_vm.RELEASE_RECORD).write_text("{}", encoding="utf-8")
+    assert run_apply(definitions, host) == 0
+    out = capsys.readouterr().out
+    assert not (fake.directory / linux_vm.RELEASE_RECORD).exists()
+    assert not (tmp_path / linux_vm.FORGET_SET).exists()
+    assert f"removed {tmp_path / linux_vm.FORGET_SET}" in out
+    for location in (other, nested):
+        assert len(os.listdir(location / linux_vm.FORGET_SET)) == linux_vm.FORGET_BATCH
+    assert os.listdir(kept / linux_vm.FORGET_SET) == ["notes.txt"]
+    assert f"kept {kept / linux_vm.FORGET_SET}" in out
 
 
 def test_a_second_apply_keeps_the_first_replaced_config(
@@ -1460,6 +2040,53 @@ def test_a_second_apply_keeps_the_first_replaced_config(
     assert (fake.directory / linux_vm.PREVIOUS_CONFIG).read_text(
         encoding="utf-8"
     ) == original
+
+
+# --------------------------------------------------------------------------
+# Service launch (the real host)
+# --------------------------------------------------------------------------
+
+
+def test_a_service_launch_leaves_its_service_running_in_its_own_group(
+    tmp_path: Path,
+) -> None:
+    """HF-471: the real `LocalHost.start_service`; the kernel is the oracle.
+
+    The command starts a background loop (the service) that inherits the
+    command's output, prints the loop's pid, its own pid and its process
+    group, and exits. The call returns when the command exits, though the
+    service still holds the output; the service is alive afterwards (Molt's
+    guard would have closed it before returning); and the command led its
+    own process group, apart from this test's.
+    """
+    stop = tmp_path / "stop"
+    loop = f"while [ ! -e {shlex.quote(str(stop))} ]; do sleep 0.05; done; echo late"
+    script = f'({loop}) & echo "$! $$ $(ps -o pgid= -p $$)"'
+    service = None
+    try:
+        completed = linux_vm.LocalHost(os.environ).start_service(
+            ["sh", "-c", script], timeout=60.0
+        )
+        assert completed.returncode == 0, completed.stderr
+        service, shell, group = (int(word) for word in completed.stdout.split())
+        assert pid_alive(service), "the service outlives the command"
+        assert group == shell != os.getpgid(0), "the command leads its own group"
+    finally:
+        stop.touch()
+    deadline = time.monotonic() + 10.0
+    while service is not None and pid_alive(service) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert service is None or not pid_alive(service)
+
+
+def test_a_service_launch_ends_only_its_command_at_the_deadline() -> None:
+    host = linux_vm.LocalHost(os.environ)
+    completed = host.start_service(["sh", "-c", "echo $$; exec sleep 30"], timeout=0.5)
+    assert completed.returncode == 124
+    assert completed.stderr.endswith("sh timed out after 0.5 s\n"), completed.stderr
+    assert not pid_alive(int(completed.stdout.split()[0]))
+    missing = host.start_service(["/nonexistent/limactl", "start"], timeout=5.0)
+    assert missing.returncode == 127 and "cannot run" in missing.stderr
 
 
 # --------------------------------------------------------------------------
@@ -1585,3 +2212,73 @@ def test_release_frees_what_a_real_guest_pinned() -> None:
         [result] = linux_vm.release(host, [instance])
         assert result.error is None, result.error
         assert held_probes() == set(), "a release after the reader exits frees it"
+
+
+_LIMA_USER_UNITS = (
+    "/init.scope",
+    "/app.slice/containerd.service",
+    "/app.slice/default-buildkit.service",
+    "/app.slice/stargz-snapshotter.service",
+)
+
+
+@pytest.mark.skipif(
+    not REAL_VMS,
+    reason=(
+        "reads the developer's running Lima VMs' processes (as root, with "
+        "`sudo ps`); set MOLT_LINUX_VM_TESTS=1 to run it"
+    ),
+)
+def test_the_real_guests_daemons_are_idle_by_their_executables(
+    definitions: linux_vm.Definitions,
+) -> None:
+    """A-8 against the real guests; it starts, stops and writes nothing.
+
+    In each running defined VM the probe lists every process with its
+    executable. The processes of the units Lima provisions for the guest user
+    (its systemd, rootless containerd, BuildKit, stargz) run declared
+    executables, so none is busy; a containerd shim would be.
+    """
+    host = linux_vm.LocalHost({**os.environ, "LIMA_HOME": str(Path.home() / ".lima")})
+    if host.which("limactl") is None:
+        pytest.skip("Lima is not installed")
+    running = [
+        instance
+        for instance in linux_vm.list_instances(host)
+        if instance.running and instance.name in definitions.vms
+    ]
+    if not running:
+        pytest.skip("no defined Lima VM is running")
+    for instance in running:
+        probe = host.run(
+            [
+                "limactl",
+                "shell",
+                "--workdir",
+                "/",
+                instance.name,
+                "sh",
+                "-c",
+                linux_vm.IDLE_PROBE,
+            ],
+            timeout=linux_vm.GUEST_COMMAND_SECONDS,
+        )
+        assert probe.returncode == 0, probe.stderr
+        parsed = linux_vm._parse_probe(probe.stdout)
+        daemons = {
+            process.pid
+            for process in parsed.processes.values()
+            if process.uid == parsed.guest_uid
+            and "/user@" in process.cgroup
+            and process.cgroup.endswith(_LIMA_USER_UNITS)
+            and not process.comm.startswith("containerd-shim")
+        }
+        assert daemons, f"{instance.name} runs no user daemon"
+        busy = {
+            process.pid
+            for process in linux_vm.busy_guest_processes(probe.stdout, definitions)
+        }
+        assert not busy & daemons, [
+            (parsed.processes[pid], parsed.executables.get(pid))
+            for pid in sorted(busy & daemons)
+        ]
