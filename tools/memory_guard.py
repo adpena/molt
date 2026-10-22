@@ -110,6 +110,8 @@ SRC_ROOT = ROOT / "src"
 from tools.memory_guard_core.common import utc_timestamp as _utc_timestamp  # noqa: E402
 from tools.memory_guard_core.active_custody import (  # noqa: E402
     ACTIVE_GUARD_MARKER_SCHEMA_VERSION,
+    guard_marker_records,
+    observe_custody,
     retire_active_guard_marker,
     sweep_active_guard_markers,
     update_active_guard_marker,
@@ -381,6 +383,7 @@ def _temporary_artifact_descendant_closure(
     sampling_telemetry: GuardSamplingTelemetry | None,
     termination_reports: Sequence[GuardTerminationReport],
     probe_grace: float,
+    active_dir: Path,
     final_samples: Mapping[int, ProcessSample] | None = None,
 ) -> tuple[bool, dict[str, object]]:
     """Return non-actuating evidence that no guarded child can still use scratch.
@@ -464,6 +467,22 @@ def _temporary_artifact_descendant_closure(
     ):
         return False, evidence
 
+    # Include births retired by earlier polls, before the final update can
+    # revoke another reused pid. Historical evidence never grants live custody.
+    producer_births: dict[int, set[int | None]] = {}
+    for pid, identity in tracker.closure_identities():
+        producer_births.setdefault(pid, set()).add(identity.started_at_ns)
+    current_births = tracker.custody_identities(tracker.known_pids or ())
+    for pid in tracker.known_pids or ():
+        if pid not in current_births:
+            producer_births.setdefault(pid, set()).add(None)
+    root_births = producer_births.setdefault(child_process.pid, set())
+    if child_process.started_at_ns is not None:
+        # The launch record supplies the root identity even before a tracker
+        # sample acquired it. An unknown placeholder is not another lifetime.
+        root_births.discard(None)
+    root_births.add(child_process.started_at_ns)
+    observed_at = time.time()
     root_pgid = child_process.pgid
     group_closed = _process_group_exited_or_unobservable(
         root_pgid,
@@ -489,6 +508,58 @@ def _temporary_artifact_descendant_closure(
     evidence["remaining_tracked_pids"] = list(remaining_tracked)
     evidence["root_process_group_members"] = list(root_group_members)
     closed = group_closed and not remaining_tracked and not root_group_members
+    if not closed:
+        return False, evidence
+
+    # A stopped inline guard can have published another generation during its
+    # signal grace. Its old process group and old token do not close that child.
+    # Walk only birth-bound custody edges; this observes records, never signals.
+    generations: list[dict[str, object]] = []
+    pending = producer_births
+    examined: set[tuple[int, int | None]] = set()
+    try:
+        while pending:
+            records = guard_marker_records(active_dir, tuple(pending))
+            examined.update(
+                (pid, birth) for pid, births in pending.items() for birth in births
+            )
+            following: dict[int, set[int | None]] = {}
+            for record in records:
+                row: dict[str, object] = {"path": str(record.path)}
+                if record.error is not None or record.guard is None:
+                    row["error"] = record.error or "guard identity unavailable"
+                    closed = False
+                else:
+                    expected = pending[record.guard.pid]
+                    if None in expected or record.guard.started_at_ns is None:
+                        row["error"] = "guard birth unavailable"
+                        closed = False
+                    elif record.guard.started_at_ns not in expected:
+                        # This numeric pid belongs to a different lifetime.
+                        continue
+                    else:
+                        observation = observe_custody(
+                            record, final_samples, now_s=observed_at
+                        )
+                        row["disposition"] = observation.state
+                        row["reason"] = observation.reason
+                        if observation.state != "closed":
+                            closed = False
+                        elif record.child is not None:
+                            child = record.child
+                            identity = (child.pid, child.started_at_ns)
+                            if identity not in examined:
+                                following.setdefault(child.pid, set()).add(
+                                    child.started_at_ns
+                                )
+                generations.append(row)
+            if not closed:
+                break
+            pending = following
+    except (OSError, ValueError) as exc:
+        evidence["guard_generation_error"] = f"{type(exc).__name__}: {exc}"
+        closed = False
+    evidence["guard_generations"] = generations
     evidence["closed"] = closed
     return closed, evidence
 
@@ -2362,6 +2433,7 @@ def run_guarded(
                 sampling_telemetry=final_sampling_telemetry,
                 termination_reports=termination_reports,
                 probe_grace=termination_wait_s,
+                active_dir=guard_marker.parent,
                 final_samples=post_exit_samples,
             )
         )

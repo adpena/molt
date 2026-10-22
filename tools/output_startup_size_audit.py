@@ -41,6 +41,7 @@ WASM_RUNNER = ROOT / "wasm" / "run_wasm.js"
 
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402
+from molt.process_guard import raise_for_guard_signal  # noqa: E402
 from molt.dx import development_artifact_env, scratch_dir  # noqa: E402
 from molt.node_runtime import NodeRuntimeError, resolve_node_runtime  # noqa: E402
 from molt.wasm_artifact import (  # noqa: E402
@@ -133,7 +134,7 @@ def _run_guarded(
     prefix: str = "MOLT_BENCH",
     progress_label: str | None = None,
 ) -> harness_memory_guard.GuardedCompletedProcess:
-    return harness_memory_guard.guarded_completed_process(
+    result = harness_memory_guard.guarded_completed_process(
         command,
         prefix=prefix,
         cwd=ROOT,
@@ -142,6 +143,8 @@ def _run_guarded(
         timeout=timeout,
         progress_label=progress_label,
     )
+    raise_for_guard_signal(result)
+    return result
 
 
 def _stats(samples: list[float]) -> dict[str, Any]:

@@ -861,17 +861,36 @@ def test_retired_history_keeps_the_newest_records(tmp_path, monkeypatch):
     assert names == [f"guard-{pid}-{pid:032x}.json" for pid in (12, 13, 14)]
 
 
-def test_guard_marker_lookup_reads_active_and_retired_records_of_one_pid(tmp_path):
+def test_guard_marker_lookup_reads_active_and_retired_records_of_one_pid(
+    tmp_path, monkeypatch
+):
     active = _active(tmp_path)
     done = _marker(active, pid=10, status="completed")
     custody.reconcile_active_guard_markers(active, _snapshot(), apply=True)
     running = _marker(active, pid=11)
-    assert [record.path for record in custody.guard_marker_records(active, 10)] == [
+    assert [record.path for record in custody.guard_marker_records(active, (10,))] == [
         _retired(tmp_path) / done.name
     ]
-    assert [record.path for record in custody.guard_marker_records(active, 11)] == [
+    assert [record.path for record in custody.guard_marker_records(active, (11,))] == [
         running
     ]
+    unrelated = active / f"guard-12-{12:032x}.json"
+    unrelated.write_text("unreadable payload", encoding="utf-8")
+    read = custody.read_marker_record
+    opened = []
+
+    def observed(path):
+        opened.append(path)
+        return read(path)
+
+    monkeypatch.setattr(custody, "read_marker_record", observed)
+    records = custody.guard_marker_records(active, (10, 11))
+    assert {record.path for record in records} == {
+        running,
+        _retired(tmp_path) / done.name,
+    }
+    assert opened == [running, _retired(tmp_path) / done.name]
+    assert unrelated not in opened
 
 
 def test_orphan_locks_leave_with_a_full_apply(tmp_path):

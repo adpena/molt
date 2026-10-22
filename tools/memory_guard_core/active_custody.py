@@ -515,13 +515,18 @@ def iter_marker_records(active_dir: Path) -> Generator[MarkerRecord]:
             yield read_marker_record(path)
 
 
-def guard_marker_records(active_dir: Path, guard_pid: int) -> tuple[MarkerRecord, ...]:
-    """Read one guard pid's records from ``active/`` and its retired history.
+def guard_marker_records(
+    active_dir: Path, guard_pids: Collection[int]
+) -> tuple[MarkerRecord, ...]:
+    """Read these guard pids' generations in active and retired custody.
 
-    Names are matched before any file is opened, so the cost is the two
-    directory listings, not the records of other guards.
+    One pair of directory listings serves the whole captured process family.
+    Match the pid namespace before reading files, retaining malformed records
+    within that namespace so unreadable evidence cannot mean closure.
     """
-    prefix = f"guard-{guard_pid}-"
+    names = {str(pid) for pid in guard_pids}
+    if not names:
+        return ()
     records: list[MarkerRecord] = []
     for directory, role in (
         (active_dir, "active marker"),
@@ -529,7 +534,11 @@ def guard_marker_records(active_dir: Path, guard_pid: int) -> tuple[MarkerRecord
     ):
         records.extend(
             read_marker_record(path)
-            for path in sorted(_iter_marker_paths(directory, role=role, prefix=prefix))
+            for path in sorted(
+                path
+                for path in _iter_marker_paths(directory, role=role)
+                if path.name.split("-", 2)[1] in names
+            )
         )
     return tuple(records)
 

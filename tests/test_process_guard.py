@@ -645,3 +645,104 @@ def test_unguarded_check_error_preserves_native_popen_args(monkeypatch):
         caught.value.stdout,
         caught.value.stderr,
     ) == (physical, 7, "output", "diagnostic")
+
+
+@pytest.mark.parametrize("check", [False, True])
+@pytest.mark.parametrize("signum", [None, 2, 15])
+def test_operator_signal_propagates_independently_of_child_status(check, signum):
+    import signal
+
+    terminal = SimpleNamespace(
+        returncode=143 if signum is None else 0,
+        guard_signal=signum,
+        timed_out=False,
+        stdout="receipt output",
+        stderr="",
+    )
+
+    class Context:
+        @classmethod
+        def from_env(cls, *_args, **_kwargs):
+            return cls()
+
+        def run(self, command, **kwargs):
+            return terminal
+
+    def run():
+        return process_guard.run_completed_command(
+            ["owned-child"],
+            check=check,
+            guard_loader=lambda _cwd, *, guard_source_root=None: SimpleNamespace(
+                HarnessExecutionContext=Context
+            ),
+        )
+
+    if signum is None:
+        if check:
+            with pytest.raises(subprocess.CalledProcessError) as caught:
+                run()
+            assert caught.value.returncode == 143
+        else:
+            assert run() is terminal
+    else:
+        exception = KeyboardInterrupt if signum == signal.SIGINT else SystemExit
+        with pytest.raises(exception) as caught:
+            run()
+        assert caught.value.guarded_result is terminal
+        if signum == signal.SIGTERM:
+            assert caught.value.code == 143
+
+
+@pytest.mark.parametrize("mode", ["ordinary143", "SIGINT", "SIGTERM"])
+def test_nested_guard_operator_stop_prevents_next_serial_command(tmp_path, mode):
+    import json
+    import os
+    import sys
+    from pathlib import Path
+    from tests.process_guard_common import run_guarded_test_process
+
+    if os.name != "posix":
+        pytest.skip("POSIX operator-signal delivery; structured boundary is portable")
+    root = Path(__file__).resolve().parents[1]
+    worker = tmp_path / "serial-owner.py"
+    receipt = tmp_path / "receipt.json"
+    sentinel = tmp_path / "next-command"
+    # The test-owned child signals only its direct inline-guard parent, after
+    # launch proves the guard has installed its handlers. No timing sleep races.
+    worker.write_text(
+        "import sys, json, signal\n"
+        "from pathlib import Path\n"
+        f"sys.path[:0] = {[str(root), str(root / 'src')]!r}\n"
+        "from molt.process_guard import run_completed_command\n"
+        f"mode = {mode!r}\n"
+        "code = 'raise SystemExit(143)' if mode == 'ordinary143' else "
+        "'import os,signal,time; os.kill(os.getppid(),signal.' + mode + '); time.sleep(60)'\n"
+        "try:\n"
+        "    result = run_completed_command([sys.executable, '-c', code], "
+        "check=False, timeout=20, capture_output=True)\n"
+        f"    Path({str(sentinel)!r}).write_text(str(result.returncode))\n"
+        "except BaseException as exc:\n"
+        "    result = exc.guarded_result\n"
+        f"    Path({str(receipt)!r}).write_text(json.dumps({{'kind': type(exc).__name__, "
+        "'signal': result.guard_signal, 'closed': result.descendants_closed}))\n"
+        "    raise SystemExit(0)\n",
+        encoding="utf-8",
+    )
+    result = run_guarded_test_process(
+        [sys.executable, str(worker)],
+        cwd=root,
+        timeout=40,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.guard_signal is None
+    assert result.descendants_closed
+    if mode == "ordinary143":
+        assert sentinel.read_text() == "143"
+        assert not receipt.exists()
+    else:
+        assert not sentinel.exists()
+        assert json.loads(receipt.read_text()) == {
+            "kind": "KeyboardInterrupt" if mode == "SIGINT" else "SystemExit",
+            "signal": 2 if mode == "SIGINT" else 15,
+            "closed": True,
+        }

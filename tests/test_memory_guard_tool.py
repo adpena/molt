@@ -503,6 +503,7 @@ def test_temporary_artifact_closure_without_launched_child_is_exact() -> None:
         raise AssertionError("no-child closure must not sample")
 
     closed, evidence = memory_guard._temporary_artifact_descendant_closure(
+        active_dir=memory_guard.active_guard_marker_dir(memory_guard.ROOT, os.environ),
         proc=None,
         child_process=None,
         tracker=None,
@@ -528,6 +529,7 @@ def test_temporary_artifact_windows_closure_requires_exact_empty_job() -> None:
     proc = types.SimpleNamespace(returncode=0)
 
     closed, evidence = memory_guard._temporary_artifact_descendant_closure(
+        active_dir=memory_guard.active_guard_marker_dir(memory_guard.ROOT, os.environ),
         proc=proc,
         child_process=_guarded_child(),
         tracker=None,
@@ -561,6 +563,7 @@ def test_temporary_artifact_windows_closure_rejects_incomplete_custody(
     cleanup: memory_guard.WindowsJobCleanup | None,
 ) -> None:
     closed, evidence = memory_guard._temporary_artifact_descendant_closure(
+        active_dir=memory_guard.active_guard_marker_dir(memory_guard.ROOT, os.environ),
         proc=types.SimpleNamespace(returncode=returncode),
         child_process=_guarded_child(),
         tracker=None,
@@ -590,6 +593,7 @@ def test_temporary_artifact_posix_closure_requires_empty_group_and_final_sample(
     )
 
     closed, evidence = memory_guard._temporary_artifact_descendant_closure(
+        active_dir=memory_guard.active_guard_marker_dir(memory_guard.ROOT, os.environ),
         proc=types.SimpleNamespace(returncode=0),
         child_process=_guarded_child(),
         tracker=memory_guard.ProcessTreeTracker(101),
@@ -609,6 +613,140 @@ def test_temporary_artifact_posix_closure_requires_empty_group_and_final_sample(
     assert evidence["root_process_group_closed"] is True
     assert evidence["remaining_tracked_pids"] == []
     assert evidence["root_process_group_members"] == []
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        "live",
+        "absent",
+        "different_birth",
+        "unreadable",
+        "pending",
+        "unknown_birth",
+        "nested_live",
+        "reused_publisher_live",
+        "reused_publisher_absent",
+    ],
+)
+def test_temporary_artifact_closure_accounts_for_late_guard_generations(
+    tmp_path, monkeypatch, state
+):
+    active = tmp_path / "custody" / "active"
+    retired = active.parent / "retired"
+    active.mkdir(parents=True)
+    retired.mkdir()
+
+    def marker(directory, token, *, pid=101, birth=11, child=202, child_birth=22):
+        payload = {
+            "schema_version": 2,
+            "pid": pid,
+            "token": token,
+            "status": "child_running",
+            "guard_process": {"pid": pid, "started_at_ns": birth},
+            "child_process": {
+                "pid": child,
+                "started_at_ns": child_birth,
+                "pgid": child,
+            },
+            "child_launch_state": "recorded",
+        }
+        path = directory / f"guard-{pid}-{token}.json"
+        active_custody.write_active_guard_marker(path, payload)
+        return path
+
+    reused_publisher = state.startswith("reused_publisher_")
+    publisher_kwargs = (
+        {"pid": 202, "birth": 22, "child": 212, "child_birth": 23}
+        if reused_publisher
+        else {}
+    )
+    old = marker(retired, "a" * 32, **publisher_kwargs)
+    active_custody.update_active_guard_marker(
+        old, "a" * 32, status="completed", descendants_closed=True
+    )
+    late = marker(
+        active,
+        "b" * 32,
+        pid=202 if reused_publisher else 101,
+        birth=22 if reused_publisher else 99 if state == "different_birth" else 11,
+        child=303,
+        child_birth=33,
+    )
+    if state == "unreadable":
+        late.write_text("incomplete record", encoding="utf-8")
+    elif state == "pending":
+        payload = json.loads(late.read_text())
+        payload.update(child_process=None, child_launch_state="pending")
+        late.write_text(json.dumps(payload), encoding="utf-8")
+    if state == "nested_live":
+        marker(active, "c" * 32, pid=303, birth=33, child=404, child_birth=44)
+    before = {
+        path: path.read_bytes()
+        for directory in (active, retired)
+        for path in directory.glob("*.json")
+    }
+    samples = {}
+    if state in {"live", "different_birth", "nested_live", "reused_publisher_live"}:
+        pid, birth = (404, 44) if state == "nested_live" else (303, 33)
+        samples[pid] = memory_guard.ProcessSample(
+            pid=pid,
+            ppid=1,
+            rss_kb=1,
+            command="owned replacement",
+            pgid=pid,
+            started_at_ns=birth,
+        )
+    monkeypatch.setattr(
+        memory_guard,
+        "_process_group_exited_or_unobservable",
+        lambda _pgid, *, grace: True,
+    )
+    child = dataclasses.replace(
+        _guarded_child(), started_at_ns=None if state == "unknown_birth" else 11
+    )
+    tracker = memory_guard.ProcessTreeTracker(101)
+    if reused_publisher:
+        root = memory_guard.ProcessSample(
+            101, 1, 1, "owner", pgid=101, started_at_ns=11
+        )
+        publisher = memory_guard.ProcessSample(
+            202, 101, 1, "inline guard", pgid=101, started_at_ns=22
+        )
+        assert tracker.update({101: root, 202: publisher}) == {101, 202}
+        unrelated = dataclasses.replace(publisher, ppid=1, pgid=202, started_at_ns=99)
+        # Consume reuse in a regular poll BEFORE final closure. There is no
+        # root guard marker edge from which to rediscover the lost publisher.
+        assert tracker.update({101: root, 202: unrelated}) == {101}
+        assert tracker.custody_identities({202}) == {}
+        samples[202] = unrelated
+    closed, evidence = memory_guard._temporary_artifact_descendant_closure(
+        active_dir=active,
+        proc=types.SimpleNamespace(returncode=0),
+        child_process=child,
+        tracker=tracker,
+        sampler=lambda: samples,
+        windows_job_cleanup=None,
+        windows_process_model=False,
+        posix_process_model=True,
+        cleanup_orphans=True,
+        guard_interrupted=False,
+        termination_wait_expired=False,
+        sampling_telemetry=_complete_sampling_telemetry(),
+        termination_reports=(),
+        probe_grace=0,
+    )
+    # The old group and all sampled descendants are gone; the independent
+    # persisted generation is the sole evidence of the replacement session.
+    assert evidence["root_process_group_closed"]
+    assert evidence["remaining_tracked_pids"] == []
+    assert closed is (state in {"absent", "different_birth", "reused_publisher_absent"})
+    assert evidence["closed"] is closed
+    assert {path: path.read_bytes() for path in before} == before
+    if state in {"live", "nested_live", "reused_publisher_live"}:
+        assert any(
+            row.get("disposition") == "live" for row in evidence["guard_generations"]
+        )
 
 
 def test_temporary_artifact_posix_closure_rejects_final_survivor(
@@ -632,6 +770,7 @@ def test_temporary_artifact_posix_closure_rejects_final_survivor(
     )
 
     closed, evidence = memory_guard._temporary_artifact_descendant_closure(
+        active_dir=memory_guard.active_guard_marker_dir(memory_guard.ROOT, os.environ),
         proc=types.SimpleNamespace(returncode=0),
         child_process=_guarded_child(),
         tracker=tracker,
@@ -665,6 +804,7 @@ def test_temporary_artifact_posix_closure_rejects_final_sampler_error(
         raise RuntimeError("snapshot unavailable")
 
     closed, evidence = memory_guard._temporary_artifact_descendant_closure(
+        active_dir=memory_guard.active_guard_marker_dir(memory_guard.ROOT, os.environ),
         proc=types.SimpleNamespace(returncode=0),
         child_process=_guarded_child(),
         tracker=memory_guard.ProcessTreeTracker(101),
@@ -743,6 +883,7 @@ def test_temporary_artifact_posix_closure_rejects_prior_custody_gap(
         )
 
     closed, evidence = memory_guard._temporary_artifact_descendant_closure(
+        active_dir=memory_guard.active_guard_marker_dir(memory_guard.ROOT, os.environ),
         proc=types.SimpleNamespace(returncode=0),
         child_process=_guarded_child(),
         tracker=memory_guard.ProcessTreeTracker(101),
@@ -853,6 +994,7 @@ def test_temporary_artifact_posix_closure_reconciles_only_terminal_liveness(
         lambda _pid, *, grace: True,
     )
     closed, evidence = memory_guard._temporary_artifact_descendant_closure(
+        active_dir=memory_guard.active_guard_marker_dir(memory_guard.ROOT, os.environ),
         proc=types.SimpleNamespace(returncode=0),
         child_process=_guarded_child(),
         tracker=memory_guard.ProcessTreeTracker(101),
@@ -909,6 +1051,7 @@ def test_temporary_artifact_posix_closure_requires_orphan_cleanup(
     )
 
     closed, evidence = memory_guard._temporary_artifact_descendant_closure(
+        active_dir=memory_guard.active_guard_marker_dir(memory_guard.ROOT, os.environ),
         proc=types.SimpleNamespace(returncode=0),
         child_process=_guarded_child(),
         tracker=memory_guard.ProcessTreeTracker(101),
@@ -2680,6 +2823,41 @@ def test_process_tree_tracker_revokes_same_command_pid_reuse() -> None:
 
     assert tracker.update(reused) == {100}
     assert tracker.custody_identities({200}) == {}
+    first = memory_guard.ProcessIdentity(2)
+    assert (200, first) in tracker.closure_identities()
+    assert (200, memory_guard.ProcessIdentity(3)) not in tracker.closure_identities()
+    # The same numeric pid can later denote another owned lifetime. Neither
+    # retired instance may overwrite the other or regain signaling authority.
+    second = dataclasses.replace(initial[200], started_at_ns=4)
+    assert tracker.update({100: initial[100], 200: second}) == {100, 200}
+    assert tracker.update(reused) == {100}
+    assert tracker.custody_identities({200}) == {}
+    assert {
+        (pid, identity.started_at_ns) for pid, identity in tracker.closure_identities()
+    } == {
+        (100, 1),
+        (200, 2),
+        (200, 4),
+    }
+    # Receiver transfer is different from reuse: the released birth belongs
+    # only to its acknowledged owner, while earlier retired births stay ours.
+    third = dataclasses.replace(initial[200], started_at_ns=6)
+    current = {100: initial[100], 200: third}
+    assert tracker.update(current) == {100, 200}
+    assert tracker.transfer_process_group(
+        200,
+        samples=current,
+        identities={200: memory_guard.ProcessIdentity(6)},
+    )
+    assert tracker.update(current) == {100}
+    assert tracker.custody_identities({200}) == {}
+    assert {
+        (pid, identity.started_at_ns) for pid, identity in tracker.closure_identities()
+    } == {
+        (100, 1),
+        (200, 2),
+        (200, 4),
+    }
 
 
 def test_process_tree_tracker_weak_reused_parent_cannot_admit_child() -> None:
@@ -5114,6 +5292,7 @@ def test_reaped_root_cleanup_composes_with_scratch_closure(
         root_reaped=case != "unproven_root_exit",
     )
     closed, evidence = memory_guard._temporary_artifact_descendant_closure(
+        active_dir=memory_guard.active_guard_marker_dir(memory_guard.ROOT, os.environ),
         proc=types.SimpleNamespace(returncode=0),
         child_process=_guarded_child(),
         tracker=tracker,
@@ -5309,6 +5488,7 @@ def test_escalation_reconciles_only_proven_terminal_exit(
     )
     closure_started = True
     closed, evidence = memory_guard._temporary_artifact_descendant_closure(
+        active_dir=memory_guard.active_guard_marker_dir(memory_guard.ROOT, os.environ),
         proc=types.SimpleNamespace(returncode=0),
         child_process=_guarded_child(),
         tracker=tracker,
@@ -6160,6 +6340,7 @@ def test_refused_group_signal_resolves_only_by_an_observed_exit(
         101, tracker=tracker, sampler=sample, grace=0.25, root_reaped=True
     )
     closed, evidence = memory_guard._temporary_artifact_descendant_closure(
+        active_dir=memory_guard.active_guard_marker_dir(memory_guard.ROOT, os.environ),
         proc=types.SimpleNamespace(returncode=0),
         child_process=_guarded_child(),
         tracker=tracker,
