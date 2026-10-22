@@ -78,7 +78,24 @@ function into a `cranelift_module::Module`; only the module that owns the code d
    file descriptor 2 at a pipe that a forked keeper process holds in memory; the runner
    then tells the keeper to discard or to write the text. A runner that dies while it
    compiles, by any signal or exit, never gives a verdict, and the keeper writes the text.
-   The keeper is reaped before the program starts.
+   The keeper is reaped before the program starts. The capture never changes how the
+   program starts: with fd 2 closed there is nothing to capture, so the runner compiles
+   with it closed, as an AOT executable runs with it closed; every descriptor the capture
+   opens sits above fd 2 and closes on exec, so a closed fd 0 or 1 stays closed; and if
+   another process kills the keeper, writes to its pipes fail with `EPIPE` instead of
+   raising `SIGPIPE` (macOS `F_SETNOSIGPIPE`; on Linux the runner blocks `SIGPIPE` while
+   it captures and discards what is pending), and the runner names the lost output on the
+   restored stderr and goes on.
+
+   macOS's allocator keeps freed large blocks in a cache, so the compiler's freed heap
+   would stay in the program's footprint (885 MB for a program that imports
+   `subprocess`, against 6.7 MB under AOT). `malloc_zone_pressure_relief` releases none
+   of it, and libmalloc reads its settings only at process start. The runner therefore
+   restarts itself once with `execv` (same pid, argv, descriptors, signal mask and
+   dispositions) with `MallocLargeCache=0`, and removes that setting and its own marker
+   before anything else runs; a caller's own `MallocLargeCache` stays. On glibc the
+   runner calls `malloc_trim(0)` before the program starts. The image bytes are dropped
+   first.
 3. **Runtime symbols.** Generated code imports runtime functions through
    `Linkage::Import`. The runner loads the runtime as a shared image and resolves every
    import with `dlsym` on that image, as cg_clif resolves dependency symbols in their
@@ -150,39 +167,44 @@ function into a `cranelift_module::Module`; only the module that owns the code d
 `runtime/molt-jit/src/image.rs` reads it):
 
 ```text
-#!/bin/sh
-exec <runner> --launch "$0" -- "$0" "$@"
-#molt.jit-image.v1 <header bytes> <program bytes>
+#!<runner> --image
+#molt.jit-image.v2 <header bytes> <program bytes>
 <header: JSON: runtime image, backend environment, compiler diagnostics, launch plan>
 <program: backend IR, MessagePack, the backend lease format>
 ```
 
 The CLI publishes it with one rename, so a header always belongs to its own program, even
 when two builds publish the same name at once. It is created executable through the umask,
-as a linker creates an AOT executable (0o777 less the umask). Its first two lines make it a program
-`execve` can start: `argv[0]`, and so `sys.executable`, names the image, which starts the
-same program again, as an AOT executable's path does. `subprocess.run([sys.executable,
-...])` and spawn-mode `multiprocessing` (which executes `sys.argv[0]`) therefore work; each
-such start compiles the program again, a cost the AOT tier does not pay. `molt run` and the
-differential harness start the runner directly with the same command shape
-(`run_tier.jit_runner_argv`), adding `--start-receipt`.
+as a linker creates an AOT executable (0o777 less the umask). Its first line makes the
+runner its interpreter: `execve` of the image starts `<runner> --image <image> [args...]`
+with no shell between, so the program keeps the environment its caller passed, and
+`argv[0]`, and so `sys.executable`, names the image, which starts the same program again,
+as an AOT executable's path does. `subprocess.run([sys.executable, ...])` and spawn-mode
+`multiprocessing` (which executes `sys.argv[0]`) therefore work; each such start compiles
+the program again, a cost the AOT tier does not pay. `molt run` and the differential
+harness start the runner with the same command (`run_tier.jit_runner_argv`), adding
+`--start-receipt`. The kernel splits an interpreter line at whitespace and reads only its
+first bytes (256 on Linux, 512 on macOS), so publication refuses a runner path that is
+relative, holds whitespace or makes the line too long.
 
-A directly started image runs `/bin/sh` first, so its program does not start in exactly
-the process state an AOT executable gets (HF-371 review v3, open until the runner becomes
-the image's interpreter): the shell sets `PWD` (to `/` when the inherited value is stale,
-and then drops `OLDPWD`) and increments `SHLVL`; `argv[0]` is the path the shell received
-(absolute when found through `PATH`, where an AOT executable keeps the name it was started
-by); and `ps` names the runner, not the image. `molt run` and the harness start the runner
-directly and see none of these differences.
+Two differences from a directly started AOT executable remain, both from how the kernel
+starts an interpreter: `argv[0]` is the path the kernel executed (absolute when a shell
+found the image through `PATH`, where an AOT executable keeps the name its caller gave),
+and `ps -o comm` names the runner, not the image. The environment, descriptors and signal
+state are the caller's: `runtime/molt-jit/tests/runner_launch.rs` executes an image from a
+caller with a stale `PWD`, an `OLDPWD` and no `SHLVL`, and the twin case
+`reexec_keeps_parent_environment.py` restarts each tier by its own path with the same
+environment and checks that both see it unchanged.
 
 An image is a development artifact tied to the checkout that built it. Its header names
 the runner generation, the runtime image and the runtime callable-symbol table in that
 checkout's Cargo target directory, and running the image renews none of them. `molt run
 --tier jit` and `molt build --emit jit` renew them; after 24 hours with neither, a later
 build may evict them, and removing the Cargo target directory removes them. The image
-then fails: `/bin/sh`
-cannot execute the runner (exit 126 or 127, naming it), or the runner cannot load the
-runtime image (exit 125). `tests/cli/test_jit_run_tier.py` proves the first case.
+then fails: the kernel cannot start its interpreter, so a shell reports a bad interpreter
+(exit 126) and `execve` fails with `ENOENT` (Python raises `FileNotFoundError` naming the
+image), or the runner cannot load the runtime image (exit 125).
+`tests/cli/test_jit_run_tier.py` proves the first case.
 
 **Launch.** `NativeLaunchPlan` owns a program's launch facts: the resolved capability
 environment and `MOLT_EXECUTION_TARGET`, external runtime module roots, and the compiled
@@ -233,8 +255,8 @@ because the JIT tier already owns its program's call graph:
 
 ## Costs
 
-The JIT tier is slower than the AOT tier for any program that imports `os`, and it holds
-about 1 GB more memory while the program runs. It stays opt-in (`--tier jit`) until it
+The JIT tier is slower than the AOT tier for any program that imports `os`, and it needs
+about 0.7 GB at its peak to compile such a program. It stays opt-in (`--tier jit`) until it
 reuses compiled stdlib code, as an AOT build does.
 
 - Removed per edit-run: object emission, the runtime-archive link, output publication,
@@ -249,8 +271,9 @@ reuses compiled stdlib code, as an AOT build does.
   whole program, its stdlib closure included. An AOT build reuses a cached shared-stdlib
   object; the JIT tier compiles those functions on every start, and again in every
   process that starts the image again (a spawned `multiprocessing` worker, a
-  `subprocess` of `sys.executable`). The compiler's heap and the image bytes stay resident
-  while the program runs.
+  `subprocess` of `sys.executable`). On macOS the runner restarts itself once to turn off
+  the allocator's large-block cache, so the compiler's freed heap leaves the program's
+  footprint; that costs about 0.3 s of compile time per start.
 - Not removed: frontend lowering on edited modules, backend IR preparation (HF-266) and
   toolchain probes (HF-357).
 
@@ -267,11 +290,18 @@ image, by cost bucket (`MOLT_BACKEND_TIMING=1`, `/usr/bin/time -l`; three starts
 | JIT finalize (link) | 1.5 ms | 13 ms |
 | Compile, total | 0.73-1.13 s | 6.84-8.02 s (9.42-10.17 s at load 8-16) |
 | Start to exit, wall | 0.86-1.92 s | 7.36-9.34 s (10.0-10.7 s at load 8-16) |
-| Peak RSS | 168 MB | 0.94-0.97 GB (0.97-1.01 GB) |
+| Peak RSS | 168 MB | 0.94-0.97 GB (0.97-1.01 GB); 694-767 MiB with the allocator restart |
 | The AOT executable, wall and peak RSS | | 0.27-0.35 s, 23 MB |
 
-Steady RSS while a program that imports `subprocess` runs: 1,331,712 KiB under JIT,
-28,416 KiB under AOT (v3 review). Through `molt run` (v3 review, `import os, sys`, load
+While a program that imports `subprocess` runs (2026-10-22, release runner, five
+interleaved starts each at load 8-12, `vmmap --summary`): its physical footprint is
+72.9-74.8 MB under JIT with the allocator restart, 875-895 MB without it, and 6.7 MB
+under AOT. The restart cost 0.28 s of compile time for `import os, sys` (median 7.33 s
+against 7.05 s), lowered its peak RSS from 796-849 MiB to 694-767 MiB, and added nothing
+measurable to `print(42)` (0.90-1.06 s against 0.86-1.08 s). `ps` still reports about
+1.0 GB of RSS under JIT (28 MB under AOT): macOS counts freed pages the allocator marked
+reusable as resident until it needs them, and the physical footprint is the figure macOS
+charges the process. Through `molt run` (v3 review, `import os, sys`, load
 9-16):
 
 | `molt run` | AOT | JIT |
@@ -297,9 +327,7 @@ Cranelift (12-17 s) recompile every start.
 The structural path (HF-371) is to compile each function lazily on its first call and to
 reuse machine code through a content-keyed cache ("Lazy compilation"). A shorter step uses
 what the AOT tier already has: link the AOT shared-stdlib archive for the program's
-stdlib set into the runtime image and compile only the application partition. The runner
-should also free the compiler's memory and the image bytes before the program starts;
-that change and its before-and-after RSS wait for the next runner build.
+stdlib set into the runtime image and compile only the application partition.
 
 ## Platform cells
 
