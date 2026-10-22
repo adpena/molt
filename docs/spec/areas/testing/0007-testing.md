@@ -466,6 +466,14 @@ require and clear its readiness marker so a missing test body cannot pass.
 Preserve live compiler/process observations when those are part of the oracle.
 A startup timeout alone does not prove that the intended workload began.
 
+The differential harness pins each backend attempt before availability and
+compilation to its existing build-plus-run reservation, clipped by the item's
+absolute deadline. The first execution of a newly emitted native or LLVM image
+can spend that attempt's unused cold allowance; it cannot restart the deadline
+or consume another backend's reservation. An explicitly unbounded build does
+not remove a finite run cap. CPython and existing WASM/Luau host execution keep
+their ordinary run caps. No extra execution establishes readiness.
+
 WASM execution tests distinguish guest-VM deadlines from native child-process
 deadlines. The guest control executes a nonterminating WASM loop in Node and
 requires the VM timeout diagnostic. The process control re-executes the native

@@ -2117,7 +2117,7 @@ pub extern "C" fn molt_sys_flags_payload() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         // The sequence fields plus every named non-sequence field any supported
         // target exposes; sys.py publishes the extras by target version.
-        let keys_and_values: [(&[u8], i64); 21] = [
+        let keys_and_values: [(&[u8], i64); _] = [
             (b"debug", env_flag_bool("PYTHONDEBUG").unwrap_or(0)),
             (b"inspect", env_flag_bool("PYTHONINSPECT").unwrap_or(0)),
             (b"interactive", 0),
@@ -2163,6 +2163,10 @@ pub extern "C" fn molt_sys_flags_payload() -> u64 {
                 b"thread_inherit_context",
                 env_flag_bool("PYTHON_THREAD_INHERIT_CONTEXT").unwrap_or(0),
             ),
+            // CPython v3.15.0 Python/initconfig.c uses -1 for normal/unset.
+            // The frontend rejects true lazy imports before dependency facts;
+            // publishing the default flag does not enable PEP 810 execution.
+            (b"lazy_imports", -1),
         ];
         let mut pairs: Vec<u64> = Vec::with_capacity(keys_and_values.len() * 2);
         for (key, value) in keys_and_values {
@@ -2422,8 +2426,7 @@ pub extern "C" fn molt_time_localtime(secs_bits: u64) -> u64 {
                 Ok(tm) => tm,
                 Err(msg) => return raise_exception::<_>(_py, "OSError", &msg),
             };
-            let parts = time_parts_from_tm(&tm);
-            time_parts_to_tuple(_py, parts)
+            time_tuple_from_tm(_py, &tm, secs as i64, true)
         }
         #[cfg(target_arch = "wasm32")]
         {
@@ -2434,7 +2437,11 @@ pub extern "C" fn molt_time_localtime(secs_bits: u64) -> u64 {
             let mut parts = time_parts_from_epoch_utc(secs.saturating_sub(offset_west));
             let std_offset_west = timezone_west_wasm().unwrap_or(offset_west);
             parts.isdst = if offset_west != std_offset_west { 1 } else { 0 };
-            time_parts_to_tuple(_py, parts)
+            let zone = match tzname_label_wasm(parts.isdst) {
+                Ok(value) => value,
+                Err(message) => return raise_exception::<u64>(_py, "OSError", &message),
+            };
+            time_parts_to_tuple(_py, parts, zone.as_bytes(), -offset_west)
         }
     })
 }
@@ -2462,13 +2469,12 @@ pub extern "C" fn molt_time_gmtime(secs_bits: u64) -> u64 {
                 Ok(tm) => tm,
                 Err(msg) => return raise_exception::<_>(_py, "OSError", &msg),
             };
-            let parts = time_parts_from_tm(&tm);
-            time_parts_to_tuple(_py, parts)
+            time_tuple_from_tm(_py, &tm, secs as i64, false)
         }
         #[cfg(target_arch = "wasm32")]
         {
             let parts = time_parts_from_epoch_utc(secs);
-            time_parts_to_tuple(_py, parts)
+            time_parts_to_tuple(_py, parts, b"UTC", 0)
         }
     })
 }
@@ -2488,16 +2494,13 @@ pub extern "C" fn molt_time_strftime(fmt_bits: u64, time_bits: u64) -> u64 {
         if fmt.as_bytes().contains(&0) {
             return raise_exception::<_>(_py, "ValueError", "embedded null character");
         }
-        let parts = match parse_time_tuple(_py, time_bits) {
+        let parts = match parse_time_argument(_py, time_bits, "strftime", true) {
             Ok(parts) => parts,
             Err(bits) => return bits,
         };
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let tm = match tm_from_time_parts(_py, parts) {
-                Ok(tm) => tm,
-                Err(bits) => return bits,
-            };
+            let tm = parts.native_tm();
             let c_fmt = match CString::new(fmt) {
                 Ok(c) => c,
                 Err(_) => {
@@ -2554,7 +2557,7 @@ pub extern "C" fn molt_time_strftime(fmt_bits: u64, time_bits: u64) -> u64 {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            let out = match strftime_wasm(&fmt, parts) {
+            let out = match strftime_wasm(&fmt, &parts) {
                 Ok(out) => out,
                 Err(msg) => return raise_exception::<_>(_py, "ValueError", &msg),
             };
@@ -2688,11 +2691,11 @@ pub extern "C" fn molt_time_tzname() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_time_asctime(time_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let parts = match parse_time_tuple(_py, time_bits) {
+        let parts = match parse_time_argument(_py, time_bits, "asctime", true) {
             Ok(parts) => parts,
             Err(bits) => return bits,
         };
-        let text = match asctime_from_parts(parts) {
+        let text = match asctime_from_parts(parts.parts) {
             Ok(text) => text,
             Err(msg) => return raise_exception::<_>(_py, "ValueError", &msg),
         };
@@ -2708,17 +2711,20 @@ pub extern "C" fn molt_time_asctime(time_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_time_mktime(time_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let parts = match parse_mktime_tuple(_py, time_bits) {
+        let parts = match parse_time_argument(_py, time_bits, "mktime", false) {
             Ok(parts) => parts,
             Err(bits) => return bits,
         };
         #[cfg(not(target_arch = "wasm32"))]
         {
-            MoltObject::from_float(mktime_native(parts)).bits()
+            match mktime_native(_py, &parts) {
+                Ok(value) => MoltObject::from_float(value).bits(),
+                Err(bits) => bits,
+            }
         }
         #[cfg(target_arch = "wasm32")]
         {
-            match mktime_wasm(parts) {
+            match mktime_wasm(parts.parts) {
                 Ok(out) => MoltObject::from_float(out).bits(),
                 Err(msg) => raise_exception::<_>(_py, "OSError", &msg),
             }

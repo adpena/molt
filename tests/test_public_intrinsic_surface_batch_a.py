@@ -13,7 +13,9 @@ _PROBE = f"""
 import functools as _host_functools
 import importlib.util
 import sys
-from tests.stdlib_intrinsic_registry import install_registry
+from tests.stdlib_intrinsic_registry import (
+    install_registry, struct_sequence_intrinsics, bind_struct_sequence_module
+)
 
 
 class _Closing:
@@ -198,7 +200,9 @@ _KW_MARK = object()
 _ASYNC_SLEEPS = []
 _TIME_SLEEPS = []
 
+_NATIVE_RECORDS = struct_sequence_intrinsics()
 install_registry({{
+    **_NATIVE_RECORDS,
     "molt_time_monotonic": lambda: 1.25,
     "molt_time_monotonic_ns": lambda: 125,
     "molt_time_perf_counter": lambda: 2.5,
@@ -207,8 +211,8 @@ install_registry({{
     "molt_time_time_ns": lambda: 350,
     "molt_time_process_time": lambda: 4.5,
     "molt_time_process_time_ns": lambda: 450,
-    "molt_time_localtime": lambda secs=None: (2026, 3, 18, 12, 0, 0, 2, 77, 0),
-    "molt_time_gmtime": lambda secs=None: (2026, 3, 18, 18, 0, 0, 2, 77, 0),
+    "molt_time_localtime": lambda secs=None: (2026, 3, 18, 12, 0, 0, 2, 77, 0, "LOCAL", -21600),
+    "molt_time_gmtime": lambda secs=None: (2026, 3, 18, 18, 0, 0, 2, 77, 0, "GMT", 0),
     "molt_time_strftime": lambda fmt, tup: f"{{fmt}}:{{tup[0]}}",
     "molt_time_timezone": lambda: 0,
     "molt_time_daylight": lambda: 0,
@@ -310,6 +314,7 @@ def _load_module(name, path_text):
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
+    bind_struct_sequence_module(module, _NATIVE_RECORDS)
     spec.loader.exec_module(module)
     return module
 

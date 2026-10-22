@@ -48,7 +48,8 @@ ROOT = Path(__file__).resolve().parents[1]
 FRONTEND_DIR = ROOT / "src" / "molt" / "frontend"
 
 # The public names that external consumers (the CLI package, debug/ir.py, tests, tools)
-# import from molt.frontend. This is the backward-compatibility contract.
+# import from molt.frontend. Declarative builtin callables have their own
+# package-independent authority in molt.builtin_callables.
 PUBLIC_SURFACE = [
     "BoundMethodHint",
     "BuiltinClass",
@@ -65,7 +66,6 @@ PUBLIC_SURFACE = [
     "FuncInfo",
     "MethodInfo",
     "ActiveException",
-    "BuiltinFuncSpec",
     "TryScope",
     "CompatibilityError",
     "CompatibilityReporter",

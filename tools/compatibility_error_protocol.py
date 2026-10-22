@@ -187,16 +187,27 @@ _MOLT_COMPATIBILITY_ERROR = _require_intrinsic("molt_compatibility_error")
 )
 
 
-def _minor_pattern(versions: Iterable[str]) -> str:
-    """The Rust match pattern for a set of 3.x target minors.
+def _version_pattern(versions: Iterable[str]) -> str:
+    """Project exact declared coordinates without discarding their major.
 
-    A contiguous run of three or more renders as an inclusive range, the form
-    clippy::manual_range_patterns requires; any other set stays an OR pattern.
+    Compress only contiguous minor ranges within the same major; grouping must
+    never authorize the same minor under an undeclared major.
     """
-    minors = [int(version.split(".")[1]) for version in versions]
-    if len(minors) > 2 and sorted(minors) == list(range(min(minors), max(minors) + 1)):
-        return f"{min(minors)}..={max(minors)}"
-    return " | ".join(str(minor) for minor in minors)
+    by_major: dict[int, set[int]] = {}
+    for version in versions:
+        major, minor = (int(part) for part in version.split("."))
+        by_major.setdefault(major, set()).add(minor)
+    if not by_major:
+        raise ValueError("compatibility outcome needs a declared target coordinate")
+    patterns = []
+    for major, values in sorted(by_major.items()):
+        minors = sorted(values)
+        if len(minors) > 2 and minors == list(range(minors[0], minors[-1] + 1)):
+            pattern = f"{minors[0]}..={minors[-1]}"
+        else:
+            pattern = " | ".join(str(minor) for minor in minors)
+        patterns.append(f"({major}, {pattern})")
+    return " | ".join(patterns)
 
 
 RUST_SOURCE = (
@@ -240,12 +251,13 @@ pub(crate) enum CompatibilityError<'a> {
 impl CompatibilityError<'_> {
     fn message(self, py: &PyToken<'_>) -> Result<String, &'static str> {
         let target = crate::object::ops_sys::runtime_target_python_info(runtime_state(py));
-        let supported_minor = match &self {
-            Self::RawIoBaseReadinto => matches!(target.minor, __RAW_IO_MINORS__),
-            Self::LoggingHandlerEmit => matches!(target.minor, __LOGGING_HANDLER_MINORS__),
-            _ => matches!(target.minor, __COMMON_MINORS__),
+        let target_version = (target.major, target.minor);
+        let supported = match &self {
+            Self::RawIoBaseReadinto => matches!(target_version, __RAW_IO_VERSIONS__),
+            Self::LoggingHandlerEmit => matches!(target_version, __LOGGING_HANDLER_VERSIONS__),
+            _ => matches!(target_version, __COMMON_VERSIONS__),
         };
-        if target.major != 3 || !supported_minor {
+        if !supported {
             return Err("unsupported compatibility-error target");
         }
         let message = match self {
@@ -285,7 +297,7 @@ impl CompatibilityError<'_> {
                     "multi-dimensional slicing is not implemented".to_owned()
                 }
             }
-            Self::MemoryviewLookup { rank } if rank > 1 && target.minor == 14 => {
+            Self::MemoryviewLookup { rank } if rank > 1 && matches!(target_version, __MEMORYVIEW_LOOKUP_VERSIONS__) => {
                 "multi-dimensional lookup is not implemented".to_owned()
             }
             Self::MemoryviewFormatSyntax { format }
@@ -361,6 +373,26 @@ mod tests {
                     );
                 });
             }
+            // Synthetic projection tests identity only, never target admission.
+            for (coordinate, expected) in [((4, 0), true), ((3, 0), false)] {
+                assert_eq!(matches!(coordinate, __SYNTHETIC_FOUR_ONLY__), expected);
+            }
+            for (major, minor) in [(3, 0), (4, 0), (4, 14)] {
+                transaction.with_target_python(
+                    py,
+                    Some(crate::state::runtime_state::PythonVersionInfo {
+                        major, minor, micro: 0, releaselevel: "final".to_string(), serial: 0,
+                    }),
+                    || {
+                        assert_eq!(CompatibilityError::RawIoBaseReadinto.message(py),
+                            Err("unsupported compatibility-error target"));
+                        assert_eq!(CompatibilityError::CounterFromkeys.message(py),
+                            Err("unsupported compatibility-error target"));
+                        assert_eq!(CompatibilityError::MemoryviewLookup { rank: 2 }.message(py),
+                            Err("unsupported compatibility-error target"));
+                    },
+                );
+            }
             for minor in [11, 16] {
                 transaction.with_target_python_minor(py, minor, || {
                     assert_eq!(
@@ -417,17 +449,22 @@ mod tests {
     }
 }
 """.replace(
-        "__RAW_IO_MINORS__",
-        _minor_pattern(OUTCOMES["RawIoBaseReadinto"].versions),
+        "__RAW_IO_VERSIONS__",
+        _version_pattern(OUTCOMES["RawIoBaseReadinto"].versions),
     )
     .replace(
-        "__LOGGING_HANDLER_MINORS__",
-        _minor_pattern(OUTCOMES["LoggingHandlerEmit"].versions),
+        "__LOGGING_HANDLER_VERSIONS__",
+        _version_pattern(OUTCOMES["LoggingHandlerEmit"].versions),
     )
     .replace(
-        "__COMMON_MINORS__",
-        _minor_pattern(TARGETS),
+        "__COMMON_VERSIONS__",
+        _version_pattern(TARGETS),
     )
+    .replace(
+        "__MEMORYVIEW_LOOKUP_VERSIONS__",
+        _version_pattern(OUTCOMES["MemoryviewLookup"].versions),
+    )
+    .replace("__SYNTHETIC_FOUR_ONLY__", _version_pattern(("4.0",)))
     .replace(
         "__ARMS__",
         "\n".join(

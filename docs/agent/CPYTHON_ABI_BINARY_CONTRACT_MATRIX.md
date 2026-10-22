@@ -742,3 +742,21 @@ re-does another's work.
 MATCHES kept only when the primary CPython source was reproduced, default
 disposition DOWNGRADE), M06 (primary-source verification), and M45 (drift-gate as
 the anti-regression authority). Line-number anchors re-anchor by symbol.*
+
+
+### Shared native type-shell allocation contract
+
+Both distributed C header transports include `include/molt/shared/_type_abi.h`.
+Static `PyTypeObject` storage and heap `PyHeapTypeObject` access use the same full
+native C layout and protocol tables as the linked ABI. The former public opaque
+shell and truncated number table are retired; sequence repeat callbacks use
+`ssizeargfunc`. This does not change Molt's internal value representation.
+
+`runtime/molt-cpython-abi/src/abi_types.rs` remains the physical authority.
+`tools/gen_cpython_abi_layout.py` projects sizeof, offset and scalar-width checks
+for both headers through `_molt_type_layout.generated.h`, including every inline
+heap protocol table. The existing public/linked struct-sequence C consumer checks
+static allocation boundary canaries as well as borrowed/stolen item ownership.
+These source contracts retain the CPython 3.12 C-layout admission boundary;
+sharing declarations does not qualify precompiled later-version extensions.
+Native Windows, Unix and WASM execution remain separate acceptance cells.

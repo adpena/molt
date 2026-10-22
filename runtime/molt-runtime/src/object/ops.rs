@@ -212,8 +212,8 @@ pub(crate) mod unicode_printable_table {
 pub(crate) mod unicode_east_asian_width_table {
     include!("unicode_width_generated.rs");
 
-    pub(crate) fn width(code: u32, minor: i64) -> &'static str {
-        let (_, ranges) = for_minor(minor).expect("unsupported target Python Unicode version");
+    pub(crate) fn width(code: u32, target: (i64, i64)) -> &'static str {
+        let (_, ranges) = for_version(target).expect("unsupported target Python Unicode version");
         let index = ranges.partition_point(|entry| entry.1 < code);
         ranges[index].2
     }
@@ -1857,7 +1857,7 @@ pub(crate) fn protocol_type_name(py: &PyToken<'_>, bits: u64, precision: usize) 
         };
     }
     let name = crate::object::ops_format::format_class_name_bytes(type_of_bits(py, bits));
-    String::from_utf8_lossy(&name[..name.len().min(precision)]).into_owned()
+    molt_cpython_abi::api::typeobj::native_name_bytes_with_precision(&name, precision)
 }
 
 fn truthy_from_special(_py: &PyToken<'_>, obj: MoltObject) -> Result<bool, ()> {

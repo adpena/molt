@@ -356,13 +356,22 @@ fn metadata_on_route(
                 )
             })
             .map_err(metadata_vfs_error),
-        None => if follow {
-            std::fs::metadata(path)
-        } else {
-            std::fs::symlink_metadata(path)
+        None => {
+            #[cfg(windows)]
+            {
+                PathMetadata::from_windows_path(path, follow).map_err(PathIoError::from_native)
+            }
+            #[cfg(not(windows))]
+            {
+                if follow {
+                    std::fs::metadata(path)
+                } else {
+                    std::fs::symlink_metadata(path)
+                }
+                .map(|metadata| PathMetadata::from_host(&metadata))
+                .map_err(PathIoError::from_native)
+            }
         }
-        .map(|metadata| PathMetadata::from_host(&metadata))
-        .map_err(PathIoError::from_native),
     }
 }
 

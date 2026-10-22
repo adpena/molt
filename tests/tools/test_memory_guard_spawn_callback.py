@@ -26,6 +26,82 @@ def _run(command: list[str], *, on_spawn=None):
     )
 
 
+def _run_observed_memory_tree(monkeypatch, tmp_path):
+    release = tmp_path / "observed"
+    ready = [tmp_path / name for name in ("child", "grandchild")]
+    spawned = []
+    observations = []
+    pending = None
+    real_total = memory_guard.total_rss
+    real_record = memory_guard._record_sample
+
+    def account_tree(samples, *, root_pid, **kwargs):
+        nonlocal pending
+        total = real_total(samples, root_pid=root_pid, **kwargs)
+        pending = None
+        if spawned != [root_pid] or not all(path.exists() for path in ready):
+            return total
+        members = {int(path.read_text(encoding="utf-8")) for path in ready}
+        watched = kwargs["watched"]
+        if members <= watched and all(samples[pid].rss_kb > 0 for pid in members):
+            sizes = [samples[pid].rss_kb for pid in watched]
+            pending = (total, sum(sizes), max(sizes))
+        return total
+
+    def record_then_release(**kwargs):
+        real_record(**kwargs)
+        if pending is not None and kwargs["total"] is pending[0]:
+            total, expected_total, expected_peak = pending
+            peak = kwargs["peak"]
+            if total is not None and peak is not None and kwargs["violation"] is None:
+                observations.append(
+                    (expected_total, expected_peak, total.rss_kb, peak.rss_kb)
+                )
+                release.touch()
+
+    # Observe the real accounting and recording boundaries. In particular,
+    # Darwin's birth-checked lazy RSS must bind before either subject exits.
+    monkeypatch.setattr(memory_guard, "total_rss", account_tree)
+    monkeypatch.setattr(memory_guard, "_record_sample", record_then_release)
+    script = (
+        "import os,pathlib,subprocess,sys,time\n"
+        "root = pathlib.Path(sys.argv[1])\n"
+        "allocation = bytearray(20_000_000)\n"
+        "ready = root / sys.argv[2]\n"
+        "staged = ready.with_suffix('.tmp')\n"
+        "staged.write_text(str(os.getpid()), encoding='utf-8')\n"
+        "staged.replace(ready)\n"
+        "child = None\n"
+        "if sys.argv[2] == 'child':\n"
+        "    child = subprocess.Popen([sys.executable, '-c', sys.argv[3], "
+        "str(root), 'grandchild'])\n"
+        "while not (root / 'observed').exists():\n"
+        "    time.sleep(0.01)\n"
+        "if child is not None:\n"
+        "    assert child.wait() == 0\n"
+    )
+    result = memory_guard.run_guarded(
+        [sys.executable, "-c", script, str(tmp_path), "child", script],
+        max_rss_kb=256 * 1024,
+        max_total_rss_kb=512 * 1024,
+        poll_interval=0.01,
+        timeout=30.0,
+        capture_output=True,
+        on_spawn=spawned.append,
+        samples_jsonl=str(tmp_path / "samples.jsonl"),
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.descendants_closed
+    assert observations, "the guard never accounted both live allocations"
+    for expected_total, expected_peak, total, peak in observations:
+        assert total == expected_total
+        assert peak == expected_peak
+        assert total > peak
+    assert result.peak_total is not None
+    assert result.peak_total.rss_kb >= max(row[0] for row in observations)
+    return result
+
+
 def test_on_spawn_observes_custodied_child_and_result_owns_tree_peak(request) -> None:
     if run_in_fresh_guard_observer(request):
         return
@@ -138,26 +214,14 @@ def test_windows_job_sampling_automatically_avoids_global_process_table() -> Non
     not memory_guard._process_model.posix_custody_reads_partial_rows(),
     reason="this host reads the process table for custody",
 )
-def test_guard_polls_read_the_tree_not_the_host_table(request) -> None:
+def test_guard_polls_read_the_tree_not_the_host_table(
+    request, monkeypatch, tmp_path
+) -> None:
     if run_in_fresh_guard_observer(request):
         return
     # Each poll once read every process of the host (about 1,300 kern.proc rows
     # on a developer Mac, or every /proc entry) to keep the few of this tree.
-    grandchild = "import time; x=bytearray(20_000_000); time.sleep(0.3)"
-    child = (
-        "import subprocess,sys,time;"
-        "x=bytearray(20_000_000);"
-        "p=subprocess.Popen([sys.executable,'-c',sys.argv[1]]);"
-        "time.sleep(0.3);p.wait()"
-    )
-
-    result = memory_guard.run_guarded(
-        [sys.executable, "-c", child, grandchild],
-        max_rss_kb=256 * 1024,
-        max_total_rss_kb=512 * 1024,
-        poll_interval=0.01,
-        capture_output=True,
-    )
+    result = _run_observed_memory_tree(monkeypatch, tmp_path)
 
     assert result.returncode == 0
     assert result.sampling_telemetry is not None
@@ -169,7 +233,8 @@ def test_guard_polls_read_the_tree_not_the_host_table(request) -> None:
     lineage = memory_guard._process_model.posix_custody_lineage(os.getpid())
     assert 2 <= result.sampling_telemetry.max_process_rows <= len(lineage) + 4
     assert result.peak_total is not None and result.peak is not None
-    assert result.peak_total.rss_kb > result.peak.rss_kb
+    # Same-sample strict aggregation is checked above. Exit rusage may carry
+    # a larger earlier process peak, distinct from the sampled tree's peak.
 
 
 @pytest.mark.skipif(
@@ -209,29 +274,16 @@ def test_guard_kill_decides_protection_on_the_host_table(monkeypatch) -> None:
 
 
 @pytest.mark.skipif(not sys.platform.startswith("win"), reason="Windows Job telemetry")
-def test_windows_job_sampling_preserves_process_and_tree_rss_semantics() -> None:
-    grandchild = "import time; x=bytearray(20_000_000); time.sleep(0.3)"
-    child = (
-        "import subprocess,sys,time;"
-        "x=bytearray(20_000_000);"
-        "p=subprocess.Popen([sys.executable,'-c',sys.argv[1]]);"
-        "time.sleep(0.3);p.wait()"
-    )
-
-    result = memory_guard.run_guarded(
-        [sys.executable, "-c", child, grandchild],
-        max_rss_kb=256 * 1024,
-        max_total_rss_kb=512 * 1024,
-        poll_interval=0.01,
-        capture_output=True,
-    )
+def test_windows_job_sampling_preserves_process_and_tree_rss_semantics(
+    monkeypatch, tmp_path
+) -> None:
+    result = _run_observed_memory_tree(monkeypatch, tmp_path)
 
     assert result.returncode == 0
     assert result.peak is not None
     assert result.peak_total is not None
     assert result.peak.scope == "process"
     assert result.peak_total.scope == "process_tree"
-    assert result.peak_total.rss_kb > result.peak.rss_kb
     assert result.sampling_telemetry is not None
     assert result.sampling_telemetry.max_process_rows >= 2
 

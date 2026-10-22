@@ -974,12 +974,7 @@ pub(crate) unsafe fn numeric_result_class(
 /// Numeric conversion diagnostics use CPython's caller-selected byte precision. Reuse
 /// the already resolved class instead of repeating a fallible class lookup.
 pub(crate) unsafe fn numeric_class_name(class: *mut PyTypeObject, precision: usize) -> String {
-    let name = unsafe { (*class).tp_name };
-    if name.is_null() {
-        return "object".to_string();
-    }
-    let bytes = unsafe { std::ffi::CStr::from_ptr(name) }.to_bytes();
-    String::from_utf8_lossy(&bytes[..bytes.len().min(precision)]).into_owned()
+    unsafe { crate::api::typeobj::type_name_with_precision(class, precision) }
 }
 
 /// Validate a foreign integer slot, retaining its owned result through the
@@ -1121,7 +1116,7 @@ pub unsafe extern "C" fn PyNumber_Long(o: *mut PyObject) -> *mut PyObject {
     }
     // CPython removed int() delegation to __trunc__ in Python 3.14. Use
     // the existing type-special resolver and warn before invoking the method.
-    if unsafe { (crate::hooks::hooks_or_stubs().target_python_minor)() } < 14 {
+    if unsafe { !(crate::hooks::hooks_or_stubs().target_python_at_least)(3, 14) } {
         let name = unsafe { crate::api::strings::PyUnicode_FromString(c"__trunc__".as_ptr()) };
         if name.is_null() {
             return ptr::null_mut();

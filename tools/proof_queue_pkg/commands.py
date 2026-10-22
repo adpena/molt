@@ -502,6 +502,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
 
 def _cmd_status(args: argparse.Namespace) -> int:
+    if args.recent < 0:
+        print("--recent must be non-negative", file=sys.stderr)
+        return 2
     with state._inspection(state._db_path(args)) as conn:
         conn.row_factory = sqlite3.Row
         active = list(

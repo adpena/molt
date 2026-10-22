@@ -17,6 +17,7 @@ CI : python3 tools/structural_audit.py --check  (the same gate, exit-coded)
 from __future__ import annotations
 
 import ast
+from contextlib import contextmanager
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,6 +25,7 @@ from types import SimpleNamespace
 import pytest
 
 from tools import structural_audit as SA
+from tests.process_guard_common import install_module_view
 
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE = ROOT / "tools" / "structural_audit_baseline.json"
@@ -49,14 +51,16 @@ def test_iter_source_files_prunes_excluded_directories_before_descent(
     venv.mkdir()
     (venv / "ignored.rs").write_text("fn ignored() {}\n", encoding="utf-8")
 
-    real_iterdir = Path.iterdir
+    real_scandir = SA.os.scandir
+    observed = []
 
-    def guarded_iterdir(path: Path):
-        if path == venv:
+    def guarded_scandir(path):
+        observed.append(Path(path))
+        if Path(path) == venv:
             raise AssertionError("structural_audit descended into excluded .venv")
-        return real_iterdir(path)
+        return real_scandir(path)
 
-    monkeypatch.setattr(Path, "iterdir", guarded_iterdir)
+    install_module_view(monkeypatch, "os", SA.os, SA, scandir=guarded_scandir)
 
     files = [
         path.relative_to(tmp_path).as_posix()
@@ -64,6 +68,187 @@ def test_iter_source_files_prunes_excluded_directories_before_descent(
     ]
 
     assert files == ["runtime/live.rs"]
+    assert observed == [runtime]
+
+
+def test_pruned_inventory_reuses_entry_types_in_deterministic_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = tmp_path / "runtime"
+    for relative in ("z/child.rs", "b.rs", "a/child.rs", "a.rs", "ignored.txt"):
+        path = runtime / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("source", encoding="utf-8")
+    excluded = runtime / "target"
+    excluded.mkdir()
+    (excluded / "ignored.rs").write_text("ignored", encoding="utf-8")
+    real_scandir, real_stat = SA.os.scandir, Path.stat
+    open_handles = set()
+    observed_entries = []
+
+    class ObservedEntry:
+        def __init__(self, entry):
+            self.entry = entry
+            self.name = entry.name
+
+        def is_dir(self):
+            assert not open_handles
+            assert self.name != "target", "excluded entries must not query metadata"
+            observed_entries.append(self.name)
+            return self.entry.is_dir()
+
+        def is_file(self):
+            assert not open_handles
+            return self.entry.is_file()
+
+        def is_symlink(self):
+            assert not open_handles
+            return self.entry.is_symlink()
+
+    @contextmanager
+    def reversed_scandir(path):
+        assert Path(path) != excluded
+        with real_scandir(path) as entries:
+            open_handles.add(Path(path))
+            try:
+                yield iter([ObservedEntry(entry) for entry in reversed(list(entries))])
+            finally:
+                open_handles.remove(Path(path))
+
+    def forbid_restat(path, *args, **kwargs):
+        assert not path.is_relative_to(runtime), (
+            "ordinary entries already have type metadata"
+        )
+        return real_stat(path, *args, **kwargs)
+
+    install_module_view(monkeypatch, "os", SA.os, SA, scandir=reversed_scandir)
+    monkeypatch.setattr(Path, "stat", forbid_restat)
+    found = SA._walk_pruned_files(runtime, tmp_path, (".rs",))
+    assert [path.relative_to(runtime).as_posix() for path in found] == [
+        "a.rs",
+        "b.rs",
+        "a/child.rs",
+        "z/child.rs",
+    ]
+    assert not open_handles
+    assert "a.rs" in observed_entries and "child.rs" in observed_entries
+
+
+def test_pruned_inventory_follows_file_links_without_descending_directory_links(
+    tmp_path: Path,
+) -> None:
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target = outside / "source.txt"
+    target.write_text("source", encoding="utf-8")
+    (outside / "outside.rs").write_text("outside", encoding="utf-8")
+    try:
+        (runtime / "file.rs").symlink_to(target)
+        (runtime / "directory").symlink_to(outside, target_is_directory=True)
+        (runtime / "broken.rs").symlink_to(outside / "absent")
+        (runtime / "loop.rs").symlink_to(runtime / "loop.rs")
+    except OSError as exc:
+        pytest.skip(f"host cannot create required symlink controls: {exc}")
+    assert SA._walk_pruned_files(runtime, tmp_path, (".rs",)) == [runtime / "file.rs"]
+
+
+def test_pruned_inventory_closes_failed_directory_enumeration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = tmp_path / "runtime"
+    blocked = runtime / "blocked"
+    blocked.mkdir(parents=True)
+    (blocked / "discarded.rs").write_text("discarded", encoding="utf-8")
+    live = runtime / "live.rs"
+    live.write_text("live", encoding="utf-8")
+    real_scandir = SA.os.scandir
+    open_handles = set()
+
+    @contextmanager
+    def failed_scandir(path):
+        path = Path(path)
+        with real_scandir(path) as entries:
+            open_handles.add(path)
+            try:
+                if path == blocked:
+
+                    def fail_during_iteration():
+                        yield next(entries)
+                        raise PermissionError("injected directory read failure")
+
+                    yield fail_during_iteration()
+                else:
+                    yield entries
+            finally:
+                open_handles.remove(path)
+
+    install_module_view(monkeypatch, "os", SA.os, SA, scandir=failed_scandir)
+    assert SA._walk_pruned_files(runtime, tmp_path, (".rs",)) == [live]
+    assert not open_handles
+
+
+@pytest.mark.parametrize("method", ["is_dir", "is_file", "is_symlink"])
+@pytest.mark.parametrize("propagate", [False, True])
+def test_pruned_inventory_preserves_path_metadata_error_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, method: str, propagate: bool
+) -> None:
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    target = runtime / "subject.rs"
+    if method == "is_symlink":
+        target.mkdir()
+    else:
+        target.write_text("source", encoding="utf-8")
+    real_scandir = SA.os.scandir
+    real_predicate = getattr(Path, method)
+    delegated = []
+    owner_error = PermissionError("canonical Path policy")
+
+    class FailedEntry:
+        name = target.name
+
+        def __getattr__(self, name):
+            if name == method:
+
+                def fail():
+                    raise OSError("DirEntry metadata unavailable")
+
+                return fail
+            return getattr(self.entry, name)
+
+        def __init__(self, entry):
+            self.entry = entry
+
+    @contextmanager
+    def failed_entry_scandir(path):
+        with real_scandir(path) as entries:
+            yield iter(
+                [
+                    FailedEntry(entry) if entry.name == target.name else entry
+                    for entry in entries
+                ]
+            )
+
+    def canonical_policy(path):
+        if path == target:
+            delegated.append(path)
+            if propagate:
+                raise owner_error
+            return False
+        return real_predicate(path)
+
+    install_module_view(monkeypatch, "os", SA.os, SA, scandir=failed_entry_scandir)
+    monkeypatch.setattr(Path, method, canonical_policy)
+    if propagate:
+        with pytest.raises(PermissionError) as exc:
+            SA._walk_pruned_files(runtime, tmp_path, (".rs",))
+        assert exc.value is owner_error
+    else:
+        found = SA._walk_pruned_files(runtime, tmp_path, (".rs",))
+        assert found == ([target] if method == "is_dir" else [])
+    assert delegated == [target]
 
 
 @pytest.mark.slow
@@ -2531,6 +2716,21 @@ def test_compatibility_protocol_rust_projection_uses_canonical_format(monkeypatc
     assert check_rustfmt.generated_owner(ROOT / protocol.RUST_PATH) == (
         "python tools/compatibility_error_protocol.py --check"
     )
+
+
+def test_compatibility_projection_preserves_major_without_widening_outcomes():
+    protocol = SA.compatibility_errors
+    # Independent literal coordinates distinguish the same minor in two majors.
+    assert protocol._version_pattern(("3.0", "4.0")) == "(3, 0) | (4, 0)"
+    assert protocol._version_pattern(("4.0",)) == "(4, 0)"
+    assert protocol._version_pattern(("3.12", "3.13", "3.14", "4.0")) == (
+        "(3, 12..=14) | (4, 0)"
+    )
+    assert protocol.OUTCOMES["MemoryviewLookup"].versions == ("3.14",)
+    assert "target.major != 3" not in protocol.RUST_SOURCE
+    assert "matches!(target_version, (3, 14))" in protocol.RUST_SOURCE
+    with pytest.raises(ValueError, match="declared target coordinate"):
+        protocol._version_pattern(())
 
 
 def test_compatibility_protocol_inventory_fails_closed(tmp_path):

@@ -518,7 +518,7 @@ fn builtin_slot_namespace_rebuild_keeps_inherited_init_out_of_str() {
                         "epoch {epoch}"
                     );
                     assert!(!lookup(&raw mut PyFloat_Type, c"__repr__").is_null());
-                    if (molt_cpython_abi::hooks::hooks_or_stubs().target_python_minor)() < 14 {
+                    if !(molt_cpython_abi::hooks::hooks_or_stubs().target_python_at_least)(3, 14) {
                         // The pre-3.14 explicit manual-inheritance exception.
                         assert!(!lookup(&raw mut PyList_Type, c"__getattribute__").is_null());
                     }

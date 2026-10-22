@@ -64,9 +64,6 @@ extern uint64_t molt_inplace_bit_or(uint64_t, uint64_t);
 extern uint64_t molt_inplace_bit_xor(uint64_t, uint64_t);
 extern uint64_t molt_inplace_matmul(uint64_t, uint64_t);
 // Borrowed reference API (zero refcount overhead)
-#ifndef MOLT_EXTENSION_HOST_ABI
-extern uint64_t molt_dict_getitem_borrowed(uint64_t, uint64_t);
-#endif
 extern uint64_t molt_list_getitem_borrowed(uint64_t, uint64_t);
 extern uint64_t molt_tuple_getitem_borrowed(uint64_t, uint64_t);
 
@@ -102,7 +99,6 @@ extern uint64_t molt_tuple_getitem_borrowed(uint64_t, uint64_t);
 #define molt_inplace_bit_or ((uint64_t (*)(uint64_t, uint64_t))_molt_host_abi_symbol("molt_inplace_bit_or"))
 #define molt_inplace_bit_xor ((uint64_t (*)(uint64_t, uint64_t))_molt_host_abi_symbol("molt_inplace_bit_xor"))
 #define molt_inplace_matmul ((uint64_t (*)(uint64_t, uint64_t))_molt_host_abi_symbol("molt_inplace_matmul"))
-#define molt_dict_getitem_borrowed ((uint64_t (*)(uint64_t, uint64_t))_molt_host_abi_symbol("molt_dict_getitem_borrowed"))
 #define molt_list_getitem_borrowed ((uint64_t (*)(uint64_t, uint64_t))_molt_host_abi_symbol("molt_list_getitem_borrowed"))
 #define molt_tuple_getitem_borrowed ((uint64_t (*)(uint64_t, uint64_t))_molt_host_abi_symbol("molt_tuple_getitem_borrowed"))
 #endif
@@ -120,14 +116,6 @@ typedef struct {
 #include "shared/_numeric_scalar_abi.h"
 #include "shared/_gil_state_abi.h"
 
-/* Source transport treats type objects as opaque identities. Numeric scalar
- * type identities are the canonical linked ABI symbols declared below. */
-struct _typeobject {
-    PyObject ob_base;
-};
-typedef struct {
-    PyTypeObject ht_type;
-} PyHeapTypeObject;
 typedef uint32_t Py_UCS4;
 typedef uint8_t Py_UCS1;
 typedef uint16_t Py_UCS2;
@@ -214,45 +202,8 @@ typedef struct _molt_pythreadstate {
 
 typedef void (*PyCapsule_Destructor)(PyObject *);
 
-typedef PyObject *(*getter)(PyObject *, void *);
-typedef int (*setter)(PyObject *, PyObject *, void *);
-typedef Py_ssize_t (*lenfunc)(PyObject *);
-typedef PyObject *(*binaryfunc)(PyObject *, PyObject *);
-typedef int (*objobjargproc)(PyObject *, PyObject *, PyObject *);
-typedef int (*objobjproc)(PyObject *, PyObject *);
-typedef PyObject *(*vectorcallfunc)(PyObject *callable, PyObject *const *args,
-                                    size_t nargsf, PyObject *kwnames);
+#include "shared/_type_abi.h"
 #include "shared/_cfunction_abi.h"
-
-typedef struct PyMappingMethods {
-    lenfunc mp_length;
-    binaryfunc mp_subscript;
-    objobjargproc mp_ass_subscript;
-} PyMappingMethods;
-
-typedef struct PySequenceMethods {
-    lenfunc sq_length;
-    binaryfunc sq_concat;
-    binaryfunc sq_repeat;
-    PyObject *(*sq_item)(PyObject *, Py_ssize_t);
-    void *was_sq_slice;
-    int (*sq_ass_item)(PyObject *, Py_ssize_t, PyObject *);
-    void *was_sq_ass_slice;
-    objobjproc sq_contains;
-    binaryfunc sq_inplace_concat;
-    binaryfunc sq_inplace_repeat;
-} PySequenceMethods;
-
-typedef struct PyNumberMethods {
-    binaryfunc nb_add;
-    binaryfunc nb_subtract;
-    binaryfunc nb_multiply;
-} PyNumberMethods;
-
-typedef struct PyBufferProcs {
-    int (*bf_getbuffer)(PyObject *, Py_buffer *, int);
-    void (*bf_releasebuffer)(PyObject *, Py_buffer *);
-} PyBufferProcs;
 
 typedef PyObject PyBytesObject;
 #include "shared/_sequence_abi.h"
@@ -359,7 +310,6 @@ extern PyObject *PyUnicode_AsEncodedString(PyObject *unicode,
 #include "shared/_typeobject_exports.h"
 static inline PyObject *_molt_builtin_class_lookup_utf8(const char *name);
 PyAPI_DATA(PyTypeObject) PyType_Type;
-PyAPI_DATA(PyTypeObject) PyTuple_Type;
 extern PyObject *PyErr_Format(PyObject *exc, const char *fmt, ...);
 extern PyObject *PyErr_FormatV(PyObject *exc, const char *fmt, va_list vargs);
 extern PyObject *PyUnicode_FromFormat(const char *format, ...);
@@ -2812,52 +2762,6 @@ static inline PyObject *PyTraceBack_GetObject(PyObject *tb) {
     return tb;
 }
 
-/* ========================================================================
- * PyStructSequence API
- * ======================================================================== */
-
-typedef struct {
-    const char *name;
-    const char *doc;
-} PyStructSequence_Field;
-
-typedef struct {
-    const char *name;
-    const char *doc;
-    int n_in_sequence;
-    PyStructSequence_Field *fields;
-} PyStructSequence_Desc;
-
-static inline int PyStructSequence_InitType2(PyTypeObject *type, PyStructSequence_Desc *desc) {
-    (void)type; (void)desc;
-    return 0;
-}
-
-static inline void PyStructSequence_InitType(PyTypeObject *type, PyStructSequence_Desc *desc) {
-    (void)PyStructSequence_InitType2(type, desc);
-}
-
-static inline PyObject *PyStructSequence_New(PyTypeObject *type) {
-    (void)type;
-    return PyTuple_New(0);
-}
-
-static inline PyObject *PyStructSequence_GetItem(PyObject *p, Py_ssize_t pos) {
-    return PyTuple_GetItem(p, pos);
-}
-
-static inline void PyStructSequence_SetItem(PyObject *p, Py_ssize_t pos, PyObject *o) {
-    PyTuple_SetItem(p, pos, o);
-}
-
-#define PyStructSequence_SET_ITEM(p, pos, o) PyStructSequence_SetItem((p), (pos), (o))
-#define PyStructSequence_GET_ITEM(p, pos) PyStructSequence_GetItem((p), (pos))
-
-static inline PyTypeObject *PyStructSequence_NewType(PyStructSequence_Desc *desc) {
-    (void)desc;
-    return &PyTuple_Type;
-}
-
 /* PyCFunction/PyCMethod constructors and inspection are linkable ABI calls. */
 
 static inline PyObject *PyInstanceMethod_New(PyObject *func) {
@@ -4059,9 +3963,6 @@ static inline void PyMem_SetupDebugHooks(void) {
 #endif
 
 /* GC traversal types */
-typedef int (*visitproc)(PyObject *, void *);
-typedef int (*traverseproc)(PyObject *, visitproc, void *);
-typedef int (*inquiry)(PyObject *);
 
 /* ========================================================================
  * Priority 1: Functions that block real C extensions (ujson, markupsafe, orjson)

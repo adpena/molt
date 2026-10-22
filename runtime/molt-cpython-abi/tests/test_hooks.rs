@@ -335,7 +335,23 @@ fn numeric_mode_and_semantic_target_are_strict_hook_contracts() {
     for invalid in [2, u32::MAX] {
         assert_eq!(NumberOperationMode::from_abi(invalid), None);
     }
-    assert_eq!(unsafe { (STUB_HOOKS.target_python_minor)() }, -1);
+    assert!(unsafe { (STUB_HOOKS.target_python_at_least)(3, 12) });
+    assert!(!unsafe { (STUB_HOOKS.target_python_at_least)(3, 13) });
+    assert!(!unsafe { (STUB_HOOKS.target_python_at_least)(4, 0) });
+    use molt_cpython_abi::api::typeobj::BuiltinSlotNamespacePolicy;
+    for (version, paired) in [
+        ((3, 13), false),
+        ((3, 14), true),
+        ((3, 15), true),
+        ((3, 16), true),
+        ((4, 0), true),
+    ] {
+        assert_eq!(
+            BuiltinSlotNamespacePolicy::for_version(version.0, version.1)
+                == BuiltinSlotNamespacePolicy::PairedInheritance,
+            paired,
+        );
+    }
     let mut prior = support::stub_runtime_hooks();
     prior.abi_version = RUNTIME_HOOKS_ABI_VERSION - 1;
     assert!(!unsafe { molt_cpython_abi::try_set_runtime_hooks(prior) });

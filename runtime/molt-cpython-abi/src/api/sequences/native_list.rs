@@ -468,7 +468,7 @@ pub(super) unsafe fn sort(
         (*list).ob_item = ptr::null_mut();
         (*list).ob_base.ob_size = 0;
         (*list).allocated = -1;
-        let runs = if (crate::hooks::hooks_or_stubs().target_python_minor)() >= 13 {
+        let runs = if (crate::hooks::hooks_or_stubs().target_python_at_least)(3, 13) {
             RunDetection::WeaklyDescending
         } else {
             RunDetection::StrictlyDescending

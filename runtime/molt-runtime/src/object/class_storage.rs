@@ -43,6 +43,9 @@ pub(crate) enum ClassDeclaration {
     /// Constructor policy is exact-class state sealed once before projection.
     SemanticPolicySealed = 1 << 12,
     // Bits 13..=23 are the typed NativeProtocolSlot inventory below.
+    /// Exact allocation owns the optional immutable struct-sequence spec tail.
+    /// Never inherited: ordinary classes retain the fixed fifteen-word payload.
+    StructSequence = 1 << 24,
 }
 
 /// Type semantics are constructor facts, independent of native instance layout,
@@ -61,6 +64,7 @@ pub(crate) struct ClassSemanticPolicy {
     immutable: bool,
     basetype: bool,
     abstract_type: bool,
+    disallow_instantiation: bool,
 }
 
 impl ClassSemanticPolicy {
@@ -79,6 +83,7 @@ impl ClassSemanticPolicy {
             immutable,
             basetype,
             abstract_type: false,
+            disallow_instantiation: false,
         }
     }
 
@@ -88,6 +93,7 @@ impl ClassSemanticPolicy {
             immutable: true,
             basetype,
             abstract_type: false,
+            disallow_instantiation: false,
         }
     }
 
@@ -166,6 +172,9 @@ impl ClassSemanticPolicy {
                 immutable: super::class_is_immutable(py, class),
                 basetype: !super::class_is_not_base(py, class),
                 abstract_type: class_is_abstract(class),
+                disallow_instantiation: crate::builtins::structseq::disallows_instantiation(
+                    py, class,
+                ),
             }
         }
     }
@@ -174,8 +183,8 @@ impl ClassSemanticPolicy {
     /// owned by the C view. This never derives origin from immutability.
     pub(crate) fn cpython_flags(self) -> std::os::raw::c_ulong {
         use molt_cpython_abi::abi_types::{
-            Py_TPFLAGS_BASETYPE, Py_TPFLAGS_HEAPTYPE, Py_TPFLAGS_IMMUTABLETYPE,
-            Py_TPFLAGS_IS_ABSTRACT,
+            Py_TPFLAGS_BASETYPE, Py_TPFLAGS_DISALLOW_INSTANTIATION, Py_TPFLAGS_HEAPTYPE,
+            Py_TPFLAGS_IMMUTABLETYPE, Py_TPFLAGS_IS_ABSTRACT,
         };
         (if self.origin == ClassOrigin::Heap {
             Py_TPFLAGS_HEAPTYPE
@@ -187,6 +196,10 @@ impl ClassSemanticPolicy {
             0
         }) | (if self.basetype {
             Py_TPFLAGS_BASETYPE
+        } else {
+            0
+        }) | (if self.disallow_instantiation {
+            Py_TPFLAGS_DISALLOW_INSTANTIATION
         } else {
             0
         }) | (if self.abstract_type {
@@ -440,6 +453,8 @@ pub(crate) enum ClassReferenceSlot {
     /// Captured native creation module; zero for ordinary Python heap classes.
     /// Static classes also use it for their immutable public module metadata.
     NativeModule = 13,
+    /// Conditional tail after the compiled class definition scalar at14.
+    StructSequence = 15,
 }
 
 /// Capture the native constructor module before publication. Static types retire
@@ -521,6 +536,11 @@ pub(crate) unsafe fn class_capture_native_module<'a, 'py>(
 /// and renamed heap types use their current name without module qualification.
 pub(crate) unsafe fn class_c_name_bits(py: &PyToken<'_>, class: *mut u8) -> Result<u64, ()> {
     unsafe {
+        if class_declares(class, ClassDeclaration::StructSequence) {
+            let name = super::layout::class_native_name_bits(class);
+            inc_ref_bits(py, name);
+            return Ok(name);
+        }
         let name = crate::class_name_bits(class);
         let module = ClassReferenceSlot::NativeModule.load(class);
         if module == 0
@@ -626,7 +646,7 @@ pub(crate) enum ClassReferenceRelease {
 }
 
 impl ClassReferenceSlot {
-    pub(crate) const ALL: [Self; 10] = [
+    pub(crate) const ALL: [Self; 11] = [
         Self::Name,
         Self::Bases,
         Self::Mro,
@@ -637,6 +657,7 @@ impl ClassReferenceSlot {
         Self::InstanceDictionary,
         Self::CreationDoc,
         Self::NativeModule,
+        Self::StructSequence,
     ];
 
     const DICTIONARIES: [Self; 2] = [Self::Dictionary, Self::InstanceDictionary];
@@ -654,10 +675,17 @@ impl ClassReferenceSlot {
             | Self::SlotDeclaration
             | Self::FieldLayout
             | Self::CreationDoc
-            | Self::NativeModule => {
+            | Self::NativeModule
+            | Self::StructSequence => {
                 matches!(phase, ClassReferenceRelease::Terminal)
             }
         }
+    }
+
+    #[inline]
+    unsafe fn present(self, ptr: *mut u8) -> bool {
+        self != Self::StructSequence
+            || unsafe { class_declares(ptr, ClassDeclaration::StructSequence) }
     }
 
     #[inline]
@@ -669,14 +697,26 @@ impl ClassReferenceSlot {
     /// custody. No Rust borrow is held across reference release or callbacks.
     #[inline]
     pub(crate) unsafe fn load(self, ptr: *mut u8) -> u64 {
-        unsafe { *self.pointer(ptr) }
+        unsafe {
+            if self.present(ptr) {
+                *self.pointer(ptr)
+            } else {
+                0
+            }
+        }
     }
 
     /// Initialize an unpublished field, consuming one owned reference. Its
     /// storage must not already contain an owned value.
     #[inline]
     pub(crate) unsafe fn initialize_owned(self, ptr: *mut u8, bits: u64) {
-        unsafe { self.pointer(ptr).write(bits) };
+        unsafe {
+            if self.present(ptr) {
+                self.pointer(ptr).write(bits);
+            } else {
+                assert_eq!(bits, 0, "absent class tail cannot own a reference");
+            }
+        };
     }
 
     /// Transfer `bits` into the field and return its displaced owned reference.
@@ -685,12 +725,20 @@ impl ClassReferenceSlot {
     #[inline]
     pub(crate) unsafe fn exchange_owned(self, ptr: *mut u8, bits: u64) -> u64 {
         crate::gil_assert();
-        unsafe { self.pointer(ptr).replace(bits) }
+        unsafe {
+            if self.present(ptr) {
+                self.pointer(ptr).replace(bits)
+            } else {
+                assert!(bits == 0 || crate::obj_from_bits(bits).is_none());
+                0
+            }
+        }
     }
 
     #[inline]
     pub(crate) unsafe fn replace_borrowed(self, py: &PyToken<'_>, ptr: *mut u8, bits: u64) {
         crate::gil_assert();
+        assert!(unsafe { self.present(ptr) } || bits == 0);
         if unsafe { self.load(ptr) } == bits {
             return;
         }
@@ -788,6 +836,14 @@ pub(crate) fn is_canonical_runtime_class(py: &PyToken<'_>, bits: u64) -> bool {
                 && crate::object_class_bits(ptr) == crate::builtin_classes(py).type_obj
                 && (crate::is_builtin_class_bits(py, bits)
                     || class_declares(ptr, ClassDeclaration::BuiltinException)
+                    // stat_result is a mutable heap type, but its private
+                    // runtime cache remains the canonical native provider owner.
+                    // This exact owner stays published until retirement ends.
+                    || bits
+                        == crate::runtime_state(py)
+                            .types
+                            .stat_result_class
+                            .load(std::sync::atomic::Ordering::Acquire)
                     || super::class_is_immutable(py, ptr))
         })
 }
@@ -1006,6 +1062,9 @@ impl RuntimeClassRetirement {
                                 })
                                 .expect("retiring slot names must be an exact tuple");
                             }
+                        }
+                        ClassReferenceSlot::StructSequence => {
+                            crate::builtins::structseq::assert_spec_shape(bits);
                         }
                         ClassReferenceSlot::FieldLayout => {
                             self.assert_exact_metadata(py, bits, crate::TYPE_ID_TUPLE);
@@ -1508,11 +1567,67 @@ mod tests {
         });
     }
 
+    // Reference-slot laws use an actual typed header and owned payload extent,
+    // without constructing a semantic class or registering these synthetic
+    // references with GC. The last word is an ordinary-class neighbor or the
+    // explicitly declared struct-sequence tail.
+    #[repr(C)]
+    struct ClassReferenceFixture {
+        header: std::mem::MaybeUninit<crate::MoltHeader>,
+        words: [u64; super::super::layout::CLASS_PAYLOAD_WORDS + 1],
+    }
+
+    impl ClassReferenceFixture {
+        fn new(fill: u64, has_tail: bool) -> Self {
+            let mut fixture = Self {
+                header: std::mem::MaybeUninit::zeroed(),
+                words: [fill; super::super::layout::CLASS_PAYLOAD_WORDS + 1],
+            };
+            unsafe {
+                let header = fixture.header.as_mut_ptr();
+                std::ptr::addr_of_mut!((*header).type_id).write(crate::TYPE_ID_TYPE);
+                crate::MoltHeader::initialize_refcount_before_publication(header, 1);
+                crate::MoltHeader::initialize_flags_before_publication(header, 0);
+                std::ptr::addr_of_mut!((*header).size_class).write(0);
+                std::ptr::addr_of_mut!((*header).aux_kind)
+                    .write(super::super::HEADER_AUX_KIND_NONE);
+                std::ptr::addr_of_mut!((*header).aux).write(super::super::MoltAuxWord::new(0));
+                let ptr = fixture.words.as_mut_ptr().cast::<u8>();
+                initialize_class_declarations(ptr);
+                if has_tail {
+                    class_declare(ptr, ClassDeclaration::StructSequence);
+                }
+            }
+            fixture
+        }
+    }
+
+    #[test]
+    fn ordinary_class_has_no_optional_reference_tail() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            // The extra sentinel is a neighbor, not padding owned by this class.
+            let mut fixture = ClassReferenceFixture::new(0, false);
+            let last = fixture.words.len() - 1;
+            fixture.words[last] = 0x9ab1_3476;
+            let ptr = fixture.words.as_mut_ptr().cast::<u8>();
+            unsafe {
+                assert_eq!(ClassReferenceSlot::StructSequence.load(ptr), 0);
+                ClassReferenceSlot::StructSequence.initialize_owned(ptr, 0);
+                assert_eq!(ClassReferenceSlot::StructSequence.take(ptr), 0);
+            }
+            assert_eq!(fixture.words[last], 0x9ab1_3476);
+            assert_eq!(super::super::layout::CLASS_DEFINITION_WORD, 14);
+            assert_eq!(super::super::layout::CLASS_PAYLOAD_WORDS, 15);
+        });
+    }
+
     #[test]
     fn class_reference_family_detaches_every_owned_slot_without_touching_policy() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let mut words = [0xA55A_u64; super::super::layout::CLASS_PAYLOAD_WORDS];
+            let mut fixture = ClassReferenceFixture::new(0xA55A, true);
+            let words = &mut fixture.words;
             for (index, slot) in ClassReferenceSlot::ALL.into_iter().enumerate() {
                 words[slot as usize] = MoltObject::from_int(index as i64).bits();
             }
@@ -1523,12 +1638,11 @@ mod tests {
                 assert_eq!(unsafe { slot.load(ptr) }, MoltObject::none().bits());
             }
             assert_eq!(words[4], 0xA55A + 1);
-            for index in [
-                8,
-                9,
-                super::super::layout::CLASS_DECLARATIONS_WORD,
-                super::super::layout::CLASS_DEFINITION_WORD,
-            ] {
+            assert_eq!(
+                words[super::super::layout::CLASS_DECLARATIONS_WORD],
+                ClassDeclaration::StructSequence as u64,
+            );
+            for index in [8, 9, super::super::layout::CLASS_DEFINITION_WORD] {
                 assert_eq!(words[index], 0xA55A);
             }
         });
@@ -1540,8 +1654,8 @@ mod tests {
         crate::with_gil_entry_nopanic!(py, {
             // Exact class payload storage isolates edge ownership from the
             // semantic validation performed by each public class attribute.
-            let mut words = [0_u64; super::super::layout::CLASS_PAYLOAD_WORDS];
-            let ptr = words.as_mut_ptr().cast::<u8>();
+            let mut fixture = ClassReferenceFixture::new(0, true);
+            let ptr = fixture.words.as_mut_ptr().cast::<u8>();
             let value_ptr = crate::alloc_dict_with_pairs(py, &[]);
             assert!(!value_ptr.is_null());
             let value = MoltObject::from_ptr(value_ptr).bits();

@@ -217,6 +217,7 @@ impl Drop for RuntimeValue {
 /// The facts describe the rejected transaction, not a later diagnostic lookup.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StaticBindingError {
+    Capacity,
     InvalidInput {
         address: usize,
         bits: AbiHandle,
@@ -748,6 +749,23 @@ impl ObjectBridge {
                         address: binding.address,
                     });
                 }
+            }
+        }
+        // Reserve every insertion before removing an old binding or publishing
+        // either identity direction. Public type factories may report OOM;
+        // they must never leave a half-bound caller-owned static shell.
+        if address.from_py.try_reserve(1).is_err() || address.direct_molt_py.try_reserve(1).is_err()
+        {
+            return Err(StaticBindingError::Capacity);
+        }
+        if canonical_view {
+            let target = if target_index == first_index {
+                &mut *first
+            } else {
+                second.as_deref_mut().unwrap()
+            };
+            if target.raw_py.try_reserve(1).is_err() {
+                return Err(StaticBindingError::Capacity);
             }
         }
         if let Some(old_bits) = old_bits {

@@ -330,3 +330,6 @@ This is the generated human projection of the canonical built-in host permission
 | `io.open.readwrite` | `fs.read`, `fs.write` | all | all | all | all |
 | `path.makedirs` | `fs.read`, `fs.write` | all | all | all | all |
 | `multiprocessing.spawn` | `process.exec`, `env.read` | all | all | all | all |
+| `pwd.getpwuid` | `fs.read` | `native` | `linux`, `macos` | all | all |
+| `pwd.getpwnam` | `fs.read` | `native` | `linux`, `macos` | all | all |
+| `pwd.getpwall` | `fs.read` | `native` | `linux`, `macos` | all | all |

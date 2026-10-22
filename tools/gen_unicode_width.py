@@ -116,13 +116,13 @@ def render(*, python_runtimes, records: ScanRecords | None = None) -> str:
             raise ValueError(f"incomplete CPython {version} width coverage")
         lines.append("];")
         major, minor = version.split(".")
-        if major != "3":
-            raise ValueError("extend the runtime target authority for a new major")
-        versions.append(f'        {minor} => Some(("{data["unicode"]}", {name})),')
+        versions.append(
+            f'        ({major}, {minor}) => Some(("{data["unicode"]}", {name})),'
+        )
     lines.extend(
         [
-            "pub(crate) fn for_minor(minor: i64) -> Option<(&'static str, WidthRanges)> {",
-            "    match minor {",
+            "pub(crate) fn for_version(target: (i64, i64)) -> Option<(&'static str, WidthRanges)> {",
+            "    match target {",
             *versions,
             "        _ => None,",
             "    }",

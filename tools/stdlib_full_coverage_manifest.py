@@ -46,6 +46,7 @@ STDLIB_FULLY_COVERED_MODULES: tuple[str, ...] = (
     "math",
     "opcode",
     "operator",
+    "pwd",
     "quopri",
     "secrets",
     "select",
@@ -404,6 +405,13 @@ STDLIB_REQUIRED_INTRINSICS_BY_MODULE: dict[str, tuple[str, ...]] = {
     ),
     "opcode": ("molt_opcode_payload_312_json",),
     "operator": (),
+    "pwd": (
+        "molt_pwd_module_init",
+        "molt_pwd_getpwuid",
+        "molt_pwd_getpwnam",
+        "molt_pwd_getpwall",
+        "molt_function_set_fixed_builtin",
+    ),
     "quopri": (
         "molt_quopri_decode",
         "molt_quopri_encode",

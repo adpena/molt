@@ -2481,9 +2481,10 @@ pub fn type_static_ptrs() -> impl Iterator<Item = *mut PyObject> {
 /// `prepare_builtin_static_type_runtime_state`, then call
 /// `ready_exception_singleton_types`; this also rebuilds ordinary builtin shells
 /// with retired roots. Readiness admission stays closed between those runtimes.
-pub unsafe fn retire_builtin_static_type_runtime_state() {
+pub unsafe fn retire_static_type_runtime_state(additional: &[(*mut PyTypeObject, bool)]) {
     let types: Vec<_> = builtin_static_type_runtime_cohort()
         .map(|entry| (entry.type_ptr, entry.bootstrap_ready))
+        .chain(additional.iter().copied())
         .collect();
     unsafe { crate::api::typeobj::retire_static_type_runtime_roots(&types) };
 }
@@ -2562,7 +2563,7 @@ pub fn builtin_static_type_runtime_cohort() -> impl Iterator<Item = StaticTypeRu
 /// This is a bootstrap-only admission boundary, not a teardown callback API.
 /// The previous runtime must have finished all root retirement and callbacks.
 /// Call before `ready_exception_singleton_types`; failed bootstrap must close
-/// the cohort again with `retire_builtin_static_type_runtime_state` while its
+/// the cohort again with `retire_static_type_runtime_state` while its
 /// runtime and bindings are still available.
 pub unsafe fn prepare_builtin_static_type_runtime_state() {
     let types: Vec<_> = builtin_static_type_runtime_cohort()
@@ -3993,4 +3994,19 @@ mod tuple_type_shell_tests {
             assert!((*mapping).mp_ass_subscript.is_null());
         }
     }
+}
+
+/// CPython's descriptor ABI, shared by static and heap struct-sequence types.
+#[repr(C)]
+pub struct PyStructSequence_Field {
+    pub name: *const std::os::raw::c_char,
+    pub doc: *const std::os::raw::c_char,
+}
+
+#[repr(C)]
+pub struct PyStructSequence_Desc {
+    pub name: *const std::os::raw::c_char,
+    pub doc: *const std::os::raw::c_char,
+    pub fields: *mut PyStructSequence_Field,
+    pub n_in_sequence: c_int,
 }

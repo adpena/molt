@@ -57,7 +57,7 @@ import json
 import subprocess
 import sys
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 ROOT_DEFAULT = Path(__file__).resolve().parents[1]
@@ -71,6 +71,8 @@ if str(_REPO_ROOT) not in sys.path:
 from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
+
+from tools.scan_records import ScanRecords, open_scan_records  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -326,21 +328,9 @@ def detect_orphans(root: Path, manifest: Manifest, sa) -> list[Violation]:
             base = root / sub
             if not base.is_dir():
                 continue
-            for path in base.rglob("*"):
-                if not path.is_file():
-                    continue
-                if path.suffix not in (
-                    ".rs",
-                    ".py",
-                    ".pyi",
-                    ".inc",
-                    ".txt",
-                    ".md",
-                    ".toml",
-                ):
-                    continue
-                if sa._is_excluded(path, root):
-                    continue
+            for path in sa._iter_pruned_files(
+                base, root, (".rs", ".py", ".pyi", ".inc", ".txt", ".md", ".toml")
+            ):
                 if not _is_generated_file(sa, path, root):
                     continue
                 rel = path.relative_to(root).as_posix()
@@ -766,8 +756,10 @@ def _top_level_named_variants(sa, block: str, arm_pat: str, enum_name: str) -> s
     return named
 
 
-def audit_closed_domains(root: Path, manifest: Manifest, sa) -> list[Violation]:
-    with sa.audit_operation(root):
+def audit_closed_domains(
+    root: Path, manifest: Manifest, sa, *, records: ScanRecords | None = None
+) -> list[Violation]:
+    with sa.audit_operation(root, records=records):
         violations: list[Violation] = []
 
         # Resolve every declared domain's live variant set ONCE up front.
@@ -787,9 +779,7 @@ def audit_closed_domains(root: Path, manifest: Manifest, sa) -> list[Violation]:
                     )
                 )
                 continue
-            variants = sa._count_enum_variants(
-                enum_file.read_text(errors="replace", encoding="utf-8"), enum_name
-            )
+            variants = sa._count_enum_variants(sa._source_text(enum_file), enum_name)
             if not variants:
                 violations.append(
                     Violation(
@@ -826,18 +816,45 @@ def audit_closed_domains(root: Path, manifest: Manifest, sa) -> list[Violation]:
         for path in sa._iter_source_files(root, (".rs",)):
             if sa._is_generated(path, root) or path.resolve() in test_paths:
                 continue
-            text = path.read_text(errors="replace", encoding="utf-8")
-            rel = None
-            for enum_name, marker, variants, audited in domains:
-                if marker not in text:
-                    continue
-                if rel is None:
-                    rel = path.relative_to(root).as_posix()
-                violations.extend(
-                    _scan_closed_domain_matches(
+            text = sa._source_text(path)
+            relevant = [domain for domain in domains if domain[1] in text]
+            if not relevant:
+                continue
+            rel = path.relative_to(root).as_posix()
+
+            def scan() -> list[Violation]:
+                return [
+                    finding
+                    for enum_name, _marker, variants, audited in relevant
+                    for finding in _scan_closed_domain_matches(
                         sa, text, rel, enum_name, variants, audited
                     )
+                ]
+
+            # Only the pure lexical step replays. Inventory, generated/test ownership,
+            # live enum discovery and the final baseline ratchet remain fresh.
+            identity = json.dumps(
+                [
+                    rel,
+                    [
+                        [name, sorted(variants), rel in audited]
+                        for name, _marker, variants, audited in relevant
+                    ],
+                ],
+                separators=(",", ":"),
+            )
+            violations.extend(
+                sa._file_result(
+                    "generator_closed_domains",
+                    path,
+                    scan,
+                    identity=identity,
+                    encode=lambda findings: [asdict(finding) for finding in findings],
+                    decode=lambda findings: [
+                        Violation(**finding) for finding in findings
+                    ],
                 )
+            )
         return violations
 
 
@@ -965,8 +982,11 @@ def _baseline_payload(counts: dict[str, int], sites: dict[str, list[str]]) -> di
 
 
 def run_all(
-    root: Path, *, with_idempotence: bool = False
-) -> tuple[list[Violation], dict]:
+    root: Path,
+    *,
+    with_idempotence: bool = False,
+    records: ScanRecords | None = None,
+) -> tuple[list[Violation], dict, list[Violation]]:
     sa = _load_structural_audit()
     manifest = load_manifest(root)
     hard: list[Violation] = []
@@ -974,7 +994,7 @@ def run_all(
     hard.extend(check_gating(root, manifest))
     if with_idempotence:
         hard.extend(check_idempotence(root, manifest))
-    domain_findings = audit_closed_domains(root, manifest, sa)
+    domain_findings = audit_closed_domains(root, manifest, sa, records=records)
     # Structural domain errors (enum file missing / unparseable) are HARD; the
     # per-site silent-default consumer matches are the down-only ratchet backlog.
     hard.extend(v for v in domain_findings if v.kind == "closed_domain_structural")
@@ -1095,7 +1115,7 @@ def _wrap(text: str, width: int) -> list[str]:
     return out
 
 
-def main(argv: list[str]) -> int:
+def main(argv: list[str], *, scan_records: bool = False) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=ROOT_DEFAULT)
     parser.add_argument(
@@ -1174,9 +1194,15 @@ def main(argv: list[str]) -> int:
         return 0
 
     try:
-        violations, summary, gating = run_all(
-            root, with_idempotence=args.check_idempotence
-        )
+        # Load the canonical parser before opening the scanner generation. Only
+        # the command entry point opts in; library callers compute directly.
+        _load_structural_audit()
+        with open_scan_records(
+            "generator_manifest", owner=__file__, enabled=scan_records
+        ) as records:
+            violations, summary, gating = run_all(
+                root, with_idempotence=args.check_idempotence, records=records
+            )
     except ManifestError as exc:
         print(f"generator_manifest.toml is malformed: {exc}", file=sys.stderr)
         return 2
@@ -1210,4 +1236,4 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    raise SystemExit(main(sys.argv[1:], scan_records=True))

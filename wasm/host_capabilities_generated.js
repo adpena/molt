@@ -309,6 +309,9 @@ export const OperationId = Object.freeze({
   IO_OPEN_READWRITE: 'io.open.readwrite',
   PATH_MAKEDIRS: 'path.makedirs',
   MULTIPROCESSING_SPAWN: 'multiprocessing.spawn',
+  PWD_GETPWUID: 'pwd.getpwuid',
+  PWD_GETPWNAM: 'pwd.getpwnam',
+  PWD_GETPWALL: 'pwd.getpwall',
 });
 export const OPERATION_CAPABILITIES = Object.freeze({
   ['net.socket']: Object.freeze(['net.socket']),
@@ -518,6 +521,9 @@ export const OPERATION_CAPABILITIES = Object.freeze({
   ['io.open.readwrite']: Object.freeze(['fs.read', 'fs.write']),
   ['path.makedirs']: Object.freeze(['fs.read', 'fs.write']),
   ['multiprocessing.spawn']: Object.freeze(['process.exec', 'env.read']),
+  ['pwd.getpwuid']: Object.freeze(['fs.read']),
+  ['pwd.getpwnam']: Object.freeze(['fs.read']),
+  ['pwd.getpwall']: Object.freeze(['fs.read']),
 });
 export const OPERATION_TARGETS = Object.freeze({
   ['signal.pthread_sigmask']: Object.freeze(['native']),
@@ -561,6 +567,9 @@ export const OPERATION_TARGETS = Object.freeze({
   ['pathlib.group']: Object.freeze(['native']),
   ['concurrent.threadpool.default']: Object.freeze(['native']),
   ['concurrent.processpool.default']: Object.freeze(['native']),
+  ['pwd.getpwuid']: Object.freeze(['native']),
+  ['pwd.getpwnam']: Object.freeze(['native']),
+  ['pwd.getpwall']: Object.freeze(['native']),
 });
 export const OPERATION_PLATFORMS = Object.freeze({
   ['signal.pthread_sigmask']: Object.freeze(['linux', 'macos']),
@@ -587,6 +596,9 @@ export const OPERATION_PLATFORMS = Object.freeze({
   ['os.sendfile']: Object.freeze(['linux', 'macos']),
   ['pathlib.owner']: Object.freeze(['linux', 'macos']),
   ['pathlib.group']: Object.freeze(['linux', 'macos']),
+  ['pwd.getpwuid']: Object.freeze(['linux', 'macos']),
+  ['pwd.getpwnam']: Object.freeze(['linux', 'macos']),
+  ['pwd.getpwall']: Object.freeze(['linux', 'macos']),
 });
 export const OPERATION_ARCHITECTURES = Object.freeze({
 });

@@ -1329,7 +1329,7 @@ pub extern "C" fn molt_os_path_getmtime(path_bits: u64) -> u64 {
             Err(error) => return error,
         };
         match path_metadata(_py, &path, true, OperationId::OsPathGetmtime, false) {
-            Ok(Some(metadata)) => MoltObject::from_float(metadata.fields[8] as f64).bits(),
+            Ok(Some(metadata)) => MoltObject::from_float(metadata.times[1].as_float()).bits(),
             Ok(None) => MoltObject::none().bits(),
             Err(error) => error,
         }
@@ -1345,7 +1345,7 @@ pub extern "C" fn molt_os_path_getatime(path_bits: u64) -> u64 {
             Err(error) => return error,
         };
         match path_metadata(_py, &path, true, OperationId::OsPathGetatime, false) {
-            Ok(Some(metadata)) => MoltObject::from_float(metadata.fields[7] as f64).bits(),
+            Ok(Some(metadata)) => MoltObject::from_float(metadata.times[0].as_float()).bits(),
             Ok(None) => MoltObject::none().bits(),
             Err(error) => error,
         }
@@ -1361,7 +1361,7 @@ pub extern "C" fn molt_os_path_getctime(path_bits: u64) -> u64 {
             Err(error) => return error,
         };
         match path_metadata(_py, &path, true, OperationId::OsPathGetctime, false) {
-            Ok(Some(metadata)) => MoltObject::from_float(metadata.fields[9] as f64).bits(),
+            Ok(Some(metadata)) => MoltObject::from_float(metadata.times[2].as_float()).bits(),
             Ok(None) => MoltObject::none().bits(),
             Err(error) => error,
         }

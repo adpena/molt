@@ -2,18 +2,45 @@
 
 import sys
 
-for name in ("flags", "version_info", "float_info", "int_info", "hash_info", "thread_info"):
+for name in (
+    "flags",
+    "version_info",
+    "float_info",
+    "int_info",
+    "hash_info",
+    "thread_info",
+):
     value = getattr(sys, name)
     cls = type(value)
-    print(name, cls.__name__, cls.__module__, cls.n_fields, cls.n_sequence_fields, cls.n_unnamed_fields)
-    print(" ", isinstance(value, tuple), len(value) == cls.n_fields, repr(value).startswith(f"sys.{name}("))
+    print(
+        name,
+        cls.__name__,
+        cls.__module__,
+        cls.n_fields,
+        cls.n_sequence_fields,
+        cls.n_unnamed_fields,
+    )
+    print(
+        " ",
+        isinstance(value, tuple),
+        len(value) == cls.n_fields,
+        repr(value).startswith(f"sys.{name}("),
+    )
 
-print("version", sys.version_info[:2] == (sys.version_info.major, sys.version_info.minor))
+print(
+    "version", sys.version_info[:2] == (sys.version_info.major, sys.version_info.minor)
+)
 major, minor, micro, level, serial = sys.version_info
-print("unpack", (major, minor) == sys.version_info[:2], level == sys.version_info.releaselevel)
+print(
+    "unpack",
+    (major, minor) == sys.version_info[:2],
+    level == sys.version_info.releaselevel,
+)
 print("compare", sys.version_info >= (3, 0), sys.version_info < (99,))
 print("flags", sys.flags.optimize == sys.flags[3], sys.flags.debug == sys.flags[0])
-print("hash", sys.hash_info.width in (32, 64), sys.hash_info.algorithm == sys.hash_info[5])
+print(
+    "hash", sys.hash_info.width in (32, 64), sys.hash_info.algorithm == sys.hash_info[5]
+)
 
 hooks = sys.get_asyncgen_hooks()
 cls = type(hooks)
@@ -28,7 +55,14 @@ try:
 except AttributeError:
     print("missing-field AttributeError")
 
-for name in ("flags", "version_info", "float_info", "int_info", "hash_info", "thread_info"):
+for name in (
+    "flags",
+    "version_info",
+    "float_info",
+    "int_info",
+    "hash_info",
+    "thread_info",
+):
     cls = type(getattr(sys, name))
     try:
         made = cls(tuple(range(cls.n_sequence_fields)))
@@ -40,6 +74,62 @@ try:
 except TypeError as exc:
     print("short", exc)
 
-print("flag-types", type(sys.flags.dev_mode).__name__, type(sys.flags.safe_path).__name__, type(sys.flags.optimize).__name__)
-print("flag-gil", hasattr(sys.flags, "gil") == (sys.version_info >= (3, 13)))
-print("flag-n_fields", type(sys.flags).n_fields - type(sys.flags).n_sequence_fields == {12: 0, 13: 1}.get(sys.version_info[1], 3))
+print(
+    "flag-types",
+    type(sys.flags.dev_mode).__name__,
+    type(sys.flags.safe_path).__name__,
+    type(sys.flags.optimize).__name__,
+)
+flag_extras = tuple(
+    name
+    for name in ("gil", "thread_inherit_context", "context_aware_warnings", "lazy_imports")
+    if hasattr(sys.flags, name)
+)
+print("flag-extras", flag_extras)
+if hasattr(sys.flags, "lazy_imports"):
+    print("flag-lazy-default", sys.flags.lazy_imports)
+print(
+    "flag-n_fields",
+    type(sys.flags).n_fields - type(sys.flags).n_sequence_fields
+    == len(flag_extras),
+)
+
+
+import os
+import time
+
+for cls in (
+    type(sys.float_info),
+    type(sys.version_info),
+    time.struct_time,
+    os.stat_result,
+    os.terminal_size,
+):
+    print("direct_tuple_base", cls.__name__, cls.__bases__ == (tuple,))
+    try:
+
+        class Derived(cls):
+            pass
+    except TypeError:
+        print("no_subclass", cls.__name__)
+
+record = time.struct_time(
+    (2001, 2, 3, 4, 5, 6, 5, 34, 0), {"tm_zone": "PRIVATE", "tm_gmtoff": 20700}
+)
+print(
+    "hidden_not_sequence",
+    len(record),
+    record.tm_zone,
+    record.tm_gmtoff,
+    record == tuple(record),
+)
+terminal = os.terminal_size(("columns", object()))
+print("terminal_no_coercion", terminal.columns, type(terminal.lines).__name__)
+
+for cls, field in (
+    (type(sys.float_info), "max"),
+    (type(sys.version_info), "major"),
+    (type(sys.hash_info), "modulus"),
+    (time.struct_time, "tm_zone"),
+):
+    print("descriptor-doc", cls.__name__, field, getattr(cls, field).__doc__)

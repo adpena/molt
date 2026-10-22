@@ -3820,25 +3820,34 @@ mod tests {
         assert!(crate::cpython_abi_hooks::register_cpython_hooks());
         crate::with_gil_entry_nopanic!(py, {
             let none = MoltObject::none().bits();
-            // Warm the selected exception class, then deny the real allocator.
-            let _ = raise_import_error(py, b"warm", none, none, none);
-            clear_exception(py);
-            let budget = RestoreBudget;
-            set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
-                max_memory: Some(0),
-                ..Default::default()
-            })));
-            assert_eq!(raise_import_error(py, b"denied", none, none, none), none);
-            crate::test_support::assert_and_clear_emergency_memory_error(py);
-            drop(budget);
-            let _ = raise_import_error(py, b"recovered", none, none, none);
-            let recovered = ExceptionValue::adopt(py, molt_exception_last_pending());
-            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
-                py,
-                recovered.bits(),
-                "ImportError"
-            ));
-            clear_exception(py);
+            for kind in ["ImportError", "ModuleNotFoundError"] {
+                let raise = |message: &[u8]| {
+                    if kind == "ImportError" {
+                        raise_import_error(py, message, none, none, none)
+                    } else {
+                        crate::builtins::exceptions::raise_module_not_found(py, message, none)
+                    }
+                };
+                // Warm each concrete class, then deny the real allocator.
+                let _ = raise(b"warm");
+                clear_exception(py);
+                let budget = RestoreBudget;
+                set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                    max_memory: Some(0),
+                    ..Default::default()
+                })));
+                assert_eq!(raise(b"denied"), none);
+                crate::test_support::assert_and_clear_emergency_memory_error(py);
+                drop(budget);
+                let _ = raise(b"recovered");
+                let recovered = ExceptionValue::adopt(py, molt_exception_last_pending());
+                assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                    py,
+                    recovered.bits(),
+                    kind
+                ));
+                clear_exception(py);
+            }
         });
     }
 

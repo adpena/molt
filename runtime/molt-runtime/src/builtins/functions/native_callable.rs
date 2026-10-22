@@ -163,6 +163,7 @@ pub(crate) struct NativeCallableSpec<'a> {
     pub(crate) self_bits: Option<u64>,
     pub(crate) cache: Option<&'a AtomicU64>,
     pub(crate) text_signature: Option<&'a str>,
+    pub(crate) fixed_convention: Option<molt_cpython_abi::api::cfunction::CFunctionConvention>,
 }
 
 impl<'a> NativeCallableSpec<'a> {
@@ -181,6 +182,7 @@ impl<'a> NativeCallableSpec<'a> {
             self_bits: None,
             cache: None,
             text_signature: None,
+            fixed_convention: None,
         }
     }
 
@@ -192,6 +194,7 @@ impl<'a> NativeCallableSpec<'a> {
             self_bits: None,
             cache: None,
             text_signature: None,
+            fixed_convention: None,
         }
     }
 
@@ -203,6 +206,7 @@ impl<'a> NativeCallableSpec<'a> {
             self_bits: Some(owner),
             cache: None,
             text_signature: None,
+            fixed_convention: None,
         }
     }
 
@@ -391,6 +395,63 @@ pub(crate) unsafe fn configure_native_callable(
             return false;
         }
 
+        // Dictionary callbacks above may have changed the executable. Validate
+        // the declaration immediately before the callback-free publication.
+        let fixed_kind = if let Some(convention) = spec.fixed_convention {
+            use molt_cpython_abi::api::cfunction::CFunctionConvention;
+            let kind = match convention {
+                CFunctionConvention::NoArgs => BIND_KIND_FIXED_NOARGS,
+                CFunctionConvention::OneObject => BIND_KIND_FIXED_ONE_OBJECT,
+                _ => {
+                    raise_exception::<()>(py, "ValueError", "expected a fixed calling convention");
+                    return false;
+                }
+            };
+            let meta = |field: Field| {
+                crate::call::function::function_metadata_bits(py, pointer, field.name().as_bytes())
+            };
+            let empty_tuple_or_none = |bits| {
+                obj_from_bits(bits).is_none()
+                    || obj_from_bits(bits).as_ptr().is_some_and(|ptr| {
+                        object_type_id(ptr) == TYPE_ID_TUPLE
+                            && crate::object::seq_access::len(ptr) == 0
+                    })
+            };
+            let published_qualified = qualified
+                .as_ref()
+                .map(|(bits, _)| *bits)
+                .or_else(|| Field::QualName.load(pointer));
+            if published_qualified
+                .and_then(|bits| crate::object::ops_format::string_obj_bytes(obj_from_bits(bits)))
+                .is_none()
+            {
+                raise_exception::<()>(
+                    py,
+                    "ValueError",
+                    "fixed builtin requires a published string __qualname__",
+                );
+                return false;
+            }
+            if spec.kind != NativeCallableKind::Function
+                || function_arity(pointer) != convention.arity()
+                || !obj_from_bits(meta(Field::Varargs)).is_none()
+                || !obj_from_bits(meta(Field::VarKeywords)).is_none()
+                || !empty_tuple_or_none(meta(Field::KeywordOnlyNames))
+                || !empty_tuple_or_none(meta(Field::Defaults))
+                || !obj_from_bits(meta(Field::KeywordDefaults)).is_none()
+            {
+                raise_exception::<()>(
+                    py,
+                    "ValueError",
+                    "fixed builtin declaration does not match executable signature",
+                );
+                return false;
+            }
+            Some(MoltObject::from_int(kind).bits())
+        } else {
+            None
+        };
+
         // Retaining the displaced class makes its existing edge replacement
         // callback-free. A rejected class edge changes neither dict nor fields.
         let old_class = object_class_bits(pointer);
@@ -435,12 +496,22 @@ pub(crate) unsafe fn configure_native_callable(
             (Field::QualName, qualified.as_ref().map(|(bits, _)| *bits)),
             (Field::TextSignature, text_signature),
             (Field::SelfValue, spec.self_bits),
+            (Field::BindKind, fixed_kind),
         ];
         let retired =
             updates.map(|(field, bits)| bits.map(|bits| field.replace_deferred(py, pointer, bits)));
-        // Native display fields do not alter binding inputs. The existing
-        // typed projection neither allocates nor invokes user code.
-        crate::call::bind::refresh_function_requires_binder_flag(py, pointer);
+        // Fixed convention publication changes binding inputs. Invalidate
+        // cached call shapes before any displaced owner can re-enter Python.
+        if fixed_kind.is_some() {
+            crate::call::function::commit_function_metadata_change(
+                py,
+                pointer,
+                Field::BindKind.name().as_bytes(),
+                true,
+            );
+        } else {
+            crate::call::bind::refresh_function_requires_binder_flag(py, pointer);
+        }
         molt_cpython_abi::api::errors::with_preserved_error(|| {
             drop(retired);
             drop(removed);
@@ -499,6 +570,92 @@ unsafe fn native_callable_name(pointer: *mut u8) -> Option<Vec<u8>> {
     }
 }
 
+/// The explicit convention is stored with the callable, never recovered from
+/// its name, arity, or code address. Existing promotions leave this field alone.
+pub(crate) unsafe fn fixed_builtin_convention(
+    pointer: *mut u8,
+) -> Option<molt_cpython_abi::api::cfunction::CFunctionConvention> {
+    use molt_cpython_abi::api::cfunction::CFunctionConvention;
+    match unsafe { Field::BindKind.load(pointer) }.and_then(|bits| obj_from_bits(bits).as_int()) {
+        Some(BIND_KIND_FIXED_NOARGS) => Some(CFunctionConvention::NoArgs),
+        Some(BIND_KIND_FIXED_ONE_OBJECT) => Some(CFunctionConvention::OneObject),
+        _ => None,
+    }
+}
+
+/// CPython's _PyObject_FunctionStr module prefix belongs to diagnostic display,
+/// independently of __qualname__ and the executable convention. Read the native
+/// metadata owner and preserve Python string bytes through the exception writer.
+pub(crate) unsafe fn native_function_error_name(
+    py: &PyToken<'_>,
+    pointer: *mut u8,
+) -> Result<Vec<u8>, ()> {
+    unsafe {
+        let Some(qualified) = Field::QualName
+            .load(pointer)
+            .filter(|bits| !obj_from_bits(*bits).is_none())
+        else {
+            raise_exception::<()>(py, "AttributeError", "__qualname__");
+            return Err(());
+        };
+        let module = Field::Module
+            .load(pointer)
+            .filter(|bits| !obj_from_bits(*bits).is_none());
+        // CPython retires qualname, then module, after both %S conversions.
+        // Array elements drop in that same order, including error returns.
+        let _owners = [Some(qualified), module].map(|value| {
+            value.and_then(|bits| {
+                obj_from_bits(bits).as_ptr().map(|pointer| {
+                    inc_ref_bits(py, bits);
+                    crate::PtrDropGuard::preserving(pointer)
+                })
+            })
+        });
+        let mut prefix = None;
+        if let Some(module) = module {
+            let Some(builtins) = attr_name_bits_from_bytes(py, b"builtins") else {
+                return Err(());
+            };
+            let _builtins = crate::PtrDropGuard::preserving(ptr_from_bits(builtins));
+            let different = crate::molt_ne(module, builtins);
+            if exception_pending(py) {
+                return Err(());
+            }
+            let include_module = is_truthy(py, obj_from_bits(different));
+            dec_ref_bits(py, different);
+            if exception_pending(py) {
+                return Err(());
+            }
+            if include_module {
+                let string = crate::molt_str_from_obj(module);
+                if exception_pending(py) {
+                    return Err(());
+                }
+                prefix = crate::object::ops_format::string_obj_bytes(obj_from_bits(string));
+                dec_ref_bits(py, string);
+                if prefix.is_none() {
+                    return Err(());
+                }
+            }
+        }
+        // Public Python __qualname__ accepts Unicode subclasses before
+        // promotion. Honor their string protocol, as CPython's %S does.
+        let string = crate::molt_str_from_obj(qualified);
+        if exception_pending(py) {
+            return Err(());
+        }
+        let name = crate::object::ops_format::string_obj_bytes(obj_from_bits(string));
+        dec_ref_bits(py, string);
+        let Some(name) = name else {
+            return Err(());
+        };
+        Ok(match prefix {
+            Some(prefix) => [prefix.as_slice(), b".", &name].concat(),
+            None => name,
+        })
+    }
+}
+
 /// Error labels read actual class storage, never __name__/__class__ hooks.
 /// A failed foreign class inquiry remains the original native failure.
 unsafe fn descriptor_class_name(py: &PyToken<'_>, class: u64) -> Result<Vec<u8>, ()> {
@@ -526,11 +683,12 @@ unsafe fn descriptor_class_name(py: &PyToken<'_>, class: u64) -> Result<Vec<u8>,
             raise_exception::<()>(py, "SystemError", "native descriptor class has no name");
             return Err(());
         };
-        // CPython's diagnostic type labels use %.100s. Its UTF-8 C-string
-        // conversion replaces an incomplete character at the precision edge.
-        Ok(String::from_utf8_lossy(&bytes[..bytes.len().min(100)])
-            .into_owned()
-            .into_bytes())
+        // Native diagnostic labels share the target-version C-string
+        // precision rule with the C-API and Python protocol diagnostics.
+        Ok(
+            molt_cpython_abi::api::typeobj::native_name_bytes_with_precision(&bytes, 100)
+                .into_bytes(),
+        )
     }
 }
 

@@ -15,6 +15,11 @@ The builder invokes the standalone crate from its directory, with the pinned Rus
 compiler and installed `wasm32-unknown-unknown` target. Its `.cargo/config.toml`
 enables SIMD and exports `__heap_base`. There are no Cargo dependencies or Molt
 runtime builds in this lane.
+The crate declares its own `[workspace]` boundary. The repository's exclusion
+alone does not stop [Cargo's ancestor workspace discovery](https://doc.rust-lang.org/cargo/reference/workspaces.html#the-members-and-exclude-fields)
+when a landing checkout is nested inside another workspace. Lock validation
+and changed-package clippy admit every independent root before Cargo executes;
+ordinary members and excluded path-dependency helpers keep their existing owners.
 
 Cargo's complete successful JSON transcript selects the one `simd_ops` cdylib
 artifact by package, manifest and target identity. The builder reads Cargo's

@@ -64,6 +64,7 @@ pub(crate) mod platform;
 pub(crate) mod platform_mod;
 pub(crate) mod pprint_ext;
 pub(crate) mod punycode;
+pub(crate) mod pwd;
 pub(crate) mod select;
 pub(crate) mod shutil;
 pub(crate) mod signal_ext;
@@ -73,6 +74,7 @@ pub(crate) mod sqlite3;
 pub(crate) mod ssl;
 pub(crate) mod string_ext;
 pub(crate) mod strings;
+pub(crate) mod structseq;
 pub(crate) mod subprocess_ext;
 pub(crate) mod sys_ext;
 #[cfg(feature = "stdlib_fs_extra")]

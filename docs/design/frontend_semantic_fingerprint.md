@@ -78,9 +78,13 @@ frontend producer imports to a `_FrontendInputRole`. Paths are relative to
 | `REPORTING` | no | Diagnostics, progress, timings, input reports, failure text. |
 | `BUILD_ENVIRONMENT` | no | Request types, admission and refusal, host, process, path and toolchain facts. A value from it that reaches a frontend computation is a field of that record's key. |
 
-The keyed set is `frontend/`, `compiler_analysis/`, 38 files outside them (the
-frontend and module drivers, the record codecs, generated tables and semantic
-helpers) and the two reference sources: 152 files, 5.4 MB.
+The keyed set is `frontend/`, `compiler_analysis/`, the declared standalone
+producer sources (drivers, codecs, generated tables and semantic helpers), and
+the two reference sources. `builtin_callables.py` owns callable declarations
+outside the frontend package so ABI generators can read them without importing
+their own generated output. Both the full tooling identity and the semantic
+identity cover that source; generation validates it against the current raw
+manifest, while frontend consumers validate the generated ABI.
 
 **Why the excluded modules cannot change a record.** A record's content is a
 function of its keyed inputs and the producer code. The lowering context

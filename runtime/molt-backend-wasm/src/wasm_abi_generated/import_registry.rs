@@ -3962,6 +3962,34 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "struct_unpack_iterator_type",
     },
     RuntimeImportSpec {
+        import: WasmRuntimeImport::PwdModuleInit,
+        name: "pwd_module_init",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::PwdGetpwuid,
+        name: "pwd_getpwuid",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::PwdGetpwnam,
+        name: "pwd_getpwnam",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::PwdGetpwall,
+        name: "pwd_getpwall",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::StructseqType,
+        name: "structseq_type",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::StructseqNew,
+        name: "structseq_new",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::OsStatResultType,
+        name: "os_stat_result_type",
+    },
+    RuntimeImportSpec {
         import: WasmRuntimeImport::TypeCall,
         name: "type_call",
     },
@@ -7208,6 +7236,10 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::InspectSignatureData,
         name: "inspect_signature_data",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::FunctionSetFixedBuiltin,
+        name: "function_set_fixed_builtin",
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BuiltinClassLookup,
@@ -13212,6 +13244,20 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_contextvars_missing_repr" => Some(WasmRuntimeImport::ContextvarsMissingRepr),
         "struct_unpack_iterator_type" => Some(WasmRuntimeImport::StructUnpackIteratorType),
         "molt_struct_unpack_iterator_type" => Some(WasmRuntimeImport::StructUnpackIteratorType),
+        "pwd_module_init" => Some(WasmRuntimeImport::PwdModuleInit),
+        "molt_pwd_module_init" => Some(WasmRuntimeImport::PwdModuleInit),
+        "pwd_getpwuid" => Some(WasmRuntimeImport::PwdGetpwuid),
+        "molt_pwd_getpwuid" => Some(WasmRuntimeImport::PwdGetpwuid),
+        "pwd_getpwnam" => Some(WasmRuntimeImport::PwdGetpwnam),
+        "molt_pwd_getpwnam" => Some(WasmRuntimeImport::PwdGetpwnam),
+        "pwd_getpwall" => Some(WasmRuntimeImport::PwdGetpwall),
+        "molt_pwd_getpwall" => Some(WasmRuntimeImport::PwdGetpwall),
+        "structseq_type" => Some(WasmRuntimeImport::StructseqType),
+        "molt_structseq_type" => Some(WasmRuntimeImport::StructseqType),
+        "structseq_new" => Some(WasmRuntimeImport::StructseqNew),
+        "molt_structseq_new" => Some(WasmRuntimeImport::StructseqNew),
+        "os_stat_result_type" => Some(WasmRuntimeImport::OsStatResultType),
+        "molt_os_stat_result_type" => Some(WasmRuntimeImport::OsStatResultType),
         "type_call" => Some(WasmRuntimeImport::TypeCall),
         "molt_type_call" => Some(WasmRuntimeImport::TypeCall),
         "type_new" => Some(WasmRuntimeImport::TypeNew),
@@ -15180,6 +15226,8 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_inspect_getcoroutinestate" => Some(WasmRuntimeImport::InspectGetcoroutinestate),
         "inspect_signature_data" => Some(WasmRuntimeImport::InspectSignatureData),
         "molt_inspect_signature_data" => Some(WasmRuntimeImport::InspectSignatureData),
+        "function_set_fixed_builtin" => Some(WasmRuntimeImport::FunctionSetFixedBuiltin),
+        "molt_function_set_fixed_builtin" => Some(WasmRuntimeImport::FunctionSetFixedBuiltin),
         "builtin_class_lookup" => Some(WasmRuntimeImport::BuiltinClassLookup),
         "molt_builtin_class_lookup" => Some(WasmRuntimeImport::BuiltinClassLookup),
         "dataclasses_make_dataclass" => Some(WasmRuntimeImport::DataclassesMakeDataclass),

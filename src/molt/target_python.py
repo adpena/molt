@@ -126,8 +126,14 @@ def _parse_target_python_version(value: str | None) -> TargetPythonVersion:
     if value is None or not value.strip():
         return _DEFAULT_TARGET_PYTHON_VERSION
     raw = value.strip().lower()
-    if raw.startswith("py") and len(raw) == 5 and raw[2:].isdigit():
-        raw = f"{raw[2]}.{raw[3:]}"
+    if raw.startswith("py"):
+        matching = [
+            target for target in _SUPPORTED_TARGET_PYTHON_VERSIONS if target.tag == raw
+        ]
+        if len(matching) == 1:
+            raw = matching[0].short
+        elif matching:
+            raise ValueError(f"ambiguous Python target tag {value!r}; use major.minor")
     from packaging.version import InvalidVersion, Version
 
     try:
@@ -164,7 +170,9 @@ def resolve_target_python_for_oracle(
         else _parse_target_python_version(explicit)
     )
     if isinstance(explicit, str) and explicit != target.short:
-        raise ValueError("Molt target Python must use canonical 3.<minor> spelling")
+        raise ValueError(
+            "Molt target Python must use canonical <major>.<minor> spelling"
+        )
     if target.feature_version != oracle_version:
         raise ValueError(
             "Molt target Python does not match the CPython oracle: "

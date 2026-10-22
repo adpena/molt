@@ -261,7 +261,12 @@ impl ObjectBridge {
             return true;
         }
         let hooks = crate::hooks::hooks_or_stubs();
-        let len = unsafe { hooks.tuple_len(bits) };
+        let Some(len) =
+            unsafe { hooks.tuple_len(bits) }.checked_add(unsafe { (hooks.tuple_hidden_len)(bits) })
+        else {
+            unsafe { crate::api::errors::PyErr_NoMemory() };
+            return false;
+        };
         let mut staged: Vec<*mut PyObject> = Vec::new();
         if staged.try_reserve_exact(len).is_err() {
             unsafe { crate::api::errors::PyErr_NoMemory() };

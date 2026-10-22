@@ -1,6 +1,8 @@
 //! Sequence API — PyList_*, PyTuple_*.
 
-use crate::abi_types::{Py_ssize_t, PyListObject, PyObject, PyTupleObject};
+use crate::abi_types::{
+    Py_ssize_t, PyListObject, PyObject, PyStructSequence_Desc, PyTupleObject, PyTypeObject,
+};
 #[allow(unused_imports)]
 use crate::abi_types::{PyList_Type, PyTuple_Type};
 use crate::bridge::{GLOBAL_BRIDGE, RuntimeValue};
@@ -900,7 +902,7 @@ pub unsafe extern "C" fn PyTuple_SetItem(
     i: Py_ssize_t,
     v: *mut PyObject,
 ) -> c_int {
-    unsafe { tuple_set_item(op, i, v, true) }
+    unsafe { tuple_set_item(op, i, v, true, false) }
 }
 
 /// Unsafe tuple initialization has no ownership check and never releases a
@@ -912,7 +914,7 @@ pub unsafe extern "C" fn PyTuple_SET_ITEM(op: *mut PyObject, i: Py_ssize_t, v: *
         return;
     }
     unsafe { crate::api::refcount::Py_XINCREF(old) };
-    if unsafe { tuple_set_item(op, i, v, false) } < 0 {
+    if unsafe { tuple_set_item(op, i, v, false, false) } < 0 {
         unsafe { crate::api::refcount::Py_XDECREF(old) };
     }
 }
@@ -922,6 +924,7 @@ unsafe fn tuple_set_item(
     i: Py_ssize_t,
     v: *mut PyObject,
     check_unique: bool,
+    complete_storage: bool,
 ) -> c_int {
     if op.is_null() {
         unsafe {
@@ -1011,7 +1014,15 @@ unsafe fn tuple_set_item(
         .map_or(MoltObject::none().bits(), RuntimeValue::bits);
     let is_tuple =
         unsafe { h.classify_heap(tuple_bits) } == crate::abi_types::MoltTypeTag::Tuple as u8;
-    let in_bounds = i >= 0 && is_tuple && (i as usize) < unsafe { h.tuple_len(tuple_bits) };
+    let visible = unsafe { h.tuple_len(tuple_bits) };
+    let extent = if complete_storage {
+        visible
+            .checked_add(unsafe { (h.tuple_hidden_len)(tuple_bits) })
+            .unwrap_or(0)
+    } else {
+        visible
+    };
+    let in_bounds = i >= 0 && is_tuple && (i as usize) < extent;
     if !in_bounds {
         drop(value);
         unsafe {
@@ -1979,4 +1990,137 @@ pub unsafe extern "C" fn PyList_Insert(
         return -1;
     }
     0
+}
+
+// Native struct-sequence API. The runtime's sealed class specification owns
+// semantics; the existing tuple projection owns all visible and hidden C edges.
+#[unsafe(no_mangle)]
+pub static mut PyStructSequence_UnnamedField: *const std::os::raw::c_char =
+    c"unnamed field".as_ptr();
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyStructSequence_NewType(
+    desc: *mut PyStructSequence_Desc,
+) -> *mut PyTypeObject {
+    let _gil = crate::hooks::RuntimeGilGuard::ensure();
+    unsafe {
+        let result =
+            crate::api::refcount::OwnedPyObject::from_owned(GLOBAL_BRIDGE.owned_result_to_pyobj(
+                (hooks_or_stubs().structseq_type_new)(desc, ptr::null_mut()),
+            ));
+        if result.as_ptr().is_null() {
+            return ptr::null_mut();
+        }
+        if !std::ffi::CStr::from_ptr((*desc).name)
+            .to_bytes()
+            .contains(&b'.')
+            && crate::api::typeobj::warn_missing_type_module((*desc).name) < 0
+        {
+            return ptr::null_mut();
+        }
+        result.into_ptr().cast()
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyStructSequence_InitType2(
+    ty: *mut PyTypeObject,
+    desc: *mut PyStructSequence_Desc,
+) -> c_int {
+    let _gil = crate::hooks::RuntimeGilGuard::ensure();
+    if ty.is_null() || desc.is_null() {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return -1;
+    }
+    let result = unsafe {
+        GLOBAL_BRIDGE.owned_result_to_pyobj((hooks_or_stubs().structseq_type_new)(desc, ty))
+    };
+    if result.is_null() {
+        return -1;
+    }
+    // InitType2 owns the extra type reference prescribed by CPython. The
+    // existing static binding independently anchors its managed class.
+    if result != ty.cast() {
+        unsafe {
+            crate::api::refcount::Py_DECREF(result);
+            crate::api::errors::PyErr_BadInternalCall();
+        }
+        return -1;
+    }
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyStructSequence_InitType(
+    ty: *mut PyTypeObject,
+    desc: *mut PyStructSequence_Desc,
+) {
+    unsafe {
+        PyStructSequence_InitType2(ty, desc);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyStructSequence_New(ty: *mut PyTypeObject) -> *mut PyObject {
+    let _gil = crate::hooks::RuntimeGilGuard::ensure();
+    let Some(class) = GLOBAL_BRIDGE.molt_handle_for_pyobj(ty.cast()) else {
+        unsafe {
+            crate::api::errors::PyErr_BadInternalCall();
+        }
+        return ptr::null_mut();
+    };
+    unsafe { GLOBAL_BRIDGE.owned_result_to_pyobj((hooks_or_stubs().structseq_new)(class.bits())) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyStructSequence_GetItem(
+    object: *mut PyObject,
+    index: Py_ssize_t,
+) -> *mut PyObject {
+    if index < 0 || unsafe { PyTuple_Check(object) } == 0 {
+        unsafe {
+            crate::api::errors::PyErr_BadInternalCall();
+        }
+        return ptr::null_mut();
+    }
+    if let Some(bits) = GLOBAL_BRIDGE.molt_handle_for_pyobj(object)
+        && let Some(item) = GLOBAL_BRIDGE.tuple_view_item_pointer(bits.bits(), index as usize)
+    {
+        return item;
+    }
+    unsafe {
+        crate::api::errors::PyErr_BadInternalCall();
+    }
+    ptr::null_mut()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyStructSequence_SetItem(
+    object: *mut PyObject,
+    index: Py_ssize_t,
+    value: *mut PyObject,
+) {
+    // As with PyTuple_SET_ITEM, a caller overwriting an initialized slot owns
+    // the displaced-reference leak. Keep the same transaction and compensation.
+    let old = if index >= 0 {
+        GLOBAL_BRIDGE
+            .molt_handle_for_pyobj(object)
+            .and_then(|bits| GLOBAL_BRIDGE.tuple_view_item_pointer(bits.bits(), index as usize))
+    } else {
+        None
+    };
+    let Some(old) = old else {
+        unsafe {
+            crate::api::refcount::Py_XDECREF(value);
+            crate::api::errors::PyErr_BadInternalCall();
+        }
+        return;
+    };
+    if old.is_null() && value.is_null() {
+        return;
+    }
+    unsafe { crate::api::refcount::Py_XINCREF(old) };
+    if unsafe { tuple_set_item(object, index, value, false, true) } < 0 {
+        unsafe { crate::api::refcount::Py_XDECREF(old) };
+    }
 }

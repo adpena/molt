@@ -38,12 +38,13 @@ pub(crate) enum CompatibilityError<'a> {
 impl CompatibilityError<'_> {
     fn message(self, py: &PyToken<'_>) -> Result<String, &'static str> {
         let target = crate::object::ops_sys::runtime_target_python_info(runtime_state(py));
-        let supported_minor = match &self {
-            Self::RawIoBaseReadinto => matches!(target.minor, 12..=15),
-            Self::LoggingHandlerEmit => matches!(target.minor, 12..=15),
-            _ => matches!(target.minor, 12..=14),
+        let target_version = (target.major, target.minor);
+        let supported = match &self {
+            Self::RawIoBaseReadinto => matches!(target_version, (3, 12..=15)),
+            Self::LoggingHandlerEmit => matches!(target_version, (3, 12..=15)),
+            _ => matches!(target_version, (3, 12..=14)),
         };
-        if target.major != 3 || !supported_minor {
+        if !supported {
             return Err("unsupported compatibility-error target");
         }
         let message = match self {
@@ -81,7 +82,7 @@ impl CompatibilityError<'_> {
                     "multi-dimensional slicing is not implemented".to_owned()
                 }
             }
-            Self::MemoryviewLookup { rank } if rank > 1 && target.minor == 14 => {
+            Self::MemoryviewLookup { rank } if rank > 1 && matches!(target_version, (3, 14)) => {
                 "multi-dimensional lookup is not implemented".to_owned()
             }
             Self::MemoryviewFormatSyntax { format }
@@ -161,6 +162,36 @@ mod tests {
                         Ok("emit must be implemented by Handler subclasses")
                     );
                 });
+            }
+            // Synthetic projection tests identity only, never target admission.
+            for (coordinate, expected) in [((4, 0), true), ((3, 0), false)] {
+                assert_eq!(matches!(coordinate, (4, 0)), expected);
+            }
+            for (major, minor) in [(3, 0), (4, 0), (4, 14)] {
+                transaction.with_target_python(
+                    py,
+                    Some(crate::state::runtime_state::PythonVersionInfo {
+                        major,
+                        minor,
+                        micro: 0,
+                        releaselevel: "final".to_string(),
+                        serial: 0,
+                    }),
+                    || {
+                        assert_eq!(
+                            CompatibilityError::RawIoBaseReadinto.message(py),
+                            Err("unsupported compatibility-error target")
+                        );
+                        assert_eq!(
+                            CompatibilityError::CounterFromkeys.message(py),
+                            Err("unsupported compatibility-error target")
+                        );
+                        assert_eq!(
+                            CompatibilityError::MemoryviewLookup { rank: 2 }.message(py),
+                            Err("unsupported compatibility-error target")
+                        );
+                    },
+                );
             }
             for minor in [11, 16] {
                 transaction.with_target_python_minor(py, minor, || {

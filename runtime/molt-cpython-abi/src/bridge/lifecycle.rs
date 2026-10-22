@@ -1550,6 +1550,7 @@ mod handle_tests {
         let type_view = ManagedView::Type {
             object: ManagedTypeAllocation::new(type_object),
             _name: std::ffi::CString::new("retiring.Type").unwrap(),
+            structseq: None,
         };
         let type_ptr = type_view.py_obj();
         let type_addr = type_ptr.addr();

@@ -8,6 +8,7 @@ detection shared by import, call, class, expression, and pattern visitors.
 
 from __future__ import annotations
 
+from molt.builtin_callables import BUILTIN_FUNC_SPECS
 from molt.opcode_literal_payloads import integer_literal_bytes
 
 import ast
@@ -18,7 +19,6 @@ from molt.frontend._types import (
     _INLINE_INT_MAX,
     _INLINE_INT_MIN,
     BUILTIN_EXCEPTION_NAMES,
-    BUILTIN_FUNC_SPECS,
     BUILTIN_TYPE_TAGS,
     MoltOp,
     MoltValue,

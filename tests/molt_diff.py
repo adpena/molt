@@ -2729,6 +2729,7 @@ def _run_molt(
             build_only=build_only,
         )
     )
+    budget = budget.for_backend("native", build_only=build_only)
     environment = (
         dict(execution_context.environment)
         if execution_context is not None
@@ -2899,7 +2900,7 @@ def _run_molt_owned(
             status="build_invalid_stdlib_profile",
         )
         return compat_backends.BackendResult(None, str(exc), 2, build_failed=True)
-    timeout = budget.policy.phase("native", "run")
+    timeout = budget.policy.phase("native", "first_run")
     build_timeout = budget.policy.phase("native", "build")
     rss_limit_kb = _diff_fail_rss_kb()
     build_rc = 0
@@ -3411,6 +3412,7 @@ def _run_backend_for_diff(
     context: compat_backends.BackendExecutionContext,
 ) -> compat_backends.BackendResult | compat_backends.BackendAvailability:
     """Keep the adapter's complete outcome, including resource failure facts."""
+    context = replace(context, budget=context.budget.for_backend(backend))
     if context.budget.expired():
         return context.budget.exhausted_result(build_failed=True)
     try:

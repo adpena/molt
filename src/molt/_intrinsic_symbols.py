@@ -1198,6 +1198,7 @@ INTRINSIC_SIGNATURES: dict[str, tuple[str, int]] = {
     "molt_types_cell_contents_set": ("molt_types_cell_contents_set", 3),
     "molt_types_cell_contents_delete": ("molt_types_cell_contents_delete", 2),
     "molt_function_set_builtin": ("molt_function_set_builtin", 1),
+    "molt_function_set_fixed_builtin": ("molt_function_set_fixed_builtin", 2),
     "molt_function_set_defaults": ("molt_function_set_defaults", 3),
     "molt_function_defaults_version": ("molt_function_defaults_version", 1),
     "molt_builtin_class_lookup": ("molt_builtin_class_lookup", 1),
@@ -2306,6 +2307,13 @@ INTRINSIC_SIGNATURES: dict[str, tuple[str, int]] = {
     "molt_contextvars_var_repr": ("molt_contextvars_var_repr", 1),
     "molt_contextvars_token_repr": ("molt_contextvars_token_repr", 1),
     "molt_contextvars_missing_repr": ("molt_contextvars_missing_repr", 1),
+    "molt_structseq_type": ("molt_structseq_type", 8),
+    "molt_structseq_new": ("molt_structseq_new", 2),
+    "molt_pwd_module_init": ("molt_pwd_module_init", 0),
+    "molt_pwd_getpwuid": ("molt_pwd_getpwuid", 2),
+    "molt_pwd_getpwnam": ("molt_pwd_getpwnam", 2),
+    "molt_pwd_getpwall": ("molt_pwd_getpwall", 1),
+    "molt_os_stat_result_type": ("molt_os_stat_result_type", 0),
 }
 
 

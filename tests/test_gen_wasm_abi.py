@@ -4,6 +4,7 @@ import copy
 import importlib
 import json
 import re
+import sys
 import tomllib
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from tools.wasm_abi_gen.paths import (
     OUT_RUNTIME_CALLABLE_ABI_RS,
     OUT_RUNTIME_CALLABLES_RS,
 )
+from tests.process_guard_common import run_guarded_test_process
 
 ROOT = Path(__file__).resolve().parents[1]
 _MANIFEST_CACHE: dict | None = None
@@ -27,6 +29,81 @@ _RENDERED_RUNTIME_CALLABLES_CACHE: str | None = None
 _RENDERED_PY_CACHE: str | None = None
 _RENDERED_TABLE_LAYOUT_INC_CACHE: str | None = None
 _RENDERED_ALLOWED_IMPORTS_CACHE: str | None = None
+
+
+@pytest.mark.parametrize("projection_state", ["absent", "invalid"])
+def test_fresh_wasm_abi_generation_does_not_consume_its_python_projection(
+    tmp_path: Path, projection_state: str
+) -> None:
+    # Give a fresh import process an actually absent or invalid output at the
+    # generated module boundary. A source declaration must never import it.
+    projection = tmp_path / "_wasm_abi_generated.py"
+    if projection_state == "invalid":
+        projection.write_text("<<<<<<< invalid generated output\n", encoding="utf-8")
+    result = run_guarded_test_process(
+        [
+            sys.executable,
+            "-c",
+            """
+import ast
+import importlib.abc
+import importlib.util
+import json
+import sys
+from pathlib import Path
+
+projection = Path(sys.argv[1])
+class GeneratedProjection(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == 'molt._wasm_abi_generated':
+            if not projection.exists():
+                raise ModuleNotFoundError(fullname)
+            return importlib.util.spec_from_file_location(fullname, projection)
+        return None
+sys.meta_path.insert(0, GeneratedProjection())
+from tools import gen_wasm_abi as gen
+gen.WASM_ABI_GEN_CACHE = projection.parent / 'empty-render-cache'
+assert not gen.WASM_ABI_GEN_CACHE.exists()
+outputs = gen.generated_outputs()
+ast.parse(outputs[gen.OUT_PY])
+assert not any(name == 'molt.frontend' or name.startswith('molt.frontend.') for name in sys.modules)
+assert 'molt._wasm_abi_generated' not in sys.modules
+print(json.dumps({'outputs': len(outputs), 'python_bytes': len(outputs[gen.OUT_PY])}))
+""",
+            str(projection),
+        ],
+        cwd=ROOT,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.descendants_closed
+    rendered = json.loads(result.stdout)
+    assert rendered["outputs"] == len(gen_wasm_abi.OUTPUT_PATHS)
+    assert rendered["python_bytes"] > 0
+
+
+def test_builtin_callable_defaults_share_one_declarative_missing_value() -> None:
+    from molt.builtin_callables import (
+        BUILTIN_FUNC_SPECS,
+        _MOLT_MISSING,
+        builtin_func_declared_arity,
+    )
+
+    for name in ("enumerate", "round", "dir", "next", "anext", "getattr", "vars"):
+        assert BUILTIN_FUNC_SPECS[name].defaults[-1] is _MOLT_MISSING
+    assert BUILTIN_FUNC_SPECS["__import__"].defaults[0] is _MOLT_MISSING
+    for name in ("min", "max"):
+        assert BUILTIN_FUNC_SPECS[name].kw_defaults[1] is _MOLT_MISSING
+    for name, arity in (("len", 1), ("pow", 3), ("next", 2), ("print", 5)):
+        assert builtin_func_declared_arity(BUILTIN_FUNC_SPECS[name]) == arity
+
+
+def test_builtin_callable_arity_is_checked_against_the_current_raw_manifest() -> None:
+    data = copy.deepcopy(gen_wasm_abi.load_manifest())
+    entry = next(row for row in data["import"] if row.get("runtime_name") == "molt_len")
+    entry["callable_arity"] = 2
+    with pytest.raises(ValueError, match="builtin function 'len' arity drift"):
+        gen_wasm_abi._python_builtin_global_callables(data)
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -50,7 +127,8 @@ def test_wasm_abi_generator_cache_identity_uses_runtime_abi_surface() -> None:
     assert OUT_RUNTIME_CALLABLES_RS.resolve() not in input_files
     assert OUT_RUNTIME_BOXED_ABI_RS.resolve() not in input_files
     assert OUT_RUNTIME_CALLABLE_ABI_RS.resolve() not in input_files
-    assert (ROOT / "src/molt/frontend/_types.py").resolve() in input_files
+    assert (ROOT / "src/molt/builtin_callables.py").resolve() in input_files
+    assert (ROOT / "src/molt/frontend/_types.py").resolve() not in input_files
     assert not any(
         path.match("runtime/molt-runtime/src/call/function.rs") for path in input_files
     )
