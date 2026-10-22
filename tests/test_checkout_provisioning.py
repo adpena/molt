@@ -221,6 +221,87 @@ def test_a_caller_choice_reaches_the_provisioner_explicitly(
     assert recorded == (caller or "tool default")
 
 
+@pytest.mark.parametrize(
+    ("caller_device", "artifact_device", "artifact_exists", "expected"),
+    [
+        (1, 2, True, "caller"),  # the caller's store shares the tree's volume
+        (2, 1, True, "artifact"),  # another volume: dx's same-volume store
+        (2, 2, True, "caller"),  # neither shares it: the tool copies
+        (2, 1, False, "caller"),  # a store that does not exist is cold
+    ],
+)
+def test_a_store_on_another_volume_yields_to_one_on_the_trees_volume(
+    checkout: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caller_device: int,
+    artifact_device: int,
+    artifact_exists: bool,
+    expected: str,
+) -> None:
+    stores = {
+        "caller": checkout / "caller-store",
+        "artifact": checkout / "artifact-store",
+    }
+    stores["caller"].mkdir()
+    if artifact_exists:
+        stores["artifact"].mkdir()
+    devices = {stores["caller"]: caller_device, stores["artifact"]: artifact_device}
+    # The tree, and everything else, sits on device 1.
+    monkeypatch.setattr(cp, "_device_of", lambda path: devices.get(path, 1))
+    monkeypatch.setattr(
+        cp,
+        "_dx_choice",
+        lambda variable, spec: (
+            stores["artifact"] if variable == "FIXTURE_TOOL_CACHE" else None
+        ),
+    )
+    (checkout / "record.py").write_text(
+        "import os\nfrom pathlib import Path\n"
+        "Path('tree').mkdir(exist_ok=True)\n"
+        "Path('tree/ready').write_text(os.environ['FIXTURE_TOOL_CACHE'])\n",
+        encoding="utf-8",
+    )
+    spec = _tree(checkout)
+    spec = dataclasses.replace(
+        spec,
+        arguments=("record.py",),
+        environment=spec.environment.updated(
+            {"FIXTURE_TOOL_CACHE": str(stores["caller"])}
+        ),
+        same_volume_choices=("FIXTURE_TOOL_CACHE",),
+    )
+    assert cp.ensure_input(spec).provisioned
+    recorded = (checkout / "tree" / "ready").read_text(encoding="utf-8")
+    assert recorded == str(stores[expected])
+
+
+@pytest.mark.parametrize(
+    ("dx_config", "expected"),
+    [
+        ("", ".uv-cache"),  # dx's default: the cache under its artifact root
+        (
+            '[tool.molt.dx.env]\nUV_CACHE_DIR = "{artifact_root}/shared-uv"\n',
+            "shared-uv",
+        ),  # the checkout's own dx configuration
+    ],
+)
+def test_the_same_volume_store_is_the_one_dx_chooses(
+    checkout: Path, dx_config: str, expected: str
+) -> None:
+    ext_root = (checkout.parent / "artifacts").resolve()
+    ext_root.mkdir()
+    (checkout / "pyproject.toml").write_text(dx_config, encoding="utf-8")
+    spec = cp.checkout_input("uv-environment", checkout)
+    spec = dataclasses.replace(
+        spec,
+        environment=spec.environment.updated(
+            {"MOLT_EXT_ROOT": str(ext_root), "UV_CACHE_DIR": "/caller/uv-cache"}
+        ),
+    )
+    # The caller's own value is what is being replaced, so dx never sees it.
+    assert cp._dx_choice("UV_CACHE_DIR", spec) == ext_root / expected
+
+
 def test_ensure_all_reports_every_failure_and_keeps_each_success(
     checkout: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

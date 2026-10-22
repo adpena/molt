@@ -32,6 +32,7 @@ from types import ModuleType
 from molt.process_environment import ProcessEnvironment
 from molt import process_guard
 from tools.git_identity import require_git_object_id
+from tools import molt_dev_common
 from tools.molt_dev_common import _COMMANDS, EXIT_USAGE, DriverError, _say, _warn
 from tools.release.git_source_snapshot import immutable_git_environment
 from tools.venv_exec import venv_python
@@ -48,8 +49,6 @@ STAGING_PREFIX = ".staging-"
 # IDLE_S without use, which outlasts any landing that could still run it.
 KEEP = 4
 IDLE_S = 24 * 3600
-_ARCHIVE_TIMEOUT_S = 300.0
-_SYNC_TIMEOUT_S = 900.0
 
 
 @dataclass(frozen=True)
@@ -73,13 +72,9 @@ def _git_environment() -> ProcessEnvironment:
 
 
 def _git_bytes(repo: Path, *args: str) -> bytes:
-    # Bounded plumbing, run directly as _run_fast_captured_command does.
-    proc = _COMMANDS.run(
-        ["git", "-C", str(repo), *args],
-        cwd=repo,
-        env=_git_environment(),
-        capture_output=True,
-        timeout=_ARCHIVE_TIMEOUT_S,
+    # Local plumbing: no wall-clock deadline, through the driver's one runner.
+    proc = molt_dev_common._run_fast_captured_bytes(
+        ["git", "-C", str(repo), *args], cwd=repo, env=_git_environment()
     )
     if proc.returncode != 0:
         detail = os.fsdecode(proc.stderr).strip()
@@ -200,8 +195,9 @@ def _sync_environment(root: Path) -> None:
         env=env,
         capture_output=True,
         text=True,
+        # No wall-clock deadline: uv bounds its downloads by read inactivity
+        # (UV_HTTP_TIMEOUT); installing from its cache is local work.
         encoding="utf-8",
-        timeout=_SYNC_TIMEOUT_S,
     )
     if proc.returncode != 0:
         raise DriverError(

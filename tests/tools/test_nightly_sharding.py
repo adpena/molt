@@ -11,7 +11,7 @@ import subprocess
 
 import pytest
 
-from tests.process_guard_common import run_guarded_test_process
+from tests.process_guard_common import HUNG_CHILD_SOURCE, run_guarded_test_process
 
 from tools import nightly_shard_profile, nightly_sharding
 
@@ -644,13 +644,13 @@ def test_killed_differential_shard_keeps_the_items_it_finished(
     tmp_path: Path,
 ) -> None:
     # The child appends each finished test to the result log, as molt_diff
-    # does, then hangs past the shard deadline.
+    # does, then hangs until the shard deadline kills it.
     root = _differential_repo(tmp_path)
     plan = _plan(root)
     entries = nightly_sharding.shard_entries(plan, "differential", 0)
     assert len(entries) >= 3
     script = (
-        "import json, os, sys, time\n"
+        "import json, os, sys\n"
         "entries = open(sys.argv[1], encoding='utf-8').read().split()\n"
         "rows = [\n"
         " {'record_type': 'test', 'file': entries[0], 'raw_status': 'pass',\n"
@@ -662,8 +662,7 @@ def test_killed_differential_shard_keeps_the_items_it_finished(
         "]\n"
         "with open(os.environ['MOLT_DIFF_RESULTS_JSONL'], 'a', encoding='utf-8') as log:\n"
         "    log.write(''.join(json.dumps(row) + '\\n' for row in rows))\n"
-        "time.sleep(60)\n"
-    )
+    ) + HUNG_CHILD_SOURCE
     evidence = tmp_path / "evidence"
     raw = nightly_sharding.run_shard(
         plan,
@@ -715,13 +714,13 @@ def test_killed_regrtest_shard_keeps_finished_and_refused_tests(
     tmp_path: Path,
 ) -> None:
     # The worker appends one row per test, including a test it refused at
-    # admission; then the run hangs past the shard deadline.
+    # admission; then the run hangs until the shard deadline kills it.
     root = _regrtest_repo(tmp_path)
     plan = _plan(root)
     entries = nightly_sharding.shard_entries(plan, "regrtest", 0)
     assert len(entries) >= 3
     script = (
-        "import json, sys, time\n"
+        "import json, sys\n"
         "entries = open(sys.argv[1], encoding='utf-8').read().split()\n"
         "rows = [\n"
         " {'test': entries[0], 'state': 'PASSED', 'duration_s': 0.5,\n"
@@ -733,8 +732,7 @@ def test_killed_regrtest_shard_keeps_finished_and_refused_tests(
         "]\n"
         "with open(sys.argv[2], 'a', encoding='utf-8') as log:\n"
         "    log.write(''.join(json.dumps(row) + '\\n' for row in rows))\n"
-        "time.sleep(60)\n"
-    )
+    ) + HUNG_CHILD_SOURCE
     evidence = tmp_path / "evidence"
     artifact_root = evidence / "artifact-tree"
     _write(artifact_root / "regrtest.log", "partial\n")

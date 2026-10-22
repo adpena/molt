@@ -174,6 +174,7 @@ from tools.molt_dev_common import (  # noqa: E402
     PublicationRace,
     RebaseConflict,
     _fail,
+    _run_fast_captured_bytes,
     _run_fast_captured_command,
     _ok,
     _run_captured_gate,
@@ -885,12 +886,10 @@ class Marker:
 
 def _git_common_directory(repo: Path) -> Path | None:
     """Resolve the shared Git namespace once, including linked worktrees."""
-    proc = _run_driver_command_bytes(
+    proc = _run_fast_captured_bytes(
         ["git", "rev-parse", "--git-common-dir"],
         cwd=repo,
         env=ProcessEnvironment(immutable_git_environment(os.environ)),
-        timeout=30.0,
-        prefix="MOLT_DEV",
     )
     if proc.returncode != 0:
         return None

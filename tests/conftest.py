@@ -292,6 +292,21 @@ def _native_fixture_donor(tmp_path_factory: pytest.TempPathFactory) -> Iterator[
 
 
 @pytest.fixture(scope="session")
+def driver_seed(tmp_path_factory: pytest.TempPathFactory, worker_id: str) -> Path:
+    """This working tree's driver files, copied once per session; clone from it.
+
+    Fixture repositories that land through the real driver
+    (tests/integration_driver_fixture.py) take their ``tools`` and ``src/molt``
+    from here: one copy across volumes per session, then block-sharing clones.
+    """
+    from tests.integration_driver_fixture import copy_driver_trees, shared_session_tree
+
+    return shared_session_tree(
+        tmp_path_factory, worker_id, "driver-seed", copy_driver_trees
+    )
+
+
+@pytest.fixture(scope="session")
 def native_fixture_donor(_native_fixture_donor: None) -> Path:
     """Build before a requesting test runs: its body may forbid child launches."""
     from tests.executable_test_support import native_executable_donor

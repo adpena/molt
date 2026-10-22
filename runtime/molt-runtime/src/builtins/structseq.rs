@@ -259,12 +259,11 @@ pub(crate) fn from_values(py: &PyToken<'_>, class: u64, fields: &[u64]) -> u64 {
     }
     let class = obj_from_bits(class).as_ptr().unwrap();
     unsafe {
-        for index in spec.visible..fields.len() {
+        for (index, &value) in fields.iter().enumerate().skip(spec.visible) {
             let offset = hidden_offset(py, class, index - spec.visible);
             let slot = crate::object::native_instance::field_base(ptr)
                 .add(offset)
                 .cast::<u64>();
-            let value = fields[index];
             inc_ref_bits(py, value);
             let old = slot.replace(value);
             // Fresh fields hold the canonical immortal missing value.

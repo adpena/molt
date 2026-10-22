@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -14,7 +15,13 @@ from molt.process_environment import (
     ProcessEnvironment,
     ProcessEnvironmentBuilder,
 )
-from tests.process_guard_common import install_module_view, run_custody_subject_process
+from tests.process_guard_common import (
+    HUNG_CHILD_SOURCE,
+    install_module_view,
+    run_custody_subject_process,
+    run_guarded_test_process,
+)
+from tools import git_transfer
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -210,6 +217,364 @@ def test_read_only_git_classifier_sees_through_inert_global_options() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        (["git", "fetch", "origin"], ("fetch", 1, None)),
+        (["git", "-C", "repo", "-c", "a.b=c", "push", "o"], ("push", 5, "repo")),
+        (["git", "--no-pager", "ls-remote", "url"], ("ls-remote", 2, None)),
+        (["git", "remote", "update"], ("remote", 1, None)),
+        (["git", "submodule", "update", "--init"], ("submodule", 1, None)),
+        (["git", "remote", "-v"], None),
+        (["git", "config", "--get", "core.sshCommand"], None),
+        (["git", "-C", "repo"], None),
+        (["gitk", "fetch"], None),
+    ],
+)
+def test_git_transfer_names_the_commands_that_talk_to_a_remote(command, expected):
+    transfer = git_transfer.git_transfer(command)
+    assert (
+        None
+        if transfer is None
+        else (transfer.subcommand, transfer.index, transfer.repository)
+    ) == expected
+    if transfer is not None:
+        # The guard applies the transfer bound; a probe would bypass it.
+        assert not command_execution._is_bounded_metadata_probe(command)
+
+
+@pytest.mark.parametrize(
+    ("environment", "settings", "expected"),
+    [
+        ({}, git_transfer.TransportSettings(), ("1", "120")),
+        # A tighter user value stays: a higher limit, a shorter time.
+        (
+            {"GIT_HTTP_LOW_SPEED_LIMIT": "1000", "GIT_HTTP_LOW_SPEED_TIME": "10"},
+            git_transfer.TransportSettings(low_speed_limit=1, low_speed_time=600),
+            ("1000", "10"),
+        ),
+        # The environment outranks configuration, as in Git's http.c.
+        (
+            {"GIT_HTTP_LOW_SPEED_TIME": "600"},
+            git_transfer.TransportSettings(low_speed_limit=500, low_speed_time=5),
+            ("1", "120"),
+        ),
+        (
+            {},
+            git_transfer.TransportSettings(low_speed_limit=500, low_speed_time=5),
+            ("500", "5"),
+        ),
+        # Zero turns curl's bound off; the transfer bound takes its place.
+        (
+            {"GIT_HTTP_LOW_SPEED_LIMIT": "0", "GIT_HTTP_LOW_SPEED_TIME": "0"},
+            git_transfer.TransportSettings(),
+            ("1", "120"),
+        ),
+    ],
+)
+def test_git_transfer_http_bound_keeps_a_tighter_user_value(
+    tmp_path, environment, settings, expected
+):
+    command = ["git", "fetch", "origin"]
+    bounded = git_transfer.bound_transfer(
+        command,
+        git_transfer.git_transfer(command),
+        environment,
+        settings=settings,
+        attended=True,
+        ssh_wrapper=tmp_path / "wrapper.sh",
+    )
+    assert _low_speed_git_reads(bounded.env) == expected
+
+
+def _configured(env) -> dict[str, str]:
+    """The ``git -c`` settings an environment carries, last value per key."""
+    return {
+        env[f"GIT_CONFIG_KEY_{index}"]: env[f"GIT_CONFIG_VALUE_{index}"]
+        for index in range(int(env.get("GIT_CONFIG_COUNT", "0")))
+    }
+
+
+def _low_speed_git_reads(env) -> tuple[str, str]:
+    # Git's http.c reads the environment before any configuration.
+    if "GIT_HTTP_LOW_SPEED_LIMIT" in env:
+        return env["GIT_HTTP_LOW_SPEED_LIMIT"], env["GIT_HTTP_LOW_SPEED_TIME"]
+    configured = _configured(env)
+    return configured["http.lowSpeedLimit"], configured["http.lowSpeedTime"]
+
+
+def test_unattended_git_transfer_never_prompts_and_ends_on_silence(tmp_path):
+    command = ["git", "-C", "repo", "fetch", "--quiet", "origin"]
+    inherited = {
+        "GIT_ASKPASS": "/opt/gui-askpass",
+        "SSH_ASKPASS": "/opt/gui-askpass",
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "user.name",
+        "GIT_CONFIG_VALUE_0": "Molt Dev",
+    }
+    transfer = git_transfer.git_transfer(command)
+    unattended = git_transfer.bound_transfer(
+        command,
+        transfer,
+        inherited,
+        settings=git_transfer.TransportSettings(),
+        attended=False,
+        ssh_wrapper=tmp_path / "wrapper.sh",
+    )
+    assert unattended.argv == [*command[:4], "--progress", *command[4:]]
+    assert unattended.no_output_timeout == git_transfer.TRANSFER_STALL_SECONDS
+    env = unattended.env
+    assert (env["GIT_ASKPASS"], env["SSH_ASKPASS"]) == ("", "")
+    assert env["SSH_ASKPASS_REQUIRE"] == "never"
+    assert env["GIT_TERMINAL_PROMPT"] == "0"
+    assert env["GCM_INTERACTIVE"] == "never"
+    assert _configured(env) == {
+        "user.name": "Molt Dev",
+        "http.lowSpeedLimit": "1",
+        "http.lowSpeedTime": "120",
+        "credential.interactive": "false",
+        "ssh.variant": "ssh",
+    }
+
+    attended = git_transfer.bound_transfer(
+        command,
+        transfer,
+        inherited,
+        settings=git_transfer.TransportSettings(),
+        attended=True,
+        ssh_wrapper=tmp_path / "wrapper.sh",
+    )
+    # A person at a terminal may answer: prompts stay, and nothing watches
+    # the output.
+    assert attended.argv == command
+    assert attended.no_output_timeout is None
+    assert attended.env["GIT_ASKPASS"] == "/opt/gui-askpass"
+    assert "GCM_INTERACTIVE" not in attended.env
+
+
+_SSH = shutil.which("ssh")
+
+
+def _effective_ssh(env, home: Path) -> dict[str, str]:
+    """What ssh would use, run the way Git runs GIT_SSH_COMMAND (``ssh -G``)."""
+    command = env["GIT_SSH_COMMAND"]
+    result = run_guarded_test_process(
+        ["sh", "-c", f'{command} "$@"', command, "-G", "example.invalid"],
+        env={**env, "HOME": str(home), "PATH": os.environ["PATH"]},
+    )
+    assert result.returncode == 0, result.stderr
+    effective: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        key, _, value = line.partition(" ")
+        if key == "identityfile":
+            effective[key] = "\n".join(filter(None, [effective.get(key), value]))
+        effective.setdefault(key, value)
+    return effective
+
+
+@pytest.mark.skipif(_SSH is None or os.name == "nt", reason="needs OpenSSH and sh")
+@pytest.mark.parametrize(
+    ("config", "user", "attended", "expected"),
+    [
+        # Nothing set: every bound applies; BatchMode only when unattended.
+        ("", {"env": 'ssh -F "$HOME/cfg"'}, False, ("120", "30", "4", "yes")),
+        ("", {"env": 'ssh -F "$HOME/cfg"'}, True, ("120", "30", "4", "no")),
+        # Tighter ssh_config values stay; unattended still forces BatchMode.
+        (
+            "ConnectTimeout 7\nServerAliveInterval 5\nServerAliveCountMax 2\n"
+            "BatchMode no\n",
+            {"env": 'ssh -F "$HOME/cfg"'},
+            False,
+            ("7", "5", "2", "yes"),
+        ),
+        # Looser ones yield to the bound.
+        (
+            "ConnectTimeout 600\nServerAliveInterval 300\n",
+            {"env": 'ssh -F "$HOME/cfg"'},
+            True,
+            ("120", "30", "4", "no"),
+        ),
+        # A tighter option in the user's own command stays.
+        (
+            "",
+            {"env": 'ssh -F "$HOME/cfg" -o ConnectTimeout=9'},
+            True,
+            ("9", "30", "4", "no"),
+        ),
+        # Git's precedence: GIT_SSH_COMMAND, then core.sshCommand, then GIT_SSH.
+        (
+            "",
+            {
+                "config": 'ssh -F "$HOME/cfg" -o ConnectTimeout=11',
+                "GIT_SSH": "/nonexistent/ssh",
+            },
+            True,
+            ("11", "30", "4", "no"),
+        ),
+        (
+            "",
+            {
+                "env": 'ssh -F "$HOME/cfg" -o ConnectTimeout=12',
+                "config": 'ssh -F "$HOME/cfg" -o ConnectTimeout=13',
+            },
+            True,
+            ("12", "30", "4", "no"),
+        ),
+    ],
+)
+def test_git_transfer_ssh_bound_keeps_the_users_transport(
+    tmp_path, config, user, attended, expected
+):
+    home = tmp_path / "home"
+    (home / ".ssh").mkdir(parents=True)
+    (home / "cfg").write_text(config, encoding="utf-8")
+    environment = {"PATH": os.environ["PATH"]}
+    if "env" in user:
+        environment["GIT_SSH_COMMAND"] = user["env"]
+    if "GIT_SSH" in user:
+        environment["GIT_SSH"] = user["GIT_SSH"]
+    command = ["git", "fetch", "origin"]
+    bounded = git_transfer.bound_transfer(
+        command,
+        git_transfer.git_transfer(command),
+        environment,
+        settings=git_transfer.TransportSettings(ssh_command=user.get("config")),
+        attended=attended,
+        ssh_wrapper=ROOT / "tools" / "git_ssh_bound.sh",
+    )
+    effective = _effective_ssh(bounded.env, home)
+    assert (
+        effective["connecttimeout"],
+        effective["serveraliveinterval"],
+        effective["serveralivecountmax"],
+        effective["batchmode"],
+    ) == expected
+
+
+@pytest.mark.skipif(_SSH is None or os.name == "nt", reason="needs OpenSSH and sh")
+def test_git_transfer_ssh_bound_expands_the_users_shell_text(tmp_path):
+    home = tmp_path / "home"
+    (home / ".ssh").mkdir(parents=True)
+    (home / "cfg").write_text("", encoding="utf-8")
+    # ssh lists an identity file it can read.
+    (home / ".ssh" / "deploy key").write_text("", encoding="utf-8")
+    command = ["git", "fetch", "origin"]
+    bounded = git_transfer.bound_transfer(
+        command,
+        git_transfer.git_transfer(command),
+        {"GIT_SSH_COMMAND": 'ssh -F "$HOME/cfg" -i "$HOME/.ssh/deploy key"'},
+        settings=git_transfer.TransportSettings(),
+        attended=True,
+        ssh_wrapper=ROOT / "tools" / "git_ssh_bound.sh",
+    )
+    effective = _effective_ssh(bounded.env, home)
+    # The user's shell text is kept as written: the shell expanded $HOME, and
+    # the quoted space stayed inside one argument.
+    assert f"{home}/.ssh/deploy key" in effective["identityfile"].splitlines()
+
+
+@pytest.mark.parametrize(
+    "environment",
+    [
+        {"GIT_SSH_COMMAND": "/opt/ssh-wrapper --flag"},
+        {"GIT_SSH": "/opt/plink"},
+    ],
+)
+def test_git_transfer_leaves_a_non_ssh_client_as_configured(tmp_path, environment):
+    command = ["git", "fetch", "origin"]
+    bounded = git_transfer.bound_transfer(
+        command,
+        git_transfer.git_transfer(command),
+        environment,
+        settings=git_transfer.TransportSettings(),
+        attended=False,
+        ssh_wrapper=tmp_path / "wrapper.sh",
+    )
+    assert bounded.env.get("GIT_SSH_COMMAND") == environment.get("GIT_SSH_COMMAND")
+
+
+def test_git_transfer_reads_settings_as_git_does_and_git_agrees(tmp_path):
+    """Each setting is the last value Git reads; Git's own lookup is the oracle.
+
+    A global key and a repository deploy key: the repository's wins, and a
+    ``-c`` value on the transfer wins over both. The HTTP bound joins the
+    configuration after the user's files, so ``git config --get-urlmatch``
+    with the bounded environment shows what the transfer uses: the
+    repository's higher limit stays, the time tightens to the bound, and a
+    URL-scoped time stays for its own URL.
+    """
+    global_config = tmp_path / "global.gitconfig"
+    global_config.write_text(
+        "[core]\n\tsshCommand = ssh -i /keys/global_key\n"
+        "[http]\n\tlowSpeedLimit = 1\n\tlowSpeedTime = 600\n",
+        encoding="utf-8",
+    )
+    environment = {
+        "PATH": os.environ["PATH"],
+        "HOME": str(tmp_path),
+        "GIT_CONFIG_GLOBAL": str(global_config),
+        "GIT_CONFIG_NOSYSTEM": "1",
+    }
+    repo = tmp_path / "repo"
+
+    def git(*args: str, env=environment) -> str:
+        result = run_guarded_test_process(["git", *args], env=env)
+        assert result.returncode == 0, result.stderr
+        return result.stdout.strip()
+
+    git("init", "-q", str(repo))
+    git("-C", str(repo), "config", "core.sshCommand", "ssh -i /keys/deploy_key")
+    git("-C", str(repo), "config", "http.lowSpeedLimit", "5000")
+    git("-C", str(repo), "config", "http.https://slow.example.lowSpeedTime", "900")
+
+    def settings(command):
+        return git_transfer.read_settings(
+            command, git_transfer.git_transfer(command), cwd=None, env=environment
+        )
+
+    command = ["git", "-C", str(repo), "fetch", "origin"]
+    read = settings(command)
+    assert read == git_transfer.TransportSettings(
+        ssh_command="ssh -i /keys/deploy_key", low_speed_limit=5000, low_speed_time=600
+    )
+    assert git("-C", str(repo), "config", "--get", "core.sshCommand") == (
+        read.ssh_command
+    )
+    with_cli = ["git", "-C", str(repo), "-c", "core.sshCommand=ssh -i /k/cli", "fetch"]
+    assert settings(with_cli).ssh_command == "ssh -i /k/cli"
+
+    bounded = git_transfer.bound_transfer(
+        command,
+        git_transfer.git_transfer(command),
+        environment,
+        settings=read,
+        attended=True,
+        ssh_wrapper=tmp_path / "wrapper.sh",
+    )
+    assert bounded.env["GIT_SSH_COMMAND"].endswith(" ssh -i /keys/deploy_key")
+    assert "GIT_HTTP_LOW_SPEED_LIMIT" not in bounded.env
+
+    def git_uses(key: str, url: str) -> str:
+        return git(
+            "-C", str(repo), "config", "--get-urlmatch", key, url, env=bounded.env
+        )
+
+    assert git_uses("http.lowSpeedLimit", "https://example.com/x.git") == "5000"
+    assert git_uses("http.lowSpeedTime", "https://example.com/x.git") == "120"
+    assert git_uses("http.lowSpeedTime", "https://slow.example/x.git") == "900"
+
+
+def test_git_version_report_is_a_probe_and_git_help_is_not() -> None:
+    # A guarded `git --version` cost 699 ms against 17 ms raw (2026-10-21).
+    assert command_execution._is_bounded_metadata_probe(["git", "--version"])
+    assert command_execution._is_bounded_metadata_probe(["git", "-C", "r", "version"])
+    # `git --help` opens a pager, and an override can arm one before a version.
+    assert not command_execution._is_bounded_metadata_probe(["git", "--help"])
+    assert not command_execution._is_bounded_metadata_probe(
+        ["git", "-c", "core.pager=./hook", "--version"]
+    )
+
+
 def test_owned_cargo_process_normalizes_wrapper_incremental_conflict(
     monkeypatch,
 ) -> None:
@@ -338,9 +703,7 @@ def test_bound_executor_retains_source_owner_with_foreign_compiler_inputs(
 
         monkeypatch.setattr(authority.ProcessStateUse, "__enter__", enter)
         command = ["git", "rev-parse", "--show-toplevel"]
-    result = command_execution.CommandExecutor(
-        prefix="MOLT_TEST", repo_root=ROOT, encoding="utf-8"
-    ).run(
+    result = command_execution.CommandExecutor(prefix="MOLT_TEST", repo_root=ROOT).run(
         command,
         env=dict(os.environ),
         cwd=ROOT,
@@ -548,17 +911,15 @@ def test_interactive_guard_cancels_actual_child_tree_and_closes_streams(tmp_path
     pidfile = tmp_path / "children.json"
     child_script = tmp_path / "interactive_child.py"
     child_script.write_text(
-        "import json,os,pathlib,subprocess,sys,time\n"
+        "import json,os,pathlib,subprocess,sys\n"
         "assert sys.stdin.readline() == 'start\\n'\n"
-        "child = subprocess.Popen([sys.executable, '-c', "
-        "'import time; time.sleep(60)'])\n"
+        f"child = subprocess.Popen([sys.executable, '-c', {HUNG_CHILD_SOURCE!r}])\n"
         "pids = {'child': os.getpid(), 'grandchild': child.pid}\n"
         # Publish atomically: the parent reads the file as soon as it exists.
         "staged = sys.argv[1] + '.tmp'\n"
         "pathlib.Path(staged).write_text(json.dumps(pids), encoding='utf-8')\n"
         "os.replace(staged, sys.argv[1])\n"
-        "print('interactive child ready', flush=True)\n"
-        "time.sleep(60)\n",
+        "print('interactive child ready', flush=True)\n" + HUNG_CHILD_SOURCE,
         encoding="utf-8",
     )
     env, managed_roots = _managed_command_roots(tmp_path)
@@ -675,9 +1036,9 @@ def test_harness_owner_survives_observation_expiry_and_admits_eventual_closure(
         [
             sys.executable,
             "-c",
-            "import os,pathlib,time; "
-            f"pathlib.Path({str(child_ready)!r}).write_text(str(os.getpid()), encoding='utf-8'); "
-            "time.sleep(30)",
+            "import os,pathlib\n"
+            f"pathlib.Path({str(child_ready)!r}).write_text(str(os.getpid()), encoding='utf-8')\n"
+            + HUNG_CHILD_SOURCE,
         ],
         cwd=ROOT,
         env={**os.environ, "MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path / "state")},
@@ -820,9 +1181,9 @@ def test_harness_owner_observes_a_guard_slower_than_one_window(tmp_path, monkeyp
         [
             sys.executable,
             "-c",
-            "import os,pathlib,time; "
-            f"pathlib.Path({str(child_ready)!r}).write_text(str(os.getpid()), encoding='utf-8'); "
-            "time.sleep(30)",
+            "import os,pathlib\n"
+            f"pathlib.Path({str(child_ready)!r}).write_text(str(os.getpid()), encoding='utf-8')\n"
+            + HUNG_CHILD_SOURCE,
         ],
         cwd=ROOT,
         env={**os.environ, "MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path / "state")},
@@ -962,7 +1323,7 @@ def test_guard_resource_owner_survives_gc_after_unresolved_wait(
     )
     executor = command_execution.CommandExecutor(prefix="MOLT_TEST", repo_root=ROOT)
     process = executor.start_owned(
-        [sys.executable, "-c", "import time; time.sleep(30)"], env=environment
+        [sys.executable, "-c", HUNG_CHILD_SOURCE], env=environment
     )
     guard_process = (
         executor.start_owned([sys.executable, "-I", "-S", "-c", "pass"])

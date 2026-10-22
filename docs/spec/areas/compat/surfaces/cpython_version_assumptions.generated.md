@@ -415,7 +415,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `tools/compile_progress.py` | 2 | scattered-assumption | `3.12` |
 | `tools/correctness_dashboard.py` | 3 | operational-tooling | `3.12` |
 | `tools/cpython_regrtest.py` | 13 | scattered-assumption | `3.12` |
-| `tools/cross_run.py` | 3 | scattered-assumption | `3.11` |
+| `tools/cross_run.py` | 3 | scattered-assumption | `3.12` |
 | `tools/dashboard_delta.py` | 1 | operational-tooling | `3.12` |
 | `tools/dev.py` | 7 | authority-routed | `sys.version_info` |
 | `tools/fail_closed_gate.py` | 1 | scattered-assumption | `3.12` |

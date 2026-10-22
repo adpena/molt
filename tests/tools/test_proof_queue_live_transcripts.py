@@ -15,6 +15,7 @@ from tools.proof_queue_pkg import diagnostic_engine as engine
 from tools.proof_queue_pkg import diagnostic_evidence as evidence
 from tools.proof_queue_pkg import diagnostic_model
 from tools.proof_queue_pkg import guarded_execution
+from tests.process_guard_common import HUNG_CHILD_SOURCE
 
 
 def _execution(tmp_path: Path):
@@ -394,7 +395,7 @@ def test_transcript_supervisor_retains_actual_state_after_failed_wait_and_gc(
         "-I",
         "-S",
         "-c",
-        "import time; time.sleep(30)"
+        HUNG_CHILD_SOURCE
         if failure in {"wait", "publish-and-wait"}
         else "print('supervisor complete')",
     ]

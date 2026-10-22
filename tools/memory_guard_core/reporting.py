@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import signal
 import sys
+import threading
 from typing import TextIO, TypedDict, Unpack
 
 from tools.memory_guard_core import cli_contract as _cli_contract
@@ -566,28 +567,20 @@ def _publish_interactive_startup(
             raise ValueError("interactive guard startup custody changed")
 
 
-def write_running_summary_json(
+def _running_summary_payload(
     path: str,
     *,
-    child_process: GuardedChildProcess | None = None,
+    child_process: GuardedChildProcess | None,
     repro_context_provider: Callable[..., dict[str, object]],
-    **context: Unpack[GuardReportContext],
-) -> None:
-    _validate_report_context(context)
+    context: GuardReportContext,
+) -> dict[str, object]:
     command = context["command"]
-    cwd = context["cwd"]
     environ = context["environ"]
     max_rss_kb = context["max_rss_kb"]
     max_total_rss_kb = context["max_total_rss_kb"]
-    max_global_rss_kb = context["max_global_rss_kb"]
     child_rlimit_kb = context["child_rlimit_kb"]
-    timeout_s = context["timeout_s"]
-    poll_interval_s = context["poll_interval_s"]
-    summary_path = Path(path)
-    if summary_path.parent:
-        summary_path.parent.mkdir(parents=True, exist_ok=True)
     child_payload = guarded_child_process_payload(child_process)
-    payload = {
+    return {
         "command": list(command),
         "guard_pid": os.getpid(),
         "launch_id": environ.get(_cli_contract.INTERNAL_LAUNCH_ID_ENV),
@@ -634,23 +627,118 @@ def write_running_summary_json(
         },
         "repro": repro_context_provider(
             command=command,
-            cwd=cwd,
+            cwd=context["cwd"],
             environ=environ,
             max_process_rss_kb=max_rss_kb,
             max_total_rss_kb=max_total_rss_kb,
-            max_global_rss_kb=max_global_rss_kb,
+            max_global_rss_kb=context["max_global_rss_kb"],
             child_rlimit_kb=child_rlimit_kb,
-            timeout_s=timeout_s,
-            poll_interval_s=poll_interval_s,
+            timeout_s=context["timeout_s"],
+            poll_interval_s=context["poll_interval_s"],
             summary_json=path,
             incident_pid=None if child_process is None else child_process.pid,
         ),
     }
-    _publish_interactive_startup(environ, payload)
-    summary_path.write_text(
+
+
+def _write_running_summary_payload(path: str, payload: Mapping[str, object]) -> None:
+    Path(path).write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+
+
+def write_running_summary_json(
+    path: str,
+    *,
+    child_process: GuardedChildProcess | None = None,
+    repro_context_provider: Callable[..., dict[str, object]],
+    **context: Unpack[GuardReportContext],
+) -> None:
+    _validate_report_context(context)
+    summary_path = Path(path)
+    if summary_path.parent:
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = _running_summary_payload(
+        path,
+        child_process=child_process,
+        repro_context_provider=repro_context_provider,
+        context=context,
+    )
+    _publish_interactive_startup(environ=context["environ"], payload=payload)
+    _write_running_summary_payload(path, payload)
+
+
+class RunningSummaryPublisher:
+    """Publish a guard's running summary without host observation on its thread.
+
+    The startup report (the child's identity) publishes at once. The repro
+    block reads the host's process table and command lines, which can block
+    while the host stalls (HF-417: a guard waited 38 minutes there before its
+    run loop began). A daemon thread builds and writes it. ``retire`` returns
+    once no write can follow, so a late write never replaces the terminal
+    summary the guard's caller writes.
+    """
+
+    def __init__(
+        self,
+        path: str,
+        *,
+        child_process: GuardedChildProcess,
+        repro_context_provider: Callable[..., dict[str, object]],
+        **context: Unpack[GuardReportContext],
+    ) -> None:
+        _validate_report_context(context)
+        self._path = path
+        self._child_process = child_process
+        self._repro_context_provider = repro_context_provider
+        self._context = context
+        self._lock = threading.Lock()
+        self._retired = False
+        self._error: BaseException | None = None
+
+    def start(self) -> None:
+        summary_path = Path(self._path)
+        if summary_path.parent:
+            summary_path.parent.mkdir(parents=True, exist_ok=True)
+        _publish_interactive_startup(
+            environ=self._context["environ"],
+            payload={
+                "guard_pid": os.getpid(),
+                "command": list(self._context["command"]),
+                "child_process": guarded_child_process_payload(self._child_process),
+            },
+        )
+        threading.Thread(
+            target=self._publish, name="molt-guard-running-summary", daemon=True
+        ).start()
+
+    def retire(self) -> None:
+        """No write follows; re-raise a failure the writer could not report."""
+        with self._lock:
+            self._retired = True
+        if self._error is not None:
+            raise self._error
+
+    def _publish(self) -> None:
+        try:
+            payload = _running_summary_payload(
+                self._path,
+                child_process=self._child_process,
+                repro_context_provider=self._repro_context_provider,
+                context=self._context,
+            )
+            with self._lock:
+                if not self._retired:
+                    _write_running_summary_payload(self._path, payload)
+        except OSError as exc:
+            print(
+                f"memory_guard: failed to refresh running summary JSON: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+        except BaseException as exc:
+            self._error = exc
 
 
 def elapsed_text(elapsed_s: float | None) -> str:
