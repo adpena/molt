@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 import contextvars
 
@@ -49,7 +49,7 @@ def parse_sections(
     )
 
 
-def build_sections(sections: list[tuple[int, bytes]]) -> bytes:
+def build_sections(sections: Sequence[tuple[int, bytes | memoryview]]) -> bytes:
     increment_whole_artifact_operation("reserializations")
     return _build_sections_raw(sections)
 
