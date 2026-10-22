@@ -9,8 +9,8 @@ use crate::{
     IO_EVENT_ERROR, IO_EVENT_READ, IO_EVENT_WRITE, TYPE_ID_LIST, TYPE_ID_TUPLE,
     alloc_dict_with_pairs, alloc_list, alloc_string, alloc_tuple, attr_name_bits_from_bytes,
     call_callable0, dec_ref_bits, exception_pending, inc_ref_bits, int_bits_from_i64, is_truthy,
-    maybe_ptr_from_bits, missing_bits, molt_getattr_builtin, molt_is_callable, monotonic_now_secs,
-    obj_from_bits, opaque_handle_bits, ptr_from_bits, raise_exception, release_ptr, to_f64, to_i64,
+    missing_bits, molt_getattr_builtin, molt_is_callable, monotonic_now_secs, obj_from_bits,
+    opaque_handle_bits, ptr_from_bits, raise_exception, release_ptr, to_f64, to_i64,
 };
 use std::collections::HashMap;
 use std::collections::hash_map::Entry as HashMapEntry;
