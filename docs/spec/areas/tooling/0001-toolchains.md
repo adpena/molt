@@ -457,6 +457,12 @@ making it absolute for a different child working directory. Resolving a virtual
 environment's interpreter symlink to its base executable changes its import
 environment. Guarded commands and benchmark interpreter selection share the
 lexical executable-path authority; content identity remains a separate check.
+The runtime build Python is the one exception: build scripts run it with
+`-B -I -S`, which imports no virtual environment site, and its path is a Cargo
+rerun input recorded with every stored product, so
+`molt.cli.runtime_build_python` pins the base interpreter (a link's target, or
+the `executable` or `home` that a launcher copy's `pyvenv.cfg` names, as on
+Windows) and every checkout of one host records one value.
 Captured environment launchers include executable interpreter aliases in its
 scripts directory when their captured content matches the selected interpreter.
 Copied files, hardlinks and same-root or base-runtime symlinks retain their

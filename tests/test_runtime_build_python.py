@@ -314,6 +314,61 @@ def test_two_checkouts_aliasing_one_interpreter_pin_one_value(tmp_path: Path) ->
     assert pinned == [str(interpreter), str(interpreter)]
 
 
+@pytest.mark.parametrize("names_base", ["executable", "home"])
+def test_two_checkouts_copying_one_interpreter_pin_its_base(
+    tmp_path: Path, names_base: str
+) -> None:
+    """A launcher copy (Windows virtualenvs, ``venv --copies``) pins its base.
+
+    Resolving a copy reaches no link, so only the virtualenv's ``pyvenv.cfg``
+    names the base: CPython's venv by ``executable``, uv by ``home``.
+    """
+    import shutil
+
+    from molt.cli.runtime_build_python import pin_runtime_build_python_environment
+
+    interpreter = Path(getattr(sys, "_base_executable", sys.executable)).resolve(
+        strict=True
+    )
+    pinned = []
+    for checkout in ("lane-a", "lane-b"):
+        venv = tmp_path / checkout / ".venv"
+        launcher = venv / "Scripts" / interpreter.name
+        launcher.parent.mkdir(parents=True)
+        shutil.copy2(interpreter, launcher)
+        key = (
+            f"executable = {interpreter}"
+            if names_base == "executable"
+            else f"home = {interpreter.parent}"
+        )
+        (venv / "pyvenv.cfg").write_text(
+            f"{key}\ninclude-system-site-packages = false\n", encoding="utf-8"
+        )
+        environment = {"PATH": str(launcher.parent), "MOLT_BUILD_PYTHON": str(launcher)}
+        pinned.append(
+            pin_runtime_build_python_environment(environment, cwd=tmp_path / checkout)[
+                "MOLT_BUILD_PYTHON"
+            ]
+        )
+    assert pinned == [str(interpreter), str(interpreter)]
+
+
+def test_a_launcher_whose_base_is_gone_keeps_its_own_path(tmp_path: Path) -> None:
+    import shutil
+
+    from molt.cli.runtime_build_python import pin_runtime_build_python_environment
+
+    interpreter = Path(sys.executable).resolve(strict=True)
+    venv = tmp_path / ".venv"
+    launcher = venv / "Scripts" / interpreter.name
+    launcher.parent.mkdir(parents=True)
+    shutil.copy2(interpreter, launcher)
+    (venv / "pyvenv.cfg").write_text(f"home = {tmp_path / 'gone'}\n", encoding="utf-8")
+    environment = {"PATH": str(launcher.parent), "MOLT_BUILD_PYTHON": str(launcher)}
+    pinned = pin_runtime_build_python_environment(environment, cwd=tmp_path)
+    assert pinned["MOLT_BUILD_PYTHON"] == str(launcher.resolve())
+
+
 def test_pinned_generator_runs_shared_rust_helper_from_another_crate_cwd(
     tmp_path: Path, unicode_generator: Path
 ) -> None:
