@@ -376,9 +376,13 @@ stdlib set into the runtime image and compile only the application partition.
   Goose's TinyCC-versus-native diff, it is not an independent implementation and finds
   no shared code-generation defect. Process-state cases pin what a Rust `main` broke:
   `closed_pipe_write_signal.py` (a closed pipe ends both tiers with `SIGPIPE`),
-  `native_stack_exhaustion.py` (stack exhaustion ends both with `SIGSEGV`), and
+  `native_stack_exhaustion.py` (stack exhaustion ends both with `SIGSEGV`),
   `multiprocessing_pool_imap.py` (spawn-mode workers execute `sys.argv[0]`, the image,
-  and so start the program again). The harness sets `sys.executable` to the
+  and so start the program again), `reexec_keeps_parent_environment.py` (a restart by the
+  program's own path keeps the parent's environment and arguments) and
+  `closed_stderr_start.py` (a program started with fd 2 closed runs under both tiers; both
+  then see the runtime's `/dev/null` on fd 2 where CPython sees it closed, an expected
+  failure until that runtime defect is fixed). The harness sets `sys.executable` to the
   CPython oracle for every compiled program, so `tests/cli/test_jit_run_tier.py` proves
   the `sys.executable` path: executing an image starts its runner with the image as
   argv[0] and the new arguments.
@@ -390,7 +394,10 @@ stdlib set into the runtime image and compile only the application partition.
   classes); one diverges: `multiprocessing_pool_apply_async.py` waits 5 s for a result,
   and its spawned JIT worker is still compiling the program. Two programs that first
   failed on a runtime build lock timeout at cold start (HF-388) passed on a recheck.
-  These counts come from main 9e0f94f11; the run on the rebased tip is open (HF-371).
+  The lane now runs those 480 and two more process-state cases, `closed_stderr_start.py`
+  and `reexec_keeps_parent_environment.py`. On the lane tip (2026-10-22, main 80a5dc469,
+  104 min at load 10-52) all 482 pass under both tiers; one native build first failed on a
+  120 s backend-daemon lock timeout (HF-388) and passed on a recheck.
   The local proof-queue lane `native.jit-aot-twins` runs the 480 passing cases;
   `native.jit-code-owner` runs the molt-jit tests.
 - Latency: edit-run of a small program, new and after a one-line edit, AOT against JIT
