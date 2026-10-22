@@ -45,7 +45,7 @@ VERIFICATION_SCOPES = (
     CPYTHON_EQUIVALENCE_SCOPE,
     "dynamic_execution_policy",
 )
-ALL_BACKENDS = ("native", "llvm", "wasm", "luau")
+ALL_BACKENDS = ("native", "llvm", "wasm", "luau", "jit")
 PLATFORM_SELECTORS = ("freebsd", "linux", "macos", "posix", "windows")
 ARCHITECTURE_SELECTORS = ("aarch64", "arm64", "x86_64")
 STDOUT_MODES = ("exact", "pyperformance")
@@ -59,6 +59,8 @@ _METADATA_KEYS = frozenset(
         "backends",
         "expect_fail",
         "expect_fail_reason",
+        "expect_molt_returncode",
+        "expect_molt_stdout_sha256",
         "host_toolchains",
         "max_py",
         "min_py",
@@ -74,6 +76,8 @@ _LIST_KEYS = frozenset({"architectures", "backends", "host_toolchains", "platfor
 _PYTHON_MINOR_RE = re.compile(r"3\.(?:0|[1-9][0-9]*)\Z", re.ASCII)
 _TOOLCHAIN_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z", re.ASCII)
 _REASON_RE = re.compile(r"[a-z][a-z0-9_]*\Z", re.ASCII)
+_RETURNCODE_RE = re.compile(r"-?(?:0|[1-9][0-9]*)\Z", re.ASCII)
+_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
 _RAW_METADATA_CANDIDATE_RE = re.compile(
     r"^[ \t]*#[ \t]*MOLT_META\b[^\r\n]*", re.ASCII | re.MULTILINE
 )
@@ -118,6 +122,11 @@ class TestMetadata:
     verification_scope: str = CPYTHON_EQUIVALENCE_SCOPE
     expect_molt_fail: bool = False
     expected_failure_reason: str | None = None
+    # The exact way Molt is expected to fail: every backend must end with this
+    # exit status and this stdout (SHA-256), or the expected failure is a new
+    # failure. Exact twins (native, jit) need the pin.
+    expected_molt_returncode: int | None = None
+    expected_molt_stdout_sha256: str | None = None
     min_python: tuple[int, int] | None = None
     max_python: tuple[int, int] | None = None
     platforms: frozenset[str] = frozenset()
@@ -139,6 +148,9 @@ class TestMetadata:
         if self.expect_molt_fail:
             record["expect_fail"] = "molt"
             record["expect_fail_reason"] = self.expected_failure_reason
+        if self.expected_molt_returncode is not None:
+            record["expect_molt_returncode"] = self.expected_molt_returncode
+            record["expect_molt_stdout_sha256"] = self.expected_molt_stdout_sha256
         if self.min_python is not None:
             record["min_py"] = f"{self.min_python[0]}.{self.min_python[1]}"
         if self.max_python is not None:
@@ -360,6 +372,24 @@ def parse_metadata_bytes(path: Path, source_bytes: bytes) -> TestMetadata:
     reason = reason_values[0] if reason_values else None
     if reason is not None and _REASON_RE.fullmatch(reason) is None:
         raise ValueError("MOLT_META expect_fail_reason must be a lowercase identifier")
+    returncode_values = raw.get("expect_molt_returncode", ())
+    stdout_values = raw.get("expect_molt_stdout_sha256", ())
+    if bool(returncode_values) != bool(stdout_values):
+        raise ValueError(
+            "MOLT_META expect_molt_returncode and expect_molt_stdout_sha256 must be "
+            "declared together"
+        )
+    if returncode_values and not expect_values:
+        raise ValueError(
+            "MOLT_META expect_molt_returncode pins an expected failure; declare "
+            "expect_fail=molt with it"
+        )
+    if returncode_values and _RETURNCODE_RE.fullmatch(returncode_values[0]) is None:
+        raise ValueError("MOLT_META expect_molt_returncode must be an integer")
+    if stdout_values and _SHA256_RE.fullmatch(stdout_values[0]) is None:
+        raise ValueError(
+            "MOLT_META expect_molt_stdout_sha256 must be 64 lowercase hex digits"
+        )
 
     min_python = parse_version(raw["min_py"][0]) if "min_py" in raw else None
     max_python = parse_version(raw["max_py"][0]) if "max_py" in raw else None
@@ -399,6 +429,10 @@ def parse_metadata_bytes(path: Path, source_bytes: bytes) -> TestMetadata:
         verification_scope=scope,
         expect_molt_fail=bool(expect_values),
         expected_failure_reason=reason,
+        expected_molt_returncode=(
+            int(returncode_values[0]) if returncode_values else None
+        ),
+        expected_molt_stdout_sha256=stdout_values[0] if stdout_values else None,
         min_python=min_python,
         max_python=max_python,
         platforms=frozenset(platforms),

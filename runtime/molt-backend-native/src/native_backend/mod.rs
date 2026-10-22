@@ -254,7 +254,7 @@ mod header_flags_tests {
             "x86_64-pc-windows-msvc",
         ] {
             let backend = SimpleBackend::new_with_target(Some(target));
-            let mut module = backend.module;
+            let mut module = backend.module.into_object();
             emit_generated_object_abi_anchor(&mut module);
             let product = module.finish();
             let macho_before = (product.object.format()
@@ -352,8 +352,9 @@ mod header_flags_tests {
             (elf::ELFOSABI_GNU, elf::ELFOSABI_GNU),
             (elf::ELFOSABI_FREEBSD, elf::ELFOSABI_FREEBSD),
         ] {
-            let mut module =
-                SimpleBackend::new_with_target(Some("x86_64-unknown-linux-gnu")).module;
+            let mut module = SimpleBackend::new_with_target(Some("x86_64-unknown-linux-gnu"))
+                .module
+                .into_object();
             emit_generated_object_abi_anchor(&mut module);
             let mut product = module.finish();
             product.object.flags = FileFlags::Elf {

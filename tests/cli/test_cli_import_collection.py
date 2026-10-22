@@ -26494,17 +26494,18 @@ def test_run_script_uses_build_resolved_entry_for_package_override_file(
         del kwargs
         return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
 
-    def fake_run_command(cmd: list[str], **kwargs: object) -> int:
+    def fake_run_command(cmd: list[str], **kwargs: object) -> _TimedResult:
         del kwargs
         run_cmds.append(list(cmd))
-        return 0
+        return _TimedResult(0, "", "", 0.0)
 
     monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli_commands, "compiler_source_root", lambda: ROOT)
     monkeypatch.setattr(
         cli_wrapper_build, "_run_completed_command", fake_run_completed_command
     )
-    monkeypatch.setattr(cli_commands, "_run_command", fake_run_command)
+    # molt run starts every built program through one timed run.
+    monkeypatch.setattr(cli_commands, "_run_command_timed", fake_run_command)
 
     rc = cli_commands.run_script(
         str(entry),
@@ -26550,17 +26551,18 @@ def test_run_script_uses_build_json_output_for_binary_path(
         build_cmds.append(list(cmd))
         return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
 
-    def fake_run_command(cmd: list[str], **kwargs: object) -> int:
+    def fake_run_command(cmd: list[str], **kwargs: object) -> _TimedResult:
         del kwargs
         run_cmds.append(list(cmd))
-        return 0
+        return _TimedResult(0, "", "", 0.0)
 
     monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli_commands, "compiler_source_root", lambda: ROOT)
     monkeypatch.setattr(
         cli_wrapper_build, "_run_completed_command", fake_run_completed_command
     )
-    monkeypatch.setattr(cli_commands, "_run_command", fake_run_command)
+    # molt run starts every built program through one timed run.
+    monkeypatch.setattr(cli_commands, "_run_command_timed", fake_run_command)
 
     rc = cli_commands.run_script(
         str(entry),
@@ -26621,7 +26623,11 @@ def test_run_script_replays_build_messages_and_warnings_in_non_json_mode(
     monkeypatch.setattr(
         cli_wrapper_build, "_run_completed_command", fake_run_completed_command
     )
-    monkeypatch.setattr(cli_commands, "_run_command", lambda cmd, **kwargs: 0)
+    monkeypatch.setattr(
+        cli_commands,
+        "_run_command_timed",
+        lambda cmd, **kwargs: _TimedResult(0, "", "", 0.0),
+    )
 
     rc = cli_commands.run_script(
         str(entry),

@@ -65,7 +65,7 @@ from project configuration: `[tool.molt.build] entry-file = "app.py"` or
 | `--type-facts PATH` | Path to type facts JSON from `molt check`. |
 | `--pgo-profile PATH` | Path to PGO profile artifact for optimization hints. |
 | `--pgo-collect` | Instrument the binary to collect PGO counters at runtime. |
-| `--emit {bin,obj,wasm}` | Select artifact format. |
+| `--emit {bin,obj,wasm,jit}` | Select artifact format. `jit` publishes a JIT image (`<name>_molt.jit`) for the development JIT tier instead of an executable; see `molt run --tier`. A JIT image runs only from the checkout that built it, and it expires (see "JIT tier costs and expiry"); ship `bin`. |
 | `--linked / --no-linked` | Emit linked WASM artifact alongside output. |
 | `--split-runtime` | Produce separate runtime and app WASM modules. |
 | `--wasm-opt-level {O1,O2,O3,O4,Os,Oz}` | Binaryen optimization level. Dev defaults to `O1`; release deployment profiles select their shipping level. |
@@ -161,6 +161,7 @@ molt run app.py --release                # Optimized build and run
 molt run app.py --target wasm            # Build and run with the Node host shim
 molt run app.py --target luau            # Build and run with lune
 molt run app.py --target mlir            # Build and emit MLIR text
+molt run app.py --tier jit               # Compile into memory and run (no link)
 molt run app.py -- --arg1 val            # Pass args to your script
 molt run --module mypackage              # Run a package
 ```
@@ -177,6 +178,7 @@ uses its provisioned pinned Node when available, then Node on `PATH`.
 |------|-------------|
 | `--target TARGET` | Build target: `native`, `wasm`, `luau`, `mlir`, or a target triple. |
 | `--release` | Optimized release build. |
+| `--tier {aot,jit}` | How to run a native program. `aot` (default) builds an executable and runs it. `jit` builds a JIT image and runs it in the `molt-jit` runner, which compiles the whole program into its own memory on every run: no object, link or executable. The JIT tier runs only in a source checkout on aarch64 macOS (the verified cell), with the Cranelift code generator and no external native package artifacts; any other request fails before the frontend runs and never falls back to `aot`. `[tool.molt.run] tier` sets the default. |
 | `--module MODULE` | Entry module name. |
 | `--profile {dev,release}` | Build profile (default: `dev`). |
 | `--python-version VERSION` | Target Python semantics for the build side. `molt run` forwards it to `molt build` and records it in wrapper cache manifests. |
@@ -190,7 +192,33 @@ uses its provisioned pinned Node when available, then Node on `PATH`.
 full binary-image closure payload, target Python version, dead-module
 elimination mode, static import modules, external static package/native artifact
 custody, and the discovered source closure. A cache hit is valid only when those
-facts and the output binary hash still match the manifest.
+facts and the output binary hash still match the manifest. A JIT launch never
+runs the backend compiler, so a JIT-tier key holds the `molt-jit` runner's source
+and dependency identity in place of the backend's. A JIT hit checks and renews,
+under each store's lock, the runner and runtime image the cached JIT image runs;
+one that eviction removed is a miss.
+
+**JIT tier costs and expiry.** The JIT tier is slower than `aot` for any program
+that imports `os`, until it reuses compiled stdlib code as an AOT build does
+(HF-371). Each start compiles the whole program, its stdlib closure included, and
+every process that starts the program again pays the same cost. Measured on macOS
+arm64 at host load 8-16: `import os, sys` compiles 832 functions in 6.8-10.2 s at
+0.7-0.8 GB peak RSS per start, where the AOT executable starts in 0.27-0.35 s at
+23 MB; and a no-change `molt run` takes 9.2-10.1 s against 1.6 s. Once the program
+runs, the compiler's memory is gone from its footprint (72-75 MB against 6.7 MB for
+a program that imports `subprocess`): on macOS the runner turns off libc's
+large-block cache for the whole program, which makes C code that churns large
+`malloc` blocks much slower; set `MallocLargeCache=1` to keep the cache. [design/dev_jit_tier.md](design/dev_jit_tier.md)
+("Costs") breaks these down by phase.
+
+A JIT image is a development artifact. Its header names this checkout's `molt-jit`
+runner generation, runtime image and runtime callable-symbol table, and running the
+image renews none of them. `molt run --tier jit` and `molt build --emit jit` renew
+them. After 24 hours with neither, a later build may evict them, and removing the
+Cargo target directory removes them. The image then fails: the kernel cannot start
+the runner its first line names, so a shell reports a bad interpreter (exit status
+126) and `subprocess` raises `FileNotFoundError`, or the runner cannot load the
+runtime image (exit status 125). Rebuild it with `molt build --emit jit`.
 
 #### `molt test`
 
@@ -548,6 +576,7 @@ portable = false
 # Run-specific overrides
 trusted = true
 timing = true
+tier = "aot"  # or "jit"; see `molt run --tier`
 
 [tool.molt.test]
 # Test-specific overrides

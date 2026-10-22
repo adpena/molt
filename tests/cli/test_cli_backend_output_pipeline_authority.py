@@ -21,7 +21,11 @@ from molt.cli import (
     frontend_pipeline,
     output,
 )
-from molt.cli.models import _BackendCacheSetup, _BuildDiagnosticsContext
+from molt.cli.models import (
+    _BackendCacheSetup,
+    _BuildDiagnosticsContext,
+    _ExternalPackageNativeArtifactPlan,
+)
 from molt.cli.build_output_layout import _BuildOutputLayout
 from molt.cli.module_source import _ModuleSourceCatalog, _ModuleSourceLease
 from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
@@ -731,7 +735,8 @@ def test_earlier_pipeline_failure_flushes_without_repeating_error_json(
         integration_state=None,
         record_binary_image_analysis=lambda *_, **__: None,
         artifacts_root=case.args["artifacts_root"],
-        native_artifact_plan=None,
+        # The build checks native-artifact custody before the frontend runs.
+        native_artifact_plan=_ExternalPackageNativeArtifactPlan(),
     )
     args = {
         key: case.args[key]

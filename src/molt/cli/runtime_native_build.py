@@ -30,7 +30,7 @@ from molt.cli.cargo_build_reads import (
     CargoBuildReads,
     CargoBuildReadsError,
     cargo_build_reads,
-    paths_outside,
+    uncovered_build_inputs,
 )
 from molt.cli.cargo_execution import (
     CargoExecutionResult,
@@ -1080,25 +1080,18 @@ def _publish_native_runtime_build(
     reads: CargoBuildReads | None = None
     try:
         reads = _runtime_build_reads(plan, build)
-        uncovered = paths_outside(
-            (*reads.files, *reads.directories),
+        detail = uncovered_build_inputs(
+            reads,
             plan.project_root,
             (
                 *runtime_source_paths(plan.project_root, plan.fingerprint_features),
                 *runtime_build_tooling_paths(plan.project_root),
             ),
+            identity="runtime",
         )
-    except (OSError, CargoBuildReadsError) as exc:
-        uncovered_error: str | None = str(exc)
-        uncovered = ()
-    else:
-        uncovered_error = None
-    if uncovered or uncovered_error is not None:
-        detail = uncovered_error or (
-            "the runtime identity does not cover build inputs: "
-            + ", ".join(uncovered[:8])
-            + (f" and {len(uncovered) - 8} more" if len(uncovered) > 8 else "")
-        )
+    except (OSError, CargoBuildReadsError, ValueError) as exc:
+        detail = str(exc)
+    if detail is not None:
         return _record_native_runtime_failure(
             plan.runtime_state,
             project_root=plan.project_root,

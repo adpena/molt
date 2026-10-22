@@ -811,7 +811,9 @@ fn final_function_custody_is_identical_after_cold_and_warm_cache_transport() {
                 TirPipelineRunOptions {
                     target_info: target.clone(),
                     cache_flavor: TirPipelineCacheFlavor::Native,
-                    cache_dir: Some(cache_dir.join(format!("{mode:?}"))),
+                    cache: crate::tir::pipeline_cache::TirCacheLocation::Directory(
+                        cache_dir.join(format!("{mode:?}")),
+                    ),
                     process_externs: false,
                     verify_lir: true,
                     tir_dump: false,
