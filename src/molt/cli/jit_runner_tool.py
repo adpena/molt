@@ -13,9 +13,12 @@ import os
 from pathlib import Path
 
 from molt.cli.backend_binary import _ensure_backend_binary
+from molt.cli.backend_generation import (
+    BACKEND_GENERATIONS_DIR,
+    record_backend_generation_use,
+)
 from molt.cli.runtime_paths import _cargo_profile_dir, _cargo_target_root
 from molt.cli.rust_cpu_policy import RustCpuPolicy
-from molt.compiler_distribution import installed_compiler
 from molt.host_tool_products import HostToolProduct
 
 
@@ -36,12 +39,11 @@ def ensure_jit_runner(
     cargo_timeout: float | None,
     json_output: bool,
 ) -> Path:
-    """Return one admitted immutable runner executable."""
-    if installed_compiler(root) is not None:
-        raise ValueError(
-            "Installed Molt ships no JIT runner; `molt run --tier jit` needs a "
-            "source checkout"
-        )
+    """Return one admitted immutable runner executable.
+
+    Build request resolution already refused an installed compiler, which
+    ships no runner (``run_tier.jit_tier_refusal``).
+    """
     product = HostToolProduct.JIT
     result = _ensure_backend_binary(
         jit_runner_coordinate(root, cargo_profile=cargo_profile),
@@ -57,3 +59,15 @@ def ensure_jit_runner(
         raise ValueError(f"JIT runner admission failed: {result.message}")
     assert result.binary is not None
     return result.binary
+
+
+def record_jit_runner_use(runner: Path) -> None:
+    """Renew the retention window of the runner generation a cached launch runs.
+
+    ``runner`` is a generation of the runner's Cargo coordinate:
+    ``<profile>/.molt-backend-generations/<name>/<sha256>/<name>``.
+    """
+    store = runner.parent.parent
+    if store.parent.name != BACKEND_GENERATIONS_DIR or store.name != runner.name:
+        raise ValueError(f"not a JIT runner generation: {runner}")
+    record_backend_generation_use(store.parent.parent / runner.name, runner)

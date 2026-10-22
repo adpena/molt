@@ -10,6 +10,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 from enum import StrEnum
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from molt.compilation_target import Target
+    from molt.native_target import NativeTargetSpec
 
 
 class RunTier(StrEnum):
@@ -37,6 +42,67 @@ JIT_IMAGE_SUFFIX = ".jit"
 # What `molt-jit --start-receipt <path>` writes after the program compiled,
 # immediately before the program starts (runtime/molt-jit/src/main.rs).
 JIT_START_RECEIPT = '{"schema":"molt.jit-start.v1"}\n'
+
+# The (os, arch) hosts where the JIT-AOT twin gate ran (HF-371). Any other
+# host is refused before the frontend runs and before its unverified runtime
+# image link and loader run.
+VERIFIED_JIT_HOSTS = frozenset({("macos", "aarch64")})
+
+
+def jit_tier_refusal(
+    *,
+    target: Target,
+    codegen_backend: str,
+    host: NativeTargetSpec | None = None,
+    compiler_root: Path | None = None,
+) -> str | None:
+    """Name the first fact that keeps the JIT tier from running, or None.
+
+    The one admission of the JIT tier. Build request resolution applies it to
+    every ``emit=jit`` request, so ``molt build --emit jit``, ``molt run
+    --tier jit`` and the differential harness refuse an unsupported cell
+    before the frontend runs. ``host`` and ``compiler_root`` default to this
+    process's host and compiler. External native package artifacts are
+    refused by the build's native-artifact custody check, which needs the
+    import plan.
+    """
+    from molt.compilation_target import TargetKind
+    from molt.native_target import NativeTargetSpec, resolve_native_target_spec
+
+    if isinstance(target, NativeTargetSpec):
+        if not target.is_host:
+            return f"the cross target {target.triple} (the JIT tier runs on the host)"
+    elif target is not TargetKind.NATIVE:
+        return f"the {target.value} target (the JIT tier runs native host code)"
+    host = resolve_native_target_spec(None) if host is None else host
+    if (host.os, host.arch) not in VERIFIED_JIT_HOSTS:
+        return (
+            f"the {host.triple} host (the JIT tier is verified only on aarch64 "
+            "macOS; HF-371 tracks the other hosts)"
+        )
+    if codegen_backend != "cranelift":
+        return f"the {codegen_backend} code generator (the JIT tier uses Cranelift)"
+    if _installed_compiler(compiler_root):
+        return (
+            "an installed Molt compiler (it ships no JIT runner; use a source checkout)"
+        )
+    return None
+
+
+def _installed_compiler(compiler_root: Path | None) -> bool:
+    from molt.cli.compiler_metadata import _compiler_root
+    from molt.compiler_distribution import installed_compiler
+
+    root = _compiler_root() if compiler_root is None else compiler_root
+    return installed_compiler(root) is not None
+
+
+def jit_tier_refusal_message(refusal: str) -> str:
+    """The diagnostic for a refused JIT request."""
+    return (
+        f"The JIT tier does not support {refusal}. "
+        "Run it with `molt run --tier aot` or build it with `molt build`."
+    )
 
 
 def jit_runner_argv(

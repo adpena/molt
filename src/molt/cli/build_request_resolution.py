@@ -7,6 +7,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 from molt.cli.build_request import BuildRequest
+from molt.cli.run_tier import RunTier, jit_tier_refusal, jit_tier_refusal_message
 from molt.compilation_target import TargetKind
 from molt.cli.build_output_layout import (
     _BUILD_PROFILE_CHOICES,
@@ -246,6 +247,13 @@ def resolve_build_request(
     )
     if backend_error is not None:
         raise ValueError(backend_error)
+    if emit == RunTier.JIT.build_emit:
+        # The JIT tier's one admission, before any frontend work.
+        refusal = jit_tier_refusal(
+            target=selected_target, codegen_backend=codegen_backend
+        )
+        if refusal is not None:
+            raise ValueError(jit_tier_refusal_message(refusal))
     bolt_requested = getattr(args, "bolt", False)
     return BuildRequest(
         file_path=args.file,

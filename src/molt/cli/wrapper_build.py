@@ -36,6 +36,7 @@ from molt.cli.cache_fingerprints import (
 from molt.cli.compiler_identity import CompilerIdentityError
 from molt.cli.rust_cpu_policy import resolve_rust_cpu_policy
 from molt.cli.run_tier import JIT_IMAGE_SUFFIX, RunTier
+from molt.host_tool_products import HostToolProduct
 from molt.backend_executable_names import backend_features_for_target
 from molt.cli.command_runtime import _CLI_MEMORY_GUARD_PREFIX, _run_completed_command
 from molt.cli.config_resolution import (
@@ -131,7 +132,7 @@ def _wrapper_build_default_consumer_path(
 
 
 # The files a cached JIT image runs besides itself. A cached launch is valid
-# only while every one still exists.
+# only while every one still exists; a hit renews their retention windows.
 _JIT_LAUNCH_ARTIFACTS = ("runner", "runtime_image")
 
 
@@ -333,6 +334,20 @@ def _wrapper_build_cache_input(
             ),
             rust_cpu=rust_cpu,
         ),
+        # A JIT launch runs the molt-jit runner, a second compiler product.
+        **(
+            {
+                "jit_runner_fingerprint": _cache_fingerprint(
+                    env=env,
+                    backend_features=HostToolProduct.JIT.required_features,
+                    include_runtime_sources=False,
+                    rust_cpu=rust_cpu,
+                    product=HostToolProduct.JIT,
+                )
+            }
+            if request.emit == RunTier.JIT.build_emit
+            else {}
+        ),
         "frontend_tooling_fingerprint": _cache_tooling_fingerprint(),
         "python_cache_tag": sys.implementation.cache_tag,
         "target_python": resolved_build_entry.target_python.tag,
@@ -384,11 +399,21 @@ def _read_wrapper_build_cache_contract(
         for key, value in raw_artifacts.items():
             if isinstance(key, str) and isinstance(value, str):
                 artifacts[key] = Path(value)
-    if tier is RunTier.JIT and not all(
-        name in artifacts and artifacts[name].is_file()
-        for name in _JIT_LAUNCH_ARTIFACTS
-    ):
-        return None
+    if tier is RunTier.JIT:
+        if not all(
+            name in artifacts and artifacts[name].is_file()
+            for name in _JIT_LAUNCH_ARTIFACTS
+        ):
+            return None
+        from molt.cli.jit_runner_tool import record_jit_runner_use
+        from molt.cli.jit_runtime_image import record_jit_runtime_image_use
+
+        try:
+            # A hit binds both generations, as the build that wrote it did.
+            record_jit_runner_use(artifacts["runner"])
+            record_jit_runtime_image_use(artifacts["runtime_image"])
+        except (OSError, ValueError):
+            return None
     bundle_root = manifest.get("bundle_root")
     return _WrapperBuildContract(
         output=Path(raw_output),
