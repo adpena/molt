@@ -13670,13 +13670,13 @@
         ]
       ],
       "setup_evidence": [
-        ".github/actions/setup-project/action.yml::version: \"0.13.1\""
+        ".github/actions/setup-project/action.yml::version: \"0.13.4\""
       ],
-      "setup_value": "0.13.1",
+      "setup_value": "0.13.4",
       "version_args": [
         "--version"
       ],
-      "version_pattern": "^uv 0\\.13\\.1\\b"
+      "version_pattern": "^uv 0\\.13\\.4\\b"
     },
     {
       "executable": "node",
