@@ -9,6 +9,8 @@ prefer live code, tests, measurements and explicit user direction over stale pro
 - Follow through on authorized landings and their post-landing work without waiting for another
   prompt. A confirmed landing and completed retirement are separate facts: resolve or report an
   actionable custody blocker, and preserve the evidence until the integration owner closes it.
+- Reuse existing work before creating an isolated lane. New isolated work uses the managed
+  lane/landing queue lifecycle in `docs/ops/INTEGRATION.md`, which owns automatic retirement.
 - Questions and reviews authorize inspection; change requests authorize in-scope implementation
   and relevant local checks. Define completion and the integration owner for the current outcome.
 - Pause only for input the user alone can provide, a real scope change, or a destructive,
