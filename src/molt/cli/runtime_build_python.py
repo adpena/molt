@@ -24,14 +24,21 @@ def pin_runtime_build_python_environment(
 ) -> ProcessEnvironment:
     """Pin effective generator selection before its first identity capture.
 
-    Cargo launches build scripts from their crate directories. An absolute
-    lexical entrypoint keeps both explicit selectors and relative PATH roots
-    attached to the operation directory, preserving virtualenv aliases.
+    Cargo launches build scripts from their crate directories, so the
+    selection is absolute: explicit selectors and relative PATH roots stay
+    attached to the operation directory. It names the interpreter itself, not
+    a checkout's virtualenv alias or launcher of it (``_base_interpreter``).
+    Build scripts run it isolated (``-B -I -S``), so the alias adds nothing,
+    and the value is a Cargo rerun input recorded with every product: an alias
+    would give each checkout its own product store variant (design 56,
+    section 2.8).
     """
     from molt.python_runtime_admission import resolve_build_python
 
     selected_environment = ProcessEnvironmentBuilder(environment)
-    entrypoint = resolve_build_python(selected_environment, cwd=cwd)
+    entrypoint = _base_interpreter(
+        resolve_build_python(selected_environment, cwd=cwd).resolve(strict=True)
+    )
     selected = next(
         (
             name
@@ -42,6 +49,42 @@ def pin_runtime_build_python_environment(
     )
     selected_environment[selected] = str(entrypoint)
     return ProcessEnvironment(selected_environment)
+
+
+def _base_interpreter(entrypoint: Path) -> Path:
+    """The interpreter a virtualenv's launcher runs, else ``entrypoint``.
+
+    A POSIX virtualenv links its interpreter, so resolving the path already
+    reaches the base. A Windows virtualenv (and ``venv --copies``) holds a
+    launcher copy in ``Scripts``, whose path differs per checkout; its
+    ``pyvenv.cfg`` names the base, by ``executable`` (CPython's venv) or by
+    its ``home`` directory (uv). Build scripts run the interpreter with
+    ``-B -I -S``, which imports no virtualenv site, so the base runs the same.
+    A base that cannot be found keeps the launcher's own path.
+    """
+    config = entrypoint.parent.parent / "pyvenv.cfg"
+    try:
+        lines = config.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return entrypoint
+    values = {
+        key.strip().casefold(): value.strip()
+        for key, separator, value in (line.partition("=") for line in lines)
+        if separator
+    }
+    candidates = []
+    if values.get("executable"):
+        candidates.append(Path(values["executable"]))
+    if values.get("home"):
+        candidates.append(Path(values["home"]) / entrypoint.name)
+    for candidate in candidates:
+        try:
+            base = candidate.resolve(strict=True)
+        except OSError:
+            continue
+        if base.is_file():
+            return base
+    return entrypoint
 
 
 def bind_runtime_build_python(

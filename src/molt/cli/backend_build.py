@@ -24,8 +24,6 @@ from molt.backend_executable_names import CodegenBackend
 from molt.cli import backend_binary as _backend_binary
 from molt.cli import backend_compile as _backend_compile
 from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
-from molt.cli.backend_generation import selected_backend_generation
-from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
 from molt.cli.build_inputs import _resolve_backend_compiler_profile
 from molt.cli.command_runtime import _resolve_timeout_env
 from molt.cli.output import emit_json, fail, json_payload
@@ -34,7 +32,6 @@ from molt.cli.project_roots import (
 )
 from molt.cli.runtime_fingerprints import (
     _read_runtime_fingerprint,
-    _runtime_artifact_fingerprint_matches,
 )
 from molt.cli.compiler_identity import installed_compiler_admission
 from molt.cli.rust_cpu_policy import resolve_rust_cpu_policy
@@ -92,21 +89,56 @@ def _verified_backend_receipts(
     identity: dict[str, str | int],
     admitted_fingerprint: str | None,
 ) -> tuple[dict[str, Any] | None, str | None]:
-    """Return the receipts binding exactly the compiler admission admitted.
+    """Return the store receipts binding exactly the compiler admission admitted.
 
-    ``binary`` is the generation admission admitted and ``identity`` its
-    content identity. The receipts are keyed by the selection's coordinate.
+    ``binary`` is the stored generation admission admitted and ``identity`` its
+    content identity. The receipts belong to the product store variant that
+    selects it under this checkout's identity and observed environment.
     """
-    source_path = _backend_binary._backend_fingerprint_path(
-        molt_root, selection.binary, selection.cargo_profile
+    build_admission = _backend_binary.backend_build_admission(
+        molt_root,
+        selection.features,
+        selection.cargo_profile,
+        os.environ,
+        rust_cpu=selection.rust_cpu,
     )
-    missing = (
-        "Backend admission left no source/content receipt selecting "
-        f"{binary} at {source_path}; the next build would run Cargo again."
+    build_admission.verify()
+    current = _backend_binary._current_backend_fingerprint(
+        molt_root,
+        cargo_profile=selection.cargo_profile,
+        backend_features=selection.features,
+        build_admission=build_admission,
     )
+    store = _backend_binary.host_tool_store(molt_root)
+    key = _backend_binary.host_tool_identity(selection.binary, current)
+    # Renewed before the read, so no eviction races it (design 56, 2.8).
+    admission = (
+        next(
+            (
+                stored
+                for stored in _backend_binary.stored_host_tools(
+                    store,
+                    key,
+                    selection.binary,
+                    current,
+                    environment=build_admission.plan.environment,
+                )
+                if stored.generation.resolve() == binary.resolve()
+            ),
+            None,
+        )
+        if store.record_use(key)
+        else None
+    )
+    if admission is None:
+        return None, (
+            f"Backend admission left no store receipt selecting {binary} in "
+            f"{store.entry(key)}; the next build would run Cargo again."
+        )
+    source_path = admission.stored.receipt
     source = _read_runtime_fingerprint(source_path)
     if source is None:
-        return None, missing
+        return None, f"Backend store receipt {source_path} does not verify."
     # Agreeing with itself proves nothing about this admission: the receipt
     # must name the source identity admission computed and these bytes must be
     # the ones it admitted, projected exactly as builds key their caches.
@@ -120,39 +152,7 @@ def _verified_backend_receipts(
             f"{receipt_fingerprint}, admitted {admitted_fingerprint}); the next "
             "build would not reuse this compiler."
         )
-    build_admission = _backend_binary.backend_build_admission(
-        molt_root,
-        selection.features,
-        selection.cargo_profile,
-        os.environ,
-        rust_cpu=selection.rust_cpu,
-    )
-    build_admission.verify()
-    CargoEnvironmentInputs.from_dict(source.get("cargo_environment")).verify(
-        build_admission.plan.environment
-    )
-    current = _backend_binary._current_backend_fingerprint(
-        molt_root,
-        cargo_profile=selection.cargo_profile,
-        backend_features=selection.features,
-        build_admission=build_admission,
-    )
-    selected = selected_backend_generation(selection.binary, source)
-    if (
-        selected is None
-        or selected.resolve() != binary.resolve()
-        or not _runtime_artifact_fingerprint_matches(
-            binary,
-            current,
-            source_path,
-            environment=build_admission.plan.environment,
-            require_artifact_digest=True,
-        )
-    ):
-        return None, missing
-    probe_path = _backend_binary._backend_probe_validation_path(
-        molt_root, selection.binary, selection.cargo_profile
-    )
+    probe_path = admission.stored.probe_validation
     probe_target = _admitted_probe_target(probe_path, selection, binary, source)
     if probe_target is None:
         return None, (
@@ -164,7 +164,6 @@ def _verified_backend_receipts(
             "path": os.fspath(source_path),
             "hash": source["hash"],
             "rustc": source.get("rustc"),
-            "inputs_digest": source.get("inputs_digest"),
             "meta_digest": source.get("meta_digest"),
             "artifact_content_identity": source.get("artifact_content_identity"),
             "cargo_environment": source.get("cargo_environment"),
@@ -318,7 +317,9 @@ def _prebuild_backend_binary(
             identity, installed, receipts = admitted_identity()
         except (OSError, ValueError):
             with _backend_binary._backend_admission_lock(
-                molt_root, selection.cargo_profile, cargo_timeout=cargo_timeout
+                molt_root,
+                selection.binary,
+                selection.cargo_profile,
             ):
                 identity, installed, receipts = admitted_identity()
     except (OSError, ValueError, _backend_binary._BackendAdmissionLockError) as exc:

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.module_isolation import forget_module
 from tests.surface_process_guard import run_surface_test_process
 
 
@@ -276,7 +277,7 @@ def test_text_encoding_public_contract_and_warning_frames(monkeypatch, buffer_si
         patch.setitem(sys.modules, "_io", private)
         patch.setattr(private, "DEFAULT_BUFFER_SIZE", -123)
         for name in ("_pyio_text", "_pyio_text_context"):
-            patch.delitem(sys.modules, name, raising=False)
+            forget_module(patch, name)
         spec = importlib.util.spec_from_file_location(
             "_molt_pyio_text", STDLIB_ROOT / "_pyio.py"
         )

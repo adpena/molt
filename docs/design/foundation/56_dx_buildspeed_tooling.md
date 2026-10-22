@@ -771,6 +771,304 @@ Cargo-incremental quarantine receipt names a directory that survives the run,
 and artifact, cache-entry and release publications are outputs other
 processes trust. Neither runs on a successful guarded command.
 
+### 2.8 One product store per host (HF-390)
+
+Each checkout used to select its Rust products (the native runtime archive per
+profile, stdlib profile and target; the backend and host-tool executables; the
+WASM runtime pair) inside its own Cargo target. A new lane, the landing
+sandbox, a pinned session and every agent worktree therefore rebuilt products
+that another checkout had built from identical inputs. Measured on the
+integrator Mac on 2026-10-21 (load 14-22): a fresh lane's first
+`molt build examples/hello.py` took 330.8 s, with one Cargo run each for the
+runtime (about 103 s) and the backend (about 153 s), against 18.8 s warm. Two
+checkouts of one commit compute the same runtime identity and the same backend
+identity; only their target paths differ.
+
+Leading tools share builds across checkouts through one store keyed by inputs:
+
+- Go keeps one build cache per user (`os.UserCacheDir()/go-build`), shared by
+  every checkout. An action ID hashes the command, environment, input contents
+  and tool contents; main-module packages also hash their directory unless
+  `-trimpath` is set
+  ([exec.go](https://github.com/golang/go/blob/go1.27.3/src/cmd/go/internal/work/exec.go),
+  [cache.go](https://github.com/golang/go/blob/go1.27.3/src/cmd/go/internal/cache/cache.go)).
+  It renews an entry's mtime at most hourly and trims entries unused for 5 days.
+- Bazel keeps an action cache (action key to result) beside a content-addressed
+  store; its disk cache serves "multiple workspaces of the same project, such
+  as multiple checkouts" ([remote caching](https://bazel.build/remote/caching),
+  [command line](https://bazel.build/reference/command-line-reference)).
+  `--incompatible_strict_action_env`, the default since Bazel 9.0, gives every
+  action a static PATH so a user's PATH cannot split a shared cache.
+- Nix addresses a store path by the derivation that made it, shares one
+  `/nix/store` across projects, and builds with `PATH=/path-not-set`
+  ([input addressing](https://nix.dev/manual/nix/latest/store/derivation/outputs/input-address),
+  [building](https://nix.dev/manual/nix/latest/store/building)).
+
+Nothing below the product level shares across checkouts today, so the store
+works at the product level:
+
+- sccache 0.18.0 hashes a Rust compile's working directory, every `CARGO_*`
+  variable and every `env!` dependency (such as `OUT_DIR`) as given; its
+  `SCCACHE_BASEDIRS` applies to C and C++ only
+  ([rust.rs @v0.18.0](https://github.com/mozilla/sccache/blob/v0.18.0/src/compiler/rust.rs),
+  [#2652](https://github.com/mozilla/sccache/issues/2652)). On this host the
+  build server hit 6 of 855 Rust requests (0.70%) against 95.5% for C/C++,
+  with its 10 GiB cache at capacity.
+- Cargo's `build.build-dir` (1.91) moves intermediates but does not share them;
+  the cross-workspace cache is a design and a draft
+  ([#5931](https://github.com/rust-lang/cargo/issues/5931),
+  [2026 goal](https://goals.rust-lang.org/2026/cargo-cross-workspace-cache.html)),
+  content freshness (`-Zchecksum-freshness`) is nightly-only, and
+  `profile.trim-paths` stabilizes in 1.101.
+- An APFS clone of a warm build directory (0.64 s, no space) cut a second
+  checkout's runtime build from about 103 s to 39.6 s: Cargo kept every
+  registry unit and recompiled the 17 workspace crates whose files were newer
+  than the clone. It is unsound in general: freshness compares mtimes, so a
+  lane whose differing sources are older than the clone's fingerprints would
+  reuse the clone's code (the HF-45/V1-01 wrong-source failure), and absolute
+  dep-info entries keep pointing into the first checkout. Rejected until
+  content freshness is stable.
+
+`molt.cli.product_store` owns the store; `molt.dx.product_store_dir` places it
+at `<target base>/target/.molt-products` (`v1/<kind>/` below it), beside the
+checkout targets of one artifact root, so every checkout target and pinned
+session target there shares it. An explicit `CARGO_TARGET_DIR` outside that
+directory is operator-owned and keeps a store of its own, which also isolates
+tests that place their target in a temporary directory.
+
+- An entry is named by the product's existing identity digest, which names
+  sources by content and logical root and never by checkout path. A store miss
+  builds once in the checkout's own target and publishes; every later build of
+  the same inputs on the host reuses the entry with no Cargo build. "The same
+  inputs" is narrower than "unchanged Rust": the identity also covers the
+  toolchain content root, and the runtime's covers about 116 Python tooling
+  files (`runtime_build_tooling_paths`), so a lane that edits only, say,
+  `src/molt/dx.py` rebuilds the runtime cold, and a clone with its own toolchain root shares nothing
+  (one such clone's first build took 710.2 s with four Cargo runs, against the
+  330.8 s baseline). Measured after this change on the integrator Mac
+  (2026-10-21, another session and load than the baseline, so not a paired
+  comparison): a second clone of one commit and toolchain built
+  `examples/hello.py` in 39.4 s with no Cargo build; one 1.3 s Cargo probe and
+  three `rustc` version probes still ran.
+- A variant inside an entry holds what one observed Cargo environment
+  (`CargoEnvironmentInputs`) produced, named by its digest. A build-script
+  variable can change bytes without changing the declared identity, so a
+  reader admits the variant whose recorded environment matches its own, and
+  two environments keep two variants instead of overwriting one selection.
+- Publication completes a variant's closure before its selection receipt
+  appears, and eviction moves an entry aside before deleting it, so readers
+  see an entry whole or not at all. A receipt that exists but does not verify
+  is therefore corruption: the build fails at stage `product-store` and names
+  the entry and `molt cache evict <kind> <identity>`, the tested tool that
+  removes it the way idle eviction does (it waits for the identity's builder,
+  then moves the entry aside under the ledger lock). It never rebuilds over
+  it silently, and a hand deletion under live readers would break the
+  whole-or-nothing rule.
+- A reader reads only its own variant: it reads each receipt's recorded Cargo
+  environment (one small JSON read for the runtime's manifest, the receipt
+  itself for a host tool), skips the variants of other environments, and
+  verifies the bytes of the one that matches. A corrupt variant of another
+  environment therefore never fails it. A receipt too damaged to name an
+  environment names no reader's; if it is the reader's own, the reader misses,
+  builds, and its publication finds the existing receipt and fails with the
+  same eviction message (one wasted build in that rare case, against
+  blocking every other environment).
+- A variant is written once, enforced by an exclusive (no-replace) receipt
+  publication. Nothing rewrites its receipt while readers may hold what it
+  selects: a stored compiler that fails its capability probe
+  fails the build (the same inputs build the same compiler), and an import
+  of a variant the host already holds returns the stored one. Probe evidence
+  is a cached check beside the receipt, so a stale one is probed again.
+- A variant's members never change. Two content-addressed derivations of the
+  runtime archive are added beside its published generation: the
+  callable-symbol projection (on the first native code generation) and the
+  extraction of the native-link custody archive (on the first link). Each is
+  published exclusively, never replaces a file, and never recreates a
+  generation that eviction removed (`atomic_write_bytes(create_parent=False)`;
+  the extraction stage is made with `parents=False`), so an entry stays whole
+  or absent, and both leave with their entry. The JIT tier's runtime image
+  (37 MiB) is not added to the runtime's entry: it is an entry of its own
+  kind, `jit-runtime-image`, keyed by the archive digest and the link command.
+  An image written inside a runtime entry that a cached JIT launch never
+  renewed could age out with it, and the image's lock then recreated a
+  variant with no receipt, which the next publication of that runtime
+  collided with (HF-390 review v2, M1). A cached JIT launch now renews the
+  entry of every file a JIT start reads: the runner, the image and the
+  runtime's callable-symbol table. A host tool's probe evidence is the one
+  other late write: a cached check beside its receipt, rewritten under the
+  entry's build lock when it does not match (a variant imported from
+  another host carries none until its first use).
+- A receipt names the product, never the checkout that built it: the
+  backend's store receipt keeps only the source identity (`hash`, `rustc`,
+  `meta_digest`), the observed environment and the bytes. Each checkout keeps
+  its fast-path metadata (source timestamps, clean-head state) in its own
+  identity memo, so a later build of that checkout skips hashing its sources.
+- One builder per input: a miss takes the entry's lock (`single_flight`) and
+  reads the store again under it, so a second checkout with the same inputs
+  waits and then reuses the first one's publication. Proven at the lock: two
+  interpreters with one identity build it once
+  (`tests/cli/test_product_store.py`). Not yet proven with two real builds:
+  in the one concurrent run on record the two checkouts ran different code
+  (one carried an edited `runtime/molt-backend/src/main.rs`) and one build
+  failed at `build-input-coverage`, so it showed neither reuse nor
+  serialization by this lock; a rerun with two worktrees at one commit is
+  open. CPU admission across
+  builds stays with `molt.host_capacity` ([host capacity](../host_capacity.md),
+  design item 6).
+- One wait policy covers the checkout's build locks, the identity's lock and
+  the shared cache locks (`molt.file_locks.lock_wait_s`): a waiter waits while
+  the holder holds the lock. Cargo waits on its build-directory and
+  package-cache locks the same way, and Bazel on its output base
+  (`--block_for_lock`, on by default). The holder bounds its own work (Cargo
+  and the capability probe each by `MOLT_CARGO_TIMEOUT`), and an OS lock dies
+  with its holder, so a waiter's own timer can only fail it while the build
+  it waits for may still finish. Before, the checkout lock waited 300 s and
+  the identity lock the build's Cargo timeout, so a waiter behind a cold
+  release backend build (267 s of Cargo at load 20 on this host) failed, and
+  with `MOLT_CARGO_TIMEOUT=T` a backend holder could hold the lock for Cargo,
+  the probe and publication, longer than its waiters' T.
+  `MOLT_BUILD_LOCK_TIMEOUT` bounds every wait for an operator who prefers to
+  fail. A build or product lock's holder (`molt.cli.build_locks`) records its
+  pid and start time in `<lock>.holder` beside the lock (the lock file stays
+  empty metadata) and empties it on release; a waiter prints one notice
+  naming the lock and that holder, as Cargo prints
+  "Blocking waiting for file lock" and Bazel "Another command (pid=...) is
+  running", so a stopped holder (a suspended `molt build`) is visible, not a
+  silent hang. A record whose pid no longer has the recorded start time names
+  no holder. Where another process's start time is not observable (Windows,
+  or a process that exited), a record names its pid only while that pid runs,
+  with a note that the pid may be reused; before, an exited holder's record
+  was named as the live holder (HF-390 review v2, m2). A bounded wait that
+  gives up reports one message (`molt.file_locks.lock_wait_timeout_message`),
+  which callers embed in their own failure lines; `tools/compile_progress.py`
+  retries on that message wherever it appears (`is_lock_wait_timeout` reads
+  its head, "Timed out after Ns waiting for"), not on the waiting notice,
+  which names `MOLT_BUILD_LOCK_TIMEOUT` too (m3; review v3 found the first
+  version required the message at a line's end, which the native runtime's
+  stage line never prints). The record is process-lifetime state with no barrier (section
+  2.7): one write, and one `ftruncate` on the descriptor it keeps for the
+  hold. Measured on the integrator Mac (2026-10-22, median of 7 x 400): an
+  uncontended acquire and release took 72 us against 47 us without the
+  record on the external volume, and 82 us against 48 us on the internal
+  disk; creating and unlinking a record file instead took about 440 us on
+  the external volume. A warm build takes two or three build locks. A shared
+  cache lock's waiter names the lock but not its holder: `molt.file_locks`
+  belongs to the Python capture closure
+  (`python_capture_authority_paths`), which must not import the process
+  model that reads another process's start time.
+- Retention follows last use, as Go's does: every read renews its entry in
+  the store's ledger before it reads (build admission, the backend receipt
+  check of `internal-backend-build`, the cross-host export, a cached JIT
+  launch's runner, image and callable-symbol table, each mapped to its entry
+  after resolving both the file and the store directory, so a file in no
+  entry is a miss), and each publication evicts entries no build
+  used for 5 days. The check and the renewal hold the ledger lock, where
+  eviction runs. A read of an absent entry is a miss that creates and renews
+  nothing; the build that follows creates and renews the entry in one step
+  under the ledger lock, so no eviction falls between the two. Before, the
+  renewal of an absent entry raised, and every first build of a new runtime
+  identity failed at stage `product-store` (HF-390 review v2, B1). Every removal, idle
+  eviction, `molt cache evict` and the sweep of an aside an interrupted
+  eviction left, runs under the ledger lock, so no sweep deletes an aside
+  another process is still removing. The native runtime's per-target generations had no
+  eviction at all (12 generations, 1.5 GB, in one live checkout's dev-fast).
+  Like Go, which renews an entry's mtime at most hourly, an admission renews
+  at most once an hour: inside the hour it reads the ledger without the lock
+  and writes nothing. A locked, durable renewal measured 14 ms (median 24 ms,
+  maximum 155 ms) at load 161 on this host, and every warm build made one for
+  the runtime and one for the backend.
+- Lock order is fixed: a build takes its checkout's build lock first (for
+  the backend it guards Cargo's one output that every feature variant
+  publishes from), then the identity's lock, then the ledger lock briefly.
+  Imports and `molt cache evict` take only the identity's lock and then the
+  ledger lock, so no order inverts. The identity's lock lives at
+  `<kind>/.locks/<identity>.lock`, outside the entry, and is never deleted,
+  as Cargo keeps its lock files: eviction moves an entry aside while a waiter
+  may hold the lock's inode, and a lock inside the entry would move with it.
+  Each identity ever built leaves two empty files (the lock and its holder
+  record), metadata with no data blocks: on the integrator Mac on 2026-10-22
+  the store held 8 such files for 4 built identities beside 16 entries, 0 KB
+  on disk. Deleting one safely would need every acquirer to compare the
+  locked descriptor's inode with the path's after locking and retry, or a
+  waiter on the unlinked inode and a later opener of a new one would both
+  hold the identity; the trade keeps the empty files.
+
+The native runtime, every host tool (each backend feature variant, the JIT
+runner and the WASM facts tool, store kind `host-tool`) and the JIT runtime
+image (kind `jit-runtime-image`) read and publish only the store; the
+per-target selection receipts, the canonical-target candidates and the
+backend's canonical hydration are deleted. A host tool's entry is named by its
+executable name and source identity. Every publication, of a runtime or a
+host tool, follows a Cargo run in this checkout's target and refuses at
+`build-input-coverage` (`backend_build_input_coverage` for a host tool) when
+Cargo's dep-info and build-script reads name a file the identity does not
+cover (`molt.cli.cargo_build_reads.paths_outside`): the store serves every
+checkout from that identity, so a missed input would let all of them reuse a
+stale product, where before the staleness stayed in one checkout. The host
+tool's identity was a hand list of its crate closure plus two files Rust
+embeds from outside it (`backend_environment.json`,
+`backend_daemon_protocol_version.txt`); the check now proves the list against
+what Cargo read. A host tool no longer seeds the store from a checkout's
+earlier Cargo output without running Cargo: that output's build left no reads
+to check, and on a warm target the Cargo run that replaces it finds every unit
+fresh. The cross-host transfer
+(`molt.cli.native_toolchain_transfer`, used by the Nightly bundle) exports a
+store entry and imports into the importing host's store.
+
+The store replaced a layout that live targets still held: per profile
+directory, `.molt-native-generations`, `.molt-backend-generations` and the
+runtime selection receipts (`libmolt_runtime.stdlib_*.a.generation.json`), and
+per build control `backend_probe_validations/` and the receipt beside Cargo's
+backend output. On 2026-10-22 a dry run of the integrator Mac's artifact root
+found 3,382 such entries, 12.5 GB, most of them in the targets of live
+worktrees, which no root retirement reaches. Nothing on current code reads,
+renews or evicts them, so the daily GC (section 2.6) retires them inside the
+roots that stay: `molt.checkout_state.superseded_layout_paths` lists the frozen
+names (two directory levels of a target, never a profile's `deps`; two names
+in a build control), and `tools/disk_guard.py` deletes an entry once it is idle
+past the protection window, no build lock is held below its root, and it holds
+the root's exclusive retirement lock, which every managed build holds shared
+for its whole run. That custody matters because a worktree that has not taken
+this change still runs the old code: if it builds, the guard skips the root;
+if it builds later, it misses and rebuilds once (receipts go before their
+generations, so it never reads a partial entry). Measured on that root: the
+whole GC dry run took 3.7 s warm (22 s cold) with the layout pass 2.0 s of it
+while 3,382 entries wait; once they are gone, the pass reads directory
+listings only (about 0.15 s for 75 targets and 6,374 build controls, warm).
+The artifact root's own `target/<profile>` (0.34 GB here, from an old canonical
+target) and a plain clone's `<checkout>/target` are not roots the guard owns,
+so no use protocol proves them idle; they stay for an operator purge, as
+section 2.9 item 4 requires.
+
+The runtime WASM pair already lives in one host directory
+(`<MOLT_EXT_ROOT>/wasm`, `molt.cli.runtime_wasm_generation`) keyed by a
+location-independent identity, so it is built once per input on a host that
+sets an artifact root; it has its own store and retention. Folding it into
+this store is open.
+
+Host-wide build state keeps three retention policies, one per kind of
+content; section 2.9 item 4's single table will carry the same rows (HF-434).
+Sizes are the integrator Mac's on 2026-10-22.
+
+| Store | Holds | Last use | Retires | Bytes | Why this policy |
+| --- | --- | --- | --- | --- | --- |
+| Product store, `<target base>/target/.molt-products` | reusable runtimes, host tools and JIT runtime images, one entry per input identity | ledger; every read renews, at most hourly | 5 days unused, at each publication; `molt cache evict` on demand | no budget; 334 MB | Every checkout reuses an entry, so reuse decides. Go trims its build cache by 5 days of non-use, a limit chosen from measured reuse, and sets no size bound either. |
+| WASM pair store, `<MOLT_EXT_ROOT>/wasm` (else the target's `molt-runtime-wasm`) | one target's selected runtime pair and the generations it replaced | ledger; publication and binding | a replaced generation 24 h unused, at each publication; the selected one never | no budget; 519 MB and 624 MB in two roots | A replaced generation has no reuse; only a build that bound it before the switch reads it, and a build ends well inside 24 h. |
+| `MOLT_CACHE` (module, link and stdlib caches; the result cache of its lane lives here too) | entries keyed by program and compiler inputs | entry mtime, refreshed on use | 30 days unused, then oldest first past 30 GiB; daily after a build, `molt cache prune` on demand | 30 GiB; 72 GB and 6.3 GB in two roots | Entries scale with the programs built, so a byte budget bounds them; 30 days is Cargo's limit for recreatable data. |
+
+Host-tool generations inside a store variant use the backend generation store
+(`backend_generation.py`): its selection keeps the one generation a variant
+publishes, and its 24-hour eviction runs only at a publication, which a
+written-once variant makes once. They leave with their entry.
+
+Cargo's PATH no longer carries the caller's PATH (HF-385): the plan derives it
+from its typed selections (the managed LLVM `bin`, each captured executable's
+directory, POSIX `confstr(_CS_PATH)`), so `uv run molt` and `.venv/bin/molt`
+share one variant. Before, each alternation reran
+`runtime/molt-runtime-platform/build.rs` and rebuilt molt-runtime (81-133 s at
+`release-output`) for a byte-identical archive. Windows keeps the caller's
+PATH (an unverified cell).
+
 ### 2.9 One owner and one last use for every regenerable root (HF-434..HF-437)
 
 Section 2.6 retires checkout state by last use and owner absence. Every other
@@ -829,7 +1127,8 @@ The design extends `molt.checkout_state`; it adds no second authority.
    window is a rename back; nothing goes through the user's Trash.
 4. **One cache policy** (HF-434). One host cache root. Each store (module
    caches, the product store, the result cache, the WASM pairs) declares its
-   last-use stamp and byte budget in one table. Only generations whose
+   last-use stamp and byte budget in one table. Section 2.8 records today's
+   three policies and the reason each differs; the table takes those rows. Only generations whose
    producer, reader and evictor share that ownership protocol may retire
    automatically. The pre-e9b0b9be8 native archive/scratch layouts remain the
    HF-282 shared-writer compatibility boundary: old builds can still require

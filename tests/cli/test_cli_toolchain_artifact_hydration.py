@@ -29,6 +29,7 @@ import molt.wasm_artifact as wasm_artifact
 from molt.cli import backend_binary as cli_backend_binary
 from molt.cli import runtime_native_build as RUNTIME_NATIVE_BUILD
 from molt.cli.models import _RuntimeArtifactState
+from molt.cli.product_store import ProductStore
 from molt.cli.runtime_native_generation import publish_native_runtime_generation
 from molt.cli import runtime_wasm_build as RUNTIME_WASM_BUILD
 from molt.cli import runtime_wasm_build_support as RUNTIME_WASM_BUILD_SUPPORT
@@ -852,16 +853,24 @@ def test_cpython_abi_failures_publish_consumable_evidence_in_json_mode(
     assert str(paths[0]) in output.err
 
 
-def test_ensure_backend_binary_hydrates_from_canonical_target(
+def test_ensure_backend_binary_reuses_another_checkouts_stored_compiler(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
+    """A second checkout with the same inputs runs the stored compiler: no Cargo.
+
+    The producer's target publishes into the host's product store; the
+    consumer's target holds nothing, admits the stored generation by reads
+    and its probe evidence, and never materializes its own coordinate.
+    """
     stub_compiler_admission(monkeypatch)
     project_root = tmp_path
-    canonical_target = project_root / "target"
-    isolated_target = project_root / "isolated-target"
-    canonical_backend = canonical_target / "dev-fast" / "molt-backend.native_backend"
-    isolated_backend = isolated_target / "dev-fast" / "molt-backend.native_backend"
+    store = ProductStore(tmp_path / "store" / "host-tool")
+    monkeypatch.setattr(cli_backend_binary, "host_tool_store", lambda _root: store)
+    producer_target = project_root / "producer-target"
+    consumer_target = project_root / "consumer-target"
+    producer_backend = producer_target / "dev-fast" / "molt-backend.native_backend"
+    consumer_backend = consumer_target / "dev-fast" / "molt-backend.native_backend"
     image = (
         "#!/bin/sh\n"
         'out=""\n'
@@ -881,22 +890,15 @@ def test_ensure_backend_binary_hydrates_from_canonical_target(
         "inputs_digest": _TEST_RUNTIME_INPUTS_DIGEST,
         "meta_digest": _TEST_RUNTIME_META_DIGEST,
     }
-    canonical_fp = cli_artifact_state._artifact_state_path_for_build_state_root(
-        cli_artifact_state._canonical_build_state_root(project_root),
-        canonical_backend,
-        subdir="backend_fingerprints",
-        stem_suffix="dev-fast",
-        extension="fingerprint",
-    )
-    canonical_generation = publish_backend(
-        canonical_backend,
+    stored_generation = publish_backend(
+        producer_backend,
         image,
-        receipt=canonical_fp,
+        project_root=project_root,
         fingerprint=fingerprint,
         cargo_environment=compiler_environment_inputs(),
     )
 
-    monkeypatch.setenv("CARGO_TARGET_DIR", str(isolated_target))
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(consumer_target))
     monkeypatch.setattr(
         cli_backend_binary,
         "_backend_fingerprint",
@@ -909,46 +911,60 @@ def test_ensure_backend_binary_hydrates_from_canonical_target(
             AssertionError("cargo should not run")
         ),
     )
+    probes: list[list[str]] = []
+
+    def probe(cmd, **kwargs):
+        probes.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
     monkeypatch.setattr(
-        cli_backend_binary,
-        "_run_subprocess_captured_to_tempfiles",
-        lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, b"", b""),
+        cli_backend_binary, "_run_subprocess_captured_to_tempfiles", probe
     )
 
-    result = cli_backend_binary._ensure_backend_binary(
-        isolated_backend,
-        cargo_timeout=1.0,
-        json_output=True,
-        cargo_profile="dev-fast",
-        project_root=project_root,
-        backend_features=("native-backend",),
-        rust_cpu=RustCpuPolicy.BASELINE,
-    )
-    assert result, result.message
-    assert result.binary is not None
-    # The isolated target publishes its own generation of the canonical bytes.
-    assert result.binary.is_relative_to(isolated_target.resolve())
-    assert result.binary.read_bytes() == canonical_generation.read_bytes() == image
-    assert os.access(result.binary, os.X_OK)
-    assert not isolated_backend.exists()
+    for _ in range(2):
+        result = cli_backend_binary._ensure_backend_binary(
+            consumer_backend,
+            cargo_timeout=1.0,
+            json_output=True,
+            cargo_profile="dev-fast",
+            project_root=project_root,
+            backend_features=("native-backend",),
+            rust_cpu=RustCpuPolicy.BASELINE,
+        )
+        assert result, result.message
+        assert result.binary is not None
+        # The consumer runs the stored generation itself, not a copy.
+        assert result.binary.samefile(stored_generation)
+        assert result.binary.is_relative_to(store.root.resolve())
+        assert os.access(result.binary, os.X_OK)
+    # The first admission probed the stored compiler once; the second reused
+    # that evidence from the store.
+    assert len(probes) == 1
+    assert not consumer_backend.exists()
+    assert not consumer_target.exists()
 
 
-def test_canonical_native_generation_keeps_portable_dependency_custody(
+def test_stored_native_generation_keeps_portable_dependency_custody(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    """A stored generation outlives the build tree that produced it."""
     target_triple = "x86_64-unknown-linux-gnu"
     project_root = tmp_path
-    canonical_target = project_root / "target"
+    store = ProductStore(tmp_path / "store" / "native-runtime")
+    monkeypatch.setattr(
+        RUNTIME_NATIVE_BUILD, "native_runtime_store", lambda _root: store
+    )
+    producer_target = project_root / "producer-target"
     isolated_target = project_root / "isolated-target"
-    canonical_runtime = (
-        canonical_target / target_triple / "dev-fast" / "libmolt_runtime.a"
+    producer_runtime = (
+        producer_target / target_triple / "dev-fast" / "libmolt_runtime.a"
     )
     isolated_runtime = (
         isolated_target / target_triple / "dev-fast" / "libmolt_runtime.a"
     )
-    canonical_runtime.parent.mkdir(parents=True)
-    canonical_runtime.write_bytes(_FAKE_STATICLIB)
+    producer_runtime.parent.mkdir(parents=True)
+    producer_runtime.write_bytes(_FAKE_STATICLIB)
     build_identity = native_runtime_staticlib_identity(
         cargo_profile="dev-fast",
         target_triple=target_triple,
@@ -971,19 +987,21 @@ def test_canonical_native_generation_keeps_portable_dependency_custody(
             "out_dir": str(out_dir),
         }
     )
+    environment = runtime_cargo_environment_inputs()
     generation = publish_native_runtime_generation(
-        canonical_runtime,
-        source_archive=canonical_runtime,
+        store.variant(build_identity.digest, environment) / producer_runtime.name,
+        source_archive=producer_runtime,
         cargo_stdout=cargo_stdout,
         cargo_stderr="note: native-static-libs: -lportable\n",
         cargo_profile="dev-fast",
         target_triple=target_triple,
         build_identity=build_identity,
         inputs_are_current=lambda: True,
-        cargo_environment=runtime_cargo_environment_inputs(),
+        cargo_environment=environment,
     )
     assert generation is not None
     shutil.rmtree(producer)
+    shutil.rmtree(producer_target)
 
     monkeypatch.setenv("CARGO_TARGET_DIR", str(isolated_target))
     monkeypatch.setattr(

@@ -979,6 +979,10 @@ def _dispatch_entrypoint_command(
             extra_paths=args.extra_path,
             list_paths=args.list_paths,
         )
+    if args.command == "cache" and args.cache_command == "evict":
+        from molt.cli.maintenance import cache_evict
+
+        return cache_evict(args.json, kind=args.kind, identity=args.identity)
     if args.command == "cache":
         from molt.cli.maintenance import cache_prune
 

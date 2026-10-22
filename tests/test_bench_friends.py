@@ -16,6 +16,7 @@ import pytest
 
 from tests.native_process_guard import run_native_test_process
 from tests.process_guard_common import install_module_view
+from tests.module_isolation import forget_module
 
 
 from tools import bench_friends, numpy_off_shelf_adapter, perf_authority
@@ -2510,7 +2511,7 @@ def test_numpy_off_shelf_adapter_rejects_loaded_submodule_origin_escape(
     escaped.write_text("VALUE = 1\n", encoding="utf-8")
     for name in list(sys.modules):
         if name == "numpy" or name.startswith("numpy."):
-            monkeypatch.delitem(sys.modules, name, raising=False)
+            forget_module(monkeypatch, name)
     monkeypatch.setitem(
         sys.modules,
         "numpy",

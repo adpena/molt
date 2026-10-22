@@ -166,15 +166,21 @@ def test_molt_diff_metadata_probe_preserves_multi_token_python_command(monkeypat
     molt_diff._METADATA_PROBE_CACHE.clear()
 
     def fake_probe(command, *, budget=None):
+        # The probe's protocol: one JSON line naming the executable and the
+        # feature version (molt_diff._python_command_metadata).
         commands.append(command)
-        return subprocess.CompletedProcess(command, 0, "(3, 13)\n", "")
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            '{"executable": "C:\\\\Python313\\\\python.exe", "version_info": [3, 13]}\n',
+            "",
+        )
 
     monkeypatch.setattr(molt_diff, "_run_metadata_probe", fake_probe)
 
     assert molt_diff._python_exe_version(("py", "-3.13")) == (3, 13)
-    assert commands == [
-        ["py", "-3.13", "-c", "import sys; print(sys.version_info[:2])"]
-    ]
+    (command,) = commands
+    assert command[:3] == ["py", "-3.13", "-c"] and len(command) == 4
 
 
 def test_python_explicit_command_uses_host_quoted_option_authority(tmp_path):

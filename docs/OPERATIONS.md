@@ -549,7 +549,7 @@ uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic/exec_
 - **Lock-check cache**: deterministic lock checks are cached in `lock_checks/` under the project's Cargo target to avoid repeated `uv lock --check` and `cargo metadata --locked` on every build; lock-check JSON publishes through the same unique atomic temp-sibling writer as the other persisted cache state.
 - **Concurrent rebuild suppression**: backend/runtime Cargo rebuilds acquire file locks under the resolved build-state root's `build_locks/` directory. A shared Cargo target resolves to shared control state regardless of per-run receipt or disposable output placement. Distinct session targets have distinct target-addressed control roots; an explicit `MOLT_BUILD_STATE_DIR` remains authoritative. Ordinary DX environments default `CARGO_INCREMENTAL=1`; deterministic proof/CI environments may select `0` explicitly. Configured sccache wrappers require `0` through the shared Cargo environment policy. Interrupted Cargo work quarantines only incremental payload under its target rather than deleting shared artifacts. Exact-key backend cache publication uses session-independent locks under the resolved cache root's `locks/compile.<key>.lock`, so separate target/session roots still serialize publication to a shared cache entry.
 - **Project Cargo target**: [`molt.dx.project_cargo_target_dir`](../src/molt/dx.py) is the one rule for the Cargo target a Molt command builds a project into. An explicit `CARGO_TARGET_DIR` wins (a relative value is relative to the working directory, as Cargo reads it). Otherwise `MOLT_PREFER_EXTERNAL_ARTIFACTS` or `MOLT_REQUIRE_EXTERNAL_ARTIFACTS` selects `<artifact root>/target/checkouts/<checkout-component>`, as `molt dx run` does, and without them the project keeps `<project>/target`; `MOLT_EXT_ROOT` alone does not move it. A pinned `MOLT_SESSION_ID` adds `sessions/<component>` below the selected checkout target; a generated one never does. The runtime and backend builds, build control, the backend daemon and its suite lease, the compile governor, the lock-check cache, the WASM host and the MLIR backend all read it.
-- **Checkout state lifecycle**: under a shared artifact root a checkout keeps state roots named by `molt.dx.checkout_component`: its Cargo target (`target/checkouts/<component>`), its uv environments (`uv-project-envs/*__src-<component>`), its pytest cache (`tmp/pytest-cache/<component>`) and its Hypothesis home (`tmp/hypothesis/<component>`); each target owns a build-control root (`tmp/build-control/<address>`). [`molt.checkout_state`](../src/molt/checkout_state.py) owns their layout, an owner record (`.molt-state-owner.json`) and a last-use stamp (`.molt-last-use`) in each root, and the retirement policy ([design 56, section 2.6](design/foundation/56_dx_buildspeed_tooling.md#26-checkout-state-retention-hf-313)). A pinned session's target (`<target>/sessions/<session>`) is a root of the same policy. `RunContext.canonical_env` stamps a checkout's roots (a uv environment only after uv wrote its `pyvenv.cfg`) and a pinned session's target, and a CLI build marks the checkout target, session target and build control it selects as used. The disk guard retires a root unused for `MOLT_CHECKOUT_STATE_MAX_AGE_DAYS` (default 30) whatever its owner, a session target unused for `MOLT_SESSION_TARGET_IDLE_HOURS` (default 6), a root whose recorded owner is gone once unused for two hours (build control right after its target or session), and, under disk pressure, roots unused for two hours oldest first. A checkout target's retirement takes its session targets along. It runs at most once a day from `RunContext.canonical_env` and on demand with `tools/disk_guard.py --gc`. `tools/molt_dev.py integrate --cleanup-worktree` and `lane retire` retire the worktree's daemons, remove it, then reclaim its roots and its targets' build control at once; a failed removal keeps them. A held lock (Cargo's per-profile `.cargo-lock`, build control's build, diff and daemon-suite owner locks, including those of a session inside a target), `CARGO_TARGET_DIR`, the current `MOLT_SESSION_ID`'s target and the running interpreter's own environment always keep a root; guard markers elsewhere in the artifact root do not. A plain clone keeps its target in the checkout and its scratch in the host temporary folder, so it has no such roots.
+- **Checkout state lifecycle**: under a shared artifact root a checkout keeps state roots named by `molt.dx.checkout_component`: its Cargo target (`target/checkouts/<component>`), its uv environments (`uv-project-envs/*__src-<component>`), its pytest cache (`tmp/pytest-cache/<component>`) and its Hypothesis home (`tmp/hypothesis/<component>`); each target owns a build-control root (`tmp/build-control/<address>`). [`molt.checkout_state`](../src/molt/checkout_state.py) owns their layout, an owner record (`.molt-state-owner.json`) and a last-use stamp (`.molt-last-use`) in each root, and the retirement policy ([design 56, section 2.6](design/foundation/56_dx_buildspeed_tooling.md#26-checkout-state-retention-hf-313)). A pinned session's target (`<target>/sessions/<session>`) is a root of the same policy. `RunContext.canonical_env` stamps a checkout's roots (a uv environment only after uv wrote its `pyvenv.cfg`) and a pinned session's target, and a CLI build marks the checkout target, session target and build control it selects as used. The disk guard retires a root unused for `MOLT_CHECKOUT_STATE_MAX_AGE_DAYS` (default 30) whatever its owner, a session target unused for `MOLT_SESSION_TARGET_IDLE_HOURS` (default 6), a root whose recorded owner is gone once unused for two hours (build control right after its target or session), and, under disk pressure, roots unused for two hours oldest first. A checkout target's retirement takes its session targets along. Inside the roots that stay, the same pass retires the per-target layout the host's product store replaced (`.molt-native-generations`, `.molt-backend-generations`, runtime `*.generation.json` receipts, `backend_probe_validations/`) once idle for two hours and under the root's exclusive retirement lock ([design 56, section 2.8](design/foundation/56_dx_buildspeed_tooling.md#28-one-product-store-per-host-hf-390)). It runs at most once a day from `RunContext.canonical_env` and on demand with `tools/disk_guard.py --gc`. `tools/molt_dev.py integrate --cleanup-worktree` and `lane retire` retire the worktree's daemons, remove it, then reclaim its roots and its targets' build control at once; a failed removal keeps them. A held lock (Cargo's per-profile `.cargo-lock`, build control's build, diff and daemon-suite owner locks, including those of a session inside a target), `CARGO_TARGET_DIR`, the current `MOLT_SESSION_ID`'s target and the running interpreter's own environment always keep a root; guard markers elsewhere in the artifact root do not. A plain clone keeps its target in the checkout and its scratch in the host temporary folder, so it has no such roots.
 - **Completed Cargo incremental retirement**: plan with `tools/disk_guard.py
   --root <artifact-root> --retire-cargo-incremental <path>
   --guard-receipt <retired-guard.json>`; after independent review, repeat with
@@ -834,7 +834,7 @@ port to the host. Design, measurements and costs:
 ```bash
 python3 tools/linux_vm.py check                      # drift from the definition: exit 1
 python3 tools/linux_vm.py push molt-linux --checkout # this checkout's HEAD into ~/molt-main
-python3 tools/linux_vm.py push molt-x86 origin/main  # a ref: refs/heads/from-host in the guest
+python3 tools/linux_vm.py push molt-x86 origin/main --ref main # as refs/heads/host/main
 python3 tools/linux_vm.py release                    # free host files a mounting VM pins
 python3 tools/linux_vm.py render molt-linux
 python3 tools/linux_vm.py apply molt-linux --confirm-restart
@@ -842,30 +842,43 @@ python3 tools/linux_vm.py apply molt-linux --confirm-restart
 
 - **Moving commits in.** `push <vm> [rev]` sends a commit of the checkout you
   run it from into the guest clone (`~/molt-main`) over Lima's SSH, as
-  `refs/heads/from-host`; `--checkout` also checks it out, detached. For a
-  writable tree, `git -C ~/molt-main archive from-host | tar -x -C /tmp/<x>`
-  in the guest. Copy a single file with `limactl copy <file> <vm>:/tmp/`.
-  A guest cannot fetch from a host path: nothing is mounted.
-- **Pinned host files.** A VM that still mounts host paths (not yet applied,
-  or made by hand) pins every host file its guest looked up, even after the
-  host deletes it. Apple's virtiofs server closes forgotten files only in
-  batches of 64, so `drop_caches` alone frees nothing. `release` makes the
-  guest forget its unused inodes and then 64 more, which frees every pin no
-  guest process holds open; lane retirement runs it for a VM that holds
-  files of the retiring checkout, or deleted files. `check` shows what each
-  mounting VM holds. `release` never stops a VM. It leaves
-  `<mount>/.molt-linux-vm-forget/` (64 empty files) under each mount; delete
-  that directory once no VM mounts the path.
-- **Apply.** `apply` restarts the VM. It refuses while the guest is busy: a
-  process of the guest user, or any process in a login session (`sudo` work
-  too), outside the session and daemon set in the definition; a process
-  under the user's subordinate ids (a container user) or a containerd shim (a
-  running container); or `apt`, `dpkg` or `cloud-init`. It does not see root
-  work outside a login session (a `systemd-run` unit, a cron job), and a
-  session that starts after its probe is stopped with the VM, so check by
-  hand on a shared VM. It keeps the first config it replaced as
-  `lima.yaml.molt-previous` and restores the replaced config if the VM does
-  not start.
+  `refs/heads/host/head` (`--ref <name>`: `refs/heads/host/<name>`). It writes
+  only that host-owned namespace, so a guest branch is never moved. With
+  `--checkout` it checks the exact commit out, detached, but refuses while the
+  clone has changes (untracked files too), a Git command holds its index, or
+  any guest process works in the clone; without it, it prints the checkout
+  command. For a writable tree,
+  `git -C ~/molt-main archive host/head | tar -x -C /tmp/<x>` in the guest.
+  Copy a single file with `limactl copy <file> <vm>:/tmp/`. A guest cannot
+  fetch from a host path: nothing is mounted, and the clones' `origin`
+  remotes, which still name `~/Molt/molt-src` on the host, no longer work.
+- **Pinned host files.** A VM that still mounts host paths (one made by
+  hand) pins every host file its guest looked up, even after the host
+  deletes it. Apple's virtiofs server closes forgotten files only in batches
+  of 64 per VM process, so `drop_caches` alone frees nothing. `release` makes
+  the guest forget its unused inodes and then 64 more, which frees every pin
+  no guest process holds open; lane retirement runs it for a VM that holds
+  files of the retiring checkout, or deleted files its last release did not
+  leave behind (those, a guest process holds open). `check` shows what each
+  mounting VM holds. `release` never stops a VM. It keeps
+  `<mount>/.molt-linux-vm-forget/` (64 empty files) under each mount while a
+  VM mounts it; `apply` removes the sets of the mounts it ends. A mount whose
+  set cannot be written is reported, and the others still release.
+- **Apply.** `apply` restarts the VM. It starts the VM as a service launch,
+  so Lima's hostagent outlives `limactl start` (HF-471), and it succeeds only
+  when Lima then lists the VM as running; otherwise it restores the replaced
+  config and restarts the VM on it. Run it from a plain shell: a memory guard
+  around `apply` itself would see the hostagent as its descendant too. It refuses
+  while the guest is busy: a process of the guest user, or any process in a
+  login session (`sudo` work too), whose executable is not one of the
+  definition's idle executables (read as root, so the guest needs Lima's
+  passwordless sudo); a process under the user's subordinate ids (a container
+  user) or a containerd shim (a running container); or `apt`, `dpkg` or
+  `cloud-init`. It does not see root work outside a login session (a
+  `systemd-run` unit, a cron job) or an idle executable a user runs by hand,
+  and a session that starts after its probe is stopped with the VM, so check
+  by hand on a shared VM. It keeps the first config it replaced as
+  `lima.yaml.molt-previous`.
 - **Disk.** VM disk images live in `~/.lima` on the boot volume, so guest
   builds use the Mac's free space.
 

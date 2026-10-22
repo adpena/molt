@@ -198,6 +198,15 @@ def test_governor_default_target_matches_cli_and_daemon_with_artifact_root(
         monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
+    # Selecting a build-state root records a use, whose lock lives under the
+    # artifact root of that target: this checkout, for a target inside it
+    # (HF-465). The test compares paths only, so it records nothing.
+    from molt.cli import runtime_paths
+
+    monkeypatch.setattr(runtime_paths, "record_build_control_use", lambda *a, **k: None)
+    monkeypatch.setattr(
+        runtime_paths, "record_checkout_target_use", lambda *a, **k: None
+    )
     assert _build_state_root(project) == expected
 
 

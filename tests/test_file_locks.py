@@ -2,14 +2,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import errno
+import os
 import sys
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from molt import file_locks as build_locks
+from molt.cli import build_locks as cli_build_locks
 from tests.process_guard_common import run_custody_subject_process
 
 
@@ -902,3 +905,272 @@ def test_shared_readers_and_writer_contend_across_processes(tmp_path, held_befor
     finally:
         build_locks._release_file_lock(holder)
     assert _HeldLocks.now() == held_before
+
+
+_HOLD_SCRIPT = """
+import sys, time
+from pathlib import Path
+from molt.cli.build_locks import held_build_lock
+
+path, release = Path(sys.argv[1]), Path(sys.argv[2])
+with held_build_lock(path, purpose="test"):
+    print("held", flush=True)
+    deadline = time.monotonic() + 30
+    while not release.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+"""
+
+
+def _start_holder(lock_path: Path, release: Path):
+    import subprocess
+
+    from tests.process_guard_common import start_owned_test_process
+
+    holder = start_owned_test_process(
+        [sys.executable, "-c", _HOLD_SCRIPT, str(lock_path), str(release)],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    assert holder.stdout is not None
+    assert holder.stdout.readline().strip() == "held"
+    return holder
+
+
+def test_a_waiter_names_the_holding_process_and_waits_while_it_holds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, held_before
+) -> None:
+    """Cargo's "Blocking waiting for file lock", with the holder Bazel names."""
+    from tests.process_guard_common import close_owned_test_process
+
+    monkeypatch.delenv("MOLT_BUILD_LOCK_TIMEOUT", raising=False)
+    lock_path = tmp_path / "build.lock"
+    release = tmp_path / "release"
+    holder = _start_holder(lock_path, release)
+    notices: list[str] = []
+    try:
+        recorded = cli_build_locks.read_lock_holder(lock_path)
+        assert recorded is not None and recorded.pid == holder.pid
+        timer = threading.Timer(1.0, release.touch)
+        timer.start()
+        started = time.monotonic()
+        with cli_build_locks.held_build_lock(
+            lock_path, purpose="test", notice=notices.append
+        ):
+            waited = time.monotonic() - started
+            # The waiter now holds the lock and names itself for the next one.
+            assert cli_build_locks.read_lock_holder(lock_path).pid == os.getpid()
+        timer.join()
+        assert holder.wait(timeout=30) == 0
+    finally:
+        release.touch()
+        close_owned_test_process(holder)
+    assert waited >= 0.5
+    assert len(notices) == 1
+    assert str(lock_path) in notices[0] and f"pid {holder.pid}," in notices[0]
+    assert "until it is released" in notices[0]
+    # A released lock names no holder, and the lock file stays empty metadata.
+    assert cli_build_locks.read_lock_holder(lock_path) is None
+    assert lock_path.read_bytes() == b""
+    assert _HeldLocks.now().registry == held_before.registry
+
+
+def test_an_operator_bound_fails_the_wait_naming_the_holder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.process_guard_common import close_owned_test_process
+
+    monkeypatch.setenv("MOLT_BUILD_LOCK_TIMEOUT", "0.2")
+    lock_path = tmp_path / "build.lock"
+    release = tmp_path / "release"
+    holder = _start_holder(lock_path, release)
+    notices: list[str] = []
+    try:
+        with pytest.raises(cli_build_locks.BuildLockAcquisitionError) as raised:
+            with cli_build_locks.held_build_lock(
+                lock_path, purpose="test", notice=notices.append
+            ):
+                pytest.fail("a held lock admitted a second holder")
+    finally:
+        release.touch()
+        close_owned_test_process(holder)
+    assert "0.2s" in notices[0] and "MOLT_BUILD_LOCK_TIMEOUT" in notices[0]
+    message = str(raised.value)
+    assert str(lock_path) in message and f"pid {holder.pid}," in message
+
+
+def test_a_record_naming_an_exited_process_names_no_holder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An exited process has no observable start time either (review v2, m2).
+
+    Its record must not name it as the live holder. Where no other process's
+    start time is observable (Windows), a running pid is named with that
+    caveat, because the pid may have been reused.
+    """
+    import json
+
+    from molt import process_model
+    from tests.process_guard_common import (
+        close_owned_test_process,
+        start_owned_test_process,
+    )
+
+    child = start_owned_test_process([sys.executable, "-c", "pass"])
+    child.wait(timeout=60)
+    close_owned_test_process(child)
+    lock_path = tmp_path / "build.lock"
+    record = cli_build_locks.lock_holder_path(lock_path)
+
+    def write(pid: int, started: int | None) -> None:
+        record.write_text(
+            json.dumps(
+                {"schema": "molt.lock-holder.v1", "pid": pid, "started_at_ns": started}
+            ),
+            encoding="utf-8",
+        )
+
+    write(child.pid, 1)
+    assert cli_build_locks.read_lock_holder(lock_path) is None
+
+    monkeypatch.setattr(process_model, "process_started_at_ns", lambda pid: None)
+    write(os.getpid(), None)
+    holder = cli_build_locks.read_lock_holder(lock_path)
+    assert holder == cli_build_locks.LockHolder(os.getpid(), None, start_verified=False)
+    assert "not observable" in holder.describe()
+    write(child.pid, None)
+    assert cli_build_locks.read_lock_holder(lock_path) is None
+
+
+def test_only_a_timeout_reads_as_a_lock_wait_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The waiting notice names the knob too (review v2, m3).
+
+    A build that waited and then failed for another reason is not a lock
+    timeout; only the line a wait that gave up writes is.
+    """
+    from molt import file_locks
+    from tests.process_guard_common import close_owned_test_process
+
+    monkeypatch.setenv(file_locks.LOCK_WAIT_ENV, "0.2")
+    lock_path = tmp_path / "build.lock"
+    release = tmp_path / "release"
+    holder = _start_holder(lock_path, release)
+    notices: list[str] = []
+    try:
+        with pytest.raises(cli_build_locks.BuildLockAcquisitionError) as raised:
+            with cli_build_locks.held_build_lock(
+                lock_path, purpose="test", notice=notices.append
+            ):
+                pass
+    finally:
+        release.touch()
+        close_owned_test_process(holder)
+    (notice,) = notices
+    assert file_locks.LOCK_WAIT_ENV in notice
+    assert not file_locks.is_lock_wait_timeout(notice + "\nerror: link failed")
+    assert file_locks.is_lock_wait_timeout(f"notice\nmolt: {raised.value}\n")
+    # The native runtime build prints the timeout inside its stage line, with
+    # its evidence path after it (review v3, A-M1): compile_progress retries it.
+    from molt.cli import runtime_native_build
+    from tools import compile_progress
+
+    monkeypatch.setenv("MOLT_BUILD_STATE_DIR", str(tmp_path / "build-state"))
+    runtime_native_build._record_native_runtime_failure(
+        None,
+        project_root=tmp_path,
+        stage="build-lock",
+        summary=f"Native runtime build lock acquisition failed: {raised.value}",
+        emit_diagnostic=True,
+    )
+    printed = capsys.readouterr().err
+    assert "Evidence: " in printed and printed.rstrip().endswith(".json"), printed
+    assert compile_progress._is_retryable_failure(2, False, printed) == (
+        "build_lock_timeout"
+    )
+    assert compile_progress._is_retryable_failure(2, False, notice) is None
+
+
+def test_a_record_its_process_no_longer_backs_names_no_holder(tmp_path: Path) -> None:
+    """A holder that died before clearing its record must not be named."""
+    import json
+
+    lock_path = tmp_path / "build.lock"
+    record = cli_build_locks.lock_holder_path(lock_path)
+    live = cli_build_locks._own_start_marker()
+    for pid, started in ((os.getpid(), live), (os.getpid(), (live or 0) + 1)):
+        record.write_text(
+            json.dumps(
+                {"schema": "molt.lock-holder.v1", "pid": pid, "started_at_ns": started}
+            ),
+            encoding="utf-8",
+        )
+        holder = cli_build_locks.read_lock_holder(lock_path)
+        if started == live:
+            assert holder == cli_build_locks.LockHolder(pid, started)
+        elif live is not None:
+            # Another process now has the pid: the record is stale.
+            assert holder is None
+    for garbage in (b"", b"{", b'{"schema": "other", "pid": 1}', b"x" * 600):
+        record.write_bytes(garbage)
+        assert cli_build_locks.read_lock_holder(lock_path) is None
+    # A dead holder's longer record never leaks into the next holder's.
+    record.write_bytes(b"x" * 400)
+    with cli_build_locks.held_build_lock(lock_path, purpose="test"):
+        holder = cli_build_locks.read_lock_holder(lock_path)
+        assert holder is not None and holder.pid == os.getpid()
+    assert record.read_bytes() == b""
+
+
+def test_every_build_lock_waits_by_one_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MOLT_BUILD_LOCK_TIMEOUT", raising=False)
+    assert build_locks.lock_wait_s() is None
+    for raw, expected in (("", None), ("junk", None), ("0", None), ("-1", None)):
+        monkeypatch.setenv("MOLT_BUILD_LOCK_TIMEOUT", raw)
+        assert build_locks.lock_wait_s() is expected
+    monkeypatch.setenv("MOLT_BUILD_LOCK_TIMEOUT", "2.5")
+    assert build_locks.lock_wait_s() == 2.5
+
+
+def test_a_shared_cache_lock_waiter_waits_while_its_holder_holds_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """The shared cache lock follows the one wait policy: no 300 s default."""
+    monkeypatch.delenv("MOLT_BUILD_LOCK_TIMEOUT", raising=False)
+    held, release = threading.Event(), threading.Event()
+
+    def holder() -> None:
+        with build_locks._shared_cache_lock("compile.test", cache_root=tmp_path):
+            held.set()
+            release.wait(timeout=30)
+
+    thread = threading.Thread(target=holder)
+    thread.start()
+    assert held.wait(timeout=10)
+    threading.Timer(0.5, release.set).start()
+    started = time.monotonic()
+    try:
+        with build_locks._shared_cache_lock("compile.test", cache_root=tmp_path):
+            waited = time.monotonic() - started
+    finally:
+        release.set()
+        thread.join(timeout=30)
+    assert waited >= 0.3
+    assert "Blocking waiting for the shared cache lock" in capsys.readouterr().err
+    monkeypatch.setenv("MOLT_BUILD_LOCK_TIMEOUT", "0.1")
+    release.clear()
+    held.clear()
+    thread = threading.Thread(target=holder)
+    thread.start()
+    assert held.wait(timeout=10)
+    try:
+        with pytest.raises(
+            build_locks.FileLockTimeout, match="MOLT_BUILD_LOCK_TIMEOUT"
+        ):
+            with build_locks._shared_cache_lock("compile.test", cache_root=tmp_path):
+                pytest.fail("a held cache lock admitted a second holder")
+    finally:
+        release.set()
+        thread.join(timeout=30)

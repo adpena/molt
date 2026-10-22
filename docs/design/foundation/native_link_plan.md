@@ -158,11 +158,13 @@ verification; they do not renormalize the environment, retry through another
 tool, or change sccache policy after capture. Guarded execution evidence remains
 available if post-execution plan verification fails.
 
-Canonical hydration copies custody before the native manifest and validates the
-copied artifact against the invoking plan's independent identity. Canonical or
-copied-manifest rejection records bounded failure evidence and its path before
-an exact-plan refresh. A successful recovery does not poison final runtime
-state; failed refresh or admission is fatal. Nightly bundle schema **3** carries
+The host's product store (design 56 section 2.8) holds each runtime once per
+input identity. Admission renews the entry, then validates the stored variant
+whose recorded Cargo environment matches the invoking plan against that plan's
+independent identity; it reads no other variant's bytes. A receipt of that
+variant that exists but does not verify is corruption and fails at stage
+`product-store`, naming `molt cache evict native-runtime <identity>`; it is
+never rebuilt over silently. Nightly bundle schema **3** carries
 the same manifest/custody authorities. Bundle OS/architecture fields are checked
 projections of the captured target, not reader-host observations. Supported
 bundle cells are GNU Linux, macOS, and Windows MSVC on x86_64/aarch64; other

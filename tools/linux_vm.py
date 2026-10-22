@@ -12,8 +12,11 @@
 
 ``push``
     Sends a commit of this checkout into a guest's clone over Lima's SSH
-    (``git push``), and with ``--checkout`` checks it out there, detached. The
-    definitions mount no host path, so this is how sources reach a guest.
+    (``git push``) as ``refs/heads/host/<name>``, a namespace only the host
+    writes. With ``--checkout`` it checks the exact commit out there,
+    detached, when the clone has no changes and no guest process works in
+    it. The definitions mount no host path, so this is how sources reach a
+    guest.
 
 ``release``
     Frees the host files that a running VM's virtiofs mounts pin. It serves a
@@ -28,10 +31,13 @@
 
 ``render`` / ``apply``
     ``render`` prints a VM's ``lima.yaml``. ``apply`` validates it with
-    ``limactl validate``, then stops the VM, installs it and starts the VM. It
-    keeps the first config it replaced as ``lima.yaml.molt-previous`` and
-    restores the replaced config if the VM does not start. It refuses without
-    ``--confirm-restart`` and while the guest runs work.
+    ``limactl validate``, then stops the VM, installs it and starts the VM as
+    a service launch: Lima's hostagent outlives ``limactl start``. Only a VM
+    that Lima lists as running counts as started. It keeps the first config
+    it replaced as ``lima.yaml.molt-previous``, restores the replaced config
+    if the VM does not run, and removes the forget sets of the mounts it
+    ended. It refuses without ``--confirm-restart`` and while the guest runs
+    work.
 
 Lane retirement calls ``release_for_paths`` (``tools/molt_dev_retire.py``)
 just before it deletes a checkout. With no live Lima hostagent, or when every
@@ -44,6 +50,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Iterable, Mapping, Sequence
+import contextlib
 from dataclasses import dataclass, field
 import enum
 import json
@@ -54,6 +61,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import tomllib
 from typing import Protocol
@@ -72,9 +80,13 @@ from tools.command_execution import CommandExecutor  # noqa: E402
 
 ROOT = _REPO_ROOT
 DEFINITIONS_PATH = ROOT / "tools" / "linux_vm.toml"
-DEFINITIONS_SCHEMA = 2
+DEFINITIONS_SCHEMA = 3
 CHECK_SCHEMA = "molt.linux-vm.check.v1"
-RELEASE_SCHEMA = "molt.linux-vm.release.v1"
+RELEASE_SCHEMA = "molt.linux-vm.release.v2"
+# What the last release left held, in the instance directory: the deleted
+# files a guest process holds open, which no release can free.
+RELEASE_RECORD = "molt-linux-vm-release.json"
+RELEASE_RECORD_SCHEMA = "molt.linux-vm.release-record.v1"
 
 EXIT_OK = 0
 EXIT_FAIL = 1
@@ -104,15 +116,20 @@ FORGET_BATCH = 64
 # Under each mount: the empty files a release looks up and forgets.
 FORGET_SET = ".molt-linux-vm-forget"
 # Prints the guest user's uid and name, the probe shell's pid, the user's
-# subordinate id ranges, then every process with its cgroup.
+# subordinate id ranges, every process's executable (as root: the user's
+# sshd and (sd-pam) are not dumpable, so only root can read theirs), then
+# every process with its cgroup. Without passwordless sudo it fails.
 IDLE_PROBE = (
     "id -u; id -un; echo $$; echo '--- subuid'; cat /etc/subuid 2>/dev/null; "
+    "echo '--- exe'; sudo -n ps -ww -eo pid=,exe= || exit 3; "
     "echo '--- ps'; ps -ww -eo pid=,ppid=,uid=,comm=,cgroup="
 )
 # A systemd-logind login session (`limactl shell` runs in one).
 _SESSION_SCOPE = re.compile(r"/session-[^/]+\.scope(?:/|$)")
 # Linux keeps a task's comm in TASK_COMM_LEN (16) bytes with a terminator.
 COMM_LENGTH = 15
+# procps prints the executable of a process whose file was replaced so.
+_DELETED_EXECUTABLE = " (deleted)"
 LIMA_INSTANCE_DISKS = ("disk", "diffdisk")
 # Lima merges these into every instance's configuration.
 LIMA_SHARED_CONFIGS = ("default.yaml", "override.yaml")
@@ -120,10 +137,22 @@ GUEST_COMMAND_SECONDS = 120.0
 LIFECYCLE_SECONDS = 900.0
 PREVIOUS_CONFIG = "lima.yaml.molt-previous"
 NEXT_CONFIG = "lima.yaml.molt-next"
-DEFAULT_PUSH_REF = "from-host"
+# Host transport refs are separate from guest branches. Ordinary Git
+# fast-forward protection also preserves divergent work in this namespace.
+PUSH_NAMESPACE = "refs/heads/host/"
+DEFAULT_PUSH_REF = "head"
+# The guest checkout's exit status when the clone is dirty or in use.
+CHECKOUT_REFUSED = 3
+# How many lines of a failed command's stderr a report quotes.
+REPORT_LINES = 5
 _SIZE = re.compile(r"^([1-9][0-9]*)(MiB|GiB|TiB)$")
 _PARAM_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _RELATIVE_PATH = re.compile(r"^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$")
+# A branch name under PUSH_NAMESPACE, in components Git accepts (see
+# `push_ref`).
+_PUSH_REF = re.compile(
+    r"^[A-Za-z0-9_][A-Za-z0-9._-]*(?:/[A-Za-z0-9_][A-Za-z0-9._-]*)*$"
+)
 _SIZE_UNITS = {"MiB": 1 << 20, "GiB": 1 << 30, "TiB": 1 << 40}
 
 
@@ -209,7 +238,8 @@ class VmDefinition:
 @dataclass(frozen=True, slots=True)
 class Definitions:
     minimum_lima_version: str
-    idle_guest_processes: frozenset[str]
+    # Absolute paths of the guest's session and daemon executables.
+    idle_guest_executables: frozenset[str]
     maintenance_guest_processes: frozenset[str]
     vms: Mapping[str, VmDefinition]
 
@@ -232,6 +262,23 @@ def _keys(table: Mapping[str, object], where: str, required: set[str]) -> None:
 def _lima_table(value: object, where: str) -> Mapping[str, object]:
     if not isinstance(value, dict):
         raise LimaError(f"{where} is not a mapping in Lima's output")
+    return value
+
+
+def _lima_list(value: object, where: str) -> list[object]:
+    """A list in Lima's output; Lima prints an absent one as null."""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise LimaError(f"{where} is not a list in Lima's output")
+    return value
+
+
+def _lima_count(value: object, where: str) -> int:
+    if value is None:
+        return 0
+    if type(value) is not int:
+        raise LimaError(f"{where} is not an integer in Lima's output")
     return value
 
 
@@ -279,6 +326,20 @@ def _names(value: object, where: str) -> frozenset[str]:
     if not isinstance(value, list) or not value:
         raise DefinitionError(f"{where} must be a non-empty list")
     return frozenset(_string(item, where)[:COMM_LENGTH] for item in value)
+
+
+def _executables(value: object, where: str) -> frozenset[str]:
+    if not isinstance(value, list) or not value:
+        raise DefinitionError(f"{where} must be a non-empty list")
+    paths = [_string(item, where) for item in value]
+    for path in paths:
+        if not path.startswith("/") or not _RELATIVE_PATH.match(path[1:]):
+            raise DefinitionError(f"{where}: {path!r} is not an absolute path")
+        if ".." in path.split("/"):
+            raise DefinitionError(f"{where}: {path!r} contains '..'")
+    if len(set(paths)) != len(paths):
+        raise DefinitionError(f"{where} lists a path twice")
+    return frozenset(paths)
 
 
 def _vm(name: str, raw: object) -> VmDefinition:
@@ -358,7 +419,7 @@ def load_definitions(path: Path = DEFINITIONS_PATH) -> Definitions:
         {
             "schema",
             "minimum_lima_version",
-            "idle_guest_processes",
+            "idle_guest_executables",
             "maintenance_guest_processes",
             "vm",
         },
@@ -372,8 +433,8 @@ def load_definitions(path: Path = DEFINITIONS_PATH) -> Definitions:
         minimum_lima_version=_string(
             raw["minimum_lima_version"], "minimum_lima_version"
         ),
-        idle_guest_processes=_names(
-            raw["idle_guest_processes"], "idle_guest_processes"
+        idle_guest_executables=_executables(
+            raw["idle_guest_executables"], "idle_guest_executables"
         ),
         maintenance_guest_processes=_names(
             raw["maintenance_guest_processes"], "maintenance_guest_processes"
@@ -561,31 +622,53 @@ class Completed:
 class Host(Protocol):
     def which(self, name: str) -> str | None: ...
 
-    def run(self, argv: Sequence[str], *, timeout: float) -> Completed: ...
+    def run(
+        self,
+        argv: Sequence[str],
+        *,
+        timeout: float,
+        env_overrides: Mapping[str, str] | None = None,
+    ) -> Completed: ...
+
+    def start_service(self, argv: Sequence[str], *, timeout: float) -> Completed: ...
 
 
 class LocalHost:
     """Runs host commands under Molt's guarded command executor.
 
     The executor binds on the first command (about 1 ms), so a caller that
-    finds no VM pays nothing for it.
+    finds no VM pays nothing for it. ``start_service`` is the one exception
+    to the guard (HF-471).
     """
 
     def __init__(self, environment: Mapping[str, str]) -> None:
         self.environment = dict(environment)
         self._commands: CommandExecutor | None = None
 
+    def _executor(self) -> CommandExecutor:
+        if self._commands is None:
+            self._commands = CommandExecutor.for_file(__file__)
+        return self._commands
+
     def which(self, name: str) -> str | None:
         return shutil.which(name, path=self.environment.get("PATH"))
 
-    def run(self, argv: Sequence[str], *, timeout: float) -> Completed:
-        if self._commands is None:
-            self._commands = CommandExecutor.for_file(__file__)
+    def run(
+        self,
+        argv: Sequence[str],
+        *,
+        timeout: float,
+        env_overrides: Mapping[str, str] | None = None,
+    ) -> Completed:
+        """Run a command and close every process it leaves behind.
+
+        ``env_overrides`` sets variables over this host's environment.
+        """
         try:
-            completed = self._commands.run(
+            completed = self._executor().run(
                 list(argv),
                 cwd=ROOT,
-                env=self.environment,
+                env={**self.environment, **(env_overrides or {})},
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -596,6 +679,47 @@ class LocalHost:
         except subprocess.TimeoutExpired:
             return Completed(124, "", f"{argv[0]} timed out after {timeout:.0f} s\n")
         return Completed(completed.returncode, completed.stdout, completed.stderr)
+
+    def start_service(self, argv: Sequence[str], *, timeout: float) -> Completed:
+        """Run a command that starts a service whose processes outlive it.
+
+        ``limactl start`` leaves Lima's hostagent running, and Lima owns its
+        lifecycle: ``limactl stop`` ends it. Molt's guard closes every
+        descendant when its command returns, so a guarded start killed both
+        hostagents on 2026-10-22 (HF-471). Here the command runs unguarded in
+        its own session and process group, from ``/`` so the service holds no
+        checkout as its working directory. Its output goes to anonymous files:
+        a service that inherits them cannot delay the return, as it could hold
+        a pipe open. The deadline bounds the command alone; at the deadline
+        only the command's own process is ended (``wait_owned``), never a
+        descendant. The caller verifies the service from its own state.
+        """
+        with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+            try:
+                process = subprocess.Popen(
+                    list(argv),
+                    cwd="/",
+                    env=self.environment,
+                    stdin=subprocess.DEVNULL,
+                    stdout=out,
+                    stderr=err,
+                    start_new_session=True,
+                )
+            except OSError as exc:
+                return Completed(127, "", f"cannot run {argv[0]}: {exc}\n")
+            note = ""
+            try:
+                returncode = self._executor().wait_owned(process, timeout=timeout)
+            except subprocess.TimeoutExpired:
+                returncode = 124
+                note = f"{argv[0]} timed out after {timeout:g} s\n"
+            out.seek(0)
+            err.seek(0)
+            return Completed(
+                returncode,
+                out.read().decode("utf-8", errors="replace"),
+                err.read().decode("utf-8", errors="replace") + note,
+            )
 
 
 def lima_home(environment: Mapping[str, str]) -> Path:
@@ -630,7 +754,7 @@ class Instance:
     def mounts(self) -> tuple[tuple[Path, Path, bool], ...]:
         """(host location, guest mount point, writable) of each mount."""
         rows = []
-        for raw in self.config.get("mounts") or ():
+        for raw in _lima_list(self.config.get("mounts"), f"{self.name} mounts"):
             mount = _lima_table(raw, f"{self.name} mount")
             location = Path(str(mount.get("location")))
             point = mount.get("mountPoint")
@@ -653,9 +777,9 @@ def _instance(line: str) -> Instance:
         directory=Path(str(row["dir"])),
         vm_type=str(row.get("vmType", "")),
         arch=str(row.get("arch", "")),
-        cpus=int(row.get("cpus") or 0),
-        memory=int(row.get("memory") or 0),
-        disk=int(row.get("disk") or 0),
+        cpus=_lima_count(row.get("cpus"), "cpus"),
+        memory=_lima_count(row.get("memory"), "memory"),
+        disk=_lima_count(row.get("disk"), "disk"),
         config=config if isinstance(config, dict) else {},
     )
 
@@ -734,7 +858,10 @@ def compare(vm: VmDefinition, instance: Instance) -> tuple[Drift, ...]:
         drift.append(Drift(DriftField.DISK, vm.disk.text, _format_bytes(instance.disk)))
     images = tuple(
         (str(image.get("location")), str(image.get("arch")), str(image.get("digest")))
-        for image in (_lima_table(raw, "image") for raw in (config.get("images") or ()))
+        for image in (
+            _lima_table(raw, "image")
+            for raw in _lima_list(config.get("images"), "images")
+        )
     )
     expected_images = ((vm.image.location, vm.arch.value, vm.image.digest),)
     if images != expected_images:
@@ -748,7 +875,10 @@ def compare(vm: VmDefinition, instance: Instance) -> tuple[Drift, ...]:
     mounts = instance.mounts()
     if mounts:
         drift.append(Drift(DriftField.MOUNTS, "none", _describe_mounts(mounts)))
-    rules = tuple(PortRule.from_lima(raw) for raw in config.get("portForwards") or ())
+    rules = tuple(
+        PortRule.from_lima(raw)
+        for raw in _lima_list(config.get("portForwards"), "portForwards")
+    )
     expected_rules = port_rules(vm)
     if rules != expected_rules:
         drift.append(
@@ -835,6 +965,9 @@ class Held:
     open_under_mounts: int
     # Open files under the paths the caller is about to delete.
     open_under_paths: int = 0
+    # Each deleted file's (descriptor, size, name): what a release record
+    # compares. The counts above are the measurement.
+    deleted: frozenset[tuple[str, int, str]] = field(default=frozenset(), compare=False)
 
     def json(self) -> dict[str, int]:
         return {
@@ -970,6 +1103,7 @@ def held_files(
             deleted_bytes=sum(item.size for item in deleted),
             open_under_mounts=sum(1 for name in opened if _under(name, mounts)),
             open_under_paths=sum(1 for name in opened if _under(name, watched)),
+            deleted=frozenset((item.fd, item.size, item.name) for item in deleted),
         )
     return held
 
@@ -985,7 +1119,12 @@ class Release:
     before: Held | None
     after: Held | None
     seconds: float
+    # The VM's release failed: nothing ran in the guest, or the guest failed.
     error: str | None
+    # Mounts that got no forget set. The release ran through the others: the
+    # server counts forgets per VM process, so their forgets free the pins of
+    # every mount.
+    mount_errors: tuple[str, ...] = ()
 
     def json(self) -> dict[str, object]:
         return {
@@ -994,19 +1133,107 @@ class Release:
             "after": None if self.after is None else self.after.json(),
             "seconds": round(self.seconds, 3),
             "error": self.error,
+            "mount_errors": list(self.mount_errors),
         }
 
 
+def _forget_names() -> tuple[str, ...]:
+    return tuple(f"{index:02d}" for index in range(FORGET_BATCH))
+
+
 def forget_set(location: Path) -> Path:
-    """The ``FORGET_BATCH`` empty files under a mount; creates what is missing."""
+    """The ``FORGET_BATCH`` empty files under a mount; creates what is missing.
+
+    A forget set lives as long as the mount: deleting it while a VM mounts
+    the location would pin its files. ``apply`` removes the sets of the mounts
+    it ends (``retire_forget_sets``).
+    """
     directory = location / FORGET_SET
     directory.mkdir(exist_ok=True)
     present = set(os.listdir(directory))
-    for index in range(FORGET_BATCH):
-        name = f"{index:02d}"
+    for name in _forget_names():
         if name not in present:
             (directory / name).touch()
     return directory
+
+
+def retire_forget_sets(
+    ended: Iterable[Path], instances: Sequence[Instance]
+) -> list[str]:
+    """Remove the forget sets of ``ended`` mount locations no instance mounts.
+
+    Called after the VM that mounted them stopped, so no VM process holds
+    their files. A set under a location another instance's config still
+    mounts (or mounts a parent of) stays. Only the set's own files are
+    removed; a directory with anything else in it stays. Returns one line
+    per set it removed or kept.
+    """
+    mounted = [
+        location
+        for instance in instances
+        for location, _point, _rw in instance.mounts()
+    ]
+    notes = []
+    for location in ended:
+        directory = _resolved(location) / FORGET_SET
+        if not directory.is_dir() or any(
+            host_path_is_within(directory, other) for other in mounted
+        ):
+            continue
+        try:
+            for name in _forget_names():
+                (directory / name).unlink(missing_ok=True)
+            directory.rmdir()
+        except OSError as exc:
+            notes.append(f"  kept {directory}: {exc}")
+        else:
+            notes.append(f"  removed {directory}: no VM mounts {location}")
+    return notes
+
+
+def remember_release(instance: Instance, after: Held) -> None:
+    """Record the deleted files a release left held, beside the instance.
+
+    What a release leaves, a guest process holds open: the next release
+    cannot free it while the same VM process holds the same descriptors.
+    """
+    record = {
+        "schema": RELEASE_RECORD_SCHEMA,
+        "pid": after.pid,
+        "deleted": sorted(list(item) for item in after.deleted),
+    }
+    path = instance.directory / RELEASE_RECORD
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    # A record that cannot be written costs the next retirement one more
+    # release; it never skips a release.
+    with contextlib.suppress(OSError):
+        temporary.write_text(json.dumps(record), encoding="utf-8")
+        os.replace(temporary, path)
+    with contextlib.suppress(OSError):
+        temporary.unlink(missing_ok=True)
+
+
+def release_cannot_change(instance: Instance, held: Held) -> bool:
+    """Whether the last release left exactly the deleted files ``held`` shows.
+
+    Then no deleted file is new, and none a guest process held has been
+    closed (its open descriptor would be gone), so a release frees nothing.
+    A missing or unreadable record answers no.
+    """
+    try:
+        record = json.loads(
+            (instance.directory / RELEASE_RECORD).read_text(encoding="utf-8")
+        )
+        return (
+            record["schema"] == RELEASE_RECORD_SCHEMA
+            and record["pid"] == held.pid
+            and frozenset(
+                (str(fd), int(size), str(name)) for fd, size, name in record["deleted"]
+            )
+            == held.deleted
+        )
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
 
 
 def release_script(guest_forget_sets: Sequence[Path]) -> str:
@@ -1049,23 +1276,33 @@ def release(
     """Free the host files each running vz instance's mounts pin; measure it.
 
     ``before`` reuses a snapshot the caller just took of these instances with
-    the same ``paths``.
+    the same ``paths``. A mount whose forget set cannot be written fails on
+    its own; the release runs through the other mounts. Each completed
+    release records what it left held (``remember_release``).
     """
     pinning = _pinning(instances)
     if before is None:
         before = held_files(host, pinning, paths=paths)
-    outcomes: list[tuple[Instance, float, str | None]] = []
+    outcomes: list[tuple[Instance, float, str | None, tuple[str, ...]]] = []
     for instance in pinning:
         if instance.name not in before:
-            outcomes.append((instance, 0.0, "no VM process holds this instance's disk"))
+            outcomes.append(
+                (instance, 0.0, "no VM process holds this instance's disk", ())
+            )
             continue
-        try:
-            guest_sets = [
-                point / forget_set(location).name
-                for location, point, _writable in instance.mounts()
-            ]
-        except OSError as exc:
-            outcomes.append((instance, 0.0, f"cannot write a forget set: {exc}"))
+        guest_sets = []
+        mount_errors = []
+        for location, point, _writable in instance.mounts():
+            try:
+                guest_sets.append(point / forget_set(location).name)
+            except OSError as exc:
+                mount_errors.append(
+                    f"cannot write a forget set under {location}: {exc}"
+                )
+        if not guest_sets:
+            outcomes.append(
+                (instance, 0.0, "no mount has a forget set", tuple(mount_errors))
+            )
             continue
         start = time.monotonic()
         completed = release_guest(host, instance.name, release_script(guest_sets))
@@ -1076,8 +1313,11 @@ def release(
                 f"the guest release failed (exit {completed.returncode}): "
                 f"{completed.stderr.strip()}"
             )
-        outcomes.append((instance, seconds, error))
+        outcomes.append((instance, seconds, error, tuple(mount_errors)))
     after = held_files(host, pinning, paths=paths)
+    for instance, _seconds, error, _mount_errors in outcomes:
+        if error is None and instance.name in after:
+            remember_release(instance, after[instance.name])
     return tuple(
         Release(
             instance.name,
@@ -1085,8 +1325,9 @@ def release(
             after.get(instance.name),
             seconds,
             error,
+            mount_errors,
         )
-        for instance, seconds, error in outcomes
+        for instance, seconds, error, mount_errors in outcomes
     )
 
 
@@ -1123,7 +1364,9 @@ def release_for_paths(
     """Before Molt deletes ``paths``: release the VMs that would pin them.
 
     A running VM releases when it mounts a path and its process holds files
-    under one, or holds deleted files (a release frees them, so they are new).
+    under one, or holds deleted files other than exactly those its last
+    release left (``release_cannot_change``): a guest process that holds a
+    deleted file open would otherwise make every retirement release again.
     Spawns nothing when no hostagent is live or every live VM runs its own
     definition, which mounts nothing. Otherwise one ``limactl list`` and, when
     a running VM mounts a path, one ``lsof``; a release adds one guest command
@@ -1156,7 +1399,13 @@ def release_for_paths(
         instance
         for instance in covering
         if instance.name in held
-        and (held[instance.name].open_under_paths or held[instance.name].deleted_files)
+        and (
+            held[instance.name].open_under_paths
+            or (
+                held[instance.name].deleted_files
+                and not release_cannot_change(instance, held[instance.name])
+            )
+        )
     ]
     if not holding:
         return ()
@@ -1166,6 +1415,58 @@ def release_for_paths(
 # --------------------------------------------------------------------------
 # Push
 # --------------------------------------------------------------------------
+
+
+def push_ref(ref: str) -> str | None:
+    """``refs/heads/host/<ref>``, or None when Git would refuse the name.
+
+    Every push lands under ``PUSH_NAMESPACE``. Ordinary Git fast-forward
+    protection preserves divergent work in both host and guest namespaces.
+    """
+    parts = ref.split("/")
+    if (
+        not _PUSH_REF.match(ref)
+        or ".." in ref
+        or any(part.endswith((".", ".lock")) for part in parts)
+    ):
+        return None
+    return PUSH_NAMESPACE + ref
+
+
+def checkout_script(clone: str, commit: str) -> str:
+    """The guest command for ``push --checkout``: check, then check out.
+
+    It refuses (exit ``CHECKOUT_REFUSED``, the reason on stdout) when the
+    clone has changes, including untracked files, when a Git command holds
+    its index lock, or when a guest process of any user has its working
+    directory in the clone (read as root from ``/proc/<pid>/cwd``). Only then
+    does it check out ``commit``, detached. Checks and checkout run in one
+    guest command, so nothing starts between them but what starts within it.
+    """
+    refused = CHECKOUT_REFUSED
+    return f"""set -u
+clone=$(cd "$HOME"/{shlex.quote(clone)} && pwd -P) || exit 1
+changes=$(git -C "$clone" status --porcelain) || exit 1
+if [ -n "$changes" ]; then
+  printf '%s has changes:\\n%s\\n' "$clone" "$changes" | head -n 6
+  exit {refused}
+fi
+git_dir=$(git -C "$clone" rev-parse --absolute-git-dir) || exit 1
+if [ -e "$git_dir/index.lock" ]; then
+  echo "$git_dir/index.lock exists: a Git command runs in $clone"
+  exit {refused}
+fi
+sudo -n true || exit 1
+users=$(sudo -n find /proc -mindepth 2 -maxdepth 2 -name cwd -printf '%h %l\\n' 2>/dev/null |
+  while read -r proc cwd; do
+    case "$cwd/" in ("$clone"/*) printf ' %s' "${{proc#/proc/}}" ;; esac
+  done)
+if [ -n "$users" ]; then
+  echo "processes work in $clone (pid$users)"
+  exit {refused}
+fi
+git -C "$clone" checkout --quiet --detach {shlex.quote(commit)}
+"""
 
 
 def push(
@@ -1178,17 +1479,20 @@ def push(
     host: Host,
     repo: Path = ROOT,
 ) -> int:
-    """Push ``rev`` of ``repo`` into the guest clone as ``refs/heads/<ref>``.
+    """Push ``rev`` of ``repo`` into the guest clone as ``refs/heads/host/<ref>``.
 
     Git negotiates over Lima's SSH (``<instance>/ssh.config``, host
-    ``lima-<vm>``) and sends only the objects the clone lacks.
+    ``lima-<vm>``) and sends only the objects the clone lacks. The SSH
+    command goes in ``GIT_SSH_COMMAND``, which Git prefers to every other
+    setting, and ``GIT_SSH_VARIANT`` fixes its argument style.
     """
     vm = definitions.vms.get(name)
     if vm is None:
         _say(f"REFUSED: {name} is not defined in tools/linux_vm.toml")
         return EXIT_USAGE
-    if not _RELATIVE_PATH.match(ref) or ".." in ref:
-        _say(f"REFUSED: {ref!r} is not a plain branch name")
+    target = push_ref(ref)
+    if target is None:
+        _say(f"REFUSED: {ref!r} is not a branch name Git accepts")
         return EXIT_USAGE
     instances = list_instances(host, [name])
     if not instances or not instances[0].running:
@@ -1220,25 +1524,27 @@ def push(
             "git",
             "-C",
             str(repo),
-            "-c",
-            f"core.sshCommand=ssh -F {shlex.quote(str(ssh_config))}",
             "push",
             "--no-verify",
             "--quiet",
             f"lima-{name}:{vm.clone}",
-            f"{commit}:refs/heads/{ref}",
+            f"{commit}:{target}",
         ],
         timeout=LIFECYCLE_SECONDS,
+        env_overrides={
+            "GIT_SSH_COMMAND": f"ssh -F {shlex.quote(str(ssh_config))}",
+            "GIT_SSH_VARIANT": "ssh",
+        },
     )
     if pushed.returncode != 0:
         _say(f"FAILED: git push to {name}: {pushed.stderr.strip()}")
         return EXIT_FAIL
     _say(
-        f"pushed {commit} to {name}:~/{vm.clone} as {ref} "
+        f"pushed {commit} to {name}:~/{vm.clone} as {target} "
         f"in {time.monotonic() - start:.2f} s"
     )
     if not checkout:
-        _say(f"  in the guest: git -C ~/{vm.clone} checkout --detach {ref}")
+        _say(f"  in the guest: git -C ~/{vm.clone} checkout --detach {commit}")
         return EXIT_OK
     switched = host.run(
         [
@@ -1249,10 +1555,16 @@ def push(
             name,
             "sh",
             "-c",
-            f'git -C "$HOME"/{shlex.quote(vm.clone)} checkout --quiet --detach {commit}',
+            checkout_script(vm.clone, commit),
         ],
         timeout=GUEST_COMMAND_SECONDS,
     )
+    if switched.returncode == CHECKOUT_REFUSED:
+        _say(
+            f"REFUSED: checkout in {name}: {switched.stdout.strip()}; the commit "
+            f"waits as {target}"
+        )
+        return EXIT_FAIL
     if switched.returncode != 0:
         _say(f"FAILED: checkout in {name}: {switched.stderr.strip()}")
         return EXIT_FAIL
@@ -1281,20 +1593,36 @@ class _Probe:
     shell: int
     subordinate: tuple[range, ...]
     processes: Mapping[int, GuestProcess]
+    # Each process's executable path, where the kernel names one.
+    executables: Mapping[int, str]
 
 
 def _parse_probe(probe_output: str) -> _Probe:
     lines = probe_output.splitlines()
     try:
         subuid_at = lines.index("--- subuid")
+        exe_at = lines.index("--- exe")
         ps_at = lines.index("--- ps")
         guest_uid = int(lines[0].strip())
         guest_user = lines[1].strip()
         shell = int(lines[2].strip())
     except (ValueError, IndexError) as exc:
         raise LimaError(f"unreadable guest process probe: {probe_output!r}") from exc
+    if not subuid_at < exe_at < ps_at:
+        raise LimaError(f"unreadable guest process probe: {probe_output!r}")
+    executables: dict[int, str] = {}
+    for line in lines[exe_at + 1 : ps_at]:
+        pid, _, path = line.strip().partition(" ")
+        path = path.strip().removesuffix(_DELETED_EXECUTABLE)
+        try:
+            number = int(pid)
+        except ValueError as exc:
+            raise LimaError(f"unreadable guest executable line: {line!r}") from exc
+        # Kernel threads, and processes even root cannot read, print `-`.
+        if path.startswith("/"):
+            executables[number] = path
     subordinate = []
-    for line in lines[subuid_at + 1 : ps_at]:
+    for line in lines[subuid_at + 1 : exe_at]:
         parts = line.strip().split(":")
         if len(parts) != 3 or parts[0] not in (guest_user, str(guest_uid)):
             continue
@@ -1318,7 +1646,9 @@ def _parse_probe(probe_output: str) -> _Probe:
         processes[process.pid] = process
     if shell not in processes:
         raise LimaError("the guest process probe does not list its own shell")
-    return _Probe(guest_uid, guest_user, shell, tuple(subordinate), processes)
+    return _Probe(
+        guest_uid, guest_user, shell, tuple(subordinate), processes, executables
+    )
 
 
 def busy_guest_processes(
@@ -1326,13 +1656,18 @@ def busy_guest_processes(
 ) -> tuple[GuestProcess, ...]:
     """The guest processes that make a restart unsafe.
 
-    The probe's own shell, its ancestors (this session) and its children are
-    excluded. Busy are: a maintenance process of any user; a process of the
-    guest user outside the session and daemon set; a process in a login
-    session (``session-*.scope``) outside that set, whatever its user, such as
+    The probe's own shell, its ancestors (this session) and its descendants
+    are excluded. A process is idle only by its executable: its path, as the
+    kernel names it, is one of the definition's idle executables. Its name
+    proves nothing: any program can be called ``exe`` or ``containerd``.
+    Busy are: a maintenance process of any user (by name: a false alarm is
+    safe); a process of the guest user that is not idle; a process in a login
+    session (``session-*.scope``) that is not idle, whatever its user, such as
     a ``sudo`` build; and a process of the guest user's subordinate ids, such
-    as a rootless container's non-root user. Root work outside a login session
-    (a ``systemd-run`` unit, a cron job) is not seen.
+    as a rootless container's non-root user. A process whose executable the
+    probe could not read is not idle. Root work outside a login session (a
+    ``systemd-run`` unit, a cron job) is not seen, and a guest user who runs
+    an idle executable by hand (``containerd`` from a shell) is not seen.
     """
     probe = _parse_probe(probe_output)
     processes = probe.processes
@@ -1341,12 +1676,21 @@ def busy_guest_processes(
     while cursor in processes and cursor not in session:
         session.add(cursor)
         cursor = processes[cursor].ppid
+    children: dict[int, list[int]] = {}
+    for process in processes.values():
+        children.setdefault(process.ppid, []).append(process.pid)
+    pending = [probe.shell]
+    while pending:
+        for child in children.get(pending.pop(), ()):
+            if child not in session:
+                session.add(child)
+                pending.append(child)
     busy = []
     for process in processes.values():
-        if process.pid in session or process.ppid == probe.shell:
+        if process.pid in session:
             continue
         comm = process.comm[:COMM_LENGTH]
-        idle = comm in definitions.idle_guest_processes
+        idle = probe.executables.get(process.pid) in definitions.idle_guest_executables
         if (
             comm in definitions.maintenance_guest_processes
             or (process.uid == probe.guest_uid and not idle)
@@ -1435,35 +1779,84 @@ def apply(
     os.replace(next_path, config_path)
     _say(f"installed {config_path} (first replaced config: {PREVIOUS_CONFIG})")
     if was_running:
-        started = host.run(
-            ["limactl", "start", "--tty=false", name], timeout=LIFECYCLE_SECONDS
-        )
-        if started.returncode != 0:
+        started, instances = start_vm(host, name)
+        if not _runs(started, instances, name):
+            failure = _start_failure(started, instances, name)
+            if _listed(instances, name).running:
+                # Only a stop could restore the replaced config now.
+                _say(f"FAILED: {failure}; {name} runs the installed definition")
+                return EXIT_FAIL
             restored = instance.directory / NEXT_CONFIG
             restored.write_bytes(replaced)
             os.replace(restored, config_path)
-            again = host.run(
-                ["limactl", "start", "--tty=false", name], timeout=LIFECYCLE_SECONDS
-            )
+            again, again_instances = start_vm(host, name)
             state = (
                 "restarted it with the replaced config"
-                if again.returncode == 0
-                else f"its start failed too: {again.stderr.strip()}"
+                if _runs(again, again_instances, name)
+                else "it does not run with that config either: "
+                + _start_failure(again, again_instances, name)
             )
-            _say(
-                f"FAILED: limactl start {name}: {started.stderr.strip()}; restored "
-                f"the replaced config and {state}"
-            )
+            _say(f"FAILED: {failure}; restored the replaced config and {state}")
             return EXIT_FAIL
-    after = list_instances(host, [name])
-    drift = compare(vm, after[0]) if after else ()
+    else:
+        instances = list_instances(host)
+    after = _listed(instances, name)
+    drift = compare(vm, after)
     for item in drift:
         _say(f"  drift {item.field}: declared {item.declared}; runs {item.effective}")
     if drift:
         return EXIT_FAIL
-    state = "restarted" if was_running else "stopped; it starts"
+    for note in retire_forget_sets(
+        (location for location, _point, _rw in instance.mounts()), instances
+    ):
+        _say(note)
+    # The definition mounts nothing, so no release runs and its record ends.
+    try:
+        (instance.directory / RELEASE_RECORD).unlink(missing_ok=True)
+    except OSError as exc:
+        _say(f"  kept {instance.directory / RELEASE_RECORD}: {exc}")
+    state = "runs" if was_running else "is stopped; it starts"
     _say(f"OK: {name} {state} with its definition")
     return EXIT_OK
+
+
+def start_vm(host: Host, name: str) -> tuple[Completed, tuple[Instance, ...]]:
+    """``limactl start`` as a service launch, then every instance's state.
+
+    Lima's hostagent must outlive the command, so it runs through
+    ``Host.start_service``. Lima's listing, not the command's exit status,
+    says whether the VM runs.
+    """
+    started = host.start_service(
+        ["limactl", "start", "--tty=false", name], timeout=LIFECYCLE_SECONDS
+    )
+    return started, list_instances(host)
+
+
+def _listed(instances: Sequence[Instance], name: str) -> Instance:
+    for instance in instances:
+        if instance.name == name:
+            return instance
+    raise LimaError(f"limactl list no longer lists {name}")
+
+
+def _runs(started: Completed, instances: Sequence[Instance], name: str) -> bool:
+    return started.returncode == 0 and _listed(instances, name).running
+
+
+def _tail(text: str) -> str:
+    return " | ".join(text.strip().splitlines()[-REPORT_LINES:])
+
+
+def _start_failure(started: Completed, instances: Sequence[Instance], name: str) -> str:
+    if started.returncode != 0:
+        return (
+            f"limactl start {name} exited {started.returncode}: {_tail(started.stderr)}"
+        )
+    return (
+        f"limactl start {name} exited 0, but Lima lists {name} as "
+        f"{_listed(instances, name).status}"
+    )
 
 
 # --------------------------------------------------------------------------
@@ -1497,29 +1890,31 @@ def check(
     by_name = {instance.name: instance for instance in instances}
     defined = [by_name[name] for name in selected if name in by_name]
     held = held_files(host, _pinning(defined))
-    rows = []
-    drifted = False
+    reports: list[tuple[str, str, tuple[Drift, ...]]] = []
     for name in selected:
         instance = by_name.get(name)
         drift = () if instance is None else compare(definitions.vms[name], instance)
-        drifted = drifted or bool(drift)
-        rows.append(
+        status = "absent" if instance is None else instance.status
+        reports.append((name, status, drift))
+    drifted = any(drift for _name, _status, drift in reports)
+    undeclared = sorted(set(by_name) - set(definitions.vms))
+    if as_json:
+        rows = [
             {
                 "name": name,
-                "status": "absent" if instance is None else instance.status,
+                "status": status,
                 "drift": [
                     {
-                        "field": str(d.field),
-                        "declared": d.declared,
-                        "effective": d.effective,
+                        "field": str(item.field),
+                        "declared": item.declared,
+                        "effective": item.effective,
                     }
-                    for d in drift
+                    for item in drift
                 ],
                 "held": None if name not in held else held[name].json(),
             }
-        )
-    undeclared = sorted(set(by_name) - set(definitions.vms))
-    if as_json:
+            for name, status, drift in reports
+        ]
         print(
             json.dumps(
                 {
@@ -1534,16 +1929,14 @@ def check(
         return EXIT_FAIL if drifted else EXIT_OK
     if not lima_present:
         _say("limactl is not on PATH: no Lima VM to check")
-    for row in rows:
-        state = "DRIFT" if row["drift"] else "ok"
-        _say(f"{row['name']}: {row['status']}, {state}")
-        for item in row["drift"]:
+    for name, status, drift in reports:
+        _say(f"{name}: {status}, {'DRIFT' if drift else 'ok'}")
+        for item in drift:
             _say(
-                f"  {item['field']}: declared {item['declared']}; "
-                f"effective {item['effective']}"
+                f"  {item.field}: declared {item.declared}; effective {item.effective}"
             )
-        if row["name"] in held:
-            _say(f"  holds {_describe_held(held[row['name']])}")
+        if name in held:
+            _say(f"  holds {_describe_held(held[name])}")
     for name in undeclared:
         _say(f"{name}: not defined by Molt, not checked")
     if drifted:
@@ -1579,9 +1972,12 @@ def release_command(*, host: Host, names: Sequence[str], as_json: bool) -> int:
             _say(f"{result.name}: released in {result.seconds:.3f} s")
             _say(f"  before: {_describe_held(result.before)}")
             _say(f"  after:  {_describe_held(result.after)}")
+            for problem in result.mount_errors:
+                _say(f"  ERROR: {problem}")
             if result.error:
                 _say(f"  ERROR: {result.error}")
-    return EXIT_FAIL if any(r.error for r in results) else EXIT_OK
+    failed = any(r.error or r.mount_errors for r in results)
+    return EXIT_FAIL if failed else EXIT_OK
 
 
 def main(
@@ -1602,8 +1998,16 @@ def main(
     )
     push_parser.add_argument("vm")
     push_parser.add_argument("rev", nargs="?", default="HEAD")
-    push_parser.add_argument("--ref", default=DEFAULT_PUSH_REF)
-    push_parser.add_argument("--checkout", action="store_true")
+    push_parser.add_argument(
+        "--ref",
+        default=DEFAULT_PUSH_REF,
+        help=f"branch name under {PUSH_NAMESPACE} (default: {DEFAULT_PUSH_REF})",
+    )
+    push_parser.add_argument(
+        "--checkout",
+        action="store_true",
+        help="also check the commit out, detached, if the guest clone is clean and idle",
+    )
     release_parser = commands.add_parser(
         "release", help="free the host files a mounting VM pins"
     )

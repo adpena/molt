@@ -57,7 +57,10 @@ DESIGN (deterministic + idempotent reclamation, separate from admission):
     ``molt.checkout_state.checkout_state_decision`` selects checkout state
     past its max age or with a removed owner, and pinned session targets idle
     past their limit; the GC reclaims each one that no lock or protected path
-    keeps, so no one ``rm``-s a finished session's target by hand.
+    keeps, so no one ``rm``-s a finished session's target by hand. Inside the
+    roots that stay, it retires the layout the product store replaced
+    (``molt.checkout_state.superseded_layout_paths``, design 56 section 2.8)
+    under the same custody.
 
   * ``--retire-cargo-incremental`` is a separate explicit review operation for
     successful pinned-session profile caches. It is never discovered by GC or
@@ -121,6 +124,7 @@ from molt.checkout_state import (  # noqa: E402
     is_session_target,
     legacy_target_kind_of,
     newest_activity_mtime as _newest_activity_mtime,
+    superseded_layout_paths,
     owner_is_absent,
     retention_limits,
     session_target_dirs,
@@ -1168,10 +1172,144 @@ def gc(
                 if _norm(cand.path) not in collected_norms
             ]
         )
+    for owner_root in scope_roots:
+        _retire_superseded_layouts(
+            owner_root,
+            scope_roots,
+            result,
+            config=cfg,
+            now=now,
+            apply=apply,
+            retired=collected_norms,
+            protected=protected,
+        )
     result.free_after = free_fn()
     if log:
         _write_log(resolved_root, result)
     return result
+
+
+def _superseded_layout_roots(
+    owner_root: Path, config: GuardConfig
+) -> list[tuple[Path, Literal["cargo-target", "build-control"]]]:
+    """The live roots of ``owner_root`` that can hold a superseded layout.
+
+    Every Cargo target the guard knows (checkout targets, pinned session
+    targets, legacy lane and flat targets) and every build control.
+    """
+    roots: list[tuple[Path, Literal["cargo-target", "build-control"]]] = []
+    for child in _checkout_state_dirs(owner_root):
+        kind = checkout_state_kind_of(child, owner_root)
+        if kind == "build-control":
+            roots.append((child, "build-control"))
+        elif kind == "cargo-target":
+            roots.append((child, "cargo-target"))
+    roots.extend((child, "cargo-target") for child in session_target_dirs(owner_root))
+    for parent in (owner_root, _target_root(owner_root)):
+        for child in _iter_dir(parent):
+            if child.is_dir() and _is_reclaimable(
+                child, owner_root, config.lane_globs
+            ) in {"lane", "cargo-target"}:
+                roots.append((child, "cargo-target"))
+    return roots
+
+
+def assert_safe_to_retire_layout(
+    path: Path,
+    root: Path,
+    owner_root: Path,
+    kind: Literal["cargo-target", "build-control"],
+    lane_globs: Sequence[str],
+) -> None:
+    """Raise unless ``path`` is a superseded layout entry of an allow-set root.
+
+    The layout choke point beside ``assert_safe_to_delete``: the root must be
+    one the guard may reclaim, and ``path`` one of the frozen names that
+    ``molt.checkout_state.superseded_layout_paths`` lists inside it now.
+    """
+    owner_root = Path(owner_root).resolve()
+    root = Path(root).resolve()
+    rp = Path(path).resolve()
+    if _is_reclaimable(root, owner_root, lane_globs) is None:
+        raise ValueError(f"disk_guard: {root} is not in the reclaimable allow-set")
+    if root not in rp.parents:
+        raise ValueError(f"disk_guard: refuse a layout entry outside its root: {rp}")
+    if rp not in {entry.resolve() for entry in superseded_layout_paths(root, kind)}:
+        raise ValueError(f"disk_guard: {rp} is not a superseded layout entry")
+
+
+def _retire_superseded_layouts(
+    owner_root: Path,
+    scope_roots: Sequence[Path],
+    result: ReclaimResult,
+    *,
+    config: GuardConfig,
+    now: float,
+    apply: bool,
+    retired: set[str],
+    protected: Sequence[Path],
+) -> None:
+    """Retire layouts a later design replaced inside live roots (design 56, 2.8).
+
+    The per-target runtime and backend generations, their receipts and probe
+    evidence have no reader on current code. Old code may still run in a
+    checkout that has not taken the change, so an entry retires only under
+    the same custody a root does: idle past the protection window, no build
+    lock held below its root, not protected, and exclusive retirement of the
+    root, which every managed build holds shared for its whole run. An old
+    build that runs later misses and rebuilds; it never reads a partial entry.
+    """
+    for root, kind in _superseded_layout_roots(owner_root, config):
+        if _norm(root) in retired or not root.is_dir():
+            continue
+
+        def idle(path: Path) -> bool:
+            return now - _newest_activity_mtime(path) >= CHECKOUT_STATE_WINDOW_S
+
+        candidates = [
+            path
+            for path in superseded_layout_paths(root, kind)
+            if idle(path) and not _is_protected(path, protected)
+        ]
+        if not candidates:
+            continue
+        if _root_lock_held(root, scope_roots):
+            result.skipped.append({"path": str(root), "reason": "lock-held"})
+            continue
+        if not apply:
+            result.reclaimed.extend(
+                {"path": str(path), "kind": "superseded-layout"} for path in candidates
+            )
+            continue
+        from molt.checkout_state import checkout_state_retirement
+
+        with checkout_state_retirement(root) as exclusive:
+            if not exclusive:
+                result.skipped.append({"path": str(root), "reason": "state-in-use"})
+                continue
+            for path in candidates:
+                if not idle(path):
+                    result.skipped.append(
+                        {
+                            "path": str(path),
+                            "reason": "used within the protection window",
+                        }
+                    )
+                    continue
+                try:
+                    assert_safe_to_retire_layout(
+                        path, root, owner_root, kind, config.lane_globs
+                    )
+                except ValueError as error:
+                    result.errors.append(str(error))
+                    continue
+                ok, error = delete_path(path)
+                if not ok:
+                    result.errors.append(f"{path}: {error}")
+                    continue
+                result.reclaimed.append(
+                    {"path": str(path), "kind": "superseded-layout"}
+                )
 
 
 def collect(

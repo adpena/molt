@@ -1,6 +1,7 @@
 # Linux VM apparatus
 
-Status: implemented (HF-463). Authority: [`tools/linux_vm.toml`](../../tools/linux_vm.toml).
+Status: implemented (HF-463, HF-471); both VMs run their definitions since
+2026-10-22. Authority: [`tools/linux_vm.toml`](../../tools/linux_vm.toml).
 Its one consumer: [`tools/linux_vm.py`](../../tools/linux_vm.py). Runbook:
 [OPERATIONS.md, "Linux VMs (Lima)"](../OPERATIONS.md#linux-vms-lima).
 
@@ -70,6 +71,8 @@ result back:
   closes all that are pending. One forget per step (a new file, `stat`, drop):
   on `molt-linux` the host closed descriptors at steps 16, 80 and 144; on
   `molt-x86` at steps 55 and 119. Each first step closed the earlier tail.
+  The v3 review measured that a directory's forget counts toward the batch
+  like a file's, and that the count is per VM process, not per mount.
 - Up to 63 forgotten descriptors stay open with no time limit. The review's
   probes stayed held for over 10 minutes and through 7 drops: each drop added
   fewer than 64 forgets.
@@ -144,9 +147,11 @@ batch.
 
 ## Definition
 
-`tools/linux_vm.toml` holds each VM's type, architecture, resources, image,
-Rosetta, containerd, Lima parameters, port forwards and the guest clone that
-`push` updates. The schema has no mount: the rendering declares `mounts: []`,
+`tools/linux_vm.toml` (schema 3) holds each VM's type, architecture,
+resources, image, Rosetta, containerd, Lima parameters, port forwards and the
+guest clone that `push` updates, and for all VMs the guest executables that
+`apply` counts as idle and the maintenance process names that make a guest
+busy. The schema has no mount: the rendering declares `mounts: []`,
 and Lima's own fill (`limactl validate --fill`) keeps it empty, without the
 home and `/tmp/lima` mounts of Lima's template. Port forwards list only what a
 guest may expose; the renderer appends the rule `{guestIP: 0.0.0.0, proto:
@@ -170,11 +175,22 @@ two without copying Lima's defaults.
   `restart_pending`. For each running VM that mounts host paths, one `lsof`
   reports what its process holds. It runs nothing in a guest.
 - `push <vm> [rev]` resolves `rev` (default `HEAD`) to a commit and runs `git
-  push` into the guest clone as `refs/heads/from-host` (`--ref` renames it),
-  over Lima's SSH config (`<instance>/ssh.config`, host `lima-<vm>`). Git sends
-  only missing objects and refuses to replace divergent guest commits. A rejected
-  push leaves the guest checkout unchanged. `--checkout` checks an accepted commit
-  out detached; Git refuses if that would overwrite local changes.
+  push` into the guest clone as `refs/heads/host/head` (`--ref <name>`
+  picks `refs/heads/host/<name>`), over Lima's SSH config
+  (`<instance>/ssh.config`, host `lima-<vm>`). Git sends only the objects the
+  clone lacks. Every push lands under `refs/heads/host/` and retains Git
+  fast-forward protection: divergent commits are never overwritten, and a
+  rejected push leaves the guest checkout unchanged. A name Git would refuse
+  is refused first. The SSH command goes in
+  `GIT_SSH_COMMAND`, which Git prefers to `core.sshCommand` and `GIT_SSH`, so
+  a caller's own `GIT_SSH_COMMAND` cannot redirect it; `GIT_SSH_VARIANT=ssh`
+  keeps OpenSSH's argument form. `--checkout` runs one guest command that
+  refuses (exit 1, the reason printed) when the clone has changes (untracked
+  files included), when its index lock exists, or when a guest process of
+  any user has its working directory in the clone (`/proc/<pid>/cwd`, read as
+  root); otherwise it checks out the exact commit, detached. Without
+  `--checkout` it prints that checkout command, with the commit, not the
+  shared ref.
 - `release` serves VMs that mount host paths. For each, the host creates a
   forget set under every mount (`<mount>/.molt-linux-vm-forget/00` to `63`,
   empty files, created once), and the guest runs one command: `echo 2 >
@@ -182,10 +198,15 @@ two without copying Lima's defaults.
   The first drop forgets every unused inode; the lookups give each mount 64
   fresh inodes, and the second drop forgets them, which carries every earlier
   forget through the server. Afterwards only forget-set files can be pending,
-  and they are never deleted. The release reports deleted files and bytes
-  before and after, from one `lsof` each. A VM process is matched to its
-  instance by the disk image it holds open; only numbered descriptors count.
-  It never stops a VM.
+  and they are not deleted while the VM mounts them. The release reports
+  deleted files and bytes before and after, from one `lsof` each. A VM process
+  is matched to its instance by the disk image it holds open; only numbered
+  descriptors count. A mount whose forget set cannot be written fails alone
+  (`mount_errors`, exit 1); the release runs through the other mounts, whose
+  forgets free every mount's pins because the server counts per VM process.
+  Each release records the deleted files it left held, which guest processes
+  hold open, in `<instance>/molt-linux-vm-release.json` with the VM process's
+  pid. It never stops a VM.
 - Lane retirement (`cleanup_worktree`, `drift_harvest --prune`) calls
   `release_for_paths` just before `git worktree remove`, while the checkout
   exists. After the removal the process can import nothing from the checkout
@@ -195,28 +216,64 @@ two without copying Lima's defaults.
   hostagent started after that file, and no `$LIMA_HOME/_config/default.yaml`
   or `override.yaml` merges into it), nothing can be pinned and it spawns
   nothing. Otherwise it lists the instances; a VM that mounts a retiring path
-  releases only when its process holds files under it or holds deleted
-  files. A release frees every deleted file no guest process holds, so the
-  next retirement releases again only for new pins. Any failure is reported
-  and never stops the cleanup.
+  releases only when its process holds files under it, or holds deleted
+  files other than exactly those its last release recorded. A release frees
+  every deleted file no guest process holds; what it leaves, a guest process
+  holds open, and a release cannot free it. So the next retirement releases
+  again only for a new pin, a held file the guest closed (its open
+  descriptor is gone, so its lookup can go), or a new VM process; a missing
+  or unreadable record always releases. Any failure is reported and never
+  stops the cleanup.
 - `apply` validates the rendering with `limactl validate`, stops the VM,
-  installs the rendering and starts the VM. It keeps the first config it
-  replaced as `lima.yaml.molt-previous` and never overwrites that file. If the
-  VM does not start, it restores the config it replaced and starts the VM
-  again. It refuses without `--confirm-restart`, refuses a vz/arch change
-  (only a new VM can make one), and refuses while the guest is busy:
-  - a process of the guest user outside the session and daemon set in the
-    definition;
-  - a process in a login session (`session-*.scope`) outside that set,
+  installs the rendering and starts the VM. The start is a service launch
+  (`Host.start_service`): `limactl start` leaves Lima's hostagent running,
+  and Lima owns its lifecycle (`limactl stop` ends it). Every other host
+  command runs under Molt's guard, which closes every descendant when its
+  command returns; on 2026-10-22 that closed both hostagents in the second
+  their VMs booted (HF-471). The service launch runs `limactl start`
+  unguarded, in its own session and process group, from `/` (the hostagent
+  inherits no checkout as its working directory), with its output in
+  anonymous files (a hostagent that inherited them cannot delay the
+  return), and with a deadline that ends only `limactl` itself. The
+  subprocess-guard audit lists this one launch and why
+  (`tools/check_subprocess_guard_coverage.py`). The VM counts as started
+  only when `limactl start` exits 0 and Lima's listing then shows it
+  running; apply never reports success from the exit status alone.
+- When the VM does not run after its start, `apply` restores the config it
+  replaced, starts the VM again the same way and checks the listing again.
+  When `limactl start` failed but the VM runs (a timeout, a degraded
+  requirement), it reports the failure and does not restart the VM again. It
+  keeps the first config it replaced as `lima.yaml.molt-previous` and never
+  overwrites that file. After a successful apply it removes the forget sets
+  of the mounts it ended, unless another instance's config still mounts
+  that location or a parent of it (it removes only the set's own 64 files),
+  and the VM's release record.
+- `apply` refuses without `--confirm-restart`, refuses a vz/arch change (only
+  a new VM can make one), and refuses while the guest is busy. A process is
+  idle only by its executable: the kernel's path for it
+  (`/proc/<pid>/exe`, listed as root by `sudo -n ps -o exe`) is one of the
+  definition's `idle_guest_executables`. A name proves nothing: rootlesskit's
+  child is called `exe`, as is any program that re-executes
+  `/proc/self/exe`, and any program can be called `containerd`. The user's
+  `sshd` and `(sd-pam)` are not dumpable, so only root can read their
+  executables; without passwordless sudo the probe fails and apply refuses.
+  Busy are:
+  - a process of the guest user that is not idle;
+  - a process in a login session (`session-*.scope`) that is not idle,
     whatever its user, such as root work under `sudo`;
   - a process under the user's subordinate ids (`/etc/subuid`), such as a
     rootless container's non-root user; a containerd shim also counts,
     because one runs only while a container runs;
-  - `apt`, `apt-get`, `dpkg` or `cloud-init` of any user.
+  - `apt`, `apt-get`, `dpkg` or `cloud-init` of any user (by name; a false
+    alarm is safe);
+  - a process whose executable the probe could not read.
 
-  It does not see root work outside a login session (a `systemd-run` unit, a
-  cron job), and nothing stops a session that starts between the probe and
-  `limactl stop`.
+  The probe's own shell, its ancestors and its descendants are excluded. An
+  executable replaced on disk (`/usr/sbin/sshd (deleted)` after an upgrade)
+  matches by its path. The limits: it does not see root work outside a login
+  session (a `systemd-run` unit, a cron job); a guest user who runs an idle
+  executable by hand (`containerd` from a shell) counts as idle; and nothing
+  stops a session that starts between the probe and `limactl stop`.
 
 ## Measured costs
 
@@ -234,21 +291,52 @@ executor:
   (the first call in a process adds 170-300 ms).
 - Transfers, above (Options).
 
+After `apply` (both VMs on their definitions, 2026-10-22, host load 9-12):
+
+- `check`: 0.22-0.65 s wall for both VMs over four runs; with no mount there
+  is no `lsof`.
+- Retirement: 1.31 ms for the first call in a process, which reads the
+  definitions and renders both VMs; no process.
+- `apply`'s idle probe: 40-50 ms per guest (140 and 119 processes, 34 and
+  32 executables readable as root).
+- `push --checkout`'s guest checks: 50-60 ms per guest (`sudo -n true`, a
+  `/proc/*/cwd` listing of 142 and 121 entries, `git status` of a clean
+  clone), read-only parts measured without the checkout.
+- A boot after `apply`: 9 s (`molt-linux`) and 12 s (`molt-x86`) from the
+  hostagent's start to Lima's "final requirement" (`ha.stderr.log`; the
+  operator's own `limactl start`).
+
+## Verified on the real VMs
+
+- `apply` on 2026-10-22 installed both definitions and kept each first
+  replaced config as `lima.yaml.molt-previous` (`molt-linux` mounted `~`,
+  `molt-x86` mounted `~/Molt` read-only). Its start then ran under the
+  guard, which closed both hostagents as they booted (HF-471); the operator
+  restarted both with `limactl start`. `check` exits 0, and no guest mounts a
+  host directory: `molt-x86`'s one virtiofs mount is Apple's Rosetta share
+  (`/mnt/lima-rosetta`, tag `vz-rosetta`), which Rosetta needs.
+- Lima 2.2.1 does not rewrite `lima.yaml` when it starts a VM: both files
+  are older than their hostagents' `ha.pid` (15:10:24 against 15:12:03,
+  15:09:42 against 15:11:50), so `runs_its_definition` holds for both and
+  retirement spawns nothing.
+- The idle rule reads both guests idle; the opt-in test
+  (`MOLT_LINUX_VM_TESTS=1`) checks that every process of Lima's user units
+  (the user's systemd, rootless containerd, BuildKit, stargz) runs a declared
+  executable.
+
 ## Not verified
 
-- `apply` on the real VMs and its restart time. The integrator runs it after
-  checking that no one uses the VMs; until then `check` reports mount drift,
-  and lane retirement releases the mounted VMs.
-- A real `push` and `--checkout` into the guests: they write guest state, and
-  this change ran only `git push --dry-run` there. A fake `ssh` with real Git
-  proves the push itself.
-- Whether Lima rewrites `lima.yaml` when it starts a VM. If it does, the
-  retirement shortcut never applies and retirement asks `limactl list`, as
-  before.
+- `apply` through the service launch on the real VMs: that restarts them.
+  The fake host proves the start goes through `start_service` and that a VM
+  that stops after its start fails apply; a real `sh` proves the service
+  outlives its command in its own process group.
+- A real `push` and `--checkout` into the guests: they write guest state.
+  Neither guest clone has a `refs/heads/host/` branch yet. Real Git with a
+  fake `ssh` proves the push, and the real checkout command, run by `dash`
+  (the guests' `/bin/sh`) against a clone with a fake `/proc` listing,
+  proves its checks.
 - The batch size on other macOS releases. It is Apple's undocumented
   behavior; the opt-in real-VM test (`MOLT_LINUX_VM_TESTS=1`) fails if a
-  release stops freeing pins.
-- Whether a VM with several mounts batches per device; `release` gives every
-  mount its own forget set either way.
+  release stops freeing pins (it skips while no VM mounts a host path).
 - Hosts without Lima (Linux, Windows) run no VM; the tool reports nothing to
   check.
