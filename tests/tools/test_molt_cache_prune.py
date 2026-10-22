@@ -678,18 +678,14 @@ def test_legacy_retention_preserves_an_open_lock_inode_and_active_stage(
         handle = _try_acquire_file_lock(lock, create=False)
         assert handle is not None
         try:
-            result = module._prune(
-                cache, max_bytes=None, max_age_days=7, dry_run=False
-            )
+            result = module._prune(cache, max_bytes=None, max_age_days=7, dry_run=False)
             assert result["entries_removed"] == 1 and not old.exists()
             assert os.path.samestat(identity, os.fstat(waiting.fileno()))
             assert os.path.samestat(identity, lock.stat())
         finally:
             _release_file_lock(handle)
         clock.time = lambda: now + 3600
-        result = module._prune(
-            cache, max_bytes=None, max_age_days=7, dry_run=False
-        )
+        result = module._prune(cache, max_bytes=None, max_age_days=7, dry_run=False)
         assert result["entries_removed"] == 0
         assert os.path.samestat(identity, lock.stat())
         assert os.path.samestat(lock.stat(), os.fstat(waiting.fileno()))
