@@ -26,6 +26,7 @@ from molt import file_publication
 from molt import temporary_artifacts as scratch
 from molt.exact_json import read_exact
 from tests.process_guard_common import (
+    HUNG_CHILD_SOURCE,
     close_owned_test_process,
     install_module_view,
     start_owned_test_process,
@@ -1436,9 +1437,7 @@ def test_a_real_orphaned_group_protects_until_its_last_member_exits(tmp_path):
     guard_pid, child_pid = [pid for pid in range(70_000, 90_000) if pid not in taken][
         :2
     ]
-    orphan = start_owned_test_process(
-        [sys.executable, "-c", "import time; time.sleep(60)"]
-    )
+    orphan = start_owned_test_process([sys.executable, "-c", HUNG_CHILD_SOURCE])
     try:
         group = os.getpgid(orphan.pid)
         assert group != os.getpgid(0)

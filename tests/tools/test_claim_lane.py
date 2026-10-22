@@ -5,12 +5,17 @@ from __future__ import annotations
 from tests.process_guard_common import run_guarded_test_process
 
 import datetime as dt
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+
+from tests.integration_driver_fixture import (
+    clone_tree,
+    copy_driver_trees,
+    shared_session_tree,
+)
 
 TOOLS = Path(__file__).resolve().parents[2] / "tools"
 CLAIM = TOOLS / "claim_lane.py"
@@ -46,10 +51,8 @@ def _claims_body(rows: str) -> str:
     )
 
 
-@pytest.fixture(scope="module")
-def _seed(tmp_path_factory: pytest.TempPathFactory) -> Path:
+def _build_seed(root: Path) -> None:
     """Minimal committed claims history for real fetch/read/refusal checks."""
-    root = tmp_path_factory.mktemp("claim-seed")
     bare = root / "remote.git"
     bare.mkdir()
     _git(bare, "init", "--bare", "-q", "-b", "main")
@@ -62,26 +65,42 @@ def _seed(tmp_path_factory: pytest.TempPathFactory) -> Path:
     _git(w, "add", "-A")
     _git(w, "commit", "-q", "-m", "init")
     _git(w, "push", "-q", str(bare), "main")
-    return root
 
 
-@pytest.fixture(scope="module")
-def _integration_seed(tmp_path_factory: pytest.TempPathFactory, _seed: Path) -> Path:
-    """Only landing tests need main's complete pinned controller and policy."""
-    from tests.integration_driver_fixture import copy_driver_trees
-
-    root = tmp_path_factory.mktemp("claim-integration-seed")
-    shutil.copytree(_seed / "remote.git", root / "remote.git")
-    shutil.copytree(_seed / "work", root / "work")
+def _build_integration_seed(root: Path, seed: Path, driver: Path) -> None:
+    """The claims history with main's complete pinned controller and policy."""
+    clone_tree(seed / "remote.git", root / "remote.git")
+    clone_tree(seed / "work", root / "work")
     w = root / "work"
-    copy_driver_trees(w)
+    copy_driver_trees(w, seed=driver)
     (w / "tools/proof_plan.toml").write_text(
         'always = ["echo claim-policy"]\n', encoding="utf-8"
     )
     _git(w, "add", "-A")
     _git(w, "commit", "-q", "-m", "pin integration controller")
     _git(w, "push", "-q", str(root / "remote.git"), "main")
-    return root
+
+
+@pytest.fixture(scope="session")
+def _seed(tmp_path_factory: pytest.TempPathFactory, worker_id: str) -> Path:
+    """One claims history per session, shared by every xdist worker."""
+    return shared_session_tree(tmp_path_factory, worker_id, "claim-seed", _build_seed)
+
+
+@pytest.fixture(scope="session")
+def _integration_seed(
+    tmp_path_factory: pytest.TempPathFactory,
+    worker_id: str,
+    _seed: Path,
+    driver_seed: Path,
+) -> Path:
+    """Only landing tests need the driver; it is committed once per session."""
+    return shared_session_tree(
+        tmp_path_factory,
+        worker_id,
+        "claim-integration-seed",
+        lambda root: _build_integration_seed(root, _seed, driver_seed),
+    )
 
 
 def _copy_repo(tmp_path: Path, seed: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -90,9 +109,9 @@ def _copy_repo(tmp_path: Path, seed: Path, monkeypatch: pytest.MonkeyPatch) -> P
     # not exist, and integrate refuses an explicit selection that is broken.
     for key in ("MOLT_VENV", "UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV"):
         monkeypatch.delenv(key, raising=False)
-    # Copy, never hardlink: each test mutates refs and objects.
-    shutil.copytree(seed / "remote.git", tmp_path / "remote.git")
-    shutil.copytree(seed / "work", tmp_path / "work")
+    # Clone (copy-on-write), never hardlink: each test mutates refs and objects.
+    clone_tree(seed / "remote.git", tmp_path / "remote.git")
+    clone_tree(seed / "work", tmp_path / "work")
     w = tmp_path / "work"
     _git(w, "remote", "add", "origin", str(tmp_path / "remote.git"))
     _git(w, "fetch", "-q", "origin")

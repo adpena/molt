@@ -618,3 +618,107 @@ def test_exit_census_failure_is_recorded_and_the_child_is_still_reaped(monkeypat
         None,
         "RuntimeError: process table unavailable",
     )
+
+
+# The enforcer's signal (HF-417) names a target without observing the host:
+# the child's own group, only while its clock holds the child unreaped.
+_BLOCK_UNTIL_SIGNALLED = "import threading\nthreading.Event().wait()\n"
+
+
+def _reserved_session_leader(code: str, *args: str):
+    """A raw POSIX session leader that its ChildExecutionClock holds unreaped."""
+    import subprocess
+    import sys
+
+    proc = subprocess.Popen([sys.executable, "-c", code, *args], start_new_session=True)
+    clock = process_custody.ChildExecutionClock(proc, time.perf_counter())
+    child = process_custody.GuardedChildProcess(
+        pid=proc.pid,
+        pgid=proc.pid,
+        sid=proc.pid,
+        command=(sys.executable, "-c", code, *args),
+        started_at="2026-10-21T00:00:00Z",
+    )
+    return proc, clock, child
+
+
+def _end_reserved_child(proc, clock) -> None:
+    if proc.returncode is None and clock.error is None:
+        proc.kill()
+    assert clock.done.wait(120)
+
+
+def test_root_group_signal_ends_with_the_childs_pid_reservation(monkeypatch):
+    import dataclasses
+    import os
+    import signal
+
+    import pytest
+
+    from tests.process_guard_common import install_module_view
+
+    if os.name != "posix":
+        pytest.skip("POSIX process-group identity rests on the reap")
+    sent: list[tuple[int, int]] = []
+    install_module_view(
+        monkeypatch,
+        "os",
+        os,
+        process_custody,
+        killpg=lambda pgid, signum: sent.append((pgid, signum)),
+    )
+    # A live, unreaped root: its own group is signalled, TERM then KILL.
+    proc, clock, child = _reserved_session_leader(_BLOCK_UNTIL_SIGNALLED)
+    try:
+        signal_root = process_custody.owned_root_group_signal(proc, clock, child)
+        assert signal_root is not None
+        signalled, report = signal_root("timeout", 0.0)
+        assert signalled and report is not None
+        assert sent == [
+            (proc.pid, signal.SIGTERM),
+            (proc.pid, process_custody.fallback_kill_signal()),
+        ]
+    finally:
+        _end_reserved_child(proc, clock)
+    # Once reaped, the PID could name another process: no signal at all.
+    sent.clear()
+    assert signal_root("timeout", 0.0) == (False, None)
+    assert sent == []
+    # A root that does not lead its own group has no observation-free signal.
+    not_leader = dataclasses.replace(child, pgid=None)
+    assert process_custody.owned_root_group_signal(proc, clock, not_leader) is None
+
+
+def test_root_group_signal_kills_a_root_that_outlives_its_grace(tmp_path):
+    import os
+    import signal
+
+    import pytest
+
+    if os.name != "posix":
+        pytest.skip("POSIX process-group identity rests on the reap")
+    ready = tmp_path / "ready"
+    code = (
+        "import pathlib, signal, sys\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "pathlib.Path(sys.argv[1]).write_text('ready', encoding='utf-8')\n"
+        + _BLOCK_UNTIL_SIGNALLED
+    )
+    proc, clock, child = _reserved_session_leader(code, str(ready))
+    try:
+        deadline = time.monotonic() + 120  # A hang guard for the handshake.
+        while not ready.exists():
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        signal_root = process_custody.owned_root_group_signal(proc, clock, child)
+        assert signal_root is not None
+        signalled, report = signal_root("timeout", 0.2)
+        assert signalled and report is not None
+        assert [
+            (action.target_id, action.signal_name, action.result)
+            for action in report.actions
+        ] == [(proc.pid, "SIGTERM", "sent"), (proc.pid, "SIGKILL", "sent")]
+        assert clock.done.wait(120)
+        assert proc.returncode == -signal.SIGKILL
+    finally:
+        _end_reserved_child(proc, clock)

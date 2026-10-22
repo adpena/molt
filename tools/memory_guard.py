@@ -37,6 +37,12 @@ DEFAULT_POLL_INTERVAL_SEC = 0.10
 DEFAULT_FAST_START_POLL_INTERVAL_SEC = 0.02
 DEFAULT_FAST_START_DURATION_SEC = 2.0
 DEFAULT_TERMINATION_WAIT_SEC = 2.0
+# How long the enforcer thread lets the run loop deliver a deadline, memory
+# trip or cancellation before it signals the child's own process group itself
+# (HF-417). A healthy loop delivered a timeout 0.10-0.41 s after its deadline
+# at host load 120 (2026-10-21), so the enforcer stays idle unless the loop
+# is stalled; the slack bounds the guard's own lateness, not the child.
+ENFORCEMENT_SLACK_SEC = 2.0
 DEFAULT_INCIDENT_SUMMARY_KEEP = 32
 # When one full process-table sample costs more than the configured poll
 # interval (Windows full-table snapshots under build load), polling
@@ -239,6 +245,10 @@ from tools.memory_guard_core.process_custody import (  # noqa: E402
     GuardedChildProcess as GuardedChildProcess,
     GuardedLaunch as GuardedLaunch,
     MAX_TERMINATION_PID_FANOUT as MAX_TERMINATION_PID_FANOUT,
+    OwnedTreeEnforcer as OwnedTreeEnforcer,
+    StopRequestWatch as StopRequestWatch,
+    completed_enforcement_report as completed_enforcement_report,
+    owned_root_group_signal as owned_root_group_signal,
     ProcessIdentity as ProcessIdentity,
     ProcessSample as ProcessSample,
     ProcessTreeTracker as ProcessTreeTracker,
@@ -908,7 +918,17 @@ def run_guarded(
     on_spawn: Callable[[int], None] | None = None,
     cancellation_requested: Callable[[], bool] | None = None,
     closure_progress: Callable[[str], None] | None = None,
+    no_output_timeout: float | None = None,
 ) -> GuardResult:
+    """Run ``command`` under the guard's memory, deadline and closure custody.
+
+    ``no_output_timeout`` ends a command whose captured stdout and stderr
+    stop growing for that long, as CI runners end a silent job (CircleCI's
+    no_output_timeout). It bounds a command by its progress, not by its
+    total wall time, and it counts only time the guard watched: a host
+    freeze that stops guard and child alike is not silence. The result
+    reports it as a timeout, with ``output_stall_s`` set.
+    """
     if not command:
         raise ValueError("command is required")
 
@@ -922,6 +942,8 @@ def run_guarded(
         raise ValueError("poll interval must be greater than 0")
     if timeout is not None and timeout <= 0:
         raise ValueError("timeout must be greater than 0")
+    if no_output_timeout is not None and (no_output_timeout <= 0 or not capture_output):
+        raise ValueError("no_output_timeout must be positive and capture output")
     if (stdout_capture_path is None) != (stderr_capture_path is None):
         raise ValueError("stdout/stderr capture paths must be provided together")
     if stdout_capture_path is not None and not capture_output:
@@ -1002,6 +1024,10 @@ def run_guarded(
     launch: GuardedLaunch | None = None
     child_process: GuardedChildProcess | None = None
     tracker: ProcessTreeTracker | None = None
+    enforcer: OwnedTreeEnforcer | None = None
+    cancellation_watch: StopRequestWatch | None = None
+    signal_watch: StopRequestWatch | None = None
+    summary_publisher: _reporting.RunningSummaryPublisher | None = None
     termination_reports: list[GuardTerminationReport] = []
     scratch_lease: _temporary_artifacts.GuardScratchLease | None = None
     temporary_artifacts: dict[str, object] | None = None
@@ -1278,6 +1304,45 @@ def run_guarded(
                 if resumed_at is None:
                     raise RuntimeError("Windows child resume clock is unavailable")
                 child_clock.started = resumed_at
+        # Enforcement that observes nothing starts before any observation: a
+        # stalled sample, marker write or host-wide repro read below can no
+        # longer delay the deadline or a cancellation (HF-417).
+        enforcer = OwnedTreeEnforcer(
+            owned_root_group_signal(
+                proc,
+                child_clock,
+                child_process,
+                terminate_job=(
+                    None
+                    if guard_job is None
+                    else partial(_win_job.terminate_job, guard_job)
+                ),
+            ),
+            slack=ENFORCEMENT_SLACK_SEC,
+            deadline=None if timeout is None else start + timeout,
+            deadline_grace=0.25,
+            # The deadline's own clock, which tests may replace.
+            clock=time.perf_counter,
+        )
+        if cancellation_requested is not None:
+            cancellation_watch = StopRequestWatch(
+                cancellation_requested,
+                interval=poll_interval,
+                on_request=partial(enforcer.request, "owner_cancellation", grace=0.0),
+                name="molt-guard-cancellation",
+            )
+        if installed_signal_handlers:
+            # The handler only records the signal; the loop signals the tree
+            # after its export, which may wait for the adoption lock. The
+            # enforcer bounds that wait for the root group.
+            signal_watch = StopRequestWatch(
+                lambda: guard_signal is not None,
+                interval=poll_interval,
+                on_request=partial(
+                    enforcer.request, "guard_signal", grace=OPERATOR_SIGNAL_GRACE_S
+                ),
+                name="molt-guard-signal",
+            )
         sampling_source = (
             "windows_full_process_table"
             if _process_model.is_windows_process_model()
@@ -1420,24 +1485,28 @@ def run_guarded(
             tracker.known_identities[proc.pid] = ProcessIdentity(root_started_at_ns)
         child_process = replace(child_process, started_at_ns=root_started_at_ns)
         if running_summary_json is not None:
+            # The startup report publishes here; the summary's host-wide repro
+            # block is read and written off this thread (HF-417).
+            summary_publisher = _reporting.RunningSummaryPublisher(
+                running_summary_json,
+                child_process=child_process,
+                repro_context_provider=repro_context_payload,
+                command=command,
+                cwd=cwd,
+                environ=(
+                    running_summary_environ
+                    if running_summary_environ is not None
+                    else child_env
+                ),
+                max_rss_kb=max_rss_kb,
+                max_total_rss_kb=max_total_rss_kb,
+                max_global_rss_kb=running_summary_max_global_rss_kb,
+                child_rlimit_kb=child_rlimit_kb,
+                timeout_s=timeout,
+                poll_interval_s=poll_interval,
+            )
             try:
-                _write_running_summary_json(
-                    running_summary_json,
-                    command=command,
-                    cwd=cwd,
-                    environ=(
-                        running_summary_environ
-                        if running_summary_environ is not None
-                        else child_env
-                    ),
-                    max_rss_kb=max_rss_kb,
-                    max_total_rss_kb=max_total_rss_kb,
-                    max_global_rss_kb=running_summary_max_global_rss_kb,
-                    child_rlimit_kb=child_rlimit_kb,
-                    timeout_s=timeout,
-                    poll_interval_s=poll_interval,
-                    child_process=child_process,
-                )
+                summary_publisher.start()
             except OSError as exc:
                 print(
                     f"memory_guard: failed to refresh running summary JSON: {exc}",
@@ -1485,7 +1554,12 @@ def run_guarded(
                 # before the child was resumed.  Do not duplicate that authority
                 # with PID-table termination, whose identities can race process
                 # exit and wrapper descendants.
+                if enforcer is not None:
+                    # Job termination observes nothing; it is idempotent.
+                    enforcer.begin(reason)
                 _win_job.terminate_job(guard_job)
+                if enforcer is not None:
+                    enforcer.delivered(reason)
                 _win_job.wait_until_empty(guard_job, timeout=termination_wait_s)
                 after = _win_job.job_accounting(guard_job)
                 if interruption_inventory is not None:
@@ -1501,16 +1575,24 @@ def run_guarded(
                 interruption_inventory = CargoInterruptionInventory(
                     "native interruption inventory lacks a process-birth fence"
                 )
+            # The protection decision reads the host table when polls read
+            # partial rows. That read can stall, so it comes before the check
+            # that defers to the enforcer, which may have signalled meanwhile.
+            decision_samples = (
+                sampler() if decide_on_host_table and custody_rows_partial else samples
+            )
+            if enforcer is not None and not enforcer.begin(reason):
+                # The enforcer signalled the root group while this loop was
+                # stalled. Its strike ends in the reap; the closure after the
+                # loop observes what remains.
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    proc.wait(timeout=termination_wait_s)
+                return
             termination_reports.append(
                 _validated_termination_report(
                     terminate_watched_processes(
                         proc.pid,
-                        # None reads the host table for the protection decision.
-                        samples=(
-                            None
-                            if decide_on_host_table and custody_rows_partial
-                            else samples
-                        ),
+                        samples=decision_samples,
                         watched=watched,
                         grace=grace,
                         reason=reason,
@@ -1521,6 +1603,8 @@ def run_guarded(
                     caller="terminate_watched_processes",
                 )
             )
+            if enforcer is not None:
+                enforcer.delivered(reason)
 
         stdin_thread: threading.Thread | None = None
         if input is not None and proc.stdin is not None:
@@ -1560,6 +1644,7 @@ def run_guarded(
                 scope="process_tree_handle",
             )
         timed_out = False
+        output_stalled = False
         child_exit_usage: ChildExitResourceUsage | None = None
         last_limits: ResolvedMemoryLimits | None = None
         termination_wait_expired = False
@@ -1834,7 +1919,7 @@ def run_guarded(
         last_sample_cost_s = 0.0
         suite_custody_transfers = []
 
-        def transfer_receipted_daemon_instances(fresh) -> None:
+        def transfer_receipted_daemon_instances(fresh, *, decisive: bool) -> None:
             # Windows Job closure owns every assigned instance; never advertise
             # a lease export which Job completion would immediately terminate.
             if (
@@ -1845,8 +1930,16 @@ def run_guarded(
                 return
             from molt import backend_daemon_suite_custody as suite_custody
 
+            # A poll looks again on its next sample. The export before the
+            # guard signals the tree, and the one after the child exits, are
+            # the last looks: they wait for the adoption lock rather than
+            # signal a daemon the suite adopted.
             for lease, identity, members in suite_custody.transferable_groups(
-                child_env, project_root=ROOT, samples=fresh, acknowledge=False
+                child_env,
+                project_root=ROOT,
+                samples=fresh,
+                acknowledge=False,
+                wait_for_lock=decisive,
             ):
                 expected = {
                     pid: process_identity(sample) for pid, sample in members.items()
@@ -1875,6 +1968,7 @@ def run_guarded(
         def sample_tracked_tree(
             *,
             allow_transient_timeout: bool = False,
+            before_signal: bool = False,
         ) -> tuple[Mapping[int, ProcessSample], set[int]] | None:
             nonlocal guard_interrupted, last_sample_cost_s, latest_cargo_observations
             latest_cargo_observations = (
@@ -1948,7 +2042,8 @@ def run_guarded(
             )
             cargo_incremental_observations.update(latest_cargo_observations)
             record_sampling_cost(len(samples))
-            transfer_receipted_daemon_instances(samples)
+            # A snapshot that precedes a signal is the tree's last export.
+            transfer_receipted_daemon_instances(samples, decisive=before_signal)
             watched = tracker.update(samples)
             remembered_samples = samples
             remembered_watched = set(watched)
@@ -1968,6 +2063,31 @@ def run_guarded(
                 # An exit can publish while the bounded wait reports expiry.
                 return child_exit_observed()
             return True
+
+        output_size_seen = -1
+        output_silence_s = 0.0
+
+        def command_output_stalled(watched_s: float) -> bool:
+            """Whether the captured output stopped growing for the bound.
+
+            Silence accrues only for ``watched_s``, the part of the poll the
+            guard spent waiting as it planned. Time beyond that plan (a host
+            freeze that stops guard and child alike, a stalled sample) is
+            not the command's silence: a frozen host must not end a command
+            that resumes its output with the host.
+            """
+            nonlocal output_size_seen, output_silence_s
+            if no_output_timeout is None:
+                return False
+            size = sum(
+                os.fstat(capture.fileno()).st_size
+                for capture in (stdout_capture, stderr_capture)
+            )
+            if size != output_size_seen:
+                output_size_seen, output_silence_s = size, 0.0
+                return False
+            output_silence_s += watched_s
+            return output_silence_s >= no_output_timeout
 
         def next_poll_wait_s(*, fast_start: bool) -> float:
             elapsed = time.perf_counter() - start
@@ -2030,6 +2150,10 @@ def run_guarded(
                     )
                 return False
             limit_at_violation = current_limits
+            # Evidence writes and the kill's host-table read follow; the
+            # enforcer signals the root group if they stall past the slack.
+            if enforcer is not None:
+                enforcer.request("rss_limit", grace=0.25)
             _record_sample(
                 root_pid=proc.pid,
                 peak=observed_peak,
@@ -2051,6 +2175,11 @@ def run_guarded(
                 limit_at_violation=memory_limits_payload(current_limits),
                 elapsed_s=time.perf_counter() - start,
             )
+            # The poll's export gave up the adoption lock after its bound; the
+            # export before a signal waits for it, so the kill spares a daemon
+            # the suite adopted, as the timeout and cancellation kills do.
+            transfer_receipted_daemon_instances(samples, decisive=True)
+            watched = tracker.update(samples)
             terminate_owned_tree(
                 reason="rss_limit",
                 samples=samples,
@@ -2069,18 +2198,24 @@ def run_guarded(
             baseline_pgids = _live_process_group_ids(snapshot[0])
             baseline_authoritative = True
         child_exited = False
+        previous_poll_at = start
         while not guard_interrupted:
             if snapshot is not None and enforce_snapshot(*snapshot):
                 break
-            if await_child_exit(next_poll_wait_s(fast_start=snapshot is not None)):
+            planned_wait_s = next_poll_wait_s(fast_start=snapshot is not None)
+            if await_child_exit(planned_wait_s):
                 child_exited = True
                 break
             now = time.perf_counter()
-            cancelled = cancellation_requested is not None and cancellation_requested()
+            watched_s = min(max(0.0, now - previous_poll_at), planned_wait_s)
+            previous_poll_at = now
+            cancelled = (
+                cancellation_watch is not None and cancellation_watch.requested()
+            )
             if cancelled:
                 progressed("cancellation_observed")
             if guard_signal is not None or cancelled:
-                signal_snapshot = sample_tracked_tree()
+                signal_snapshot = sample_tracked_tree(before_signal=True)
                 assert signal_snapshot is not None
                 samples, watched = signal_snapshot
                 if guard_interrupted:
@@ -2113,9 +2248,15 @@ def run_guarded(
                     termination_wait_expired = True
                 progressed("child_wait_finished")
                 break
-            if timeout is not None and now - start >= timeout:
+            stalled = command_output_stalled(watched_s)
+            if stalled or (timeout is not None and now - start >= timeout):
                 timed_out = True
-                timeout_snapshot = sample_tracked_tree()
+                output_stalled = stalled
+                stop_reason = "output_stalled" if stalled else "timeout"
+                if stalled and enforcer is not None:
+                    # The export below may wait for the adoption lock.
+                    enforcer.request(stop_reason, grace=0.25)
+                timeout_snapshot = sample_tracked_tree(before_signal=True)
                 assert timeout_snapshot is not None
                 samples, watched = timeout_snapshot
                 if guard_interrupted:
@@ -2133,7 +2274,7 @@ def run_guarded(
                     or _samples_include_cargo_build_state(samples, watched)
                 )
                 terminate_owned_tree(
-                    reason="timeout",
+                    reason=stop_reason,
                     samples=samples,
                     watched=watched,
                     grace=0.25,
@@ -2158,6 +2299,13 @@ def run_guarded(
                 assert keepalive_interval is not None
                 next_keepalive = now + keepalive_interval
             snapshot = sample_tracked_tree(allow_transient_timeout=True)
+        # The run loop has delivered or the child has exited. The enforcer
+        # stays armed until no signal of the root remains to deliver.
+        if cancellation_watch is not None:
+            cancellation_watch.stop()
+        if signal_watch is not None:
+            signal_watch.stop()
+        assert enforcer is not None
         if child_exited and violation is None:
             child_exit_usage = _take_child_exit_usage(proc)
         if violation is None and child_exit_usage is not None:
@@ -2201,7 +2349,11 @@ def run_guarded(
                 try:
                     proc.wait(timeout=max(1.0, poll_interval * 4.0))
                 except subprocess.TimeoutExpired:
-                    post_loop_snapshot = sample_tracked_tree()
+                    # The export below may wait for the adoption lock; the
+                    # enforcer signals the root group if it waits past the
+                    # slack.
+                    enforcer.request("post_loop_unreaped_child", grace=0.0)
+                    post_loop_snapshot = sample_tracked_tree(before_signal=True)
                     assert post_loop_snapshot is not None
                     samples, watched = post_loop_snapshot
                     terminate_owned_tree(
@@ -2221,6 +2373,13 @@ def run_guarded(
                         terminate_direct_child_handle(
                             reason=("post_loop_unreaped_child_direct_child_handle")
                         )
+            # Every signal of the root is delivered: the rest is observation,
+            # which a backstop must not race.
+            enforced_reasons, enforcer_reports = enforcer.stop()
+            if "timeout" in enforced_reasons:
+                timed_out = True
+            if "owner_cancellation" in enforced_reasons:
+                cancelled = True
             exit_census, exit_census_error = take_child_exit_census(proc)
             if exit_census is not None and not guard_interrupted:
                 # A child orphaned between two samples is reparented at its
@@ -2237,7 +2396,7 @@ def run_guarded(
                 and not _process_model.is_windows_process_model()
                 and child_env.get("MOLT_BACKEND_DAEMON_SUITE_LEASE")
             ):
-                transfer_receipted_daemon_instances(sampler())
+                transfer_receipted_daemon_instances(sampler(), decisive=True)
             if cleanup_orphans and not guard_interrupted:
                 try:
                     # One observation after the root's exit serves every
@@ -2360,7 +2519,11 @@ def run_guarded(
             returncode = GUARD_RETURN_CODE
         if timed_out:
             returncode = TIMEOUT_RETURN_CODE
-            timeout_msg = f"memory_guard: timeout after {timeout:.2f}s\n"
+            timeout_msg = (
+                f"memory_guard: no output for {no_output_timeout:.2f}s\n"
+                if output_stalled
+                else f"memory_guard: timeout after {timeout:.2f}s\n"
+            )
             stderr = _append_guard_message(stderr, timeout_msg, text=text)
         if guard_signal is not None and violation is None and not timed_out:
             returncode = 128 + guard_signal
@@ -2416,6 +2579,17 @@ def run_guarded(
                 "unobserved during those intervals. See sampling_telemetry in "
                 "the summary JSON.\n",
                 text=text,
+            )
+        for enforcement in enforcer_reports:
+            termination_reports.append(
+                completed_enforcement_report(
+                    enforcement,
+                    identities=tracker.custody_identities(
+                        set(tracker.known_pids or ())
+                    ),
+                    sampler=sampler,
+                    grace=termination_wait_s,
+                )
             )
         progressed("descendant_closure_started")
         descendants_closed, scratch_closure_evidence = (
@@ -2636,6 +2810,7 @@ def run_guarded(
             child_returncode=proc.returncode,
             infrastructure_failure=infrastructure_failure,
             worker_peaks=None if worker_peaks is None else worker_peaks.summary(),
+            output_stall_s=no_output_timeout if output_stalled else None,
         )
         state_closed = result.descendants_closed
         _update_active_guard_marker(
@@ -2680,6 +2855,9 @@ def run_guarded(
                 else _exit_signal_payload(128 + result.guard_signal)
             ),
         )
+        if summary_publisher is not None:
+            # No running summary may follow the terminal one the caller writes.
+            summary_publisher.retire()
         return result
     except BaseException as exc:
         caught_exception = exc
@@ -2696,6 +2874,17 @@ def run_guarded(
         )
         raise
     finally:
+        if cancellation_watch is not None:
+            cancellation_watch.stop()
+        if signal_watch is not None:
+            signal_watch.stop()
+        if enforcer is not None:
+            enforcer.stop()
+        if summary_publisher is not None:
+            # The normal path re-raised a writer failure; here an exception
+            # is already propagating.
+            with contextlib.suppress(BaseException):
+                summary_publisher.retire()
         # The finalizer reads the published exit only. poll() re-raises a
         # reaper failure, which would abort the remaining custody cleanup.
         if proc is not None and proc.returncode is None:

@@ -15,7 +15,7 @@ import time
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from types import ModuleType
 
-from tools import memory_guard, process_sentinel
+from tools import git_transfer, memory_guard, process_sentinel
 
 from tools.memory_guard_core import harness_outcomes as _harness_outcomes
 from tools.memory_guard_core.memory_limits import ResolvedMemoryLimits
@@ -130,6 +130,7 @@ class GuardedCompletedProcess[Output: str | bytes](subprocess.CompletedProcess[O
         cancelled: bool = False,
         descendants_closed: bool = False,
         worker_peaks: WorkerPeakSummary | None = None,
+        output_stall_s: float | None = None,
     ) -> None:
         super().__init__(
             args=list(args), returncode=returncode, stdout=stdout, stderr=stderr
@@ -160,6 +161,8 @@ class GuardedCompletedProcess[Output: str | bytes](subprocess.CompletedProcess[O
         self.child_stderr = child_stderr
         self.sampling_telemetry = sampling_telemetry
         self.sampling_interval_s = sampling_interval_s
+        # The output bound that ended the command, when silence ended it.
+        self.output_stall_s = output_stall_s
 
 
 def _claim_terminated_pgid(pgid: int) -> bool:
@@ -1079,6 +1082,32 @@ def _auto_repo_sentinel(
         yield sentinel
 
 
+def _bound_git_transfer(
+    command: Sequence[str],
+    *,
+    cwd: str | os.PathLike[str] | None,
+    env: Mapping[str, str] | None,
+    capture_output: bool,
+) -> tuple[Sequence[str], Mapping[str, str] | None, float | None]:
+    """Bound a Git transfer by its progress (tools/git_transfer.py).
+
+    Every guarded command passes through here, so every Git transfer a tool
+    starts through CommandExecutor, the harness or HarnessExecutionContext
+    gets the one bound, whichever tool started it.
+    """
+    transfer = git_transfer.bound_for_guard(
+        command, cwd=cwd, env=env, capture_output=capture_output
+    )
+    if transfer is None:
+        return command, env, None
+    bounded_env: Mapping[str, str] = (
+        ProcessEnvironment(transfer.env, rule=env.rule)
+        if isinstance(env, ProcessEnvironment)
+        else transfer.env
+    )
+    return transfer.argv, bounded_env, transfer.no_output_timeout
+
+
 def guarded_completed_process(
     command: Sequence[str],
     *,
@@ -1107,6 +1136,9 @@ def guarded_completed_process(
     running_summary_environ: Mapping[str, str] | None = None,
     sampling_scope: str = "global",
 ) -> GuardedCompletedProcess:
+    command, env, no_output_timeout = _bound_git_transfer(
+        command, cwd=cwd, env=env, capture_output=capture_output
+    )
     env = memory_guard.test_custody_launch_env(command, environ=env, cwd=cwd)
     env, _cargo_policies = cargo_subprocess_environment(command, env)
     resolved_limits = limits or limits_from_env(prefix, env)
@@ -1173,6 +1205,7 @@ def guarded_completed_process(
             running_summary_json=running_summary_json,
             running_summary_environ=running_summary_environ,
             running_summary_max_global_rss_kb=resolved_limits.max_global_rss_kb,
+            no_output_timeout=no_output_timeout,
         )
     stderr: str | bytes = guarded.stderr or ("" if text else b"")
     incident_at = _utc_timestamp()
@@ -1335,6 +1368,7 @@ def guarded_completed_process(
         cancelled=guarded.cancelled,
         descendants_closed=guarded.descendants_closed,
         worker_peaks=guarded.worker_peaks,
+        output_stall_s=guarded.output_stall_s,
     )
 
 
@@ -1397,6 +1431,9 @@ def guarded_completed_process_to_tempfiles(
     """
 
     cwd = Path(cwd) if cwd is not None else None
+    command, env, no_output_timeout = _bound_git_transfer(
+        command, cwd=cwd, env=env, capture_output=True
+    )
     env, _cargo_policies = cargo_subprocess_environment(command, env)
     resolved_limits = limits or limits_from_env(prefix, env)
     # Resolve a relative path-bearing executable against the parent cwd before
@@ -1438,6 +1475,7 @@ def guarded_completed_process_to_tempfiles(
             progress_label=progress_label,
             keepalive_interval=keepalive_interval,
             text=False,
+            no_output_timeout=no_output_timeout,
         )
     stdout = _guard_output_bytes(guarded.stdout)
     stderr = _guard_output_bytes(guarded.stderr)
@@ -1837,6 +1875,7 @@ class RepoProcessMemorySentinel:
                 lease=self._daemon_suite_lease.record,
                 samples=samples,
                 acknowledge=False,
+                wait_for_lock=False,
             )
         else:
             adopted = suite_custody.transferable_groups(
@@ -1844,6 +1883,7 @@ class RepoProcessMemorySentinel:
                 project_root=self._repo_root,
                 samples=samples,
                 acknowledge=False,
+                wait_for_lock=False,
             )
         adopted_pids = {
             pid for _lease, _identity, members in adopted for pid in members

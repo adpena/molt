@@ -4,6 +4,7 @@ from dataclasses import replace
 import json
 import os
 from pathlib import Path
+import signal
 import sys
 
 import pytest
@@ -673,7 +674,6 @@ def test_guardian_failure_still_runs_bounded_suite_fallback(tmp_path, monkeypatc
 @pytest.mark.skipif(os.name != "posix", reason="real fork ownership requires POSIX")
 def test_fork_child_does_not_keep_suite_eof_alive(tmp_path):
     import signal
-    import time
 
     root = Path(__file__).resolve().parents[1]
     env = dict(os.environ)
@@ -681,14 +681,23 @@ def test_fork_child_does_not_keep_suite_eof_alive(tmp_path):
     env["PYTHONPATH"] = str(root / "src") + os.pathsep + str(root)
     active = suite.SuiteDaemonLease.start(project_root=root, environ=env)
     assert active is not None
+    # The child lives until the test's SIGTERM, whatever handler pytest
+    # installed: it takes the default action before the signal can arrive.
+    mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})
     child = getattr(os, "fork")()
     if child == 0:
-        # Close inherited Python object too: this must be inert, never unlock.
-        active.close()
-        time.sleep(10)
-        os._exit(0)
+        try:
+            signal.signal(signal.SIGTERM, signal.SIG_DFL)
+            signal.pthread_sigmask(signal.SIG_SETMASK, mask)
+            # Close inherited Python object too: this must be inert, never unlock.
+            active.close()
+            while True:
+                signal.pause()
+        finally:
+            os._exit(1)
+    signal.pthread_sigmask(signal.SIG_SETMASK, mask)
     try:
-        active.close(timeout=3)
+        active.close()
         assert active.guardian.returncode == 0
         assert os.waitpid(child, getattr(os, "WNOHANG")) == (0, 0)
     finally:
@@ -836,18 +845,61 @@ def test_birth_probe_snapshot_error_is_unavailable(monkeypatch):
     assert daemon.process_started_at_ns(30) is None
 
 
+# Each ending decides how the guarded command ends after the guard has sampled
+# the daemon: it exits (0 or 7), or the guard ends it on its deadline, on owner
+# cancellation, on an operator's signal to the guard, or on a memory trip.
+_PROTOCOL_ENDINGS = {
+    "exit": 0,
+    "fail": 7,
+    "timeout": memory_guard.TIMEOUT_RETURN_CODE,
+    "cancel": memory_guard.GUARD_RETURN_CODE,
+    "signal": 128 + signal.SIGHUP,
+    "rss": memory_guard.GUARD_RETURN_CODE,
+}
+
+
 @pytest.mark.skipif(
     os.name != "posix", reason="real guarded daemon-scope transfer requires POSIX"
 )
-@pytest.mark.parametrize("exit_code", [0, 7])
+@pytest.mark.parametrize(
+    ("ending", "lock_mode"),
+    [
+        ("exit", "free"),
+        ("exit", "held"),
+        ("fail", "free"),
+        ("timeout", "held"),
+        ("cancel", "held"),
+        ("signal", "held"),
+        ("signal", "past-slack"),
+        ("rss", "held"),
+        ("rss", "past-slack"),
+    ],
+)
 def test_guarded_protocol_daemon_transfer_and_failure_cleanup(
-    tmp_path, exit_code, request
+    tmp_path, ending, lock_mode, request, monkeypatch
 ):
-    """Exercise actual guard/guardian protocol; this is not a compiler benchmark."""
+    """Exercise actual guard/guardian protocol; this is not a compiler benchmark.
+
+    With ``lock_mode`` ``held``, another party holds the adoption lock from before
+    the command ends until well past the observer bound, and every poll gives
+    up its export, as polls do under that contention: only the last export,
+    after the exit or before the guard's signal, can transfer the adopted
+    daemon. On 2026-10-21 that export gave up under host I/O load and the
+    exiting build's guard killed the shared daemon. Events order every step:
+    the command ends only after a poll has sampled the daemon, and the holder
+    keeps the lock for three observer bounds after the last export starts to
+    wait. ``past-slack`` holds it until the command is dead: the run loop
+    waits in its export, so only the enforcer can have signalled the root's
+    group, and the daemon still survives once the export returns.
+    """
     if run_in_fresh_guard_observer(request):
         return
     import textwrap
+    import threading
 
+    exit_code = _PROTOCOL_ENDINGS[ending]
+    acknowledged = ending != "fail"
+    lock_held = lock_mode != "free"
     root = Path(__file__).resolve().parents[1]
     env = dict(os.environ)
     env["CARGO_TARGET_DIR"] = str(tmp_path / "target")
@@ -857,7 +909,11 @@ def test_guarded_protocol_daemon_transfer_and_failure_cleanup(
     env[suite.LEASE_ENV] = str(active.path)
     env["OWNED_PROTOCOL_PID_FILE"] = str(tmp_path / "daemon.pid")
     env["OWNED_PROTOCOL_SCRATCH_FILE"] = str(tmp_path / "daemon.scratch")
-    env["OWNED_PROTOCOL_EXIT"] = str(exit_code)
+    env["OWNED_PROTOCOL_ACKNOWLEDGE"] = "1" if acknowledged else ""
+    env["OWNED_PROTOCOL_ENDING"] = ending
+    env["OWNED_PROTOCOL_ROOT_FILE"] = str(tmp_path / "root.pid")
+    go = tmp_path / "go"
+    env["OWNED_PROTOCOL_GO_FILE"] = str(go)
     script = textwrap.dedent("""
         import os, subprocess, sys, time
         from pathlib import Path
@@ -866,6 +922,9 @@ def test_guarded_protocol_daemon_transfer_and_failure_cleanup(
             acknowledge_started_daemon, persistent_daemon_env,
         )
         root=Path.cwd()
+        root_file = Path(os.environ['OWNED_PROTOCOL_ROOT_FILE'])
+        root_file.with_suffix('.partial').write_text(str(os.getpid()))
+        os.replace(root_file.with_suffix('.partial'), root_file)
         socket=Path(os.environ['OWNED_PROTOCOL_PID_FILE']).with_suffix('.sock')
         child_code = (
             'import os, sys, tempfile, time; from pathlib import Path; '
@@ -874,7 +933,7 @@ def test_guarded_protocol_daemon_transfer_and_failure_cleanup(
             'scratch=Path(tempfile.mkdtemp(prefix="molt_batch_")); '
             '(scratch/"module.o").write_bytes(b"native object"); '
             'Path(os.environ["OWNED_PROTOCOL_SCRATCH_FILE"]).write_text(str(scratch)); '
-            'time.sleep(30)'
+            'import threading; threading.Event().wait()'
         )
         proc=subprocess.Popen([sys.executable,'-I','-S','-c',child_code,'--daemon','--socket',str(socket)],
             start_new_session=True, env=persistent_daemon_env(os.environ),
@@ -883,37 +942,169 @@ def test_guarded_protocol_daemon_transfer_and_failure_cleanup(
             project_root=root,cargo_profile='dev-fast',config_digest='c'*64,backend_bin=Path(sys.executable))
         assert identity.started_at_ns is not None
         custody.write_backend_daemon_identity(custody.backend_daemon_root_from_env(os.environ,project_root=root)/'protocol.identity.json',identity)
-        if int(os.environ['OWNED_PROTOCOL_EXIT']) == 0:
+        if os.environ['OWNED_PROTOCOL_ACKNOWLEDGE']:
             assert acknowledge_started_daemon(os.environ, project_root=root, daemon_pid=proc.pid)
             # Native compilation starts only after receiver acknowledgement.
             proc.stdin.write(b'g')
             proc.stdin.flush()
-            deadline = time.monotonic() + 3
             while not Path(os.environ['OWNED_PROTOCOL_SCRATCH_FILE']).exists():
                 assert proc.poll() is None
-                assert time.monotonic() < deadline
                 time.sleep(0.01)
-        Path(os.environ['OWNED_PROTOCOL_PID_FILE']).write_text(str(proc.pid))
-        time.sleep(0.4)
-        sys.exit(int(os.environ['OWNED_PROTOCOL_EXIT']))
+        # Published whole: the test reads it as soon as it exists.
+        pid_file = Path(os.environ['OWNED_PROTOCOL_PID_FILE'])
+        pid_file.with_suffix('.partial').write_text(str(proc.pid))
+        os.replace(pid_file.with_suffix('.partial'), pid_file)
+        # The test writes it on every path, so the wait ends.
+        while not Path(os.environ['OWNED_PROTOCOL_GO_FILE']).exists():
+            time.sleep(0.01)
+        ending = os.environ['OWNED_PROTOCOL_ENDING']
+        if ending in ('exit', 'fail'):
+            sys.exit(0 if ending == 'exit' else 7)
+        if ending == 'rss':
+            held = b'x' * (128 << 20)
+        # Only the guard ends this command.
+        import threading
+        threading.Event().wait()
     """)
-    try:
-        result = memory_guard.run_guarded(
-            [sys.executable, "-c", script],
-            env=env,
-            cwd=root,
-            max_rss_kb=512_000,
-            max_total_rss_kb=1_024_000,
-            poll_interval=0.02,
-            timeout=10,
+    conductor_errors: list[BaseException] = []
+    stop_conductor = threading.Event()
+    go_written = threading.Event()
+    holding = threading.Event()
+    last_export_started = threading.Event()
+    last_export_contended: list[bool] = []
+    root_ended_while_held: list[bool] = []
+    polled = threading.Condition()
+    polled_pids: set[int] = set()
+    real_transferable_groups = suite.transferable_groups
+
+    def observed_export(environ, **kwargs):
+        with polled:
+            polled_pids.update(kwargs["samples"])
+            polled.notify_all()
+        if kwargs.get("wait_for_lock", True):
+            last_export_contended.append(holding.is_set())
+            last_export_started.set()
+            return real_transferable_groups(environ, **kwargs)
+        if lock_held:
+            # A poll's export gives up while the lock is held; only an export
+            # that waits for the lock reaches the real protocol.
+            return ()
+        return real_transferable_groups(environ, **kwargs)
+
+    monkeypatch.setattr(suite, "transferable_groups", observed_export)
+
+    def conduct() -> None:
+        # The command wrote its pid file after it acknowledged custody.
+        lock = None
+        try:
+            pid_file = tmp_path / "daemon.pid"
+            while not pid_file.exists():
+                if stop_conductor.wait(0.01):
+                    return
+            daemon_pid = int(pid_file.read_text(encoding="utf-8"))
+            if lock_held:
+                lock_path = active.path.parent / "adoption-transaction.lock"
+                while lock is None:
+                    lock = _try_acquire_file_lock(lock_path)
+                    if lock is None and stop_conductor.wait(0.01):
+                        return
+            # The guard tracks the daemon once a poll has sampled it.
+            with polled:
+                while daemon_pid not in polled_pids:
+                    if stop_conductor.is_set():
+                        return
+                    polled.wait(0.05)
+            if lock is not None:
+                holding.set()
+            go.write_text("go", encoding="utf-8")
+            go_written.set()
+            if ending == "signal":
+                # The guard's handler runs on this process's main thread.
+                signal.raise_signal(signal.SIGHUP)
+            if lock is not None:
+                while not last_export_started.wait(0.05):
+                    if stop_conductor.is_set():
+                        return
+                if lock_mode == "past-slack":
+                    root_pid = int((tmp_path / "root.pid").read_text("utf-8"))
+                    while process_model.pid_alive(root_pid):
+                        if stop_conductor.wait(0.02):
+                            return
+                    root_ended_while_held.append(True)
+                else:
+                    stop_conductor.wait(suite._ADOPTION_LOCK_S * 3)
+        except BaseException as exc:
+            conductor_errors.append(exc)
+        finally:
+            holding.clear()
+            if lock is not None:
+                _release_file_lock(lock)
+            # The command ends on every path, so a failed step fails fast.
+            go.write_text("go", encoding="utf-8")
+            go_written.set()
+
+    if ending == "timeout":
+        import time
+
+        # The guard's clock jumps past its deadline once the command may end.
+        install_module_view(
+            monkeypatch,
+            "time",
+            time,
+            memory_guard,
+            perf_counter=lambda: (
+                time.perf_counter() + (86_400.0 if go_written.is_set() else 0.0)
+            ),
         )
+    conductor = threading.Thread(target=conduct)
+    conductor.start()
+    try:
+        try:
+            result = memory_guard.run_guarded(
+                [sys.executable, "-c", script],
+                env=env,
+                cwd=root,
+                max_rss_kb=96_000 if ending == "rss" else 512_000,
+                max_total_rss_kb=1_024_000,
+                poll_interval=0.02,
+                # Only the timeout ending reaches its deadline, and only once
+                # its clock jumps; otherwise the deadline is a hang guard.
+                timeout=600,
+                cancellation_requested=go_written.is_set
+                if ending == "cancel"
+                else None,
+            )
+        finally:
+            stop_conductor.set()
+            conductor.join(120)  # A hang guard only.
+        assert not conductor.is_alive()
+        assert conductor_errors == []
         assert result.returncode == exit_code, result.stderr
+        if lock_held:
+            # The last export started while another party held the lock.
+            assert last_export_contended[:1] == [True]
+        if lock_mode == "past-slack":
+            # The run loop was still waiting in its export when the root died:
+            # the enforcer signalled the root's group, and only that group.
+            assert root_ended_while_held == [True]
+            root_pid = int((tmp_path / "root.pid").read_text(encoding="utf-8"))
+            reason = "rss_limit" if ending == "rss" else "guard_signal"
+            struck = [
+                action
+                for report in result.termination_reports
+                if report.reason == reason
+                for action in report.actions
+                if action.signal_name == "SIGTERM"
+            ]
+            assert [(a.target_kind, a.target_id) for a in struck] == [
+                ("process_group", root_pid)
+            ]
         pid = int((tmp_path / "daemon.pid").read_text(encoding="utf-8"))
         assert result.temporary_artifacts is not None
         closure = result.temporary_artifacts["closure"]
         assert isinstance(closure, dict)
         transfers = closure.get("suite_custody_transfers", [])
-        if exit_code == 0:
+        if acknowledged:
             assert [item["pgid"] for item in transfers] == [pid]
             assert pid in memory_guard.sample_processes()
             native_scratch = Path(
@@ -1384,39 +1575,55 @@ def test_adoption_inner_schema_rejects_even_matching_content_digest(
     assert suite.registered_groups(path, lease=record, samples=samples) == ()
 
 
-def test_adoption_waits_bounded_transaction_contention(lease, tmp_path):
+def test_custody_decision_waits_out_adoption_contention_an_observer_does_not(
+    lease, tmp_path
+):
+    """An acknowledgement waits for the adoption lock; a periodic observer does not.
+
+    Under host I/O load a holder kept the lock past the observer bound. A
+    decision that gave up there left an adopted daemon to orphan cleanup.
+    """
     import threading
 
     path, record, _handle = lease
     _owned, _operational, samples = acknowledge(lease, tmp_path)
-    held = threading.Event()
-    release = threading.Event()
-    errors = []
+    lock = _try_acquire_file_lock(path.parent / "adoption-transaction.lock")
+    assert lock is not None
+    outcomes: dict[str, object] = {}
+    finished = {name: threading.Event() for name in ("observer", "decision")}
 
-    def hold():
-        lock = _try_acquire_file_lock(path.parent / "adoption-transaction.lock")
+    def call(name: str, **kwargs) -> None:
         try:
-            assert lock is not None
-            held.set()
-            assert release.wait(5)
+            outcomes[name] = suite.registered_groups(
+                path, lease=record, samples=samples, **kwargs
+            )
         except BaseException as exc:
-            errors.append(exc)
+            outcomes[name] = exc
         finally:
-            if lock is not None:
-                _release_file_lock(lock)
+            finished[name].set()
 
-    thread = threading.Thread(target=hold)
-    thread.start()
-    assert held.wait(5)
-    timer = threading.Timer(0.05, release.set)
-    timer.start()
+    observer = threading.Thread(
+        target=call,
+        args=("observer",),
+        kwargs={"acknowledge": False, "wait_for_lock": False},
+    )
+    decision = threading.Thread(target=call, args=("decision",))
     try:
-        assert len(suite.registered_groups(path, lease=record, samples=samples)) == 1
+        # The observer gives up while another party holds the lock (the bound
+        # here is a hang guard; the observer returns after the 0.5 s bound)...
+        observer.start()
+        assert finished["observer"].wait(120)
+        assert outcomes["observer"] == ()
+        # ...and the decision still waits well past the observer's bound.
+        decision.start()
+        assert not finished["decision"].wait(suite._ADOPTION_LOCK_S * 4)
     finally:
-        release.set()
-        thread.join(5)
-        timer.join(5)
-    assert not errors and not thread.is_alive()
+        _release_file_lock(lock)
+    for thread in (observer, decision):
+        thread.join(120)  # A hang guard only; each call runs in milliseconds.
+        assert not thread.is_alive()
+    groups = outcomes["decision"]
+    assert isinstance(groups, tuple) and len(groups) == 1, groups
 
 
 def test_staged_receipt_recovers_after_final_commit_interruption(

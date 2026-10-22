@@ -11,6 +11,7 @@ import pytest
 
 from molt import host_capacity, process_model
 from tests.process_guard_common import (
+    HUNG_CHILD_SOURCE,
     install_module_view,
     install_thread_module_view,
 )
@@ -121,14 +122,16 @@ def test_run_subprocess_guard_kills_fast_allocator(tmp_path: Path, monkeypatch) 
         tree_gb=0.20,
         global_gb=0.30,
     )
-    script = """
+    script = (
+        """
 import time
 chunks = []
 for _ in range(16):
     chunks.append(bytearray(4 * 1024 * 1024))
     time.sleep(0.02)
-time.sleep(10)
 """
+        + HUNG_CHILD_SOURCE
+    )
 
     result = module._run_subprocess(
         [sys.executable, "-c", script],
@@ -152,7 +155,7 @@ def test_run_subprocess_guard_accounts_recursive_children(
         tree_gb=0.08,
         global_gb=0.30,
     )
-    child = "import time; buf = bytearray(36 * 1024 * 1024); time.sleep(10)"
+    child = "buf = bytearray(36 * 1024 * 1024)\n" + HUNG_CHILD_SOURCE
     script = f"""
 import subprocess
 import sys
@@ -1533,8 +1536,9 @@ def test_operator_signal_closes_real_child_before_returning_typed_outcome(
             sys.executable,
             "-B",
             "-c",
-            "import os,signal,sys,time; print(os.getpid(),flush=True); "
-            "os.kill(int(sys.argv[1]),getattr(signal,sys.argv[2])); time.sleep(30)",
+            "import os,signal,sys; print(os.getpid(),flush=True); "
+            "os.kill(int(sys.argv[1]),getattr(signal,sys.argv[2]))\n"
+            + HUNG_CHILD_SOURCE,
             str(os.getpid()),
             signal_name,
         ],

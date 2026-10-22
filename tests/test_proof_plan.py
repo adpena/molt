@@ -39,6 +39,7 @@ from tools.proof_queue_pkg import command_admission, supervisor_custody
 from tools.proof_queue_pkg import evidence as proof_queue_evidence
 from tests.executable_test_support import custody_spelling
 from tests.process_guard_common import (
+    HUNG_CHILD_SOURCE,
     install_module_view,
     keep_probe_commands_as_written,
     run_guarded_test_process,
@@ -7034,7 +7035,10 @@ def test_cli_process_exit_preserves_autonomous_guard_and_eventual_closure(tmp_pa
         "raise SystemExit(guarded_exec.main())\n",
         encoding="utf-8",
     )
-    live_code = f"import pathlib,time; pathlib.Path({str(ready)!r}).write_text('ready', encoding='utf-8'); time.sleep(30)"
+    live_code = (
+        f"import pathlib; pathlib.Path({str(ready)!r}).write_text('ready', encoding='utf-8')\n"
+        + HUNG_CHILD_SOURCE
+    )
     fail_code = (
         "import pathlib,time; deadline=time.monotonic()+15\n"
         f"while not pathlib.Path({str(ready)!r}).exists() and time.monotonic()<deadline: time.sleep(.02)\n"

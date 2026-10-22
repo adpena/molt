@@ -15,12 +15,20 @@ Design:
 * Execution always happens on the remote (or in a docker container). The
   runner copies the produced binary + a JSON manifest of expected stdout,
   then invokes the binary remotely under the host's preferred shell.
-* The runner is pure stdlib (Python >= 3.11 for tomllib). It shells out
+* The runner is pure stdlib (Python >= 3.12). It shells out
   to ssh / scp / rsync / docker — the only requirement on the dev box is
   that those tools are on PATH.
-* Read-only on the remote outside ``remote_dir``: every file it writes
-  goes under that directory; cleanup deletes the directory at the end
-  unless ``--keep-remote`` is passed.
+* Each host run owns its staging allocations from preparation through exit,
+  including failed setup and cancellation. SSH ``remote_dir`` is a staging
+  parent: only a fresh nonce child with its matching owner marker is removed.
+  Docker containers share sealed replay's nonce/label custody: prove stopped
+  (including PID zero), remove the exact container, then release its local bind
+  source. Provider failures retain unproven resources and report cleanup errors.
+  ``--keep-remote`` retains SSH children / Docker stage files for debugging;
+  containers always retire. Local rename copies never modify build outputs.
+  Hard owner termination or an unreachable provider can leave resources for
+  explicit recovery; this is not a crash-recovery supervisor. This does not
+  create, remove or unmount VM-wide filesystem shares.
 
 Smoke corpus:
 
@@ -80,8 +88,9 @@ import tempfile
 import time
 import tomllib
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from pathlib import Path
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
@@ -100,6 +109,7 @@ TOOLS_ROOT = REPO / "tools"
 
 from tools import harness_memory_guard  # noqa: E402
 from molt.dx import ARTIFACT_ROOT_ENV, artifact_root  # noqa: E402
+from molt.temporary_artifacts import OwnedTemporaryDirectory  # noqa: E402
 
 VALID_SHELLS = ("bash", "sh", "powershell")
 VALID_TRANSPORTS = ("ssh", "docker")
@@ -302,10 +312,6 @@ class Host:
     def is_windows(self) -> bool:
         return self.shell == "powershell" or "windows" in self.target
 
-    def remote_path(self, *parts: str) -> str:
-        sep = "\\" if self.is_windows else "/"
-        return self.remote_dir.rstrip("/\\") + sep + sep.join(parts)
-
 
 def _expand(maybe_path: str | None) -> str | None:
     if maybe_path is None:
@@ -496,6 +502,17 @@ class Transport(ABC):
 
     def __init__(self, host: Host) -> None:
         self.host = host
+        self._nonce = secrets.token_hex(16)
+        sep = "\\" if host.is_windows else "/"
+        self.execution_dir = (
+            host.remote_dir.rstrip("/\\") + sep + "molt-cross-" + self._nonce
+            if host.transport == "ssh"
+            else host.remote_dir
+        )
+
+    def remote_path(self, *parts: str) -> str:
+        sep = "\\" if self.host.is_windows else "/"
+        return self.execution_dir.rstrip("/\\") + sep + sep.join(parts)
 
     # Common helpers ------------------------------------------------------
 
@@ -574,14 +591,33 @@ class SSHTransport(Transport):
         return self._ssh_base() + [command]
 
     def prepare(self) -> None:
+        marker = self.remote_path(".molt-owner")
         if self.host.shell == "powershell":
+            parent, directory, marker = (
+                "'" + value.replace("'", "''") + "'"
+                for value in (self.host.remote_dir, self.execution_dir, marker)
+            )
             mkdir = (
-                f"if (-not (Test-Path -LiteralPath '{self.host.remote_dir}')) "
-                f"{{ New-Item -ItemType Directory -Path '{self.host.remote_dir}' "
-                f"-Force | Out-Null }}"
+                "$ErrorActionPreference = 'Stop'; "
+                f"New-Item -ItemType Directory -Path {parent} -Force | Out-Null; "
+                f"New-Item -ItemType Directory -Path {directory} | Out-Null; "
+                f"try {{ [IO.File]::WriteAllText({marker}, '{self._nonce}') }} "
+                "catch { $prepareError = $_; "
+                f"try {{ Remove-Item -Recurse -Force -LiteralPath {directory} }} "
+                'catch { throw "prepare: $prepareError; cleanup: $_" }; '
+                "throw $prepareError }"
             )
         else:
-            mkdir = f"mkdir -p {shlex.quote(self.host.remote_dir)}"
+            directory = shlex.quote(self.execution_dir)
+            marker = shlex.quote(marker)
+            # Exclusive mkdir establishes the owner before writing its marker.
+            # A marker-write failure retires only that just-created allocation.
+            mkdir = (
+                f"umask 077; mkdir -p {shlex.quote(self.host.remote_dir)} && "
+                f"mkdir {directory} && {{ "
+                f"printf %s {self._nonce} > {marker} || {{ "
+                f"rm -f {marker}; rmdir {directory}; exit 1; }}; }}"
+            )
         proc = _guarded_run(
             self._remote_shell_invoke(mkdir),
             capture_output=True,
@@ -600,7 +636,7 @@ class SSHTransport(Transport):
         # scp each file individually so a single bad path doesn't sink the
         # whole batch; this keeps error reporting per-file.
         for src in local_files:
-            dest = f"{self.host.user}@{self.host.hostname}:{self.host.remote_dir}/"
+            dest = f"{self.host.user}@{self.host.hostname}:{self.execution_dir}/"
             cmd = self._scp_base() + [str(src), dest]
             proc = _guarded_run(cmd, capture_output=True, text=True, timeout=180)
             if proc.returncode != 0:
@@ -624,21 +660,45 @@ class SSHTransport(Transport):
         return proc.returncode, proc.stdout, proc.stderr
 
     def cleanup(self) -> None:
+        marker = self.remote_path(".molt-owner")
         if self.host.shell == "powershell":
+            directory, marker = (
+                "'" + value.replace("'", "''") + "'"
+                for value in (self.execution_dir, marker)
+            )
             rm = (
-                f"if (Test-Path -LiteralPath '{self.host.remote_dir}') "
-                f"{{ Remove-Item -Recurse -Force -LiteralPath "
-                f"'{self.host.remote_dir}' }}"
+                "$ErrorActionPreference = 'Stop'; "
+                f"if (Test-Path -LiteralPath {directory}) {{ "
+                f"if (((Get-Item -Force -LiteralPath {directory}).Attributes "
+                "-band [IO.FileAttributes]::ReparsePoint) -or "
+                f"((Get-Item -Force -LiteralPath {marker}).Attributes "
+                "-band [IO.FileAttributes]::ReparsePoint)) "
+                "{ throw 'SSH staging indirection differs; retained' }; "
+                f"if ([IO.File]::ReadAllText({marker}) -cne '{self._nonce}') "
+                "{ throw 'SSH staging ownership differs; retained' }; "
+                f"Remove-Item -Recurse -Force -LiteralPath {directory} }}"
             )
         else:
-            rm = f"rm -rf {shlex.quote(self.host.remote_dir)}"
-        # Best-effort; cleanup failure is logged but not fatal.
-        _guarded_run(
+            directory = shlex.quote(self.execution_dir)
+            marker = shlex.quote(marker)
+            rm = (
+                f"if [ -e {directory} ] || [ -L {directory} ]; then "
+                f"[ ! -L {directory} ] && [ ! -L {marker} ] && "
+                f'[ "$(cat {marker})" = {self._nonce} ] || '
+                "{ echo 'SSH staging ownership differs; retained' >&2; exit 1; }; "
+                f"rm -rf {directory}; fi"
+            )
+        proc = _guarded_run(
             self._remote_shell_invoke(rm),
             capture_output=True,
             text=True,
             timeout=60,
         )
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"ssh cleanup failed for {self.host.name} at {self.execution_dir}: "
+                f"exit={proc.returncode} stderr={proc.stderr[:300]}"
+            )
 
 
 def _file_sha256(path: Path) -> str:
@@ -652,6 +712,7 @@ class DockerTransport(Transport):
     def __init__(self, host: Host) -> None:
         super().__init__(host)
         self._stage: Path | None = None
+        self._container_pending = False
 
     def prepare(self) -> None:
         # Verify docker is available locally.
@@ -680,23 +741,157 @@ class DockerTransport(Transport):
             shutil.copy2(src, self._stage / src.name)
             os.chmod(self._stage / src.name, 0o755)
 
+    def _docker_command(
+        self, args: list[str], *, timeout: int
+    ) -> subprocess.CompletedProcess[str]:
+        proc = _guarded_run(["docker", *args], timeout=timeout)
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"Docker {args[0]} failed: exit={proc.returncode} "
+                f"stderr={proc.stderr[:300]}"
+            )
+        return proc
+
+    @staticmethod
+    def _inspect(execute: Callable, kind: str, identifier: str) -> dict:
+        value = json.loads(execute([kind, "inspect", identifier], timeout=30).stdout)
+        if (
+            not isinstance(value, list)
+            or len(value) != 1
+            or not isinstance(value[0], dict)
+        ):
+            raise ValueError("Docker inspect did not return exactly one object")
+        return value[0]
+
+    @staticmethod
+    def _require_container_owner(
+        value: dict, identifier: str, name: str, nonce: str
+    ) -> None:
+        if (
+            value.get("Id") != identifier
+            or value.get("Name") != "/" + name
+            or value.get("Config", {}).get("Labels", {}).get("org.molt.release-custody")
+            != nonce
+        ):
+            raise ValueError("Docker cleanup lost exact container custody; retained")
+
+    @contextmanager
+    def _owned_container(
+        self, execute: Callable, create_args: list[str], *, nonce: str
+    ) -> Iterator[dict]:
+        """One container lifetime for ordinary runs and sealed replay.
+
+        The daemon outlives its client. Register custody before create, recover
+        an unacknowledged create only by our name AND nonce label, and never
+        release a bind source until exact-container closure has been proved.
+        """
+        name = "molt-run-" + nonce
+        label = "org.molt.release-custody"
+        identifier = None
+        snapshots: dict = {}
+        if self._container_pending:
+            raise RuntimeError("Earlier Docker container retirement unproved; retained")
+        self._container_pending = True
+        primary: BaseException | None = None
+        try:
+            created = execute(
+                [
+                    "container",
+                    "create",
+                    "--pull=never",
+                    "--name",
+                    name,
+                    "--label",
+                    label + "=" + nonce,
+                    *create_args,
+                ],
+                timeout=30,
+            )
+            identifier = created.stdout.strip()
+            if not re.fullmatch(r"[0-9a-f]{64}", identifier):
+                identifier = None
+                raise ValueError("Docker create returned no exact container identity")
+            before = self._inspect(execute, "container", identifier)
+            self._require_container_owner(before, identifier, name, nonce)
+            snapshots["before"] = before
+            yield snapshots
+        except BaseException as exc:
+            primary = exc
+            raise
+        finally:
+            try:
+                if identifier is None:
+                    # The client may have timed out after daemon-side creation.
+                    found = execute(
+                        [
+                            "container",
+                            "ls",
+                            "--all",
+                            "--quiet",
+                            "--no-trunc",
+                            "--filter",
+                            "name=" + name,
+                            "--filter",
+                            "label=" + label + "=" + nonce,
+                        ],
+                        timeout=30,
+                    ).stdout.split()
+                    if len(found) > 1 or any(
+                        not re.fullmatch(r"[0-9a-f]{64}", item) for item in found
+                    ):
+                        raise ValueError(
+                            "Docker create recovery has ambiguous custody; retained"
+                        )
+                    if not found:
+                        # No terminal acknowledgement exists. A daemon request
+                        # can still finish after this empty lookup; absence now
+                        # grants no authority to delete a future bind source.
+                        raise RuntimeError(
+                            f"Docker creation outcome unknown for {name}: "
+                            "create unacknowledged and no exact ID observed; retained"
+                        )
+                    identifier = found[0]
+                if identifier is not None:
+                    after = self._inspect(execute, "container", identifier)
+                    self._require_container_owner(after, identifier, name, nonce)
+                    if after.get("State", {}).get("Running") is True:
+                        execute(["container", "kill", identifier], timeout=30)
+                        after = self._inspect(execute, "container", identifier)
+                        self._require_container_owner(after, identifier, name, nonce)
+                    if (
+                        after.get("State", {}).get("Running") is not False
+                        or after.get("State", {}).get("Pid") != 0
+                    ):
+                        raise ValueError("Docker container did not close; retained")
+                    snapshots["after"] = after
+                    execute(["container", "rm", identifier], timeout=30)
+                self._container_pending = False
+            except BaseException as cleanup:
+                if primary is not None:
+                    raise BaseExceptionGroup(
+                        "Docker execution and cleanup failed", [primary, cleanup]
+                    ) from None
+                raise
+
     def run(self, remote_argv: list[str], *, timeout: int) -> tuple[int, str, str]:
-        assert self._stage is not None
-        # Translate /<remote_dir>/<file> into the mount path, which we
-        # always make remote_dir for symmetry with ssh hosts.
-        mount = self.host.remote_dir
-        cmd = [
-            "docker",
-            "run",
-            "--rm",
-            "--pull=never",
+        assert self._stage is not None and self.host.container is not None
+        create_args = [
             "-v",
-            f"{self._stage}:{mount}",
+            f"{self._stage}:{self.execution_dir}",
             "-w",
-            mount,
+            self.execution_dir,
             self.host.container,
-        ] + remote_argv
-        proc = _guarded_run(cmd, capture_output=True, text=True, timeout=timeout)
+            *remote_argv,
+        ]
+        with self._owned_container(
+            self._docker_command, create_args, nonce=secrets.token_hex(16)
+        ) as snapshots:
+            proc = _guarded_run(
+                ["docker", "container", "start", "--attach", snapshots["before"]["Id"]],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
         return proc.returncode, proc.stdout, proc.stderr
 
     def import_sealed_root(
@@ -744,7 +939,7 @@ class DockerTransport(Transport):
         if not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
             raise ValueError("Docker import did not return an exact image identity")
         self._sealed_image = image_id
-        inspected = self._sealed_inspect("image", image_id)
+        inspected = self._inspect(self._sealed_command, "image", image_id)
         validate_sealed_docker_image(inspected, sha256=sha256, arch=arch)
         if _file_sha256(archive) != sha256:
             raise ValueError("sealed root archive changed during Docker import")
@@ -838,18 +1033,6 @@ class DockerTransport(Transport):
         )
         return {"version": version, "info": info}
 
-    def _sealed_inspect(self, kind: str, identifier: str) -> dict:
-        value = json.loads(
-            self._sealed_command([kind, "inspect", identifier], timeout=30).stdout
-        )
-        if (
-            not isinstance(value, list)
-            or len(value) != 1
-            or not isinstance(value[0], dict)
-        ):
-            raise ValueError("Docker inspect did not return exactly one object")
-        return value[0]
-
     def run_sealed(self, command: list[str], *, timeout: int) -> dict[str, object]:
         """Inspect before entry, capture output, prove stopped, then remove ours.
 
@@ -857,16 +1040,7 @@ class DockerTransport(Transport):
         the canonical supervisor export stream before the container stops.
         """
         nonce = secrets.token_hex(16)
-        name = "molt-release-" + nonce
-        label = "org.molt.release-custody=" + nonce
         argv = [
-            "container",
-            "create",
-            "--pull=never",
-            "--name",
-            name,
-            "--label",
-            label,
             "--hostname",
             "molt-guest",
             "--network",
@@ -921,51 +1095,20 @@ class DockerTransport(Transport):
             self._sealed_image,
             *command[1:],
         ]
-        created = self._sealed_command(argv, timeout=30)
-        identifier = created.stdout.strip()
-        if not re.fullmatch(r"[0-9a-f]{64}", identifier):
-            raise ValueError("Docker create returned no exact container identity")
-        before = self._sealed_inspect("container", identifier)
-        # Ownership is established before any cleanup; arbitrary IDs never grant it.
-        if (
-            before.get("Id") != identifier
-            or before.get("Config", {})
-            .get("Labels", {})
-            .get("org.molt.release-custody")
-            != nonce
-        ):
-            raise ValueError("Docker container identity differs from the created owner")
         result = None
-        try:
+        with self._owned_container(
+            self._sealed_command, argv, nonce=nonce
+        ) as snapshots:
+            before = snapshots["before"]
             validate_sealed_docker_configuration(
                 before, image=self._sealed_image, command=command
             )
             result = self._sealed_command(
-                ["container", "start", "--attach", identifier],
+                ["container", "start", "--attach", before["Id"]],
                 timeout=timeout,
                 capture=self._sealed_evidence / nonce,
             )
-        finally:
-            after = self._sealed_inspect("container", identifier)
-            if (
-                after.get("Id") != identifier
-                or after.get("Config", {})
-                .get("Labels", {})
-                .get("org.molt.release-custody")
-                != nonce
-            ):
-                raise ValueError(
-                    "Docker cleanup lost exact container custody; retained"
-                )
-            if after.get("State", {}).get("Running") is True:
-                self._sealed_command(["container", "kill", identifier], timeout=30)
-                after = self._sealed_inspect("container", identifier)
-            if (
-                after.get("State", {}).get("Running") is not False
-                or after.get("State", {}).get("Pid") != 0
-            ):
-                raise ValueError("Docker container did not close; retained")
-            self._sealed_command(["container", "rm", identifier], timeout=30)
+        after = snapshots["after"]
         if (
             result is None
             or after["State"].get("ExitCode") != 0
@@ -990,8 +1133,13 @@ class DockerTransport(Transport):
                 )
 
     def cleanup(self) -> None:
-        if self._stage and self._stage.exists():
-            shutil.rmtree(self._stage, ignore_errors=True)
+        if self._container_pending:
+            raise RuntimeError(
+                "Docker container retirement unproved; bind source retained"
+            )
+        if self._stage is not None:
+            shutil.rmtree(self._stage)
+            self._stage = None
 
 
 def validate_sealed_docker_provider(value: dict, *, arch: str) -> None:
@@ -1171,6 +1319,7 @@ class HostResult:
     host: Host
     cases: list[CaseResult] = dataclasses.field(default_factory=list)
     setup_error: str | None = None
+    cleanup_error: str | None = None
 
     def passed(self) -> int:
         return sum(1 for c in self.cases if c.status == "PASS")
@@ -1204,57 +1353,38 @@ def _run_one_host(
 ) -> HostResult:
     result = HostResult(host=host)
     transport = transport_for(host)
+    local_stage: OwnedTemporaryDirectory | None = None
+    primary: BaseException | None = None
     try:
-        transport.prepare()
-    except Exception as exc:
-        result.setup_error = f"transport.prepare failed: {exc}"
-        for c in cases:
-            result.cases.append(
-                CaseResult(
-                    case=c.name,
-                    status="SKIP",
-                    duration=0.0,
-                    detail=result.setup_error,
-                )
-            )
-        return result
+        phase = "transport.prepare"
+        try:
+            transport.prepare()
+            # Renaming must never publish copies beside shared build outputs.
+            phase = "local staging"
+            push_files: list[Path] = []
+            case_to_remote: dict[str, str] = {}
+            for c in cases:
+                binary, _ = builds[(host.target, c.name)]
+                if binary is None:
+                    continue
+                remote_name = f"{c.name}{binary.suffix}"
+                staged = binary
+                if binary.name != remote_name:
+                    if local_stage is None:
+                        local_stage = OwnedTemporaryDirectory(prefix="molt_cross_push_")
+                    staged = Path(local_stage.name) / remote_name
+                    shutil.copy2(binary, staged)
+                    os.chmod(staged, 0o755)
+                push_files.append(staged)
+                case_to_remote[c.name] = remote_name
+            phase = "transport.push"
+            transport.push(push_files)
+        except Exception as exc:
+            result.setup_error = f"{phase} failed: {exc}"
+            for c in cases:
+                result.cases.append(CaseResult(c.name, "SKIP", 0.0, result.setup_error))
+            return result
 
-    # Push every binary that compiled successfully.
-    push_files: list[Path] = []
-    case_to_remote: dict[str, str] = {}
-    for c in cases:
-        binary, _ = builds[(host.target, c.name)]
-        if binary is None:
-            continue
-        # Force a stable remote name regardless of local extension.
-        ext = binary.suffix
-        remote_name = f"{c.name}{ext}"
-        # Stage with the remote_name so push lands the right basename.
-        staged = binary.parent / remote_name
-        if staged != binary:
-            shutil.copy2(binary, staged)
-            os.chmod(staged, 0o755)
-        push_files.append(staged)
-        case_to_remote[c.name] = remote_name
-
-    try:
-        transport.push(push_files)
-    except Exception as exc:
-        result.setup_error = f"transport.push failed: {exc}"
-        for c in cases:
-            result.cases.append(
-                CaseResult(
-                    case=c.name,
-                    status="SKIP",
-                    duration=0.0,
-                    detail=result.setup_error,
-                )
-            )
-        if not keep_remote:
-            transport.cleanup()
-        return result
-
-    try:
         for c in cases:
             binary, log = builds[(host.target, c.name)]
             if binary is None:
@@ -1269,7 +1399,7 @@ def _run_one_host(
                 )
                 continue
             remote_name = case_to_remote[c.name]
-            remote_path = host.remote_path(remote_name)
+            remote_path = transport.remote_path(remote_name)
             t0 = time.monotonic()
             try:
                 code, out, err = transport.run([remote_path], timeout=60)
@@ -1312,9 +1442,31 @@ def _run_one_host(
                 result.cases.append(
                     CaseResult(case=c.name, status="PASS", duration=duration, detail="")
                 )
+    except BaseException as exc:
+        primary = exc
+        raise
     finally:
+        errors: list[BaseException] = []
         if not keep_remote:
-            transport.cleanup()
+            try:
+                transport.cleanup()
+            except BaseException as exc:
+                errors.append(exc)
+        if local_stage is not None:
+            try:
+                local_stage.cleanup()
+            except BaseException as exc:
+                errors.append(exc)
+        if errors:
+            if primary is not None:
+                raise BaseExceptionGroup(
+                    "Cross-run execution and cleanup failed", [primary, *errors]
+                ) from None
+            # Ordinary cleanup failures belong beside setup/case diagnostics.
+            # Cancellation or another BaseException must still escape.
+            if any(not isinstance(exc, Exception) for exc in errors):
+                raise BaseExceptionGroup("Cross-run cleanup failed", errors)
+            result.cleanup_error = "; ".join(str(exc) for exc in errors)
     return result
 
 
@@ -1336,6 +1488,8 @@ def _print_matrix(results: list[HostResult], cases: list[Case]) -> None:
                 total_skip += 1
         if r.setup_error:
             sys.stdout.write(f"  [setup error] {r.setup_error}\n")
+        if r.cleanup_error:
+            sys.stdout.write(f"  [cleanup error] {r.cleanup_error}\n")
     sys.stdout.write("\nMatrix:\n")
     for r in results:
         n = len(r.cases)
@@ -1395,15 +1549,20 @@ def _write_report(
                 lines.append(c.detail.strip() or "(no detail)")
                 lines.append("```")
                 lines.append("")
-        if r.setup_error:
+        for kind, diagnostic in (
+            ("setup", r.setup_error),
+            ("cleanup", r.cleanup_error),
+        ):
+            if diagnostic is None:
+                continue
             if not any_detail:
                 lines.append("## Diagnostics")
                 lines.append("")
                 any_detail = True
-            lines.append(f"### {r.host.name} — setup error")
+            lines.append(f"### {r.host.name} — {kind} error")
             lines.append("")
             lines.append("```")
-            lines.append(r.setup_error)
+            lines.append(diagnostic)
             lines.append("```")
             lines.append("")
     path.write_text("\n".join(lines), encoding="utf-8")
@@ -1447,7 +1606,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--keep-remote",
         action="store_true",
-        help="leave the remote_dir in place after the run (debugging)",
+        help="retain this run’s SSH child / Docker stage files (containers still retire)",
     )
     parser.add_argument(
         "--verbose",
@@ -1539,8 +1698,8 @@ def main(argv: list[str] | None = None) -> int:
     # Exit non-zero if anything failed; SKIP alone is OK so the loopback
     # smoke run still exits 0 when every case passed.
     any_fail = any(any(c.status == "FAIL" for c in r.cases) for r in results)
-    any_setup_err = any(r.setup_error for r in results)
-    return 1 if (any_fail or any_setup_err) else 0
+    any_host_err = any(r.setup_error or r.cleanup_error for r in results)
+    return 1 if (any_fail or any_host_err) else 0
 
 
 if __name__ == "__main__":

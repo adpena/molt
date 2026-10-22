@@ -109,6 +109,22 @@ percentages. Required conformance and release matrix gates still apply.
   timing assumptions. Preserve minimized fuzz/differential inputs, seed and
   applicable target coordinates in existing replay evidence. Normalize only
   differences the contract allows; do not normalize away semantic mismatches.
+- **Order events, not time.** A test must not depend on a wall-clock race: a
+  host that stalls (38 minutes on 2026-10-21) fails every timing assumption
+  at once. Order steps with a handshake (a file, a pipe, a sampler callback),
+  and assert outcomes, not elapsed bounds. A child that stands in for a hung
+  process runs `HUNG_CHILD_SOURCE` (`tests/process_guard_common.py`): it waits
+  for an event nobody sets, so only its owner's kill ends it, never a sleep
+  that a stalled owner outlasts. The trade: a regressed kill then hangs the
+  test instead of failing it, so the test depends on an outer deadline.
+  Proof-plan families run under a family timeout; a plain local pytest run
+  has none and waits until the operator stops it. Each such test gives its
+  hung children a fresh `hung_child_marker()` as an argv element and stops
+  the ones its subject may leave in a `finally` with
+  `stop_test_processes_carrying(marker)`. That finds only processes that
+  carry the marker as a whole argument and were born after the test process,
+  so a call that raises before a pid is known leaks nothing, and no other
+  session's child or other process is touched.
 - **Make fixtures and claims portable.** Cover Windows, macOS and Linux,
   applicable architectures, CPython versions, native/WASM, and claimed
   backends/profiles through the canonical matrices. Distinguish the host running
@@ -136,7 +152,11 @@ percentages. Required conformance and release matrix gates still apply.
   one private cache; they do not depend on another test's or developer's state.
 - **Budget the execution, not the coverage.** Use the smallest fixture and
   dependency closure that preserves the invariant. Profile slow setup/build/run
-  stages before optimizing. Reuse immutable fixture inputs without sharing
+  stages before optimizing: `python -m pytest -p tools.pytest_profile
+  --molt-profile=run.json ...` records every phase's wall, CPU, child CPU,
+  spawns and waiting, and `python tools/pytest_profile.py report run.json`
+  shows what bounds the run (the busiest worker, the exit tail, the tests that
+  wait). Reuse immutable fixture inputs without sharing
   mutable state across tests; batch integration builds and keep them out of the
   fast unit loop. Real Cargo fixtures use actual filesystem measurements with
   invocation-owned headroom appropriate to their dependency graph; modeled

@@ -57,9 +57,13 @@ import time
 import venv
 from pathlib import Path
 from tests.process_guard_common import (
+    HUNG_CHILD_SOURCE,
     install_module_os_view,
     install_module_view,
+    hung_child_marker,
+    processes_carrying,
     run_guarded_test_process,
+    stop_test_processes_carrying,
 )
 
 import pytest
@@ -76,7 +80,10 @@ from tools.molt_dev_common import (  # noqa: E402
     GateFailure,
     _run_fast_captured_command,
 )
-from tests.integration_driver_fixture import copy_driver_trees  # noqa: E402
+from tests.integration_driver_fixture import (  # noqa: E402
+    clone_tree,
+    copy_driver_trees,
+)
 
 SCRIPT_PATH = REPO_ROOT / "tools" / "molt_dev.py"
 COMMITTED_GATES = REPO_ROOT / "tools" / "proof_plan.toml"
@@ -121,6 +128,33 @@ def _record_driver_git_commands(drv, monkeypatch):
     return commands
 
 
+def _record_process_deadlines(monkeypatch):
+    """Record each command's deadline where driver commands reach a process.
+
+    Every executor is a CommandExecutor, and the driver's guarded commands go
+    through harness_memory_guard; a module that bound its executor at import
+    is still recorded.
+    """
+    from tools import command_execution, harness_memory_guard
+
+    deadlines: list[tuple[tuple[str, ...], float | None]] = []
+    real_run = command_execution.CommandExecutor.run
+
+    def run(self, args, **kwargs):
+        deadlines.append((tuple(str(part) for part in args), kwargs.get("timeout")))
+        return real_run(self, args, **kwargs)
+
+    real_guarded = harness_memory_guard.guarded_completed_process
+
+    def guarded(cmd, **kwargs):
+        deadlines.append((tuple(str(part) for part in cmd), kwargs.get("timeout")))
+        return real_guarded(cmd, **kwargs)
+
+    monkeypatch.setattr(command_execution.CommandExecutor, "run", run)
+    monkeypatch.setattr(harness_memory_guard, "guarded_completed_process", guarded)
+    return deadlines
+
+
 def _assert_no_patch_diff_work(commands):
     assert not any(args[0] == "patch-id" for args in commands)
     assert not any(args[0] == "diff-tree" and "-p" in args for args in commands)
@@ -161,19 +195,13 @@ def _origin_seed(tmp_path_factory):
     return origin
 
 
-@pytest.fixture
-def origin_and_clone(tmp_path, _origin_seed, monkeypatch):
-    """Independent real bare origin and working clone for each integration.
-
-    Copy files, never hardlink them: tests mutate refs, hooks, config and objects.
-    Subject fetch/rebase/push operations and clone creation still use real Git.
-    """
+def _clone_origin(tmp_path, seed: Path, monkeypatch) -> tuple[Path, Path]:
     # These repositories exercise generic shell gates, not the caller's venv.
     # Interpreter-selection tests construct and select their own environments.
     for key in ("MOLT_VENV", "UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV"):
         monkeypatch.delenv(key, raising=False)
     origin = tmp_path / "origin.git"
-    shutil.copytree(_origin_seed, origin)
+    clone_tree(seed, origin)
     work = tmp_path / "work"
     _git(
         tmp_path,
@@ -187,6 +215,56 @@ def origin_and_clone(tmp_path, _origin_seed, monkeypatch):
         str(work),
     )
     return origin, work
+
+
+@pytest.fixture
+def origin_and_clone(tmp_path, _origin_seed, monkeypatch):
+    """Independent real bare origin and working clone for each integration.
+
+    Copy files, never hardlink them: tests mutate refs, hooks, config and objects.
+    Subject fetch/rebase/push operations and clone creation still use real Git.
+    """
+    return _clone_origin(tmp_path, _origin_seed, monkeypatch)
+
+
+def _build_driver_origin(root: Path, driver: Path) -> None:
+    """The seed history, with this checkout's driver trees committed on main."""
+    seed = root / "seed"
+    _init_repo(seed)
+    copy_driver_trees(seed, seed=driver)
+    (seed / "tools/proof_plan.toml").write_text(
+        'always = ["echo integration-policy"]\n', encoding="utf-8"
+    )
+    (seed / "README.md").write_text("seed\n", encoding="utf-8")
+    _git(seed, "add", "-A", "--", ".")
+    _git(seed, "commit", "-q", "--no-verify", "-m", "seed: main driver")
+    _git(root, "clone", "--bare", "-q", str(seed), str(root / "origin.git"))
+
+
+@pytest.fixture(scope="session")
+def _driver_origin_seed(tmp_path_factory, worker_id, driver_seed):
+    """A bare origin whose main carries the driver, built once per session.
+
+    A landing runs main's pinned driver, so a test that lands through it needs
+    the driver committed on main. Each such test copied the driver trees
+    (1,088 files, 25 MB) into its clone and committed them; the session now
+    makes that commit once and each test clones it.
+    """
+    from tests.integration_driver_fixture import shared_session_tree
+
+    root = shared_session_tree(
+        tmp_path_factory,
+        worker_id,
+        "driver-origin",
+        lambda root: _build_driver_origin(root, driver_seed),
+    )
+    return root / "origin.git"
+
+
+@pytest.fixture
+def driver_origin_and_clone(tmp_path, _driver_origin_seed, monkeypatch):
+    """`origin_and_clone` whose main already carries this checkout's driver."""
+    return _clone_origin(tmp_path, _driver_origin_seed, monkeypatch)
 
 
 def test_origin_fixture_copies_history_without_mutable_aliases(
@@ -2425,12 +2503,14 @@ gates = ["echo build-started > build-started.txt"]
 
 
 def _wait_for(marker: str, *, then: str) -> str:
-    """A gate that needs another gate to run beside it: serially it times out."""
+    """A gate that needs another gate to run beside it.
+
+    Serially it waits forever, and the session's own deadline ends the test:
+    a wall-clock bound here failed it on a loaded host.
+    """
     return _integration_python(
         "import pathlib, sys, time\n"
-        "deadline = time.monotonic() + 60\n"
         f"while not pathlib.Path({marker!r}).exists():\n"
-        "    if time.monotonic() > deadline: sys.exit(9)\n"
         "    time.sleep(0.05)\n" + then
     )
 
@@ -2485,14 +2565,12 @@ def test_integrate_reports_the_first_failure_in_declared_order(
         "receipt = pathlib.Path(git('rev-parse', '--path-format=absolute', "
         "'--git-common-dir')) / 'molt-integrate' / 'receipts' / "
         "(git('rev-parse', 'HEAD') + '.gates.json')\n"
-        "deadline = time.monotonic() + 60\n"
         "while True:\n"
         "    try:\n"
         "        rows = json.loads(receipt.read_text())['commands']\n"
         "    except (OSError, ValueError, KeyError):\n"
         "        rows = []\n"
         "    if any(r['id'] == 'local.always.3' for r in rows): sys.exit(5)\n"
-        "    if time.monotonic() > deadline: sys.exit(9)\n"
         "    time.sleep(0.05)\n"
     )
     gates = [
@@ -2515,24 +2593,26 @@ def test_integrate_cancels_later_gates_after_an_earlier_failure(
     drv, origin_and_clone, monkeypatch
 ):
     _, work = origin_and_clone
-    marker = str(work.parent / "second-started")
-    finished = work.parent / "second-finished"
-    gates = [
-        _wait_for(marker, then="sys.exit(4)"),
-        _integration_python(
-            "import pathlib, time\n"
-            f"pathlib.Path({marker!r}).touch()\n"
-            "time.sleep(120)\n"
-            f"pathlib.Path({str(finished)!r}).touch()"
-        ),
-    ]
-    _commit_integration_policy(work, gates)
+    started = str(work.parent / "second-started")
+    marker = hung_child_marker()
+    # The second gate never ends by itself: only its cancellation ends it.
+    hung = shlex.join(
+        [
+            sys.executable,
+            "-c",
+            f"import pathlib\npathlib.Path({started!r}).touch()\n" + HUNG_CHILD_SOURCE,
+            marker,
+        ]
+    )
+    _commit_integration_policy(work, [_wait_for(started, then="sys.exit(4)"), hung])
     monkeypatch.setattr(drv, "concurrent_gate_limit", lambda: 2)
-    started = time.monotonic()
-    with pytest.raises(GateFailure, match=r"gate failed \(exit 4\)"):
-        drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
-    assert time.monotonic() - started < 100
-    assert not finished.exists()
+    try:
+        with pytest.raises(GateFailure, match=r"gate failed \(exit 4\)"):
+            drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
+        still_running = processes_carrying(marker)
+    finally:
+        stop_test_processes_carrying(marker)
+    assert still_running == [], "the cancelled gate still runs"
 
 
 @pytest.mark.parametrize("cause", ["gate exit", "outside writer"])
@@ -2982,24 +3062,13 @@ def test_pinned_controller_is_reused_per_tree_and_replaced_when_main_changes(
 
 
 def test_real_driver_lands_and_retires_a_worktree_as_pinned_controller(
-    origin_and_clone, tmp_path
+    driver_origin_and_clone, tmp_path
 ):
-    _, work = origin_and_clone
-    copy_driver_trees(work)
+    _, work = driver_origin_and_clone
     (work / "tools" / "proof_plan.toml").write_text(
         'always = ["echo controller-gate"]\n', encoding="utf-8"
     )
-    _git(
-        work,
-        "add",
-        "-A",
-        "--",
-        "tools",
-        "src",
-        "pyproject.toml",
-        "uv.lock",
-        ".python-version",
-    )
+    _git(work, "add", "--", "tools/proof_plan.toml")
     _git(work, "commit", "-q", "--no-verify", "-m", "main driver")
     _git(work, "push", "-q", "origin", "HEAD:main")
     lane = tmp_path / "lane"
@@ -3472,16 +3541,15 @@ def test_land_no_precheck_queues_without_running_gates(
 
 
 def test_land_waits_for_a_real_runner_through_the_pinned_controller(
-    origin_and_clone, tmp_path
+    driver_origin_and_clone, tmp_path
 ):
     # The production path: `land` spawns a detached runner, which hands off
     # to main's pinned driver and lands the request from the queue sandbox.
-    _, work = origin_and_clone
-    copy_driver_trees(work)
+    _, work = driver_origin_and_clone
     (work / "tools" / "proof_plan.toml").write_text(
         'always = ["echo queue-gate"]\n', encoding="utf-8"
     )
-    _git(work, "add", "-A", "--", ".")
+    _git(work, "add", "--", "tools/proof_plan.toml")
     _git(work, "commit", "-q", "--no-verify", "-m", "main driver")
     _git(work, "push", "-q", "origin", "HEAD:main")
     lane = tmp_path / "lane"
@@ -3529,10 +3597,33 @@ def test_land_wait_fails_when_its_runner_exits_without_landing(tmp_path, monkeyp
     # A runner that has not finished may still be starting: keep waiting.
     assert queue._runner_exited_without(paths, request.id) is None
     (runner / "rc").write_text("1\n", encoding="utf-8")
-    monkeypatch.setattr(queue, "_AWAIT_POLL_S", 0.01)
+    monkeypatch.setattr(queue, "_AWAIT_POLL_MIN_S", 0.01)
+    monkeypatch.setattr(queue, "_AWAIT_POLL_MAX_S", 0.01)
 
     assert queue._await_landing(paths, request.id) == molt_dev.EXIT_FAIL
     assert queue._runner_exited_without(paths, request.id) == runner
+
+
+def test_land_wait_looks_again_at_a_doubling_interval(tmp_path, monkeypatch):
+    from tools import molt_dev_queue as queue
+    from tests.process_guard_common import install_module_view
+
+    paths = queue.QueuePaths(tmp_path / "landing-queue")
+    request = queue.enqueue(paths, head="1" * 40, worktree=tmp_path, branch=None)
+    waits: list[float] = []
+
+    def wait(seconds: float) -> None:
+        waits.append(seconds)
+        if len(waits) == 7:
+            queue.record_result(
+                paths, request, status="landed", detail="", landed="2" * 40
+            )
+
+    install_module_view(monkeypatch, "time", time, queue, sleep=wait)
+
+    assert queue._await_landing(paths, request.id) == molt_dev.EXIT_OK
+    # From 0.05 s, each wait doubles, up to one second.
+    assert waits == pytest.approx([0.05, 0.1, 0.2, 0.4, 0.8, 1.0, 1.0])
 
 
 # Resolve the launcher's recorded supervisor, never the possibly adopted PPID.
@@ -3557,6 +3648,23 @@ _ORPHAN_EXITING_SLEEPER = (
     "finally:\n"
     "    (state / 'command-done').touch()\n"
 )
+
+
+def _release_orphan_sleeper(runner, supervisor):
+    from molt.process_model import pid_alive
+
+    (runner / "command-release").touch()
+    deadline = time.monotonic() + 30
+    while not (runner / "command-done").exists():
+        assert time.monotonic() < deadline, "test command did not release"
+        time.sleep(0.01)
+    command = int((runner / "command-pid").read_text(encoding="utf-8"))
+    while pid_alive(command):
+        assert time.monotonic() < deadline, "test command did not exit"
+        time.sleep(0.01)
+    while os.waitpid(supervisor, os.WNOHANG)[0] == 0:
+        assert time.monotonic() < deadline, "test supervisor did not exit"
+        time.sleep(0.01)
 
 
 @pytest.mark.parametrize("adoptive_parent", [1, 4321])
@@ -3586,6 +3694,59 @@ def test_orphan_sleeper_exits_when_started_after_reparenting(tmp_path, adoptive_
         _ORPHAN_EXITING_SLEEPER,
         {"__builtins__": {**vars(builtins), "__import__": selected_import}},
     )
+
+
+@pytest.mark.skipif(
+    os.name != "posix", reason="an unreaped child (a zombie) is a POSIX state"
+)
+def test_land_wait_counts_every_runner_that_may_still_land(tmp_path):
+    """An older runner waiting for the lock may land the request after the
+    newest runner exits; a pid that another process now holds does not count.
+    """
+    import signal
+
+    from molt import process_model
+    from tools import molt_dev_queue as queue
+
+    paths = queue.QueuePaths(tmp_path / "landing-queue")
+    request = queue.enqueue(paths, head="1" * 40, worktree=tmp_path, branch=None)
+    # A stale record whose pid names a live process that is not its supervisor.
+    stale = paths.runners / "runner-0"
+    stale.mkdir(parents=True)
+    (stale / "pid").write_text(str(os.getpid()), encoding="utf-8")
+    # An older runner whose real detached supervisor is alive (waiting).
+    runner = paths.runners / "runner-1"
+    molt_dev.cmd_detached_run(
+        _dr_ns(
+            molt_dev,
+            "runner-1",
+            paths.runners,
+            [sys.executable, "-c", _ORPHAN_EXITING_SLEEPER, str(runner / "pid")],
+        )
+    )
+    supervisor = int((runner / "pid").read_text(encoding="utf-8"))
+    try:
+        deadline = time.monotonic() + 30
+        while not (runner / "command-pid").exists():
+            assert time.monotonic() < deadline, "test command did not start"
+            time.sleep(0.01)
+        # The newest runner has exited.
+        newest = paths.runners / "runner-2"
+        newest.mkdir()
+        (newest / "pid").write_text(str(os.getpid()), encoding="utf-8")
+        (newest / "rc").write_text("1\n", encoding="utf-8")
+
+        assert queue._runner_exited_without(paths, request.id) is None
+
+        os.kill(supervisor, signal.SIGKILL)  # This test owns exactly this child.
+        # The signal is delivered asynchronously; the kernel then lists an
+        # unreaped zombie, which counts as gone.
+        while process_model.pid_alive(supervisor):
+            assert time.monotonic() < deadline, "test supervisor did not exit"
+            time.sleep(0.01)
+        assert queue._runner_exited_without(paths, request.id) == newest
+    finally:
+        _release_orphan_sleeper(runner, supervisor)
 
 
 @pytest.mark.skipif(
@@ -3639,7 +3800,8 @@ def test_land_wait_fails_when_its_runner_supervisor_dies_without_rc(
             time.sleep(seconds)
 
         install_module_view(monkeypatch, "time", time, queue, sleep=bounded_sleep)
-        monkeypatch.setattr(queue, "_AWAIT_POLL_S", 0.01)
+        monkeypatch.setattr(queue, "_AWAIT_POLL_MIN_S", 0.01)
+        monkeypatch.setattr(queue, "_AWAIT_POLL_MAX_S", 0.01)
 
         assert queue._await_landing(paths, request.id) == molt_dev.EXIT_FAIL
         assert not (runner / "rc").exists()
@@ -3650,20 +3812,7 @@ def test_land_wait_fails_when_its_runner_supervisor_dies_without_rc(
         assert failure_stage is not None and error is injected
         observed_failure = error
     finally:
-        from molt.process_model import pid_alive
-
-        (runner / "command-release").touch()
-        deadline = time.monotonic() + 30
-        while not (runner / "command-done").exists():
-            assert time.monotonic() < deadline, "test command did not release"
-            time.sleep(0.01)
-        command = int((runner / "command-pid").read_text(encoding="utf-8"))
-        while pid_alive(command):
-            assert time.monotonic() < deadline, "test command did not exit"
-            time.sleep(0.01)
-        while os.waitpid(supervisor, os.WNOHANG)[0] == 0:
-            assert time.monotonic() < deadline, "test supervisor did not exit"
-            time.sleep(0.01)
+        _release_orphan_sleeper(runner, supervisor)
     assert (observed_failure is injected) == (failure_stage is not None)
 
 
@@ -4937,9 +5086,15 @@ def test_integrate_clean_rebase_runs_committed_policy(
     upstream = _commit_file(other, "other.py", "other = 1\n", "upstream")
     _git(other, "push", "origin", "main")
     commands = _record_driver_git_commands(drv, monkeypatch)
+    deadlines = _record_process_deadlines(monkeypatch)
     assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work))) == drv.EXIT_OK
     selected = _git(work, "rev-parse", "HEAD").stdout.strip()
     assert selected != source
+    # A landing's Git plumbing waits out a host stall: a deadline on a 5 ms
+    # read failed this test when the host stalled (2026-10-21 landing batch).
+    git_deadlines = [deadline for argv, deadline in deadlines if argv[0] == "git"]
+    assert len(git_deadlines) >= len(commands) > 0
+    assert set(git_deadlines) == {None}
     replay = next(index for index, args in enumerate(commands) if args[0] == "rebase")
     assert ["diff-tree", "-p", "--no-color", source] in commands[:replay]
     assert ["diff-tree", "-p", "--no-color", selected] in commands[replay + 1 :]
@@ -4962,6 +5117,197 @@ def test_integrate_clean_rebase_runs_committed_policy(
     output = capsys.readouterr()
     assert "empty diffs (no patch-id, not patch-tracked)" in output.out + output.err
     assert empty[:9] in output.out + output.err
+
+
+def test_landing_local_git_reads_carry_no_wall_clock_deadline(
+    drv, origin_and_clone, monkeypatch
+):
+    from tools import molt_dev_controller
+
+    _, work = origin_and_clone
+    deadlines = _record_process_deadlines(monkeypatch)
+    head = drv.Git(work).rev_parse("HEAD")
+    assert drv._git_common_directory(work) is not None
+    assert molt_dev_controller._git_bytes(work, "rev-parse", "HEAD").strip() == (
+        head.encode("ascii")
+    )
+    reads = [(argv, deadline) for argv, deadline in deadlines if argv[0] == "git"]
+    assert {argv[-1] for argv, _ in reads} >= {"HEAD", "--git-common-dir"}
+    assert len(reads) >= 3
+    assert {deadline for _, deadline in reads} == {None}
+
+
+class _SilentPeer:
+    """A local TCP peer that accepts and never answers: a wedged remote the
+    kernel keeps alive, which TCP keepalive never ends."""
+
+    def __init__(self) -> None:
+        import socket
+        import threading
+
+        self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server.bind(("127.0.0.1", 0))
+        self.server.listen(4)
+        self.port = self.server.getsockname()[1]
+        self.held: list[socket.socket] = []
+        threading.Thread(target=self._serve, daemon=True).start()
+
+    def _serve(self) -> None:
+        while True:
+            try:
+                conn, _ = self.server.accept()
+            except OSError:
+                return
+            self.held.append(conn)
+            try:
+                conn.recv(65536)
+            except OSError:
+                pass
+
+    def close(self) -> None:
+        self.server.close()
+        for conn in self.held:
+            conn.close()
+
+
+class _Unauthorized:
+    """A local HTTP remote that asks every request for credentials."""
+
+    def __init__(self) -> None:
+        import http.server
+        import threading
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802 - the stdlib's name
+                self.send_response(401)
+                self.send_header("WWW-Authenticate", 'Basic realm="molt"')
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, *_args) -> None:
+                pass
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.server.server_port}/private.git"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+
+
+def _transfer_in_thread(drv, work, args):
+    """Run a driver transfer on a thread; a hang guard only bounds the test."""
+    import threading
+
+    outcome: dict[str, object] = {}
+    transfer = threading.Thread(
+        target=lambda: outcome.update(proc=drv.Git(work)._run(args, check=False))
+    )
+    transfer.start()
+    transfer.join(120)  # A hang guard only; the bounds end it within seconds.
+    assert not transfer.is_alive(), "the transfer outlived its progress bound"
+    return outcome["proc"]
+
+
+@pytest.fixture
+def isolated_git_identity(monkeypatch, tmp_path):
+    """Keep the developer's own Git configuration out of transfer tests."""
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "gitconfig"))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    (tmp_path / "gitconfig").write_text("", encoding="utf-8")
+    return tmp_path / "gitconfig"
+
+
+@pytest.mark.parametrize("scheme", ["http", "ssh"])
+def test_git_transfer_ends_a_silent_peer_by_progress_not_wall_clock(
+    drv, origin_and_clone, monkeypatch, isolated_git_identity, scheme
+):
+    """A peer that never answers ends by lack of progress, with no deadline.
+
+    HTTP: curl's low-speed limit. ssh: ConnectTimeout, which covers the
+    banner exchange; server-alive probes start only after it. The transfer
+    is attended here, so only the transport's own bound can end it.
+    """
+    from tools import git_transfer
+
+    if scheme == "ssh" and shutil.which("ssh") is None:
+        pytest.skip("needs an OpenSSH client")
+    _, work = origin_and_clone
+    peer = _SilentPeer()
+    monkeypatch.setattr(git_transfer, "TRANSFER_STALL_SECONDS", 2)
+    monkeypatch.setattr(git_transfer, "prompt_reaches_a_person", lambda: True)
+    deadlines = _record_process_deadlines(monkeypatch)
+    url = (
+        f"http://127.0.0.1:{peer.port}/silent.git"
+        if scheme == "http"
+        else f"ssh://git@127.0.0.1:{peer.port}/silent.git"
+    )
+    try:
+        proc = _transfer_in_thread(drv, work, ["ls-remote", url])
+    finally:
+        peer.close()
+    assert proc.returncode != 0
+    if scheme == "http":
+        assert "too slow" in proc.stderr.lower()
+    else:
+        assert "timed out during banner exchange" in proc.stderr.lower()
+    transfer_deadlines = [deadline for argv, deadline in deadlines if url in argv]
+    assert transfer_deadlines and set(transfer_deadlines) == {None}
+
+
+def test_unattended_git_transfer_never_runs_an_inherited_askpass(
+    drv, origin_and_clone, monkeypatch, isolated_git_identity, tmp_path
+):
+    from tools import git_transfer
+
+    _, work = origin_and_clone
+    asked = tmp_path / "asked"
+    askpass = tmp_path / "askpass.sh"
+    # Stands in for a desktop prompt nobody answers.
+    askpass.write_text(
+        f'#!/bin/sh\necho "$1" >> {shlex.quote(str(asked))}\nexec sleep 3600\n',
+        encoding="utf-8",
+    )
+    askpass.chmod(0o755)
+    monkeypatch.setenv("GIT_ASKPASS", str(askpass))
+    monkeypatch.setenv("SSH_ASKPASS", str(askpass))
+    monkeypatch.setattr(git_transfer, "prompt_reaches_a_person", lambda: False)
+    remote = _Unauthorized()
+    try:
+        proc = _transfer_in_thread(drv, work, ["ls-remote", remote.url])
+    finally:
+        remote.close()
+    assert proc.returncode not in (0, 124)
+    assert not asked.exists(), asked.read_text(encoding="utf-8")
+
+
+def test_unattended_git_transfer_ends_a_credential_helper_that_waits(
+    drv, origin_and_clone, monkeypatch, isolated_git_identity, tmp_path
+):
+    """A helper that waits (a keychain prompt nobody sees) ends on silence."""
+    from tools import git_transfer
+
+    _, work = origin_and_clone
+    marker = hung_child_marker()
+    helper = tmp_path / "helper.py"
+    helper.write_text(HUNG_CHILD_SOURCE, encoding="utf-8")
+    isolated_git_identity.write_text(
+        "[credential]\n\thelper = "
+        f"!{shlex.quote(sys.executable)} {shlex.quote(str(helper))} {marker}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(git_transfer, "TRANSFER_STALL_SECONDS", 2)
+    monkeypatch.setattr(git_transfer, "prompt_reaches_a_person", lambda: False)
+    remote = _Unauthorized()
+    try:
+        proc = _transfer_in_thread(drv, work, ["ls-remote", remote.url])
+    finally:
+        remote.close()
+        stop_test_processes_carrying(marker)
+    assert proc.returncode == 124
+    assert "no output for 2.00s" in proc.stderr
+    assert not processes_carrying(marker)
 
 
 def test_integrate_classifies_raw_paths_without_git_quote_escaping(
@@ -5762,9 +6108,7 @@ def test_detached_invalid_ack_retains_parent_use_after_exception_gc(
 
     def child(self, command, **kwargs):
         nonlocal process
-        process = start(
-            [sys.executable, "-c", "import time; time.sleep(30)"], env=environment
-        )
+        process = start([sys.executable, "-c", HUNG_CHILD_SOURCE], env=environment)
         return process
 
     monkeypatch.setattr(type(detached._COMMANDS), "start_owned", child)
@@ -5782,7 +6126,7 @@ def test_detached_invalid_ack_retains_parent_use_after_exception_gc(
     finally:
         assert process is not None
         process.terminate()
-        process.wait(timeout=5)
+        process.wait()
         atexit.unregister(handoff._close_at_exit)
         handoff._close_at_exit()
     _assert_detached_retirement_binding(roots, True)
