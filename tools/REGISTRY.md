@@ -127,9 +127,16 @@ self-commits or invents an external scheduling authority.
   classifier authority is `src/molt/process_model.py` (Codex/Claude/
   host-control-plane are NEVER kill targets). Never name/tree-kill.
 - `molt.process_model.pid_alive(pid)` — the one pid-liveness probe. A zombie is
-  not alive and the probe never reaps; Windows waits on the process object.
+  not alive and the probe never reaps; on Linux every thread must have exited,
+  since a leader that called `pthread_exit` reads `Z` while other threads run.
+  The process samplers drop exited, unreaped processes by the same rule on
+  Linux and Darwin. Windows waits on the process object.
   Unknown native query or handle-close errors raise; callers cannot treat
-  an unknown observation as proven death.
+  an unknown observation as proven death. An invalid pid returns False, so a
+  caller that acts only on a proven exit checks `valid_pid(pid)` first (the
+  one pid-range rule: a positive `int` within `pid_t`, or within a `DWORD`
+  through `windows_process_api.valid_windows_pid`, which the Windows process
+  queries share).
   Never probe with `os.kill(pid, 0)`: on Windows signal 0 is `CTRL_C_EVENT`.
 - `tools/memory_guard_custody.py --json` — inspect guard-marker custody; dry-run
   by default. `--apply` reconciles records whose processes are proven gone and
