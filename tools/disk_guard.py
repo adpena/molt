@@ -59,6 +59,11 @@ DESIGN (deterministic + idempotent reclamation, separate from admission):
     past their limit; the GC reclaims each one that no lock or protected path
     keeps, so no one ``rm``-s a finished session's target by hand.
 
+  * ``--retire-cargo-incremental`` is a separate explicit review operation for
+    successful pinned-session profile caches. It is never discovered by GC or
+    pressure reclaim; its own exact coordinate, terminal guard and inventory
+    checks retain the rest of the profile. Plan first, then apply its digest.
+
 Pure-stdlib (no third-party imports), so it runs under the host ``python`` a
 Claude Code hook invokes as well as the molt venv. Windows-first (``msvcrt``
 lock probe) with a POSIX (``fcntl``) path; explicit UTF-8 everywhere (M43).
@@ -67,6 +72,10 @@ lock probe) with a POSIX (``fcntl``) path; explicit UTF-8 everywhere (M43).
 from __future__ import annotations
 
 import argparse
+import hashlib
+import re
+import stat
+import tomllib
 import json
 import os
 import shutil
@@ -545,7 +554,7 @@ def _target_root(owner_root: Path) -> Path:
 def assert_safe_to_delete(path: Path, root: Path, lane_globs: Sequence[str]) -> None:
     """Raise unless ``path`` is provably a reclaimable artifact dir under root.
 
-    The single choke point every delete passes through. It fails CLOSED: any
+    The choke point for automatic and whole-root retirement. It fails CLOSED: any
     ambiguity -> refusal. This is what makes a mis-computed candidate list
     incapable of deleting the wrong thing.
     """
@@ -1573,6 +1582,310 @@ def _print_result(result: ReclaimResult, *, as_json: bool) -> None:
         )
 
 
+def _incremental_coordinate(path: Path, root: Path) -> tuple[Path, Path]:
+    from molt.file_publication import resolve_owned_path
+
+    root, path = resolve_owned_path(root), resolve_owned_path(path)
+    # RuntimeCargoPlan.with_build_directory owns this toolchain partition.
+    relative = path.relative_to(root).parts
+    if (
+        len(relative) not in {9, 10}
+        or relative[:2] != ("target", "checkouts")
+        or relative[3] != "sessions"
+        or relative[5] != ".molt-toolchains"
+        or re.fullmatch(r"[0-9a-f]{64}", relative[6]) is None
+        or relative[-1] != "incremental"
+    ):
+        raise ValueError(
+            "requires a pinned session's toolchain/profile incremental root"
+        )
+    session = root.joinpath(*relative[:5])
+    owner = bound_checkout_owner(session, root)
+    if owner is None or owner.kind != "cargo-target":
+        raise ValueError("incremental session lacks its bound checkout owner")
+    if not owner.path.is_dir() and not owner_is_absent(owner):
+        raise ValueError(
+            "incremental checkout owner is inaccessible or not a directory"
+        )
+    return session, owner.path
+
+
+def _incremental_successful_guard(
+    receipt: Path, *, root: Path, session: Path, owner: Path, path: Path
+) -> str:
+    from molt.cli.cargo_command import _command_options
+    from molt.cli.runtime_paths import _cargo_profile_dir
+    from molt.file_publication import resolve_owned_path
+    from molt.memory_guard_paths import retired_guard_marker_dir
+    from tools.memory_guard_core.active_custody import read_marker_record
+
+    receipt = resolve_owned_path(receipt)
+    if receipt.parent not in {
+        retired_guard_marker_dir(active) for active in active_guard_marker_dirs_of(root)
+    }:
+        raise ValueError("requires the existing retired guard receipt authority")
+    record = read_marker_record(receipt)
+    value = record.payload or {}
+    if (
+        not record.terminal
+        or record.status not in {"completed", "finalizer_completed"}
+        or record.descendants_closed is not True
+        or type(value.get("returncode")) is not int
+        or value["returncode"] != 0
+        or type(value.get("child_returncode")) is not int
+        or value["child_returncode"] != 0
+        or value.get("cwd") != str(owner)
+    ):
+        raise ValueError("requires a successful, descendant-closed checkout guard")
+    argv = value.get("command")
+    if (
+        not isinstance(argv, list)
+        or len(argv) < 2
+        or any(type(arg) is not str for arg in argv)
+        or Path(argv[0]).name not in {"cargo", "cargo.exe"}
+        or not Path(argv[0]).is_absolute()
+        or argv[1] not in {"build", "check"}
+        or argv != value.get("launch_command")
+        or argv != (value.get("child_process") or {}).get("command")
+        or "--" in argv
+        or any(arg == "--target-dir" or arg.startswith("--target-dir=") for arg in argv)
+        or argv.count("--profile") != 1
+        or any(
+            arg in {"-r", "--release"} or arg.startswith("--profile=") for arg in argv
+        )
+    ):
+        raise ValueError("guard must record the directly launched pinned Cargo command")
+    target, configs = _command_options(argv)
+    outputs: dict[str, str] = {}
+    for raw in configs:
+        parsed = tomllib.loads(raw)
+        build = parsed.get("build", {})
+        if not isinstance(build, dict):
+            raise ValueError("malformed Cargo build configuration")
+        for key in ("build-dir", "target-dir"):
+            if key in build:
+                if key in outputs or type(build[key]) is not str:
+                    raise ValueError("ambiguous Cargo output coordinate")
+                outputs[key] = build[key]
+    build_root = session / ".molt-toolchains" / path.relative_to(session).parts[1]
+    if outputs != {"build-dir": str(build_root), "target-dir": str(session)}:
+        raise ValueError("guard command does not bind this session's Cargo roots")
+    profile_index = argv.index("--profile") + 1
+    if profile_index >= len(argv):
+        raise ValueError("missing Cargo profile")
+    expected = build_root
+    if target is not None:
+        expected /= target
+    expected /= _cargo_profile_dir(argv[profile_index])
+    if expected / "incremental" != path:
+        raise ValueError("guard command does not bind this Cargo target/profile")
+    assert record.identity is not None
+    return record.identity.sha256
+
+
+def _incremental_inventory(path: Path) -> dict[str, object]:
+    from molt.file_publication import metadata_is_link_like, resolve_owned_path
+
+    entries = []
+    inodes: dict[tuple[int, int], list[int]] = {}
+    root_device = path.lstat().st_dev
+    pending = [path]
+    deadline = time.monotonic() + 10.0
+    while pending:
+        current = pending.pop()
+        if len(entries) >= 100_000 or time.monotonic() > deadline:
+            raise ValueError("incremental inventory exceeds its bounded review budget")
+        metadata = current.lstat()
+        regular = stat.S_ISREG(metadata.st_mode)
+        if (
+            metadata_is_link_like(metadata)
+            or metadata.st_dev != root_device
+            or not metadata.st_ino
+            or (not regular and not stat.S_ISDIR(metadata.st_mode))
+            or os.path.ismount(current)
+            or resolve_owned_path(current) != current
+        ):
+            raise ValueError(
+                "incremental inventory contains an indirect or special entry"
+            )
+        if regular:
+            if current.suffix not in {".bin", ".o", ".rmeta", ".bc", ".lock"}:
+                raise ValueError(
+                    "incremental inventory contains an unknown payload kind"
+                )
+            inode = inodes.setdefault(
+                (metadata.st_dev, metadata.st_ino),
+                [0, metadata.st_nlink, getattr(metadata, "st_blocks", 0) * 512],
+            )
+            if inode[1] != metadata.st_nlink:
+                raise ValueError(
+                    "incremental hardlink identity changed during inventory"
+                )
+            inode[0] += 1
+        else:
+            for child in current.iterdir():
+                if (
+                    len(entries) + len(pending) >= 100_000
+                    or time.monotonic() > deadline
+                ):
+                    raise ValueError(
+                        "incremental inventory exceeds its bounded review budget"
+                    )
+                pending.append(child)
+        entries.append(
+            [
+                str(current.relative_to(path)),
+                metadata.st_mode,
+                metadata.st_dev,
+                metadata.st_ino,
+                metadata.st_size,
+                metadata.st_nlink,
+                metadata.st_mtime_ns,
+                metadata.st_ctime_ns,
+                getattr(metadata, "st_blocks", 0),
+            ]
+        )
+    return {
+        "entries": sorted(entries),
+        "regular_files": sum(item[0] for item in inodes.values()),
+        # Unlinking a cache hardlink never changes bytes/attributes of deps.
+        # Count only inodes whose every link is inside this deletion scope.
+        "reclaimable_allocated_bytes": sum(
+            blocks for links, count, blocks in inodes.values() if links == count
+        ),
+        "externally_linked_bytes_retained": sum(
+            blocks for links, count, blocks in inodes.values() if links != count
+        ),
+    }
+
+
+def retire_cargo_incremental(
+    path: Path,
+    *,
+    root: Path,
+    guard_receipt: Path,
+    expected_inventory_sha256: str | None = None,
+    apply: bool = False,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, object]:
+    """Explicit successful-session cache retirement; never pressure discovery.
+
+    The checkout lease excludes managed users. The build and output Cargo profile locks remain
+    held across review and durable retirement, preserving their original names
+    for waiting Cargo. Raw Rustc writers bypassing Cargo locks are unsupported,
+    just as in interrupted-Cargo recovery. No process is launched or stopped.
+    """
+    from contextlib import ExitStack
+    from molt.checkout_state import checkout_state_retirement
+    from molt.file_locks import (
+        _try_acquire_file_lock,
+        _release_file_lock,
+        _file_lock_owned_operation,
+    )
+    from molt.file_publication import durable_remove_path, resolve_owned_path
+    from tools.memory_guard_core.cargo_quarantine import _local_cargo_lock_filesystem
+
+    environment = os.environ if env is None else env
+    if apply and (
+        type(expected_inventory_sha256) is not str
+        or re.fullmatch(r"[0-9a-f]{64}", expected_inventory_sha256) is None
+    ):
+        raise ValueError("apply requires the independently reviewed inventory SHA256")
+    root = resolve_owned_path(root)
+    path = resolve_owned_path(path)
+    session, owner = _incremental_coordinate(path, root)
+    if _is_protected(session, _protected_paths((root,), environment)):
+        raise ValueError(
+            "incremental session is protected by this execution environment"
+        )
+    profile = path.parent
+    build_root = session / ".molt-toolchains" / path.relative_to(session).parts[1]
+    output_profile = resolve_owned_path(session / profile.relative_to(build_root))
+    if not all(_local_cargo_lock_filesystem(p) for p in (profile, output_profile)):
+        raise ValueError("Cargo-compatible local filesystem authority unavailable")
+    with checkout_state_retirement(session) as exclusive, ExitStack() as stack:
+        if not exclusive:
+            raise ValueError("incremental session has a live managed reader")
+        if _root_lock_held(session, (root,)):
+            raise ValueError("incremental session has a live build-control/Cargo owner")
+        handles = []
+        # Cargo Layout::new locks intermediate build state, then final output.
+        # They are distinct when build.build-dir and target-dir are split.
+        for raw_lock in (profile / ".cargo-build-lock", output_profile / ".cargo-lock"):
+            lock = resolve_owned_path(raw_lock)
+            metadata = lock.lstat()
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                raise ValueError(
+                    "Cargo profile lock is not a direct unshared regular file"
+                )
+            handle = _try_acquire_file_lock(lock, create=False)
+            if handle is None:
+                raise ValueError("incremental Cargo profile is active")
+            stack.callback(_release_file_lock, handle)
+            held, named = os.fstat(handle.file.fileno()), lock.lstat()
+            if not stat.S_ISREG(named.st_mode) or not os.path.samestat(held, named):
+                raise ValueError("Cargo lock path identity changed")
+            stack.enter_context(
+                _file_lock_owned_operation(handle, expected_lock_path=lock)
+            )
+            handles.append((lock, handle))
+        if _incremental_coordinate(path, root) != (session, owner):
+            raise ValueError("incremental checkout ownership changed")
+        receipt_sha256 = _incremental_successful_guard(
+            guard_receipt, root=root, session=session, owner=owner, path=path
+        )
+        inventory = _incremental_inventory(path)
+        reviewed = {
+            "path": str(path),
+            "root": str(root),
+            "session": str(session),
+            "owner": str(owner),
+            "guard_receipt": str(guard_receipt),
+            "guard_sha256": receipt_sha256,
+            **inventory,
+        }
+        digest = hashlib.sha256(
+            json.dumps(reviewed, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        if (
+            expected_inventory_sha256 is not None
+            and digest != expected_inventory_sha256
+        ):
+            raise ValueError("incremental inventory or custody changed since review")
+        free_before = shutil.disk_usage(path).free
+        if apply:
+            # Recheck the exact open lock objects and namespace under the same
+            # lease immediately before handing off to canonical durable removal.
+            if _incremental_inventory(path) != inventory:
+                raise ValueError("incremental inventory changed before retirement")
+            if _incremental_coordinate(path, root) != (session, owner):
+                raise ValueError("incremental checkout ownership changed")
+            if (
+                _incremental_successful_guard(
+                    guard_receipt, root=root, session=session, owner=owner, path=path
+                )
+                != receipt_sha256
+            ):
+                raise ValueError("incremental guard receipt changed")
+            for lock, handle in handles:
+                held, named = os.fstat(handle.file.fileno()), lock.lstat()
+                if not stat.S_ISREG(named.st_mode) or not os.path.samestat(held, named):
+                    raise ValueError("Cargo lock path identity changed")
+            metadata = path.lstat()
+            root_entry = next(row for row in inventory["entries"] if row[0] == ".")
+            if [metadata.st_mode, metadata.st_dev, metadata.st_ino] != root_entry[1:4]:
+                raise ValueError("incremental root identity changed before retirement")
+            durable_remove_path(path, retirement_scope="cargo-incremental:" + digest)
+        return {
+            "operation": "retire-cargo-incremental",
+            "applied": apply,
+            "inventory_sha256": digest,
+            **reviewed,
+            "free_before": free_before,
+            "free_after": shutil.disk_usage(profile).free,
+        }
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -1605,7 +1918,44 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--high-water-gb", type=float, default=None)
     ap.add_argument("--target-gb", type=float, default=None)
+    ap.add_argument("--retire-cargo-incremental", type=Path)
+    ap.add_argument("--guard-receipt", type=Path)
+    ap.add_argument("--inventory-sha256")
+    ap.add_argument(
+        "--apply", action="store_true", help="apply reviewed incremental retirement"
+    )
     args = ap.parse_args(argv)
+    if args.retire_cargo_incremental is not None:
+        if (
+            not args.root
+            or not args.guard_receipt
+            or args.gc
+            or args.check
+            or args.ensure_free is not None
+            or (args.apply and args.dry_run)
+        ):
+            ap.error(
+                "incremental retirement requires --root and --guard-receipt, without other operations"
+            )
+        try:
+            report = retire_cargo_incremental(
+                args.retire_cargo_incremental,
+                root=Path(args.root),
+                guard_receipt=args.guard_receipt,
+                expected_inventory_sha256=args.inventory_sha256,
+                apply=args.apply,
+            )
+        except (OSError, ValueError, RuntimeError) as error:
+            print(
+                json.dumps(
+                    {"operation": "retire-cargo-incremental", "error": str(error)}
+                )
+            )
+            return 1
+        print(json.dumps(report, indent=2))
+        return 0
+    if args.apply or args.guard_receipt or args.inventory_sha256:
+        ap.error("incremental options require --retire-cargo-incremental")
 
     if args.check:
         results = selftest()
