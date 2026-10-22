@@ -55,6 +55,12 @@ or prevent vulnerabilities in admitted code. Capability-manifest digests and
 package checksums establish integrity only within their declared coverage;
 authenticity requires the release trust policy and validated signatures.
 
+Dependencies, toolchains and Actions move only to releases that have been
+public for at least 7 days, so a compromised release has time to be found and
+withdrawn first. A release that fixes a published advisory moves at once. The
+[release-age rule](DEVELOPER_GUIDE.md#release-age-rule) describes the resolver
+settings and tools that enforce it.
+
 The [packaging contract](../packaging/PACKAGING.md) owns immutable
 candidate assembly and provenance. The release workflow builds independent native
 and runtime generations and passes them to candidate assembly. Reproducibility

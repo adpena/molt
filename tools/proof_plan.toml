@@ -4004,8 +4004,12 @@ pytest = ["tests/test_native_lir_loop_join_semantics.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "clang", "llvm-sdk", "llvm-strip"]
 cargo_build_python = true
 
+# The one Python and npm lock advisory authority: OSV for every version in
+# uv.lock and the npm locks, accepted only by an ACCEPTED_ADVISORIES entry
+# under an open ledger row. On every change an aged-out exemption is reported,
+# not failed; the scheduled `security.pin-freshness` and `molt update` fail it.
 [[command]]
-id = "security.python.audit"
+id = "security.lock-audit"
 family = "python_security"
 cell = "linux-x86_64-py312-python-audit"
 tiers = ["pr", "main", "scheduled"]
@@ -4013,12 +4017,16 @@ resource_class = "network-audit"
 timeout_seconds = 900
 cache_domain = "uv"
 dependencies = []
-argv = ["uv", "run", "pip-audit"]
+argv = ["uv", "run", "python3", "tools/pin_freshness.py", "--audit", "--allow-expired"]
 toolchains = ["python", "uv"]
 
-# Owner rule: every pin tracks its upstream's newest stable release. The
-# scheduled run fails while any pin trails; `tools/pin_freshness.py --update`
-# moves a tool_releases.toml tool with verified digests.
+# Owner rule: every pin tracks its upstream's newest clean release that has
+# been public for 7 days, and takes an advisory fix at once through a dated
+# exemption. The scheduled run fails while any pin trails that target or is
+# younger than 7 days without a record, and while a release-age exemption is
+# malformed or has aged out; it reports a release still waiting on age. Lock
+# advisories belong to `security.lock-audit`. `tools/pin_freshness.py
+# --update` moves a tool_releases.toml tool with verified digests.
 [[command]]
 id = "security.pin-freshness"
 family = "python_security"
