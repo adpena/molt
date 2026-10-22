@@ -637,6 +637,8 @@ def admitted_backend_binary(
     )
     store = host_tool_store(project_root)
     identity = host_tool_identity(binary, fingerprint)
+    # Renewed before the read, so no eviction races it (design 56, 2.8).
+    store.record_use(identity)
     for admission in stored_host_tools(
         store,
         identity,

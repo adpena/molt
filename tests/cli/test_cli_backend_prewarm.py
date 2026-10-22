@@ -820,3 +820,50 @@ def test_prewarm_rejects_compiler_bytes_changed_after_admission(
     assert "is corrupt: its executable differs from its receipt" in (
         capsys.readouterr().err
     )
+
+
+def test_receipt_verification_renews_the_entry_before_it_reads_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Every store read renews its entry first (design 56, 2.8).
+
+    The entry was last used 30 s inside the idle window, where a publication
+    elsewhere could evict it during the read; the receipt read renews it.
+    """
+    import time
+
+    from molt.cli import backend_build, product_store
+    from molt.cli.backend_compile import _BackendSelection
+    from molt.toolchain_identity import executable_content_identity
+
+    root = _isolated_molt_root(tmp_path, monkeypatch)
+    _fake_backend_toolchain(monkeypatch)
+    assert _dispatch(["internal-backend-build", "--target", "wasm", "--json"]) == 0
+    compiler = json.loads(capsys.readouterr().out)["data"]["compiler"]
+    binary = Path(compiler["path"])
+    store = cli_backend_binary.host_tool_store(root)
+    (entry,) = store.root.glob("[0-9a-f]" * 64)
+    ledger_path = store.root / ".product-store.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    aged = time.time() - product_store.PRODUCT_STORE_IDLE_SECONDS + 30
+    ledger["last_used"][entry.name] = aged
+    ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+
+    selection = _BackendSelection(
+        cargo_profile=compiler["cargo_profile"],
+        features=tuple(compiler["features"]),
+        binary=Path(compiler["coordinate"]),
+        rust_cpu=RustCpuPolicy.BASELINE,
+    )
+    receipts, error = backend_build._verified_backend_receipts(
+        root,
+        selection,
+        binary,
+        executable_content_identity(binary, label="prewarmed backend"),
+        compiler["fingerprint"],
+    )
+    assert error is None and receipts is not None
+    renewed = json.loads(ledger_path.read_bytes())["last_used"][entry.name]
+    assert renewed > aged + 60

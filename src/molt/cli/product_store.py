@@ -187,11 +187,13 @@ class ProductStore:
             with generation_store(self.root, _LEDGER) as ledger:
                 ledger.use(identity)
                 evicted = ledger.evict_idle(PRODUCT_STORE_IDLE_SECONDS)
+                # An eviction interrupted after its move left these behind.
+                # Every removal runs under the ledger lock, so none of them
+                # is another process's removal still in progress.
+                for aside in self.root.glob(f"{_ASIDE_PREFIX}*"):
+                    delete_path(aside)
         except RuntimeError as exc:  # the ledger lock timed out
             raise OSError(str(exc)) from exc
-        for aside in self.root.glob(f"{_ASIDE_PREFIX}*"):
-            # An eviction interrupted after its move left this behind.
-            delete_path(aside)
         return evicted
 
     @contextmanager
@@ -208,9 +210,12 @@ class ProductStore:
         from molt.cli.build_locks import BuildLockAcquisitionError
 
         try:
-            # Renewed first: an entry a builder holds is never idle.
-            self.record_use(identity)
+            # The entry exists before it is renewed: a renewal of an absent
+            # entry is an eviction miss (GenerationStore.use). Renewed before
+            # the build: an entry a builder holds is never idle, and one the
+            # ledger has not seen starts its window now.
             self.entry(identity).mkdir(parents=True, exist_ok=True)
+            self.record_use(identity)
         except (OSError, RuntimeError) as exc:
             raise BuildLockAcquisitionError(str(exc)) from exc
         with self._held(identity):
