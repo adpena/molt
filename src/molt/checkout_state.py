@@ -740,6 +740,100 @@ def _record_checkout_state_use(root: Path, *, now: float | None = None) -> None:
         return
 
 
+# Layouts a later design replaced inside roots that stay live, frozen as the
+# last code that wrote them left them (design 56, sections 2.8 and 2.9). Until
+# the host's product store, every Cargo target kept, per profile directory
+# (``<target>/<profile>`` or ``<target>/<triple>/<profile>``), its native
+# runtime generations with their selection receipts and its backend
+# generations; every build control kept backend probe evidence and a receipt
+# beside Cargo's backend output. Nothing writes these names now. They hold
+# about 10 to 20 GB in live targets on the integrator Mac, so the daily GC
+# retires them inside a live root by the same custody it retires roots with.
+SupersededLayoutRoot = Literal["cargo-target", "build-control"]
+_SUPERSEDED_GENERATION_DIRS = (".molt-native-generations", ".molt-backend-generations")
+_SUPERSEDED_RUNTIME_RECEIPT = re.compile(
+    r"(?:lib)?molt_runtime\.stdlib_[a-z]+\.(?:a|lib)\.generation\.json"
+)
+_SUPERSEDED_PROBE_EVIDENCE = "backend_probe_validations"
+_SUPERSEDED_RECEIPTS_DIR = "backend_fingerprints"
+_SUPERSEDED_CARGO_OUTPUT_RECEIPT = re.compile(
+    r"(?:molt-backend|molt-wasm-facts)(?:\.exe)?\.[A-Za-z0-9_-]+\.[0-9a-f]{16}"
+    r"\.fingerprint"
+)
+
+
+def _real_child(parent: Path, name: str, *, directory: bool) -> Path | None:
+    path = parent / name
+    try:
+        found = path.lstat()
+    except OSError:
+        return None
+    wanted = stat.S_ISDIR(found.st_mode) if directory else stat.S_ISREG(found.st_mode)
+    return path if wanted else None
+
+
+def _superseded_profile_entries(profile: Path) -> list[Path]:
+    """One profile directory's superseded receipts, then its generations.
+
+    Receipts come first, so an interrupted retirement never leaves a receipt
+    naming a removed generation; the old reader misses on either.
+    """
+    generations = [
+        path
+        for name in _SUPERSEDED_GENERATION_DIRS
+        if (path := _real_child(profile, name, directory=True)) is not None
+    ]
+    if not generations:
+        return []  # Receipts appear only beside a generation directory.
+    try:
+        with os.scandir(profile) as entries:
+            receipts = sorted(
+                Path(entry.path)
+                for entry in entries
+                if _SUPERSEDED_RUNTIME_RECEIPT.fullmatch(entry.name)
+                and entry.is_file(follow_symlinks=False)
+            )
+    except OSError:
+        receipts = []
+    return [*receipts, *generations]
+
+
+def superseded_layout_paths(root: Path, kind: SupersededLayoutRoot) -> list[Path]:
+    """The superseded layout entries inside one live root, in removal order.
+
+    It reads a Cargo target's direct children and their children (finite
+    listings, never a profile's ``deps``), and two names in a build control.
+    """
+    found: list[Path] = []
+    if kind == "build-control":
+        evidence = _real_child(root, _SUPERSEDED_PROBE_EVIDENCE, directory=True)
+        receipts = _real_child(root, _SUPERSEDED_RECEIPTS_DIR, directory=True)
+        if receipts is not None:
+            try:
+                with os.scandir(receipts) as entries:
+                    found.extend(
+                        sorted(
+                            Path(entry.path)
+                            for entry in entries
+                            if _SUPERSEDED_CARGO_OUTPUT_RECEIPT.fullmatch(entry.name)
+                            and entry.is_file(follow_symlinks=False)
+                        )
+                    )
+            except OSError:
+                pass
+        if evidence is not None:
+            found.append(evidence)
+        return found
+    # Two levels reach every profile directory and nothing deeper: a pinned
+    # session's profiles sit three levels down (a root of its own), and an
+    # operator-owned target's store four.
+    for child in _directories(root):
+        found.extend(_superseded_profile_entries(child))
+        for grandchild in _directories(child):
+            found.extend(_superseded_profile_entries(grandchild))
+    return found
+
+
 def newest_activity_mtime(path: Path) -> float:
     """The mtime of ``path`` or of its newest immediate child; 0.0 if unreadable.
 
