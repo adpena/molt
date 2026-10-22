@@ -27,6 +27,7 @@ from molt.file_locks import (
     _release_file_lock,
     _try_acquire_file_lock,
     lock_wait_s,
+    lock_wait_timeout_message,
 )
 from molt.cli.runtime_paths import _build_state_root
 
@@ -46,8 +47,13 @@ class LockHolder:
 
     pid: int
     started_at_ns: int | None
+    # False when this host cannot read another process's start time, so the
+    # pid runs but may have been reused since the record was written.
+    start_verified: bool = True
 
     def describe(self) -> str:
+        if not self.start_verified:
+            return f"pid {self.pid} (its start time is not observable here)"
         if self.started_at_ns is None:
             return f"pid {self.pid}"
         started = time.strftime(
@@ -130,7 +136,9 @@ def read_lock_holder(lock_path: Path) -> LockHolder | None:
     """The live holder ``lock_path``'s record names, or None when unknown.
 
     A record whose process has exited, or whose pid another process now has,
-    names no holder: its writer died before it could clear it.
+    names no holder: its writer died before it could clear it. Where the start
+    time is not observable (another process on Windows), a record names its
+    pid only while that pid runs, and the holder says the pid may be reused.
     """
     try:
         with open(lock_holder_path(lock_path), "rb") as record:
@@ -145,10 +153,18 @@ def read_lock_holder(lock_path: Path) -> LockHolder | None:
         return None
     if started is not None and type(started) is not int:
         return None
-    from molt.process_model import process_started_at_ns
+    from molt.process_model import pid_alive, process_started_at_ns
 
     observed = process_started_at_ns(pid)
-    if observed is not None and observed != started:
+    if observed is None:
+        # An exited process has no start time either; only a running pid
+        # can be the holder.
+        try:
+            running = pid_alive(pid)
+        except OSError:
+            return None
+        return LockHolder(pid, started, start_verified=False) if running else None
+    if observed != started:
         return None
     return LockHolder(pid, started)
 
@@ -195,8 +211,10 @@ def held_build_lock(
             except FileLockTimeout:
                 assert wait is not None
                 raise BuildLockAcquisitionError(
-                    f"Timed out after {wait:.1f}s waiting for the {purpose} lock "
-                    f"{lock_path}, {_holder_text(lock_path)} ({LOCK_WAIT_ENV})"
+                    lock_wait_timeout_message(
+                        wait,
+                        f"the {purpose} lock {lock_path}, {_holder_text(lock_path)}",
+                    )
                 ) from None
     except BuildLockAcquisitionError:
         raise

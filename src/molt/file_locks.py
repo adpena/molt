@@ -663,6 +663,26 @@ def _parse_lock_timeout(raw: str, *, default_s: float | None) -> float | None:
 
 
 LOCK_WAIT_ENV = "MOLT_BUILD_LOCK_TIMEOUT"
+_LOCK_WAIT_TIMEOUT_PREFIX = "Timed out after "
+
+
+def lock_wait_timeout_message(wait_s: float, subject: str) -> str:
+    """What a bounded lock wait that gave up reports: one line, one spelling.
+
+    ``is_lock_wait_timeout`` reads exactly this line. The waiting notice also
+    names ``LOCK_WAIT_ENV`` when a bound is set, so the knob alone does not
+    identify a timeout.
+    """
+    return f"{_LOCK_WAIT_TIMEOUT_PREFIX}{wait_s:.1f}s waiting for {subject} ({LOCK_WAIT_ENV})"
+
+
+def is_lock_wait_timeout(text: str) -> bool:
+    """Whether ``text`` holds the line ``lock_wait_timeout_message`` writes."""
+    suffix = f" ({LOCK_WAIT_ENV})"
+    return any(
+        _LOCK_WAIT_TIMEOUT_PREFIX in line and line.rstrip().endswith(suffix)
+        for line in text.splitlines()
+    )
 
 
 def lock_wait_s(environ: Mapping[str, str] | None = None) -> float | None:
@@ -696,10 +716,11 @@ def _shared_cache_lock(name: str, *, cache_root: Path | None = None):
         handle = _acquire_file_lock(
             lock_path,
             timeout_s=wait,
-            timeout_message=(
-                f"Timed out after {wait}s waiting for the shared cache lock "
-                f"{lock_path} ({LOCK_WAIT_ENV})"
-            ),
+            timeout_message=lock_wait_timeout_message(
+                wait, f"the shared cache lock {lock_path}"
+            )
+            if wait is not None
+            else "",
         )
     try:
         yield
