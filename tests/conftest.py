@@ -278,6 +278,26 @@ def generous_host_memory(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(scope="session", autouse=True)
+def _isolate_lima_home(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
+    """Tests never reach the developer's Lima VMs.
+
+    Lane retirement makes a running VM drop the host files it pins
+    (``tools/linux_vm.py``); a test that retires a checkout must not act on a
+    real guest. An empty Lima home has no live hostagent, so that release
+    reads one directory and spawns nothing. Child processes inherit it.
+    """
+    previous = os.environ.get("LIMA_HOME")
+    os.environ["LIMA_HOME"] = str(tmp_path_factory.mktemp("lima-home"))
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("LIMA_HOME", None)
+        else:
+            os.environ["LIMA_HOME"] = previous
+
+
+@pytest.fixture(scope="session", autouse=True)
 def _native_fixture_donor(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
     """Bind a lazy donor without loading runtime construction in unrelated tests."""
     from tests.executable_test_support import bind_native_donor_factory
