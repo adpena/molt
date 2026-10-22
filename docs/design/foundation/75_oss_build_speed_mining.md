@@ -312,3 +312,63 @@ Peer pipeline caching / daemons / incremental analysis:
 - [9] Buck2 — content-addressed action cache + persistent workers: https://buck2.build/docs/rule_authors/persistent_workers/ , https://buck2.build/docs/users/remote_execution/
 - [17] Bevy — dynamic_linking + leaf-crate/linker guidance: https://bevy.org/learn/quick-start/getting-started/setup/ , https://docs.rs/bevy_dylib
 - [19] TypeScript — `.tsbuildinfo`/incremental stale-cache class (issues #54501, #38648): https://www.typescriptlang.org/tsconfig/tsBuildInfoFile.html
+
+## 9. tsrs: a compiler built for speed, low memory and an agent dev loop (2026-10-22)
+
+Read 2026-10-22 from the tsrs repository at commit 89ea430 [T1]. tsrs ports the TypeScript 7
+compiler (tsgo, itself a Go port of tsc) to Rust. Its published benchmarks [T2] are the 2026-10-16
+snapshot at tsrs d57703ab5f07. On a 16-vCPU host it type-checks mui-docs in 0.75 s against tsgo's
+12.66 s, in 1.60 GiB against 7.39 GiB. On an 8-vCPU host, after a comment edit, its watch mode
+re-checks vscode in 33 ms against 1.76 s. Molt has two resource regimes: building and verifying
+Molt uses the whole machine for the least wall clock; compiling a user's program is low-memory and
+fast. tsrs informs both.
+
+### 9.1 The development loop (building and verifying Molt)
+
+| tsrs practice | tsrs number | Molt today | Owner |
+|---|---|---|---|
+| Edit-loop profile: `release` settings, no LTO, 256 codegen units, incremental | a checker edit rebuilds in 4.9 s against 176 s [T3] | dev builds default to `dev-fast` (no LTO, 256 codegen units) since 130b439e1 | — |
+| The pinned Go compiler is the specification; any diagnostic, order, text or exit-code difference is a tsrs defect | all 13,462 error baselines pass in the harness's `--baselines js` mode, measured at tsrs f250e637 on 2026-10-08 [T4] | CPython is the oracle; the differential suite has no enforced passing set | HF-106 |
+| The passing set never shrinks: `comm -23 before after` prints nothing before a merge | — [T5] | not enforced | HF-106 |
+| The 15,197-case conformance suite runs from baselines [T4] | 15 s wall, 51 s CPU [T3] | `molt_diff.py` builds and runs each program | — |
+| Performance lands on evidence: 1% of single-threaded instructions (deterministic), 2% of wall time across two publishes, or 5% of peak memory at the default checker count | — [T6] | the scoreboard records wall time, peak RSS, binary size and compile time of compiled programs, and flags a 5% RSS or size gain; no lane records instructions retired or the compiler's own peak RSS; the perf gate does not complete | HF-185, HF-459, V1-07 |
+| Search before an experiment: a "measured and rejected" list, read first; an idea returns only with new evidence | global identifier interning: parse +9% [T7] | §4 here, HF-263, scattered rows | HF-460 |
+| Short agent rules that point to the authority | `AGENTS.md` [T6] | `AGENTS.md` | — |
+
+### 9.2 Under the hood (compiling a user's program)
+
+| tsrs technique | Measured effect [T7] | Molt counterpart |
+|---|---|---|
+| Native core; work-stealing parallel check; by default all cores up to 16, then half the cores, at most 32, fewer on small projects | 4.2–16.9x faster than tsgo, each at its default thread count [T2] | Molt's frontend (module graph, analysis, lowering) runs in Python: HF-254, DO-2 |
+| 32-bit arena handles; `Option<P<T>>` is 4 bytes; `const` size pins (`Type` is 24 bytes) | peak memory −14 to −15%, instructions +6.5% | HF-202 (typed compact ops): add size pins with it |
+| `FxHashMap` everywhere, std `HashMap` banned, sorted output | Fx costs 0.7–1.4% of instructions | audit the backend's maps |
+| Per-thread arenas; per-file regions retired once their diagnostics are read | vscode peak RSS −13 to −16% | the frontend keeps whole-program state in Python dicts |
+| Lazy members; cold fields split out of hot structs | — | TIR facts (HF-201, HF-202) |
+| `#[cold]` splits of rare branches | parse 16.66 G → 15.07 G instructions | TIR facts (HF-201, HF-202) |
+| Huge pages for arena chunks only (`MADV_HUGEPAGE`) | −2 to −6% wall, 21–48x fewer faults | after HF-202 |
+| Heavy files split by statement range across checkers; the owner merges in order | check 0.40 s → 0.12 s at 32 checkers, byte-identical | the backend's per-function parallelism |
+| mimalloc v3 as the compiler's allocator | −3 to −14% wall against v2, jemalloc and glibc | a jemalloc switch for the backend daemon was deleted unmeasured (797be4558, HF-281): HF-458 |
+| Ship build: fat LTO, PGO and BOLT (frame pointers only in the profiling build) | PGO −13.5% instructions; BOLT −1.0 to −3.2% wall on a 38k-file codebase, −3.4 to −4.0% on vscode | `Makefile.pgo` (`pgo-full`, `bolt-backend`, `tools/bolt_optimize.sh`) builds a PGO and BOLT `molt-backend`; on 2026-04-23 (0c587cd8e) PGO gave about 0% because the backend was 1.5% of compile wall clock and the Python frontend dominated: HF-458 |
+
+### 9.3 What Molt adopts
+
+1. Selection and overlap (landed 40438ab3d): a landing selects only the plan entries an edit
+   reaches (HF-457) and overlaps its Cargo and pytest gates (HF-334).
+2. HF-458: first re-measure the backend's share of compile time, which was 1.5% when April's PGO
+   run found about 0% gain. Since then a resident daemon serves the backend, record cutoffs shorten
+   the frontend on rebuilds, and HF-254 moves frontend work into Rust. Re-run PGO, BOLT and
+   mimalloc v3 through `Makefile.pgo` only where that share makes the bar in 9.1 reachable.
+3. HF-459: instructions retired and the compiler's own peak RSS become scoreboard axes, reported
+   before and after on every performance change.
+4. HF-460: one evidence registry for measured optimizations, with each verdict tied to the typed
+   context that produced it (`docs/design/optimization_evidence_registry.md`). Once its first phase
+   lands, it will replace the static §4 list as the place agents search before they design.
+
+Sources (tsrs at commit 89ea430, https://github.com/oxc-project/tsrs):
+- [T1] `README.md`
+- [T2] `bench/RESULTS.md`
+- [T3] `notes/dev-loop-build.md`
+- [T4] `notes/upstream-gaps-2026-10-08.md`
+- [T5] `CONTRIBUTING.md`
+- [T6] `AGENTS.md`
+- [T7] `docs/RUST.md`, `notes/perf-round2-followups.md`, `crates/tsrs_checker/src/types.rs`

@@ -245,8 +245,16 @@ root. Volume choice still requires measurement per machine.
    resource classes, longest first; the first step of the
    [landing queue](landing_queue.md). The always gates run as one block
    in the `repository-policy` class, bounded by `executor_max_workers` and
-   one GiB per gate from this authority, and leave a receipt. Declared
-   timeouts, longest-first order and the rule, pytest and Cargo gates remain.
+   one GiB per gate from this authority, and leave a receipt. Done
+   (2026-10-22): the read-only checks run first, so a failing check stops
+   every build before it starts. The Cargo and pytest gates then share one
+   executor block: every pytest session is admitted in `python-tests`, at
+   most two at once, each sizing `-n auto` within the exported memory slice;
+   other Cargo gates run in `compiler-build-resource`; and every gate that
+   may build with Cargo, a pytest session included, waits for the previous
+   one in declared order, because they share one target. A pytest session
+   that does not build overlaps the Cargo gates instead of waiting for them.
+   Declared timeouts and longest-first order remain.
 4. The host-wide jobserver.
 5. Qualify the canonical shared source-record lifetime and retention costs;
    measure volume placement before changing it.

@@ -101,7 +101,18 @@ conflict:
   each searched directory and the selected entry: a program added to an
   earlier directory, or a retargeted link, selects another executable.
 - A `sys.addaudithook` observer sees readable file opens, directory listings
-  and started programs. Read/write and append opens retain input dependencies.
+  and started programs. CPython raises every `open` event with integer flags:
+  `FileIO` and `os.open` pass their `open(2)` flags, and the `fopen`-style
+  producers (`_Py_fopen_obj`, `_Py_wfopen`, `readline`) pass 0, which counts
+  as a read. An event without integer flags refuses the record.
+  Read/write and append opens retain input dependencies.
+  An open that creates a file (`O_CREAT|O_EXCL`, `O_TMPFILE`) or truncates one
+  with write access reads nothing that existed before it, so it is no input:
+  `tempfile` opens a guard's capture files that way, and their removal made the
+  lease's parent a changing directory input that refused every record (HF-250).
+  An exclusive create (`x` mode or `O_CREAT|O_EXCL`) is no input either,
+  although it succeeds only on an absent name. A reader whose result depends
+  on that outcome reports the name with `report_probe` before it creates.
   Audit events happen before their syscalls and never grant product ownership:
   failed writes and existing-directory `mkdir(exist_ok=True)` cannot erase a
   prior read or exclude the directory's children. Process-pool

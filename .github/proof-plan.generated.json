@@ -382,7 +382,8 @@
     "tests/tools/test_pytest_truth_plugin.py",
     "tests/tools/test_win_job.py",
     "tests/tools/test_win_job_contract.py",
-    "tests/tools/test_windows_process_api.py"
+    "tests/tools/test_windows_process_api.py",
+    "tools/dirty_tree_policy.py"
   ],
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
@@ -452,6 +453,7 @@
         "tests/test_gen_intrinsics.py/**",
         "tests/test_generator_manifest.py/**",
         "tests/test_molt_dev.py/**",
+        "tests/test_committed_gate_policy.py/**",
         "tests/test_molt_dev_lanes.py/**",
         "tests/test_checkout_provisioning.py/**",
         "tests/test_resource_pressure.py/**",
@@ -3514,6 +3516,7 @@
         "tests/test_gen_intrinsics.py",
         "tests/test_generator_manifest.py",
         "tests/test_molt_dev.py",
+        "tests/test_committed_gate_policy.py",
         "tests/test_molt_dev_lanes.py",
         "tests/test_checkout_provisioning.py",
         "tests/test_resource_pressure.py",
@@ -9517,10 +9520,11 @@
       "local.checkout-output-custody.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.0 tests/test_custody_layout.py tests/test_dx_run_context.py tests/tools/test_proof_queue_output_layout.py tests/cli/test_llvm_wasi_tools.py tests/tools/test_disk_guard.py tests/tools/test_lane_maturity.py tests/tools/test_proof_queue_lane_maturity.py",
       "local.ci-wiring.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_proof_plan.py tests/test_ci_workflow_topology.py tests/test_dependabot_config.py tests/test_ci_cargo_cache.py tests/test_generator_manifest.py tests/test_resource_pressure.py tests/test_translation_validate_roots.py tests/tools/test_ci_resource_env.py tests/tools/test_fuzz_compiler_cli.py tests/tools/test_formal_correspondence_truth.py tests/tools/test_nightly_prepare.py tests/tools/test_nightly_profile_feedback.py tests/tools/test_nightly_runtime_bundle.py tests/tools/test_nightly_shard_profile.py tests/tools/test_nightly_sharding.py tests/tools/test_reproducible_build_truth.py",
       "local.codec-tables.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/test_gen_codecs.py",
+      "local.committed-gate-policy.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_committed_gate_policy.py tests/test_checkout_provisioning.py tests/tools/test_rust_toolchain_contract.py tests/tools/test_check_rustfmt.py tests/tools/test_check_changed_clippy.py",
       "local.compression-stream-state.0": "cargo test --locked --profile dev-fast --no-fail-fast -p molt-runtime-compression -p molt-lang-cpython-abi --lib --test test_numbers -- --test-threads=4",
       "local.cpython-abi-authorities.0": "cargo test --locked --no-fail-fast --profile dev-fast -p molt-lang-cpython-abi --tests -- --test-threads=4",
       "local.cpython-coverage-generation.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/tools/test_gen_cpython_coverage.py",
-      "local.dev-tooling.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/tools/test_setup_project_inputs.py tests/test_molt_dev.py tests/tools/test_claim_lane.py tests/test_molt_dev_lanes.py tests/test_checkout_provisioning.py tests/tools/test_rust_toolchain_contract.py tests/tools/test_check_rustfmt.py tests/tools/test_check_changed_clippy.py tests/test_cargo_workspace.py",
+      "local.dev-tooling.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/tools/test_setup_project_inputs.py tests/test_committed_gate_policy.py tests/test_molt_dev.py tests/tools/test_claim_lane.py tests/test_molt_dev_lanes.py tests/test_checkout_provisioning.py tests/tools/test_rust_toolchain_contract.py tests/tools/test_check_rustfmt.py tests/tools/test_check_changed_clippy.py tests/test_cargo_workspace.py",
       "local.docs-architecture.0": "python tools/check_docs_architecture.py",
       "local.ecosystem-compat.0": "python tools/check_ecosystem_compat.py",
       "local.edgebox-typescript.0": "python tools/guarded_exec.py --cwd examples/edgebox/packages/edgebox-cloudflare --timeout 120 -- corepack npm run check",
@@ -10431,7 +10435,6 @@
           "tests/tools/test_python_custody_bootstrap.py",
           "tools/proof_plan.py",
           "tools/proof_receipts.py",
-          "tools/proof_plan.toml",
           "tools/proof_queue_pkg/pact.py",
           "tests/cli/test_atomic_io_authority.py",
           "tests/cli/test_source_package_seal.py",
@@ -10453,6 +10456,12 @@
           "tools/proof_queue_pkg/cli.py"
         ],
         "name": "source-extension-proof-policy",
+        "plan_entities": [
+          "toolchain_policy",
+          "named_lane:pact.witness.acceptance.native",
+          "named_lane:pact.witness.acceptance.wasm",
+          "named_lane:pact.witness.oracle"
+        ],
         "pytest": [
           "tests/cli/test_source_extension_link_inputs.py",
           "tests/tools/test_source_extension_proof_family.py",
@@ -10565,7 +10574,6 @@
           "src/molt/cargo_workspace.py",
           "tools/molt_dev.py",
           "tools/molt_dev_*.py",
-          "tools/proof_plan.toml",
           "src/molt/checkout_provisioning.py",
           "tests/tools/test_rust_toolchain_contract.py",
           "tests/tools/test_check_rustfmt.py",
@@ -10581,6 +10589,7 @@
         "name": "dev-tooling",
         "pytest": [
           "tests/tools/test_setup_project_inputs.py",
+          "tests/test_committed_gate_policy.py",
           "tests/test_molt_dev.py",
           "tests/tools/test_claim_lane.py",
           "tests/test_molt_dev_lanes.py",
@@ -10589,6 +10598,37 @@
           "tests/tools/test_check_rustfmt.py",
           "tests/tools/test_check_changed_clippy.py",
           "tests/test_cargo_workspace.py"
+        ],
+        "toolchains": [
+          "python",
+          "uv"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.committed-gate-policy.pytest"
+        ],
+        "description": "The committed proof plan's gate selection and the tests that read its toolchain policies.",
+        "gates": [],
+        "globs": [
+          "tests/test_committed_gate_policy.py"
+        ],
+        "name": "committed-gate-policy",
+        "plan_entities": [
+          "rule",
+          "always",
+          "always_toolchains",
+          "command",
+          "executor_max_workers",
+          "resource_policy",
+          "toolchain_policy"
+        ],
+        "pytest": [
+          "tests/test_committed_gate_policy.py",
+          "tests/test_checkout_provisioning.py",
+          "tests/tools/test_rust_toolchain_contract.py",
+          "tests/tools/test_check_rustfmt.py",
+          "tests/tools/test_check_changed_clippy.py"
         ],
         "toolchains": [
           "python",
@@ -11281,7 +11321,6 @@
           "pyproject.toml",
           "tools/proof_plan.py",
           "tools/proof_receipts.py",
-          "tools/proof_plan.toml",
           "tools/gen_proof_plan.py",
           "tools/generator_io.py",
           "tools/proof_counts.py",
@@ -11327,6 +11366,24 @@
           "tests/tools/test_ci_resource_env.py"
         ],
         "name": "ci-wiring",
+        "plan_entities": [
+          "schema",
+          "authority_inputs",
+          "always_toolchains",
+          "always",
+          "receipt_schema",
+          "executor_max_workers",
+          "inventory_hash_workers",
+          "resource_policy",
+          "toolchain_policy",
+          "matrix_cell",
+          "ci_family",
+          "scheduled_family",
+          "command",
+          "rule",
+          "named_lane",
+          "gate_flip"
+        ],
         "pytest": [
           "tests/test_proof_plan.py",
           "tests/test_ci_workflow_topology.py",
@@ -12757,6 +12814,10 @@
         "python",
         "uv",
         "rustfmt"
+      ],
+      "local.committed-gate-policy.pytest": [
+        "python",
+        "uv"
       ],
       "local.compression-stream-state.0": [
         "rustc",

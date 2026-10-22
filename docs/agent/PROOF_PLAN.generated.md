@@ -16,8 +16,8 @@ Landing checks execute the generator and authority inputs captured from the exac
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 13 |
-| Hashed executable authority inputs | 1 | 382 |
-| Local path rules | 35 | 84 |
+| Hashed executable authority inputs | 1 | 383 |
+| Local path rules | 35 | 85 |
 | Unique local commands | 73 | 76 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
@@ -45,7 +45,7 @@ GitHub job budgets cover the deterministic command-deadline DAG projection plus 
 
 | Family | Tiers | Required | Executor | Timeout | Commands | Reserve | Headroom | Resource | Selection parents | Admission | Inputs |
 |---|---|---:|---|---:|---:|---:|---:|---|---|---|---:|
-| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2820 s | 120 s | 660 s | `repository-policy` | none | `docs-gates` needs none | 226 |
+| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2820 s | 120 s | 660 s | `repository-policy` | none | `docs-gates` needs none | 227 |
 | `wasm` | pr, main | yes | `github-job` | 333 min | 19800 s | 180 s | 0 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 53 |
 | `python_static` | pre-push, pr, main | yes | `github-job` | 16 min | 900 s | 60 s | 0 s | `python-static` | none | `python-static` needs `classify-changes` | 10 |
 | `python_unit` | pre-push, pr, main | yes | `github-matrix` | 43 min | 2520 s per cell | 60 s | 0 s | `python-tests` | none | `python-unit` needs `classify-changes` | 11 |
@@ -372,12 +372,13 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `stringprep-tables` | 3 | 0 |
 | `llvm-runtime-abi` | 8 | 1 |
 | `source-extension-package-sets` | 44 | 0 |
-| `source-extension-proof-policy` | 60 | 0 |
+| `source-extension-proof-policy` | 59 | 0 |
 | `suite-honesty` | 4 | 2 |
 | `ecosystem-compat` | 2 | 1 |
 | `tinygrad-upat-static-exec-registry` | 2 | 0 |
 | `docs-architecture` | 4 | 1 |
-| `dev-tooling` | 21 | 0 |
+| `dev-tooling` | 20 | 0 |
+| `committed-gate-policy` | 1 | 0 |
 | `managed-git-hooks` | 8 | 0 |
 | `checkout-output-custody` | 13 | 0 |
 | `fresh-guard-observer` | 2 | 0 |
@@ -401,7 +402,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `table-drift` | 18 | 1 |
 | `findings-registry` | 4 | 0 |
 | `memory-graph` | 4 | 1 |
-| `ci-wiring` | 57 | 0 |
+| `ci-wiring` | 56 | 0 |
 | `apparatus-hooks` | 11 | 2 |
 | `apparatus-learning-protection` | 6 | 1 |
 | `timing-ratio-authority` | 2 | 0 |

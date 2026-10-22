@@ -55,7 +55,13 @@ checks if unusable. An explicit directory needs no default path resolution.
   `molt-tir/src/tir/pipeline_cache.rs`, and Cranelift's deferred flush. Native batch worker processes
   receive exactly the request's settings (`configure_child`).
 - Build identity (`MOLT_BACKEND_COMPILER_FINGERPRINT`) stays process-scoped: the config digest that
-  names the daemon's socket already fixes it.
+  names the daemon's socket already fixes it. That digest binds only process-scoped roles
+  (`daemon_process_environment_inputs` in `src/molt/backend_environment.py`), so one daemon serves
+  every program and codegen setting of a build configuration. Each cache key binds the request's
+  active environment, not the namespace the request asserts
+  (`cache_context_binds_the_active_environment_not_the_asserted_namespace`). A request-scoped value
+  in the digest starts one daemon per value: from 2026-10-17 to 2026-10-22 the entry module did, and
+  one lane's differential run held 105 idle daemons with 9.0 GB of RSS at once (HF-462).
 - Each compiler crate's `clippy.toml` disallows `std::env::var` and `std::env::var_os`. A
   process-level read outside the catalog states its reason with `#[expect(clippy::disallowed_methods)]`;
   test builds may read the process environment.

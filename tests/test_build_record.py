@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import importlib.util
 import json
@@ -9,6 +10,7 @@ import py_compile
 import shutil
 import stat
 import sys
+import tempfile
 import time
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -921,6 +923,121 @@ def test_updates_preserve_input_reads_and_refuse_racy_records(
     output = tmp_path / "app"
     output.write_bytes(b"binary")
     assert _write(tmp_path, ledger, output)[1] is not None
+
+
+_EXISTING = b"existing bytes"
+_ACCESS = {"rdonly": os.O_RDONLY, "wronly": os.O_WRONLY, "rdwr": os.O_RDWR}
+_EXTRA = {
+    "plain": 0,
+    "append": os.O_APPEND,
+    "trunc": os.O_TRUNC,
+    "creat": os.O_CREAT,
+    # O_EXCL without O_CREAT creates nothing, so the open still reads the old
+    # bytes: Linux and macOS ignore it on a regular file, and the Windows CRT
+    # applies _O_EXCL only with _O_CREAT.
+    "excl": os.O_EXCL,
+    "creat-trunc": os.O_CREAT | os.O_TRUNC,
+    "creat-excl": os.O_CREAT | os.O_EXCL,
+    "append-creat-trunc": os.O_APPEND | os.O_CREAT | os.O_TRUNC,
+}
+
+
+def _reads_or_appends_to_old_bytes(path: Path, flags: int) -> bool:
+    """Ask the OS about one open of a file that holds bytes: does the
+    descriptor read those bytes, or does its append keep them in the file?
+
+    Each target specifies every outcome asked here. Only an exclusive create
+    refuses the open (EEXIST), and only a write-only descriptor refuses the
+    read (EBADF, which the Windows CRT also documents for a descriptor that
+    is not open for reading).
+    """
+    path.write_bytes(_EXISTING)
+    try:
+        descriptor = os.open(path, flags | getattr(os, "O_BINARY", 0), 0o600)
+    except FileExistsError:
+        assert flags & (os.O_CREAT | os.O_EXCL) == os.O_CREAT | os.O_EXCL
+        return False
+    try:
+        try:
+            reads = os.read(descriptor, len(_EXISTING)) == _EXISTING
+        except OSError as error:
+            assert error.errno == errno.EBADF
+            assert flags & (os.O_WRONLY | os.O_RDWR) == os.O_WRONLY
+            reads = False
+        appends = bool(flags & os.O_APPEND) and path.read_bytes() == _EXISTING
+        return reads or appends
+    finally:
+        os.close(descriptor)
+
+
+@pytest.mark.parametrize("extra", sorted(_EXTRA))
+@pytest.mark.parametrize("access", sorted(_ACCESS))
+def test_an_open_is_a_read_exactly_when_it_can_read_or_append_to_old_bytes(
+    tmp_path: Path, access: str, extra: str
+) -> None:
+    flags = _ACCESS[access] | _EXTRA[extra]
+    classified = input_report._reads_existing_content(flags)
+    if access == "rdonly" and flags & os.O_TRUNC:
+        # No target specifies this open, so the OS is no oracle: POSIX leaves
+        # O_RDONLY|O_TRUNC undefined (macOS and Linux truncate), and Windows
+        # maps it to TRUNCATE_EXISTING, which CreateFile documents only with
+        # write access. A read stays the safe side.
+        assert classified
+    else:
+        assert classified == _reads_or_appends_to_old_bytes(tmp_path / "file", flags)
+
+
+@pytest.mark.usefixtures("fresh_process")
+def test_an_open_event_without_int_flags_refuses_the_record(
+    tmp_path: Path, transient: Path
+) -> None:
+    # Every CPython "open" event carries int flags, so no CPython producer
+    # reaches this. An unknown producer's event refuses instead of dropping
+    # a read the classifier cannot judge.
+    with build_record.recording(transient) as ledger:
+        sys.audit("open", os.fspath(tmp_path / "input"), "r", None)
+    assert ledger.refusals == ["unobservable open event"]
+
+
+def test_an_unnamed_temporary_file_is_no_read(tmp_path: Path) -> None:
+    if sys.platform != "linux":
+        pytest.skip("O_TMPFILE is Linux-only")
+    flags = os.O_RDWR | os.O_TMPFILE
+    descriptor = os.open(tmp_path, flags, 0o600)
+    try:
+        assert os.read(descriptor, 1) == b""
+    finally:
+        os.close(descriptor)
+    assert not input_report._reads_existing_content(flags)
+
+
+@pytest.mark.usefixtures("fresh_process")
+def test_a_removed_temporary_file_adds_no_input(
+    tmp_path: Path, transient: Path
+) -> None:
+    # HF-250: a guard captures its child's output in `tempfile.TemporaryFile`
+    # inside its scratch lease and removes the lease before the build records.
+    # Each removed capture left the lease's parent as a changing directory
+    # input, so no unchanged rebuild was ever recorded.
+    lease = tmp_path / "scratch" / "lease"
+    lease.mkdir(parents=True)
+    source = tmp_path / "project" / "removed" / "config"
+    source.parent.mkdir(parents=True)
+    source.write_text("input", encoding="utf-8")
+    with build_record.recording(transient) as ledger:
+        with tempfile.TemporaryFile(dir=lease) as capture:
+            capture.write(b"child output")
+            capture.seek(0)
+            assert capture.read() == b"child output"
+        assert source.read_text(encoding="utf-8") == "input"
+    shutil.rmtree(lease)
+    shutil.rmtree(source.parent)
+    build_record.resolve_observed(ledger, ())
+    # A removed real read still makes its surviving parent an input.
+    assert os.fspath(source.parent.parent) in ledger.directories
+    assert os.fspath(lease.parent) not in ledger.directories
+    recorded = (*ledger.files, *ledger.directories, *ledger.probes)
+    assert not [name for name in recorded if name.startswith(os.fspath(lease))]
 
 
 @pytest.mark.parametrize("payload", [None, False, True, 0, 1.5, "text", [], [1, {}]])

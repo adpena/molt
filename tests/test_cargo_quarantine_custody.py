@@ -15,6 +15,7 @@ import subprocess
 import contextlib
 import ctypes
 import sys
+import time
 from unittest.mock import patch
 import platform
 
@@ -26,6 +27,7 @@ from molt.rust_toolchain import rust_channel
 from tools.memory_guard_core import cargo_quarantine as cargo
 from molt.process_model import process_identity
 from tests.process_guard_common import (
+    child_exited_unreaped,
     close_owned_test_process,
     current_thread_only,
     install_module_os_view,
@@ -1154,136 +1156,90 @@ def test_missing_sampler_row_requires_positive_process_closure(
     assert receipt.ownership_status == "deferred" and owned.exists()
 
 
-@pytest.mark.parametrize("error", [PermissionError("denied"), OSError("unknown")])
-def test_posix_omitted_pid_probe_errors_remain_unknown(monkeypatch, error):
-    install_module_os_view(monkeypatch, cargo, name="posix")
-
-    def probe(pid, signal):
-        assert pid == 90051 and signal == 0
-        raise error
-
-    monkeypatch.setattr(cargo.os, "kill", probe)
-    assert not cargo._observed_pid_is_definitely_closed(90051)
+def _await_unreaped_exit(child: subprocess.Popen) -> None:
+    deadline = time.monotonic() + 30
+    while not child_exited_unreaped(child):
+        assert time.monotonic() < deadline, "child did not exit"
+        time.sleep(0.01)
 
 
-def test_posix_pid_probe_requires_esrch_not_snapshot_absence(monkeypatch):
-    install_module_os_view(monkeypatch, cargo, name="posix")
-    monkeypatch.setattr(cargo.os, "kill", lambda pid, signal: None)
-    assert not cargo._observed_pid_is_definitely_closed(90051)
+def test_only_a_proven_exit_closes_an_omitted_pid():
+    assert not cargo._observed_pid_is_definitely_closed(os.getpid())
+    child = start_owned_test_process([sys.executable, "-c", "pass"])
+    try:
+        if os.name == "posix":
+            # HF-379: a compiler that exited before its parent reaped it is a
+            # zombie; it can write nothing more, so the omitted pid is closed.
+            _await_unreaped_exit(child)
+            assert cargo._observed_pid_is_definitely_closed(child.pid)
+    finally:
+        close_owned_test_process(child)
+    assert cargo._observed_pid_is_definitely_closed(child.pid)
 
-    def absent(pid, signal):
-        raise ProcessLookupError(3, "ESRCH")
 
-    monkeypatch.setattr(cargo.os, "kill", absent)
-    assert cargo._observed_pid_is_definitely_closed(90051)
+@pytest.mark.skipif(
+    os.name != "posix", reason="an unreaped child (a zombie) is a POSIX state"
+)
+def test_an_exited_unreaped_compiler_closes_its_observation(tmp_path):
+    from molt import process_model
+
+    # Real stand-ins for rustc and cargo: they run until the test closes their
+    # input, then exit and stay unreaped, as an interrupted build's compilers
+    # stay until their parent waits.
+    children: list[subprocess.Popen] = []
+    try:
+        for _ in range(2):
+            children.append(
+                start_owned_test_process(
+                    [sys.executable, "-I", "-S", "-c", "import os; os.read(0, 1)"],
+                    stdin=subprocess.PIPE,
+                )
+            )
+        rustc, cargo_process = children
+        births = [process_model.process_started_at_ns(child.pid) for child in children]
+        assert all(type(birth) is int and birth > 0 for birth in births)
+        observation = cargo.CargoIncrementalObservation(
+            rustc.pid, births[0], str(tmp_path), cargo_process.pid, births[1]
+        )
+        # The sampler lists both running compilers with their births.
+        assert not cargo._observed_compilers_closed([observation])
+        for child in children:
+            assert child.stdin is not None
+            child.stdin.close()
+        for child in children:
+            _await_unreaped_exit(child)
+        # The Darwin and Linux samplers omit an exited, unreaped process, and
+        # pid_alive proves each omitted pid's exit.
+        assert cargo._observed_compilers_closed([observation])
+    finally:
+        for child in children:
+            if child.stdin is not None and not child.stdin.closed:
+                child.stdin.close()
+            close_owned_test_process(child)
 
 
-@pytest.mark.parametrize("pid", [0, -1, True, 0x100000000])
-def test_invalid_windows_pid_cannot_prove_absence(monkeypatch, pid):
-    install_module_os_view(monkeypatch, cargo, name="nt")
+@pytest.mark.parametrize("pid", [0, -1, True, 0x100000000, 2**31])
+def test_an_invalid_pid_cannot_prove_closure(monkeypatch, pid):
+    from molt import process_model
+
+    if os.name == "nt" and pid == 2**31:
+        pytest.skip("a Windows process ID is a DWORD")
+
+    def forbidden(candidate):
+        raise AssertionError("an invalid pid reached the liveness probe")
+
+    monkeypatch.setattr(process_model, "pid_alive", forbidden)
     assert not cargo._observed_pid_is_definitely_closed(pid)
 
 
-def test_actual_native_current_process_never_counts_closed():
-    import os
+def test_an_unknown_observation_cannot_prove_closure(monkeypatch):
+    from molt import process_model
 
-    assert not cargo._observed_pid_is_definitely_closed(os.getpid())
+    def unknown(pid):
+        raise OSError("native process query failed")
 
-
-@pytest.mark.parametrize(
-    "found,error,close_ok,expected",
-    [
-        (False, 18, True, True),
-        (False, 5, True, False),
-        (False, 87, True, False),
-        (False, 18, False, False),
-        (True, 18, True, False),
-    ],
-)
-def test_windows_complete_pid_enumeration_is_required(
-    monkeypatch, found, error, close_ok, expected
-):
-    from molt import windows_process_snapshot
-    import os
-
-    calls, errors = [], [0]
-
-    class Entry:
-        th32ProcessID = os.getpid()
-
-    def next_entry(handle, entry):
-        if found and len(calls) == 0:
-            calls.append("next")
-            entry.th32ProcessID = 90051
-            return True
-        errors[0] = error
-        return False
-
-    api = SimpleNamespace(
-        create_snapshot=lambda flags, pid: 111,
-        invalid_handle_value=-1,
-        ProcessEntry32W=Entry,
-        ctypes=SimpleNamespace(
-            sizeof=lambda cls: 1,
-            byref=lambda entry: entry,
-            get_last_error=lambda: errors[0],
-            set_last_error=lambda error: errors.__setitem__(0, error),
-        ),
-        process_first=lambda handle, entry: True,
-        process_next=next_entry,
-        close_handle=lambda handle: calls.append(handle) or close_ok,
-    )
-    install_module_os_view(monkeypatch, cargo, name="nt")
-    monkeypatch.setattr(windows_process_snapshot, "_windows_snapshot_api", lambda: api)
-    assert cargo._observed_pid_is_definitely_closed(90051) == expected
-    assert calls[-1] == 111
-
-
-def test_posix_oversize_pid_cannot_escape_structured_deferral(monkeypatch):
-    install_module_os_view(monkeypatch, cargo, name="posix")
-
-    def forbidden(*args):
-        raise AssertionError("invalid PID reached native API")
-
-    monkeypatch.setattr(cargo.os, "kill", forbidden)
-    assert not cargo._observed_pid_is_definitely_closed(2**31)
-
-
-@pytest.mark.parametrize(
-    "mode", ["empty", "self_missing", "stale_error", "invalid_snapshot"]
-)
-def test_windows_ambiguous_snapshot_cannot_authorize_absence(monkeypatch, mode):
-    from molt import windows_process_snapshot
-    import os
-
-    calls, error = [], [18]
-
-    class Entry:
-        th32ProcessID = os.getpid() if mode == "stale_error" else 90050
-
-    def next_entry(handle, entry):
-        if mode != "stale_error":
-            error[0] = 18
-        return False
-
-    api = SimpleNamespace(
-        create_snapshot=lambda flags, pid: None if mode == "invalid_snapshot" else 111,
-        invalid_handle_value=-1,
-        ProcessEntry32W=Entry,
-        ctypes=SimpleNamespace(
-            sizeof=lambda cls: 1,
-            byref=lambda entry: entry,
-            get_last_error=lambda: error[0],
-            set_last_error=lambda value: error.__setitem__(0, value),
-        ),
-        process_first=lambda handle, entry: False if mode == "empty" else True,
-        process_next=next_entry,
-        close_handle=lambda handle: calls.append(handle) or True,
-    )
-    install_module_os_view(monkeypatch, cargo, name="nt")
-    monkeypatch.setattr(windows_process_snapshot, "_windows_snapshot_api", lambda: api)
+    monkeypatch.setattr(process_model, "pid_alive", unknown)
     assert not cargo._observed_pid_is_definitely_closed(90051)
-    assert calls == ([] if mode == "invalid_snapshot" else [111])
 
 
 def test_observed_missing_pid_closure_is_deduplicated(tmp_path, monkeypatch):

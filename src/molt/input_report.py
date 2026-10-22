@@ -128,14 +128,21 @@ def remove_sink() -> None:
     _WORKER_LOG_DIR = None
 
 
-def _reads_existing_content(mode: object, flags: object) -> bool:
-    if isinstance(flags, int):
-        return flags & (os.O_WRONLY | os.O_RDWR) != os.O_WRONLY or bool(
-            flags & os.O_APPEND
-        )
-    if isinstance(mode, str):
-        return "r" in mode or "+" in mode or "a" in mode
-    return False
+_O_TMPFILE = getattr(os, "O_TMPFILE", 0)
+
+
+def _reads_existing_content(flags: int) -> bool:
+    # An open that creates a new file (O_CREAT|O_EXCL, or Linux's unnamed
+    # O_TMPFILE) or truncates one with write access reads nothing that
+    # existed before it: `tempfile` opens both ways (HF-250).
+    access = flags & (os.O_WRONLY | os.O_RDWR)
+    if (
+        flags & (os.O_CREAT | os.O_EXCL) == os.O_CREAT | os.O_EXCL
+        or (_O_TMPFILE and flags & _O_TMPFILE == _O_TMPFILE)
+        or (access and flags & os.O_TRUNC)
+    ):
+        return False
+    return access != os.O_WRONLY or bool(flags & os.O_APPEND)
 
 
 def _worker_log(entry: list[Any]) -> None:
@@ -201,9 +208,13 @@ def _audit_hook(event: str, args: tuple[Any, ...]) -> None:
     _HOOK_GUARD.busy = True
     try:
         if event == "open":
-            path, mode, flags = args
+            # CPython raises every "open" event with int flags: FileIO and
+            # os.open pass their open(2) flags, and the fopen-style producers
+            # (_Py_fopen_obj, _Py_wfopen, readline) pass 0, a read. Flags of
+            # any other type raise here and refuse the record.
+            path, _mode, flags = args
             if isinstance(path, (str, bytes, os.PathLike)) and _reads_existing_content(
-                mode, flags
+                flags
             ):
                 _observe(("file", os.path.abspath(os.fsdecode(path))))
         elif event in ("os.listdir", "os.scandir"):

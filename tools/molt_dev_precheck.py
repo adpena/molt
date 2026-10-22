@@ -17,6 +17,7 @@ from pathlib import Path
 from types import ModuleType
 
 from tools.molt_dev_common import _say, _step
+from tools.molt_dev_policy import select_landing_gates
 from tools.molt_dev_gates import (
     concurrent_gate_limit,
     gate_time_summary,
@@ -46,7 +47,7 @@ def precheck_landing(
         git._run(["merge-base", head, upstream]).stdout.strip(),
         label="landing merge base",
     )
-    policy, config, _touched, gates, _matched = drv.select_landing_gates(
+    policy, config, _touched, gates, _matched = select_landing_gates(
         git, repo, head, base, extra=[]
     )
     static = [gate for gate in gates if gate.precheck]

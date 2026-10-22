@@ -267,12 +267,6 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "actual status; the command or existing outer guard owns descendants",
     ),
     AllowedRawSubprocessUse(
-        "tools/memory_guard_core/cargo_quarantine.py",
-        "_observed_pid_is_definitely_closed",
-        "os.kill",
-        "cargo quarantine pid-existence probe with signal 0; not signal authority",
-    ),
-    AllowedRawSubprocessUse(
         "tools/memory_guard_core/process_custody.py",
         "ChildExecutionClock.send_signal",
         "os.kill",

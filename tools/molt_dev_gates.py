@@ -1,18 +1,18 @@
-"""Landing-gate selection and execution for ``tools/molt_dev.py integrate``.
+"""Landing-gate execution for ``tools/molt_dev.py integrate``.
 
-Explicit pytest nodes are collected first under their selected environment,
-without executing tests or replacing any gate. Then gates run in declared
-order and the first failure in that order halts the
+Explicit pytest nodes collect first under the same environment without executing
+test bodies or replacing mandatory gates. Gates report in declared order and the first failure in that order halts the
 landing. A gate's nonzero exit raises ``GateFailure``, a ``CandidateFailure``
 the landing queue bisects on; a stop of the runner itself stays a plain
-``DriverError``. The leading run of always gates (read-only whole-repository checks
-without Cargo outputs) executes through the one proof executor
-(``tools/proof_executor.py``): its admission bounds the block by the plan's
-executor ceiling and the gates' resource class, both capped by
-``molt.host_capacity``, and it leaves a receipt with each gate's duration and
-peak RSS. Every later gate runs alone (docs/design/host_capacity.md, "One
-scheduler"). Every gate writes its streams to files while it runs
-(`prepare_gate_streams`); the terminal shows a failure's bounded tail.
+``DriverError``. Every gate executes through the one proof executor
+(``tools/proof_executor.py``) in its plan resource class: gates that may build
+with Cargo share one target and run one at a time, pytest sessions run beside
+them in the memory slice the executor exports, and read-only checks fill the
+rest, all bounded by the plan's executor ceiling and ``molt.host_capacity``
+(docs/design/host_capacity.md, "One scheduler"). The block leaves a receipt
+with each gate's duration and peak RSS. Every gate writes its streams to files
+while it runs (`prepare_gate_streams`); the terminal shows a failure's bounded
+tail.
 """
 
 from __future__ import annotations
@@ -24,444 +24,32 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import shlex
 import shutil
 import sys
 import threading
 import time
-import tomllib
 from typing import TYPE_CHECKING, Any, Protocol
 
 from tools import proof_executor, proof_receipts
-from tools.dirty_tree_policy import is_ignored as _is_ignored
-from tools.molt_dev_common import EXIT_USAGE, DriverError, GateFailure, _say, _warn
+from tools.molt_dev_common import DriverError, GateFailure, _say, _warn
 from tools.memory_guard_core.reporting import NAMED_RECORD_MIN_AGE_S
 
 if TYPE_CHECKING:
     from molt.disk_capacity import DiskCapacityProbe
     from molt.process_environment import ProcessEnvironment
-    from tools.proof_plan import PytestMemoryUnits
 
 # Local always gates share the repository-policy resource class with their CI
 # commands; a policy without that class admits up to the executor ceiling.
 GATE_RESOURCE_CLASS = "repository-policy"
+# Every gate that may build with Cargo shares one Cargo target, so those gates
+# run one at a time (a correctness bound, not capacity); pytest sessions size
+# their workers within the memory slice the executor exports to each.
+CARGO_GATE_RESOURCE_CLASS = "compiler-build-resource"
+PYTEST_GATE_RESOURCE_CLASS = "python-tests"
 LOCAL_GATE_FAMILY = "local_integration"
 # The largest always gate's process tree peaks below 1 GiB (structural_audit
 # 0.69 GB, generators 0.50 GB on the 2026-10 tree): the host-capacity unit.
 CONCURRENT_GATE_BYTES = 1 << 30
-
-
-@dataclass
-class GateRule:
-    name: str
-    globs: list[str]
-    gates: list[str]
-    description: str = ""
-    pytest: list[str] = field(default_factory=list)
-    # (selection argv, targets): each runs as its own pytest invocation.
-    pytest_select: list[tuple[tuple[str, ...], tuple[str, ...]]] = field(
-        default_factory=list
-    )
-
-
-# The toolchains of a gate that only reads the candidate's files: linters,
-# formatters, type checkers, generators and policy audits. `land` runs those
-# gates in the lane before it queues the lane (molt_dev_precheck); a gate that
-# builds with Cargo, runs compiled programs or is a pytest session waits for the
-# queue's batch, which runs every selected gate once.
-PRECHECK_TOOLCHAINS = frozenset({"generators", "git", "python", "rustfmt", "uv"})
-
-
-@dataclass(frozen=True)
-class SelectedGate:
-    command: str | tuple[str, ...]
-    toolchains: tuple[str, ...]
-    # An always gate is a read-only whole-repository check; the leading run of
-    # them executes as one concurrent block (run_selected_gates).
-    concurrent: bool = False
-    # The merged pytest session or one pytest_select cohort.
-    pytest: bool = False
-    # Selected node admission; unfiltered cohorts collect only explicit nodes.
-    # Successful collection never replaces this gate's mandatory execution.
-    collection_command: tuple[str, ...] | None = None
-
-    @property
-    def precheck(self) -> bool:
-        """Whether `land` runs this gate in the lane before queueing it."""
-        return not self.pytest and frozenset(self.toolchains) <= PRECHECK_TOOLCHAINS
-
-
-@dataclass
-class GateConfig:
-    pytest_memory_units: "PytestMemoryUnits"
-    rules: list[GateRule] = field(default_factory=list)
-    always: list[str] = field(default_factory=list)
-    prerequisites: dict[str, tuple[str, tuple[str, ...]]] = field(default_factory=dict)
-    prerequisite_policy: dict = field(default_factory=dict)
-    root: Path = field(default_factory=lambda: Path(__file__).resolve().parents[1])
-    # The proof executor's declared admission: its ceiling and resource classes.
-    executor_max_workers: int | None = None
-    resource_limits: dict[str, int] = field(default_factory=dict)
-
-    @staticmethod
-    def load(path: Path) -> "GateConfig":
-        if not path.exists():
-            raise DriverError(
-                f"gate manifest missing: {path}. The change-class->gates manifest "
-                "is required for `integrate`.",
-                code=EXIT_USAGE,
-            )
-        return GateConfig.parse(
-            path.read_text(encoding="utf-8"), str(path), root=path.parent.parent
-        )
-
-    @staticmethod
-    def parse(source: str, label: str, *, root: Path | None = None) -> "GateConfig":
-        from tools.proof_plan import (
-            PytestMemoryUnits,
-            local_gate_commands,
-            local_pytest_select_errors,
-            local_pytest_selections,
-            local_pytest_target_errors,
-            local_rule_field_error,
-        )
-
-        root = root or Path(__file__).resolve().parents[1]
-        try:
-            data = tomllib.loads(source)
-        except tomllib.TOMLDecodeError as exc:
-            raise DriverError(f"gate manifest is not valid TOML ({label}): {exc}")
-        rules: list[GateRule] = []
-        for entry in data.get("rule", []):
-            if field_error := local_rule_field_error(entry):
-                raise DriverError(field_error)
-            name = entry.get("name")
-            globs = entry.get("globs")
-            gates = entry.get("gates")
-            if not isinstance(name, str) or not name:
-                raise DriverError(f"gate rule missing string `name`: {entry!r}")
-            if not isinstance(globs, list) or not all(
-                isinstance(g, str) for g in globs
-            ):
-                raise DriverError(f"gate rule {name!r} `globs` must be a list of str")
-            if not isinstance(gates, list) or not all(
-                isinstance(g, str) for g in gates
-            ):
-                raise DriverError(f"gate rule {name!r} `gates` must be a list of str")
-            pytest_targets = entry.get("pytest", [])
-            errors = local_pytest_target_errors(name, pytest_targets, root=root)
-            errors += local_pytest_select_errors(
-                name, entry.get("pytest_select", []), root=root
-            )
-            if errors:
-                raise DriverError("\n".join(errors))
-            rules.append(
-                GateRule(
-                    name=name,
-                    globs=globs,
-                    gates=gates,
-                    description=str(entry.get("description", "")),
-                    pytest=pytest_targets,
-                    pytest_select=local_pytest_selections(entry),
-                )
-            )
-        always = data.get("always", [])
-        if not isinstance(always, list) or not all(isinstance(g, str) for g in always):
-            raise DriverError("gate manifest `always` must be a list of str")
-        try:
-            memory_units = PytestMemoryUnits(data.get("command", ()))
-            commands = local_gate_commands(data, memory_units=memory_units)
-        except ValueError as exc:
-            raise DriverError(f"invalid local gate policy: {exc}") from exc
-        ceiling = data.get("executor_max_workers")
-        if ceiling is not None and (type(ceiling) is not int or ceiling < 1):
-            raise DriverError("gate manifest `executor_max_workers` must be positive")
-        resource_limits = {
-            str(entry["name"]): int(entry["max_parallel"])
-            for entry in data.get("resource_policy", [])
-        }
-        return GateConfig(
-            pytest_memory_units=memory_units,
-            rules=rules,
-            always=list(always),
-            prerequisites=commands,
-            prerequisite_policy={"toolchain_policy": data.get("toolchain_policy", [])},
-            root=Path(__file__).resolve().parents[1] if root is None else root,
-            executor_max_workers=ceiling,
-            resource_limits=resource_limits,
-        )
-
-    def admit(
-        self,
-        touched: list[str],
-        matched: list[GateRule],
-        extra: list[str],
-        *,
-        environ: Mapping[str, str],
-    ) -> dict[str, dict]:
-        """Admit the union once under ``environ``, the gates' baseline;
-        execution projects each gate from that same baseline.
-
-        Returns the admitted toolchain fingerprints the gate receipt records.
-        """
-        selected_owners = {f"local.{rule.name}" for rule in matched}
-        if touched:
-            selected_owners.add("local.always")
-        unknown = sorted(
-            set(extra) - {command for command, _ in self.prerequisites.values()}
-        )
-        if unknown:
-            raise DriverError(
-                "extra gates lack declared prerequisite custody; declare them in "
-                "proof_plan.toml before selection: " + ", ".join(unknown)
-            )
-        return self._admit_owned(
-            {
-                identifier: tools
-                for identifier, (command, tools) in self.prerequisites.items()
-                if identifier.rsplit(".", 1)[0] in selected_owners or command in extra
-            },
-            environ=environ,
-        )
-
-    def admit_gates(
-        self, gates: list[SelectedGate], *, environ: Mapping[str, str]
-    ) -> dict[str, dict]:
-        """Admit exactly the toolchains these gates declare (a landing precheck)."""
-        owned: dict[str, tuple[str, ...]] = {}
-        for gate in gates:
-            owned[
-                shlex.join(gate.command)
-                if isinstance(gate.command, tuple)
-                else gate.command
-            ] = gate.toolchains
-        return self._admit_owned(owned, environ=environ)
-
-    def _admit_owned(
-        self, selected: Mapping[str, tuple[str, ...]], *, environ: Mapping[str, str]
-    ) -> dict[str, dict]:
-        """Admit the union of each owner's toolchain closure once."""
-        from tools.proof_plan import (
-            admit_toolchains,
-            load_toolchain_policies,
-            toolchain_closure,
-        )
-
-        try:
-            names = tuple(
-                dict.fromkeys(name for tools in selected.values() for name in tools)
-            )
-            policies = load_toolchain_policies(
-                self.prerequisite_policy, root=self.root, names=names
-            )
-            owners: dict[str, list[str]] = {}
-            for identifier, tools in selected.items():
-                for name in toolchain_closure(policies, tools):
-                    owners.setdefault(name, []).append(identifier)
-            return admit_toolchains(
-                policies,
-                tuple(owners),
-                environ=environ,
-                owners=owners,
-                root=self.root,
-            ).fingerprints
-        except (ValueError, OSError, KeyError) as exc:
-            raise DriverError(
-                f"selected gate prerequisites failed; executed=0: {exc}"
-            ) from exc
-
-    def select(
-        self, touched: list[str], *, extra: list[str] | None = None
-    ) -> tuple[list[SelectedGate], list[GateRule]]:
-        """Select commands with their declared prerequisites intact.
-
-        Deduplicated commands union their owners' tools. Only rules contributing
-        to the merged pytest invocation supply its tools; each selector cohort
-        keeps its own. Command binding happens after this policy selection.
-        """
-        from tools.proof_plan import local_pytest_argv, local_pytest_collection_argv
-
-        selected: list[SelectedGate] = []
-        indices: dict[str, int] = {}
-        seen_pytest: set[str] = set()
-        matched_rules: list[GateRule] = []
-        pytest_targets: list[str] = []
-        pytest_tools: dict[str, None] = {}
-        pytest_index: int | None = None
-        pytest_commands: set[str] = set()
-
-        def command_key(command: str | tuple[str, ...]) -> str:
-            return command if isinstance(command, str) else shlex.join(command)
-
-        def add(
-            command: str | tuple[str, ...],
-            tools: tuple[str, ...],
-            *,
-            concurrent: bool = False,
-            pytest: bool = False,
-            collection_command: tuple[str, ...] | None = None,
-        ) -> None:
-            key = command_key(command)
-            if key in indices:
-                index = indices[key]
-                prior = selected[index]
-                selected[index] = replace(
-                    prior,
-                    toolchains=tuple(dict.fromkeys((*prior.toolchains, *tools))),
-                    pytest=prior.pytest or pytest,
-                    collection_command=prior.collection_command or collection_command,
-                )
-            else:
-                indices[key] = len(selected)
-                selected.append(
-                    SelectedGate(command, tools, concurrent, pytest, collection_command)
-                )
-
-        def tools(identifier: str) -> tuple[str, ...]:
-            return self.prerequisites[identifier][1]
-
-        if touched:
-            for index, command in enumerate(self.always):
-                add(command, tools(f"local.always.{index}"), concurrent=True)
-        for rule in self.rules:
-            if not any(_is_ignored(path, tuple(rule.globs)) for path in touched):
-                continue
-            matched_rules.append(rule)
-            owner = f"local.{rule.name}"
-            for index, command in enumerate(rule.gates):
-                add(command, tools(f"{owner}.{index}"))
-            if rule.pytest:
-                if pytest_index is None:
-                    pytest_index = len(selected)
-                pytest_tools.update(dict.fromkeys(tools(f"{owner}.pytest")))
-            for index, (select, targets) in enumerate(rule.pytest_select):
-                command = local_pytest_argv(
-                    targets, select, memory_units=self.pytest_memory_units
-                )
-                pytest_commands.add(command_key(command))
-                add(
-                    command,
-                    tools(f"{owner}.pytest-select-{index}"),
-                    pytest=True,
-                    collection_command=(
-                        local_pytest_collection_argv(command)
-                        if any("::" in target for target in targets)
-                        else None
-                    ),
-                )
-            for target in rule.pytest:
-                if target not in seen_pytest:
-                    seen_pytest.add(target)
-                    pytest_targets.append(target)
-        # Extras are raw policy commands, not bound argv or unowned shell text.
-        for command in extra or ():
-            owners = [
-                required
-                for raw, required in self.prerequisites.values()
-                if raw == command
-            ]
-            if not owners:
-                raise DriverError(
-                    "extra gates lack declared prerequisite custody; declare them in "
-                    "proof_plan.toml before selection: " + command
-                )
-            add(
-                command,
-                tuple(dict.fromkeys(name for owner in owners for name in owner)),
-            )
-        if pytest_index is not None:
-            command = local_pytest_argv(
-                pytest_targets, memory_units=self.pytest_memory_units
-            )
-            pytest_commands.add(command_key(command))
-            # File-only targets already have a validated path. Admit named nodes
-            # without importing every file in the merged mandatory cohort again.
-            named_targets = tuple(target for target in pytest_targets if "::" in target)
-            size = len(selected)
-            add(
-                command,
-                tuple(pytest_tools),
-                pytest=True,
-                collection_command=(
-                    local_pytest_collection_argv(
-                        local_pytest_argv(
-                            named_targets, memory_units=self.pytest_memory_units
-                        )
-                    )
-                    if named_targets
-                    else None
-                ),
-            )
-            if len(selected) != size:
-                selected.insert(pytest_index, selected.pop())
-        # Run declared source/metadata and compilation controls before Python
-        # consumers. This also moves already-required Cargo gates earlier; it
-        # adds no commands or builds and preserves each phase's relative order.
-        explicit: list[SelectedGate] = []
-        consumers: list[SelectedGate] = []
-        for gate in selected:
-            phase = (
-                consumers if command_key(gate.command) in pytest_commands else explicit
-            )
-            phase.append(gate)
-        selected = explicit + consumers
-        return selected, matched_rules
-
-    def environments(
-        self, gates: list[SelectedGate], *, baseline: Mapping[str, str]
-    ) -> dict[tuple[str, ...], ProcessEnvironment]:
-        """Project once per declared tool selection, never from aggregate admission."""
-        from molt.process_environment import ProcessEnvironment
-        from tools.proof_plan import (
-            load_toolchain_policies,
-            project_toolchains,
-            toolchain_closure,
-        )
-
-        try:
-            names = tuple(
-                dict.fromkeys(name for gate in gates for name in gate.toolchains)
-            )
-            policies = load_toolchain_policies(
-                self.prerequisite_policy, root=self.root, names=names
-            )
-            environments = {}
-            for gate in gates:
-                if gate.toolchains in environments:
-                    continue
-                projection = project_toolchains(
-                    policies,
-                    toolchain_closure(policies, gate.toolchains),
-                    environ=baseline,
-                    root=self.root,
-                )
-                environments[gate.toolchains] = ProcessEnvironment(baseline).updated(
-                    projection.delta
-                )
-            return environments
-        except (ValueError, OSError, KeyError) as exc:
-            raise DriverError(
-                f"selected gate environment failed; executed=0: {exc}"
-            ) from exc
-
-    def cargo_outputs(
-        self,
-        environments: dict[tuple[str, ...], ProcessEnvironment],
-    ) -> dict[tuple[str, ...], tuple[Path, ...]]:
-        """Outputs of gate owners explicitly declaring Cargo capability.
-
-        Declared capability is conservative: it does not prove that a Cargo
-        child launches. Actual argv/output admission remains with each child.
-        Transitive tool availability (for example generator metadata queries)
-        does not impose a compilation-space requirement.
-        """
-        from molt.cargo_execution_policy import cargo_output_paths
-
-        outputs = {}
-        for tools, environment in environments.items():
-            if "cargo" in tools:
-                outputs[tools] = cargo_output_paths((), cwd=self.root, env=environment)
-        return outputs
 
 
 class Gate(Protocol):
@@ -469,6 +57,7 @@ class Gate(Protocol):
     toolchains: tuple[str, ...]
     concurrent: bool
     collection_command: tuple[str, ...] | None
+    pytest: bool
 
 
 class Progress(Protocol):
@@ -742,6 +331,33 @@ def observe_gate_capacity(
         return ()
 
 
+def gate_resource_class(gate: Gate) -> str:
+    """The plan resource class one landing gate is admitted in. A pytest
+    session counts against the session limit even when its rules declare
+    Cargo; `_cargo_chain` keeps every Cargo-bearing gate off the others."""
+    if gate.pytest:
+        return PYTEST_GATE_RESOURCE_CLASS
+    if "cargo" in gate.toolchains:
+        return CARGO_GATE_RESOURCE_CLASS
+    return GATE_RESOURCE_CLASS
+
+
+def _cargo_chain(commands: list[_LocalGateCommand]) -> list[_LocalGateCommand]:
+    """Each gate that may build with Cargo waits for the previous one in
+    declared order: they share one target, and a pytest session that builds
+    is still admitted as a pytest session. The executor runs a dependent only
+    after its dependency passes, so the first failure still wins."""
+    chained: list[_LocalGateCommand] = []
+    previous: str | None = None
+    for command in commands:
+        if "cargo" in command.gate.toolchains:
+            if previous is not None:
+                command = replace(command, dependencies=(previous,))
+            previous = command.id
+        chained.append(command)
+    return chained
+
+
 def run_selected_gates(
     gates: list[Gate],
     runtime: GateRuntime,
@@ -749,23 +365,46 @@ def run_selected_gates(
     *,
     host_limit: Callable[[], int] = concurrent_gate_limit,
 ) -> None:
-    """Admit named nodes before builds, then execute every selected gate."""
-    for ordinal, gate in enumerate(gates, start=1):
+    """Read-only checks first; then the heavy gates overlap in one block.
+
+    The read-only checks run as before: the leading always gates as one
+    executor block, then each rule check in declared order. A failing check
+    therefore stops every build before it starts. The heavy gates (Cargo and
+    pytest) then share one executor block: Cargo gates run one at a time on
+    their shared target while pytest sessions run beside them, each sized
+    within the exported memory slice. The first failure in declared order
+    within a phase halts the landing and cancels the gates declared after it.
+    """
+    ordered = list(enumerate(gates, start=1))
+    for ordinal, gate in ordered:
         if gate.collection_command is not None:
             _run_serial_gate(ordinal, gate, runtime, gate_seconds, collection=True)
+    light = [
+        (ordinal, gate)
+        for ordinal, gate in ordered
+        if gate_resource_class(gate) == GATE_RESOURCE_CLASS
+    ]
+    heavy = [
+        (ordinal, gate)
+        for ordinal, gate in ordered
+        if gate_resource_class(gate) != GATE_RESOURCE_CLASS
+    ]
     block = 0
-    while (
-        block < len(gates)
-        and gates[block].concurrent
-        and not runtime.cargo_outputs.get(gates[block].toolchains)
-    ):
+    while block < len(light) and light[block][1].concurrent:
         block += 1
     if block >= 2:
-        _run_executor_block(gates[:block], runtime, gate_seconds, host_limit())
+        _run_executor_block(light[:block], runtime, gate_seconds, host_limit())
     else:
         block = 0
-    for ordinal, gate in enumerate(gates[block:], start=block + 1):
+    for ordinal, gate in light[block:]:
         _run_serial_gate(ordinal, gate, runtime, gate_seconds)
+    if len(heavy) >= 2:
+        _run_executor_block(
+            heavy, runtime, gate_seconds, host_limit(), receipt_kind="heavy"
+        )
+    else:
+        for ordinal, gate in heavy:
+            _run_serial_gate(ordinal, gate, runtime, gate_seconds)
 
 
 def _run_serial_gate(
@@ -884,28 +523,53 @@ class _BlockState:
             self.first_failure = min(self.first_failure, ordinal)
 
 
-def _local_plan(runtime: GateRuntime, block: int, host: int) -> _LocalGatePlan:
-    ceiling = min(host, block, runtime.executor_max_workers or host)
-    max_parallel = min(
-        ceiling, runtime.resource_limits.get(GATE_RESOURCE_CLASS, ceiling)
-    )
+def _local_plan(
+    runtime: GateRuntime, classes: dict[str, int], host: int
+) -> _LocalGatePlan:
+    ceiling = min(host, sum(classes.values()), runtime.executor_max_workers or host)
     return _LocalGatePlan(
         receipt_schema=proof_receipts.RECEIPT_SCHEMA,
         executor_max_workers=ceiling,
-        resource_policies=(_ResourcePolicy(GATE_RESOURCE_CLASS, max_parallel),),
+        resource_policies=tuple(
+            _ResourcePolicy(
+                name, min(ceiling, runtime.resource_limits.get(name, ceiling))
+            )
+            for name in sorted(classes)
+        ),
     )
+
+
+def _memory_slice(plan: _LocalGatePlan, classes: dict[str, int]) -> int | None:
+    """The memory one gate may claim while the executor runs others beside it.
+
+    The proof executor's own rule (``proof_plan._command_memory_share``): the
+    memory beyond the reserve, divided by the most gates that can run at once.
+    """
+    from molt import host_capacity
+
+    capacity = host_capacity.memory_capacity(os.environ)
+    _total, available = capacity.bounded_bytes
+    if available is None:
+        return None
+    slots = sum(
+        min(classes[policy.name], policy.max_parallel)
+        for policy in plan.resource_policies
+    )
+    concurrency = max(1, min(plan.executor_max_workers, slots))
+    usable = max(0, available - host_capacity.headroom_bytes(capacity))
+    return max(1, usable // concurrency)
 
 
 def _local_command(ordinal: int, gate: Gate, cell: str) -> _LocalGateCommand:
     cmd = gate.command
     argv = ("/bin/sh", "-c", cmd) if isinstance(cmd, str) else tuple(cmd)
     return _LocalGateCommand(
-        id=f"local.always.{ordinal}",
+        id=f"local.{'always' if gate.concurrent else 'gate'}.{ordinal}",
         family=LOCAL_GATE_FAMILY,
         data={
             "cell": cell,
             "tiers": ["local-integration"],
-            "resource_class": GATE_RESOURCE_CLASS,
+            "resource_class": gate_resource_class(gate),
             # Local always gates keep their unbounded deadline.
             "timeout_budget": "none",
             "timeout_seconds": 0,
@@ -917,21 +581,46 @@ def _local_command(ordinal: int, gate: Gate, cell: str) -> _LocalGateCommand:
 
 
 def _run_executor_block(
-    gates: list[Gate],
+    gates: list[tuple[int, Gate]],
     runtime: GateRuntime,
     gate_seconds: list[tuple[float, str]],
     host: int,
+    *,
+    receipt_kind: str | None = None,
 ) -> None:
     """Run the block through the proof executor; report it in declared order."""
     from tools.proof_plan import _normalized_arch, _normalized_os
 
-    plan = _local_plan(runtime, len(gates), host)
+    classes: dict[str, int] = {}
+    for _ordinal, gate in gates:
+        name = gate_resource_class(gate)
+        classes[name] = classes.get(name, 0) + 1
+    plan = _local_plan(runtime, classes, host)
     cell = f"{_normalized_os()}-{_normalized_arch()}-local"
-    commands = [
-        _local_command(ordinal, gate, cell)
-        for ordinal, gate in enumerate(gates, start=1)
-    ]
-    state = _BlockState(first_failure=len(gates) + 1)
+    commands = _cargo_chain(
+        [_local_command(ordinal, gate, cell) for ordinal, gate in gates]
+    )
+    state = _BlockState(first_failure=max(ordinal for ordinal, _gate in gates) + 1)
+    receipt_path = (
+        runtime.receipt_path
+        if receipt_kind is None
+        else runtime.receipt_path.with_name(
+            f"{runtime.receipt_path.stem}.{receipt_kind}{runtime.receipt_path.suffix}"
+        )
+    )
+    from molt import host_capacity
+
+    memory_slice = _memory_slice(plan, classes)
+    environments = {
+        toolchains: (
+            environment
+            if memory_slice is None
+            else environment.updated(
+                {host_capacity.MEMORY_SLICE_ENV: str(memory_slice)}
+            )
+        )
+        for toolchains, environment in runtime.environments.items()
+    }
 
     def run_command(
         _plan: Any, command: _LocalGateCommand, cancel: threading.Event
@@ -961,20 +650,53 @@ def _run_executor_block(
         runtime.progress.emit(
             "gate_started", **gate_details(command.ordinal, command.gate)
         )
+        shown = display(command.gate.command)
+        paths = runtime.cargo_outputs.get(command.gate.toolchains, ())
+        required = runtime.capacity_requirements.get(command.gate.toolchains, 0)
         started = time.monotonic()
         streams, stream_error = prepare_gate_streams(
             runtime.output_dir, command.ordinal
         )
         record.update(stream_record(streams, stream_error))
         try:
+            before = (
+                runtime.observe_capacity(
+                    paths, required_bytes=required, phase="before", gate=shown
+                )
+                if paths
+                else ()
+            )
             outcome = runtime.run_captured_gate(
                 command.gate.command,
                 runtime.repo,
-                runtime.environments[command.gate.toolchains],
+                environments[command.gate.toolchains],
                 lambda: cancel.is_set() or state.moot(command.ordinal),
                 streams,
             )
-        except BaseException as exc:  # reported in declared order below
+            if paths:
+                runtime.observe_capacity(
+                    paths,
+                    required_bytes=required,
+                    phase="after",
+                    gate=shown,
+                    before=before,
+                )
+        except Exception as exc:
+            # The runner itself failed, not the gate: stop the block, and keep
+            # this record (its streams and duration) for the receipt; the
+            # declared-order report below raises the original error.
+            state.outcomes[command.id] = exc
+            state.fail(command.ordinal)
+            return {
+                **record,
+                "duration_seconds": round(time.monotonic() - started, 6),
+                "status": "failure",
+                "returncode": 2,
+                "executor_error": f"{type(exc).__name__}: {exc}",
+                "failure_scope": "global",
+                "failure_reason": "the gate runner raised",
+            }
+        except BaseException as exc:  # an interrupt stops the block at once
             state.outcomes[command.id] = exc
             state.fail(command.ordinal)
             raise
@@ -1005,7 +727,7 @@ def _run_executor_block(
     proof_executor.execute_commands(
         plan,
         commands,
-        runtime.receipt_path,
+        receipt_path,
         _source_tree_changes=runtime.source_changes,
         toolchain_fingerprints=lambda _policies, _names: dict(runtime.toolchains),
         _authority_sha256=lambda _plan: authority.hexdigest(),
@@ -1017,14 +739,14 @@ def _run_executor_block(
         _cache_disposition=lambda _command: "none",
     )
     wall = time.monotonic() - block_started
-    receipt = json.loads(runtime.receipt_path.read_text(encoding="utf-8"))
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     records = {record["id"]: record for record in receipt.get("commands", ())}
 
     def stopped(where: str) -> DriverError:
         # The runner, not the candidate, stopped the block.
         errors = "; ".join(receipt.get("errors", ()) or ("no reason recorded",))
         return DriverError(
-            f"gate block stopped {where}: {errors}; receipt {runtime.receipt_path}"
+            f"gate block stopped {where}: {errors}; receipt {receipt_path}"
         )
 
     for command in commands:
@@ -1075,5 +797,5 @@ def _run_executor_block(
     runtime.say(
         f"    gate block: {len(commands)} gates in {wall:.1f} s wall through the "
         f"proof executor, at most {plan.executor_max_workers} at once; "
-        f"receipt {runtime.receipt_path}"
+        f"receipt {receipt_path}"
     )

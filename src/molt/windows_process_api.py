@@ -7,6 +7,16 @@ import sys
 from ctypes import wintypes
 from functools import lru_cache
 
+# A Windows process ID is a ``DWORD``.
+_WINDOWS_PID_MAX = 0xFFFFFFFF
+
+
+def valid_windows_pid(pid: object) -> bool:
+    """Whether ``pid`` can name a Windows process: a positive ``int`` (never a
+    ``bool``) within a ``DWORD``. ``process_model.valid_pid`` applies it on
+    Windows, so a host-neutral caller never spells the range itself."""
+    return type(pid) is int and 0 < pid <= _WINDOWS_PID_MAX
+
 
 def bind_process_query_api(api: ctypes.CDLL) -> None:
     """Bind shared query signatures on a consumer-owned DLL function table."""
@@ -46,7 +56,7 @@ def process_is_alive(pid: int) -> bool:
     """
     if sys.platform != "win32":
         raise OSError("Win32 process queries require Windows")
-    if type(pid) is not int or not 0 < pid <= 0xFFFFFFFF:
+    if not valid_windows_pid(pid):
         raise OSError("invalid positive Windows process ID")
     api = process_query_api()
     handle = api.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE only

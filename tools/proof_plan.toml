@@ -392,6 +392,7 @@ authority_inputs = [
   "tests/tools/test_win_job.py",
   "tests/tools/test_win_job_contract.py",
   "tests/tools/test_windows_process_api.py",
+  "tools/dirty_tree_policy.py",
 ]
 
 # Tiers are enforced per CI event (tools/proof_plan.py active_tier): pull
@@ -2593,7 +2594,7 @@ timeout_seconds = 900
 cache_domain = "pytest"
 dependencies = ["repository.generator-manifest", "repository.generators", "repository.structural-debt", "repository.canonicalization", "repository.call-fact-coverage", "repository.perf-methodology"]
 argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-n", "auto"]
-pytest = ["tests/test_update_status_blocks.py", "tests/test_bench_report.py", "tests/test_check_docs_architecture.py", "tests/test_dependabot_config.py", "tests/tools/test_check_test_ownership.py", "tests/test_compatibility_contract_docs.py", "tests/test_ecosystem_compat.py", "tests/test_check_suite_honesty.py", "tests/test_gen_op_kinds.py", "tests/test_gen_heap_kinds.py", "tests/test_gen_python_effects.py", "tests/test_gen_python_identity_catalog.py", "tests/test_gen_builtin_binding_guards.py", "tests/tools/test_gen_python_numeric_errors.py", "tests/test_gen_wasm_abi.py", "tests/test_gen_intrinsics.py", "tests/test_generator_manifest.py", "tests/test_molt_dev.py", "tests/test_molt_dev_lanes.py", "tests/test_checkout_provisioning.py", "tests/test_resource_pressure.py", "tests/test_structural_audit.py", "tests/tools/test_structural_audit_records.py", "tests/test_call_fact_coverage.py", "tests/test_llvm_runtime_abi_audit.py", "tests/tools/test_ci_resource_env.py", "tests/tools/test_gen_cpython_coverage.py", "tests/tools/test_gen_cpython_type_slots.py", "tests/tools/test_perf_authority.py", "tests/tools/test_perf_methodology.py", "tests/tools/test_perf_profile_selection.py", "tests/tools/test_perf_scoreboard.py", "tests/tools/test_opt_explorer.py", "tests/tools/test_sample_profile.py", "tests/tools/test_perf_schema.py", "tests/tools/test_check_perf_gate_wiring.py", "tests/tools/test_analysis_capsule.py", "tests/tools/test_binary_size_analysis.py", "tests/tools/test_runtime_bridge_test_stubs.py", "tests/tools/test_runtime_app_bootstrap_authority.py", "tests/tools/test_cargo_test_truth.py", "tests/tools/test_import_symbol_gate.py", "tests/tools/test_phase_exit_manifest.py", "tests/tools/test_legacy_inventory.py", "tests/tools/test_public_contract_gate.py", "tests/tools/test_gen_luau_support_matrix.py", "tests/tools/test_runtime_descendant_receipts.py", "tests/tools/test_runtime_test_gate.py", "tests/test_environment_registry.py", "tests/tools/test_check_environment_registry.py", "tests/tools/test_setup_project_inputs.py", "tests/tools/test_rust_toolchain_contract.py", "tests/test_gen_cpython_abi_layout.py", "tests/tools/test_perf_release_integrity.py"]
+pytest = ["tests/test_update_status_blocks.py", "tests/test_bench_report.py", "tests/test_check_docs_architecture.py", "tests/test_dependabot_config.py", "tests/tools/test_check_test_ownership.py", "tests/test_compatibility_contract_docs.py", "tests/test_ecosystem_compat.py", "tests/test_check_suite_honesty.py", "tests/test_gen_op_kinds.py", "tests/test_gen_heap_kinds.py", "tests/test_gen_python_effects.py", "tests/test_gen_python_identity_catalog.py", "tests/test_gen_builtin_binding_guards.py", "tests/tools/test_gen_python_numeric_errors.py", "tests/test_gen_wasm_abi.py", "tests/test_gen_intrinsics.py", "tests/test_generator_manifest.py", "tests/test_molt_dev.py", "tests/test_committed_gate_policy.py", "tests/test_molt_dev_lanes.py", "tests/test_checkout_provisioning.py", "tests/test_resource_pressure.py", "tests/test_structural_audit.py", "tests/tools/test_structural_audit_records.py", "tests/test_call_fact_coverage.py", "tests/test_llvm_runtime_abi_audit.py", "tests/tools/test_ci_resource_env.py", "tests/tools/test_gen_cpython_coverage.py", "tests/tools/test_gen_cpython_type_slots.py", "tests/tools/test_perf_authority.py", "tests/tools/test_perf_methodology.py", "tests/tools/test_perf_profile_selection.py", "tests/tools/test_perf_scoreboard.py", "tests/tools/test_opt_explorer.py", "tests/tools/test_sample_profile.py", "tests/tools/test_perf_schema.py", "tests/tools/test_check_perf_gate_wiring.py", "tests/tools/test_analysis_capsule.py", "tests/tools/test_binary_size_analysis.py", "tests/tools/test_runtime_bridge_test_stubs.py", "tests/tools/test_runtime_app_bootstrap_authority.py", "tests/tools/test_cargo_test_truth.py", "tests/tools/test_import_symbol_gate.py", "tests/tools/test_phase_exit_manifest.py", "tests/tools/test_legacy_inventory.py", "tests/tools/test_public_contract_gate.py", "tests/tools/test_gen_luau_support_matrix.py", "tests/tools/test_runtime_descendant_receipts.py", "tests/tools/test_runtime_test_gate.py", "tests/test_environment_registry.py", "tests/tools/test_check_environment_registry.py", "tests/tools/test_setup_project_inputs.py", "tests/tools/test_rust_toolchain_contract.py", "tests/test_gen_cpython_abi_layout.py", "tests/tools/test_perf_release_integrity.py"]
 pytest_worker_memory_gb = 1.75
 toolchains = ["python", "uv", "rustfmt"]
 
@@ -4786,6 +4787,7 @@ pytest = [
 [[rule]]
 name = "source-extension-proof-policy"
 toolchains = ["python", "uv"]
+plan_entities = ["toolchain_policy", "named_lane:pact.witness.acceptance.native", "named_lane:pact.witness.acceptance.wasm", "named_lane:pact.witness.oracle"]
 description = "Source-extension typed invocation, target/toolchain custody and Pact receipt admission. Production inputs preserve this complete shared boundary."
 globs = [
   "config/source_extension_package_sets.toml",
@@ -4828,7 +4830,6 @@ globs = [
   "tests/tools/test_python_custody_bootstrap.py",
   "tools/proof_plan.py",
   "tools/proof_receipts.py",
-  "tools/proof_plan.toml",
   "tools/proof_queue_pkg/pact.py",
   "tests/cli/test_atomic_io_authority.py",
   "tests/cli/test_source_package_seal.py",
@@ -4939,7 +4940,6 @@ globs = [
   "src/molt/cargo_workspace.py",
   "tools/molt_dev.py",
   "tools/molt_dev_*.py",
-  "tools/proof_plan.toml",
   "src/molt/checkout_provisioning.py",
   "tests/tools/test_rust_toolchain_contract.py",
   "tests/tools/test_check_rustfmt.py",
@@ -4955,6 +4955,7 @@ globs = [
 gates = []
 pytest = [
   "tests/tools/test_setup_project_inputs.py",
+  "tests/test_committed_gate_policy.py",
   "tests/test_molt_dev.py",
   "tests/tools/test_claim_lane.py",
   "tests/test_molt_dev_lanes.py",
@@ -4963,6 +4964,27 @@ pytest = [
   "tests/tools/test_check_rustfmt.py",
   "tests/tools/test_check_changed_clippy.py",
   "tests/test_cargo_workspace.py",
+]
+
+# --- The committed gate policy (its selection, not the driver) -----------
+# GateConfig reads these plan sections, so an edit to any of them reruns the
+# tests that select through the committed policy; the driver's own tests run
+# only when the driver changes (HF-457).
+[[rule]]
+name = "committed-gate-policy"
+toolchains = ["python", "uv"]
+plan_entities = ["rule", "always", "always_toolchains", "command", "executor_max_workers", "resource_policy", "toolchain_policy"]
+description = "The committed proof plan's gate selection and the tests that read its toolchain policies."
+globs = [
+  "tests/test_committed_gate_policy.py",
+]
+gates = []
+pytest = [
+  "tests/test_committed_gate_policy.py",
+  "tests/test_checkout_provisioning.py",
+  "tests/tools/test_rust_toolchain_contract.py",
+  "tests/tools/test_check_rustfmt.py",
+  "tests/tools/test_check_changed_clippy.py",
 ]
 
 # --- Managed Git hooks ---------------------------------------------------
@@ -5455,6 +5477,7 @@ pytest = [
 [[rule]]
 name = "ci-wiring"
 toolchains = ["python"]
+plan_entities = ["schema", "authority_inputs", "always_toolchains", "always", "receipt_schema", "executor_max_workers", "inventory_hash_workers", "resource_policy", "toolchain_policy", "matrix_cell", "ci_family", "scheduled_family", "command", "rule", "named_lane", "gate_flip"]
 description = "CI workflows or pyproject: the CI-topology contract test."
 globs = [
   ".github/actions/**",
@@ -5470,7 +5493,6 @@ globs = [
   "pyproject.toml",
   "tools/proof_plan.py",
   "tools/proof_receipts.py",
-  "tools/proof_plan.toml",
   "tools/gen_proof_plan.py",
   "tools/generator_io.py",
   "tools/proof_counts.py",
