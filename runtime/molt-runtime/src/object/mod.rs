@@ -5241,7 +5241,7 @@ mod tests {
 
             let ptr = alloc_object_with_aux(
                 _py,
-                super::layout::InlineBytesStorage::object_size(0).unwrap(),
+                super::layout::StringStorage::object_size(0).unwrap(),
                 TYPE_ID_STRING,
                 ObjectAuxPreselection::Sidecar,
             );

@@ -449,3 +449,72 @@ del stream
 gc.collect()
 assert reference() is None
 print("zip cache cycle retired", reference() is None)
+
+
+# Native iterator class descriptors share receiver admission with ordinary
+# wrappers; retaining a descriptor must work after the iterator drops its source.
+class IndexedSource:
+    def __getitem__(self, index):
+        if index == 0:
+            return 7
+        raise IndexError
+
+
+empty_native_iterator = object()
+native_iterators = [
+    (iter(IndexedSource()), 7), (iter(lambda: 1, 1), empty_native_iterator),
+    (iter(b"a"), 97), (iter(bytearray(b"a")), 97),
+    (iter({1: 2}), 1), (iter({1: 2}.values()), 2), (iter({1: 2}.items()), (1, 2)),
+    (reversed({1: 2}), 1), (reversed({1: 2}.values()), 2),
+    (reversed({1: 2}.items()), (1, 2)), (iter([7]), 7), (reversed([7]), 7),
+    (iter(range(1)), 0), (iter(range(2**100, 2**100 + 1)), 2**100),
+    (iter({7}), 7), (iter("a"), "a"), (iter("é"), "é"), (iter((7,)), 7),
+    (enumerate([7]), (0, 7)), (reversed((7,)), 7), (zip([7]), (7,)),
+    (map(abs, [-7]), 7), (filter(None, [7]), 7),
+]
+for native_iterator, expected_first in native_iterators:
+    native_class = type(native_iterator)
+    iter_descriptor = native_class.__iter__
+    next_descriptor = native_class.__next__
+    for name, descriptor in (("__iter__", iter_descriptor), ("__next__", next_descriptor)):
+        assert descriptor is native_class.__dict__[name]
+        assert descriptor.__objclass__ is native_class
+        assert name in dir(native_class)
+        assert type(descriptor).__name__ == "wrapper_descriptor"
+        assert descriptor.__text_signature__ == "($self, /)"
+        for args in ((), (object(),), (native_iterator, 3)):
+            try:
+                descriptor(*args)
+            except TypeError:
+                pass
+            else:
+                raise AssertionError("native descriptor receiver or arity accepted")
+        try:
+            descriptor(native_iterator, extra=3)
+        except TypeError:
+            pass
+        else:
+            raise AssertionError("native descriptor accepted keyword")
+    assert iter_descriptor(native_iterator) is native_iterator
+    bound_next = native_iterator.__next__
+    assert bound_next.__self__ is native_iterator
+    assert type(bound_next).__name__ == "method-wrapper"
+    if expected_first is empty_native_iterator:
+        try:
+            bound_next()
+        except StopIteration:
+            pass
+        else:
+            raise AssertionError("sentinel iterator yielded a value")
+    else:
+        assert bound_next() == expected_first
+    for advance in (bound_next, lambda: next_descriptor(native_iterator), bound_next):
+        try:
+            advance()
+        except StopIteration:
+            pass
+        else:
+            raise AssertionError("native descriptor failed to exhaust")
+        assert type(native_iterator) is native_class
+        assert iter_descriptor(native_iterator) is native_iterator
+print("native-iterator-descriptors", len(native_iterators))

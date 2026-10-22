@@ -78,7 +78,8 @@ impl NativePayload {
         match self {
             Self::Tuple => super::layout::TupleStorage::object_size(length)?
                 .checked_sub(size_of::<MoltHeader>()),
-            Self::String | Self::Bytes => super::layout::InlineBytesStorage::payload_size(length),
+            Self::String => super::layout::StringStorage::payload_size(length),
+            Self::Bytes => super::layout::InlineBytesStorage::payload_size(length),
             Self::Bytearray => Some(size_of::<*mut Vec<u8>>() + size_of::<u64>()),
             Self::Set | Self::Frozenset => Some(size_of::<HashStorage<SetEntry>>()),
             Self::Complex => Some(size_of::<crate::builtins::numbers::ComplexParts>()),
