@@ -437,6 +437,15 @@ class BackendExecutionContext:
             MappingProxyType(dict(sorted(self.environment.items()))),
         )
 
+    def for_backend(self, name: str) -> BackendExecutionContext:
+        """This context under ``name``'s narrowed budget.
+
+        When nothing narrows, the context itself: an adapter passes its
+        caller's context through without rebuilding (and re-validating) it.
+        """
+        budget = self.budget.for_backend(name)
+        return self if budget is self.budget else replace(self, budget=budget)
+
 
 class BackendAdapter(Protocol):
     """A backend knows how to (a) report availability and (b) build+run a file."""
@@ -999,7 +1008,7 @@ class LlvmAdapter:
         *,
         context: BackendExecutionContext,
     ) -> BackendResult:
-        context = replace(context, budget=context.budget.for_backend(self.name))
+        context = context.for_backend(self.name)
         if context.budget.expired():
             return context.budget.exhausted_result(build_failed=True)
         return _with_adapter_scratch(
