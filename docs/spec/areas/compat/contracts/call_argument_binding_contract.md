@@ -340,6 +340,21 @@ Side effects from argument expressions must occur before binding errors are rais
 - Iteration order for insertion into `**kwargs` (when collecting extra keywords) follows mapping iteration order.
 - Keys **must be `str`**; otherwise `TypeError`.
 
+Mapping traversal is shared with dictionary displays and dictionary update;
+the caller owns acceptance and diagnostics. `{**mapping}` accepts non-string
+keys and overwrites earlier entries, but refuses an iterable of pairs.
+`dict(pairs)`, `dict.update(pairs)` and `dict.__ior__` retain their pair-iterable
+protocol. Keyword expansion keeps its string-key and duplicate-key rules.
+The strict C `PyDict_Update` boundary preserves the mapping protocol and its
+pending exception; `PyDict_MergeFromSeq2` deliberately accepts pairs.
+
+For admitted Python 3.12–3.14 displays, an `AttributeError` from mapping lookup,
+`keys()` or item retrieval becomes the version-correct mapping `TypeError`.
+Type names use the shared diagnostic precision policy. Python 3.15 changes
+this error path; its implementation and execution qualification remain tracked
+in V1-35. Backend support stays subject to the canonical target capability
+matrix: Luau currently requires directly proven canonical ordered mappings.
+
 ### 4.4 Keyword argument semantics
 - Explicit keywords: `f(x=1)`
 - Keyword names match parameters by name, except:

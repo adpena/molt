@@ -279,8 +279,25 @@ def _parse_source_for_target(
             f"{target_python.short}+ executable, run "
             "`molt setup --install-cli-dependencies`, then retry `molt build`"
         )
-    return ast.parse(
+    tree = ast.parse(
         source,
         filename=filename,
         feature_version=target_python.feature_version,
     )
+    from molt.compiler_analysis.python_comprehensions import (
+        COMPREHENSION_UNPACKING_MIN_VERSION,
+        require_comprehension_target,
+    )
+
+    if (
+        frontend_version >= COMPREHENSION_UNPACKING_MIN_VERSION
+        and target_python.feature_version < COMPREHENSION_UNPACKING_MIN_VERSION
+    ):
+        for node in ast.walk(tree):
+            if isinstance(
+                node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+            ):
+                require_comprehension_target(
+                    node, target_python.feature_version, filename=filename
+                )
+    return tree

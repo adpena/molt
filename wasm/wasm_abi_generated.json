@@ -3261,6 +3261,7 @@
     "dict_setdefault_empty_list": "molt_dict_setdefault_empty_list",
     "dict_setitem": "molt_dict_setitem",
     "dict_str_int_inc": "molt_dict_str_int_inc",
+    "dict_unpack": "molt_dict_unpack",
     "dict_update": "molt_dict_update",
     "dict_update_kwstar": "molt_dict_update_kwstar",
     "dict_update_missing": "molt_dict_update_missing",

@@ -706,7 +706,7 @@ class ExpressionVisitorMixin(GeneratorMixinBase):
                         )
                     self.emit(
                         MoltOp(
-                            kind="DICT_UPDATE",
+                            kind="DICT_UNPACK",
                             args=[res, mapping],
                             result=MoltValue("none"),
                         )
@@ -744,7 +744,7 @@ class ExpressionVisitorMixin(GeneratorMixinBase):
                             )
                         self.emit(
                             MoltOp(
-                                kind="DICT_UPDATE",
+                                kind="DICT_UNPACK",
                                 args=[res, mapping],
                                 result=MoltValue("none"),
                             )

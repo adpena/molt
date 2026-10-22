@@ -8,6 +8,7 @@ use crate::*;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MergeOutcome {
     Complete,
+    /// Keys are absent. A lookup AttributeError, if raised, remains pending.
     NotMapping,
     Error,
 }
@@ -172,11 +173,24 @@ pub(crate) unsafe fn apply(
         let Some(name) = attr_name_bits_from_bytes(py, b"keys") else {
             return MergeOutcome::Error;
         };
-        let method = attr_lookup_ptr_allow_missing(py, ptr, name);
+        let method = crate::builtins::attributes::attr_lookup_ptr(py, ptr, name);
         dec_ref_bits(py, name);
         let method = match method {
             Ok(method) => method,
-            Err(()) => return MergeOutcome::Error,
+            Err(()) => {
+                let error = molt_exception_last_pending();
+                let missing = crate::builtins::exceptions::exception_matches_builtin_name(
+                    py,
+                    error,
+                    "AttributeError",
+                );
+                molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, error));
+                return if missing {
+                    MergeOutcome::NotMapping
+                } else {
+                    MergeOutcome::Error
+                };
+            }
         };
         let Some(method) = method else {
             return MergeOutcome::NotMapping;
@@ -209,6 +223,32 @@ pub(crate) unsafe fn apply(
                 return MergeOutcome::Error;
             }
         }
+    }
+}
+
+/// Merge a mapping into a dictionary without the sequence-of-pairs fallback.
+/// The caller owns its public diagnostic when the source is not a mapping.
+#[must_use]
+pub(crate) unsafe fn unpack_dict(py: &PyToken<'_>, target: *mut u8, source: u64) -> MergeOutcome {
+    unsafe {
+        let outcome = apply(
+            py,
+            source,
+            Some(target),
+            |_, _| true,
+            |key, value, hash| insert_dict(py, target, key, value, hash),
+        );
+        // The strict boundary materializes missing-keys failure. General update
+        // still takes its pairs fallback without allocating a synthetic error.
+        if outcome == MergeOutcome::NotMapping && !exception_pending(py) {
+            let name = type_name(py, obj_from_bits(source));
+            raise_exception::<()>(
+                py,
+                "AttributeError",
+                &format!("'{name}' object has no attribute 'keys'"),
+            );
+        }
+        outcome
     }
 }
 
@@ -277,6 +317,7 @@ pub(crate) unsafe fn merge_keywords(py: &PyToken<'_>, target: *mut u8, mapping: 
         MergeOutcome::Complete => true,
         MergeOutcome::Error => false,
         MergeOutcome::NotMapping => {
+            clear_exception(py);
             raise_exception::<()>(py, "TypeError", "argument after ** must be a mapping");
             false
         }

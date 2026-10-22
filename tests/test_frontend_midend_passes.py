@@ -6733,3 +6733,24 @@ def test_prologue_values_keep_the_first_activation_value() -> None:
         if op.kind == "STORE_CLOSURE" and op.args[1] in baseline_slots:
             assert idx > switch, "a prologue store would save every activation"
             assert cfg.op_blocks[idx] not in from_resume, idx
+
+
+def test_dictionary_display_uses_strict_mapping_primitive() -> None:
+    function = _lowered_function(
+        "def f(mapping):\n    return {1: 2, **mapping, 3: 4, **mapping}\n", "f"
+    )
+    operations = function["ops"]
+    assert sum(op["kind"] == "dict_unpack" for op in operations) == 2
+    assert not any(op["kind"] == "dict_update" for op in operations)
+    for op in operations:
+        if op["kind"] == "dict_unpack":
+            assert len(op["args"]) == 2
+
+
+def test_general_dictionary_update_keeps_pair_iterable_primitive() -> None:
+    function = _lowered_function(
+        "def f(pairs):\n    value = {}\n    value.update(pairs)\n    return value\n",
+        "f",
+    )
+    assert any(op["kind"] == "dict_update" for op in function["ops"])
+    assert not any(op["kind"] == "dict_unpack" for op in function["ops"])

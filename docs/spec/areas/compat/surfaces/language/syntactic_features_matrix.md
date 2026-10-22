@@ -81,7 +81,10 @@ Differential coverage: 24 test files (~565 lines) in `tests/differential/basic/p
 - [x] Extended unpacking (`a, *b = c`)
 - [x] Starred expression in calls (`f(*args)`)
 - [x] Double-starred expression in calls (`f(**kwargs)`)
-- [ ] Generalized unpacking in comprehensions
+- [ ] Generalized unpacking in comprehensions (PEP 798, Python 3.15).
+  Selected pre-3.15 targets reject these forms even when a newer host parser
+  accepts them, including direct AST input and unreachable code. This admission
+  fence does not qualify Python 3.15 comprehension execution; see V1-35.
 
 ## 2. Parser Support
 Molt uses `ruff-ast` (Rust) which supports Python 3.12 syntax.

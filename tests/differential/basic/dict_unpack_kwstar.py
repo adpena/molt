@@ -63,3 +63,70 @@ def make_config(**overrides):
     return {**defaults, **overrides}
 
 print(sorted(make_config(debug=True).items()))
+
+# Displays demand mappings; dict.update/constructor/|= deliberately accept pairs.
+pairs = [(1, "first"), (1, "last"), (2, "two")]
+try:
+    print({**pairs})
+except TypeError as error:
+    print(type(error).__name__, str(error))
+print(dict(pairs))
+updated = {}
+updated.update(pairs)
+print(updated)
+updated |= [(3, "three")]
+print(updated)
+
+trace = []
+class Mapping:
+    def keys(self):
+        trace.append("keys")
+        return [1, "x", 1]
+    def __getitem__(self, key):
+        trace.append(("get", key))
+        return len(trace)
+    def __iter__(self):
+        raise AssertionError("mapping expansion must use keys")
+
+print({**Mapping(), "tail": 9})
+print(trace)
+
+class BrokenKeys:
+    def keys(self):
+        raise AttributeError("keys failed")
+
+class BrokenItem:
+    def keys(self):
+        return [1]
+    def __getitem__(self, key):
+        raise AttributeError("item failed")
+
+for mapping in (BrokenKeys(), BrokenItem()):
+    try:
+        print({**mapping})
+    except (AttributeError, TypeError) as error:
+        print(type(error).__name__, str(error))
+
+# Failure stops evaluation before the later segment; successful prefixes may
+# have invoked callbacks, but the unfinished dictionary never escapes.
+trace.clear()
+def later():
+    trace.append("later")
+    return {}
+try:
+    result = {**Mapping(), **[(7, 8)], **later()}
+except TypeError:
+    print(trace)
+
+
+# Native protocol type-name precision is byte-based and version-sensitive at
+# an incomplete UTF-8 boundary; the complete neighboring name is a control.
+class BoundaryName:
+    pass
+
+for name in ("a" * 198 + "é", "a" * 199 + "é"):
+    BoundaryName.__name__ = name
+    try:
+        result = {**BoundaryName()}
+    except TypeError as error:
+        print("type-name-boundary", ascii(str(error)))

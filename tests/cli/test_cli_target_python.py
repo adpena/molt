@@ -539,3 +539,33 @@ def test_defective_compiler_host_cli_refuses_before_dispatch(monkeypatch, capsys
     monkeypatch.setattr(entrypoint, "_build_entrypoint_parser", unexpected_dispatch)
     assert entrypoint.main(build_fn=lambda _request: 0) == 2
     assert "3.14.1+" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "[*x for x in ((1,),)]",
+        "{*x for x in ((1,),)}",
+        "{**x for x in ({1: 2},)}",
+        "(*x for x in ((1,),))",
+    ],
+)
+@pytest.mark.parametrize("minor", [12, 13, 14])
+def test_pep798_syntax_obeys_selected_target(source: str, minor: int) -> None:
+    import sys
+
+    if sys.version_info < (3, 15):
+        pytest.skip("requires the CPython 3.15 parser that admits PEP 798")
+    # CPython's best-effort feature_version admits this syntax on 3.15.
+    ast.parse(source, feature_version=(3, minor))
+    with pytest.raises(SyntaxError, match="unpacking cannot be used"):
+        molt_target_python._parse_source_for_target(
+            source,
+            filename="unpacking.py",
+            target_python=molt_target_python.TargetPythonVersion(3, minor, 0),
+        )
+    control = molt_target_python._parse_source_for_target(
+        "[x for x in (1, 2)]",
+        target_python=molt_target_python.TargetPythonVersion(3, minor, 0),
+    )
+    assert isinstance(control.body[0].value, ast.ListComp)

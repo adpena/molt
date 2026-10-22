@@ -1402,6 +1402,10 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "dict_str_int_inc",
     },
     RuntimeImportSpec {
+        import: WasmRuntimeImport::DictUnpack,
+        name: "dict_unpack",
+    },
+    RuntimeImportSpec {
         import: WasmRuntimeImport::DictUpdate,
         name: "dict_update",
     },
@@ -11750,6 +11754,8 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_dict_setdefault_empty_list" => Some(WasmRuntimeImport::DictSetdefaultEmptyList),
         "dict_str_int_inc" => Some(WasmRuntimeImport::DictStrIntInc),
         "molt_dict_str_int_inc" => Some(WasmRuntimeImport::DictStrIntInc),
+        "dict_unpack" => Some(WasmRuntimeImport::DictUnpack),
+        "molt_dict_unpack" => Some(WasmRuntimeImport::DictUnpack),
         "dict_update" => Some(WasmRuntimeImport::DictUpdate),
         "molt_dict_update" => Some(WasmRuntimeImport::DictUpdate),
         "dict_update_kwstar" => Some(WasmRuntimeImport::DictUpdateKwstar),

@@ -190,7 +190,7 @@ pub(super) fn validate_luau_identity_contract(
     function: &FunctionIR,
     plan: &ScalarRepresentationPlan,
 ) -> Result<(), String> {
-    // Luau's CallArgs runtime currently has one exact **mapping carrier: the
+    // Luau's runtime currently has one exact **mapping carrier: the
     // ordered Molt dict.  Do not let the presence of an emitter arm imply the
     // generic Python keys()/__getitem__ mapping protocol.  A direct canonical
     // producer is deliberately required until that shared protocol exists.
@@ -202,8 +202,8 @@ pub(super) fn validate_luau_identity_contract(
                 && !canonical_ordered_mappings.contains(mapping)
             {
                 return Err(format!(
-                    "luau target rejected before source generation: {}:op#{index} `callargs_expand_kwstar`: Luau requires a directly produced canonical ordered Molt dict because the generic Python keys/getitem mapping protocol is unavailable",
-                    function.name,
+                    "luau target rejected before source generation: {}:op#{index} `{}`: Luau requires a directly produced canonical ordered Molt dict because the generic Python keys/getitem mapping protocol is unavailable",
+                    function.name, op.kind,
                 ));
             }
         }

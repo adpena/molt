@@ -104,6 +104,16 @@ impl LuauBackend {
                     }
                 }
             }
+            "dict_unpack" => {
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() == 2 {
+                    let dict = sanitize_ident(&args[0]);
+                    let other = sanitize_ident(&args[1]);
+                    self.emit_line(&format!("molt_dict_unpack({dict}, {other})"));
+                } else {
+                    self.emit_unsupported_op(op);
+                }
+            }
             "dict_update" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {

@@ -1275,47 +1275,49 @@ fn callable_and_frame_runtime_fragments_pass_shared_source_validation() {
 }
 
 #[test]
-fn compile_checked_rejects_kwstar_without_canonical_ordered_mapping_provenance() {
-    let ir = SimpleIR {
-        functions: vec![FunctionIR {
-            return_abi: molt_ir::FunctionReturnAbi::Value,
-            name: "unknown_mapping".to_string(),
-            params: vec!["func".to_string(), "mapping".to_string()],
-            ops: vec![
-                OpIR {
-                    kind: "callargs_new".to_string(),
-                    out: Some("builder".to_string()),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "callargs_expand_kwstar".to_string(),
-                    args: Some(vec!["builder".to_string(), "mapping".to_string()]),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "call_indirect".to_string(),
-                    args: Some(vec!["func".to_string(), "builder".to_string()]),
-                    out: Some("result".to_string()),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "ret".to_string(),
-                    args: Some(vec!["result".to_string()]),
-                    ..OpIR::default()
-                },
-            ],
-            ..FunctionIR::default()
-        }],
-        profile: None,
-    };
-    let error = LuauBackend::new()
-        .compile_checked(&ir)
-        .expect_err("generic Python mapping protocol is not implemented by Luau");
-    assert!(
-        error.contains("`callargs_expand_kwstar`")
-            && error.contains("canonical ordered Molt dict")
-            && error.contains("keys/getitem mapping protocol")
-    );
+fn compile_checked_rejects_unpack_without_canonical_ordered_mapping_provenance() {
+    for kind in ["callargs_expand_kwstar", "dict_unpack"] {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
+                name: "unknown_mapping".to_string(),
+                params: vec!["func".to_string(), "mapping".to_string()],
+                ops: vec![
+                    OpIR {
+                        kind: "callargs_new".to_string(),
+                        out: Some("builder".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: kind.to_string(),
+                        args: Some(vec!["builder".to_string(), "mapping".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "call_indirect".to_string(),
+                        args: Some(vec!["func".to_string(), "builder".to_string()]),
+                        out: Some("result".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        args: Some(vec!["result".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+                ..FunctionIR::default()
+            }],
+            profile: None,
+        };
+        let error = LuauBackend::new()
+            .compile_checked(&ir)
+            .expect_err("generic Python mapping protocol is not implemented by Luau");
+        assert!(
+            error.contains(&format!("`{kind}`"))
+                && error.contains("canonical ordered Molt dict")
+                && error.contains("keys/getitem mapping protocol")
+        );
+    }
 }
 
 #[test]

@@ -222,7 +222,9 @@ pub(crate) unsafe fn dict_update_apply(
         match outcome {
             crate::object::mapping_merge::MergeOutcome::Complete => return true,
             crate::object::mapping_merge::MergeOutcome::Error => return false,
-            crate::object::mapping_merge::MergeOutcome::NotMapping => {}
+            crate::object::mapping_merge::MergeOutcome::NotMapping => {
+                crate::builtins::attr::clear_attribute_error_if_pending(_py);
+            }
         }
         let Some(mut iter) = crate::object::iterable::OwnedIterator::new(_py, other_bits) else {
             return false;
@@ -484,6 +486,48 @@ pub extern "C" fn molt_dict_setdefault_empty_list(dict_bits: u64, key_bits: u64)
             }
             dict_setdefault_in_place(_py, dict_ptr, key_bits, None)
                 .unwrap_or_else(|| MoltObject::none().bits())
+        }
+    })
+}
+
+/// Language ** expansion accepts mappings, including non-string keys, but
+/// never the iterable pairs accepted by dict.update and dict construction.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_dict_unpack(dict_bits: u64, source_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let Some(ptr) = obj_from_bits(dict_bits).as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "dictionary unpack requires dict");
+        };
+        unsafe {
+            let Some(storage) = (match dict_like_bits_from_ptr(_py, ptr) {
+                Ok(storage) => storage,
+                Err(()) => return MoltObject::none().bits(),
+            }) else {
+                return raise_exception::<_>(_py, "TypeError", "dictionary unpack requires dict");
+            };
+            let target = obj_from_bits(storage).as_ptr().unwrap();
+            let outcome = crate::object::mapping_merge::unpack_dict(_py, target, source_bits);
+            if outcome != crate::object::mapping_merge::MergeOutcome::Complete {
+                let error = molt_exception_last_pending();
+                let attribute_error = crate::builtins::exceptions::exception_matches_builtin_name(
+                    _py,
+                    error,
+                    "AttributeError",
+                );
+                molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(_py, error));
+                if attribute_error {
+                    // CPython 3.12–3.14 DICT_UPDATE converts any AttributeError,
+                    // including one raised by keys() or __getitem__, to TypeError.
+                    clear_exception(_py);
+                    let name = super::ops::protocol_type_name(_py, source_bits, 200);
+                    return raise_exception::<u64>(
+                        _py,
+                        "TypeError",
+                        &format!("'{name}' object is not a mapping"),
+                    );
+                }
+            }
+            MoltObject::none().bits()
         }
     })
 }

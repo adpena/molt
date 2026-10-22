@@ -2865,3 +2865,53 @@ fn public_gil_boundary_does_not_steal_nested_molt_custody() {
         molt_cpython_abi::api::object::detach_runtime_execution_thread();
     });
 }
+
+#[test]
+fn c_api_dict_update_rejects_pairs_but_python_update_accepts_them() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let target = PyDict_New();
+            let pair = alloc_tuple(
+                py,
+                &[
+                    MoltObject::from_int(7).bits(),
+                    MoltObject::from_int(23).bits(),
+                ],
+            );
+            let pair = MoltObject::from_ptr(pair).bits();
+            let pairs = alloc_list(py, &[pair]);
+            let pairs = MoltObject::from_ptr(pairs).bits();
+            assert_eq!(PyDict_Update(target, pairs), -1);
+            let error = molt_exception_last_pending();
+            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                py,
+                error,
+                "AttributeError"
+            ));
+            dec_ref_bits(py, error);
+            clear_exception(py);
+            assert_eq!(PyDict_Size(target), 0);
+            crate::object::ops_dict::molt_dict_unpack(target, pairs);
+            let error = molt_exception_last_pending();
+            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                py,
+                error,
+                "TypeError"
+            ));
+            dec_ref_bits(py, error);
+            clear_exception(py);
+            assert_eq!(PyDict_Size(target), 0);
+            crate::object::ops_dict::molt_dict_update(target, pairs);
+            assert!(!exception_pending(py));
+            assert_eq!(PyDict_Size(target), 1);
+            assert_eq!(
+                PyDict_GetItem(target, MoltObject::from_int(7).bits()),
+                MoltObject::from_int(23).bits()
+            );
+            dec_ref_bits(py, pairs);
+            dec_ref_bits(py, pair);
+            dec_ref_bits(py, target);
+        }
+    });
+}
