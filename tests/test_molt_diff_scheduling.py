@@ -173,6 +173,26 @@ def test_cli_evidence_directory_reports_every_conflict_before_execution(tmp_path
     assert not (tmp_path / "explicit-output.log").exists()
 
 
+def _footprint(root: Path) -> dict[str, int]:
+    """Each directory under ``root``, at any depth, with its count of files.
+
+    One guarded launch writes records whose names carry its pid and a nonce,
+    so two launches match by shape, not by name; an extra file anywhere,
+    the guard's own directories included, changes a count.
+    """
+    if not root.exists():
+        return {}
+    shape: dict[str, int] = {".": 0}
+    for path in root.rglob("*"):
+        relative = path.relative_to(root)
+        if path.is_dir():
+            shape.setdefault(relative.as_posix(), 0)
+        else:
+            parent = relative.parent.as_posix()
+            shape[parent] = shape.get(parent, 0) + 1
+    return shape
+
+
 @pytest.mark.parametrize(
     "inherited,compiler_profile,build_profile,expected",
     [
@@ -192,6 +212,8 @@ def test_cli_compiler_profile_is_explicit_and_independent_of_build_profile(
     env = {
         **os.environ,
         "MOLT_EXT_ROOT": str(artifact_root),
+        # molt_diff's own outputs live here, beside the guard's state.
+        "MOLT_DIFF_ROOT": str(artifact_root / "diff"),
         "MOLT_TARGET_ROOT": str(tmp_path / "tools"),
         "MOLT_USE_SCCACHE": "0",
         "MOLT_DIFF_SUMMARY": str(tmp_path / "old-summary.json"),
@@ -222,6 +244,20 @@ def test_cli_compiler_profile_is_explicit_and_independent_of_build_profile(
     if compiler_profile is not None:
         command.extend(["--compiler-profile", compiler_profile])
 
+    # A guarded no-op in its own artifact root: what one launch leaves.
+    baseline_root = tmp_path / "baseline-artifacts"
+    baseline = run_guarded_test_process(
+        [sys.executable, "-B", "-c", "pass"],
+        env={
+            **env,
+            "MOLT_EXT_ROOT": str(baseline_root),
+            "MOLT_DIFF_ROOT": str(baseline_root / "diff"),
+        },
+        capture_output=True,
+        timeout=15,
+    )
+    assert baseline.returncode == 0
+    guard_footprint = _footprint(baseline_root)
     result = run_guarded_test_process(
         command, env=env, capture_output=True, text=True, timeout=15
     )
@@ -231,7 +267,9 @@ def test_cli_compiler_profile_is_explicit_and_independent_of_build_profile(
     if compiler_profile == "debug":
         assert "argument --compiler-profile: invalid choice" in result.stderr
         assert "conflicts with explicit artifact paths" not in result.stderr
-        assert not artifact_root.exists()
+        # Only the guarded launch itself left state under the artifact root:
+        # a guarded no-op with the same environment leaves the same shape.
+        assert _footprint(artifact_root) == guard_footprint
         assert not (tmp_path / "tools").exists()
     else:
         assert "conflicts with explicit artifact paths" in result.stderr
