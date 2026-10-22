@@ -426,11 +426,12 @@ stdlib set into the runtime image and compile only the application partition.
   and its spawned JIT worker is still compiling the program. Two programs that first
   failed on a runtime build lock timeout at cold start (HF-388) passed on a recheck.
   The lane now runs those 480 and two more process-state cases, `closed_stderr_start.py`
-  and `reexec_keeps_parent_environment.py`. On the lane tip (2026-10-22, main 80a5dc469,
-  104 min at load 10-52) all 482 pass under both tiers; one native build first failed on a
-  120 s backend-daemon lock timeout (HF-388) and passed on a recheck. Each full run so far
-  lost one or two cases to an HF-388 lock timeout (2 in the v3 run, 1 in the v4 run), so
-  a full run is usually red until HF-388 lands, and its timeouts need a recheck. The proof
+  and `reexec_keeps_parent_environment.py`. On the lane tip (2026-10-22, main 1c317eeb8,
+  126 min at load 10-60) all 482 pass under both tiers, and the three pinned expected
+  failures end exactly as pinned; 8 native builds first failed on 120 s backend-daemon
+  lock timeouts (HF-388) and passed on a recheck. Each full run so far lost cases to an
+  HF-388 lock timeout (2, 1 and 8 in the last three runs), so a full run is usually red
+  until HF-388 lands, and its timeouts need a recheck. The proof
   queue cannot run the lane on macOS, its only admitted host: the macOS proof supervisor
   refuses every process-closure mode (HF-07), so the queue refused `native.jit-aot-twins`
   with "native supervisor prelaunch refused" (2026-10-22). The lane argv runs detached
