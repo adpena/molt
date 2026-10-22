@@ -1585,15 +1585,19 @@ def test_focused_pytest_refuses_what_no_owner_declares(arguments, message) -> No
 
 @pytest.mark.parametrize(
     "spelling",
-    [["uv", "run", "pip-audit"], ["uv", "run", "python", "-m", "pip_audit"]],
-    ids=["console", "module"],
+    [
+        ["uv", "run", "python3", "tools/pin_freshness.py"],
+        ["uv", "run", "python", "tools/pin_freshness.py"],
+    ],
+    ids=["python3", "python"],
 )
-def test_console_script_near_match_keeps_the_registered_authority(spelling) -> None:
-    # `uv run pip-audit` is registered (security.python.audit). A console
-    # script is its module, so an altered spelling of either form is the same
-    # near-match, never a generic Python run without the command's authority.
+def test_entrypoint_near_match_keeps_the_registered_authority(spelling) -> None:
+    # `tools/pin_freshness.py` is registered (security.lock-audit and
+    # security.pin-freshness). An altered spelling of either interpreter form
+    # is the same near-match, never a generic Python run without the
+    # commands' authority.
     with pytest.raises(ValueError, match="near-match would discard"):
-        command_admission.envelope_for_command([*spelling, "--strict"])
+        command_admission.envelope_for_command([*spelling, "--audit", "--strict"])
 
 
 def test_focused_pytest_refuses_a_file_that_no_command_owns(monkeypatch) -> None:

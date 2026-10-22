@@ -8632,13 +8632,16 @@
       "argv": [
         "uv",
         "run",
-        "pip-audit"
+        "python3",
+        "tools/pin_freshness.py",
+        "--audit",
+        "--allow-expired"
       ],
       "cache_domain": "uv",
       "cell": "linux-x86_64-py312-python-audit",
       "dependencies": [],
       "family": "python_security",
-      "id": "security.python.audit",
+      "id": "security.lock-audit",
       "resource_class": "network-audit",
       "tiers": [
         "pr",

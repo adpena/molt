@@ -666,6 +666,11 @@ _REGISTRY_JSON = r"""{
       "summary": "Guard scope for performance calibration runs."
     },
     {
+      "name": "MOLT_PIN_FRESHNESS",
+      "owner": "tools/pin_freshness.py",
+      "summary": "Guard scope for the `uv lock` and `npm install` children of `--prune-expired`."
+    },
+    {
       "name": "MOLT_PLATFORM_TOOLCHAIN",
       "owner": "src/molt/platform_toolchain.py",
       "summary": "Guard scope for platform toolchain probes (Visual Studio developer shells, compilers)."

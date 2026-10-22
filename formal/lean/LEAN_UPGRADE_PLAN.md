@@ -1,7 +1,7 @@
 # Lean Upgrade Plan
 
 **Current pin:** `leanprover/lean4:v4.35.0`
-**Status:** 4.35.0 default `MoltTIR` target builds on macOS arm64; other cells remain unverified.
+**Status:** 4.35.0 builds the default `MoltTIR` target and `MoltPython MoltLowering` on macOS arm64 (2026-10-22); Linux and the modules outside the Lake roots remain unverified.
 The completed 4.28.0 -> 4.34.1 qualification below is dated 2026-10-06.
 **History:** 4.16.0 -> 4.28.0 (MOL-295, 2026-03-16); 4.28.0 -> 4.34.1 (2026-10-06)
 
@@ -11,9 +11,12 @@ file records how each upgrade went. It does not set the version.
 ## 1. Current State
 
 - **Lean version:** `leanprover/lean4:v4.35.0` (upstream commit `eb6cafb7290e8bd5f2937522d8d804f58f02bafc`).
-- **Current qualification:** `lake build` passed on macOS arm64 (100 jobs).
-  This checks the default `MoltTIR` target only. Linux, non-default libraries,
-  unreachable modules and the separate sorry baseline remain unverified.
+- **Current qualification (macOS arm64, 2026-10-22):** `lake build` passes
+  (100 jobs, 0 errors) with the same 198 warnings as 4.34.1;
+  `lake build MoltPython MoltLowering` passes (19 jobs, 0 errors);
+  `tools/check_lean_sorry_count.py` counts 13 against the baseline of 13;
+  `NanBoxBV.lean` type-checks with no `sorry`. Linux and the modules outside
+  the Lake roots remain unverified.
 - **lakefile.lean:** Standard Lake DSL config, no Mathlib, no Lake packages
 
 Historical results on 4.34.1 (2026-10-06; not qualification of 4.35.0):
@@ -89,9 +92,8 @@ path. The manual proofs in `NanBoxCorrect.lean` are complete and sorry-free.
 
 | Item | Priority | Status |
 |------|----------|--------|
-| Lower `SORRY_BASELINE` from 28 to the measured 13 | P2 | Open |
 | Repair or delete the 14 modules outside the Lake roots that fail on both 4.28.0 and 4.34.1 | P2 | Open |
 | Switch NanBox proofs to `bv_decide` (optional) | P4 | Drafted in NanBoxBV.lean |
 | Evaluate `bv_omega` for mixed BitVec/Int goals | P4 | Not started |
-| Qualify the selected 4.35.0 pin with the owning Lean proofs | P1 | Default `MoltTIR` passes on macOS arm64; remaining cells unverified |
+| Qualify the selected 4.35.0 pin with the owning Lean proofs | P1 | macOS arm64 passes (default target, `MoltPython`, `MoltLowering`, sorry baseline); Linux unverified |
 | Track Lean releases after 4.35.0 | P4 | Monitoring |

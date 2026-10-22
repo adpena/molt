@@ -6395,6 +6395,11 @@ owner = "tools/perf_calibration.py"
 summary = "Guard scope for performance calibration runs."
 
 [[stem]]
+name = "MOLT_PIN_FRESHNESS"
+owner = "tools/pin_freshness.py"
+summary = "Guard scope for the `uv lock` and `npm install` children of `--prune-expired`."
+
+[[stem]]
 name = "MOLT_PLATFORM_TOOLCHAIN"
 owner = "src/molt/platform_toolchain.py"
 summary = "Guard scope for platform toolchain probes (Visual Studio developer shells, compilers)."
