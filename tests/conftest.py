@@ -63,8 +63,8 @@ _INTRINSIC_BUILTINS = (
 
 @pytest.fixture(autouse=True)
 def _isolated_product_stores(
-    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
-) -> None:
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[None]:
     """In-process builds keep their products out of the host's product store.
 
     The store keys entries by input identity (design 56, section 2.8), so a
@@ -73,6 +73,11 @@ def _isolated_product_stores(
     re-roots every store it resolves below a directory of its own; distinct
     stores stay distinct. Builds a test runs as a child process keep the host
     store, where real products are worth reusing.
+
+    It patches through a private ``MonkeyPatch``: requesting the test's own
+    ``monkeypatch`` here would set it up before ``_restore_intrinsic_registry``
+    and so tear it down after that fixture, which then deletes the intrinsic
+    builtins a test patched before ``monkeypatch`` can restore them.
     """
     from molt.cli import product_store
 
@@ -83,7 +88,9 @@ def _isolated_product_stores(
         store = os.fspath(resolve(project_root, env))
         return root / hashlib.sha256(store.encode()).hexdigest()[:16]
 
-    monkeypatch.setattr(product_store, "product_store_dir", isolated)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(product_store, "product_store_dir", isolated)
+        yield
 
 
 @pytest.fixture(autouse=True)
