@@ -777,6 +777,29 @@ def _staged_purpose(purpose: str) -> str:
     return (normalized or "stage")[:16]
 
 
+def staging_destination_key(destination: Path) -> str:
+    """A stage-name key, not physical identity or permission to remove a file."""
+    return hashlib.sha256(os.fsencode(destination.name)).hexdigest()[:16]
+
+
+def staged_file_destination_key(
+    staged: Path, *, purpose: str | None = None, suffix: str | None = None
+) -> str | None:
+    """Read the canonical name key for bounded, owner-scoped stage discovery.
+
+    Consumers must separately prove directory, physical generation, and writer
+    custody. In particular a reserved-looking name never authorizes deletion.
+    """
+    match = _STAGED_NAME_RE.fullmatch(os.path.normcase(staged.name))
+    if (
+        match is None
+        or (purpose is not None and match.group("purpose") != _staged_purpose(purpose))
+        or (suffix is not None and match.group("suffix") != os.path.normcase(suffix))
+    ):
+        return None
+    return match.group("identity")
+
+
 def staged_file_path(
     destination: Path, *, purpose: str = "write", suffix: str = ".tmp"
 ) -> Path:
@@ -798,7 +821,7 @@ def staged_file_path(
     ):
         raise ValueError(f"invalid staged file suffix: {suffix!r}")
     destination = canonical_file_leaf(destination, create_parent=True)
-    identity = hashlib.sha256(os.fsencode(destination.name)).hexdigest()[:16]
+    identity = staging_destination_key(destination)
     return destination.parent / (
         f".molt-{_staged_purpose(purpose)}-{identity}-{uuid.uuid4().hex}{suffix}"
     )
@@ -816,16 +839,12 @@ def is_owned_staged_file_path(
 
     staged = Path(staged)
     destination = Path(destination)
-    match = _STAGED_NAME_RE.fullmatch(os.path.normcase(staged.name))
-    if match is None or resolved_host_path_key(staged.parent) != resolved_host_path_key(
-        destination.parent
-    ):
-        return False
-    identity = hashlib.sha256(os.fsencode(destination.name)).hexdigest()[:16]
+    key = staged_file_destination_key(staged, purpose=purpose, suffix=suffix)
     return (
-        match.group("identity") == identity
-        and (purpose is None or match.group("purpose") == _staged_purpose(purpose))
-        and (suffix is None or match.group("suffix") == os.path.normcase(suffix))
+        key is not None
+        and key == staging_destination_key(destination)
+        and resolved_host_path_key(staged.parent)
+        == resolved_host_path_key(destination.parent)
     )
 
 
@@ -841,6 +860,7 @@ def atomic_write_bytes(
     exclusive: bool = False,
     replace: FileReplace | None = None,
     durability: PublicationDurability = PublicationDurability.DURABLE,
+    purpose: str = "write",
 ) -> None:
     """Publish complete bytes atomically with the owner's durability policy.
 
@@ -856,7 +876,7 @@ def atomic_write_bytes(
     destination = canonical_file_leaf(path, create_parent=True)
     if exclusive and destination.exists():
         raise FileExistsError(destination)
-    staged = staged_file_path(destination)
+    staged = staged_file_path(destination, purpose=purpose)
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     flags |= getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(staged, flags, 0o666)

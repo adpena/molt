@@ -258,3 +258,45 @@ host-table read (memory trip) and the running summary's repro read
 (deadline). Two tests in `tests/test_child_clock_custody.py` bind the signal
 to the PID reservation: it signals a live root's group (TERM, then KILL for a
 root that ignores TERM) and nothing once the root is reaped.
+
+
+## Atomic summaries and crash-stage custody
+
+Running, terminal and worker-exit summaries use the shared reconstructible
+atomic publication authority. Readers see the previous complete JSON or the
+next complete JSON. These observational records add no durability barrier.
+Scratch comparisons validate identical lexical paths once per comparison;
+directory identity reuses the same `lstat` result for link/reparse classification.
+Validation is not cached across locks, callbacks or filesystem mutations.
+
+The existing active-marker sweep captures marker and stage generations before
+its complete process snapshot. It joins bounded publication destination keys to
+reversible marker-lock names in a batched namespace scan; a key collision holds
+every plausible marker and lock owner, including during explicit release. An
+indirect file, changed generation, busy lock, live or unreadable custody remains
+HOLD. A second names-only scan after the snapshot holds late stages. Orphan lock
+retirement considers only pre-snapshot lock names whose producer PID is absent;
+fresh launch tokens cannot reuse those lock names.
+The stage name is routing metadata, never deletion authority. Under the same
+marker lock, the captured physical/content identity and committed generation
+must still match before a stage can be removed.
+
+Only an exclusive, validated `guard_starting` publication with no launched child
+uses the `guard-launch` purpose. The producer cannot spawn until that publication
+returns. A process crash during its first partial write is recoverable through
+the existing lock and absent producer PID, without parsing a partial body. A
+present PID with unavailable birth remains ambiguous, including PID reuse.
+Later writes keep the ordinary `write` purpose and require captured complete
+custody; a partial update whose committed marker was lost remains HOLD. Legacy
+stages without reconstructible provenance also remain HOLD, with an actionable
+preservation report. An operator marker release does not erase unresolved stage
+custody. No new sidecar, registry, process signal or age-based deletion is used.
+
+A stage alone admits a sweep. The existing sweep receipt separately records
+remaining markers and remaining stages; unchanged HOLD residue does not request
+a fresh global process snapshot on every guard exit. Discovery is O(active
+namespace entries plus actual candidate relations), with two batched listings,
+stage-sized key lookup and captured payload storage;
+there is no per-stage rescan of locks or retired history. Publication and
+reconciliation retain their pre/post-lock physical checks. These are developer
+apparatus costs, with no generated-program overhead.

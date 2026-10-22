@@ -10,6 +10,8 @@ import sys
 import threading
 from typing import TextIO, TypedDict, Unpack
 
+from molt.file_publication import PublicationDurability, atomic_write_bytes
+
 from tools.memory_guard_core import cli_contract as _cli_contract
 from tools.memory_guard_core.cargo_quarantine import (
     _cargo_incremental_quarantine_message,
@@ -463,9 +465,10 @@ def write_summary_json(
             summary_json=path,
             incident_pid=result.violation.pid if result.violation is not None else None,
         )
-    summary_path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+    atomic_write_bytes(
+        summary_path,
+        (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+        durability=PublicationDurability.RECONSTRUCTIBLE,
     )
 
 
@@ -510,9 +513,10 @@ def write_worker_exit_summary_json(
             "summary."
         ),
     }
-    summary_path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+    atomic_write_bytes(
+        summary_path,
+        (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+        durability=PublicationDurability.RECONSTRUCTIBLE,
     )
     return True
 
@@ -642,9 +646,10 @@ def _running_summary_payload(
 
 
 def _write_running_summary_payload(path: str, payload: Mapping[str, object]) -> None:
-    Path(path).write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+    atomic_write_bytes(
+        Path(path),
+        (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+        durability=PublicationDurability.RECONSTRUCTIBLE,
     )
 
 

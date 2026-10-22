@@ -55,6 +55,8 @@ from molt.file_publication import (
     canonical_file_leaf,
     namespace_move_exclusive,
     metadata_is_link_like,
+    staged_file_destination_key,
+    staging_destination_key,
 )
 from molt.memory_guard_paths import retired_guard_marker_dir
 from molt.toolchain_identity import (
@@ -262,6 +264,7 @@ class ReconciliationReport:
     decisions: tuple[ReconciliationDecision, ...]
     removed_locks: int = 0
     scratch_retention: tuple[Mapping[str, object], ...] = ()
+    stages: tuple[PublicationStageDecision, ...] = ()
 
     @property
     def terminalized(self) -> int:
@@ -283,6 +286,14 @@ class ReconciliationReport:
         """Records this pass left in active/."""
         return sum(item.retired_to is None for item in self.decisions)
 
+    @property
+    def stages_removed(self) -> int:
+        return sum(stage.removed for stage in self.stages)
+
+    @property
+    def stages_remaining(self) -> int:
+        return sum(not stage.removed for stage in self.stages)
+
     def next_steps(self) -> list[str]:
         """Name each record only an operator can resolve, with the command."""
         steps = []
@@ -296,6 +307,13 @@ class ReconciliationReport:
                 f"{CUSTODY_COMMAND} --active-dir {self.active_dir} "
                 f"--release {item.marker} --apply"
             )
+        for stage in self.stages:
+            if stage.disposition == "preserve":
+                steps.append(
+                    f"{stage.stage}: HOLD ({stage.reason}). Preserve these bytes and "
+                    f"recover writer/marker custody ({', '.join(stage.markers) or 'unknown destination'}); "
+                    "neither age nor the stage name authorizes deletion."
+                )
         return steps
 
     def to_dict(self) -> dict[str, object]:
@@ -305,6 +323,8 @@ class ReconciliationReport:
             "retired": self.retired,
             "preserved": self.preserved,
             "remaining": self.remaining,
+            "stages_removed": self.stages_removed,
+            "stages_remaining": self.stages_remaining,
             "next_steps": self.next_steps(),
         }
 
@@ -593,10 +613,22 @@ def _marker_lock(path: Path) -> Generator[Path]:
 
 def write_active_guard_marker(path: Path, payload: Mapping[str, object]) -> None:
     """Exclusively publish one launch; leave every prior evidence record intact."""
-    _parse_payload(path, dict(payload))
+    record = _parse_payload(path, dict(payload))
+    # Only this exclusive, before-launch state can prove that a partial
+    # initial publication has no child custody. Updates never use this role.
+    initial = (
+        record.status == "guard_starting"
+        and payload["child_launch_state"] == "not_started"
+        and record.child is None
+        and not record.orphaned_groups
+    )
     with _marker_lock(path) as canonical:
         atomic_write_bytes(
-            canonical, encode_exact(payload), exclusive=True, durability=_RECORDS
+            canonical,
+            encode_exact(payload),
+            exclusive=True,
+            durability=_RECORDS,
+            purpose="guard-launch" if initial else "write",
         )
 
 
@@ -1125,22 +1157,218 @@ def _release_records(
     return tuple(records)
 
 
-def _discard_orphan_locks(active_dir: Path) -> int:
-    """Delete the locks of markers that already left active/."""
-    removed = 0
-    for lock in sorted(active_dir.iterdir()):
-        if _LOCK_NAME.fullmatch(lock.name) is None:
+@dataclass(frozen=True, slots=True)
+class PublicationStageDecision:
+    stage: str
+    markers: tuple[str, ...]
+    disposition: str
+    reason: str
+    removed: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _PublicationStage:
+    path: Path
+    markers: tuple[Path, ...]
+    identity: StableRegularFileIdentity | None = None
+    record: MarkerRecord | None = None
+    error: str | None = None
+
+
+def _guard_stage_key(path: Path) -> str | None:
+    return staged_file_destination_key(
+        path, purpose="write", suffix=".tmp"
+    ) or staged_file_destination_key(path, purpose="guard-launch", suffix=".tmp")
+
+
+def _publication_namespace(
+    active_dir: Path,
+) -> tuple[dict[str, list[Path]], list[tuple[Path, str]]]:
+    """Join names once per observation, without reading unrelated payloads."""
+    destinations: dict[str, list[Path]] = {}
+    stages: list[tuple[Path, str]] = []
+    if not _direct_directory(active_dir, role="active marker"):
+        return destinations, stages
+    with os.scandir(active_dir) as entries:
+        for entry in entries:
+            path = Path(entry.path)
+            if _LOCK_NAME.fullmatch(entry.name):
+                marker = path.with_suffix(".json")
+                destinations.setdefault(staging_destination_key(marker), []).append(
+                    marker
+                )
+            elif (key := _guard_stage_key(path)) is not None:
+                stages.append((path, key))
+    return destinations, stages
+
+
+def _publication_stages(
+    active_dir: Path,
+) -> tuple[tuple[_PublicationStage, ...], tuple[Path, ...]]:
+    """Capture stage generations and all plausible lock owners before sampling."""
+    destinations, stages = _publication_namespace(active_dir)
+    captured = []
+    for path, key in stages:
+        matching = tuple(destinations.get(key, ()))
+        if len(matching) != 1:
+            captured.append(
+                _PublicationStage(path, matching, error="stage_writer_custody_unknown")
+            )
             continue
+        marker = matching[0]
+        identity = None
+        record = None
+        error = None
+        try:
+            identity, raw = capture_stable_regular_file(
+                path, label="guard publication stage", max_bytes=_MAX_MARKER_BYTES
+            )
+            try:
+                payload = loads_exact(raw.decode("utf-8", errors="strict"))
+            except (ValueError, UnicodeError):
+                # Partial initial bytes require the before-launch role; partial
+                # updates require captured committed custody.
+                pass
+            else:
+                record = _parse_payload(marker, payload)
+        except (OSError, ValueError) as exc:
+            error = str(exc)
+        captured.append(_PublicationStage(path, matching, identity, record, error))
+    locks = tuple(
+        marker.with_suffix(".lock")
+        for matching in destinations.values()
+        for marker in matching
+    )
+    return tuple(captured), locks
+
+
+def _include_late_stages(
+    active_dir: Path, captured: tuple[_PublicationStage, ...]
+) -> tuple[_PublicationStage, ...]:
+    # A producer may crash between the first inventory and the process table.
+    # A second names-only scan preserves those late stages and their owners;
+    # it never evaluates their bytes against an older process snapshot.
+    destinations, names = _publication_namespace(active_dir)
+    observed = {stage.path: stage for stage in captured}
+    for path, key in names:
+        candidates = tuple(destinations.get(key, ()))
+        prior = observed.get(path)
+        if prior is None:
+            observed[path] = _PublicationStage(
+                path, candidates, error="stage_observed_after_snapshot"
+            )
+        elif set(candidates) != set(prior.markers):
+            observed[path] = replace(
+                prior,
+                markers=tuple(dict.fromkeys((*prior.markers, *candidates))),
+                error="stage_destinations_changed",
+            )
+    return tuple(observed.values())
+
+
+def _reconcile_publication_stage(
+    stage: _PublicationStage,
+    committed: MarkerRecord | None,
+    samples: Mapping[int, ProcessSampleView],
+    *,
+    now_s: float,
+    apply: bool,
+) -> PublicationStageDecision:
+    decision = PublicationStageDecision(
+        str(stage.path),
+        tuple(str(marker) for marker in stage.markers),
+        "preserve",
+        stage.error or "stage_writer_custody_unknown",
+    )
+    if stage.error is not None or len(stage.markers) != 1 or stage.identity is None:
+        return decision
+    marker = stage.markers[0]
+    lock = marker.with_suffix(".lock")
+    try:
+        handle = _try_acquire_file_lock(lock, create=False)
+    except (OSError, ValueError) as exc:
+        return replace(decision, reason=f"stage_lock_unavailable: {exc}")
+    if handle is None:
+        return replace(decision, reason="stage_writer_lock_busy")
+    try:
+        with _file_lock_owned_operation(handle, expected_lock_path=lock):
+            # A truncated update cannot reconstruct lost committed custody.
+            # Only the exclusive before-launch role proves there was no child.
+            # A present PID with unavailable birth stays HOLD, including reuse.
+            records = [
+                record for record in (committed, stage.record) if record is not None
+            ]
+            if not records:
+                if (
+                    staged_file_destination_key(
+                        stage.path, purpose="guard-launch", suffix=".tmp"
+                    )
+                    is None
+                ):
+                    return replace(decision, reason="stage_committed_custody_missing")
+                match = _MARKER_NAME.fullmatch(marker.name)
+                assert match is not None
+                if int(match[1]) in samples:
+                    return replace(decision, reason="stage_writer_birth_unavailable")
+            for record in records:
+                if record.error is not None:
+                    return replace(
+                        decision, reason="stage_committed_custody_unreadable"
+                    )
+                observation = observe_custody(record, samples, now_s=now_s)
+                if observation.state != "closed":
+                    return replace(decision, reason=observation.reason)
+            # The same lock excludes all cooperative stage writers. Bind both
+            # the captured stage and its committed record across the snapshot.
+            if committed is None:
+                if os.path.lexists(marker):
+                    return replace(decision, reason="stage_marker_changed")
+            elif read_marker_record(marker).identity != committed.identity:
+                return replace(decision, reason="stage_marker_changed")
+            current, _ = capture_stable_regular_file(
+                stage.path, label="guard publication stage", max_bytes=_MAX_MARKER_BYTES
+            )
+            if current != stage.identity:
+                return replace(decision, reason="stage_changed")
+            if apply:
+                stage.path.unlink()
+            return replace(
+                decision,
+                disposition="remove",
+                reason="stage_writer_and_custody_closed",
+                removed=apply,
+            )
+    except (OSError, ValueError) as exc:
+        return replace(decision, reason=f"stage_custody_changed: {exc}")
+    finally:
+        _release_file_lock(handle)
+
+
+def _discard_orphan_locks(
+    captured: Collection[Path],
+    samples: Mapping[int, ProcessSampleView],
+    *,
+    protected: Collection[Path] = (),
+) -> int:
+    """Retire only pre-snapshot locks of absent, fresh-token producers."""
+    removed = 0
+    for lock in sorted(captured):
         marker = lock.with_suffix(".json")
+        match = _MARKER_NAME.fullmatch(marker.name)
+        if match is None or lock in protected or int(match[1]) in samples:
+            continue
         if os.path.lexists(marker):
             continue
-        handle = _try_acquire_file_lock(lock)
+        if not os.path.lexists(lock):
+            continue
+        handle = _try_acquire_file_lock(lock, create=False)
         if handle is None:
             continue
         try:
-            # A producer creates the lock before its marker; it holds the
-            # lock until the marker exists, so recheck under the lock.
-            orphan = not os.path.lexists(marker)
+            # All late stages were held by the post-snapshot names scan. The
+            # captured producer is absent, and fresh tokens prohibit reuse.
+            with _file_lock_owned_operation(handle, expected_lock_path=lock):
+                orphan = not os.path.lexists(marker)
         finally:
             _release_file_lock(handle)
         if orphan and _discard_marker_lock(lock):
@@ -1177,11 +1405,47 @@ def reconcile_active_guard_markers(
             sorted(iter_marker_records(active_dir), key=lambda record: record.path)
         )
     )
+    stages, captured_locks = _publication_stages(active_dir)
+    committed = {record.path: record for record in records}
     now_s = time.time()
     samples = _validated_snapshot(snapshot)
+    stages = _include_late_stages(active_dir, stages)
+    if release:
+        released = {record.path for record in records}
+        stages = tuple(
+            stage for stage in stages if released.intersection(stage.markers)
+        )
+    stage_decisions = tuple(
+        _reconcile_publication_stage(
+            stage,
+            committed.get(stage.markers[0]) if len(stage.markers) == 1 else None,
+            samples,
+            now_s=now_s,
+            apply=apply,
+        )
+        for stage in stages
+    )
+    held_markers = {
+        Path(marker)
+        for stage in stage_decisions
+        if stage.disposition == "preserve"
+        for marker in stage.markers
+    }
     timestamp = utc_timestamp()
     decisions = tuple(
-        _reconcile_record(
+        replace(
+            _reconcile_record(
+                record,
+                samples,
+                apply=False,
+                operator=False,
+                timestamp=timestamp,
+                now_s=now_s,
+            ),
+            retirement="publication_stage_unresolved",
+        )
+        if record.path in held_markers
+        else _reconcile_record(
             record,
             samples,
             apply=apply,
@@ -1209,7 +1473,11 @@ def reconcile_active_guard_markers(
             if root.is_dir()
         ]
         if not release:
-            removed_locks = _discard_orphan_locks(active_dir)
+            removed_locks = _discard_orphan_locks(
+                captured_locks,
+                samples,
+                protected={path.with_suffix(".lock") for path in held_markers},
+            )
     return ReconciliationReport(
         str(active_dir.absolute()),
         len(samples),
@@ -1217,33 +1485,43 @@ def reconcile_active_guard_markers(
         decisions,
         removed_locks,
         tuple(retention),
+        stage_decisions,
     )
 
 
-def _marker_count(active_dir: Path, *, stop_after: int) -> int:
-    count = 0
+def _active_work_count(active_dir: Path, *, stop_after: int) -> tuple[int, int]:
+    markers = stages = 0
     try:
         with os.scandir(active_dir) as entries:
             for entry in entries:
                 if _MARKER_NAME.fullmatch(entry.name):
-                    count += 1
-                    if count >= stop_after:
-                        break
+                    markers += 1
+                elif _guard_stage_key(Path(entry.name)) is not None:
+                    stages += 1
+                if markers + stages >= stop_after:
+                    break
     except FileNotFoundError:
-        return 0
-    return count
+        return 0, 0
+    return markers, stages
 
 
-def _sweep_baseline(state_root: Path) -> int:
-    """Return how many records the previous sweep left, or 0 if unknown."""
+def _sweep_baseline(state_root: Path) -> tuple[int, int]:
     try:
         receipt = read_exact(
             state_root / _SWEEP_RECEIPT, max_bytes=1024 * 1024, label="custody sweep"
         )
     except (OSError, ValueError):
-        return 0
+        return 0, 0
     remaining = receipt.get("remaining") if isinstance(receipt, dict) else None
-    return remaining if type(remaining) is int and remaining >= 0 else 0
+    stages = receipt.get("stages_remaining", 0) if isinstance(receipt, dict) else 0
+    return (
+        (remaining, stages)
+        if type(remaining) is int
+        and remaining >= 0
+        and type(stages) is int
+        and stages >= 0
+        else (0, 0)
+    )
 
 
 def record_custody_sweep(report: ReconciliationReport) -> None:
@@ -1255,6 +1533,7 @@ def record_custody_sweep(report: ReconciliationReport) -> None:
             "schema_version": 1,
             "swept_at": utc_timestamp(),
             "remaining": report.remaining,
+            "stages_remaining": report.stages_remaining,
             "next_steps": report.next_steps(),
         },
         durability=_RECORDS,
@@ -1264,30 +1543,40 @@ def record_custody_sweep(report: ReconciliationReport) -> None:
 def sweep_active_guard_markers(
     active_dir: Path, snapshot: Callable[[], Mapping[int, ProcessSampleView]]
 ) -> ReconciliationReport | None:
-    """Reconcile active/ after a guard exits, when enough records gathered.
+    """Reconcile active/ after marker growth or a newly discovered stage.
 
-    The gate reads at most ``AUTO_SWEEP_LIMIT`` + 1 directory entries, so an
-    exiting guard never pays for history. Returns None when no sweep ran.
+    The gate stops after ``AUTO_SWEEP_LIMIT`` + 1 matching active names, so an
+    exiting guard never scans retired history. Returns None when no sweep ran.
     """
     state_root = active_dir.parent
-    count = _marker_count(active_dir, stop_after=AUTO_SWEEP_LIMIT + 1)
-    # Read the previous sweep's receipt only when a sweep can be due.
+    markers, stages = _active_work_count(active_dir, stop_after=AUTO_SWEEP_LIMIT + 1)
+    if markers + stages > AUTO_SWEEP_LIMIT or (
+        markers <= AUTO_SWEEP_GROWTH and not stages
+    ):
+        return None
+    previous_markers, previous_stages = _sweep_baseline(state_root)
+    # One newly discovered stage is enough, even if its initial marker never
+    # committed. Held residue does not force a full snapshot on every exit.
     if (
-        count <= AUTO_SWEEP_GROWTH
-        or count > AUTO_SWEEP_LIMIT
-        or count <= 2 * _sweep_baseline(state_root) + AUTO_SWEEP_GROWTH
+        stages <= previous_stages
+        and markers <= 2 * previous_markers + AUTO_SWEEP_GROWTH
     ):
         return None
     handle = _try_acquire_file_lock(state_root / _SWEEP_LOCK)
     if handle is None:
         return None  # Another guard is sweeping the same records.
     try:
-        samples = dict(snapshot())
-        # A complete native table holds its reader. This refuses a selected,
-        # cached or substituted table before it can retire live custody.
-        if os.getpid() not in samples:
-            raise ActiveCustodyError("process snapshot omits its own reader")
-        report = reconcile_active_guard_markers(active_dir, lambda: samples, apply=True)
+
+        def complete_snapshot() -> Mapping[int, ProcessSampleView]:
+            samples = dict(snapshot())
+            # Capture generations first, then this complete native table.
+            if os.getpid() not in samples:
+                raise ActiveCustodyError("process snapshot omits its own reader")
+            return samples
+
+        report = reconcile_active_guard_markers(
+            active_dir, complete_snapshot, apply=True
+        )
         record_custody_sweep(report)
     finally:
         _release_file_lock(handle)

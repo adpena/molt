@@ -1703,3 +1703,23 @@ def test_a_crash_that_drops_the_generation_lock_is_reported_once(
                         f"owner={owner} index={index} payload={payload}: {problem}"
                     )
     assert failures == []
+
+
+def test_same_spelling_reuses_validation_but_never_admits_a_link(tmp_path, monkeypatch):
+    target = tmp_path / "owned"
+    target.mkdir()
+    calls = []
+    original = scratch.resolve_owned_path
+
+    def resolve(path):
+        calls.append(path)
+        return original(path)
+
+    monkeypatch.setattr(scratch, "resolve_owned_path", resolve)
+    assert scratch._same_owned_path(str(target), str(target))
+    assert calls == [target]
+    link = tmp_path / "link"
+    link.symlink_to(target, target_is_directory=True)
+    with pytest.raises((ValueError, OSError)):
+        scratch._same_owned_path(str(link), str(link))
+    assert calls[-1] == link
