@@ -828,9 +828,35 @@ def test_source_comparison_assesses_real_delta_and_reuses_current_families(
     assert all(
         row["execution_evidence"] == "UNKNOWN" for row in assessment["numeric_contexts"]
     )
+    syntax = {row["family"]: row for row in assessment["syntax_families"]}
+    assert set(syntax) == {"comprehension-unpacking", "lazy-imports"}
+    assert (
+        syntax["comprehension-unpacking"]["admission_disposition"]
+        == "minimum-version-gated"
+    )
+    assert syntax["lazy-imports"]["admission_disposition"] == "unsupported"
+    assert all(row["introduced_in_delta"] for row in syntax.values())
+    assert all(row["minimum_version"] == "3.15" for row in syntax.values())
+    assert all(row["execution_evidence"] == "UNKNOWN" for row in syntax.values())
+    assert all(row["witness_paths"] for row in syntax.values())
+    assert assessment["syntax_inventory_scope"] == "known-tracked-families-only"
+    assert assessment["syntax_metadata_sha256"] == gen._sha256(
+        json.dumps(
+            assessment["syntax_families"], sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    )
+    assert (
+        assessment["syntax_source_binding"]
+        == "loaded-canonical-metadata; owner-path-is-a-review-pointer"
+    )
+    assert not any(
+        row["path"] == "src/molt/compiler_analysis/python_syntax.py"
+        for row in assessment["current_source_inputs"]
+    )
     assert report == gen.source_comparison("3.14", "3.15")
     unchanged = gen.source_comparison("3.14", "3.14")["prerequisites"]
     assert unchanged["modules"] == []
+    assert all(not row["introduced_in_delta"] for row in unchanged["syntax_families"])
     assert unchanged["status_analysis_used"] is False
     assert (
         unchanged["current_namespace_sha256"] == assessment["current_namespace_sha256"]
@@ -865,6 +891,14 @@ def test_source_comparison_future_major_is_source_only(fixture_authority, monkey
         assert report["after"]["python"] == candidate
         assert report["after"]["admitted_target"] is False
         assert report["after"]["configured_reference"] is None
+        assert all(
+            row["introduced_in_delta"]
+            for row in report["prerequisites"]["syntax_families"]
+        )
+        assert all(
+            row["execution_evidence"] == "UNKNOWN"
+            for row in report["prerequisites"]["syntax_families"]
+        )
         assert all(
             not row["declared_observation"]
             for row in report["prerequisites"]["numeric_contexts"]

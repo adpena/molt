@@ -4770,3 +4770,39 @@ def test_direct_ast_comprehension_unpacking_requires_target315(expression, minor
             source_digest=python_ast_digest(tree),
             policy=PythonBindingPolicy(target_python=(3, minor)),
         )
+
+
+@pytest.mark.parametrize("source", ["import pkg", "from pkg import item"])
+def test_direct_ast_lazy_import_admission_precedes_eager_and_dead_code_facts(source):
+    # Exercise the pinned 3.15 ASDL schema on older frontends too. Declaring its
+    # field keeps synthetic AST identity faithful to the real 3.15 producer.
+    for prefix in ("", "if False:\n    "):
+        tree = ast.parse(prefix + source)
+        statement = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.Import, ast.ImportFrom))
+        )
+        if "is_lazy" not in statement._fields:
+            statement._fields = (*statement._fields, "is_lazy")
+        for target in ((3, 12), (3, 14), (3, 15), (4, 0)):
+            for lazy in (None, 0, False, 1, True, -1, 2, "1"):
+                statement.is_lazy = lazy
+                policy = PythonBindingPolicy(target_python=target)
+                digest = python_ast_digest(tree)
+                if lazy is None or lazy is False or type(lazy) is int and lazy == 0:
+                    python_binding_flow.analyze_python_bindings(
+                        tree, source_digest=digest, policy=policy
+                    )
+                    continue
+                message = (
+                    "invalid import is_lazy metadata"
+                    if type(lazy) not in (bool, int) or lazy not in (0, 1)
+                    else "lazy imports require Python 3.15"
+                    if target < (3, 15)
+                    else "PEP 810.*not implemented"
+                )
+                with pytest.raises(SyntaxError, match=message):
+                    python_binding_flow.analyze_python_bindings(
+                        tree, source_digest=digest, policy=policy
+                    )

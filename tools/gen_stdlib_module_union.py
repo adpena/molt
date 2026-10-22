@@ -926,12 +926,15 @@ class NumericAssessment:
 
 
 def _prerequisite_assessment(
-    before: VersionData, after: VersionData, candidate: str
+    before: VersionData, after: VersionData, *, base: str, candidate: str
 ) -> dict[str, object]:
     """Join existing implementation/declaration facts, never infer parity."""
     from tools import check_stdlib_intrinsics as stdlib
     from tools import gen_python_numeric_errors as numeric
+    from molt.compiler_analysis.python_syntax import PYTHON_SYNTAX_DELTAS
     from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
+
+    syntax_owner = ROOT / "src/molt/compiler_analysis/python_syntax.py"
 
     def namespace_paths() -> tuple[Path, ...]:
         return tuple(
@@ -1038,6 +1041,21 @@ def _prerequisite_assessment(
         )
         for context in contexts
     ]
+    syntax_rows = [
+        {
+            "family": delta.family.value,
+            "minimum_version": ".".join(map(str, delta.minimum_version)),
+            "introduced_in_delta": (
+                _version_key(base) < delta.minimum_version <= _version_key(candidate)
+            ),
+            "pep_url": delta.pep_url,
+            "admission_disposition": delta.disposition,
+            "owner": stdlib._display_path(syntax_owner),
+            "witness_paths": list(delta.witness_paths),
+            "execution_evidence": "UNKNOWN",
+        }
+        for delta in PYTHON_SYNTAX_DELTAS
+    ]
     for identity in identities.values():
         verify_stable_regular_file_identity(
             identity, label="source assessment input", hash_content=True
@@ -1057,6 +1075,14 @@ def _prerequisite_assessment(
         "current_source_inputs": source_rows,
         "modules": [asdict(row) for row in rows],
         "numeric_contexts": [asdict(row) for row in numeric_rows],
+        "syntax_families": syntax_rows,
+        "syntax_metadata_sha256": _sha256(
+            json.dumps(syntax_rows, sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
+        ),
+        "syntax_source_binding": "loaded-canonical-metadata; owner-path-is-a-review-pointer",
+        "syntax_inventory_scope": "known-tracked-families-only",
         "interpretation": (
             "Current-source status and declared observations are prerequisites, "
             "not candidate-target execution or full-coverage attestations. "
@@ -1126,7 +1152,7 @@ def source_comparison(base: str, candidate: str) -> dict[str, object]:
                 "changed_interval": _source_change_detail(a.text, b.text),
             }
         )
-    assessment = _prerequisite_assessment(left, right, candidate)
+    assessment = _prerequisite_assessment(left, right, base=base, candidate=candidate)
     for identity in (pins_identity, snapshot_identity, reference_identity):
         verify_stable_regular_file_identity(
             identity, label="CPython comparison authority", hash_content=True

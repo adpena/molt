@@ -7514,7 +7514,7 @@ def test_luau_lowering_changes_select_owning_library_without_native_codegen(
     assert [
         argv[index + 1] for index, token in enumerate(argv[:-1]) if token == "-p"
     ] == ["molt-backend-luau"]
-    assert {"rustc", "cargo"} <= set(PLAN.toolchain_closure(gate.toolchains))
+    assert {"rustc", "cargo", "lune"} <= set(PLAN.toolchain_closure(gate.toolchains))
     assert isolated.select(["README.md"]) == ([], [])
 
 

@@ -284,20 +284,16 @@ def _parse_source_for_target(
         filename=filename,
         feature_version=target_python.feature_version,
     )
-    from molt.compiler_analysis.python_comprehensions import (
-        COMPREHENSION_UNPACKING_MIN_VERSION,
-        require_comprehension_target,
+    from molt.compiler_analysis.python_syntax import (
+        PYTHON_SYNTAX_DELTAS,
+        PYTHON_SYNTAX_NODE_TYPES,
+        require_python_syntax_target,
     )
 
-    if (
-        frontend_version >= COMPREHENSION_UNPACKING_MIN_VERSION
-        and target_python.feature_version < COMPREHENSION_UNPACKING_MIN_VERSION
-    ):
+    if any(frontend_version >= delta.minimum_version for delta in PYTHON_SYNTAX_DELTAS):
         for node in ast.walk(tree):
-            if isinstance(
-                node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
-            ):
-                require_comprehension_target(
+            if isinstance(node, PYTHON_SYNTAX_NODE_TYPES):
+                require_python_syntax_target(
                     node, target_python.feature_version, filename=filename
                 )
     return tree

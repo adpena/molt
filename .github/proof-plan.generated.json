@@ -11794,7 +11794,8 @@
         "toolchains": [
           "python",
           "rustc",
-          "cargo"
+          "cargo",
+          "lune"
         ]
       },
       {
@@ -12537,7 +12538,8 @@
         "python",
         "rustc",
         "cargo",
-        "git"
+        "git",
+        "lune"
       ],
       "local.backend-native.0": [
         "python",
