@@ -1055,7 +1055,7 @@ fn tee_iter_class(_py: &PyToken) -> u64 {
         std::mem::size_of::<TeeCursor>() as i64,
         molt_itertools_tee_next as *const () as usize as u64,
         ObjectShapeId::ItertoolsTee,
-        Some((molt_itertools_tee_new as *const () as usize as u64, 1, &[])),
+        Some((molt_itertools_tee_new as *const () as usize as u64, 2, &[])),
     )
 }
 
@@ -3018,7 +3018,11 @@ pub extern "C" fn molt_itertools_tee(iterable_bits: u64, n_bits: u64) -> u64 {
             if exception_pending(py) {
                 return MoltObject::none().bits();
             }
-            let first_bits = molt_itertools_tee_new(iterator.bits());
+            let class = tee_iter_class(py);
+            if exception_pending(py) {
+                return MoltObject::none().bits();
+            }
+            let first_bits = molt_itertools_tee_new(class, iterator.bits());
             let first = unsafe { OwnedRuntimeValue::from_owned_bits(py, first_bits) };
             if exception_pending(py) {
                 return MoltObject::none().bits();
@@ -3043,7 +3047,7 @@ pub extern "C" fn molt_itertools_tee(iterable_bits: u64, n_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_tee_new(iterable_bits: u64) -> u64 {
+pub extern "C" fn molt_itertools_tee_new(_cls_bits: u64, iterable_bits: u64) -> u64 {
     with_core_gil!(py, {
         let iterator_bits = molt_iter(py, iterable_bits);
         if obj_from_bits(iterator_bits).is_none() {

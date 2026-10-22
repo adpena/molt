@@ -158,7 +158,11 @@ fn native_iterator_cursor_is_not_managed_field_or_dictionary_storage() {
         unsafe {
             let value = MoltObject::from_int(19).bits();
             let source = crate::molt_itertools_repeat(value, MoltObject::from_int(4).bits());
-            let reader = crate::molt_itertools_tee_new(source);
+            let readers = crate::molt_itertools_tee(source, MoltObject::from_int(1).bits());
+            assert!(!exception_pending(py));
+            let reader = seq_access::item(obj_from_bits(readers).as_ptr().unwrap(), 0).unwrap();
+            inc_ref_bits(py, reader);
+            dec_ref_bits(py, readers);
             assert!(!exception_pending(py));
             assert_eq!(crate::molt_itertools_tee_next(reader), value);
             let ptr = obj_from_bits(reader).as_ptr().unwrap();
@@ -199,9 +203,15 @@ fn native_iterator_cursor_is_not_managed_field_or_dictionary_storage() {
             let copied = call_callable0(py, bound);
             assert!(!exception_pending(py));
             assert_ne!(copied, reader);
+            // Exercise type.__call__ itself: it prepends the explicit cls
+            // operand before binding the registered native __new__ ABI.
+            let constructed = call_callable1(py, class, reader);
+            assert!(!exception_pending(py), "tee class constructor failed");
+            assert_ne!(constructed, reader);
+            assert_eq!(crate::molt_itertools_tee_next(constructed), value);
             assert_eq!(crate::molt_itertools_tee_next(copied), value);
             assert_eq!(crate::molt_itertools_tee_next(reader), value);
-            for bits in [copied, bound, key, reader, source] {
+            for bits in [constructed, copied, bound, key, reader, source] {
                 dec_ref_bits(py, bits);
             }
             assert!(!exception_pending(py));
