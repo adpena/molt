@@ -247,7 +247,7 @@ def locate_editable_project(root: Path, project: str) -> str | None:
     # decoder. Unsupported fields and malformed markers cannot become manual.
     editable_direct_url_path(text.encode("utf-8"), distribution=project)
     candidates = [
-        Path(dist.locate_file(entry)).resolve(strict=True)
+        Path(str(dist.locate_file(entry))).resolve(strict=True)
         for entry in dist.files or ()
         if entry.name == "direct_url.json"
     ]
