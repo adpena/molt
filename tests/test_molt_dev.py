@@ -74,6 +74,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 TOOLS_ROOT = REPO_ROOT / "tools"
 
 
+from tools import molt_dev_gates  # noqa: E402
 from tools import dirty_tree_policy, molt_dev, molt_dev_retire  # noqa: E402
 from tools.molt_dev_common import (  # noqa: E402
     CandidateFailure,
@@ -631,7 +632,7 @@ def test_cmd_fix_uses_the_selected_environment_without_per_command_wrappers(
 
 def test_committed_gate_manifest_is_valid(drv):
     # The shipped manifest must parse and carry rules + always-gates.
-    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    cfg = molt_dev_gates.GateConfig.load(COMMITTED_GATES)
     assert cfg.always, "the committed manifest must define `always` gates"
     assert cfg.rules, "the committed manifest must define rules"
     names = {r.name for r in cfg.rules}
@@ -655,7 +656,7 @@ def _selected_pytest_targets(cfg, paths):
 
 
 def test_scanner_gate_edits_select_direct_owners_without_ci_siblings(drv):
-    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    cfg = molt_dev_gates.GateConfig.load(COMMITTED_GATES)
     paths = [
         "docs/design/foundation/56_dx_buildspeed_tooling.md",
         "tools/check_generator_manifest.py",
@@ -694,7 +695,7 @@ def test_scanner_gate_edits_select_direct_owners_without_ci_siblings(drv):
     ],
 )
 def test_scanner_leaf_source_and_test_select_their_owner(drv, source, owner):
-    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    cfg = molt_dev_gates.GateConfig.load(COMMITTED_GATES)
     for path in (source, owner):
         assert _selected_pytest_targets(cfg, [path]) == {
             "tests/tools/test_import_file.py",
@@ -712,7 +713,7 @@ def test_scanner_leaf_source_and_test_select_their_owner(drv, source, owner):
     ],
 )
 def test_structural_audit_producers_select_all_parser_consumers(drv, source):
-    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    cfg = molt_dev_gates.GateConfig.load(COMMITTED_GATES)
     assert _selected_pytest_targets(cfg, [source]) >= {
         "tests/test_structural_audit.py",
         "tests/tools/test_structural_audit_records.py",
@@ -721,7 +722,7 @@ def test_structural_audit_producers_select_all_parser_consumers(drv, source):
 
 
 def test_unicode_width_source_keeps_its_admitted_runtime_replay_control(drv):
-    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    cfg = molt_dev_gates.GateConfig.load(COMMITTED_GATES)
     assert _selected_pytest_targets(cfg, ["tools/gen_unicode_width.py"]) == {
         "tests/tools/test_import_file.py",
         "tests/test_runtime_build_python.py::test_unicode_width_facts_replay_keyed_by_the_admitted_runtime",
@@ -733,7 +734,7 @@ def test_unicode_width_source_keeps_its_admitted_runtime_replay_control(drv):
     ["tests/test_structural_audit.py", "tests/tools/test_structural_audit_records.py"],
 )
 def test_structural_audit_test_edits_do_not_select_sibling_consumers(drv, owner):
-    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    cfg = molt_dev_gates.GateConfig.load(COMMITTED_GATES)
     assert _selected_pytest_targets(cfg, [owner]) == {
         "tests/tools/test_import_file.py",
         owner,
@@ -750,7 +751,7 @@ def test_structural_audit_test_edits_do_not_select_sibling_consumers(drv, owner)
     ],
 )
 def test_shared_scan_record_producers_select_all_consumer_owners(drv, source):
-    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    cfg = molt_dev_gates.GateConfig.load(COMMITTED_GATES)
     assert _selected_pytest_targets(cfg, [source]) >= {
         "tests/tools/test_encoding_gate.py",
         "tests/tools/test_signed_ratio.py",
@@ -770,7 +771,7 @@ def test_shared_scan_record_producers_select_all_consumer_owners(drv, source):
     ["tools/generator_io.py", "tools/proof_plan.toml", ".github/workflows/ci.yml"],
 )
 def test_shared_generator_and_ci_inputs_retain_ci_consumer_closure(drv, source):
-    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    cfg = molt_dev_gates.GateConfig.load(COMMITTED_GATES)
     assert _selected_pytest_targets(cfg, [source]) >= {
         "tests/test_proof_plan.py",
         "tests/test_ci_workflow_topology.py",
@@ -816,7 +817,9 @@ toolchains = ["python"]
     (tmp_path / "tests").mkdir()
     for name in ("a", "b", "c", "shared"):
         (tmp_path / "tests" / f"test_{name}.py").write_text("", encoding="utf-8")
-    cfg = drv.GateConfig.parse(source, "merged pytest fixture", root=tmp_path)
+    cfg = molt_dev_gates.GateConfig.parse(
+        source, "merged pytest fixture", root=tmp_path
+    )
     gates, matched = cfg.select(["src/a/x.py", "src/b/y.py"])
     gates = [gate.command for gate in gates]
     assert [rule.name for rule in matched] == ["first", "second"]
@@ -862,7 +865,9 @@ toolchains = ["python"]
     (tmp_path / "tests").mkdir()
     for name in ("a", "b"):
         (tmp_path / "tests" / f"test_{name}.py").write_text("", encoding="utf-8")
-    cfg = drv.GateConfig.parse(source, "pytest selection fixture", root=tmp_path)
+    cfg = molt_dev_gates.GateConfig.parse(
+        source, "pytest selection fixture", root=tmp_path
+    )
     gates, _ = cfg.select(["src/a/x.py", "src/b/y.py"])
     gates = [gate.command for gate in gates]
     prefix = (
@@ -908,7 +913,7 @@ gates = []
 pytest = [{json.dumps(target)}]
 """
     with pytest.raises(drv.DriverError, match=message):
-        drv.GateConfig.parse(source, "invalid batch", root=tmp_path)
+        molt_dev_gates.GateConfig.parse(source, "invalid batch", root=tmp_path)
 
 
 @pytest.mark.parametrize("platform_name", ["posix", "nt"])
@@ -955,7 +960,7 @@ def test_structured_gate_preserves_node_ids_without_a_shell(
 
 
 def test_landing_pytest_inherits_actual_larger_owning_units(drv):
-    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    cfg = molt_dev_gates.GateConfig.load(COMMITTED_GATES)
     gates, _rules = cfg.select(
         [
             "src/molt/cli/backend_compile.py",
@@ -994,7 +999,7 @@ def test_gate_driver_rejects_malformed_declared_pytest_unit_before_admission(drv
         f"pytest_worker_memory_gb = {unit}\n"
     )
     with pytest.raises(drv.DriverError, match="invalid local gate policy"):
-        drv.GateConfig.parse(source, "invalid worker unit")
+        molt_dev_gates.GateConfig.parse(source, "invalid worker unit")
 
 
 def _gate_args(gate):
@@ -1053,7 +1058,7 @@ def test_run_gate_structured_arguments_use_selected_python(drv, tmp_path):
     ],
 )
 def test_proof_policy_edits_select_receivers_without_package_production(drv, path):
-    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    cfg = molt_dev_gates.GateConfig.load(COMMITTED_GATES)
     gates, matched = cfg.select([path])
     gates = [gate.command for gate in gates]
     names = {rule.name for rule in matched}
@@ -1099,7 +1104,7 @@ def test_proof_policy_edits_select_receivers_without_package_production(drv, pat
     ],
 )
 def test_producer_edits_retain_package_and_proof_boundary_checks(drv, path):
-    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    cfg = molt_dev_gates.GateConfig.load(COMMITTED_GATES)
     gates, matched = cfg.select([path])
     gates = [gate.command for gate in gates]
     names = {rule.name for rule in matched}
@@ -1117,7 +1122,7 @@ def test_producer_edits_retain_package_and_proof_boundary_checks(drv, path):
 
 
 def test_mixed_rust_python_change_checks_rust_before_consumer_cohorts(drv):
-    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    cfg = molt_dev_gates.GateConfig.load(COMMITTED_GATES)
     selected, _ = cfg.select(
         [
             "runtime/molt-backend/src/backend_process/input/mod.rs",
@@ -1139,7 +1144,7 @@ def test_mixed_rust_python_change_checks_rust_before_consumer_cohorts(drv):
 
 
 def test_every_producer_trigger_also_selects_its_proof_boundary(drv):
-    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    cfg = molt_dev_gates.GateConfig.load(COMMITTED_GATES)
     rules = {rule.name: rule for rule in cfg.rules}
     # Both actions depend on these inputs. A new producer trigger must not
     # silently leave its proof-admission consumer behind.
@@ -1160,7 +1165,7 @@ def test_every_producer_trigger_also_selects_its_proof_boundary(drv):
     ],
 )
 def test_committed_gate_manifest_selects_tir_midend_ratchet(drv, path):
-    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    cfg = molt_dev_gates.GateConfig.load(COMMITTED_GATES)
     gates, matched = cfg.select([path])
     gates = [gate.command for gate in gates]
     if not path.startswith("runtime/molt-backend-wasm/"):
@@ -1193,7 +1198,7 @@ def test_committed_gate_manifest_selects_tir_midend_ratchet(drv, path):
     ],
 )
 def test_committed_native_policy_includes_owning_crate(drv, path):
-    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    cfg = molt_dev_gates.GateConfig.load(COMMITTED_GATES)
     gates, matched = cfg.select([path])
     gates = [gate.command for gate in gates]
     rule = next(rule for rule in matched if rule.name == "backend-native")
@@ -1227,7 +1232,7 @@ def test_committed_native_policy_includes_owning_crate(drv, path):
     ],
 )
 def test_committed_facts_policy_excludes_compiler_codegen(drv, path):
-    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    cfg = molt_dev_gates.GateConfig.load(COMMITTED_GATES)
     gates, matched = cfg.select([path])
     gates = [gate.command for gate in gates]
     assert "backend-native" not in {rule.name for rule in matched}
@@ -1261,7 +1266,7 @@ def test_committed_facts_policy_excludes_compiler_codegen(drv, path):
 
 
 def test_committed_source_checks_precede_complete_native_build_selection(drv):
-    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    cfg = molt_dev_gates.GateConfig.load(COMMITTED_GATES)
     gates, matched = cfg.select(
         [
             "runtime/molt-backend-native/src/native_backend/simple_backend/config.rs",
@@ -1313,7 +1318,7 @@ def test_committed_source_checks_precede_complete_native_build_selection(drv):
 
 
 def test_committed_gate_manifest_selects_molt_ir_op_kind_registry(drv):
-    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    cfg = molt_dev_gates.GateConfig.load(COMMITTED_GATES)
     gates, matched = cfg.select(["tools/op_kinds/render_rust.py"])
     gates = [gate.command for gate in gates]
 
@@ -1337,7 +1342,7 @@ def test_committed_gate_manifest_selects_molt_ir_op_kind_registry(drv):
 
 
 def test_committed_gate_manifest_selects_backend_native_llvm(drv):
-    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    cfg = molt_dev_gates.GateConfig.load(COMMITTED_GATES)
     gates, matched = cfg.select(
         [
             "runtime/molt-backend-native/src/llvm_backend/lowering/preserved_ops/direct_ops.rs"
@@ -1359,7 +1364,7 @@ def test_committed_gate_manifest_selects_backend_native_llvm(drv):
 
 
 def test_committed_gate_manifest_selects_codec_table_registry(drv):
-    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    cfg = molt_dev_gates.GateConfig.load(COMMITTED_GATES)
     gates, matched = cfg.select(["runtime/molt-stdlib-text/src/codec_registry.rs"])
     gates = [gate.command for gate in gates]
 
@@ -1410,7 +1415,7 @@ def test_committed_gate_manifest_selects_codec_table_registry(drv):
 
 
 def test_committed_gate_manifest_selects_wasm_host_ratchet(drv):
-    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    cfg = molt_dev_gates.GateConfig.load(COMMITTED_GATES)
     gates, matched = cfg.select(["runtime/molt-wasm-host/src/main.rs"])
     gates = [gate.command for gate in gates]
 
@@ -1448,7 +1453,7 @@ gates = ["echo python-gate"]
 
 
 def test_gate_manifest_selection_backend(drv, tmp_path):
-    cfg = drv.GateConfig.load(_write_gates(tmp_path))
+    cfg = molt_dev_gates.GateConfig.load(_write_gates(tmp_path))
     gates, matched = cfg.select(["runtime/molt-backend/src/lib.rs"])
     gates = [gate.command for gate in gates]
     assert "echo always-ran" in gates
@@ -1458,7 +1463,7 @@ def test_gate_manifest_selection_backend(drv, tmp_path):
 
 
 def test_gate_manifest_selection_python(drv, tmp_path):
-    cfg = drv.GateConfig.load(_write_gates(tmp_path))
+    cfg = molt_dev_gates.GateConfig.load(_write_gates(tmp_path))
     gates, matched = cfg.select(["src/molt/frontend.py"])
     gates = [gate.command for gate in gates]
     assert "echo python-gate" in gates
@@ -1468,7 +1473,7 @@ def test_gate_manifest_selection_python(drv, tmp_path):
 
 def test_gate_manifest_always_runs(drv, tmp_path):
     # An unmatched change-class still runs `always` gates, nothing else.
-    cfg = drv.GateConfig.load(_write_gates(tmp_path))
+    cfg = molt_dev_gates.GateConfig.load(_write_gates(tmp_path))
     gates, matched = cfg.select(["docs/notes.txt"])
     gates = [gate.command for gate in gates]
     assert gates == ["echo always-ran"]
@@ -1491,7 +1496,7 @@ gates = ["echo shared", "echo b-only"]
 """,
         encoding="utf-8",
     )
-    cfg = drv.GateConfig.load(cfg_path)
+    cfg = molt_dev_gates.GateConfig.load(cfg_path)
     gates, _ = cfg.select(["x/1", "y/2"])
     gates = [gate.command for gate in gates]
     # 'echo shared' appears once, preserving first-seen order.
@@ -1502,12 +1507,12 @@ def test_gate_manifest_rejects_bad_toml(drv, tmp_path):
     bad = tmp_path / "bad.toml"
     bad.write_text("[[rule]]\nname = 5\nglobs = []\ngates = []\n", encoding="utf-8")
     with pytest.raises(drv.DriverError):
-        drv.GateConfig.load(bad)
+        molt_dev_gates.GateConfig.load(bad)
 
 
 def test_gate_manifest_missing_is_usage_error(drv, tmp_path):
     with pytest.raises(drv.DriverError) as exc:
-        drv.GateConfig.load(tmp_path / "does_not_exist.toml")
+        molt_dev_gates.GateConfig.load(tmp_path / "does_not_exist.toml")
     assert exc.value.code == drv.EXIT_USAGE
 
 
@@ -2669,7 +2674,7 @@ def test_gate_block_blames_the_candidate_only_for_a_gate_exit(drv, tmp_path, cau
     # The landing queue bisects on CandidateFailure. A gate's nonzero exit is
     # one; a runner stop (here the executor sees an outside writer dirty the
     # source and stops scheduling) must stay a plain DriverError.
-    from tools import molt_dev_gates
+    from tools import molt_dev_gates  # noqa: E402
 
     changes: list[tuple[str, ...]] = [()]
     ran: list[object] = []
@@ -2707,7 +2712,7 @@ def test_gate_block_blames_the_candidate_only_for_a_gate_exit(drv, tmp_path, cau
         ok=lambda message: None,
     )
     gates = [
-        drv.SelectedGate(
+        molt_dev_gates.SelectedGate(
             command=("gate", str(index)), toolchains=("python",), concurrent=True
         )
         for index in (1, 2)
@@ -2731,7 +2736,7 @@ def test_gate_block_keeps_every_stream_and_shows_a_failure_briefly(
     # A failure must say why, and a passing gate must cost the caller nothing:
     # every stream is kept beside the receipt, which names it, and the
     # terminal gets the failed gate's bounded tail and the file's path.
-    from tools import molt_dev_gates
+    from tools import molt_dev_gates  # noqa: E402
 
     huge = "x" * 34_000
     streams = {
@@ -2767,7 +2772,7 @@ def test_gate_block_keeps_every_stream_and_shows_a_failure_briefly(
         ok=lambda message: None,
     )
     gates = [
-        drv.SelectedGate(
+        molt_dev_gates.SelectedGate(
             command=("gate", str(index)), toolchains=("python",), concurrent=True
         )
         for index in (1, 2)
@@ -2824,7 +2829,7 @@ def test_unkept_gate_output_never_changes_the_verdict_or_hides_the_reason(
 ):
     # A log that cannot be written must not turn a pass into a runner fault
     # or a failure into silence: the failed gate's streams print whole.
-    from tools import molt_dev_gates
+    from tools import molt_dev_gates  # noqa: E402
 
     blocked = tmp_path / "not-a-directory"
     blocked.write_text("", encoding="utf-8")
@@ -2836,7 +2841,7 @@ def test_unkept_gate_output_never_changes_the_verdict_or_hides_the_reason(
         molt_dev_gates, tmp_path, outcomes, output_dir=blocked / "run"
     )
     gates = [
-        drv.SelectedGate(
+        molt_dev_gates.SelectedGate(
             command=("gate", str(index)), toolchains=("python",), concurrent=concurrent
         )
         for index in (1, 2)
@@ -2850,7 +2855,7 @@ def test_unkept_gate_output_never_changes_the_verdict_or_hides_the_reason(
 def test_serial_gate_keeps_its_streams_and_names_them_in_the_failure(
     drv, tmp_path, capsys
 ):
-    from tools import molt_dev_gates
+    from tools import molt_dev_gates  # noqa: E402
 
     outcomes = {
         ("gate", "1"): molt_dev_gates.GateOutcome(
@@ -2861,7 +2866,7 @@ def test_serial_gate_keeps_its_streams_and_names_them_in_the_failure(
     runtime = _gate_runtime_fixture(
         molt_dev_gates, tmp_path, outcomes, output_dir=output_dir
     )
-    gate = drv.SelectedGate(
+    gate = molt_dev_gates.SelectedGate(
         command=("gate", "1"), toolchains=("python",), concurrent=False
     )
     with pytest.raises(GateFailure) as failure:
@@ -2900,7 +2905,7 @@ def test_a_gate_writes_its_streams_to_files_while_it_runs(drv, tmp_path):
 
 
 def test_idle_gate_runs_retire_and_recent_ones_stay(tmp_path):
-    from tools import molt_dev_gates
+    from tools import molt_dev_gates  # noqa: E402
 
     now = 10_000_000.0
     window = molt_dev_gates.NAMED_RECORD_MIN_AGE_S
@@ -2920,7 +2925,7 @@ def test_idle_gate_runs_retire_and_recent_ones_stay(tmp_path):
 
 
 def test_a_gate_log_that_cannot_retire_says_so(tmp_path, monkeypatch, capsys):
-    from tools import molt_dev_gates
+    from tools import molt_dev_gates  # noqa: E402
 
     now = 10_000_000.0
     run = tmp_path / "abc.gates.d" / "old"
@@ -2958,7 +2963,7 @@ def test_the_keepalive_label_names_only_the_gate_commands_first_words(drv, monke
 
 def test_concurrent_gate_limit_comes_from_host_capacity(drv, monkeypatch):
     from molt import host_capacity
-    from tools import molt_dev_gates
+    from tools import molt_dev_gates  # noqa: E402
 
     calls = []
 
@@ -3707,7 +3712,7 @@ def test_queue_rebuilds_a_batch_when_main_moves_under_it(
 
 def test_land_precheck_selects_only_gates_that_read_the_candidate(drv):
     # The committed policy, for a frontend source and a runtime source.
-    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    cfg = molt_dev_gates.GateConfig.load(COMMITTED_GATES)
     gates, _rules = cfg.select(
         [
             "src/molt/cli/backend_compile.py",
@@ -3768,13 +3773,13 @@ def test_land_runs_static_gates_in_the_lane_before_queueing(
     # The precheck admits under the gates' baseline, which alone sets this key.
     monkeypatch.delenv("PYTHONPYCACHEPREFIX", raising=False)
     admitted = []
-    admit_gates = drv.GateConfig.admit_gates
+    admit_gates = molt_dev_gates.GateConfig.admit_gates
 
     def recorded_admission(self, gates, *, environ):
         admitted.append(environ)
         return admit_gates(self, gates, environ=environ)
 
-    monkeypatch.setattr(drv.GateConfig, "admit_gates", recorded_admission)
+    monkeypatch.setattr(molt_dev_gates.GateConfig, "admit_gates", recorded_admission)
 
     assert _land_without_runner(drv, monkeypatch, lane) == drv.EXIT_OK
     assert admitted and all("PYTHONPYCACHEPREFIX" in env for env in admitted)
@@ -4452,8 +4457,10 @@ def test_integration_progress_preserves_gate_outcomes(
     shell = "printf '%s\\n' 'literal shell text'"
     argv = ("python", "-c", "print('literal [argument]')", "line\nbreak")
     commands = [shell, argv, "echo final-gate"]
-    selected = [drv.SelectedGate(command, ()) for command in commands]
-    monkeypatch.setattr(drv.GateConfig, "select", lambda *a, **kw: (selected, []))
+    selected = [molt_dev_gates.SelectedGate(command, ()) for command in commands]
+    monkeypatch.setattr(
+        molt_dev_gates.GateConfig, "select", lambda *a, **kw: (selected, [])
+    )
     seen = []
 
     def run_gate(command, repo, environment):
@@ -5167,7 +5174,7 @@ def test_integrate_rejects_unknown_gate_binding_before_admission_or_spawn(
     _, work = origin_and_clone
     _commit_integration_policy(work, ["echo {integration_upstream_ref}"])
     monkeypatch.setattr(
-        drv.GateConfig,
+        molt_dev_gates.GateConfig,
         "admit",
         lambda *args, **kwargs: pytest.fail("invalid policy admitted"),
     )
@@ -5712,9 +5719,11 @@ version_pattern = '.*'
     )
     # Tool installation/version projection is outside the capacity contract.
     # Selection, explicit capability, output resolution, and admission stay real.
-    monkeypatch.setattr(drv.GateConfig, "admit", lambda *args, **kwargs: None)
     monkeypatch.setattr(
-        drv.GateConfig,
+        molt_dev_gates.GateConfig, "admit", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        molt_dev_gates.GateConfig,
         "environments",
         lambda self, gates, *, baseline: {
             gate.toolchains: ProcessEnvironment(baseline) for gate in gates
@@ -5839,7 +5848,7 @@ def test_integrate_no_cargo_or_dry_run_has_no_new_capacity_requirement(
 
 
 def test_transitive_cargo_metadata_availability_adds_no_build_requirement(drv):
-    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    cfg = molt_dev_gates.GateConfig.load(COMMITTED_GATES)
     gates, _ = cfg.select(["docs/agent/V1_HANDOFF_FINDINGS.md"])
     # This is the real ledger-only policy, including its generator dependency.
     assert ("python", "git", "generators") in [gate.toolchains for gate in gates]
@@ -5951,7 +5960,7 @@ def test_selected_local_gate_does_not_materialize_unrelated_policy(
 ):
     from tools import proof_plan
 
-    cfg = drv.GateConfig.parse(
+    cfg = molt_dev_gates.GateConfig.parse(
         """
 always = []
 [[toolchain_policy]]
@@ -6120,7 +6129,7 @@ def test_gate_selection_preserves_tools_across_batching_dedup_and_extras(drv, tm
     (tmp_path / "tests").mkdir()
     for name in ("a", "b"):
         (tmp_path / "tests" / f"test_{name}.py").write_text("", encoding="utf-8")
-    cfg = drv.GateConfig.parse(
+    cfg = molt_dev_gates.GateConfig.parse(
         """
 always = ["shared"]
 always_toolchains = ["base"]
@@ -7040,7 +7049,7 @@ def test_selected_pytest_nodes_collect_before_build_and_still_execute(
     case,
 ):
     from dataclasses import replace
-    from tools import molt_dev_gates
+    from tools import molt_dev_gates  # noqa: E402
 
     (tmp_path / "tests").mkdir()
     # This is a real isolated checkout: admit the same repository custody and
@@ -7079,7 +7088,9 @@ def test_selected_pytest_nodes_collect_before_build_and_still_execute(
         + selection
         + "}]\n"
     )
-    config = drv.GateConfig.parse(policy, "real collection boundary", root=tmp_path)
+    config = molt_dev_gates.GateConfig.parse(
+        policy, "real collection boundary", root=tmp_path
+    )
     gates, _ = config.select(["source.py"])
     assert gates[0].command == "mock-rust-build"
     cohort = next(gate for gate in gates if gate.pytest)
@@ -7165,7 +7176,7 @@ def test_file_only_pytest_cohort_keeps_single_execution_without_collection(
     (tmp_path / "tests/test_file.py").write_text(
         "def test_one(): pass\n", encoding="utf-8"
     )
-    config = drv.GateConfig.parse(
+    config = molt_dev_gates.GateConfig.parse(
         'always=[]\n[[rule]]\nname="file"\nglobs=["source.py"]\ngates=[]\n'
         'pytest=["tests/test_file.py"]\ntoolchains=["python"]\n',
         "file-only",
@@ -7193,7 +7204,9 @@ def test_merged_pytest_collection_admits_only_explicit_nodes(drv, tmp_path):
         + json.dumps([*files, *nodes])
         + '\ntoolchains=["python"]\n'
     )
-    config = drv.GateConfig.parse(policy, "synthetic mixed cohort", root=tmp_path)
+    config = molt_dev_gates.GateConfig.parse(
+        policy, "synthetic mixed cohort", root=tmp_path
+    )
     gates, _ = config.select(["source.py"])
     assert len(gates) == 1
     gate = gates[0]
@@ -7215,7 +7228,7 @@ def test_filtered_pytest_collection_retains_whole_selected_envelope(drv, tmp_pat
     (tmp_path / "tests").mkdir()
     for name in ("tests/test_file.py", "tests/test_nodes.py"):
         (tmp_path / name).touch()
-    config = drv.GateConfig.parse(
+    config = molt_dev_gates.GateConfig.parse(
         'always=[]\n[[rule]]\nname="filtered"\nglobs=["source.py"]\ngates=[]\n'
         'pytest_select=[{targets=["tests/test_file.py", "tests/test_nodes.py::test_one"], '
         'k="one or another"}]\ntoolchains=["python"]\n',
