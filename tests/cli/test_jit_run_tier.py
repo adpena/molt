@@ -520,10 +520,11 @@ def test_runtime_images_are_product_store_entries(monkeypatch, tmp_path: Path) -
     monkeypatch.delenv("MOLT_BUILD_LOCK_TIMEOUT", raising=False)
     runtime = tmp_path / "runtime"
     runtime.mkdir()
-    store = product_store.ProductStore(
-        tmp_path / ".molt-products" / "v1" / "jit-runtime-image"
-    )
-    renew = product_store.record_stored_file_use
+    store_dir = tmp_path / ".molt-products"
+    store = product_store.ProductStore(store_dir / "v1" / "jit-runtime-image")
+
+    def renew(path: Path) -> bool:
+        return product_store.record_stored_file_use(path, store_dir)
 
     def ensure(payload: bytes) -> Path:
         binding = _runtime_image_binding(runtime, payload)
@@ -760,9 +761,17 @@ def test_a_cache_hit_renews_every_store_entry_a_jit_start_reads(
 
     from molt.cli import wrapper_build
     from molt.cli.backend_generation import backend_generation_path
-    from molt.cli.product_store import ProductStore
+    from molt.cli.product_store import LAYOUT_VERSION, ProductStore
+    from molt.dx import PRODUCT_STORE_DIRNAME
 
-    root = tmp_path / ".molt-products" / "v1"
+    # The store a build of the compiler checkout uses under this artifact
+    # root; the cache reader must resolve the same one (review v4).
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifacts))
+    monkeypatch.setenv("MOLT_PREFER_EXTERNAL_ARTIFACTS", "1")
+    monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
+    root = artifacts / "target" / PRODUCT_STORE_DIRNAME / LAYOUT_VERSION
     identity, variant = "a" * 64, "b" * 64
     runtime = ProductStore(root / "native-runtime")
     generation = runtime.entry(identity) / variant / ".molt-native-generations" / "c"
@@ -794,6 +803,10 @@ def test_a_cache_hit_renews_every_store_entry_a_jit_start_reads(
         "_wrapper_build_default_consumer_path",
         lambda entry, *, tier: image,
     )
+    from molt.dx import product_store_dir
+    from molt.source_root import compiler_source_root
+
+    assert product_store_dir(compiler_source_root(), os.environ) == root.parent
     wrapper_build._wrapper_build_cache_manifest_path(image).write_text(
         json.dumps(
             {

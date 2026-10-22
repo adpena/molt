@@ -9,6 +9,7 @@ from functools import lru_cache
 import errno
 import _thread
 import os
+import re
 import sys
 from pathlib import Path
 import threading
@@ -663,26 +664,26 @@ def _parse_lock_timeout(raw: str, *, default_s: float | None) -> float | None:
 
 
 LOCK_WAIT_ENV = "MOLT_BUILD_LOCK_TIMEOUT"
-_LOCK_WAIT_TIMEOUT_PREFIX = "Timed out after "
+# The head of every lock-wait timeout: callers embed the message in their own
+# failure lines (a build stage prefix, an evidence path after it) and may cut
+# its tail, so the head alone identifies it.
+_LOCK_WAIT_TIMEOUT = re.compile(r"Timed out after \d+(?:\.\d+)?s waiting for ")
 
 
 def lock_wait_timeout_message(wait_s: float, subject: str) -> str:
-    """What a bounded lock wait that gave up reports: one line, one spelling.
+    """What a bounded lock wait that gave up reports, in one spelling.
 
-    ``is_lock_wait_timeout`` reads exactly this line. The waiting notice also
-    names ``LOCK_WAIT_ENV`` when a bound is set, so the knob alone does not
-    identify a timeout.
+    ``is_lock_wait_timeout`` reads it wherever it appears. The waiting notice
+    also names ``LOCK_WAIT_ENV`` when a bound is set, so the knob alone does
+    not identify a timeout.
     """
-    return f"{_LOCK_WAIT_TIMEOUT_PREFIX}{wait_s:.1f}s waiting for {subject} ({LOCK_WAIT_ENV})"
+    return f"Timed out after {wait_s:.1f}s waiting for {subject} ({LOCK_WAIT_ENV})"
 
 
 def is_lock_wait_timeout(text: str) -> bool:
-    """Whether ``text`` holds the line ``lock_wait_timeout_message`` writes."""
-    suffix = f" ({LOCK_WAIT_ENV})"
-    return any(
-        _LOCK_WAIT_TIMEOUT_PREFIX in line and line.rstrip().endswith(suffix)
-        for line in text.splitlines()
-    )
+    """Whether ``text`` reports a lock wait that ``lock_wait_timeout_message``
+    ended, wherever a caller placed it."""
+    return _LOCK_WAIT_TIMEOUT.search(text) is not None
 
 
 def lock_wait_s(environ: Mapping[str, str] | None = None) -> float | None:
