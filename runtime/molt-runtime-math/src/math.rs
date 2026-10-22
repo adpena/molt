@@ -1916,36 +1916,126 @@ enum StatisticsReduction {
     Variance { population: bool, sqrt: bool },
 }
 
+// Inline exact arithmetic is a storage optimization, not a different sum.
+// Like CPython's compact longs and LLVM APInt's inline word, bounded values
+// avoid heap storage. Overflow promotes once; rounding stays at ratio_to_f64.
+// CPython 3.14.9: Objects/longobject.c at
+// ead82c07db1f111d613926ed1b6667411d768125 (long_add/long_mul).
+enum StatisticsSumStorage {
+    Small { sum: i128, squares: i128 },
+    Large { sum: BigInt, squares: BigInt },
+}
+
+impl Default for StatisticsSumStorage {
+    fn default() -> Self {
+        Self::Small { sum: 0, squares: 0 }
+    }
+}
+
+impl StatisticsSumStorage {
+    fn into_bigints(self) -> (BigInt, BigInt) {
+        match self {
+            Self::Small { sum, squares } => (BigInt::from(sum), BigInt::from(squares)),
+            Self::Large { sum, squares } => (sum, squares),
+        }
+    }
+}
+
 #[derive(Default)]
 struct StatisticsExactSum {
-    sum: BigInt,
-    squares: BigInt,
+    storage: StatisticsSumStorage,
     exponent: i32,
     count: usize,
     float_domain: bool,
 }
 
+// checked_shl only checks the shift count. The arithmetic right-shift identity
+// also proves signed representability, including MIN and the sign-bit boundary.
+fn statistics_checked_shift(value: i128, shift: u32) -> Option<i128> {
+    if value == 0 {
+        return Some(0);
+    }
+    let shifted = value.checked_shl(shift)?;
+    (shifted >> shift == value).then_some(shifted)
+}
+
 impl StatisticsExactSum {
-    fn add(&mut self, numerator: BigInt, exponent: i32, float_domain: bool, squares: bool) {
+    #[inline]
+    fn add_small(&mut self, numerator: i128, exponent: i32, float_domain: bool, squares: bool) {
+        let aligned_exponent = self.exponent.min(exponent);
+        let old_shift = (self.exponent - aligned_exponent) as u32;
+        let value_shift = (exponent - aligned_exponent) as u32;
+        if let StatisticsSumStorage::Small {
+            sum,
+            squares: prior_squares,
+        } = &self.storage
+        {
+            // Do not publish any field until every operation has succeeded.
+            // A failed square/shift/add promotes the original state exactly once.
+            let updated = (|| {
+                let sum = statistics_checked_shift(*sum, old_shift)?;
+                let value = statistics_checked_shift(numerator, value_shift)?;
+                let square_sum = if squares {
+                    statistics_checked_shift(*prior_squares, 2 * old_shift)?
+                        .checked_add(value.checked_mul(value)?)?
+                } else {
+                    *prior_squares
+                };
+                Some((sum.checked_add(value)?, square_sum))
+            })();
+            if let Some((sum, squares)) = updated {
+                self.storage = StatisticsSumStorage::Small { sum, squares };
+                self.exponent = aligned_exponent;
+                self.count += 1;
+                self.float_domain |= float_domain;
+                return;
+            }
+        }
+        self.add_large(BigInt::from(numerator), exponent, float_domain, squares);
+    }
+
+    fn add_integer(&mut self, numerator: BigInt, squares: bool) {
+        if let Some(value) = numerator.to_i128() {
+            self.add_small(value, 0, false, squares);
+        } else {
+            self.add_large(numerator, 0, false, squares);
+        }
+    }
+
+    fn add_large(&mut self, numerator: BigInt, exponent: i32, float_domain: bool, squares: bool) {
+        if let StatisticsSumStorage::Small { sum, squares } = &self.storage {
+            self.storage = StatisticsSumStorage::Large {
+                sum: BigInt::from(*sum),
+                squares: BigInt::from(*squares),
+            };
+        }
+        let StatisticsSumStorage::Large {
+            sum,
+            squares: square_sum,
+        } = &mut self.storage
+        else {
+            unreachable!("promotion installs large storage")
+        };
         if exponent < self.exponent {
             let shift = (self.exponent - exponent) as usize;
-            self.sum <<= shift;
+            *sum <<= shift;
             if squares {
-                self.squares <<= 2 * shift;
+                *square_sum <<= 2 * shift;
             }
             self.exponent = exponent;
         }
         let value = numerator << (exponent - self.exponent) as usize;
         if squares {
-            self.squares += &value * &value;
+            *square_sum += &value * &value;
         }
-        self.sum += value;
+        *sum += value;
         self.count += 1;
         self.float_domain |= float_domain;
     }
 }
 
-fn statistics_float_ratio(value: f64) -> Option<(BigInt, i32)> {
+#[inline]
+fn statistics_float_ratio(value: f64) -> Option<(i64, i32)> {
     if !value.is_finite() {
         return None;
     }
@@ -1958,10 +2048,10 @@ fn statistics_float_ratio(value: f64) -> Option<(BigInt, i32)> {
         (fraction | (1_u64 << 52), exponent - 1023 - 52)
     };
     if mantissa == 0 {
-        return Some((BigInt::zero(), 0));
+        return Some((0, 0));
     }
     let trailing = mantissa.trailing_zeros();
-    let mut numerator = BigInt::from(mantissa >> trailing);
+    let mut numerator = (mantissa >> trailing) as i64;
     if bits >> 63 != 0 {
         numerator = -numerator;
     }
@@ -1983,9 +2073,11 @@ fn statistics_exact_accumulate(
         // Python float domain before asking for an integer representation.
         if let Some(float) = as_float_extended(value) {
             let (numerator, exponent) = statistics_float_ratio(float)?;
-            total.add(numerator, exponent, true, squares);
+            total.add_small(i128::from(numerator), exponent, true, squares);
+        } else if let Some(integer) = value.as_int().or_else(|| value.as_bool().map(i64::from)) {
+            total.add_small(i128::from(integer), 0, false, squares);
         } else {
-            total.add(to_bigint(value)?, 0, false, squares);
+            total.add_integer(to_bigint(value)?, squares);
         }
     }
     Some(total)
@@ -2060,10 +2152,11 @@ fn statistics_exact_result(
         return raise_exception::<u64>(py, "StatisticsError", &message);
     }
     let count = BigInt::from(total.count);
+    let (sum, squares) = total.storage.into_bigints();
     let (numerator, denominator, sqrt) = match reduction {
-        StatisticsReduction::Mean => (total.sum, count << (-total.exponent) as usize, false),
+        StatisticsReduction::Mean => (sum, count << (-total.exponent) as usize, false),
         StatisticsReduction::Variance { population, sqrt } => {
-            let numerator = &count * total.squares - &total.sum * &total.sum;
+            let numerator = &count * squares - &sum * &sum;
             let divisor = if population {
                 total.count
             } else {
@@ -2397,9 +2490,10 @@ fn statistics_harmonic_mean_value(py: &PyToken, data: u64) -> Option<u64> {
         let Some((numerator, exponent)) = statistics_float_ratio(reciprocal) else {
             return Some(not_implemented_bits(py));
         };
-        total.add(numerator, exponent, true, false);
+        total.add_small(i128::from(numerator), exponent, true, false);
     }
-    if total.sum.is_zero() {
+    let (sum, _) = total.storage.into_bigints();
+    if sum.is_zero() {
         return raise_exception::<Option<u64>>(
             py,
             "StatisticsError",
@@ -2407,7 +2501,7 @@ fn statistics_harmonic_mean_value(py: &PyToken, data: u64) -> Option<u64> {
         );
     }
     let numerator = BigInt::from(values.len()) << (-total.exponent) as usize;
-    Some(statistics_ratio_float(py, &numerator, &total.sum))
+    Some(statistics_ratio_float(py, &numerator, &sum))
 }
 
 fn statistics_geometric_mean_value(_py: &PyToken, data_bits: u64) -> Option<f64> {
@@ -2698,26 +2792,188 @@ mod statistics_reduction_tests {
         kahan_sum_sq_diff(values, mean)
     }
 
+    #[derive(Default)]
+    struct BeforeStatisticsExactSum {
+        sum: BigInt,
+        squares: BigInt,
+        exponent: i32,
+        count: usize,
+        float_domain: bool,
+    }
+
+    impl BeforeStatisticsExactSum {
+        fn add(&mut self, numerator: BigInt, exponent: i32, float_domain: bool, squares: bool) {
+            if exponent < self.exponent {
+                let shift = (self.exponent - exponent) as usize;
+                self.sum <<= shift;
+                if squares {
+                    self.squares <<= 2 * shift;
+                }
+                self.exponent = exponent;
+            }
+            let value = numerator << (exponent - self.exponent) as usize;
+            if squares {
+                self.squares += &value * &value;
+            }
+            self.sum += value;
+            self.count += 1;
+            self.float_domain |= float_domain;
+        }
+    }
+
+    fn before_statistics_float_ratio(value: f64) -> Option<(BigInt, i32)> {
+        if !value.is_finite() {
+            return None;
+        }
+        let bits = value.to_bits();
+        let exponent = ((bits >> 52) & 0x7ff) as i32;
+        let fraction = bits & ((1_u64 << 52) - 1);
+        let (mantissa, exponent) = if exponent == 0 {
+            (fraction, -1074)
+        } else {
+            (fraction | (1_u64 << 52), exponent - 1023 - 52)
+        };
+        if mantissa == 0 {
+            return Some((BigInt::zero(), 0));
+        }
+        let trailing = mantissa.trailing_zeros();
+        let mut numerator = BigInt::from(mantissa >> trailing);
+        if bits >> 63 != 0 {
+            numerator = -numerator;
+        }
+        Some((numerator, exponent + trailing as i32))
+    }
+
+    fn accumulate_before(values: &[f64], squares: bool) -> BeforeStatisticsExactSum {
+        let mut total = BeforeStatisticsExactSum::default();
+        for &value in values {
+            let (numerator, exponent) = before_statistics_float_ratio(value).unwrap();
+            total.add(numerator, exponent, true, squares);
+        }
+        total
+    }
+
     fn accumulate(values: &[f64], squares: bool) -> StatisticsExactSum {
         let mut total = StatisticsExactSum::default();
         for &value in values {
             let (numerator, exponent) = statistics_float_ratio(value).unwrap();
-            total.add(numerator, exponent, true, squares);
+            total.add_small(i128::from(numerator), exponent, true, squares);
         }
         total
+    }
+
+    fn small_storage_promotion_oracles() {
+        for (value, shift, expected) in [
+            (0, 128, Some(0)),
+            (-1, 127, Some(i128::MIN)),
+            (1, 127, None),
+            (i128::MIN, 0, Some(i128::MIN)),
+            (i128::MIN, 1, None),
+            (1, 128, None),
+        ] {
+            assert_eq!(statistics_checked_shift(value, shift), expected);
+        }
+        let total = accumulate(&[1.5, 0.25, -0.5], true);
+        assert!(matches!(total.storage, StatisticsSumStorage::Small { .. }));
+        assert_eq!(total.exponent, -2);
+        assert_eq!(
+            total.storage.into_bigints(),
+            (BigInt::from(5), BigInt::from(41))
+        );
+        let mut total = StatisticsExactSum::default();
+        total.add_small(i128::MAX, 0, false, false);
+        total.add_small(1, 0, false, false);
+        total.add_small(-i128::MAX, 0, false, false);
+        assert!(matches!(total.storage, StatisticsSumStorage::Large { .. }));
+        assert_eq!(total.count, 3);
+        assert!(!total.float_domain);
+        assert_eq!(total.storage.into_bigints().0, BigInt::one());
+        let mut total = StatisticsExactSum::default();
+        total.add_small(1_i128 << 64, 0, false, true);
+        total.add_small(-(1_i128 << 64), 0, false, true);
+        assert_eq!(total.count, 2);
+        assert_eq!(
+            total.storage.into_bigints(),
+            (BigInt::zero(), BigInt::one() << 129usize)
+        );
+        let mut total = StatisticsExactSum::default();
+        total.add_small(1_i128 << 63, 0, false, true);
+        assert!(matches!(total.storage, StatisticsSumStorage::Small { .. }));
+        total.add_small(1_i128 << 63, 0, false, true);
+        assert!(matches!(total.storage, StatisticsSumStorage::Large { .. }));
+        assert_eq!(total.count, 2);
+        assert_eq!(
+            total.storage.into_bigints(),
+            (BigInt::one() << 64usize, BigInt::one() << 127usize)
+        );
+        let tiny = f64::from_bits(1);
+        let total = accumulate(&[-tiny, tiny * 2.0], true);
+        assert!(matches!(total.storage, StatisticsSumStorage::Small { .. }));
+        assert_eq!(total.exponent, -1074);
+        assert_eq!(
+            total.storage.into_bigints(),
+            (BigInt::one(), BigInt::from(5))
+        );
+        let total = accumulate(&[1.0, tiny], true);
+        assert!(matches!(total.storage, StatisticsSumStorage::Large { .. }));
+        assert_eq!(total.exponent, -1074);
+        assert_eq!(
+            total.storage.into_bigints(),
+            (
+                (BigInt::one() << 1074usize) + 1,
+                (BigInt::one() << 2148usize) + 1
+            )
+        );
+        let mut total = StatisticsExactSum::default();
+        total.add_integer(BigInt::one() << 200usize, true);
+        total.add_integer(-(BigInt::one() << 200usize), true);
+        assert_eq!(
+            total.storage.into_bigints(),
+            (BigInt::zero(), BigInt::one() << 401usize)
+        );
+        // Independent retained pre-change tuple algorithm, across finite raw
+        // binary64 bit patterns, signs, cancellation, exponent gaps and zero.
+        let values: Vec<_> = [
+            0,
+            1,
+            2,
+            0x0010000000000000,
+            0x3ff0000000000000,
+            0x3fb999999999999a,
+            0x4008000000000000,
+            0x7fefffffffffffff,
+            0x8000000000000000,
+            0x8000000000000001,
+            0xbff0000000000000,
+            0xffefffffffffffff,
+        ]
+        .into_iter()
+        .map(f64::from_bits)
+        .collect();
+        for squares in [false, true] {
+            for prefix in 1..=values.len() {
+                let before = accumulate_before(&values[..prefix], squares);
+                let after = accumulate(&values[..prefix], squares);
+                assert_eq!(
+                    (after.exponent, after.count, after.float_domain),
+                    (before.exponent, before.count, before.float_domain)
+                );
+                assert_eq!(after.storage.into_bigints(), (before.sum, before.squares));
+            }
+        }
     }
 
     #[test]
     fn exact_reduction_oracles_and_primitive_cost() {
         let total = accumulate(&[1e50, 1.0, -1e50], false);
         let denominator = BigInt::from(3) << (-total.exponent) as usize;
-        assert_eq!(ratio_to_f64(&total.sum, &denominator), Ok(1.0 / 3.0));
+        let (sum, _) = total.storage.into_bigints();
+        assert_eq!(ratio_to_f64(&sum, &denominator), Ok(1.0 / 3.0));
         let total = accumulate(&[1.0, 2.0, 3.0], true);
-        assert_eq!(
-            (&total.squares * 3 - &total.sum * &total.sum),
-            BigInt::from(6)
-        );
         assert!(total.float_domain);
+        let (sum, squares) = total.storage.into_bigints();
+        assert_eq!((&squares * 3 - &sum * &sum), BigInt::from(6));
+        small_storage_promotion_oracles();
         let (n, d) = statistics_sqrt_ratio(BigInt::one(), BigInt::one() << 2148usize);
         assert_eq!(ratio_to_f64(&n, &d).unwrap().to_bits(), 1);
         let (n, d) = statistics_sqrt_ratio(BigInt::one() << 2044usize, BigInt::one());
@@ -2748,12 +3004,17 @@ mod statistics_reduction_tests {
                 });
             }
             let before_ns = before.elapsed().as_nanos();
+            let exact_bigint = Instant::now();
+            for _ in 0..8 {
+                black_box(accumulate_before(black_box(&values), squares));
+            }
+            let exact_bigint_ns = exact_bigint.elapsed().as_nanos();
             let after = Instant::now();
             for _ in 0..8 {
                 black_box(accumulate(black_box(&values), squares));
             }
             eprintln!(
-                "statistics primitive cost squares={squares} elements={} repeats=8 before_ns={before_ns} after_ns={}",
+                "statistics primitive cost squares={squares} elements={} repeats=8 before_ns={before_ns} exact_bigint_ns={exact_bigint_ns} after_ns={}",
                 values.len(),
                 after.elapsed().as_nanos()
             );

@@ -38,10 +38,12 @@ def test_policy_coordinates_and_class_contract():
     rows = policy.load_policy()
     assert {row.name for row in rows} == set(observed_legacy)
     for row in rows:
-        assert row.messages == (
-            *observed_legacy[row.name],
-            observed_314.get(row.name, "division by zero"),
-        )
+        assert dict(row.messages) == {
+            "3.12": observed_legacy[row.name][0],
+            "3.13": observed_legacy[row.name][1],
+            "3.14": observed_314.get(row.name, "division by zero"),
+            "3.15": observed_314.get(row.name, "division by zero"),
+        }
         assert row.error_class == (
             "ValueError" if row.name == "ModularPowerZero" else "ZeroDivisionError"
         )
@@ -117,9 +119,11 @@ def test_compiled_policy_and_integer_sign_family(tmp_path):
             f"assert_eq!(python_integer_divmod({a}i128, {b}i128), Some(({q}i128, {r}i128)));"
         )
     for row in policy.load_policy():
-        for minor, message in zip((12, 13, 14), row.messages):
+        for target in policy.TARGETS:
+            major, minor = target.split(".")
+            message = row.messages[target]
             checks.append(
-                f"assert_eq!(NumericErrorContext::{row.name}.message(3, {minor}), Some({json.dumps(message)}));"
+                f"assert_eq!(NumericErrorContext::{row.name}.message({major}, {minor}), Some({json.dumps(message)}));"
             )
         for major, minor in ((2, 12), (3, 11), (3, 15), (4, 12)):
             checks.append(
@@ -199,7 +203,9 @@ fn molt_sys_version_state()->&'static std::sync::Mutex<Target> { static STATE:st
         "assert!(matches!(molt_floor_div(MoltValue::Int(-7), MoltValue::Bool(true)), MoltValue::Int(-7)));",
         "assert!(matches!(molt_mod(MoltValue::Bool(true), MoltValue::Int(-3)), MoltValue::Int(-2)));",
     ]
-    for minor in (12, 13, 14):
+    for target in policy.TARGETS:
+        major, minor = target.split(".")
+        checks.append(f"molt_sys_version_state().lock().unwrap().major = {major};")
         checks.append(f"molt_sys_version_state().lock().unwrap().minor = {minor};")
         for operation, context in (
             ("div", "FloatTrueDivision"),
@@ -207,12 +213,12 @@ fn molt_sys_version_state()->&'static std::sync::Mutex<Target> { static STATE:st
             ("mod", "FloatModulo"),
         ):
             row = next(row for row in policy.load_policy() if row.name == context)
-            expected = json.dumps("ZeroDivisionError: " + row.messages[minor - 12])
+            expected = json.dumps("ZeroDivisionError: " + row.messages[target])
             checks.append(
                 f"let error = std::panic::catch_unwind(|| molt_{operation}(MoltValue::Float(7.0), MoltValue::Float(-0.0))).err().unwrap(); assert_eq!(error.downcast_ref::<String>().unwrap(), {expected});"
             )
         row = next(row for row in policy.load_policy() if row.name == "NegativePower")
-        expected = json.dumps("ZeroDivisionError: " + row.messages[minor - 12])
+        expected = json.dumps("ZeroDivisionError: " + row.messages[target])
         checks.append(
             f"let error = std::panic::catch_unwind(|| molt_pow(MoltValue::Int(0), MoltValue::Int(-1))).err().unwrap(); assert_eq!(error.downcast_ref::<String>().unwrap(), {expected});"
         )
@@ -380,7 +386,7 @@ def test_numeric_policy_covers_the_selected_target_python_catalog():
 
 
 def test_admission_expansion_requires_observed_numeric_coordinates(monkeypatch):
-    monkeypatch.setattr(policy, "TARGETS", (*policy.TARGETS, "3.15"))
+    monkeypatch.setattr(policy, "TARGETS", (*policy.TARGETS, "4.0"))
     with pytest.raises(policy.SchemaError, match="needs observed numeric coordinates"):
         policy.load_policy()
 
@@ -390,7 +396,14 @@ def synthetic_catalog_policy(tmp_path, monkeypatch):
     """Synthetic majors, minors and column order expose positional binding."""
     monkeypatch.setattr(policy, "TARGETS", ("4.20", "3.7"))
     current = tomllib.loads(policy.SOURCE.read_text(encoding="utf-8"))
-    lines = ["schema_version = 1", 'supported_targets = ["4.20", "3.7"]']
+    from tools import cpython_regrtest
+
+    monkeypatch.setattr(
+        cpython_regrtest,
+        "load_cpython_sources",
+        lambda: {"4.20": object(), "3.7": object()},
+    )
+    lines = ["schema_version = 2", 'observed_targets = ["4.20", "3.7"]']
     for row in current["context"]:
         lines.append("\n[[context]]")
         for field in ("name", "operation", "operand_kind", "error_class"):
@@ -410,7 +423,9 @@ def test_numeric_columns_follow_exact_selected_catalog(synthetic_catalog_policy)
     rows = policy.load_policy(synthetic_catalog_policy)
     assert rows
     assert all(
-        row.messages == ("twentieth coordinate", "seventh coordinate") for row in rows
+        dict(row.messages)
+        == {"4.20": "twentieth coordinate", "3.7": "seventh coordinate"}
+        for row in rows
     )
     rendered = policy.render(rows)
     twentieth = rendered.index("            (4, 20) => Some(match self {")
@@ -431,7 +446,7 @@ def test_numeric_columns_follow_exact_selected_catalog(synthetic_catalog_policy)
 @pytest.mark.parametrize(
     ("before", "after"),
     [
-        ('["4.20", "3.7"]', '["3.7", "4.20"]'),
+        ('["4.20", "3.7"]', '["4.20", "3.7", "3.7"]'),
         ('["4.20", "3.7"]', '["4.20"]'),
         ('["4.20", "3.7"]', '["4.20", "3.8"]'),
         ('python_3_7 = "seventh coordinate"\n', ""),
@@ -452,3 +467,139 @@ def test_synthetic_catalog_stays_closed(synthetic_catalog_policy, before, after)
     )
     with pytest.raises(policy.SchemaError):
         policy.load_policy(synthetic_catalog_policy)
+
+
+def test_pending_observations_do_not_admit_or_change_guest_outputs(tmp_path):
+    source = policy.SOURCE.read_text(encoding="utf-8")
+    pending = policy.load_policy()
+    assert all("3.15" in row.messages for row in pending)
+    assert "3.15" not in policy.TARGETS
+    assert "            (3, 15) =>" not in policy.render(pending)
+    for row in pending:
+        with pytest.raises(TypeError):
+            row.messages["3.15"] = "mutated"
+    source = source.replace(', "3.15"]', "]")
+    source = "\n".join(
+        line for line in source.splitlines() if not line.startswith("python_3_15 =")
+    )
+    path = tmp_path / "admitted-only.toml"
+    path.write_text(source, encoding="utf-8")
+    admitted = policy.load_policy(path)
+    for output in policy.OUTPUTS:
+        kwargs = {"integer_helper": "molt-backend-luau" not in output.parts}
+        assert policy.render(pending, **kwargs) == policy.render(admitted, **kwargs)
+        assert policy.render(pending, **kwargs) == output.read_text(encoding="utf-8")
+
+
+def test_observation_order_is_not_catalog_order(synthetic_catalog_policy):
+    before = policy.render(policy.load_policy(synthetic_catalog_policy))
+    source = synthetic_catalog_policy.read_text(encoding="utf-8")
+    synthetic_catalog_policy.write_text(
+        source.replace('["4.20", "3.7"]', '["3.7", "4.20"]'), encoding="utf-8"
+    )
+    assert policy.render(policy.load_policy(synthetic_catalog_policy)) == before
+
+
+def test_capture_independent_operations_and_exact_pin(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from tools import command_execution, cpython_regrtest, gen_stdlib_module_union
+
+    source = cpython_regrtest.CPythonSource(
+        "4.20", "a" * 40, "v4.20.7", "https://github.com/python/cpython.git"
+    )
+    pins = cpython_regrtest.load_cpython_sources()
+    monkeypatch.setattr(
+        cpython_regrtest, "load_cpython_sources", lambda: {**pins, "4.20": source}
+    )
+    snapshot_requests = []
+    monkeypatch.setattr(
+        gen_stdlib_module_union,
+        "pinned_snapshots",
+        lambda versions: snapshot_requests.append(versions),
+    )
+    # Independent payload: success records actual observed differences, never
+    # fills them from declaration messages or assumes a major-three layout.
+    rows = {
+        row.wire_key: {
+            "error_class": row.error_class,
+            "message": "observed future exception",
+        }
+        for row in policy.load_policy()
+    }
+    payload = {"implementation": "cpython", "version": "4.20.7", "rows": rows}
+    commands = []
+
+    def run(argv, **kwargs):
+        commands.append(argv)
+        return SimpleNamespace(stdout=json.dumps(payload), stderr="")
+
+    monkeypatch.setattr(
+        command_execution.CommandExecutor,
+        "for_file",
+        lambda _: SimpleNamespace(run=run),
+    )
+    executable = tmp_path / "python"
+    executable.write_bytes(b"independent executable identity fixture")
+    result = policy.capture_observations("4.20", executable)
+    assert result["source"]["revision"] == "a" * 40
+    assert result["admitted_target"] is False
+    assert result["observation"]["rows"] == rows
+    assert snapshot_requests == [("4.20",)]
+    assert len(commands) == 1 and commands[0][:3] == [str(executable), "-I", "-c"]
+    assert commands[0][3] == policy.OBSERVATION_PROGRAM
+    payload["version"] = "4.20.6"
+    with pytest.raises(policy.SchemaError, match="exact pinned release"):
+        policy.capture_observations("4.20", executable)
+    payload["version"] = "4.20.7"
+    payload["rows"] = {}
+    with pytest.raises(policy.SchemaError, match="incomplete"):
+        policy.capture_observations("4.20", executable)
+
+
+def test_capture_cli_modes_and_input_custody(capsys, tmp_path):
+    with pytest.raises(SystemExit) as help_exit:
+        policy.main(["--help"])
+    assert help_exit.value.code == 0
+    help_text = capsys.readouterr().out
+    for option in ("--capture-observations", "--python-executable", "--report"):
+        assert option in help_text
+    alias = policy.SOURCE.with_name(policy.SOURCE.name.swapcase())
+    if alias.exists() and alias.samefile(policy.SOURCE):
+        with pytest.raises(SystemExit) as alias_refused:
+            policy.main(
+                [
+                    "--capture-observations",
+                    "3.15",
+                    "--python-executable",
+                    str(policy.SOURCE),
+                    "--report",
+                    str(alias),
+                ]
+            )
+        assert alias_refused.value.code == 2
+    for arguments in (
+        [
+            "--capture-observations",
+            "3.15",
+            "--python-executable",
+            str(policy.SOURCE),
+            "--report",
+            str(policy.OUTPUTS[0]),
+        ],
+        ["--check", "--capture-observations", "3.15"],
+        ["--check", "--report", str(tmp_path / "report.json")],
+        [
+            "--capture-observations",
+            "3.15",
+            "--python-executable",
+            str(policy.SOURCE),
+            "--report",
+            str(policy.SOURCE),
+        ],
+    ):
+        protected = (policy.SOURCE, *policy.OUTPUTS)
+        before = {path: path.read_bytes() for path in protected}
+        with pytest.raises(SystemExit) as refused:
+            policy.main(arguments)
+        assert refused.value.code == 2
+        assert {path: path.read_bytes() for path in protected} == before

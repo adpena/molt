@@ -1121,6 +1121,14 @@ def test_shipping_runtime_gate_requires_full_parallel_and_fresh_child_accounting
     # adding a semantic obligation, and would evade registered queue custody.
     local = next(rule for rule in PLAN.local_rules if rule["name"] == "runtime-lib")
     assert shlex.split(local["gates"][0]) == list(shipping.argv[9:])
+    # Satellite-only edits must reach the same local owning gate. Their libtest
+    # bodies are not compiled by depending on the ordinary satellite rlibs.
+    for path in (
+        "runtime/molt-runtime-core/src/numeric_ratio.rs",
+        "runtime/molt-runtime-math/src/math.rs",
+    ):
+        assert any(proof_plan._matches(path, pattern) for pattern in local["globs"])
+        assert _classes(path)["rust"] is True
     for path in (
         "tools/run_runtime_test_gate.py",
         "tests/tools/test_runtime_test_gate.py",

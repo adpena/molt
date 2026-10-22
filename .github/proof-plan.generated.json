@@ -12074,13 +12074,15 @@
         "command_ids": [
           "local.runtime-lib.0"
         ],
-        "description": "Runtime/object-model Rust: one default-feature image with ordinary and isolated lifecycle semantics; performance probes remain unrun. Clippy belongs to rust-clippy-changed.",
+        "description": "Runtime/object-model Rust: one Cargo build owns default-feature lifecycle semantics and declared core/math numeric libtests; runtime performance probes remain unrun. Clippy belongs to rust-clippy-changed.",
         "gates": [
           "python tools/run_runtime_test_gate.py --profile release-output --build-timeout-seconds 6300 --child-timeout-seconds 120 --parallel-threads 8"
         ],
         "globs": [
           "runtime/molt-runtime/**/*.rs",
           "runtime/molt-obj-model/**/*.rs",
+          "runtime/molt-runtime-core/src/numeric_ratio.rs",
+          "runtime/molt-runtime-math/src/math.rs",
           "runtime/**/Cargo.toml"
         ],
         "name": "runtime-lib",

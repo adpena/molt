@@ -12,6 +12,8 @@ both feature images once and runs only its declared controls in fresh processes;
 process-global allocator counters and refusal must never share a libtest run.
 The WASI lifecycle policy builds a target libtest and hands its exact image to
 the existing native production-host integration; Rust owns its semantic roster.
+The native semantic policy also owns the declared core/math numeric libtests in
+that same Cargo build; primitive timings are observations, not performance gates.
 """
 
 from __future__ import annotations
@@ -47,6 +49,7 @@ from molt.node_runtime import resolve_node_runtime  # noqa: E402
 from tools.libtest_results import accounting_problem  # noqa: E402
 from tools.runtime_test_gate_plan import (  # noqa: E402
     OBSERVER_FEATURE,
+    SEMANTIC_IMAGES,
     WASI_TARGET,
     cargo_operations,
     parse_arguments,
@@ -138,6 +141,8 @@ OBSERVER_PERFORMANCE_PROBES = {
 
 
 def unrun_reason(policy: str, target: str, name: str, platform: str) -> str:
+    if policy == "semantic" and target != "molt_runtime":
+        return "outside declared satellite numeric controls"
     if (
         policy == "semantic"
         or name in OBSERVER_PERFORMANCE_PROBES[target]
@@ -148,6 +153,8 @@ def unrun_reason(policy: str, target: str, name: str, platform: str) -> str:
 
 
 def image_targets(policy: str) -> dict[str, str]:
+    if policy == "semantic":
+        return {image.target: image.kind for image in SEMANTIC_IMAGES}
     targets = {"molt_runtime": "rlib"}
     if policy == "allocation-observer":
         targets["l7_numeric_runtime_perf_attestation"] = "test"
@@ -189,7 +196,7 @@ def probes_for(platform: str) -> tuple[str, ...]:
 
 
 def selections(
-    inventory: list[str], threads: int, platform: str
+    inventory: list[str], threads: int, platform: str, *, target: str = "molt_runtime"
 ) -> dict[str, tuple[list[str], set[str]]]:
     if threads < 2:
         raise RuntimeError(
@@ -197,6 +204,21 @@ def selections(
         )
     if len(inventory) != len(set(inventory)):
         raise RuntimeError("duplicate test discovery identity")
+    if target != "molt_runtime":
+        image = next((row for row in SEMANTIC_IMAGES if row.target == target), None)
+        if image is None or not image.cases:
+            raise RuntimeError(f"unknown semantic satellite image: {target}")
+        required = set(image.cases)
+        if not required <= set(inventory):
+            raise RuntimeError(
+                f"{target}: missing required satellite cases: {sorted(required - set(inventory))}"
+            )
+        return {
+            "declared": (
+                ["--exact", *image.cases, "--test-threads=1", "--nocapture"],
+                required,
+            )
+        }
     isolated = isolated_for(platform)
     probes = probes_for(platform)
     required = set(isolated + probes)
@@ -301,13 +323,15 @@ def validate_artifact(
     artifact: dict[str, str],
     target_name: str = "molt_runtime",
     target_kind: str = "rlib",
+    *,
+    package: str = "molt-runtime",
 ) -> None:
     # Cargo target.kind follows crate-type: this runtime declares rlib, not lib.
     # Do not normalize arbitrary binary artifacts into the runtime authority.
     if (
         artifact["target_name"] != target_name
         or artifact["target_kind"] != target_kind
-        or not artifact["package"].startswith("molt-runtime@")
+        or not artifact["package"].startswith(f"{package}@")
     ):
         raise RuntimeError(
             f"Cargo artifact is not the {target_name}/{target_kind} test authority"
@@ -318,12 +342,17 @@ def select_artifacts(
     artifacts: dict[str, dict[str, str]], policy: str
 ) -> dict[str, dict[str, str]]:
     targets = image_targets(policy)
+    packages = (
+        {image.target: image.package for image in SEMANTIC_IMAGES}
+        if policy == "semantic"
+        else dict.fromkeys(targets, "molt-runtime")
+    )
     selected = {}
     for artifact in artifacts.values():
         name = artifact["target_name"]
         if name not in targets or name in selected:
             raise RuntimeError(f"unexpected or duplicate Cargo test target: {name}")
-        validate_artifact(artifact, name, targets[name])
+        validate_artifact(artifact, name, targets[name], package=packages[name])
         selected[name] = artifact
     if set(selected) != set(targets):
         raise RuntimeError(
@@ -1211,7 +1240,7 @@ def main(argv: list[str] | None = None) -> int:
         "run_id": run_id,
         "status": "failed",
         "scope": (
-            "full default-feature runtime semantics; performance probes unrun"
+            "full default-feature runtime semantics and declared core/math numeric controls; runtime performance probes unrun"
             if args.policy == "semantic"
             else "declared WASI micro-runtime lifecycle cases through the production host only"
             if args.policy == "wasi-lifecycle"
@@ -1325,7 +1354,9 @@ def main(argv: list[str] | None = None) -> int:
             selection = (
                 observer_selections(inventory, target)
                 if args.policy == "allocation-observer"
-                else selections(inventory, args.parallel_threads, sys.platform)
+                else selections(
+                    inventory, args.parallel_threads, sys.platform, target=target
+                )
             )
             selected_tests = set().union(
                 *(expected for _, expected in selection.values())
@@ -1359,6 +1390,9 @@ def main(argv: list[str] | None = None) -> int:
         invocations: set[str] = set()
         for target, (binary, identity, selection) in images.items():
             image = aggregate["images"][target]
+            require_passed = (
+                args.policy == "allocation-observer" or target != "molt_runtime"
+            )
             children: dict[str, list[dict]] = {}
             for index, (name, (child_args, expected)) in enumerate(selection.items()):
                 directory = run / target / f"child-{index}"
@@ -1371,7 +1405,7 @@ def main(argv: list[str] | None = None) -> int:
                     run_id=run_id,
                     source=source,
                     timeout=args.child_timeout_seconds,
-                    require_passed=args.policy == "allocation-observer",
+                    require_passed=require_passed,
                     retained_root=run,
                 )
                 image["children"][name] = {
@@ -1394,7 +1428,7 @@ def main(argv: list[str] | None = None) -> int:
                     run_id=run_id,
                     binary=binary,
                     identity=identity,
-                    require_passed=args.policy == "allocation-observer",
+                    require_passed=require_passed,
                     invocations=invocations,
                 )
             except RuntimeError as exc:
