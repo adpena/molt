@@ -6,9 +6,9 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 
 ## Counts
 
-- `authority-routed` files: 65
+- `authority-routed` files: 66
 - `operational-tooling` files: 59
-- `scattered-assumption` files: 345
+- `scattered-assumption` files: 346
 
 ## Files
 
@@ -31,6 +31,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `src/molt/cli/wasm_final_link_cache.py` | 1 | operational-tooling | `sys.version_info` |
 | `src/molt/compiler_analysis/python_binding_flow.py` | 4 | authority-routed | `3.14` |
 | `src/molt/compiler_analysis/python_call_arguments.py` | 1 | scattered-assumption | `3.12` |
+| `src/molt/compiler_analysis/python_comprehensions.py` | 1 | authority-routed | `3.15` |
 | `src/molt/compiler_analysis/python_imports.py` | 2 | authority-routed | `3.15` |
 | `src/molt/compiler_analysis/python_lexical_scope.py` | 2 | authority-routed | `3.12` |
 | `src/molt/debug/contracts.py` | 2 | operational-tooling | `sys.version_info` |
@@ -338,6 +339,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `runtime/molt-runtime/src/object/ops_bytes.rs` | 6 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/object/ops_bytes_ascii.rs` | 6 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/object/ops_convert.rs` | 4 | scattered-assumption | `3.12` |
+| `runtime/molt-runtime/src/object/ops_dict.rs` | 2 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/object/ops_encoding.rs` | 3 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/object/ops_format.rs` | 2 | scattered-assumption | `3.14` |
 | `runtime/molt-runtime/src/object/ops_hash.rs` | 15 | scattered-assumption | `3.14` |
