@@ -9527,7 +9527,7 @@
       "local.dev-tooling.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/tools/test_setup_project_inputs.py tests/test_committed_gate_policy.py tests/test_molt_dev.py tests/tools/test_claim_lane.py tests/test_molt_dev_lanes.py tests/test_checkout_provisioning.py tests/tools/test_rust_toolchain_contract.py tests/tools/test_check_rustfmt.py tests/tools/test_check_changed_clippy.py tests/test_cargo_workspace.py",
       "local.docs-architecture.0": "python tools/check_docs_architecture.py",
       "local.ecosystem-compat.0": "python tools/check_ecosystem_compat.py",
-      "local.edgebox-typescript.0": "python tools/guarded_exec.py --cwd examples/edgebox/packages/edgebox-cloudflare --timeout 120 -- corepack npm run check",
+      "local.edgebox-typescript.0": "python tools/guarded_exec.py --cwd examples/edgebox/packages/edgebox-cloudflare --timeout 120 -- python -m molt.tool_releases run npm -- run check",
       "local.encoding-diagnostics.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_encoding_gate.py",
       "local.environment-registry-audit.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/tools/test_check_environment_registry.py",
       "local.findings-registry.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_findings_registry.py",
@@ -11761,11 +11761,13 @@
         ],
         "description": "Type-check the actual Edgebox Worker API against its locked dependencies.",
         "gates": [
-          "python tools/guarded_exec.py --cwd examples/edgebox/packages/edgebox-cloudflare --timeout 120 -- corepack npm run check"
+          "python tools/guarded_exec.py --cwd examples/edgebox/packages/edgebox-cloudflare --timeout 120 -- python -m molt.tool_releases run npm -- run check"
         ],
         "globs": [
           "examples/edgebox/packages/edgebox-cloudflare/**",
-          "src/molt/checkout_provisioning.py"
+          "src/molt/checkout_provisioning.py",
+          "src/molt/tool_releases.py",
+          "config/tool_releases.toml"
         ],
         "name": "edgebox-typescript",
         "toolchains": [
@@ -12880,7 +12882,7 @@
         "python",
         "edgebox-typescript",
         "node",
-        "corepack"
+        "npm"
       ],
       "local.encoding-diagnostics.pytest": [
         "python"
@@ -13995,16 +13997,21 @@
       "dependencies": [
         "node"
       ],
-      "executable": "corepack",
-      "name": "corepack",
+      "executable": "npm",
+      "name": "npm",
+      "projection": "runtime-tool-release",
+      "setup_command": "python -m molt.tool_releases provision npm",
       "setup_evidence": [
-        "examples/edgebox/packages/edgebox-cloudflare/package.json::packageManager"
+        "config/tool_releases.toml::version = \"12.2.1\"",
+        "deploy/cloudflare/package.json::\"packageManager\": \"npm@12.2.1\"",
+        "examples/edgebox/packages/edgebox-cloudflare/package.json::\"packageManager\": \"npm@12.2.1\"",
+        "tools/browser_asset_graph/package.json::\"packageManager\": \"npm@12.2.1\""
       ],
-      "setup_value": "Corepack npm packageManager launcher",
+      "setup_value": "12.2.1",
       "version_args": [
         "--version"
       ],
-      "version_pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+      "version_pattern": "^12\\.2\\.1$"
     },
     {
       "checkout_input": "edgebox-typescript",
@@ -14016,7 +14023,7 @@
       ],
       "dependencies": [
         "node",
-        "corepack"
+        "npm"
       ],
       "executable": "node",
       "name": "edgebox-typescript",

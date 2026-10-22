@@ -159,7 +159,12 @@ def test_wasi_variables_appear_only_when_the_selection_needs_the_wasi_sdk(
     assert wasm["WASI_SDK_PATH"] == "/wasi/sdk"
     assert wasm["CC_wasm32_wasip1"] == "/wasi/bin/clang"
     # A command that declares only host tools projects nothing.
-    assert _delta(commands=["nightly.determinism.ir-hashseed"]) == {}
+    assert _delta(commands=["rust.check.fuzz"]) == {}
+    # uv is a pinned tool release (a9f61e4f3): a command that runs it puts the
+    # pinned uv first, and nothing else.
+    assert _delta(commands=["nightly.determinism.ir-hashseed"]) == {
+        "PATH": os.pathsep.join([str(Path("/tools/uv/bin")), str(Path("/usr/bin"))])
+    }
 
 
 def test_binaryen_projection_pins_the_managed_wasm_opt(

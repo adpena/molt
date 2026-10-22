@@ -669,7 +669,7 @@ def _archive_fixture(tmp_path, *, arch="x86_64", missing=None):
     (source / "config/tool_releases.toml").write_text(
         "\n".join(
             [
-                "schema_version = 2",
+                f"schema_version = {tool_releases.TOOL_RELEASES_SCHEMA_VERSION}",
                 "[tools.node]",
                 'version = "1.0.0"',
                 'executable = "node"',

@@ -1,4 +1,4 @@
-schema_version = 2
+schema_version = 3
 
 # Pinned releases of standalone tool binaries that both CI and the local
 # custody toolchain root install from. One authority: the CI provisioning
@@ -180,6 +180,30 @@ url = "https://nodejs.org/dist/v26.12.1/node-v26.12.1-darwin-arm64.tar.gz"
 size = 58334853
 sha256 = "1901d539912c02afa10d1cc126943a8855a7eedebe830119463470db5e6c59e8"
 archive_member = "node-v26.12.1-darwin-arm64/bin/node"
+
+# npm, the package manager of every npm project here. A runtime tool: its
+# registry tarball's `package/` tree runs on the pinned Node as
+# `node <prefix>/package/bin/npm-cli.js` through `molt.tool_releases`, never
+# from PATH, a shim or Corepack (Node 25 and later ship no Corepack). Each npm
+# project's `packageManager` names this version. `tools/pin_freshness.py
+# --update npm` moves the pin, the proof-plan policy and every
+# `packageManager` together, after checking the tarball against the
+# registry's SHA-512 `integrity`.
+[tools.npm]
+version = "12.2.1"
+executable = "npm"
+runtime = "node"
+entrypoint = "bin/npm-cli.js"
+
+[tools.npm.provenance]
+kind = "npm-registry"
+url = "https://registry.npmjs.org/npm/12.2.1"
+
+[tools.npm.assets.any]
+url = "https://registry.npmjs.org/npm/-/npm-12.2.1.tgz"
+size = 3062824
+sha256 = "228bd64aaef23270dbdbd2cf3d5ef5c467602ef38c4066246cef1984adab9a67"
+archive_tree = "package"
 
 [tools.uv]
 version = "0.13.5"
