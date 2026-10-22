@@ -13,31 +13,35 @@
 # of 64, so a mount pins files the host deletes (HF-463). Sources reach a guest
 # through `tools/linux_vm.py push`, which costs no more than the mount did.
 
-schema = 2
+schema = 3
 minimum_lima_version = "2.0.0"
 
-# The guest's own session and daemon processes. `apply` restarts a VM only
-# when every process of the guest user, and every process in a login session
-# (`sudo` work too), is one of these (comm, truncated by Linux to 15
-# characters), no process runs under the user's subordinate ids (a container
-# user), and no maintenance process runs.
-idle_guest_processes = [
-  "systemd",
-  "(sd-pam)",
-  "sshd",
-  "sshd-session",
-  "sshd-auth",
-  "dbus-daemon",
-  # Lima's rootless containerd (containerd.user = true).
-  "rootlesskit",
-  "exe",
-  "containerd",
-  # Not containerd-shim-runc-v2: a shim runs only while a container runs.
-  "buildkitd",
-  "slirp4netns",
-  "bypass4netnsd",
-  "containerd-stargz-grpc",
-  "containerd-fuse-overlayfs-grpc",
+# The executables of the guest's own session and daemon processes, as the
+# kernel names them (/proc/<pid>/exe, read as root). `apply` restarts a VM
+# only when every process of the guest user, and every process in a login
+# session (`sudo` work too), runs one of these, no process runs under the
+# user's subordinate ids (a container user), and no maintenance process runs.
+# A process name proves nothing: rootlesskit's child is called `exe`, and so
+# is any program that re-executes /proc/self/exe. Paths read in both guests
+# on 2026-10-22 (Ubuntu 26.04 and 24.04); 24.04 has no sshd-session.
+idle_guest_executables = [
+  # The user's systemd, and its (sd-pam) helper.
+  "/usr/lib/systemd/systemd",
+  "/usr/lib/systemd/systemd-executor",
+  # SSH sessions, Lima's own among them.
+  "/usr/sbin/sshd",
+  "/usr/lib/openssh/sshd-session",
+  "/usr/lib/openssh/sshd-auth",
+  "/usr/bin/dbus-daemon",
+  # Lima's rootless containerd (containerd.user = true): rootlesskit and its
+  # `exe` child share one executable. Not containerd-shim-runc-v2: a shim
+  # runs only while a container runs.
+  "/usr/local/bin/rootlesskit",
+  "/usr/local/bin/containerd",
+  "/usr/local/bin/buildkitd",
+  "/usr/local/bin/bypass4netnsd",
+  "/usr/local/bin/containerd-stargz-grpc",
+  "/usr/local/bin/containerd-fuse-overlayfs-grpc",
 ]
 # Processes of any user that a restart must not cut short: package installs
 # and first-boot provisioning. Ubuntu's resident unattended-upgrade-shutdown
