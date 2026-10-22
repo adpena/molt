@@ -636,7 +636,6 @@ executable = "corepack"
 version_args = ["--version"]
 version_pattern = '^[0-9]+\.[0-9]+\.[0-9]+$'
 setup_value = "Corepack npm packageManager launcher"
-setup_command = 'npm install --ignore-scripts --prefix "$MOLT_TARGET_ROOT/toolchains/corepack" corepack; put its node_modules/.bin on PATH'
 setup_evidence = ["examples/edgebox/packages/edgebox-cloudflare/package.json::packageManager"]
 dependencies = ["node"]
 
@@ -5909,7 +5908,7 @@ globs = [
 ]
 gates = [
   "cargo test --locked --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor --bin molt-backend -- daemon backend_process::input::tests backend_process::cli_args::parse::tests --test-threads=1",
-  "cargo test --locked --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor --test daemon_server -- --test-threads=1",
+  "cargo test --locked --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend -p molt-backend-rust --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor --test daemon_server --test rust_transpiler_preview -- --test-threads=1",
 ]
 
 [[rule]]
