@@ -31,15 +31,19 @@ from typing import Any
 
 from molt import file_publication
 from molt.cli.backend_ir_transport import write_backend_ir
-from molt.cli.run_tier import JIT_RUNNER_IMAGE_FLAG
+from molt.cli.native_launch_abi_generated import (
+    JIT_IMAGE_MARKER,
+    JIT_RUNNER_IMAGE_FLAG,
+)
 
-JIT_IMAGE_MARKER = "#molt.jit-image.v2"
 # The program length is patched in after the program streamed out, so it has
 # a fixed width; the runner parses leading zeros.
 _LENGTH_WIDTH = 20
 # The bytes of a `#!` line, newline included, that execve reads: Linux's
 # BINPRM_BUF_SIZE and the 512-byte script header macOS reads.
 _INTERPRETER_LINE_BYTES = {"linux": 256, "darwin": 512}
+# Characters besides whitespace that end the interpreter path in an `#!` line.
+_INTERPRETER_PATH_STOPS = frozenset({"#", "\0"})
 
 
 def jit_image_interpreter_line(runner: Path, *, platform: str = sys.platform) -> str:
@@ -47,9 +51,19 @@ def jit_image_interpreter_line(runner: Path, *, platform: str = sys.platform) ->
     text = os.fspath(runner)
     if not os.path.isabs(text):
         raise ValueError(f"the JIT runner path is not absolute: {text!r}")
-    if any(character.isspace() for character in text):
+    # The kernel ends the interpreter path at whitespace, and macOS's parser
+    # also at '#' (XNU exec_shell_imgact); a NUL ends any C path.
+    stops = sorted(
+        {
+            repr(character)
+            for character in text
+            if character.isspace() or character in _INTERPRETER_PATH_STOPS
+        }
+    )
+    if stops:
         raise ValueError(
-            f"the JIT runner path contains whitespace, which an interpreter line cannot hold: {text!r}"
+            "the JIT runner path contains a character that ends an interpreter "
+            f"line's path ({', '.join(stops)}): {text!r}"
         )
     line = f"#!{text} {JIT_RUNNER_IMAGE_FLAG}"
     limit = _INTERPRETER_LINE_BYTES.get(platform)

@@ -12,6 +12,12 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from molt.cli.native_launch_abi_generated import (
+    JIT_RUNNER_IMAGE_FLAG,
+    JIT_RUNNER_START_RECEIPT_FLAG,
+    JIT_START_RECEIPT,
+)
+
 if TYPE_CHECKING:
     from molt.compilation_target import Target
     from molt.native_target import NativeTargetSpec
@@ -39,9 +45,6 @@ DEFAULT_RUN_TIER = RunTier.AOT
 # an AOT build would publish (src/molt/cli/jit_image.py).
 JIT_IMAGE_SUFFIX = ".jit"
 
-# What `molt-jit --start-receipt <path>` writes after the program compiled,
-# immediately before the program starts (runtime/molt-jit/src/main.rs).
-JIT_START_RECEIPT = '{"schema":"molt.jit-start.v1"}\n'
 
 # The (os, arch) hosts where the JIT-AOT twin gate ran (HF-371). Any other
 # host is refused before the frontend runs and before its unverified runtime
@@ -105,11 +108,6 @@ def jit_tier_refusal_message(refusal: str) -> str:
     )
 
 
-# The runner flag that names the image; everything after the image is the
-# program's. A JIT image's interpreter line ends with it (``jit_image.py``).
-JIT_RUNNER_IMAGE_FLAG = "--image"
-
-
 def jit_runner_argv(
     runner: str,
     image: str,
@@ -126,7 +124,7 @@ def jit_runner_argv(
     """
     argv = [runner]
     if start_receipt is not None:
-        argv += ["--start-receipt", start_receipt]
+        argv += [JIT_RUNNER_START_RECEIPT_FLAG, start_receipt]
     return [*argv, JIT_RUNNER_IMAGE_FLAG, image, *program_arguments]
 
 

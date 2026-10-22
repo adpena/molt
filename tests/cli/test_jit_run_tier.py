@@ -359,7 +359,10 @@ def test_executing_a_jit_image_starts_its_runner_with_no_shell(
     "runner,reason",
     [
         (Path("relative/molt-jit"), "not absolute"),
-        (Path("/runner dir/molt-jit"), "whitespace"),
+        (Path("/runner dir/molt-jit"), "' '"),
+        (Path("/runner\tdir/molt-jit"), "'\\t'"),
+        # macOS's interpreter-line parser stops at '#' (HF-371 review v4).
+        (Path("/runner#dir/molt-jit"), "'#'"),
         (Path("/" + "r" * 600 + "/molt-jit"), "interpreter line"),
     ],
 )
@@ -369,8 +372,9 @@ def test_a_runner_path_the_kernel_cannot_start_is_refused(
     from molt.cli.jit_image import publish_jit_image
 
     image = tmp_path / f"app_molt{JIT_IMAGE_SUFFIX}"
-    with pytest.raises(ValueError, match=reason):
+    with pytest.raises(ValueError) as refused:
         publish_jit_image(image, runner=runner, header=_HEADER, ir={"functions": []})
+    assert reason in str(refused.value)
     assert not image.exists()
 
 

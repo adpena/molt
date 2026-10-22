@@ -245,8 +245,9 @@ fn function(name: &str, returns_value: bool, ops: Vec<OpIR>) -> FunctionIR {
     }
 }
 
-/// The program as the CLI's backend IR lease (MessagePack).
-fn program(extra_import: Option<&str>) -> Vec<u8> {
+/// The program as the CLI's backend IR lease (MessagePack), with `filler`
+/// extra functions that only return, to make compilation take a while.
+fn program(extra_import: Option<&str>, filler: usize) -> Vec<u8> {
     let mut main = vec![];
     if let Some(symbol) = extra_import {
         main.push(OpIR {
@@ -255,7 +256,7 @@ fn program(extra_import: Option<&str>) -> Vec<u8> {
         });
     }
     main.push(op("ret_void"));
-    let functions = vec![
+    let mut functions = vec![
         function("molt_main", false, main),
         function(
             "molt_isolate_bootstrap",
@@ -273,6 +274,9 @@ fn program(extra_import: Option<&str>) -> Vec<u8> {
             ],
         ),
     ];
+    functions.extend(
+        (0..filler).map(|index| function(&format!("filler_{index}"), false, vec![op("ret_void")])),
+    );
     #[derive(serde::Serialize)]
     struct Document {
         functions: Vec<FunctionIR>,
@@ -288,14 +292,26 @@ fn program(extra_import: Option<&str>) -> Vec<u8> {
     .expect("encode the program")
 }
 
+/// How the image asks for compiler diagnostics.
+#[derive(Clone, Copy)]
+enum Diagnostics {
+    /// Backend timing, a diagnostic: compiler output streams, as the CLI sets
+    /// it (`_env_requests_backend_diagnostics`).
+    Timing,
+    /// The default: compiler output appears only if compilation fails.
+    OnFailure,
+}
+
 /// The JIT image layout `src/molt/cli/jit_image.py` writes.
-fn write_image(path: &Path, runtime_image: &Path, program: &[u8]) {
+fn write_image(path: &Path, runtime_image: &Path, program: &[u8], diagnostics: Diagnostics) {
+    let (backend_environment, compiler_diagnostics) = match diagnostics {
+        Diagnostics::Timing => (serde_json::json!({"MOLT_BACKEND_TIMING": "1"}), "stream"),
+        Diagnostics::OnFailure => (serde_json::json!({}), "on_failure"),
+    };
     let header = serde_json::json!({
         "runtime_image": runtime_image,
-        // Backend timing is a diagnostic, so its output streams, as the CLI
-        // sets it (`_env_requests_backend_diagnostics`).
-        "backend_environment": {"MOLT_BACKEND_TIMING": "1"},
-        "compiler_diagnostics": "stream",
+        "backend_environment": backend_environment,
+        "compiler_diagnostics": compiler_diagnostics,
         "launch": {
             "environment": {"MOLT_EXECUTION_TARGET": "native"},
             "runtime_module_roots": [],
@@ -304,7 +320,9 @@ fn write_image(path: &Path, runtime_image: &Path, program: &[u8]) {
     })
     .to_string();
     let mut bytes = format!(
-        "#!{RUNNER} --image\n#molt.jit-image.v2 {} {}\n{header}",
+        "#!{RUNNER} {}\n{} {} {}\n{header}",
+        runner_protocol("image_flag"),
+        runner_protocol("image_marker"),
         header.len(),
         program.len()
     )
@@ -330,22 +348,28 @@ struct Launch {
     stderr: String,
     log: Vec<String>,
     receipt: bool,
+    receipt_contents: String,
 }
 
 fn launch(label: &str, extra_import: Option<&str>, start: Start) -> Launch {
     let artifacts = CargoTestArtifacts::new(label).expect("Cargo test artifact root");
     let runtime = fake_runtime(&artifacts);
     let image = artifacts.path().join("app_molt.jit");
-    write_image(&image, &runtime, &program(extra_import));
+    write_image(
+        &image,
+        &runtime,
+        &program(extra_import, 0),
+        Diagnostics::Timing,
+    );
     let log = artifacts.path().join("calls.log");
     let receipt = artifacts.path().join("started.json");
     let mut command = match start {
         Start::Runner => {
             let mut command = Command::new(RUNNER);
             command
-                .arg("--start-receipt")
+                .arg(runner_protocol("start_receipt_flag"))
                 .arg(&receipt)
-                .arg("--image")
+                .arg(runner_protocol("image_flag"))
                 .arg(&image)
                 .args(["first", "second"]);
             command
@@ -356,8 +380,11 @@ fn launch(label: &str, extra_import: Option<&str>, start: Start) -> Launch {
                 .args(["first", "two words"])
                 .env("PWD", "/stale/dir")
                 .env("OLDPWD", "/previous/dir")
-                // A caller's own allocator setting stays the program's.
+                // A caller's own allocator setting stays the program's, even
+                // beside a variable named like the marker the restart once
+                // used (HF-371 review v4): the marker now travels in argv.
                 .env("MallocLargeCache", "1")
+                .env("MOLT_JIT_ALLOCATOR_RESTART", "1")
                 .env_remove("SHLVL");
             command
         }
@@ -377,17 +404,32 @@ fn launch(label: &str, extra_import: Option<&str>, start: Start) -> Launch {
             .map(str::to_owned)
             .collect(),
         receipt: receipt.exists(),
+        receipt_contents: std::fs::read_to_string(&receipt).unwrap_or_default(),
     }
 }
 
-/// The `start` entries of the launch ABI's one source, in declared order.
-fn declared_start_sequence() -> Vec<String> {
+/// The launch ABI's one declaration: its runtime entries, the runner's command
+/// line and the image format.
+fn launch_abi() -> toml::Table {
     let source = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../native_launch_abi.toml"
     ))
     .expect("read the launch ABI");
-    let document: toml::Table = source.parse().expect("parse the launch ABI");
+    source.parse().expect("parse the launch ABI")
+}
+
+/// One value of the launch ABI's `[runner]` table.
+fn runner_protocol(key: &str) -> String {
+    launch_abi()["runner"][key]
+        .as_str()
+        .expect("a runner protocol string")
+        .to_string()
+}
+
+/// The `start` entries of the launch ABI's one source, in declared order.
+fn declared_start_sequence() -> Vec<String> {
+    let document = launch_abi();
     document["start"]
         .as_array()
         .expect("start entries")
@@ -401,6 +443,7 @@ fn the_runner_starts_a_program_in_the_aot_stub_order() {
     let run = launch("jit-launch-order", None, Start::Runner);
     assert_eq!(run.status.code(), Some(0), "{}", run.stderr);
     assert!(run.receipt);
+    assert_eq!(run.receipt_contents, runner_protocol("start_receipt"));
     let called: Vec<&str> = run
         .log
         .iter()
@@ -500,7 +543,7 @@ fn executing_the_image_starts_its_runner_with_no_shell_between() {
     };
     assert_eq!(
         line("env"),
-        r#"env PWD=Some("/stale/dir") SHLVL=None OLDPWD=Some("/previous/dir") MallocLargeCache=Some("1") restart=None"#
+        r#"env PWD=Some("/stale/dir") SHLVL=None OLDPWD=Some("/previous/dir") MallocLargeCache=Some("1") restart=Some("1")"#
     );
     let argv = line("molt_set_argv");
     assert!(
@@ -515,4 +558,76 @@ fn executing_the_image_starts_its_runner_with_no_shell_between() {
         "{}",
         run.stderr
     );
+}
+
+/// The direct children of `pid`, as `pgrep -P` lists them.
+fn children_of(pid: u32) -> Vec<u32> {
+    let output = Command::new("pgrep")
+        .arg("-P")
+        .arg(pid.to_string())
+        .output()
+        .expect("run pgrep");
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.trim().parse().ok())
+        .collect()
+}
+
+#[test]
+fn a_keeper_killed_alone_leaves_the_program_running() {
+    // The compiler writes a progress line with eprintln! every 50 functions,
+    // and eprintln! panics on a write error. Another process kills only the
+    // compiler output keeper while the runner compiles 20,000 functions: the
+    // remaining progress lines must still be written, and the program must
+    // start and exit as it would have.
+    let artifacts = CargoTestArtifacts::new("jit-keeper-killed").expect("Cargo test artifact root");
+    let runtime = fake_runtime(&artifacts);
+    let image = artifacts.path().join("app_molt.jit");
+    write_image(
+        &image,
+        &runtime,
+        &program(None, 20_000),
+        Diagnostics::OnFailure,
+    );
+    let log = artifacts.path().join("calls.log");
+    let receipt = artifacts.path().join("started.json");
+    let runner = Command::new(RUNNER)
+        .arg(runner_protocol("start_receipt_flag"))
+        .arg(&receipt)
+        .arg(runner_protocol("image_flag"))
+        .arg(&image)
+        .env("FAKE_RUNTIME_LOG", &log)
+        .env("FAKE_RUNTIME_RECEIPT", &receipt)
+        .env_remove("MOLT_EXECUTION_TARGET")
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("start molt-jit");
+    let started = std::time::Instant::now();
+    let keeper = loop {
+        if let Some(&keeper) = children_of(runner.id()).first() {
+            break keeper;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "the runner started no keeper"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    };
+    // The runner writes its start receipt right after it compiles: the kill
+    // below must land before that, while the keeper holds the capture.
+    assert!(!receipt.exists(), "the runner compiled before the kill");
+    let killed = Command::new("kill")
+        .args(["-KILL", &keeper.to_string()])
+        .status()
+        .expect("run kill");
+    assert!(killed.success());
+    let output = runner.wait_with_output().expect("wait for molt-jit");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(0), "{stderr}");
+    // The kill landed while the runner compiled: it never wrote its receipt
+    // before the keeper died, and it wrote it afterwards.
+    assert!(receipt.exists(), "{stderr}");
+    let calls = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(calls.contains("molt_runtime_exit 0"), "{calls}\n{stderr}");
+    assert_eq!(stderr, "", "a discarded compile writes nothing");
 }

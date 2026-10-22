@@ -49,14 +49,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 const EXIT_RUNNER_FAILURE: i32 = 125;
 const EXIT_USAGE: i32 = 2;
 
-const USAGE: &str =
-    "usage: molt-jit [--start-receipt <path>] --image <image> [args...]\n       molt-jit --probe";
-
-/// The exact contents of a start receipt (`--start-receipt`). The runner
-/// creates it after the program compiled, immediately before the program
-/// starts, so its absence means the runner failed first: the JIT tier's form
-/// of a failed build (`src/molt/cli/run_tier.py`).
-const START_RECEIPT: &str = "{\"schema\":\"molt.jit-start.v1\"}\n";
+// The runner's command line and image format, from the launch ABI's one
+// declaration (runtime/native_launch_abi.toml). A start receipt is created
+// after the program compiled, immediately before the program starts, so its
+// absence means the runner failed first: the JIT tier's form of a failed
+// build (src/molt/cli/run_tier.py).
+use launch_abi::{IMAGE_FLAG, START_RECEIPT, START_RECEIPT_FLAG};
 
 /// The compiled program's `molt_isolate_bootstrap`, published before the
 /// runtime starts. The runtime image imports the symbol from this executable.
@@ -101,27 +99,36 @@ pub unsafe extern "C" fn process_entry(
     // unreferenced functions, and the runtime image binds it at load.
     std::hint::black_box(molt_isolate_bootstrap as unsafe extern "C" fn() -> u64);
     // SAFETY: the caller passes `argc` valid NUL-terminated strings.
-    let arguments = unsafe { process_arguments(argc, argv) };
+    #[cfg_attr(not(target_os = "macos"), expect(unused_mut))]
+    let mut arguments = unsafe { process_arguments(argc, argv) };
+    #[cfg(target_os = "macos")]
+    let restarted = arguments.first().is_some_and(|argument| {
+        argument.as_encoded_bytes() == launch_abi::ALLOCATOR_RESTART_FLAG.as_bytes()
+    });
+    #[cfg(target_os = "macos")]
+    if restarted {
+        arguments.remove(0);
+        // SAFETY: the process is single-threaded; this restart set it.
+        unsafe { std::env::remove_var(LARGE_BLOCK_CACHE) };
+        LARGE_BLOCK_CACHE_OFF.store(true, Ordering::Relaxed);
+    }
     let Some(invocation) = parse_invocation(arguments) else {
         return usage();
     };
     #[cfg(target_os = "macos")]
-    if matches!(invocation, Invocation::Run { .. }) {
-        // SAFETY: the process is single-threaded; `argv` is the process's own
-        // NUL-terminated vector.
-        if let Err(message) = unsafe { restart_without_large_block_cache(argv) } {
+    if !restarted && matches!(invocation, Invocation::Run { .. }) {
+        // SAFETY: the process is single-threaded; `argv` holds `argc` valid
+        // NUL-terminated strings.
+        if let Err(message) = unsafe { restart_without_large_block_cache(argc, argv) } {
             return fail(message);
         }
     }
     runner_main(invocation)
 }
 
-/// libmalloc's setting the runner restarts itself with, and the marker that
-/// says this process is that restart.
+/// libmalloc's setting the runner restarts itself with.
 #[cfg(target_os = "macos")]
 const LARGE_BLOCK_CACHE: &str = "MallocLargeCache";
-#[cfg(target_os = "macos")]
-const RESTARTED: &str = "MOLT_JIT_ALLOCATOR_RESTART";
 
 /// Whether this process runs with the large-block cache off, for the timing
 /// line (`MOLT_BACKEND_TIMING`).
@@ -132,37 +139,30 @@ static LARGE_BLOCK_CACHE_OFF: std::sync::atomic::AtomicBool =
 ///
 /// macOS's allocator keeps freed large blocks in a cache for reuse. The
 /// compiler frees almost all it built, but the cache keeps those pages dirty,
-/// so a program that imports `subprocess` would run with an 0.9 GB footprint
-/// (38 MB under AOT). `malloc_zone_pressure_relief` releases none of them, and
-/// libmalloc reads its settings only when a process starts. So the runner
-/// restarts itself once, as the same process (`execv` keeps the pid, argv,
-/// descriptors, signal mask and dispositions), with `MallocLargeCache=0`, and
-/// the restarted runner removes both variables before anything else runs, so
-/// the program sees its caller's environment. Measured on macOS arm64 for that
-/// program: a 71 MB footprint, for 0.4 s more compile time (median of five).
-/// A caller that sets `MallocLargeCache` itself keeps its own setting.
+/// so a program that imports `subprocess` would run with an 885 MB footprint
+/// (6.7 MB under AOT). `malloc_zone_pressure_relief` releases none of them,
+/// and libmalloc reads its settings only when a process starts. So the runner
+/// restarts itself once, as the same process (`execv` keeps the pid,
+/// descriptors, signal mask and dispositions), with `MallocLargeCache=0` and
+/// its own first argument `ALLOCATOR_RESTART_FLAG`; the restarted runner
+/// drops both before anything else runs, so the program sees its caller's
+/// environment and arguments. The marker travels in argv, not in the
+/// environment, so no variable a caller passes can stand for it. A caller
+/// that sets `MallocLargeCache` itself keeps its own setting: no restart.
+///
+/// The setting holds for the whole process, the program included. Molt's own
+/// heap (mimalloc in the runtime image) does not use it, but libc `malloc`
+/// does (C extensions, `PyMem_Malloc`): churning large blocks costs 50-200
+/// times more with the cache off (docs/design/dev_jit_tier.md, "Costs").
 ///
 /// # Safety
-/// The process must be single-threaded, and `argv` its NUL-terminated
-/// argument vector.
+/// The process must be single-threaded, and `argv` must hold `argc` valid
+/// NUL-terminated strings.
 #[cfg(target_os = "macos")]
 unsafe fn restart_without_large_block_cache(
+    argc: libc::c_int,
     argv: *const *const libc::c_char,
 ) -> Result<(), String> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the runner reads the allocator setting its caller passed"
-    )]
-    let restarted = std::env::var_os(RESTARTED).is_some();
-    if restarted {
-        // SAFETY: the caller guarantees a single-threaded process.
-        unsafe {
-            std::env::remove_var(RESTARTED);
-            std::env::remove_var(LARGE_BLOCK_CACHE);
-        }
-        LARGE_BLOCK_CACHE_OFF.store(true, Ordering::Relaxed);
-        return Ok(());
-    }
     #[expect(
         clippy::disallowed_methods,
         reason = "the runner reads the allocator setting its caller passed"
@@ -174,12 +174,22 @@ unsafe fn restart_without_large_block_cache(
         .map_err(|error| format!("cannot find the runner to restart it: {error}"))?;
     let executable = std::ffi::CString::new(executable.as_os_str().as_encoded_bytes())
         .map_err(|_| "the runner path contains a NUL byte".to_string())?;
-    // SAFETY: the caller guarantees a single-threaded process; `execv` gets
-    // the process's own NUL-terminated argv and returns only on failure.
+    let flag = std::ffi::CString::new(launch_abi::ALLOCATOR_RESTART_FLAG)
+        .map_err(|_| "the allocator restart flag contains a NUL byte".to_string())?;
+    let count = usize::try_from(argc).unwrap_or(0);
+    let mut restart: Vec<*const libc::c_char> = Vec::with_capacity(count + 2);
+    // SAFETY: the caller guarantees `argc` valid strings; argv[0] stays first.
+    unsafe {
+        restart.push(*argv);
+        restart.push(flag.as_ptr());
+        restart.extend((1..count).map(|index| *argv.add(index)));
+    }
+    restart.push(std::ptr::null());
+    // SAFETY: the caller guarantees a single-threaded process; `restart` is a
+    // NUL-terminated vector of live strings; `execv` returns only on failure.
     unsafe {
         std::env::set_var(LARGE_BLOCK_CACHE, "0");
-        std::env::set_var(RESTARTED, "1");
-        libc::execv(executable.as_ptr(), argv);
+        libc::execv(executable.as_ptr(), restart.as_ptr());
     }
     Err(format!(
         "cannot restart the runner without the large-block cache: {}",
@@ -230,11 +240,11 @@ fn parse_invocation(arguments: Vec<OsString>) -> Option<Invocation> {
             Some("--probe") if start_receipt.is_none() && args.len() == 0 => {
                 return Some(Invocation::Probe);
             }
-            Some("--start-receipt") if start_receipt.is_none() => {
+            Some(START_RECEIPT_FLAG) if start_receipt.is_none() => {
                 start_receipt = Some(PathBuf::from(args.next()?));
             }
             // Everything after the image is the program's, verbatim.
-            Some("--image") => {
+            Some(IMAGE_FLAG) => {
                 let image = args.next()?;
                 let argv = std::iter::once(image.clone()).chain(args).collect();
                 return Some(Invocation::Run {
@@ -269,7 +279,9 @@ fn runner_main(invocation: Invocation) -> i32 {
 }
 
 fn usage() -> i32 {
-    eprintln!("{USAGE}");
+    eprintln!(
+        "usage: molt-jit [{START_RECEIPT_FLAG} <path>] {IMAGE_FLAG} <image> [args...]\n       molt-jit --probe"
+    );
     EXIT_USAGE
 }
 
