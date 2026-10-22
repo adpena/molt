@@ -1,15 +1,15 @@
 """Purpose: a program started with stderr closed runs, as a C program does.
 
 A shell's `2>&-` starts a program with file descriptor 2 closed. CPython runs
-with sys.stderr unset, and a native AOT executable runs with fd 2 closed. The
+with sys.stderr set to None, and a native AOT executable starts with fd 2 closed. The
 development JIT runner captures compiler output on fd 2 while it compiles; it
 must compile with nothing to capture and start the program with fd 2 still
 closed, not refuse to start (HF-371).
 
 Both native code owners then differ from CPython the same way: the runtime
 opens /dev/null at start, and with fd 2 closed that descriptor becomes fd 2,
-so the child sees stderr open. The twins must agree on that, and the AOT
-behavior is its own open finding.
+so the child sees stderr open. The twins must agree on that until the runtime
+keeps a closed fd 2 closed (HF-455).
 """
 # MOLT_ENV: MOLT_CAPABILITIES=process.exec,env.read,fs.read
 # MOLT_META: expect_fail=molt expect_fail_reason=closed_stderr_reused_by_runtime
