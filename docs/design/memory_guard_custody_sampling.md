@@ -38,8 +38,10 @@ and protection walks each tree member's ancestry through the guard. With
 the lineage, custody rows give the host table's verdicts; without it, an
 unowned member's group was judged protected (measured on a live tree).
 Members of a watched group share the root's session, so they are tree rows.
-A kill still re-reads the host table before it signals (defense in depth);
-only the sampling-failure path reuses the last poll's rows, by design.
+A kill still reads the host table for its protection decision (defense in
+depth); only the sampling-failure path reuses the last poll's rows, by design.
+That read is observation, so enforcement no longer waits for it; see
+[Enforcement independent of observation](#enforcement-independent-of-observation-hf-417).
 
 ## How leading tools do it
 
@@ -116,3 +118,105 @@ Linux (Lima aarch64 VM, 145 processes, guarded `/bin/sleep 2`, 3 runs each):
 sampler CPU 0.235-0.254 s over 69-70 polls before, 0.037-0.041 s over 76-78
 polls after; rows per poll 145 before, 6 after; observer CPU 0.29-0.31 s
 before, 0.08-0.10 s after.
+
+## Enforcement independent of observation (HF-417)
+
+Status: POSIX implemented and measured on macOS arm64, 2026-10-21; Linux and
+Windows unverified. Ledger: HF-417.
+
+### Problem
+
+The run loop enforced the deadline, memory trips and an owner's cancellation
+on the thread that also samples, exports daemon custody and writes evidence.
+Any of those can block while the host stalls. On 2026-10-21 a guard with a
+300 s deadline (`uv run python3 tools/audit_op_kinds.py --check`) signalled
+its child at 2,270 s: its startup report is dated 38 minutes after the
+spawn, so it waited inside the running summary's host-wide repro read (every
+process's command line) before its loop began. Four landing tests waited out
+the same 13:16:49Z-13:54:39Z window.
+
+### How leading supervisors do it
+
+- Bazel's process wrapper runs the child in its own process group, arms a
+  timer, and on expiry sends SIGTERM to the group, then SIGKILL after
+  `--kill_delay`; nothing else runs on that path.
+- GNU `timeout` signals the command from its alarm handler, and `-k` sends
+  KILL after a delay.
+- Go's `exec.CommandContext` cancels from a goroutine that waits only on the
+  context, apart from the goroutines that copy output (`Cmd.Cancel`,
+  `Cmd.WaitDelay`).
+- systemd enforces `RuntimeMaxSec` and stop timeouts from timers on its event
+  loop and kills by cgroup, which needs no process scan.
+- CPython's `Popen.send_signal` polls before it signals to narrow PID reuse
+  (bpo-38630); Linux `pidfd_send_signal` closes it. Here the reap lock does.
+
+### Design
+
+`OwnedTreeEnforcer` (`tools/memory_guard_core/process_custody.py`) is a
+thread that reads no process table and writes no file. It signals through
+`owned_root_group_signal` only, the one target that needs no observation to
+identify:
+
+- POSIX: the child's own process group. The child leads a new session from
+  launch, so only its descendants can join the group, and while its
+  `ChildExecutionClock` holds it unreaped, its PID, and so the group it leads,
+  cannot name another process. Each signal is sent under the lock the reap
+  takes. SIGTERM goes first; SIGKILL follows the grace unless the root has
+  been reaped by then, when observation must finish what remains.
+- Windows: the guard's Job (unverified here).
+- Otherwise (no reserved wait, or a root that does not lead its group): none,
+  and the run loop alone enforces, as before.
+
+The enforcer is a backstop. A deadline falls due `ENFORCEMENT_SLACK_SEC`
+(2 s) after it passes; a memory trip or a cancellation falls due 2 s after it
+arises. The run loop calls `begin(reason)` just before it signals, which
+defers to a strike already made or pushes the due time another 2 s out, and
+`delivered(reason)` after. A healthy run loop delivered a timeout 0.03-0.58 s
+after its deadline at host load 12-120, so the enforcer stays idle and the
+loop keeps its evidence, such as the Cargo interruption inventory it takes
+before it signals. A loop that resumes after a strike does not signal again
+from stale rows; it waits for the reap, and the closure after the loop adds
+the observed exit to the enforcer's report.
+
+An owner's cancellation callable may do I/O, so a `StopRequestWatch` polls
+it on a thread of its own and latches the first request for the loop and the
+enforcer; a second watch hands an operator's signal to the enforcer. The
+kill's host-table read now comes before `begin`, so a stall there defers to
+the enforcer instead of signalling from stale rows.
+
+Under a suite daemon lease, the export before a signal waits for the
+adoption lock without a ceiling (it decides whether a daemon the suite
+adopted survives). On the memory-trip, operator-signal, cancellation,
+deadline and post-loop paths the enforcer is requested before that export,
+and it stays armed until the post-loop path is done, so the root's group is
+signalled within the slack however long the export waits. The trade:
+descendants in other process groups, which are the daemons that export
+decides about, run until the export returns. The
+running summary publishes its startup report on the guard thread and writes
+its host-wide repro block from a daemon thread (`RunningSummaryPublisher`),
+retired before the guard returns so it never replaces the terminal summary.
+
+Residual: memory trips still need a tree sample to be detected, an operator
+signal still waits for the guard thread to run Python, and a member that
+ignores SIGTERM after the root's reap waits for the closure's observation.
+
+### Costs
+
+One thread per guarded command that has a deadline, a memory trip or a
+cancellation callable, plus one for the callable and one for a running
+summary; each waits on an event. Interleaved runs of guarded `/bin/sleep 2`
+(12 each, load 12-16, 2026-10-21): wall per sample 2.33 ms before, 2.11 ms
+after (median); observer CPU 0.163 s and 0.144 s; guard process CPU 0.183 s
+and 0.164 s. With a running summary, guard overhead outside the child fell
+from 0.092 s to 0.028 s (median), because the host-wide repro read left the
+guard thread.
+
+### Verification
+
+`tests/test_memory_guard_tool.py` stalls each read that stood on the
+enforcement path and requires the child's own group to be signalled while it
+is stalled: the guard thread's samples (deadline, cancellation), the kill's
+host-table read (memory trip) and the running summary's repro read
+(deadline). Two tests in `tests/test_child_clock_custody.py` bind the signal
+to the PID reservation: it signals a live root's group (TERM, then KILL for a
+root that ignores TERM) and nothing once the root is reaped.

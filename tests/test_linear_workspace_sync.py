@@ -283,3 +283,63 @@ def test_build_sync_plan_closes_missing_managed_grouped_issues_only() -> None:
     assert plan.updates == ()
     assert plan.duplicate_updates == ()
     assert plan.missing_updates == ("iss_stale",)
+
+
+def test_remote_branch_probe_runs_under_a_plain_interpreter(tmp_path):
+    # `checkout-branch` asks the remote through the repository's bounded
+    # transfer path; a plain interpreter with no installed `molt` (-S skips
+    # site-packages) must still reach it. Git's own ref listing is the oracle.
+    import shutil
+    import sys
+    from pathlib import Path
+
+    from tests.process_guard_common import run_guarded_test_process
+
+    git = shutil.which("git")
+    assert git is not None
+    remote = tmp_path / "remote.git"
+    work = tmp_path / "work"
+    for argv in (
+        [git, "init", "-q", "--bare", str(remote)],
+        [git, "init", "-q", str(work)],
+        [
+            git,
+            "-C",
+            str(work),
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.invalid",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "base",
+        ],
+        [git, "-C", str(work), "push", "-q", str(remote), "HEAD:refs/heads/feature"],
+    ):
+        assert (
+            run_guarded_test_process(
+                argv, capture_output=True, text=True, check=False
+            ).returncode
+            == 0
+        )
+    tool = Path(linear_workspace.__file__).resolve()
+    probe = (
+        "import importlib.util, sys\n"
+        f"spec = importlib.util.spec_from_file_location('lw', {str(tool)!r})\n"
+        "m = importlib.util.module_from_spec(spec); sys.modules['lw'] = m\n"
+        "spec.loader.exec_module(m)\n"
+        f"print(m._git_branch_exists_remote({str(remote)!r}, 'feature'),"
+        f" m._git_branch_exists_remote({str(remote)!r}, 'absent'))\n"
+    )
+    result = run_guarded_test_process(
+        [sys.executable, "-I", "-S", "-c", probe],
+        cwd=work,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert (result.returncode, result.stdout.strip()) == (0, "True False"), (
+        result.stderr
+    )

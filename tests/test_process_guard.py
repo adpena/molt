@@ -1,13 +1,22 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
 
 from molt import process_guard
 from molt.process_environment import NameRule, ProcessEnvironment
-from tests.process_guard_common import install_module_view
+from tests.process_guard_common import (
+    HUNG_CHILD_SOURCE,
+    close_owned_test_process,
+    hung_child_marker,
+    install_module_view,
+    processes_carrying,
+    start_owned_test_process,
+    stop_test_processes_carrying,
+)
 
 
 @pytest.mark.parametrize("rule", list(NameRule))
@@ -197,15 +206,17 @@ def test_typed_argv_boundary_rejects_shell_text() -> None:
 
 def test_bounded_unguarded_probe_preserves_subprocess_contract(monkeypatch) -> None:
     calls: list[tuple[list[str], dict[str, object]]] = []
+    waits: list[tuple[object, float | None]] = []
 
     def fake_popen(command: list[str], **kwargs: object):
         calls.append((command, kwargs))
+
+        def communicate(input_text, *, timeout):
+            waits.append((input_text, timeout))
+            return "head\n", ""
+
         return SimpleNamespace(
-            communicate=lambda _input, *, timeout: (
-                ("head\n", "")
-                if timeout == 30.0
-                else pytest.fail("probe timeout changed")
-            ),
+            communicate=communicate,
             poll=lambda: 0,
             __exit__=lambda *_args: None,
         )
@@ -227,6 +238,21 @@ def test_bounded_unguarded_probe_preserves_subprocess_contract(monkeypatch) -> N
     assert "shell" not in calls[0][1]
     assert calls[0][1]["stdout"] == subprocess.PIPE
     assert calls[0][1]["stderr"] == subprocess.PIPE
+    # No default deadline: a local read waits out a host stall. The probe
+    # reads no inherited stdin, so nothing but the probe itself can hold it.
+    assert waits[0] == (None, None)
+    assert calls[0][1]["stdin"] is subprocess.DEVNULL
+
+    process_guard.run_completed_command(
+        ["git", "patch-id", "--stable"],
+        memory_guard_prefix=None,
+        input="diff\n",
+        timeout=7.5,
+        capture_output=True,
+    )
+    # A caller's input and deadline pass through unchanged.
+    assert calls[1][1]["stdin"] is subprocess.PIPE
+    assert waits[1] == ("diff\n", 7.5)
 
 
 @pytest.mark.parametrize(
@@ -502,7 +528,7 @@ def test_unguarded_probe_retains_live_use_and_original_error_through_gc(
         "-I",
         "-S",
         "-c",
-        "import time; time.sleep(30)"
+        HUNG_CHILD_SOURCE
         if failure == "wait"
         else "import sys; value=sys.stdin.read(); print(value,end=''); sys.stderr.buffer.write(b'diagnostic\\n'); raise SystemExit(7)",
     ]
@@ -598,7 +624,7 @@ def test_unguarded_probe_actual_timeout_keeps_partial_output(tmp_path):
         "-I",
         "-S",
         "-c",
-        "import time; print('before-timeout',flush=True); time.sleep(30)",
+        "print('before-timeout',flush=True)\n" + HUNG_CHILD_SOURCE,
     ]
     with pytest.raises(subprocess.TimeoutExpired) as caught:
         process_guard.run_completed_command(
@@ -645,3 +671,34 @@ def test_unguarded_check_error_preserves_native_popen_args(monkeypatch):
         caught.value.stdout,
         caught.value.stderr,
     ) == (physical, 7, "output", "diagnostic")
+
+
+def test_hung_child_cleanup_stops_only_what_carries_its_own_marker() -> None:
+    """The cleanup's victims carry the test's fresh marker as a whole argument.
+
+    A process whose argv merely contains the text, as a shell's command line
+    can, is not the test's, and neither is one with another test's marker.
+    """
+    marker = hung_child_marker()
+    other = hung_child_marker()
+    assert marker != other
+    with pytest.raises(ValueError):
+        processes_carrying("hung-gate-of-test_integrate_cancels_later_g0")
+    carrying = start_owned_test_process(
+        [sys.executable, "-c", HUNG_CHILD_SOURCE, marker]
+    )
+    mentioning = start_owned_test_process(
+        [sys.executable, "-c", f"# {marker}\n" + HUNG_CHILD_SOURCE]
+    )
+    foreign = start_owned_test_process([sys.executable, "-c", HUNG_CHILD_SOURCE, other])
+    try:
+        assert processes_carrying(marker) == [carrying.pid]
+
+        stop_test_processes_carrying(marker)
+
+        assert carrying.wait() != 0
+        assert mentioning.poll() is None and foreign.poll() is None
+        assert processes_carrying(marker) == []
+    finally:
+        for process in (carrying, mentioning, foreign):
+            close_owned_test_process(process)
