@@ -625,6 +625,16 @@ snapshots cannot be conflated by a static alias map. Candidate liveness lists
 schedule cleanup but do not constitute a second release-state authority. Raw
 scalar carriers remain outside boxed-object cleanup.
 
+Before transport custody is planned, the canonical block-argument pruner
+removes payload lanes with no executable consumer, including loops, state
+transitions and exception observations. Their producers and side effects stay;
+ordinary last uses, frame homes and Python boundaries still own their release.
+This prevents retaining a borrowed value for a dead mixed scalar/object phi
+whose transport would otherwise be deleted after ownership insertion. Live
+mixed phis retain their owned contract. Cleanup arguments introduced by drop
+insertion either feed explicit reference operations or forward to live handler
+arguments; final pruning removes only transport that remains unused.
+
 Every canonical control arc carries custody. A terminator arc binds its target's
 block arguments, and a `CheckException` binds its operands to its handler's
 arguments when it raises. A `TryStart` registers its region: it keeps the
