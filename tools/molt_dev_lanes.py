@@ -27,6 +27,9 @@ Every verdict comes from Git plumbing exit codes and object ids (hazard 5).
 
 from __future__ import annotations
 
+from collections.abc import Generator
+from contextlib import contextmanager
+
 import argparse
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -45,6 +48,7 @@ from molt.checkout_state import is_checkout_state_lock_file
 from molt.custody_layout import BUNDLES_DIRNAME, family_worktrees_root
 from molt.path_custody import host_path_is_within
 from molt.portable_paths import portable_path_component
+from molt.file_locks import _release_file_lock, _try_acquire_file_lock
 from molt.process_environment import ProcessEnvironment
 from tools.molt_dev_common import (
     _COMMANDS,
@@ -516,6 +520,26 @@ def work_in_progress_refusal(repo: Path, *, now: float) -> str | None:
     return "\n".join(lines)
 
 
+@contextmanager
+def _lane_start_lock(repo: Path, slug: str) -> Generator[None]:
+    """Hold ``slug``'s start lock, or refuse: another start of it is running."""
+    common = _driver()._git_common_directory(repo)
+    if common is None:
+        raise DriverError(f"cannot resolve the Git common directory of {repo}")
+    path = common / "molt" / "lane-start" / f"{slug}.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = _try_acquire_file_lock(path)
+    if handle is None:
+        raise DriverError(
+            f"another `lane start {slug}` is running in this repository; wait "
+            "for it, or choose another slug"
+        )
+    try:
+        yield
+    finally:
+        _release_file_lock(handle)
+
+
 def _undo_lane_start(
     git: Any, repo: Path, worktree: Path, branch: str, base: str, env: dict[str, str]
 ) -> str:
@@ -540,6 +564,7 @@ def _undo_lane_start(
         Path(record["path"]).resolve() == resolved for record in _worktrees(git)
     )
     removed: list[str] = []
+    kept: list[str] = []
     if registered:
         proc = git_in_repo("worktree", "remove", str(worktree))
         if proc.returncode != 0:
@@ -551,22 +576,26 @@ def _undo_lane_start(
             )
         removed.append(str(worktree))
     elif worktree.exists():
-        return (
-            f"kept {worktree} and {branch}: {worktree} exists but is no "
-            "registered worktree; inspect it before removing either"
+        # Not registered, so `git worktree add` did not make it; this start's
+        # checks refused an existing path, so another process made it.
+        kept.append(
+            f"{worktree}: it is no registered worktree, so this start did not make it"
         )
     holder = _lane_worktree(_worktrees(git), branch)
     if holder is not None:
-        return f"removed {', '.join(removed) or 'nothing'}; kept {branch}: {holder} holds it"
-    if _ref_sha(git, f"refs/heads/{branch}") is not None:
+        kept.append(f"{branch}: {holder} holds it")
+    elif _ref_sha(git, f"refs/heads/{branch}") is not None:
         proc = git_in_repo("update-ref", "-d", f"refs/heads/{branch}", base)
         if proc.returncode != 0:
-            return (
-                f"removed {', '.join(removed) or 'nothing'}; kept {branch}: it "
-                f"no longer points at {base[:12]} ({proc.stderr.strip()})"
+            kept.append(
+                f"{branch}: it no longer points at {base[:12]} "
+                f"({proc.stderr.strip()}); keep what it holds "
+                f"(`git log {base[:12]}..{branch}`), then `git branch -D {branch}`"
             )
-        removed.append(branch)
-    return f"removed {' and '.join(removed)}" if removed else "created nothing"
+        else:
+            removed.append(branch)
+    done = f"removed {' and '.join(removed)}" if removed else "removed nothing"
+    return done + "".join(f"; kept {item}" for item in kept)
 
 
 def cmd_lane_start(args: argparse.Namespace) -> int:
@@ -583,80 +612,86 @@ def cmd_lane_start(args: argparse.Namespace) -> int:
     main = _main_checkout(_worktrees(git))
     root = Path(args.root).expanduser().resolve() if args.root else _default_root(main)
     worktree = root / slug
-    if _ref_sha(git, f"refs/heads/{branch}") is not None:
-        raise DriverError(
-            f"{branch} already exists; retire it (lane retire {slug}) or choose "
-            "another slug"
-        )
-    if worktree.exists() or worktree.is_symlink():
-        raise DriverError(f"{worktree} already exists; choose another slug or --root")
-    if _record_status(main, slug) in agent_coordination.ACTIVE_STATUSES:
-        raise DriverError(
-            f"{_record_path(main, slug)} is an active record without its branch; "
-            "close it before reusing the slug"
-        )
-    refusal = work_in_progress_refusal(repo, now=time.time())
-    if refusal is not None:
-        raise DriverError(refusal)
-
-    _step(f"fetch {args.remote}/{args.branch}")
-    git.fetch(args.remote, args.branch)
-    base_ref = args.base or f"{args.remote}/{args.branch}"
-    base = git.rev_parse(f"{base_ref}^{{commit}}")
-
-    _step(f"create {branch} at {git.short(base)} in {worktree}")
-    root.mkdir(parents=True, exist_ok=True)
-    env = immutable_git_environment(os.environ)
-    env["GIT_TERMINAL_PROMPT"] = "0"
-    try:
-        proc = _run_fast_captured_command(
-            [
-                "git",
-                "-C",
-                str(repo),
-                "worktree",
-                "add",
-                "--no-track",
-                "-b",
-                branch,
-                str(worktree),
-                base,
-            ],
-            env=ProcessEnvironment(env),
-            timeout=_WORKTREE_ADD_TIMEOUT_S,
-        )
-        if proc.returncode != 0:
+    # One start per slug at a time, from its checks through its record: a
+    # second start of the slug refuses, so no start's undo can meet another
+    # start's worktree or branch (review v4).
+    with _lane_start_lock(repo, slug):
+        if _ref_sha(git, f"refs/heads/{branch}") is not None:
             raise DriverError(
-                f"git worktree add failed (exit {proc.returncode}): "
-                f"{proc.stderr.strip()}"
+                f"{branch} already exists; retire it (lane retire {slug}) or choose "
+                "another slug"
             )
-        _ok(f"created {worktree}")
-        record = agent_coordination.create_task(
-            registry_root=main,
-            source_root=worktree,
-            task=lane_task(slug),
-            lane=branch,
-            extra={
-                "lane": {
-                    "slug": slug,
-                    "branch": branch,
-                    "base_ref": base_ref,
-                    "base_commit": base,
-                    "worktree": str(worktree),
-                    "controller": controller,
-                }
-            },
-        )
-    except BaseException as exc:
-        # `git worktree add` can fail after it made the branch (a hook, the
-        # deadline, an interrupt), and the record can fail after the add;
-        # either way undo what this command created before it reports.
-        undone = _undo_lane_start(git, repo, worktree, branch, base, env)
-        if isinstance(exc, Exception):
-            raise DriverError(f"cannot start {branch}: {exc}; {undone}") from exc
-        _fail(f"interrupted; {undone}")
-        raise
-    _ok(f"recorded {_record_path(main, slug)} ({record['status']})")
+        if worktree.exists() or worktree.is_symlink():
+            raise DriverError(
+                f"{worktree} already exists; choose another slug or --root"
+            )
+        if _record_status(main, slug) in agent_coordination.ACTIVE_STATUSES:
+            raise DriverError(
+                f"{_record_path(main, slug)} is an active record without its branch; "
+                "close it before reusing the slug"
+            )
+        refusal = work_in_progress_refusal(repo, now=time.time())
+        if refusal is not None:
+            raise DriverError(refusal)
+
+        _step(f"fetch {args.remote}/{args.branch}")
+        git.fetch(args.remote, args.branch)
+        base_ref = args.base or f"{args.remote}/{args.branch}"
+        base = git.rev_parse(f"{base_ref}^{{commit}}")
+
+        _step(f"create {branch} at {git.short(base)} in {worktree}")
+        root.mkdir(parents=True, exist_ok=True)
+        env = immutable_git_environment(os.environ)
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        try:
+            proc = _run_fast_captured_command(
+                [
+                    "git",
+                    "-C",
+                    str(repo),
+                    "worktree",
+                    "add",
+                    "--no-track",
+                    "-b",
+                    branch,
+                    str(worktree),
+                    base,
+                ],
+                env=ProcessEnvironment(env),
+                timeout=_WORKTREE_ADD_TIMEOUT_S,
+            )
+            if proc.returncode != 0:
+                raise DriverError(
+                    f"git worktree add failed (exit {proc.returncode}): "
+                    f"{proc.stderr.strip()}"
+                )
+            _ok(f"created {worktree}")
+            record = agent_coordination.create_task(
+                registry_root=main,
+                source_root=worktree,
+                task=lane_task(slug),
+                lane=branch,
+                extra={
+                    "lane": {
+                        "slug": slug,
+                        "branch": branch,
+                        "base_ref": base_ref,
+                        "base_commit": base,
+                        "worktree": str(worktree),
+                        "controller": controller,
+                    }
+                },
+            )
+        except BaseException as exc:
+            # `git worktree add` can fail after it made the branch (a hook, the
+            # deadline, an interrupt), and the record can fail after the add;
+            # either way undo what this command created before it reports.
+            undone = _undo_lane_start(git, repo, worktree, branch, base, env)
+            if isinstance(exc, Exception):
+                raise DriverError(f"cannot start {branch}: {exc}; {undone}") from exc
+            _fail(f"interrupted; {undone}")
+            raise
+        _ok(f"recorded {_record_path(main, slug)} ({record['status']})")
 
     _step(f"provision {worktree}")
     try:
