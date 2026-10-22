@@ -1188,13 +1188,8 @@ def project_cargo_target_dir(
     """
 
     project = Path(project_root)
-    raw = env.get("CARGO_TARGET_DIR", "").strip()
-    if raw:
-        target = Path(raw).expanduser()
-        if not target.is_absolute():
-            target = Path.cwd() / target
-        target = target.absolute()
-    else:
+    target = _explicit_cargo_target_dir(env)
+    if target is None:
         root = project_cargo_target_base(project, env)
         target = (
             cargo_target_dir_for_environment(root, env, source_root=project)
@@ -1203,6 +1198,17 @@ def project_cargo_target_dir(
         )
     _require_external_path("CARGO_TARGET_DIR", target, env, repo_root=project)
     return target
+
+
+def _explicit_cargo_target_dir(env: Mapping[str, str]) -> Path | None:
+    """``CARGO_TARGET_DIR`` as Cargo resolves it, or None when unset."""
+    raw = env.get("CARGO_TARGET_DIR", "").strip()
+    if not raw:
+        return None
+    target = Path(raw).expanduser()
+    if not target.is_absolute():
+        target = Path.cwd() / target
+    return target.absolute()
 
 
 def project_cargo_target_base(project_root: Path, env: Mapping[str, str]) -> Path:
@@ -1233,13 +1239,9 @@ def product_store_dir(project_root: Path, env: Mapping[str, str]) -> Path:
 
     project = Path(project_root)
     shared = project_cargo_target_base(project, env) / "target"
-    raw = env.get("CARGO_TARGET_DIR", "").strip()
-    if raw:
-        target = Path(raw).expanduser()
-        if not target.is_absolute():
-            target = Path.cwd() / target
-        if not host_path_is_within(target, shared):
-            return target.absolute() / PRODUCT_STORE_DIRNAME
+    explicit = _explicit_cargo_target_dir(env)
+    if explicit is not None and not host_path_is_within(explicit, shared):
+        return explicit / PRODUCT_STORE_DIRNAME
     return shared / PRODUCT_STORE_DIRNAME
 
 
