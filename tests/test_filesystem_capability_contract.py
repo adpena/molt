@@ -13,6 +13,7 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+from tests.module_isolation import forget_module
 from tests.process_guard_common import ModuleView
 from tests.stdlib_intrinsic_registry import (
     intrinsic_registry,
@@ -439,9 +440,24 @@ def _logging_handlers_module(monkeypatch):
     module = _logging_module(monkeypatch)
     with monkeypatch.context() as patch:
         patch.setitem(sys.modules, "logging", module)
-        patch.delitem(sys.modules, "logging.handlers", raising=False)
+        forget_module(patch, "logging.handlers")
         handlers = importlib.import_module("logging.handlers")
     return module, handlers
+
+
+def test_loading_molt_logging_handlers_leaves_sys_modules_as_found(
+    monkeypatch,
+) -> None:
+    """Whether or not the host had imported logging's submodules, a test that
+    loads Molt's leaves none of its modules behind."""
+    for key in ("logging.handlers", "logging.config"):
+        forget_module(monkeypatch, key)
+    real_logging = sys.modules["logging"]
+    with pytest.MonkeyPatch.context() as patch:
+        _logging_handlers_module(patch)
+    assert sys.modules["logging"] is real_logging
+    assert "logging.handlers" not in sys.modules
+    assert "logging.config" not in sys.modules
 
 
 def test_logging_handlers_use_normal_package_identity(monkeypatch):
@@ -459,8 +475,8 @@ def test_logging_handlers_use_normal_package_identity(monkeypatch):
     )
     with monkeypatch.context() as patch:
         patch.setitem(sys.modules, "logging", module)
-        patch.delitem(sys.modules, "logging.handlers", raising=False)
-        patch.delitem(sys.modules, "logging.config", raising=False)
+        forget_module(patch, "logging.handlers")
+        forget_module(patch, "logging.config")
         handlers = importlib.import_module("logging.handlers")
         with intrinsic_registry(
             {

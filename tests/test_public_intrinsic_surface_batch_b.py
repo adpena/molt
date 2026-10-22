@@ -88,7 +88,16 @@ def _merge(iterables, key, reverse):
     return sorted(values, key=key, reverse=reverse)
 
 
+def _builtin_class(name):
+    # The runtime owns these classes (molt-obj-model exception_layout.rs); the
+    # probe needs only statistics' error, a ValueError the module re-exports.
+    if name == "StatisticsError":
+        return type(name, (ValueError,), {{"__module__": "statistics"}})
+    raise KeyError(name)
+
+
 install_registry({{
+    "molt_builtin_class_lookup": _builtin_class,
     "molt_base64_b64encode": lambda s, altchars=None: _host_base64.b64encode(bytes(s), altchars),
     "molt_base64_b64decode": lambda s, altchars=None, validate=False: _host_base64.b64decode(s, altchars=altchars, validate=validate),
     "molt_base64_standard_b64encode": lambda s: _host_base64.standard_b64encode(bytes(s)),
