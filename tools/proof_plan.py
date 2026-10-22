@@ -141,9 +141,26 @@ TOOLCHAIN_PROJECTIONS = frozenset(
 RELEASE_PROJECTIONS = frozenset({"tool-release", "runtime-tool-release"})
 
 
-@functools.cache
 def _tool_release_kinds(root: Path) -> dict[str, str]:
-    """Each pinned tool release and the projection that names it."""
+    """Each pinned tool release and the projection that names it.
+
+    Cached per manifest state, not per root: the landing runner validates
+    batch after batch in one sandbox path, each with its own manifest.
+    """
+    from molt.tool_releases import tool_releases_path
+
+    try:
+        stat = tool_releases_path(root).stat()
+        signature = (stat.st_ino, stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        signature = None  # the loader reports the missing manifest
+    return _tool_release_kinds_of(root, signature)
+
+
+@functools.lru_cache(maxsize=8)
+def _tool_release_kinds_of(
+    root: Path, signature: tuple[int, int, int] | None
+) -> dict[str, str]:
     from molt.tool_releases import load_tool_releases
 
     return {
@@ -3671,8 +3688,12 @@ def _runtime_command(
         command = pinned_command(
             tool, root, environ=environ, cwd=cwd, provision=provision
         )
-        # Keyed after provisioning, which may have just written the trees.
-        _RUNTIME_COMMANDS[key()] = command
+        # Keyed after provisioning, which may have just written the trees;
+        # never under an absent installation (a tree retired meanwhile),
+        # which a later call must refuse or provision again.
+        stored = key()
+        if all(part[3] is not None for part in stored[2:]):
+            _RUNTIME_COMMANDS[stored] = command
     return command
 
 
@@ -4130,7 +4151,7 @@ def admit_toolchains(
         if projection.missing:
             details.append(
                 _not_provisioned(
-                    projection.missing, attempted=runtime_error is not None
+                    projection.missing, attempted=provisioning_error is not None
                 )
             )
         if len(details) == 1:

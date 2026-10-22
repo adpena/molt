@@ -1212,6 +1212,171 @@ sys.exit(molt_dev_retire.cleanup_worktree(
     assert not target.exists() and not uv_environment.exists()
 
 
+def test_cleanup_makes_a_running_vm_release_its_pins_of_the_worktree_first(
+    origin_and_clone, tmp_path
+):
+    """A Linux VM that pins files of the retiring checkout releases them first.
+
+    The landing runs inside the checkout it removes, with every later import
+    refused, as in the test above. Fake `limactl` and `lsof` executables model
+    one running vz VM that mounts the checkout's parent and whose process
+    holds a file of the checkout until its guest runs the release; the release
+    must come before the removal, while the checkout's sources can still
+    guard a command.
+    """
+    origin, _work = origin_and_clone
+    wt = _worktree_off(origin, tmp_path, "wt_vm_pins")
+    lima_home = tmp_path / "lima"
+    instance = lima_home / "vm"
+    instance.mkdir(parents=True)
+    # The pytest worker outlives the child, so this hostagent is live.
+    (instance / "ha.pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
+    dropped = tmp_path / "dropped"
+    row = {
+        "name": "vm",
+        "status": "Running",
+        "dir": str(instance),
+        "vmType": "vz",
+        "arch": "aarch64",
+        "cpus": 1,
+        "memory": 1 << 30,
+        "disk": 1 << 30,
+        "config": {
+            "mounts": [
+                {
+                    "location": str(tmp_path),
+                    "mountPoint": str(tmp_path),
+                    "writable": False,
+                }
+            ]
+        },
+    }
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "limactl").write_text(
+        f"""#!{sys.executable}
+import sys
+from pathlib import Path
+args = sys.argv[1:]
+if args == ["list", "--json"]:
+    print({json.dumps(json.dumps(row))})
+elif (args[:8] == ["shell", "--workdir", "/", "vm", "sudo", "-n", "sh", "-c"]
+      and args[8].startswith("echo 2 > /proc/sys/vm/drop_caches && stat -- ")):
+    Path({str(dropped)!r}).write_text(str(Path({str(wt)!r}).exists()))
+else:
+    sys.exit(f"unexpected limactl {{args}}")
+""",
+        encoding="utf-8",
+    )
+    (bin_dir / "lsof").write_text(
+        f"""#!{sys.executable}
+from pathlib import Path
+lines = ["p77", "ccom.apple.Virtualization.VirtualMachine",
+         "f3", "tREG", "s1", "k1", "n{instance / "disk"}"]
+if not Path({str(dropped)!r}).exists():
+    lines += ["f9", "tREG", "s4096", "k1", "n{wt / "README.md"}"]
+print("\\n".join(lines))
+""",
+        encoding="utf-8",
+    )
+    for tool in ("limactl", "lsof"):
+        (bin_dir / tool).chmod(0o755)
+    code = f"""
+import os
+import sys
+from pathlib import Path
+sys.path[:0] = [{str(REPO_ROOT / "src")!r}, {str(REPO_ROOT)!r}]
+from tools import molt_dev as drv
+from tools import molt_dev_retire
+
+
+class RefuseAfterRemoval:
+    armed = False
+
+    def find_spec(self, name, path=None, target=None):
+        if self.armed and name.split(".")[0] in ("molt", "tools"):
+            raise ImportError(f"imported {{name}} after the worktree was removed")
+        return None
+
+
+guard = RefuseAfterRemoval()
+sys.meta_path.insert(0, guard)
+real = molt_dev_retire._run_fast_captured_command
+
+
+def run(command, **kwargs):
+    result = real(command, **kwargs)
+    if command[3:5] == ["worktree", "remove"]:
+        guard.armed = True
+    return result
+
+
+molt_dev_retire._run_fast_captured_command = run
+wt = Path(sys.argv[1])
+os.chdir(wt)
+sys.exit(molt_dev_retire.cleanup_worktree(
+    drv.Git(wt), wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=None
+))
+"""
+    completed = run_guarded_test_process(
+        [sys.executable, "-c", code, str(wt)],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "LIMA_HOME": str(lima_home),
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        },
+        timeout=180,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert not wt.exists()
+    assert f"vm released its pins of {wt}: 1 host files released" in (
+        completed.stderr
+    ), completed.stderr
+    assert dropped.read_text(encoding="utf-8") == "True", "release before removal"
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ImportError("tools.linux_vm"),
+        ValueError("bad definition"),
+        TypeError("bad Lima JSON"),
+        KeyError("dir"),
+        RuntimeError("limactl list failed"),
+        OSError("lsof"),
+        subprocess.TimeoutExpired("lsof", 60),
+    ],
+    ids=lambda error: type(error).__name__,
+)
+def test_the_guest_release_never_aborts_a_cleanup(
+    drv, origin_and_clone, tmp_path, monkeypatch, capsys, error
+):
+    """B5: whatever the release raises, the checkout is still removed."""
+    from tools import linux_vm
+
+    origin, _work = origin_and_clone
+    wt = _worktree_off(origin, tmp_path, "wt_release_raises")
+
+    def fail(*_args, **_kwargs):
+        raise error
+
+    if isinstance(error, ImportError):
+        # `from tools import linux_vm` itself fails.
+        import tools
+
+        monkeypatch.delattr(tools, "linux_vm")
+        monkeypatch.setitem(sys.modules, "tools.linux_vm", None)
+    else:
+        monkeypatch.setattr(linux_vm, "release_for_paths", fail)
+    rc = molt_dev_retire.cleanup_worktree(
+        drv.Git(wt), wt, "origin/main", drv.DEFAULT_IGNORE_GLOBS, force_sha=None
+    )
+    assert rc == drv.EXIT_OK
+    assert not wt.exists()
+    assert f"Linux VMs may keep files of {wt}" in capsys.readouterr().err
+
+
 def test_failed_worktree_removal_keeps_the_checkouts_state(
     drv, origin_and_clone, tmp_path, monkeypatch
 ):
@@ -1255,10 +1420,17 @@ def test_retirement_binds_complete_checkout_inventory_independent_of_caller_sele
 ):
     from molt import checkout_state
     from molt.build_state_layout import build_state_root
-    from tools import drift_harvest
+    from tools import drift_harvest, linux_vm
 
     origin, _work = origin_and_clone
     wt = _worktree_off(origin, tmp_path, "wt_retirement_inventory")
+    guest_releases: list[tuple[tuple[Path, ...], bool]] = []
+
+    def release_guests(paths, *, environment, host):
+        guest_releases.append((tuple(paths), wt.exists()))
+        return ()
+
+    monkeypatch.setattr(linux_vm, "release_for_paths", release_guests)
     main = tmp_path / "mainclone"
     ext = tmp_path / "artifacts"
     ext.mkdir()
@@ -1392,6 +1564,12 @@ def test_retirement_binds_complete_checkout_inventory_independent_of_caller_sele
                 "kind": kind,
             }
     assert foreign_bytes() == before
+    # Linux VMs release their pins of the checkout and its state roots once,
+    # just before the removal, while they still exist (HF-463).
+    [(released, checkout_present)] = guest_releases
+    assert checkout_present
+    assert {wt, target, uv_environment} <= set(released)
+    assert foreign_target not in released
 
 
 def test_cleanup_refuses_unpushed(drv, origin_and_clone, tmp_path):
