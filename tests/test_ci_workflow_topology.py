@@ -61,16 +61,20 @@ def _default_python_version() -> str:
     return version
 
 
-# A step's `run` script is read as the POSIX shell reads it: comments (a `#`
-# at the start of a word, outside quotes, up to the newline it leaves in
-# place), heredoc bodies (not commands; a body that runs molt marks its
-# command), line continuations, then shlex words and the operators between
-# simple commands. GitHub substitutes `${{ ... }}` before any shell runs:
-# `${{ github.workspace }}` is the workspace, any other expression one word.
+# A step's `run` script is read as the POSIX shell reads it, for the
+# constructs below (the HF-456 row lists what it does not model). A
+# quote-aware pre-pass first: `${{ github.workspace }}` becomes
+# $GITHUB_WORKSPACE and any other GitHub expression one word; a line
+# continuation joins its lines; a `#` at the start of a word starts a comment
+# up to its newline, which stays; `$(...)`, `$((...))`, backquotes and
+# `$'...'` become one word each, inside double quotes too; heredoc bodies are
+# dropped. A substitution or heredoc body whose text runs molt marks its
+# command, which is then reported, never passed. shlex then splits words and
+# operators.
 _WORKSPACE_EXPRESSION = re.compile(r"\$\{\{\s*github\.workspace\s*\}\}")
 _GITHUB_EXPRESSION = re.compile(r"\$\{\{.*?\}\}")
-_HEREDOC = re.compile(r"<<(-?)[ \t]*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2")
-_HEREDOC_RUNS_MOLT = "MOLT-HEREDOC-RUNS-MOLT"
+_HEREDOC = re.compile(r"<<(-?)[ \t]*\\?(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2")
+_RUNS_MOLT_UNREAD = "MOLT-RUNS-MOLT-UNREAD"
 _MOLT_MODULE_TEXT = re.compile(r"-m\s*molt\b")
 _OPERATORS = (
     "<<<", "<<-", "&&", "||", ";;", "|&", ">>", "<<", ">&", "<&", "&>",
@@ -78,8 +82,11 @@ _OPERATORS = (
 )  # fmt: skip
 _COMMAND_SEPARATORS = frozenset({"\n", ";", ";;", "&", "&&", "|", "||", "|&"})
 _RESERVED_WORDS = frozenset(
-    {"if", "then", "elif", "else", "fi", "do", "done", "while", "until", "!", "{", "}"}
-)
+    {
+        "if", "then", "elif", "else", "fi", "do", "done", "while", "until",
+        "!", "{", "}", "esac",
+    }
+)  # fmt: skip
 _ASSIGNMENT = re.compile(r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)=(?P<value>.*)", re.S)
 _PYTHON_EXECUTABLE = re.compile(r"python[0-9.]*")
 _VARIABLE = re.compile(r"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?")
@@ -124,41 +131,129 @@ _UV_RUN_VALUE_OPTIONS = frozenset(
 _UV_RUN_WITHOUT_PROJECT = frozenset({"--no-project", "--only-dev", "--only-group"})
 
 
+def _skip_quoted(text: str, index: int, quote: str) -> int:
+    """The index after the quote that closes ``quote`` (', " or $') at ``index``."""
+    position = index + len(quote)
+    closer = '"' if quote == '"' else "'"
+    while position < len(text):
+        char = text[position]
+        if char == "\\" and quote != "'":
+            position += 2
+        elif quote == '"' and text.startswith("$(", position):
+            position = _skip_substitution(text, position)
+        elif quote == '"' and char == "`":
+            position = _skip_backquote(text, position)
+        elif char == closer:
+            return position + 1
+        else:
+            position += 1
+    return len(text)
+
+
+def _skip_substitution(text: str, index: int) -> int:
+    """The index after the `)` closing the `$(` (or `$((`) at ``index``."""
+    position, depth = index + 2, 1
+    while position < len(text) and depth:
+        char = text[position]
+        if char == "\\":
+            position += 2
+            continue
+        if text.startswith("$'", position):
+            position = _skip_quoted(text, position, "$'")
+            continue
+        if char in "'\"":
+            position = _skip_quoted(text, position, char)
+            continue
+        if text.startswith("$(", position):
+            position = _skip_substitution(text, position)
+            continue
+        if char == "`":
+            position = _skip_backquote(text, position)
+            continue
+        depth += {"(": 1, ")": -1}.get(char, 0)
+        position += 1
+    return position
+
+
+def _skip_backquote(text: str, index: int) -> int:
+    """The index after the backquote closing the one at ``index``."""
+    position = index + 1
+    while position < len(text):
+        if text[position] == "\\":
+            position += 2
+        elif text[position] == "`":
+            return position + 1
+        else:
+            position += 1
+    return len(text)
+
+
+def _flatten(segment: str) -> tuple[str, bool]:
+    """``segment`` with each substitution one word, and whether one runs molt."""
+    out: list[str] = []
+    runs_molt = False
+    position = 0
+    while position < len(segment):
+        if segment.startswith("$(", position):
+            end = _skip_substitution(segment, position)
+        elif segment[position] == "`":
+            end = _skip_backquote(segment, position)
+        else:
+            out.append(segment[position])
+            position += 1
+            continue
+        runs_molt |= bool(_MOLT_MODULE_TEXT.search(segment[position:end]))
+        out.append("MOLT-SUBSTITUTION")
+        position = end
+    return "".join(out), runs_molt
+
+
 def _shell_text(run: str) -> str:
-    """``run`` with comments, continuations and heredoc bodies removed."""
+    """``run`` read by the pre-pass above."""
     text = _GITHUB_EXPRESSION.sub(
         "GITHUB_EXPRESSION", _WORKSPACE_EXPRESSION.sub("$GITHUB_WORKSPACE", run)
     )
     out: list[str] = []
     pending: list[tuple[str, bool]] = []
-    quote: str | None = None
     word_start = True
     index = 0
     while index < len(text):
         char = text[index]
-        if quote == "'":
-            out.append(char)
-            quote = None if char == "'" else quote
-            index += 1
-            continue
         if char == "\\" and index + 1 < len(text):
-            if text[index + 1] == "\n" and quote is None:
-                index += 2  # a line continuation joins the lines
-                continue
-            out.append(text[index : index + 2])
+            if text[index + 1] != "\n":  # a line continuation joins the lines
+                out.append(text[index : index + 2])
             index += 2
             word_start = False
             continue
-        if quote == '"':
-            out.append(char)
-            quote = None if char == '"' else quote
-            index += 1
+        if text.startswith("$'", index):
+            index = _skip_quoted(text, index, "$'")
+            out.append("MOLT-ANSI-C-STRING")
+            word_start = False
+            continue
+        if text.startswith("$(", index) or char == "`":
+            end = (
+                _skip_substitution(text, index)
+                if char == "$"
+                else _skip_backquote(text, index)
+            )
+            flattened, runs_molt = _flatten(text[index:end])
+            out.append(flattened)
+            if runs_molt:
+                out.append(f" {_RUNS_MOLT_UNREAD} ")
+            index = end
+            word_start = False
             continue
         if char in "'\"":
-            quote = char
-            out.append(char)
+            end = _skip_quoted(text, index, char)
+            segment = text[index:end]
+            runs_molt = False
+            if char == '"':
+                segment, runs_molt = _flatten(segment)
+            out.append(segment)
+            if runs_molt:
+                out.append(f" {_RUNS_MOLT_UNREAD} ")
+            index = end
             word_start = False
-            index += 1
             continue
         if char == "#" and word_start:
             while index < len(text) and text[index] != "\n":
@@ -167,7 +262,7 @@ def _shell_text(run: str) -> str:
         heredoc = _HEREDOC.match(text, index) if char == "<" else None
         if heredoc is not None and not text.startswith("<<<", index):
             pending.append((heredoc[3], heredoc[1] == "-"))
-            out.append(text[index : heredoc.end()])
+            out.append(f"<< {heredoc[3]}")
             index = heredoc.end()
             word_start = False
             continue
@@ -184,7 +279,7 @@ def _shell_text(run: str) -> str:
                         break
                     body.append(line)
                 if _MOLT_MODULE_TEXT.search("\n".join(body)):
-                    out.append(f" {_HEREDOC_RUNS_MOLT}")
+                    out.append(f" {_RUNS_MOLT_UNREAD}")
             pending.clear()
             out.append("\n")
             word_start = True
@@ -199,7 +294,7 @@ def _shell_words(run: str) -> list[str]:
     """The words and operators of ``run``, operators split one by one."""
     lexer = shlex.shlex(_shell_text(run), posix=True, punctuation_chars=True)
     lexer.whitespace = " \t\r"
-    lexer.wordchars += "${}"
+    lexer.wordchars += "${}+:@%,^!"
     lexer.commenters = ""
     words: list[str] = []
     for word in lexer:
@@ -262,8 +357,8 @@ def _names_src(pythonpath: object, *, relative_ok: bool) -> bool:
 
 @dataclass
 class _ShellState:
-    """What one shell scope holds: exported and plain variables, and whether
-    it may have left the workspace directory."""
+    """What one shell holds: exported and plain variables, and whether it may
+    have left the workspace directory."""
 
     exported: dict[str, object]
     variables: dict[str, object]
@@ -271,6 +366,11 @@ class _ShellState:
 
     def copy(self) -> _ShellState:
         return _ShellState(dict(self.exported), dict(self.variables), self.moved)
+
+
+_DECLARATIONS = frozenset(
+    {"export", "unset", "declare", "typeset", "local", "readonly"}
+)
 
 
 def _molt_module_runs(
@@ -284,171 +384,256 @@ def _molt_module_runs(
     be imported there: `uv run` with the project (with `--no-sync`, only after
     a sync earlier in the job or script) or a PYTHONPATH entry naming the
     repository's `src` that the interpreter honors. Assignments before a
-    command apply to it; `export`, `export -n`, `unset` and a reassignment of
-    an exported variable apply to the rest of its scope, and a `( ... )`
-    subshell's changes end with it; the step, job and workflow env come first.
-    A string a shell runs (`sh -c`, `eval`, `<<<`) is read as a script; a
+    command apply to it; `export`, `unset`, `declare`/`typeset`/`local`/
+    `readonly` and a reassignment of an exported variable apply to the rest of
+    the shell; a `( ... )` subshell, a pipeline element and a background
+    command keep their changes; `eval` reads its string in the shell, `sh -c`
+    and `<<<` in a child shell; the step, job and workflow env come first. A
     molt run this reading cannot attribute to an interpreter (`sudo`, a
-    heredoc fed to a shell) is reported as unprovided, never passed."""
+    heredoc or substitution that runs molt) is reported, never passed."""
     found: list[tuple[str, bool]] = []
-    scopes = [_ShellState(dict(env), {}, moved)]
-    words = _shell_words(run)
-    commands: list[list[str]] = [[]]
-    for word in words:
+    _read_script(run, [_ShellState(dict(env), {}, moved)], found, [project_synced])
+    return found
+
+
+def _read_script(
+    run: str,
+    scopes: list[_ShellState],
+    found: list[tuple[str, bool]],
+    synced: list[bool],
+) -> None:
+    """Read ``run`` in the shell ``scopes[-1]`` (its subshells push scopes)."""
+    commands: list[tuple[list[str], str, str, bool]] = []
+    current: list[str] = []
+    before = "\n"
+    case_depth = 0
+    current_in_case = False
+    for word in [*_shell_words(run), "\n"]:
         if word in _COMMAND_SEPARATORS:
-            commands.append([])
-        elif word in {"(", ")"}:
-            commands.append([word])
-            commands.append([])
+            commands.append((current, before, word, current_in_case))
+            current, before, current_in_case = [], word, case_depth > 0
+        elif word in {"(", ")"} and case_depth == 0:
+            commands.append((current, before, word, current_in_case))
+            commands.append(([word], word, word, False))
+            current, before, current_in_case = [], word, False
         else:
-            commands[-1].append(word)
-    for command in commands:
-        if command == ["("]:
+            if not current and word == "case":
+                case_depth += 1
+                current_in_case = True
+            elif word == "esac" and case_depth:
+                case_depth -= 1
+            current.append(word)
+    for words, before, after, in_case in commands:
+        if words == ["("]:
             scopes.append(scopes[-1].copy())
-            continue
-        if command == [")"]:
+        elif words == [")"]:
             if len(scopes) > 1:
                 scopes.pop()
-            continue
-        state = scopes[-1]
-        words = [word for word in command if word not in _RESERVED_WORDS]
-        argv: list[str] = []
-        redirects: list[tuple[str, str]] = []
-        index = 0
-        while index < len(words):
-            if words[index] in _OPERATORS:
-                target = words[index + 1] if index + 1 < len(words) else ""
-                redirects.append((words[index], target))
-                index += 2
+        elif words:
+            if in_case and ")" in words:
+                words = words[words.index(")") + 1 :]  # a case pattern
+            # A pipeline element or a background command runs in a subshell.
+            if before in {"|", "|&"} or after in {"|", "|&", "&"}:
+                _read_command(words, [scopes[-1].copy()], found, synced)
             else:
-                argv.append(words[index])
-                index += 1
-        if not argv and not redirects:
+                _read_command(words, scopes, found, synced)
+
+
+def _declare(argv: list[str], state: _ShellState) -> None:
+    """Apply `export`, `unset`, `declare`, `typeset`, `local` or `readonly`."""
+    options = [word for word in argv[1:] if word[:1] in {"-", "+"}]
+    exporting = argv[0] == "export" or any(
+        word.startswith("-") and "x" in word[1:] for word in options
+    )
+    unexporting = (argv[0] == "export" and "-n" in options) or any(
+        word.startswith("+") and "x" in word[1:] for word in options
+    )
+    for word in argv[1:]:
+        if word[:1] in {"-", "+"}:
             continue
-        if argv[:2] == ["uv", "sync"]:
-            project_synced = True
-        if argv[:1] == ["cd"]:
-            state.moved |= argv[1:] not in ([], ["."], ["$GITHUB_WORKSPACE"])
-            continue
-        if argv[:1] in (["export"], ["unset"]):
-            unexport = argv[0] == "export" and "-n" in argv[1:]
-            for word in argv[1:]:
-                if word.startswith("-"):
-                    continue
-                assignment = _ASSIGNMENT.fullmatch(word)
-                name = assignment["name"] if assignment else word
-                if argv[0] == "unset":
-                    state.exported.pop(name, None)
-                    state.variables.pop(name, None)
-                elif unexport:
-                    if name in state.exported:
-                        state.variables[name] = state.exported.pop(name)
-                elif assignment is not None:
-                    state.exported[name] = assignment["value"]
-                elif name in state.variables:
-                    state.exported[name] = state.variables.pop(name)
-            continue
-        if argv and all(_ASSIGNMENT.fullmatch(word) for word in argv):
-            for word in argv:
-                assignment = _ASSIGNMENT.fullmatch(word)
-                assert assignment is not None
-                target = (
-                    state.exported
-                    if assignment["name"] in state.exported
-                    else state.variables
-                )
-                target[assignment["name"]] = assignment["value"]
-            continue
-        local = dict(state.exported)
-        original = argv
-        while argv:
-            if assignment := _ASSIGNMENT.fullmatch(argv[0]):
-                local[assignment["name"]] = assignment["value"]
-                argv = argv[1:]
-            elif argv[0] == "env":
-                argv = argv[1:]
-                while argv and argv[0].startswith("-"):
-                    option = argv.pop(0)
-                    if option in {"-i", "-", "--ignore-environment"}:
-                        local.clear()
-                    elif option in {"-u", "--unset"} and argv:
-                        local.pop(argv.pop(0), None)
-            elif argv[0] in _COMMAND_WRAPPERS:
-                operands, valued = _COMMAND_WRAPPERS[argv[0]]
-                argv = argv[1:]
-                while argv and argv[0].startswith("-"):
-                    argv = argv[2:] if argv[0] in valued else argv[1:]
-                argv = argv[operands:]
-            else:
-                break
-        script: str | None = None
-        if argv[:1] == ["eval"]:
-            script = " ".join(argv[1:])
-        elif argv and argv[0].rsplit("/", 1)[-1] in _SHELLS:
-            options = [word for word in argv[1:] if word.startswith("-")]
-            if any(
-                "c" in option[1:] for option in options if not option.startswith("--")
-            ):
-                operands = [word for word in argv[1:] if not word.startswith("-")]
-                script = operands[0] if operands else ""
-            else:
-                strings = [target for op, target in redirects if op == "<<<"]
-                script = strings[0] if strings else None
-        if script is not None:
-            found += _molt_module_runs(
-                script, local, project_synced=project_synced, moved=state.moved
+        assignment = _ASSIGNMENT.fullmatch(word)
+        name = assignment["name"] if assignment else word
+        value = assignment["value"] if assignment else None
+        if argv[0] == "unset":
+            state.exported.pop(name, None)
+            state.variables.pop(name, None)
+        elif unexporting:
+            held = state.exported.pop(name, state.variables.get(name))
+            state.variables[name] = held if value is None else value
+        elif exporting:
+            held = state.variables.pop(name, state.exported.get(name))
+            state.exported[name] = held if value is None else value
+        elif value is not None:
+            target = state.exported if name in state.exported else state.variables
+            target[name] = value
+
+
+def _read_command(
+    command: list[str],
+    scopes: list[_ShellState],
+    found: list[tuple[str, bool]],
+    synced: list[bool],
+) -> None:
+    state = scopes[-1]
+    words = [word for word in command if word not in _RESERVED_WORDS]
+    argv: list[str] = []
+    redirects: list[tuple[str, str]] = []
+    index = 0
+    while index < len(words):
+        if words[index] in _OPERATORS:
+            redirects.append(
+                (words[index], words[index + 1] if index + 1 < len(words) else "")
             )
-            if _HEREDOC_RUNS_MOLT in original:
-                found.append((shlex.join(original), False))
-            continue
-        uv_synced = False
-        if argv[:2] == ["uv", "run"]:
-            rest = argv[2:]
-            uv_synced = str(local.get("UV_NO_PROJECT", "")).lower() not in _TRUE
-            no_sync = str(local.get("UV_NO_SYNC", "")).lower() in _TRUE
-            module = None
-            while rest and rest[0].startswith("-"):
-                option = rest.pop(0)
-                if option in {"-m", "--module"}:
-                    module = rest[0] if rest else None
-                    break
-                uv_synced &= option not in _UV_RUN_WITHOUT_PROJECT
-                no_sync |= option == "--no-sync"
-                if option in _UV_RUN_VALUE_OPTIONS and rest:
-                    rest.pop(0)
-            uv_synced &= project_synced or not no_sync
-            if module is not None:
-                if _is_molt(module):
-                    found.append((shlex.join(argv), uv_synced))
-                continue
-            argv = rest
-        if argv[:1] == ["py"]:  # the Windows launcher, as `py -3.12`
-            argv = argv[1:]
-            if argv and re.fullmatch(r"-[0-9.]+(-[0-9]+)?", argv[0]):
-                argv = argv[1:]
-        elif not argv or not (
-            _PYTHON_EXECUTABLE.fullmatch(argv[0].rsplit("/", 1)[-1])
-            or _VARIABLE.fullmatch(argv[0])
-        ):
-            if _HEREDOC_RUNS_MOLT in original or any(
-                (word == "-m" and following.split(".")[0] == "molt")
-                or word == "-mmolt"
-                or word.startswith("-mmolt.")
-                for word, following in zip(original, [*original[1:], ""])
-            ):
-                found.append((shlex.join(original), False))
-            continue
+            index += 2
         else:
-            argv = argv[1:]
-        module, ignores_pythonpath = _python_module(argv)
-        if not _is_molt(module):
-            continue
-        provided = uv_synced or (
-            not ignores_pythonpath
-            and _names_src(local.get("PYTHONPATH"), relative_ok=not state.moved)
+            argv.append(words[index])
+            index += 1
+    if not argv:
+        return
+    unread = any(_RUNS_MOLT_UNREAD in word for word in argv)
+    if argv[:2] == ["uv", "sync"]:
+        synced[0] = True
+    if argv[0] in {"cd", "pushd", "popd"}:
+        state.moved |= argv[0] != "cd" or argv[1:] not in (
+            [],
+            ["."],
+            ["$GITHUB_WORKSPACE"],
         )
-        found.append((shlex.join(argv), provided))
-    return found
+        return
+    if argv[0] in _DECLARATIONS:
+        _declare(argv, state)
+        if unread:
+            found.append((shlex.join(argv), False))
+        return
+    if all(_ASSIGNMENT.fullmatch(word) for word in argv):
+        for word in argv:
+            assignment = _ASSIGNMENT.fullmatch(word)
+            assert assignment is not None
+            target = (
+                state.exported
+                if assignment["name"] in state.exported
+                else state.variables
+            )
+            target[assignment["name"]] = assignment["value"]
+        return
+    local = dict(state.exported)
+    original = argv
+    while argv:
+        if assignment := _ASSIGNMENT.fullmatch(argv[0]):
+            local[assignment["name"]] = assignment["value"]
+            argv = argv[1:]
+        elif argv[0] == "env":
+            argv = argv[1:]
+            while argv and argv[0].startswith("-"):
+                option = argv.pop(0)
+                if option in {"-i", "-", "--ignore-environment"}:
+                    local.clear()
+                elif option in {"-u", "--unset"} and argv:
+                    local.pop(argv.pop(0), None)
+        elif argv[0] in _COMMAND_WRAPPERS:
+            operands, valued = _COMMAND_WRAPPERS[argv[0]]
+            argv = argv[1:]
+            while argv and argv[0].startswith("-"):
+                argv = argv[2:] if argv[0] in valued else argv[1:]
+            argv = argv[operands:]
+        else:
+            break
+    if argv[:1] == ["eval"]:
+        # eval runs its string in this shell: its changes stay.
+        _read_script(" ".join(argv[1:]), scopes, found, synced)
+        if unread:
+            found.append((shlex.join(original), False))
+        return
+    if argv and argv[0].rsplit("/", 1)[-1] in _SHELLS:
+        script = _shell_script(argv[1:], redirects)
+        if script is not None:
+            child = _ShellState(local, {}, state.moved)
+            _read_script(script, [child], found, synced)
+            if unread:
+                found.append((shlex.join(original), False))
+            return
+    uv_synced = False
+    if argv[:2] == ["uv", "run"]:
+        rest = argv[2:]
+        uv_synced = str(local.get("UV_NO_PROJECT", "")).lower() not in _TRUE
+        no_sync = str(local.get("UV_NO_SYNC", "")).lower() in _TRUE
+        module = None
+        while rest and rest[0].startswith("-"):
+            option = rest.pop(0)
+            if option in {"-m", "--module"}:
+                module = rest[0] if rest else None
+                break
+            uv_synced &= option not in _UV_RUN_WITHOUT_PROJECT
+            no_sync |= option == "--no-sync"
+            if option in _UV_RUN_VALUE_OPTIONS and rest:
+                rest.pop(0)
+        uv_synced &= synced[0] or not no_sync
+        if module is not None:
+            if _is_molt(module):
+                found.append((shlex.join(argv), uv_synced))
+            return
+        argv = rest
+    if argv[:1] == ["py"]:  # the Windows launcher, as `py -3.12`
+        argv = argv[1:]
+        if argv and re.fullmatch(r"-[0-9.]+(-[0-9]+)?", argv[0]):
+            argv = argv[1:]
+    elif not argv or not (
+        _PYTHON_EXECUTABLE.fullmatch(argv[0].rsplit("/", 1)[-1])
+        or _VARIABLE.fullmatch(argv[0])
+    ):
+        if unread or any(
+            (word == "-m" and following.split(".")[0] == "molt")
+            or word == "-mmolt"
+            or word.startswith("-mmolt.")
+            for word, following in zip(original, [*original[1:], ""])
+        ):
+            found.append((shlex.join(original), False))
+        return
+    else:
+        argv = argv[1:]
+    module, ignores_pythonpath = _python_module(argv)
+    if not _is_molt(module):
+        if unread:
+            found.append((shlex.join(original), False))
+        return
+    provided = uv_synced or (
+        not ignores_pythonpath
+        and _names_src(local.get("PYTHONPATH"), relative_ok=not state.moved)
+    )
+    found.append((shlex.join(argv), provided))
+
+
+# Shell options that take the next word as their value.
+_SHELL_VALUE_OPTIONS = frozenset({"-o", "+o", "-O", "+O", "--rcfile", "--init-file"})
+
+
+def _shell_script(words: list[str], redirects: list[tuple[str, str]]) -> str | None:
+    """The script a shell command runs from a string: its `-c` operand, or a
+    `<<<` string; None when it runs a file or reads stdin."""
+    command_string = False
+    operands: list[str] = []
+    index = 0
+    while index < len(words):
+        word = words[index]
+        if word in _SHELL_VALUE_OPTIONS:
+            index += 2
+            continue
+        if word == "--":
+            operands = words[index + 1 :]
+            break
+        if word.startswith("--"):
+            index += 1
+            continue
+        if word[:1] in {"-", "+"} and len(word) > 1:
+            command_string |= "c" in word[1:]
+            index += 1
+            continue
+        operands = words[index:]
+        break
+    if command_string:
+        return operands[0] if operands else ""
+    strings = [target for operator, target in redirects if operator == "<<<"]
+    return strings[0] if strings else None
 
 
 def _github_env_writes(run: str) -> dict[str, str]:
@@ -476,8 +661,24 @@ def _github_env_writes(run: str) -> dict[str, str]:
 # A composite action's step that runs only when the action's `sync` input is
 # true (its `if` requires it) runs after the action's sync step.
 _SYNC_INPUT_CONDITION = re.compile(
-    r"\b(?:inputs|steps\.inputs\.outputs)\.sync\s*==\s*'true'"
+    r"(?:inputs|steps\.inputs\.outputs)\.sync\s*==\s*'true'"
 )
+
+
+def _requires_sync_input(condition: str) -> bool:
+    """Whether a step's `if` requires the action's sync input: one of its
+    top-level `&&` conjuncts, with no `||` or negation anywhere."""
+    text = condition.strip()
+    if text.startswith("${{") and text.endswith("}}"):
+        text = text[3:-2].strip()
+    if "||" in text or "!" in text.replace("!=", ""):
+        return False
+    return any(
+        _SYNC_INPUT_CONDITION.fullmatch(part.strip().strip("()").strip())
+        for part in text.split("&&")
+    )
+
+
 _WORKSPACE_DIRECTORIES = frozenset(
     {"", ".", "$GITHUB_WORKSPACE", "${{ github.workspace }}"}
 )
@@ -521,10 +722,7 @@ def _step_runs_with_env(payload: dict[str, object]) -> list[_StepRun]:
                         str(step.get("name")),
                         run,
                         {**env, **appended, **dict(step.get("env") or {})},
-                        synced
-                        or (
-                            composite and bool(_SYNC_INPUT_CONDITION.search(condition))
-                        ),
+                        synced or (composite and _requires_sync_input(condition)),
                         directory not in _WORKSPACE_DIRECTORIES,
                     )
                 )
@@ -641,6 +839,32 @@ _MOLT_RUN_CASES = [
     ("{ PYTHONPATH=src python3 -m molt.x; }", True, True),
     ("exec env PYTHONPATH=src python3 -m molt.x", True, True),
     ("nice -n 5 env PYTHONPATH=src python3 -m molt.x", True, True),
+    # Follow-up review v3: options with values, quoting, eval, scopes.
+    ("bash -o pipefail -c 'python3 -m molt.x'", False, True),
+    ("bash -O extglob -c 'PYTHONPATH=src python3 -m molt.x'", True, True),
+    (
+        "cat > /dev/null <<\\EOF\nexport PYTHONPATH=src\nEOF\npython3 -m molt.x",
+        False,
+        True,
+    ),
+    ("echo $'a\\'b'\npython3 -m molt.x", False, True),
+    ('echo "$(echo "a # b")"; python3 -m molt.x', False, True),
+    ("( case x in x) export PYTHONPATH=src ;; esac ); python3 -m molt.x", False, True),
+    ("case x in x) export PYTHONPATH=src ;; esac\npython3 -m molt.x", True, True),
+    ('export PYTHONPATH=src\neval "unset PYTHONPATH"\npython3 -m molt.x', False, True),
+    ('eval "cd /tmp"\nPYTHONPATH=src python3 -m molt.x', False, True),
+    (
+        "mkdir -p sub; pushd sub >/dev/null; PYTHONPATH=src python3 -m molt.x",
+        False,
+        True,
+    ),
+    ("export PYTHONPATH=src\ndeclare +x PYTHONPATH\npython3 -m molt.x", False, True),
+    ("declare -x PYTHONPATH=src\npython3 -m molt.x", True, True),
+    ("export PYTHONPATH=src | cat\npython3 -m molt.x", False, True),
+    ("export PYTHONPATH=src &\nwait\npython3 -m molt.x", False, True),
+    # Conservative: a substitution that runs molt is reported, though bash
+    # imports molt there.
+    ("x=$(PYTHONPATH=src python3 -m molt.x)", False, False),
     # A wrapper this reading does not know is reported, never passed.
     ("sudo python3 -m molt.x", False, False),
     ("python3 -m moltlib.thing", None, True),
@@ -722,6 +946,23 @@ def test_uv_run_without_sync_needs_an_earlier_sync() -> None:
         ("before", False),
         ("after", True),
     ]
+
+
+@pytest.mark.parametrize(
+    ("condition", "required"),
+    [
+        ("steps.inputs.outputs.sync == 'true'", True),
+        ("${{ inputs.sync == 'true' && runner.os != 'Windows' }}", True),
+        ("inputs.sync == 'true' || runner.os == 'Linux'", False),
+        ("!(inputs.sync == 'true')", False),
+        ("runner.os != 'Windows'", False),
+    ],
+)
+def test_a_composite_step_counts_as_synced_only_when_its_if_requires_it(
+    condition: str, required: bool
+) -> None:
+    """Follow-up review v3: a mention of the sync input is not a requirement."""
+    assert _requires_sync_input(condition) is required
 
 
 def test_github_env_and_working_directory_reach_later_steps() -> None:
