@@ -381,6 +381,50 @@ tally primitive reuses a key's hash only when the receiver's actual get/store
 descriptors admit the native dictionary path; overridden methods retain normal
 dispatch. Callback exceptions propagate with the already completed mutations.
 
+### Shared tee storage
+
+`itertools.tee` readers own a `(block, offset)` cursor. Each block is a separate
+GC-tracked runtime object owning its source iterator, up to 57 cached values,
+and its successor. `runtime/heap_kinds.toml` declares both shapes;
+`molt-runtime-core::itertools_tee` owns their `repr(C, align(8))` payloads and
+allocation extents (16-byte cursor, 480-byte block, excluding runtime headers).
+The in-tree and satellite profiles use the same implementation and lifecycle.
+There are no raw reader-owner lists, first-reader GC attribution, or secondary
+reference-count/identity registries. Clearing a reader detaches only its block.
+Clearing a block detaches its own edges before any Python destructor runs.
+
+This follows the linked GC data-object design in CPython
+[3.12.15](https://github.com/python/cpython/blob/v3.12.15/Modules/itertoolsmodule.c)
+and [3.15.1](https://github.com/python/cpython/blob/v3.15.1/Modules/itertoolsmodule.c),
+including the 57-value allocation/retirement tradeoff. Copies and tee-of-tee
+share a block at the current offset. Cache misses retain their block and source
+across Python callbacks; the shared running state rejects recursive fetches.
+Exceptions and exhaustion leave the cursor unchanged and permit a later retry.
+Rollover publishes the successor before retiring the prior block, then resets
+the offset, preserving CPython's observable value-finalizer callback order.
+
+Terminal destruction transfers a committed-dead block's successor to the
+existing decref caller. That caller iterates through the ordinary refcount,
+ABI-view, finalizer and physical-free transactions. It stops at an independently
+owned successor; releasing that owner later resumes normal retirement. This
+bounds stack use independently of lag, including chains with C views. Cyclic
+GC still uses the same per-object edge visitor and detach transaction.
+
+Cached reads cost one indexed load and result retain, without allocation or a
+scan of readers. A source fetch adds temporary block/iterator owners around one
+iterator call. Outside reentrant retirement, new storage costs one block per
+57 fetched values. Lockstep readers retain at most 57 cached values; with lag
+`L`, retained blocks are bounded by `floor(L / 57) + 2`, plus reader cursors.
+Retirement work is linear in the number of blocks and values actually freed,
+with constant stack use along successor links. No syscalls, process spawns,
+serialization, or additional locks are introduced; runtime mutation uses the
+existing GIL custody. These are structural cost bounds, not measured speedups.
+The owning `itertools_class` tests expose heap allocation counts and verify
+retention and native/C-view retirement. The existing
+`itertools_tee_independence` differential witness covers Python-visible lifetime,
+copying, exceptions, callback reentry and cycles. Native/WASM and profile,
+free-threaded and performance acceptance require their actual consumer proofs.
+
 ## 5. Concurrency: GIL-Like Serialization (Current)
 Molt currently serializes runtime mutation with a GIL-like lock. The concurrency
 contract is defined in `docs/spec/areas/runtime/0026_CONCURRENCY_AND_GIL.md`.

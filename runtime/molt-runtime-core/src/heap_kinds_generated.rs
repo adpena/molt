@@ -195,10 +195,11 @@ pub enum ObjectShapeId {
     ItertoolsTakewhile = 114,
     ItertoolsTee = 115,
     ItertoolsZipLongest = 116,
+    ItertoolsTeeBlock = 117,
 }
 
 impl ObjectShapeId {
-    pub const MAX_ID: u16 = 116;
+    pub const MAX_ID: u16 = 117;
 
     #[inline(always)]
     pub const fn from_u16(value: u16) -> Option<Self> {
@@ -268,6 +269,7 @@ impl ObjectShapeId {
             114 => Self::ItertoolsTakewhile,
             115 => Self::ItertoolsTee,
             116 => Self::ItertoolsZipLongest,
+            117 => Self::ItertoolsTeeBlock,
             _ => return None,
         })
     }
@@ -363,6 +365,7 @@ pub const fn object_shape_lifecycle_family(shape: ObjectShapeId) -> ObjectShapeL
         ObjectShapeId::ItertoolsTakewhile => ObjectShapeLifecycleFamily::Itertools,
         ObjectShapeId::ItertoolsTee => ObjectShapeLifecycleFamily::Itertools,
         ObjectShapeId::ItertoolsZipLongest => ObjectShapeLifecycleFamily::Itertools,
+        ObjectShapeId::ItertoolsTeeBlock => ObjectShapeLifecycleFamily::Itertools,
     }
 }
 
@@ -434,6 +437,7 @@ pub const fn object_shape_resource_slot(shape: ObjectShapeId) -> ObjectShapeReso
         ObjectShapeId::ItertoolsTakewhile => ObjectShapeResourceSlot::None,
         ObjectShapeId::ItertoolsTee => ObjectShapeResourceSlot::None,
         ObjectShapeId::ItertoolsZipLongest => ObjectShapeResourceSlot::None,
+        ObjectShapeId::ItertoolsTeeBlock => ObjectShapeResourceSlot::None,
     }
 }
 

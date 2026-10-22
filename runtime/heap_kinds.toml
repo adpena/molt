@@ -1040,6 +1040,12 @@ id = 116
 family = "itertools"
 resource_slot0 = "none"
 
+[[object_shape]]
+name = "ITERTOOLS_TEE_BLOCK"
+id = 117
+family = "itertools"
+resource_slot0 = "none"
+
 [[kind]]
 name = "CONTEXT_BITMAP_NODE"
 id = 260
