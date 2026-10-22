@@ -208,6 +208,7 @@ from tools.molt_dev_probe import probe_path, probe_pid  # noqa: E402
 from tools.molt_dev_lanes import add_lane_arguments  # noqa: E402
 from tools.molt_dev_queue import add_queue_arguments  # noqa: E402
 from tools import venv_exec  # noqa: E402
+from tools.memory_guard_core.repro_context import argv_head  # noqa: E402
 from tools.molt_dev_gates import (  # noqa: E402
     GateOutcome,
     GateRuntime,
@@ -215,7 +216,9 @@ from tools.molt_dev_gates import (  # noqa: E402
     observe_gate_capacity,
     concurrent_gate_limit,
     display as _gate_display,
+    gate_output_dir,
     gate_time_summary,
+    retire_gate_logs,
     run_selected_gates,
 )
 from tools.dirty_tree_policy import (  # noqa: E402
@@ -975,12 +978,21 @@ def run_captured_gate(
     repo: Path,
     env: ProcessEnvironment,
     cancelled: Callable[[], bool],
+    streams: tuple[Path, Path] | None = None,
 ) -> GateOutcome:
-    """Run one gate of the executor block: the same environment as ``run_gate``,
-    with captured streams and the executor's cancellation."""
+    """Run one landing gate in ``run_gate``'s environment, writing its streams
+    to ``streams`` while it runs, under the executor's cancellation."""
     cmd, env = _gate_environment(cmd, repo, env)
     return GateOutcome(
-        *_run_captured_gate(cmd, repo=repo, env=env, cancelled=cancelled)
+        *_run_captured_gate(
+            cmd,
+            repo=repo,
+            env=env,
+            cancelled=cancelled,
+            streams=streams,
+            # The guard repeats this label every keepalive; keep it short.
+            label=f"gate {argv_head(cmd.split() if isinstance(cmd, str) else cmd)}",
+        )
     )
 
 
@@ -1150,6 +1162,13 @@ def _gate_runtime(
             raise DriverError("integration source HEAD changed")
         return {"commit": selected_commit, "tree": tree}
 
+    # Beside the integration lock, shared by every worktree, never inside one.
+    receipt_path = (
+        _integration_lock_path(repo).with_name("molt-integrate")
+        / "receipts"
+        / f"{selected_commit}.{receipt_kind}.json"
+    )
+    retire_gate_logs(receipt_path.parent, now=time.time())
     return GateRuntime(
         repo=repo,
         environments=environments,
@@ -1163,12 +1182,8 @@ def _gate_runtime(
         executor_max_workers=config.executor_max_workers,
         resource_limits=config.resource_limits,
         toolchains=toolchains,
-        # Beside the integration lock: one namespace for the repository's
-        # worktrees, never inside a working tree.
-        receipt_path=_integration_lock_path(repo).with_name("molt-integrate")
-        / "receipts"
-        / f"{selected_commit}.{receipt_kind}.json",
-        run_gate=lambda cmd, root, environment: run_gate(cmd, root, environment),
+        receipt_path=receipt_path,
+        output_dir=gate_output_dir(receipt_path),
         run_captured_gate=lambda *args: run_captured_gate(*args),
         observe_capacity=observe_gate_capacity,
         say=_say,

@@ -164,12 +164,6 @@ def _run_fast_captured_bytes(
     return _COMMANDS.run(cmd, cwd=cwd, env=env, capture_output=True, check=False)
 
 
-def _run_live_gate(
-    cmd: str | tuple[str, ...], *, repo: Path, env: ProcessEnvironment
-) -> int:
-    """Run shell syntax or structured argv live through memory custody."""
-
-
 def _gate_launch(
     cmd: str | tuple[str, ...], env: ProcessEnvironment
 ) -> tuple[list[str], ProcessEnvironment]:
@@ -202,19 +196,35 @@ def _run_live_gate(
     return proc.returncode
 
 
+#: The bounded end of each stream a gate returns when its streams go to files.
+GATE_STREAM_TAIL_BYTES = 64 * 1024
+
+
 def _run_captured_gate(
     cmd: str | tuple[str, ...],
     *,
     repo: Path,
     env: ProcessEnvironment,
     cancelled: Callable[[], bool],
+    streams: tuple[Path, Path] | None = None,
+    label: str | None = None,
 ) -> tuple[int, str, str, int | None]:
-    """Run one gate beside others: capture its streams, honor cancellation.
+    """Run one gate: capture its streams, honor cancellation.
 
     The guard owns the child tree; ``cancelled`` lets the scheduler stop a gate
-    whose outcome no longer matters.
+    whose outcome no longer matters. With ``streams`` the child writes stdout
+    and stderr to those files while it runs (a killed runner leaves them), and
+    the outcome holds only each stream's bounded end. ``label`` keeps the
+    guard's keepalive line, which a captured run otherwise drops.
     """
     argv, env = _gate_launch(cmd, env)
+    files: dict[str, object] = {}
+    if streams is not None:
+        files = {
+            "stdout_capture_path": streams[0],
+            "stderr_capture_path": streams[1],
+            "capture_tail_bytes": GATE_STREAM_TAIL_BYTES,
+        }
     proc = harness_memory_guard.guarded_completed_process(
         argv,
         prefix="MOLT_TEST_SUITE",
@@ -224,6 +234,8 @@ def _run_captured_gate(
         text=True,
         timeout=None,
         cancellation_requested=cancelled,
+        progress_label=label,
+        **files,
     )
     peak = proc.peak_total or proc.peak
     peak_bytes = None if peak is None else peak.rss_kb * 1024

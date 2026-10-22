@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 import json
 import math
 import os
+import uuid
 from pathlib import Path
 import shutil
 import subprocess
@@ -18,7 +19,12 @@ from types import ModuleType
 from tools import git_transfer, memory_guard, process_sentinel
 
 from tools.memory_guard_core import harness_outcomes as _harness_outcomes
+from tools.memory_guard_core import reporting as _reporting
 from tools.memory_guard_core.memory_limits import ResolvedMemoryLimits
+from tools.memory_guard_core.repro_context import (
+    REPRO_ERROR_SCHEMA,
+    repro_context_text,
+)
 from tools.memory_guard_core.worker_peaks import WorkerPeakSummary
 
 
@@ -766,6 +772,24 @@ def _append_jsonl(
         handle.write(line)
 
 
+def _write_incident_record(directory: Path, payload: dict[str, object]) -> Path:
+    """Write one incident's profile event to its own file and return it.
+
+    The profile log rotates; an incident record must outlive that, so each
+    gets a unique, atomically written file beside the log.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    stamp = "".join(ch for ch in str(payload["recorded_at"]) if ch.isalnum())
+    path = directory / f"{stamp}-{os.getpid()}-{uuid.uuid4().hex[:12]}.json"
+    scratch = path.with_suffix(".json.tmp")
+    scratch.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    scratch.replace(path)
+    _reporting.prune_named_records(
+        directory, keep=memory_guard.DEFAULT_INCIDENT_SUMMARY_KEEP
+    )
+    return path
+
+
 _utc_timestamp = _harness_outcomes.utc_timestamp
 _elapsed_text = _harness_outcomes.elapsed_text
 _limit_text = _harness_outcomes.limit_text
@@ -840,7 +864,7 @@ def _guard_repro_payload(
         # must be recorded but can never replace the timeout/signal/RSS result
         # that caused enrichment to run.
         error_payload: dict[str, object] = {
-            "schema": "molt.guard-repro-error.v1",
+            "schema": REPRO_ERROR_SCHEMA,
             "prefix": _normalize_prefix(prefix) or "MOLT",
             "error_type": type(error).__name__,
             "error": str(error)[:1000],
@@ -863,7 +887,14 @@ def _guard_repro_message(
     timeout: float | None,
     prefix: str,
     operation_role: str | None = None,
+    record: tuple[str, Mapping[str, object]] | None = None,
 ) -> str:
+    """The incident's repro line: the record it was written to, or, when no
+    record holds it, the whole context inline so it is never lost."""
+    if record is not None:
+        locator, payload = record
+        text = repro_context_text(payload, record=locator)
+        return f"memory_guard: repro context: {text}\n"
     payload = _guard_repro_payload(
         command=command,
         cwd=cwd,
@@ -908,7 +939,10 @@ def _append_guarded_command_profile(
     operation_role: str | None = None,
     cancelled: bool = False,
     descendants_closed: bool = False,
-) -> tuple[Path, str | None]:
+    name_incident: bool = False,
+) -> tuple[Path, str | None, tuple[str, Mapping[str, object]] | None]:
+    """Append one profile event; return its log, any write error, and the
+    repro record it holds (``(locator, payload)``) when it holds one."""
     source = _effective_env(env)
     path = command_profile_log_path(source)
     max_bytes = _max_bytes_from_mb(
@@ -939,7 +973,7 @@ def _append_guarded_command_profile(
     )
     mode = _command_profile_mode(source)
     if mode == "off" or (mode == "incident" and status == "pass"):
-        return path, None
+        return path, None, None
     payload: dict[str, object] = {
         "schema_version": "1.0",
         "event": "guarded_command_profile",
@@ -1020,8 +1054,22 @@ def _append_guarded_command_profile(
         return (
             path,
             f"memory_guard: command profile write failed: path={path} error={exc}\n",
+            None,
         )
-    return path, None
+    repro = payload.get("repro")
+    # Only an incident the stream names gets its own record; a plain nonzero
+    # exit stays in the profile log alone.
+    if not name_incident or not isinstance(repro, Mapping):
+        return path, None, None
+    try:
+        incident = _write_incident_record(path.parent / "incidents", payload)
+    except OSError as exc:
+        return (
+            path,
+            f"memory_guard: incident record write failed: error={exc}\n",
+            None,
+        )
+    return path, None, (str(incident), repro)
 
 
 def _repo_sentinel_repro_payload(
@@ -1285,28 +1333,16 @@ def guarded_completed_process(
             ),
             text=text,
         )
-    if (
+    incident = (
         guarded.violation is not None
         or guarded.timed_out
         or bool(guarded.orphaned_process_groups)
         or guarded.guard_signal is not None
         or guarded.infrastructure_failure is not None
         or memory_guard.exit_signal_payload(guarded.returncode) is not None
-    ):
-        stderr = memory_guard._append_guard_message(
-            stderr,
-            _guard_repro_message(
-                command=command,
-                cwd=cwd,
-                env=env,
-                limits=resolved_limits,
-                timeout=timeout,
-                prefix=prefix,
-                operation_role=operation_role,
-            ),
-            text=text,
-        )
-    _profile_path, profile_error = _append_guarded_command_profile(
+    )
+    _profile_path, profile_error, profile_record = _append_guarded_command_profile(
+        name_incident=incident,
         command=command,
         prefix=prefix,
         cwd=cwd,
@@ -1338,6 +1374,21 @@ def guarded_completed_process(
     )
     if profile_error:
         stderr = memory_guard._append_guard_message(stderr, profile_error, text=text)
+    if incident:
+        stderr = memory_guard._append_guard_message(
+            stderr,
+            _guard_repro_message(
+                command=command,
+                cwd=cwd,
+                env=env,
+                limits=resolved_limits,
+                timeout=timeout,
+                prefix=prefix,
+                operation_role=operation_role,
+                record=profile_record,
+            ),
+            text=text,
+        )
     return GuardedCompletedProcess(
         list(command),
         guarded.returncode,
@@ -1549,26 +1600,16 @@ def guarded_completed_process_to_tempfiles(
                 killed_at=incident_at,
             ),
         )
-    if (
+    incident = (
         guarded.violation is not None
         or guarded.timed_out
         or bool(guarded.orphaned_process_groups)
         or guarded.guard_signal is not None
         or guarded.infrastructure_failure is not None
         or memory_guard.exit_signal_payload(guarded.returncode) is not None
-    ):
-        stderr = _append_guard_bytes(
-            stderr,
-            _guard_repro_message(
-                command=command,
-                cwd=cwd,
-                env=env,
-                limits=resolved_limits,
-                timeout=timeout,
-                prefix=prefix,
-            ),
-        )
-    _profile_path, profile_error = _append_guarded_command_profile(
+    )
+    _profile_path, profile_error, profile_record = _append_guarded_command_profile(
+        name_incident=incident,
         command=command,
         prefix=prefix,
         cwd=cwd,
@@ -1599,6 +1640,19 @@ def guarded_completed_process_to_tempfiles(
     )
     if profile_error:
         stderr = _append_guard_bytes(stderr, profile_error)
+    if incident:
+        stderr = _append_guard_bytes(
+            stderr,
+            _guard_repro_message(
+                command=command,
+                cwd=cwd,
+                env=env,
+                limits=resolved_limits,
+                timeout=timeout,
+                prefix=prefix,
+                record=profile_record,
+            ),
+        )
     return GuardedCompletedProcess(
         list(command),
         guarded.returncode,

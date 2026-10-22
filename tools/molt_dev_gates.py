@@ -8,8 +8,9 @@ without Cargo outputs) executes through the one proof executor
 (``tools/proof_executor.py``): its admission bounds the block by the plan's
 executor ceiling and the gates' resource class, both capped by
 ``molt.host_capacity``, and it leaves a receipt with each gate's duration and
-peak RSS. Every later gate runs alone and streams live
-(docs/design/host_capacity.md, "One scheduler").
+peak RSS. Every later gate runs alone (docs/design/host_capacity.md, "One
+scheduler"). Every gate writes its streams to files while it runs
+(`prepare_gate_streams`); the terminal shows a failure's bounded tail.
 """
 
 from __future__ import annotations
@@ -19,7 +20,9 @@ from dataclasses import dataclass, field
 import datetime as dt
 import hashlib
 import json
+import os
 from pathlib import Path
+import shutil
 import sys
 import threading
 import time
@@ -27,6 +30,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from tools import proof_executor, proof_receipts
 from tools.molt_dev_common import DriverError, GateFailure, _say, _warn
+from tools.memory_guard_core.reporting import NAMED_RECORD_MIN_AGE_S
 
 if TYPE_CHECKING:
     from molt.disk_capacity import DiskCapacityProbe
@@ -59,6 +63,97 @@ class GateOutcome:
     peak_rss_bytes: int | None
 
 
+#: A failed gate's terminal excerpt: the last lines of each stream, each cut
+#: to a width, so one oversized line cannot flood the caller's context.
+FAILURE_TAIL_LINES = 20
+FAILURE_TAIL_WIDTH = 400
+
+
+def gate_output_dir(receipt_path: Path) -> Path:
+    """This run's gate logs, beside the receipt, named by UTC time and pid so
+    a run never reuses another's."""
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    return receipt_path.with_suffix(".d") / f"{stamp}-{os.getpid()}"
+
+
+def retire_gate_logs(receipts: Path, *, now: float) -> None:
+    """Delete gate run directories idle past the named-record window, then
+    the receipt directories they leave empty; a landing calls this once and
+    warns when one cannot go. Retiring whole receipts belongs to HF-435."""
+    failures: list[str] = []
+    for run in receipts.glob("*.d/*"):
+        try:
+            if run.is_dir() and now - run.stat().st_mtime > NAMED_RECORD_MIN_AGE_S:
+                shutil.rmtree(run)
+                if not any(run.parent.iterdir()):
+                    run.parent.rmdir()
+        except OSError as exc:
+            failures.append(f"{run}: {type(exc).__name__}: {exc}")
+    if failures:
+        _warn(
+            f"{len(failures)} idle gate log run(s) could not be retired; "
+            f"first: {failures[0]}"
+        )
+
+
+def prepare_gate_streams(
+    directory: Path, ordinal: int
+) -> tuple[tuple[Path, Path] | None, str | None]:
+    """The files a gate writes its stdout and stderr to while it runs, or
+    ``(None, error)`` when they cannot be prepared; the gate then runs with
+    its streams in memory, and a failure shows them whole."""
+    streams = (
+        directory / f"gate-{ordinal:03d}.stdout.log",
+        directory / f"gate-{ordinal:03d}.stderr.log",
+    )
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return None, f"{type(exc).__name__}: {exc}"
+    return streams, None
+
+
+def stream_record(
+    streams: tuple[Path, Path] | None, error: str | None
+) -> dict[str, str]:
+    """Where a gate's streams are, for its receipt record and progress event."""
+    if streams is None:
+        return {"output_error": str(error)}
+    return {"stdout_path": str(streams[0]), "stderr_path": str(streams[1])}
+
+
+def gate_failure_report(outcome: GateOutcome, record: Mapping[str, str]) -> str:
+    """What the terminal shows of a failed gate: where its full streams are
+    and the bounded end of each; when they could not go to files, both
+    streams whole, so the reason is never lost."""
+    if "stdout_path" not in record:
+        return (
+            f"    gate output not kept ({record.get('output_error')}); "
+            "its streams follow whole\n"
+            f"--- stdout ---\n{outcome.stdout}\n--- stderr ---\n{outcome.stderr}\n"
+        )
+
+    def tail(text: str) -> list[str]:
+        lines = text.rstrip("\n").splitlines()[-FAILURE_TAIL_LINES:]
+        return [
+            line
+            if len(line) <= FAILURE_TAIL_WIDTH
+            else f"{line[:FAILURE_TAIL_WIDTH]}... ({len(line)} chars)"
+            for line in lines
+        ]
+
+    parts = [
+        f"    full stdout: {record['stdout_path']}\n",
+        f"    full stderr: {record['stderr_path']}\n",
+    ]
+    for name, text in (("stdout", outcome.stdout), ("stderr", outcome.stderr)):
+        lines = tail(text)
+        if lines:
+            parts.append(f"    --- {name}, last {len(lines)} lines ---\n")
+            parts.extend(f"{line}\n" for line in lines)
+    return "".join(parts)
+
+
 @dataclass(frozen=True)
 class GateRuntime:
     """What one landing's gates run against; integrate builds it once."""
@@ -76,7 +171,8 @@ class GateRuntime:
     resource_limits: Mapping[str, int]
     toolchains: Mapping[str, dict[str, Any]]
     receipt_path: Path
-    run_gate: Callable[[str | tuple[str, ...], Path, ProcessEnvironment], int]
+    # This run's gate logs (`gate_output_dir`); the receipt names each file.
+    output_dir: Path
     run_captured_gate: Callable[..., GateOutcome]
     observe_capacity: Callable[..., Any]
     say: Callable[[str], None]
@@ -114,12 +210,22 @@ def gate_details(ordinal: int, gate: Gate) -> dict[str, object]:
 
 
 def gate_failure(
-    rc: int | None, elapsed: float, shown: str, gate_seconds: list[tuple[float, str]]
+    rc: int | None,
+    elapsed: float,
+    shown: str,
+    gate_seconds: list[tuple[float, str]],
+    record: Mapping[str, str] | None = None,
 ) -> GateFailure:
     """A selected gate exited nonzero: the candidate failed (the landing queue
     bisects on this type). A fault of the runner itself stays a DriverError."""
+    kept = (
+        f"    full stderr: {record['stderr_path']}\n"
+        if record and "stderr_path" in record
+        else ""
+    )
     return GateFailure(
         f"gate failed (exit {rc}) after {elapsed:.1f} s: {shown}\n"
+        + kept
         + gate_time_summary(gate_seconds)
         + "\n    Integration halts before push; fix the gate and re-run."
     )
@@ -261,12 +367,26 @@ def _run_serial_gate(
     details = gate_details(ordinal, gate)
     runtime.progress.emit("gate_started", **details)
     rc = None
+    outcome: GateOutcome | None = None
+    streams, stream_error = prepare_gate_streams(runtime.output_dir, ordinal)
+    record = stream_record(streams, stream_error)
     try:
-        rc = runtime.run_gate(cmd, runtime.repo, runtime.environments[gate.toolchains])
+        outcome = runtime.run_captured_gate(
+            cmd,
+            runtime.repo,
+            runtime.environments[gate.toolchains],
+            lambda: False,
+            streams,
+        )
+        rc = outcome.returncode
     finally:
         elapsed = time.monotonic() - started
         runtime.progress.emit(
-            "gate_finished", **details, returncode=rc, duration_seconds=elapsed
+            "gate_finished",
+            **details,
+            **record,
+            returncode=rc,
+            duration_seconds=elapsed,
         )
         if paths:
             runtime.observe_capacity(
@@ -279,7 +399,10 @@ def _run_serial_gate(
     gate_seconds.append((elapsed, shown))
     runtime.check_source()
     if rc != 0:
-        raise gate_failure(rc, elapsed, shown, gate_seconds)
+        runtime.say(f"    gate: {shown}")
+        sys.stderr.write(gate_failure_report(outcome, record))
+        sys.stderr.flush()
+        raise gate_failure(rc, elapsed, shown, gate_seconds, record)
     runtime.ok(f"gate passed in {elapsed:.1f} s: {shown}")
 
 
@@ -401,12 +524,17 @@ def _run_executor_block(
             "gate_started", **gate_details(command.ordinal, command.gate)
         )
         started = time.monotonic()
+        streams, stream_error = prepare_gate_streams(
+            runtime.output_dir, command.ordinal
+        )
+        record.update(stream_record(streams, stream_error))
         try:
             outcome = runtime.run_captured_gate(
                 command.gate.command,
                 runtime.repo,
                 runtime.environments[command.gate.toolchains],
                 lambda: cancel.is_set() or state.moot(command.ordinal),
+                streams,
             )
         except BaseException as exc:  # reported in declared order below
             state.outcomes[command.id] = exc
@@ -479,14 +607,18 @@ def _run_executor_block(
         runtime.progress.emit(
             "gate_finished",
             **gate_details(command.ordinal, command.gate),
+            **{
+                key: record[key]
+                for key in ("stdout_path", "stderr_path", "output_error")
+                if key in record
+            },
             returncode=record.get("returncode"),
             duration_seconds=elapsed,
         )
-        runtime.say(f"    gate: {shown}")
-        if isinstance(outcome, GateOutcome):
-            sys.stdout.write(outcome.stdout)
-            sys.stdout.flush()
-            sys.stderr.write(outcome.stderr)
+        if isinstance(outcome, BaseException) or outcome.returncode != 0:
+            runtime.say(f"    gate: {shown}")
+        if isinstance(outcome, GateOutcome) and outcome.returncode != 0:
+            sys.stderr.write(gate_failure_report(outcome, record))
             sys.stderr.flush()
         gate_seconds.append((elapsed, shown))
         if isinstance(outcome, BaseException):
@@ -496,7 +628,7 @@ def _run_executor_block(
         if record.get("source_tree_state_after") == "changed":
             runtime.check_source()
         if status == "failure" and outcome.returncode != 0:
-            raise gate_failure(outcome.returncode, elapsed, shown, gate_seconds)
+            raise gate_failure(outcome.returncode, elapsed, shown, gate_seconds, record)
         if status != "success":
             raise stopped(f"at {shown} ({status})")
         runtime.ok(f"gate passed in {elapsed:.1f} s: {shown}")

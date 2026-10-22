@@ -124,14 +124,18 @@ controller  →  fetch  →  rebase  →  verify-commits  →  cite  →  marker
    The always gates run first, as one block through the proof executor
    (`tools/molt_dev_gates.py`). The plan's `executor_max_workers`, its
    `repository-policy` resource class and `molt.host_capacity` at one GiB per
-   gate bound the block. Each gate's captured output prints in declared order,
-   and the first failure in declared order is the one reported; gates declared
+   gate bound the block. Each gate reports in declared order, and the first
+   failure in declared order is the one reported; gates declared
    after it are skipped or cancelled. A gate's nonzero exit raises
    `GateFailure` (a `CandidateFailure`); a source refusal or a stop of the
    executor itself stays a plain `DriverError`. The block leaves an executor receipt with
    each gate's duration, peak RSS and outcome at
    `<git common dir>/molt-integrate/receipts/<commit>.gates.json`. Rule, pytest
-   and Cargo gates then run one at a time and stream live.
+   and Cargo gates then run one at a time. Every gate writes its stdout and stderr to
+   `<receipt>.d/<run>/gate-<ordinal>.{stdout,stderr}.log` while it runs, and the guard's
+   keepalive line shows progress. A passing gate prints one line, and its
+   `gate_finished` progress event names both files; a failed gate prints the file
+   paths and each stream's bounded end.
    Gates keep the canonical execution environment, except that bytecode goes
    to the DX pycache prefix outside the checkout (`molt.dx.scratch_dir`,
    `"pycache"`). A prefix inside the checkout is refused. No gate result is
