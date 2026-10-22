@@ -5,6 +5,7 @@ import io
 import re
 import shutil
 import tarfile
+import tomllib
 import zipfile
 from pathlib import Path
 
@@ -13,6 +14,7 @@ import pytest
 from molt import tool_releases
 from molt.binaryen_toolchain import BinaryenConfigError, load_binaryen_manifest
 from molt.llvm_toolchain import load_llvm_releases
+from molt.verified_subset import load_verified_subset_policy
 from tools import finding_status, pin_freshness
 from tools.pin_freshness import Pin, PinFreshnessError
 
@@ -25,6 +27,7 @@ PIN_AUTHORITIES = (
     "formal/lean/lean-toolchain",
     "rust-toolchain.toml",
     "tools/proof_plan.toml",
+    "config/verified_subset.toml",
 )
 
 
@@ -122,6 +125,22 @@ def test_every_pin_reads_its_authority_loader() -> None:
         "binaryen",
         "lean",
     } <= set(pins)
+    references = load_verified_subset_policy()
+    expected = {
+        f"reference-python-{line}": reference
+        for line, reference in zip(
+            references.python_versions, references.reference_cpython, strict=True
+        )
+    }
+    actual = {
+        name: pin.current
+        for name, pin in pins.items()
+        if name.startswith("reference-python-")
+    }
+    assert actual == expected
+    assert all(
+        pins[name].authority == "config/verified_subset.toml" for name in expected
+    )
     assert pins["python"].current == pins["python-patch"].current
     assert (
         pins["python"].current
@@ -255,6 +274,11 @@ def _pin_root(tmp_path: Path) -> Path:
         target = tmp_path / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / relative, target)
+    policy = tomllib.loads(
+        (tmp_path / "config/verified_subset.toml").read_text(encoding="utf-8")
+    )
+    for suite in policy["differential_suites"]:
+        (tmp_path / suite["path"]).mkdir(parents=True, exist_ok=True)
     return tmp_path
 
 
@@ -524,3 +548,62 @@ def test_python_pins_track_the_patch_line_and_the_newest_line() -> None:
     assert pins["python-patch"].latest() == "3.12.16"
     assert seen[-1] == f"https://endoflife.date/api/python/{line}.json"
     assert pins["python"].latest() == "3.14.3"
+
+
+def test_reference_pins_reread_policy_and_report_their_own_patch_line(tmp_path) -> None:
+    root = _pin_root(tmp_path)
+    authority = root / "config/verified_subset.toml"
+    policy = load_verified_subset_policy(authority)
+    original = list(policy.reference_cpython)
+    seen = []
+
+    def fetch(url: str) -> object:
+        seen.append(url)
+        line = url.removesuffix(".json").rsplit("/", 1)[-1]
+        return {"latest": line + ".999"}
+
+    def references():
+        return {
+            pin.name: pin
+            for pin in pin_freshness.collect_pins(
+                root, fetch=fetch, fetch_text=_no_network
+            )
+            if pin.name.startswith("reference-python-")
+        }
+
+    first = references()
+    for line, version in zip(policy.python_versions, original, strict=True):
+        pin = first[f"reference-python-{line}"]
+        assert pin.current == version
+        assert pin.latest() == line + ".999"
+        assert seen[-1] == f"https://endoflife.date/api/python/{line}.json"
+
+    changed = [line + ".1" for line in policy.python_versions]
+    text = authority.read_text(encoding="utf-8")
+    authority.write_text(
+        re.sub(
+            r"(?m)^reference_cpython = .*?$",
+            "reference_cpython = [" + ", ".join(f'"{v}"' for v in changed) + "]",
+            text,
+        ),
+        encoding="utf-8",
+    )
+    reread = references()
+    assert [
+        reread[f"reference-python-{line}"].current for line in policy.python_versions
+    ] == changed
+    status, output = _check(list(reread.values()))
+    assert status == 1
+    for line in policy.python_versions:
+        assert f"STALE   reference-python-{line}: {line}.1 -> {line}.999" in output
+
+
+def test_python_patch_resolver_preserves_a_future_major_coordinate() -> None:
+    seen = []
+
+    def fetch(url: str) -> object:
+        seen.append(url)
+        return {"latest": "4.0.2"}
+
+    assert pin_freshness.python_latest_patch("4.0.1", fetch) == "4.0.2"
+    assert seen == ["https://endoflife.date/api/python/4.0.json"]

@@ -9019,8 +9019,6 @@ def test_edgebox_sources_select_the_actual_locked_typescript_check(path: str) ->
     assert argv == [
         "python",
         "tools/guarded_exec.py",
-        "--prefix",
-        "MOLT_TEST",
         "--cwd",
         "examples/edgebox/packages/edgebox-cloudflare",
         "--timeout",

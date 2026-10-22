@@ -278,7 +278,7 @@ def test_policy_generates_exact_version_host_backend_closure() -> None:
     coordinates = authority.verified_subset_coordinates(policy)
 
     assert policy.python_versions == ("3.12", "3.13", "3.14")
-    assert policy.reference_cpython == ("3.12.13", "3.13.11", "3.14.3")
+    assert policy.reference_cpython == ("3.12.15", "3.13.17", "3.14.9")
     assert policy.backends == ("llvm", "native", "wasm")
     assert policy.abi == "cpython-language"
     assert policy.concurrency == "gil"
