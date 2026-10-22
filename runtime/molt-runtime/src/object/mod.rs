@@ -3989,55 +3989,66 @@ pub(crate) unsafe fn dec_ref_ptr_validated(py: &PyToken<'_>, ptr: *mut u8, type_
 #[inline(always)]
 unsafe fn dec_ref_ptr_with_validated_type_id(
     py: &PyToken<'_>,
-    ptr: *mut u8,
-    validated_type_id: Option<u32>,
+    mut ptr: *mut u8,
+    mut validated_type_id: Option<u32>,
 ) {
     unsafe {
         crate::gil_assert();
-        if ptr.is_null() {
-            return;
-        }
-        let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
-        let type_id = validated_type_id.unwrap_or_else(|| (*header_ptr).type_id);
-        // Type-id validity is a MEMORY-SAFETY boundary (see `inc_ref_ptr`). This
-        // `type_id` drives the dealloc switch below (reading type-specific inner
-        // pointers and freeing the backing memory), so an out-of-range value —
-        // use-after-free, wild pointer, or corrupted header — would corrupt
-        // unrelated memory. Fail closed in ALL profiles via the single canonical
-        // validator before reading any other header field. `molt_dec_ref_obj`
-        // already guards the bits-based entry; this closes the ptr-based hot path
-        // it short-circuits past, so both DecRef entry points share one authority.
-        if validated_type_id.is_none() && !is_valid_heap_type_id(type_id) {
-            fatal_invalid_dec_ref_header(ptr, type_id);
-        }
-        let header_flags = (*header_ptr).load_synchronized_flags();
-        let header_size_class = (*header_ptr).size_class;
-        let header_aux = header_aux_snapshot(header_ptr);
-        if (header_flags & HEADER_FLAG_IMMORTAL) != 0 {
-            return;
-        }
-        // A zero refcount at dec_ref entry is an ownership invariant violation.
-        // Do not make dec_ref idempotent: a stale post-free pointer may already
-        // alias allocator metadata or a different object, so continuing would
-        // corrupt unrelated runtime state.
-        let (prev, should_finalize) = if header_flags & HEADER_FLAG_HAS_ABI_VIEW != 0 {
-            release_abi_view_owner(ptr, header_ptr)
-        } else {
-            let release = (*header_ptr).release_owned("dec_ref_ptr");
-            (release.previous(), release.reached_zero())
-        };
-        if rc_transition_trace_enabled() {
-            trace_dec_ref_transition(ptr, type_id, prev);
-        }
-        if should_finalize {
-            dec_ref_ptr_terminal(
-                py,
-                ptr,
-                type_id,
-                header_flags,
-                header_size_class,
-                header_aux,
-            );
+        loop {
+            if ptr.is_null() {
+                return;
+            }
+            let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
+            let type_id = validated_type_id.unwrap_or_else(|| (*header_ptr).type_id);
+            // Type-id validity is a MEMORY-SAFETY boundary (see `inc_ref_ptr`). This
+            // `type_id` drives the dealloc switch below (reading type-specific inner
+            // pointers and freeing the backing memory), so an out-of-range value —
+            // use-after-free, wild pointer, or corrupted header — would corrupt
+            // unrelated memory. Fail closed in ALL profiles via the single canonical
+            // validator before reading any other header field. `molt_dec_ref_obj`
+            // already guards the bits-based entry; this closes the ptr-based hot path
+            // it short-circuits past, so both DecRef entry points share one authority.
+            if validated_type_id.is_none() && !is_valid_heap_type_id(type_id) {
+                fatal_invalid_dec_ref_header(ptr, type_id);
+            }
+            let header_flags = (*header_ptr).load_synchronized_flags();
+            let header_size_class = (*header_ptr).size_class;
+            let header_aux = header_aux_snapshot(header_ptr);
+            if (header_flags & HEADER_FLAG_IMMORTAL) != 0 {
+                return;
+            }
+            // A zero refcount at dec_ref entry is an ownership invariant violation.
+            // Do not make dec_ref idempotent: a stale post-free pointer may already
+            // alias allocator metadata or a different object, so continuing would
+            // corrupt unrelated runtime state.
+            let (prev, should_finalize) = if header_flags & HEADER_FLAG_HAS_ABI_VIEW != 0 {
+                release_abi_view_owner(ptr, header_ptr)
+            } else {
+                let release = (*header_ptr).release_owned("dec_ref_ptr");
+                (release.previous(), release.reached_zero())
+            };
+            if rc_transition_trace_enabled() {
+                trace_dec_ref_transition(ptr, type_id, prev);
+            }
+            if should_finalize {
+                let next_tee_link = dec_ref_ptr_terminal(
+                    py,
+                    ptr,
+                    type_id,
+                    header_flags,
+                    header_size_class,
+                    header_aux,
+                );
+                if let Some(next) = next_tee_link {
+                    // Terminal retirement transferred this sole edge before
+                    // releasing children. A shared or C-rooted successor simply
+                    // consumes the edge through its normal refcount transaction.
+                    ptr = obj_from_bits(next).as_ptr().expect("owned tee block link");
+                    validated_type_id = None;
+                    continue;
+                }
+            }
+            break;
         }
     }
 }
@@ -4154,7 +4165,7 @@ unsafe fn dec_ref_ptr_terminal(
     header_flags: u32,
     header_size_class: u16,
     header_aux: ObjectAuxSnapshot,
-) {
+) -> Option<u64> {
     unsafe {
         let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
         if type_id == TYPE_ID_EXCEPTION && trace_exception_rc() {
@@ -4321,13 +4332,13 @@ unsafe fn dec_ref_ptr_terminal(
                 if has_abi_view {
                     molt_cpython_abi::bridge::GLOBAL_BRIDGE.finish_finalization(view_bits, true);
                 }
-                return;
+                return None;
             }
             if has_abi_view && molt_cpython_abi::bridge::GLOBAL_BRIDGE.has_direct_c_refs(view_bits)
             {
                 (*header_ptr).close_revival_window(revival_window);
                 molt_cpython_abi::bridge::GLOBAL_BRIDGE.finish_finalization(view_bits, false);
-                return;
+                return None;
             }
             // `__del__` did not resurrect: death is now committed. Publish
             // DEALLOCATING before weakref clearing so callbacks cannot create
@@ -4379,7 +4390,7 @@ unsafe fn dec_ref_ptr_terminal(
         if type_id == TYPE_ID_EXCEPTION
             && crate::builtins::exceptions::memory_error::try_recycle(py, ptr)
         {
-            return;
+            return None;
         }
         // Module m_free is a terminal callback, after the resurrection verdict
         // and before the canonical C identity/state disappear. Checked retains
@@ -4426,6 +4437,21 @@ unsafe fn dec_ref_ptr_terminal(
                     .retire_runtime_object_deferred(MoltObject::from_ptr(ptr).bits())
                     .unwrap_or_else(|| std::process::abort()),
             )
+        } else {
+            None
+        };
+        // A committed-dead tee block cannot be revived or mutated. Transfer
+        // its successor to the caller's local owner before ordinary detach,
+        // then finish every normal edge/resource/free transaction here. The
+        // caller iterates that successor, bounding stack use even when every
+        // link has an ABI view. GC and value finalizers see the suffix rooted
+        // by this retained physical owner throughout retirement.
+        let next_tee_link = if type_id == TYPE_ID_OBJECT
+            && object_shape_id(ptr) == ObjectShapeId::ItertoolsTeeBlock
+        {
+            let block = ptr.cast::<molt_runtime_core::itertools_tee::TeeBlock>();
+            let next = std::mem::replace(&mut (*block).next_bits, 0);
+            (next != 0).then_some(next)
         } else {
             None
         };
@@ -4580,6 +4606,7 @@ unsafe fn dec_ref_ptr_terminal(
         if (header_flags & HEADER_FLAG_SCOPED) == 0 {
             record_terminal_deallocation(py, type_id, dealloc_bytes);
         }
+        next_tee_link
     }
 }
 
