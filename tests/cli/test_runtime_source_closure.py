@@ -43,20 +43,9 @@ def test_source_closure_deduplicates_features_and_keeps_shared_inputs(
     )
     assert first == (tmp_path / "runtime" / "crate-a",)
     assert calls == [("feature-a", "feature-b")]
-    assert extras == [
-        (
-            tmp_path / "Cargo.toml",
-            tmp_path / "Cargo.lock",
-            tmp_path / "runtime/build_support",
-            tmp_path / "LICENSE",
-            tmp_path / "include/molt",
-            tmp_path / "runtime/wasm_table_layout.inc",
-            tmp_path / "runtime/molt-runtime-http/src/functions_logging.rs",
-            tmp_path / "runtime/molt-runtime-itertools/src/itertools.rs",
-            tmp_path / "runtime/molt-runtime-path/src/os_ext.rs",
-            tmp_path / "runtime/molt-runtime-path/src/pathlib.rs",
-        )
-    ]
+    # Crates declare what their builds read outside them; only the
+    # workspace's manifest and lock are the caller's.
+    assert extras == [(tmp_path / "Cargo.toml", tmp_path / "Cargo.lock")]
 
 
 def test_cargo_closure_owns_build_script_non_src_inputs(tmp_path: Path) -> None:
@@ -85,6 +74,78 @@ def test_cargo_closure_owns_build_script_non_src_inputs(tmp_path: Path) -> None:
 
     assert paths == [crate]
     assert before["digest"] != after["digest"]
+
+
+def _declaring_tree(root: Path, declared: str) -> tuple[Path, Path, Path]:
+    """app -> reader; reader declares one build input; other declares none."""
+    app = root / "runtime" / "app"
+    reader = root / "runtime" / "reader"
+    other = root / "runtime" / "other"
+    for crate in (app, reader, other):
+        (crate / "src").mkdir(parents=True)
+    (app / "Cargo.toml").write_text(
+        "[package]\nname='app'\nversion='0.1.0'\n"
+        "[dependencies]\nreader={path='../reader'}\n",
+        encoding="utf-8",
+    )
+    (reader / "Cargo.toml").write_text(
+        "[package]\nname='reader'\nversion='0.1.0'\n"
+        f"[package.metadata.molt]\nbuild-inputs = [{declared}]\n",
+        encoding="utf-8",
+    )
+    (other / "Cargo.toml").write_text(
+        "[package]\nname='other'\nversion='0.1.0'\n", encoding="utf-8"
+    )
+    catalog = root / "src" / "catalog.json"
+    catalog.parent.mkdir(parents=True)
+    catalog.write_text("{}\n", encoding="utf-8")
+    return app, other, catalog
+
+
+def test_a_closure_keys_the_build_inputs_of_every_crate_it_reaches(
+    tmp_path: Path,
+) -> None:
+    app, other, catalog = _declaring_tree(tmp_path, "'../../src/catalog.json'")
+
+    def closure_of(crate: Path) -> list[Path]:
+        return _cargo_crate_source_closure(
+            project_root=tmp_path, crate_root=crate, crate_features=()
+        )
+
+    reaching = closure_of(app)
+    assert catalog in reaching
+    assert catalog not in closure_of(other)
+    before = _tree_identity(
+        tuple((str(path.relative_to(tmp_path)), path) for path in reaching),
+        require_all=True,
+    )
+    catalog.write_text('{"changed": 1}\n', encoding="utf-8")
+    after = _tree_identity(
+        tuple((str(path.relative_to(tmp_path)), path) for path in reaching),
+        require_all=True,
+    )
+    assert before["digest"] != after["digest"]
+
+
+@pytest.mark.parametrize(
+    "declared,reason",
+    [
+        ("'../../src/missing.json'", "does not exist"),
+        ("'../../../outside.json'", "escapes the source root"),
+        ("'../../src/catalog.json', 3", "must be a list of paths"),
+        ("''", "must be a list of paths"),
+    ],
+)
+def test_a_build_input_declaration_that_cannot_be_keyed_is_refused(
+    tmp_path: Path, declared: str, reason: str
+) -> None:
+    (tmp_path.parent / "outside.json").write_text("{}\n", encoding="utf-8")
+    root = tmp_path / "repo"
+    app, _other, _catalog = _declaring_tree(root, declared)
+    with pytest.raises(ValueError, match=reason):
+        _cargo_crate_source_closure(
+            project_root=root, crate_root=app, crate_features=()
+        )
 
 
 def test_repeated_directory_closure_observes_added_rust_module(

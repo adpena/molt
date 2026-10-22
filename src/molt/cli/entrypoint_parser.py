@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from typing import Never, get_args
 from molt.cli.build_request import BuildProfile, ParseCodec, TypeHintPolicy, EmitMode
+from molt.cli.run_tier import RunTier
 
 from molt.backend_executable_names import CODEGEN_BACKENDS
 from molt.debug import DebugSubcommand
@@ -1176,6 +1177,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
             "  molt run app.py --target wasm          Build linked WASM and run with Node\n"
             "  molt run app.py --target luau          Build and run with lune\n"
             "  molt run app.py --target mlir          Build and JIT via MLIR\n"
+            "  molt run app.py --tier jit             Compile into memory and run (no link)\n"
             "  molt run app.py -- --arg1 val          Pass args to your script\n"
         ),
     )
@@ -1191,6 +1193,16 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
             "Build target: native (default), wasm (linked build + Node host), "
             "luau (build + run with lune), mlir (build + JIT via MLIR), "
             "or a target triple."
+        ),
+    )
+    run_parser.add_argument(
+        "--tier",
+        choices=[tier.value for tier in RunTier],
+        default=None,
+        help=(
+            "How to run a native program: aot (default) builds an executable "
+            "and runs it; jit compiles it into the molt-jit runner's memory and "
+            "runs it there, with no object, link or executable."
         ),
     )
     run_parser.add_argument(

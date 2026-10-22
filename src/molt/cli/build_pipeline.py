@@ -11,6 +11,7 @@ from molt.cli import backend_ir as _backend_ir
 from molt.cli import backend_ir_analysis_cache as _backend_ir_analysis_cache
 from molt.cli import backend_pipeline as _backend_pipeline
 from molt.cli import frontend_pipeline as _frontend_pipeline
+from molt.cli import jit_pipeline as _jit_pipeline
 from molt.cli import progress as _progress
 from molt.cli.build_request import FactGraphRequest
 from molt.backend_daemon_paths import (
@@ -90,6 +91,19 @@ def _run_build_pipeline(
     prepared_frontend_run_ticket = (
         prepared_frontend_pipeline_bundle.prepared_frontend_run_ticket
     )
+    output_layout: _BuildOutputLayout = prepared_frontend_pipeline_bundle.output_layout
+    native_artifact_plan = prepared_frontend_pipeline_bundle.native_artifact_plan
+    # The import plan already names every external native artifact, so an
+    # output that cannot carry them is refused before the frontend runs.
+    native_artifact_custody_error = _external_native_artifact_output_custody_error(
+        native_artifact_plan=native_artifact_plan,
+        output_layout=output_layout,
+        target=target,
+    )
+    if native_artifact_custody_error is not None:
+        return return_after_build_diagnostics(
+            _fail(native_artifact_custody_error, json_output, command="build")
+        )
     _progress.phase("frontend")
     frontend_run_start = time.perf_counter()
     frontend_layer_error = _run_frontend_pipeline(
@@ -107,20 +121,33 @@ def _run_build_pipeline(
 
     _progress.phase("backend_pipeline")
 
+    if output_layout.emit_mode == "jit":
+        if fact_graph_request is not None:
+            return return_after_build_diagnostics(
+                _fail(
+                    "factgraph does not support the JIT tier",
+                    json_output,
+                    command="factgraph",
+                )
+            )
+        return return_after_build_diagnostics(
+            _jit_pipeline._run_jit_pipeline(
+                prepared_build_preamble=prepared_build_preamble,
+                prepared_build_roots=prepared_build_roots,
+                prepared_build_config=prepared_build_config,
+                resolved_build_entry=resolved_build_entry,
+                prepared_frontend_pipeline_bundle=prepared_frontend_pipeline_bundle,
+                profile=profile,
+                json_output=json_output,
+                target=target,
+                deterministic=deterministic,
+                trusted=trusted,
+                stdlib_profile=stdlib_profile,
+            )
+        )
     # MLIR target: run the frontend to produce TIR, then shell out to the
     # standalone molt-backend-mlir binary. This bypasses the standard backend
     # pipeline entirely because the MLIR crate is out-of-workspace.
-    output_layout: _BuildOutputLayout = prepared_frontend_pipeline_bundle.output_layout
-    native_artifact_plan = prepared_frontend_pipeline_bundle.native_artifact_plan
-    native_artifact_custody_error = _external_native_artifact_output_custody_error(
-        native_artifact_plan=native_artifact_plan,
-        output_layout=output_layout,
-        target=target,
-    )
-    if native_artifact_custody_error is not None:
-        return return_after_build_diagnostics(
-            _fail(native_artifact_custody_error, json_output, command="build")
-        )
     if fact_graph_request is not None and output_layout.is_mlir_emit:
         return return_after_build_diagnostics(
             _fail(

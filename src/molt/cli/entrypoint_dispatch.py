@@ -431,6 +431,18 @@ def _dispatch_entrypoint_command(
             parse_build_arguments,
             resolve_build_request,
         )
+        from molt.cli.run_tier import DEFAULT_RUN_TIER, RunTier
+
+        raw_tier = getattr(args, "tier", None) or run_cfg.get("tier")
+        try:
+            run_tier = DEFAULT_RUN_TIER if raw_tier is None else RunTier(raw_tier)
+        except ValueError:
+            return _fail(
+                f"Invalid run tier: {raw_tier!r} (expected one of "
+                f"{', '.join(tier.value for tier in RunTier)})",
+                args.json,
+                command="run",
+            )
 
         try:
             build_selection = parse_build_arguments(
@@ -439,6 +451,11 @@ def _dispatch_entrypoint_command(
             if run_target is not None and build_selection.target is None:
                 build_args.extend(["--target", run_target])
                 build_selection.target = run_target
+            if run_tier is not RunTier.AOT and build_selection.emit is None:
+                # The tier's artifact; request resolution admits it before any
+                # frontend work (run_tier.jit_tier_refusal).
+                build_args.extend(["--emit", run_tier.build_emit])
+                build_selection.emit = run_tier.build_emit
             effective_build = resolve_build_request(
                 build_selection,
                 build_cfg=build_cfg,
@@ -537,6 +554,7 @@ def _dispatch_entrypoint_command(
             cast("BuildProfile | None", run_profile),
             audit_log=getattr(args, "audit_log", None),
             io_mode=getattr(args, "io_mode", None),
+            tier=run_tier,
         )
     if args.command == "repl":
         from molt.repl import run_repl

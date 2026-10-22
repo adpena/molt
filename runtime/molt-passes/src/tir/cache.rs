@@ -168,10 +168,18 @@ impl CompilationCache {
         )
     }
 
-    /// Open the namespace of the running backend binary (see
-    /// [`backend_cache_dir`]). Its trims also retire stale sibling namespaces.
+    /// Open the namespace of the running backend binary under the process's
+    /// cache root (see [`backend_cache_dir`]). Its trims also retire stale
+    /// sibling namespaces.
     pub fn open_backend_namespace() -> Self {
-        let root = backend_cache_root();
+        Self::open_backend_namespace_under(backend_cache_root())
+    }
+
+    /// Open the namespace of the running backend binary under `root`, for a
+    /// process whose own environment and current directory do not name its
+    /// cache (the JIT runner's are the program's). Its trims also retire
+    /// stale sibling namespaces under `root`.
+    pub fn open_backend_namespace_under(root: PathBuf) -> Self {
         let mut cache = Self::open(backend_cache_dir_under(&root));
         cache.namespace_root = Some(root);
         cache

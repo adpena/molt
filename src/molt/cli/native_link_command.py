@@ -497,3 +497,106 @@ def _build_native_link_plan(
         selection_requirements=external_inputs if external_inputs.items else None,
         runtime_inputs=runtime_inputs,
     )
+
+
+# The runtime leaves the application initializer to the final image. A JIT
+# runner exports it, so a runtime image binds it when the runner loads it.
+APP_ISOLATE_BOOTSTRAP_SYMBOL = "molt_isolate_bootstrap"
+
+
+def runtime_image_suffix(target: NativeTargetSpec) -> str:
+    if target.object_format is NativeObjectFormat.MACHO:
+        return ".dylib"
+    if target.object_format is NativeObjectFormat.ELF:
+        return ".so"
+    raise RuntimeError(
+        f"The JIT tier has no {target.object_format.value} runtime image yet"
+    )
+
+
+def _build_native_runtime_image_link_plan(
+    *,
+    runtime_lib: Path,
+    output_image: Path,
+    target: NativeTargetSpec,
+    sysroot_path: Path | None,
+    profile: str,
+    runtime_codegen_binding: NativeRuntimeCodegenBinding,
+) -> NativeLinkPlan:
+    """Link the whole AOT runtime archive into one shared image (JIT tier).
+
+    Every archive member stays in the image and nothing is dead-stripped, so
+    the image defines exactly the symbols an AOT link resolves generated code
+    against. The archive's own Cargo native link plan and the AOT driver,
+    SDK and framework selection apply unchanged.
+    """
+    if not target.is_host:
+        raise RuntimeError("The JIT tier runs programs on the host target only")
+    runtime_image_suffix(target)
+    link_cmd, linker_hint, normalized_target = _build_native_link_driver_command(
+        output_obj=None,
+        target=target,
+        sysroot_path=sysroot_path,
+        profile=profile,
+    )
+    selected_linker_name = native_linker_name_from_driver_command(
+        link_cmd,
+        hinted=linker_hint,
+    )
+    capabilities = native_link_capabilities(
+        target=target,
+        linker_hint=selected_linker_name,
+    )
+    runtime_lib_str = str(runtime_lib)
+    if target.object_format is NativeObjectFormat.MACHO:
+        link_cmd.extend(
+            [
+                "-dynamiclib",
+                f"-Wl,-force_load,{runtime_lib_str}",
+                f"-Wl,-U,_{APP_ISOLATE_BOOTSTRAP_SYMBOL}",
+                "-o",
+                str(output_image),
+                *native_link_output_flags(
+                    capabilities=capabilities, output=output_image
+                ),
+                "-lc++",
+            ]
+        )
+        _append_darwin_runtime_frameworks(link_cmd, target=target)
+    else:
+        # A shared object may leave the bootstrap undefined; the dynamic
+        # loader binds it to the runner's export.
+        link_cmd.extend(
+            [
+                "-shared",
+                "-Wl,--whole-archive",
+                runtime_lib_str,
+                "-Wl,--no-whole-archive",
+                "-o",
+                str(output_image),
+                "-lstdc++",
+                "-lm",
+            ]
+        )
+    runtime_inputs = _collect_cargo_native_link_deps(
+        runtime_lib,
+        target_triple=target.cargo_target,
+        object_format=target.object_format.value,
+        runtime_build_identity=runtime_codegen_binding.build_identity,
+        runtime_codegen_binding=runtime_codegen_binding,
+    )
+    link_cmd.extend(runtime_inputs.flags)
+    return NativeLinkPlan(
+        target=target,
+        capabilities=capabilities,
+        policy=native_link_policy(
+            target=target,
+            profile=profile,
+            keep_symbols=True,
+            bolt_requested=False,
+        ),
+        command=tuple(link_cmd),
+        linker_hint=selected_linker_name,
+        normalized_target=normalized_target,
+        runtime_inputs=runtime_inputs,
+    )

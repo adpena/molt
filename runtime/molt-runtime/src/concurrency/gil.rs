@@ -739,7 +739,15 @@ mod tests {
         });
         assert!(unwind.is_err());
         assert!(!super::tls_destruction_gil_held());
-        assert!(super::molt_gil().try_lock().is_some());
+        // A fresh owner gets the lock, so the unwind left no acquisition
+        // behind. Other tests share the process-wide GIL: asserting that it
+        // is free at this instant raced them (a landing gate, 2026-10-22).
+        let (fresh_tx, fresh_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            drop(GilGuard::new());
+            fresh_tx.send(()).unwrap();
+        });
+        fresh_rx.recv_timeout(Duration::from_secs(10)).unwrap();
     }
 
     #[test]

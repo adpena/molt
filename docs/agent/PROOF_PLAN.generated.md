@@ -17,8 +17,8 @@ Landing checks execute the generator and authority inputs captured from the exac
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 13 |
 | Hashed executable authority inputs | 1 | 383 |
-| Local path rules | 35 | 85 |
-| Unique local commands | 73 | 76 |
+| Local path rules | 35 | 86 |
+| Unique local commands | 73 | 77 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
 ## CI families
@@ -45,7 +45,7 @@ GitHub job budgets cover the deterministic command-deadline DAG projection plus 
 
 | Family | Tiers | Required | Executor | Timeout | Commands | Reserve | Headroom | Resource | Selection parents | Admission | Inputs |
 |---|---|---:|---|---:|---:|---:|---:|---|---|---|---:|
-| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2820 s | 120 s | 660 s | `repository-policy` | none | `docs-gates` needs none | 227 |
+| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2820 s | 120 s | 660 s | `repository-policy` | none | `docs-gates` needs none | 228 |
 | `wasm` | pr, main | yes | `github-job` | 333 min | 19800 s | 180 s | 0 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 53 |
 | `python_static` | pre-push, pr, main | yes | `github-job` | 16 min | 900 s | 60 s | 0 s | `python-static` | none | `python-static` needs `classify-changes` | 10 |
 | `python_unit` | pre-push, pr, main | yes | `github-matrix` | 43 min | 2520 s per cell | 60 s | 0 s | `python-tests` | none | `python-unit` needs `classify-changes` | 11 |
@@ -434,6 +434,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `builtin-binding-guard-authority` | 9 | 1 |
 | `wasm-optimizer-policy` | 6 | 1 |
 | `native-callable-abi` | 20 | 1 |
+| `native-launch-abi` | 9 | 1 |
 | `runtime-regex` | 11 | 2 |
 | `stringprep-leaf` | 2 | 1 |
 | `cpython-abi-authorities` | 2 | 1 |

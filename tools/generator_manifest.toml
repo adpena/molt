@@ -260,6 +260,21 @@ closed_domains = []
 discovery_only = false
 
 [[generator]]
+tool = "tools/gen_native_launch_abi.py"
+outputs = [
+  "src/molt/cli/native_launch_abi_generated.py",
+  "runtime/molt-jit/src/launch_abi_generated.rs",
+]
+source = "runtime/native_launch_abi.toml + tools/generator_io.py"
+check_mode = true
+check_command = "tools/gen_native_launch_abi.py --check"
+toolchains = ["rustfmt"]
+idempotent = true
+sync_test = "tests/test_gen_native_launch_abi.py"
+closed_domains = []
+discovery_only = false
+
+[[generator]]
 tool = "tools/gen_runtime_profile_schema.py"
 outputs = [
   "runtime/molt-runtime/src/runtime_profile_schema_generated.rs",

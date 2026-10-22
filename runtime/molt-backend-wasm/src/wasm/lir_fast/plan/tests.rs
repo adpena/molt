@@ -495,7 +495,7 @@ fn wasm_final_owner_consumes_module_and_terminal_cached_pipeline_modes() {
             TirPipelineRunOptions {
                 target_info: target.clone(),
                 cache_flavor: TirPipelineCacheFlavor::Wasm,
-                cache_dir: None,
+                cache: crate::tir::pipeline_cache::TirCacheLocation::ProcessRoot,
                 process_externs: false,
                 verify_lir: true,
                 tir_dump: false,

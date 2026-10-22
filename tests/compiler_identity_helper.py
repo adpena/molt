@@ -89,12 +89,36 @@ def stub_compiler_admission(monkeypatch):
     monkeypatch.setattr(compiler_identity, "backend_build_admission", admission)
 
 
+# The backend reads two authorities outside its crate: molt-backend embeds the
+# daemon protocol version and molt-ir's build embeds the environment catalog.
+# The one-crate fixture declares both, as the real crates do.
+_BACKEND_FIXTURE_BUILD_INPUTS = {
+    "src/molt/backend_environment.json": "{}\n",
+    "src/molt/backend_daemon_protocol_version.txt": "2\n",
+}
+
+
 def write_compiler_lock(root, *, product=HostToolProduct.BACKEND):
     manifest = root / "runtime" / product.value / "Cargo.toml"
     if not manifest.exists():
         manifest.parent.mkdir(parents=True, exist_ok=True)
+        build_inputs = (
+            _BACKEND_FIXTURE_BUILD_INPUTS if product is HostToolProduct.BACKEND else {}
+        )
+        for relative, content in build_inputs.items():
+            path = root / relative
+            if not path.exists():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
         manifest.write_text(
             f'[package]\nname = "{product.value}"\nversion = "0.1.0"\n'
+            + (
+                "[package.metadata.molt]\nbuild-inputs = ["
+                + ", ".join(f'"../../{relative}"' for relative in build_inputs)
+                + "]\n"
+                if build_inputs
+                else ""
+            )
             + (
                 "[features]\ndefault = []\nhost-tool = []\n"
                 if product is HostToolProduct.WASM_FACTS
@@ -121,13 +145,6 @@ def write_compiler_source(root: Path, *, product=HostToolProduct.BACKEND) -> Non
         "Cargo.toml": f'[workspace]\nmembers = ["runtime/{product.value}"]\n',
         f"runtime/{product.value}/src/main.rs": "fn main() {}\n",
     }
-    if product is HostToolProduct.BACKEND:
-        files.update(
-            {
-                "src/molt/backend_environment.json": "{}\n",
-                "src/molt/backend_daemon_protocol_version.txt": "2\n",
-            }
-        )
     for relative, content in files.items():
         path = root / relative
         if not path.exists():
@@ -149,9 +166,18 @@ def compiler_environment_inputs(environment=None):
 
 
 def compiler_cargo_stdout(
-    root: Path, output: Path, environment, *, product=HostToolProduct.BACKEND
+    root: Path,
+    output: Path,
+    environment,
+    *,
+    product=HostToolProduct.BACKEND,
+    extra_reads: tuple[Path, ...] = (),
 ) -> str:
-    """Real Cargo/rustc protocol for a known local binary's exact output bytes."""
+    """Real Cargo/rustc protocol for a known local binary's exact output bytes.
+
+    ``extra_reads`` adds files the unit's rustc dep-info says it read, as an
+    ``include_str!`` outside the crate would.
+    """
     root = root.resolve()
     write_compiler_source(root, product=product)
     package = root / "runtime" / product.value
@@ -180,8 +206,11 @@ def compiler_cargo_stdout(
         env_line += "=" + value.replace("\\", "\\\\").replace("\n", "\\n").replace(
             "\r", "\\r"
         )
+    reads = (source, *extra_reads)
     unit.with_suffix(".d").write_text(
-        f"{escape(unit)}: {escape(source)}\n\n{escape(source)}:\n\n{env_line}\n",
+        f"{escape(unit)}: {' '.join(escape(read) for read in reads)}\n\n"
+        + "".join(f"{escape(read)}:\n" for read in reads)
+        + f"\n{env_line}\n",
         encoding="utf-8",
     )
     return (

@@ -1,6 +1,6 @@
 use molt_backend::SimpleIR;
 
-use super::super::{NativeApplicationArtifactOptions, deduplicate_functions_by_name};
+use super::super::NativeApplicationArtifactOptions;
 
 pub(crate) struct NativeApplicationStats {
     pub(crate) function_count: usize,
@@ -16,27 +16,16 @@ impl NativeApplicationStats {
 pub(crate) fn prepare_native_application_ir(
     ir: &mut SimpleIR,
     options: &NativeApplicationArtifactOptions<'_>,
-) {
-    // Preserve the one-shot native application-object sequence as the single
-    // authority for both direct backend runs and daemon requests.
-    molt_backend::inject_runtime_exit(ir);
-    if !options.stdlib_split_enabled {
-        // Import bedrock: registry init symbols are DFE roots - init bodies
-        // are reachable only through the registry blob's MODULE_INIT_TABLE
-        // relocations (invariant I5).
-        let module_registry_roots: std::collections::BTreeSet<String> = options
-            .module_registry
-            .as_ref()
-            .map(|registry| registry.init_symbols.iter().cloned().collect())
-            .unwrap_or_default();
-        molt_backend::eliminate_dead_functions_with_roots(ir, &module_registry_roots);
-        molt_backend::eliminate_dead_imports(ir);
-        molt_backend::eliminate_dead_ops(
-            ir,
-            &molt_backend::tir::target_info::TargetInfo::native_release_fast(),
-        );
-    }
-    deduplicate_functions_by_name(&mut ir.functions);
+) -> std::io::Result<()> {
+    // One admission and application sequence for direct backend runs, daemon
+    // requests and the development JIT runner.
+    molt_backend::prepare_native_application_ir(
+        ir,
+        options.module_registry.as_ref(),
+        &options.code_slots,
+        options.stdlib_split_enabled,
+    )
+    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error.to_string()))
 }
 
 pub(crate) fn native_application_stats(ir: &SimpleIR) -> NativeApplicationStats {

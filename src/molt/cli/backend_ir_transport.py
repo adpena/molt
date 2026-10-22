@@ -1,7 +1,7 @@
 """Stream executable IR without a whole-document transport buffer."""
 
 from collections.abc import Mapping
-from typing import Any, BinaryIO
+from typing import Any, Protocol
 
 import msgspec
 
@@ -17,7 +17,13 @@ def _container_header(count: int, *, array: bool) -> bytes:
     return bytes([0xDD if array else 0xDF]) + count.to_bytes(4, "big")
 
 
-def write_backend_ir(handle: BinaryIO, ir: Mapping[str, Any]) -> None:
+class ByteSink(Protocol):
+    """Anything the transport can stream encoded bytes into."""
+
+    def write(self, data: bytes, /) -> object: ...
+
+
+def write_backend_ir(handle: ByteSink, ir: Mapping[str, Any]) -> None:
     """Keep at most one top-level array element's encoded bytes resident.
 
     Function bodies use the same sorted, bit-preserving codec as persisted
