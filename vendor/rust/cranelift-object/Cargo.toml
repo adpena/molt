@@ -63,7 +63,7 @@ default-features = false
 version = "0.137.0"
 
 [dependencies.gimli]
-version = "0.33.0"
+version = "0.34.0"
 features = [
     "read",
     "write",
