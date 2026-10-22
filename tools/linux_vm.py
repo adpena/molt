@@ -1223,7 +1223,6 @@ def push(
             "-c",
             f"core.sshCommand=ssh -F {shlex.quote(str(ssh_config))}",
             "push",
-            "--force",
             "--no-verify",
             "--quiet",
             f"lima-{name}:{vm.clone}",

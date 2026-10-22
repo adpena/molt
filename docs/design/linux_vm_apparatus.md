@@ -170,11 +170,11 @@ two without copying Lima's defaults.
   `restart_pending`. For each running VM that mounts host paths, one `lsof`
   reports what its process holds. It runs nothing in a guest.
 - `push <vm> [rev]` resolves `rev` (default `HEAD`) to a commit and runs `git
-  push --force` into the guest clone as `refs/heads/from-host` (`--ref`
-  renames it), over Lima's SSH config (`<instance>/ssh.config`, host
-  `lima-<vm>`). Git sends only the objects the clone lacks. `--checkout` also
-  checks the commit out, detached, in the guest; Git refuses if that would
-  overwrite local changes.
+  push` into the guest clone as `refs/heads/from-host` (`--ref` renames it),
+  over Lima's SSH config (`<instance>/ssh.config`, host `lima-<vm>`). Git sends
+  only missing objects and refuses to replace divergent guest commits. A rejected
+  push leaves the guest checkout unchanged. `--checkout` checks an accepted commit
+  out detached; Git refuses if that would overwrite local changes.
 - `release` serves VMs that mount host paths. For each, the host creates a
   forget set under every mount (`<mount>/.molt-linux-vm-forget/00` to `63`,
   empty files, created once), and the guest runs one command: `echo 2 >
