@@ -1327,7 +1327,15 @@ def test_daemon_cache_runs_actual_native_and_wasm_binary_receivers() -> None:
     ]
     assert "runtime/molt-backend/tests/daemon_server.rs" in local["globs"]
     server = shlex.split(local["gates"][1])
-    assert server[server.index("--test") + 1] == "daemon_server"
+    assert {server[i + 1] for i, arg in enumerate(server[:-1]) if arg == "--test"} == {
+        "daemon_server",
+        "rust_transpiler_preview",
+    }
+    assert {server[i + 1] for i, arg in enumerate(server[:-1]) if arg == "-p"} == {
+        "molt-backend",
+        "molt-backend-rust",
+    }
+    assert "--no-fail-fast" in server
     assert server[server.index("--features") + 1] == argv[argv.index("--features") + 1]
     assert server[server.index("--profile") + 1] == "dev-fast"
 
