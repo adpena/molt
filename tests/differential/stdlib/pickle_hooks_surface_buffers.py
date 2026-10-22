@@ -100,3 +100,63 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+# Reducer iterator slots use a distinct owned collector from NEXT_BUFFER.
+class WithListItems:
+    def __reduce__(self):
+        return list, (), None, iter([11, 12])
+
+
+class WithDictItems:
+    def __reduce__(self):
+        return dict, (), None, None, iter([("left", 11), ("right", 12)])
+
+
+assert pickle.loads(pickle.dumps(WithListItems(), protocol=4)) == [11, 12]
+assert pickle.loads(pickle.dumps(WithDictItems(), protocol=4)) == {
+    "left": 11,
+    "right": 12,
+}
+
+
+class ReducerFailure(RuntimeError):
+    pass
+
+
+reducer_failure = ReducerFailure("reducer iterator failed")
+
+
+class FailingItems:
+    def __init__(self, dictionary):
+        self.dictionary = dictionary
+        self.position = 0
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self.position:
+            raise reducer_failure
+        self.position += 1
+        return ("left", 11) if self.dictionary else 11
+
+
+class WithFailingItems:
+    def __init__(self, dictionary):
+        self.dictionary = dictionary
+
+    def __reduce__(self):
+        if self.dictionary:
+            return dict, (), None, None, FailingItems(True)
+        return list, (), None, FailingItems(False)
+
+
+for dictionary in (False, True):
+    try:
+        pickle.dumps(WithFailingItems(dictionary), protocol=4)
+    except ReducerFailure as caught:
+        assert caught is reducer_failure
+    else:
+        raise AssertionError("pickle swallowed reducer iterator failure")
+print("reducer iterator slots", True, True)
