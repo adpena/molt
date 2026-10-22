@@ -5802,7 +5802,7 @@ globs = [
   "src/molt/checkout_provisioning.py",
 ]
 gates = [
-  "python tools/guarded_exec.py --prefix MOLT_TEST --cwd examples/edgebox/packages/edgebox-cloudflare --timeout 120 -- corepack npm run check",
+  "python tools/guarded_exec.py --cwd examples/edgebox/packages/edgebox-cloudflare --timeout 120 -- corepack npm run check",
 ]
 
 [[rule]]
