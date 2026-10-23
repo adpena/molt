@@ -1,3 +1,4 @@
+# MOLT_ENV: MOLT_CAPABILITIES=process.exec,process.asyncio
 """Purpose: asyncio child-watcher gate is intrinsic-backed and avoids NotImplementedError."""
 
 import asyncio
