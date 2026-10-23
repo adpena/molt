@@ -56,6 +56,11 @@ const _: () = {
 /// Acquire the existing stable descriptor from a runtime handle. The caller
 /// holds runtime execution custody; errors are transferred by the same native
 /// retirement policy used by all owners, never cleared or replaced here.
+///
+/// # Safety
+/// `bits` must identify a live runtime value whose owner is retained throughout
+/// this call, including exporter callbacks. The caller must hold runtime
+/// execution custody, and native exporters must obey the Python buffer protocol.
 pub unsafe fn acquire_buffer(
     bits: u64,
     flags: i32,
@@ -71,6 +76,11 @@ pub unsafe fn acquire_buffer(
 /// Projection precedes exporter dispatch. Preserve every preparation failure,
 /// including metadata and publication errors; Clinic may normalize only errors
 /// from the subsequently invoked buffer protocol.
+///
+/// # Safety
+/// `bits` must identify a live runtime value whose owner remains alive throughout
+/// projection. The caller must hold runtime execution custody while preparing
+/// the native object and its class; the returned owner retains that object.
 pub unsafe fn project_buffer_object(bits: u64) -> Result<NativeObjectOwner, BufferAcquireError> {
     unsafe {
         let object = NativeObjectOwner::from_owned(
@@ -96,6 +106,12 @@ pub unsafe fn project_buffer_object(bits: u64) -> Result<NativeObjectOwner, Buff
 /// caller keeps that reference alive until this call completes; the returned
 /// lease owns its exporter independently. All descriptor validation and native
 /// error completion are shared with runtime-handle acquisition.
+///
+/// # Safety
+/// `object` must point to a valid, live native Python object retained throughout
+/// this call, including exporter callbacks. The caller must hold runtime
+/// execution custody, and the exporter must honor the requested buffer protocol,
+/// including keeping exported storage valid until the lease is released.
 pub unsafe fn acquire_buffer_from_object(
     object: *mut molt_cpython_abi::abi_types::PyObject,
     flags: i32,
@@ -152,6 +168,12 @@ pub unsafe fn exact_bytes(
 
 /// Read a PyBUF_SIMPLE span after all intervening Python conversions. The
 /// caller must not hold the returned Rust reference across Python reentry.
+///
+/// # Safety
+/// The lease must describe a contiguous byte span, as acquired with PyBUF_SIMPLE.
+/// Its storage must remain readable and unmodified for the returned borrow.
+/// The caller must retain execution custody and prevent callbacks or concurrent
+/// writers while the slice is in use; an export alone does not prevent mutation.
 pub unsafe fn buffer_bytes(lease: &RuntimeBufferLease) -> &[u8] {
     let descriptor = unsafe { &*lease.descriptor() };
     if descriptor.len == 0 {
