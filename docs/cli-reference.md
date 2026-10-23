@@ -68,7 +68,7 @@ from project configuration: `[tool.molt.build] entry-file = "app.py"` or
 | `--emit {bin,obj,wasm,jit}` | Select artifact format. `jit` publishes a JIT image (`<name>_molt.jit`) for the development JIT tier instead of an executable; see `molt run --tier`. A JIT image runs only from the checkout that built it, and it expires (see "JIT tier costs and expiry"); ship `bin`. |
 | `--linked / --no-linked` | Emit linked WASM artifact alongside output. |
 | `--split-runtime` | Produce separate runtime and app WASM modules. |
-| `--wasm-opt-level {O1,O2,O3,O4,Os,Oz}` | Binaryen optimization level. Dev defaults to `O1`; release deployment profiles select their shipping level. |
+| `--wasm-opt-level {O1,O2,O3,O4,Os,Oz}` | Binaryen optimization level. Dev builds run no post-link optimizer unless a level is named; release deployment profiles select their shipping level. |
 | `--precompile` | Have `molt-wasm-host` publish source-bound precompiled containers for faster startup. |
 | `--snapshot` | Generate a non-restorable `molt.snapshot.json` metadata template; live runtime state and pause/resume are not supported. |
 | `--portable` | Use baseline ISA (no host-specific CPU features). |
@@ -677,8 +677,9 @@ molt build app.py --target wasm --linked --precompile  # Host-produced precompil
 **Size optimization:**
 - `--split-runtime` emits an independently optimized `app.wasm` plus one app-independent, CDN-cacheable `molt_runtime.wasm`; the shared runtime retains its canonical ABI and receives deterministic structural reachability cleanup.
 - `--stdlib-profile micro` includes the core import surface, non-network scheduling, logging, collections, and tempfile/filesystem intrinsics.
-- Dev builds default to `--wasm-opt-level O1` without fixed-point convergence;
-  release browser/edge profiles retain their `Oz` or `O3` shipping policy.
+- Dev builds run no post-link optimizer; `--wasm-opt-level O1` (single pass)
+  or another level opts in. Release browser/edge profiles retain their `Oz` or
+  `O3` shipping policy.
 - Post-link optimization needs Binaryen's `wasm-opt`. An optimized build fails
   closed if the optimizer is missing, times out, or produces an invalid artifact;
   it never publishes a baseline artifact as optimized. Resolution order:

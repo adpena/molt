@@ -17,6 +17,7 @@ mod imports;
 pub(crate) use imports::*;
 mod value_encoding;
 pub(crate) use value_encoding::*;
+mod linkage_carriers;
 mod module_metadata;
 pub use module_metadata::*;
 mod block_builder;
