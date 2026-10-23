@@ -41,30 +41,6 @@ thread_local! {
 static INSTALL_EXPECTED_PANIC_HOOK: Once = Once::new();
 static PROCESS_GLOBAL_TEST_STATE: Mutex<()> = Mutex::new(());
 
-/// Keep rejection probes outside the registered target family as it grows.
-/// The generated registry owns admission; this module exists only in libtests.
-pub(crate) fn unsupported_target_python_version() -> (i64, i64) {
-    let (major, minor) = molt_obj_model::python_version_generated::SUPPORTED_TARGET_PYTHON_VERSIONS
-        .iter()
-        .map(|version| {
-            let (major, minor) = version
-                .split_once('.')
-                .expect("registered Python target has major and minor");
-            (
-                major.parse::<i64>().expect("registered Python major"),
-                minor.parse::<i64>().expect("registered Python minor"),
-            )
-        })
-        .max()
-        .expect("registered Python targets are nonempty");
-    (
-        major,
-        minor
-            .checked_add(1)
-            .expect("Python rejection probe fits i64"),
-    )
-}
-
 /// Reproduce array.py's real producer boundary: a declared class publishes
 /// native wrapper descriptors and an ordinary instance owns the storage handle.
 /// The caller retains its handle; the returned instance is a new owned value.
