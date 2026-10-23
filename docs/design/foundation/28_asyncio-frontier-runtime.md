@@ -67,9 +67,9 @@ Dominant cost: **2 heap allocations** (Task Python object + coroutine frame), **
 
 `sleep_worker` holds the SleepQueue inner Mutex until the deadline fires, then calls `enqueue_task_ptr` which acquires `task_queue_lock()` (a separate global Mutex), checks four flag bits on the header, sets `HEADER_FLAG_TASK_QUEUED`, then calls `runtime_state().scheduler().enqueue` which calls `crossbeam Injector::push`. The Injector push is lock-free but involves an atomic CAS and potentially allocating a new segment when the current one fills.
 
-Before running, `execute_task` saves the entire task exception state: acquires `task_exception_stacks` Mutex (take), `task_exception_handler_stacks` Mutex (take), `task_exception_depths` Mutex (get), sets CURRENT_TASK thread-local, sets current cancel token. On completion: reverses all saves, calls `clear_task_token` (3 Mutex acquires: `task_tokens`, `task_tokens_by_id`, `await_waiters`), calls `task_mark_done` (1 Mutex acquire: `task_queue_lock`), calls `wake_await_waiters` (acquires `task_waiting_on`, `await_waiters`, `await_waiter_index_map` all under 1 combined lock operation).
+Before running, `execute_task` moves the task's exception state onto the thread through `ActivationExceptionScope`, which reads one word of the task's sidecar and takes no lock (HF-230); it sets CURRENT_TASK thread-local and the current cancel token. On completion: reverses all saves, calls `clear_task_token` (3 Mutex acquires: `task_tokens`, `task_tokens_by_id`, `await_waiters`), calls `task_mark_done` (1 Mutex acquire: `task_queue_lock`), calls `wake_await_waiters` (acquires `task_waiting_on`, `await_waiters`, `await_waiter_index_map` all under 1 combined lock operation).
 
-Total wakeup-to-poll overhead: **5 Mutex acquires** just in exception state save/restore, **3 additional Mutexes** for token cleanup. **0 allocations** on the hot path (state is moved, not cloned).
+Total wakeup-to-poll overhead: no lock for exception state save/restore, **3 Mutexes** for token cleanup. **0 allocations** on the hot path (state is moved, not cloned).
 
 **sleep(0) round-trip** (the canonical async benchmark metric)
 
@@ -108,7 +108,7 @@ The cancel-check hot path is called from `execute_task` after every poll, even f
 
 ### 1.3 Critical Path Bottlenecks Ranked
 
-1. **Exception state save/restore per task poll** — 8+ Mutex acquires on the critical task execution path (`task_exception_stacks`, `task_exception_handler_stacks`, `task_exception_depths`, `task_cancel_messages`, `task_tokens`, `task_tokens_by_id`, `await_waiters`, `task_results`). These are all stored as separate `HashMap`s behind separate `Mutex`es in RuntimeState. Each is a HashMap lookup under a Mutex acquire even when single-threaded (under the GIL). This is the dominant overhead for short-lived tasks. **Target: 0 heap lookups on the hot task poll path.**
+1. **Task side tables per task poll** — 5+ Mutex acquires on the critical task execution path (`task_cancel_messages`, `task_tokens`, `task_tokens_by_id`, `await_waiters`, `task_results`). The exception state is no longer among them: each task keeps it in one sidecar word (HF-230). These are all stored as separate `HashMap`s behind separate `Mutex`es in RuntimeState. Each is a HashMap lookup under a Mutex acquire even when single-threaded (under the GIL). This is the dominant overhead for short-lived tasks. **Target: 0 heap lookups on the hot task poll path.**
 
 2. **Timer implementation: BinaryHeap per event loop** — The current `EventLoopState.timers` is a `BinaryHeap<TimerEntry>` inside the event_loop_registry `Mutex<HashMap<u64, EventLoopState>>`. Every `call_later` and timer check acquires this global Mutex. The `run_once` timer loop at `event_loop.rs:551–591` re-acquires the Mutex on every timer pop. For a 100k-timer workload this is 100k Mutex acquires per `run_once`. **Target: O(1) amortized timer insert and expire, single Mutex acquire per batch.**
 
@@ -118,7 +118,7 @@ The cancel-check hot path is called from `execute_task` after every poll, even f
 
 5. **GIL crossing in sleep_worker** — The sleep_worker thread acquires the GIL at every wakeup (`GilGuard::new()` at line 2687). This means every sleep expiry is a GIL contention point, serializing all sleep wakeups through the main thread. **Target: batch wakeup delivery in a single GIL acquire.**
 
-6. **Five separate HashMaps for task state** — `task_exception_stacks`, `task_exception_handler_stacks`, `task_exception_depths`, `task_last_exceptions`, `task_results` are five separate `Mutex<HashMap<PtrSlot, _>>` in RuntimeState. A lookup in any one requires a Mutex acquire + HashMap probe. **Target: inline the hot fields into the task header or a single task-local struct keyed once per task lifetime.**
+6. **Separate HashMaps for task state** — `task_last_exceptions` and `task_results` are separate `Mutex<HashMap<PtrSlot, _>>` in RuntimeState (the three exception-stack maps are gone, HF-230). A lookup in any one requires a Mutex acquire + HashMap probe. **Target: inline the hot fields into the task header or a single task-local struct keyed once per task lifetime.**
 
 7. **await-waiter graph: 3 nested Mutex acquires per edge** — `await_waiter_register` at line 1889 acquires `task_waiting_on`, `await_waiters`, and `await_waiter_index_map` three separate Mutexes (three separate lock() calls). **Target: single Mutex protecting the entire await-waiter graph.**
 

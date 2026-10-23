@@ -31,8 +31,9 @@ The `_poll` function receives `self` (the frame pointer) as its sole argument. I
 offset 0  (GEN_SEND_OFFSET=0):   send-value slot (edge)
 offset 8  (GEN_THROW_OFFSET=8):  pending throw-exception slot (edge)
 offset 16 (GEN_STATE_OFFSET=16): raw frame state word (never an edge)
-offset 24 (GEN_EXC_DEPTH_OFFSET=24): raw exception-stack depth (never an edge)
+offset 24: reserved raw word, zero (never an edge)
 offset 32 (GEN_YIELD_FROM_OFFSET=32): yield-from delegation target (edge)
+offset 40: reserved raw word, zero (never an edge)
 GEN_CONTROL_SIZE=48 bytes of control header
 offset 48+: spilled locals at 8 bytes each, deterministic name-sorted order
 ```
@@ -44,6 +45,10 @@ clearing raise it monotonically. A poll returns the yielded or returned value
 itself and reports completion by storing `GENERATOR_RESUME_RETURNED` in its
 resume label; the runtime turns that report into `Completed` (HF-486). Native
 coroutines keep `HEADER_FLAG_CORO_RUNNING` and `HEADER_FLAG_CORO_STARTED`.
+An activation keeps its handler levels, handled exceptions, `with` context
+managers and handler depth in one word of its sidecar, not in the payload
+(`builtins/exceptions/activation.rs`, HF-230); `GEN_RESERVED_OFFSETS` names the
+two zero words.
 
 **Spill model** (`_spill_async_temporaries`, lines 7775-7898): a pre-pass over the emitted op list, run at the end of compiling the `_poll` function, that detects every SSA value that is live across a `STATE_LABEL` boundary. For each such value it inserts `STORE_CLOSURE(self, offset, v)` before the `STATE_YIELD`/`STATE_TRANSITION` and `LOAD_CLOSURE(self, offset)` after the matching `STATE_LABEL`. Slot offsets are assigned in alphabetically-sorted name order to be deterministic (to fix non-determinism bug #34 that hash-seeded iteration order created). Every live-across-yield value, including temporaries, gets a dedicated closure slot even if the value has a 1-byte lifetime across the yield point.
 

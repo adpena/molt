@@ -328,6 +328,7 @@ stdlib:
       - tests/differential/basic/bytes_translate_maketrans.py
   contextlib:
     tests:
+      - tests/differential/stdlib/contextmanager_exit_outcomes.py
       - tests/differential/stdlib/contextlib_aclosing.py
       - tests/differential/basic/context_return_unwind_scope.py
       - tests/differential/stdlib/contextlib_closing_failures.py
@@ -512,6 +513,7 @@ stdlib:
       - tests/differential/stdlib/subprocess_shell_args.py
   sys:
     tests:
+      - tests/differential/stdlib/sys_exception_across_resume.py
       - tests/differential/stdlib/sys_basic.py
       - tests/differential/stdlib/sys_encoding_basic.py
       - tests/differential/stdlib/sys_getframe_fields.py
@@ -976,6 +978,7 @@ stdlib:
       - tests/differential/stdlib/logging_record_thread_process.py
   traceback:
     tests:
+      - tests/differential/stdlib/traceback_tb_next_assignment.py
       - tests/differential/stdlib/traceback_chain.py
       - tests/differential/stdlib/traceback_extract_tb_payload.py
       - tests/differential/stdlib/traceback_exception_object.py

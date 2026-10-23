@@ -743,17 +743,12 @@ pub(crate) unsafe fn visit_payload_owned_values(
             }
             // Shape/custom handlers have their own typed projection authorities.
             HeapLifecycleHandler::Generator => {
+                // The task projection includes the saved exception state.
                 crate::async_rt::scheduler::task_visit_owned_edges(py, ptr, &mut |bits| {
                     visit_bits(bits, visit)
                 });
-                crate::builtins::exceptions::generator_exception_stack_visit(ptr, |bits| {
-                    visit_bits(bits, visit)
-                });
-                crate::builtins::context::generator_context_stack_visit(ptr, |bits| {
-                    visit_bits(bits, visit)
-                });
-                // The control region's raw words (state, exception depth)
-                // are never edges; only its edge slots are visited.
+                // The control region's raw words (state, reserved) are never
+                // edges; only its edge slots are visited.
                 for offset in crate::GEN_EDGE_OFFSETS {
                     visit_bits(*(ptr.add(offset) as *const u64), visit);
                 }
@@ -1016,7 +1011,8 @@ pub(crate) unsafe fn terminal_detach_capacity(py: &PyToken<'_>, ptr: *mut u8) ->
     (edges, unsafe { detached_resource_count(ptr) })
 }
 
-/// Detach every generator-owned inline, closure-tail, and side-registry edge.
+/// Detach every generator-owned inline and closure-tail edge (the task
+/// detachment that precedes this one takes its saved exception state).
 /// The caller reserves the sink before mutation and releases it only after this
 /// function has published every source empty.
 ///
@@ -1029,12 +1025,6 @@ pub(crate) unsafe fn detach_generator_owned_edges(ptr: *mut u8, sink: &mut Detac
         crate::async_rt::generators::generator_clear(ptr);
         for offset in crate::GEN_EDGE_OFFSETS {
             sink.detach_if_heap(super::payload_refs::take(ptr, offset));
-        }
-        for bits in crate::builtins::exceptions::generator_exception_stack_take(ptr) {
-            sink.detach_if_heap(bits);
-        }
-        for bits in crate::builtins::context::generator_context_stack_take(ptr) {
-            sink.detach_if_heap(bits);
         }
         let payload_size = super::object_payload_size(ptr);
         debug_assert_eq!(payload_size % std::mem::size_of::<u64>(), 0);

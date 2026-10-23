@@ -8,11 +8,6 @@ use crate::{
     call_callable0, call_callable3, dec_ref_bits, exception_pending, inc_ref_bits,
     intern_static_name, obj_from_bits, object_type_id, raise_exception, runtime_state, to_i64,
 };
-use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
-
-static GENERATOR_CONTEXT_STACKS: LazyLock<Mutex<HashMap<usize, Vec<u64>>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn context_debug_enabled() -> bool {
     runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_CONTEXT_STACK)
@@ -28,43 +23,9 @@ fn context_stack_len() -> usize {
     CONTEXT_STACK.with(|stack| stack.borrow().len())
 }
 
-pub(crate) fn context_stack_take() -> Vec<u64> {
-    CONTEXT_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()))
-}
-
-pub(crate) fn context_stack_store(values: Vec<u64>) {
-    CONTEXT_STACK.with(|stack| {
-        *stack.borrow_mut() = values;
-    });
-}
-
-pub(crate) fn generator_context_stack_take(ptr: *mut u8) -> Vec<u64> {
-    GENERATOR_CONTEXT_STACKS
-        .lock()
-        .unwrap()
-        .remove(&(ptr as usize))
-        .unwrap_or_default()
-}
-
-pub(crate) fn generator_context_stack_store(ptr: *mut u8, values: Vec<u64>) {
-    let mut map = GENERATOR_CONTEXT_STACKS.lock().unwrap();
-    if values.is_empty() {
-        map.remove(&(ptr as usize));
-    } else {
-        map.insert(ptr as usize, values);
-    }
-}
-
-pub(crate) fn generator_context_stack_visit(ptr: *mut u8, mut visit: impl FnMut(u64)) {
-    if let Some(values) = GENERATOR_CONTEXT_STACKS
-        .lock()
-        .unwrap()
-        .get(&(ptr as usize))
-    {
-        for &bits in values {
-            visit(bits);
-        }
-    }
+/// Install `values` as the thread's context-manager stack; return the one it held.
+pub(crate) fn context_stack_replace(values: Vec<u64>) -> Vec<u64> {
+    CONTEXT_STACK.with(|stack| stack.replace(values))
 }
 
 unsafe fn context_enter_fn(ptr: *mut u8) -> *const () {

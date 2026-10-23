@@ -9,24 +9,20 @@ use std::time::Instant;
 
 use crossbeam_deque::{Injector, Worker};
 
+use crate::builtins::exceptions::{ActivationExceptionScope, ActivationKind};
 use crate::object::ops::string_obj_to_owned;
 use crate::{
-    ACTIVE_EXCEPTION_STACK, EXCEPTION_STACK, GilGuard, GilReleaseGuard, HEADER_FLAG_BLOCK_ON,
-    HEADER_FLAG_SPAWN_RETAIN, HEADER_FLAG_TASK_DONE, HEADER_FLAG_TASK_QUEUED,
-    HEADER_FLAG_TASK_RUNNING, HEADER_FLAG_TASK_WAKE_PENDING, MoltHeader, MoltObject, PtrSlot,
-    anext_default_poll_fn_addr, async_sleep_poll_fn_addr, asyncgen_poll_fn_addr,
-    class_name_for_error, code_filename_bits, code_name_bits, context_stack_unwind, dec_ref_bits,
-    exception_context_align_depth, exception_context_fallback_pop, exception_context_fallback_push,
-    exception_handler_active, exception_pending, exception_stack_baseline_get,
-    exception_stack_baseline_set, exception_stack_depth, exception_stack_set_depth,
-    generator_raise_active, header_from_obj_ptr, inc_ref_bits, io_wait_poll_fn_addr,
-    maybe_ptr_from_bits, molt_exception_last_pending, obj_from_bits, object_class_bits,
-    object_type_id, pending_bits_i64, process_poll_fn_addr, promise_poll_fn_addr, ptr_from_bits,
-    raise_exception, record_exception, resolve_task_ptr, runtime_state, set_task_raise_active,
-    task_exception_baseline_store, task_exception_baseline_take, task_exception_depth_store,
-    task_exception_depth_take, task_exception_handler_stack_store,
-    task_exception_handler_stack_take, task_exception_stack_store, task_exception_stack_take,
-    task_last_exception_contains_valid, task_raise_active, thread_poll_fn_addr, with_gil,
+    GilGuard, GilReleaseGuard, HEADER_FLAG_BLOCK_ON, HEADER_FLAG_SPAWN_RETAIN,
+    HEADER_FLAG_TASK_DONE, HEADER_FLAG_TASK_QUEUED, HEADER_FLAG_TASK_RUNNING,
+    HEADER_FLAG_TASK_WAKE_PENDING, MoltHeader, MoltObject, PtrSlot, anext_default_poll_fn_addr,
+    async_sleep_poll_fn_addr, asyncgen_poll_fn_addr, class_name_for_error, code_filename_bits,
+    code_name_bits, context_stack_unwind, dec_ref_bits, exception_handler_active,
+    exception_pending, generator_raise_active, header_from_obj_ptr, inc_ref_bits,
+    io_wait_poll_fn_addr, maybe_ptr_from_bits, molt_exception_last_pending, obj_from_bits,
+    object_class_bits, object_type_id, pending_bits_i64, process_poll_fn_addr,
+    promise_poll_fn_addr, ptr_from_bits, raise_exception, record_exception, resolve_task_ptr,
+    runtime_state, set_task_raise_active, task_last_exception_contains_valid, task_raise_active,
+    thread_poll_fn_addr, with_gil,
 };
 
 use super::cancellation::{
@@ -58,8 +54,7 @@ mod task_state;
 pub(crate) use task_state::thread_task_state;
 pub(crate) use task_state::{
     AwaitWaiterIndex, await_chain_terminal, await_waiter_clear, await_waiter_register,
-    await_waiters, process_task_state, task_detach_owned_edges, task_exception_depths,
-    task_exception_handler_stacks, task_exception_stacks, task_last_exceptions,
+    await_waiters, process_task_state, task_detach_owned_edges, task_last_exceptions,
     task_visit_owned_edges, task_waiting_on, task_waiting_on_event, task_waiting_on_future,
     wake_await_waiters,
 };
@@ -555,26 +550,13 @@ impl MoltScheduler {
                     }
                     let token = ensure_task_token(_py, task_ptr, current_token_id());
                     let prev_token = set_current_token(_py, token);
-                    let caller_depth = exception_stack_depth();
-                    let caller_handlers =
-                        EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
-                    let caller_active = ACTIVE_EXCEPTION_STACK
-                        .with(|stack| std::mem::take(&mut *stack.borrow_mut()));
-                    let caller_context = caller_active
-                        .last()
-                        .copied()
-                        .unwrap_or(MoltObject::none().bits());
-                    exception_context_fallback_push(caller_context);
-                    let task_handlers = task_exception_handler_stack_take(_py, task_ptr);
-                    EXCEPTION_STACK.with(|stack| {
-                        *stack.borrow_mut() = task_handlers;
-                    });
-                    let task_active = task_exception_stack_take(_py, task_ptr);
-                    ACTIVE_EXCEPTION_STACK.with(|stack| {
-                        *stack.borrow_mut() = task_active;
-                    });
-                    let task_depth = task_exception_depth_take(_py, task_ptr);
-                    exception_stack_set_depth(_py, task_depth);
+                    let exceptions = ActivationExceptionScope::enter(
+                        _py,
+                        task_ptr,
+                        ActivationKind::Task {
+                            own_baseline: false,
+                        },
+                    );
                     let prev_raise = task_raise_active();
                     set_task_raise_active(true);
                     if async_trace_enabled() {
@@ -604,23 +586,7 @@ impl MoltScheduler {
                         (*header).take_flags(HEADER_FLAG_TASK_RUNNING);
                     }
                     let wake_pending = task_take_wake_pending(task_ptr);
-                    let new_depth = exception_stack_depth();
-                    task_exception_depth_store(_py, task_ptr, new_depth);
-                    exception_context_align_depth(_py, new_depth);
-                    let task_handlers =
-                        EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
-                    task_exception_handler_stack_store(_py, task_ptr, task_handlers);
-                    let task_active = ACTIVE_EXCEPTION_STACK
-                        .with(|stack| std::mem::take(&mut *stack.borrow_mut()));
-                    task_exception_stack_store(_py, task_ptr, task_active);
-                    ACTIVE_EXCEPTION_STACK.with(|stack| {
-                        *stack.borrow_mut() = caller_active;
-                    });
-                    EXCEPTION_STACK.with(|stack| {
-                        *stack.borrow_mut() = caller_handlers;
-                    });
-                    exception_stack_set_depth(_py, caller_depth);
-                    exception_context_fallback_pop(_py);
+                    exceptions.exit(_py);
                     if pending {
                         let waiting_on_event = task_waiting_on_event(_py, task_ptr);
                         let scheduled = task_sleep_scheduled(_py, task_ptr);
@@ -1009,18 +975,7 @@ pub unsafe extern "C" fn molt_spawn(task_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
     unsafe {
-        let (
-            task_ptr,
-            poll_fn_addr,
-            task_scope,
-            prev_task,
-            prev_token,
-            caller_depth,
-            caller_baseline,
-            caller_handlers,
-            caller_active,
-            prev_raise,
-        ) = {
+        let (task_ptr, poll_fn_addr, task_scope, prev_task, prev_token, exceptions, prev_raise) = {
             let _gil = GilGuard::new();
             let _py = _gil.token();
             let _py = &_py;
@@ -1040,29 +995,13 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
             let prev_task = task_scope.previous();
             let token = ensure_task_token(_py, task_ptr, current_token_id());
             let prev_token = set_current_token(_py, token);
-            let caller_depth = exception_stack_depth();
-            let caller_baseline = exception_stack_baseline_get();
-            let caller_handlers =
-                EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
-            let caller_active =
-                ACTIVE_EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
-            let task_baseline = task_exception_baseline_take(_py, task_ptr);
-            exception_stack_baseline_set(task_baseline);
-            let caller_context = caller_active
-                .last()
-                .copied()
-                .unwrap_or(MoltObject::none().bits());
-            exception_context_fallback_push(caller_context);
-            let task_handlers = task_exception_handler_stack_take(_py, task_ptr);
-            EXCEPTION_STACK.with(|stack| {
-                *stack.borrow_mut() = task_handlers;
-            });
-            let task_active = task_exception_stack_take(_py, task_ptr);
-            ACTIVE_EXCEPTION_STACK.with(|stack| {
-                *stack.borrow_mut() = task_active;
-            });
-            let task_depth = task_exception_depth_take(_py, task_ptr);
-            exception_stack_set_depth(_py, task_depth);
+            // The root task's exception state stays on this thread while the
+            // loop below releases and retakes the GIL between polls.
+            let exceptions = ActivationExceptionScope::enter(
+                _py,
+                task_ptr,
+                ActivationKind::Task { own_baseline: true },
+            );
             (*header).fetch_or_flags(HEADER_FLAG_BLOCK_ON);
             BLOCK_ON_TASK.with(|cell| cell.set(task_ptr));
             let prev_raise = task_raise_active();
@@ -1073,10 +1012,7 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
                 task_scope,
                 prev_task,
                 prev_token,
-                caller_depth,
-                caller_baseline,
-                caller_handlers,
-                caller_active,
+                exceptions,
                 prev_raise,
             )
         };
@@ -1359,37 +1295,9 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
                     label, pending, kind
                 );
             };
-            let new_depth = exception_stack_depth();
             trace_step("start");
-            task_exception_depth_store(_py, task_ptr, new_depth);
-            trace_step("task_exception_depth_store");
-            exception_context_align_depth(_py, new_depth);
-            trace_step("exception_context_align_depth");
-            let new_baseline = exception_stack_baseline_get();
-            task_exception_baseline_store(_py, task_ptr, new_baseline);
-            trace_step("task_exception_baseline_store");
-            exception_stack_baseline_set(caller_baseline);
-            trace_step("exception_stack_baseline_set");
-            let task_handlers =
-                EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
-            task_exception_handler_stack_store(_py, task_ptr, task_handlers);
-            trace_step("task_exception_handler_stack_store");
-            let task_active =
-                ACTIVE_EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
-            task_exception_stack_store(_py, task_ptr, task_active);
-            trace_step("task_exception_stack_store");
-            ACTIVE_EXCEPTION_STACK.with(|stack| {
-                *stack.borrow_mut() = caller_active;
-            });
-            trace_step("restore_active_exception_stack");
-            EXCEPTION_STACK.with(|stack| {
-                *stack.borrow_mut() = caller_handlers;
-            });
-            trace_step("restore_exception_stack");
-            exception_stack_set_depth(_py, caller_depth);
-            trace_step("exception_stack_set_depth");
-            exception_context_fallback_pop(_py);
-            trace_step("exception_context_fallback_pop");
+            exceptions.exit(_py);
+            trace_step("exception_state_restored");
             // Move any pending exception off the block_on task and onto the caller/global slot.
             let task_exc_slot = task_last_exceptions(_py)
                 .lock()
