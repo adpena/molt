@@ -471,11 +471,11 @@ def test_wasm_binding_projection_reaches_eager_object_closure(
 
 def test_depfile_retains_lexical_aliases_without_duplicating_content_identity(tmp_path):
     target = tmp_path / "content.h"
-    target.write_text("#define VALUE 7\n")
+    target.write_text("#define VALUE 7\n", encoding="utf-8")
     alias = tmp_path / "selected.h"
     alias.symlink_to(target.name)
     report = tmp_path / "aliases.d"
-    report.write_text("object: selected.h content.h selected.h\n")
+    report.write_text("object: selected.h content.h selected.h\n", encoding="utf-8")
     paths, error = dependency_files.parse_make_depfile(
         report, cwd=tmp_path, producer="compiler"
     )

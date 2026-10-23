@@ -2400,7 +2400,7 @@ def test_compilation_preflight_selection_retains_bound_runtime(
     elif defect == "diagnostic-cell":
         diagnostic["installed_runtime_selection"] = {**observed, "id": "0" * 64}
     path = tmp_path / "preflight.json"
-    path.write_text(json.dumps(diagnostic))
+    path.write_text(json.dumps(diagnostic), encoding="utf-8")
     if defect in {"diagnostic-omitted", "diagnostic-cell"}:
         with pytest.raises(ValueError, match="exact preflight runtime selection"):
             consumer_replay.compilation_runtime_selection(
@@ -2421,7 +2421,7 @@ def test_compilation_input_projection_preserves_captured_tool_alias(
     from tools.proof_queue_pkg import toolchain_capture
 
     manifest = bundle / "source" / distribution.MANIFEST_NAME
-    value = json.loads(manifest.read_text())
+    value = json.loads(manifest.read_text(encoding="utf-8"))
     for row in (
         value["compiler"],
         value["runtime"],
@@ -2429,7 +2429,7 @@ def test_compilation_input_projection_preserves_captured_tool_alias(
         value["wasm_facts"],
     ):
         row.update(platform="linux", arch="x86_64")
-    manifest.write_text(json.dumps(value))
+    manifest.write_text(json.dumps(value), encoding="utf-8")
     monkeypatch.setattr(
         distribution, "current_host_coordinate", lambda: ("linux", "x86_64")
     )

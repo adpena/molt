@@ -1055,7 +1055,9 @@ def test_sealed_transport_retains_the_executed_projection(
         if compilation
         else "--property=ReadWritePaths="
     ) in launches[0]
-    intent = json.loads((tmp_path / (nonce + ".intent.json")).read_text())
+    intent = json.loads(
+        (tmp_path / (nonce + ".intent.json")).read_text(encoding="utf-8")
+    )
     assert intent["execution"] == result["execution"]
 
 
