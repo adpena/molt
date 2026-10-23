@@ -54,8 +54,6 @@ non_runtime_callable_intrinsic = [
   # not Python object values even when their carriers are i64.
   "molt_exception_pending",
   "molt_async_work_poll_and_exception_pending",
-  "molt_frame_invocation_enter",
-  "molt_frame_invocation_exit",
   "molt_gpu_prim_create_tensor",
   "molt_gpu_prim_create_tensor_raw",
   "molt_gpu_prim_zeros",
@@ -1758,15 +1756,11 @@ name = "frame_locals_set"
 return_contract = "owned_object"
 type = 2
 
+# The thread record's address: direct calls write its invocation handoff.
 [[import]]
-name = "frame_invocation_enter"
-type = 2
+name = "thread_record"
+type = 0
 return_contract = "raw_bits"
-
-[[import]]
-name = "frame_invocation_exit"
-type = 2
-return_contract = "borrowed_object"
 
 [[import]]
 name = "trace_enter_slot"
@@ -1930,13 +1924,18 @@ name = "task_register_execution"
 type = 4
 
 [[import]]
-name = "recursion_guard_enter"
+name = "recursion_enter_fast"
 return_contract = "raw_bits"
 type = 0
 
 [[import]]
-name = "recursion_guard_exit"
+name = "recursion_exit_fast"
 type = 7
+
+[[import]]
+name = "raise_recursion_error"
+return_contract = "raw_bits"
+type = 0
 
 [[import]]
 name = "set_intrinsic_manifest"

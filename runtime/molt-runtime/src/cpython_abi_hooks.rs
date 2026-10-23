@@ -4409,10 +4409,7 @@ pub(crate) unsafe fn try_call_cext(
     let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(py) else {
         return Some(MoltObject::none().bits());
     };
-    let Some(_frame) = crate::builtins::frames::FrameInvocationGuard::for_function(py, function)
-    else {
-        return Some(MoltObject::none().bits());
-    };
+    let _frame = crate::builtins::frames::FrameInvocationGuard::for_function(py, function);
     let _execution =
         (!crate::concurrency::execution::current_thread_has_c_extension_execution_context())
             .then(RuntimeExecutionGuard::enter);

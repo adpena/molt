@@ -25,6 +25,15 @@ use wasm_encoder::{BlockType, Function, Instruction, MemArg};
 const WASM_I64_LOAD_ALIGN: u32 = 3;
 const NATIVE_FORWARD_F32_LEN_SLOT_BYTES: i64 = 8;
 
+/// The thread record's invocation-handoff word.
+fn pending_invocation_memarg() -> MemArg {
+    MemArg {
+        align: WASM_I64_LOAD_ALIGN,
+        offset: molt_codegen_abi::THREAD_RECORD_PENDING_INVOCATION_OFFSET as u64,
+        memory_index: 0,
+    }
+}
+
 pub(super) fn emit_dynamic_call_op(
     call_ctx: &mut CallOpContext<'_, '_, '_>,
     func: &mut Function,
@@ -101,21 +110,28 @@ pub(super) fn emit_dynamic_call_op(
                 emit_call(
                     func,
                     reloc_enabled,
-                    import_ids[WasmRuntimeImport::RecursionGuardEnter],
+                    import_ids[WasmRuntimeImport::RecursionEnterFast],
                 );
                 func.instruction(&Instruction::I64Const(0));
                 func.instruction(&Instruction::I64Ne);
                 func.instruction(&Instruction::If(BlockType::Empty));
-                func.instruction(&Instruction::LocalGet(callee_bits));
+                // Hand the callee to the frame entry it reaches with plain
+                // loads and stores of the thread record's invocation word;
+                // the outer handoff goes back once the call returns.
+                let record = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp2);
                 emit_call(
                     func,
                     reloc_enabled,
-                    import_ids[WasmRuntimeImport::FrameInvocationEnter],
+                    import_ids[WasmRuntimeImport::ThreadRecord],
                 );
-                func.instruction(&Instruction::LocalTee(tmp_ptr));
-                func.instruction(&Instruction::I64Const(0));
-                func.instruction(&Instruction::I64Ne);
-                func.instruction(&Instruction::If(BlockType::Empty));
+                func.instruction(&Instruction::LocalTee(record));
+                func.instruction(&Instruction::I32WrapI64);
+                func.instruction(&Instruction::I64Load(pending_invocation_memarg()));
+                func.instruction(&Instruction::LocalSet(tmp_ptr));
+                func.instruction(&Instruction::LocalGet(record));
+                func.instruction(&Instruction::I32WrapI64);
+                func.instruction(&Instruction::LocalGet(callee_bits));
+                func.instruction(&Instruction::I64Store(pending_invocation_memarg()));
                 if has_closure {
                     func.instruction(&Instruction::LocalGet(callee_bits));
                     emit_call(
@@ -132,51 +148,26 @@ pub(super) fn emit_dynamic_call_op(
                     crate::wasm_values::emit_boxed_none(func);
                 }
                 func.instruction(&Instruction::LocalSet(out));
+                func.instruction(&Instruction::LocalGet(record));
+                func.instruction(&Instruction::I32WrapI64);
                 func.instruction(&Instruction::LocalGet(tmp_ptr));
+                func.instruction(&Instruction::I64Store(pending_invocation_memarg()));
                 emit_call(
                     func,
                     reloc_enabled,
-                    import_ids[WasmRuntimeImport::FrameInvocationExit],
-                );
-                super::super::result_sink::discard_runtime_result(
-                    func,
-                    import_ids,
-                    reloc_enabled,
-                    WasmRuntimeImport::FrameInvocationExit,
-                );
-                emit_call(
-                    func,
-                    reloc_enabled,
-                    import_ids[WasmRuntimeImport::RecursionGuardExit],
+                    import_ids[WasmRuntimeImport::RecursionExitFast],
                 );
                 // The adopting entry ended its parameters; the instruction's
                 // callable ends after it returns, as on the owned fallback leg.
                 release_adopted_callable(func, import_ids, reloc_enabled, locals, op);
                 func.instruction(&Instruction::Else);
+                // The recursion limit refused the call.
                 emit_call(
                     func,
                     reloc_enabled,
-                    import_ids[WasmRuntimeImport::RecursionGuardExit],
+                    import_ids[WasmRuntimeImport::RaiseRecursionError],
                 );
-                // No callee took the adopted callable and arguments over.
-                release_adopted_call_inputs(
-                    func,
-                    import_ids,
-                    reloc_enabled,
-                    locals,
-                    call_site_abi.call_func_spill_offset(),
-                    op,
-                    true,
-                    1,
-                );
-                emit_pending_exception_return(
-                    func,
-                    const_cache,
-                    call_ctx.frame,
-                    call_ctx.return_depth + 3,
-                );
-                func.instruction(&Instruction::End);
-                func.instruction(&Instruction::Else);
+                func.instruction(&Instruction::Drop);
                 release_adopted_call_inputs(
                     func,
                     import_ids,

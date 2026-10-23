@@ -1,19 +1,17 @@
-use std::cell::Cell;
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::atomic::Ordering;
 
 pub(crate) const DEFAULT_RECURSION_LIMIT: usize = 1000;
 
-thread_local! {
-    // Depth belongs to the execution stack, not to the process. A suspended
-    // activation carries no charge while another task executes on this thread.
-    static RECURSION_DEPTH: Cell<usize> = const { Cell::new(0) };
-}
+// Depth belongs to the execution stack, not to the process: it lives in the
+// thread record (`ExecutionTls::recursion_depth`), as CPython keeps it on the
+// thread state. A suspended activation carries no charge while another task
+// executes on this thread.
 
 #[inline]
 pub(crate) fn recursion_depth() -> usize {
-    RECURSION_DEPTH.with(Cell::get)
+    crate::state::execution_tls().recursion_depth.get()
 }
 
 #[inline]
@@ -34,39 +32,35 @@ pub(crate) fn recursion_limit_set(limit: usize) {
 #[inline]
 pub(crate) fn recursion_guard_enter() -> bool {
     let limit = recursion_limit_get();
-    RECURSION_DEPTH.with(|depth| {
-        let current = depth.get();
-        if current >= limit {
-            false
-        } else {
-            depth.set(current + 1);
-            true
-        }
-    })
+    let depth = &crate::state::execution_tls().recursion_depth;
+    let current = depth.get();
+    if current >= limit {
+        false
+    } else {
+        depth.set(current + 1);
+        true
+    }
 }
 
 #[inline]
 pub(crate) fn recursion_guard_exit() {
-    RECURSION_DEPTH.with(|depth| {
-        depth.set(
-            depth
-                .get()
-                .checked_sub(1)
-                .expect("unbalanced recursion guard exit"),
-        );
-    });
+    let depth = &crate::state::execution_tls().recursion_depth;
+    depth.set(
+        depth
+            .get()
+            .checked_sub(1)
+            .expect("unbalanced recursion guard exit"),
+    );
 }
 
 pub(crate) fn assert_thread_recursion_idle() {
-    // TLS may already have been destroyed at shutdown. While live, resetting
-    // an outstanding charge would conceal broken custody.
-    let _ = RECURSION_DEPTH.try_with(|depth| {
-        assert_eq!(
-            depth.get(),
-            0,
-            "thread teardown crossed an active recursion guard"
-        );
-    });
+    // The thread record has no destructor, so it is readable at shutdown.
+    // Resetting an outstanding charge would conceal broken custody.
+    assert_eq!(
+        recursion_depth(),
+        0,
+        "thread teardown crossed an active recursion guard"
+    );
 }
 
 /// Releases on every return path and cannot move to another thread's stack.

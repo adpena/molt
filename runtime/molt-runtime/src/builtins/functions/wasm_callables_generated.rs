@@ -16,8 +16,6 @@ pub(crate) const NON_RUNTIME_CALLABLE_INTRINSICS: &[&str] = &[
     "molt_async_work_poll_and_exception_pending",
     "molt_dict_getitem_borrowed",
     "molt_exception_pending",
-    "molt_frame_invocation_enter",
-    "molt_frame_invocation_exit",
     "molt_gpu_prim_binary",
     "molt_gpu_prim_cast",
     "molt_gpu_prim_contiguous",

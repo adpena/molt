@@ -9066,20 +9066,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         python_name: None,
     },
     IntrinsicSpec {
-        name: "molt_frame_invocation_enter",
-        symbol: "molt_frame_invocation_enter",
-        arity: 1,
-        defaults: &[],
-        python_name: None,
-    },
-    IntrinsicSpec {
-        name: "molt_frame_invocation_exit",
-        symbol: "molt_frame_invocation_exit",
-        arity: 1,
-        defaults: &[],
-        python_name: None,
-    },
-    IntrinsicSpec {
         name: "molt_trace_set_line",
         symbol: "molt_trace_set_line",
         arity: 1,
