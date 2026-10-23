@@ -1107,7 +1107,7 @@ def test_sealed_import_passes_projection_to_archive_admission(
     transport = cross_run.SealedRootTransport()
     archive = tmp_path / "rootfs.tar"
     digest = "a" * 64
-    monkeypatch.setattr(cross_run.sys, "platform", "linux")
+    install_module_view(monkeypatch, "sys", cross_run.sys, cross_run, platform="linux")
     monkeypatch.setattr(transport, "_provider", lambda: {})
     monkeypatch.setattr(
         cross_run, "validate_sealed_systemd_provider", lambda *a, **k: None
