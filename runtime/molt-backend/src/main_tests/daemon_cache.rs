@@ -147,6 +147,7 @@ fn daemon_native_object_contract_is_checked_before_cached_or_probe_admission() {
         Some("stdlib-key"),
         Some("manifest"),
         "partition",
+        None,
     )
     .expect("matching stdlib generation");
     unsafe {

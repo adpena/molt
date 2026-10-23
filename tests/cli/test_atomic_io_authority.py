@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import ctypes
 import errno
 import hashlib
 import os
-import shutil
 import stat
+import sys
 import time
 from pathlib import Path
 import zipfile
@@ -32,6 +33,61 @@ from tests.runtime_build_identity_helper import (
 )
 
 
+def test_clone_file_copies_into_a_missing_leaf_with_its_own_inode(tmp_path):
+    source = tmp_path / "source.bin"
+    payload = bytes(range(256)) * 4096
+    source.write_bytes(payload)
+    destination = tmp_path / "destination.bin"
+    file_publication.clone_file(source, destination)
+    assert destination.read_bytes() == payload
+    assert destination.stat().st_ino != source.stat().st_ino
+    # A clone shares blocks copy-on-write: rewriting the source cannot reach it.
+    with source.open("r+b") as handle:
+        handle.write(b"rewritten")
+    assert destination.read_bytes() == payload
+    with pytest.raises(FileExistsError):
+        file_publication.clone_file(source, destination)
+    assert destination.read_bytes() == payload
+
+
+@pytest.mark.skipif(
+    sys.platform != "darwin" and not sys.platform.startswith("linux"),
+    reason="the clone system call is platform specific",
+)
+def test_clone_file_copies_when_the_volume_cannot_share_blocks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"payload")
+    attempts: list[str] = []
+    if sys.platform == "darwin":
+
+        class Libc:
+            def __init__(self, *_args, **_kwargs) -> None:
+                self.clonefile = self
+
+            def __call__(self, *_args) -> int:
+                attempts.append("clonefile")
+                ctypes.set_errno(errno.EXDEV)
+                return -1
+
+        install_module_view(monkeypatch, "ctypes", ctypes, file_publication, CDLL=Libc)
+    else:
+        import fcntl
+
+        def ioctl(*_args) -> None:
+            attempts.append("ficlone")
+            raise OSError(errno.EOPNOTSUPP, "no reflink")
+
+        monkeypatch.setattr(fcntl, "ioctl", ioctl)
+    destination = tmp_path / "destination.bin"
+    file_publication.clone_file(source, destination)
+    assert attempts
+    assert destination.read_bytes() == b"payload"
+    with pytest.raises(FileExistsError):
+        file_publication.clone_file(source, destination)
+
+
 def test_owned_path_has_one_spelling_before_and_after_allocation(tmp_path):
     path = tmp_path / "owned-generation"
     spellings = [path]
@@ -53,16 +109,14 @@ def test_verified_copy_checks_staged_bytes_before_publication(
     if existing:
         destination.write_bytes(b"previous")
     expected = hashlib.sha256(source.read_bytes()).hexdigest()
-    copyfile = shutil.copyfile
+    clone_file = artifact_publication.clone_file
 
     def changed_copy(src: Path, staged: Path) -> None:
-        copyfile(src, staged)
+        clone_file(src, staged)
         staged.write_bytes(b"changed during copy")
 
-    # Artifact publication stages the verified copy.
-    install_module_view(
-        monkeypatch, "shutil", shutil, artifact_publication, copyfile=changed_copy
-    )
+    # Artifact publication stages the verified copy with the platform copy.
+    monkeypatch.setattr(artifact_publication, "clone_file", changed_copy)
     with pytest.raises(ValueError, match="source changed while staging verified copy"):
         atomic_io._atomic_copy_file(source, destination, expected_sha256=expected)
     assert not list(tmp_path.glob(".*.tmp"))
@@ -70,8 +124,11 @@ def test_verified_copy_checks_staged_bytes_before_publication(
         assert destination.read_bytes() == b"previous"
     else:
         assert not destination.exists()
-    monkeypatch.setattr(artifact_publication.shutil, "copyfile", copyfile)
+    monkeypatch.setattr(artifact_publication, "clone_file", clone_file)
     atomic_io._atomic_copy_file(source, destination, expected_sha256=expected)
+    assert destination.read_bytes() == b"expected"
+    # The clone has its own inode: rewriting the source cannot reach it.
+    source.write_bytes(b"rewritten")
     assert destination.read_bytes() == b"expected"
 
 

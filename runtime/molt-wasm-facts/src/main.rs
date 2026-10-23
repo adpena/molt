@@ -1,8 +1,9 @@
-use molt_artifact_publish::{AtomicFilePublication, open_regular_artifact};
+use molt_artifact_publish::AtomicFilePublication;
 use molt_host_process::host_process_environment_generated::HostProcessEnv;
 use molt_host_process::{
     default_process_max_rss_gb, install_process_memory_limit, process_max_rss_bytes_from,
 };
+use std::io::Read;
 use std::path::Path;
 use std::{env, io};
 
@@ -78,16 +79,24 @@ fn parse_callable_table_layout(
     })
 }
 
+/// Read the whole module from stdin. The producer holds these bytes in memory
+/// already, so a pipe replaces a scratch file: no module-sized write and read
+/// per scan (HF-26).
+fn read_wasm_facts_input() -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    io::stdin()
+        .lock()
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("cannot read wasm facts input from stdin: {error}"))?;
+    Ok(bytes)
+}
+
 fn publish_wasm_link_facts_atomically(
-    input: &Path,
+    bytes: &[u8],
     output: &Path,
     layout: Option<molt_wasm_facts::CallableTableLayout>,
     role: molt_wasm_facts::CallableTableArtifactRole,
 ) -> Result<molt_wasm_facts::WasmLinkFacts, String> {
-    let file = open_regular_artifact(input)
-        .map_err(|error| format!("cannot open wasm facts input {}: {error}", input.display()))?;
-    let bytes = unsafe { memmap2::MmapOptions::new().map(&file) }
-        .map_err(|error| format!("cannot map wasm facts input {}: {error}", input.display()))?;
     let mut publication = AtomicFilePublication::new(output).map_err(|error| {
         format!(
             "cannot reserve atomic attested wasm output {}: {error}",
@@ -95,15 +104,11 @@ fn publish_wasm_link_facts_atomically(
         )
     })?;
     let result = molt_wasm_facts::scan_and_write_callable_table_attestation(
-        &bytes,
+        bytes,
         layout,
         role,
         publication.writer(),
     );
-    // Windows cannot replace a mapped input. End the read lease before the
-    // single atomic commit so input == output is a supported, atomic update.
-    drop(bytes);
-    drop(file);
     let facts = match result {
         Ok(facts) => facts,
         Err(error) => return Err(publication.abort(io::Error::other(error)).to_string()),
@@ -135,35 +140,23 @@ fn main() -> io::Result<()> {
     let args: Vec<String> = env::args().collect();
     match args.get(1).map(String::as_str) {
         Some("--scan-wasm-link-facts") => {
-            let result = args
-                .get(2)
-                .ok_or_else(|| "--scan-wasm-link-facts requires a wasm path".to_string())
-                .and_then(|path| {
-                    if args.len() != 3 {
-                        return Err(
-                            "--scan-wasm-link-facts accepts exactly one wasm path".to_string()
-                        );
-                    }
-                    let file = open_regular_artifact(Path::new(path))
-                        .map_err(|error| format!("cannot open wasm facts input {path}: {error}"))?;
-                    // The linker hands this command an immutable finalized artifact and
-                    // keeps the file descriptor alive for the scan. A read-only mapping
-                    // avoids the 36-46 MiB whole-file heap copy paid by the former CLI.
-                    let bytes = unsafe { memmap2::MmapOptions::new().map(&file) }
-                        .map_err(|error| format!("cannot map wasm facts input {path}: {error}"))?;
-                    molt_wasm_facts::scan_wasm_link_facts(&bytes)
-                });
+            let result = if args.len() == 2 {
+                read_wasm_facts_input()
+                    .and_then(|bytes| molt_wasm_facts::scan_wasm_link_facts(&bytes))
+            } else {
+                Err(
+                    "--scan-wasm-link-facts reads the module from stdin and takes no arguments"
+                        .to_string(),
+                )
+            };
             emit_wasm_link_facts_result(result)
         }
         Some("--publish-wasm-link-facts") => {
             let result = (|| {
-                let input = args
-                    .get(2)
-                    .ok_or("--publish-wasm-link-facts requires an input wasm path")?;
                 let mut output = None;
                 let mut layout = None;
                 let mut role = molt_wasm_facts::CallableTableArtifactRole::Monolithic;
-                let mut index = 3usize;
+                let mut index = 2usize;
                 while index < args.len() {
                     match args[index].as_str() {
                         "--output" => {
@@ -204,12 +197,8 @@ fn main() -> io::Result<()> {
                     index += 1;
                 }
                 let output = output.ok_or("--publish-wasm-link-facts requires --output")?;
-                publish_wasm_link_facts_atomically(
-                    Path::new(input),
-                    Path::new(output),
-                    layout,
-                    role,
-                )
+                let bytes = read_wasm_facts_input()?;
+                publish_wasm_link_facts_atomically(&bytes, Path::new(output), layout, role)
             })();
             emit_wasm_link_facts_result(result)
         }

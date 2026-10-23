@@ -13,15 +13,29 @@ use sha2::{Digest, Sha256};
 
 use super::files::{refresh_cache_entry_recency, sha256_file_hex};
 use super::lock::with_shared_stdlib_cache_publish_lock;
-use super::paths::stdlib_archive_cache_root;
-use crate::backend_process::native_batch::{NativeBatchObjectJob, validate_native_object_bytes};
+use super::paths::{
+    NATIVE_STDLIB_OBJECT_DIRECTORY, native_stdlib_archive_entry_path, stdlib_archive_cache_root,
+};
+use crate::backend_process::native_batch::{
+    MappedObject, NativeBatchObjectJob, validate_native_object_bytes,
+};
 
 const MAGIC: &[u8; 8] = b"MOLTNO01";
 const HEADER_SIZE: usize = 8 + 32 + 32 + 8;
 
 pub(crate) struct StdlibObjectCache {
-    root: PathBuf,
+    /// The cache root that holds both constituent and archive generations.
+    cache_root: PathBuf,
     authority: serde_json::Value,
+}
+
+/// A content-addressed archive generation: the archive assembled from one
+/// ordered list of constituent inputs. Its sidecars carry the content key and
+/// the program-independent constituent manifest instead of a program's.
+pub(crate) struct ContentArchive {
+    pub(crate) path: PathBuf,
+    pub(crate) key: String,
+    pub(crate) manifest: String,
 }
 
 struct DigestWriter<'a>(&'a mut Sha256);
@@ -94,11 +108,36 @@ impl StdlibObjectCache {
             "effective_codegen".into(),
             molt_backend::SimpleBackend::object_codegen_identity(target),
         );
-        let parent = stdlib_archive_cache_root(archive)?;
         Ok(Some(Self {
-            root: parent.join("native-stdlib-objects-v1"),
+            cache_root: stdlib_archive_cache_root(archive)?,
             authority,
         }))
+    }
+
+    /// The content identity of the archive assembled from constituents with
+    /// these input keys, in member order. Each input key binds its complete
+    /// job, the program-independent manifest, the executing backend bytes and
+    /// the effective ISA, and the archive is a pure function of the ordered
+    /// constituent outputs. So two programs with the same stdlib partition
+    /// share one archive, as Go's build cache serves an unchanged package
+    /// archive by its action ID.
+    pub(crate) fn archive_key(inputs: &[[u8; 32]]) -> [u8; 32] {
+        let mut digest = Sha256::new();
+        digest.update(b"native-stdlib-archive-input-v1\0");
+        digest.update((inputs.len() as u64).to_le_bytes());
+        for input in inputs {
+            digest.update(input);
+        }
+        digest.finalize().into()
+    }
+
+    pub(crate) fn content_archive(&self, key: &[u8; 32]) -> io::Result<ContentArchive> {
+        let key = bytes_to_lower_hex(key);
+        Ok(ContentArchive {
+            path: native_stdlib_archive_entry_path(&self.cache_root, &key),
+            key,
+            manifest: serde_json::to_string(&self.authority).map_err(io::Error::other)?,
+        })
     }
 
     pub(crate) fn input_key(&self, job: &NativeBatchObjectJob) -> io::Result<[u8; 32]> {
@@ -127,12 +166,20 @@ impl StdlibObjectCache {
 
     fn path(&self, key: &[u8; 32]) -> PathBuf {
         let hex = bytes_to_lower_hex(key);
-        self.root.join(hex).join("object.entry")
+        self.cache_root
+            .join(NATIVE_STDLIB_OBJECT_DIRECTORY)
+            .join(hex)
+            .join("object.entry")
     }
 
-    /// Copy an admitted immutable generation to the job's private ordinary
-    /// object path. Archive assembly retains its existing format/target checks.
-    pub(crate) fn restore(&self, key: &[u8; 32], output: &Path) -> io::Result<Option<u64>> {
+    /// Admit an immutable generation as a mapping of its object bytes.
+    ///
+    /// Publication replaces files atomically and never edits a generation in
+    /// place, and the lock excludes a competing publisher while the bytes are
+    /// verified. The mapping then owns that generation's bytes until archive
+    /// assembly drops it, even if retention unlinks the entry meanwhile. No
+    /// private copy is written: a warm entry costs a mapping and a digest.
+    pub(crate) fn admit(&self, key: &[u8; 32]) -> io::Result<Option<MappedObject>> {
         let path = self.path(key);
         with_shared_stdlib_cache_publish_lock(&path, || {
             let file = match File::open(&path) {
@@ -140,13 +187,10 @@ impl StdlibObjectCache {
                 Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
                 Err(error) => return Err(error),
             };
-            // Publication replaces files atomically and never edits a mapped
-            // generation. The shared lock also prevents a competing publisher.
             let bytes = unsafe { memmap2::MmapOptions::new().map(&file) }?;
-            let object = admitted_object(&bytes, key)?;
-            molt_artifact_publish::write_bytes_atomically(output, object)?;
+            admitted_object(&bytes, key)?;
             refresh_cache_entry_recency(path.parent().expect("entry owner"));
-            Ok(Some(object.len() as u64))
+            MappedObject::within(bytes, HEADER_SIZE).map(Some)
         })
     }
 

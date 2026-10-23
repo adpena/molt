@@ -7,7 +7,7 @@ static NONCE: AtomicU64 = AtomicU64::new(0);
 
 fn cache() -> StdlibObjectCache {
     StdlibObjectCache {
-        root: std::env::temp_dir().join(format!(
+        cache_root: std::env::temp_dir().join(format!(
             "molt-stdlib-objects-{}-{}",
             std::process::id(),
             NONCE.fetch_add(1, Ordering::Relaxed)
@@ -122,7 +122,7 @@ fn complete_job_key_tracks_every_context_family_and_compilation_input() {
         let mut changed_authority = cache.authority.clone();
         changed_authority[field] = serde_json::json!("changed");
         let other = StdlibObjectCache {
-            root: cache.root.clone(),
+            cache_root: cache.cache_root.clone(),
             authority: changed_authority,
         };
         assert_ne!(
@@ -162,11 +162,10 @@ fn object_bytes(symbol: &str) -> Vec<u8> {
 #[test]
 fn constituent_publication_roundtrips_rejects_corruption_and_preserves_prior_generation() {
     let cache = cache();
-    std::fs::create_dir_all(&cache.root).unwrap();
-    let source = cache.root.join("source.o");
-    let restored = cache.root.join("restored.o");
+    std::fs::create_dir_all(&cache.cache_root).unwrap();
+    let source = cache.cache_root.join("source.o");
     let key = cache.input_key(&job()).unwrap();
-    assert_eq!(cache.restore(&key, &restored).unwrap(), None);
+    assert!(cache.admit(&key).unwrap().is_none());
     let bytes = object_bytes("original");
     std::fs::write(&source, &bytes).unwrap();
     assert_eq!(cache.publish(&key, &source).unwrap(), bytes.len() as u64);
@@ -190,11 +189,9 @@ fn constituent_publication_roundtrips_rejects_corruption_and_preserves_prior_gen
     directory.set_modified(old).unwrap();
     let aged = owner.metadata().unwrap().modified().unwrap();
     let stored_modified = entry.metadata().unwrap().modified().unwrap();
-    assert_eq!(
-        cache.restore(&key, &restored).unwrap(),
-        Some(bytes.len() as u64)
-    );
-    assert_eq!(std::fs::read(&restored).unwrap(), bytes);
+    let admitted = cache.admit(&key).unwrap().expect("published generation");
+    assert_eq!(admitted.as_ref(), bytes.as_slice());
+    assert_eq!(admitted.len(), bytes.len() as u64);
     let reused = owner.metadata().unwrap().modified().unwrap();
     assert!(
         reused > old,
@@ -204,17 +201,20 @@ fn constituent_publication_roundtrips_rejects_corruption_and_preserves_prior_gen
         entry.metadata().unwrap().modified().unwrap(),
         stored_modified
     );
-    assert_eq!(
-        cache.restore(&key, &restored).unwrap(),
-        Some(bytes.len() as u64)
-    );
+    assert!(cache.admit(&key).unwrap().is_some());
     assert_eq!(owner.metadata().unwrap().modified().unwrap(), reused);
+    #[cfg(unix)]
+    {
+        // The mapping owns the admitted bytes: retention may unlink the entry
+        // while assembly still reads them.
+        let held = cache.admit(&key).unwrap().expect("held generation");
+        let stored = std::fs::read(&entry).unwrap();
+        std::fs::remove_file(&entry).unwrap();
+        assert_eq!(held.as_ref(), bytes.as_slice());
+        assert!(cache.admit(&key).unwrap().is_none());
+        std::fs::write(&entry, stored).unwrap();
+    }
     directory.set_modified(old).unwrap();
-    assert!(
-        cache.restore(&key, owner).is_err(),
-        "a failed copy is not reuse"
-    );
-    assert_eq!(owner.metadata().unwrap().modified().unwrap(), aged);
     let stored = std::fs::read(cache.path(&key)).unwrap();
     std::fs::write(&source, object_bytes("different")).unwrap();
     assert!(
@@ -233,16 +233,45 @@ fn constituent_publication_roundtrips_rejects_corruption_and_preserves_prior_gen
     std::fs::write(cache.path(&key), corrupt).unwrap();
     assert!(
         cache
-            .restore(&key, &restored)
-            .unwrap_err()
+            .admit(&key)
+            .err()
+            .expect("corrupt generation is an error, not a miss")
             .to_string()
             .contains("digest/extent")
     );
-    // Failed admission must not overwrite the caller's existing private object.
-    assert_eq!(std::fs::read(&restored).unwrap(), bytes);
+    // Failed admission is not reuse.
     assert_eq!(owner.metadata().unwrap().modified().unwrap(), aged);
     drop(directory);
-    std::fs::remove_dir_all(cache.root).unwrap();
+    std::fs::remove_dir_all(cache.cache_root).unwrap();
+}
+
+#[test]
+fn archive_key_binds_every_ordered_constituent_input() {
+    let first = [1u8; 32];
+    let second = [2u8; 32];
+    let key = StdlibObjectCache::archive_key(&[first, second]);
+    assert_eq!(key, StdlibObjectCache::archive_key(&[first, second]));
+    assert_ne!(key, StdlibObjectCache::archive_key(&[second, first]));
+    assert_ne!(key, StdlibObjectCache::archive_key(&[first]));
+    assert_ne!(
+        key,
+        StdlibObjectCache::archive_key(&[first, second, second])
+    );
+    let cache = cache();
+    let content = cache.content_archive(&key).unwrap();
+    assert_eq!(content.key.len(), 64);
+    assert!(
+        content.path.ends_with(
+            std::path::Path::new("native-stdlib-archives-v1")
+                .join(&content.key)
+                .join("stdlib.a")
+        )
+    );
+    // The manifest is the program-independent constituent authority.
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&content.manifest).unwrap(),
+        cache.authority
+    );
 }
 
 #[test]

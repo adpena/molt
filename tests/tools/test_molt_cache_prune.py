@@ -292,6 +292,7 @@ def _run_pruner(cache: Path, *, dry_run: bool = False):
 @pytest.mark.parametrize("existing_locks", [False, True])
 def test_real_pruner_dry_run_creates_no_locks_or_other_files(tmp_path, existing_locks):
     from molt.default_paths import (
+        native_stdlib_archive_cache_entry,
         native_stdlib_object_cache_entry,
         shared_stdlib_cache_entry,
     )
@@ -300,7 +301,8 @@ def test_real_pruner_dry_run_creates_no_locks_or_other_files(tmp_path, existing_
     stdlib, stdlib_lock = shared_stdlib_cache_entry(cache, "b" * 64)
     wasm = _cache_entry(cache, "cc-dry-run")
     native, native_lock = native_stdlib_object_cache_entry(cache, "d" * 64)
-    for root in (stdlib, wasm.root, native):
+    content, content_lock = native_stdlib_archive_cache_entry(cache, "e" * 64)
+    for root in (stdlib, wasm.root, native, content):
         root.mkdir(parents=True)
         (root / "payload").write_bytes(b"reclaimable")
     if existing_locks:
@@ -308,12 +310,13 @@ def test_real_pruner_dry_run_creates_no_locks_or_other_files(tmp_path, existing_
             stdlib_lock,
             wasm.lock,
             native_lock,
+            content_lock,
         ):
             lock.parent.mkdir(parents=True, exist_ok=True)
             lock.write_bytes(b"unchanged advisory contents")
     before = _snapshot_tree(cache)
     output = _run_pruner(cache, dry_run=True)
-    assert "removed.entries=3" in output
+    assert "removed.entries=4" in output
     assert _snapshot_tree(cache) == before
 
 
@@ -373,11 +376,13 @@ os.environ['MOLT_CACHE'] = str(cache)
 from molt.default_paths import shared_stdlib_publish_lock_path
 
 def barrier(entry, lock):
-    # The OS lock is held before the child announces readiness. Timeouts bound
-    # both directions; elapsed time is never the evidence of readiness.
+    # The OS lock is held before the child announces readiness. The release
+    # wait has no deadline: the parent's test body takes as long as the host
+    # allows, and a dead parent closes the socket, so recv returns b''.
     with socket.create_connection(('127.0.0.1', int(port)), timeout=20) as channel:
         channel.sendall((json.dumps({'entry': str(entry) if entry else None,
                                     'lock': str(lock)}) + '\n').encode())
+        channel.settimeout(None)
         assert channel.recv(1) == b'R'
 
 from molt.cli.backend_cache import _stdlib_object_cache_path, _shared_stdlib_cache_lock
@@ -395,12 +400,40 @@ print('RELEASED')
 """
 
 
+_OWNER_START_DEADLINE_S = 300.0
+
+
+def _accept_owner(
+    server: socket.socket, process: subprocess.Popen[str]
+) -> socket.socket:
+    """Wait for the owner's connection while the owner is alive.
+
+    Its start imports the CLI, which a loaded host can delay for tens of
+    seconds; liveness, not a short deadline, decides. An owner that exits
+    first fails the test with its output.
+    """
+    server.settimeout(0.5)
+    deadline = time.monotonic() + _OWNER_START_DEADLINE_S
+    while True:
+        try:
+            channel, _address = server.accept()
+            return channel
+        except TimeoutError:
+            if process.poll() is not None:
+                stdout, stderr = process.communicate()
+                raise AssertionError(
+                    f"cache owner exited {process.returncode} before readiness: "
+                    f"{stdout}{stderr}"
+                ) from None
+            if time.monotonic() > deadline:
+                raise
+
+
 @contextmanager
 def _active_cache_owner(cache: Path):
     with socket.socket() as server:
         server.bind(("127.0.0.1", 0))
         server.listen(1)
-        server.settimeout(30)
         process = start_owned_test_process(
             [
                 sys.executable,
@@ -416,7 +449,7 @@ def _active_cache_owner(cache: Path):
         )
         channel = None
         try:
-            channel, _address = server.accept()
+            channel = _accept_owner(server, process)
             channel.settimeout(30)
             with channel.makefile("rb") as stream:
                 ready = json.loads(stream.readline())
@@ -540,6 +573,7 @@ def test_pruner_removes_abandoned_stdlib_stages_without_archive(tmp_path):
         "wasm_link/runtime_tree_shake",
         "wasm_link/runtime_tree_shake/schema",
         "shared-stdlib",
+        "native-stdlib-archives-v1",
         "native-stdlib-objects-v1",
     ],
 )

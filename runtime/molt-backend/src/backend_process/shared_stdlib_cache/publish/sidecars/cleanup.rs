@@ -81,6 +81,7 @@ mod tests {
                     Some("key"),
                     Some("manifest"),
                     "partition",
+                    None,
                 )
                 .expect("publish replacement metadata");
                 assert!(archive.exists());

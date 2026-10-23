@@ -1,6 +1,7 @@
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
@@ -49,15 +50,38 @@ fn clean_module() -> Vec<u8> {
     module.finish()
 }
 
+/// Run the facts tool with `args` and the module bytes on stdin.
+fn run_facts(args: &[&std::ffi::OsStr], module: &[u8]) -> Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_molt-wasm-facts"))
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn facts CLI");
+    // A refused command may exit before it reads its input.
+    let _ = child.stdin.take().expect("stdin").write_all(module);
+    child.wait_with_output().expect("run facts CLI")
+}
+
+fn scan(module: &[u8]) -> Output {
+    run_facts(&["--scan-wasm-link-facts".as_ref()], module)
+}
+
+fn publish(module: &[u8], output: &std::path::Path) -> Output {
+    run_facts(
+        &[
+            "--publish-wasm-link-facts".as_ref(),
+            "--output".as_ref(),
+            output.as_os_str(),
+        ],
+        module,
+    )
+}
+
 #[test]
 fn cli_emits_versioned_success_json() {
-    let fixture = temp_wasm("ok", &clean_module());
-
-    let output = Command::new(env!("CARGO_BIN_EXE_molt-wasm-facts"))
-        .arg("--scan-wasm-link-facts")
-        .arg(&fixture.0)
-        .output()
-        .expect("run facts CLI");
+    let output = scan(&clean_module());
 
     assert!(
         output.status.success(),
@@ -87,13 +111,7 @@ fn cli_emits_versioned_success_json() {
 
 #[test]
 fn cli_emits_versioned_error_json_and_nonzero_exit() {
-    let fixture = temp_wasm("bad", b"\0asm\x01\0\0");
-
-    let output = Command::new(env!("CARGO_BIN_EXE_molt-wasm-facts"))
-        .arg("--scan-wasm-link-facts")
-        .arg(&fixture.0)
-        .output()
-        .expect("run facts CLI");
+    let output = scan(b"\0asm\x01\0\0");
 
     assert_eq!(output.status.code(), Some(2));
     let payload: Value = serde_json::from_slice(&output.stdout).expect("parse error JSON");
@@ -107,34 +125,30 @@ fn cli_emits_versioned_error_json_and_nonzero_exit() {
 }
 
 #[test]
-fn cli_missing_path_is_a_structured_error() {
-    let output = Command::new(env!("CARGO_BIN_EXE_molt-wasm-facts"))
-        .arg("--scan-wasm-link-facts")
-        .output()
-        .expect("run facts CLI");
+fn cli_input_path_is_a_structured_error() {
+    // The module arrives on stdin; a path argument is a protocol error, not
+    // a file the tool opens.
+    let fixture = temp_wasm("path-argument", &clean_module());
+    let output = run_facts(
+        &["--scan-wasm-link-facts".as_ref(), fixture.0.as_os_str()],
+        &clean_module(),
+    );
 
     assert_eq!(output.status.code(), Some(2));
-    let payload: Value = serde_json::from_slice(&output.stdout).expect("parse missing-path JSON");
+    let payload: Value = serde_json::from_slice(&output.stdout).expect("parse argument JSON");
     assert_eq!(payload["ok"], false);
     assert!(
         payload["error"]
             .as_str()
-            .is_some_and(|error| error.contains("requires a wasm path"))
+            .is_some_and(|error| error.contains("reads the module from stdin"))
     );
 }
 
 #[test]
 fn cli_publishes_and_validates_rust_owned_attestation() {
-    let fixture = temp_wasm("publish-input", &clean_module());
     let published = temp_wasm("publish-output", b"");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_molt-wasm-facts"))
-        .arg("--publish-wasm-link-facts")
-        .arg(&fixture.0)
-        .arg("--output")
-        .arg(&published.0)
-        .output()
-        .expect("publish facts");
+    let output = publish(&clean_module(), &published.0);
 
     assert!(
         output.status.success(),
@@ -144,62 +158,59 @@ fn cli_publishes_and_validates_rust_owned_attestation() {
     let payload: Value = serde_json::from_slice(&output.stdout).expect("parse publication JSON");
     assert_eq!(payload["ok"], true);
     assert_eq!(payload["facts"]["callable_table_attestation_present"], true);
-    assert!(fs::metadata(&published.0).expect("published wasm").len() > 8);
-    let rescanned = Command::new(env!("CARGO_BIN_EXE_molt-wasm-facts"))
-        .arg("--scan-wasm-link-facts")
-        .arg(&published.0)
-        .output()
-        .expect("rescan separate published output");
+    let published_bytes = fs::read(&published.0).expect("published wasm");
+    assert!(published_bytes.len() > 8);
+    let rescanned = scan(&published_bytes);
     assert!(rescanned.status.success());
     let actual: Value = serde_json::from_slice(&rescanned.stdout).expect("parse rescan JSON");
     assert_eq!(payload["facts"], actual["facts"]);
 }
 
 #[test]
-fn cli_publishes_in_place_through_one_atomic_commit() {
-    let fixture = temp_wasm("publish-in-place", &clean_module());
+fn cli_publication_replaces_an_existing_generation_in_one_commit() {
+    let destination = temp_wasm("publish-replace", b"previous-generation");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_molt-wasm-facts"))
-        .arg("--publish-wasm-link-facts")
-        .arg(&fixture.0)
-        .arg("--output")
-        .arg(&fixture.0)
-        .output()
-        .expect("publish facts in place");
+    let output = publish(&clean_module(), &destination.0);
 
     assert!(
         output.status.success(),
         "stderr={}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let rescanned = Command::new(env!("CARGO_BIN_EXE_molt-wasm-facts"))
-        .arg("--scan-wasm-link-facts")
-        .arg(&fixture.0)
-        .output()
-        .expect("rescan in-place publication");
+    let rescanned = scan(&fs::read(&destination.0).expect("replaced generation"));
     assert!(rescanned.status.success());
     let publication: Value =
         serde_json::from_slice(&output.stdout).expect("parse publication JSON");
     let payload: Value =
-        serde_json::from_slice(&rescanned.stdout).expect("parse in-place publication JSON");
+        serde_json::from_slice(&rescanned.stdout).expect("parse replaced publication JSON");
     assert_eq!(payload["facts"]["callable_table_attestation_present"], true);
     assert_eq!(publication["facts"], payload["facts"]);
+    let directory = destination.0.parent().expect("fixture directory");
+    let name = destination
+        .0
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    assert!(
+        fs::read_dir(directory)
+            .unwrap()
+            .filter_map(Result::ok)
+            .all(|entry| !entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(&format!(".{name}"))),
+        "a committed publication leaves no private stage"
+    );
 }
 
 #[test]
 fn failed_publication_never_exposes_partial_destination() {
     let mut malformed = clean_module();
     malformed.pop();
-    let fixture = temp_wasm("publish-malformed", &malformed);
     let destination = temp_wasm("publish-existing", b"sentinel-generation");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_molt-wasm-facts"))
-        .arg("--publish-wasm-link-facts")
-        .arg(&fixture.0)
-        .arg("--output")
-        .arg(&destination.0)
-        .output()
-        .expect("run failing publication");
+    let output = publish(&malformed, &destination.0);
 
     assert!(!output.status.success());
     assert_eq!(
@@ -223,26 +234,15 @@ fn final_publication_rejects_scannable_linker_metadata_atomically() {
     ] {
         let mut module = clean_module();
         module.extend_from_slice(metadata);
-        let fixture = temp_wasm(name, &module);
         let destination = temp_wasm("linked-generation", b"sentinel-generation");
-        let scan = Command::new(env!("CARGO_BIN_EXE_molt-wasm-facts"))
-            .arg("--scan-wasm-link-facts")
-            .arg(&fixture.0)
-            .output()
-            .expect("scan valid linker metadata");
+        let scanned = scan(&module);
         assert!(
-            scan.status.success(),
+            scanned.status.success(),
             "{name}: {}",
-            String::from_utf8_lossy(&scan.stdout)
+            String::from_utf8_lossy(&scanned.stdout)
         );
 
-        let publication = Command::new(env!("CARGO_BIN_EXE_molt-wasm-facts"))
-            .arg("--publish-wasm-link-facts")
-            .arg(&fixture.0)
-            .arg("--output")
-            .arg(&destination.0)
-            .output()
-            .expect("refuse final publication of linker metadata");
+        let publication = publish(&module, &destination.0);
         assert_eq!(publication.status.code(), Some(2));
         let error: Value = serde_json::from_slice(&publication.stdout).expect("structured refusal");
         assert_eq!(error["ok"], false);
@@ -256,83 +256,18 @@ fn final_publication_rejects_scannable_linker_metadata_atomically() {
             fs::read(&destination.0).expect("prior output"),
             b"sentinel-generation"
         );
-        assert_eq!(fs::read(&fixture.0).expect("original input"), module);
     }
 }
 
-fn assert_nonregular_input_refused(input: &std::path::Path) {
-    for mode in ["--scan-wasm-link-facts", "--publish-wasm-link-facts"] {
-        let output = temp_wasm("nonregular-output", b"preserve");
-        let mut command = Command::new(env!("CARGO_BIN_EXE_molt-wasm-facts"));
-        command.arg(mode).arg(input);
-        if mode == "--publish-wasm-link-facts" {
-            command.arg("--output").arg(&output.0);
-        }
-        let result = command.output().expect("reject nonregular facts input");
-        assert_eq!(result.status.code(), Some(2));
-        assert_eq!(fs::read(&output.0).expect("prior publication"), b"preserve");
-        let facts: Value = serde_json::from_slice(&result.stdout).expect("structured refusal");
-        assert_eq!(facts["ok"], false);
-        assert!(facts.get("facts").is_none());
-    }
-}
-
-#[cfg(unix)]
 #[test]
-fn no_writer_fifo_is_rejected_before_read_for_each_mode() {
-    use std::ffi::CString;
-    use std::os::unix::ffi::OsStrExt;
-    let input = temp_wasm("fifo", &[]);
-    fs::remove_file(&input.0).unwrap();
-    let name = CString::new(input.0.as_os_str().as_bytes()).unwrap();
-    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
-    assert_nonregular_input_refused(&input.0);
-    let alias = temp_wasm("fifo-alias", &[]);
-    fs::remove_file(&alias.0).unwrap();
-    std::os::unix::fs::symlink(&input.0, &alias.0).unwrap();
-    assert_nonregular_input_refused(&alias.0);
-}
-
-#[cfg(unix)]
-#[test]
-fn regular_file_symlink_is_admitted_without_changing_its_target() {
-    let target = temp_wasm("symlink-target", &clean_module());
-    let input = temp_wasm("symlink", &[]);
-    fs::remove_file(&input.0).unwrap();
-    std::os::unix::fs::symlink(&target.0, &input.0).unwrap();
-    for mode in ["--scan-wasm-link-facts", "--publish-wasm-link-facts"] {
-        let output = temp_wasm("symlink-output", b"preserve");
-        let mut command = Command::new(env!("CARGO_BIN_EXE_molt-wasm-facts"));
-        command.arg(mode).arg(&input.0);
-        if mode == "--publish-wasm-link-facts" {
-            command.arg("--output").arg(&output.0);
-        }
-        let result = command.output().expect("admit regular file alias");
-        assert!(
-            result.status.success(),
-            "{}",
-            String::from_utf8_lossy(&result.stdout)
-        );
-        let facts: Value = serde_json::from_slice(&result.stdout).expect("facts for regular alias");
-        assert_eq!(facts["ok"], true);
-        assert!(facts["facts"].is_object());
-    }
+fn publication_without_output_refuses_before_reading_input() {
+    let output = run_facts(&["--publish-wasm-link-facts".as_ref()], &clean_module());
+    assert_eq!(output.status.code(), Some(2));
+    let payload: Value = serde_json::from_slice(&output.stdout).expect("structured refusal");
+    assert_eq!(payload["ok"], false);
     assert!(
-        fs::symlink_metadata(&input.0)
-            .expect("retained alias")
-            .is_symlink()
+        payload["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("requires --output"))
     );
-    assert_eq!(fs::read(&target.0).expect("symlink target"), clean_module());
-}
-
-#[cfg(unix)]
-#[test]
-fn unix_character_device_is_not_a_regular_artifact() {
-    assert_nonregular_input_refused(std::path::Path::new("/dev/null"));
-}
-
-#[cfg(windows)]
-#[test]
-fn windows_character_device_is_not_a_regular_artifact() {
-    assert_nonregular_input_refused(std::path::Path::new("NUL"));
 }

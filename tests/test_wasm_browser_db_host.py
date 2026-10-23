@@ -613,7 +613,7 @@ try {{ host.run(); }} finally {{ host.dispose(); }}
         assert run.returncode == 0, run.stderr
         assert [line.strip() for line in run.stdout.splitlines() if line.strip()] == [
             "tuple",
-            "71",
+            "74",  # Includes three Windows reparse-tag slots, zeroed on WASM.
             "16384",
         ]
     finally:

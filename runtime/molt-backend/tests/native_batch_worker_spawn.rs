@@ -531,12 +531,73 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
         "warm native batch worker path must write a non-empty application object"
     );
 
-    // Force a whole-archive miss with a different program key. Constituent
-    // admission must avoid BOTH production workers and reproduce the archive.
+    // Force a program-key miss with a different program key. The partition is
+    // unchanged, so its content-addressed archive transfers whole: no worker,
+    // no constituent restore and no assembly, with byte-identical output.
     let original_archive = std::fs::read(&stdlib_path).expect("read original stdlib archive");
+    let content_store = cache_root.join("native-stdlib-archives-v1");
+    let content_entries = || {
+        std::fs::read_dir(&content_store)
+            .map(|entries| entries.count())
+            .unwrap_or(0)
+    };
+    assert_eq!(content_entries(), 1, "the cold build publishes its content");
+    let other_output_path = tmp.path.join("other-program.a");
+    let content_output = run_backend(&other_output_path, other_key.as_str(), "speed", "0");
+    let content_stderr = String::from_utf8_lossy(&content_output.stderr);
+    assert!(
+        content_output.status.success(),
+        "content reuse failed: {content_stderr}"
+    );
+    assert!(
+        content_stderr.contains("stdlib archive reuse: content")
+            && !content_stderr.contains("stdlib object reuse:")
+            && !content_stderr.contains("stdlib batch"),
+        "an unchanged partition must transfer its archive whole: {content_stderr}"
+    );
+    assert_eq!(
+        std::fs::read(required_archive_for(&other_output_path)).unwrap(),
+        original_archive
+    );
+    assert_eq!(
+        std::fs::read(archive_for(&other_key)).unwrap(),
+        original_archive
+    );
+    for (path, key) in [
+        (required_archive_for(&other_output_path), other_key.as_str()),
+        (archive_for(&other_key), other_key.as_str()),
+    ] {
+        assert_eq!(
+            std::fs::read_to_string(path.with_extension("key")).unwrap(),
+            key,
+            "a transferred generation records its own program key"
+        );
+        assert_eq!(
+            std::fs::read_to_string(path.with_extension("sha256")).unwrap(),
+            std::fs::read_to_string(stdlib_path.with_extension("sha256")).unwrap()
+        );
+    }
+    assert_eq!(content_entries(), 1);
+    assert_ne!(archive_for(&initial_key), archive_for(&other_key));
+    assert!(cache_root.join("native-stdlib-objects-v1").is_dir());
+
+    // A corrupt content generation is a miss, never a transfer: constituent
+    // admission then avoids BOTH production workers and reproduces the archive.
+    let content_entry = std::fs::read_dir(&content_store)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path()
+        .join("stdlib.a");
+    let mut corrupt = original_archive.clone();
+    *corrupt.last_mut().unwrap() ^= 1;
+    std::fs::write(&content_entry, corrupt).unwrap();
+    let constituent_key = "f".repeat(64);
+    let constituent_output_path = tmp.path.join("constituent-program.a");
     let constituent_output = run_backend(
-        &tmp.path.join("other-program.a"),
-        other_key.as_str(),
+        &constituent_output_path,
+        constituent_key.as_str(),
         "speed",
         "0",
     );
@@ -546,20 +607,24 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
         "constituent reuse failed: {constituent_stderr}"
     );
     assert!(
-        constituent_stderr.contains("stdlib object reuse: 2 hits, 0 misses"),
-        "archive miss must restore both exact objects: {constituent_stderr}"
+        constituent_stderr.contains("stdlib object reuse: 2 hits, 0 misses")
+            && !constituent_stderr.contains("stdlib archive reuse: content"),
+        "a corrupt content generation must restore both exact objects: {constituent_stderr}"
     );
     assert!(
         !constituent_stderr.contains("compiling stdlib object miss"),
         "cache hits must not invoke stdlib workers: {constituent_stderr}"
     );
-    assert_eq!(std::fs::read(&stdlib_path).unwrap(), original_archive);
     assert_eq!(
-        std::fs::read(archive_for(&other_key)).unwrap(),
+        std::fs::read(required_archive_for(&constituent_output_path)).unwrap(),
         original_archive
     );
-    assert_ne!(archive_for(&initial_key), archive_for(&other_key));
-    assert!(cache_root.join("native-stdlib-objects-v1").is_dir());
+    assert_eq!(
+        std::fs::read(&content_entry).unwrap(),
+        original_archive,
+        "assembly republishes the content generation it could not admit"
+    );
+    assert_eq!(std::fs::read(&stdlib_path).unwrap(), original_archive);
     assert!(
         !archive_for(&other_key)
             .parent()
@@ -593,6 +658,9 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
             "ops": [{"kind": "ret_void"}]
         }));
     std::fs::write(&ir_path, serde_json::to_vec(&shifted).unwrap()).unwrap();
+    // Without its content generation the shifted program restores both
+    // constituents, which proves their identity directly.
+    std::fs::remove_dir_all(&content_store).unwrap();
     let shifted_output_path = tmp.path.join("shifted-program.a");
     let shifted_key = "e".repeat(64);
     let shifted_output = run_backend(&shifted_output_path, &shifted_key, "speed", "0");

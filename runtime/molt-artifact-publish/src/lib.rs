@@ -272,6 +272,86 @@ pub fn write_text_atomically(destination: &Path, contents: &str) -> io::Result<(
     write_bytes_atomically(destination, contents.as_bytes())
 }
 
+/// Publish a copy of `source` at `destination` through the same rename boundary.
+///
+/// The copy is the platform's file copy (`std::fs::copy`): a copy-on-write
+/// clone on APFS (`fclonefileat`), a reflink on btrfs and XFS
+/// (`copy_file_range`), block cloning on ReFS (`CopyFileExW`), and an in-kernel
+/// copy elsewhere. A clone writes no data blocks, so republishing an immutable
+/// 67 MB archive costs metadata, not bandwidth. `admit` inspects the private
+/// copy before commit; its error leaves the destination unchanged.
+///
+/// A clone is made only into a missing path, so the copy lands in a private
+/// stage directory that this call creates exclusively beside the destination.
+/// No other process can name that path, whatever its process id.
+pub fn copy_file_atomically<T>(
+    source: &Path,
+    destination: &Path,
+    admit: impl FnOnce(&Path) -> io::Result<T>,
+) -> io::Result<T> {
+    let inherited_permissions = destination_permissions(destination)?;
+    let stage = reserve_stage_directory(destination)?;
+    let temporary = stage.join(destination.file_name().expect("reserved destination name"));
+    let staged = (|| -> io::Result<T> {
+        std::fs::copy(source, &temporary)?;
+        if let Some(permissions) = inherited_permissions {
+            std::fs::set_permissions(&temporary, permissions)?;
+        }
+        admit(&temporary)
+    })();
+    let result = match staged {
+        Ok(value) => replace(&temporary, destination).map(|()| value),
+        Err(error) => Err(AtomicPublicationError::new(
+            destination,
+            PublicationState::Unchanged,
+            error,
+        )),
+    };
+    let cleanup =
+        remove_publication_temporary(&temporary).and_then(|()| std::fs::remove_dir(&stage));
+    match (result, cleanup) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Ok(_), Err(error)) => {
+            Err(AtomicPublicationError::new(destination, PublicationState::Replaced, error).into())
+        }
+        (Err(mut error), Err(cleanup)) => {
+            error.record_cleanup_error(cleanup);
+            Err(error.into())
+        }
+        (Err(error), Ok(())) => Err(error.into()),
+    }
+}
+
+fn reserve_stage_directory(destination: &Path) -> io::Result<PathBuf> {
+    let file_name = destination.file_name().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "atomic publication destination has no file name: {}",
+                destination.display()
+            ),
+        )
+    })?;
+    std::fs::create_dir_all(publication_parent(destination))?;
+    let pid = std::process::id();
+    for _ in 0..1024 {
+        let nonce = PUBLICATION_NONCE.fetch_add(1, Ordering::Relaxed);
+        let stage = destination.with_file_name(temporary_name(file_name, pid, nonce));
+        match std::fs::create_dir(&stage) {
+            Ok(()) => return Ok(stage),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        format!(
+            "cannot reserve a copy stage beside {} after 1024 attempts",
+            destination.display()
+        ),
+    ))
+}
+
 /// Commit a producer-owned temporary file through the same rename used by
 /// direct artifact output. The producer must place the file on the destination
 /// filesystem so replacement stays atomic.
@@ -474,6 +554,46 @@ mod tests {
                 .count(),
             0
         );
+        std::fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn copy_publication_admits_private_copy_before_replacement() {
+        let directory = test_directory("copy");
+        let source = directory.join("source.bin");
+        let output = directory.join("artifact.bin");
+        std::fs::write(&source, b"immutable generation").expect("write source");
+        std::fs::write(&output, b"old").expect("seed output");
+
+        let refused = copy_file_atomically(&source, &output, |staged| {
+            assert_eq!(std::fs::read(staged).unwrap(), b"immutable generation");
+            Err::<(), _>(io::Error::new(io::ErrorKind::InvalidData, "refused"))
+        })
+        .expect_err("admission refuses the copy");
+        assert!(refused.to_string().contains("destination unchanged"));
+        assert_eq!(std::fs::read(&output).unwrap(), b"old");
+
+        let length = copy_file_atomically(&source, &output, |staged| {
+            Ok(std::fs::metadata(staged)?.len())
+        })
+        .expect("publish copy");
+        assert_eq!(length, 20);
+        assert_eq!(std::fs::read(&output).unwrap(), b"immutable generation");
+        // The source keeps its own inode: a later replacement of either path
+        // cannot reach the other.
+        std::fs::write(&source, b"replaced").expect("rewrite source");
+        assert_eq!(std::fs::read(&output).unwrap(), b"immutable generation");
+        let mut names: Vec<_> = std::fs::read_dir(&directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["artifact.bin", "source.bin"]);
+
+        let missing = copy_file_atomically(&directory.join("absent"), &output, |_| Ok(()))
+            .expect_err("missing source");
+        assert_eq!(missing.kind(), io::ErrorKind::NotFound);
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 2);
         std::fs::remove_dir_all(directory).expect("remove test directory");
     }
 
