@@ -140,10 +140,11 @@ cargo kani --tests --harness int_roundtrip
 
 ## What is NOT yet verified
 
-- **Pointer round-trip through the registry** (`from_ptr` / `as_ptr`): the
-  pointer registry uses global mutable state (`OnceLock`, `RwLock`, `HashMap`)
-  which Kani cannot easily model. The pointer harness verifies bit-level
-  encoding only.
+- **Pointer memory accesses and provenance**: `from_ptr` exposes provenance and
+  `as_ptr` reconstructs it directly, independently of registry membership. The
+  pointer harness verifies bit-level encoding only, not allocation lifetime or
+  alias validity. Explicit raw/opaque registries use global mutable state
+  (`OnceLock`, `RwLock`, `HashMap`) which Kani cannot easily model.
 - **Exhaustive concurrent schedules**: Kani proves the shared transition
   algebra and native `free-threaded` builds stress-test concurrent
   retain/release, but a Loom-class proof of every atomic interleaving remains.

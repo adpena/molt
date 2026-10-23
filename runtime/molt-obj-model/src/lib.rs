@@ -363,8 +363,8 @@ impl MoltObject {
     #[inline(always)]
     pub fn from_ptr(ptr: *mut u8) -> Self {
         // Address representability is checked before publication in every profile.
-        // The registry adds development-only provenance checks; it does not own
-        // the encoding or change the address recovered by generated code.
+        // Debug membership supports explicit diagnostics and raw-address consumers;
+        // it does not own the encoding or ordinary object-word decoding.
         let bits = box_ptr_bits(ptr.expose_provenance() as u64) as u64;
         #[cfg(debug_assertions)]
         register_ptr(ptr);
@@ -423,38 +423,16 @@ impl MoltObject {
     pub fn as_ptr(&self) -> Option<*mut u8> {
         if self.is_ptr() {
             let addr = ptr_payload_bits(self.0);
-            // The NaN-boxed canonical address is the SINGLE source of truth for a
-            // `TAG_PTR` value's identity, on every build profile. Recovering it via
-            // `with_exposed_provenance_mut` is exactly what release does, and it is
-            // address-equivalent to the registered slot for runtime-minted pointers
-            // (`register_ptr` keys on the same `expose_provenance()` address that
-            // `from_ptr` boxes).
-            //
-            // The provenance registry is a debug-only PROVENANCE CHECKER, not the
-            // arbiter of whether a pointer is recoverable. Compiled code legitimately
-            // mints `TAG_PTR` values without calling `from_ptr`, so canonical
-            // pointer words crossing the ABI need not enter this registry.
-            // A registry miss must not change address decoding between profiles.
-            //
-            // So: when the registry has a slot for this address, return the
-            // provenance-carrying registered pointer (preserving the debug-build
-            // safety check for runtime-minted objects); otherwise fall back to the
-            // canonical reconstruction, identical to release. This keeps `as_ptr()`
-            // profile-independent while retaining the registry's checking value.
-            #[cfg(not(debug_assertions))]
-            {
-                usize::try_from(addr)
-                    .ok()
-                    .map(std::ptr::with_exposed_provenance_mut)
-            }
-            #[cfg(debug_assertions)]
-            {
-                resolve_ptr(addr).or_else(|| {
-                    usize::try_from(addr)
-                        .ok()
-                        .map(std::ptr::with_exposed_provenance_mut)
-                })
-            }
+            // Object words carry their address, not a registry handle. from_ptr
+            // exposes provenance before boxing; generated words obey the same
+            // ABI obligation. Decode directly in every profile. The old debug
+            // registry lookup accepted misses through this same reconstruction,
+            // so it validated neither lifetime nor aliasing and only added a
+            // lock/hash lookup to every object access. Explicit raw-pointer and
+            // opaque-handle consumers still use their registries.
+            usize::try_from(addr)
+                .ok()
+                .map(std::ptr::with_exposed_provenance_mut)
         } else {
             None
         }
@@ -689,7 +667,14 @@ mod tests {
         assert!(obj.is_ptr());
         assert_eq!(obj.as_ptr(), Some(ptr));
         release_ptr(ptr);
+        assert_eq!(resolve_ptr(ptr.expose_provenance() as u64), None);
+        // Removing registry membership does not end this allocation's lifetime.
+        // Decoding an object word must remain independent of that membership.
+        let recovered = obj.as_ptr().expect("live object address");
         unsafe {
+            assert_eq!(recovered.read(), 123);
+            recovered.write(45);
+            assert_eq!(ptr.read(), 45);
             drop(Box::from_raw(ptr));
         }
     }
@@ -745,6 +730,9 @@ mod tests {
         let recovered = obj.as_ptr().expect("unregistered TAG_PTR must recover");
         assert_eq!(recovered.expose_provenance() as u64, addr);
         unsafe {
+            assert_eq!(recovered.read(), 0xAB);
+            recovered.write(0xCD);
+            assert_eq!(ptr.read(), 0xCD);
             drop(Box::from_raw(ptr));
         }
         reset_ptr_registry();
