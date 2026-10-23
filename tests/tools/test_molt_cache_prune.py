@@ -292,6 +292,7 @@ def _run_pruner(cache: Path, *, dry_run: bool = False):
 @pytest.mark.parametrize("existing_locks", [False, True])
 def test_real_pruner_dry_run_creates_no_locks_or_other_files(tmp_path, existing_locks):
     from molt.default_paths import (
+        native_stdlib_archive_cache_entry,
         native_stdlib_object_cache_entry,
         shared_stdlib_cache_entry,
     )
@@ -300,7 +301,8 @@ def test_real_pruner_dry_run_creates_no_locks_or_other_files(tmp_path, existing_
     stdlib, stdlib_lock = shared_stdlib_cache_entry(cache, "b" * 64)
     wasm = _cache_entry(cache, "cc-dry-run")
     native, native_lock = native_stdlib_object_cache_entry(cache, "d" * 64)
-    for root in (stdlib, wasm.root, native):
+    content, content_lock = native_stdlib_archive_cache_entry(cache, "e" * 64)
+    for root in (stdlib, wasm.root, native, content):
         root.mkdir(parents=True)
         (root / "payload").write_bytes(b"reclaimable")
     if existing_locks:
@@ -308,12 +310,13 @@ def test_real_pruner_dry_run_creates_no_locks_or_other_files(tmp_path, existing_
             stdlib_lock,
             wasm.lock,
             native_lock,
+            content_lock,
         ):
             lock.parent.mkdir(parents=True, exist_ok=True)
             lock.write_bytes(b"unchanged advisory contents")
     before = _snapshot_tree(cache)
     output = _run_pruner(cache, dry_run=True)
-    assert "removed.entries=3" in output
+    assert "removed.entries=4" in output
     assert _snapshot_tree(cache) == before
 
 
@@ -560,6 +563,7 @@ def test_pruner_removes_abandoned_stdlib_stages_without_archive(tmp_path):
         "wasm_link/runtime_tree_shake",
         "wasm_link/runtime_tree_shake/schema",
         "shared-stdlib",
+        "native-stdlib-archives-v1",
         "native-stdlib-objects-v1",
     ],
 )

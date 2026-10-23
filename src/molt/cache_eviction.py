@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 from molt.default_paths import (
     CACHE_MAINTENANCE_INTERVAL_SECONDS as AUTOMATIC_PRUNE_INTERVAL_SECONDS,
+    NATIVE_STDLIB_ARCHIVE_CACHE_DIRECTORY,
     NATIVE_STDLIB_OBJECT_CACHE_DIRECTORY,
     SHARED_STDLIB_CACHE_DIRECTORY,
     SHARED_SOURCE_RECORDS_DIRECTORY,
@@ -25,6 +26,7 @@ from molt.default_paths import (
     protected_cache_roots,
     shared_cache_lock_path,
     is_backend_cache_artifact_name,
+    native_stdlib_archive_cache_entry,
     native_stdlib_object_cache_entry,
     resolve_budget,
     shared_stdlib_cache_entry,
@@ -233,6 +235,7 @@ def _collect_entries(
             continue
         if child.name in {
             SHARED_STDLIB_CACHE_DIRECTORY,
+            NATIVE_STDLIB_ARCHIVE_CACHE_DIRECTORY,
             NATIVE_STDLIB_OBJECT_CACHE_DIRECTORY,
         } and _is_direct_directory(child):
             for entry_root in _children(child):
@@ -247,6 +250,10 @@ def _collect_entries(
                 try:
                     if child.name == SHARED_STDLIB_CACHE_DIRECTORY:
                         _root, lock = shared_stdlib_cache_entry(
+                            cache_root, entry_root.name
+                        )
+                    elif child.name == NATIVE_STDLIB_ARCHIVE_CACHE_DIRECTORY:
+                        _root, lock = native_stdlib_archive_cache_entry(
                             cache_root, entry_root.name
                         )
                     else:
