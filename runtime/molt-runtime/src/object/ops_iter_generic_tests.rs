@@ -343,3 +343,98 @@ fn tuple_cache_publication_retracks_a_demoted_result_before_retirement() {
         }
     });
 }
+
+extern "C" fn iter_overload_returns_none() -> u64 {
+    MoltObject::none().bits()
+}
+
+#[test]
+fn public_iter_callable_admits_both_overloads() {
+    let _guard = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let name = MoltObject::from_ptr(alloc_string(py, b"iter_overload_fixture")).bits();
+            let module = crate::molt_module_new(name);
+            let spec = crate::builtins::functions::python_builtin_function_info("iter").unwrap();
+            let public =
+                crate::builtins::functions::alloc_python_builtin_function_bits(py, spec, module)
+                    .unwrap();
+            let public_ptr = obj_from_bits(public).as_ptr().unwrap();
+            assert!(!crate::call::bind::function_requires_binder_flag(
+                public_ptr
+            ));
+            assert!(
+                !crate::call::bind::function_raw_positional_call_needs_binding(py, public_ptr, 2)
+            );
+            for public_name in [
+                "next",
+                "getattr",
+                "dir",
+                "vars",
+                "format",
+                "divmod",
+                "hasattr",
+                "setattr",
+                "delattr",
+                "anext",
+                "isinstance",
+                "issubclass",
+            ] {
+                let sibling_spec =
+                    crate::builtins::functions::python_builtin_function_info(public_name).unwrap();
+                let sibling = crate::builtins::functions::alloc_python_builtin_function_bits(
+                    py,
+                    sibling_spec,
+                    module,
+                )
+                .unwrap();
+                let ptr = obj_from_bits(sibling).as_ptr().unwrap();
+                assert!(
+                    !crate::call::bind::function_requires_binder_flag(ptr),
+                    "{public_name}"
+                );
+                assert!(
+                    !crate::call::bind::function_raw_positional_call_needs_binding(
+                        py,
+                        ptr,
+                        sibling_spec.arity as usize
+                    ),
+                    "{public_name}"
+                );
+                dec_ref_bits(py, sibling);
+            }
+            let seven = MoltObject::from_int(7).bits();
+            let source = MoltObject::from_ptr(alloc_tuple(py, &[seven])).bits();
+            let iterator = call_callable1(py, public, source);
+            assert!(!exception_pending(py));
+            assert_eq!(molt_next_builtin(iterator, missing_bits(py)), seven);
+            dec_ref_bits(py, iterator);
+            let callback =
+                MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
+                    py,
+                    crate::provenance::abi::expose_function_address(
+                        iter_overload_returns_none as *const (),
+                    ),
+                    0,
+                ))
+                .bits();
+            let sentinel_iter =
+                crate::call_callable2(py, public, callback, MoltObject::none().bits());
+            assert!(!exception_pending(py));
+            assert_eq!(molt_next_builtin(sentinel_iter, seven), seven);
+            assert!(!exception_pending(py));
+            dec_ref_bits(py, sentinel_iter);
+            let invalid_unary = call_callable1(py, public, MoltObject::none().bits());
+            assert!(exception_pending(py));
+            assert!(obj_from_bits(invalid_unary).is_none());
+            clear_exception(py);
+            let invalid = crate::call_callable2(py, public, source, MoltObject::none().bits());
+            assert!(exception_pending(py));
+            assert!(obj_from_bits(invalid).is_none());
+            clear_exception(py);
+            for bits in [callback, source, public, module, name] {
+                dec_ref_bits(py, bits);
+            }
+        }
+    })
+}

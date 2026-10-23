@@ -6,6 +6,29 @@
 // DO NOT EDIT BY HAND.
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(i64)]
+pub enum BuiltinBindingPolicy {
+    ClinicNamed = 1,
+    PositionalRange = 7,
+}
+
+impl BuiltinBindingPolicy {
+    pub fn from_abi(value: i64) -> Option<Self> {
+        match value {
+            1 => Some(Self::ClinicNamed),
+            7 => Some(Self::PositionalRange),
+            _ => None,
+        }
+    }
+    pub fn requires_custom_binding(self) -> bool {
+        match self {
+            Self::ClinicNamed => true,
+            Self::PositionalRange => false,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PythonBuiltinCallableSpec {
     pub python_name: &'static str,
     pub python_module: &'static str,
@@ -167,8 +190,8 @@ pub const PYTHON_BUILTIN_CALLABLES: &[PythonBuiltinCallableSpec] = &[
     PythonBuiltinCallableSpec {
         python_name: "iter",
         python_module: "builtins",
-        runtime_name: "molt_iter_checked",
-        arity: 1,
+        runtime_name: "molt_iter_builtin",
+        arity: 2,
     },
     PythonBuiltinCallableSpec {
         python_name: "len",

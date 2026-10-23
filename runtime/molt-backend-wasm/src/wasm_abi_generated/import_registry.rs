@@ -1454,6 +1454,10 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "iter",
     },
     RuntimeImportSpec {
+        import: WasmRuntimeImport::IterBuiltin,
+        name: "iter_builtin",
+    },
+    RuntimeImportSpec {
         import: WasmRuntimeImport::IterNext,
         name: "iter_next",
     },
@@ -11768,6 +11772,8 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_unpack_sequence" => Some(WasmRuntimeImport::UnpackSequence),
         "iter" => Some(WasmRuntimeImport::Iter),
         "molt_iter_checked" => Some(WasmRuntimeImport::Iter),
+        "iter_builtin" => Some(WasmRuntimeImport::IterBuiltin),
+        "molt_iter_builtin" => Some(WasmRuntimeImport::IterBuiltin),
         "iter_next" => Some(WasmRuntimeImport::IterNext),
         "molt_iter_next" => Some(WasmRuntimeImport::IterNext),
         "iter_next_unboxed" => Some(WasmRuntimeImport::IterNextUnboxed),

@@ -2813,7 +2813,7 @@ fn runtime_adapters_require_real_providers_but_public_names_remain_lookup() {
     for (public, symbol, missing) in [
         ("hash", "molt_hash_builtin", "molt_hash"),
         ("id", "molt_id", "molt_id"),
-        ("iter", "molt_iter_checked", "molt_iter"),
+        ("iter", "molt_iter_builtin", "molt_iter"),
         ("next", "molt_next_builtin", "molt_next"),
         ("divmod", "molt_divmod_builtin", "molt_divmod"),
         ("hex", "molt_hex_builtin", "molt_hex"),

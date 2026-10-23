@@ -943,29 +943,28 @@ fn iter_impl(iter_bits: u64, builtin_only: bool) -> u64 {
     })
 }
 
+pub(super) fn iter_checked(_py: &PyToken<'_>, iter_bits: u64) -> u64 {
+    let res = molt_iter(iter_bits);
+    if obj_from_bits(res).is_none() {
+        if exception_pending(_py) {
+            return res;
+        }
+        if runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_ITER) {
+            let iter_obj = obj_from_bits(iter_bits);
+            eprintln!(
+                "molt_iter_checked: non-iterable type={} bits=0x{:x}",
+                type_name(_py, iter_obj),
+                iter_bits
+            );
+        }
+        return raise_not_iterable(_py, iter_bits);
+    }
+    res
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_iter_checked(iter_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        if obj_from_bits(iter_bits).is_none() {
-            return MoltObject::none().bits();
-        }
-        let res = molt_iter(iter_bits);
-        if obj_from_bits(res).is_none() {
-            if exception_pending(_py) {
-                return res;
-            }
-            if runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_ITER) {
-                let iter_obj = obj_from_bits(iter_bits);
-                eprintln!(
-                    "molt_iter_checked: non-iterable type={} bits=0x{:x}",
-                    type_name(_py, iter_obj),
-                    iter_bits
-                );
-            }
-            return raise_not_iterable(_py, iter_bits);
-        }
-        res
-    })
+    crate::with_gil_entry_nopanic!(_py, { iter_checked(_py, iter_bits) })
 }
 
 /// Publish exhaustion before retiring either owned field. Finalizers may
@@ -978,28 +977,30 @@ unsafe fn call_iter_finish(py: &PyToken<'_>, ptr: *mut u8) {
         unsafe { std::ptr::replace(ptr.add(std::mem::size_of::<u64>()).cast::<u64>(), none) };
     dec_ref_bits(py, sentinel);
 }
+pub(super) fn iter_sentinel(_py: &PyToken<'_>, callable_bits: u64, sentinel_bits: u64) -> u64 {
+    let callable_ok = is_truthy(_py, obj_from_bits(molt_is_callable(callable_bits)));
+    if !callable_ok {
+        return raise_exception::<_>(_py, "TypeError", "iter(v, w): v must be callable");
+    }
+    let total = std::mem::size_of::<MoltHeader>() + CALL_ITER_PAYLOAD_SIZE;
+    let iter_ptr = alloc_object(_py, total, TYPE_ID_CALL_ITER);
+    if iter_ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    unsafe {
+        *(iter_ptr as *mut u64) = callable_bits;
+        *(iter_ptr.add(std::mem::size_of::<u64>()) as *mut u64) = sentinel_bits;
+        // Initialize cached-tuple slot to null.
+        call_iter_set_cached_tuple(iter_ptr, std::ptr::null_mut());
+    }
+    inc_ref_bits(_py, callable_bits);
+    inc_ref_bits(_py, sentinel_bits);
+    MoltObject::from_ptr(iter_ptr).bits()
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_iter_sentinel(callable_bits: u64, sentinel_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let callable_ok = is_truthy(_py, obj_from_bits(molt_is_callable(callable_bits)));
-        if !callable_ok {
-            return raise_exception::<_>(_py, "TypeError", "iter(v, w): v must be callable");
-        }
-        let total = std::mem::size_of::<MoltHeader>() + CALL_ITER_PAYLOAD_SIZE;
-        let iter_ptr = alloc_object(_py, total, TYPE_ID_CALL_ITER);
-        if iter_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        unsafe {
-            *(iter_ptr as *mut u64) = callable_bits;
-            *(iter_ptr.add(std::mem::size_of::<u64>()) as *mut u64) = sentinel_bits;
-            // Initialize cached-tuple slot to null.
-            call_iter_set_cached_tuple(iter_ptr, std::ptr::null_mut());
-        }
-        inc_ref_bits(_py, callable_bits);
-        inc_ref_bits(_py, sentinel_bits);
-        MoltObject::from_ptr(iter_ptr).bits()
-    })
+    crate::with_gil_entry_nopanic!(_py, { iter_sentinel(_py, callable_bits, sentinel_bits) })
 }
 
 #[unsafe(no_mangle)]

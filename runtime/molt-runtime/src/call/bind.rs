@@ -14,8 +14,8 @@ use crate::call::{
 use crate::state::recursion::RecursionGuard;
 use crate::state::tls::FRAME_STACK;
 use crate::{
-    ALLOC_BYTES_CALLARGS, BIND_KIND_CAPI_METHOD, BIND_KIND_CLINIC_NAMED, BIND_KIND_TYPE_NEW_INIT,
-    CALL_BIND_IC_HIT_COUNT, CALL_BIND_IC_MISS_COUNT, HEADER_FLAG_FUNC_REQUIRES_BINDER,
+    ALLOC_BYTES_CALLARGS, BIND_KIND_CAPI_METHOD, BIND_KIND_TYPE_NEW_INIT, CALL_BIND_IC_HIT_COUNT,
+    CALL_BIND_IC_MISS_COUNT, HEADER_FLAG_FUNC_REQUIRES_BINDER,
     INVOKE_FFI_BRIDGE_CAPABILITY_DENIED_COUNT, MoltHeader, MoltObject, PtrDropGuard, PyToken,
     TYPE_ID_BOUND_METHOD, TYPE_ID_CALLARGS, TYPE_ID_DICT, TYPE_ID_FOREIGN, TYPE_ID_FROZENSET,
     TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS, TYPE_ID_SET, TYPE_ID_STRING, TYPE_ID_TUPLE,
@@ -57,6 +57,7 @@ use crate::{
     ptr_from_bits, raise_exception, raise_not_callable, runtime_state, runtime_state_for_gil,
     string_obj_to_owned, type_name, type_of_bits,
 };
+use molt_ir::python_builtin_callables_generated::BuiltinBindingPolicy;
 use std::collections::{HashMap, HashSet};
 use std::sync::{MutexGuard, OnceLock};
 

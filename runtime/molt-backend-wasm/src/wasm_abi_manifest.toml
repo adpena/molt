@@ -2174,6 +2174,13 @@ type = 2
 runtime_name = "molt_iter_checked"
 callable_arity = 1
 
+# Public iter(object[, sentinel]) is distinct from unary protocol acquisition.
+[[import]]
+name = "iter_builtin"
+type = 3
+runtime_name = "molt_iter_builtin"
+callable_arity = 2
+
 [[import]]
 name = "iter_next"
 type = 2

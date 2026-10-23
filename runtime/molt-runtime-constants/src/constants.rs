@@ -2,8 +2,7 @@
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicU64;
 
-// Keep in sync with MOLT_BIND_KIND_CLINIC_NAMED in src/molt/builtin_callables.py.
-pub const BIND_KIND_CLINIC_NAMED: i64 = 1;
+// Builtin callable policy tags are generated from builtin_callables.py.
 pub const BIND_KIND_CAPI_METHOD: i64 = 2;
 pub const BIND_KIND_PACKED_BUILTIN: i64 = 3;
 pub const BIND_KIND_TYPE_NEW_INIT: i64 = 4;
