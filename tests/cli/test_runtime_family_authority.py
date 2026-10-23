@@ -1617,6 +1617,17 @@ def test_native_dependency_observation_changes_without_changing_plan_fingerprint
 ) -> None:
     from molt.cli import runtime_build_identity as builder
     from molt.cli.runtime_artifact_selection import RUNTIME_STATICLIB_ARTIFACTS
+    from molt.cli.runtime_identity_schema import (
+        RuntimePublicationTransform,
+        runtime_publication_executor_paths,
+    )
+
+    for relative in runtime_publication_executor_paths(
+        RuntimePublicationTransform.NATIVE_STATICLIB
+    ):
+        executor = plan_root / relative
+        executor.parent.mkdir(parents=True, exist_ok=True)
+        executor.write_text("# publication executor fixture\n", encoding="utf-8")
 
     admitted = native_runtime_staticlib_identity()
     family = admitted.payload["family"]
