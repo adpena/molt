@@ -203,22 +203,6 @@ extern int molt_msgpack_parse_scalar(const char* ptr, long len, unsigned long lo
 extern int molt_cbor_parse_scalar(const char* ptr, long len, unsigned long long* out);
 extern unsigned long long molt_get_attr_generic(void* obj, const char* attr, unsigned long long len);
 
-static int molt_env_enabled(const char* name) {
-#ifdef _WIN32
-    char* value = NULL;
-    size_t value_len = 0;
-    if (_dupenv_s(&value, &value_len, name) != 0 || value == NULL) {
-        free(value);
-        return 0;
-    }
-    int enabled = value[0] != '\\0' && strcmp(value, "0") != 0;
-    free(value);
-    return enabled;
-#else
-    const char* value = getenv(name);
-    return value != NULL && value[0] != '\\0' && strcmp(value, "0") != 0;
-#endif
-}
 /* Per-app callable resolver: the backend emits molt_app_resolve_callable into
  * the user object for the native app-callable manifest, and WASM emits the
  * analogous callable table resolver for intrinsics plus reachable builtin
@@ -237,20 +221,11 @@ extern const unsigned char molt_module_registry_blob[];
 /* MOLT_RUNTIME_MODULE_ROOTS_SNIPPET */
 /* MOLT_COMPILED_SOURCES_SNIPPET */
 
+/* The runtime reports an exception left pending by the entry (CPython's
+ * PyErr_Print) and chooses the status; its exit runs teardown and exits. */
 static int molt_finish() {
-    unsigned long long pending = molt_exception_pending();
-    if (molt_env_enabled("MOLT_DEBUG_MAIN_EXCEPTION")) {
-        fprintf(stderr, "molt main finish pending=%d\\n", pending != 0);
-    }
-    if (pending != 0) {
-        unsigned long long exc = molt_exception_last_pending();
-        unsigned long long exit_code = molt_exception_report_uncaught(exc);
-        molt_dec_ref_obj(exc);
-        molt_runtime_exit(exit_code);
-        _Exit(1);
-    }
-    molt_runtime_exit(0);
-    _Exit(0);
+    molt_runtime_exit(molt_main_exit_status());
+    _Exit(1);
 }
 
 #ifdef _WIN32

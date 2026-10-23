@@ -116,14 +116,23 @@ export class EdgeBox implements DurableObject {
       const exports = instance.exports as unknown as {
         memory: WebAssembly.Memory;
         molt_main?: () => void;
+        molt_main_exit_status?: () => bigint;
         _start?: () => void;
       };
 
       bridge.memory = exports.memory;
       bridge.exports = exports;
 
-      if (exports.molt_main) exports.molt_main();
-      else if (exports._start) exports._start();
+      if (exports.molt_main) {
+        exports.molt_main();
+        // The runtime reports an exception the entry left pending (CPython's
+        // PyErr_Print, through sys.excepthook into stderr) and returns the
+        // program's exit status, as the native main stub does.
+        if (!exports.molt_main_exit_status) {
+          throw new Error("box missing molt_main_exit_status export");
+        }
+        exitCode = Number(exports.molt_main_exit_status());
+      } else if (exports._start) exports._start();
     } catch (err) {
       if (err instanceof ProcExit) {
         exitCode = err.code;

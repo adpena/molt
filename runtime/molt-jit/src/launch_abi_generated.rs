@@ -26,10 +26,7 @@ pub(crate) struct RuntimeLaunchApi {
     pub(crate) molt_runtime_init: unsafe extern "C" fn() -> u64,
     pub(crate) molt_runtime_ensure_gil: unsafe extern "C" fn(),
     pub(crate) molt_set_argv: unsafe extern "C" fn(i32, *const *const std::ffi::c_char),
-    pub(crate) molt_exception_pending: unsafe extern "C" fn() -> u64,
-    pub(crate) molt_exception_last_pending: unsafe extern "C" fn() -> u64,
-    pub(crate) molt_exception_report_uncaught: unsafe extern "C" fn(u64) -> u64,
-    pub(crate) molt_dec_ref_obj: unsafe extern "C" fn(u64),
+    pub(crate) molt_main_exit_status: unsafe extern "C" fn() -> u64,
     pub(crate) molt_runtime_exit: unsafe extern "C" fn(u64) -> u64,
 }
 
@@ -79,24 +76,9 @@ impl RuntimeLaunchApi {
                     unsafe extern "C" fn(i32, *const *const std::ffi::c_char),
                 >(entry("molt_set_argv")?)
             },
-            molt_exception_pending: unsafe {
+            molt_main_exit_status: unsafe {
                 std::mem::transmute::<*const u8, unsafe extern "C" fn() -> u64>(entry(
-                    "molt_exception_pending",
-                )?)
-            },
-            molt_exception_last_pending: unsafe {
-                std::mem::transmute::<*const u8, unsafe extern "C" fn() -> u64>(entry(
-                    "molt_exception_last_pending",
-                )?)
-            },
-            molt_exception_report_uncaught: unsafe {
-                std::mem::transmute::<*const u8, unsafe extern "C" fn(u64) -> u64>(entry(
-                    "molt_exception_report_uncaught",
-                )?)
-            },
-            molt_dec_ref_obj: unsafe {
-                std::mem::transmute::<*const u8, unsafe extern "C" fn(u64)>(entry(
-                    "molt_dec_ref_obj",
+                    "molt_main_exit_status",
                 )?)
             },
             molt_runtime_exit: unsafe {

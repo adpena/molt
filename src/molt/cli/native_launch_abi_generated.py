@@ -27,12 +27,6 @@ NATIVE_LAUNCH_START_SEQUENCE = (
     "molt_set_argv",
 )
 # Called after the entry returns: report a pending exception, then exit.
-NATIVE_LAUNCH_FINISH_ENTRIES = (
-    "molt_exception_pending",
-    "molt_exception_last_pending",
-    "molt_exception_report_uncaught",
-    "molt_dec_ref_obj",
-    "molt_runtime_exit",
-)
+NATIVE_LAUNCH_FINISH_ENTRIES = ("molt_main_exit_status", "molt_runtime_exit")
 # The C declarations of every launch entry.
-NATIVE_LAUNCH_C_DECLARATIONS = "extern void molt_register_compiled_sources(const char* const*, unsigned long long);\nextern unsigned long long molt_set_app_callable_resolver(unsigned long long);\nextern unsigned long long molt_module_registry_install(const unsigned char*);\nextern unsigned long long molt_runtime_init(void);\nextern void molt_runtime_ensure_gil(void);\nextern void molt_set_argv(int, const char**);\nextern unsigned long long molt_exception_pending(void);\nextern unsigned long long molt_exception_last_pending(void);\nextern unsigned long long molt_exception_report_uncaught(unsigned long long);\nextern void molt_dec_ref_obj(unsigned long long);\nextern unsigned long long molt_runtime_exit(unsigned long long);"
+NATIVE_LAUNCH_C_DECLARATIONS = "extern void molt_register_compiled_sources(const char* const*, unsigned long long);\nextern unsigned long long molt_set_app_callable_resolver(unsigned long long);\nextern unsigned long long molt_module_registry_install(const unsigned char*);\nextern unsigned long long molt_runtime_init(void);\nextern void molt_runtime_ensure_gil(void);\nextern void molt_set_argv(int, const char**);\nextern unsigned long long molt_main_exit_status(void);\nextern unsigned long long molt_runtime_exit(unsigned long long);"
