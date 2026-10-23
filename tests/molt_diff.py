@@ -79,6 +79,7 @@ _FAILURE_STATUSES = frozenset({"fail", "oom", "uncalibrated"})
 _PROCESS_STARTED = time.monotonic()
 _DIFF_RUN_LOCK_HANDLE: file_locks._FileLockHandle | None = None
 _WORKER_ORPHAN_GUARD_INSTALLED = False
+_WORKER_DIAGNOSTIC_STDOUT: io.TextIOBase | None = None
 _BATCH_COMPILE_SERVER_CLIENT: "_BatchCompileServerClient | None" = None
 _BATCH_COMPILE_SERVER_CLIENT_PID = 0
 _DIFF_MEMORY_GUARD_TRIP_FILE_ENV = harness_outcomes.SUITE_TRIP_FILE_ENV
@@ -1551,9 +1552,15 @@ def _emit_line(
     log_handle: io.TextIOBase | None = None,
     *,
     echo: bool = True,
+    stream: io.TextIOBase | None = None,
 ) -> None:
     if echo:
-        print(line, flush=True)
+        if stream is None:
+            print(line, flush=True)
+        else:
+            # One bounded preview write, using the pool's inherited transport.
+            stream.write(line + "\n")
+            stream.flush()
     if log_handle is not None:
         log_handle.write(line + "\n")
         log_handle.flush()
@@ -1603,10 +1610,39 @@ def _diff_worker(
     }
 
 
-def _install_worker_state(suite_stop: object) -> None:
-    """Pool initializer: bind the suite's stop and the orphan guard."""
+def _install_worker_state(suite_stop: object, live: bool = False) -> None:
+    """Bind stop custody and preserve stdout before item capture redirects it."""
+    global _WORKER_DIAGNOSTIC_STDOUT
+    _WORKER_DIAGNOSTIC_STDOUT = sys.stdout if live else None
     compat_backends.bind_suite_stop(suite_stop)
     _install_worker_orphan_guard()
+
+
+def _publish_backend_diagnostic(
+    file_path: str, backend: str, status: str, detail: str
+) -> None:
+    """Preview a failure without waiting for the admitted backend matrix.
+
+    Full diagnostics remain in the one captured item result. Slice before
+    formatting: the preview never recopies the growing StringIO or serializes
+    another whole output. It uses the existing inherited output transport,
+    without a progress queue, interprocess lock, or new scheduling cadence.
+    These best-effort human previews may interleave across workers; they are
+    neither synchronized records nor a substitute for the completed evidence.
+    """
+    if _WORKER_DIAGNOSTIC_STDOUT is None:
+        return
+    preview = detail[:640].replace("\r", "\\r").replace("\n", "\\n")
+    try:
+        _emit_line(
+            f"[BACKEND {status.upper()}] {file_path!r} ({backend}): {preview} "
+            "[matrix still running; final verdict pending]",
+            stream=_WORKER_DIAGNOSTIC_STDOUT,
+        )
+    except (OSError, ValueError):
+        # A human preview is best effort, not result/evidence authority. A closed
+        # or unencodable inherited stream cannot change the semantic verdict.
+        pass
 
 
 def _install_worker_orphan_guard() -> None:
@@ -3542,6 +3578,14 @@ def _emit_backend_fail(
     outcome: compat_backends.BackendResult,
     detail: str,
 ) -> None:
+    _publish_backend_diagnostic(
+        file_path,
+        backend,
+        "fail",
+        f"rc={outcome.returncode}; {detail[:120]}; "
+        f"stdout={None if outcome.stdout is None else outcome.stdout[:120]!r}; "
+        f"stderr={(outcome.child_stderr or outcome.stderr)[-240:]!r}",
+    )
     if outcome.stdout is None:
         print(f"[FAIL] Molt failed to build {file_path} ({backend})")
         print(outcome.stderr)
@@ -3901,6 +3945,9 @@ def diff_test(
                 context=execution_context,
             )
             if isinstance(outcome, compat_backends.BackendAvailability):
+                _publish_backend_diagnostic(
+                    file_path, backend, "uncalibrated", outcome.reason
+                )
                 any_unavailable = True
                 _record_backend_result(
                     record,
@@ -3929,6 +3976,9 @@ def diff_test(
                 print(outcome.stderr)
                 return
             if outcome.infrastructure_failure is not None:
+                _publish_backend_diagnostic(
+                    file_path, backend, "uncalibrated", outcome.detail
+                )
                 any_infrastructure_failure = True
                 _record_backend_result(
                     record,
@@ -4349,6 +4399,7 @@ def run_diff(
                 except OSError as exc:
                     print(f"Warning: failed to create log dir {log_dir}: {exc}")
                     log_dir = None
+            preview_failures = live
             if not live:
                 live = True
             prune_every = _diff_prune_every()
@@ -4362,7 +4413,9 @@ def run_diff(
                     executor_params = {
                         "mp_context": worker_context,
                         "initializer": _install_worker_state,
-                        "initargs": (suite_stop,),
+                        "initargs": (
+                            (suite_stop, True) if preview_failures else (suite_stop,)
+                        ),
                     }
                     try:
                         executor_ctx = concurrent.futures.ProcessPoolExecutor(
@@ -4763,7 +4816,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--live",
         action="store_true",
-        help="Emit per-test status lines as tests complete.",
+        help="Emit best-effort bounded backend failure previews while their matrix runs, "
+        "and per-test status lines as tests complete. Full diagnostics keep "
+        "their existing detail-log ownership.",
     )
     parser.add_argument(
         "--deadline-s",
