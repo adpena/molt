@@ -133,9 +133,11 @@ def test_python_cmd_reuses_active_harness_interpreter() -> None:
     assert bench_wasm._python_cmd() == [bench_wasm.sys.executable]
 
 
+@pytest.mark.parametrize("keep_temp", [False, True])
 def test_prepare_wasm_binary_sets_linked_table_base(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    keep_temp: bool,
 ) -> None:
     reloc_runtime = tmp_path / "molt_runtime_reloc.wasm"
     reloc_runtime.write_bytes(b"\x00asm")
@@ -175,12 +177,16 @@ def test_prepare_wasm_binary_sets_linked_table_base(
         "tests/benchmarks/bench_sum.py",
         tty=False,
         log=None,
-        keep_temp=False,
+        keep_temp=keep_temp,
     )
     assert wasm is not None
     assert pruned_envs == [base_env]
     assert "MOLT_WASM_RELOCATABLE" not in captured_env
     assert captured_env.get("MOLT_WASM_TABLE_BASE") == "2354"
+    from molt.temporary_artifacts import OwnedTemporaryDirectory
+
+    assert type(wasm.temp_dir) is OwnedTemporaryDirectory
+    wasm.temp_dir.cleanup()
 
 
 def test_build_wasm_output_reuses_molt_build_cache_by_default(
