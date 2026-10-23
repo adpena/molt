@@ -48,8 +48,7 @@ prefer live code, tests, measurements and explicit user direction over stale pro
 - Prefer the simplest direct design. Add abstraction only to remove duplication, make an invariant
   explicit, or enable measured optimization. Systematize families instead of type- or backend-local
   fixes; specialized representations are welcome when they materially help and keep the protocol.
-- Treat frontend, IR, passes, backends, runtime, ABI, tooling, diagnostics, packaging, tests, and
-  docs as projections of the same architecture.
+- Treat all compiler layers, runtime, ABI, tooling, diagnostics, packaging, tests and docs as one architecture.
 
 ## Build to the state of the art
 
@@ -73,12 +72,10 @@ prefer live code, tests, measurements and explicit user direction over stale pro
   to an upstream defect—not a hidden substitute implementation.
 - Native and WASM are co-equal frontier targets. LLVM, MLIR, the rest of the IR stack, linkers,
   runtime memory management and every shipped backend/profile are first-class optimization surfaces.
-- Design for free-threaded and GIL-less execution while preserving deterministic expected CPython
-  behavior by default.
+- Preserve deterministic CPython behavior by default while designing for free-threaded and GIL-less execution.
 - Support claims are explicit matrices over target OS, architecture, ABI, Python version,
   concurrency mode, backend, profile, and optimization level. Gate only on demonstrated capability,
-  correctness, or performance—not on implementation convenience. Unsupported cells fail early with
-  useful diagnostics.
+  correctness or performance, never convenience. Refuse unsupported cells early with useful diagnostics.
 - Portability covers compiler/runtime, CLI, tests, build/release tooling, and developer apparatus
   alike; host-specific assumptions must not leak into target semantics or shared infrastructure.
 
@@ -145,8 +142,7 @@ prefer live code, tests, measurements and explicit user direction over stale pro
 
 - Tests must distinguish correct behavior from a plausible defect using an independent oracle.
   Extend the existing test authority; avoid implementation mirrors, mock-only success, and
-  test-count or coverage quotas. When adding or reviewing tests, use
-  `docs/spec/areas/testing/0007-testing.md` for test quality.
+  test-count or coverage quotas. Follow `docs/spec/areas/testing/0007-testing.md` when adding or reviewing tests.
 - Prove the exact changed contract first, then widen in proportion to the claim (static checks,
   unit, differential and integration tests, target execution, profiling, benchmarks). One green
   cell does not prove a family-wide claim; a narrow check that fully proves the owned invariant
@@ -160,8 +156,7 @@ prefer live code, tests, measurements and explicit user direction over stale pro
 - Run the owning proof families locally before pushing; CI arbitrates release candidates. Make
   repeated manual triage, profiling or log pipelines a tested tool and point to it below.
 - Every test file belongs to a proof cell; a test that no cell runs rots without notice.
-- Treat a frozen or silent process as unknown until logs, artifacts, guard state, or live process
-  evidence establishes its result.
+- Treat silent or frozen processes as unknown until logs, artifacts, guard state or live process evidence establish a result.
 - Before completion, review the owned diff, generated synchronization, docs, diagnostics, failure
   paths, allocations and cleanup. Fix newly exposed in-scope defects instead of merely reporting them.
 - Align public docs in the same change: `README.md` and onboarding, then owning contract/status
@@ -177,8 +172,7 @@ prefer live code, tests, measurements and explicit user direction over stale pro
   trailer and no "Generated with Claude Code" footer. `tools/check_commit_attribution.py` enforces
   this in the `commit-msg` hook and in CI (the `repository_policy` proof-plan family).
 - Dependencies, toolchains, Actions: newest release >=7 days old; advisory fixes by dated exemption.
-- Never use destructive Git operations or broad filesystem cleanup without explicit authorization
-  and verified targets.
+- Destructive Git operations and broad filesystem cleanup require explicit authorization and verified targets.
 - Before retiring old WIP, make at least two passes through its source, history and current owners,
   including an independent pass when available. Harvest and land useful changes through current
   authorities; identify what is already satisfied or intentionally superseded. Preserve unresolved
