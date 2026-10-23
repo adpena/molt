@@ -267,8 +267,23 @@ def _in_build_scope(
 
     @functools.wraps(build_function)
     def build(request: BuildRequest) -> int:
-        from molt.cli.build_output_layout import build_scope
+        from molt.cli.build_output_layout import (
+            build_scope,
+            resolve_build_output_options,
+        )
 
+        try:
+            resolve_build_output_options(
+                target=request.target,
+                trusted=request.trusted,
+                split_runtime=request.split_runtime,
+                require_linked=request.require_linked,
+                linked=request.linked,
+                linked_output=request.linked_output,
+                emit=request.emit,
+            )
+        except ValueError as exc:
+            return _fail(str(exc), request.json_output, command="build")
         with build_scope():
             return build_function(request)
 

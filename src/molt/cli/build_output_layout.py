@@ -364,7 +364,7 @@ def _backend_artifact_suffix(*, target: Target, emit_mode: str) -> str:
     return resolve_backend_artifact_contract(target=target, emit_mode=emit_mode).suffix
 
 
-def _resolve_build_output_layout(
+def resolve_build_output_options(
     *,
     target: Target,
     trusted: bool,
@@ -373,20 +373,13 @@ def _resolve_build_output_layout(
     linked: bool,
     linked_output: str | None,
     emit: str | None,
-    output: str | None,
-    emit_ir: str | None,
-    artifacts_root: Path,
-    bin_root: Path,
-    output_root: Path,
-    output_base: str,
-    out_dir_path: Path | None,
-    project_root: Path,
-) -> _BuildOutputLayout:
+) -> tuple[bool, str]:
+    """Resolve target/output options before source, cache, or artifact work.
+
+    Proof drivers can validate all planned builds through this same authority
+    before executing any of them. This reads only the linked-output default.
+    """
     is_wasm = is_wasm_target(target)
-    is_wasm_freestanding = target in {
-        TargetKind.WASM_FREESTANDING,
-        TargetKind.WASM_UNKNOWN,
-    }
     is_rust_transpile = target in {TargetKind.RUST, TargetKind.LUAU}
     is_luau_transpile = target is TargetKind.LUAU
     is_mlir_emit = target is TargetKind.MLIR
@@ -408,13 +401,6 @@ def _resolve_build_output_layout(
         wasm_linked_env = os.environ.get("MOLT_WASM_LINKED", "1").strip().lower()
         if wasm_linked_env not in {"0", "false", "no", "off"}:
             linked = True
-    target_triple = (
-        target.triple
-        if isinstance(target, NativeTargetSpec)
-        else target.value
-        if target in {TargetKind.WASI, TargetKind.WASM_UNKNOWN}
-        else None
-    )
     is_transpile = is_rust_transpile or is_luau_transpile
     emit_mode = (
         "bin"
@@ -436,6 +422,51 @@ def _resolve_build_output_layout(
     if emit_mode == "jit" and (linked or split_runtime):
         raise ValueError("emit=jit publishes no linked or split artifact")
 
+    return linked, emit_mode
+
+
+def _resolve_build_output_layout(
+    *,
+    target: Target,
+    trusted: bool,
+    split_runtime: bool = False,
+    require_linked: bool,
+    linked: bool,
+    linked_output: str | None,
+    emit: str | None,
+    output: str | None,
+    emit_ir: str | None,
+    artifacts_root: Path,
+    bin_root: Path,
+    output_root: Path,
+    output_base: str,
+    out_dir_path: Path | None,
+    project_root: Path,
+) -> _BuildOutputLayout:
+    linked, emit_mode = resolve_build_output_options(
+        target=target,
+        trusted=trusted,
+        split_runtime=split_runtime,
+        require_linked=require_linked,
+        linked=linked,
+        linked_output=linked_output,
+        emit=emit,
+    )
+    is_wasm = is_wasm_target(target)
+    is_wasm_freestanding = target in {
+        TargetKind.WASM_FREESTANDING,
+        TargetKind.WASM_UNKNOWN,
+    }
+    is_rust_transpile = target in {TargetKind.RUST, TargetKind.LUAU}
+    is_luau_transpile = target is TargetKind.LUAU
+    is_mlir_emit = target is TargetKind.MLIR
+    target_triple = (
+        target.triple
+        if isinstance(target, NativeTargetSpec)
+        else target.value
+        if target in {TargetKind.WASI, TargetKind.WASM_UNKNOWN}
+        else None
+    )
     # A JIT image is no backend artifact: the runner compiles the program's IR
     # in its own memory.
     artifact_suffix = (
