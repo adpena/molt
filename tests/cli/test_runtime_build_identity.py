@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -56,6 +57,7 @@ from molt.python_runtime_identity import (
 from tests.python_environment_test_support import runtime_identity_manifest
 from tests.executable_test_support import (
     build_native_executable,
+    native_fixture_build_timeout,
     native_executable_name,
     write_mock_executable,
 )
@@ -1860,10 +1862,13 @@ def test_wasi_sysroot_layout_does_not_include_unattested_parent_version(
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX linker entrypoint symlink contract")
-def test_executable_identity_preserves_role_selecting_symlink(tmp_path: Path) -> None:
+def test_executable_identity_preserves_role_selecting_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # lld selects its flavor from argv[0]: `wasm-ld` is a role name for the
     # generic driver. Identity must probe the role spelling, never the link
     # target, or the generic driver refuses to run and the tool is misrecorded.
+    cold_timeout = native_fixture_build_timeout()
     generic = build_native_executable(
         tmp_path / native_executable_name("lld"),
         """
@@ -1882,6 +1887,7 @@ fn main() {
     }
 }
 """,
+        timeout=cold_timeout,
     )
     role = tmp_path / native_executable_name("wasm-ld")
     try:
@@ -1889,6 +1895,13 @@ fn main() {
     except OSError as exc:  # Windows without the symlink privilege
         pytest.skip(f"host cannot create file symlinks: {exc}")
 
+    # This is the image's first correctness execution, including OS assessment.
+    # Keep the actual probe and its argv/environment; product defaults stay 30s.
+    monkeypatch.setattr(
+        identity,
+        "probe_executable",
+        partial(identity.probe_executable, timeout=cold_timeout),
+    )
     tool = identity._executable_identity(
         "wasm-ld",
         "wasm-ld",

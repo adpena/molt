@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.cargo_execution_policy import cargo_profile_directory
+
 from molt import native_target
 
 from molt.compilation_target import admit_target
@@ -15658,12 +15660,12 @@ def test_backend_bin_path_is_cached(
 
 
 def test_cargo_profile_dir_is_cached() -> None:
-    RUNTIME_PATHS._cargo_profile_dir.cache_clear()
+    cargo_profile_directory.cache_clear()
 
-    first = RUNTIME_PATHS._cargo_profile_dir("dev")
-    second = RUNTIME_PATHS._cargo_profile_dir("dev")
+    first = cargo_profile_directory("dev")
+    second = cargo_profile_directory("dev")
 
-    info = RUNTIME_PATHS._cargo_profile_dir.cache_info()
+    info = cargo_profile_directory.cache_info()
     assert first == second == "debug"
     assert info.hits >= 1
     assert info.currsize >= 1

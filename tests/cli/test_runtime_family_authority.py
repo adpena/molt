@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.cargo_execution_policy import cargo_command_options
+
 from molt.process_environment import (
     NameRule,
     ProcessEnvironment,
@@ -1921,7 +1923,7 @@ def test_cli_tool_selectors_are_pinned_after_original_overrides(
             "panic=abort",
         ),
     )
-    selected = cargo_argv._command_options(plan.command)[1]
+    selected = cargo_command_options(plan.command)[1]
     pinned = cargo_argv._pinned_tool_configurations(
         plan.tools,
         plan.wrappers,

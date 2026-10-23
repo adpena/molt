@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.cargo_execution_policy import cargo_profile_directory
+
 from molt.process_environment import ProcessEnvironment
 
 from molt.python_runtime_admission import BuildPythonAdmission
@@ -67,10 +69,7 @@ from molt.cli.runtime_features import (
 from molt.cli.runtime_fingerprints import (
     _read_runtime_fingerprint,
 )
-from molt.cli.runtime_paths import (
-    _cargo_profile_dir,
-    _cargo_target_root,
-)
+from molt.cli.runtime_paths import _cargo_target_root
 from molt.cli.runtime_wasm_build_policy import (
     _resolve_wasm_cargo_profile,
     _runtime_wasm_incremental_enabled,
@@ -374,7 +373,7 @@ def _compute_runtime_wasm_build_spec(
     )
     requested_cargo_profile = cargo_profile
     cargo_profile = _resolve_wasm_cargo_profile(cargo_profile)
-    profile_dir = _cargo_profile_dir(cargo_profile)
+    profile_dir = cargo_profile_directory(cargo_profile)
     incremental_enabled = _runtime_wasm_incremental_enabled()
     env = _cargo_build_env()
     if "CARGO_INCREMENTAL" not in os.environ:

@@ -76,7 +76,23 @@ def custody_spelling(path: Path) -> str:
     return anchor.lower() + rest
 
 
-def build_native_executable(path: Path, rust_source: str) -> Path:
+def native_fixture_build_timeout() -> float | None:
+    """The bound session's build budget also owns first-image assessment."""
+    from tests.process_guard_common import (
+        GuardedProcessRole,
+        resolve_test_process_timeout,
+    )
+
+    if _BUILD_ENVIRONMENT is None:
+        raise RuntimeError("tests/conftest.py must bind the native build environment")
+    return resolve_test_process_timeout(
+        "MOLT_PYTEST", GuardedProcessRole.BUILD, _BUILD_ENVIRONMENT
+    )
+
+
+def build_native_executable(
+    path: Path, rust_source: str, *, timeout: float | None = None
+) -> Path:
     """Compile a tiny native executable from Rust source with the pinned rustc.
 
     Tool identity admits only native executables (ELF, Mach-O, PE). A test that
@@ -94,5 +110,6 @@ def build_native_executable(path: Path, rust_source: str) -> Path:
         cwd=path.parent,
         env=_BUILD_ENVIRONMENT,
         check=True,
+        timeout=native_fixture_build_timeout() if timeout is None else timeout,
     )
     return path

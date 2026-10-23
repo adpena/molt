@@ -1764,8 +1764,10 @@ def _incremental_coordinate(path: Path, root: Path) -> tuple[Path, Path]:
 def _incremental_successful_guard(
     receipt: Path, *, root: Path, session: Path, owner: Path, path: Path
 ) -> str:
-    from molt.cli.cargo_command import _command_options
-    from molt.cli.runtime_paths import _cargo_profile_dir
+    from molt.cargo_execution_policy import (
+        cargo_command_options,
+        cargo_profile_directory,
+    )
     from molt.file_publication import resolve_owned_path
     from molt.memory_guard_paths import retired_guard_marker_dir
     from tools.memory_guard_core.active_custody import read_marker_record
@@ -1806,7 +1808,7 @@ def _incremental_successful_guard(
         )
     ):
         raise ValueError("guard must record the directly launched pinned Cargo command")
-    target, configs = _command_options(argv)
+    target, configs = cargo_command_options(argv)
     outputs: dict[str, str] = {}
     for raw in configs:
         parsed = tomllib.loads(raw)
@@ -1827,7 +1829,7 @@ def _incremental_successful_guard(
     expected = build_root
     if target is not None:
         expected /= target
-    expected /= _cargo_profile_dir(argv[profile_index])
+    expected /= cargo_profile_directory(argv[profile_index])
     if expected / "incremental" != path:
         raise ValueError("guard command does not bind this Cargo target/profile")
     assert record.identity is not None

@@ -337,14 +337,15 @@ def _role_prefix(prefix: str, role: GuardedProcessRole) -> str:
     return f"{prefix}_{role.value.upper()}"
 
 
-def _timeout_from_role_env(
+def resolve_test_process_timeout(
     prefix: str,
     role: GuardedProcessRole,
     env: Mapping[str, str],
     *,
-    explicit: float | None,
-    default: float | None,
+    explicit: float | None = None,
+    default: float | None = None,
 ) -> float | None:
+    """Select one existing role budget for a fixture's build and first execution."""
     if explicit is not None:
         return explicit
     role_default = (
@@ -448,7 +449,7 @@ def run_guarded_test_process(
     command = list(args)
     process_env = os.environ if env is None else env
     role = guarded_process_role(command)
-    resolved_timeout = _timeout_from_role_env(
+    resolved_timeout = resolve_test_process_timeout(
         prefix,
         role,
         process_env,

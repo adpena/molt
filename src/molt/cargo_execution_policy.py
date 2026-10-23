@@ -1,4 +1,4 @@
-"""Shared Cargo subprocess, resource, and timeout authority."""
+"""Shared Cargo argv, output-directory, subprocess, resource, and timeout authority."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ __molt_neutral_authority__ = True
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+import functools
 import hashlib
 import math
 import os
@@ -22,6 +23,42 @@ from .disk_capacity import (
 )
 from .source_root import compiler_source_root
 from .process_environment import NameRule, ProcessEnvironment, ProcessEnvironmentBuilder
+
+
+def cargo_command_options(command: Sequence[str]) -> tuple[str | None, tuple[str, ...]]:
+    """Read Cargo selectors before rustc passthrough for plans and receipts."""
+    target = None
+    configs: list[str] = []
+    iterator = iter(command[1:])
+    for token in iterator:
+        if token == "--":
+            break
+        if token in {"--target", "--config"}:
+            value = next(iterator, None)
+            if value is None or not value:
+                raise ValueError(f"runtime Cargo {token} requires a value")
+            key = token
+        elif token.startswith(("--target=", "--config=")):
+            key, value = token.split("=", 1)
+            if not value:
+                raise ValueError(f"runtime Cargo {key} requires a value")
+        else:
+            continue
+        if key == "--target":
+            if target is not None and target != value:
+                raise ValueError(
+                    "runtime Cargo multiple targets require separate artifact families"
+                )
+            target = value
+        else:
+            configs.append(value)
+    return target, tuple(configs)
+
+
+@functools.lru_cache(maxsize=64)
+def cargo_profile_directory(cargo_profile: str) -> str:
+    """Cargo maps the dev profile to debug; named profiles keep their names."""
+    return "debug" if cargo_profile == "dev" else cargo_profile
 
 
 CI_CARGO_POLICY_SCHEMA = "molt.ci-resource-policy.v2"
