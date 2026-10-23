@@ -2320,7 +2320,7 @@ mod tests {
     fn runtime_output_sinks_keep_startup_cwd_until_first_write() {
         use super::*;
         unsafe extern "C" {
-            fn molt_exception_report_uncaught(exc_bits: u64) -> u64;
+            fn molt_main_exit_status() -> u64;
         }
         // Cover the default feedback filename as well as an explicit relative
         // destination whose parent must remain lazy until the first emission.
@@ -2367,7 +2367,8 @@ mod tests {
                 let exception = crate::alloc_exception(&py, "RuntimeError", "startup sink canary");
                 assert!(!exception.is_null());
                 let bits = MoltObject::from_ptr(exception).bits();
-                assert_eq!(unsafe { molt_exception_report_uncaught(bits) }, 1);
+                crate::builtins::exceptions::molt_raise(bits);
+                assert_eq!(unsafe { molt_main_exit_status() }, 1);
                 crate::dec_ref_bits(&py, bits);
                 let feedback_path = original.join(feedback.unwrap_or("molt_runtime_feedback.json"));
                 let payload: serde_json::Value =

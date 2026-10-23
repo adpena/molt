@@ -31,13 +31,13 @@ def test_cli_native_main_stub_authority_is_single_home() -> None:
         assert f"def {name}(" not in cli_source
 
 
-def test_native_main_stub_uses_warning_free_windows_env_probe() -> None:
+def test_native_main_stub_leaves_the_exit_debug_switch_to_the_runtime() -> None:
     rendered = native_main_stub._render_native_main_stub(
         resolved_capability_policy=CapabilityManifest().resolve(),
     )
 
-    assert "_dupenv_s(&value, &value_len, name)" in rendered
-    assert 'getenv("MOLT_DEBUG_MAIN_EXCEPTION")' not in rendered
+    # `molt_main_exit_status` reads MOLT_DEBUG_MAIN_EXCEPTION as a RuntimeFlag.
+    assert "MOLT_DEBUG_MAIN_EXCEPTION" not in rendered
 
 
 def test_native_main_stub_attribute_result_preserves_boxed_width_on_windows() -> None:
@@ -83,15 +83,18 @@ def test_native_main_stub_reports_then_exits_through_runtime_custody() -> None:
         resolved_capability_policy=CapabilityManifest().resolve(),
     )
 
-    assert "molt_exception_report_uncaught(exc)" in rendered
-    assert "molt_raise(exc)" not in rendered
-    assert "molt_exception_last()" not in rendered
-    acquire = rendered.index("exc = molt_exception_last_pending()")
-    report = rendered.index("molt_exception_report_uncaught(exc)", acquire)
-    release = rendered.index("molt_dec_ref_obj(exc)", report)
-    shutdown = rendered.index("molt_runtime_exit(exit_code)", release)
-    fallback = rendered.index("_Exit(1)", shutdown)
-    assert acquire < report < release < shutdown < fallback
+    # The runtime owns the pending exception, its report and the status; the
+    # stub only hands that status to the runtime's exit.
+    for retired in (
+        "molt_exception_report_uncaught",
+        "molt_exception_last_pending()",
+        "molt_exception_last()",
+        "molt_raise(",
+        "molt_dec_ref_obj(",
+    ):
+        assert retired not in rendered
+    shutdown = rendered.index("molt_runtime_exit(molt_main_exit_status());")
+    assert rendered.index("_Exit(1)", shutdown) > shutdown
 
 
 def test_native_main_stub_leaves_python_frame_custody_to_generated_code() -> None:
@@ -112,18 +115,18 @@ def test_native_main_stub_leaves_python_frame_custody_to_generated_code() -> Non
 @pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX native main execution control"
 )
-def test_rendered_native_main_reports_owned_raised_exception(tmp_path: Path) -> None:
+def test_rendered_native_main_hands_the_runtime_status_to_its_exit(
+    tmp_path: Path,
+) -> None:
     tools = verified_llvm_tools()
     rendered = native_main_stub._render_native_main_stub(
         resolved_capability_policy=CapabilityManifest().resolve(),
     )
-    # Distinct raised and handled owners make the old observer visibly wrong.
-    # Compile the actual entrypoint, including its shutdown-return fallbacks.
+    # Compile the actual entrypoint, including its refused-exit fallback.
     runtime = r"""
-static int mode, acquired, legacy, reported, released, exited;
-static unsigned long long pending;
+static int mode, ran, reported, exited;
 static void require(int condition) {
-    if (!condition) { fputs("owner-contract-failed\n", stderr); _Exit(91); }
+    if (!condition) { fputs("exit-contract-failed\n", stderr); _Exit(91); }
 }
 const unsigned char molt_module_registry_blob[] = {0};
 unsigned long long molt_app_resolve_callable(const char* name, unsigned long long len) {
@@ -143,78 +146,49 @@ void molt_register_compiled_sources(
 unsigned long long molt_runtime_init(void) { return 1; }
 void molt_runtime_ensure_gil(void) {}
 void molt_set_argv(int argc, const char** argv) {
-    require(argc == 2); mode = atoi(argv[1]); pending = mode != 0;
+    require(argc == 2); mode = atoi(argv[1]);
 }
-void molt_main(void) {}
-unsigned long long molt_exception_pending(void) { return pending; }
-unsigned long long molt_exception_last_pending(void) {
-    require(pending && acquired == 0); ++acquired; return 101;
-}
-unsigned long long molt_exception_last(void) {
-    ++legacy; pending = 0; return 202;
-}
-unsigned long long molt_exception_report_uncaught(unsigned long long owner) {
-    require(owner == 101 && pending && acquired == 1 && reported == 0);
-    ++reported; return 23;
-}
-void molt_dec_ref_obj(unsigned long long owner) {
-    require(owner == 101 && reported == 1 && released == 0); ++released;
+void molt_main(void) { require(ran == 0); ++ran; }
+unsigned long long molt_main_exit_status(void) {
+    require(ran == 1 && reported == 0); ++reported; return mode ? 23 : 0;
 }
 unsigned long long molt_runtime_exit(unsigned long long code) {
-    require(legacy == 0 && exited == 0);
-    require(mode ? (acquired == 1 && reported == 1 && released == 1 && code == 23)
-                 : (acquired == 0 && reported == 0 && released == 0 && code == 0));
+    require(reported == 1 && exited == 0 && code == (mode ? 23u : 0u));
     ++exited;
-    printf("%d %d %d %d %d\n", acquired, legacy, reported, released, exited);
+    printf("%d %d %d\n", ran, reported, exited);
     fflush(stdout);
     if (mode == 2) return 0;
     _Exit((int)code);
 }
 """
-    for old_observer in (False, True):
-        source = tmp_path / f"main-{old_observer}.c"
-        binary = source.with_suffix("")
-        entrypoint = rendered
-        if old_observer:
-            # The old observer, declared and called: renaming only the call
-            # leaves it undeclared, which C99 refuses to compile.
-            entrypoint = entrypoint.replace(
-                "molt_exception_last_pending", "molt_exception_last"
-            )
-        source.write_text(entrypoint + runtime, encoding="utf-8")
-        compiled = _COMMANDS.run(
-            [
-                tools.clang,
-                "-std=c11",
-                "-D_POSIX_C_SOURCE=200809L",
-                str(source),
-                "-o",
-                str(binary),
-            ],
-            env=dict(tools.environment),
+    source = tmp_path / "main.c"
+    binary = source.with_suffix("")
+    source.write_text(rendered + runtime, encoding="utf-8")
+    compiled = _COMMANDS.run(
+        [
+            tools.clang,
+            "-std=c11",
+            "-D_POSIX_C_SOURCE=200809L",
+            str(source),
+            "-o",
+            str(binary),
+        ],
+        env=dict(tools.environment),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+    )
+    assert compiled.returncode == 0, compiled.stdout + compiled.stderr
+    # Mode 2: the runtime refuses the exit, and the stub terminates nonzero.
+    for mode, exit_code in ((0, 0), (1, 23), (2, 1)):
+        result = _COMMANDS.run(
+            [str(binary), str(mode)],
             capture_output=True,
             text=True,
             encoding="utf-8",
-            timeout=30,
+            timeout=10,
         )
-        assert compiled.returncode == 0, compiled.stdout + compiled.stderr
-        cases = (
-            ((1, 91, ""),)
-            if old_observer
-            else (
-                (0, 0, "0 0 0 0 1\n"),
-                (1, 23, "1 0 1 1 1\n"),
-                (2, 1, "1 0 1 1 1\n"),
-            )
-        )
-        for mode, exit_code, output in cases:
-            result = _COMMANDS.run(
-                [str(binary), str(mode)],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                timeout=10,
-            )
-            assert result.returncode == exit_code, result.stdout + result.stderr
-            assert result.stdout == output
-            assert result.stderr == ("owner-contract-failed\n" if old_observer else "")
+        assert result.returncode == exit_code, result.stdout + result.stderr
+        assert result.stdout == "1 1 1\n"
+        assert result.stderr == ""
