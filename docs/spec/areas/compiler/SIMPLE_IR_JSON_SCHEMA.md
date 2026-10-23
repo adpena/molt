@@ -264,14 +264,30 @@ roots and custody after reuse. SQL applies each reader's byte bound before
 payload allocation; lowering explicitly retains its uncapped role. There is
 one decode per hit, no retained parsed-document cache, and no per-project copy.
 Opaque payloads live in an ordinary rowid table with a unique `(kind, key)`
-primary-key index and one record-recency index. There is no generation-level
-retention table. [SQLite's layout guidance](https://sqlite.org/withoutrowid.html#when_to_use_without_rowid)
+primary-key index. Each record's last use lives in a separate narrow
+`recency` table (`WITHOUT ROWID`, indexed by `(used_ns, kind, key)`). A record
+and its stamp publish in one transaction; a delete trigger retires the stamp.
+A revision-and-use-fenced renewal updates only this small row, avoiding a
+rewrite of the opaque payload. The original HF-515 measurement was 3.6 seconds
+and 33.1 MB of WAL for 10.8k renewals in payload rows, versus 0.11 seconds and
+0.7 MB in the narrow table. Due observations enter a bounded queue, as
+[Cargo's deferred last-use tracking](https://github.com/rust-lang/cargo/blob/rust-1.90.0/src/cargo/core/global_cache_tracker.rs)
+delays advisory writes. One nonwaiting transaction saves at most 4,096
+observations at the batch boundary, normal owning operation exit or explicit
+close. Reentrant operations share the outer owner; fresh identity scopes do not
+flush a borrowed outer owner. Generator finalization skips these writes. A queued renewal is
+advisory acceptance, not a successful SQL update; `save_renewals()` reports
+actual changed rows. GC drops pending advisory renewals rather than performing
+SQL writes from arbitrary finalization contexts. No generation-level retention
+table or trim exists. [SQLite's layout guidance](https://sqlite.org/withoutrowid.html#when_to_use_without_rowid)
 recommends small rows for `WITHOUT ROWID`, whose intermediate nodes carry record
 content. Uncapped lowerings therefore live in table leaves and overflow pages;
 the narrow key index preserves lookup fan-out.
 
-Each schema owns `toolchain_source_records/v<schema>/records.sqlite`, as rustc
-keys incremental state by compiler version. A new version starts an empty
+Each schema owns `toolchain_source_records/<schema digest>/records.sqlite`.
+The namespace is derived from the DDL rather than a manually incremented version;
+concurrent schema changes cannot accidentally claim the same next version.
+As rustc keys incremental state by compiler identity, a different schema starts an empty
 optional cache, without migrating or reading another version's records. The
 store derives its database, namespace and persistent lifetime lock from one
 cache root. A shared lock in the existing cache control directory protects every
@@ -287,13 +303,14 @@ closes suspended generators, and [PEP 442](https://peps.python.org/pep-0442/)
 includes their cyclic finalization. The short conservative lease extension avoids
 reentrant deadlock without retaining SQLite page caches or adding a worker.
 
-The existing pruner exclusively locks only older namespaces, then uses the
+The existing pruner exclusively locks another digest namespace or a known prior
+version namespace (v1–v3), then uses the
 shared atomic namespace-retirement authority before physical deletion. A
 partial reclamation remains isolated from any new live database and is retried
 under the existing prune owner. A post-rename reclamation failure is reported as
 failed without crediting reclaimed bytes; malformed or changed residue remains
 evidence while unrelated entries continue. A read-only sweep cannot recreate a
-missing lifetime control and reports that store unavailable. Current and newer schemas remain outside file
+missing lifetime control and reports that store unavailable. The current digest and unknown future version namespaces remain outside file
 eviction; current rows keep their bounded metadata/CAS policy. Flat legacy
 stores cannot prove connection lifetime and are reported as
 `legacy_source_record_state`, without automatic unlinking. New namespace
@@ -308,6 +325,7 @@ programs perform none of this storage or retention work.
 
 A fresh
 file at version zero enters one cold bootstrap owner through the existing
+
 portable file lock; that owner rechecks admission, establishes incremental
 vacuum and WAL, then publishes the schema, indexes and the version in one SQL
 transaction. Failure rolls back the whole transition and refuses the optional

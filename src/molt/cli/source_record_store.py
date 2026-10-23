@@ -14,6 +14,7 @@ remain optional cache misses or failed writes, with no alternate cache lane.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import sqlite3
@@ -46,15 +47,52 @@ RecordKind = Literal[
 SOURCE_RECORD_BATCH_MAX_RECORDS = 256
 SOURCE_RECORD_BATCH_MAX_BYTES = 1 << 20
 
-_SCHEMA_VERSION = 3
-_STORE_NAMESPACE = f"v{_SCHEMA_VERSION}"
+_SCHEMA = (
+    """CREATE TABLE IF NOT EXISTS records (
+        kind TEXT NOT NULL,
+        key TEXT NOT NULL,
+        generation TEXT NOT NULL,
+        payload BLOB NOT NULL,
+        revision BLOB NOT NULL,
+        PRIMARY KEY (kind, key)
+    )""",
+    # Last use lives apart from the payload. SQLite rewrites a whole row on
+    # UPDATE, so a stamp in `records` rewrote every payload it renewed, with
+    # 47 times the WAL bytes of this narrow table.
+    """CREATE TABLE IF NOT EXISTS recency (
+        kind TEXT NOT NULL,
+        key TEXT NOT NULL,
+        used_ns INTEGER NOT NULL,
+        PRIMARY KEY (kind, key)
+    ) WITHOUT ROWID""",
+    "CREATE INDEX IF NOT EXISTS recency_order ON recency (used_ns, kind, key)",
+    # A deleted record retires its stamp. REPLACE fires no delete trigger
+    # (recursive triggers are off), and `put` writes the stamp itself.
+    """CREATE TRIGGER IF NOT EXISTS records_retire_recency AFTER DELETE ON records
+    BEGIN
+        DELETE FROM recency WHERE kind = old.kind AND key = old.key;
+    END""",
+)
+
+
+def _schema_identity(schema: Sequence[str]) -> str:
+    return hashlib.sha256("\0".join(schema).encode("utf-8")).hexdigest()[:16]
+
+
+# Schema text names the whole lifetime-protected namespace. Distinct schemas
+# never migrate a peer's database or collide through independent version bumps.
+_SCHEMA_DIGEST = _schema_identity(_SCHEMA)
+# PRAGMA user_version is signed 32-bit; zero means uninitialized.
+_SCHEMA_VERSION = int(_SCHEMA_DIGEST[:7], 16) | 1
+_STORE_NAMESPACE = _SCHEMA_DIGEST
 STORE_RELATIVE_PATH = (
     Path(SHARED_SOURCE_RECORDS_DIRECTORY) / _STORE_NAMESPACE / "records.sqlite"
 )
 SOURCE_RECORD_RETIREMENT_SCOPE = "source-records"
-_NAMESPACE = re.compile(r"v(?P<version>0|[1-9][0-9]*)")
+_NAMESPACE = re.compile(r"(?:v(?P<version>0|[1-9][0-9]*)|(?P<digest>[0-9a-f]{16}))")
 _LEGACY_FILE = re.compile(
-    r"source_records(?:\.v[0-9]+)?\.sqlite(?:-wal|-shm|\.initialize\.lock)?"
+    r"source_records(?:\.(?:v[0-9]+|[0-9a-f]{16}))?\.sqlite"
+    r"(?:-wal|-shm|\.initialize\.lock)?"
 )
 
 
@@ -71,32 +109,46 @@ def source_record_namespace_paths(
 
 
 def superseded_store_namespace(name: str) -> bool:
+    """Recognize a retirement candidate, never permission to unlink it.
+
+    Retirement still requires its exclusive lifetime lease and atomic namespace
+    retirement. Only known version namespaces (v1-v3) predate digest naming;
+    unknown future numbered namespaces remain outside our deletion authority.
+    Digest namespaces share this lifetime protocol regardless of schema order.
+    """
     match = _NAMESPACE.fullmatch(name)
-    return match is not None and int(match["version"]) < _SCHEMA_VERSION
+    if match is None:
+        return False
+    if match["digest"] is not None:
+        return match["digest"] != _SCHEMA_DIGEST
+    return 1 <= int(match["version"]) <= 3
 
 
 def legacy_source_record_file(name: str) -> bool:
-    """Old flat stores have no lifetime protocol; inventory without unlinking."""
+    """Flat stores have no lifetime protocol; inventory without unlinking."""
     return _LEGACY_FILE.fullmatch(name) is not None
 
-
-_SCHEMA = (
-    """CREATE TABLE IF NOT EXISTS records (
-        kind TEXT NOT NULL,
-        key TEXT NOT NULL,
-        generation TEXT NOT NULL,
-        payload BLOB NOT NULL,
-        revision BLOB NOT NULL,
-        used_ns INTEGER NOT NULL,
-        PRIMARY KEY (kind, key)
-    )""",
-    "CREATE INDEX IF NOT EXISTS records_recency ON records (used_ns, kind, key)",
-)
 
 _RECORD_REFRESH_NS = int(CACHE_MAINTENANCE_INTERVAL_SECONDS * 1_000_000_000)
 _BUSY_TIMEOUT_SECONDS = 60.0
 _PAGE_SIZE = 256
-_RECORD_OBSERVATION_PREDICATE = "kind = ? AND key = ? AND revision = ? AND used_ns = ?"
+_RECORD_OBSERVATION_PREDICATE = (
+    "kind = ? AND key = ? AND revision = ? AND EXISTS ("
+    "SELECT 1 FROM recency AS u WHERE u.kind = records.kind"
+    " AND u.key = records.key AND u.used_ns = ?)"
+)
+# Queued renewals held before one transaction writes them: about 150 bytes each.
+_RENEWAL_BATCH_LIMIT = 4096
+_RENEW_RECORD = (
+    "UPDATE recency SET used_ns = :now"
+    " WHERE kind = :kind AND key = :key AND used_ns = :used_ns AND EXISTS ("
+    "SELECT 1 FROM records WHERE kind = :kind AND key = :key"
+    " AND generation = :generation AND revision = :revision)"
+)
+
+# A renewal is keyed by its observation (kind, key, generation, revision,
+# used_ns) and maps to the renewal time.
+_Renewals = dict[tuple[str, str, str, bytes, int], int]
 
 # Foreign fork children keep inherited handles inert until process exit. Even a
 # PID-fenced callback must retain its argument: dropping it could invoke the
@@ -149,6 +201,39 @@ def _close_connection(
             _release_file_lock(lifetime)
 
 
+def _save_renewals(connection: sqlite3.Connection, renewals: _Renewals) -> int:
+    """Write the queued renewals in one transaction; return the renewed rows.
+
+    Cargo's ``DeferredGlobalLastUse`` saves last-use stamps the same way,
+    instead of one write transaction per renewal. A renewal still applies only
+    to the revision and stamp it observed. The queue is emptied first: a busy
+    or failed save drops renewals, which are advisory.
+    """
+    if not renewals:
+        return 0
+    rows = [
+        {
+            "now": now,
+            "kind": kind,
+            "key": key,
+            "generation": generation,
+            "revision": revision,
+            "used_ns": used_ns,
+        }
+        for (kind, key, generation, revision, used_ns), now in renewals.items()
+    ]
+    renewals.clear()
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        renewed = connection.executemany(_RENEW_RECORD, rows).rowcount
+        connection.execute("COMMIT")
+    except BaseException:
+        if connection.in_transaction:
+            connection.execute("ROLLBACK")
+        raise
+    return renewed
+
+
 @dataclass(frozen=True, slots=True)
 class SourceRecord:
     payload: bytes
@@ -160,7 +245,12 @@ class SourceRecord:
     _store: SourceRecordStore = field(repr=False, compare=False)
 
     def refresh(self) -> bool:
-        """Renew an admitted observation if due and still the same record."""
+        """Queue a due observation once without waiting or reopening the store.
+
+        True means queued, not persisted: the eventual batch can be dropped on
+        contention, or its revision/recency fence can reject a stale observation.
+        GC drops pending stamps; explicit close attempts one nonwaiting save.
+        """
         return self._store._refresh_record(self)
 
 
@@ -278,7 +368,7 @@ class SourceRecordMaintenance:
         if remaining <= 0:
             return
         with self._cursor(
-            "SELECT used_ns, kind, key FROM records"
+            "SELECT used_ns, kind, key FROM recency"
             " ORDER BY used_ns DESC, kind DESC, key DESC LIMIT 1"
         ) as cursor:
             upper = cursor.fetchone()
@@ -288,14 +378,16 @@ class SourceRecordMaintenance:
         while remaining > 0:
             parameters: tuple[Any, ...] = tuple(upper)
             query = (
-                "SELECT kind, key, revision, used_ns, length(payload) FROM records"
-                " WHERE (used_ns, kind, key) <= (?, ?, ?)"
+                "SELECT u.kind, u.key, r.revision, u.used_ns, length(r.payload)"
+                " FROM recency AS u JOIN records AS r"
+                " ON r.kind = u.kind AND r.key = u.key"
+                " WHERE (u.used_ns, u.kind, u.key) <= (?, ?, ?)"
             )
             if after is not None:
-                query += " AND (used_ns, kind, key) > (?, ?, ?)"
+                query += " AND (u.used_ns, u.kind, u.key) > (?, ?, ?)"
                 parameters += after
             with self._cursor(
-                query + " ORDER BY used_ns, kind, key LIMIT ?",
+                query + " ORDER BY u.used_ns, u.kind, u.key LIMIT ?",
                 (*parameters, min(_PAGE_SIZE, remaining)),
             ) as cursor:
                 rows = cursor.fetchall()
@@ -422,6 +514,7 @@ class SourceRecordStore:
         self._lock = threading.Lock()
         self._connection_resources: _ConnectionResources | None = None
         self._connection_finalizer: finalize | None = None
+        self._renewals: _Renewals = {}
         self._unavailable = False
 
     def close(self) -> None:
@@ -429,10 +522,14 @@ class SourceRecordStore:
         if self._pid != os.getpid():
             return
         with self._lock:
-            self._release_connection()
+            try:
+                self._save_renewals_locked()
+            finally:
+                self._release_connection()
         _release_deferred_lifetimes()
 
     def _release_connection(self) -> None:
+        self._renewals.clear()
         finalizer, self._connection_finalizer = self._connection_finalizer, None
         resources, self._connection_resources = self._connection_resources, None
         if finalizer is not None and finalizer.detach() is not None:
@@ -452,8 +549,9 @@ class SourceRecordStore:
         if self._pid != os.getpid():
             return None
         query = (
-            "SELECT payload, revision, used_ns FROM records"
-            " WHERE kind = ? AND key = ? AND generation = ?"
+            "SELECT r.payload, r.revision, u.used_ns FROM records AS r"
+            " JOIN recency AS u ON u.kind = r.kind AND u.key = r.key"
+            " WHERE r.kind = ? AND r.key = ? AND r.generation = ?"
             " AND typeof(payload) = 'blob' AND typeof(revision) = 'blob'"
             " AND length(revision) = 16 AND typeof(used_ns) = 'integer'"
         )
@@ -483,15 +581,29 @@ class SourceRecordStore:
         if self._pid != os.getpid():
             return False
         now = time.time_ns()
-        with self._lock:
-            stored, _result = self._run(
-                lambda connection: connection.execute(
+
+        def store(connection: sqlite3.Connection) -> None:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                connection.execute(
                     "INSERT OR REPLACE INTO records"
-                    " (kind, key, generation, payload, revision, used_ns)"
-                    " VALUES (?, ?, ?, ?, randomblob(16), ?)",
-                    (kind, key, generation, payload, now),
-                ),
-            )
+                    " (kind, key, generation, payload, revision)"
+                    " VALUES (?, ?, ?, ?, randomblob(16))",
+                    (kind, key, generation, payload),
+                )
+                connection.execute(
+                    "INSERT OR REPLACE INTO recency (kind, key, used_ns)"
+                    " VALUES (?, ?, ?)",
+                    (kind, key, now),
+                )
+                connection.execute("COMMIT")
+            except BaseException:
+                if connection.in_transaction:
+                    connection.execute("ROLLBACK")
+                raise
+
+        with self._lock:
+            stored, _result = self._run(store)
         return stored
 
     def _refresh_record(self, record: SourceRecord) -> bool:
@@ -510,40 +622,60 @@ class SourceRecordStore:
             if self._connection_resources is None:
                 return False
 
-            def refresh(connection: sqlite3.Connection) -> int:
-                with closing(connection.execute("PRAGMA busy_timeout")) as cursor:
-                    previous_timeout = cursor.fetchone()[0]
-                connection.execute("PRAGMA busy_timeout = 0").close()
-                try:
-                    with closing(
-                        connection.execute(
-                            "UPDATE records SET used_ns = ? WHERE kind = ? AND key = ?"
-                            " AND generation = ? AND revision = ? AND used_ns = ?",
-                            (
-                                now,
-                                record.kind,
-                                record.key,
-                                record.generation,
-                                record.revision,
-                                record.used_ns,
-                            ),
-                        )
-                    ) as cursor:
-                        return cursor.rowcount
-                finally:
-                    try:
-                        connection.execute(
-                            f"PRAGMA busy_timeout = {previous_timeout}"
-                        ).close()
-                    except sqlite3.Error:
-                        # Never reuse a connection with an unqualified policy.
-                        self._disable()
-                        raise
-
-            ok, changed = self._run(refresh)
-            return ok and changed == 1
+            observation = (
+                record.kind,
+                record.key,
+                record.generation,
+                record.revision,
+                record.used_ns,
+            )
+            if observation in self._renewals:
+                return False
+            self._renewals[observation] = now
+            if len(self._renewals) >= _RENEWAL_BATCH_LIMIT:
+                self._save_renewals_locked()
+            return True
         finally:
             self._lock.release()
+
+    def save_renewals(self) -> int:
+        """Attempt one nonwaiting batch; return rows actually renewed by CAS.
+
+        Busy owners, closed stores and failed saves return zero. Failed saves
+        drop advisory observations; they never reopen or bootstrap a store.
+        """
+        if self._pid != os.getpid() or not self._lock.acquire(blocking=False):
+            return 0
+        try:
+            return self._save_renewals_locked()
+        finally:
+            self._lock.release()
+
+    def _save_renewals_locked(self) -> int:
+        if not self._renewals or self._connection_resources is None:
+            return 0
+        connection = self._connection_resources[0]
+        try:
+            with closing(connection.execute("PRAGMA busy_timeout")) as cursor:
+                previous_timeout = cursor.fetchone()[0]
+            connection.execute("PRAGMA busy_timeout = 0").close()
+            try:
+                return _save_renewals(connection, self._renewals)
+            finally:
+                try:
+                    connection.execute(
+                        f"PRAGMA busy_timeout = {previous_timeout}"
+                    ).close()
+                except sqlite3.Error:
+                    # Never reuse a connection with an unqualified policy.
+                    self._disable()
+                    raise
+        except sqlite3.OperationalError:
+            self._renewals.clear()
+            return 0
+        except sqlite3.DatabaseError:
+            self._disable()
+            return 0
 
     def _run(self, operation: Any) -> tuple[bool, Any]:
         connection = self._connect()

@@ -44,6 +44,7 @@ from molt.cli.native_link_plan import (
     NativeLinkerKind,
     NativeLinkPlan,
     NativeLinkPolicy,
+    NativeSymbolStrip,
 )
 from molt.native_target import (
     NativeArtifactKind,
@@ -685,6 +686,7 @@ def test_prepare_native_link_preserves_codegen_runtime_for_stdlib_profile(
                 explicit_no_icf_flag=None,
                 # The fake command passes no -final_output flag.
                 signs_as_final_output=False,
+                strips_local_symbols=True,
             ),
             command=("clang", str(runtime_lib), "-o", str(output_binary)),
             runtime_inputs=read_native_link_flags(
@@ -700,7 +702,7 @@ def test_prepare_native_link_preserves_codegen_runtime_for_stdlib_profile(
                 preserve_function_identity=True,
                 dead_strip=False,
                 emit_relocations=False,
-                strip_after_link=False,
+                symbol_strip=NativeSymbolStrip.NONE,
                 bolt_requested=False,
             ),
         )

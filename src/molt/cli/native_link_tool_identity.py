@@ -26,7 +26,11 @@ from molt.llvm_wasi_tools import (
     llvm_named_tool_candidates,
     llvm_tool_candidates,
 )
-from molt.cli.native_link_plan import NativeLinkPlan, native_link_execution_command
+from molt.cli.native_link_plan import (
+    NativeLinkPlan,
+    NativeSymbolStrip,
+    native_link_execution_command,
+)
 from molt.llvm_linker_roles import (
     executable_selects_linker_role,
     lexical_executable_path,
@@ -249,7 +253,10 @@ def native_link_tool_facts(plan: NativeLinkPlan) -> list[dict[str, object]]:
     else:
         linker = _system_linker_from_driver(driver) if driver is not None else None
     candidates.append(("linker", linker))
-    if plan.policy.strip_after_link or plan.policy.bolt_requested:
+    if (
+        plan.policy.symbol_strip is NativeSymbolStrip.AFTER_LINK
+        or plan.policy.bolt_requested
+    ):
         strips = llvm_tool_candidates(
             "strip", sibling_directories=(() if sibling is None else (sibling,))
         )
@@ -331,7 +338,10 @@ def native_link_cache_tool_facts(plan: NativeLinkPlan) -> list[dict[str, object]
         linker = _system_linker_from_driver(driver) if driver is not None else None
 
     tools: list[tuple[str, Path | None]] = [("driver", driver), ("linker", linker)]
-    if plan.policy.strip_after_link or plan.policy.bolt_requested:
+    if (
+        plan.policy.symbol_strip is NativeSymbolStrip.AFTER_LINK
+        or plan.policy.bolt_requested
+    ):
         strips = llvm_tool_candidates(
             "strip", sibling_directories=(() if sibling is None else (sibling,))
         )

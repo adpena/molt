@@ -1,15 +1,8 @@
 use crate::runtime_flags::{self, RuntimeFlag};
 use molt_obj_model::MoltObject;
 
-use crate::{
-    ACTIVE_EXCEPTION_STACK, EXCEPTION_STACK, PyToken, exception_context_align_depth,
-    exception_context_fallback_pop, exception_context_fallback_push, exception_stack_baseline_get,
-    exception_stack_baseline_set, exception_stack_depth, exception_stack_set_depth,
-    set_task_raise_active, task_exception_baseline_store, task_exception_baseline_take,
-    task_exception_depth_store, task_exception_depth_take, task_exception_handler_stack_store,
-    task_exception_handler_stack_take, task_exception_stack_store, task_exception_stack_take,
-    task_raise_active,
-};
+use crate::builtins::exceptions::{ActivationExceptionScope, ActivationKind};
+use crate::{PyToken, set_task_raise_active, task_raise_active};
 
 #[cfg(target_arch = "wasm32")]
 use crate::raise_exception;
@@ -538,19 +531,14 @@ pub(crate) unsafe fn call_poll_fn(_py: &PyToken<'_>, poll_fn_addr: u64, task_ptr
             {
                 // SAFETY: `poll_fn_addr` is a valid extern "C" fn pointer stored in the task object
                 // by the async runtime. The caller ensures it points to a 1-arg poll function. UB if null.
-                let poll_target = if let Some(target) =
-                    crate::builtins::functions::runtime_callable_target_ptr(poll_fn_addr)
-                {
-                    target
-                } else {
-                    let Some(target) = crate::provenance::abi::function_ptr(poll_fn_addr) else {
-                        return crate::raise_exception::<i64>(
-                            _py,
-                            "RuntimeError",
-                            "async poll address exceeds the active address space",
-                        );
-                    };
-                    target
+                let Some(poll_target) =
+                    crate::builtins::functions::runtime_poll_call_target(poll_fn_addr)
+                else {
+                    return crate::raise_exception::<i64>(
+                        _py,
+                        "RuntimeError",
+                        &format!("async poll target 0x{poll_fn_addr:x} does not resolve"),
+                    );
                 };
                 let poll_fn: extern "C" fn(u64) -> i64 = std::mem::transmute(poll_target);
                 poll_fn(poll_argument(poll_fn_addr, task_ptr))
@@ -599,29 +587,11 @@ pub(crate) unsafe fn poll_future_with_task_stack(
                 task_ptr as usize
             );
         }
-        let caller_depth = exception_stack_depth();
-        let caller_baseline = exception_stack_baseline_get();
-        let caller_handlers =
-            EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
-        let caller_active =
-            ACTIVE_EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
-        let caller_context = caller_active
-            .last()
-            .copied()
-            .unwrap_or(MoltObject::none().bits());
-        exception_context_fallback_push(caller_context);
-        let task_baseline = task_exception_baseline_take(_py, task_ptr);
-        exception_stack_baseline_set(task_baseline);
-        let task_handlers = task_exception_handler_stack_take(_py, task_ptr);
-        EXCEPTION_STACK.with(|stack| {
-            *stack.borrow_mut() = task_handlers;
-        });
-        let task_active = task_exception_stack_take(_py, task_ptr);
-        ACTIVE_EXCEPTION_STACK.with(|stack| {
-            *stack.borrow_mut() = task_active;
-        });
-        let task_depth = task_exception_depth_take(_py, task_ptr);
-        exception_stack_set_depth(_py, task_depth);
+        let exceptions = ActivationExceptionScope::enter(
+            _py,
+            task_ptr,
+            ActivationKind::Task { own_baseline: true },
+        );
         let prev_raise = task_raise_active();
         set_task_raise_active(true);
         let res = call_poll_fn(_py, poll_fn_addr, task_ptr);
@@ -636,25 +606,7 @@ pub(crate) unsafe fn poll_future_with_task_stack(
             crate::task_last_exception_drop(_py, task_ptr);
         }
         set_task_raise_active(prev_raise);
-        let new_depth = exception_stack_depth();
-        task_exception_depth_store(_py, task_ptr, new_depth);
-        exception_context_align_depth(_py, new_depth);
-        let new_baseline = exception_stack_baseline_get();
-        task_exception_baseline_store(_py, task_ptr, new_baseline);
-        exception_stack_baseline_set(caller_baseline);
-        let task_handlers = EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
-        task_exception_handler_stack_store(_py, task_ptr, task_handlers);
-        let task_active =
-            ACTIVE_EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
-        task_exception_stack_store(_py, task_ptr, task_active);
-        ACTIVE_EXCEPTION_STACK.with(|stack| {
-            *stack.borrow_mut() = caller_active;
-        });
-        EXCEPTION_STACK.with(|stack| {
-            *stack.borrow_mut() = caller_handlers;
-        });
-        exception_stack_set_depth(_py, caller_depth);
-        exception_context_fallback_pop(_py);
+        exceptions.exit(_py);
         if debug_task && prev_task.is_null() {
             eprintln!(
                 "molt task trace: restoring prev_task=null after task=0x{:x}",
@@ -1091,6 +1043,16 @@ mod tests {
         assert_ne!(poll_id, raw_ptr);
         assert_eq!(
             crate::builtins::functions::runtime_callable_target_ptr(poll_id),
+            Some(crate::molt_async_sleep_poll as *const ())
+        );
+        // Dispatch resolves the named key through the table only, and an
+        // unregistered address key to itself.
+        assert_eq!(
+            crate::builtins::functions::runtime_poll_call_target(poll_id),
+            Some(crate::molt_async_sleep_poll as *const ())
+        );
+        assert_eq!(
+            crate::builtins::functions::runtime_poll_call_target(raw_ptr),
             Some(crate::molt_async_sleep_poll as *const ())
         );
         assert_eq!(

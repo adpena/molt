@@ -164,7 +164,7 @@ Work backward from the §0 end-state to the mechanisms that make it inevitable.
      leaves the build** (ad-hoc at minimum; real identity when configured).
   → **requires** the build pipeline to *invoke the signer on the final user binary*
      at the one place it is finalized (`_finalize_native_link_candidate`, after
-     `_post_link_strip`), not only on the daemon/BOLT artifacts.
+     any `AFTER_LINK` strip), not only on the daemon/BOLT artifacts.
      **FACT NEEDED:** a single **`sign_native_artifact(binary, profile, target)`**
      authority that (a) is the *only* place native signing happens, (b) chooses
      real-identity (`_codesign_sign`) over ad-hoc (`_codesign_binary`) when an
@@ -270,7 +270,7 @@ sign_native_artifact(binary: Path, *, target_triple, profile,
 ```
 
 - **Call site (the load-bearing one):** in `_finalize_native_link_candidate`, immediately
-  after `_post_link_strip(output_binary, target_triple)` (`__init__.py:20842`) and
+  after the symbol-strip stage (`NativeSymbolStrip`; an `AT_LINK` image is already final) and
   *before* the success JSON is emitted, for `emit_mode == "bin"` on Darwin. The
   signing cost is captured into the build-success payload (`build_native_link_success_data`)
   as a `codesign` sub-object (`{signed, identity, elapsed_ms}`), so it is reported
@@ -826,7 +826,7 @@ made a release-gating correctness property, not an aspiration.**
   `_codesign_binary` (lines 40–54) + `__init__.py` `_codesign_sign`/`_codesign_identity_info`
   (~3750–3805); the user-binary call site belongs after
   `_finalize_native_link_candidate`
-  after `_post_link_strip(output_binary, target_triple)` (`__init__.py:20842`); the
+  after the symbol-strip stage (`NativeSymbolStrip`); the
   daemon-binary site to route through it: `__init__.py:27484`; BOLT site:
   `_atomic_copy_file(..., codesign=True)` (`__init__.py:14126–14134`, called at
   `27482` / `native_toolchain.py:177`).

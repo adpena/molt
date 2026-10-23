@@ -16,18 +16,6 @@ use crate::{
 
 use super::{async_trace_enabled, wake_task_ptr};
 
-pub(crate) fn task_exception_stacks(
-    _py: &PyToken<'_>,
-) -> &'static Mutex<HashMap<PtrSlot, Vec<u64>>> {
-    &runtime_state(_py).task_exception_stacks
-}
-
-pub(crate) fn task_exception_handler_stacks(
-    _py: &PyToken<'_>,
-) -> &'static Mutex<HashMap<PtrSlot, Vec<usize>>> {
-    &runtime_state(_py).task_exception_handler_stacks
-}
-
 pub(crate) fn await_waiters(_py: &PyToken<'_>) -> &'static Mutex<HashMap<PtrSlot, Vec<PtrSlot>>> {
     &runtime_state(_py).await_waiters
 }
@@ -97,10 +85,6 @@ fn indexed_unique_vec_swap_remove<T: Copy + Eq + Hash>(
     true
 }
 
-pub(crate) fn task_exception_depths(_py: &PyToken<'_>) -> &'static Mutex<HashMap<PtrSlot, usize>> {
-    &runtime_state(_py).task_exception_depths
-}
-
 pub(crate) fn task_last_exceptions(
     _py: &PyToken<'_>,
 ) -> &'static Mutex<HashMap<PtrSlot, Option<PtrSlot>>> {
@@ -122,11 +106,7 @@ pub(crate) fn task_visit_owned_edges(
     }
     // SPAWN_RETAIN and queue/work-item references are external roots. Visiting
     // either as an internal self-edge would erase scheduler reachability.
-    if let Some(stack) = task_exception_stacks(_py).lock().unwrap().get(&slot) {
-        for &bits in stack {
-            visit(bits);
-        }
-    }
+    crate::builtins::exceptions::activation_exception_state_visit(task_ptr, &mut visit);
     if let Some(Some(exception)) = task_last_exceptions(_py).lock().unwrap().get(&slot) {
         visit(MoltObject::from_ptr(exception.0).bits());
     }

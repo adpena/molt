@@ -488,11 +488,118 @@ fn push_sync_callback(
     MoltObject::none().bits()
 }
 
+/// The generator protocol a `@contextmanager` or `@asynccontextmanager`
+/// object drives.
+#[derive(Clone, Copy)]
+enum GeneratorProtocol {
+    /// `next` and `throw`, finished by `StopIteration`.
+    Sync,
+    /// `anext` and `athrow`, finished by `StopAsyncIteration`.
+    Async,
+}
+
+impl GeneratorProtocol {
+    const fn stop_name(self) -> &'static str {
+        match self {
+            Self::Sync => "StopIteration",
+            Self::Async => "StopAsyncIteration",
+        }
+    }
+
+    /// Whether the body turns `value` into a `RuntimeError` when it escapes
+    /// the frame (PEP 479).
+    fn converts_to_runtime_error(self, py: &PyToken<'_>, value: u64) -> bool {
+        use crate::builtins::exceptions::exception_matches_builtin_name;
+        exception_matches_builtin_name(py, value, "StopIteration")
+            || (matches!(self, Self::Async)
+                && exception_matches_builtin_name(py, value, "StopAsyncIteration"))
+    }
+}
+
+/// What `__exit__` or `__aexit__` does after `throw(value)` raised `raised`
+/// (owned), as CPython's `_GeneratorContextManager.__exit__` decides. A stop
+/// exception suppresses unless it is `value` itself. `value` coming back, or
+/// a `RuntimeError` whose cause is the stop exception `value`, means the body
+/// did not handle it: `value` gets back the traceback `__exit__` received and
+/// the result is False, so the `with` statement re-raises it. Any other
+/// exception replaced `value` and propagates.
+fn generator_exit_after_throw(
+    py: &PyToken<'_>,
+    protocol: GeneratorProtocol,
+    raised: u64,
+    value: u64,
+    traceback: u64,
+) -> u64 {
+    use crate::builtins::exceptions::exception_matches_builtin_name;
+    if exception_matches_builtin_name(py, raised, protocol.stop_name()) {
+        let suppress = raised != value;
+        dec_ref_bits(py, raised);
+        return MoltObject::from_bool(suppress).bits();
+    }
+    let unhandled = raised == value
+        || (exception_matches_builtin_name(py, raised, "RuntimeError")
+            && protocol.converts_to_runtime_error(py, value)
+            && obj_from_bits(raised)
+                .as_ptr()
+                .is_some_and(|raised_ptr| unsafe {
+                    crate::builtins::exceptions::exception_cause_bits(raised_ptr) == value
+                }));
+    if !unhandled {
+        return rethrow_with_owned_exception(py, raised);
+    }
+    dec_ref_bits(py, raised);
+    if let Err(message) =
+        exception_replace_field_bits(py, value, ExceptionFieldSlot::Traceback, traceback)
+    {
+        return raise_exception::<u64>(py, "TypeError", message);
+    }
+    MoltObject::from_bool(false).bits()
+}
+
+/// Raise `RuntimeError(message)` and close the generator, as CPython's
+/// `try: raise RuntimeError(message) finally: gen.close()`: `close()` runs
+/// while the `RuntimeError` is the handled exception, so an exception it
+/// raises replaces the `RuntimeError` and chains to it.
+fn generator_did_not_stop(py: &PyToken<'_>, gen_bits: u64, message: &str) -> u64 {
+    raise_exception::<()>(py, "RuntimeError", message);
+    let stop_error = ExceptionValue::adopt(py, take_pending_exception(py));
+    exception_stack_push();
+    crate::builtins::exceptions::exception_context_set(py, stop_error.bits());
+    let closed = ExceptionValue::adopt(py, call_method0(py, gen_bits, b"close"));
+    let close_error = exception_pending(py).then(|| take_pending_exception(py));
+    exception_stack_pop(py);
+    drop(closed);
+    match close_error {
+        Some(close_error) => rethrow_with_owned_exception(py, close_error),
+        None => rethrow_with_owned_exception(py, stop_error.into_bits()),
+    }
+}
+
+/// `raise RuntimeError("generator didn't yield") from None` while the stop
+/// exception (owned) is the handled exception, as CPython's `__enter__` and
+/// `__aenter__` do: the new exception keeps it as a suppressed context.
+fn generator_did_not_yield(py: &PyToken<'_>, stop: u64) -> u64 {
+    let stop = ExceptionValue::adopt(py, stop);
+    exception_stack_push();
+    crate::builtins::exceptions::exception_context_set(py, stop.bits());
+    raise_exception::<()>(py, "RuntimeError", "generator didn't yield");
+    let error = take_pending_exception(py);
+    exception_stack_pop(py);
+    if let Err(message) =
+        crate::builtins::exceptions::exception_replace_suppress_context(py, error, true)
+    {
+        dec_ref_bits(py, error);
+        return raise_exception::<u64>(py, "TypeError", message);
+    }
+    rethrow_with_owned_exception(py, error)
+}
+
 fn asyncgen_exit_handle_exception(
     _py: &PyToken<'_>,
     mode: i64,
     raised_bits: u64,
     normalized_exc_bits: u64,
+    tb_bits: u64,
 ) -> i64 {
     if mode == ASYNCGEN_EXIT_MODE_ANEXT {
         if crate::builtins::exceptions::exception_matches_builtin_name(
@@ -506,29 +613,13 @@ fn asyncgen_exit_handle_exception(
         return rethrow_with_owned_exception(_py, raised_bits) as i64;
     }
     if mode == ASYNCGEN_EXIT_MODE_THROW {
-        if crate::builtins::exceptions::exception_matches_builtin_name(
+        return generator_exit_after_throw(
             _py,
+            GeneratorProtocol::Async,
             raised_bits,
-            "StopAsyncIteration",
-        ) {
-            let suppress = raised_bits != normalized_exc_bits;
-            dec_ref_bits(_py, raised_bits);
-            return MoltObject::from_bool(suppress).bits() as i64;
-        }
-        let is_runtime_error = crate::builtins::exceptions::exception_matches_builtin_name(
-            _py,
-            raised_bits,
-            "RuntimeError",
-        );
-        if is_runtime_error && raised_bits == normalized_exc_bits {
-            dec_ref_bits(_py, raised_bits);
-            return MoltObject::from_bool(false).bits() as i64;
-        }
-        if is_runtime_error {
-            return rethrow_with_owned_exception(_py, raised_bits) as i64;
-        }
-        dec_ref_bits(_py, raised_bits);
-        return MoltObject::from_bool(false).bits() as i64;
+            normalized_exc_bits,
+            tb_bits,
+        ) as i64;
     }
     rethrow_with_owned_exception(_py, raised_bits) as i64
 }
@@ -881,8 +972,7 @@ pub extern "C" fn molt_contextlib_generator_enter(gen_bits: u64) -> u64 {
             exc_bits,
             "StopIteration",
         ) {
-            dec_ref_bits(_py, exc_bits);
-            return raise_exception::<u64>(_py, "RuntimeError", "generator didn't yield");
+            return generator_did_not_yield(_py, exc_bits);
         }
         rethrow_with_owned_exception(_py, exc_bits)
     })
@@ -902,7 +992,7 @@ pub extern "C" fn molt_contextlib_generator_exit(
                 if !obj_from_bits(out).is_none() {
                     dec_ref_bits(_py, out);
                 }
-                return raise_exception::<u64>(_py, "RuntimeError", "generator didn't stop");
+                return generator_did_not_stop(_py, gen_bits, "generator didn't stop");
             }
             let raised = take_pending_exception(_py);
             if crate::builtins::exceptions::exception_matches_builtin_name(
@@ -931,42 +1021,17 @@ pub extern "C" fn molt_contextlib_generator_exit(
             dec_ref_bits(_py, normalized_exc);
             return MoltObject::none().bits();
         }
-        let out = unsafe { call_callable1(_py, throw_bits, normalized_exc) };
+        let value = ExceptionValue::adopt(_py, normalized_exc);
+        let out = unsafe { call_callable1(_py, throw_bits, value.bits()) };
         dec_ref_bits(_py, throw_bits);
         if !exception_pending(_py) {
             if !obj_from_bits(out).is_none() {
                 dec_ref_bits(_py, out);
             }
-            dec_ref_bits(_py, normalized_exc);
-            return raise_exception::<u64>(
-                _py,
-                "RuntimeError",
-                "generator didn't stop after throw",
-            );
+            return generator_did_not_stop(_py, gen_bits, "generator didn't stop after throw()");
         }
         let raised = take_pending_exception(_py);
-        if crate::builtins::exceptions::exception_matches_builtin_name(_py, raised, "StopIteration")
-        {
-            let suppress = raised != normalized_exc;
-            dec_ref_bits(_py, raised);
-            dec_ref_bits(_py, normalized_exc);
-            return MoltObject::from_bool(suppress).bits();
-        }
-        if crate::builtins::exceptions::exception_matches_builtin_name(_py, raised, "RuntimeError")
-            && raised == normalized_exc
-        {
-            dec_ref_bits(_py, raised);
-            dec_ref_bits(_py, normalized_exc);
-            return MoltObject::from_bool(false).bits();
-        }
-        if crate::builtins::exceptions::exception_matches_builtin_name(_py, raised, "RuntimeError")
-        {
-            dec_ref_bits(_py, normalized_exc);
-            return rethrow_with_owned_exception(_py, raised);
-        }
-        dec_ref_bits(_py, raised);
-        dec_ref_bits(_py, normalized_exc);
-        MoltObject::from_bool(false).bits()
+        generator_exit_after_throw(_py, GeneratorProtocol::Sync, raised, value.bits(), tb_bits)
     })
 }
 
@@ -1514,12 +1579,7 @@ pub unsafe extern "C" fn molt_contextlib_asyncgen_enter_poll(obj_bits: u64) -> i
                         raised_bits,
                         "StopAsyncIteration",
                     ) {
-                        dec_ref_bits(_py, raised_bits);
-                        return raise_exception::<i64>(
-                            _py,
-                            "RuntimeError",
-                            "async generator didn't yield",
-                        );
+                        return generator_did_not_yield(_py, raised_bits) as i64;
                     }
                     return rethrow_with_owned_exception(_py, raised_bits) as i64;
                 }
@@ -1551,12 +1611,7 @@ pub unsafe extern "C" fn molt_contextlib_asyncgen_enter_poll(obj_bits: u64) -> i
                     raised_bits,
                     "StopAsyncIteration",
                 ) {
-                    dec_ref_bits(_py, raised_bits);
-                    return raise_exception::<i64>(
-                        _py,
-                        "RuntimeError",
-                        "async generator didn't yield",
-                    );
+                    return generator_did_not_yield(_py, raised_bits) as i64;
                 }
                 return rethrow_with_owned_exception(_py, raised_bits) as i64;
             }
@@ -1601,6 +1656,7 @@ pub unsafe extern "C" fn molt_contextlib_asyncgen_exit_poll(obj_bits: u64) -> i6
                             ASYNCGEN_EXIT_MODE_ANEXT,
                             raised_bits,
                             MoltObject::none().bits(),
+                            MoltObject::none().bits(),
                         );
                     }
                     let await_bits = async_result_poll_owned(_py, await_bits);
@@ -1636,6 +1692,7 @@ pub unsafe extern "C" fn molt_contextlib_asyncgen_exit_poll(obj_bits: u64) -> i6
                         ASYNCGEN_EXIT_MODE_THROW,
                         raised_bits,
                         payload_slot(payload_ptr, ASYNCGEN_EXIT_SLOT_NORMALIZED_EXC),
+                        tb_bits,
                     );
                 }
                 let await_bits = async_result_poll_owned(_py, await_bits);
@@ -1670,14 +1727,21 @@ pub unsafe extern "C" fn molt_contextlib_asyncgen_exit_poll(obj_bits: u64) -> i6
             let normalized_exc_bits = payload_slot(payload_ptr, ASYNCGEN_EXIT_SLOT_NORMALIZED_EXC);
             if exception_pending(_py) {
                 let raised_bits = take_pending_exception(_py);
-                return asyncgen_exit_handle_exception(_py, mode, raised_bits, normalized_exc_bits);
+                let tb_bits = payload_slot(payload_ptr, ASYNCGEN_EXIT_SLOT_TB);
+                return asyncgen_exit_handle_exception(
+                    _py,
+                    mode,
+                    raised_bits,
+                    normalized_exc_bits,
+                    tb_bits,
+                );
             }
 
             if !obj_from_bits(res as u64).is_none() {
                 dec_ref_bits(_py, res as u64);
             }
             if mode == ASYNCGEN_EXIT_MODE_ANEXT {
-                return raise_exception::<i64>(_py, "RuntimeError", "async generator didn't stop");
+                return raise_exception::<i64>(_py, "RuntimeError", "generator didn't stop");
             }
             if mode == ASYNCGEN_EXIT_MODE_THROW {
                 let agen_bits = payload_slot(payload_ptr, ASYNCGEN_EXIT_SLOT_AGEN);
@@ -1689,7 +1753,7 @@ pub unsafe extern "C" fn molt_contextlib_asyncgen_exit_poll(obj_bits: u64) -> i6
                 return raise_exception::<i64>(
                     _py,
                     "RuntimeError",
-                    "async generator didn't stop after athrow",
+                    "generator didn't stop after athrow()",
                 );
             }
             raise_exception::<i64>(_py, "RuntimeError", "invalid contextlib async state")

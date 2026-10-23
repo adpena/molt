@@ -37,6 +37,7 @@ from molt.cli.native_link_command import (
     _build_native_link_plan,
 )
 from molt.cli.native_link_plan import (
+    NativeSymbolStrip,
     native_link_execution_command as _native_link_execution_command,
     validate_native_object_artifact,
 )
@@ -468,7 +469,9 @@ def _prepare_native_link(
         link_fingerprint=link_fingerprint,
         link_skipped=link_skipped,
         link_process=link_process,
-        strip_after_link=link_plan.policy.strip_after_link,
+        strip_after_link=(
+            link_plan.policy.symbol_strip is NativeSymbolStrip.AFTER_LINK
+        ),
         link_selection=(link_selection_candidate, selection_output)
         if link_selection_candidate is not None and selection_output is not None
         else None,

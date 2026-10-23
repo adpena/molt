@@ -264,9 +264,7 @@ fn poll_future_value(_py: &PyToken<'_>, future_bits: u64) -> i64 {
             }
         }
         if res != pending_bits_i64() && !task_has_token(_py, ptr) {
-            task_exception_stack_drop(_py, ptr);
-            task_exception_depth_drop(_py, ptr);
-            task_exception_baseline_drop(_py, ptr);
+            crate::builtins::exceptions::activation_exception_state_drop(_py, ptr);
         }
         res
     }

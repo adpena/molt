@@ -575,11 +575,8 @@ pub(crate) use crate::builtins::containers_alloc::{DictSeqError, dict_pair_from_
 pub use crate::builtins::containers_alloc::{
     molt_dict_from_obj, molt_dict_new, molt_frozenset_new, molt_set_new,
 };
+pub(crate) use crate::builtins::context::context_stack_unwind;
 pub use crate::builtins::context::*;
-pub(crate) use crate::builtins::context::{
-    context_stack_store, context_stack_take, context_stack_unwind, generator_context_stack_store,
-    generator_context_stack_take,
-};
 pub use crate::builtins::contextlib::*;
 pub use crate::builtins::contextvars::*;
 pub use crate::builtins::copy_mod::*;
@@ -587,18 +584,15 @@ pub use crate::builtins::dbm_dumb::*;
 pub use crate::builtins::enum_ext::*;
 pub(crate) use crate::builtins::exceptions::{
     ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, EXCEPTION_STACK, ExceptionSentinel,
-    GENERATOR_EXCEPTION_STACKS, GENERATOR_RAISE, TASK_RAISE_ACTIVE, alloc_exception,
-    alloc_exception_from_class_bits, clear_exception, clear_exception_type_cache,
-    clear_thread_exception_for_teardown, exception_cause_bits, exception_clear_reason_set,
-    exception_context_align_depth, exception_context_bits, exception_context_fallback_pop,
-    exception_context_fallback_push, exception_dict_bits, exception_handler_active,
-    exception_last_bits_noinc, exception_matches_type, exception_materialized_args_bits,
-    exception_notes_bits, exception_pending, exception_stack_baseline_get,
-    exception_stack_baseline_set, exception_stack_depth, exception_stack_pop,
-    exception_stack_pop_restore_last, exception_stack_push, exception_stack_set_depth,
-    exception_suppress_bits, exception_trace_bits, exception_type_bits_from_name,
-    exceptions_clear_runtime_state, format_exception_message, format_exception_with_traceback,
-    generator_exception_stack_store, generator_exception_stack_take, generator_raise_active,
+    GENERATOR_RAISE, TASK_RAISE_ACTIVE, alloc_exception, alloc_exception_from_class_bits,
+    clear_exception, clear_exception_type_cache, clear_thread_exception_for_teardown,
+    exception_cause_bits, exception_clear_reason_set, exception_context_bits, exception_dict_bits,
+    exception_handler_active, exception_last_bits_noinc, exception_matches_type,
+    exception_materialized_args_bits, exception_notes_bits, exception_pending,
+    exception_stack_baseline_get, exception_stack_baseline_set, exception_stack_pop,
+    exception_stack_pop_restore_last, exception_stack_push, exception_suppress_bits,
+    exception_trace_bits, exception_type_bits_from_name, exceptions_clear_runtime_state,
+    format_exception_message, format_exception_with_traceback, generator_raise_active,
     molt_async_work_poll_and_exception_last_pending, molt_async_work_poll_and_exception_pending,
     molt_exception_active, molt_exception_clear, molt_exception_kind, molt_exception_last,
     molt_exception_last_pending, molt_exception_match_handler, molt_exception_pending,
@@ -606,12 +600,8 @@ pub(crate) use crate::builtins::exceptions::{
     molt_unraisable_hook_args_is_exact, raise_exception, raise_key_error_with_key,
     raise_not_iterable, raise_unicode_decode_error, raise_unicode_encode_error, record_exception,
     record_memory_error_without_allocation, set_generator_raise, set_task_raise_active,
-    sync_current_exception_pending, task_exception_baseline_drop, task_exception_baseline_store,
-    task_exception_baseline_take, task_exception_depth_drop, task_exception_depth_store,
-    task_exception_depth_take, task_exception_handler_stack_drop,
-    task_exception_handler_stack_store, task_exception_handler_stack_take,
-    task_exception_stack_drop, task_exception_stack_store, task_exception_stack_take,
-    task_last_exception_contains_valid, task_last_exception_drop, task_raise_active,
+    sync_current_exception_pending, task_last_exception_contains_valid, task_last_exception_drop,
+    task_raise_active,
 };
 #[cfg(test)]
 pub(crate) use crate::builtins::exceptions::{exception_args_bits, exception_args_payload_bits};

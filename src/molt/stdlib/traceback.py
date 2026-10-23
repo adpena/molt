@@ -249,60 +249,73 @@ class StackSummary:
 
 
 class TracebackException:
-    def __init__(self, exc: BaseException | None, stack: StackSummary) -> None:
-        self.stack = stack
-        self.exc_type = type(exc) if exc is not None else None
-        self._exc = exc
-        self.__cause__: TracebackException | None = None
-        self.__context__: TracebackException | None = None
-        if exc is None:
-            self.__suppress_context__ = False
-        else:
-            suppress = _MOLT_TRACEBACK_EXCEPTION_SUPPRESS_CONTEXT(exc)
-            if not isinstance(suppress, bool):
-                raise RuntimeError(
-                    "traceback suppress-context intrinsic returned invalid value"
-                )
-            self.__suppress_context__ = suppress
+    """An exception and its chain, captured for rendering, as CPython's
+    ``traceback.TracebackException``. The stack of the head comes from the
+    traceback the caller passes, which may differ from
+    ``exc_value.__traceback__`` (``unittest`` trims runner frames)."""
 
-    @classmethod
-    def from_exception(
-        cls,
-        exc: BaseException,
+    def __init__(
+        self,
+        exc_type: Any,
+        exc_value: BaseException | None,
+        exc_traceback: Any,
+        *,
         limit: int | None = None,
         lookup_lines: bool = True,
         capture_locals: bool = False,
-    ) -> "TracebackException":
-        del lookup_lines, capture_locals
-        chain = _exception_chain_payload(exc, limit)
+        compact: bool = False,
+        max_group_width: int = 15,
+        max_group_depth: int = 10,
+    ) -> None:
+        del lookup_lines, capture_locals, compact, max_group_width, max_group_depth
+        self._capture(exc_type, exc_value, exc_traceback, limit)
+        self.stack = extract_tb(exc_traceback, limit)
+        if exc_value is None:
+            self.__suppress_context__ = False
+            return
+        chain = _exception_chain_payload(exc_value, limit)
         if not chain:
-            return cls(exc, StackSummary([]))
-        nodes: list[TracebackException] = []
-        links: list[tuple[int | None, int | None]] = []
-        for (
-            current,
-            frames_payload,
-            suppress_context,
-            cause_index,
-            context_index,
-        ) in chain:
-            stack = StackSummary(
+            self.__suppress_context__ = _suppress_context(exc_value)
+            return
+        nodes: list[TracebackException] = [self]
+        for current, frames_payload, suppress_context, _cause, _context in chain[1:]:
+            node = TracebackException.__new__(type(self))
+            node._capture(type(current), current, current.__traceback__, limit)
+            node.stack = StackSummary(
                 _payload_to_frames(
                     frames_payload, "traceback exception chain payload intrinsic"
                 ),
             )
-            current_exc = cls(current, stack)
-            current_exc.__suppress_context__ = suppress_context
-            nodes.append(current_exc)
-            links.append((cause_index, context_index))
-        for _i in range(len(nodes)):
-            current_exc = nodes[_i]
-            cause_index, context_index = links[_i]
+            node.__suppress_context__ = suppress_context
+            nodes.append(node)
+        self.__suppress_context__ = chain[0][2]
+        for node, (_value, _frames, _suppress, cause_index, context_index) in zip(
+            nodes, chain
+        ):
             if cause_index is not None:
-                current_exc.__cause__ = nodes[cause_index]
+                node.__cause__ = nodes[cause_index]
             if context_index is not None:
-                current_exc.__context__ = nodes[context_index]
-        return nodes[0]
+                node.__context__ = nodes[context_index]
+
+    def _capture(
+        self,
+        exc_type: Any,
+        exc_value: BaseException | None,
+        exc_traceback: Any,
+        limit: int | None,
+    ) -> None:
+        self.exc_type = exc_type
+        self._exc = exc_value
+        self._tb = exc_traceback
+        self._limit = limit
+        self.__cause__: TracebackException | None = None
+        self.__context__: TracebackException | None = None
+
+    @classmethod
+    def from_exception(
+        cls, exc: BaseException, *args: Any, **kwargs: Any
+    ) -> "TracebackException":
+        return cls(type(exc), exc, exc.__traceback__, *args, **kwargs)
 
     def format(self, *, chain: bool = True) -> list[str]:
         if self._exc is None:
@@ -313,9 +326,19 @@ class TracebackException:
             lines.extend(format_exception_only(self.exc_type, self._exc))
             return lines
         lines = _MOLT_TRACEBACK_FORMAT_EXCEPTION(
-            self.exc_type, self._exc, None, None, bool(chain)
+            self.exc_type, self._exc, self._tb, self._limit, bool(chain)
         )
         return _validate_string_list(lines, "traceback format exception intrinsic")
+
+    def format_exception_only(self) -> list[str]:
+        return format_exception_only(self.exc_type, self._exc)
+
+
+def _suppress_context(exc: BaseException) -> bool:
+    suppress = _MOLT_TRACEBACK_EXCEPTION_SUPPRESS_CONTEXT(exc)
+    if not isinstance(suppress, bool):
+        raise RuntimeError("traceback suppress-context intrinsic returned invalid value")
+    return suppress
 
 
 def format_tb(tb: Any, limit: int | None = None) -> list[str]:
