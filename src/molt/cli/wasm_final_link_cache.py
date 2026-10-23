@@ -24,6 +24,7 @@ from molt.cli.wasm_link_cache import (
     _locked_wasm_link_cache_entry,
     _publish_wasm_link_cache_bundle,
     _read_wasm_link_cache_bundle,
+    _transfer_file,
     _wasm_link_cache_entry,
 )
 from molt.exact_json import canonical_json_bytes
@@ -108,11 +109,11 @@ def restore_final_link_result(
         cached = _read_wasm_link_cache_bundle(entry, outputs.keys())
         if cached.status == "corrupt":
             _invalidate_wasm_link_cache_bundle(entry)
-    if cached.files is None:
-        return False
-    for role, path in outputs.items():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(cached.files[role])
+        if cached.files is None:
+            return False
+        # Transfer the verified generation before its lock releases.
+        for role, path in outputs.items():
+            _transfer_file(cached.files[role], path)
     return True
 
 
@@ -120,6 +121,5 @@ def publish_final_link_result(
     entry: WasmLinkCacheEntry, outputs: Mapping[str, Path]
 ) -> None:
     """Record the complete private output family of one successful link."""
-    files = {role: path.read_bytes() for role, path in outputs.items()}
     with _locked_wasm_link_cache_entry(entry):
-        _publish_wasm_link_cache_bundle(entry, files)
+        _publish_wasm_link_cache_bundle(entry, outputs)
