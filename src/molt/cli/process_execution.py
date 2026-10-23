@@ -21,6 +21,7 @@ class _TimedResult(NamedTuple):
     stdout: str
     stderr: str
     duration_s: float
+    descendants_closed: bool = False
 
 
 def _run_command(
@@ -89,6 +90,7 @@ def _run_command_timed(
         result.stdout or "",
         result.stderr or "",
         duration,
+        getattr(result, "descendants_closed", False) is True,
     )
 
 

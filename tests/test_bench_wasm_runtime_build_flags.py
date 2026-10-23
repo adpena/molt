@@ -4,7 +4,7 @@ import hashlib
 import io
 import json
 import subprocess
-import tempfile
+from molt.temporary_artifacts import OwnedTemporaryDirectory
 import time
 from pathlib import Path
 
@@ -252,7 +252,7 @@ def test_wasm_link_response_rejects_ambiguous_entries(
 def test_failed_wasm_run_has_null_time_and_samples(monkeypatch, tmp_path: Path) -> None:
     script = tmp_path / "bench_fail.py"
     script.write_text("print(1)\n", encoding="utf-8")
-    temp_dir = tempfile.TemporaryDirectory()
+    temp_dir = OwnedTemporaryDirectory()
     wasm = bench_wasm.WasmBinary(
         run_env={},
         temp_dir=temp_dir,
@@ -389,7 +389,7 @@ def test_wasm_run_cmd_routes_tty_timeout_through_guard(monkeypatch) -> None:
 def test_partial_wasm_sample_failure_has_null_time(monkeypatch, tmp_path: Path) -> None:
     script = tmp_path / "bench_partial.py"
     script.write_text("print(1)\n", encoding="utf-8")
-    temp_dir = tempfile.TemporaryDirectory()
+    temp_dir = OwnedTemporaryDirectory()
     wasm = bench_wasm.WasmBinary(
         run_env={},
         temp_dir=temp_dir,
@@ -439,7 +439,7 @@ def test_partial_wasm_sample_failure_has_null_time(monkeypatch, tmp_path: Path) 
 
 
 def test_collect_samples_rejects_partial_sample_failure(monkeypatch) -> None:
-    temp_dir = tempfile.TemporaryDirectory()
+    temp_dir = OwnedTemporaryDirectory()
     wasm = bench_wasm.WasmBinary(
         run_env={},
         temp_dir=temp_dir,

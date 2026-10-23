@@ -1701,3 +1701,51 @@ def test_remap_preserves_installed_app_slot_in_default_region() -> None:
     )
     # An occupied slot is a genuine indirect call: index is returned unchanged.
     assert remapped == installed_idx
+
+
+@pytest.mark.parametrize("trap", [False, True])
+def test_cli_json_wasm_keeps_guest_bytes_and_host_diagnostics(
+    tmp_path, monkeypatch, capsys, trap
+):
+    from molt.cli import script_commands
+    from molt.process_environment import ProcessEnvironment
+    from molt.temporary_artifacts import OwnedTemporaryDirectory
+    from molt.node_runtime import resolve_node_runtime
+
+    manifest = _stderr_guest_manifest(tmp_path, "linked", trap=trap)
+    env = {**os.environ, "MOLT_WASM_TRACE_RUN": "1"}
+    env.pop("NODE_NO_WARNINGS", None)
+    env.pop("NODE_OPTIONS", None)
+    node = resolve_node_runtime(source_root=ROOT, environment=env)
+    owners = []
+
+    def allocate(**kwargs):
+        owner = OwnedTemporaryDirectory(dir=tmp_path, **kwargs)
+        owners.append(owner)
+        return owner
+
+    monkeypatch.setattr(script_commands, "OwnedTemporaryDirectory", allocate)
+    rc = script_commands._run_program(
+        [str(node.path), str(ROOT / "wasm/run_wasm.js"), str(manifest)],
+        env=ProcessEnvironment(env),
+        cwd=ROOT,
+        json_output=True,
+        verbose=False,
+        timing=True,
+        build_duration_s=0.0,
+        start_receipt=None,
+        memory_guard_prefix="MOLT_CROSS",
+        wasm_guest_stderr=True,
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert rc == (1 if trap else 0)
+    assert payload["status"] == ("error" if trap else "ok")
+    data = payload["data"]
+    assert data["returncode"] == rc and data["stdout"] == "stdout"
+    expected = b"ExperimentalWarning: guest\r\n(node:7) guest\n\xfftail|shutdown"
+    assert data["stderr"].encode("utf-8", "surrogateescape") == expected
+    assert "[molt wasm] runner=" in data["host_stderr"]
+    assert "ExperimentalWarning" in data["host_stderr"]
+    assert "ExperimentalWarning: guest" not in data["host_stderr"]
+    assert ("unreachable" in data["host_stderr"]) is trap
+    assert all(not Path(owner.name).exists() for owner in owners)
