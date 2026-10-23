@@ -393,7 +393,7 @@ const vm = require('node:vm');
 const assert = require('node:assert/strict');
 
 const {combinedError, formatTraceError} = require(lifecyclePath);
-async function exercise(primary, split, fails, cleanupErrors = []) {
+async function exercise(primary, split, fails, cleanupErrors = [], status = 0) {
   const events = [];
   const traces = [];
   const runtime = {};
@@ -413,13 +413,16 @@ async function exercise(primary, split, fails, cleanupErrors = []) {
       return {imports: {funcImports: split ? [{module: 'molt_runtime'}] : [],
                         table: true, memory: true}, exportFunctionSignatures: {}};
     },
+    // A runner returns the program's exit status (molt_main_exit_status).
     runLinked: async () => {
       events.push('startup');
       if (fails) throw primary;
+      return status;
     },
     runDirectLink: async () => {
       events.push('startup');
       if (fails) throw primary;
+      return status;
     },
     runHostExportCalls: async () => events.push('host-export'),
     wasiExitCode: null, maybeDumpRuntimeProfile() {},
@@ -444,9 +447,13 @@ async function exercise(primary, split, fails, cleanupErrors = []) {
     }
     assert(caught, 'guest and cleanup failures must remain observable');
   } else {
-    assert.equal(await context.invoke(), 0);
+    assert.equal(await context.invoke(), status);
   }
-  if (fails) {
+  if (status !== 0) {
+    // A nonzero status ends the program before its host exports run.
+    assert.deepEqual(events, ['startup', 'dispose', 'shutdown']);
+    assert(traces.includes(`runMain:exit_status:${status}`));
+  } else if (fails) {
     assert.deepEqual(events, ['startup', 'dispose', 'shutdown']);
     assert.equal(traces.filter(mark => mark.startsWith('runMain:primary_error:')).length, 1);
     assert(traces.findIndex(mark => mark.startsWith('runMain:primary_error:')) <
@@ -464,6 +471,7 @@ async function exercise(primary, split, fails, cleanupErrors = []) {
   const revoked = Proxy.revocable({}, {}); revoked.revoke();
   for (const split of [false, true]) {
     await exercise(undefined, split, false);
+    await exercise(undefined, split, false, [], 4);
     await exercise(undefined, split, false, [new Error('shutdown only')]);
     for (const primary of [new Error('original bootstrap diagnostic'), null, undefined,
       false, 0, '', hostile, revoked.proxy]) {
@@ -1534,6 +1542,13 @@ async function exercise(status) {
   let pending = 0n;
   const exports = {
     molt_main() { events.push('main'); pending = status === 'pending' ? 1n : 0n; },
+    // The runtime's report takes the pending exception and returns its status.
+    molt_main_exit_status() {
+      events.push('status');
+      const exitStatus = pending;
+      pending = 0n;
+      return exitStatus;
+    },
     molt_runtime_execution_enter() { events.push('enter'); return 1n; },
     molt_runtime_execution_leave() { events.push('leave'); },
     molt_runtime_shutdown() { events.push('shutdown'); return 1n; },
@@ -1554,9 +1569,8 @@ async function exercise(status) {
   );
   assert.equal(response.status, status === 'ok' ? 200 : 500);
   assert.deepEqual(events, status === 'missing'
-    ? ['enter', 'leave', 'shutdown'] : ['enter', 'main', 'leave', 'shutdown']);
-  assert.equal(pending, status === 'pending' ? 1n : 0n,
-               'host must not clear pending diagnostic state');
+    ? ['enter', 'leave', 'shutdown'] : ['enter', 'main', 'status', 'leave', 'shutdown']);
+  assert.equal(pending, 0n, 'the runtime report, not the host, consumes the exception');
 }
 (async () => {
   for (const status of ['missing', 'pending', 'ok']) await exercise(status);
@@ -1987,6 +2001,7 @@ const instance = {exports: {
   leave() { events.push('leave'); },
   shutdown() { events.push('shutdown'); return 1n; },
   molt_main() { events.push('main'); },
+  molt_main_exit_status() { events.push('status'); return 0n; },
   molt_host_init() { events.push('host-init'); },
   sample() { events.push('export'); return 42n; },
   molt_dec_ref_obj() {},
@@ -2013,9 +2028,9 @@ vm.runInContext(boundary + methods + owner, context);
   context.host.dispose(); context.host.dispose();
   assert.throws(() => context.host.run(), /disposed/);
   await assert.rejects(context.host.invokeExport('sample'), /disposed/);
-  assert.deepEqual(events, ['enter', 'main', 'flush', 'leave', 'enter', 'export', 'leave',
-    'enter', 'main', 'flush', 'leave', 'shutdown', 'db-close', 'socket-close', 'ws-close',
-    'gpu-close', 'flush']);
+  assert.deepEqual(events, ['enter', 'main', 'status', 'flush', 'leave', 'enter', 'export',
+    'leave', 'enter', 'main', 'status', 'flush', 'leave', 'shutdown', 'db-close',
+    'socket-close', 'ws-close', 'gpu-close', 'flush']);
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """,
         tmp_path,
@@ -2067,6 +2082,7 @@ async function exercise(fail, primary, failShutdown, failInstantiate = false) {
     leave() { events.push('leave'); },
     shutdown() { events.push('shutdown'); if (failShutdown) throw cleanup; return 1n; },
     _initialize() { events.push('initialize'); },
+    molt_main_exit_status() { events.push('status'); return 0n; },
   }};
   const app = {exports: {molt_main() { events.push('main'); if (fail) throw primary; }}};
   const runtimeModule = {};
@@ -2095,7 +2111,8 @@ async function exercise(fail, primary, failShutdown, failInstantiate = false) {
   }
   assert.equal(caught, fail || failShutdown || failInstantiate);
   assert.deepEqual(events, failInstantiate ? ['shutdown', 'vfs-clear']
-    : ['initialize', 'enter', 'main', 'leave', 'shutdown', 'vfs-clear']);
+    : fail ? ['initialize', 'enter', 'main', 'leave', 'shutdown', 'vfs-clear']
+    : ['initialize', 'enter', 'main', 'status', 'leave', 'shutdown', 'vfs-clear']);
 }
 (async () => {
   await exercise(false, undefined, false);

@@ -73,13 +73,7 @@ def test_the_aot_stub_calls_the_launch_entries_in_the_declared_order() -> None:
     # The entry runs after the last start entry; the finish follows it.
     assert positions[-1] < main.index("molt_main();") < main.index("molt_finish()")
     finish = _body(stub, "static int molt_finish() {")
-    assert (
-        finish.index("molt_exception_pending()")
-        < finish.index("molt_exception_last_pending()")
-        < finish.index("molt_exception_report_uncaught(")
-        < finish.index("molt_dec_ref_obj(")
-        < finish.index("molt_runtime_exit(")
-    )
+    assert finish.index("molt_runtime_exit(") < finish.index("molt_main_exit_status()")
 
 
 @pytest.mark.skipif(shutil.which("cc") is None, reason="needs a C compiler")

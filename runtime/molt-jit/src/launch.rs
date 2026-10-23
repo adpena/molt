@@ -134,30 +134,12 @@ pub(crate) unsafe fn run_program(
 /// The stub's `molt_finish`: report an uncaught exception, then leave through
 /// the runtime's process exit.
 unsafe fn finish(api: &RuntimeLaunchApi) -> ! {
-    // SAFETY: the runtime is initialized and this thread holds its GIL.
+    // SAFETY: the runtime is initialized and this thread holds its GIL. The
+    // runtime reports a pending exception and chooses the status; its exit
+    // runs teardown and does not return.
     unsafe {
-        let pending = (api.molt_exception_pending)();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "MOLT_DEBUG_MAIN_EXCEPTION is the stub's own debug switch"
-        )]
-        if std::env::var("MOLT_DEBUG_MAIN_EXCEPTION")
-            .is_ok_and(|value| !value.is_empty() && value != "0")
-        {
-            crate::report(format_args!(
-                "molt main finish pending={}",
-                i32::from(pending != 0)
-            ));
-        }
-        if pending != 0 {
-            let exception = (api.molt_exception_last_pending)();
-            let exit_code = (api.molt_exception_report_uncaught)(exception);
-            (api.molt_dec_ref_obj)(exception);
-            (api.molt_runtime_exit)(exit_code);
-            libc::_exit(1)
-        }
-        (api.molt_runtime_exit)(0);
-        libc::_exit(0)
+        (api.molt_runtime_exit)((api.molt_main_exit_status)());
+        libc::_exit(1)
     }
 }
 

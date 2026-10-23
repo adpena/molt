@@ -363,12 +363,22 @@ export default {
                 }
             });
             const errors = [];
+            let exitStatus = 0;
             try {
                 lifetime.execute(() => {
                     if (typeof instance.exports.molt_main !== 'function') {
                         throw new Error('missing application startup export');
                     }
                     instance.exports.molt_main();
+                    // The runtime reports an exception the entry left pending
+                    // (CPython's PyErr_Print, through sys.excepthook into
+                    // stderr) and returns the program's exit status, as the
+                    // native main stub does.
+                    const status = instance.exports.molt_main_exit_status;
+                    if (typeof status !== 'function') {
+                        throw new Error('missing molt_main_exit_status export');
+                    }
+                    exitStatus = Number(status());
                 });
             } catch (error) {
                 if (!(error instanceof ProcExit && error.code === 0)) errors.push(error);
@@ -376,6 +386,13 @@ export default {
                 try { lifetime.dispose(); } catch (error) { errors.push(error); }
             }
             if (errors.length) throw combinedError(errors);
+            if (exitStatus !== 0) {
+                console.error(`molt worker exit status ${exitStatus}:`, stdio.getStderr());
+                return new Response('internal error', {
+                    status: 500,
+                    headers: { 'content-type': 'text/plain' },
+                });
+            }
 
             // Return stdout as response body
             const output = stdio.getStdout();

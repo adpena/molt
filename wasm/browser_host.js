@@ -84,6 +84,22 @@ const runtimeLifetime = (runtimeInstance, runtimeImportAbi) => {
 };
 const withRuntimeExecution = (runtimeInstance, runtimeImportAbi, operation) =>
   runtimeLifetime(runtimeInstance, runtimeImportAbi).execute(operation);
+// After the entry returns, the runtime reports an exception it left pending
+// (CPython's PyErr_Print, through sys.excepthook and sys.stderr) and returns
+// the program's exit status, as the native main stub does.
+const mainExitStatus = (runtimeInstance) => {
+  if (typeof runtimeInstance.exports.molt_main_exit_status !== 'function') {
+    throw new Error('runtime missing molt_main_exit_status export');
+  }
+  return Number(runtimeInstance.exports.molt_main_exit_status());
+};
+// A nonzero status rejects `run()`; the report itself already went to stderr.
+const throwOnExitStatus = (exitStatus) => {
+  if (exitStatus === 0) return;
+  const error = new Error(`Molt program exited with status ${exitStatus}`);
+  error.exitStatus = exitStatus;
+  throw error;
+};
 const closeBrowserSocket = (entry) => {
   const ws = entry.ws;
   const listeners = entry.listeners;
@@ -3731,18 +3747,16 @@ export const loadMoltWasm = async (options = {}) => {
         invokeExport: makeExportInvoker(instance),
         dispose,
         run: () => {
-          withRuntimeExecution(state.runtimeInstance, runtimeImportAbi, () => {
+          throwOnExitStatus(withRuntimeExecution(state.runtimeInstance, runtimeImportAbi, () => {
             if (typeof instance.exports.molt_main !== 'function') {
               throw new Error('molt_main export missing');
             }
             instance.exports.molt_main();
+            const exitStatus = mainExitStatus(state.runtimeInstance);
             flushOwnedStdio();
-            const pendingException = pendingRuntimeExceptionMessage(state.runtimeInstance, state.memory);
-            if (pendingException) {
-              throw new Error(pendingException);
-            }
-            hostExportsInitialized = true;
-          });
+            if (exitStatus === 0) hostExportsInitialized = true;
+            return exitStatus;
+          }));
         },
       };
     }
@@ -3931,18 +3945,16 @@ export const loadMoltWasm = async (options = {}) => {
       invokeExport: makeExportInvoker(outputModule.instance),
       dispose,
       run: () => {
-        withRuntimeExecution(state.runtimeInstance, runtimeImportAbi, () => {
+        throwOnExitStatus(withRuntimeExecution(state.runtimeInstance, runtimeImportAbi, () => {
           if (typeof outputModule.instance.exports.molt_main !== 'function') {
             throw new Error('molt_main export missing');
           }
           outputModule.instance.exports.molt_main();
+          const exitStatus = mainExitStatus(state.runtimeInstance);
           flushOwnedStdio();
-          const pendingException = pendingRuntimeExceptionMessage(state.runtimeInstance, state.memory);
-          if (pendingException) {
-            throw new Error(pendingException);
-          }
-          hostExportsInitialized = true;
-        });
+          if (exitStatus === 0) hostExportsInitialized = true;
+          return exitStatus;
+        }));
       },
     };
   } catch (error) {

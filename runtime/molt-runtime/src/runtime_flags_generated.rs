@@ -37,6 +37,7 @@ pub(crate) enum RuntimeFlag {
     MOLT_DEBUG_ITER,
     MOLT_DEBUG_LIST_BUILDER,
     MOLT_DEBUG_LOCALS,
+    MOLT_DEBUG_MAIN_EXCEPTION,
     MOLT_DEBUG_OBJECT_RC,
     MOLT_DEBUG_OOM,
     MOLT_DEBUG_OPEN_FD,
@@ -138,7 +139,7 @@ pub(crate) enum RuntimeFlag {
 
 impl RuntimeFlag {
     /// Every flag in declaration order: `ALL[flag as usize] == flag`.
-    pub(crate) const ALL: [RuntimeFlag; 128] = [
+    pub(crate) const ALL: [RuntimeFlag; 129] = [
         Self::MOLT_ASSERT_CHILD,
         Self::MOLT_ASSERT_NO_LEAK,
         Self::MOLT_ASSERT_NO_PENDING_ON_SUCCESS,
@@ -170,6 +171,7 @@ impl RuntimeFlag {
         Self::MOLT_DEBUG_ITER,
         Self::MOLT_DEBUG_LIST_BUILDER,
         Self::MOLT_DEBUG_LOCALS,
+        Self::MOLT_DEBUG_MAIN_EXCEPTION,
         Self::MOLT_DEBUG_OBJECT_RC,
         Self::MOLT_DEBUG_OOM,
         Self::MOLT_DEBUG_OPEN_FD,
@@ -270,7 +272,7 @@ impl RuntimeFlag {
     ];
 
     /// Each flag's variable name, sorted: `NAMES[flag as usize]` names `flag`.
-    pub(crate) const NAMES: [&str; 128] = [
+    pub(crate) const NAMES: [&str; 129] = [
         "MOLT_ASSERT_CHILD",
         "MOLT_ASSERT_NO_LEAK",
         "MOLT_ASSERT_NO_PENDING_ON_SUCCESS",
@@ -302,6 +304,7 @@ impl RuntimeFlag {
         "MOLT_DEBUG_ITER",
         "MOLT_DEBUG_LIST_BUILDER",
         "MOLT_DEBUG_LOCALS",
+        "MOLT_DEBUG_MAIN_EXCEPTION",
         "MOLT_DEBUG_OBJECT_RC",
         "MOLT_DEBUG_OOM",
         "MOLT_DEBUG_OPEN_FD",
