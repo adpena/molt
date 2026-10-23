@@ -300,3 +300,21 @@ stage-sized key lookup and captured payload storage;
 there is no per-stage rescan of locks or retired history. Publication and
 reconciliation retain their pre/post-lock physical checks. These are developer
 apparatus costs, with no generated-program overhead.
+
+
+## Current-tree sentinel observation
+
+Automatic command and suite sentinels use the same `CustodyInterest` sampler as
+command guards. Their poll includes the guard lineage, remembered process births
+(including reparented children), and the current suite receipt roots and members.
+The suite projects observation hints through its existing receipt reader; the
+hints grant no custody, and the usual lease and birth validation still decides
+adoption. Receipt discovery runs each poll to see newly adopted daemons. This
+adds one non-waiting receipt discovery for a leased sentinel while removing
+host-size process enumeration. A busy adoption lock supplies no new hints;
+remembered tracker births remain sampling roots. Existing admission keeps its
+separate bounded lock policy. Inherited receivers, including an object retained
+after fork, discover the command operational root as admission does. Diagnostic
+PID history remains available for protection and attribution but never seeds
+traversal: only current tracker custody and receipt hints do. Explicit repo-scope observers and signal-time protection
+continue to read the host table. The 100 ms cadence is unchanged.

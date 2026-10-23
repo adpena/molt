@@ -1794,9 +1794,12 @@ def test_reader_waits_for_receipt_index_transaction(lease, tmp_path, monkeypatch
     }
 
 
+@pytest.mark.parametrize("inherited_receiver", [False, True])
 def test_transferred_groups_use_actual_command_root_projection(
-    lease, tmp_path, monkeypatch
+    lease, tmp_path, monkeypatch, inherited_receiver
 ):
+    from types import SimpleNamespace
+
     path, record, _handle = lease
     command_root = tmp_path / "actual-command-root"
     owned = identity(tmp_path, path)
@@ -1814,11 +1817,18 @@ def test_transferred_groups_use_actual_command_root_projection(
         suite.LEASE_ENV: str(path),
         "CARGO_TARGET_DIR": str(tmp_path / "command-target"),
     }
+    # A fork can retain the receiver object without being its owner. Its
+    # observation must discover the same operational root as admission.
+    receiver = SimpleNamespace(path=path, record=record) if inherited_receiver else None
+    hints = suite.sentinel_sampling_interest(
+        environ, project_root=tmp_path, receiver=receiver
+    )
+    assert hints.tree_pids == frozenset({30})
     assert (
         len(suite.transferable_groups(environ, project_root=tmp_path, samples=samples))
         == 1
     )
-    assert observed == [environ]
+    assert observed == [environ, environ]
 
 
 def test_owner_lock_contention_is_cross_process_os_proof(lease):
@@ -2221,3 +2231,113 @@ def test_suite_state_ack_admits_real_cold_import_beyond_birth_budget(
         if lease is not None:
             lease.close(timeout=7)
     _assert_suite_retirement(roots, True)
+
+
+@pytest.mark.parametrize("receiver_owned", [False, True])
+def test_sentinel_sampling_interest_discovers_reparented_receipt_members(
+    lease, tmp_path, monkeypatch, receiver_owned
+):
+    from types import SimpleNamespace
+
+    path, record, _handle = lease
+    install_module_os_view(monkeypatch, suite, name="posix")
+    owned = identity(tmp_path, path)
+    members = {30: sample(30, 1, 30, 300), 31: sample(31, 30, 30, 310)}
+    assert suite._record_adoption(path, lease=record, identity=owned, members=members)
+    if receiver_owned:
+        install_module_view(
+            monkeypatch, "os", os, suite, name="posix", getpid=lambda: 10
+        )
+    receiver = SimpleNamespace(path=path, record=record) if receiver_owned else None
+    env = {} if receiver_owned else {suite.LEASE_ENV: str(path)}
+    interest = suite.sentinel_sampling_interest(
+        env, project_root=tmp_path, receiver=receiver
+    )
+    assert interest.tree_pids == frozenset({30, 31})
+    assert interest.exact_pids == frozenset({10, record["guardian_pid"]})
+    # Observation hints cannot authorize a reused PID. Existing receipt admission
+    # still validates the exact births, even when both supplied PIDs are visible.
+    replaced = {30: sample(30, 1, 30, 301), 31: sample(31, 1, 31, 311)}
+    assert (
+        suite.registered_groups(path, lease=record, samples=replaced, acknowledge=False)
+        == ()
+    )
+    # A later adoption must be discovered without recreating the sentinel.
+    members[32] = sample(32, 31, 30, 320)
+    assert suite._record_adoption(path, lease=record, identity=owned, members=members)
+    assert (
+        32
+        in suite.sentinel_sampling_interest(
+            env, project_root=tmp_path, receiver=receiver
+        ).tree_pids
+    )
+
+
+def test_sentinel_busy_adoption_lock_skips_discovery_and_retains_known_births(
+    lease, tmp_path, monkeypatch
+):
+    from molt import file_locks
+    from tools import harness_memory_guard
+
+    path, record, _handle = lease
+    root, child = os.getpid(), os.getpid() + 100000
+    rows = {
+        1: sample(1, 0, 1, 1),
+        root: sample(root, 1, root, 200),
+        child: sample(child, root, child, 300, f"{tmp_path}/target/molt-backend"),
+    }
+    interests = []
+
+    def observe(interest):
+        interests.append(interest)
+        return {
+            pid: row
+            for pid, row in rows.items()
+            if pid in interest.tree_pids | interest.exact_pids
+            or row.ppid in interest.tree_pids
+        }
+
+    install_module_view(
+        monkeypatch,
+        "memory_guard",
+        memory_guard,
+        harness_memory_guard,
+        sample_processes_custody=observe,
+    )
+    monkeypatch.delenv(suite.LEASE_ENV, raising=False)
+    sentinel = harness_memory_guard.repo_process_sentinel(
+        repo_root=tmp_path,
+        artifact_root=tmp_path,
+        label="busy-lease",
+        drain_on_exit=False,
+    )
+    sentinel._custody_lineage = frozenset({1, root})
+    assert {pid for group in sentinel._current_groups() for pid in group.pids} == {
+        child
+    }
+    before = sentinel._tree_tracker.known_identities[child]
+    rows[child] = replace(rows[child], ppid=1)
+    monkeypatch.setenv(suite.LEASE_ENV, str(path))
+    lock = _try_acquire_file_lock(path.parent / "adoption-transaction.lock")
+    assert lock is not None
+    try:
+        # The held real lock must fail immediately: no retry sleep is allowed
+        # in discovery. Admission below keeps its existing bounded lock policy.
+        with monkeypatch.context() as discovery_patch:
+            install_module_view(
+                discovery_patch,
+                "time",
+                file_locks.time,
+                file_locks,
+                sleep=lambda _delay: pytest.fail("discovery waited on a busy lock"),
+            )
+            hints = suite.sentinel_sampling_interest(os.environ, project_root=tmp_path)
+            assert hints.tree_pids == frozenset()
+            assert hints.exact_pids == frozenset({10, record["guardian_pid"]})
+        assert {pid for group in sentinel._current_groups() for pid in group.pids} == {
+            child
+        }
+        assert child in interests[-1].tree_pids
+        assert sentinel._tree_tracker.known_identities[child] == before
+    finally:
+        _release_file_lock(lock)
