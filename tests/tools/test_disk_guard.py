@@ -1228,7 +1228,9 @@ def test_retirement_reclaims_only_its_checkouts_state_at_once(tmp_path, monkeypa
         resolved_owners.append(path)
         return resolve_owned_path(path)
 
-    monkeypatch.setattr(build_state_layout, "resolve_owned_path", resolve_selected_owner)
+    monkeypatch.setattr(
+        build_state_layout, "resolve_owned_path", resolve_selected_owner
+    )
     retired.rmdir()
     earlier.rmdir()
     # A guard elsewhere in the artifact root says nothing about these roots.

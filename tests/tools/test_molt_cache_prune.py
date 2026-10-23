@@ -1462,7 +1462,8 @@ def _source_namespace_peer(cache_text, namespace, channel):
 
 @pytest.mark.parametrize("namespace", ["v2", "0" * 16])
 def test_source_namespace_retirement_waits_for_real_peer_and_preserves_other_versions(
-    tmp_path, namespace,
+    tmp_path,
+    namespace,
 ):
     import multiprocessing
     import sqlite3
@@ -1487,7 +1488,9 @@ def test_source_namespace_retirement_waits_for_real_peer_and_preserves_other_ver
     legacy_files = {str(path) for path in root.iterdir() if path.is_file()}
     ctx = multiprocessing.get_context("spawn")
     parent, channel = ctx.Pipe()
-    child = ctx.Process(target=_source_namespace_peer, args=(str(cache), namespace, channel))
+    child = ctx.Process(
+        target=_source_namespace_peer, args=(str(cache), namespace, channel)
+    )
     child.start()
     channel.close()
     directory = root / namespace
@@ -1543,9 +1546,7 @@ def test_source_namespace_reclamation_failure_cannot_mix_wal_generations(
     from molt.file_locks import _try_acquire_file_lock, _release_file_lock
 
     cache = tmp_path / "cache"
-    root, lock = records.source_record_namespace_paths(
-        cache, "v2"
-    )
+    root, lock = records.source_record_namespace_paths(cache, "v2")
     root.mkdir(parents=True)
     with sqlite3.connect(root / "records.sqlite") as old:
         old.execute("CREATE TABLE witness(value TEXT)")
@@ -1710,9 +1711,7 @@ def test_malformed_source_retirement_preserves_evidence_and_continues_sweep(tmp_
     from molt.cli import source_record_store as records
 
     cache = tmp_path / "cache"
-    namespace, _ = records.source_record_namespace_paths(
-        cache, "v2"
-    )
+    namespace, _ = records.source_record_namespace_paths(cache, "v2")
     namespace.mkdir(parents=True)
     (namespace / "records.sqlite").write_bytes(b"idle older namespace")
     prefix = hashlib.sha256(records.SOURCE_RECORD_RETIREMENT_SCOPE.encode()).hexdigest()
