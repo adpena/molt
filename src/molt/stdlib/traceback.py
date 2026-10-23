@@ -26,6 +26,7 @@ _MOLT_GETFRAME = _require_intrinsic("molt_getframe")
 
 
 __all__ = [
+    "clear_frames",
     "extract_tb",
     "extract_stack",
     "format_exception",
@@ -409,6 +410,17 @@ def format_exc(limit: int | None = None) -> str:
 def print_exc(limit: int | None = None, file: Any | None = None) -> None:
     exc_type, value, tb = sys.exc_info()
     print_exception(exc_type, value, tb, limit, file)
+
+
+def clear_frames(tb: Any) -> None:
+    """Clear all references to local variables in the frames of a traceback."""
+    while tb is not None:
+        try:
+            tb.tb_frame.clear()
+        except RuntimeError:
+            # A frame that is still executing cannot be cleared.
+            pass
+        tb = tb.tb_next
 
 
 globals().pop("_require_intrinsic", None)

@@ -364,6 +364,25 @@ charged snapshot owner; item tuple construction runs only after the complete
 entry observation is retained. RuntimeHooks exposes a physical dictionary
 cursor through `dict_next` with no ordinal compatibility lane.
 
+Iterator advance has one authority, `ops_iter::iteration_step`: the runtime's
+`tp_iternext` (CPython `PyIter_Next`; `FOR_ITER` calls the slot directly).
+Runtime iterator kinds dispatch on their heap type id: sequence and hash
+iterators, `enumerate`, `zip`, `map`, `filter`, `reversed`, callable iterators,
+generators and glob iterators. A native class, such as an itertools type,
+declares its native next once, in its class's native next word, from the same
+callback as its `__next__` descriptor. Only the exact class owns that word, and
+the class is immutable, so its namespace cannot diverge from the slot. A heap
+subclass never inherits the word: its own or inherited `__next__` runs through
+the special-method protocol. A step returns an owned item, clean exhaustion
+with the StopIteration value, or a pending error. It never builds a
+`(value, done)` pair. As in CPython, `enumerate`, `map`, `filter` and non-strict
+`zip` keep their input's StopIteration value, and strict `zip` stops advancing
+inputs at the first mismatch. `molt_iter_next_unboxed`, `next()` and runtime
+consumers read the step directly. `molt_iter_next` projects it onto the pair
+ABI and reuses an iterator kind's pair cache. `enumerate` and `zip` refill a
+result tuple that only the iterator still owns, as CPython's `enum_next` and
+`zip_next` do.
+
 These storage invariants describe implementation. Native, WASM, free-threaded,
 backend/profile and performance acceptance require execution of their affected
 consumers; source layout and a single green cell do not establish that matrix.
