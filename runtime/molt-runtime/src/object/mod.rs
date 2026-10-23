@@ -2882,6 +2882,9 @@ pub(crate) unsafe fn object_has_finalizer(_py: &PyToken<'_>, ptr: *mut u8) -> bo
         if object_type_id(ptr) == TYPE_ID_ASYNC_GENERATOR {
             return crate::async_rt::generators::asyncgen_needs_finalizer(ptr);
         }
+        if object_type_id(ptr) == TYPE_ID_GENERATOR {
+            return crate::async_rt::generators::generator_needs_finalizer(ptr);
+        }
         let Some(class_ptr) = obj_from_bits(object_class_bits(ptr)).as_ptr() else {
             return false;
         };
@@ -3583,6 +3586,13 @@ unsafe fn run_object_finalizer_in_revival_window(py: &PyToken<'_>, ptr: *mut u8)
         unsafe {
             (*header_ptr).fetch_or_flags(HEADER_FLAG_FINALIZER_RAN);
             asyncgen_call_finalizer(py, ptr);
+        }
+        return;
+    }
+    if unsafe { object_type_id(ptr) } == TYPE_ID_GENERATOR {
+        unsafe {
+            (*header_ptr).fetch_or_flags(HEADER_FLAG_FINALIZER_RAN);
+            crate::async_rt::generators::generator_call_finalizer(py, ptr);
         }
         return;
     }

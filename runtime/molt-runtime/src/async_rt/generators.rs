@@ -906,6 +906,27 @@ fn asyncgen_hooks_snapshot(py: &PyToken<'_>) -> [u64; 2] {
     values
 }
 
+/// A generator whose frame started and has not finished closes when its last
+/// reference dies, as CPython's `_PyGen_Finalize` calls `close()`. A generator
+/// that never started has nothing to finalize.
+pub(crate) unsafe fn generator_needs_finalizer(ptr: *mut u8) -> bool {
+    unsafe { generator_started(ptr) && !generator_closed(ptr) }
+}
+
+/// Close a dying generator; an error it raises is written unraisable.
+pub(crate) unsafe fn generator_call_finalizer(py: &PyToken<'_>, ptr: *mut u8) {
+    let generator = MoltObject::from_ptr(ptr).bits();
+    crate::builtins::exceptions::run_unraisable_with_policy(
+        py,
+        || (generator, None),
+        || {
+            let _scope = crate::builtins::exceptions::ExceptionStackScope::push(py);
+            let result = molt_generator_close(generator);
+            dec_ref_bits(py, result);
+        },
+    );
+}
+
 pub(crate) unsafe fn asyncgen_needs_finalizer(ptr: *mut u8) -> bool {
     unsafe {
         maybe_ptr_from_bits(asyncgen_gen_bits(ptr)).is_some_and(|generator| {
@@ -1280,6 +1301,11 @@ pub extern "C" fn molt_asyncgen_new(gen_bits: u64) -> u64 {
             let payload_ptr = ptr as *mut u64;
             *payload_ptr = gen_bits;
             inc_ref_bits(_py, gen_bits);
+            // The async generator finalizes the frame it drives (its hook, or
+            // close()); CPython has one object here, so the inner generator
+            // never runs a finalizer of its own.
+            (*header_from_obj_ptr(gen_ptr))
+                .fetch_or_flags(crate::object::HEADER_FLAG_FINALIZER_RAN);
             *payload_ptr.add(1) = MoltObject::none().bits();
             *payload_ptr.add(2) = MoltObject::none().bits();
             *payload_ptr.add(3) = MoltObject::from_bool(false).bits();

@@ -1022,17 +1022,23 @@ pub(crate) unsafe fn terminal_detach_capacity(py: &PyToken<'_>, ptr: *mut u8) ->
 /// Detach every generator-owned inline, closure-tail, and side-registry edge.
 /// The caller reserves the sink before mutation and releases it only after this
 /// function has published every source empty.
+///
+/// Detachment is terminal: the closed flag holds a bool, never an edge, and
+/// stays true so no finalizer or resumption re-enters the cleared body
+/// (CPython's `FRAME_CLEARED` state ranks above `FRAME_COMPLETED`).
 pub(crate) unsafe fn detach_generator_owned_edges(ptr: *mut u8, sink: &mut DetachedEdgeSink) {
     unsafe {
         for offset in [
             crate::GEN_SEND_OFFSET,
             crate::GEN_THROW_OFFSET,
-            crate::GEN_CLOSED_OFFSET,
             crate::GEN_EXC_DEPTH_OFFSET,
             crate::GEN_YIELD_FROM_OFFSET,
         ] {
             sink.detach_if_heap(super::payload_refs::take(ptr, offset));
         }
+        ptr.add(crate::GEN_CLOSED_OFFSET)
+            .cast::<u64>()
+            .write(MoltObject::from_bool(true).bits());
         for bits in crate::builtins::exceptions::generator_exception_stack_take(ptr) {
             sink.detach_if_heap(bits);
         }
