@@ -33,15 +33,18 @@ class _AsyncTask:
 _fake_asyncio = types.ModuleType("asyncio")
 _fake_asyncio.Future = _AsyncFuture
 _fake_asyncio.Task = _AsyncTask
+# _asyncio.get_event_loop delegates to the one asyncio.events implementation.
+_fake_events = types.ModuleType("asyncio.events")
+_fake_events.get_event_loop = lambda: ("events", _state["event_loop"])
+_fake_asyncio.events = _fake_events
 sys.modules["asyncio"] = _fake_asyncio
+sys.modules["asyncio.events"] = _fake_events
 
 _state = {{"running_loop": None, "event_loop": "event-loop", "current": "current-task"}}
 
 install_registry({{
     "molt_asyncio_running_loop_get": lambda: _state["running_loop"],
     "molt_asyncio_running_loop_set": lambda loop: _state.__setitem__("running_loop", loop),
-    "molt_asyncio_event_loop_get": lambda: _state["event_loop"],
-    "molt_asyncio_event_loop_policy_get": lambda: None,
     "molt_asyncio_task_registry_current": lambda: _state["current"],
     "molt_asyncio_task_registry_current_for_loop": lambda loop: ("for-loop", loop),
     "molt_asyncio_enter_task": lambda loop, task: _state.__setitem__("current", task),
@@ -76,7 +79,7 @@ checks = {{
     "behavior": (
         _private._get_running_loop() == "loop-a"
         and _private.get_running_loop() == "loop-a"
-        and _private.get_event_loop() == "event-loop"
+        and _private.get_event_loop() == ("events", "event-loop")
         and _private.current_task() == "task-a"
         and _private.current_task("loop-a") == ("for-loop", "loop-a")
         and isinstance(_private.Future(), _AsyncFuture)
@@ -85,8 +88,6 @@ checks = {{
     "private_handles_hidden": (
         "_MOLT_ASYNCIO_RUNNING_LOOP_GET" not in _private.__dict__
         and "_MOLT_ASYNCIO_RUNNING_LOOP_SET" not in _private.__dict__
-        and "_MOLT_ASYNCIO_EVENT_LOOP_GET" not in _private.__dict__
-        and "_MOLT_ASYNCIO_EVENT_LOOP_POLICY_GET" not in _private.__dict__
         and "_MOLT_ASYNCIO_TASK_REGISTRY_CURRENT" not in _private.__dict__
         and "_MOLT_ASYNCIO_TASK_REGISTRY_CURRENT_FOR_LOOP" not in _private.__dict__
         and "_MOLT_ASYNCIO_ENTER_TASK" not in _private.__dict__

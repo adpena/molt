@@ -1242,6 +1242,34 @@ mod tests {
             dec_ref_bits(_py, bits);
         });
     }
+
+    /// CPython documents the order of equal-deadline callbacks as undefined;
+    /// Molt promises registration order (spec 0300, "Determinism Guarantees").
+    #[test]
+    fn equal_deadline_timers_run_in_registration_order() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            let loop_handle = molt_event_loop_new();
+            let when = MoltObject::from_float(86_400.0).bits();
+            let callbacks: Vec<u64> = (0..3).map(|i| MoltObject::from_int(i).bits()).collect();
+            for &callback in &callbacks {
+                let _ = molt_event_loop_call_at(loop_handle, when, callback);
+            }
+            let order: Vec<u64> = with_loop(_py, loop_handle, |state| {
+                state
+                    .timers
+                    .values()
+                    .map(|work| match work {
+                        ReadyWork::Handle(bits) => *bits,
+                        _ => panic!("call_at registers a callback handle"),
+                    })
+                    .collect()
+            })
+            .unwrap();
+            assert_eq!(order, callbacks);
+            molt_event_loop_drop(loop_handle);
+        });
+    }
 }
 
 #[cfg(test)]

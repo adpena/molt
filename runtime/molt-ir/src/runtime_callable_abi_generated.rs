@@ -348,11 +348,6 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
-        symbol: "molt_asyncio_event_loop_get",
-        arity: 0,
-        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
-    },
-    RuntimeCallableAbi {
         symbol: "molt_asyncio_event_loop_get_current",
         arity: 0,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,

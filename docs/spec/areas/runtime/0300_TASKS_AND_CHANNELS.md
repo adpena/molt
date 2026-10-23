@@ -50,6 +50,10 @@ The RT2 acceptance bar requires deterministic behavior for the cases that most
 often regress async runtimes:
 
 - Equal-deadline `call_later` / `call_at` callbacks resume in FIFO order.
+  CPython documents that order as undefined (its `heapq` timer heap orders by
+  deadline alone), so FIFO is a Molt refinement: the runtime unit test
+  `equal_deadline_timers_run_in_registration_order` pins it, and the
+  differential test compares only the callbacks that ran.
 - Surviving I/O waiters preserve registration order after neighbouring waiters
   are cancelled.
 - Cancelled timers and readiness waiters do not produce spurious wakeups in a
@@ -59,7 +63,7 @@ often regress async runtimes:
 
 These guarantees are covered by differential tests including
 `asyncio_call_later_fifo_tiebreak.py`,
-`asyncio_call_at_fifo_tiebreak.py`,
+`asyncio_call_at_equal_deadline.py`,
 `asyncio_sock_recv_cancel_deterministic.py`,
 `asyncio_sock_recv_cancel_survivor_order.py`, and
 `asyncio_wait_for_cancel_propagation.py`.
