@@ -2552,7 +2552,6 @@
     "asyncio_event_clear": "molt_asyncio_event_clear",
     "asyncio_event_drop": "molt_asyncio_event_drop",
     "asyncio_event_is_set": "molt_asyncio_event_is_set",
-    "asyncio_event_loop_get": "molt_asyncio_event_loop_get",
     "asyncio_event_loop_get_current": "molt_asyncio_event_loop_get_current",
     "asyncio_event_loop_policy_get": "molt_asyncio_event_loop_policy_get",
     "asyncio_event_loop_policy_set": "molt_asyncio_event_loop_policy_set",

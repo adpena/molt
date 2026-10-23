@@ -4644,11 +4644,6 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 1,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_asyncio_event_loop_get",
-        import: WasmRuntimeImport::AsyncioEventLoopGet,
-        arity: 0,
-    },
-    RuntimeCallableImportSpec {
         runtime_name: "molt_asyncio_event_loop_get_current",
         import: WasmRuntimeImport::AsyncioEventLoopGetCurrent,
         arity: 0,
@@ -13660,7 +13655,6 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         }
         "molt_asyncio_running_loop_get" => Some(WasmRuntimeImport::AsyncioRunningLoopGet),
         "molt_asyncio_running_loop_set" => Some(WasmRuntimeImport::AsyncioRunningLoopSet),
-        "molt_asyncio_event_loop_get" => Some(WasmRuntimeImport::AsyncioEventLoopGet),
         "molt_asyncio_event_loop_get_current" => {
             Some(WasmRuntimeImport::AsyncioEventLoopGetCurrent)
         }

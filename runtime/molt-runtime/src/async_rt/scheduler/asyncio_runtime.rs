@@ -18,9 +18,9 @@ pub(crate) use event_waiters::{
     molt_asyncio_event_waiters_register, molt_asyncio_event_waiters_unregister,
 };
 pub(crate) use loops::{
-    molt_asyncio_event_loop_get, molt_asyncio_event_loop_get_current,
-    molt_asyncio_event_loop_policy_get, molt_asyncio_event_loop_policy_set,
-    molt_asyncio_event_loop_set, molt_asyncio_running_loop_get, molt_asyncio_running_loop_set,
+    molt_asyncio_event_loop_get_current, molt_asyncio_event_loop_policy_get,
+    molt_asyncio_event_loop_policy_set, molt_asyncio_event_loop_set, molt_asyncio_running_loop_get,
+    molt_asyncio_running_loop_set,
 };
 pub(crate) use task_registry::{
     molt_asyncio_enter_task, molt_asyncio_leave_task, molt_asyncio_register_task,

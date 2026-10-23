@@ -8,6 +8,7 @@ import os as _os
 import sys as _sys
 import time as _time
 import traceback as _traceback
+import collections.abc as _collections_abc
 import contextlib as _contextlib
 import inspect as _inspect
 import errno as _errno
@@ -563,8 +564,19 @@ from .exceptions import (
 def _is_cancelled_exc(exc: BaseException) -> bool:
     return isinstance(exc, CancelledError)
 
+_iscoroutine_typecache: set[type] = set()
+
 def iscoroutine(obj: Any) -> bool:
-    return bool(_molt_inspect_iscoroutine(obj))
+    # CPython's asyncio.coroutines.iscoroutine: a native coroutine or any
+    # collections.abc.Coroutine (an async generator's asend/athrow awaitable
+    # among them), with a positive type cache of at most 100 types.
+    if type(obj) in _iscoroutine_typecache:
+        return True
+    if _molt_inspect_iscoroutine(obj) or isinstance(obj, _collections_abc.Coroutine):
+        if len(_iscoroutine_typecache) < 100:
+            _iscoroutine_typecache.add(type(obj))
+        return True
+    return False
 
 def iscoroutinefunction(func: Any) -> bool:
     return bool(_molt_inspect_iscoroutinefunction(func))
