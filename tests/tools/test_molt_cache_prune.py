@@ -20,6 +20,7 @@ from molt.cli.wasm_link_cache import (
     _wasm_link_cache_entry,
 )
 from tests.process_guard_common import (
+    close_owned_multiprocessing_child,
     close_owned_test_process,
     install_module_view,
     run_custody_subject_process,
@@ -1532,9 +1533,7 @@ def test_source_namespace_retirement_waits_for_real_peer_and_preserves_other_ver
     finally:
         parent.close()
         peer.close()
-        if child.is_alive():
-            child.terminate()
-        child.join(30)
+        close_owned_multiprocessing_child(child)
 
 
 def test_source_namespace_reclamation_failure_cannot_mix_wal_generations(

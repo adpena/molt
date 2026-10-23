@@ -178,9 +178,9 @@ prefer live code, tests, measurements and explicit user direction over stale pro
   authorities; identify what is already satisfied or intentionally superseded. Preserve unresolved
   signal with an indexed recovery path and explicit owner or question. An archive alone is not
   reconciliation, and age or a cache-like name is not evidence that source can be deleted.
-- Molt process cleanup may stop only a live-proved Molt-owned child or worker, never Codex, Claude,
-  app/renderer/server helpers, MCP/plugin processes, shell hosts, Git pollers, ancestors or
-  ambiguous host control-plane processes; keep evidence and repair custody if identity is unclear.
+- Molt process cleanup may stop only a live-proved Molt-owned child or worker; test observers use `tests/process_guard_common.py`.
+  Never stop Codex, Claude, app/renderer/server helpers, MCP/plugin processes, shell hosts,
+  Git pollers, ancestors or ambiguous host control-plane processes; preserve evidence and repair unclear custody.
 - Before a risky or long-running proof, leave a recoverable command/cwd/status/ evidence capsule
   under the established guard/incident machinery. Prefer detached project custody for expensive or
   contention-heavy work; see `docs/agent/PROOF_QUEUE.md` when that machinery is actually needed.
