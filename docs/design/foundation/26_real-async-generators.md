@@ -28,15 +28,22 @@ The `_poll` function receives `self` (the frame pointer) as its sole argument. I
 
 **The heap frame layout** (defined at `/Users/adpena/Projects/molt/src/molt/frontend/_types.py:265-269`):
 ```
-offset 0  (GEN_SEND_OFFSET=0):   send-value slot
-offset 8  (GEN_THROW_OFFSET=8):  pending throw-exception slot
-offset 16 (GEN_CLOSED_OFFSET=16): bool — generator exhausted
-offset 32 (GEN_YIELD_FROM_OFFSET=32): yield-from delegation target
+offset 0  (GEN_SEND_OFFSET=0):   send-value slot (edge)
+offset 8  (GEN_THROW_OFFSET=8):  pending throw-exception slot (edge)
+offset 16 (GEN_STATE_OFFSET=16): raw frame state word (never an edge)
+offset 24 (GEN_EXC_DEPTH_OFFSET=24): raw exception-stack depth (never an edge)
+offset 32 (GEN_YIELD_FROM_OFFSET=32): yield-from delegation target (edge)
 GEN_CONTROL_SIZE=48 bytes of control header
 offset 48+: spilled locals at 8 bytes each, deterministic name-sorted order
 ```
 
-The running/started flags live in `MoltHeader.flags` (`HEADER_FLAG_GEN_RUNNING`, `HEADER_FLAG_GEN_STARTED`), not in the frame payload.
+The frame state word (`FrameState` in `async_rt/generators.rs`) orders the
+lifecycle as CPython's `gi_frame_state`: Created < Suspended < Executing <
+Completed < Cleared. Entry is one compare-and-swap; completion and cycle
+clearing raise it monotonically. A poll returns the yielded or returned value
+itself and reports completion by storing `GENERATOR_RESUME_RETURNED` in its
+resume label; the runtime turns that report into `Completed` (HF-486). Native
+coroutines keep `HEADER_FLAG_CORO_RUNNING` and `HEADER_FLAG_CORO_STARTED`.
 
 **Spill model** (`_spill_async_temporaries`, lines 7775-7898): a pre-pass over the emitted op list, run at the end of compiling the `_poll` function, that detects every SSA value that is live across a `STATE_LABEL` boundary. For each such value it inserts `STORE_CLOSURE(self, offset, v)` before the `STATE_YIELD`/`STATE_TRANSITION` and `LOAD_CLOSURE(self, offset)` after the matching `STATE_LABEL`. Slot offsets are assigned in alphabetically-sorted name order to be deterministic (to fix non-determinism bug #34 that hash-seeded iteration order created). Every live-across-yield value, including temporaries, gets a dedicated closure slot even if the value has a 1-byte lifetime across the yield point.
 
@@ -483,7 +490,7 @@ Runtime files whose correctness must be preserved unchanged through all phases:
 - `/Users/adpena/Projects/molt/runtime/molt-runtime/src/async_rt/event_loop.rs` — asyncio event loop; unchanged by generator fusion
 
 Frontend files whose output the fusion pass consumes:
-- `/Users/adpena/Projects/molt/src/molt/frontend/_types.py:265-269` — `GEN_SEND_OFFSET`, `GEN_THROW_OFFSET`, `GEN_CLOSED_OFFSET`, `GEN_YIELD_FROM_OFFSET`, `GEN_CONTROL_SIZE`
+- `/Users/adpena/Projects/molt/src/molt/frontend/_types.py:265-269` — `GEN_SEND_OFFSET`, `GEN_THROW_OFFSET`, `GEN_YIELD_FROM_OFFSET`, `GEN_CONTROL_SIZE`, `GEN_RESUME_RETURNED`
 - `/Users/adpena/Projects/molt/src/molt/frontend/__init__.py:7775-7898` — `_spill_async_temporaries` (the frame-slot spill logic whose output the fusion pass must correctly parse)
 - `/Users/adpena/Projects/molt/src/molt/frontend/__init__.py:12046` and `:17695`, `:17959`, `:17962` — the `ALLOC_TASK` emission sites
 ---

@@ -752,14 +752,11 @@ pub(crate) unsafe fn visit_payload_owned_values(
                 crate::builtins::context::generator_context_stack_visit(ptr, |bits| {
                     visit_bits(bits, visit)
                 });
-                visit_bits(*(ptr.add(crate::GEN_SEND_OFFSET) as *const u64), visit);
-                visit_bits(*(ptr.add(crate::GEN_THROW_OFFSET) as *const u64), visit);
-                visit_bits(*(ptr.add(crate::GEN_CLOSED_OFFSET) as *const u64), visit);
-                visit_bits(*(ptr.add(crate::GEN_EXC_DEPTH_OFFSET) as *const u64), visit);
-                visit_bits(
-                    *(ptr.add(crate::GEN_YIELD_FROM_OFFSET) as *const u64),
-                    visit,
-                );
+                // The control region's raw words (state, exception depth)
+                // are never edges; only its edge slots are visited.
+                for offset in crate::GEN_EDGE_OFFSETS {
+                    visit_bits(*(ptr.add(offset) as *const u64), visit);
+                }
                 let payload_size = super::object_payload_size(ptr);
                 debug_assert_eq!(payload_size % std::mem::size_of::<u64>(), 0);
                 for offset in
@@ -1023,22 +1020,16 @@ pub(crate) unsafe fn terminal_detach_capacity(py: &PyToken<'_>, ptr: *mut u8) ->
 /// The caller reserves the sink before mutation and releases it only after this
 /// function has published every source empty.
 ///
-/// Detachment is terminal: the closed flag holds a bool, never an edge, and
-/// stays true so no finalizer or resumption re-enters the cleared body
-/// (CPython's `FRAME_CLEARED` state ranks above `FRAME_COMPLETED`).
+/// Detachment is terminal: the state becomes `Cleared`, which ranks above
+/// `Completed` as CPython's `FRAME_CLEARED` does, so no finalizer or
+/// resumption re-enters the cleared body. The raw control words are never
+/// taken as edges.
 pub(crate) unsafe fn detach_generator_owned_edges(ptr: *mut u8, sink: &mut DetachedEdgeSink) {
     unsafe {
-        for offset in [
-            crate::GEN_SEND_OFFSET,
-            crate::GEN_THROW_OFFSET,
-            crate::GEN_EXC_DEPTH_OFFSET,
-            crate::GEN_YIELD_FROM_OFFSET,
-        ] {
+        crate::async_rt::generators::generator_clear(ptr);
+        for offset in crate::GEN_EDGE_OFFSETS {
             sink.detach_if_heap(super::payload_refs::take(ptr, offset));
         }
-        ptr.add(crate::GEN_CLOSED_OFFSET)
-            .cast::<u64>()
-            .write(MoltObject::from_bool(true).bits());
         for bits in crate::builtins::exceptions::generator_exception_stack_take(ptr) {
             sink.detach_if_heap(bits);
         }

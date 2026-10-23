@@ -584,15 +584,18 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                 }
             )
         elif op.kind == "STATE_YIELD":
-            pair, next_state = op.args
+            value, next_state = op.args
             ctx.json_ops.append(
                 {
                     "kind": "state_yield",
-                    "args": [pair.name],
+                    "args": [value.name],
                     "value": next_state,
                     "out": op.result.name,
                 }
             )
+        elif op.kind == "STATE_SET":
+            (state,) = op.args
+            ctx.json_ops.append({"kind": "state_set", "value": state})
         elif op.kind == "GEN_SEND":
             gen, val = op.args
             ctx.json_ops.append(

@@ -1,5 +1,6 @@
 //! Activation locals and pre-entry frames project one registered layout.
 use super::*;
+use crate::async_rt::generators::FrameState;
 
 const GEN_POLL: u64 = 0x5eed_0001;
 const CORO_POLL: u64 = 0x5eed_0002;
@@ -27,10 +28,6 @@ fn dict(py: &PyToken<'_>) -> u64 {
 
 fn int(value: usize) -> u64 {
     MoltObject::from_int(value as i64).bits()
-}
-
-fn flag(value: bool) -> u64 {
-    MoltObject::from_bool(value).bits()
 }
 
 fn cell(value: u64) -> u64 {
@@ -237,7 +234,7 @@ fn created_and_suspended_generator_locals_follow_the_registered_layout() {
         // The compiled prologue boxes cell bindings and initializes body
         // locals; suspended views dereference exactly those cells.
         unsafe {
-            (*crate::header_from_obj_ptr(ptr)).fetch_or_flags(crate::HEADER_FLAG_GEN_STARTED)
+            crate::async_rt::generators::generator_set_state_for_test(ptr, FrameState::Suspended)
         };
         store_owned(py, ptr, BASE + 16, cell(int(5)));
         store_owned(py, ptr, BASE + 24, int(11));
@@ -262,12 +259,7 @@ fn created_and_suspended_generator_locals_follow_the_registered_layout() {
         take_error(py, "SystemError");
 
         unsafe {
-            crate::object::payload_refs::store_borrowed(
-                py,
-                ptr,
-                crate::GEN_CLOSED_OFFSET,
-                flag(true),
-            )
+            crate::async_rt::generators::generator_set_state_for_test(ptr, FrameState::Completed)
         };
         let closed = unsafe { activation_locals_bits(py, ptr) }.expect("closed locals");
         assert_eq!(
@@ -438,8 +430,10 @@ fn live_poll_frame_owns_locals_across_partial_cell_publication_and_terminal_unwi
                 let raw_cell = cell(int(19));
                 unsafe { crate::object::payload_refs::store_borrowed(py, ptr, BASE, raw_cell) };
                 unsafe {
-                    (*crate::header_from_obj_ptr(ptr))
-                        .fetch_or_flags(crate::HEADER_FLAG_GEN_STARTED)
+                    crate::async_rt::generators::generator_set_state_for_test(
+                        ptr,
+                        FrameState::Suspended,
+                    )
                 };
                 let baseline = refs(task);
                 let guard = FrameInvocationGuard::for_activation(py, ptr);
@@ -533,11 +527,9 @@ fn live_poll_frame_owns_locals_across_partial_cell_publication_and_terminal_unwi
                 // Marking a task terminal does not invalidate the live compiled frame's
                 // owned payload. Suspended views are empty; unwind snapshots keep locals.
                 unsafe {
-                    crate::object::payload_refs::store_borrowed(
-                        py,
+                    crate::async_rt::generators::generator_set_state_for_test(
                         ptr,
-                        crate::GEN_CLOSED_OFFSET,
-                        flag(true),
+                        FrameState::Completed,
                     )
                 };
                 let terminal = unsafe { activation_locals_bits(py, ptr) }.unwrap();

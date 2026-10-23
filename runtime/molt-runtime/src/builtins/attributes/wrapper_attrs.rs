@@ -668,7 +668,7 @@ unsafe fn coroutine_member_value(
         let header = header_from_obj_ptr(object);
         match operation {
             MemberOperation::CoroutineRunning => {
-                let running = ((*header).load_synchronized_flags() & HEADER_FLAG_GEN_RUNNING) != 0;
+                let running = ((*header).load_synchronized_flags() & HEADER_FLAG_CORO_RUNNING) != 0;
                 Some(MoltObject::from_bool(running).bits())
             }
             MemberOperation::CoroutineFrame => {
@@ -694,7 +694,7 @@ unsafe fn coroutine_member_value(
             }
             MemberOperation::CoroutineAwait => {
                 if (*header).load_synchronized_flags()
-                    & (HEADER_FLAG_GEN_RUNNING | HEADER_FLAG_TASK_DONE)
+                    & (HEADER_FLAG_CORO_RUNNING | HEADER_FLAG_TASK_DONE)
                     != 0
                 {
                     return Some(MoltObject::none().bits());

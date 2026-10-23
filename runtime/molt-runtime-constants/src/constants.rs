@@ -68,11 +68,22 @@ pub const fn wasm_table_base_fallback() -> u64 {
 pub const MAX_SMALL_LIST: usize = 16;
 pub const ITER_EXHAUSTED: usize = usize::MAX;
 
+// A generator's control region, the first `GENERATOR_CONTROL_BYTES` of its
+// payload. Edge slots own a boxed value that heap traversal visits and
+// detachment takes; raw words hold plain integers and are never edges.
+/// Edge: the value `send()` passes to the resumed body.
 pub const GEN_SEND_OFFSET: usize = 0;
+/// Edge: the exception `throw()` injects at the resumed yield.
 pub const GEN_THROW_OFFSET: usize = 8;
-pub const GEN_CLOSED_OFFSET: usize = 16;
+/// Raw word: the activation's frame state (`async_rt::generators::FrameState`).
+pub const GEN_STATE_OFFSET: usize = 16;
+/// Raw word: the exception-stack depth the body resumes at.
 pub const GEN_EXC_DEPTH_OFFSET: usize = 24;
+/// Edge: the iterator a `yield from` delegates to.
 pub const GEN_YIELD_FROM_OFFSET: usize = 32;
+/// Every control-region slot that owns a reference, the one layout authority
+/// for heap traversal and detachment.
+pub const GEN_EDGE_OFFSETS: [usize; 3] = [GEN_SEND_OFFSET, GEN_THROW_OFFSET, GEN_YIELD_FROM_OFFSET];
 
 pub const ASYNCGEN_GEN_OFFSET: usize = 0;
 pub const ASYNCGEN_RUNNING_OFFSET: usize = 8;

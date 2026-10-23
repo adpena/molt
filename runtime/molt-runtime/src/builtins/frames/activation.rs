@@ -24,6 +24,7 @@ use super::bindings::{
     frame_bindings_release_extras, frame_bindings_retire_activation, frame_policy_for_code, shared,
 };
 use super::namespace::admit_compiled_namespace;
+use crate::async_rt::generators::{FrameState, activation_frame_state};
 use crate::object::aux_header::{
     object_frame_bindings_bits, object_frame_code_bits, object_frame_locals_phase,
     object_frame_locals_prestart, object_mark_frame_locals_prestart, object_set_frame_locals_phase,
@@ -36,10 +37,9 @@ use crate::state::runtime_state::{
     StatefulLocalSlot, StatefulLocalsLayout, StatefulLocalsLease, release_stateful_locals_layout,
 };
 use crate::{
-    FRAME_STACK, HEADER_FLAG_GEN_RUNNING, HEADER_FLAG_GEN_STARTED, HEADER_FLAG_TASK_DONE, PyToken,
-    TYPE_ID_GENERATOR, TYPE_ID_STRING, TYPE_ID_TUPLE, alloc_dict_with_pairs, dec_ref_bits,
-    exception_pending, header_from_obj_ptr, inc_ref_bits, is_missing_bits, missing_bits,
-    obj_from_bits, object_type_id, raise_exception, runtime_state, to_i64,
+    FRAME_STACK, PyToken, TYPE_ID_GENERATOR, TYPE_ID_STRING, TYPE_ID_TUPLE, alloc_dict_with_pairs,
+    dec_ref_bits, exception_pending, inc_ref_bits, is_missing_bits, missing_bits, obj_from_bits,
+    object_type_id, raise_exception, runtime_state, to_i64,
 };
 
 /// Edges retained across an allocation that may run finalizers. Released
@@ -209,29 +209,8 @@ pub extern "C" fn molt_stateful_locals_register(
     })
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ActivationState {
-    Created,
-    Started,
-    Terminal,
-}
-
-unsafe fn activation_state(ptr: *mut u8) -> ActivationState {
-    unsafe {
-        let flags = (*header_from_obj_ptr(ptr)).load_synchronized_flags();
-        let terminal = if object_type_id(ptr) == TYPE_ID_GENERATOR {
-            crate::async_rt::generators::generator_closed(ptr)
-        } else {
-            (flags & HEADER_FLAG_TASK_DONE) != 0
-        };
-        if terminal {
-            ActivationState::Terminal
-        } else if (flags & HEADER_FLAG_GEN_STARTED) != 0 {
-            ActivationState::Started
-        } else {
-            ActivationState::Created
-        }
-    }
+unsafe fn activation_terminal(ptr: *mut u8) -> bool {
+    unsafe { activation_frame_state(ptr).is_terminal() }
 }
 
 unsafe fn payload_word(ptr: *mut u8, payload_size: usize, offset: usize) -> Option<u64> {
@@ -291,7 +270,7 @@ pub(crate) fn empty_locals_bits(py: &PyToken<'_>) -> Option<u64> {
 /// # Safety
 /// `ptr` must be a live generator or native coroutine task.
 pub(crate) unsafe fn activation_locals_bits(py: &PyToken<'_>, ptr: *mut u8) -> Option<u64> {
-    if unsafe { activation_state(ptr) } == ActivationState::Terminal {
+    if unsafe { activation_terminal(ptr) } {
         return owned_dict(py, &[]);
     }
     let result = unsafe { try_activation_binding_pairs(py, ptr) }.and_then(|pairs| {
@@ -449,7 +428,7 @@ unsafe fn try_activation_binding_pairs(
 /// # Safety
 /// `ptr` must be a live generator or native coroutine task.
 pub(crate) unsafe fn activation_finished(ptr: *mut u8) -> bool {
-    unsafe { activation_state(ptr) == ActivationState::Terminal }
+    unsafe { activation_terminal(ptr) }
 }
 
 /// The contents of a validated `str` name.
@@ -578,10 +557,12 @@ fn release_taken(py: &PyToken<'_>, taken: Vec<TakenBinding>, policy: FramePolicy
 /// keeps reading them, until the task dies. Control and scratch slots and the
 /// closure stay with the task object that owns them.
 ///
+/// `started` says whether the body ever ran.
+///
 /// # Safety
 /// `ptr` must be a live generator or native coroutine task under the GIL,
 /// whose compiled body no longer runs.
-pub(crate) unsafe fn activation_exit_bindings(py: &PyToken<'_>, ptr: *mut u8) {
+pub(crate) unsafe fn activation_exit_bindings(py: &PyToken<'_>, ptr: *mut u8, started: bool) {
     unsafe {
         let code_bits = object_frame_code_bits(ptr);
         if code_bits == 0 {
@@ -592,8 +573,6 @@ pub(crate) unsafe fn activation_exit_bindings(py: &PyToken<'_>, ptr: *mut u8) {
             Some(payload) => frame_bindings_policy(payload),
             None => frame_policy_for_code(py, code_bits),
         };
-        let started =
-            ((*header_from_obj_ptr(ptr)).load_synchronized_flags() & HEADER_FLAG_GEN_STARTED) != 0;
         if !started && !policy.releases_unstarted() {
             return;
         }
@@ -773,7 +752,7 @@ pub(crate) unsafe fn activation_write_binding(
         else {
             return frame_write_violation(py, "frame slot key is not a str");
         };
-        if activation_state(ptr) == ActivationState::Terminal {
+        if activation_terminal(ptr) {
             return frame_write_violation(py, "finished activation frame is not live");
         }
         let Some(layout) = activation_layout(py, ptr) else {
@@ -864,15 +843,15 @@ pub(crate) unsafe fn activation_frame_clear(
     policy: FramePolicy,
 ) -> Result<(), ()> {
     unsafe {
-        let flags = (*header_from_obj_ptr(ptr)).load_synchronized_flags();
-        if flags & HEADER_FLAG_GEN_RUNNING != 0 {
+        let state = activation_frame_state(ptr);
+        if state == FrameState::Executing {
             raise_exception::<u64>(py, "RuntimeError", "cannot clear an executing frame");
             return Err(());
         }
-        if activation_state(ptr) == ActivationState::Terminal {
+        if state.is_terminal() {
             return Ok(());
         }
-        let started = flags & HEADER_FLAG_GEN_STARTED != 0;
+        let started = state != FrameState::Created;
         if started && policy.pep667() {
             raise_exception::<u64>(py, "RuntimeError", "cannot clear a suspended frame");
             return Err(());
