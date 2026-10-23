@@ -135,10 +135,15 @@ monkeypatching.
 Each phase is one complete migration across the frontend, TIR, verifier, all backends and the
 runtime layout authority.
 
-0. **Per-resume runtime cost (HF-230)**: keep the exception state in the task header, not a
-   thread-local map; replace the global context mutex. Independent of the transform; measure
-   resume latency before and after. The debug-flag half is done: HF-F235 reads every runtime
-   flag once, through the generated closed type `RuntimeFlag`.
+0. **Per-resume runtime cost (HF-230)**: done. Each activation owns its exception state in one
+   word of its sidecar, and `ActivationExceptionScope` (`builtins/exceptions/activation.rs`) is
+   the one resume protocol of the generator, scheduler, task-poll and `block_on` sites. Entry
+   links the caller's innermost handled exception, as CPython's `_PyErr_GetTopmostException`
+   walks the `exc_info` chain (HF-495). Poll dispatch resolves a compiled poll without the
+   registry lock. Generator loop 300 to 238 ns/op, 9,141 to 7,956 instructions per item. Entry
+   and exit still take 11% of a resume, mostly thread-local access to four separate stacks. The
+   debug-flag half is HF-F235: every runtime flag is read once, through the generated closed
+   type `RuntimeFlag`.
 1. **Typed slots and the `ObjOrNull` spill rule**: closes HF-216's remaining item.
 2. **The TIR transform** replaces both frontend spill mechanisms (HF-104 becomes a verifier fact).
 3. **Locals in SSA within an activation and lazy frame materialization**, shared with HF-185.

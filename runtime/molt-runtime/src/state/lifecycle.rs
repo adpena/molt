@@ -41,12 +41,12 @@ use crate::object::utf8_cache::{
 };
 use crate::{
     ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, BLOCK_ON_TASK, CONTEXT_STACK, CURRENT_TASK,
-    CURRENT_TOKEN, EXCEPTION_STACK, FRAME_STACK, GENERATOR_EXCEPTION_STACKS, GENERATOR_RAISE,
-    GilGuard, GilReleaseGuard, MoltObject, PARSE_ARENA, TASK_RAISE_ACTIVE, TRACE_FRAME_PUSH_STACK,
-    TYPE_ID_DICT, TYPE_ID_FILE_HANDLE, TYPE_ID_MODULE, alloc_string,
-    builtin_classes_retire_identities, builtin_classes_shutdown, call_callable0, clear_exception,
-    clear_exception_type_cache, clear_thread_exception_for_teardown, dec_ref_bits,
-    default_cancel_tokens, dict_clear_in_place_shutdown, dict_get_in_place, exception_pending,
+    CURRENT_TOKEN, EXCEPTION_STACK, FRAME_STACK, GENERATOR_RAISE, GilGuard, GilReleaseGuard,
+    MoltObject, PARSE_ARENA, TASK_RAISE_ACTIVE, TRACE_FRAME_PUSH_STACK, TYPE_ID_DICT,
+    TYPE_ID_FILE_HANDLE, TYPE_ID_MODULE, alloc_string, builtin_classes_retire_identities,
+    builtin_classes_shutdown, call_callable0, clear_exception, clear_exception_type_cache,
+    clear_thread_exception_for_teardown, dec_ref_bits, default_cancel_tokens,
+    dict_clear_in_place_shutdown, dict_get_in_place, exception_pending,
     exceptions_clear_runtime_state, inc_ref_bits, intern_static_name, module_dict_bits,
     molt_file_flush, molt_get_attr_name, obj_from_bits, object_type_id, reset_ptr_registry,
     runtime_state,
@@ -648,9 +648,6 @@ fn clear_thread_local_state_without_ref_owning_ic(_py: &PyToken<'_>) -> bool {
         let mut stack = stack.borrow_mut();
         let _ = std::mem::take(&mut *stack);
     });
-    let generators = GENERATOR_EXCEPTION_STACKS
-        .try_with(|map| std::mem::take(&mut *map.borrow_mut()))
-        .unwrap_or_default();
     let _ = EXCEPTION_STACK.try_with(|stack| {
         let mut stack = stack.borrow_mut();
         let _ = std::mem::take(&mut *stack);
@@ -665,8 +662,7 @@ fn clear_thread_local_state_without_ref_owning_ic(_py: &PyToken<'_>) -> bool {
     // Every TLS owner and execution marker is detached before Python can run.
     // In particular no RefCell borrow survives a decref that can repopulate the
     // same context/exception stack from a finalizer.
-    changed |=
-        !contexts.is_empty() || !frames.is_empty() || !active.is_empty() || !generators.is_empty();
+    changed |= !contexts.is_empty() || !frames.is_empty() || !active.is_empty();
     if let Some(bits) = exception {
         dec_ref_bits(_py, bits);
     }
@@ -679,11 +675,6 @@ fn clear_thread_local_state_without_ref_owning_ic(_py: &PyToken<'_>) -> bool {
     // releases finish. The stack is already unlinked above.
     for frame in frames.into_iter().rev() {
         frame.exit(_py);
-    }
-    for stack in generators.into_values() {
-        for bits in stack {
-            dec_ref_bits(_py, bits);
-        }
     }
     let _ = PARSE_ARENA.try_with(|arena| arena.borrow_mut().clear());
     changed |= clear_attr_tls_caches(_py);
@@ -1108,25 +1099,8 @@ fn clear_task_state(_py: &PyToken<'_>, state: &RuntimeState) -> bool {
     // Detach the complete task/exception authority before any callback-bearing
     // reference is released. A finalizer can only publish into fresh state and
     // will therefore be observed by the next fixed-point pass.
-    let stacks = {
-        let mut guard = state.task_exception_stacks.lock().unwrap();
-        std::mem::take(&mut *guard)
-            .into_values()
-            .collect::<Vec<_>>()
-    };
-    changed |= !stacks.is_empty();
-    changed |= {
-        let mut guard = state.task_exception_handler_stacks.lock().unwrap();
-        !std::mem::take(&mut *guard).is_empty()
-    };
-    changed |= {
-        let mut guard = state.task_exception_depths.lock().unwrap();
-        !std::mem::take(&mut *guard).is_empty()
-    };
-    changed |= {
-        let mut guard = state.task_exception_baselines.lock().unwrap();
-        !std::mem::take(&mut *guard).is_empty()
-    };
+    // A task's saved exception state lives in its sidecar and retires with
+    // the task (`activation_exception_state_detach`).
     let pointers = {
         let mut guard = state.task_last_exceptions.lock().unwrap();
         guard
@@ -1267,13 +1241,6 @@ fn clear_task_state(_py: &PyToken<'_>, state: &RuntimeState) -> bool {
     changed |= state.pipe_transport_registry.clear();
     changed |= state.event_loop_registry.clear(_py);
 
-    for stack in stacks {
-        for bits in stack {
-            if !obj_from_bits(bits).is_none() {
-                dec_ref_bits(_py, bits);
-            }
-        }
-    }
     for ptr in pointers {
         dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
     }

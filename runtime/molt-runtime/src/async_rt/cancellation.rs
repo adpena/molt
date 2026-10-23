@@ -11,9 +11,7 @@ use crate::{
     ExceptionSentinel, HEADER_FLAG_BLOCK_ON, HEADER_FLAG_CANCEL_PENDING, HEADER_FLAG_SPAWN_RETAIN,
     MoltObject, PtrSlot, TYPE_ID_TUPLE, alloc_exception_from_class_bits, alloc_tuple, dec_ref_bits,
     exception_type_bits_from_name, header_from_obj_ptr, obj_from_bits, raise_exception,
-    runtime_state, string_obj_to_owned, task_exception_baseline_drop, task_exception_depth_drop,
-    task_exception_handler_stack_drop, task_exception_stack_drop, task_last_exception_drop,
-    type_name,
+    runtime_state, string_obj_to_owned, task_last_exception_drop, type_name,
 };
 
 use super::scheduler::{await_waiter_clear, wake_task_ptr};
@@ -387,10 +385,7 @@ pub(crate) fn clear_task_token(_py: &PyToken<'_>, task_ptr: *mut u8) {
     // The caller additionally owns its active queue item or manual call operand.
     let spawn_root = take_task_spawn_root(task_ptr);
     task_last_exception_drop(_py, task_ptr);
-    task_exception_handler_stack_drop(_py, task_ptr);
-    task_exception_stack_drop(_py, task_ptr);
-    task_exception_depth_drop(_py, task_ptr);
-    task_exception_baseline_drop(_py, task_ptr);
+    crate::builtins::exceptions::activation_exception_state_drop(_py, task_ptr);
     await_waiter_clear(_py, task_ptr);
     if let Some(bits) = spawn_root {
         dec_ref_bits(_py, bits);
