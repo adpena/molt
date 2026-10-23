@@ -955,10 +955,10 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .insert(key, Some(PtrSlot(task_ptr)));
             crate::CURRENT_TASK.with(|slot| slot.set(task_ptr));
-            CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(true));
+            exception_pending_flag().set(true);
 
             let transaction = UnraisableTransaction::begin(_py);
-            assert!(!CURRENT_EXCEPTION_PENDING.with(|pending| pending.get()));
+            assert!(!exception_pending_flag().get());
             drop(transaction);
             assert_eq!(ref_count(bits), baseline);
 
@@ -973,7 +973,7 @@ mod tests {
                     .expect("restored task exception edge")
             };
             crate::CURRENT_TASK.with(|slot| slot.set(std::ptr::null_mut()));
-            CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(false));
+            exception_pending_flag().set(false);
             map.clear_poison();
             dec_ref_bits(_py, MoltObject::from_ptr(restored.0).bits());
             dec_ref_bits(_py, bits);

@@ -153,14 +153,7 @@ mod tests {
                 WasmRuntimeImport::AsyncWorkPollAndExceptionPending,
                 WasmRuntimeReturn::RawBits,
             ),
-            (
-                WasmRuntimeImport::FrameInvocationEnter,
-                WasmRuntimeReturn::RawBits,
-            ),
-            (
-                WasmRuntimeImport::FrameInvocationExit,
-                WasmRuntimeReturn::BorrowedObject,
-            ),
+            (WasmRuntimeImport::ThreadRecord, WasmRuntimeReturn::RawBits),
             (
                 WasmRuntimeImport::DictSet,
                 WasmRuntimeReturn::BorrowedObject,

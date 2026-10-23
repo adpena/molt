@@ -493,42 +493,43 @@ impl SimpleBackend {
             &[],
             &[types::I64],
         );
-        // Inline exception flag optimization: fetch the flag pointer once
-        // per function and keep it in a dedicated stack slot. Using a
-        // Cranelift Variable here let SSA repair synthesize zero-valued
-        // placeholder predecessors in nested if/check_exception shapes,
-        // which could drop the live flag pointer on one edge and corrupt
-        // exception propagation. A stack slot keeps the invariant pointer
-        // available across arbitrary CFG without introducing block params.
-        // Generated async-work polls bypass this pure-exception lane in
-        // `handle_exception_control_op` and call the eval-breaker observer.
+        // The thread record (`molt_thread_record`): fetch its address once
+        // per invocation and keep it in a dedicated stack slot. Inline
+        // exception checks load its pending byte; direct Python calls write
+        // its invocation handoff. Using a Cranelift Variable here let SSA
+        // repair synthesize zero-valued placeholder predecessors in nested
+        // if/check_exception shapes, which could drop the live pointer on one
+        // edge and corrupt exception propagation. A stack slot keeps the
+        // invariant pointer available across arbitrary CFG without
+        // introducing block params. Generated async-work polls bypass the
+        // pure-exception lane in `handle_exception_control_op` and call the
+        // eval-breaker observer.
         let has_exc_handling = function_exception_label_id.is_some();
         let inline_exc_disabled = env_setting(BackendEnv::MOLT_BACKEND_INLINE_EXC_DISABLED)
             .as_deref()
             .map(parse_truthy_env)
             .unwrap_or(false);
-        let exc_pending_flag_ptr_fn = if has_exc_handling && !inline_exc_disabled {
-            Some(import_func_ref(
+        let inline_exception_checks = has_exc_handling && !inline_exc_disabled;
+        let makes_direct_python_calls = func_ir
+            .ops
+            .iter()
+            .any(|op| matches!(op.kind.as_str(), "call_guarded" | "call_func"));
+        let thread_record_fn = (inline_exception_checks || makes_direct_python_calls).then(|| {
+            import_func_ref(
                 &mut self.module,
                 &mut self.import_ids,
                 &mut builder,
                 &mut import_refs,
-                "molt_exception_pending_flag_ptr",
+                "molt_thread_record",
                 &[],
                 &[types::I64],
-            ))
-        } else {
-            None
-        };
-        let exc_flag_ptr_slot = if exc_pending_flag_ptr_fn.is_some() {
-            Some(builder.create_sized_stack_slot(StackSlotData::new(
-                StackSlotKind::ExplicitSlot,
-                8,
-                3,
-            )))
-        } else {
-            None
-        };
+            )
+        });
+        let thread_record_slot = thread_record_fn.map(|_| {
+            builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3))
+        });
+        // The pending-exception byte is the record's first byte.
+        let exc_flag_ptr_slot = thread_record_slot.filter(|_| inline_exception_checks);
         let local_profile_struct = needs_field_store_profile.then(|| {
             import_func_ref(
                 &mut self.module,
@@ -655,13 +656,13 @@ impl SimpleBackend {
             builder.inst_results(call)[0]
         });
 
-        // Fetch the exception flag pointer once in the entry block and keep
-        // it in a stack slot so later check_exception sites can load it
+        // Fetch the thread record once in the entry block and keep it in a
+        // stack slot so later exception checks and direct calls can load it
         // without re-entering Cranelift SSA variable repair.
-        if let (Some(slot), Some(flag_fn_ref)) = (exc_flag_ptr_slot, exc_pending_flag_ptr_fn) {
-            let call = builder.ins().call(flag_fn_ref, &[]);
-            let active_ptr = builder.inst_results(call)[0];
-            builder.ins().stack_store(pointer_type, active_ptr, slot, 0);
+        if let (Some(slot), Some(record_fn_ref)) = (thread_record_slot, thread_record_fn) {
+            let call = builder.ins().call(record_fn_ref, &[]);
+            let record = builder.inst_results(call)[0];
+            builder.ins().stack_store(pointer_type, record, slot, 0);
         }
 
         // ── Entry-block variable initialization ──────────────────────────
@@ -1719,6 +1720,7 @@ impl SimpleBackend {
                         &mut block_tracked_ptr,
                         &mut cleanup_roots,
                         local_dec_ref_obj,
+                        thread_record_slot,
                         &nbc,
                     );
                 }

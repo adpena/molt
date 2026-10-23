@@ -49,7 +49,7 @@ pub(crate) use locals_proxy::{
 pub(crate) use namespace::{
     CodeNamespace, CompiledCodeSlot, FrameInvocationGuard, acquire_pending_invocation_context,
     compiled_slot_for_code, globals_namespace_storage_bits, globals_namespace_storage_ptr,
-    take_invocation_namespace, take_pending_namespaces_for_teardown,
+    take_invocation_namespace,
 };
 
 /// The executing Python argument-zero slot, independent of ABI-only parameters.
@@ -1525,6 +1525,28 @@ mod tests {
         dec_ref_bits(_py, filename_bits);
         dec_ref_bits(_py, name_bits);
         (code_ptr, MoltObject::from_ptr(code_ptr).bits())
+    }
+
+    /// A function an invoker hands to the compiled frame of `code`: its entry
+    /// is `target` (the code's callable identity), its namespace `globals`,
+    /// and its builtins the `__builtins__` entry of `globals` when it has one.
+    /// The caller owns the returned function.
+    pub(super) fn alloc_invoked_function(
+        py: &crate::PyToken<'_>,
+        code: u64,
+        target: u64,
+        globals: u64,
+    ) -> *mut u8 {
+        let function = crate::builtins::functions::alloc_runtime_function_obj(py, target, 0);
+        assert!(!function.is_null());
+        unsafe {
+            assert!(crate::object::layout::function_set_code_bits(
+                py, function, code
+            ));
+            crate::object::layout::function_set_globals_bits(py, function, globals)
+                .expect("invoked function globals");
+        }
+        function
     }
 
     #[test]

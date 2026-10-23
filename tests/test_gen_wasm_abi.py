@@ -875,13 +875,13 @@ def test_runtime_return_contract_generated_rust_agrees_with_shared_boxed_project
     for name in (
         "exception_pending",
         "async_work_poll_and_exception_pending",
-        "frame_invocation_enter",
+        "thread_record",
+        "recursion_enter_fast",
     ):
         assert contracts[name] == "raw_bits"
         entry = next(entry for entry in data["import"] if entry["name"] == name)
         assert "callable_arity" not in entry
     for kind in (
-        "frame_invocation_exit",
         "trace_enter_slot",
         "trace_exit",
         "trace_set_line",
@@ -890,7 +890,11 @@ def test_runtime_return_contract_generated_rust_agrees_with_shared_boxed_project
     boxed_names = {
         row["runtime_name"] for row in manifest.runtime_boxed_call_specs(data)
     }
-    assert "molt_frame_invocation_exit" not in boxed_names
+    # A direct call hands its callee over through the thread record; the
+    # runtime keeps no invocation token protocol.
+    import_names = {entry["name"] for entry in data["import"]}
+    assert not {"frame_invocation_enter", "frame_invocation_exit"} & import_names
+    assert "molt_thread_record" not in boxed_names
     for name in ("dtype", "nbytes", "free", "numel", "realize", "contiguous"):
         runtime_name = f"molt_gpu_prim_{name}"
         assert runtime_name in data["non_runtime_callable_intrinsic"]

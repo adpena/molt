@@ -32,6 +32,8 @@ pub(crate) use runtime_state::{
     RuntimeState, clear_thread_runtime_state, runtime_extension_states_clear_and_drop,
     set_thread_runtime_state,
 };
+#[cfg(test)]
+pub(crate) use tls::molt_thread_record;
 pub(crate) use tls::{
     CONTEXT_STACK, ExecutionTls, FRAME_STACK, PARSE_ARENA, REPR_DEPTH, REPR_SET, REPR_STACK,
     TRACE_FRAME_PUSH_STACK, TRACEBACK_SUPPRESS, execution_tls,

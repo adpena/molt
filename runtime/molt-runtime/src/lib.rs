@@ -586,9 +586,9 @@ pub use crate::builtins::copy_mod::*;
 pub use crate::builtins::dbm_dumb::*;
 pub use crate::builtins::enum_ext::*;
 pub(crate) use crate::builtins::exceptions::{
-    ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, CURRENT_EXCEPTION_PENDING, EXCEPTION_STACK,
-    ExceptionSentinel, GENERATOR_EXCEPTION_STACKS, GENERATOR_RAISE, TASK_RAISE_ACTIVE,
-    alloc_exception, alloc_exception_from_class_bits, clear_exception, clear_exception_type_cache,
+    ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, EXCEPTION_STACK, ExceptionSentinel,
+    GENERATOR_EXCEPTION_STACKS, GENERATOR_RAISE, TASK_RAISE_ACTIVE, alloc_exception,
+    alloc_exception_from_class_bits, clear_exception, clear_exception_type_cache,
     clear_thread_exception_for_teardown, exception_cause_bits, exception_clear_reason_set,
     exception_context_align_depth, exception_context_bits, exception_context_fallback_pop,
     exception_context_fallback_push, exception_dict_bits, exception_handler_active,
