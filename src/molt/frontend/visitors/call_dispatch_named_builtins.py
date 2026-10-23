@@ -189,7 +189,8 @@ class CallNamedBuiltinDispatchMixin(
                 args.append(self._emit_const_value(b""))
             if len(args) > 1:
                 if len(args) == 2:
-                    args.append(self._emit_const_value(None))
+                    # Omitted errors is absent, not None: bytes(s, e, None) raises.
+                    args.append(self._emit_missing_value())
                 opcode = _BYTES_FROM_STR_OPS[name]
             else:
                 opcode = _BYTES_FROM_OBJ_OPS[name]
