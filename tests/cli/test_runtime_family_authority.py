@@ -1318,11 +1318,8 @@ def test_cargo_wrapper_policy_and_removal_keep_the_name_rule(rule):
     removed = cargo_execution_policy.without_sccache_compiler_wrappers(env)
     assert selected.rule is removed.rule is rule
     if rule is NameRule.WINDOWS:
-        assert selected.child_block() == {
-            "rustc_wrapper": "sccache",
-            "Cargo_Incremental": "0",
-        }
-        assert policies == ("sccache-disables-incremental",)
+        assert selected.child_block() == {"rustc_wrapper": "sccache"}
+        assert policies == ("sccache-profile-incremental",)
         assert removed.child_block() == {"Cargo_Incremental": "1"}
     else:
         assert selected.child_block() == {

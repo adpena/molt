@@ -68,11 +68,10 @@ mod asyncio_runtime;
 pub(crate) use asyncio_runtime::{
     AsyncioEventWaiterIndex, molt_asyncio_child_watcher_add, molt_asyncio_child_watcher_clear,
     molt_asyncio_child_watcher_pop, molt_asyncio_child_watcher_remove, molt_asyncio_enter_task,
-    molt_asyncio_event_loop_get, molt_asyncio_event_loop_get_current,
-    molt_asyncio_event_loop_policy_get, molt_asyncio_event_loop_policy_set,
-    molt_asyncio_event_loop_set, molt_asyncio_event_waiters_cleanup_token,
-    molt_asyncio_event_waiters_register, molt_asyncio_event_waiters_unregister,
-    molt_asyncio_leave_task, molt_asyncio_register_task,
+    molt_asyncio_event_loop_get_current, molt_asyncio_event_loop_policy_get,
+    molt_asyncio_event_loop_policy_set, molt_asyncio_event_loop_set,
+    molt_asyncio_event_waiters_cleanup_token, molt_asyncio_event_waiters_register,
+    molt_asyncio_event_waiters_unregister, molt_asyncio_leave_task, molt_asyncio_register_task,
     molt_asyncio_require_child_watcher_support, molt_asyncio_require_unix_socket_support,
     molt_asyncio_running_loop_get, molt_asyncio_running_loop_set,
     molt_asyncio_ssl_transport_orchestrate, molt_asyncio_task_last_exception_clear,
@@ -739,7 +738,10 @@ pub(crate) fn task_mark_done(_py: &PyToken<'_>, task_ptr: *mut u8) {
     }
     // The terminal transition hands the coroutine frame's bindings to a frame
     // object that shares them, or releases them.
-    unsafe { crate::builtins::frames::activation_exit_bindings(_py, task_ptr) };
+    let started = unsafe { (*crate::header_from_obj_ptr(task_ptr)).load_synchronized_flags() }
+        & crate::HEADER_FLAG_CORO_STARTED
+        != 0;
+    unsafe { crate::builtins::frames::activation_exit_bindings(_py, task_ptr, started) };
 }
 
 pub(crate) fn task_result_get(_py: &PyToken<'_>, task_ptr: *mut u8) -> Option<u64> {
@@ -1394,7 +1396,7 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
                 .unwrap()
                 .get_mut(&PtrSlot(task_ptr))
                 .and_then(Option::take);
-            crate::CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(false));
+            crate::builtins::exceptions::exception_pending_flag().set(false);
             trace_step("task_exc_slot_taken");
             let pending_bits = if let Some(exc_slot) = task_exc_slot {
                 MoltObject::from_ptr(exc_slot.0).bits()

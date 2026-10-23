@@ -131,7 +131,7 @@ def test_resolver_uses_only_supplied_namespace_config_and_environment(monkeypatc
     "flags,profile,opt,split",
     [
         (["--platform=wasi"], "release", "O3", False),
-        (["--platform=wasi", "--build-profile=dev"], "dev", "O1", False),
+        (["--platform=wasi", "--build-profile=dev"], "dev", None, False),
         (["--profile=browser"], "release", "Oz", True),
     ],
 )

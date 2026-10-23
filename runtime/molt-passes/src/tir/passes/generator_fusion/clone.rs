@@ -56,8 +56,8 @@ pub(super) struct ClonedPoll {
     /// The cloned block + op index holding the (single) `state_yield`.
     pub(super) yield_block: BlockId,
     pub(super) yield_idx: usize,
-    /// The yielded pair value (cloned).
-    pub(super) yield_pair: ValueId,
+    /// The yielded value (cloned).
+    pub(super) yield_value: ValueId,
     /// Cloned blocks terminating in `Return` (the exhausted / normal exits).
     pub(super) return_blocks: Vec<BlockId>,
 }
@@ -155,7 +155,7 @@ pub(super) fn exception_stack_values(poll: &TirFunction) -> HashSet<ValueId> {
 /// promoted read a copy of its reaching definition that keeps the reference the
 /// `ClosureLoad` returned (`owners`, design 20 §1.2). `arguments` holds the
 /// caller value for each argument position the plan reads. Returns `None`
-/// (bail) on a malformed poll: no `state_yield`, or one without its pair.
+/// (bail) on a malformed poll: no `state_yield`, or one without its value.
 pub(super) fn clone_and_rewrite_poll(
     poll: &TirFunction,
     caller: &mut TirFunction,
@@ -316,8 +316,11 @@ pub(super) fn clone_and_rewrite_poll(
             new_ops.push(const_none_op(none_for_control));
         }
         for (op_index, op) in src.ops.iter().enumerate() {
-            // Drop bookkeeping + the lone state_switch.
-            if op.opcode == OpCode::StateSwitch || is_bookkeeping_op(op) {
+            // Drop bookkeeping, the lone state_switch, and the completion
+            // reports (`state_set` before each return): a fused body has no
+            // frame state, and its returns become the loop exit.
+            if matches!(op.opcode, OpCode::StateSwitch | OpCode::StateSet) || is_bookkeeping_op(op)
+            {
                 continue;
             }
             // Frame accesses. A promoted store becomes a copy of its value that
@@ -361,11 +364,11 @@ pub(super) fn clone_and_rewrite_poll(
                 }
             }
             // state_yield: keep a marker copy (rewritten in wire_fused_loop). We
-            // record its location and pair operand, and DROP it from the op
+            // record its location and yielded value, and DROP it from the op
             // stream — the split happens at this index in the cloned block.
             if op.opcode == OpCode::StateYield {
-                let &pair = op.operands.first()?;
-                yield_block_idx = Some((new_bid, new_ops.len(), remap(pair, &value_map)));
+                let &value = op.operands.first()?;
+                yield_block_idx = Some((new_bid, new_ops.len(), remap(value, &value_map)));
                 continue;
             }
             // Drop the exception-stack restore-copies (a `Copy(exc_val, ..)`
@@ -457,13 +460,13 @@ pub(super) fn clone_and_rewrite_poll(
     // resolve the exception edge.
     transfer_label_id_map(poll, caller, &block_map, &label_remap, &poll.name);
 
-    let (yield_block, yield_idx, yield_pair) = yield_block_idx?;
+    let (yield_block, yield_idx, yield_value) = yield_block_idx?;
 
     Some(ClonedPoll {
         entry: entry_clone,
         yield_block,
         yield_idx,
-        yield_pair,
+        yield_value,
         return_blocks,
     })
 }

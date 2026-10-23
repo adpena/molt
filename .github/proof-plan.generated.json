@@ -9432,7 +9432,6 @@
       "local.backend-llvm.0": "cargo test --locked --profile release-fast -p molt-backend-native -p molt-backend --features molt-backend/native-backend,molt-backend/llvm --lib --test ir_contract_validation --no-fail-fast",
       "local.backend-luau.0": "cargo test --locked --profile dev-fast -p molt-backend-luau --features luau-backend --lib --no-fail-fast",
       "local.backend-native.0": "cargo test --locked --profile release-fast -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend,molt-backend/wasm-backend --lib --bins --no-fail-fast",
-      "local.bootstrap-stdlib.0": "python tools/check_stdlib_intrinsics.py --critical-allowlist",
       "local.browser-loader-deployment.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_driver_layout.py tests/test_browser_asset_closure.py tests/test_driver_cloudflare_verify.py tests/test_driver_cloudflare_worker.py tests/test_falcon_ocr_prompt_contract.py",
       "local.browser-loader-deployment.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 -k 'not (test_falcon_browser_driver_init_and_ocr_tokens_roundtrip or test_falcon_browser_driver_reuses_cached_weights_on_second_init or test_falcon_browser_driver_init_from_manifest_roundtrip)' tests/test_falcon_driver_scaffold.py",
       "local.browser-simd.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/tools/test_build_browser_simd.py tests/e2e/test_simd_differential.py tests/test_browser_compute_backend_semantics.py",
@@ -9519,6 +9518,7 @@
       "local.source-extension-package-sets.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.0 tests/cli/test_source_extension_set_registry.py tests/cli/test_source_extension_manifest_authority.py tests/cli/test_source_extension_link_requirements.py tests/cli/test_source_extension_producer.py tests/cli/test_source_build_environment_probe.py tests/cli/test_source_extension_candidate_attestation.py tests/cli/test_source_extension_candidate_transaction.py tests/cli/test_source_package_seal.py tests/test_exact_json.py tests/cli/test_external_native_scipy_package_seal.py tests/cli/test_atomic_io_authority.py tests/cli/test_python_module_names.py tests/cli/test_source_extension_runtime_imports.py tests/cli/test_source_extension_input_custody.py tests/cli/test_source_extension_target.py tests/cli/test_source_extension_language.py tests/cli/test_source_extension_compiler_target.py tests/cli/test_extension_wheel_retained_inputs.py tests/tools/test_native_link_benchmark.py tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel tests/cli/test_source_extension_invocation.py tests/cli/test_source_extension_compiler_inputs.py",
       "local.source-extension-proof-policy.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/cli/test_source_extension_link_inputs.py tests/tools/test_source_extension_proof_family.py tests/tools/test_target_derived_toolchains.py tests/tools/test_python_custody_bootstrap.py tests/tools/test_scientific_stack_versions.py",
       "local.source-extension-proof-policy.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=1.0 -k 'proof_queue_pact_witness or proof_queue_rejects_scipy or proof_queue_requires_explicit_scipy or rejects_expected_extension_identity_drift' tests/tools/test_proof_queue.py",
+      "local.stdlib-intrinsic-contracts.0": "python tools/check_stdlib_intrinsics.py --critical-allowlist",
       "local.stringprep-leaf.0": "cargo check --locked --manifest-path Cargo.toml -p molt-runtime-stringprep --lib",
       "local.stringprep-tables.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/test_gen_stringprep_tables.py",
       "local.structural-audit-records.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/tools/test_structural_audit_records.py",
@@ -9904,19 +9904,22 @@
       },
       {
         "command_ids": [
-          "local.bootstrap-stdlib.0"
+          "local.stdlib-intrinsic-contracts.0"
         ],
-        "description": "builtins/sys/importlib/_intrinsics: stdlib-intrinsic audits (Bootstrap Authority).",
+        "description": "Every stdlib module's intrinsic reads match the manifest and its full-coverage contract.",
         "gates": [
           "python tools/check_stdlib_intrinsics.py --critical-allowlist"
         ],
         "globs": [
-          "src/molt/stdlib/builtins.py",
-          "src/molt/stdlib/sys.py",
-          "src/molt/stdlib/importlib/**/*.py",
-          "src/molt/stdlib/_intrinsics.py"
+          "src/molt/stdlib/**/*.py",
+          "src/moltlib/**/*.py",
+          "runtime/molt-runtime/src/intrinsics/manifest.pyi",
+          "tools/check_stdlib_intrinsics.py",
+          "tools/stdlib_full_coverage_manifest.py",
+          "tools/stdlib_module_union.py",
+          "tools/stdlib_intrinsics_ratchet.json"
         ],
-        "name": "bootstrap-stdlib",
+        "name": "stdlib-intrinsic-contracts",
         "toolchains": [
           "python"
         ]
@@ -12645,9 +12648,6 @@
         "cargo",
         "git"
       ],
-      "local.bootstrap-stdlib.0": [
-        "python"
-      ],
       "local.browser-loader-deployment.pytest": [
         "python",
         "uv",
@@ -13074,6 +13074,9 @@
       "local.source-extension-proof-policy.pytest-select-0": [
         "python",
         "uv"
+      ],
+      "local.stdlib-intrinsic-contracts.0": [
+        "python"
       ],
       "local.stringprep-leaf.0": [
         "python",

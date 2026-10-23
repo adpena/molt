@@ -40,14 +40,13 @@ use crate::object::utf8_cache::{
     clear_utf8_count_tls,
 };
 use crate::{
-    ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, BLOCK_ON_TASK, CONTEXT_STACK,
-    CURRENT_EXCEPTION_PENDING, CURRENT_TASK, CURRENT_TOKEN, EXCEPTION_STACK, FRAME_STACK,
-    GENERATOR_EXCEPTION_STACKS, GENERATOR_RAISE, GilGuard, GilReleaseGuard, MoltObject,
-    PARSE_ARENA, TASK_RAISE_ACTIVE, TRACE_FRAME_PUSH_STACK, TYPE_ID_DICT, TYPE_ID_FILE_HANDLE,
-    TYPE_ID_MODULE, alloc_string, builtin_classes_retire_identities, builtin_classes_shutdown,
-    call_callable0, clear_exception, clear_exception_type_cache,
-    clear_thread_exception_for_teardown, dec_ref_bits, default_cancel_tokens,
-    dict_clear_in_place_shutdown, dict_get_in_place, exception_pending,
+    ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, BLOCK_ON_TASK, CONTEXT_STACK, CURRENT_TASK,
+    CURRENT_TOKEN, EXCEPTION_STACK, FRAME_STACK, GENERATOR_EXCEPTION_STACKS, GENERATOR_RAISE,
+    GilGuard, GilReleaseGuard, MoltObject, PARSE_ARENA, TASK_RAISE_ACTIVE, TRACE_FRAME_PUSH_STACK,
+    TYPE_ID_DICT, TYPE_ID_FILE_HANDLE, TYPE_ID_MODULE, alloc_string,
+    builtin_classes_retire_identities, builtin_classes_shutdown, call_callable0, clear_exception,
+    clear_exception_type_cache, clear_thread_exception_for_teardown, dec_ref_bits,
+    default_cancel_tokens, dict_clear_in_place_shutdown, dict_get_in_place, exception_pending,
     exceptions_clear_runtime_state, inc_ref_bits, intern_static_name, module_dict_bits,
     molt_file_flush, molt_get_attr_name, obj_from_bits, object_type_id, reset_ptr_registry,
     runtime_state,
@@ -334,6 +333,9 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, mode: Runtime
     clear_thread_exception_for_teardown(_py);
     trace_shutdown("run_atexit_callbacks");
     crate::builtins::atexit::atexit_run_exitfuncs_teardown(_py);
+    state
+        .interpreter_finalizing
+        .store(true, AtomicOrdering::Release);
     trace_shutdown("flush_stdio");
     flush_stdio_handles(_py, state);
     trace_shutdown("clear_utf8_caches");
@@ -627,14 +629,15 @@ fn clear_thread_local_state_without_ref_owning_ic(_py: &PyToken<'_>) -> bool {
     let exception = take_thread_exception_for_teardown(_py);
     let mut changed =
         exception.is_some() | clear_thread_asyncgen_hooks(_py) | clear_thread_context(_py);
-    let _ = CURRENT_EXCEPTION_PENDING.try_with(|pending| pending.set(false));
+    crate::builtins::exceptions::exception_pending_flag().set(false);
     let contexts = CONTEXT_STACK
         .try_with(|stack| std::mem::take(&mut *stack.borrow_mut()))
         .unwrap_or_default();
     let frames = FRAME_STACK
         .try_with(|stack| std::mem::take(&mut *stack.borrow_mut()))
         .unwrap_or_default();
-    let pending_namespaces = crate::builtins::frames::take_pending_namespaces_for_teardown();
+    // A handoff is borrowed from its invoker, which no longer runs.
+    super::execution_tls().pending_invocation.set(0);
     let _ = TRACE_FRAME_PUSH_STACK.try_with(|stack| {
         let _ = std::mem::take(&mut *stack.borrow_mut());
     });
@@ -657,16 +660,13 @@ fn clear_thread_local_state_without_ref_owning_ic(_py: &PyToken<'_>) -> bool {
     let _ = TASK_RAISE_ACTIVE.try_with(|flag| flag.set(false));
     let _ = BLOCK_ON_TASK.try_with(|cell| cell.set(std::ptr::null_mut()));
     let _ = CURRENT_TASK.try_with(|cell| cell.set(std::ptr::null_mut()));
-    let _ = CURRENT_EXCEPTION_PENDING.try_with(|pending| pending.set(false));
+    crate::builtins::exceptions::exception_pending_flag().set(false);
     let _ = CURRENT_TOKEN.try_with(|cell| cell.set(1));
     // Every TLS owner and execution marker is detached before Python can run.
     // In particular no RefCell borrow survives a decref that can repopulate the
     // same context/exception stack from a finalizer.
-    changed |= !contexts.is_empty()
-        || !frames.is_empty()
-        || !active.is_empty()
-        || !generators.is_empty()
-        || !pending_namespaces.is_empty();
+    changed |=
+        !contexts.is_empty() || !frames.is_empty() || !active.is_empty() || !generators.is_empty();
     if let Some(bits) = exception {
         dec_ref_bits(_py, bits);
     }
@@ -679,9 +679,6 @@ fn clear_thread_local_state_without_ref_owning_ic(_py: &PyToken<'_>) -> bool {
     // releases finish. The stack is already unlinked above.
     for frame in frames.into_iter().rev() {
         frame.exit(_py);
-    }
-    for bits in pending_namespaces {
-        dec_ref_bits(_py, bits);
     }
     for stack in generators.into_values() {
         for bits in stack {

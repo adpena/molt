@@ -28,9 +28,9 @@ def test_wires_rustc_wrapper_when_sccache_available(monkeypatch):
     env = {"MOLT_USE_SCCACHE": "1"}
     dx._ensure_sccache_wrapper(env)
     assert env.get("RUSTC_WRAPPER") == "/opt/sccache"
-    # sccache silently skips incremental units — enabling it MUST force this off,
-    # else the wrapper caches nothing (another silent degradation).
-    assert env.get("CARGO_INCREMENTAL") == "0"
+    # The Cargo profile decides incremental: workspace crates build
+    # incrementally and sccache caches registry crates.
+    assert "CARGO_INCREMENTAL" not in env
 
 
 def test_a_missing_pinned_sccache_is_never_downloaded(monkeypatch, tmp_path):
@@ -164,16 +164,19 @@ def test_cargo_build_env_incremental_on_when_sccache_off(monkeypatch):
     assert env["CARGO_INCREMENTAL"] == "1"
 
 
-def test_cargo_build_env_incremental_off_when_sccache_wrapper(monkeypatch):
+def test_cargo_build_env_leaves_incremental_to_the_profile_with_sccache(monkeypatch):
     import molt.cli.cargo_execution as ce
 
     monkeypatch.setenv("RUSTC_WRAPPER", "/opt/sccache")
     monkeypatch.delenv("CARGO_INCREMENTAL", raising=False)
     env = ce._cargo_build_env()
-    assert env["CARGO_INCREMENTAL"] == "0"  # sccache skips incremental units
+    # sccache refuses an explicit nonzero value; the profile decides.
+    assert "CARGO_INCREMENTAL" not in env
 
 
-def test_maybe_enable_sccache_forces_incremental_off(monkeypatch, tmp_path: Path):
+def test_maybe_enable_sccache_leaves_incremental_to_the_profile(
+    monkeypatch, tmp_path: Path
+):
     import molt.cli.cargo_execution as ce
 
     monkeypatch.setattr(ce, "pinned_sccache", lambda env: "/opt/sccache")
@@ -189,7 +192,7 @@ def test_maybe_enable_sccache_forces_incremental_off(monkeypatch, tmp_path: Path
     )
     ce._maybe_enable_sccache(env)
     assert env.get("RUSTC_WRAPPER", "").endswith("sccache")
-    assert env["CARGO_INCREMENTAL"] == "0"
+    assert "CARGO_INCREMENTAL" not in env
 
 
 # HF-105: the shared sccache server takes its temporary directory from the

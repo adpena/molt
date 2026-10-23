@@ -558,7 +558,9 @@ class _EventLoop(AbstractEventLoop):
         self, handler: Callable[["EventLoop", dict[str, Any]], Any] | None
     ) -> None:
         if handler is not None and not callable(handler):
-            raise TypeError("A callable object or None is expected")
+            raise TypeError(
+                f"A callable object or None is expected, got {handler!r}"
+            )
         _require_asyncio_intrinsic(
             _molt_event_loop_set_exception_handler, "event_loop_set_exception_handler"
         )(self._loop_handle, handler)
@@ -614,6 +616,8 @@ class _EventLoop(AbstractEventLoop):
         )
 
     def set_task_factory(self, factory: Callable[..., Task] | None) -> None:
+        if factory is not None and not callable(factory):
+            raise TypeError("task factory must be a callable or None")
         _require_asyncio_intrinsic(
             _molt_event_loop_set_task_factory, "event_loop_set_task_factory"
         )(self._loop_handle, factory)
@@ -1800,10 +1804,12 @@ def set_event_loop_policy(policy: AbstractEventLoopPolicy | None) -> None:
     _molt_asyncio_event_loop_policy_set(policy)
 
 def get_event_loop() -> EventLoop:
+    # CPython's get_event_loop (_asynciomodule.c) returns the running loop on
+    # every version; only without one does it consult the policy.
+    loop = _get_running_loop()
+    if loop is not None:
+        return loop
     if _VERSION_INFO >= (3, 14):
-        loop = _get_running_loop()
-        if loop is not None:
-            return loop
         raise RuntimeError(
             "There is no current event loop in thread %r."
             % _threading.current_thread().name

@@ -183,10 +183,10 @@ mod state;
 
 use internals::{exception_type_cache, module_cache};
 pub(crate) use state::{
-    ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, CURRENT_EXCEPTION_PENDING, EXCEPTION_STACK,
-    EXCEPTION_STACK_BASELINE, ExceptionContextFallback, ExceptionsRuntimeState,
-    GENERATOR_EXCEPTION_STACKS, GENERATOR_RAISE, TASK_RAISE_ACTIVE, THREAD_LAST_EXCEPTION,
-    exception_clear_reason_set, internals,
+    ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, EXCEPTION_STACK, EXCEPTION_STACK_BASELINE,
+    ExceptionContextFallback, ExceptionsRuntimeState, GENERATOR_EXCEPTION_STACKS, GENERATOR_RAISE,
+    TASK_RAISE_ACTIVE, THREAD_LAST_EXCEPTION, exception_clear_reason_set, exception_pending_flag,
+    internals,
 };
 use state::{
     LAST_EXCEPTION_COL, debug_exception_clear, debug_exception_flow, debug_exception_pending,
@@ -2088,7 +2088,7 @@ fn thread_last_exception_pending_slot() -> Option<PtrSlot> {
 fn thread_last_exception_take() -> Option<PtrSlot> {
     let ptr = THREAD_LAST_EXCEPTION.with(|slot| slot.replace(std::ptr::null_mut()));
     if current_task_key().is_none() {
-        CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(false));
+        exception_pending_flag().set(false);
     }
     if ptr.is_null() {
         None
@@ -2113,11 +2113,11 @@ pub(crate) fn sync_current_exception_pending(_py: &PyToken<'_>, task_ptr: *mut u
             .get(&PtrSlot(task_ptr))
             .is_some_and(Option::is_some)
     };
-    CURRENT_EXCEPTION_PENDING.with(|flag| flag.set(pending));
+    exception_pending_flag().set(pending);
 }
 
 pub(crate) fn exception_pending(_py: &PyToken<'_>) -> bool {
-    if !CURRENT_EXCEPTION_PENDING.with(|pending| pending.get()) {
+    if !exception_pending_flag().get() {
         return false;
     }
     let debug_pending = debug_exception_pending();
@@ -2132,7 +2132,7 @@ pub(crate) fn exception_pending(_py: &PyToken<'_>) -> bool {
         };
         let pending = pending_ptr.is_some();
         if !pending {
-            CURRENT_EXCEPTION_PENDING.with(|flag| flag.set(false));
+            exception_pending_flag().set(false);
         }
         if debug_pending
             && pending
@@ -2148,7 +2148,7 @@ pub(crate) fn exception_pending(_py: &PyToken<'_>) -> bool {
     }
     let pending = thread_last_exception_pending_slot().is_some();
     if !pending {
-        CURRENT_EXCEPTION_PENDING.with(|flag| flag.set(false));
+        exception_pending_flag().set(false);
     }
     if debug_pending
         && pending
@@ -2187,7 +2187,7 @@ pub(crate) fn take_thread_exception_for_teardown(_py: &PyToken<'_>) -> Option<u6
         .ok()
         .flatten();
     if current_task_key().is_none() {
-        let _ = CURRENT_EXCEPTION_PENDING.try_with(|pending| pending.set(false));
+        exception_pending_flag().set(false);
     }
     ptr.map(|ptr| MoltObject::from_ptr(ptr.0).bits())
 }
@@ -2859,7 +2859,7 @@ pub(crate) fn task_last_exception_drop(_py: &PyToken<'_>, ptr: *mut u8) {
         .get_mut(&PtrSlot(ptr))
         .and_then(Option::take);
     if current_task_ptr() == ptr {
-        CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(false));
+        exception_pending_flag().set(false);
     }
     if let Some(old_ptr) = old_ptr {
         let old_bits = MoltObject::from_ptr(old_ptr.0).bits();
@@ -3061,7 +3061,7 @@ pub(crate) fn clear_exception(_py: &PyToken<'_>) {
             .unwrap()
             .get_mut(&task_key)
             .and_then(Option::take);
-        CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(false));
+        exception_pending_flag().set(false);
         if let Some(old_ptr) = old_ptr {
             let old_bits = MoltObject::from_ptr(old_ptr.0).bits();
             dec_ref_bits(_py, old_bits);
@@ -6922,8 +6922,7 @@ mod tests {
             let thread_bits = MoltObject::from_ptr(thread_exc).bits();
             let task_a_bits = MoltObject::from_ptr(task_a_exc).bits();
             let task_b_bits = MoltObject::from_ptr(task_b_exc).bits();
-            let flag_ptr =
-                super::exception_state_abi::molt_exception_pending_flag_ptr() as *const bool;
+            let flag_ptr = crate::state::molt_thread_record() as *const bool;
             assert!(!flag_ptr.is_null());
 
             record_exception(_py, thread_exc);

@@ -62,7 +62,7 @@ def cargo_profile_directory(cargo_profile: str) -> str:
 
 
 CI_CARGO_POLICY_SCHEMA = "molt.ci-resource-policy.v2"
-SCCACHE_INCREMENTAL_POLICY = "sccache-disables-incremental"
+SCCACHE_INCREMENTAL_POLICY = "sccache-profile-incremental"
 SCCACHE_SERVER_TEMP_POLICY = "sccache-server-temp-dir"
 SCCACHE_SERVER_ENDPOINT_POLICY = "sccache-server-private-endpoint"
 SCCACHE_SERVER_ENDPOINT_ENV_NAMES = ("SCCACHE_SERVER_UDS", "SCCACHE_SERVER_PORT")
@@ -397,16 +397,23 @@ def normalize_cargo_environment(
     Cargo accepts compiler wrappers through both direct Rust variables and
     ``build.*`` configuration environment variables.  Every subprocess boundary
     must inspect the complete family: checking only ``RUSTC_WRAPPER`` leaves
-    probes and workspace wrappers able to inherit the invalid
-    sccache-plus-incremental combination, or a caller's scratch ``TMPDIR`` that
-    a server it starts would keep (see ``sccache_server_temp_dir``). When
-    sccache is selected, normalization also prepares its durable temporary
-    directory through ``sccache_client_environment``; it starts no process.
+    probes and workspace wrappers able to inherit a ``CARGO_INCREMENTAL`` that
+    sccache refuses, or a caller's scratch ``TMPDIR`` that a server it starts
+    would keep (see ``sccache_server_temp_dir``). When sccache is selected,
+    normalization also prepares its durable temporary directory through
+    ``sccache_client_environment``; it starts no process.
+
+    Under sccache the Cargo profile decides incremental compilation. sccache
+    refuses an explicit nonzero ``CARGO_INCREMENTAL``, so normalization removes
+    it; Cargo then builds only workspace and path crates incrementally, and
+    sccache still caches every registry crate. An explicit ``0`` stays: CI sets
+    it, because incremental state never outlives a CI job.
     """
 
     child = ProcessEnvironmentBuilder(os.environ if environ is None else environ)
     if sccache_compiler_wrappers(child):
-        child["CARGO_INCREMENTAL"] = "0"
+        if child.get("CARGO_INCREMENTAL", "0") != "0":
+            del child["CARGO_INCREMENTAL"]
         selected, pinned = sccache_client_environment(child)
         return selected, (SCCACHE_INCREMENTAL_POLICY, *pinned)
     if default_incremental is not None and "CARGO_INCREMENTAL" not in child:

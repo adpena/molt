@@ -270,11 +270,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             crate::molt_asyncio_running_loop_set as *const (),
         )),
         #[cfg(feature = "stdlib_asyncio")]
-        "molt_asyncio_event_loop_get" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_asyncio_event_loop_get",
-            crate::molt_asyncio_event_loop_get as *const (),
-        )),
-        #[cfg(feature = "stdlib_asyncio")]
         "molt_asyncio_event_loop_get_current" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_asyncio_event_loop_get_current",
             crate::molt_asyncio_event_loop_get_current as *const (),

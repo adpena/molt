@@ -5,7 +5,7 @@ pub(super) fn exception_last_public_bits(_py: &PyToken<'_>) -> u64 {
     // With no raised owner, return the handled owner or None. This
     // keeps `exception_last` in sync with the inline `check_exception`
     // flag byte that the Cranelift backend uses.
-    if !CURRENT_EXCEPTION_PENDING.with(|pending| pending.get()) {
+    if !exception_pending_flag().get() {
         if let Some(bits) = exception_context_active_bits() {
             inc_ref_bits(_py, bits);
             return bits;
@@ -48,7 +48,7 @@ pub(super) fn exception_last_public_bits(_py: &PyToken<'_>) -> u64 {
             inc_ref_bits(_py, bits);
             return bits;
         }
-        CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(false));
+        exception_pending_flag().set(false);
         return MoltObject::none().bits();
     }
     let ptr = thread_last_exception_pending_slot();
@@ -87,7 +87,7 @@ pub(super) fn exception_last_public_bits(_py: &PyToken<'_>) -> u64 {
 /// Borrow from the canonical pending slot without changing raised state or RC.
 /// The caller holds the GIL and must not invoke Python while using this borrow.
 fn pending_exception_slot(_py: &PyToken<'_>) -> Option<PtrSlot> {
-    if !CURRENT_EXCEPTION_PENDING.with(|pending| pending.get()) {
+    if !exception_pending_flag().get() {
         return None;
     }
     if let Some(task_key) = current_task_key() {
@@ -148,7 +148,7 @@ pub(super) fn exception_last_pending_bits(_py: &PyToken<'_>) -> u64 {
     }
 
     if current_task_key().is_some() {
-        CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(false));
+        exception_pending_flag().set(false);
     }
     if debug_exception_flow() {
         eprintln!("molt exc last_pending task=0x0 kind=none");
@@ -421,16 +421,6 @@ fn service_async_work(_py: &PyToken<'_>) -> bool {
     let drain_failed =
         molt_cpython_abi::api::pending_calls::make_pending_calls_at_runtime_safepoint() != 0;
     drain_failed || exception_pending(_py)
-}
-
-/// Returns a pointer to the current thread's pending-exception byte.
-/// The native Cranelift backend uses this to inline the exception check
-/// as a single byte load + branch, avoiding the full function call
-/// overhead of `molt_exception_pending_fast` on the happy path.
-///
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_exception_pending_flag_ptr() -> u64 {
-    CURRENT_EXCEPTION_PENDING.with(|pending| pending.as_ptr() as u64)
 }
 
 #[unsafe(no_mangle)]

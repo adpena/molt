@@ -67,7 +67,7 @@ class BuildRequest:
     diagnostics_file: str | None = None
     diagnostics_verbosity: str | None = None
     portable: bool = False
-    wasm_opt_level: str = "Oz"
+    wasm_opt_level: str | None = "Oz"
     precompile: bool = False
     wasm_profile: str = "auto"
     snapshot: bool = False

@@ -230,9 +230,26 @@ depth, thread-local policy mirror, or cold-path synchronization exists.
 Compiled entry (`molt_trace_enter_slot`) is the sole owner of Python frame
 creation; callable dispatch never manufactures a second frame. Each code slot
 publishes an owned code/globals pair under the runtime execution token. Dynamic
-function invocation transfers exact callable code, captured globals and builtins through a scoped,
-slot-keyed, single-use handoff. Typed generated calls and runtime dispatch use
-the same handoff, independently of their machine return ABI.
+function invocation transfers exact callable code, captured globals and builtins
+through a scoped, slot-keyed, single-use handoff. Typed generated calls and
+runtime dispatch use the same handoff, independently of their machine return
+ABI.
+
+The handoff is one word of the thread record (`ExecutionTls`, the
+`THREAD_RECORD_*` layout in `molt-codegen-abi`): the invoker's callable, a
+function object or a resumed activation's task, borrowed for the call. The
+invoker keeps the callable alive, publishes it before the call and restores the
+outer word when the call returns; runtime dispatch does this through
+`FrameInvocationGuard`, and compiled direct calls with two plain stores into
+the record whose address `molt_thread_record` lends once per invocation. The
+entry of the compiled slot the callable's code names takes the word (clears it)
+and retains the namespace its frame keeps, read from the callable at entry, as
+CPython 3.11+ builds the callee's `_PyInterpreterFrame` from the function object
+(`_PyFrame_PushUnchecked`, `Include/internal/pycore_frame.h`). The same record
+holds the pending-exception byte that inline exception checks load and the
+thread's Python recursion depth, as CPython keeps both on `PyThreadState`.
+Direct calls charge that depth without entering the object runtime
+(`molt_recursion_enter_fast`); the limit stays runtime policy.
 
 Frame entry returns `None`, not its borrowed code identity. The frame stack
 owns the transferred code, globals and builtins until exit; disposing an unbound
@@ -698,7 +715,8 @@ syntax, not caller overrides, lexical type hints, or bound-method guesses.
 Positional object dispatch binds the actual descriptor result, including self.
 Both guarded and inline direct calls retain the invocation context handoff.
 
-Teardown detaches slots and invocation handoffs before callback-capable decrefs.
+Teardown detaches slots and clears the borrowed invocation handoff before
+callback-capable decrefs.
 
 Regression authorities: `builtins/frames/namespace_tests.rs`, suspended-task
 tests in `async_rt/poll.rs` and `object/aux_header.rs`, module lookup tests, and

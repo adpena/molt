@@ -14,23 +14,25 @@
 //! ```
 //!
 //! and **splices** `P`'s body into the caller, eliminating the heap frame
-//! (`AllocTask` → `molt_task_new`), the per-yield `(value, done)` pair tuple,
-//! the indirect `_poll` call, and the `STATE_SWITCH` dispatch. The generator's
-//! own control flow becomes the fused loop; each `STATE_YIELD(pair)` binds the
+//! (`AllocTask` → `molt_task_new`), the consumer's `IterNext` pair, the
+//! indirect `_poll` call, and the `STATE_SWITCH` dispatch. The generator's own
+//! control flow becomes the fused loop; each `STATE_YIELD(value)` binds the
 //! element directly to the consumer's for-target and runs the consumer body
 //! inline.
 //!
 //! ## What the splice actually rebuilds
 //!
 //! A generator `_poll` lowers to a **linear / structured** TIR body: a
-//! `state_switch` marker op, then code interleaved with `state_yield(pair,
+//! `state_switch` marker op, then code interleaved with `state_yield(value,
 //! next_state)` ops, with the resume-after-yield being the *fall-through* (the
 //! state dispatch CFG that the native/LLVM backends reconstruct from the
 //! `next_state` ids does NOT exist as TIR edges). The frame slots are MEMORY:
 //! `closure_load(self, offset)` / `closure_store(self, offset, v)` where
 //! `offset < GEN_CONTROL_BYTES` (48) are the control slots (send=0, throw=8,
-//! closed=16) and `offset >= 48` are the generator's captured params + spilled
-//! locals.
+//! yield-from=32) and `offset >= 48` are the generator's captured params +
+//! spilled locals. Each normal return reports completion with `state_set`
+//! before it; a fused body has no frame state, so the clone drops the report
+//! and the return becomes the loop exit.
 //!
 //! The fused form is the generator's own control flow, with the consumer body
 //! spliced in at the yield and the frame promoted to SSA (`slots.rs`):
@@ -42,7 +44,7 @@
 //!           definition; a join its stores reach takes the slot as a block
 //!           argument ...
 //!   yield site (P's yield block, up to the yield):
-//!       elem = pair[0]; br consumer
+//!       elem = copy(value); br consumer
 //!   consumer:
 //!       <original consumer body using elem>
 //!       br post_yield            // continue
@@ -67,8 +69,9 @@
 //!
 //! Fusion runs before the terminal drop plane and places no reference
 //! operation: DropInsertion owns every reference of the fused body (design 20
-//! §1.2). The element is the owned result of `Index(pair, 0)`, as the eliminated
-//! `IterNext` pair's element was. Each promoted read replaces a `ClosureLoad`,
+//! §1.2). The element is a copy of the yielded value that keeps the reference
+//! the yield handed its consumer, as the eliminated `IterNext` pair's element
+//! was owned. Each promoted read replaces a `ClosureLoad`,
 //! whose result was owned, and keeps that reference through
 //! `ownership_lattice_min::Replacements`. So do the frame's own references: each
 //! promoted store's to the value it stored, and each parameter slot's to its
@@ -106,9 +109,10 @@ pub(in crate::tir::passes::generator_fusion) use self::types::FusionCandidate;
 
 /// Byte size of the generator control header. Frame offsets `< GEN_CONTROL_BYTES`
 /// are the control slots — `GEN_SEND_OFFSET=0` (the `.send()` value),
-/// `GEN_THROW_OFFSET=8` (the pending `.throw()` exception), `GEN_CLOSED_OFFSET=16`
-/// (the exhausted flag), `GEN_YIELD_FROM_OFFSET=32` (the delegation target);
-/// offsets `>= GEN_CONTROL_BYTES` are the generator's captured params + spilled
-/// locals. Mirrors `GEN_CONTROL_SIZE` in `src/molt/frontend/_types.py` and
+/// `GEN_THROW_OFFSET=8` (the pending `.throw()` exception),
+/// `GEN_YIELD_FROM_OFFSET=32` (the delegation target), and the runtime's raw
+/// state and exception-depth words at 16 and 24, which compiled bodies never
+/// touch; offsets `>= GEN_CONTROL_BYTES` are the generator's captured params +
+/// spilled locals. Mirrors `GEN_CONTROL_SIZE` in `src/molt/frontend/_types.py` and
 /// `crate::GENERATOR_CONTROL_BYTES`.
 pub(super) const GEN_CONTROL_BYTES: i64 = 48;

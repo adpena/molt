@@ -76,8 +76,6 @@ STDLIB_REQUIRED_INTRINSICS_BY_MODULE: dict[str, tuple[str, ...]] = {
     ),
     "_asyncio": (
         "molt_asyncio_enter_task",
-        "molt_asyncio_event_loop_get",
-        "molt_asyncio_event_loop_policy_get",
         "molt_asyncio_leave_task",
         "molt_asyncio_register_task",
         "molt_asyncio_running_loop_get",
@@ -565,8 +563,6 @@ STDLIB_REQUIRED_INTRINSICS_BY_MODULE: dict[str, tuple[str, ...]] = {
     # Module-local loads only: ref/type/count/refs are delegated to _weakref;
     # ReferenceType construction owns registration and callback-free interning.
     "weakref": (
-        "molt_weakref_finalize_track",
-        "molt_weakref_finalize_untrack",
         "molt_weakcontainer_clear",
         "molt_weakcontainer_contains",
         "molt_weakcontainer_dead",

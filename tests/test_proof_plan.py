@@ -2304,7 +2304,8 @@ def test_wasm_backend_prewarm_admits_the_consumer_compiler(
         )
         assert {name: environment[name] for name in inherited} == inherited
         assert environment["RUSTC_WRAPPER"] == "/opt/cache/sccache"
-        assert environment["CARGO_INCREMENTAL"] == "0"
+        # sccache never sees a nonzero CARGO_INCREMENTAL; an ambient CI zero stays.
+        assert environment.get("CARGO_INCREMENTAL", "0") == "0"
         assert environment["MOLT_BACKEND_DAEMON"] == "0"
 
 
@@ -2354,7 +2355,8 @@ def test_wasm_python_consumers_share_prebuild_entrypoint_and_wrapper_selection(
             "molt.cli",
         )
     # The proof chooses a wrapper once; prebuild and consumer rows must not
-    # silently erase that choice. The shared policy still disables incremental.
+    # silently erase that choice. The shared policy removes the nonzero
+    # CARGO_INCREMENTAL that sccache refuses, so the Cargo profile decides.
     monkeypatch.setenv("RUSTC_WRAPPER", "/selected/sccache")
     monkeypatch.setenv("CARGO_INCREMENTAL", "1")
     monkeypatch.setenv("MOLT_BUILD_PYTHON", "/selected/build-python")
@@ -2367,8 +2369,8 @@ def test_wasm_python_consumers_share_prebuild_entrypoint_and_wrapper_selection(
             memory_share=None,
         )
         assert environment["RUSTC_WRAPPER"] == "/selected/sccache"
-        assert environment["CARGO_INCREMENTAL"] == (
-            "0" if "cargo" in row.toolchains else "1"
+        assert environment.get("CARGO_INCREMENTAL") == (
+            None if "cargo" in row.toolchains else "1"
         )
         assert environment["MOLT_BUILD_PYTHON"] == "/selected/build-python"
 
@@ -3128,9 +3130,10 @@ def test_sccache_environment_policy_covers_every_rust_proof_family(
         environment, applied = proof_plan._command_environment(
             PLAN, command, 30, environment=dict(os.environ), memory_share=None
         )
-        assert environment["CARGO_INCREMENTAL"] == "0", command.id
+        # sccache never sees a nonzero CARGO_INCREMENTAL; an ambient CI zero stays.
+        assert environment.get("CARGO_INCREMENTAL", "0") == "0", command.id
         assert applied == (
-            "sccache-disables-incremental",
+            "sccache-profile-incremental",
             "sccache-server-temp-dir",
             "sccache-server-private-endpoint",
         ), command.id

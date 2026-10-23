@@ -42,7 +42,7 @@ pub(crate) fn take_raised(_py: &PyToken<'_>) -> RaisedSnapshot {
             }
         }
     };
-    CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(false));
+    exception_pending_flag().set(false);
     raised
 }
 
@@ -72,7 +72,7 @@ pub(crate) fn resolve_raised(_py: &PyToken<'_>, saved: &mut Option<RaisedSnapsho
                 // Publication transfers the saved strong edge to TLS.
                 *saved = None;
                 if current_task_key().is_none() {
-                    CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(true));
+                    exception_pending_flag().set(true);
                 }
                 if !old.is_null() {
                     dec_ref_bits(_py, MoltObject::from_ptr(old).bits());
@@ -92,7 +92,7 @@ pub(crate) fn resolve_raised(_py: &PyToken<'_>, saved: &mut Option<RaisedSnapsho
                 // Map publication transfers the saved strong edge.
                 *saved = None;
                 if current_task_key() == Some(key) {
-                    CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(true));
+                    exception_pending_flag().set(true);
                 }
                 if let Some(old) = old {
                     dec_ref_bits(_py, MoltObject::from_ptr(old.0).bits());

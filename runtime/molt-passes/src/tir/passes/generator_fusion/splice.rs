@@ -212,7 +212,7 @@ fn apply_fusion_staged(
     let clone = clone_and_rewrite_poll(poll, caller, plan, &arguments, &mut owners)?;
 
     // --- Wire the fused loop. ---
-    if !wire_fused_loop(caller, candidate, &clone, preheader_init_ops) {
+    if !wire_fused_loop(caller, candidate, &clone, preheader_init_ops, &mut owners) {
         return None;
     }
 

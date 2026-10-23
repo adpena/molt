@@ -1,6 +1,7 @@
 # Typed suspension state machines
 
-Status: proposed, 2026-10-15. Ledger: HF-229 (transform), HF-230 (per-resume runtime cost).
+Status: proposed, 2026-10-15; the frame-state word and the tuple-free yield landed with
+HF-486 (2026-10-23). Ledger: HF-229 (transform), HF-230 (per-resume runtime cost), HF-486.
 Supersedes the frame-layout and cost sections of
 [foundation/26_real-async-generators.md](foundation/26_real-async-generators.md); its generator
 elision ladder (tiers A–C) stays the plan for frames that never escape.
@@ -15,7 +16,7 @@ runtime call.
 | Event | Cost today (code read on main, 2026-10-15) |
 |---|---|
 | Read or write a local in a stateful body | `LOAD_CLOSURE`/`STORE_CLOSURE`: one runtime entry; an incref on load; incref + decref on store; a raw int is boxed first (`lowering/local_bindings.py:1001-1014`, `function_abi.rs:1837-1877`) |
-| `yield` | a `(value, done)` tuple allocation (`async_gen.py:833-903`, `ops_iter.rs:1622-1625`) |
+| `yield` | a `(value, done)` tuple allocation (`async_gen.py:833-903`, `ops_iter.rs:1622-1625`); gone since HF-486, except for the IR iterator pair that `yield from` still builds per delegated item |
 | Resume (`molt_generator_send`) | a runtime entry; an exception-stack swap through a thread-local `HashMap`; a context stack behind a global `Mutex<HashMap>` locked twice; 4 incref + 4 decref and a vector push (`generators.rs:449-555`, `exceptions.rs:2575-2584`, `context.rs:46-60`, `frames/namespace.rs:258-288`). Debug flags cost one bit test since HF-F235 (`runtime_flags.rs`); before it, each resume read `MOLT_TRACE_GENERATOR_STATE` from the environment and each WASM poll read two more names |
 | `await` | a generic call to `molt_get_awaitable`, `molt_future_poll`, two new frame slots per site |
 
@@ -79,8 +80,11 @@ semantics that CPython lacks.
    materialization read only that table.
 4. **Overlapping layout**: Rust's fixed prefix plus per-state variants inside each region. The
    header holds the state word, the exception state, the lazily created frame object and the
-   yield-from target. States CREATED, RUNNING and CLEARED are reserved; free-threaded builds enter
-   RUNNING with a compare-and-swap, which also yields "generator already executing".
+   yield-from target. Since HF-486 a generator's state word is a raw atomic `FrameState` at
+   payload offset 16, ordered as CPython's `gi_frame_state` (Created < Suspended < Executing <
+   Completed < Cleared); entry is one compare-and-swap, which also yields "generator already
+   executing", and completion and cycle clearing raise it monotonically. Native coroutines still
+   keep two header bits and `TASK_DONE`.
 5. **Frame homes as a private alias class that cannot throw.** Only the resume path and frame
    materialization read it, so the optimizer can promote homes to SSA in loops and sink stores to
    the next suspension or frame-observing call. Each call site and suspension carries a frame-state
@@ -88,6 +92,10 @@ semantics that CPython lacks.
    authority HF-185 needs for synchronous frames; build it once.
 6. **Typed resume protocol.** The poll writes its value through an out-word and reports a terminal
    state for completion, as `molt_iter_next_unboxed` already does (HF-217); the per-yield tuple goes.
+   Landed (HF-486): the poll's return register is the out-word, and a generator body's normal
+   return stores `GENERATOR_RESUME_RETURNED` in its resume label, as a Rust coroutine reports
+   `Returned` through its discriminant; the runtime turns the report into `Completed` and resumes
+   through one typed step.
 7. **Elision.** Keep `generator_fusion` (ZipPy's generator peeling gave 3.58x); require that the
    generator does not escape and that every consumer exit runs `close()` semantics. For
    `await f()` with a known, non-escaping callee, embed the callee frame in the caller frame.
@@ -134,5 +142,7 @@ runtime layout authority.
 1. **Typed slots and the `ObjOrNull` spill rule**: closes HF-216's remaining item.
 2. **The TIR transform** replaces both frontend spill mechanisms (HF-104 becomes a verifier fact).
 3. **Locals in SSA within an activation and lazy frame materialization**, shared with HF-185.
-4. **Out-word resume protocol** removes the per-yield tuple.
+4. **Out-word resume protocol** removes the per-yield tuple. Done for a generator's own yields
+   (HF-486: generator loop 458 to 313 ns/op, 12,848 to 9,247 instructions per item); the
+   yield-from delegate pair remains (HF-229).
 5. **Elision** extensions (callee-frame embedding for `await`).

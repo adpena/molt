@@ -211,239 +211,16 @@ pub(crate) struct WeakRefEntry {
 #[derive(Clone)]
 pub(crate) struct AtexitCallbackEntry {
     pub(crate) registration_id: u64,
-    pub(crate) kind: AtexitCallbackKind,
     pub(crate) func_bits: u64,
     pub(crate) args_bits: u64,
     pub(crate) kwargs_bits: u64,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AtexitCallbackKind {
-    Python,
-    WeakrefFinalizerRunner,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum WeakrefRunnerState {
-    Available,
-    Registered,
-    Cleared,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct WeakFinalizerId {
-    slot: usize,
-    generation: u64,
-}
-
-#[derive(Debug)]
-struct WeakFinalizerSlot {
-    bits: u64,
-    generation: u64,
-    order_prev: Option<usize>,
-    order_next: Option<usize>,
-}
-
-#[derive(Debug)]
-pub(crate) struct WeakFinalizerPrepared {
-    index: HashMap<u64, WeakFinalizerId>,
-    slots: Vec<Option<WeakFinalizerSlot>>,
-    free_slots: Vec<usize>,
-}
-
-impl WeakFinalizerPrepared {
-    pub(crate) fn try_with_capacity(capacity: usize) -> Result<Self, ()> {
-        let mut index = HashMap::new();
-        index.try_reserve(capacity).map_err(|_| ())?;
-        let mut slots = Vec::new();
-        slots.try_reserve_exact(capacity).map_err(|_| ())?;
-        let mut free_slots = Vec::new();
-        free_slots.try_reserve_exact(capacity).map_err(|_| ())?;
-        Ok(Self {
-            index,
-            slots,
-            free_slots,
-        })
-    }
-
-    pub(crate) fn capacity(&self) -> usize {
-        self.index
-            .capacity()
-            .min(self.slots.capacity())
-            .min(self.free_slots.capacity())
-    }
-}
-
-/// Stable LIFO order and an O(1) identity index share the same slot authority.
-/// The generation prevents a recycled slot from ever validating a stale id.
-pub(crate) struct WeakFinalizerRegistry {
-    index: HashMap<u64, WeakFinalizerId>,
-    slots: Vec<Option<WeakFinalizerSlot>>,
-    free_slots: Vec<usize>,
-    order_head: Option<usize>,
-    order_tail: Option<usize>,
-    next_generation: u64,
-    #[cfg(test)]
-    growth_count: usize,
-}
-
-impl WeakFinalizerRegistry {
-    fn new() -> Self {
-        Self {
-            index: HashMap::new(),
-            slots: Vec::new(),
-            free_slots: Vec::new(),
-            order_head: None,
-            order_tail: None,
-            next_generation: 1,
-            #[cfg(test)]
-            growth_count: 0,
-        }
-    }
-
-    pub(crate) fn len(&self) -> usize {
-        self.index.len()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn is_empty(&self) -> bool {
-        self.index.is_empty()
-    }
-
-    pub(crate) fn contains(&self, bits: u64) -> bool {
-        self.index.contains_key(&bits)
-    }
-
-    pub(crate) fn capacity(&self) -> usize {
-        self.index
-            .capacity()
-            .min(self.slots.capacity())
-            .min(self.free_slots.capacity())
-    }
-
-    pub(crate) fn can_insert(&self) -> bool {
-        self.next_generation != u64::MAX
-            && self.index.len() < self.index.capacity()
-            && (!self.free_slots.is_empty() || self.slots.len() < self.slots.capacity())
-    }
-
-    pub(crate) fn generation_available(&self) -> bool {
-        self.next_generation != u64::MAX
-    }
-
-    /// Replace all allocation-bearing stores with externally prepared buffers.
-    /// Migration is allocation-free and the displaced empty stores are dropped
-    /// by the caller after releasing the registry lock.
-    pub(crate) fn install_prepared(
-        &mut self,
-        mut prepared: WeakFinalizerPrepared,
-    ) -> Result<WeakFinalizerPrepared, WeakFinalizerPrepared> {
-        let required = match self.index.len().checked_add(1) {
-            Some(required) => required,
-            None => return Err(prepared),
-        };
-        if prepared.capacity() < required {
-            return Err(prepared);
-        }
-        for (bits, id) in self.index.drain() {
-            prepared.index.insert(bits, id);
-        }
-        prepared.slots.append(&mut self.slots);
-        prepared.free_slots.append(&mut self.free_slots);
-        std::mem::swap(&mut prepared.index, &mut self.index);
-        std::mem::swap(&mut prepared.slots, &mut self.slots);
-        std::mem::swap(&mut prepared.free_slots, &mut self.free_slots);
-        #[cfg(test)]
-        {
-            self.growth_count += 1;
-        }
-        Ok(prepared)
-    }
-
-    pub(crate) fn insert_prepared(&mut self, bits: u64) -> Result<bool, ()> {
-        if self.contains(bits) {
-            return Ok(false);
-        }
-        if !self.can_insert() {
-            return Err(());
-        }
-        let generation = self.next_generation;
-        let next_generation = generation.checked_add(1).ok_or(())?;
-        if self
-            .order_tail
-            .is_some_and(|tail| self.slots.get(tail).is_none_or(|entry| entry.is_none()))
-        {
-            return Err(());
-        }
-        let slot = if let Some(slot) = self.free_slots.pop() {
-            slot
-        } else {
-            let slot = self.slots.len();
-            self.slots.push(None);
-            slot
-        };
-        let id = WeakFinalizerId { slot, generation };
-        self.slots[slot] = Some(WeakFinalizerSlot {
-            bits,
-            generation,
-            order_prev: self.order_tail,
-            order_next: None,
-        });
-        if let Some(tail) = self.order_tail {
-            if let Some(tail_entry) = self.slots.get_mut(tail).and_then(Option::as_mut) {
-                tail_entry.order_next = Some(slot);
-            }
-        } else {
-            self.order_head = Some(slot);
-        }
-        self.order_tail = Some(slot);
-        self.index.insert(bits, id);
-        self.next_generation = next_generation;
-        Ok(true)
-    }
-
-    pub(crate) fn remove(&mut self, bits: u64) -> Option<u64> {
-        let id = *self.index.get(&bits)?;
-        let entry = self.slots.get(id.slot)?.as_ref()?;
-        if entry.bits != bits || entry.generation != id.generation {
-            return None;
-        }
-        let (order_prev, order_next) = (entry.order_prev, entry.order_next);
-        self.index.remove(&bits);
-        if let Some(prev) = order_prev {
-            if let Some(entry) = self.slots.get_mut(prev).and_then(Option::as_mut) {
-                entry.order_next = order_next;
-            }
-        } else {
-            self.order_head = order_next;
-        }
-        if let Some(next) = order_next {
-            if let Some(entry) = self.slots.get_mut(next).and_then(Option::as_mut) {
-                entry.order_prev = order_prev;
-            }
-        } else {
-            self.order_tail = order_prev;
-        }
-        let entry = self.slots[id.slot].take()?;
-        self.free_slots.push(id.slot);
-        Some(entry.bits)
-    }
-
-    pub(crate) fn pop_lifo(&mut self) -> Option<u64> {
-        let tail = self.order_tail?;
-        let bits = self.slots.get(tail)?.as_ref()?.bits;
-        self.remove(bits)
-    }
-}
-
-/// One lock owns exit callback ordering, monotonic registration identities,
-/// weakref-finalizer publication, and its runner. Keeping these facts together
-/// makes publication atomic without an independent flag that can get ahead of
-/// the callback it describes.
+/// One lock owns exit callback ordering and monotonic registration
+/// identities. `weakref.finalize` registers its own exit function here, as
+/// CPython's does, so finalizers need no second registry.
 pub(crate) struct ExitRegistry {
     pub(crate) callbacks: Vec<AtexitCallbackEntry>,
-    pub(crate) weakref_finalizers: WeakFinalizerRegistry,
-    pub(crate) weakref_runner_state: WeakrefRunnerState,
     pub(crate) next_callback_id: u64,
 }
 
@@ -451,8 +228,6 @@ impl ExitRegistry {
     pub(crate) fn new() -> Self {
         Self {
             callbacks: Vec::new(),
-            weakref_finalizers: WeakFinalizerRegistry::new(),
-            weakref_runner_state: WeakrefRunnerState::Available,
             next_callback_id: 1,
         }
     }
@@ -609,6 +384,10 @@ pub(crate) struct RuntimeState {
     pub(crate) gc: crate::object::gc::GcRuntimeState,
     pub(crate) gc_running: AtomicBool,
     pub(crate) gc_last_failure: AtomicU8,
+    /// CPython's interpreter `finalizing` fact (`sys.is_finalizing()`): set
+    /// once the atexit phase has run, before module and root teardown, in
+    /// `Py_FinalizeEx` order. Never cleared for this runtime state.
+    pub(crate) interpreter_finalizing: AtomicBool,
     pub(crate) builtin_classes: std::sync::atomic::AtomicPtr<BuiltinClasses>,
     pub(crate) cpython: crate::cpython_abi_hooks::CpythonRuntimeState,
     pub(crate) interned: InternedNames,
@@ -769,6 +548,7 @@ impl RuntimeState {
             gc: crate::object::gc::GcRuntimeState::new(),
             gc_running: AtomicBool::new(false),
             gc_last_failure: AtomicU8::new(0),
+            interpreter_finalizing: AtomicBool::new(false),
             builtin_classes: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
             cpython: crate::cpython_abi_hooks::CpythonRuntimeState::new(),
             interned: InternedNames::new(),
@@ -2967,59 +2747,6 @@ mod tests {
         registry.next_callback_id = u64::MAX;
         assert_eq!(registry.allocate_callback_id(), None);
         assert_eq!(registry.next_callback_id, u64::MAX);
-    }
-
-    #[test]
-    fn weak_finalizer_registry_churn_is_indexed_lifo_and_geometric() {
-        let mut registry = WeakFinalizerRegistry::new();
-        let mut target = 8;
-        for bits in 1..=10_000_u64 {
-            if !registry.can_insert() {
-                let prepared = WeakFinalizerPrepared::try_with_capacity(target)
-                    .expect("prepared finalizer storage");
-                drop(
-                    registry
-                        .install_prepared(prepared)
-                        .expect("install finalizer storage"),
-                );
-                target = target.checked_mul(2).expect("test capacity");
-            }
-            assert_eq!(registry.insert_prepared(bits), Ok(true));
-        }
-        assert_eq!(registry.len(), 10_000);
-        assert!(registry.growth_count <= 12);
-        assert!(registry.contains(5_000));
-        assert_eq!(registry.remove(5_000), Some(5_000));
-        assert!(!registry.contains(5_000));
-
-        let mut previous = u64::MAX;
-        let mut drained = 0;
-        while let Some(bits) = registry.pop_lifo() {
-            assert!(bits < previous);
-            assert_ne!(bits, 5_000);
-            previous = bits;
-            drained += 1;
-        }
-        assert_eq!(drained, 9_999);
-        assert!(registry.is_empty());
-    }
-
-    #[test]
-    fn weak_finalizer_generation_exhaustion_is_transactional() {
-        let mut registry = WeakFinalizerRegistry::new();
-        let prepared =
-            WeakFinalizerPrepared::try_with_capacity(8).expect("prepared finalizer storage");
-        drop(
-            registry
-                .install_prepared(prepared)
-                .expect("install finalizer storage"),
-        );
-        registry.next_generation = u64::MAX;
-        assert!(!registry.generation_available());
-        assert_eq!(registry.insert_prepared(1), Err(()));
-        assert!(registry.is_empty());
-        assert!(registry.order_head.is_none());
-        assert!(registry.order_tail.is_none());
     }
 
     #[test]

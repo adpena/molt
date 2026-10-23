@@ -4,6 +4,22 @@ use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use molt_ir::tir::op_kinds_generated::simpleir_kind_references_defined_function;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Exact executable symbol references carried by a function. The declarative
+/// opcode roles own ordinary references; compiler-owned GPU descriptors own
+/// their embedded body identities. Callers decide whether a target is defined,
+/// external, or forbidden across their boundary; this collector does not infer
+/// companion symbols or treat arbitrary string literals as references.
+pub fn visit_function_reference_targets(function: &crate::FunctionIR, mut visit: impl FnMut(&str)) {
+    super::app_callable_manifest::visit_gpu_descriptor_body_symbols(function, &mut visit);
+    for op in &function.ops {
+        if simpleir_kind_references_defined_function(&op.kind)
+            && let Some(name) = op.s_value.as_ref()
+        {
+            visit(name);
+        }
+    }
+}
+
 /// Dead-function elimination: remove functions that are never referenced from
 /// any reachable function.  The entry function (first in the list, typically
 /// `<module>`) is always retained; any function reachable from it through
@@ -61,15 +77,12 @@ pub fn reachable_function_names(
     let mut references: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
 
     for func in functions {
-        let mut refs = super::app_callable_manifest::gpu_descriptor_body_symbols(func);
-        for op in &func.ops {
-            if simpleir_kind_references_defined_function(&op.kind)
-                && let Some(name) = op.s_value.as_ref()
-                && defined.contains(name.as_str())
-            {
-                refs.insert(name.clone());
+        let mut refs = BTreeSet::new();
+        visit_function_reference_targets(func, |name| {
+            if defined.contains(name) {
+                refs.insert(name.to_owned());
             }
-        }
+        });
         references.insert(func.name.clone(), refs);
     }
 

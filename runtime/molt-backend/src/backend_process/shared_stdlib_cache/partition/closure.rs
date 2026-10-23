@@ -1,34 +1,5 @@
 use std::io;
 
-fn stdlib_partition_reference_kind(kind: &str) -> bool {
-    matches!(
-        kind,
-        "call"
-            | "call_internal"
-            | "func_new"
-            | "func_new_closure"
-            | "func_new_builtin"
-            | "code_new"
-            | "call_guarded"
-            | "call_indirect"
-            | "alloc_task"
-            | "generator_create"
-            | "coro_create"
-            | "stateful_locals_register"
-            | "task_new"
-            | "generator_send"
-            | "call_func"
-            | "call_method"
-            | "import_from"
-            | "import_name"
-            | "class_def"
-            | "decorator"
-            | "super_call"
-            | "yield_from"
-            | "await"
-    )
-}
-
 pub(crate) fn shared_stdlib_partition_closure_issue(
     stdlib_funcs: &[molt_backend::FunctionIR],
     all_function_names: &std::collections::BTreeSet<String>,
@@ -37,20 +8,11 @@ pub(crate) fn shared_stdlib_partition_closure_issue(
         stdlib_funcs.iter().map(|func| func.name.as_str()).collect();
     let mut missing: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for func in stdlib_funcs {
-        for op in &func.ops {
-            if !stdlib_partition_reference_kind(op.kind.as_str()) {
-                continue;
-            }
-            let Some(target) = op.s_value.as_deref() else {
-                continue;
-            };
-            if !all_function_names.contains(target) {
-                continue;
-            }
-            if !partition_names.contains(target) {
+        molt_tir::passes::visit_function_reference_targets(func, |target| {
+            if all_function_names.contains(target) && !partition_names.contains(target) {
                 missing.insert(format!("{} -> {}", func.name, target));
             }
-        }
+        });
     }
     if missing.is_empty() {
         return None;

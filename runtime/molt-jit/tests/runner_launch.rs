@@ -191,7 +191,7 @@ pub extern "C" fn molt_exception_pending_fast() -> u64 {{
     0
 }}
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_exception_pending_flag_ptr() -> u64 {{
+pub extern "C" fn molt_thread_record() -> u64 {{
     std::ptr::addr_of!(EXCEPTION_PENDING) as u64
 }}
 #[unsafe(no_mangle)]

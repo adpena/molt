@@ -220,7 +220,7 @@ pub extern "C" fn molt_inc_ref_obj(_: u64) {{}}
 #[no_mangle]
 pub extern "C" fn molt_exception_pending_fast() -> u64 {{ 0 }}
 #[no_mangle]
-pub extern "C" fn molt_exception_pending_flag_ptr() -> u64 {{
+pub extern "C" fn molt_thread_record() -> u64 {{
     core::ptr::addr_of!(EXCEPTION_PENDING) as u64
 }}
 #[no_mangle]
@@ -377,7 +377,7 @@ pub extern "C" fn molt_dec_ref(_: u64) {}
 #[no_mangle]
 pub extern "C" fn molt_exception_pending_fast() -> u64 { unsafe { EXCEPTION_PENDING as u64 } }
 #[no_mangle]
-pub extern "C" fn molt_exception_pending_flag_ptr() -> u64 {
+pub extern "C" fn molt_thread_record() -> u64 {
     core::ptr::addr_of!(EXCEPTION_PENDING) as u64
 }
 #[no_mangle]
@@ -1891,7 +1891,7 @@ pub unsafe extern "C" fn molt_unpack_sequence(pair: u64, count: u64, output: u64
 #[no_mangle]
 pub extern "C" fn molt_exception_pending_fast() -> u64 { unsafe { EXCEPTION_PENDING as u64 } }
 #[no_mangle]
-pub extern "C" fn molt_exception_pending_flag_ptr() -> u64 {
+pub extern "C" fn molt_thread_record() -> u64 {
     core::ptr::addr_of!(EXCEPTION_PENDING) as u64
 }
 #[no_mangle]
@@ -2580,7 +2580,7 @@ pub extern "C" fn molt_inc_ref_obj(_: u64) {{}}
 #[no_mangle]
 pub extern "C" fn molt_exception_pending_fast() -> u64 {{ 0 }}
 #[no_mangle]
-pub extern "C" fn molt_exception_pending_flag_ptr() -> u64 {{
+pub extern "C" fn molt_thread_record() -> u64 {{
     core::ptr::addr_of!(EXCEPTION_PENDING) as u64
 }}
 #[no_mangle]
@@ -2919,7 +2919,7 @@ fn subscript_words(values:&[u64], expected:&[u64]) -> bool {
     unsafe {construct(words.as_ptr() as u64,3)}
 }
 #[no_mangle] pub extern "C" fn molt_exception_pending_fast()->u64 {unsafe {PENDING as u64}}
-#[no_mangle] pub extern "C" fn molt_exception_pending_flag_ptr()->u64 {core::ptr::addr_of!(PENDING) as u64}
+#[no_mangle] pub extern "C" fn molt_thread_record()->u64 {core::ptr::addr_of!(PENDING) as u64}
 #[no_mangle] pub extern "C" fn molt_async_work_poll_and_exception_pending()->u64 {molt_exception_pending_fast()}
 #[no_mangle] pub extern "C" fn fixed_reset(failure:u64, ctor_failure:u64) {
     assert_eq!(fixed_live(),0); ATTEMPTS.store(0,SeqCst); CALLS.store(0,SeqCst);

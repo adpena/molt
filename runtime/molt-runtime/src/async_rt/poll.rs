@@ -422,19 +422,8 @@ pub(crate) unsafe fn call_poll_fn(_py: &PyToken<'_>, poll_fn_addr: u64, task_ptr
         };
         // Resumption transports creation-time code and namespace into the compiler's
         // real frame entry; it must not introduce a second visible Python frame.
-        let [globals_bits, builtins_bits, code_bits] =
-            crate::object::aux_header::object_frame_context_bits(task_ptr);
-        let Some(_frame_invocation) =
-            crate::builtins::frames::FrameInvocationGuard::for_activation_namespace(
-                _py,
-                code_bits,
-                globals_bits,
-                builtins_bits,
-                MoltObject::from_ptr(task_ptr).bits(),
-            )
-        else {
-            return MoltObject::none().bits() as i64;
-        };
+        let _frame_invocation =
+            crate::builtins::frames::FrameInvocationGuard::for_activation(_py, task_ptr);
         let result = {
             #[cfg(target_arch = "wasm32")]
             {
@@ -509,6 +498,8 @@ pub(crate) unsafe fn call_poll_fn(_py: &PyToken<'_>, poll_fn_addr: u64, task_ptr
                     };
                     let mut code_name = "<none>".to_string();
                     let mut code_file = "<none>".to_string();
+                    let [_, _, code_bits] =
+                        crate::object::aux_header::object_frame_context_bits(task_ptr);
                     if code_bits != 0
                         && let Some(code_ptr) = crate::maybe_ptr_from_bits(code_bits)
                     {
@@ -880,6 +871,22 @@ mod tests {
                 (*crate::header_from_obj_ptr(crate::obj_from_bits(rebound).as_ptr().unwrap()))
                     .ref_count_snapshot()
             };
+            // An invoker hands over a function: `code_bits` under `globals`, with
+            // the builtins `globals` names when the function is made.
+            let invoked = |globals: u64| {
+                let function = crate::builtins::functions::alloc_runtime_function_obj(py, poll, 0);
+                assert!(!function.is_null());
+                unsafe {
+                    assert!(crate::object::layout::function_set_code_bits(
+                        py, function, code_bits
+                    ));
+                    crate::object::layout::function_set_globals_bits(py, function, globals)
+                        .unwrap();
+                }
+                function
+            };
+            let release =
+                |function: *mut u8| dec_ref_bits(py, MoltObject::from_ptr(function).bits());
 
             for kind in [
                 crate::TASK_KIND_GENERATOR,
@@ -895,9 +902,11 @@ mod tests {
                         builtins,
                     ));
                 }
-                let creation = FrameInvocationGuard::for_namespace(py, code_bits, rebound).unwrap();
+                let creator = invoked(rebound);
+                let creation = FrameInvocationGuard::for_function(py, creator);
                 let task = crate::molt_task_new(poll, crate::GEN_CONTROL_SIZE as u64, kind);
                 drop(creation);
+                release(creator);
                 let ptr = crate::obj_from_bits(task).as_ptr().unwrap();
                 assert_eq!(object_frame_globals_bits(ptr), rebound);
                 assert_eq!(object_frame_builtins_bits(ptr), builtins);
@@ -933,7 +942,8 @@ mod tests {
                     "retained code must be visible to GC"
                 );
 
-                let calling = FrameInvocationGuard::for_namespace(py, code_bits, caller).unwrap();
+                let caller_fn = invoked(caller);
+                let calling = FrameInvocationGuard::for_function(py, caller_fn);
                 crate::molt_trace_enter_slot(0);
                 for _ in 0..2 {
                     assert_eq!(
@@ -1018,6 +1028,7 @@ mod tests {
                 }
                 crate::molt_trace_exit();
                 drop(calling);
+                release(caller_fn);
                 dec_ref_bits(py, task);
                 assert_eq!(
                     unsafe {
@@ -1040,7 +1051,8 @@ mod tests {
                     "captured builtins must retire exactly once"
                 );
             }
-            let calling = FrameInvocationGuard::for_namespace(py, code_bits, caller).unwrap();
+            let caller_fn = invoked(caller);
+            let calling = FrameInvocationGuard::for_function(py, caller_fn);
             crate::molt_trace_enter_slot(0);
             let native_task = crate::molt_task_new(
                 poll,
@@ -1056,6 +1068,7 @@ mod tests {
             );
             crate::molt_trace_exit();
             drop(calling);
+            release(caller_fn);
             dec_ref_bits(py, native_task);
             dec_ref_bits(py, code_bits);
             dec_ref_bits(py, replacement_code_bits);
