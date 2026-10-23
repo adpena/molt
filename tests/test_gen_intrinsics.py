@@ -416,9 +416,17 @@ def test_gated_core_symbols_carry_compile_time_absence_probes() -> None:
     )
     index = (resolvers / "mod.rs").read_text(encoding="utf-8")
     assert "mod declared_absent {" in index
-    assert "    pub(super) const molt_ast_parse: () = ();\n" in index
+    # A marker type, so a probe binds no unit value (clippy::let_unit_value).
+    assert "    pub(super) struct DeclaredAbsent;\n" in index
+    assert (
+        "    pub(super) const molt_ast_parse: DeclaredAbsent = DeclaredAbsent;\n"
+        in index
+    )
     assert "molt_compile_builtin" not in index
-    assert "    pub(super) const molt_socketpair: () = ();\n" in index
+    assert (
+        "    pub(super) const molt_socketpair: DeclaredAbsent = DeclaredAbsent;\n"
+        in index
+    )
     # Leaf crates are optional dependencies: dropping the feature drops the
     # crate, so their symbols need no probe.
     assert "molt_math_sqrt" not in index
