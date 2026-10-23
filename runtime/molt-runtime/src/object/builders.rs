@@ -1954,12 +1954,17 @@ pub(crate) fn alloc_class_obj_with_spec(
             ptr.add(9 * std::mem::size_of::<u64>()) as *mut std::sync::atomic::AtomicUsize,
             std::sync::atomic::AtomicUsize::new(0),
         );
-        // No compiled class statement has stamped this class yet.
-        std::ptr::write(
-            ptr.add(super::layout::CLASS_DEFINITION_WORD * std::mem::size_of::<u64>())
-                as *mut std::sync::atomic::AtomicU64,
-            std::sync::atomic::AtomicU64::new(0),
-        );
+        // No compiled class statement has stamped this class yet, and no
+        // native iterator advance is declared until a native factory does so.
+        for word in [
+            super::layout::CLASS_DEFINITION_WORD,
+            super::layout::CLASS_NATIVE_NEXT_WORD,
+        ] {
+            std::ptr::write(
+                ptr.add(word * std::mem::size_of::<u64>()) as *mut std::sync::atomic::AtomicU64,
+                std::sync::atomic::AtomicU64::new(0),
+            );
+        }
         if let Some(metaclass) = metaclass {
             assert!(object_init_class_edge_unpublished(
                 _py,

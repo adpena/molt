@@ -1379,6 +1379,16 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         capture_map: dict[str, ScratchCell],
     ) -> None: ...
 
+    def _emit_match_cases(
+        self,
+        node: ast.Match,
+        subject_val: MoltValue,
+        done_cell: MoltValue,
+        surviving_exact: dict[str, ExactClassFact],
+        surviving_exact_token: int,
+        unbound_snapshot: set[str],
+    ) -> None: ...
+
     def _emit_match_cell(self, initial: bool) -> MoltValue: ...
 
     def _emit_match_class(

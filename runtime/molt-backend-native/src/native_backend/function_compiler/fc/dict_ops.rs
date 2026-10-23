@@ -78,7 +78,9 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
         "dict_keys" => "molt_dict_keys",
         "dict_values" => "molt_dict_values",
         "dict_items" => "molt_dict_items",
-        "dict_set" => "molt_store_index",
+        // PyDict_SetItem semantics, as on LLVM and WASM: a dict subclass's
+        // `__setitem__` never runs.
+        "dict_set" => "molt_dict_set",
         "dict_update_missing" => "molt_dict_update_missing",
         _ => unreachable!("handler invoked with non-matching op.kind"),
     };
