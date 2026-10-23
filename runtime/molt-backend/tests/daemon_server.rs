@@ -13,6 +13,10 @@ const PROTOCOL_VERSION: u32 = include!(concat!(
     "/../../src/molt/backend_daemon_protocol_version.txt"
 ));
 const PATIENCE: Duration = Duration::from_secs(30);
+/// The first launch of a freshly built backend binary can wait on macOS's scan
+/// of the new executable for tens of seconds under load; a daemon that dies
+/// fails at once below, so a long start deadline costs a passing run nothing.
+const START_PATIENCE: Duration = Duration::from_secs(300);
 
 struct Daemon {
     child: Child,
@@ -22,11 +26,17 @@ struct Daemon {
 
 impl Daemon {
     fn start(name: &str) -> Self {
-        // Short: a Unix socket path must fit in about 100 bytes.
-        let dir = std::env::temp_dir().join(format!("moltd-{name}-{}", std::process::id()));
+        // A Unix socket path holds at most 104 bytes on macOS, and a guarded
+        // run's TMPDIR can be longer: like src/molt/backend_daemon_paths.py,
+        // fall back to /tmp when the path would not fit.
+        let leaf = format!("moltd-{name}-{}", std::process::id());
+        let mut dir = std::env::temp_dir().join(&leaf);
+        if dir.join("d.sock").as_os_str().len() >= 104 {
+            dir = PathBuf::from("/tmp").join(&leaf);
+        }
         std::fs::create_dir_all(&dir).expect("create daemon directory");
         let socket = dir.join("d.sock");
-        let child = Command::new(env!("CARGO_BIN_EXE_molt-backend"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_molt-backend"))
             .arg("--daemon")
             .arg("--socket")
             .arg(&socket)
@@ -34,8 +44,11 @@ impl Daemon {
             .stdout(Stdio::null())
             .spawn()
             .expect("start daemon");
-        let deadline = Instant::now() + PATIENCE;
+        let deadline = Instant::now() + START_PATIENCE;
         while UnixStream::connect(&socket).is_err() {
+            if let Some(status) = child.try_wait().expect("poll daemon") {
+                panic!("daemon exited before it listened: {status}");
+            }
             assert!(Instant::now() < deadline, "daemon never listened");
             std::thread::sleep(Duration::from_millis(10));
         }
