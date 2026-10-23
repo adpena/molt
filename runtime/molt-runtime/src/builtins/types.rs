@@ -5,7 +5,6 @@ use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 use molt_obj_model::MoltObject;
 
-use crate::object::seq_access::{locked_len, pin_item};
 use crate::state::{RuntimeState, cache::clear_atomic_slots};
 use crate::{
     ClassEdgeOwnership, PyToken, TYPE_ID_BYTES, TYPE_ID_COMPLEX, TYPE_ID_DATACLASS, TYPE_ID_DICT,
@@ -733,6 +732,7 @@ mod tests {
     use crate::MoltHeader;
     use crate::function_dict_bits;
     use crate::object::maybe_ptr_from_bits;
+    use crate::object::seq_access::locked_len;
     use std::sync::Once;
     use std::sync::atomic::Ordering;
 
