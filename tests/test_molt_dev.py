@@ -3018,6 +3018,8 @@ def _publish_controller_stub(work: Path, role: str) -> str:
     locked = _run_fast_captured_command([uv, "lock", "--offline", "--quiet"], cwd=work)
     assert locked.returncode == 0, locked.stderr
     _git(work, "add", "--", "pyproject.toml", ".python-version", "uv.lock")
+    # Every controller path exists on main (molt_dev_controller.CONTROLLER_PATHS).
+    _commit_file(work, "config/tool_releases.toml", "", "config")
     _commit_file(work, "src/molt/__init__.py", "", "molt package")
     tip = _commit_file(
         work, "tools/molt_dev.py", _CONTROLLER_STUB.format(role=role), "main driver"
@@ -3159,6 +3161,57 @@ def test_real_driver_lands_and_retires_a_worktree_as_pinned_controller(
     origin_main = _git(work, "ls-remote", "origin", "refs/heads/main").stdout.split()[0]
     assert origin_main == lane_tip
     assert not lane.exists(), "the controller survives the worktree it retires"
+
+
+def test_lane_start_and_retire_run_through_mains_controller_by_default(
+    driver_origin_and_clone,
+):
+    """Main's pinned controller starts and retires a lane in a default shell.
+
+    A POSIX shell wires sccache by default, which reads the controller's
+    config/tool_releases.toml; the controller once lacked config/ and every
+    lane start crashed after creating its worktree (review v2, B-1, B-2).
+    The fixture cannot provision the Acorn tree or the Git hooks (it carries
+    neither), so the start may report those inputs; it must record the lane.
+    """
+    _, work = driver_origin_and_clone
+    env = dict(os.environ)
+    env.pop("MOLT_USE_SCCACHE", None)
+
+    def lane(*argv: str):
+        result = run_guarded_test_process(
+            [sys.executable, str(SCRIPT_PATH), "lane", *argv, "--repo", str(work)],
+            cwd=REPO_ROOT,
+            env=ProcessEnvironment(env),
+            timeout=300,
+        )
+        output = result.stdout + result.stderr
+        assert "Traceback" not in output, output
+        return result.returncode, output
+
+    returncode, output = lane("start", "handoff", "--root", str(work.parent / "lanes"))
+    (controller,) = (work / ".git" / "molt" / "controllers").iterdir()
+    assert f"pinned controller {controller.name}" in output, output
+    assert returncode in {molt_dev.EXIT_OK, molt_dev.EXIT_FAIL}, output
+    if returncode == molt_dev.EXIT_FAIL:
+        # Only the inputs the fixture lacks may fail; a failed start prints
+        # failures alone, so any other input's name means it failed.
+        assert "the lane exists; finish provisioning" in output, output
+        assert "uv-environment:" not in output, output
+    record_path = work / "logs" / "agents" / "lane-handoff" / "coordination.json"
+    assert record_path.is_file(), output
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert record["status"] == "running", output
+    worktree = Path(record["lane"]["worktree"])
+    assert worktree.is_dir()
+
+    returncode, output = lane("retire", "handoff")
+    assert returncode == molt_dev.EXIT_OK, output
+    assert f"pinned controller {controller.name}" in output, output
+    assert not worktree.exists()
+    assert _git(work, "branch", "--list", "lane/handoff").stdout.strip() == ""
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert record["status"] == "landed"
 
 
 def test_main_without_a_controller_refuses_before_any_gate(origin_and_clone, tmp_path):
@@ -4469,6 +4522,41 @@ def test_subcommand_identity_destinations_never_alias_payloads(drv):
                     check(child, identities | {action.dest})
 
     check(drv.build_parser(), set())
+
+
+@pytest.mark.parametrize(
+    ("argv", "pinned"),
+    [
+        (["lane", "start", "feature"], True),
+        (["lane", "retire", "feature"], True),
+        (["lane", "start", "feature", "--candidate-controller"], False),
+        (["lane", "retire", "feature", "--candidate-controller"], False),
+        (["lane", "list"], False),
+        # The handoff itself: main's controller receives these and runs it.
+        (
+            [
+                "lane",
+                "start",
+                "feature",
+                "--repo",
+                "/repo",
+                "--pinned-controller",
+                "a" * 32,
+                "--controller-cwd",
+                "/repo",
+            ],
+            False,
+        ),
+        (["land"], True),
+        (["queue", "status"], False),
+    ],
+)
+def test_lane_start_and_retire_run_mains_driver(drv, argv, pinned) -> None:
+    """HF-468: a lane's start provisions it at main and its retirement judges
+    its trees against main, so both run main's pinned driver, as land does;
+    a driver at another commit read their manifests with another schema."""
+    parsed = drv.build_parser().parse_args(argv)
+    assert molt_dev.molt_dev_controller.runs_from_pinned_controller(parsed) is pinned
 
 
 def test_detached_run_completes_and_records_rc(drv, tmp_path, capsys):
