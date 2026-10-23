@@ -1,5 +1,5 @@
 use crate::bridge::*;
-use molt_cpython_abi::native_custody::{BufferAcquireError, ByteInput};
+use molt_runtime_capi::{BufferAcquireError, ByteInput};
 use molt_runtime_core::prelude::*;
 
 const BASE64_TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

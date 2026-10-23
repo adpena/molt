@@ -667,20 +667,23 @@ def check_target_python_versions() -> CategoryResult:
         )
     )
 
-    width_text = _read(
-        ROOT / "runtime/molt-runtime/src/object/unicode_width_generated.rs"
-    )
+    width_text = _read(ROOT / "runtime/molt-obj-model/src/unicode_generated.rs")
     width_versions = tuple(
         f"{major}.{minor}"
         for major, minor in re.findall(
-            r'^\s*\((\d+),\s*(\d+)\) => Some\(\("', width_text, re.MULTILINE
+            r"^\s*\((\d+),\s*(\d+)\) => Some\(&DATA_", width_text, re.MULTILINE
         )
+    )
+    from tools.cpython_regrtest import load_cpython_sources
+
+    source_versions = tuple(
+        load_cpython_sources(ROOT / "config/cpython_regrtest_sources.toml")
     )
     result.items.append(
         CheckItem(
-            "unicode-width-target-versions",
-            width_versions == authority_versions,
-            f"Unicode width targets={width_versions} vs authority {authority_versions}; regenerate with tools/gen_unicode_width.py",
+            "unicode-facts-source-versions",
+            width_versions == source_versions,
+            f"Unicode facts sources={width_versions} vs pinned cohort {source_versions}; regenerate with tools/gen_unicode_width.py",
         )
     )
 

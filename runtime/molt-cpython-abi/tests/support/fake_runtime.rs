@@ -1029,7 +1029,14 @@ pub fn wire_numeric(hooks: &mut RuntimeHooks) {
     hooks.ref_count = Some(ref_count);
 }
 
+/// The shared language fixture declares its Python target, independently of
+/// the production interpreter owner. Version-specific tests supply their own hook.
+pub unsafe extern "C" fn target_python_at_least(major: i64, minor: i64) -> bool {
+    (3, 12) >= (major, minor)
+}
+
 pub fn wire(hooks: &mut RuntimeHooks) {
+    hooks.target_python_at_least = target_python_at_least;
     wire_numeric(hooks);
     hooks.register_c_function = Some(register_c_function);
     hooks.method_new = Some(method_new);

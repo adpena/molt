@@ -219,8 +219,7 @@ pub extern "C" fn molt_ord(val: u64) -> u64 {
                     if char_count != 1 {
                         return ord_length_error(_py, char_count as usize);
                     }
-                    let Some(code) = molt_runtime_core::text_storage::code_points(bytes).next()
-                    else {
+                    let Some(code) = molt_obj_model::text_storage::code_points(bytes).next() else {
                         return MoltObject::none().bits();
                     };
                     return MoltObject::from_int(code as i64).bits();
@@ -267,7 +266,7 @@ pub(crate) fn trace_sys_version() -> bool {
 fn default_sys_version_info() -> &'static PythonVersionInfo {
     static DEFAULT: std::sync::LazyLock<PythonVersionInfo> = std::sync::LazyLock::new(|| {
         let (major, minor, micro, releaselevel, serial) =
-            molt_runtime_core::host_capabilities_generated::DEFAULT_TARGET_PYTHON_VERSION;
+            molt_obj_model::python_version_generated::DEFAULT_TARGET_PYTHON_VERSION;
         PythonVersionInfo {
             major,
             minor,
@@ -1310,7 +1309,7 @@ pub extern "C" fn molt_chr(val: u64) -> u64 {
             }
             let code = i as u32;
             let mut out_bytes = Vec::with_capacity(4);
-            molt_runtime_core::text_storage::push_code_point(&mut out_bytes, code);
+            molt_obj_model::text_storage::push_code_point(&mut out_bytes, code);
             let out = alloc_string(_py, &out_bytes);
             if out.is_null() {
                 return MoltObject::none().bits();
@@ -1331,7 +1330,7 @@ pub extern "C" fn molt_chr(val: u64) -> u64 {
             return raise_exception::<_>(_py, "ValueError", "chr() arg not in range(0x110000)");
         };
         let mut out_bytes = Vec::with_capacity(4);
-        molt_runtime_core::text_storage::push_code_point(&mut out_bytes, code);
+        molt_obj_model::text_storage::push_code_point(&mut out_bytes, code);
         let out = alloc_string(_py, &out_bytes);
         if out.is_null() {
             return MoltObject::none().bits();
@@ -1857,7 +1856,7 @@ pub extern "C" fn molt_sys_set_version_info(
             );
         }
         let target = format!("{major}.{minor}");
-        if !molt_runtime_core::host_capabilities_generated::SUPPORTED_TARGET_PYTHON_VERSIONS
+        if !molt_obj_model::python_version_generated::SUPPORTED_TARGET_PYTHON_VERSIONS
             .contains(&target.as_str())
         {
             return raise_exception::<_>(

@@ -88,7 +88,7 @@ pub(crate) fn bytes_contains_builtin(py: &PyToken<'_>, container: u64, needle: u
             let hay = std::slice::from_raw_parts(bytes_data(hay_ptr), bytes_len(hay_ptr));
             return MoltObject::from_bool(bytes_find_impl(hay, needle) >= 0).bits();
         }
-        let lease = match molt_cpython_abi::native_custody::acquire_buffer(needle, PyBUF_SIMPLE) {
+        let lease = match molt_runtime_capi::acquire_buffer(needle, PyBUF_SIMPLE) {
             Ok(lease) => lease,
             Err(_) => return MoltObject::none().bits(),
         };

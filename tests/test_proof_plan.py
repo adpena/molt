@@ -1158,39 +1158,50 @@ def test_runtime_proof_transport_preserves_registered_native_build_closure(comma
 
 
 @pytest.mark.parametrize("kind", ["command", "named_lane"])
-@pytest.mark.parametrize("value", ["false", 0, None])
-def test_cargo_generator_declaration_rejects_untyped_policy(kind, value):
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("cargo_build_python", True),
+        ("cargo_build_python", 0),
+        ("unregistered_input", None),
+    ],
+)
+def test_proof_rows_reject_unknown_or_retired_command_fields(kind, field, value):
     rows = PLAN.commands if kind == "command" else PLAN.named_lanes
     selected = next(row for row in rows if "cargo" in row.toolchains)
     changed = tuple(
-        replace(row, data={**row.data, "cargo_build_python": value})
-        if row.id == selected.id
-        else row
+        replace(row, data={**row.data, field: value}) if row.id == selected.id else row
         for row in rows
     )
     plan = replace(
         PLAN, **{"commands" if kind == "command" else "named_lanes": changed}
     )
-    assert any("cargo_build_python requires" in error for error in plan.validate())
+    expected = (
+        "unknown command fields" if kind == "command" else "unknown named lane fields"
+    )
+    assert any(
+        selected.id in error and expected in error and field in error
+        for error in plan.validate()
+    )
 
 
-def test_cargo_generator_declaration_rejects_noncargo_and_static_roles():
-    with pytest.raises(ValueError, match="Cargo toolchain"):
-        proof_plan.cargo_build_python(
-            {"toolchains": ["python"], "cargo_build_python": False}
-        )
-    with pytest.raises(ValueError, match="contextual"):
-        proof_plan.cargo_build_python(
-            {"toolchains": ["cargo", "build-python"], "cargo_build_python": True}
-        )
-
-
-def test_registered_cargo_generator_policy_is_explicit_for_every_owner():
-    for row in (*PLAN.commands, *PLAN.named_lanes):
-        if "cargo" in row.toolchains:
-            assert type(row.data.get("cargo_build_python")) is bool, row.id
-        else:
-            assert "cargo_build_python" not in row.data, row.id
+def test_actual_python_custody_and_source_unicode_controls_keep_real_owners():
+    assert PLAN.validate() == []
+    probe = "tests/cli/test_runtime_build_identity.py::test_python_identity_live_content_probe"
+    native = next(
+        row for row in PLAN.commands if row.id == "native.integration.python-custody"
+    )
+    assert (
+        probe in native.argv
+        and "-m" not in native.argv[native.argv.index("pytest") + 1 :]
+    )
+    assert "tests/test_runtime_build_python.py" not in native.argv
+    generator = next(
+        row for row in PLAN.commands if row.id == "repository.tooling-tests"
+    )
+    assert "tests/tools/test_gen_token_metadata.py" in generator.argv
+    assert "tests/test_runtime_build_python.py" in generator.argv
+    assert generator.family == "repository_policy"
 
 
 def test_runtime_descendant_authority_is_hashed_and_its_tests_execute() -> None:
@@ -1419,7 +1430,7 @@ def test_native_receipt_contract_selects_existing_integration_batch(path: str) -
 @pytest.mark.parametrize(
     "changed",
     [
-        "runtime/molt-runtime-core/src/text_storage.rs",
+        "runtime/molt-obj-model/src/text_storage.rs",
         "tests/differential/basic/unicode_surrogate_handling.py",
     ],
 )
@@ -3732,7 +3743,7 @@ def test_toolchain_path_probe_has_one_shared_exact_decoder(tmp_path: Path) -> No
         ("wasm", "tests/test_finally_pending_observer_parity.py"),
         ("wasm", "tests/molt_diff.py"),
         ("native_integration", "tests/cli/test_runtime_build_identity.py"),
-        ("native_integration", "tests/test_runtime_build_python.py"),
+        ("repository_policy", "tests/test_runtime_build_python.py"),
         ("native_integration", "tests/cli/test_cli_python_source_closure.py"),
         ("native_integration", "tests/cli/test_c_api_headers.py"),
         ("native_integration", "tests/cli/test_cli_native_main_stub_authority.py"),
@@ -7912,7 +7923,7 @@ def test_runtime_boundary_consumers_keep_executable_toolchain_authority():
         assert envelope["proof_plan_command_ids"] == [row.id]
         expected_tools = set(row.toolchains)
         if "cargo" in expected_tools:
-            expected_tools.update({"git", "build-python"})
+            expected_tools.add("git")
         assert set(envelope["toolchains"]) == expected_tools
     assert (
         "tests/cli/test_cli_native_main_stub_authority.py::"
@@ -9021,7 +9032,6 @@ def test_browser_simd_changes_have_a_standalone_source_build_proof(path: str) ->
         PLAN.required_toolchains(contract)
     )
     assert "wasm-ld" not in PLAN.required_toolchains(contract)
-    assert proof_plan.cargo_build_python(contract.data) is False
 
 
 @pytest.mark.parametrize(

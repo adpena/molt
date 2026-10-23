@@ -323,7 +323,7 @@ def test_mutation_target_python_generator_redeclare_caught() -> None:
     )
 
 
-def test_unicode_width_gate_distinguishes_same_minor_across_majors(
+def test_unicode_facts_gate_distinguishes_same_minor_across_majors(
     tmp_path, monkeypatch
 ):
     # This private catalog checks identity transport only, not version admission.
@@ -337,11 +337,21 @@ def test_unicode_width_gate_distinguishes_same_minor_across_majors(
         path = tmp_path / (attribute + ".py")
         path.write_text(source, encoding="utf-8")
         monkeypatch.setattr(GATE, attribute, path)
-    width = tmp_path / "runtime/molt-runtime/src/object/unicode_width_generated.rs"
-    width.parent.mkdir(parents=True)
-    source = (
-        '(3, 0) => Some(("three", WIDTH_3_0)),\n(4, 0) => Some(("four", WIDTH_4_0)),\n'
+    pins = tmp_path / "config/cpython_regrtest_sources.toml"
+    pins.parent.mkdir()
+    pins.write_text(
+        'schema = "molt.cpython-regrtest-sources.v1"\n'
+        + "\n".join(
+            f'[[source]]\npython = "{version}"\ntag = "v{version}.0"\n'
+            f'revision = "{"a" * 40}"\n'
+            'git_url = "https://github.com/python/cpython.git"\n'
+            for version in ("3.0", "4.0")
+        ),
+        encoding="utf-8",
     )
+    width = tmp_path / "runtime/molt-obj-model/src/unicode_generated.rs"
+    width.parent.mkdir(parents=True)
+    source = "(3, 0) => Some(&DATA_3_0),\n(4, 0) => Some(&DATA_4_0),\n"
     width.write_text(source, encoding="utf-8")
     assert GATE.check_target_python_versions().ok
     # Same minor, wrong major must not be reported as an identical target set.
@@ -349,7 +359,7 @@ def test_unicode_width_gate_distinguishes_same_minor_across_majors(
     result = GATE.check_target_python_versions()
     assert not result.ok
     assert any(
-        item.name == "unicode-width-target-versions" and not item.ok
+        item.name == "unicode-facts-source-versions" and not item.ok
         for item in result.items
     )
     width.write_text(source, encoding="utf-8")

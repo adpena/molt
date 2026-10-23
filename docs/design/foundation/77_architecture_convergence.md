@@ -151,14 +151,13 @@ latency, startup, throughput, live memory and linked bytes together. Development
 verification and provenance do not become emitted-program work.
 
 Native buffer custody follows the existing
-[crate extraction contract](70_molt_runtime_crate_extraction.md): its actual
-protocol owner is the C-API crate, which consumes core and is consumed by the
-five satellites that need native buffers. Core does not import the C API.
-Resolved Cargo identities expose dependencies through registry intermediates;
-package spelling alone cannot establish a rebuild cone. This establishes the
-structural dependency boundary. Moving a function between packages can change
-its optimization profile, so source equivalence alone does not establish a
-shipping latency or binary-size result.
+[crate extraction contract](70_molt_runtime_crate_extraction.md). C-API protocol
+storage is independent of runtime-core; the small runtime/C-API integration crate
+consumes both owners and is consumed by native-buffer satellites. Pure Unicode
+and text-storage facts belong to the existing object-model crate. This prevents
+standalone C-API linkage from importing unrelated runtime bridge symbols.
+Moving a function between packages may change its optimization profile; source
+equivalence does not establish shipping latency or binary-size acceptance.
 
 ## Target architecture
 

@@ -7,7 +7,6 @@ use std::cmp::Ordering;
 use std::ffi::{CStr, c_void};
 use std::os::raw::{c_char, c_int};
 use std::ptr;
-use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
 
 enum UnicodeCodecErrorObject<'a> {
     Bytes(&'a [u8]),
@@ -399,138 +398,145 @@ fn python_text_to_ucs4(bytes: &[u8]) -> Option<Vec<u32>> {
     )
 }
 
-fn unicode_range_contains(ranges: &[(u32, u32)], code: u32) -> bool {
-    let mut lo = 0usize;
-    let mut hi = ranges.len();
-    while lo < hi {
-        let mid = (lo + hi) / 2;
-        let (start, end) = ranges[mid];
-        if code < start {
-            hi = mid;
-        } else if code > end {
-            lo = mid + 1;
-        } else {
-            return true;
+/// A C operation borrows one target descriptor. Missing hooks have no target
+/// facts: the existing error owner represents bootstrap SystemError without
+/// fabricating an exception payload or selecting a host/default Unicode table.
+pub(crate) fn unicode_data() -> Option<&'static molt_lang_obj_model::unicode::UnicodeData> {
+    if let Some(hooks) = crate::hooks::hooks() {
+        let at_least = hooks.target_python_at_least;
+        if let Some(data) = molt_lang_obj_model::unicode::UnicodeData::for_target_comparison(
+            |major, minor| unsafe { at_least(major, minor) },
+        ) {
+            return Some(data);
         }
     }
-    false
-}
-
-#[allow(dead_code)]
-mod unicode_digit_table {
-    include!(concat!(env!("OUT_DIR"), "/unicode_digit_ranges.rs"));
-
-    pub(super) fn is_digit(code: u32) -> bool {
-        super::unicode_range_contains(UNICODE_DIGIT_RANGES, code)
+    unsafe {
+        crate::api::errors::PyErr_SetString(
+            (&raw mut crate::abi_types::PyExc_SystemError).cast(),
+            c"Unicode facts require a supported runtime target Python".as_ptr(),
+        );
     }
+    None
 }
-
-#[allow(dead_code)]
-mod unicode_decimal_table {
-    include!(concat!(env!("OUT_DIR"), "/unicode_decimal_ranges.rs"));
-
-    pub(super) fn is_decimal(code: u32) -> bool {
-        super::unicode_range_contains(UNICODE_DECIMAL_RANGES, code)
-    }
-
-    pub(super) fn decimal_value(code: u32) -> Option<u8> {
-        let index = UNICODE_DECIMAL_RANGES
-            .binary_search_by(|&(start, end)| {
-                if code < start {
-                    std::cmp::Ordering::Greater
-                } else if code > end {
-                    std::cmp::Ordering::Less
-                } else {
-                    std::cmp::Ordering::Equal
-                }
-            })
-            .ok()?;
-        let start = UNICODE_DECIMAL_RANGES[index].0;
-        Some(((code - start) % 10) as u8)
-    }
-}
-
-#[allow(dead_code)]
-mod unicode_numeric_table {
-    include!(concat!(env!("OUT_DIR"), "/unicode_numeric_ranges.rs"));
-
-    pub(super) fn is_numeric(code: u32) -> bool {
-        super::unicode_range_contains(UNICODE_NUMERIC_RANGES, code)
-    }
-}
-
-#[allow(dead_code)]
-mod unicode_space_table {
-    include!(concat!(env!("OUT_DIR"), "/unicode_space_ranges.rs"));
-
-    pub(super) fn is_space(code: u32) -> bool {
-        super::unicode_range_contains(UNICODE_SPACE_RANGES, code)
-    }
-}
-
-pub(crate) fn unicode_decimal_digit_value(code: u32) -> Option<u8> {
-    unicode_decimal_table::decimal_value(code)
-}
-
-pub(crate) fn unicode_is_space(code: u32) -> bool {
-    unicode_space_table::is_space(code)
-}
-
-#[allow(dead_code)]
-mod unicode_printable_table {
-    include!(concat!(env!("OUT_DIR"), "/unicode_printable_ranges.rs"));
-
-    pub(super) fn is_printable(code: u32) -> bool {
-        super::unicode_range_contains(UNICODE_PRINTABLE_RANGES, code)
-    }
-}
-
-fn unicode_char(ch: u32) -> Option<char> {
-    char::from_u32(ch)
-}
-
-fn unicode_general_category(ch: u32) -> Option<GeneralCategory> {
-    Some(unicode_char(ch)?.general_category())
-}
-
-fn unicode_category_is_alpha(category: GeneralCategory) -> bool {
-    matches!(
-        category,
-        GeneralCategory::UppercaseLetter
-            | GeneralCategory::LowercaseLetter
-            | GeneralCategory::TitlecaseLetter
-            | GeneralCategory::ModifierLetter
-            | GeneralCategory::OtherLetter
-    )
-}
-
-fn c_bool(value: bool) -> c_int {
-    value as c_int
-}
-
-// ─── Unicode character predicates ─────────────────────────────────────────
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _PyUnicode_IsLowercase(ch: u32) -> c_int {
-    c_bool(unicode_char(ch).is_some_and(char::is_lowercase))
+    // CPython's out-of-range domain is false independently of admission.
+    if ch >= 0x110000 {
+        return 0;
+    }
+    let Some(data) = unicode_data() else {
+        return 0;
+    };
+    i32::from(data.is_lower(ch))
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _PyUnicode_IsUppercase(ch: u32) -> c_int {
-    c_bool(unicode_char(ch).is_some_and(char::is_uppercase))
+    // CPython's out-of-range domain is false independently of admission.
+    if ch >= 0x110000 {
+        return 0;
+    }
+    let Some(data) = unicode_data() else {
+        return 0;
+    };
+    i32::from(data.is_upper(ch))
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _PyUnicode_IsTitlecase(ch: u32) -> c_int {
-    c_bool(matches!(
-        unicode_general_category(ch),
-        Some(GeneralCategory::TitlecaseLetter)
-    ))
+    // CPython's out-of-range domain is false independently of admission.
+    if ch >= 0x110000 {
+        return 0;
+    }
+    let Some(data) = unicode_data() else {
+        return 0;
+    };
+    i32::from(data.is_title(ch))
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _PyUnicode_IsWhitespace(ch: u32) -> c_int {
-    c_bool(unicode_space_table::is_space(ch))
+    // CPython's out-of-range domain is false independently of admission.
+    if ch >= 0x110000 {
+        return 0;
+    }
+    let Some(data) = unicode_data() else {
+        return 0;
+    };
+    i32::from(data.is_space(ch))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn _PyUnicode_IsLinebreak(ch: u32) -> c_int {
+    // CPython's out-of-range domain is false independently of admission.
+    if ch >= 0x110000 {
+        return 0;
+    }
+    let Some(data) = unicode_data() else {
+        return 0;
+    };
+    i32::from(data.is_linebreak(ch))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn _PyUnicode_IsDecimalDigit(ch: u32) -> c_int {
+    // CPython's out-of-range domain is false independently of admission.
+    if ch >= 0x110000 {
+        return 0;
+    }
+    let Some(data) = unicode_data() else {
+        return 0;
+    };
+    i32::from(data.is_decimal(ch))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn _PyUnicode_IsDigit(ch: u32) -> c_int {
+    // CPython's out-of-range domain is false independently of admission.
+    if ch >= 0x110000 {
+        return 0;
+    }
+    let Some(data) = unicode_data() else {
+        return 0;
+    };
+    i32::from(data.is_digit(ch))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn _PyUnicode_IsNumeric(ch: u32) -> c_int {
+    // CPython's out-of-range domain is false independently of admission.
+    if ch >= 0x110000 {
+        return 0;
+    }
+    let Some(data) = unicode_data() else {
+        return 0;
+    };
+    i32::from(data.is_numeric(ch))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn _PyUnicode_IsPrintable(ch: u32) -> c_int {
+    // CPython's out-of-range domain is false independently of admission.
+    if ch >= 0x110000 {
+        return 0;
+    }
+    let Some(data) = unicode_data() else {
+        return 0;
+    };
+    i32::from(data.is_printable(ch))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn _PyUnicode_IsAlpha(ch: u32) -> c_int {
+    // CPython's out-of-range domain is false independently of admission.
+    if ch >= 0x110000 {
+        return 0;
+    }
+    let Some(data) = unicode_data() else {
+        return 0;
+    };
+    i32::from(data.is_alpha(ch))
 }
 
 /// CPython `_Py_ascii_whitespace[128]` (Objects/bytes_methods.c): the ASCII
@@ -554,39 +560,6 @@ pub static _Py_ascii_whitespace: [std::os::raw::c_uchar; 128] = {
     t[0x20] = 1;
     t
 };
-
-#[unsafe(no_mangle)]
-pub extern "C" fn _PyUnicode_IsLinebreak(ch: u32) -> c_int {
-    c_bool(matches!(
-        ch,
-        0x000A | 0x000B | 0x000C | 0x000D | 0x001C | 0x001D | 0x001E | 0x0085 | 0x2028 | 0x2029
-    ))
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn _PyUnicode_IsDecimalDigit(ch: u32) -> c_int {
-    c_bool(unicode_decimal_table::is_decimal(ch))
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn _PyUnicode_IsDigit(ch: u32) -> c_int {
-    c_bool(unicode_digit_table::is_digit(ch))
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn _PyUnicode_IsNumeric(ch: u32) -> c_int {
-    c_bool(unicode_numeric_table::is_numeric(ch))
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn _PyUnicode_IsPrintable(ch: u32) -> c_int {
-    c_bool(unicode_printable_table::is_printable(ch))
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn _PyUnicode_IsAlpha(ch: u32) -> c_int {
-    c_bool(unicode_general_category(ch).is_some_and(unicode_category_is_alpha))
-}
 
 // ─── PyUnicode ────────────────────────────────────────────────────────────
 
@@ -2415,9 +2388,6 @@ pub unsafe extern "C" fn molt_bytearray_dealloc(op: *mut PyObject) {
 #[cfg(test)]
 mod tests {
     use super::{
-        _PyUnicode_IsAlpha, _PyUnicode_IsDecimalDigit, _PyUnicode_IsDigit, _PyUnicode_IsLinebreak,
-        _PyUnicode_IsLowercase, _PyUnicode_IsNumeric, _PyUnicode_IsPrintable,
-        _PyUnicode_IsTitlecase, _PyUnicode_IsUppercase, _PyUnicode_IsWhitespace,
         encoding_name_matches, latin1_encode_utf8_bytes, python_text_to_ucs4,
         unicode_kind_data_to_utf8,
     };
@@ -2488,49 +2458,6 @@ mod tests {
             python_text_to_ucs4(b"\xed\xa0\x80\xed\xb0\x80\0").unwrap(),
             [0xd800, 0xdc00, 0]
         );
-    }
-
-    #[test]
-    fn unicode_predicates_match_cpython_category_boundaries() {
-        assert_eq!(_PyUnicode_IsAlpha('A' as u32), 1);
-        assert_eq!(_PyUnicode_IsAlpha('é' as u32), 1);
-        assert_eq!(_PyUnicode_IsAlpha('一' as u32), 1);
-        assert_eq!(_PyUnicode_IsAlpha('1' as u32), 0);
-
-        assert_eq!(_PyUnicode_IsUppercase('A' as u32), 1);
-        assert_eq!(_PyUnicode_IsLowercase('é' as u32), 1);
-        assert_eq!(_PyUnicode_IsTitlecase('\u{01c5}' as u32), 1);
-        assert_eq!(_PyUnicode_IsTitlecase('A' as u32), 0);
-    }
-
-    #[test]
-    fn unicode_numeric_predicates_preserve_decimal_digit_numeric_split() {
-        assert_eq!(_PyUnicode_IsDecimalDigit('0' as u32), 1);
-        assert_eq!(_PyUnicode_IsDecimalDigit('\u{0660}' as u32), 1);
-        assert_eq!(_PyUnicode_IsDecimalDigit('\u{00b2}' as u32), 0);
-
-        assert_eq!(_PyUnicode_IsDigit('\u{00b2}' as u32), 1);
-        assert_eq!(_PyUnicode_IsDigit('\u{2160}' as u32), 0);
-
-        assert_eq!(_PyUnicode_IsNumeric('\u{2160}' as u32), 1);
-        assert_eq!(_PyUnicode_IsNumeric('一' as u32), 1);
-        assert_eq!(_PyUnicode_IsNumeric('A' as u32), 0);
-    }
-
-    #[test]
-    fn unicode_space_printable_linebreak_and_invalid_scalar_predicates() {
-        assert_eq!(_PyUnicode_IsWhitespace(' ' as u32), 1);
-        assert_eq!(_PyUnicode_IsWhitespace('\u{2003}' as u32), 1);
-        assert_eq!(_PyUnicode_IsWhitespace('A' as u32), 0);
-
-        assert_eq!(_PyUnicode_IsLinebreak('\n' as u32), 1);
-        assert_eq!(_PyUnicode_IsLinebreak('\u{2028}' as u32), 1);
-        assert_eq!(_PyUnicode_IsLinebreak(' ' as u32), 0);
-
-        assert_eq!(_PyUnicode_IsPrintable('A' as u32), 1);
-        assert_eq!(_PyUnicode_IsPrintable('\n' as u32), 0);
-        assert_eq!(_PyUnicode_IsAlpha(0x11_0000), 0);
-        assert_eq!(_PyUnicode_IsLowercase(0x11_0000), 0);
     }
 }
 

@@ -370,7 +370,7 @@ pub(crate) fn wtf8_step(bytes: &[u8], cursor: usize, from_right: bool) -> Option
     let code = if bytes[start].is_ascii() {
         u32::from(bytes[start])
     } else {
-        molt_runtime_core::text_storage::code_points(&bytes[start..])
+        molt_obj_model::text_storage::code_points(&bytes[start..])
             .next()
             .unwrap()
     };

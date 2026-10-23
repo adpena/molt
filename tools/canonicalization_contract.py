@@ -24,9 +24,10 @@ THE LAYER SCHEMA (mirrors CPython core / builtins / stdlib / third-party):
                  compiler intrinsics. Depends on NOTHING above; everything
                  depends on it. (CPython Objects/ + core Python/.)
   c_api       -- native object/buffer protocol and CPython C-API/ABI custody.
+  runtime_c_api -- runtime execution-bound ownership over core and C-API protocol.
                  Depends on `core`; core must not depend on this surface.
   stdlib      -- one crate per stdlib module. Depends on `core` and, when the
-                 implementation consumes native object protocols, `c_api`.
+                 implementation consumes native object protocols, `c_api` or `runtime_c_api`.
                  Never depends on the `runtime` fan-in. (CPython Lib/ + Modules/.)
   runtime     -- the builtins namespace + call + object-protocol remainder still
                  inside the `molt-runtime` god-crate (being split down). May
@@ -72,8 +73,12 @@ BASELINE_REL = "tools/canonicalization_contract_baseline.json"
 LAYERS: dict[str, dict] = {
     "core": {"rank": 0, "may_depend_on": set()},
     "c_api": {"rank": 1, "may_depend_on": {"core"}},
-    "stdlib": {"rank": 2, "may_depend_on": {"core", "c_api"}},
-    "runtime": {"rank": 3, "may_depend_on": {"core", "c_api", "stdlib"}},
+    "runtime_c_api": {"rank": 2, "may_depend_on": {"core", "c_api"}},
+    "stdlib": {"rank": 3, "may_depend_on": {"core", "c_api", "runtime_c_api"}},
+    "runtime": {
+        "rank": 4,
+        "may_depend_on": {"core", "c_api", "runtime_c_api", "stdlib"},
+    },
 }
 
 # Package assignments and stdlib domains live only in runtime/crate_graph.toml.

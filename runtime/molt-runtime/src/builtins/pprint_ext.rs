@@ -9,7 +9,7 @@ fn text(parts: &[&[u8]]) -> Vec<u8> {
     parts.concat()
 }
 fn text_len(bytes: &[u8]) -> usize {
-    molt_runtime_core::text_storage::code_points(bytes).count()
+    molt_obj_model::text_storage::code_points(bytes).count()
 }
 
 // ─── helpers ────────────────────────────────────────────────────────────────

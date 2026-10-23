@@ -1,3 +1,4 @@
+# MOLT_META: stderr=exact
 """Purpose: differential coverage for unicode surrogate handling."""
 
 import codecs
@@ -10,7 +11,14 @@ except Exception as exc:
     print(type(exc).__name__)
 
 print(s.encode("utf-8", "surrogatepass"))
-print(codecs.decode(b"\xed\xa0\x80", "utf-8", "surrogatepass"))
+decoded = codecs.decode(b"\xed\xa0\x80", "utf-8", "surrogatepass")
+try:
+    print(decoded)
+except UnicodeEncodeError:
+    print("stdout_surrogate", "UnicodeEncodeError")
+# Keep the decoded value observable without ending the indexing witness at an
+# uncaught stdout encoding error. Matching that early exit proved no indexing.
+print(repr(decoded))
 print(s.encode("utf-8", "backslashreplace"))
 
 

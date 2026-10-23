@@ -166,6 +166,8 @@ RUNTIME_FEATURE_GATES: tuple[tuple[str, str], ...] = (
     ("molt_tk_", "stdlib_tk"),
     ("molt_html_", "stdlib_text"),
     ("molt_unicodedata_", "stdlib_text"),
+    ("molt_unicodedata_name", "stdlib_unicode_names"),
+    ("molt_unicodedata_lookup", "stdlib_unicode_names"),
     ("molt_zoneinfo_", "stdlib_zoneinfo"),
     ("molt_ctypes_", "stdlib_http"),
     ("molt_http_", "stdlib_http"),
@@ -239,6 +241,7 @@ LINK_AFFECTING_FEATURES: frozenset[str] = frozenset(
         "stdlib_stringprep",
         "stdlib_text",
         "stdlib_tk",
+        "stdlib_unicode_names",
         "stdlib_xml",
         "stdlib_zoneinfo",
     }

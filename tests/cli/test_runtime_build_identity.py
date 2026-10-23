@@ -20,7 +20,6 @@ from molt import toolchain_identity
 from molt.cli import runtime_build_identity as identity
 from molt.cli.cargo_search_path import derives_cargo_search_path
 from molt.cli import runtime_native_build
-from molt.cli.runtime_build_python import bind_runtime_build_python
 from molt.cli.runtime_artifact_selection import (
     RUNTIME_STATICLIB_ARTIFACTS,
     RUNTIME_WASM_COMBINED_ARTIFACTS,
@@ -30,10 +29,8 @@ from molt.exact_json import canonical_json_bytes, canonical_json_sha256
 from molt.source_root import compiler_source_root
 from molt.wasi_sysroot import resolve_wasi_sysroot_layout
 from tests.process_guard_common import current_thread_only, install_module_view
-from tests.rust.process_guard import run_rust_test_process
 from tests.executable_test_support import native_executable_donor
 from tests.runtime_build_identity_helper import (
-    build_python_identity_fixture,
     RuntimeFixtureRoot,
     clear_wasm_toolchain_selection,
     provisioned_wasi_sdk_fixture,
@@ -288,11 +285,6 @@ def identity_root(
 
     monkeypatch.setattr(rustc_probes, "rust_target_metadata", target_metadata)
     monkeypatch.setattr(cargo_plans, "_rust_resource_roots", lambda *args, **kwargs: ())
-    monkeypatch.setattr(
-        identity,
-        "_python_identity",
-        lambda _env, **_kwargs: build_python_identity_fixture(),
-    )
     (tmp_path / "Cargo.toml").write_text(
         '[profile.release-output]\ninherits = "release"\n[profile.dev-fast]\ninherits = "dev"\n',
         encoding="utf-8",
@@ -619,7 +611,7 @@ def test_identity_json_objects_reject_non_string_key_aliasing() -> None:
     with pytest.raises(ValueError, match="incomplete"):
         schema.RuntimeBuildIdentity.from_dict(
             {
-                "schema": "molt.runtime-build-member-identity.v3",
+                "schema": "molt.runtime-build-member-identity.v4",
                 "digest": "0" * 64,
                 "compile_digest": "0" * 64,
                 "family_digest": "0" * 64,
@@ -704,14 +696,28 @@ def test_identity_rejects_digest_valid_shape_and_type_drift(
         )
 
 
+@pytest.mark.parametrize(
+    "owned_relative",
+    [
+        "src/molt/cli/cargo_build_reads.py",
+        "src/molt/process_environment.py",
+        "src/molt/file_publication.py",
+        "src/molt/package_import_custody.py",
+        "src/molt/python_identity_common.py",
+    ],
+)
 def test_runtime_tooling_authority_excludes_orthogonal_cli_files(
     tmp_path: Path,
+    owned_relative: str,
 ) -> None:
     authority_paths = {
         path.relative_to(tmp_path).as_posix()
         for path in identity.runtime_build_tooling_paths(tmp_path)
     }
     assert "pyproject.toml" in authority_paths
+    assert "uv.lock" not in authority_paths
+    assert "src/molt/python_runtime_admission.py" not in authority_paths
+    assert "src/molt/cli/runtime_build_python.py" not in authority_paths
     assert "src/molt/cli/cargo_command.py" in authority_paths
     assert "src/molt/cli/cargo_build_reads.py" in authority_paths
     assert "src/molt/pyproject.toml" not in authority_paths
@@ -719,14 +725,24 @@ def test_runtime_tooling_authority_excludes_orthogonal_cli_files(
         path = tmp_path / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(f"# {relative}\n", encoding="utf-8")
-    unrelated = tmp_path / "src/molt/cli/frontend_pipeline.py"
-    unrelated.write_text("# unrelated 1\n", encoding="utf-8")
-
+    unrelated = [
+        tmp_path / relative
+        for relative in (
+            "src/molt/cli/frontend_pipeline.py",
+            "src/molt/python_environment_identity.py",
+            "src/sitecustomize.py",
+        )
+    ]
+    for path in unrelated:
+        assert path.relative_to(tmp_path).as_posix() not in authority_paths
+        path.write_text("# unrelated 1\n", encoding="utf-8")
     _, before = identity._capture_runtime_build_trees(tmp_path, ())
-    unrelated.write_text("# unrelated 2\n", encoding="utf-8")
+    for path in unrelated:
+        path.write_text("# unrelated 2\n", encoding="utf-8")
     _, after_unrelated = identity._capture_runtime_build_trees(tmp_path, ())
     assert "src/molt/rust_toolchain.py" in authority_paths
-    owned = tmp_path / "src/molt/cli/cargo_build_reads.py"
+    assert owned_relative in authority_paths
+    owned = tmp_path / owned_relative
     owned.write_text("# runtime authority changed\n", encoding="utf-8")
     _, after_owned = identity._capture_runtime_build_trees(tmp_path, ())
 
@@ -739,21 +755,19 @@ def test_runtime_tooling_authority_excludes_orthogonal_cli_files(
 def test_runtime_tooling_source_projection_is_independent_of_install_layout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from molt import python_environment_identity as capture
-
     source = tmp_path / "compiler-source"
     expected = identity.runtime_build_tooling_paths(source)
     package = tmp_path / "environment/Lib/site-packages/molt"
     monkeypatch.setattr(
         identity, "__file__", str(package / "cli/runtime_build_identity.py")
     )
-    monkeypatch.setattr(
-        capture, "__file__", str(package / "python_environment_identity.py")
-    )
     assert identity.runtime_build_tooling_paths(source) == expected
-    assert source / "src/molt/python_environment_identity.py" in expected
-    assert source / "src/sitecustomize.py" in expected
+    assert source / "src/molt/rust_toolchain.py" in expected
+    assert source / "src/molt/cli/cargo_build_reads.py" in expected
+    assert source / "src/molt/python_environment_identity.py" not in expected
+    assert source / "src/sitecustomize.py" not in expected
     assert source / "pyproject.toml" in expected
+    assert source / "src/molt/file_publication.py" in expected
 
 
 def test_native_cpu_policy_splits_the_native_runtime_identity(
@@ -871,7 +885,8 @@ def test_build_script_environment_is_semantic_content_identity(
         extra_env={**common, "PYTHONPATH": str(relocated)},
     )
     assert changed_pythonpath == baseline
-    assert build_script["python_import_policy"] == "isolated-no-site-v1"
+    assert "python_import_policy" not in build_script
+    assert "build_python" not in build_script
     assert "PYTHONPATH" not in build_script
 
     changed_exports = _resolve(
@@ -885,91 +900,6 @@ def test_build_script_environment_is_semantic_content_identity(
         },
     )
     assert changed_exports.compile_digest != baseline.compile_digest
-
-
-@pytest.mark.parametrize("raw", [None, "", os.pathsep, "missing", "source-root"])
-def test_build_script_python_import_policy_never_enumerates_ambient_roots(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raw: str | None
-) -> None:
-    environment = {} if raw is None else {"PYTHONPATH": raw}
-    if raw == "source-root":
-        environment["PYTHONPATH"] = str(tmp_path)
-    monkeypatch.setattr(
-        identity,
-        "_tree_identity",
-        lambda *_args, **_kwargs: pytest.fail("ambient import roots were enumerated"),
-    )
-    result = identity._build_python_script_environment_identity(
-        environment, build_python_identity=build_python_identity_fixture()
-    )
-    assert result == identity._build_python_script_environment_identity(
-        {}, build_python_identity=build_python_identity_fixture()
-    )
-
-
-@pytest.mark.parametrize("kind", ["native", "shared", "reloc", "cpython-abi"])
-def test_build_python_signature_is_derived_not_another_identity_input(
-    identity_root: Path, kind: str
-) -> None:
-    before = _resolve(identity_root, kind=kind, publication="signature-proof")
-    python = before.toolchain_manifest.to_dict()["payload"]["toolchain"]["tools"][
-        "build_python"
-    ]
-    signature = canonical_json_sha256(python)
-    after = _resolve(
-        identity_root,
-        kind=kind,
-        publication="signature-proof",
-        extra_env={"MOLT_BUILD_PYTHON_SIGNATURE": signature},
-    )
-    assert after == before
-
-
-@pytest.mark.parametrize("signature", ["", "0" * 64])
-def test_build_python_signature_cannot_attest_other_captured_content(
-    identity_root: Path, signature: str
-) -> None:
-    with pytest.raises(
-        ValueError, match="Python signature differs from captured content"
-    ):
-        _resolve(
-            identity_root,
-            kind="native",
-            publication="signature-proof",
-            extra_env={"MOLT_BUILD_PYTHON_SIGNATURE": signature},
-        )
-
-
-def test_bind_build_python_signature_uses_admitted_identity_without_a_probe(
-    identity_root: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    captured = _resolve(identity_root, kind="native", publication="signature-proof")
-    plan = _test_plan(
-        identity_root,
-        {
-            "PATH": os.environ["PATH"],
-            "RUSTC": sys.executable,
-            "CARGO": sys.executable,
-            "CARGO_HOME": str(identity_root / "test-cargo-home"),
-        },
-        target_triple=None,
-    )
-    monkeypatch.setattr(
-        identity,
-        "_python_identity",
-        lambda *_args, **_kwargs: pytest.fail("signature binding launched Python"),
-    )
-    bound = bind_runtime_build_python(plan, captured)
-    python = captured.toolchain_manifest.to_dict()["payload"]["toolchain"]["tools"][
-        "build_python"
-    ]
-    assert bound.environment["MOLT_BUILD_PYTHON_SIGNATURE"] == canonical_json_sha256(
-        python
-    )
-    assert "MOLT_BUILD_PYTHON_SIGNATURE" not in plan.environment
-    assert bind_runtime_build_python(bound, captured) is bound
-    assert bound.command == plan.command and bound.rustflags == plan.rustflags
-    assert bound.toolchain_identity() == plan.toolchain_identity()
 
 
 @pytest.mark.skipif(
@@ -1013,19 +943,14 @@ def test_cargo_plan_path_is_derived_from_its_tools_not_its_caller(
 
 
 @pytest.mark.parametrize("producer", ["native", "wasm-cpython-abi"])
-def test_no_plan_provisioning_pins_generator_before_capture(
+def test_no_plan_provisioning_uses_cargo_tools_without_python_capture(
     tmp_path, monkeypatch, runtime_fixture_root, producer, readonly_wasi_sdk
 ):
     from functools import partial
+    from molt.python_runtime_admission import BuildPythonAdmission
+    from tests.runtime_build_identity_helper import runtime_cargo_plan
 
-    from tests.runtime_build_identity_helper import (
-        runtime_cargo_plan,
-        runtime_toolchain_content_manifest,
-    )
-
-    environment = {
-        "MOLT_BUILD_PYTHON": os.path.relpath(sys.executable, tmp_path),
-    }
+    environment = {"MOLT_BUILD_PYTHON": "missing-generator-is-not-a-rust-input"}
     sdk = readonly_wasi_sdk() if producer == "wasm-cpython-abi" else None
     if sdk is not None:
         environment.update(project_wasm_toolchain_environment(sdk, environ={}))
@@ -1034,150 +959,31 @@ def test_no_plan_provisioning_pins_generator_before_capture(
         "resolve_runtime_cargo_plan",
         partial(runtime_cargo_plan, fixture_root=runtime_fixture_root),
     )
-    captured = []
-
-    def capture(plan, **_kwargs):
-        captured.append(plan)
-        executable = Path(plan.environment["MOLT_BUILD_PYTHON"])
-        assert executable.is_absolute()
-        assert executable.samefile(sys.executable)
-        return runtime_toolchain_content_manifest().to_dict()["payload"]["toolchain"]
-
-    monkeypatch.setattr(identity, "_capture_plan_toolchain", capture)
+    monkeypatch.setattr(
+        BuildPythonAdmission,
+        "capture",
+        lambda *_a, **_k: pytest.fail("Rust toolchain capture admitted Python"),
+    )
     if producer == "native":
-        identity.provision_native_runtime_toolchain_content_manifest(
+        manifest = identity.provision_native_runtime_toolchain_content_manifest(
             project_root=tmp_path,
             env=environment,
             target_triple=None,
             cargo_command=("cargo", "rustc"),
         )
+        tools = manifest.payload["toolchain"]["tools"]
     else:
         assert sdk is not None
-        identity._wasm_compile_toolchain_content(
+        content = identity._wasm_compile_toolchain_content(
             project_root=tmp_path,
             env=environment,
             target_triple="wasm32-wasip1",
             wasi_sysroot=wasi_c_abi_plan(sdk).sysroot,
         )
-    assert len(captured) == 1
-    assert environment["MOLT_BUILD_PYTHON"] != sys.executable
-
-
-def test_build_python_signature_reexecutes_cargo_generator_for_same_path(
-    identity_root: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Real Cargo freshness, with a finite attested-Python boundary fixture.
-
-    The helper actually reads the changed same-path generator input. This
-    isolates Cargo's invalidation contract; it does not mutate a live Python
-    installation or claim to exercise interpreter content capture again.
-    """
-    cargo = shutil.which("cargo")
-    if cargo is None:
-        pytest.skip("Cargo is required for the generator freshness proof")
-    project = identity_root / "cargo-generator"
-    project.mkdir()
-    (project / "src").mkdir()
-    (project / "Cargo.toml").write_text(
-        '[package]\nname="python-signature-proof"\nversion="0.0.0"\nedition="2024"\n'
-        "[workspace]\n",
-        encoding="utf-8",
-    )
-    payload = project / "generator-input.txt"
-    payload.write_text("first", encoding="utf-8")
-    counter = project / "generator-runs.txt"
-    helper_source = (
-        Path(__file__).resolve().parents[2] / "runtime/build_support/build_python.rs"
-    )
-    # Match the shared helper's real ../build_support watcher. A missing
-    # watched path would make Cargo rerun every time and invalidate the oracle.
-    helper = project.parent / "build_support/build_python.rs"
-    helper.parent.mkdir()
-    shutil.copyfile(helper_source, helper)
-    script = f"from pathlib import Path\nprint(Path({str(payload)!r}).read_text())\n"
-    (project / "build.rs").write_text(
-        f"#[path = {json.dumps(str(helper))}] mod build_python;\n"
-        "use std::{env,fs,io::Write,path::PathBuf};\n"
-        "fn main() {\n"
-        f'let value = build_python::run_script(&build_python::resolve(), {json.dumps(script)}, "freshness proof");\n'
-        'let output = PathBuf::from(env::var("OUT_DIR").unwrap()).join("generated.rs");\n'
-        'fs::write(output, format!("const GENERATED: &str = {:?};", value.trim())).unwrap();\n'
-        f"let mut count = fs::OpenOptions::new().create(true).append(true).open({json.dumps(str(counter))}).unwrap();\n"
-        'writeln!(count, "{}", value.trim()).unwrap();\n}\n',
-        encoding="utf-8",
-    )
-    (project / "src/main.rs").write_text(
-        'include!(concat!(env!("OUT_DIR"), "/generated.rs"));\n'
-        'fn main() { println!("{}", GENERATED); }\n',
-        encoding="utf-8",
-    )
-
-    def signature() -> str:
-        python = build_python_identity_fixture()
-        python["selected_executable"]["sha256"] = hashlib.sha256(
-            payload.read_bytes()
-        ).hexdigest()
-        python["identity_sha256"] = canonical_json_sha256(
-            {key: value for key, value in python.items() if key != "identity_sha256"}
-        )
-        monkeypatch.setattr(identity, "_python_identity", lambda *_a, **_k: python)
-        captured = _resolve(identity_root, kind="native", publication="signature-proof")
-        plan = _test_plan(
-            identity_root,
-            {
-                "PATH": os.environ["PATH"],
-                "RUSTC": sys.executable,
-                "CARGO": sys.executable,
-                "CARGO_HOME": str(identity_root / "test-cargo-home"),
-            },
-            target_triple=None,
-        )
-        return bind_runtime_build_python(plan, captured).environment[
-            "MOLT_BUILD_PYTHON_SIGNATURE"
-        ]
-
-    def generated(selected_signature: str) -> str:
-        environment = dict(os.environ)
-        environment.update(
-            MOLT_BUILD_PYTHON=sys.executable,
-            MOLT_BUILD_PYTHON_SIGNATURE=selected_signature,
-            CARGO_TARGET_DIR=str(project / "target"),
-            CARGO_BUILD_BUILD_DIR=str(project / "intermediates"),
-            RUSTC_WRAPPER="",
-            RUSTC_WORKSPACE_WRAPPER="",
-            CARGO_BUILD_RUSTC_WRAPPER="",
-            CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER="",
-        )
-        result = run_rust_test_process(
-            [
-                cargo,
-                "run",
-                "--quiet",
-                "--offline",
-                "--manifest-path",
-                str(project / "Cargo.toml"),
-            ],
-            cwd=str(project),
-            env=environment,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        assert result.returncode == 0, result.stderr
-        return result.stdout.strip()
-
-    before = signature()
-    assert generated(before) == "first"
-    assert generated(before) == "first"
-    assert counter.read_text(encoding="utf-8").splitlines() == ["first"]
-    payload.write_text("second", encoding="utf-8")
-    # This negative control proves the selector/path alone leaves stale output.
-    assert generated(before) == "first"
-    after = signature()
-    assert after != before
-    assert generated(after) == "second"
-    assert generated(after) == "second"
-    assert counter.read_text(encoding="utf-8").splitlines() == ["first", "second"]
+        tools = content["tools"]
+    assert {"cargo", "rustc"} <= tools.keys()
+    assert "build_python" not in tools
+    assert environment["MOLT_BUILD_PYTHON"] == "missing-generator-is-not-a-rust-input"
 
 
 @pytest.mark.parametrize(
@@ -1187,15 +993,12 @@ def test_build_python_signature_reexecutes_cargo_generator_for_same_path(
         "molt.cpython-abi-build-script-environment",
     ],
 )
-def test_build_script_identity_rejects_retired_import_authority_and_policy_drift(
-    script_schema: str,
-) -> None:
-    build_python = build_python_identity_fixture()
+def test_build_script_identity_rejects_retired_python_fields_and_old_schema(
+    script_schema,
+):
     payload = {
-        "schema": script_schema + ".v3",
-        **identity._build_python_script_environment_identity(
-            {}, build_python_identity=build_python
-        ),
+        "schema": script_schema + ".v4",
+        "MOLT_WASI_C_ABI_PLAN": {"state": "ignored-for-target"},
     }
     if script_schema == "molt.runtime-build-script-environment":
         payload.update(
@@ -1204,18 +1007,16 @@ def test_build_script_identity_rejects_retired_import_authority_and_policy_drift
                 "MOLT_WASM_CPYTHON_ABI_DATA_EXPORTS": "ignored-for-target",
             }
         )
-    payload["MOLT_WASI_C_ABI_PLAN"] = {"state": "ignored-for-target"}
-    schema._validated_build_script_environment(
-        payload, target="x86_64-test-native", build_python=build_python
-    )
+    schema._validated_build_script_environment(payload, target="x86_64-test-native")
     for changed, message in (
-        ({**payload, "schema": script_schema + ".v1"}, "schema"),
+        ({**payload, "schema": script_schema + ".v3"}, "schema"),
         ({**payload, "PYTHONPATH": {"state": "unset"}}, "shape"),
-        ({**payload, "python_import_policy": "ambient"}, "import policy"),
+        ({**payload, "python_import_policy": "isolated-no-site-v1"}, "shape"),
+        ({**payload, "build_python": {}}, "shape"),
     ):
         with pytest.raises(ValueError, match=message):
             schema._validated_build_script_environment(
-                changed, target="x86_64-test-native", build_python=build_python
+                changed, target="x86_64-test-native"
             )
 
 
@@ -1912,7 +1713,7 @@ fn main() {
     assert tool["version"] == "22.1.8"
 
 
-@pytest.mark.parametrize("resource", ["archive", "sysroot", "python"])
+@pytest.mark.parametrize("resource", ["archive", "sysroot", "configuration"])
 def test_portable_manifest_is_evidence_not_live_capture_authority(
     identity_root: Path, monkeypatch: pytest.MonkeyPatch, resource: str
 ) -> None:
@@ -1934,21 +1735,16 @@ def test_portable_manifest_is_evidence_not_live_capture_authority(
             "#define WASI_ERRNO 2\\n", encoding="utf-8"
         )
     else:
-        python = build_python_identity_fixture()
-        python["selected_executable"]["sha256"] = "1" * 64
-        python["identity_sha256"] = canonical_json_sha256(
-            {key: value for key, value in python.items() if key != "identity_sha256"}
-        )
-        monkeypatch.setattr(
-            identity, "_python_identity", lambda _env, **_kwargs: python
-        )
+        config = identity_root / ".cargo" / "config.toml"
+        config.parent.mkdir(exist_ok=True)
+        config.write_text("[build]\nincremental = false\n", encoding="utf-8")
     after = _resolve(
         identity_root,
         kind="shared",
         publication="strip-final-link-metadata-v1",
         wasi_sdk=installation,
     )
-    if resource == "python":
+    if resource == "configuration":
         assert after.toolchain_manifest != restored
         assert after.compile_digest != before.compile_digest
     else:
@@ -1997,23 +1793,12 @@ def test_toolchain_manifest_is_relocatable_and_rejects_tampering(
         schema.RuntimeToolchainContentManifest.from_dict(value)
 
 
-def test_toolchain_manifest_rejects_resealed_nested_python_runtime_drift(
-    identity_root: Path,
-) -> None:
+def test_toolchain_manifest_rejects_resealed_retired_python_tool(identity_root):
     value = _provision_toolchain(identity_root).to_dict()
     payload = value["payload"]
-    build_python = payload["toolchain"]["tools"]["build_python"]
-    runtime = build_python["runtime"]
-    runtime["explicit_files"][0]["node"] = "missing-node"
-    runtime_material = dict(runtime)
-    runtime_material.pop("runtime_closure_sha256")
-    runtime["runtime_closure_sha256"] = schema._digest(runtime_material)
-    build_python_material = dict(build_python)
-    build_python_material.pop("identity_sha256")
-    build_python["identity_sha256"] = schema._digest(build_python_material)
+    payload["toolchain"]["tools"]["build_python"] = {}
     value["digest"] = schema._digest(payload)
-
-    with pytest.raises(ValueError, match="build Python closure is invalid"):
+    with pytest.raises(ValueError, match="tools are invalid"):
         schema.RuntimeToolchainContentManifest.from_dict(value)
 
 
@@ -2029,12 +1814,9 @@ def test_toolchain_manifest_concurrent_publication_is_atomic(
     identity_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     first = _provision_toolchain(identity_root)
-    python = build_python_identity_fixture()
-    python["selected_executable"]["sha256"] = "1" * 64
-    python["identity_sha256"] = canonical_json_sha256(
-        {key: value for key, value in python.items() if key != "identity_sha256"}
-    )
-    monkeypatch.setattr(identity, "_python_identity", lambda _env, **_kwargs: python)
+    config = identity_root / ".cargo" / "config.toml"
+    config.parent.mkdir(exist_ok=True)
+    config.write_text("[build]\nincremental = false\n", encoding="utf-8")
     second = _provision_toolchain(identity_root)
     assert first.digest != second.digest
     path = tmp_path / "runtime-toolchain.json"
@@ -2157,9 +1939,7 @@ def python_session(tmp_path, monkeypatch, runtime_receipt):
     return admission, selected, session, calls
 
 
-def test_python_identity_uses_exact_isolated_facade_in_v3_build_receipt(
-    python_session, runtime_receipt
-):
+def test_python_admission_uses_exact_isolated_facade(python_session, runtime_receipt):
     from molt.process_environment import ProcessEnvironment
 
     admission, selected, session, calls = python_session
@@ -2169,9 +1949,9 @@ def test_python_identity_uses_exact_isolated_facade_in_v3_build_receipt(
         "PATH": "captured-path",
     }
     with admission.BuildPythonAdmission() as owner:
-        first = identity._python_identity(environment, admission=owner)
+        first = owner.capture(environment)
         first["runtime"]["version"] = "caller mutation"
-        second = identity._python_identity(environment, admission=owner)
+        second = owner.capture(environment)
     assert session.closed
     assert session.verifications == 1
     assert len(session.fresh_calls) == 1
@@ -2310,7 +2090,8 @@ def test_python_identity_rejects_ambiguous_probe_json(
         )
     session.lines.put(output + "\n")
     with pytest.raises(ValueError):
-        identity._python_identity({"MOLT_BUILD_PYTHON": str(selected)})
+        with admission.BuildPythonAdmission() as owner:
+            owner.capture({"MOLT_BUILD_PYTHON": str(selected)})
     assert session.closed
 
 
@@ -2368,31 +2149,13 @@ def test_python_identity_timeout_revokes_without_retry(
     assert len(calls) == 1
 
 
-def test_build_python_scope_borrows_only_live_operation_owner(python_session):
-    from types import SimpleNamespace
-
-    admission, selected, session, calls = python_session
-    state = SimpleNamespace(build_python_admission=None)
-    environment = {"MOLT_BUILD_PYTHON": str(selected)}
-    from molt.cli.runtime_build_python import build_python_scope
-
-    with build_python_scope(state) as owner:
-        first = owner.capture(environment)
-        with build_python_scope(state) as borrowed:
-            assert borrowed is owner
-            assert borrowed.capture(environment) == first
-        assert not session.closed
-    assert session.closed
-    assert state.build_python_admission is None
-    assert len(calls) == 1
-
-
 def test_python_identity_unresolved_interpreter_never_spawns_probe(
     python_session, tmp_path
 ):
-    _admission, _selected, _session, calls = python_session
+    admission, _selected, _session, calls = python_session
     with pytest.raises(ValueError, match="unavailable"):
-        identity._python_identity({"MOLT_BUILD_PYTHON": str(tmp_path / "missing")})
+        with admission.BuildPythonAdmission() as owner:
+            owner.capture({"MOLT_BUILD_PYTHON": str(tmp_path / "missing")})
     assert not calls
 
 
@@ -2616,3 +2379,52 @@ def test_native_executable_copy_error_preserves_existing_destination(tmp_path):
     with pytest.raises(FileExistsError):
         _copy_native_image(Path(sys.executable).resolve(strict=True), destination)
     assert destination.read_bytes() == b"existing fixture must survive"
+
+
+@pytest.mark.parametrize("kind", ["native", "shared", "reloc", "cpython-abi"])
+def test_rust_build_identity_has_no_python_generator_dependency(
+    identity_root, monkeypatch, kind
+):
+    from molt.python_runtime_admission import BuildPythonAdmission
+
+    monkeypatch.setattr(
+        BuildPythonAdmission,
+        "capture",
+        lambda *_a, **_k: pytest.fail("Rust build admitted Python"),
+    )
+    before = _resolve(identity_root, kind=kind, publication="no-python-generator")
+    after = _resolve(
+        identity_root,
+        kind=kind,
+        publication="no-python-generator",
+        extra_env={
+            "MOLT_BUILD_PYTHON": "missing-build-python",
+            "PYTHON": "missing-shadowed-python",
+            "MOLT_BUILD_PYTHON_SIGNATURE": "not-a-signature",
+            "PYTHONPATH": "missing-ambient-root",
+        },
+    )
+    assert after == before
+    assert "build_python" not in after.toolchain_manifest.payload["toolchain"]["tools"]
+
+
+@pytest.mark.parametrize("kind", ["native", "shared", "reloc", "cpython-abi"])
+@pytest.mark.parametrize("coordinate", ["member", "family", "toolchain"])
+def test_retired_rust_python_sidecar_epochs_are_rejected(
+    identity_root, kind, coordinate
+):
+    current = _resolve(identity_root, kind=kind, publication="old-epoch")
+    if coordinate == "toolchain":
+        value = current.toolchain_manifest.to_dict()
+        value["schema"] = "molt.runtime-toolchain-content.v3"
+        with pytest.raises(ValueError, match="schema"):
+            schema.RuntimeToolchainContentManifest.from_dict(value)
+        return
+    value = current.to_dict()
+    if coordinate == "member":
+        value["schema"] = "molt.runtime-build-member-identity.v3"
+    else:
+        value["payload"]["family"]["schema"] = "molt.runtime-build-family.v3"
+        _reseal_runtime_build_identity(value)
+    with pytest.raises(ValueError, match="schema|family shape"):
+        schema.RuntimeBuildIdentity.from_dict(value)

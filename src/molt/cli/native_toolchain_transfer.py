@@ -27,7 +27,6 @@ from molt.cli.build_inputs import _resolve_backend_compiler_profile
 from molt.cli.cargo_profiles import _resolve_cargo_profile_name
 from molt.cli.native_link_custody import NativeLinkCustodyError
 from molt.cli.native_link_manifest import NativeLinkDependencyManifestError
-from molt.cli.runtime_build_python import build_python_scope
 from molt.cli.product_store import ProductStoreError
 from molt.cli.runtime_native_build import (
     NativeRuntimeBuildInputs,
@@ -128,20 +127,18 @@ class NativeToolchainSelection:
     def runtime_build_inputs(self) -> NativeRuntimeBuildInputs:
         """This checkout's current runtime inputs; never a receipt's claim.
 
-        The capture runs in the build-Python scope a ``molt build`` opens, so
-        it records the same build interpreter as the build it is compared to.
+        The capture uses the same Cargo tool and resource admission as a
+        ``molt build``; a stored receipt never supplies its own expectation.
         """
         try:
-            with build_python_scope(None) as build_python_admission:
-                return current_native_runtime_build_inputs(
-                    self.project_root,
-                    self.runtime_lib,
-                    target_triple=None,
-                    cargo_profile=self.runtime_cargo_profile,
-                    stdlib_profile=STDLIB_PROFILE,
-                    rust_cpu=self.backend.rust_cpu,
-                    build_python_admission=build_python_admission,
-                )
+            return current_native_runtime_build_inputs(
+                self.project_root,
+                self.runtime_lib,
+                target_triple=None,
+                cargo_profile=self.runtime_cargo_profile,
+                stdlib_profile=STDLIB_PROFILE,
+                rust_cpu=self.backend.rust_cpu,
+            )
         except (OSError, ValueError) as exc:
             raise NativeToolchainTransferError(
                 f"cannot capture the native runtime build identity: {exc}"

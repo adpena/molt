@@ -7,7 +7,6 @@ from molt.cli.native_symbol_inspection import (
 )
 
 import contextlib
-from molt.python_runtime_admission import BuildPythonAdmission
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -103,22 +102,14 @@ def _run_backend_pipeline(
     bolt_training_cmd: str | None = None,
     fact_graph_request: FactGraphRequest | None = None,
 ) -> int:
-    build_python_admission: BuildPythonAdmission | None = None
-
-    def record_backend_result(result: int) -> int:
-        if result != 0 and build_python_admission is not None:
-            build_python_admission.record_failure(result)
-        return result
 
     def return_after_build_diagnostics(result: int) -> int:
-        return record_backend_result(
-            _emit_build_diagnostics_for_result(
-                result,
-                diagnostics_enabled=prepared_build_preamble.diagnostics_enabled,
-                build_diagnostics_payload=build_diagnostics_payload,
-                json_output=json_output,
-                verbosity=prepared_build_preamble.resolved_diagnostics_verbosity,
-            )
+        return _emit_build_diagnostics_for_result(
+            result,
+            diagnostics_enabled=prepared_build_preamble.diagnostics_enabled,
+            build_diagnostics_payload=build_diagnostics_payload,
+            json_output=json_output,
+            verbosity=prepared_build_preamble.resolved_diagnostics_verbosity,
         )
 
     if prepared_build_preamble.diagnostics_enabled:
@@ -283,12 +274,9 @@ def _run_backend_pipeline(
             )
         )
     with contextlib.ExitStack() as output_scope:
-        build_python_admission = output_scope.enter_context(BuildPythonAdmission())
 
         def finish_inputs() -> None:
             prepared_frontend_pipeline_bundle.module_source_catalog.validate()
-            assert build_python_admission is not None
-            build_python_admission.close()
 
         try:
             output_layout, backend_output_destination = output_scope.enter_context(
@@ -307,7 +295,6 @@ def _run_backend_pipeline(
         backend_setup_start = time.perf_counter()
         prepared_backend_setup, prepared_backend_setup_error = (
             _backend_compile._prepare_backend_setup(
-                build_python_admission=build_python_admission,
                 is_rust_transpile=output_layout.is_rust_transpile,
                 is_luau_transpile=output_layout.is_luau_transpile,
                 is_wasm=output_layout.is_wasm,
@@ -401,7 +388,7 @@ def _run_backend_pipeline(
                 entry_override_env=ENTRY_OVERRIDE_ENV,
                 finalize_inputs=finish_inputs,
             )
-            return record_backend_result(result)
+            return result
         try:
             backend_compile_start = time.perf_counter()
             prepared_backend_compile, prepared_backend_compile_error = (
@@ -501,4 +488,4 @@ def _run_backend_pipeline(
             bolt_requested=bolt_requested,
             bolt_training_cmd=bolt_training_cmd,
         )
-        return record_backend_result(result)
+        return result

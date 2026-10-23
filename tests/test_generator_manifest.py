@@ -1489,65 +1489,17 @@ python_versions = "supported-targets"
     assert error.count("FileNotFoundError") == 2
 
 
-def test_unicode_query_consumes_new_admitted_selection_while_old_python_exists(
-    tmp_path, monkeypatch
-):
-    import os
-    from tools import gen_unicode_width, proof_plan
-    from tests.tools.test_tool_identity_reuse import selected_runtime_fixture
+def test_unicode_generation_has_no_target_interpreter_prerequisite():
+    from tools import gen_unicode_width
 
-    from tools.proof_queue_pkg import command_identity
-
-    fixture = selected_runtime_fixture(tmp_path, monkeypatch)
-
-    def identify():
-        return command_identity._tool_identity(
-            fixture.plan,
-            fixture.policy.name,
-            {"python": None},
-            [sys.executable, "-c", "pass"],
-            cwd=tmp_path,
-            env=os.environ,
-            reuse_root=tmp_path / "reuse",
-        )
-
-    previous = identify()
-    first = fixture.selected[0]
-    second = Path(list(fixture.installations)[1])
-    fixture.selected[0] = second
-    current = identify()
-    assert previous["content_path"] == str(first)
-    assert current["content_path"] == str(second)
-    monkeypatch.setattr(
-        gen_unicode_width, "SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS", (fixture.minor,)
+    entry = next(
+        item
+        for item in CGM.load_manifest(ROOT).generators
+        if item["tool"] == "tools/gen_unicode_width.py"
     )
-    calls = []
-    original = gen_unicode_width.harness_memory_guard.guarded_completed_process
-
-    def query(command, **kwargs):
-        calls.append(list(command))
-        return original(command, **kwargs)
-
-    monkeypatch.setattr(
-        gen_unicode_width.harness_memory_guard, "guarded_completed_process", query
-    )
-    from molt.python_runtime_admission import BuildPythonAdmission
-
-    with BuildPythonAdmission(with_custody=True) as admission:
-        selected = proof_plan.capture_selected_python_runtime(
-            fixture.policy,
-            second,
-            environment=os.environ,
-            admission=admission,
-        )
-        assert proof_plan.selected_python_runtime_material(
-            selected
-        ) == proof_plan.selected_python_runtime_material(current["python_runtime"])
-        text = gen_unicode_width.render(
-            python_runtimes={fixture.minor: (selected, admission)}
-        )
-    assert first.is_file() and second.is_file()
-    assert calls[0][:4] == [str(second), "-B", "-I", "-S"]
-    assert "uv" not in calls[0]
-    assert f"WIDTH_{fixture.minor.replace('.', '_')}" in text
-    assert "Some((" in text
+    assert not entry.get("toolchains", [])
+    assert entry["outputs"] == ["runtime/molt-obj-model/src/unicode_generated.rs"]
+    assert not hasattr(gen_unicode_width, "harness_memory_guard")
+    # Generation consumes the admitted source catalog; interpreter selection is
+    # only a differential-test oracle and cannot alter a production table.
+    assert gen_unicode_width.OUTPUT == ROOT / entry["outputs"][0]

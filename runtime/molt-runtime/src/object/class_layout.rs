@@ -199,7 +199,7 @@ impl SlotAdmission {
                         return Err(());
                     };
                     let bytes = std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr));
-                    if !super::ops_string::is_identifier_bytes(bytes) {
+                    if !super::ops_string::is_identifier_bytes(py, bytes) {
                         raise_exception::<()>(py, "TypeError", "__slots__ must be identifiers");
                         return Err(());
                     }

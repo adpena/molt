@@ -36,7 +36,6 @@ from molt.cli.backend_ir import _PreparedBackendIR
 from molt.cli.build_output_layout import _BuildOutputLayout
 from molt.cli.output import fail
 from molt.cli.module_source import _ModuleSourceCatalog, _ModuleSourceLease
-from molt.python_runtime_admission import BuildPythonAdmission
 from molt.cli.installed_runtime_contract import InstalledNativeAdmission
 from molt.cli.native_link_manifest import (
     native_link_dependency_manifest_path,
@@ -109,10 +108,7 @@ def test_native_object_publication_is_one_admitted_transaction(
     write_test_static_archive(archive)
     identity = write_test_native_link_manifest(archive)
     binding = native_codegen_binding(archive, identity)
-    admission = BuildPythonAdmission()
-    request.addfinalizer(admission.close)
     runtime_state = _RuntimeArtifactState(
-        build_python_admission=admission,
         runtime_lib=archive,
         native_runtime_build_identity=identity,
         native_runtime_generation=native_runtime_generation_fixture(archive, identity),

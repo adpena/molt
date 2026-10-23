@@ -1,5 +1,6 @@
 """Purpose: differential coverage for unicodedata basic."""
 
+from collections import namedtuple
 import unicodedata
 
 # name / lookup round-trip
@@ -10,6 +11,10 @@ print("lookup_A", unicodedata.lookup("LATIN CAPITAL LETTER A"))
 
 # name with default
 print("name_default", unicodedata.name("\ufffe", "UNKNOWN"))
+
+# Generic codecs share the table without requiring the public names API.
+print("named_escape", b"\\N{LATIN CAPITAL LETTER A}".decode("unicode_escape"))
+print("name_replace", "\u20ac\u0378".encode("ascii", "namereplace"))
 
 # category
 print("cat_A", unicodedata.category("A"))
@@ -82,3 +87,90 @@ try:
     unicodedata.decimal("A")
 except ValueError:
     print("decimal_A_err", "ValueError")
+
+
+# Target-table deltas: Unicode 15.1's new printable symbol, Unicode 16's
+# Cyrillic case pair, and Unicode 17's changed lowercase classification.
+# These observations, rather than a version predicate, select the oracle.
+for code in (0x2FFC, 0x1C89, 0x0295, 0x1FAE9):
+    char = chr(code)
+    print(
+        "target_facts",
+        hex(code),
+        unicodedata.category(char),
+        unicodedata.east_asian_width(char),
+        char.isprintable(),
+        char.isalpha(),
+        char.islower(),
+        char.isupper(),
+        char.isidentifier(),
+        repr(char.lower()),
+        repr(char.upper()),
+        repr(char.casefold()),
+    )
+
+# Context and expansions must survive a whole-string operation, including
+# combining marks, punctuation, and a surrogate boundary.
+for value in ("AΣ", "AΣ'A", "A\u0301Σ", "İßﬃ", "aΣ'ß", "ǅaΣ", "A\ud800ΣA"):
+    print(
+        "case_context",
+        repr(value),
+        repr(value.lower()),
+        repr(value.upper()),
+        repr(value.casefold()),
+        repr(value.title()),
+        repr(value.capitalize()),
+        repr(value.swapcase()),
+    )
+
+ascii_text = " ab CD_09\t\n"
+print(
+    "ascii_control",
+    repr(ascii_text.strip()),
+    ascii_text.split(),
+    repr(ascii_text.title()),
+    repr(ascii_text.capitalize()),
+    repr(ascii_text.swapcase()),
+    "ASCII_09".isidentifier(),
+    "09".isdecimal(),
+)
+
+# Unicode numeric whitespace is admitted for str, while bytes retain the
+# ASCII grammar; Python's additional U+001C..1F string spaces are not numeric.
+for label, padding, raw_padding in (
+    ("ascii", " \t", b" \t"),
+    ("nbsp", "\u00a0", b"\xc2\xa0"),
+    ("ideographic", "\u3000", b"\xe3\x80\x80"),
+    ("file_separator", "\x1c", b"\x1c"),
+    ("unit_separator", "\x1f", b"\x1f"),
+):
+    for domain, value in (
+        ("str", padding + "1.5" + padding),
+        ("bytes", raw_padding + b"1.5" + raw_padding),
+    ):
+        try:
+            result = float(value)
+        except ValueError:
+            print("numeric_whitespace", label, domain, "ValueError")
+        else:
+            print("numeric_whitespace", label, domain, result)
+    try:
+        result = complex(padding + "1+2j" + padding)
+    except ValueError:
+        print("complex_whitespace", label, "ValueError")
+    else:
+        print("complex_whitespace", label, result)
+
+# XID includes Other_ID_Start/combining continuation and excludes a merely
+# alphanumeric superscript. The Cyrillic field also changes with target data.
+for field in ("a²", "℘", "a\u0301", "\ud800", "\u1c89"):
+    try:
+        point = namedtuple("UnicodePoint", [field])
+    except ValueError:
+        renamed = namedtuple("UnicodePoint", [field], rename=True)
+        assert renamed._fields == ("_0",)
+        print("xid", repr(field), field.isidentifier(), "ValueError")
+    else:
+        assert point._fields == (field,)
+        assert point(7)[0] == 7
+        print("xid", repr(field), field.isidentifier(), "accepted")

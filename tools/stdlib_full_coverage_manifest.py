@@ -43,6 +43,7 @@ STDLIB_FULLY_COVERED_MODULES: tuple[str, ...] = (
     "hmac",
     "imghdr",
     "itertools",
+    "keyword",
     "math",
     "opcode",
     "operator",
@@ -347,6 +348,7 @@ STDLIB_REQUIRED_INTRINSICS_BY_MODULE: dict[str, tuple[str, ...]] = {
         "molt_itertools_tee",
         "molt_itertools_zip_longest",
     ),
+    "keyword": ("molt_keyword_lists",),
     "math": (
         "molt_math_acos",
         "molt_math_acosh",

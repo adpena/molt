@@ -489,7 +489,7 @@ pub extern "C" fn molt_string_split_field_ord_at_bounds(
             if i < 0 || i >= len {
                 return raise_exception::<_>(_py, "IndexError", "string index out of range");
             }
-            let Some(code) = molt_runtime_core::text_storage::code_points(field).nth(i as usize)
+            let Some(code) = molt_obj_model::text_storage::code_points(field).nth(i as usize)
             else {
                 return raise_exception::<_>(_py, "IndexError", "string index out of range");
             };

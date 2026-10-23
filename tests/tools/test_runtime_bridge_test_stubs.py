@@ -33,9 +33,9 @@ unsafe extern "C" {
         encoding="utf-8",
     )
 
-    native = root / "runtime/molt-cpython-abi/src"
+    native = root / "runtime/molt-runtime-capi/src"
     native.mkdir(parents=True)
-    (native / "native_custody.rs").write_text(
+    (native / "lib.rs").write_text(
         'unsafe extern "C" {\n    fn molt_native_retirement();\n}\n',
         encoding="utf-8",
     )

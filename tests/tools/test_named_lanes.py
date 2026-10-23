@@ -982,20 +982,13 @@ def test_differential_host_tools_follow_selected_cases_and_platform(
     monkeypatch.setattr(test_policy, "current_platform_name", lambda: platform)
     lane = PLAN.named_lane("runtime.public-consumers.native")
     base = set(PLAN.toolchain_closure(lane.toolchains))
-    # Admission adds the Cargo build generator the lane declares; the static
-    # lane closure has no Cargo context (docs/agent/PROOF_QUEUE.md).
-    generator = (
-        set(PLAN.toolchain_closure(["build-python"]))
-        if lane.data.get("cargo_build_python") is True
-        else set()
-    )
     for case, extra in ((first, expected), (second, set())):
         relative = case.relative_to(root).as_posix()
         command = command_admission.selected_differential_lane_command(
             lane.id, cases=[relative]
         )
         envelope = command_admission.envelope_for_command(command)
-        assert set(envelope["toolchains"]) == base | extra | generator
+        assert set(envelope["toolchains"]) == base | extra
         assert envelope["process_closure"]["toolchains"] == envelope["toolchains"]
         # Default recipes consume the same declaration as explicit selections.
         default = replace(lane, data={**lane.data, "differential_cases": [relative]})

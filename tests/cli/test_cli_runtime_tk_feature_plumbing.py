@@ -335,7 +335,7 @@ def test_runtime_builtin_features_wasm_full_is_linked_wasm_surface() -> None:
     assert "sqlite" not in features
     assert "stdlib_tk" not in features
     assert "stdlib_net" not in features
-    assert "stdlib_unicode_names" not in features
+    assert "stdlib_unicode_names" in features
     assert "stdlib_crypto" in features
     assert "stdlib_compression" in features
 

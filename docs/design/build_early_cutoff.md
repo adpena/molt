@@ -306,7 +306,7 @@ the admitted generation in the child. Resource captures and their cached
 content projections are reused: no second SDK enumeration or executable probe
 is introduced to compute this key.
 
-Rust source, build-Python content, job counts, output paths and unrelated Cargo
+Rust source, job counts, output paths and unrelated Cargo
 configuration bytes are excluded from this graph key. Ordinary source edits
 retain Cargo's incremental graph; actual toolchain/resource changes pay for a
 fresh graph and its disk storage. Old generations remain ordinary development
@@ -383,7 +383,15 @@ which removed the artifact store.
    ([Cargo input authority](cargo_input_authority.md)).
 4. Runtime tables use pinned Unicode data selected by the target Python version;
    native errno uses target headers with CPython's conditional publication
-   policy. Retire build Python after all generated consumers migrate.
+   policy. Rust artifacts have no build-Python dependency; explicit source
+   generators and differential oracles retain development-side Python custody.
+   Unicode generation consumes every pinned CPython source cohort member,
+   including pending versions, independently of guest target admission. Pure
+   descriptors use complete `(major, minor)` coordinates; runtime and C-API
+   consumers select only registered guest targets. Missing C-API providers and
+   unsupported targets report the existing `SystemError`, while out-of-range
+   code points retain their false predicate result. Source facts do not admit a
+   guest version or establish target qualification.
 5. A directory the build lists records the projection it used (its module
    candidates), not its token, so a new log or editor file beside the entry
    does not invalidate the record; Bazel's `GlobValue` cuts off the same way.

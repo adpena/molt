@@ -130,15 +130,13 @@ def test_shared_locks_create_cross_platform_lock_files(tmp_path: Path):
         assert (tmp_path / "stdlib.o.publish.lock").exists()
 
 
-def test_cargo_build_env_pins_build_python(monkeypatch):
-
+def test_cargo_build_env_does_not_select_a_python_generator(monkeypatch):
     monkeypatch.delenv("MOLT_BUILD_PYTHON", raising=False)
-    env = cli_cargo_execution._cargo_build_env()
-    assert env["MOLT_BUILD_PYTHON"] == sys.executable
-
-    monkeypatch.setenv("MOLT_BUILD_PYTHON", "custom-python")
-    env = cli_cargo_execution._cargo_build_env()
-    assert env["MOLT_BUILD_PYTHON"] == "custom-python"
+    assert "MOLT_BUILD_PYTHON" not in cli_cargo_execution._cargo_build_env()
+    monkeypatch.setenv("MOLT_BUILD_PYTHON", "missing-poison")
+    assert (
+        cli_cargo_execution._cargo_build_env()["MOLT_BUILD_PYTHON"] == "missing-poison"
+    )
 
 
 def test_runtime_staticlib_names_are_target_platform_specific():

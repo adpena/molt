@@ -29,7 +29,6 @@ from molt.cli.models import (
 from molt.cli.build_output_layout import _BuildOutputLayout
 from molt.cli.module_source import _ModuleSourceCatalog, _ModuleSourceLease
 from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
-from molt.python_runtime_admission import BuildPythonAdmission
 
 import molt.cli as cli
 from molt.cli import backend_output_pipeline as cli_backend_output_pipeline
@@ -158,10 +157,7 @@ def terminal_build(
         build_identity=identity,
         verify=lambda: None,
     )
-    admission = BuildPythonAdmission()
-    request.addfinalizer(admission.close)
     runtime = SimpleNamespace(
-        build_python_admission=admission,
         native_runtime_codegen_binding=binding,
         native_runtime_build_identity=identity,
         runtime_lib=binding.runtime_lib,

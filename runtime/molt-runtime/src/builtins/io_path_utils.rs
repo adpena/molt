@@ -237,7 +237,7 @@ pub(crate) fn os_string_from_text(
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStringExt;
-        let points = molt_runtime_core::text_storage::code_points(text);
+        let points = molt_obj_model::text_storage::code_points(text);
         let mut wide = Vec::with_capacity(points.size_hint().0);
         for code in points {
             if code <= 0xffff {
@@ -833,9 +833,9 @@ fn glob1_text(
         names
             .retain(|name| molt_runtime_platform::fnmatch::fnmatch_match_bytes_impl(name, pattern));
     } else {
-        let pattern: Vec<u32> = molt_runtime_core::text_storage::code_points(pattern).collect();
+        let pattern: Vec<u32> = molt_obj_model::text_storage::code_points(pattern).collect();
         names.retain(|name| {
-            let name: Vec<u32> = molt_runtime_core::text_storage::code_points(name).collect();
+            let name: Vec<u32> = molt_obj_model::text_storage::code_points(name).collect();
             molt_runtime_platform::fnmatch::fnmatch_match_units(&name, &pattern)
         });
     }

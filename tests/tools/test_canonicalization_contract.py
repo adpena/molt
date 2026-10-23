@@ -113,6 +113,13 @@ def test_semantics_use_package_identity_not_directory_prefix_or_role(
     "consumer_layer,provider_layer,allowed",
     [
         ("core", "c_api", False),
+        ("c_api", "runtime_c_api", False),
+        ("core", "runtime_c_api", False),
+        ("runtime_c_api", "core", True),
+        ("runtime_c_api", "c_api", True),
+        ("runtime_c_api", "stdlib", False),
+        ("stdlib", "runtime_c_api", True),
+        ("runtime", "runtime_c_api", True),
         ("c_api", "core", True),
         ("stdlib", "c_api", True),
         ("c_api", "stdlib", False),

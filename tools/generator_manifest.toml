@@ -129,12 +129,12 @@ discovery_only = false
 
 [[generator]]
 tool = "tools/gen_unicode_width.py"
-outputs = ["runtime/molt-runtime/src/object/unicode_width_generated.rs"]
-source = "src/molt/target_python.py + installed matching CPython unicodedata databases + tools/generator_io.py"
+outputs = ["runtime/molt-obj-model/src/unicode_generated.rs"]
+source = "config/cpython_stdlib_snapshot.json (receipted Objects/unicodetype_db.h, Modules/unicodedata_db.h, Tools/unicode/makeunicodedata.py, Objects/unicodectype.c and Modules/unicodedata.c at config/cpython_regrtest_sources.toml revisions) + config/cpython_regrtest_sources.toml + tools/gen_stdlib_module_union.py + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_unicode_width.py --check"
 idempotent = true
-toolchains = ["target-pythons"]
+toolchains = []
 sync_test = "tests/test_runtime_build_python.py"
 discovery_only = false
 
@@ -230,6 +230,7 @@ tool = "tools/gen_host_capabilities.py"
 outputs = [
   "src/molt/_host_capabilities_generated.py",
   "runtime/molt-runtime-core/src/host_capabilities_generated.rs",
+  "runtime/molt-obj-model/src/python_version_generated.rs",
   "runtime/molt-backend-luau/src/python_version_policy_generated.rs",
   "wasm/host_capabilities_generated.js",
   "docs/spec/areas/security/host_capabilities.generated.md",
@@ -536,7 +537,7 @@ tool = "tools/check_runtime_bridge_test_stubs.py"
 outputs = [
   "runtime/molt-runtime-core/src/bridge_test_stubs.rs",
 ]
-source = "runtime/molt-runtime-core/src/lib.rs + runtime/molt-cpython-abi/src/native_custody.rs + runtime/*/src/bridge.rs extern declarations + tools/generator_io.py"
+source = "runtime/molt-runtime-core/src/lib.rs + runtime/molt-runtime-capi/src/lib.rs + runtime/*/src/bridge.rs extern declarations + tools/generator_io.py"
 check_mode = true
 toolchains = []
 check_command = "tools/check_runtime_bridge_test_stubs.py --check"
