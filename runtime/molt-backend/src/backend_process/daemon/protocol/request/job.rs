@@ -1,8 +1,8 @@
-#[cfg(feature = "wasm-backend")]
-use molt_backend::json_boundary::optional_u32;
 use molt_backend::json_boundary::{
     expect_object, optional_bool, optional_string, required_field, required_string,
 };
+#[cfg(feature = "wasm-backend")]
+use molt_backend::json_boundary::{optional_u32, optional_u64};
 use serde_json::Value as JsonValue;
 
 use super::model::{
@@ -148,6 +148,10 @@ fn wasm_job_target(obj: &JsonObject, ctx: &str) -> Result<DaemonJobTarget, Strin
                 "wasm_split_runtime_app_table_base",
                 ctx,
             )?,
+            runtime_poll_slots: optional_u64(obj, "wasm_runtime_poll_slots", ctx)?
+                .map(molt_backend::WasmRuntimePollSlots::from_mask)
+                .transpose()
+                .map_err(|error| format!("{ctx}.wasm_runtime_poll_slots: {error}"))?,
         },
     ))
 }

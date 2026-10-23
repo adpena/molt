@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from molt._wasm_abi_generated import WASM_POLL_TABLE_IMPORTS
 from molt.backend_environment import CodegenSelection
 from molt.cli import backend_compile
 from molt.cli.backend_artifact_contract import (
@@ -44,6 +45,7 @@ def test_layout_uses_bound_pair_not_mutable_selection_or_ambient_overrides(
         "MOLT_WASM_DATA_BASE",
         "MOLT_WASM_TABLE_BASE",
         "MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE",
+        "MOLT_WASM_RUNTIME_POLL_SLOTS",
     ):
         monkeypatch.setenv(name, "999999")
     monkeypatch.delenv("MOLT_WASM_RELOCATABLE", raising=False)
@@ -55,6 +57,20 @@ def test_layout_uses_bound_pair_not_mutable_selection_or_ambient_overrides(
     assert layout.split_app_table_base == (256 if split_runtime else None)
     assert layout.relocatable is linked
     assert layout.backend_environment()["MOLT_WASM_TABLE_BASE"] == str(table_base)
+    # The fixture pair is built without stdlib_net: its poll table defines the
+    # core poll functions and lacks every networking one (HF-487).
+    defined = {
+        name
+        for slot, name in WASM_POLL_TABLE_IMPORTS
+        if layout.runtime_poll_slots >> slot & 1
+    }
+    assert {"async_sleep_poll", "asyncgen_poll", "promise_poll"} <= defined
+    assert defined.isdisjoint(
+        {"io_wait", "ws_wait", "asyncio_sock_recv_poll", "asyncio_fd_watcher_poll"}
+    )
+    assert layout.backend_environment()["MOLT_WASM_RUNTIME_POLL_SLOTS"] == str(
+        layout.runtime_poll_slots
+    )
 
 
 def _compile(
@@ -150,6 +166,7 @@ def test_codegen_and_all_cache_hits_preserve_runtime_layout(
         "MOLT_WASM_DATA_BASE",
         "MOLT_WASM_TABLE_BASE",
         "MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE",
+        "MOLT_WASM_RUNTIME_POLL_SLOTS",
     ):
         monkeypatch.setenv(name, "999999")
     result, error = _compile(
@@ -165,6 +182,10 @@ def test_codegen_and_all_cache_hits_preserve_runtime_layout(
         assert len(emitted) == 1
         assert emitted[0]["MOLT_WASM_TABLE_BASE"] == "1"
         assert emitted[0]["MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE"] == "256"
+        bound = prepare_wasm_codegen_layout(binding, linked=True, split_runtime=True)
+        assert emitted[0]["MOLT_WASM_RUNTIME_POLL_SLOTS"] == str(
+            bound.runtime_poll_slots
+        )
         assert emitted[0]["MOLT_WASM_DATA_BASE"] == str(64 * 1024 * 1024 + 2 * 65536)
     else:
         assert not emitted

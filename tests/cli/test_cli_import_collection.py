@@ -29243,6 +29243,7 @@ def test_backend_daemon_compile_request_uses_canonical_split_table_boundary(
         wasm_data_base=67_108_864,
         wasm_table_base=1,
         wasm_split_runtime_app_table_base=8_192,
+        wasm_runtime_poll_slots=6,
         cache_key="module-cache",
         function_cache_key="function-cache",
         config_digest="digest123",
@@ -29255,6 +29256,7 @@ def test_backend_daemon_compile_request_uses_canonical_split_table_boundary(
     assert request_bytes is not None
     job = json.loads(request_bytes)["jobs"][0]
     assert job["wasm_split_runtime_app_table_base"] == 8_192
+    assert job["wasm_runtime_poll_slots"] == 6
     assert "wasm_split_runtime_runtime_table_min" not in job
 
 

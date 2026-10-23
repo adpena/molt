@@ -52,4 +52,4 @@ pub use molt_backend_luau::luau;
 #[cfg(feature = "rust-backend")]
 pub use molt_backend_rust::rust;
 #[cfg(feature = "wasm-backend")]
-pub use molt_backend_wasm::{WasmBackend, WasmCompileOptions, WasmProfile};
+pub use molt_backend_wasm::{WasmBackend, WasmCompileOptions, WasmProfile, WasmRuntimePollSlots};

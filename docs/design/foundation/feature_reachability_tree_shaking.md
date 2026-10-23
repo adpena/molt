@@ -140,6 +140,19 @@ I/O-driver futures (sockets, streams, fd watchers, accept loops) and the I/O
 poller exist only with a provider; WASM host-progress retries for processes and
 streams live outside the poller and need none.
 
+**WASM poll table.** A WASM app fills fixed poll-table slots with the runtime's
+poll functions, and a runtime without `stdlib_net` lacks 17 of them (the I/O
+wait, the WebSocket wait and the 15 asyncio socket, stream, watcher and accept
+polls). The codegen layout therefore carries one more fact from the bound
+runtime: `MOLT_WASM_RUNTIME_POLL_SLOTS`, a bit mask of the slots whose poll
+functions that runtime defines. `wasm_codegen_layout.py` derives it from the
+pair's generated export obligations
+(`RuntimeWasmGeneration.shared_runtime_import_names`), the same declared cfg the
+runtime's admission checks. The backend imports only the defined poll functions
+and fills every other slot with the sentinel; the slot numbering and the table
+layout stay fixed. No future can name an absent slot, because only the absent
+feature creates one.
+
 Precedent: Rust `cfg` removes an item from the crate, so a reference fails to
 compile and a missing symbol fails to link
 ([cfg](https://doc.rust-lang.org/reference/conditional-compilation.html),

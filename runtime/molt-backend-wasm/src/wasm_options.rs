@@ -21,12 +21,57 @@ impl WasmProfile {
     }
 }
 
+/// The fixed poll-table slots the bound runtime defines.
+///
+/// Bit `s` is set when the runtime exports the poll function of generated
+/// slot `s`. A runtime built without a feature lacks that feature's poll
+/// functions (HF-487), so the app fills their slots with the sentinel and does
+/// not import them. The slot numbering, and so the table layout, does not
+/// change with the runtime's features.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct WasmRuntimePollSlots(u64);
+
+impl WasmRuntimePollSlots {
+    /// Every generated poll slot: the full runtime ABI.
+    pub fn all() -> Self {
+        Self(
+            crate::wasm_abi::POLL_TABLE_IMPORTS
+                .iter()
+                .fold(0, |mask, spec| mask | (1u64 << spec.table_slot)),
+        )
+    }
+
+    /// Admit a slot mask; a bit outside the generated slots is a stale or
+    /// foreign layout and fails closed.
+    pub fn from_mask(mask: u64) -> Result<Self, String> {
+        let all = Self::all().0;
+        let unknown = mask & !all;
+        if unknown != 0 {
+            return Err(format!(
+                "runtime poll-slot mask {mask:#x} names slots outside the generated poll table \
+                 (unknown bits {unknown:#x}, generated slots {all:#x})"
+            ));
+        }
+        Ok(Self(mask))
+    }
+
+    pub fn mask(self) -> u64 {
+        self.0
+    }
+
+    pub(crate) fn defines_slot(self, slot: u32) -> bool {
+        slot < u64::BITS && self.0 & (1u64 << slot) != 0
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct WasmCompileOptions {
     pub reloc_enabled: bool,
     pub data_base: u32,
     pub table_base: u32,
     pub split_runtime_app_table_base: Option<u32>,
+    /// Poll-table slots the bound runtime defines (`MOLT_WASM_RUNTIME_POLL_SLOTS`).
+    pub runtime_poll_slots: WasmRuntimePollSlots,
     /// Enable `return_call` emission (WASM tail-call proposal).
     /// Disabled by default until the target feature probe proves support; set
     /// `MOLT_WASM_TAIL_CALL=1` after that probe to opt into the proposal.
@@ -64,6 +109,16 @@ impl Default for WasmCompileOptions {
             )
             .ok()
             .and_then(|value| value.parse::<u32>().ok()),
+            runtime_poll_slots: match backend_env::var(BackendEnv::MOLT_WASM_RUNTIME_POLL_SLOTS) {
+                Ok(raw) => raw
+                    .parse::<u64>()
+                    .map_err(|error| {
+                        format!("MOLT_WASM_RUNTIME_POLL_SLOTS {raw:?} is not a u64: {error}")
+                    })
+                    .and_then(WasmRuntimePollSlots::from_mask)
+                    .unwrap_or_else(|error| panic!("{error}")),
+                Err(_) => WasmRuntimePollSlots::all(),
+            },
             tail_call_enabled: matches!(
                 backend_env::var(BackendEnv::MOLT_WASM_TAIL_CALL).as_deref(),
                 Ok("1") | Ok("true") | Ok("TRUE") | Ok("on") | Ok("ON")
