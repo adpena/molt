@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-from molt.cli.link_input_observation import CompilationInputRecord
-
-from molt.backend_protocol import BackendDaemonJobOrigin
-
 from molt.compilation_target import Target
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 from molt.compiler_analysis.python_imports import (
@@ -51,7 +47,9 @@ from molt.type_facts import TypeFacts
 from molt.toolchain_identity import StableRegularFileIdentity
 
 if TYPE_CHECKING:
+    from molt.backend_protocol import BackendDaemonJobOrigin
     from molt.cli.build_request import BuildProfile, ParseCodec, TypeHintPolicy
+    from molt.cli.link_input_observation import CompilationInputRecord
     from molt.cli.external_native import (
         _ExternalNativeAbiSymbol,
         _ExternalNativeCapiSymbol,

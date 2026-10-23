@@ -1330,6 +1330,8 @@ def test_ir_input_receivers_run_with_enabled_and_disabled_cbor() -> None:
 
 
 def test_daemon_cache_runs_actual_native_and_wasm_binary_receivers() -> None:
+    from tools import molt_dev_policy
+
     local = next(
         rule for rule in PLAN.local_rules if rule["name"] == "backend-daemon-cache"
     )
@@ -1361,6 +1363,7 @@ def test_daemon_cache_runs_actual_native_and_wasm_binary_receivers() -> None:
     server = shlex.split(local["gates"][1])
     assert {server[i + 1] for i, arg in enumerate(server[:-1]) if arg == "--test"} == {
         "daemon_server",
+        "native_batch_worker_spawn",
         "rust_transpiler_preview",
     }
     assert {server[i + 1] for i, arg in enumerate(server[:-1]) if arg == "-p"} == {
@@ -1370,6 +1373,18 @@ def test_daemon_cache_runs_actual_native_and_wasm_binary_receivers() -> None:
     assert "--no-fail-fast" in server
     assert server[server.index("--features") + 1] == argv[argv.index("--features") + 1]
     assert server[server.index("--profile") + 1] == "dev-fast"
+
+    policy = molt_dev_policy.GateConfig.load(proof_plan.DEFAULT_MANIFEST)
+    for path in (
+        "runtime/molt-backend/src/backend_process/input/msgpack.rs",
+        "runtime/molt-backend/src/backend_process/native_batch.rs",
+        "runtime/molt-backend/src/backend_process/native_batch/worker/spawn.rs",
+        "runtime/molt-backend/src/backend_process/shared_stdlib_cache.rs",
+        "runtime/molt-backend/src/backend_process/shared_stdlib_cache/compile/batched.rs",
+        "runtime/molt-backend/tests/native_batch_worker_spawn.rs",
+    ):
+        selected, _ = policy.select([path])
+        assert [gate.command for gate in selected].count(local["gates"][1]) == 1, path
 
 
 def test_cpython_abi_owner_reuses_the_compiler_graph_and_registered_local_lane() -> (

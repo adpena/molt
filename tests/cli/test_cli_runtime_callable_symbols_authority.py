@@ -870,6 +870,7 @@ def test_native_object_output_rejects_runtime_generation_drift(
     from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
     from molt.cli.models import (
         _BackendCacheSetup,
+        _PreparedBackendCompile,
         _PreparedBackendSetup,
         _PreparedBuildConfig,
     )
@@ -994,12 +995,13 @@ def test_native_object_output_rejects_runtime_generation_drift(
             cache_path=None,
             function_cache_path=None,
         ),
-        prepared_backend_compile=NS(
+        prepared_backend_compile=_PreparedBackendCompile(
             cache_enabled=False,
             cache_hit=False,
             cache_hit_tier=None,
             backend_daemon_cached=False,
             backend_daemon_cache_tier=None,
+            backend_daemon_health=None,
             backend_daemon_config_digest=None,
             wasm_table_base=None,
         ),

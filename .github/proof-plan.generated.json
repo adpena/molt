@@ -9422,7 +9422,7 @@
       "local.apparatus-learning-protection.0": "python tools/apparatus_agent_safety.py --check",
       "local.apparatus-learning-protection.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_apparatus_agent_safety.py tests/tools/test_check_gate_liveness.py tests/tools/test_memory_graph.py",
       "local.backend-daemon-cache.0": "cargo test --locked --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor --bin molt-backend -- daemon backend_process::input::tests backend_process::cli_args::parse::tests --test-threads=1",
-      "local.backend-daemon-cache.1": "cargo test --locked --no-fail-fast --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend -p molt-backend-rust --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor --test daemon_server --test rust_transpiler_preview -- --test-threads=1",
+      "local.backend-daemon-cache.1": "cargo test --locked --no-fail-fast --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend -p molt-backend-rust --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor --test daemon_server --test native_batch_worker_spawn --test rust_transpiler_preview -- --test-threads=1",
       "local.backend-daemon-custody.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_backend_daemon_custody.py tests/test_backend_daemon_argv.py tests/test_backend_daemon_suite_custody.py tests/test_molt_diff_daemon_pruning.py tests/test_bench_individual_tool.py",
       "local.backend-environment-contract.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.0 tests/cli/test_backend_environment_contract.py tests/cli/test_llvm_wasi_tools.py tests/cli/test_cli_wasm_codegen_layout.py tests/cli/test_cli_shared_stdlib_cache.py tests/cli/test_cli_runtime_callable_symbols_authority.py tests/cli/test_native_codegen_identity.py tests/cli/test_cli_backend_prewarm.py",
       "local.backend-environment-contract.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=6.25 -k 'backend_codegen or backend_daemon or backend_cache_setup or backend_setup or backend_compile or backend_pipeline or backend_dispatch or codegen_selection or fingerprint_env' tests/cli/test_cli_import_collection.py",
@@ -11836,18 +11836,24 @@
           "local.backend-daemon-cache.0",
           "local.backend-daemon-cache.1"
         ],
-        "description": "Exercise typed daemon target identity, LRU and flights on the compiler-authorities feature graph.",
+        "description": "Exercise daemon identity, worker processes and shared-stdlib reuse on one compiler-authorities feature graph.",
         "gates": [
           "cargo test --locked --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor --bin molt-backend -- daemon backend_process::input::tests backend_process::cli_args::parse::tests --test-threads=1",
-          "cargo test --locked --no-fail-fast --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend -p molt-backend-rust --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor --test daemon_server --test rust_transpiler_preview -- --test-threads=1"
+          "cargo test --locked --no-fail-fast --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend -p molt-backend-rust --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor --test daemon_server --test native_batch_worker_spawn --test rust_transpiler_preview -- --test-threads=1"
         ],
         "globs": [
           "runtime/molt-backend/Cargo.toml",
           "runtime/molt-backend/src/backend_process/cli_args/**/*.rs",
           "runtime/molt-backend/src/backend_process/native_artifact.rs",
+          "runtime/molt-backend/src/backend_process/input/**/*.rs",
+          "runtime/molt-backend/src/backend_process/native_batch.rs",
+          "runtime/molt-backend/src/backend_process/native_batch/**/*.rs",
+          "runtime/molt-backend/src/backend_process/shared_stdlib_cache.rs",
+          "runtime/molt-backend/src/backend_process/shared_stdlib_cache/**/*.rs",
           "runtime/molt-backend/src/backend_process/daemon/**/*.rs",
           "runtime/molt-backend/src/main_tests/daemon*.rs",
-          "runtime/molt-backend/tests/daemon_server.rs"
+          "runtime/molt-backend/tests/daemon_server.rs",
+          "runtime/molt-backend/tests/native_batch_worker_spawn.rs"
         ],
         "name": "backend-daemon-cache",
         "toolchains": [
