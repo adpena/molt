@@ -149,6 +149,29 @@ def cleanup_worktree(
     return EXIT_OK
 
 
+def release_slot(git, repo: Path, upstream_ref: str) -> int:
+    """Detach a lane's slot worktree at `upstream_ref` and keep it (HF-491).
+
+    The next lane reuses the slot with its checkout state warm: its Cargo
+    target, sccache keys and environment are keyed by its path. Retirement has
+    proved the lane landed or bundled and the slot clean, and `git switch`
+    refuses to overwrite any change it would lose.
+    """
+    commit = git.rev_parse(f"{upstream_ref}^{{commit}}")
+    proc = _run_fast_captured_command(
+        ["git", "-C", str(repo), "switch", "--quiet", "--detach", commit],
+        timeout=120.0,
+    )
+    if proc.returncode != 0:
+        _fail(
+            f"git switch --detach failed in slot {repo} (exit {proc.returncode}): "
+            f"{proc.stderr.strip()}"
+        )
+        return EXIT_FAIL
+    _ok(f"released slot {repo} at {upstream_ref} ({git.short(commit)})")
+    return EXIT_OK
+
+
 def prepare_checkout_retirement(checkout: Path) -> Callable[[], None]:
     """Prepare a checkout's removal while it exists; return what runs after.
 

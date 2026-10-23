@@ -3209,7 +3209,12 @@ def test_lane_start_and_retire_run_through_mains_controller_by_default(
     returncode, output = lane("retire", "handoff")
     assert returncode == molt_dev.EXIT_OK, output
     assert f"pinned controller {controller.name}" in output, output
-    assert not worktree.exists()
+    # A slot lane's retirement keeps the slot, detached, for the next lane
+    # (HF-491).
+    assert worktree.name == "slot-01"
+    assert _git(worktree, "status", "--porcelain", "--branch").stdout.startswith(
+        "## HEAD (no branch)"
+    )
     assert _git(work, "branch", "--list", "lane/handoff").stdout.strip() == ""
     record = json.loads(record_path.read_text(encoding="utf-8"))
     assert record["status"] == "landed"
