@@ -3,7 +3,6 @@ from __future__ import annotations
 import errno
 import hashlib
 import os
-import shutil
 import stat
 import time
 from pathlib import Path
@@ -53,16 +52,14 @@ def test_verified_copy_checks_staged_bytes_before_publication(
     if existing:
         destination.write_bytes(b"previous")
     expected = hashlib.sha256(source.read_bytes()).hexdigest()
-    copyfile = shutil.copyfile
+    clone_file = artifact_publication.clone_file
 
     def changed_copy(src: Path, staged: Path) -> None:
-        copyfile(src, staged)
+        clone_file(src, staged)
         staged.write_bytes(b"changed during copy")
 
-    # Artifact publication stages the verified copy.
-    install_module_view(
-        monkeypatch, "shutil", shutil, artifact_publication, copyfile=changed_copy
-    )
+    # Artifact publication stages the verified copy with the platform copy.
+    monkeypatch.setattr(artifact_publication, "clone_file", changed_copy)
     with pytest.raises(ValueError, match="source changed while staging verified copy"):
         atomic_io._atomic_copy_file(source, destination, expected_sha256=expected)
     assert not list(tmp_path.glob(".*.tmp"))
@@ -70,8 +67,11 @@ def test_verified_copy_checks_staged_bytes_before_publication(
         assert destination.read_bytes() == b"previous"
     else:
         assert not destination.exists()
-    monkeypatch.setattr(artifact_publication.shutil, "copyfile", copyfile)
+    monkeypatch.setattr(artifact_publication, "clone_file", clone_file)
     atomic_io._atomic_copy_file(source, destination, expected_sha256=expected)
+    assert destination.read_bytes() == b"expected"
+    # The clone has its own inode: rewriting the source cannot reach it.
+    source.write_bytes(b"rewritten")
     assert destination.read_bytes() == b"expected"
 
 
