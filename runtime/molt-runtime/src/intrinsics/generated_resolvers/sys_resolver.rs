@@ -187,18 +187,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_sys_audit",
             crate::molt_sys_audit as *const (),
         )),
-        "molt_sys_exit" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_sys_exit",
-            crate::molt_sys_exit as *const (),
-        )),
-        "molt_sys_displayhook_write" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_sys_displayhook_write",
-            crate::molt_sys_displayhook_write as *const (),
-        )),
-        "molt_sys_excepthook_write" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_sys_excepthook_write",
-            crate::molt_sys_excepthook_write as *const (),
-        )),
         "molt_sys_path" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_sys_path",
             crate::molt_sys_path as *const (),

@@ -357,10 +357,15 @@ pub extern "C" fn molt_sys_thread_info() -> u64 {
 // 4. Functions
 // ---------------------------------------------------------------------------
 
-/// `sys.is_finalizing()` -> `False` for active compiled execution.
+/// `sys.is_finalizing()`: True once the atexit phase has run.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_is_finalizing() -> u64 {
-    MoltObject::from_bool(false).bits()
+    crate::with_gil_entry_nopanic!(_py, {
+        let finalizing = runtime_state(_py)
+            .interpreter_finalizing
+            .load(std::sync::atomic::Ordering::Acquire);
+        MoltObject::from_bool(finalizing).bits()
+    })
 }
 
 /// `sys.getrefcount(obj)` -> best-effort runtime refcount, including call arg ref.
@@ -1128,46 +1133,6 @@ pub extern "C" fn molt_sys_audit(event_bits: u64, args_bits: u64) -> u64 {
             completed
         });
         MoltObject::none().bits()
-    })
-}
-
-/// `sys.exit(code)` -> raises SystemExit
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sys_exit(code_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let _ = code_bits;
-        raise_exception::<u64>(_py, "SystemExit", "")
-    })
-}
-
-// --- displayhook / excepthook / unraisablehook delegated to Python ---
-// These are complex functions that interact with Python's repr/traceback
-// formatting. We provide thin intrinsic stubs that the Python side calls
-// to write to stdout/stderr.
-
-/// `sys._displayhook_write(text)` -> None  (write text to stdout)
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sys_displayhook_write(text_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        if let Some(s) = string_obj_to_owned(obj_from_bits(text_bits)) {
-            print!("{s}");
-            MoltObject::none().bits()
-        } else {
-            raise_exception::<u64>(_py, "TypeError", "expected str")
-        }
-    })
-}
-
-/// `sys._excepthook_write(text)` -> None  (write text to stderr)
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sys_excepthook_write(text_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        if let Some(s) = string_obj_to_owned(obj_from_bits(text_bits)) {
-            eprint!("{s}");
-            MoltObject::none().bits()
-        } else {
-            raise_exception::<u64>(_py, "TypeError", "expected str")
-        }
     })
 }
 

@@ -22,12 +22,6 @@ def _require_callable_intrinsic(name: str):
     return value
 
 
-_molt_weakref_finalize_track = _require_callable_intrinsic(
-    "molt_weakref_finalize_track"
-)
-_molt_weakref_finalize_untrack = _require_callable_intrinsic(
-    "molt_weakref_finalize_untrack"
-)
 _molt_weakcontainer_new = _require_callable_intrinsic("molt_weakcontainer_new")
 _molt_weakcontainer_store_probe = _require_callable_intrinsic(
     "molt_weakcontainer_store_probe"
@@ -315,80 +309,143 @@ class WeakMethod:
 
 
 class finalize:
-    __slots__ = ("_ref", "_func", "_args", "_kwargs", "_alive", "_atexit")
+    """Class for finalization of weakrefable objects
 
-    def __init__(
-        self, obj: object, func: Callable[..., Any], /, *args: Any, **kwargs: Any
-    ) -> None:
-        if not callable(func):
-            raise TypeError("finalize() func must be callable")
-        self._alive = True
-        self._func = func
-        self._args = args
-        self._kwargs = kwargs
-        self._atexit = True
-        self._ref = ref(obj, self)
-        _molt_weakref_finalize_track(self)
+    finalize(obj, func, *args, **kwargs) returns a callable finalizer
+    object which will be called when obj is garbage collected. The
+    first time the finalizer is called it evaluates func(*arg, **kwargs)
+    and returns the result. After this the finalizer is dead, and
+    calling it just returns None.
 
-    def __call__(self, _ref: ReferenceType | None = None) -> object | None:
-        state = self._take_state()
-        if state is None:
-            return None
-        _, func, args, kwargs = state
-        return func(*args, **kwargs)
+    When the program exits any remaining finalizers for which the
+    atexit attribute is true will be run in reverse order of creation.
+    By default atexit is true.
+    """
 
-    def _take_state(
-        self,
-    ) -> tuple[ReferenceType, object, tuple[object, ...], dict[str, object]] | None:
-        if not self._alive:
-            return None
-        _molt_weakref_finalize_untrack(self)
-        self._alive = False
-        state = (self._ref, self._func, self._args, self._kwargs)
-        self._ref = None  # type: ignore[assignment]
-        self._func = None  # type: ignore[assignment]
-        self._args = ()
-        self._kwargs = {}
-        return state
+    # CPython's protocol: finalizer objects have no state of their own. They
+    # key `_Info` records in the registry, so they cannot be part of a
+    # reference cycle. An entry is never reinserted, so registry order is
+    # creation order and exit selection needs no separate index.
 
-    def detach(
-        self,
-    ) -> tuple[object, object, tuple[object, ...], dict[str, object]] | None:
-        state = self._take_state()
-        if state is None:
-            return None
-        ref_obj, func, args, kwargs = state
-        obj = ref_obj()
-        if obj is None:
-            return None
-        return (obj, func, args, kwargs)
+    __slots__ = ()
+    _registry = {}
+    _shutdown = False
+    _dirty = False
+    _registered_with_atexit = False
 
-    def peek(
-        self,
-    ) -> tuple[object, object, tuple[object, ...], dict[str, object]] | None:
-        if not self._alive:
-            return None
-        obj = self._ref()
-        if obj is None:
-            return None
-        return (obj, self._func, self._args, self._kwargs)
+    class _Info:
+        __slots__ = ("weakref", "func", "args", "kwargs", "atexit")
+
+    def __init__(self, obj, func, /, *args, **kwargs):
+        if not self._registered_with_atexit:
+            # A thread race may register the exit function twice; the second
+            # run finds nothing to select.
+            import atexit
+
+            atexit.register(self._exitfunc)
+            finalize._registered_with_atexit = True
+        info = self._Info()
+        info.weakref = ref(obj, self)
+        info.func = func
+        info.args = args
+        info.kwargs = kwargs or None
+        info.atexit = True
+        self._registry[self] = info
+        finalize._dirty = True
+
+    def __call__(self, _=None):
+        """If alive then mark as dead and return func(*args, **kwargs);
+        otherwise return None"""
+        info = self._registry.pop(self, None)
+        if info and not self._shutdown:
+            return info.func(*info.args, **(info.kwargs or {}))
+
+    def detach(self):
+        """If alive then mark as dead and return (obj, func, args, kwargs);
+        otherwise return None"""
+        info = self._registry.get(self)
+        obj = info and info.weakref()
+        if obj is not None and self._registry.pop(self, None):
+            return (obj, info.func, info.args, info.kwargs or {})
+
+    def peek(self):
+        """If alive then return (obj, func, args, kwargs);
+        otherwise return None"""
+        info = self._registry.get(self)
+        obj = info and info.weakref()
+        if obj is not None:
+            return (obj, info.func, info.args, info.kwargs or {})
 
     @property
-    def alive(self) -> bool:
-        return self._alive
+    def alive(self):
+        """Whether finalizer is alive"""
+        return self in self._registry
 
     @property
-    def atexit(self) -> bool:
-        return self._atexit
+    def atexit(self):
+        """Whether finalizer should be called at exit"""
+        info = self._registry.get(self)
+        return bool(info) and info.atexit
 
     @atexit.setter
-    def atexit(self, value: object) -> None:
-        normalized = bool(value)
-        self._atexit = normalized
+    def atexit(self, value):
+        info = self._registry.get(self)
+        if info:
+            info.atexit = bool(value)
 
-    def __repr__(self) -> str:
-        state = "alive" if self._alive else "dead"
-        return f"<finalize object at {hex(id(self))}; {state}>"
+    def __repr__(self):
+        info = self._registry.get(self)
+        obj = info and info.weakref()
+        if obj is None:
+            return "<%s object at %#x; dead>" % (type(self).__name__, id(self))
+        return "<%s object at %#x; for %r at %#x>" % (
+            type(self).__name__,
+            id(self),
+            type(obj).__name__,
+            id(obj),
+        )
+
+    @classmethod
+    def _select_for_exit(cls):
+        # Live finalizers marked for exit, oldest first.
+        return [f for (f, i) in cls._registry.items() if i.atexit]
+
+    @classmethod
+    def _exitfunc(cls):
+        # At shutdown invoke finalizers for which atexit is true. This runs
+        # once all other non-daemonic threads have been joined.
+        reenable_gc = False
+        try:
+            if cls._registry:
+                import gc
+
+                if gc.isenabled():
+                    reenable_gc = True
+                    gc.disable()
+                pending = None
+                while True:
+                    if pending is None or finalize._dirty:
+                        pending = cls._select_for_exit()
+                        finalize._dirty = False
+                    if not pending:
+                        break
+                    f = pending.pop()
+                    try:
+                        # gc is disabled, so (assuming no daemonic threads)
+                        # this is the only line here that can create a new
+                        # finalizer.
+                        f()
+                    except Exception:
+                        import sys
+
+                        sys.excepthook(*sys.exc_info())
+                    assert f not in cls._registry
+        finally:
+            # No finalizer runs once exit processing has ended.
+            finalize._shutdown = True
+            if reenable_gc:
+                gc.enable()
+
 
 class WeakKeyDictionary:
     def __init__(self, mapping: dict[object, Any] | None = None) -> None:
