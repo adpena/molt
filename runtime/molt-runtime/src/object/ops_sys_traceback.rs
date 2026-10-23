@@ -934,6 +934,7 @@ mod traceback_format_tests {
             (12, "15.0.0", "N"),
             (13, "15.1.0", "N"),
             (14, "16.0.0", "W"),
+            (15, "17.0.0", "W"),
         ] {
             let data = UnicodeData::for_version((3, minor)).unwrap();
             assert_eq!(data.version, version);
@@ -944,11 +945,11 @@ mod traceback_format_tests {
             assert_eq!(data.east_asian_width(0x0301), "A");
             assert_eq!(
                 super::traceback_display_width("\u{1fae9}", 1, (3, minor)),
-                if minor == 14 { 2 } else { 1 }
+                if emoji_width == "W" { 2 } else { 1 }
             );
         }
         for target in [(3, 99), (3, 0), (4, 0), (4, 14)] {
-            assert!(for_version(target).is_none());
+            assert!(UnicodeData::for_version(target).is_none());
         }
     }
 
