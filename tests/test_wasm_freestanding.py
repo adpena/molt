@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 from molt.cli import entrypoint_parser
+from molt.cli.build_request_resolution import resolve_build_request
 from molt.wasm_artifact import (
     parse_wasm_exports,
     parse_wasm_imports,
@@ -728,7 +729,10 @@ def test_wasm_profile_auto_and_pure_accepted():
     """--wasm-profile should expose the default auto planner and pure mode."""
     parser = entrypoint_parser._build_entrypoint_parser()
     args = parser.parse_args(["build", "--target", "wasm", str(FIXTURE)])
-    assert args.wasm_profile == "auto"
+    request = resolve_build_request(
+        args, build_cfg={}, cfg_capabilities=None, env={}
+    )
+    assert request.wasm_profile == "auto"
     wasm_profile_action = (
         next(
             action
