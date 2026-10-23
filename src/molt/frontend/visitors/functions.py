@@ -101,12 +101,7 @@ class FunctionVisitorMixin(GeneratorMixinBase):
             if needs_scope_exit:
                 self._emit_restore_exception_stack_depth(exit_baseline=False)
                 self._emit_raise_if_pending()
-            if self.in_generator:
-                done = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=done))
-                pair = MoltValue(self.next_var(), type_hint="tuple")
-                self.emit(MoltOp(kind="TUPLE_NEW", args=[val, done], result=pair))
-                val = pair
+            # A generator's return reports completion at the return terminator.
             self._emit_return_value(val)
         finally:
             self._restore_control_flow_unwind_labels(popped_labels)
@@ -290,26 +285,7 @@ class FunctionVisitorMixin(GeneratorMixinBase):
                         break
             finally:
                 self._pop_qualname()
-            if self.return_label is not None:
-                if not self._ends_with_return_jump():
-                    none_val = MoltValue(self.next_var(), type_hint="None")
-                    self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-                    done = MoltValue(self.next_var(), type_hint="bool")
-                    self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=done))
-                    pair = MoltValue(self.next_var(), type_hint="tuple")
-                    self.emit(
-                        MoltOp(kind="TUPLE_NEW", args=[none_val, done], result=pair)
-                    )
-                    self._emit_return_value(pair)
-                self._emit_return_label()
-            elif not (self.current_ops and self.current_ops[-1].kind == "ret"):
-                none_val = MoltValue(self.next_var(), type_hint="None")
-                self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-                done = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=done))
-                pair = MoltValue(self.next_var(), type_hint="tuple")
-                self.emit(MoltOp(kind="TUPLE_NEW", args=[none_val, done], result=pair))
-                self._emit_normal_return_terminator(pair)
+            self._emit_generator_falloff()
             self._spill_async_temporaries()
             closure_size = self._task_closure_size(
                 frame_plan.payload_slots,
@@ -743,26 +719,7 @@ class FunctionVisitorMixin(GeneratorMixinBase):
                 self.visit(return_node)
             finally:
                 self._pop_qualname()
-            if self.return_label is not None:
-                if not self._ends_with_return_jump():
-                    none_val = MoltValue(self.next_var(), type_hint="None")
-                    self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-                    done = MoltValue(self.next_var(), type_hint="bool")
-                    self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=done))
-                    pair = MoltValue(self.next_var(), type_hint="tuple")
-                    self.emit(
-                        MoltOp(kind="TUPLE_NEW", args=[none_val, done], result=pair)
-                    )
-                    self._emit_return_value(pair)
-                self._emit_return_label()
-            elif not (self.current_ops and self.current_ops[-1].kind == "ret"):
-                none_val = MoltValue(self.next_var(), type_hint="None")
-                self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-                done = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=done))
-                pair = MoltValue(self.next_var(), type_hint="tuple")
-                self.emit(MoltOp(kind="TUPLE_NEW", args=[none_val, done], result=pair))
-                self._emit_normal_return_terminator(pair)
+            self._emit_generator_falloff()
             self._spill_async_temporaries()
             closure_size = self._task_closure_size(
                 frame_plan.payload_slots,

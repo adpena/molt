@@ -1343,23 +1343,24 @@ pub extern "C" fn molt_inspect_getgeneratorstate(gen_bits: u64) -> u64 {
         if running {
             return state_string(_py, b"GEN_RUNNING");
         }
-        let Some(frame_bits) = (match get_attr_optional(_py, gen_bits, b"gi_frame") {
-            Ok(value) => value,
+        // CPython reads the frame state through `gi_suspended`; only a
+        // generator that is neither running nor suspended needs its frame.
+        match attr_truthy(_py, gen_bits, b"gi_suspended") {
+            Ok(true) => return state_string(_py, b"GEN_SUSPENDED"),
+            Ok(false) => {}
             Err(err) => return err,
-        }) else {
-            return state_string(_py, b"GEN_CLOSED");
-        };
-        if obj_from_bits(frame_bits).is_none() {
-            return state_string(_py, b"GEN_CLOSED");
         }
-        let lasti = match frame_lasti(_py, frame_bits) {
+        let frame_bits = match get_attr_optional(_py, gen_bits, b"gi_frame") {
             Ok(value) => value,
             Err(err) => return err,
         };
-        if lasti == -1 {
-            return state_string(_py, b"GEN_CREATED");
+        match frame_bits {
+            Some(frame_bits) if !obj_from_bits(frame_bits).is_none() => {
+                dec_ref_bits(_py, frame_bits);
+                state_string(_py, b"GEN_CREATED")
+            }
+            _ => state_string(_py, b"GEN_CLOSED"),
         }
-        state_string(_py, b"GEN_SUSPENDED")
     })
 }
 
@@ -1373,23 +1374,22 @@ pub extern "C" fn molt_inspect_getasyncgenstate(agen_bits: u64) -> u64 {
         if running {
             return state_string(_py, b"AGEN_RUNNING");
         }
-        let Some(frame_bits) = (match get_attr_optional(_py, agen_bits, b"ag_frame") {
-            Ok(value) => value,
+        match attr_truthy(_py, agen_bits, b"ag_suspended") {
+            Ok(true) => return state_string(_py, b"AGEN_SUSPENDED"),
+            Ok(false) => {}
             Err(err) => return err,
-        }) else {
-            return state_string(_py, b"AGEN_CLOSED");
-        };
-        if obj_from_bits(frame_bits).is_none() {
-            return state_string(_py, b"AGEN_CLOSED");
         }
-        let lasti = match frame_lasti(_py, frame_bits) {
+        let frame_bits = match get_attr_optional(_py, agen_bits, b"ag_frame") {
             Ok(value) => value,
             Err(err) => return err,
         };
-        if lasti == -1 {
-            return state_string(_py, b"AGEN_CREATED");
+        match frame_bits {
+            Some(frame_bits) if !obj_from_bits(frame_bits).is_none() => {
+                dec_ref_bits(_py, frame_bits);
+                state_string(_py, b"AGEN_CREATED")
+            }
+            _ => state_string(_py, b"AGEN_CLOSED"),
         }
-        state_string(_py, b"AGEN_SUSPENDED")
     })
 }
 

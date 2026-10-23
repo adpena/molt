@@ -374,7 +374,7 @@ fn coroutine_resume(py: &PyToken<'_>, receiver: u64, request: ResumeRequest) -> 
     };
     let ptr = ptr_from_bits(coro);
     let initially_started = unsafe {
-        ((*header_from_obj_ptr(ptr)).load_synchronized_flags() & HEADER_FLAG_GEN_STARTED) != 0
+        ((*header_from_obj_ptr(ptr)).load_synchronized_flags() & HEADER_FLAG_CORO_STARTED) != 0
     };
     let initial_awaited = crate::object::aux_header::object_frame_awaited_bits(ptr);
     let normalized = if let ResumeRequest::Throw(exception) = request
@@ -396,7 +396,7 @@ fn coroutine_resume(py: &PyToken<'_>, receiver: u64, request: ResumeRequest) -> 
         return raise_exception::<_>(py, "RuntimeError", "cannot reuse already awaited coroutine");
     }
     if unsafe {
-        ((*header_from_obj_ptr(ptr)).load_synchronized_flags() & HEADER_FLAG_GEN_RUNNING) != 0
+        ((*header_from_obj_ptr(ptr)).load_synchronized_flags() & HEADER_FLAG_CORO_RUNNING) != 0
     } {
         if let Some(exception) = normalized {
             dec_ref_bits(py, exception);
@@ -404,7 +404,7 @@ fn coroutine_resume(py: &PyToken<'_>, receiver: u64, request: ResumeRequest) -> 
         return raise_exception::<_>(py, "ValueError", "coroutine already executing");
     }
     let started = unsafe {
-        ((*header_from_obj_ptr(ptr)).load_synchronized_flags() & HEADER_FLAG_GEN_STARTED) != 0
+        ((*header_from_obj_ptr(ptr)).load_synchronized_flags() & HEADER_FLAG_CORO_STARTED) != 0
     };
     if !started {
         if let Some(exception) = normalized {
@@ -647,7 +647,7 @@ pub extern "C" fn molt_coroutine_close_method(receiver: u64) -> u64 {
             return MoltObject::none().bits();
         }
         let flags = unsafe { (*header_from_obj_ptr(ptr)).load_synchronized_flags() };
-        if flags & (HEADER_FLAG_GEN_STARTED | HEADER_FLAG_GEN_RUNNING) == 0 {
+        if flags & (HEADER_FLAG_CORO_STARTED | HEADER_FLAG_CORO_RUNNING) == 0 {
             unsafe {
                 crate::object::heap_lifecycle::close_unstarted_coroutine(py, ptr);
             }
@@ -796,7 +796,7 @@ impl CoroutinePollGuard {
         }
         let header = unsafe { header_from_obj_ptr(ptr) };
         if !unsafe {
-            (*header).try_set_flags_unless(HEADER_FLAG_GEN_RUNNING, HEADER_FLAG_GEN_RUNNING)
+            (*header).try_set_flags_unless(HEADER_FLAG_CORO_RUNNING, HEADER_FLAG_CORO_RUNNING)
         } {
             return Err(raise_exception::<i64>(
                 py,
@@ -805,7 +805,7 @@ impl CoroutinePollGuard {
             ));
         }
         unsafe {
-            (*header).fetch_or_flags(HEADER_FLAG_GEN_STARTED);
+            (*header).fetch_or_flags(HEADER_FLAG_CORO_STARTED);
         }
         Ok(Some(Self(header)))
     }
@@ -815,7 +815,7 @@ impl CoroutinePollGuard {
     pub(crate) fn enter_before_body(py: &PyToken<'_>, ptr: *mut u8) -> Result<Self, i64> {
         let header = unsafe { header_from_obj_ptr(ptr) };
         if !unsafe {
-            (*header).try_set_flags_unless(HEADER_FLAG_GEN_RUNNING, HEADER_FLAG_GEN_RUNNING)
+            (*header).try_set_flags_unless(HEADER_FLAG_CORO_RUNNING, HEADER_FLAG_CORO_RUNNING)
         } {
             return Err(raise_exception::<i64>(
                 py,
@@ -830,7 +830,7 @@ impl CoroutinePollGuard {
 impl Drop for CoroutinePollGuard {
     fn drop(&mut self) {
         unsafe {
-            (*self.0).take_flags(HEADER_FLAG_GEN_RUNNING);
+            (*self.0).take_flags(HEADER_FLAG_CORO_RUNNING);
         }
     }
 }
@@ -864,16 +864,12 @@ fn iterator_resume(
             crate::async_rt::generators_async::asyncio_call_method1(py, iterator, b"send", value)
         },
         ResumeRequest::Throw(exception) => {
-            if !closing
-                && maybe_ptr_from_bits(iterator)
-                    .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_GENERATOR })
+            if let Some(generator) = maybe_ptr_from_bits(iterator)
+                .filter(|&ptr| !closing && unsafe { object_type_id(ptr) == TYPE_ID_GENERATOR })
             {
-                let pair = crate::molt_generator_throw(iterator, exception);
-                if exception_pending(py) {
-                    pair
-                } else {
-                    unsafe { crate::async_rt::generators::generator_method_result(py, pair) }
-                }
+                crate::async_rt::generators::generator_step_value(py, unsafe {
+                    crate::async_rt::generators::generator_throw_step(py, generator, exception)
+                })
             } else {
                 let method_name = if closing {
                     b"close".as_slice()

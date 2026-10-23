@@ -37,8 +37,8 @@ mod object_proofs {
     }
 
     // Header flags — must match the real constants in object/mod.rs.
-    const HEADER_FLAG_GEN_RUNNING: u32 = 1 << 2;
-    const HEADER_FLAG_GEN_STARTED: u32 = 1 << 3;
+    const HEADER_FLAG_CORO_RUNNING: u32 = 1 << 2;
+    const HEADER_FLAG_CORO_STARTED: u32 = 1 << 3;
     const HEADER_FLAG_SPAWN_RETAIN: u32 = 1 << 4;
     const HEADER_FLAG_CANCEL_PENDING: u32 = 1 << 5;
     const HEADER_FLAG_BLOCK_ON: u32 = 1 << 6;
@@ -68,8 +68,8 @@ mod object_proofs {
     /// All header flags as a static array for bit-independence checks.
     const ALL_FLAGS: [u32; 28] = [
         HEADER_FLAG_HAS_PTRS,
-        HEADER_FLAG_GEN_RUNNING,
-        HEADER_FLAG_GEN_STARTED,
+        HEADER_FLAG_CORO_RUNNING,
+        HEADER_FLAG_CORO_STARTED,
         HEADER_FLAG_SPAWN_RETAIN,
         HEADER_FLAG_CANCEL_PENDING,
         HEADER_FLAG_BLOCK_ON,

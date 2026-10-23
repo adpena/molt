@@ -11,9 +11,9 @@ use std::collections::HashSet;
 
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
 use crate::tir::function::TirFunction;
-use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
+use crate::tir::ops::{AttrDict, Dialect, OpCode, TirOp};
+use crate::tir::passes::ownership_lattice_min::Replacements;
 use crate::tir::types::TirType;
-use crate::tir::values::ValueId;
 
 use super::clone::{ClonedPoll, const_int_op};
 use super::{FusionCandidate, is_get_iter_op};
@@ -37,6 +37,7 @@ pub(super) fn wire_fused_loop(
     candidate: &FusionCandidate,
     clone: &ClonedPoll,
     preheader_init_ops: Vec<TirOp>,
+    owners: &mut Replacements,
 ) -> bool {
     // --- 1. Splice the consumer body at the yield site. ---
     // Split the cloned yield block into [pre-yield | post-yield].
@@ -45,26 +46,24 @@ pub(super) fn wire_fused_loop(
         None => return false,
     };
     // pre_block ends (currently) with a Branch to post_block (from split). We
-    // instead extract elem = Index(yield_pair, 0) and branch to the consumer
-    // body. The runtime returns the element owned, as it did the eliminated
-    // `IterNext` pair's element, and the drop plane releases that result once:
-    // fusion places no reference operation (design 20 §1.2). The consumer body
+    // instead bind elem to the yielded value and branch to the consumer body.
+    // The yield handed its consumer one reference of its own, as the
+    // eliminated `IterNext` returned its element owned: elem is a copy that
+    // keeps that reference (`owners`), and the drop plane releases it once.
+    // Fusion places no reference operation (design 20 §1.2). The consumer body
     // (the caller's body_block) on continue branches to post_block.
-    let elem_index_op = TirOp {
+    let elem_op = TirOp {
         dialect: Dialect::Molt,
-        opcode: OpCode::Index,
-        operands: vec![clone.yield_pair, const_zero(caller)],
+        opcode: OpCode::Copy,
+        operands: vec![clone.yield_value],
         results: vec![candidate.elem_val],
-        attrs: {
-            let mut a = AttrDict::new();
-            a.insert("container_type".into(), AttrValue::Str("tuple".into()));
-            a
-        },
+        attrs: AttrDict::new(),
         source_span: None,
     };
+    owners.record_held(candidate.elem_val);
     {
         let pb = caller.blocks.get_mut(&pre_block).unwrap();
-        pb.ops.push(elem_index_op);
+        pb.ops.push(elem_op);
         pb.terminator = Terminator::Branch {
             target: candidate.body_block,
             args: Vec::new(),
@@ -132,25 +131,6 @@ fn block_targets(caller: &TirFunction, block: BlockId, target: BlockId) -> bool 
         .blocks
         .get(&block)
         .is_some_and(|block| block.terminator.has_successor(target))
-}
-
-/// Materialize a `ConstInt(0)` in the caller (for the `Index(pair, 0)` element
-/// extraction), returning its value id. Cached-free: a fresh const each call is
-/// fine (copy-prop/GVN dedups them in the re-run pipeline).
-fn const_zero(caller: &mut TirFunction) -> ValueId {
-    let v = caller.fresh_value();
-    caller.value_types.insert(v, TirType::I64);
-    // The const op is inserted by the caller of this fn into the pre-yield block.
-    // To keep it dominating, we must actually emit it; we stash it via a thread
-    // local is overkill — instead emit it directly into the entry block top.
-    let entry = caller.entry_block;
-    caller
-        .blocks
-        .get_mut(&entry)
-        .unwrap()
-        .ops
-        .insert(0, const_int_op(v, 0));
-    v
 }
 
 /// Split block `bid` after op index `idx` (the yield op was already dropped, so

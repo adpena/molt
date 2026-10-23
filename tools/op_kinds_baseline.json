@@ -60,7 +60,6 @@
       "stack_alloc",
       "state_block_end",
       "state_block_start",
-      "state_set",
       "store_attr",
       "task_wait",
       "type_guard",

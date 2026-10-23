@@ -738,7 +738,10 @@ pub(crate) fn task_mark_done(_py: &PyToken<'_>, task_ptr: *mut u8) {
     }
     // The terminal transition hands the coroutine frame's bindings to a frame
     // object that shares them, or releases them.
-    unsafe { crate::builtins::frames::activation_exit_bindings(_py, task_ptr) };
+    let started = unsafe { (*crate::header_from_obj_ptr(task_ptr)).load_synchronized_flags() }
+        & crate::HEADER_FLAG_CORO_STARTED
+        != 0;
+    unsafe { crate::builtins::frames::activation_exit_bindings(_py, task_ptr, started) };
 }
 
 pub(crate) fn task_result_get(_py: &PyToken<'_>, task_ptr: *mut u8) -> Option<u64> {
