@@ -413,6 +413,125 @@ def test_apple_ld_signs_a_private_stage_as_the_published_binary(
         run_cli_test_process([str(output)], check=True, timeout=cold_timeout)
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin", reason="actual Apple ld, strip and codesign oracle"
+)
+@pytest.mark.parametrize("arch", ["arm64", "x86_64"])
+def test_apple_ld_strips_at_link_as_strip_x_does_and_keeps_its_signature(
+    monkeypatch, tmp_path: Path, arch: str
+) -> None:
+    import platform
+
+    from molt import file_publication
+    from molt.cli import atomic_io, build_results
+    from molt.cli.native_link_plan import (
+        NativeSymbolStrip,
+        native_link_capabilities,
+        native_link_output_flags,
+        native_link_policy,
+        native_link_strip_flags,
+        native_strip_flags,
+    )
+    from molt.native_artifact_header import read_macho_code_signature
+    from molt.platform_toolchain import select_darwin_toolchain
+
+    toolchain = select_darwin_toolchain(dict(os.environ))
+    environment = {**os.environ, **toolchain.environment()}
+    clang = str(toolchain.tools["clang"])
+    target = resolve_native_target_spec(
+        "aarch64-apple-darwin" if arch == "arm64" else "x86_64-apple-darwin"
+    )
+    capabilities = native_link_capabilities(target=target, linker_hint=None)
+    policy = native_link_policy(
+        target=target,
+        capabilities=capabilities,
+        profile="release",
+        keep_symbols=False,
+        bolt_requested=False,
+    )
+    assert policy.symbol_strip is NativeSymbolStrip.AT_LINK
+    output = tmp_path / "out" / "app"
+    output.parent.mkdir()
+    output_flags = native_link_output_flags(capabilities=capabilities, output=output)
+    source = tmp_path / "main.c"
+    # A static helper is a local symbol; -g leaves a debug map of stabs.
+    source.write_text(
+        "static int helper(int x) { return x * 3; }\n"
+        "int visible(int x) { return helper(x) + 1; }\n"
+        "int main(int argc, char **argv) { return visible(argc) - 4; }\n",
+        encoding="utf-8",
+    )
+    obj = tmp_path / "main.o"
+    cold_timeout = 60
+    run_cli_test_process(
+        [clang, "-arch", arch, "-g", "-O0", "-c", str(source), "-o", str(obj)],
+        env=environment,
+        check=True,
+        timeout=cold_timeout,
+    )
+
+    def link(stage: Path, *extra: str) -> None:
+        run_cli_test_process(
+            [clang, "-arch", arch, str(obj), "-o", str(stage), *output_flags, *extra],
+            env=environment,
+            check=True,
+            timeout=cold_timeout,
+        )
+
+    def symbols(image: Path) -> list[str]:
+        listing = run_cli_test_process(
+            ["nm", "-a", str(image)], env=environment, check=True, timeout=30
+        ).stdout
+        # Compare names and types; the local symbols and stabs carry no address
+        # the stripped images could share.
+        return sorted(" ".join(line.split()[-2:]) for line in listing.splitlines())
+
+    unstripped = tmp_path / "unstripped"
+    link(unstripped)
+    assert any(line.endswith(" _helper") for line in symbols(unstripped))
+    # The oracle: Apple's strip applies the post-link policy to the same image.
+    oracle = tmp_path / "oracle"
+    oracle.write_bytes(unstripped.read_bytes())
+    run_cli_test_process(
+        ["strip", *native_strip_flags(target), str(oracle)],
+        env=environment,
+        check=True,
+        timeout=30,
+    )
+    stage = file_publication.staged_file_path(output, purpose="native-link")
+    link(stage, *native_link_strip_flags(target))
+    assert symbols(stage) == symbols(oracle)
+    assert not any(line.endswith(" _helper") for line in symbols(stage))
+    # The linker signed the stripped image itself, as the published binary.
+    signature = read_macho_code_signature(stage)
+    assert signature is not None
+    assert signature.identifier == "app"
+    assert signature.ad_hoc and signature.covers_image
+    run_cli_test_process(
+        ["codesign", "--verify", "--strict", str(stage)], check=True, timeout=30
+    )
+
+    def no_codesign(*_args: object) -> None:
+        raise AssertionError("an image stripped at link time keeps its signature")
+
+    def no_strip(*_args: object) -> None:
+        raise AssertionError("an image stripped at link time is final")
+
+    monkeypatch.setattr(atomic_io, "_codesign_atomic_copy_temp", no_codesign)
+    monkeypatch.setattr(build_results, "_post_link_strip", no_strip)
+    assert (
+        build_results._finalize_native_link_candidate(
+            candidate=stage,
+            output_binary=output,
+            target_triple=target.triple,
+            strip=policy.symbol_strip is NativeSymbolStrip.AFTER_LINK,
+        )
+        is None
+    )
+    if platform.machine() == arch:
+        run_cli_test_process([str(output)], check=True, timeout=cold_timeout)
+
+
 def test_append_darwin_runtime_frameworks_skips_non_darwin_target() -> None:
     args = ["zig", "cc", "-target", "x86_64-unknown-linux-gnu"]
     NATIVE_TOOLCHAIN._append_darwin_runtime_frameworks(
