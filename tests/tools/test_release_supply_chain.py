@@ -1130,6 +1130,23 @@ def _assemble_transport_inputs(tmp_path: Path, snapshot):
         evidence = output / "consumer-evidence"
         evidence.mkdir()
         (evidence / "replay.json").write_bytes(_transport_replay_bytes(candidate))
+        for owner, proof in [
+            *(
+                ("bundle", row)
+                for row in _consumer_transport_receipt(candidate)["python_proofs"]
+            ),
+            ("pip", _consumer_transport_receipt(candidate)["pip_proof"]),
+        ]:
+            record = (
+                output
+                / _transport_compilation_reference(candidate, owner, proof["python"])[
+                    "path"
+                ]
+            )
+            record.parent.mkdir(parents=True)
+            record.write_bytes(
+                _transport_compilation_bytes(candidate, owner, proof["python"])
+            )
         consumer_replay.publish_archive(
             candidate_dir=output,
             receipt=output / "consumer-verification.json",
@@ -1160,6 +1177,43 @@ def consumer_transport_boundary(monkeypatch):
         consumer_replay, "provision_verifier", lambda: (Path("/fixture-supervisor"), {})
     )
     monkeypatch.setattr(consumer_replay, "validate", validate)
+
+    def validate_compilation(reference, **kwargs):
+        candidate, owner, minor = (
+            kwargs["candidate"],
+            kwargs["owner"],
+            kwargs["proof"]["python"],
+        )
+        if reference != _transport_compilation_reference(candidate, owner, minor) or (
+            kwargs["evidence_root"] / reference["path"]
+        ).read_bytes() != _transport_compilation_bytes(candidate, owner, minor):
+            raise ValueError("compilation transport fixture reference differs")
+
+    monkeypatch.setattr(
+        consumer_replay, "validate_installed_compilation", validate_compilation
+    )
+
+
+def _transport_compilation_bytes(candidate, owner, minor):
+    return json.dumps(
+        {
+            "boundary": "fixture, no kernel admission",
+            "candidate": canonical_json_sha256(candidate),
+            "owner": owner,
+            "python": minor,
+        },
+        sort_keys=True,
+    ).encode()
+
+
+def _transport_compilation_reference(candidate, owner, minor):
+    content = _transport_compilation_bytes(candidate, owner, minor)
+    return {
+        "path": f"compilation-evidence/{owner}-{minor}/compilation.json",
+        "filename": "compilation.json",
+        "size": len(content),
+        "sha256": hashlib.sha256(content).hexdigest(),
+    }
 
 
 def _transport_replay_reference(candidate):
@@ -1297,10 +1351,11 @@ def _consumer_transport_receipt(candidate):
                             "--python-version",
                             minor,
                             "--diagnostics-file",
-                            diagnostics,
+                            "/work/output/diagnostics.json",
                             "--output",
-                            output,
-                            source,
+                            "/work/output/program",
+                            "--capture-link-inputs",
+                            "/app/source.py",
                         ],
                     )
                 )
@@ -1322,9 +1377,10 @@ def _consumer_transport_receipt(candidate):
                             profile,
                             "--python-version",
                             minor,
-                            f"--build-arg=--diagnostics-file={diagnostics}",
-                            f"--build-arg=--output={output}",
-                            source,
+                            "--build-arg=--diagnostics-file=/work/output/diagnostics.json",
+                            "--build-arg=--output=/work/output/program.wasm",
+                            "--build-arg=--capture-link-inputs",
+                            "/app/source.py",
                             "--",
                             *guest_argv,
                         ],
@@ -1372,6 +1428,9 @@ def _consumer_transport_receipt(candidate):
                 "source_sha256": hashlib.sha256(guest_source.encode()).hexdigest(),
                 "commands": commands,
                 "cells": cells,
+                "compilation": _transport_compilation_reference(
+                    candidate, "bundle", minor
+                ),
             }
         )
     wheel_record = next(
@@ -1441,10 +1500,17 @@ def _consumer_transport_receipt(candidate):
             "wheel": {key: wheel_record[key] for key in ("filename", "sha256", "size")},
             "python": first_minor,
             "reference_python": first_reference,
+            "execution": {
+                **copy.deepcopy(first["execution"]),
+                "python": {**first["execution"]["python"], "executable": pip_python},
+            },
             "commands": pip_commands,
             "source": pip_products["source"],
             "source_sha256": first["source_sha256"],
             "cells": pip_products["cells"],
+            "compilation": _transport_compilation_reference(
+                candidate, "pip", first_minor
+            ),
             "compiler_sha256": candidate["compiler"]["sha256"],
             "wasm_facts_sha256": candidate["wasm_facts"]["sha256"],
         },
@@ -2116,8 +2182,17 @@ def test_installed_consumer_rejects_extracted_native_receipt_substitution(
         )
     ).unlink()
     shutil.rmtree(candidate_dir / "consumer-evidence")
+    shutil.rmtree(candidate_dir / "compilation-evidence")
     with pytest.raises(ValueError, match=message):
-        verify_consumer.verify(candidate_dir, receipt)
+        verify_consumer.verify(
+            candidate_dir,
+            receipt,
+            compilation_projection=verify_consumer.SealedExecutionProjection.compilation(
+                memory_max_bytes=2**30,
+                workspace_max_bytes=2**28,
+                runtime_max_seconds=60,
+            ),
+        )
     assert not receipt.exists()
 
 
@@ -2333,6 +2408,7 @@ def test_consumer_admission_requires_bound_target_profile_python_closure(
         "reference_python",
         "source",
         "source_sha256",
+        "compilation",
     ):
         payload = copy.deepcopy(valid)
         del payload["python_proofs"][0][field]

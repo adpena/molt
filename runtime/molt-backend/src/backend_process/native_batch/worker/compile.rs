@@ -2,13 +2,32 @@ use std::{io, path::Path};
 
 use molt_backend::SimpleBackend;
 
-use super::super::super::io_limits::{read_json_artifact, write_output_path};
+use super::super::super::io_limits::write_output_path;
 use super::super::batching::NativeBatchObjectJob;
+use crate::backend_process::input::content::{ContentIdentity, ContentReader};
+
+/// Worker-owned observation emitted only after complete input decoding and output publication.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct NativeWorkerOrigin {
+    pub(crate) schema: String,
+    pub(crate) process_id: u32,
+    pub(crate) input: ContentIdentity,
+    pub(crate) output: ContentIdentity,
+}
+impl NativeWorkerOrigin {
+    pub(crate) fn retained_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.schema.capacity()
+            + self.input.sha256.capacity()
+            + self.output.sha256.capacity()
+    }
+}
 
 fn compile_native_batch_object_job(
     job: NativeBatchObjectJob,
     output_path: &Path,
-) -> io::Result<()> {
+) -> io::Result<ContentIdentity> {
     if job.emit_app_callable_resolver != job.code_slots.is_some()
         || (!job.emit_app_callable_resolver && job.module_registry.is_some())
     {
@@ -28,7 +47,8 @@ fn compile_native_batch_object_job(
     backend.code_slots = job.code_slots;
     backend.set_module_context(job.module_context);
     let output = backend.compile(job.ir);
-    write_output_path(output_path, &output.bytes)
+    write_output_path(output_path, &output.bytes)?;
+    Ok(ContentIdentity::of_bytes(&output.bytes))
 }
 
 /// `--native-batch-job-file JOB`: JOB names a preserved replay file, or `-` for
@@ -36,30 +56,42 @@ fn compile_native_batch_object_job(
 pub(crate) fn compile_native_batch_object_job_file(
     job_path: &Path,
     output_path: &Path,
-) -> io::Result<()> {
-    let job: NativeBatchObjectJob = if job_path == Path::new("-") {
-        serde_json::from_reader(io::BufReader::new(io::stdin().lock())).map_err(|err| {
+) -> io::Result<NativeWorkerOrigin> {
+    if job_path == Path::new("-") {
+        decode_compile_native_worker(io::stdin().lock(), output_path)
+    } else {
+        let file = molt_artifact_publish::open_regular_artifact(job_path)?;
+        decode_compile_native_worker(file, output_path)
+    }
+}
+
+fn decode_compile_native_worker(
+    reader: impl io::Read,
+    output_path: &Path,
+) -> io::Result<NativeWorkerOrigin> {
+    let mut reader = ContentReader::new(reader);
+    // serde_json::from_reader requires EOF: rejected suffixes never produce an origin.
+    let job: NativeBatchObjectJob = serde_json::from_reader(io::BufReader::new(&mut reader))
+        .map_err(|err| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("invalid native batch object job on stdin: {err}"),
+                format!("invalid native batch object job: {err}"),
             )
-        })?
-    } else {
-        read_json_artifact(job_path, "native batch object job")?
-    };
-    compile_native_batch_object_job(job, output_path)
+        })?;
+    let input = reader.identity();
+    let output = compile_native_batch_object_job(job, output_path)?;
+    Ok(NativeWorkerOrigin {
+        schema: "molt.native-worker-origin.v1".into(),
+        process_id: std::process::id(),
+        input,
+        output,
+    })
 }
 
 #[cfg(test)]
 pub(crate) fn compile_native_batch_object_job_bytes(
     job: &[u8],
     output_path: &Path,
-) -> io::Result<()> {
-    let job: NativeBatchObjectJob = serde_json::from_slice(job).map_err(|err| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("invalid native batch object job: {err}"),
-        )
-    })?;
-    compile_native_batch_object_job(job, output_path)
+) -> io::Result<NativeWorkerOrigin> {
+    decode_compile_native_worker(job, output_path)
 }

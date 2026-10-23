@@ -47,7 +47,7 @@ def _production_ir_record(ir: dict) -> dict:
 def _executable_ir_record(ir: dict) -> dict:
     """Observe the already lowered backend input without projecting it again."""
     from molt.cli import cache_keys
-    from molt.cli.backend_ir_transport import write_backend_ir
+    from molt.cli.backend_ir_transport import BackendIrProgram
 
     functions = ir.get("functions")
     assert isinstance(functions, list) and functions, "compiler returned no functions"
@@ -60,7 +60,7 @@ def _executable_ir_record(ir: dict) -> dict:
     streamed_bytes = streamed.getvalue().encode("utf-8")
     assert streamed_bytes == json_bytes
     binary = io.BytesIO()
-    write_backend_ir(binary, ir)
+    BackendIrProgram(ir, cache_keys.FunctionDigests()).write(binary)
     msgpack_bytes = binary.getvalue()
     payload = cache_keys._cache_backend_payload_ir(ir)
     payload_bytes = cache_keys._cache_json_payload_bytes(payload)
@@ -134,9 +134,16 @@ def _decode_compilation_result(result, *, allow_unsupported: bool) -> str:
         assert any(isinstance(fn, dict) and fn.get("ops") for fn in ir["functions"])
         import msgpack
 
-        packed_ir = msgpack.unpackb(decoded["msgpack"], strict_map_key=False)
-        assert isinstance(packed_ir, dict) and packed_ir.get("functions")
-        from molt.cli import cache_keys
+        from molt.cli import cache_keys, function_records
+
+        # The binary transport is a content-addressed lease: every body ships,
+        # named in program order by the digest of its exact bytes.
+        lease = msgpack.unpackb(decoded["msgpack"], strict_map_key=False)
+        bodies = lease["function_bodies"]
+        assert [msgpack.unpackb(body) for body in bodies] == ir["functions"]
+        assert lease["function_digests"] == b"".join(
+            function_records.function_body_digest(body) for body in bodies
+        )
 
         # The transported canonical payload must carry the child's digest:
         # the digest of its header and of each function (109b42e88).

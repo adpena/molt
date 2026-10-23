@@ -1,6 +1,18 @@
 from __future__ import annotations
 
+from molt.cli.link_input_observation import CompilationInputRecord
+
 from dataclasses import dataclass
+import json
+from molt.backend_protocol import BackendDaemonJobOrigin
+from molt.cli.link_input_observation import (
+    capture_link_inputs as observe_link_inputs,
+    compilation_input_observation,
+    capture_native_link_preparation,
+)
+from molt.toolchain_identity import stable_regular_file_content_identity
+from molt.cli.native_link_plan import NativeLinkerKind
+from molt.native_target import NativeObjectFormat
 
 import contextlib
 import os
@@ -42,7 +54,10 @@ from molt.cli.native_link_plan import (
     validate_native_object_artifact,
 )
 from molt.native_target import NativeTargetSpec, NativeArtifactKind
-from molt.cli.native_link_tool_identity import native_link_cache_tool_facts
+from molt.cli.native_link_tool_identity import (
+    native_link_cache_tool_facts,
+    native_link_tool_facts,
+)
 from molt.cli.native_main_stub import _render_native_main_stub
 from molt.cli.output import CliFailure as _CliFailure
 from molt.cli.output import fail as _fail
@@ -72,6 +87,8 @@ class _PreparedNativeLink:
     link_process: subprocess.CompletedProcess[str]
     strip_after_link: bool
     link_selection: tuple[Path, Path] | None = None
+    link_input_artifacts: dict[str, tuple[Path, Path]] | None = None
+    link_input_observation: CompilationInputRecord | None = None
 
 
 def _run_native_link_command(
@@ -176,6 +193,8 @@ def _prepare_native_link(
     ),
     compiled_source_paths: tuple[str, ...] = (),
     bolt_requested: bool = False,
+    capture_link_inputs: bool = False,
+    daemon_job_origin: BackendDaemonJobOrigin | None = None,
 ) -> tuple[_PreparedNativeLink | None, _CliFailure | None]:
     if diagnostics_enabled:
         phase_starts["link"] = time.perf_counter()
@@ -268,6 +287,16 @@ def _prepare_native_link(
             file=sys.stderr,
         )
         print(f"native-link plan: {link_plan}", file=sys.stderr)
+    if capture_link_inputs and (
+        daemon_job_origin is None
+        or link_plan.capabilities.linker is not NativeLinkerKind.LLD
+        or link_plan.capabilities.object_format is not NativeObjectFormat.ELF
+    ):
+        return None, _fail(
+            "Link input admission capture requires ELF LLD and retained compiler emission origin.",
+            json_output,
+            command="build",
+        )
     link_cmd = list(link_plan.command)
     linker_hint = link_plan.linker_hint
     normalized_target = link_plan.normalized_target
@@ -348,6 +377,12 @@ def _prepare_native_link(
             stored_link_fingerprint["fingerprint"] if stored_link_fingerprint else None
         ),
     )
+    if capture_link_inputs and link_fingerprint is None:
+        return None, _fail(
+            "Link input capture requires an output-family receipt",
+            json_output,
+            command="build",
+        )
     link_skipped = link_fingerprints._link_outputs_match(
         outputs=link_outputs,
         fingerprint=link_fingerprint,
@@ -356,10 +391,13 @@ def _prepare_native_link(
     # BOLT replaces the linked image with a post-link transformed artifact.
     # Always recreate the unoptimized, relocation-bearing input before another
     # BOLT run; a link fingerprint describes link inputs, not BOLT profile data.
-    if link_plan.policy.bolt_requested:
+    if link_plan.policy.bolt_requested or capture_link_inputs:
         link_skipped = False
     link_output = output_binary
     link_selection_candidate = None
+    link_input_artifacts = None
+    link_input_observation = None
+    capture_expected = None
     if link_skipped:
         link_process = subprocess.CompletedProcess(
             args=link_cmd,
@@ -378,6 +416,87 @@ def _prepare_native_link(
                 selection_output, purpose="native-link"
             )
         try:
+            if capture_link_inputs:
+                selected_tools = native_link_tool_facts(link_plan)
+                selected_linkers = [
+                    row
+                    for row in selected_tools
+                    if row["role"] == "linker" and row["resolved"]
+                ]
+                selected_drivers = [
+                    row
+                    for row in selected_tools
+                    if row["role"] == "driver" and row["resolved"]
+                ]
+                if len(selected_linkers) != 1 or len(selected_drivers) != 1:
+                    raise ValueError("link input capture has no unique selected linker")
+                selected_linker = Path(str(selected_linkers[0]["path"]))
+                selected_driver = Path(str(selected_drivers[0]["path"]))
+                assert daemon_job_origin is not None
+                report = output_binary.with_name(
+                    output_binary.name + ".molt-link-inputs.tar"
+                )
+                observation = output_binary.with_name(
+                    output_binary.name + ".molt-link-inputs.json"
+                )
+                dependencies = output_binary.with_name(
+                    output_binary.name + ".molt-native-inputs.d"
+                )
+                preparation = output_binary.with_name(
+                    output_binary.name + ".molt-native-inputs.json"
+                )
+                link_input_artifacts = {
+                    "driver_dependencies": (
+                        file_publication.staged_file_path(
+                            dependencies, purpose="link-inputs", suffix=".d"
+                        ),
+                        dependencies,
+                    ),
+                    "driver_preparation": (
+                        file_publication.staged_file_path(
+                            preparation, purpose="link-inputs", suffix=".json"
+                        ),
+                        preparation,
+                    ),
+                    "input_reproducer": (
+                        file_publication.staged_file_path(
+                            report, purpose="link-inputs", suffix=".tar"
+                        ),
+                        report,
+                    ),
+                    "input_observation": (
+                        file_publication.staged_file_path(
+                            observation, purpose="link-inputs", suffix=".json"
+                        ),
+                        observation,
+                    ),
+                }
+                capture_expected = {
+                    "compiler_output": (
+                        output_obj,
+                        {
+                            "size": daemon_job_origin.output_size,
+                            "sha256": daemon_job_origin.output_sha256,
+                        },
+                    ),
+                    "runtime": (
+                        resolved_runtime_lib,
+                        {
+                            k: v
+                            for k, v in stable_regular_file_content_identity(
+                                resolved_runtime_lib, label="admission runtime input"
+                            ).items()
+                            if k in {"size", "sha256"}
+                        },
+                    ),
+                }
+                validate_link_output_paths(
+                    {
+                        **link_outputs,
+                        **{k: v[1] for k, v in link_input_artifacts.items()},
+                    },
+                    inputs=link_inputs,
+                )
             with native_link_selection(
                 link_plan, link_output, surface=selection_surface
             ) as selection:
@@ -385,12 +504,60 @@ def _prepare_native_link(
                     link_plan,
                     planned_output=output_binary,
                     execution_output=link_output,
-                    selection_arguments=selection.arguments if selection else (),
+                    selection_arguments=(
+                        *(selection.arguments if selection else ()),
+                        *(
+                            (
+                                "-Xlinker",
+                                "--reproduce="
+                                + str(link_input_artifacts["input_reproducer"][0]),
+                                "-MD",
+                                "-MF",
+                                str(link_input_artifacts["driver_dependencies"][0]),
+                            )
+                            if link_input_artifacts is not None
+                            else ()
+                        ),
+                    ),
                 ) as execution_link_cmd:
                     link_process = _run_native_link_command(
                         link_cmd=execution_link_cmd,
                         json_output=json_output,
                         link_timeout=link_timeout,
+                    )
+                if link_process.returncode == 0 and link_input_artifacts is not None:
+                    assert capture_expected is not None
+                    preparation_record = capture_native_link_preparation(
+                        link_input_artifacts["driver_dependencies"][0],
+                        source=stub_path,
+                        driver=selected_driver,
+                        cwd=Path.cwd(),
+                    )
+                    link_input_artifacts["driver_preparation"][0].write_text(
+                        json.dumps(
+                            preparation_record, sort_keys=True, separators=(",", ":")
+                        )
+                        + "\n",
+                        encoding="utf-8",
+                    )
+                    observed_inputs = observe_link_inputs(
+                        link_input_artifacts["input_reproducer"][0],
+                        dialect="elf-gnu",
+                        linker_path=selected_linker,
+                        expected=capture_expected,
+                    ).as_record()
+                    assert daemon_job_origin is not None
+                    link_input_observation = compilation_input_observation(
+                        daemon_job_origin.payload(), observed_inputs
+                    )
+                    link_input_artifacts["input_observation"][0].write_text(
+                        json.dumps(
+                            link_input_observation,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        )
+                        + "\n",
+                        encoding="utf-8",
                     )
                 if link_process.returncode == 0 and selection is not None:
                     assert link_selection_candidate is not None
@@ -426,6 +593,8 @@ def _prepare_native_link(
                 link_output.unlink()
             if link_selection_candidate is not None:
                 discard_staged_output(link_selection_candidate)
+            for stage, _ in (link_input_artifacts or {}).values():
+                discard_staged_output(stage)
             message = (
                 "Linker timed out"
                 if isinstance(exc, subprocess.TimeoutExpired)
@@ -437,6 +606,8 @@ def _prepare_native_link(
                 link_output.unlink()
             if link_selection_candidate is not None:
                 discard_staged_output(link_selection_candidate)
+            for stage, _ in (link_input_artifacts or {}).values():
+                discard_staged_output(stage)
     try:
         # Link-cache reuse and real execution both consume the same codegen
         # generation. A mutation after final preflight cannot publish success.
@@ -450,6 +621,8 @@ def _prepare_native_link(
                 link_output.unlink()
         if link_selection_candidate is not None:
             discard_staged_output(link_selection_candidate)
+        for stage, _ in (link_input_artifacts or {}).values():
+            discard_staged_output(stage)
         return None, _fail(
             f"Native runtime changed during final linking: {exc}",
             json_output,
@@ -472,6 +645,8 @@ def _prepare_native_link(
         strip_after_link=(
             link_plan.policy.symbol_strip is NativeSymbolStrip.AFTER_LINK
         ),
+        link_input_artifacts=link_input_artifacts,
+        link_input_observation=link_input_observation,
         link_selection=(link_selection_candidate, selection_output)
         if link_selection_candidate is not None and selection_output is not None
         else None,

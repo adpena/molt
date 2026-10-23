@@ -13,7 +13,10 @@ from pathlib import Path
 import shutil
 import tarfile
 import time
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from molt.cli.link_input_observation import CompilationInputRecord
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
@@ -29,6 +32,7 @@ from molt.process_environment import (  # noqa: E402
     ProcessEnvironmentBuilder,
 )
 
+from tools.cross_run import SealedExecutionProjection  # noqa: E402
 from tools.command_execution import CommandExecutor  # noqa: E402
 
 from tools.release import consumer_replay  # noqa: E402
@@ -410,6 +414,147 @@ def _audit_guest(
         raise
 
 
+def _compilation_captures(
+    *,
+    interpreters: tuple[Path, ...],
+    tools: tuple[Path, ...],
+    compiler: InstalledCompiler,
+    cwd: Path,
+    env: ProcessEnvironment,
+    supervisor: Path,
+    cas_root: Path,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Use canonical Python/toolchain producers; these select immutable inputs.
+
+    Actual consumption is established only by the subsequent sealed run. Full
+    captures are admission-only and shared across this coordinate's lane set.
+    """
+    from molt.python_capture import validate_python_capture
+    from tools.proof_queue_pkg import (
+        command_identity,
+        command_admission,
+        execution_environment,
+        toolchain_capture,
+    )
+
+    python_captures = [
+        validate_python_capture(
+            command_identity._parse_json_output(
+                command_identity._run_captured(
+                    command_identity._python_probe_command(
+                        interpreter, source_root=compiler.source_root
+                    ),
+                    cwd=cwd,
+                    env=env,
+                ),
+                purpose="installed compilation frontend capture",
+            )
+        )
+        for interpreter in dict.fromkeys(interpreters)
+    ]
+    captured: dict[str, Any] = {}
+    for tool in dict.fromkeys(tools):
+        exact = [str(tool), "--version"]
+        envelope = command_admission.envelope_for_command(exact)
+        _, located, _, updates = execution_environment._locate_toolchain_watch_roots(
+            envelope, exact, cwd=cwd, env=env, supervisor_binary=supervisor
+        )
+        if updates:
+            raise ValueError(
+                "installed compilation tool capture changed the selected environment"
+            )
+        _, identities = execution_environment._capture_toolchains(
+            envelope,
+            exact,
+            cwd=cwd,
+            env=env,
+            source_root=compiler.source_root,
+            hash_workers=1,
+            located_toolchains=located,
+        )
+        for name, identity in identities.items():
+            if name in captured and captured[name] != identity:
+                raise ValueError(
+                    "installed compilation lanes selected different toolchain generations"
+                )
+            captured[name] = identity
+    _, reference, _ = toolchain_capture.publish_capture(cas_root, captured)
+    return python_captures, reference
+
+
+def _installed_frontend_python(
+    *,
+    compiler: InstalledCompiler,
+    python: Path,
+    env: ProcessEnvironment,
+    cwd: Path,
+    portable_bundle: bool,
+) -> Path:
+    if not portable_bundle:
+        return python
+    # Ask the existing bootstrap identity owner; never guess its environment
+    # directory or run setup again. Its native launcher selects this interpreter.
+    code = (
+        "import json,runpy,sys; from pathlib import Path; "
+        "root=Path(sys.argv[1]); "
+        "m=runpy.run_path(str(root/'source'/'packaging'/'bootstrap.py')); "
+        "home,identity=m['_release_inputs'](root); "
+        "print(json.dumps(str(home/'environments'/identity/'bin'/'python')))"
+    )
+    result = _COMMANDS.run(
+        [str(python), "-I", "-B", "-c", code, str(compiler.source_root.parent)],
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+        check=True,
+    )
+    value = loads_exact(result.stdout)
+    if (
+        not isinstance(value, str)
+        or not Path(value).is_absolute()
+        or not Path(value).is_file()
+    ):
+        raise ValueError("installed bootstrap did not identify its prepared frontend")
+    return Path(value)
+
+
+def _preparation_link_inputs(
+    output: Path, *, target: str
+) -> tuple[CompilationInputRecord, dict[str, Path]]:
+    from molt.artifact_publication import publication_receipt_path
+    from molt.cli.link_fingerprints import _read_link_fingerprint, _link_outputs_match
+    from molt.cli.link_input_observation import validate_compilation_input_observation
+    from molt.exact_json import read_exact
+
+    primary = (
+        output
+        if target == "native"
+        else wasm_runtime_manifest_entry_path(wasm_runtime_manifest_path(output))
+    )
+    path = publication_receipt_path(primary)
+    receipt = _read_link_fingerprint(path)
+    if receipt is None:
+        raise ValueError("installed preparation omitted its final-link publication")
+    outputs = {role: Path(row["path"]) for role, row in receipt["outputs"].items()}
+    if not _link_outputs_match(
+        outputs=outputs, fingerprint=receipt["fingerprint"], receipt_path=path
+    ):
+        raise ValueError("installed preparation final-link family changed")
+    if "input_observation" not in outputs:
+        raise ValueError("installed preparation omitted compiler/linker observations")
+    observation = validate_compilation_input_observation(
+        read_exact(
+            outputs["input_observation"],
+            max_bytes=16 * 1024 * 1024,
+            label="installed preparation compiler/linker observation",
+        )
+    )
+    return observation, outputs
+
+
 def _verify_guest_cells(
     *,
     root: Path,
@@ -424,23 +569,36 @@ def _verify_guest_cells(
     evidence_dir: Path,
     commands: list[dict[str, Any]],
     role_prefix: str,
-) -> list[dict[str, object]]:
-    """One installed producer for bundle and wheel, with explicit lane selectors."""
-    runtime_env = env.without(("PYTHON",))
-    cells: list[dict[str, object]] = []
-    for lane in consumer_lanes():
-        guest_target = lane.target
-        cell_env = env.updated(lane.environment())
-        # One fresh directory per cell keeps outputs and manifests apart and
-        # proves every observed artifact came from this cell's command.
+    python: Path,
+    portable_bundle: bool,
+    compilation_evidence: Path,
+    archive_cache: Path,
+    supervisor: Path,
+    generation: dict[str, Any],
+    projection: SealedExecutionProjection,
+) -> tuple[list[dict[str, object]], dict[str, object]]:
+    """Prepare inputs, then admit actual installed products before uninstall.
+
+    Preparation is not a used-byte claim. Only the immutable-root compilation's
+    exported products and closed native journal can enter standalone replay.
+    """
+    from molt.cli.link_input_observation import (
+        LinkInputObservation,
+        validate_native_link_preparation,
+    )
+    from molt.exact_json import read_exact
+    from molt.toolchain_identity import find_executable
+    from molt.wasm_optimizer_identity import find_wasm_opt
+
+    lanes = consumer_lanes()
+    selected = []
+    native_inputs = {}
+    tools: list[Path] = []
+    for lane in lanes:
         cell_root = project / lane.id
         cell_root.mkdir()
         diagnostics = cell_root / "diagnostics.json"
-        output = cell_root / (
-            "release_consumer.wasm"
-            if guest_target == "wasm"
-            else "release_consumer" + (".exe" if os.name == "nt" else "")
-        )
+        output = cell_root / ("program.wasm" if lane.target == "wasm" else "program")
         command = consumer_guest_command(
             launcher,
             lane=lane,
@@ -448,58 +606,145 @@ def _verify_guest_cells(
             diagnostics=str(diagnostics),
             output=str(output),
             source=str(source),
+            capture_link_inputs=True,
         )
-        if guest_target == "native":
-            commands.append(
-                _run(
-                    command,
-                    cwd=root,
-                    env=cell_env,
-                    timeout=2700,
-                    role=f"{role_prefix}build_{lane.id}",
+        # The preparatory command discovers the frontend-selected runtime tier,
+        # linker buffers and C dependencies. Its timings/products are not proof.
+        _run(
+            command,
+            cwd=root,
+            env=env.updated(lane.environment()),
+            timeout=2700,
+            role=f"prepare_{lane.id}",
+            expected_stdout=CONSUMER_EXPECTED_STDOUT if lane.target == "wasm" else None,
+        )
+        _diagnosed_compiler(diagnostics, compiler=compiler, lane=lane)
+        kind, key = consumer_replay.compilation_runtime_selection(
+            diagnostics, compiler=compiler, lane=lane
+        )
+        selected.append((lane, kind, key))
+        observation, outputs = _preparation_link_inputs(output, target=lane.target)
+        link = observation["link"]
+        records = link["links"].values() if lane.target == "wasm" else (link,)
+        tools.extend(
+            Path(LinkInputObservation.from_record(row).linker_path) for row in records
+        )
+        if lane.target == "native":
+            if (
+                not {"driver_preparation", "driver_dependencies", "input_reproducer"}
+                <= outputs.keys()
+            ):
+                raise ValueError(
+                    "installed native preparation omitted C/linker input custody"
+                )
+            preparation = validate_native_link_preparation(
+                read_exact(
+                    outputs["driver_preparation"],
+                    max_bytes=16 * 1024 * 1024,
+                    label="installed native driver preparation",
                 )
             )
-            if not output.is_file():
-                raise RuntimeError(
-                    f"Molt did not produce the requested binary: {output}"
-                )
+            native_inputs[lane.id] = (outputs["input_reproducer"], link, preparation)
+            tools.append(Path(preparation["driver"]["path"]))
+    if portable_bundle:
+        uv = find_executable("uv", environment=env)
+        if uv is None:
+            raise ValueError("installed bundle has no selected uv launcher")
+        tools.append(uv)
+    if any(lane.target == "wasm" for lane in lanes):
+        node = find_executable("node", environment=env)
+        optimizer = find_wasm_opt(environment=env, source_root=compiler.source_root)
+        if node is None or optimizer is None:
+            raise ValueError(
+                "installed WASM compilation has no selected Node/optimizer"
+            )
+        tools.extend((node, Path(optimizer)))
+    frontend = _installed_frontend_python(
+        compiler=compiler,
+        python=python,
+        env=env,
+        cwd=root,
+        portable_bundle=portable_bundle,
+    )
+    captures, tool_capture = _compilation_captures(
+        interpreters=(python, frontend),
+        tools=tuple(tools),
+        compiler=compiler,
+        cwd=root,
+        env=env,
+        supervisor=supervisor,
+        cas_root=root / "capture-cas",
+    )
+    plan = consumer_replay.prepare_compilation(
+        evidence=compilation_evidence,
+        compiler=compiler,
+        launcher=launcher,
+        python_executable=python,
+        python_captures=captures,
+        toolchain_capture=tool_capture,
+        cas_root=root / "capture-cas",
+        native_link_inputs=native_inputs,
+        environment=dict(env),
+        cells=selected,
+        python_minor=minor,
+        projection=projection,
+        archive_cache=archive_cache,
+        supervisor=supervisor,
+        generation=generation,
+    )
+    compilation = consumer_replay.execute_compilation(
+        evidence=compilation_evidence,
+        compilation=plan,
+        supervisor=supervisor,
+        compiler=compiler,
+        lanes=lanes,
+        python_minor=minor,
+        launcher=launcher,
+        controller_python=python,
+    )
+    cells = []
+    for lane, row in zip(lanes, compilation["cells"], strict=True):
+        cell_root = compilation_evidence / "outputs" / lane.id
+        output = cell_root / ("program.wasm" if lane.target == "wasm" else "program")
+        diagnostics = cell_root / "diagnostics.json"
+        result = row["outputs"]["command"]
+        commands.append(
+            {
+                "role": f"{role_prefix}{'build' if lane.target == 'native' else 'run'}_{lane.id}",
+                "argv": result["argv"],
+                "returncode": result["returncode"],
+                "duration_seconds": result["duration_sec"],
+                "stdout_sha256": sha256_file(cell_root / "command.stdout"),
+                "stderr_sha256": sha256_file(cell_root / "command.stderr"),
+            }
+        )
+        if lane.target == "native":
             _audit_guest(
                 output, target=target, wheel_tag=wheel_tag, evidence_dir=evidence_dir
-            )
-            identity = executable_content_identity(
-                output, label="release consumer guest executable"
             )
             commands.append(
                 _run(
                     [str(output), *CONSUMER_GUEST_ARGV],
                     cwd=project,
-                    env=runtime_env,
+                    env=env.without(("PYTHON",)),
                     timeout=60,
                     role=f"{role_prefix}run_{lane.id}",
                     expected_stdout=CONSUMER_EXPECTED_STDOUT,
                 )
             )
-            artifact = {
-                "path": str(output),
-                "sha256": identity["sha256"],
-                "size": identity["size"],
-            }
-        else:
-            # Public `molt run` owns the one linked build and its Node host.
-            commands.append(
-                _run(
-                    command,
-                    cwd=project,
-                    env=cell_env,
-                    timeout=2700,
-                    role=f"{role_prefix}run_{lane.id}",
-                    expected_stdout=CONSUMER_EXPECTED_STDOUT,
-                )
-            )
-            artifact = _linked_wasm_artifact(output)
+        elif (
+            cell_root / "command.stdout"
+        ).read_bytes() != CONSUMER_EXPECTED_STDOUT.encode():
+            raise ValueError("sealed WASM compilation returned another guest result")
+        # Diagnostics contain the namespace compiler path. The journal/receiver
+        # already joined that exact image to this installed compiler generation.
         compiler_sha256, fingerprint = _diagnosed_compiler(
             diagnostics, compiler=compiler, lane=lane
         )
+        artifact = {
+            key: row["outputs"]["artifact"][key] for key in ("path", "sha256", "size")
+        }
+        artifact["path"] = str(cell_root / artifact["path"])
         cells.append(
             {
                 "lane": lane.as_record(),
@@ -510,18 +755,25 @@ def _verify_guest_cells(
                 "artifact": artifact,
                 "manifest": (
                     {
-                        "path": str(wasm_runtime_manifest_path(output)),
+                        "path": str(cell_root / "manifest.json"),
                         **stable_regular_file_content_identity(
-                            wasm_runtime_manifest_path(output),
-                            label="installed consumer execution manifest",
+                            cell_root / "manifest.json", label="compiled WASM manifest"
                         ),
                     }
-                    if guest_target == "wasm"
+                    if lane.target == "wasm"
                     else None
                 ),
             }
         )
-    return cells
+    pointer = {
+        "path": "compilation-evidence/"
+        + compilation_evidence.name
+        + "/compilation.json",
+        **consumer_replay.execution_root.file_identity(
+            compilation_evidence / "compilation.json"
+        ),
+    }
+    return cells, pointer
 
 
 def _verify_pip_distribution(
@@ -535,6 +787,11 @@ def _verify_pip_distribution(
     target: dict[str, object],
     wheel_tag: str,
     evidence_dir: Path,
+    compilation_evidence: Path,
+    archive_cache: Path,
+    supervisor: Path,
+    generation: dict[str, Any],
+    projection: SealedExecutionProjection,
 ) -> dict[str, Any]:
     """Install one platform wheel and produce the complete logical lane set."""
     root.mkdir(parents=True)
@@ -583,7 +840,10 @@ def _verify_pip_distribution(
     pip_compiler.verify_wasm_facts()
     pip_compiler.verify_runtime()
     script = venv / ("Scripts/molt.exe" if os.name == "nt" else "bin/molt")
-    cells = _verify_guest_cells(
+    execution = _capture_python_execution(
+        python, env=env, cwd=root, target=target, reference_python=reference
+    )
+    cells, compilation = _verify_guest_cells(
         root=root,
         project=project,
         source=source,
@@ -596,7 +856,21 @@ def _verify_pip_distribution(
         evidence_dir=evidence_dir,
         commands=commands,
         role_prefix="pip_",
+        python=python,
+        portable_bundle=False,
+        compilation_evidence=compilation_evidence,
+        archive_cache=archive_cache,
+        supervisor=supervisor,
+        generation=generation,
+        projection=projection,
     )
+    if (
+        _capture_python_execution(
+            python, env=env, cwd=root, target=target, reference_python=reference
+        )
+        != execution
+    ):
+        raise ValueError("release consumer pip interpreter changed during compilation")
     _require_no_cargo_runtime(root / "molt-home")
     commands.append(
         _run(
@@ -612,10 +886,12 @@ def _verify_pip_distribution(
         "wheel": {key: wheel_record[key] for key in ("filename", "sha256", "size")},
         "python": minor,
         "reference_python": reference,
+        "execution": execution,
         "commands": commands,
         "source": str(source),
         "source_sha256": sha256_file(source),
         "cells": cells,
+        "compilation": compilation,
         "compiler_sha256": compiler.record["sha256"],
         "wasm_facts_sha256": compiler.wasm_facts["sha256"],
     }
@@ -632,6 +908,11 @@ def _verify_python_coordinate(
     reference: str,
     wheel_tag: str,
     evidence_dir: Path,
+    compilation_evidence: Path,
+    archive_cache: Path,
+    supervisor: Path,
+    generation: dict[str, Any],
+    projection: SealedExecutionProjection,
 ) -> dict[str, Any]:
     project = root / "project"
     project.mkdir(parents=True)
@@ -687,7 +968,7 @@ def _verify_python_coordinate(
     source = project / "release_consumer.py"
     # Bytes, not text mode: the receipt digest is the canonical program's.
     source.write_bytes(consumer_guest_source(minor).encode("utf-8"))
-    cells = _verify_guest_cells(
+    cells, compilation = _verify_guest_cells(
         root=root,
         project=project,
         source=source,
@@ -700,6 +981,13 @@ def _verify_python_coordinate(
         evidence_dir=evidence_dir,
         commands=commands,
         role_prefix="",
+        python=python,
+        portable_bundle=True,
+        compilation_evidence=compilation_evidence,
+        archive_cache=archive_cache,
+        supervisor=supervisor,
+        generation=generation,
+        projection=projection,
     )
     if (
         _capture_python_execution(
@@ -723,6 +1011,7 @@ def _verify_python_coordinate(
         "source_sha256": sha256_file(source),
         "commands": commands,
         "cells": cells,
+        "compilation": compilation,
     }
 
 
@@ -774,7 +1063,11 @@ def _uninstall_and_replay(
 
 
 def verify(
-    candidate_dir: Path, receipt: Path, *, archive_cache: Path | None = None
+    candidate_dir: Path,
+    receipt: Path,
+    *,
+    compilation_projection: SealedExecutionProjection,
+    archive_cache: Path | None = None,
 ) -> dict[str, object]:
     if receipt != candidate_dir / "consumer-verification.json":
         raise ValueError("consumer receipt must be beside its candidate")
@@ -783,6 +1076,7 @@ def verify(
     if (
         receipt.exists()
         or (receipt.parent / "consumer-evidence").exists()
+        or (receipt.parent / "compilation-evidence").exists()
         or (candidate_dir / consumer_replay.archive_filename(candidate)).exists()
     ):
         raise ValueError(
@@ -930,6 +1224,11 @@ def verify(
             archive_cache, arch=candidate["target"]["arch"]
         )
         supervisor, generation = consumer_replay.provision_verifier()
+        if compilation_projection.mode != "compilation":
+            raise ValueError(
+                "installed consumer requires an explicit compilation resource projection"
+            )
+        projection = compilation_projection
         proofs = [
             _verify_python_coordinate(
                 root=root / f"python-{minor}",
@@ -941,6 +1240,13 @@ def verify(
                 reference=reference,
                 wheel_tag=wheel_tag,
                 evidence_dir=evidence_dir,
+                compilation_evidence=receipt.parent
+                / "compilation-evidence"
+                / f"bundle-{minor}",
+                archive_cache=archive_cache,
+                supervisor=supervisor,
+                generation=generation,
+                projection=projection,
             )
             for minor, reference in coordinates
         ]
@@ -958,6 +1264,13 @@ def verify(
             target=candidate["target"],
             wheel_tag=wheel_tag,
             evidence_dir=evidence_dir,
+            compilation_evidence=receipt.parent
+            / "compilation-evidence"
+            / f"pip-{minor}",
+            archive_cache=archive_cache,
+            supervisor=supervisor,
+            generation=generation,
+            projection=projection,
         )
         standalone_evidence = receipt.parent / "consumer-evidence"
         replay = consumer_replay.prepare(
@@ -1022,9 +1335,19 @@ def main() -> None:
     parser.add_argument("--candidate", type=Path, required=True)
     parser.add_argument("--receipt", type=Path, required=True)
     parser.add_argument("--execution-archive-cache", type=Path, required=True)
+    parser.add_argument("--compile-memory-max-bytes", type=int, required=True)
+    parser.add_argument("--compile-workspace-max-bytes", type=int, required=True)
+    parser.add_argument("--compile-runtime-max-seconds", type=int, required=True)
     args = parser.parse_args()
     payload = verify(
-        args.candidate, args.receipt, archive_cache=args.execution_archive_cache
+        args.candidate,
+        args.receipt,
+        archive_cache=args.execution_archive_cache,
+        compilation_projection=SealedExecutionProjection.compilation(
+            memory_max_bytes=args.compile_memory_max_bytes,
+            workspace_max_bytes=args.compile_workspace_max_bytes,
+            runtime_max_seconds=args.compile_runtime_max_seconds,
+        ),
     )
     print(json.dumps(payload, sort_keys=True))
 

@@ -368,6 +368,12 @@ def _add_build_parser(
         help="IO mode: real (default), virtual (sandbox), callback (host-mediated)",
     )
     build_parser.add_argument(
+        "--capture-link-inputs",
+        action="store_true",
+        default=False,
+        help="Retain linker input buffers for installed admission (writes a full reproducer).",
+    )
+    build_parser.add_argument(
         "--diagnostics",
         action=argparse.BooleanOptionalAction,
         default=None,

@@ -10,7 +10,10 @@ pub(super) fn run_native_application_batches(
     output_path: &Path,
     batch_specs: &[NativeBatchJobSpec],
     log_prefix: &str,
-) -> io::Result<()> {
+) -> io::Result<(
+    crate::backend_process::input::ContentIdentity,
+    Vec<super::super::super::NativeWorkerOrigin>,
+)> {
     release_native_backend_batch_memory_to_os();
 
     // Batches compile in parallel worker processes on the request's pool; the
@@ -29,12 +32,13 @@ pub(super) fn run_native_application_batches(
             ),
         })
         .collect();
-    run_native_batch_workers("native application batch worker", &works)?;
+    let origins = run_native_batch_workers("native application batch worker", &works)?;
     release_native_backend_batch_memory_to_os();
 
     let objects = batch_specs
         .iter()
         .map(|spec| MappedObject::file(&spec.object_path))
         .collect::<io::Result<Vec<_>>>()?;
-    write_native_archive_objects(output_path, &objects)
+    let output = write_native_archive_objects(output_path, &objects)?;
+    Ok((output, origins))
 }

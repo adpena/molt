@@ -165,19 +165,21 @@ fn native_compile_request(
         .create_new(true)
         .open(&lease)
         .expect("create compile IR lease");
-    rmp_serde::encode::write_named(
+    let document = molt_ir::ir::BackendIrDocument::from_json_value(&serde_json::json!({
+        "functions": [
+            {"return_abi": "void", "name": "molt_main", "params": [], "ops": [
+                {"kind": "call", "s_value": "helper"}, {"kind": "ret_void"}
+            ]},
+            {"return_abi": "void", "name": "helper", "params": [], "ops": [{"kind": "ret_void"}]}
+        ],
+        "profile": null
+    }))
+    .expect("valid compile IR");
+    std::io::Write::write_all(
         &mut file,
-        &serde_json::json!({
-            "functions": [
-                {"return_abi": "void", "name": "molt_main", "params": [], "ops": [
-                    {"kind": "call", "s_value": "helper"}, {"kind": "ret_void"}
-                ]},
-                {"return_abi": "void", "name": "helper", "params": [], "ops": [{"kind": "ret_void"}]}
-            ],
-            "profile": null
-        }),
+        &molt_ir::addressed_program::encode_complete_lease(&document).expect("encode lease"),
     )
-    .expect("encode compile IR lease");
+    .expect("write compile IR lease");
 
     serde_json::json!({
         "version": PROTOCOL_VERSION,
@@ -223,5 +225,110 @@ fn concurrent_compiles_run_under_their_own_request_settings() {
         assert_eq!(response["ok"], true, "{response}");
         assert_eq!(response["jobs"][0]["ok"], true, "{response}");
         assert!(output.exists(), "missing {}", output.display());
+    }
+}
+
+#[test]
+fn daemon_origin_tracks_production_workers_and_original_cache_entry() {
+    use sha2::{Digest, Sha256};
+    let identity = |bytes: &[u8]| {
+        serde_json::json!({
+            "sha256": format!("{:x}", Sha256::digest(bytes)), "size": bytes.len()
+        })
+    };
+    let daemon = Daemon::start("origins");
+    for (key, kind, batch_size, batched) in [
+        ("direct-object", "object", "100", false),
+        ("direct-archive", "archive", "100", false),
+        ("worker-archive", "archive", "1", true),
+    ] {
+        let output = daemon.dir.join(format!("{key}.artifact"));
+        let mut request = native_compile_request(
+            &output,
+            key,
+            serde_json::json!({
+                "MOLT_BACKEND_BATCH_SIZE": batch_size,
+                "MOLT_BACKEND_BATCH_OP_BUDGET": "8000"
+            }),
+        );
+        request["jobs"][0]["native_output_kind"] = kind.into();
+        let consumed = std::fs::read(output.with_extension("msgpack")).unwrap();
+        let response = daemon.connect().request(request.clone());
+        assert_eq!(response["jobs"][0]["ok"], true, "{response}");
+        assert_eq!(response["jobs"][0]["cached"], false, "{response}");
+        let origin = response["jobs"][0]["origin"].clone();
+        assert_eq!(origin["schema"], "molt.daemon-job-origin.v2");
+        assert_eq!(origin["daemon_pid"], daemon.child.id());
+        assert_eq!(origin["input"]["schema"], "molt.addressed-program-input.v1");
+        assert_eq!(origin["input"]["lease"], identity(&consumed));
+        #[derive(serde::Deserialize)]
+        struct ObservedLease<'a> {
+            #[serde(borrow)]
+            function_digests: &'a [u8],
+        }
+        let lease: ObservedLease<'_> = rmp_serde::from_slice(&consumed).unwrap();
+        assert_eq!(lease.function_digests.len(), 64, "two ordered functions");
+        let expected: String = lease
+            .function_digests
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        assert_eq!(origin["input"]["function_digests"], expected);
+        let emitted = std::fs::read(&output).unwrap();
+        assert_eq!(origin["output"], identity(&emitted));
+        if batched {
+            assert_eq!(origin["codegen"]["kind"], "native-workers");
+            let workers = origin["codegen"]["workers"].as_array().unwrap();
+            assert_eq!(workers.len(), 2, "actual subprocess fixture must batch");
+            let archive = object::read::archive::ArchiveFile::parse(emitted.as_slice()).unwrap();
+            let members: Vec<_> = archive.members().map(Result::unwrap).collect();
+            assert_eq!(members.len(), workers.len());
+            for (index, (member, worker)) in members.iter().zip(workers).enumerate() {
+                assert_eq!(worker["schema"], "molt.native-worker-origin.v1");
+                let pid = worker["process_id"].as_u64().unwrap();
+                assert!(
+                    pid > 0
+                        && pid != u64::from(daemon.child.id())
+                        && pid != u64::from(std::process::id())
+                );
+                assert_eq!(member.name(), format!("molt_{index:08}.o").as_bytes());
+                assert_eq!(worker["output"], identity(member.data(&emitted).unwrap()));
+            }
+        } else {
+            assert_eq!(
+                origin["codegen"],
+                serde_json::json!({"kind":"in-process", "process_id":daemon.child.id()})
+            );
+        }
+        // These cache probes carry no IR. The original compiler processes have
+        // exited for batched jobs; a serving daemon must not replace their origin.
+        request["jobs"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("ir_path");
+        request["jobs"][0]["probe_cache_only"] = true.into();
+        request["jobs"][0]["function_digests"] = expected.into();
+        for tier in ["module", "function"] {
+            let replay = daemon.dir.join(format!("{key}-{tier}.artifact"));
+            request["jobs"][0]["output"] = replay.to_string_lossy().as_ref().into();
+            if tier == "function" {
+                request["jobs"][0]["cache_key"] = "".into();
+            }
+            let hit = daemon.connect().request(request.clone());
+            assert_eq!(hit["jobs"][0]["ok"], true, "{hit}");
+            assert_eq!(hit["jobs"][0]["cached"], true, "{hit}");
+            assert_eq!(hit["jobs"][0]["cache_tier"], tier);
+            assert_eq!(hit["jobs"][0]["origin"], origin);
+            assert_eq!(std::fs::read(&replay).unwrap(), emitted);
+            std::fs::remove_file(&replay).unwrap();
+            let flag = format!("skip_{tier}_output_if_synced");
+            request["jobs"][0][&flag] = true.into();
+            let synced = daemon.connect().request(request.clone());
+            assert_eq!(synced["jobs"][0]["ok"], true, "{synced}");
+            assert_eq!(synced["jobs"][0]["output_written"], false);
+            assert_eq!(synced["jobs"][0]["origin"], origin);
+            assert!(!replay.exists());
+            request["jobs"][0].as_object_mut().unwrap().remove(&flag);
+        }
     }
 }

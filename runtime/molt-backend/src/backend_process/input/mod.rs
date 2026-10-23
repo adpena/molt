@@ -1,8 +1,14 @@
 mod cbor;
+pub(crate) mod content;
+pub(crate) use content::ContentIdentity;
+#[cfg(test)]
+use msgpack::read_captured_msgpack;
 mod json;
 mod msgpack;
 mod ndjson;
 mod source;
+
+pub(crate) use source::open_ir_file;
 
 #[cfg(test)]
 mod tests;

@@ -133,7 +133,7 @@ impl PlannedStdlibArchive {
                     index + 1,
                     total
                 );
-                run_native_batch_worker_with_failure_artifacts(
+                let _unpersisted_worker_origin = run_native_batch_worker_with_failure_artifacts(
                     "native stdlib batch worker",
                     &job,
                     &format!("batch_{index}.json"),

@@ -233,6 +233,7 @@ class WasmDeploymentGeneration:
             return value
 
         return _PreparedNonNativeResult(
+            link_input_observation=result.link_input_observation,
             primary_output=reverse.get(result.primary_output, result.primary_output),
             consumer_output=reverse.get(result.consumer_output, result.consumer_output),
             bundle_root=path(result.bundle_root),

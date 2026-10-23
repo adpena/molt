@@ -27,6 +27,7 @@ def full_payload():
         "runtime_feedback": "feedback.json",
         "output": "out.wasm",
         "json_output": True,
+        "capture_link_inputs": True,
         "verbose": True,
         "deterministic": False,
         "deterministic_warn": True,

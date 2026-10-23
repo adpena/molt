@@ -23,7 +23,9 @@ from molt.cli import frontend_pipeline as _frontend_pipeline
 from molt.cli import runtime_features as _runtime_features
 from molt.cli.backend_diagnostics import _env_requests_backend_diagnostics
 from molt.cli.backend_execution import _backend_request_environment
+from molt.cli.backend_ir_transport import BackendIrProgram
 from molt.cli.build_request import BuildProfile
+from molt.cli.cache_keys import FunctionDigests
 from molt.cli.build_results import (
     _build_common_build_json_data,
     _emit_build_result_json,
@@ -221,7 +223,10 @@ def _run_jit_pipeline(
                 backend_environment=backend_environment,
                 launch=plan.image_header_payload(),
             ),
-            ir=prepared_backend_ir.ir,
+            program=BackendIrProgram(
+                prepared_backend_ir.ir,
+                FunctionDigests(prepared_backend_ir.function_digest_seeds),
+            ),
         )
     except (OSError, ValueError) as exc:
         return _fail(

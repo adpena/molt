@@ -457,3 +457,425 @@ def test_release_manifest_requires_one_platform_wheel_per_target(
     ]
     with pytest.raises(ValueError):
         release_model.validate_release_manifest(payload)
+
+
+@pytest.mark.parametrize("portable_bundle", [False, True])
+@pytest.mark.parametrize(
+    "defect",
+    [None, "compile-failure", "missing-cell", "compiler-substitution", "wasm-stdout"],
+)
+def test_installed_guest_owner_uses_only_sealed_compilation_products(
+    tmp_path, monkeypatch, portable_bundle, defect
+):
+    """Actual installed caller; tool/capture/namespace boundaries are explicit fakes.
+
+    Preparatory products contain different bytes. Neither their timings nor
+    their identities may become the installed replay products. No kernel or
+    executable success is simulated as product admission by this test.
+    """
+    from types import SimpleNamespace
+    from tools.release import consumer_replay
+    from tests.tools.test_release_sealed_replay import _compilation_export_fixture
+    from molt import toolchain_identity, wasm_optimizer_identity
+
+    lanes = tuple(
+        next(
+            lane for lane in release_authority.consumer_lanes() if lane.target == target
+        )
+        for target in ("native", "wasm")
+    )
+    monkeypatch.setattr(verify_consumer, "consumer_lanes", lambda: lanes)
+    root, project = tmp_path / "installation", tmp_path / "project"
+    root.mkdir()
+    project.mkdir()
+    source = project / "release_consumer.py"
+    source.write_text("preparation")
+    compiler = SimpleNamespace(
+        binary=root / "backend",
+        source_root=root / "source",
+        record={"sha256": "c" * 64},
+        verify_binary=lambda *args: None,
+    )
+    preparations = {}
+    for target in ("native", "wasm"):
+        prepared = tmp_path / ("preflight-" + target)
+        prepared.mkdir()
+        _compilation_export_fixture(prepared, target)
+        files = prepared / "export"
+        observation_path = next(files.glob("*.molt-link-inputs.json"))
+        outputs = {"input_reproducer": next(files.glob("*.tar"))}
+        if target == "native":
+            outputs.update(
+                driver_preparation=files / "program.molt-native-inputs.json",
+                driver_dependencies=files / "program.molt-native-inputs.d",
+            )
+        preparations[target] = (json.loads(observation_path.read_text()), outputs)
+    monkeypatch.setattr(
+        verify_consumer,
+        "_preparation_link_inputs",
+        lambda output, *, target: preparations[target],
+    )
+    monkeypatch.setattr(
+        consumer_replay,
+        "compilation_runtime_selection",
+        lambda path, *, compiler, lane: (lane.target, {"tier": "selected"}),
+    )
+    monkeypatch.setattr(
+        toolchain_identity,
+        "find_executable",
+        lambda name, **kwargs: Path("/tools") / name,
+    )
+    monkeypatch.setattr(
+        wasm_optimizer_identity, "find_wasm_opt", lambda **kwargs: "/tools/wasm-opt"
+    )
+    python = root / "python"
+    frontend = root / "frontend"
+    frontend_calls = []
+
+    def frontend_selection(**kwargs):
+        frontend_calls.append(kwargs)
+        return frontend
+
+    monkeypatch.setattr(
+        verify_consumer, "_installed_frontend_python", frontend_selection
+    )
+    capture_calls = []
+
+    def capture(**kwargs):
+        capture_calls.append(kwargs)
+        assert kwargs["interpreters"] == (python, frontend)
+        return [{"captured": "frontend"}], {"captured": "tools"}
+
+    monkeypatch.setattr(verify_consumer, "_compilation_captures", capture)
+    plans = []
+
+    def prepare(**kwargs):
+        plans.append(kwargs)
+        assert [lane for lane, _, _ in kwargs["cells"]] == list(lanes)
+        assert set(kwargs["native_link_inputs"]) == {lanes[0].id}
+        assert kwargs["python_executable"] == python
+        return {"prepared": True}
+
+    monkeypatch.setattr(consumer_replay, "prepare_compilation", prepare)
+    evidence = (
+        tmp_path
+        / "compilation-evidence"
+        / (("bundle-" if portable_bundle else "pip-") + "3.12")
+    )
+
+    def diagnostics(path, lane, digest="c" * 64):
+        path.write_text(
+            json.dumps(
+                {
+                    "compiler": {
+                        "sha256": digest,
+                        "path": str(compiler.binary),
+                        "cargo_profile": lane.compiler_profile,
+                        "fingerprint": "d" * 64,
+                    },
+                    "program": lane.as_record(),
+                }
+            )
+        )
+
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs["role"]))
+        if kwargs["role"].startswith("prepare_"):
+            lane = next(
+                lane for lane in lanes if kwargs["role"] == "prepare_" + lane.id
+            )
+            folder = project / lane.id
+            diagnostics(folder / "diagnostics.json", lane)
+            (folder / "program").write_bytes(b"unadmitted preparatory product")
+        return {
+            "role": kwargs["role"],
+            "argv": command,
+            "returncode": 0,
+            "duration_seconds": 0.1,
+            "stdout_sha256": hashlib.sha256(
+                release_authority.CONSUMER_EXPECTED_STDOUT.encode()
+            ).hexdigest(),
+            "stderr_sha256": hashlib.sha256(b"").hexdigest(),
+        }
+
+    monkeypatch.setattr(verify_consumer, "_run", run)
+    monkeypatch.setattr(verify_consumer, "_audit_guest", lambda *args, **kwargs: None)
+
+    def execute(**kwargs):
+        assert kwargs["lanes"] == lanes and kwargs["compiler"] is compiler
+        assert kwargs["compilation"] == {"prepared": True}
+        if defect == "compile-failure":
+            raise ValueError("actual compilation refused")
+        rows = []
+        for lane in lanes:
+            folder = evidence / "outputs" / lane.id
+            folder.mkdir(parents=True)
+            name = "program.wasm" if lane.target == "wasm" else "program"
+            (folder / name).write_bytes(b"actual sealed product")
+            diagnostics(
+                folder / "diagnostics.json",
+                lane,
+                "e" * 64 if defect == "compiler-substitution" else "c" * 64,
+            )
+            stdout = (
+                release_authority.CONSUMER_EXPECTED_STDOUT.encode()
+                if lane.target == "wasm"
+                else b""
+            )
+            (folder / "command.stdout").write_bytes(
+                b"wrong"
+                if defect == "wasm-stdout" and lane.target == "wasm"
+                else stdout
+            )
+            (folder / "command.stderr").write_bytes(b"")
+            (folder / "manifest.json").write_bytes(b"manifest")
+            command = release_authority.consumer_guest_command(
+                ["/installed/molt"],
+                lane=lane,
+                python_minor="3.12",
+                diagnostics="/work/output/diagnostics.json",
+                source="/app/source.py",
+                output="/work/output/" + name,
+                capture_link_inputs=True,
+            )
+            rows.append(
+                {
+                    "outputs": {
+                        "artifact": {
+                            "path": name,
+                            "filename": name,
+                            "size": len(b"actual sealed product"),
+                            "sha256": hashlib.sha256(
+                                b"actual sealed product"
+                            ).hexdigest(),
+                        },
+                        "command": {
+                            "argv": command,
+                            "returncode": 0,
+                            "duration_sec": 0.5,
+                        },
+                    }
+                }
+            )
+        if defect == "missing-cell":
+            rows.pop()
+        result = {"cells": rows}
+        (evidence / "compilation.json").write_text(json.dumps(result))
+        return result
+
+    monkeypatch.setattr(consumer_replay, "execute_compilation", execute)
+    commands = []
+    kwargs = dict(
+        root=root,
+        project=project,
+        source=source,
+        launcher=["/installed/molt"],
+        env=ProcessEnvironment({"MOLT_HOME": str(root / "home")}),
+        compiler=compiler,
+        minor="3.12",
+        target={"platform": "linux", "arch": "x86_64"},
+        wheel_tag="fixture",
+        evidence_dir=tmp_path / "audit",
+        commands=commands,
+        role_prefix="" if portable_bundle else "pip_",
+        python=python,
+        portable_bundle=portable_bundle,
+        compilation_evidence=evidence,
+        archive_cache=tmp_path / "archives",
+        supervisor=tmp_path / "supervisor",
+        generation={},
+        projection=verify_consumer.SealedExecutionProjection.compilation(
+            memory_max_bytes=2**30, workspace_max_bytes=2**28, runtime_max_seconds=60
+        ),
+    )
+    if defect:
+        with pytest.raises(ValueError):
+            verify_consumer._verify_guest_cells(**kwargs)
+    else:
+        cells, reference = verify_consumer._verify_guest_cells(**kwargs)
+        assert len(cells) == 2 and reference["path"].endswith("/compilation.json")
+        assert all(
+            Path(cell["artifact"]["path"]).read_bytes() == b"actual sealed product"
+            for cell in cells
+        )
+        assert len(commands) == 3
+        assert all(not row["role"].startswith("prepare_") for row in commands)
+        assert [row["duration_seconds"] for row in commands] == [0.5, 0.1, 0.5]
+        assert len(frontend_calls) == len(capture_calls) == len(plans) == 1
+        assert frontend_calls[0]["portable_bundle"] is portable_bundle
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [
+        None,
+        "candidate-runtime",
+        "candidate-source",
+        "product",
+        "command",
+        "diagnostics",
+        "manifest",
+        "reference",
+        "missing-cell",
+        "python-image",
+    ],
+)
+def test_release_compilation_receiver_binds_candidate_product_and_raw_command(
+    tmp_path, monkeypatch, defect
+):
+    """Release join uses real retained bytes; native replay is a named seam."""
+    from types import SimpleNamespace
+    from molt import compiler_distribution
+    from molt.exact_json import canonical_json_sha256
+    from tools.release import consumer_replay
+
+    lane = next(
+        lane for lane in release_authority.consumer_lanes() if lane.target == "wasm"
+    )
+    monkeypatch.setattr(release_authority, "consumer_lanes", lambda: (lane,))
+    root = tmp_path / "compilation-evidence/bundle-3.12"
+    retained = root / "outputs" / lane.id
+    retained.mkdir(parents=True)
+    record = {"path": "bin/backend", "sha256": "a" * 64}
+    files = [{"path": "compiler-source", "size": 1, "sha256": "a" * 64}]
+    installed = SimpleNamespace(
+        source_sha="a" * 40,
+        record=record,
+        launcher={"path": "bin/molt"},
+        wasm_facts={"path": "bin/facts"},
+        runtime={"cells": ["runtime"]},
+        files=files,
+        verify_launcher=lambda: None,
+        verify_wasm_facts=lambda: None,
+    )
+    monkeypatch.setattr(
+        compiler_distribution, "installed_compiler", lambda path: installed
+    )
+    candidate = {
+        "source_sha": "a" * 40,
+        "compiler": record,
+        "launcher": installed.launcher,
+        "wasm_facts": installed.wasm_facts,
+        "runtime": installed.runtime,
+        "native_build": {"source": {"files_sha256": canonical_json_sha256(files)}},
+    }
+    command = {"argv": ["/installed/molt", "run"], "returncode": 0, "duration_sec": 0.2}
+    (retained / "command.stdout").write_bytes(b"independent stdout")
+    (retained / "command.stderr").write_bytes(b"independent stderr")
+    (retained / "manifest.json").write_bytes(b"independent manifest")
+    (retained / "diagnostics.json").write_text(
+        json.dumps(
+            {
+                "program": lane.as_record(),
+                "compiler": {
+                    "path": "/installed/bin/backend",
+                    "sha256": "a" * 64,
+                    "fingerprint": "b" * 64,
+                    "cargo_profile": lane.compiler_profile,
+                },
+            }
+        )
+    )
+    compilation = {
+        "compiler_source_root": "/installed/source",
+        "cells": [
+            {
+                "lane": lane.as_record(),
+                "outputs": {
+                    "artifact": {"path": "program.wasm", "size": 7, "sha256": "c" * 64},
+                    "command": command,
+                },
+            }
+        ],
+    }
+    path = root / "compilation.json"
+    path.write_text(json.dumps(compilation))
+    reference = {
+        "path": path.relative_to(tmp_path).as_posix(),
+        **consumer_replay.execution_root.file_identity(path),
+    }
+    (root / "rootfs").mkdir()
+    (root / "rootfs/python").write_bytes(b"selected Python")
+    proof = {
+        "python": "3.12",
+        "execution": {
+            "python": {
+                "executable": "/python",
+                "size": len(b"selected Python"),
+                "sha256": hashlib.sha256(b"selected Python").hexdigest(),
+            }
+        },
+        "cells": [
+            {
+                "lane": lane.as_record(),
+                "artifact": {
+                    "path": "/export/program.wasm",
+                    "size": 7,
+                    "sha256": "c" * 64,
+                },
+                "compiler_sha256": "a" * 64,
+                "compiler_fingerprint": "b" * 64,
+                "manifest": {
+                    "path": "/export/manifest.json",
+                    **consumer_replay.execution_root.file_identity(
+                        retained / "manifest.json"
+                    ),
+                },
+            }
+        ],
+        "commands": [
+            {
+                "role": "run_" + lane.id,
+                "argv": command["argv"],
+                "returncode": 0,
+                "duration_seconds": 0.2,
+                "stdout_sha256": hashlib.sha256(b"independent stdout").hexdigest(),
+                "stderr_sha256": hashlib.sha256(b"independent stderr").hexdigest(),
+            }
+        ],
+    }
+    replays = []
+
+    def replay(**kwargs):
+        assert kwargs["compiler"] is installed and kwargs["lanes"] == (lane,)
+        assert kwargs["launcher"] == ["/installed/bin/molt"] and kwargs[
+            "controller_python"
+        ] == Path("/python")
+        replays.append(kwargs)
+
+    monkeypatch.setattr(consumer_replay, "validate_compilation", replay)
+    if defect == "python-image":
+        (root / "rootfs/python").write_bytes(b"replaced Python")
+    elif defect == "candidate-runtime":
+        candidate["runtime"] = {"cells": ["other"]}
+    elif defect == "candidate-source":
+        candidate["native_build"]["source"]["files_sha256"] = "e" * 64
+    elif defect == "product":
+        proof["cells"][0]["artifact"]["sha256"] = "e" * 64
+    elif defect == "command":
+        proof["commands"][0]["stdout_sha256"] = "e" * 64
+    elif defect == "diagnostics":
+        proof["cells"][0]["compiler_fingerprint"] = "e" * 64
+    elif defect == "manifest":
+        proof["cells"][0]["manifest"]["sha256"] = "e" * 64
+    elif defect == "reference":
+        reference["path"] = "compilation-evidence/pip-3.12/compilation.json"
+    elif defect == "missing-cell":
+        proof["cells"].clear()
+    kwargs = dict(
+        evidence_root=tmp_path,
+        candidate=candidate,
+        proof=proof,
+        launcher=["/installed/bin/molt"],
+        controller_python=Path("/python"),
+        owner="bundle",
+        supervisor=tmp_path / "supervisor",
+    )
+    if defect:
+        with pytest.raises(ValueError):
+            consumer_replay.validate_installed_compilation(reference, **kwargs)
+    else:
+        consumer_replay.validate_installed_compilation(reference, **kwargs)
+        assert len(replays) == 1

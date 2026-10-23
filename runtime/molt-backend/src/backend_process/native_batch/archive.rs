@@ -1,3 +1,4 @@
+use crate::backend_process::input::ContentIdentity;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
@@ -95,7 +96,10 @@ pub(crate) fn validate_native_object_bytes(bytes: &[u8]) -> io::Result<()> {
     native_archive_target([Ok(bytes)]).map(|_| ())
 }
 
-fn publish_native_archive(output: &Path, members: &[NewArchiveMember<'_>]) -> io::Result<()> {
+fn publish_native_archive(
+    output: &Path,
+    members: &[NewArchiveMember<'_>],
+) -> io::Result<ContentIdentity> {
     let target = native_archive_target(members.iter().map(|member| Ok((*member.buf).as_ref())))?;
     let kind = target.archive_kind()?;
     publish_validated_native_archive(output, target, |writer| {
@@ -107,7 +111,7 @@ fn publish_validated_native_archive(
     output: &Path,
     target: NativeArchiveTarget,
     write: impl FnOnce(&mut BufWriter<File>) -> io::Result<()>,
-) -> io::Result<()> {
+) -> io::Result<ContentIdentity> {
     write_atomically(output, |writer| {
         write(writer)?;
         writer.flush()?;
@@ -124,7 +128,7 @@ fn publish_validated_native_archive(
                 ),
             ));
         }
-        Ok(())
+        Ok(ContentIdentity::of_bytes(&bytes))
     })
 }
 
@@ -168,7 +172,10 @@ fn validate_native_archive_bytes(bytes: &[u8]) -> io::Result<NativeArchiveTarget
     Ok(target)
 }
 
-pub(crate) fn write_native_archive_bytes(output: &Path, bytes: &[u8]) -> io::Result<()> {
+pub(crate) fn write_native_archive_bytes(
+    output: &Path,
+    bytes: &[u8],
+) -> io::Result<ContentIdentity> {
     publish_native_archive(
         output,
         &[NewArchiveMember::new(
@@ -222,7 +229,7 @@ impl AsRef<[u8]> for MappedObject {
 pub(crate) fn write_native_archive_objects(
     output: &Path,
     objects: &[MappedObject],
-) -> io::Result<()> {
+) -> io::Result<ContentIdentity> {
     let members = objects
         .iter()
         .enumerate()
@@ -306,10 +313,12 @@ mod tests {
                 std::fs::write(&paths[0], &first).expect("write first object");
                 std::fs::write(&paths[1], &second).expect("write second object");
                 let output = directory.0.join("first.a");
-                write_native_archive_objects(&output, &mapped(&paths)).expect("publish archive");
+                let emitted = write_native_archive_objects(&output, &mapped(&paths))
+                    .expect("publish archive");
                 validate_native_archive_file(&output)
                     .expect("published archive passes cache admission");
                 let bytes = std::fs::read(&output).expect("read archive");
+                assert_eq!(emitted, ContentIdentity::of_bytes(&bytes));
                 let renamed = [
                     directory.0.join("unrelated-name.o"),
                     directory.0.join("another-name.o"),

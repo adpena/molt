@@ -200,6 +200,7 @@ class TestDaemonSequentialRequests:
                     "output": "/tmp/molt-test-probe.o",
                     "cache_key": "non-existent-key-" + str(time.time()),
                     "probe_cache_only": True,
+                    "function_digests": "ab" * 32,
                 }
             ],
         }
@@ -213,6 +214,8 @@ class TestDaemonSequentialRequests:
         jobs = resp.get("jobs", [])
         assert jobs, "Response has no jobs"
         assert jobs[0].get("needs_ir"), "Cache miss probe must set needs_ir=True"
+        # A cold store lacks the one named body (protocol 4).
+        assert jobs[0].get("missing_functions") == [0]
         assert not jobs[0].get("cached"), "Cache miss probe must not set cached=True"
 
     def test_five_sequential_probe_requests_no_stall(self, daemon_socket: Path) -> None:
@@ -231,6 +234,7 @@ class TestDaemonSequentialRequests:
                         "output": f"/tmp/molt-test-probe-{i}.o",
                         "cache_key": f"non-existent-key-{i}-{time.time()}",
                         "probe_cache_only": True,
+                        "function_digests": "",
                     }
                 ],
             }
@@ -308,6 +312,7 @@ class TestDaemonSequentialRequests:
                     "output": "/tmp/molt-test-probe-close.o",
                     "cache_key": f"non-existent-{time.time()}",
                     "probe_cache_only": True,
+                    "function_digests": "ab" * 32,
                 }
             ],
         }

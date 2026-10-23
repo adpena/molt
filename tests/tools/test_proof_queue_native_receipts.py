@@ -213,12 +213,14 @@ def test_rust_link_capture_owns_workspace_inside_owner_selected_scratch(
                 assert supervisor_custody.supervisor_receipt_is_complete(receipt)
                 assert receipt["root_exit_code"] == 0
                 assert output.read_bytes().startswith(b"\x7fELF")
-                _, observed = supervisor_custody._verified_supervisor_event_artifact(
+                observed = supervisor_custody._verified_supervisor_event_artifact(
                     receipt_path=receipt_path,
                     descriptor=receipt["event_log"],
                     collect_images=True,
                 )
-                assert str(frontend) in {path for path, _digest, _size in observed}
+                assert str(frontend) in {
+                    path for path, _digest, _size in observed.images
+                }
             else:
                 assert completed.returncode != 0
                 assert not supervisor_custody.supervisor_receipt_is_complete(receipt)

@@ -548,7 +548,10 @@ def test_wasm_receipts_must_carry_distribution_semantics(bundle):
         "files": [],
     }
     cell = installed_runtime.InstalledRuntimeCell(
-        installed, record, installed.runtime_root / record["id"]
+        installed,
+        record,
+        installed.runtime_root / record["id"],
+        installed_runtime.installed_runtime_store(installed),
     )
     with pytest.raises(InstalledRuntimeError, match="SIMD"):
         installed_runtime._require_wasm_semantics(
@@ -1087,7 +1090,10 @@ def test_installed_link_rejects_a_changed_selection_after_codegen(
         if selection == "unshipped":
             raise InstalledRuntimeError("does not ship")
         return installed_runtime.InstalledRuntimeCell(
-            cell.installed, {**cell.record, "id": "f" * 64}, cell.members_root
+            cell.installed,
+            {**cell.record, "id": "f" * 64},
+            cell.members_root,
+            cell.retention_store,
         )
 
     monkeypatch.setattr(runtime_native_build, "select_installed_native_runtime", select)
@@ -1194,7 +1200,10 @@ def _installed_wasm_cell(bundle: Path, cell_id: str):
         ],
     }
     return installed_runtime.InstalledRuntimeCell(
-        installed, record, installed.runtime_root / cell_id
+        installed,
+        record,
+        installed.runtime_root / cell_id,
+        installed_runtime.installed_runtime_store(installed),
     )
 
 
@@ -1304,7 +1313,10 @@ def test_installed_wasm_link_rejects_a_changed_selection(
         # The same signed bytes under another content address name another
         # retained generation; the bound pair is never reselected.
         cell = installed_runtime.InstalledRuntimeCell(
-            cell.installed, {**cell.record, "id": "d" * 64}, cell.members_root
+            cell.installed,
+            {**cell.record, "id": "d" * 64},
+            cell.members_root,
+            cell.retention_store,
         )
     else:
         overrides["required_link_features"] = frozenset({"stdlib_full"})
@@ -1494,7 +1506,10 @@ def test_runtime_policy_receipts_match_installed_simd_key(bundle, simd):
             "files": [],
         }
         cell = installed_runtime.InstalledRuntimeCell(
-            installed, record, installed.runtime_root / record["id"]
+            installed,
+            record,
+            installed.runtime_root / record["id"],
+            installed_runtime.installed_runtime_store(installed),
         )
         for identity in identities:
             if required == simd:
@@ -2225,3 +2240,253 @@ def test_wasm_release_producer_uses_declared_physical_profile(
     assert observed == [profile]
     assert record["key"]["cargo_profile"] == profile
     assert os.environ["MOLT_WASM_CARGO_PROFILE"] == "ambient-wrong"
+
+
+@pytest.mark.parametrize("home_spelling", ["canonical", "parent-alias"])
+def test_installed_cell_binds_retention_home_before_ambient_change(
+    bundle, tmp_path, monkeypatch, home_spelling
+):
+    canonical_home = tmp_path / "home"
+    if home_spelling == "parent-alias":
+        (tmp_path / "owned").mkdir()
+        home = tmp_path / "owned" / ".." / "home"
+    else:
+        home = canonical_home
+    monkeypatch.setenv("MOLT_HOME", str(home))
+    cell = _cell(bundle)
+    assert cell.retention_store == canonical_home / "installed-runtime"
+    original = cell.retained_root
+    monkeypatch.setenv("MOLT_HOME", str(tmp_path / "other-home"))
+    assert cell.retained_root == original
+    assert _cell(bundle).retained_root != original
+
+
+@pytest.mark.parametrize(
+    "defect", [None, "inside-bundle", "noncanonical-store", "changed-shipped-member"]
+)
+def test_compilation_root_hydrates_through_installed_runtime_owner(
+    bundle, tmp_path, monkeypatch, defect
+):
+    from tools.release import execution_root
+
+    _forbid_cargo(monkeypatch)
+    cell = _cell(bundle)
+    root = tmp_path / "rootfs"
+    root.mkdir()
+    if defect == "inside-bundle":
+        with pytest.raises(InstalledRuntimeError, match="outside the immutable"):
+            installed_runtime.select_installed_runtime_cell(
+                cell.installed,
+                kind=cell.kind,
+                key=cell.record["key"],
+                retention_store=bundle / "forged-store",
+            )
+        return
+    if defect == "noncanonical-store":
+        (tmp_path / "owned").mkdir()
+        with pytest.raises(
+            InstalledRuntimeError, match="canonical bound retention store"
+        ):
+            installed_runtime.select_installed_runtime_cell(
+                cell.installed,
+                kind=cell.kind,
+                key=cell.record["key"],
+                retention_store=tmp_path / "owned" / ".." / "forged-store",
+            )
+        assert not (tmp_path / "forged-store").exists()
+        return
+    if defect == "changed-shipped-member":
+        member = cell.members_root / cell.file_record("runtime_archive")["name"]
+        member.write_bytes(b"X" * member.stat().st_size)
+        with pytest.raises(InstalledRuntimeError):
+            execution_root.stage_compilation_runtime(
+                root,
+                compiler=cell.installed,
+                environment={"MOLT_HOME": "/installed-home"},
+                kind=cell.kind,
+                key=dict(cell.record["key"]),
+            )
+        assert not list(root.rglob("*.a"))
+        return
+    rows, record = execution_root.stage_compilation_runtime(
+        root,
+        compiler=cell.installed,
+        environment={"MOLT_HOME": "/installed-home"},
+        kind=cell.kind,
+        key=dict(cell.record["key"]),
+    )
+    assert record == cell.record
+    assert rows == execution_root.root_inventory(root)
+    runtime = (
+        root
+        / "installed-home/installed-runtime"
+        / cell.id
+        / cell.file_record("runtime_archive")["name"]
+    )
+    assert runtime.read_bytes() == (cell.members_root / runtime.name).read_bytes()
+    # Sealing uses the existing final root authority; this is data retention,
+    # not a kernel execution positive or a newly selected runtime generation.
+    seal = execution_root.seal_root(root, tmp_path / "root.tar", expected_files=rows)
+    execution_root.validate_sealed_tar(
+        tmp_path / "root.tar", root, expected_archive=seal["archive"]
+    )
+
+
+@pytest.mark.parametrize("target", ["native", "wasm"])
+@pytest.mark.parametrize(
+    "defect",
+    [
+        None,
+        "ambient-home",
+        "member-replaced",
+        "other-cell",
+        "diagnostic-omitted",
+        "diagnostic-cell",
+    ],
+)
+def test_compilation_preflight_selection_retains_bound_runtime(
+    bundle,
+    tmp_path,
+    monkeypatch,
+    target,
+    defect,
+):
+    """Auto-tier preparation projects a bound cell, never a new selector."""
+    from dataclasses import replace
+    from molt.release_lanes import capture_release_lanes
+    from tools.release import consumer_replay
+
+    _forbid_cargo(monkeypatch)
+    if target == "wasm":
+        _ship_installed_wasm_cell(bundle, tmp_path)
+        cell = _select_installed_wasm(bundle)
+        wasm = installed_runtime.admit_installed_wasm_runtime(cell)
+        native = None
+        member = wasm.reloc
+    else:
+        cell = _cell(bundle)
+        native = installed_runtime.admit_installed_native_runtime(cell)
+        wasm = None
+        member = native.runtime_lib
+    if defect == "ambient-home":
+        monkeypatch.setenv("MOLT_HOME", str(tmp_path / "unrelated-home"))
+    elif defect == "member-replaced":
+        _mutate(member, "replace")
+    elif defect == "other-cell":
+        if native is not None:
+            native = replace(native, cell_id="0" * 64)
+        else:
+            wasm = replace(
+                wasm, shared=wasm.shared.parent.parent / ("0" * 64) / wasm.shared.name
+            )
+    if defect in {"member-replaced", "other-cell"}:
+        with pytest.raises((ValueError, OSError)):
+            installed_runtime.installed_runtime_selection(
+                bundle / "source", native=native, wasm=wasm
+            )
+        return
+    observed = installed_runtime.installed_runtime_selection(
+        bundle / "source", native=native, wasm=wasm
+    )
+    assert observed == cell.record
+    lane = next(
+        lane
+        for lane in capture_release_lanes(bundle / "source").lanes
+        if lane.target == target and lane.runtime_profile == cell.key["cargo_profile"]
+    )
+    diagnostic = {"program": lane.as_record(), "installed_runtime_selection": observed}
+    if defect == "diagnostic-omitted":
+        del diagnostic["installed_runtime_selection"]
+    elif defect == "diagnostic-cell":
+        diagnostic["installed_runtime_selection"] = {**observed, "id": "0" * 64}
+    path = tmp_path / "preflight.json"
+    path.write_text(json.dumps(diagnostic))
+    if defect in {"diagnostic-omitted", "diagnostic-cell"}:
+        with pytest.raises(ValueError, match="exact preflight runtime selection"):
+            consumer_replay.compilation_runtime_selection(
+                path, compiler=cell.installed, lane=lane
+            )
+    else:
+        assert consumer_replay.compilation_runtime_selection(
+            path, compiler=cell.installed, lane=lane
+        ) == (cell.kind, dict(cell.key))
+
+
+@pytest.mark.parametrize("changed", [False, True])
+def test_compilation_input_projection_preserves_captured_tool_alias(
+    bundle, tmp_path, monkeypatch, changed
+):
+    from molt import python_capture
+    from tools.release import execution_root
+    from tools.proof_queue_pkg import toolchain_capture
+
+    manifest = bundle / "source" / distribution.MANIFEST_NAME
+    value = json.loads(manifest.read_text())
+    for row in (
+        value["compiler"],
+        value["runtime"],
+        value["launcher"],
+        value["wasm_facts"],
+    ):
+        row.update(platform="linux", arch="x86_64")
+    manifest.write_text(json.dumps(value))
+    monkeypatch.setattr(
+        distribution, "current_host_coordinate", lambda: ("linux", "x86_64")
+    )
+    compiler = distribution.installed_compiler(bundle / "source")
+    assert compiler is not None
+    physical = tmp_path / "driver-content"
+    physical.write_bytes(b"captured driver")
+    physical.chmod(0o755)
+    lexical = tmp_path / "clang"
+    lexical.symlink_to(physical.name)
+    # Only the Python/tool capture producers are seams; real installed manifest
+    # verification, direct-file custody, root copying and alias projection run.
+    monkeypatch.setattr(
+        python_capture, "validate_python_capture", lambda value: {"file_custody": []}
+    )
+    monkeypatch.setattr(execution_root, "compilation_python_files", lambda value: [])
+    captures_loaded = []
+
+    def load_tools(*args, **kwargs):
+        captures_loaded.append(True)
+        return {
+            "files": [
+                {
+                    "path": str(lexical),
+                    "size": len(b"captured driver"),
+                    "sha256": _digest(b"captured driver"),
+                }
+            ]
+        }
+
+    monkeypatch.setattr(toolchain_capture, "load_capture", load_tools)
+    if changed:
+        physical.write_bytes(b"replaced driver")
+    root = tmp_path / "rootfs"
+    root.mkdir()
+    args = dict(
+        root=root,
+        compiler=compiler,
+        python_captures=[{}, {}],
+        toolchain_capture={},
+        cas_root=tmp_path / "cas",
+    )
+    if changed:
+        with pytest.raises(ValueError, match="changed after owning admission"):
+            execution_root.stage_compilation_inputs(**args)
+    else:
+        rows = execution_root.stage_compilation_inputs(**args)
+        projected = root / str(lexical).removeprefix("/")
+        assert captures_loaded == [
+            True
+        ]  # Both frontend captures share one toolchain projection.
+        assert (
+            not projected.is_symlink() and projected.read_bytes() == b"captured driver"
+        )
+        assert (
+            next(row for row in rows if row["path"] == str(lexical).removeprefix("/"))[
+                "mode"
+            ]
+            == 0o555
+        )

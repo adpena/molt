@@ -158,6 +158,8 @@ def terminal_build(
         verify=lambda: None,
     )
     runtime = SimpleNamespace(
+        installed_native_admission=None,
+        runtime_wasm_codegen_binding=None,
         native_runtime_codegen_binding=binding,
         native_runtime_build_identity=identity,
         runtime_lib=binding.runtime_lib,
@@ -251,6 +253,7 @@ def terminal_build(
             cache_enabled=True,
             cache_hit=True,
             cache_hit_tier="module",
+            backend_daemon_origin=None,
             backend_daemon_cached=None,
             backend_daemon_cache_tier=None,
             backend_daemon_config_digest=None,
@@ -295,6 +298,8 @@ def terminal_build(
             external_native_artifacts=(),
             strip_after_link=True,
             link_selection=None,
+            link_input_artifacts=None,
+            link_input_observation=None,
         ), None
 
     def finalize(**_):
@@ -340,6 +345,7 @@ def _terminal_payload(case, capsys):
     assert case.snapshots == [diagnostics["total_sec"]]
     assert sum(diagnostics["phase_sec"].values()) == diagnostics["total_sec"]
     assert diagnostics["compiler"]["fingerprint"] == "selected-compiler"
+    assert diagnostics["installed_runtime_selection"] is None
     assert diagnostics["program"] == {
         "backend": case.args["prepared_backend_setup"].backend,
         "guest_profile": "dev",
@@ -518,6 +524,7 @@ def test_wasm_terminal_snapshot_follows_requested_snapshot_header(
         return SimpleNamespace(
             primary_output=tmp_path / "app.wasm",
             consumer_output=tmp_path / "app.wasm",
+            link_input_observation=None,
             bundle_root=None,
             extra_fields={},
             artifacts={},
@@ -592,6 +599,7 @@ def test_wasm_inspection_admission_is_lazy_and_failure_preserves_diagnostics(
         return SimpleNamespace(
             primary_output=kwargs["output_artifact"],
             consumer_output=kwargs["output_artifact"],
+            link_input_observation=None,
             bundle_root=None,
             extra_fields={},
             artifacts={},
@@ -635,6 +643,7 @@ def test_disabled_terminal_diagnostics_do_not_read_artifacts_or_probe_identity(
                 SimpleNamespace(
                     primary_output=kwargs["output_artifact"],
                     consumer_output=kwargs["output_artifact"],
+                    link_input_observation=None,
                     bundle_root=None,
                     extra_fields={},
                     artifacts={},
@@ -1054,6 +1063,7 @@ def test_reporting_failure_prevents_success_and_retains_published_artifact(
             return SimpleNamespace(
                 primary_output=artifact,
                 consumer_output=artifact,
+                link_input_observation=None,
                 bundle_root=None,
                 extra_fields={},
                 artifacts={},
