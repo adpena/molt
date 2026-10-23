@@ -6059,7 +6059,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_STDLIB_CACHE_ENTRY",
       "output_neutral": false,
       "owner": "runtime/molt-backend/src/backend_process/native_artifact.rs",
-      "summary": "Optional canonical shared-stdlib/<key>/stdlib.a cache entry; required MOLT_STDLIB_OBJ must be outside that cache root or inside its durable canonical home subtree; CLI preparation hydrates the required output before app-cache admission, backend requests use this entry for constituent reuse and cache publication, and per-request environment reset prevents daemon state leakage.",
+      "summary": "Optional canonical shared-stdlib/<key>/stdlib.a cache entry; required MOLT_STDLIB_OBJ must be outside that cache root or inside its durable canonical home subtree; CLI preparation hydrates the required output before app-cache admission, backend requests use this entry's cache root for content-addressed archive and constituent reuse and this entry for cache publication, and per-request environment reset prevents daemon state leakage.",
       "values": []
     },
     {
