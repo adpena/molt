@@ -1028,7 +1028,11 @@ def test_lowering_cache_cannot_publish_or_serve_a_different_source_generation(
     metadata = path.stat()
     lease = module_source._ModuleSourceLease.path_backed(path)
     digest = "a" * 64
-    result = {"functions": [], "function_metadata": {}}
+    result = {
+        "body_selection": {"kind": "complete_source", "roots": []},
+        "functions": [],
+        "function_metadata": {},
+    }
     MC = module_cache
     MC._write_persisted_module_lowering(
         path, source_lease=lease, context_digest=digest, result=result
@@ -1069,7 +1073,7 @@ def test_lowering_cache_cannot_publish_or_serve_a_different_source_generation(
                 path,
                 source_lease=lease,
                 context_digest=digest,
-                result={"functions": [{"name": "stale"}], "function_metadata": {}},
+                result={**result, "functions": [{"name": "stale"}]},
             )
     assert observation().payload == before.payload
     assert observation().revision == before.revision

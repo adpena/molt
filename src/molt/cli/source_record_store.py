@@ -47,6 +47,9 @@ RecordKind = Literal[
 SOURCE_RECORD_BATCH_MAX_RECORDS = 256
 SOURCE_RECORD_BATCH_MAX_BYTES = 1 << 20
 
+# DDL identity does not encode the write protocol. Users sharing a namespace
+# must retain the stamp CAS and lifetime-lease protocol; incompatible changes
+# require a distinct namespace grammar or identity even when DDL is unchanged.
 _SCHEMA = (
     """CREATE TABLE IF NOT EXISTS records (
         kind TEXT NOT NULL,
@@ -223,13 +226,13 @@ def _save_renewals(connection: sqlite3.Connection, renewals: _Renewals) -> int:
         for (kind, key, generation, revision, used_ns), now in renewals.items()
     ]
     renewals.clear()
-    connection.execute("BEGIN IMMEDIATE")
+    connection.execute("BEGIN IMMEDIATE").close()
     try:
         renewed = connection.executemany(_RENEW_RECORD, rows).rowcount
-        connection.execute("COMMIT")
+        connection.execute("COMMIT").close()
     except BaseException:
         if connection.in_transaction:
-            connection.execute("ROLLBACK")
+            connection.execute("ROLLBACK").close()
         raise
     return renewed
 
@@ -583,7 +586,7 @@ class SourceRecordStore:
         now = time.time_ns()
 
         def store(connection: sqlite3.Connection) -> None:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("BEGIN IMMEDIATE").close()
             try:
                 connection.execute(
                     "INSERT OR REPLACE INTO records"
@@ -596,10 +599,10 @@ class SourceRecordStore:
                     " VALUES (?, ?, ?)",
                     (kind, key, now),
                 )
-                connection.execute("COMMIT")
+                connection.execute("COMMIT").close()
             except BaseException:
                 if connection.in_transaction:
-                    connection.execute("ROLLBACK")
+                    connection.execute("ROLLBACK").close()
                 raise
 
         with self._lock:

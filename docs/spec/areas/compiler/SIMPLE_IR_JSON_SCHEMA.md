@@ -307,7 +307,11 @@ The existing pruner exclusively locks another digest namespace or a known prior
 version namespace (v1–v3), then uses the
 shared atomic namespace-retirement authority before physical deletion. A
 partial reclamation remains isolated from any new live database and is retried
-under the existing prune owner. A post-rename reclamation failure is reported as
+under the existing prune owner. A foreign digest may belong to newer code:
+exclusive lifetime custody makes its retirement safe, but interleaved schemas
+can lose idle cache warmth under byte/age pressure. Digest-schema participants
+must retain the lifetime and recency-write protocol; incompatible protocols
+require a distinct namespace grammar or identity. A post-rename reclamation failure is reported as
 failed without crediting reclaimed bytes; malformed or changed residue remains
 evidence while unrelated entries continue. A read-only sweep cannot recreate a
 missing lifetime control and reports that store unavailable. The current digest and unknown future version namespaces remain outside file
@@ -325,7 +329,6 @@ programs perform none of this storage or retention work.
 
 A fresh
 file at version zero enters one cold bootstrap owner through the existing
-
 portable file lock; that owner rechecks admission, establishes incremental
 vacuum and WAL, then publishes the schema, indexes and the version in one SQL
 transaction. Failure rolls back the whole transition and refuses the optional
