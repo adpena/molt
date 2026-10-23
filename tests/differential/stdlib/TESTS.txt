@@ -1835,6 +1835,7 @@ tests/differential/stdlib/sys_encoding_basic.py
 tests/differential/stdlib/sys_exc_info_nested.py
 tests/differential/stdlib/sys_excepthook_raises_systemexit.py
 tests/differential/stdlib/sys_excepthook_uncaught_exit.py
+tests/differential/stdlib/sys_exception_across_resume.py
 tests/differential/stdlib/sys_exit_code_and_args.py
 tests/differential/stdlib/sys_exit_message_to_stderr.py
 tests/differential/stdlib/sys_flags_intrinsic.py
@@ -1919,6 +1920,7 @@ tests/differential/stdlib/traceback_format_exception_only.py
 tests/differential/stdlib/traceback_multiline_span_intrinsic.py
 tests/differential/stdlib/traceback_print_helpers.py
 tests/differential/stdlib/traceback_suppress_context_intrinsic.py
+tests/differential/stdlib/traceback_tb_next_assignment.py
 tests/differential/stdlib/types_advanced.py
 tests/differential/stdlib/types_basic.py
 tests/differential/stdlib/types_code_object_fields.py
