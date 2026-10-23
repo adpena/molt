@@ -1275,15 +1275,25 @@ def pytest_load_initial_conftests(
 # package startup must not import it. A test phase must not import it either:
 # tests remove molt modules from sys.modules and replace file_locks helpers,
 # and the phase record must neither re-import the module nor follow them.
-_CURRENT_TEST_LOCK: tuple[Any, Any] | None = None
+_CURRENT_TEST_LOCK: tuple[Any, Any, type[BaseException]] | None = None
+# Publications skipped because a reader held the record past the deadline.
+_SKIPPED_CURRENT_TEST_PUBLICATIONS = 0
 
 
 def _bind_current_test_lock() -> None:
     global _CURRENT_TEST_LOCK
     if _CURRENT_TEST_LOCK is None:
-        from molt.file_locks import _HOST_HANDLE_LOCK, _exclusive_record_file
+        from molt.file_locks import (
+            _HOST_HANDLE_LOCK,
+            FileLockTimeout,
+            _exclusive_record_file,
+        )
 
-        _CURRENT_TEST_LOCK = (_exclusive_record_file, _HOST_HANDLE_LOCK)
+        _CURRENT_TEST_LOCK = (
+            _exclusive_record_file,
+            _HOST_HANDLE_LOCK,
+            FileLockTimeout,
+        )
 
 
 def pytest_configure(config: object) -> None:
@@ -1345,6 +1355,7 @@ def _write_pytest_current_test(
     phase: str,
     location: object | None = None,
 ) -> None:
+    global _SKIPPED_CURRENT_TEST_PUBLICATIONS
     root_path = install_pytest_current_test_file_env()
     path = _pytest_current_test_worker_record_path(root_path)
     payload: dict[str, object] = {
@@ -1361,6 +1372,8 @@ def _write_pytest_current_test(
     }
     if location is not None:
         payload["location"] = _bounded_text(location)
+    if _SKIPPED_CURRENT_TEST_PUBLICATIONS:
+        payload["skipped_publications"] = _SKIPPED_CURRENT_TEST_PUBLICATIONS
     data = (json.dumps(payload, sort_keys=True) + "\n").encode("utf-8")
     if (
         len(nodeid) > MAX_CURRENT_TEST_TEXT
@@ -1389,11 +1402,24 @@ def _write_pytest_current_test(
         raise RuntimeError(
             "current-test publication lock is unbound; pytest_configure binds it"
         )
-    exclusive_record_file, host_lock = _CURRENT_TEST_LOCK
+    exclusive_record_file, host_lock, lock_timeout = _CURRENT_TEST_LOCK
 
     # Current status is volatile, not a durable artifact generation. Lock its
     # existing inode instead of replacing a directory entry on every phase.
     # Observers use a nonblocking lock, so they never hold up a memory trip.
+    try:
+        _publish_current_test(exclusive_record_file, host_lock, path, data)
+    except lock_timeout:
+        # A sampler held the record past the deadline, as a descheduled reader
+        # can on a loaded host. The record is diagnostics: skip this phase and
+        # count it in the next record, never abort the test session (a gate run
+        # on 2026-10-22 died of this INTERNALERROR at load 17).
+        _SKIPPED_CURRENT_TEST_PUBLICATIONS += 1
+
+
+def _publish_current_test(
+    exclusive_record_file, host_lock, path: Path, data: bytes
+) -> None:
     with exclusive_record_file(
         path,
         host_lock,
