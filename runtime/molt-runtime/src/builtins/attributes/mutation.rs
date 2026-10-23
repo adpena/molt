@@ -1259,6 +1259,16 @@ pub(crate) unsafe fn object_setattr_raw(
         if readonly_descriptor_metadata(_py, obj_ptr, attr_name).is_some() {
             return Err(());
         }
+        if object_class_bits(obj_ptr) == builtin_classes(_py).traceback
+            && crate::object::ops_sys::traceback_mutate_field(
+                _py,
+                obj_ptr,
+                attr_name,
+                Some(val_bits),
+            )?
+        {
+            return Ok(());
+        }
         let _header = header_from_obj_ptr(obj_ptr);
         if object_type_id(obj_ptr) == TYPE_ID_OBJECT
             && crate::object::object_shape_is_task(crate::object::object_shape_id(obj_ptr))
@@ -1415,6 +1425,11 @@ pub(crate) unsafe fn object_delattr_raw(
     unsafe {
         if readonly_descriptor_metadata(_py, obj_ptr, attr_name).is_some() {
             return Err(());
+        }
+        if object_class_bits(obj_ptr) == builtin_classes(_py).traceback
+            && crate::object::ops_sys::traceback_mutate_field(_py, obj_ptr, attr_name, None)?
+        {
+            return Ok(());
         }
         let obj_bits = MoltObject::from_ptr(obj_ptr).bits();
         let _header = header_from_obj_ptr(obj_ptr);
