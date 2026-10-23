@@ -2381,10 +2381,7 @@ fn string_sequence_arg_from_bits(
         return Err(MoltObject::none().bits());
     };
     let mut out: Vec<String> = Vec::new();
-    loop {
-        let Some(bits) = iterator.next().map_err(|_| MoltObject::none().bits())? else {
-            break;
-        };
+    while let Some(bits) = iterator.next().map_err(|_| MoltObject::none().bits())? {
         let value = unsafe {
             molt_runtime_core::OwnedRuntimeValue::from_owned_bits(_py.core_token(), bits)
         };

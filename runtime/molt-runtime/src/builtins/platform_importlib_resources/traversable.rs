@@ -10,10 +10,7 @@ pub(super) fn importlib_reader_collect_unique_strings(
     };
     let mut out: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
-    loop {
-        let Some(bits) = iterator.next().map_err(|_| MoltObject::none().bits())? else {
-            break;
-        };
+    while let Some(bits) = iterator.next().map_err(|_| MoltObject::none().bits())? {
         let value = unsafe {
             molt_runtime_core::OwnedRuntimeValue::from_owned_bits(_py.core_token(), bits)
         };
@@ -41,10 +38,7 @@ pub(super) fn importlib_reader_collect_unique_paths(
     };
     let mut out: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
-    loop {
-        let Some(bits) = iterator.next().map_err(|_| MoltObject::none().bits())? else {
-            break;
-        };
+    while let Some(bits) = iterator.next().map_err(|_| MoltObject::none().bits())? {
         let value = unsafe {
             molt_runtime_core::OwnedRuntimeValue::from_owned_bits(_py.core_token(), bits)
         };
@@ -167,10 +161,7 @@ pub(super) fn importlib_traversable_iterdir_names(
     let name_attr = intern_runtime_static_name(_py, b"name");
     let mut out: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
-    loop {
-        let Some(bits) = iterator.next().map_err(|_| MoltObject::none().bits())? else {
-            break;
-        };
+    while let Some(bits) = iterator.next().map_err(|_| MoltObject::none().bits())? {
         let entry = unsafe {
             molt_runtime_core::OwnedRuntimeValue::from_owned_bits(_py.core_token(), bits)
         };
