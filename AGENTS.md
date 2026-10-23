@@ -60,8 +60,8 @@ prefer live code, tests, measurements and explicit user direction over stale pro
   come from one declarative definition that generates closed types, so the compiler (exhaustive
   Rust matches, `Literal` types under `ty`) rejects a stale consumer. A source-scraping audit is a
   bridge: delete it when the type system enforces the same fact.
-- Every registered entity has a proven producer. Removing the last producer removes every consumer
-  in the same change; `tools/op_kinds/census.py` proves this for op kinds.
+- Every registered entity needs a proven producer; retire its consumers with its last producer.
+  `tools/op_kinds/census.py` proves op kinds. Test filters need a producer in the selected crate/features.
 
 ## Project direction
 
@@ -147,9 +147,9 @@ prefer live code, tests, measurements and explicit user direction over stale pro
   unit, differential and integration tests, target execution, profiling, benchmarks). One green
   cell does not prove a family-wide claim; a narrow check that fully proves the owned invariant
   needs no broad suite. Repeat checks only for changed inputs, a new failure or an open claim.
-- Preflight every planned proof coordinate through the owning command authority before expensive
-  work; validate mutation targets against their canonical definitions. Turn a demonstrated mistake
-  into a deterministic check at that boundary, not a duplicate gate or a private exception.
+- Preflight selected toolchains, targets and runtime prerequisites through their owners with the full
+  child environment before expensive work; parser acceptance alone does not prove readiness. Validate
+  mutation targets canonically and turn mistakes into checks at that boundary, without duplicate gates.
 - After failure, classify product, harness, artifact drift or unknown before retrying. Preserve the
   failed receipt and reuse completed phases only when source, tool, environment, workload and
   artifact evidence still match; rerun only missing or invalidated obligations.
