@@ -75,8 +75,6 @@ STDLIB_REQUIRED_INTRINSICS_BY_MODULE: dict[str, tuple[str, ...]] = {
     ),
     "_asyncio": (
         "molt_asyncio_enter_task",
-        "molt_asyncio_event_loop_get",
-        "molt_asyncio_event_loop_policy_get",
         "molt_asyncio_leave_task",
         "molt_asyncio_register_task",
         "molt_asyncio_running_loop_get",
