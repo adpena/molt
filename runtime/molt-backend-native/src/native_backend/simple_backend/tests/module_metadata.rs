@@ -473,3 +473,138 @@ fn native_linkage_abi_freezes_entry_custody_for_consumer_declarations() {
         .unwrap_err();
     assert!(error.contains("parameter custody"), "{error}");
 }
+
+fn linkage_carrier_store(label: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "molt-linkage-carriers-{label}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ))
+}
+
+/// One name, two bodies: a constant return freezes an exact scalar return
+/// carrier, a parameter passthrough a boxed one.
+fn value_function(constant: bool) -> FunctionIR {
+    let ops = if constant {
+        vec![
+            OpIR {
+                kind: "const".into(),
+                value: Some(7),
+                out: Some("seven".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "ret".into(),
+                args: Some(vec!["seven".into()]),
+                ..OpIR::default()
+            },
+        ]
+    } else {
+        vec![OpIR {
+            kind: "ret".into(),
+            args: Some(vec!["value".into()]),
+            ..OpIR::default()
+        }]
+    };
+    FunctionIR {
+        name: "app__value".into(),
+        params: vec!["value".into()],
+        return_abi: molt_ir::FunctionReturnAbi::Value,
+        ops,
+        ..FunctionIR::default()
+    }
+}
+
+fn computed_context(functions: &[FunctionIR]) -> NativeBackendModuleContext {
+    NativeBackendModuleContext::from_functions_with_carrier_cache(&mut functions.to_vec(), None)
+}
+
+#[test]
+fn linkage_carriers_reuse_unchanged_bodies_and_rekey_changed_bodies() {
+    let _guard = acquire_backend_env_lock();
+    let constant = value_function(true);
+    let passthrough = value_function(false);
+    let expected = |function: &FunctionIR| {
+        computed_context(std::slice::from_ref(function))
+            .function_linkage_abi("app__value")
+            .cloned()
+            .expect("defined function has a linkage row")
+    };
+    let (constant_abi, passthrough_abi) = (expected(&constant), expected(&passthrough));
+    // The oracle distinguishes the bodies, so a stale row would be visible.
+    assert_ne!(constant_abi.return_type, passthrough_abi.return_type);
+
+    let store = linkage_carrier_store("rekey");
+    for (function, expected, disk_hits, writes) in [
+        // Cold: computed and published.
+        (&constant, &constant_abi, 0, 1),
+        // Warm, in a new process-equivalent cache handle: served from disk.
+        (&constant, &constant_abi, 1, 0),
+        // Same name, changed body: a new key, never the published row.
+        (&passthrough, &passthrough_abi, 0, 1),
+    ] {
+        let mut cache = crate::tir::cache::CompilationCache::open(store.clone());
+        let context = NativeBackendModuleContext::from_functions_with_carrier_cache(
+            &mut vec![function.clone()],
+            Some(&mut cache),
+        );
+        assert_eq!(context.function_linkage_abi("app__value"), Some(expected));
+        let telemetry = cache.stats().telemetry;
+        assert_eq!((telemetry.disk_hits, telemetry.writes), (disk_hits, writes));
+    }
+    std::fs::remove_dir_all(store).expect("remove carrier store");
+}
+
+#[test]
+fn reused_linkage_carriers_freeze_the_computed_module_context() {
+    let _guard = acquire_backend_env_lock();
+    let mut functions = vec![value_function(true), {
+        let mut other = value_function(false);
+        other.name = "app__other".into();
+        other
+    }];
+    functions.push(FunctionIR {
+        name: "runtime_extern".into(),
+        params: vec!["value".into()],
+        return_abi: molt_ir::FunctionReturnAbi::Value,
+        is_extern: true,
+        ..FunctionIR::default()
+    });
+    let reference = serde_json::to_value(computed_context(&functions)).unwrap();
+    let store = linkage_carrier_store("context");
+    for warm in [false, true] {
+        let mut cache = crate::tir::cache::CompilationCache::open(store.clone());
+        let context = NativeBackendModuleContext::from_functions_with_carrier_cache(
+            &mut functions.clone(),
+            Some(&mut cache),
+        );
+        assert_eq!(serde_json::to_value(context).unwrap(), reference);
+        // Externs freeze no carrier row; both defined bodies do.
+        assert_eq!(cache.stats().telemetry.disk_hits, if warm { 2 } else { 0 });
+    }
+    std::fs::remove_dir_all(store).expect("remove carrier store");
+}
+
+#[test]
+fn compilation_diagnostics_compute_linkage_carriers_without_reuse() {
+    let _guard = acquire_backend_env_lock();
+    let store = linkage_carrier_store("diagnostics");
+    let function = value_function(true);
+    let mut cache = crate::tir::cache::CompilationCache::open(store.clone());
+    NativeBackendModuleContext::from_functions_with_carrier_cache(
+        &mut vec![function.clone()],
+        Some(&mut cache),
+    );
+    let _dump = ScopedEnvVar::set("MOLT_TIR_DUMP", Some("1"));
+    let mut cache = crate::tir::cache::CompilationCache::open(store.clone());
+    NativeBackendModuleContext::from_functions_with_carrier_cache(
+        &mut vec![function],
+        Some(&mut cache),
+    );
+    let telemetry = cache.stats().telemetry;
+    assert_eq!((telemetry.disk_hits, telemetry.misses), (0, 0));
+    std::fs::remove_dir_all(store).expect("remove carrier store");
+}
