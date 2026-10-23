@@ -3745,7 +3745,13 @@ def test_builtin_binding_policy_projects_typed_identity_and_hot_path() -> None:
     from molt.builtin_callables import BUILTIN_FUNC_SPECS, BuiltinBindingPolicy
 
     data = gen_wasm_abi.load_manifest()
-    rendered = gen_wasm_abi.render_python_builtin_callables_rs(data)
+    rendered = gen_wasm_abi.render_runtime_callables_rs(data)
+    assert (
+        "BuiltinBindingPolicy"
+        not in gen_wasm_abi.render_python_builtin_callables_rs(data)
+    )
+    assert "molt_ir::" not in rendered
+    assert "bind_kind: Option<BuiltinBindingPolicy>" in rendered
     for policy in BuiltinBindingPolicy:
         variant = policy.name.title().replace("_", "")
         assert f"{variant} = {int(policy)}" in rendered
