@@ -4,12 +4,11 @@ use super::weak_container::{
 };
 use crate::state::runtime_state::{WeakRefEntry, WeakRefRegistry};
 use crate::{
-    MoltObject, PtrSlot, PyToken, attr_name_bits_from_bytes, molt_get_attr_name, molt_is_callable,
-    raise_exception, runtime_state, type_name,
+    MoltObject, PtrSlot, PyToken, molt_is_callable, raise_exception, runtime_state, type_name,
 };
 use crate::{
-    alloc_list, call_callable0, call_callable1, dec_ref_bits, exception_pending,
-    header_from_obj_ptr, inc_ref_bits, int_bits_from_i64, is_truthy, obj_from_bits,
+    alloc_list, call_callable1, dec_ref_bits, exception_pending, header_from_obj_ptr, inc_ref_bits,
+    int_bits_from_i64, is_truthy, obj_from_bits,
 };
 use std::num::NonZeroU64;
 use std::ptr;
@@ -548,43 +547,6 @@ fn weakref_handle_cycle_unreachable_noqueue(
             }
         }
     }
-}
-
-pub(crate) fn weakref_run_atexit_finalizers(_py: &PyToken<'_>) {
-    while let Some(finalizer_bits) = crate::builtins::atexit::pop_weakref_finalizer(_py) {
-        let should_run = crate::builtins::exceptions::run_unraisable_with_policy(
-            _py,
-            || weakref_unraisable_policy(_py, finalizer_bits),
-            || weakref_finalizer_should_run_atexit(_py, finalizer_bits),
-        );
-        if should_run {
-            let res_bits = crate::builtins::exceptions::run_unraisable_with_policy(
-                _py,
-                || weakref_unraisable_policy(_py, finalizer_bits),
-                || unsafe { call_callable0(_py, finalizer_bits) },
-            );
-            if !obj_from_bits(res_bits).is_none() {
-                dec_ref_bits(_py, res_bits);
-            }
-        }
-        dec_ref_bits(_py, finalizer_bits);
-    }
-}
-
-fn weakref_finalizer_should_run_atexit(_py: &PyToken<'_>, finalizer_bits: u64) -> bool {
-    let Some(name_bits) = attr_name_bits_from_bytes(_py, b"atexit") else {
-        return true;
-    };
-    let value_bits = molt_get_attr_name(finalizer_bits, name_bits);
-    dec_ref_bits(_py, name_bits);
-    if exception_pending(_py) {
-        return true;
-    }
-    let should_run = is_truthy(_py, obj_from_bits(value_bits));
-    if !obj_from_bits(value_bits).is_none() {
-        dec_ref_bits(_py, value_bits);
-    }
-    should_run
 }
 
 fn unregister_weakref(_py: &PyToken<'_>, weak_ptr: *mut u8) -> Option<WeakRefEntry> {
@@ -1171,76 +1133,6 @@ pub(crate) fn weakref_callback_owned(_py: &PyToken<'_>, weak_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_weakref_peek(weak_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, { weakref_get_owned_or_none(_py, weak_bits) })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_weakref_finalize_track(finalizer_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        if obj_from_bits(finalizer_bits).is_none() {
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                "weakref finalize tracker expects callable object",
-            );
-        }
-        let callable_ok = is_truthy(_py, obj_from_bits(molt_is_callable(finalizer_bits)));
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-        if !callable_ok {
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                "weakref finalize tracker expects callable object",
-            );
-        }
-        if let Err(error) = crate::builtins::atexit::weakref_finalizer_track(_py, finalizer_bits) {
-            return match error {
-                crate::builtins::atexit::ExitRegistryError::OutOfMemory => raise_exception::<_>(
-                    _py,
-                    "MemoryError",
-                    "weakref finalizer registration failed",
-                ),
-                crate::builtins::atexit::ExitRegistryError::RegistrationIdExhausted => {
-                    raise_exception::<_>(
-                        _py,
-                        "OverflowError",
-                        "atexit registration id space exhausted",
-                    )
-                }
-                crate::builtins::atexit::ExitRegistryError::CapacityExhausted => {
-                    raise_exception::<_>(
-                        _py,
-                        "OverflowError",
-                        "weakref finalizer registry capacity exhausted",
-                    )
-                }
-                crate::builtins::atexit::ExitRegistryError::FinalizerGenerationExhausted => {
-                    raise_exception::<_>(
-                        _py,
-                        "OverflowError",
-                        "weakref finalizer generation space exhausted",
-                    )
-                }
-                crate::builtins::atexit::ExitRegistryError::InvalidPreparedCapacity => {
-                    raise_exception::<_>(
-                        _py,
-                        "RuntimeError",
-                        "invalid prepared atexit registry capacity",
-                    )
-                }
-            };
-        }
-        MoltObject::none().bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_weakref_finalize_untrack(finalizer_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        crate::builtins::atexit::weakref_finalizer_untrack(_py, finalizer_bits);
-        MoltObject::none().bits()
-    })
 }
 
 #[cfg(test)]

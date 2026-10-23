@@ -3686,14 +3686,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "weakref_count",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::WeakrefFinalizeTrack,
-        name: "weakref_finalize_track",
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::WeakrefFinalizeUntrack,
-        name: "weakref_finalize_untrack",
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::WeakrefFindNocallback,
         name: "weakref_find_nocallback",
     },
@@ -10734,18 +10726,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "sys_addaudithook",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::SysExit,
-        name: "sys_exit",
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::SysDisplayhookWrite,
-        name: "sys_displayhook_write",
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::SysExcepthookWrite,
-        name: "sys_excepthook_write",
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::OsMakedirs,
         name: "os_makedirs",
     },
@@ -13110,10 +13090,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_weakref_callback_get" => Some(WasmRuntimeImport::WeakrefCallbackGet),
         "weakref_count" => Some(WasmRuntimeImport::WeakrefCount),
         "molt_weakref_count" => Some(WasmRuntimeImport::WeakrefCount),
-        "weakref_finalize_track" => Some(WasmRuntimeImport::WeakrefFinalizeTrack),
-        "molt_weakref_finalize_track" => Some(WasmRuntimeImport::WeakrefFinalizeTrack),
-        "weakref_finalize_untrack" => Some(WasmRuntimeImport::WeakrefFinalizeUntrack),
-        "molt_weakref_finalize_untrack" => Some(WasmRuntimeImport::WeakrefFinalizeUntrack),
         "weakref_find_nocallback" => Some(WasmRuntimeImport::WeakrefFindNocallback),
         "molt_weakref_find_nocallback" => Some(WasmRuntimeImport::WeakrefFindNocallback),
         "weakref_get" => Some(WasmRuntimeImport::WeakrefGet),
@@ -17102,12 +17078,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_sys_call_tracing_validate" => Some(WasmRuntimeImport::SysCallTracingValidate),
         "sys_addaudithook" => Some(WasmRuntimeImport::SysAddaudithook),
         "molt_sys_addaudithook" => Some(WasmRuntimeImport::SysAddaudithook),
-        "sys_exit" => Some(WasmRuntimeImport::SysExit),
-        "molt_sys_exit" => Some(WasmRuntimeImport::SysExit),
-        "sys_displayhook_write" => Some(WasmRuntimeImport::SysDisplayhookWrite),
-        "molt_sys_displayhook_write" => Some(WasmRuntimeImport::SysDisplayhookWrite),
-        "sys_excepthook_write" => Some(WasmRuntimeImport::SysExcepthookWrite),
-        "molt_sys_excepthook_write" => Some(WasmRuntimeImport::SysExcepthookWrite),
         "os_makedirs" => Some(WasmRuntimeImport::OsMakedirs),
         "molt_os_makedirs" => Some(WasmRuntimeImport::OsMakedirs),
         "sys_path" => Some(WasmRuntimeImport::SysPath),

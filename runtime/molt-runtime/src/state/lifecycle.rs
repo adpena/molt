@@ -333,6 +333,9 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, mode: Runtime
     clear_thread_exception_for_teardown(_py);
     trace_shutdown("run_atexit_callbacks");
     crate::builtins::atexit::atexit_run_exitfuncs_teardown(_py);
+    state
+        .interpreter_finalizing
+        .store(true, AtomicOrdering::Release);
     trace_shutdown("flush_stdio");
     flush_stdio_handles(_py, state);
     trace_shutdown("clear_utf8_caches");

@@ -5054,18 +5054,6 @@ runtime_name = "molt_weakref_count"
 callable_arity = 1
 
 [[import]]
-name = "weakref_finalize_track"
-type = 2
-runtime_name = "molt_weakref_finalize_track"
-callable_arity = 1
-
-[[import]]
-name = "weakref_finalize_untrack"
-type = 2
-runtime_name = "molt_weakref_finalize_untrack"
-callable_arity = 1
-
-[[import]]
 name = "weakref_find_nocallback"
 type = 2
 runtime_name = "molt_weakref_find_nocallback"

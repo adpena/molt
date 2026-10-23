@@ -11179,16 +11179,6 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
-        symbol: "molt_sys_displayhook_write",
-        arity: 1,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_sys_excepthook_write",
-        arity: 1,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
         symbol: "molt_sys_exec_prefix",
         arity: 0,
         result: RuntimeBoxedReturn::OwnedValue,
@@ -11196,11 +11186,6 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_sys_executable",
         arity: 0,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_sys_exit",
-        arity: 1,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
@@ -12646,16 +12631,6 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_weakref_eq",
         arity: 2,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_weakref_finalize_track",
-        arity: 1,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_weakref_finalize_untrack",
-        arity: 1,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
