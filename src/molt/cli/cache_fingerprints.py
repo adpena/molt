@@ -390,12 +390,14 @@ def _source_tree_fingerprint_transaction(*, fresh: bool = False) -> Generator[No
     implicit_close = False
     try:
         with local_python_import_graph_transaction(fresh=fresh):
-            yield
-    except GeneratorExit:
-        # An abandoned scope can finalize while an unrelated Python lock is
-        # held. Only explicit success/error exits may save advisory stamps.
-        implicit_close = True
-        raise
+            try:
+                yield
+            except GeneratorExit:
+                # Classify abandonment before graph teardown can replace it
+                # with another exception. GC may hold unrelated Python locks;
+                # only explicit success/error exits may save advisory stamps.
+                implicit_close = True
+                raise
     finally:
         try:
             store = transaction.source_records

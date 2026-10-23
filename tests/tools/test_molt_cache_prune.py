@@ -1690,6 +1690,7 @@ def test_global_row_budget_replaces_generation_count_retirement(tmp_path, monkey
         clock[0] += 2 * 3600 * 1_000_000_000
     refreshed = store.get("import-scan", "0", generation="g0", max_bytes=None)
     assert refreshed is not None and refreshed.refresh()
+    assert store.save_renewals() == 1
     module = _load_molt_cache_prune()
     result = module._prune(cache, max_bytes=400, max_age_days=None, dry_run=False)
     assert result["source_records_before"] == 8

@@ -1701,7 +1701,8 @@ def test_each_schema_owns_its_store_namespace(tmp_path: Path) -> None:
     assert records._schema_identity(changed) != records._SCHEMA_DIGEST
     assert records._schema_identity(records._SCHEMA) == records._SCHEMA_DIGEST
     assert 0 < records._SCHEMA_VERSION < 2**31
-    newer = tmp_path / "source_records.sqlite"
+    newer = tmp_path / records.SHARED_SOURCE_RECORDS_DIRECTORY / "source_records.sqlite"
+    newer.parent.mkdir(parents=True)
     with closing(sqlite3.connect(newer, isolation_level=None)) as peer:
         peer.execute("PRAGMA user_version = 99").close()
     store = records.source_record_store(tmp_path)
@@ -1792,14 +1793,31 @@ def test_advisory_batch_contention_drops_stamps_without_waiting(
     store.close()
 
 
+@pytest.mark.parametrize("cleanup_replaces_exit", [False, True])
 @pytest.mark.parametrize("boundary", ["operation", "fresh"])
 def test_abandoned_operation_drops_renewals_without_entering_save(
-    tmp_path, monkeypatch, boundary
+    tmp_path, monkeypatch, boundary, cleanup_replaces_exit
 ):
     import gc
+    import sys
+    from contextlib import contextmanager
     from molt.cli import cache_fingerprints as fingerprints
 
     monkeypatch.setattr(records, "_default_molt_cache", lambda: tmp_path)
+    unraisable = []
+    if cleanup_replaces_exit:
+
+        @contextmanager
+        def replacing_cleanup(*, fresh=False):
+            try:
+                yield
+            except GeneratorExit:
+                raise RuntimeError("graph cleanup replaced abandonment") from None
+
+        monkeypatch.setattr(
+            fingerprints, "local_python_import_graph_transaction", replacing_cleanup
+        )
+        monkeypatch.setattr(sys, "unraisablehook", unraisable.append)
     clock = [100 * _DAY]
     install_module_view(monkeypatch, "time", time, records, time_ns=lambda: clock[0])
     scope = (
@@ -1821,6 +1839,9 @@ def test_abandoned_operation_drops_renewals_without_entering_save(
         del context
         gc.collect()
     assert saves == []
+    assert [str(event.exc_value) for event in unraisable] == (
+        ["graph cleanup replaced abandonment"] if cleanup_replaces_exit else []
+    )
     assert fingerprints._SOURCE_TREE_FINGERPRINT_TRANSACTION.get() is None
     assert store._connect().execute("SELECT used_ns FROM recency").fetchall() == [
         (100 * _DAY,)

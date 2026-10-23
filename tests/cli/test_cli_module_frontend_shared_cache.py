@@ -236,7 +236,8 @@ def test_analysis_reuse_across_sessions_uses_same_row(tmp_path, monkeypatch):
     assert result is not None
     defaults, kinds = result
     assert kinds == {"f": "sync"} and defaults["f"]["defaults"] == [2]
-    assert shared_source_records().save_renewals() == 1
+    # The owning operation already flushed its partial advisory batch.
+    assert shared_source_records().save_renewals() == 0
     after = _record("module-analysis", key)
     assert after.revision == before.revision and after.payload == before.payload
     assert after.used_ns > before.used_ns
