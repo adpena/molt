@@ -419,26 +419,50 @@ class SourceRecordStore:
         now = time.time_ns()
         if now - record.used_ns < _RECORD_REFRESH_NS:
             return False
-        with self._lock:
-            ok, changed = self._run(
-                lambda connection: (
-                    connection.execute(
-                        "UPDATE records SET used_ns = ? WHERE kind = ? AND key = ?"
-                        " AND generation = ? AND revision = ? AND used_ns = ?",
-                        (
-                            now,
-                            record.kind,
-                            record.key,
-                            record.generation,
-                            record.revision,
-                            record.used_ns,
-                        ),
-                    ).rowcount
-                )
-            )
-            if ok and changed == 1:
-                return True
-        return False
+        # Admitted bytes are already in reader custody. Advisory recency must
+        # not wait behind this process's work or another SQLite writer.
+        if not self._lock.acquire(blocking=False):
+            return False
+        try:
+            # An old observation must not reopen/bootstrap a closed store only
+            # to renew optional metadata. Ordinary get/put retain reopening.
+            if self._connection is None:
+                return False
+
+            def refresh(connection: sqlite3.Connection) -> int:
+                with closing(connection.execute("PRAGMA busy_timeout")) as cursor:
+                    previous_timeout = cursor.fetchone()[0]
+                connection.execute("PRAGMA busy_timeout = 0").close()
+                try:
+                    with closing(
+                        connection.execute(
+                            "UPDATE records SET used_ns = ? WHERE kind = ? AND key = ?"
+                            " AND generation = ? AND revision = ? AND used_ns = ?",
+                            (
+                                now,
+                                record.kind,
+                                record.key,
+                                record.generation,
+                                record.revision,
+                                record.used_ns,
+                            ),
+                        )
+                    ) as cursor:
+                        return cursor.rowcount
+                finally:
+                    try:
+                        connection.execute(
+                            f"PRAGMA busy_timeout = {previous_timeout}"
+                        ).close()
+                    except sqlite3.Error:
+                        # Never reuse a connection with an unqualified policy.
+                        self._disable()
+                        raise
+
+            ok, changed = self._run(refresh)
+            return ok and changed == 1
+        finally:
+            self._lock.release()
 
     def _run(self, operation: Any) -> tuple[bool, Any]:
         connection = self._connect()

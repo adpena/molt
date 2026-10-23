@@ -259,21 +259,21 @@ def _emit_build_diagnostics(
                     file=sys.stderr,
                 )
     if isinstance(runtime_wasm_cache, dict):
-        hydrate_attempts = runtime_wasm_cache.get("hydrate_attempts")
-        hydrate_hits = runtime_wasm_cache.get("hydrate_hits")
-        hydrate_misses = runtime_wasm_cache.get("hydrate_misses")
-        hydrate_failures = runtime_wasm_cache.get("hydrate_failures")
-        hydrate_hit_rate = runtime_wasm_cache.get("hydrate_hit_rate")
+        admit_attempts = runtime_wasm_cache.get("admit_attempts")
+        admit_hits = runtime_wasm_cache.get("admit_hits")
+        admit_misses = runtime_wasm_cache.get("admit_misses")
+        admit_failures = runtime_wasm_cache.get("admit_failures")
+        admit_hit_rate = runtime_wasm_cache.get("admit_hit_rate")
         publish_attempts = runtime_wasm_cache.get("publish_attempts")
         publish_successes = runtime_wasm_cache.get("publish_successes")
         publish_failures = runtime_wasm_cache.get("publish_failures")
         publish_success_rate = runtime_wasm_cache.get("publish_success_rate")
         if (
-            isinstance(hydrate_attempts, int)
-            and isinstance(hydrate_hits, int)
-            and isinstance(hydrate_misses, int)
-            and isinstance(hydrate_failures, int)
-            and isinstance(hydrate_hit_rate, (int, float))
+            isinstance(admit_attempts, int)
+            and isinstance(admit_hits, int)
+            and isinstance(admit_misses, int)
+            and isinstance(admit_failures, int)
+            and isinstance(admit_hit_rate, (int, float))
             and isinstance(publish_attempts, int)
             and isinstance(publish_successes, int)
             and isinstance(publish_failures, int)
@@ -281,10 +281,10 @@ def _emit_build_diagnostics(
         ):
             print(
                 "- runtime_wasm_cache: "
-                f"hydrate_hits={hydrate_hits}/{hydrate_attempts} "
-                f"hydrate_misses={hydrate_misses} "
-                f"hydrate_failures={hydrate_failures} "
-                f"hydrate_hit_rate={float(hydrate_hit_rate):.6f} "
+                f"admit_hits={admit_hits}/{admit_attempts} "
+                f"admit_misses={admit_misses} "
+                f"admit_failures={admit_failures} "
+                f"admit_hit_rate={float(admit_hit_rate):.6f} "
                 f"publish_successes={publish_successes}/{publish_attempts} "
                 f"publish_failures={publish_failures} "
                 f"publish_success_rate={float(publish_success_rate):.6f}",

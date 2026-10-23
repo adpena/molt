@@ -334,6 +334,82 @@ def test_only_admitted_use_refreshes_and_stale_observations_cannot_renew(
     ).fetchone() == (original.used_ns,)
 
 
+def test_advisory_refresh_declines_busy_owners_without_reopening(tmp_path, monkeypatch):
+    clock = [100 * _DAY]
+    install_module_view(monkeypatch, "time", time, records, time_ns=lambda: clock[0])
+    kinds = ("import-scan", "intrinsic-facts", "module-analysis", "module-lowering")
+    store = _store(tmp_path)
+    for kind in kinds:
+        assert store.put(kind, "k", kind.encode(), generation="g")
+    old = [store.get(kind, "k", generation="g", max_bytes=None) for kind in kinds]
+    assert all(record is not None for record in old)
+    clock[0] += 301 * 1_000_000_000
+    store.close()
+
+    # This first boundary makes the old implementation fail immediately,
+    # without running its 60s writer wait or deadlocking on the local lock.
+    def no_reopen():
+        pytest.fail("advisory refresh reopened a closed store")
+
+    with monkeypatch.context() as closed:
+        closed.setattr(store, "_connect", no_reopen)
+        assert all(record.refresh() is False for record in old)
+    assert store._connection is None
+    observed = [store.get(kind, "k", generation="g", max_bytes=None) for kind in kinds]
+    connection = store._connect()
+    assert connection is not None
+    # A nondefault value proves exact restoration, not hardcoding 60000.
+    connection.execute("PRAGMA busy_timeout = 12345").close()
+    try:
+        assert store._lock.acquire(blocking=False)
+        try:
+            assert all(record.refresh() is False for record in observed)
+        finally:
+            store._lock.release()
+        with closing(
+            sqlite3.connect(store.path, isolation_level=None, timeout=0)
+        ) as peer:
+            expected = peer.execute(
+                "SELECT * FROM records ORDER BY kind,key"
+            ).fetchall()
+            peer.execute("BEGIN IMMEDIATE").close()
+            try:
+                assert all(record.refresh() is False for record in observed)
+                assert connection.execute("PRAGMA busy_timeout").fetchone() == (12345,)
+                assert (
+                    peer.execute("SELECT * FROM records ORDER BY kind,key").fetchall()
+                    == expected
+                )
+                assert not store._unavailable
+            finally:
+                peer.execute("ROLLBACK").close()
+            assert all(record.refresh() is True for record in observed)
+            assert connection.execute("PRAGMA busy_timeout").fetchone() == (12345,)
+            # A now-stale admitted observation cannot renew the newer recency.
+            assert all(record.refresh() is False for record in observed)
+            current = [
+                store.get(kind, "k", generation="g", max_bytes=None) for kind in kinds
+            ]
+            assert all(
+                record.used_ns == clock[0] and record.refresh() is False
+                for record in current
+            )
+            for kind in kinds:
+                assert store.put(kind, "k", b"replacement", generation="g")
+            replacements = peer.execute(
+                "SELECT * FROM records ORDER BY kind,key"
+            ).fetchall()
+            clock[0] += 301 * 1_000_000_000
+            assert all(record.refresh() is False for record in current)
+            assert (
+                peer.execute("SELECT * FROM records ORDER BY kind,key").fetchall()
+                == replacements
+            )
+            assert connection.execute("PRAGMA busy_timeout").fetchone() == (12345,)
+    finally:
+        store.close()
+
+
 def test_metadata_pages_do_not_select_payload_and_deletion_is_observation_fenced(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

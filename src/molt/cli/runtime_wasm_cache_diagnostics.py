@@ -6,10 +6,10 @@ from typing import Any
 
 
 _RUNTIME_WASM_CACHE_STATS: dict[str, int | str] = {
-    "hydrate_attempts": 0,
-    "hydrate_hits": 0,
-    "hydrate_misses": 0,
-    "hydrate_failures": 0,
+    "admit_attempts": 0,
+    "admit_hits": 0,
+    "admit_misses": 0,
+    "admit_failures": 0,
     "publish_attempts": 0,
     "publish_successes": 0,
     "publish_failures": 0,
@@ -18,18 +18,18 @@ _RUNTIME_WASM_CACHE_STATS: dict[str, int | str] = {
 
 
 def _runtime_wasm_cache_diagnostics_snapshot() -> dict[str, Any] | None:
-    hydrate_attempts = int(_RUNTIME_WASM_CACHE_STATS["hydrate_attempts"])
+    admit_attempts = int(_RUNTIME_WASM_CACHE_STATS["admit_attempts"])
     publish_attempts = int(_RUNTIME_WASM_CACHE_STATS["publish_attempts"])
-    if hydrate_attempts == 0 and publish_attempts == 0:
+    if admit_attempts == 0 and publish_attempts == 0:
         return None
-    hydrate_hits = int(_RUNTIME_WASM_CACHE_STATS["hydrate_hits"])
+    admit_hits = int(_RUNTIME_WASM_CACHE_STATS["admit_hits"])
     publish_successes = int(_RUNTIME_WASM_CACHE_STATS["publish_successes"])
     snapshot: dict[str, Any] = {
-        "hydrate_attempts": hydrate_attempts,
-        "hydrate_hits": hydrate_hits,
-        "hydrate_misses": int(_RUNTIME_WASM_CACHE_STATS["hydrate_misses"]),
-        "hydrate_failures": int(_RUNTIME_WASM_CACHE_STATS["hydrate_failures"]),
-        "hydrate_hit_rate": round(hydrate_hits / max(1, hydrate_attempts), 6),
+        "admit_attempts": admit_attempts,
+        "admit_hits": admit_hits,
+        "admit_misses": int(_RUNTIME_WASM_CACHE_STATS["admit_misses"]),
+        "admit_failures": int(_RUNTIME_WASM_CACHE_STATS["admit_failures"]),
+        "admit_hit_rate": round(admit_hits / max(1, admit_attempts), 6),
         "publish_attempts": publish_attempts,
         "publish_successes": publish_successes,
         "publish_failures": int(_RUNTIME_WASM_CACHE_STATS["publish_failures"]),

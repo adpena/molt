@@ -1056,8 +1056,16 @@ section 2.9 item 4 requires.
 The runtime WASM pair already lives in one host directory
 (`<MOLT_EXT_ROOT>/wasm`, `molt.cli.runtime_wasm_generation`) keyed by a
 location-independent identity, so it is built once per input on a host that
-sets an artifact root; it has its own store and retention. Folding it into
-this store is open.
+sets an artifact root; it has its own store and retention. Ordinary cache hits
+admit the existing family-addressed generation under
+`MOLT_CACHE/runtime_wasm_generations/<family digest>` directly. Cargo environment,
+member content and exports still pass their owning admission checks, and the
+existing generation ledger renews member use before codegen pins the receipt.
+A different family's mutable host selection cannot force copying or publication
+of the retained pair. The diagnostics call these `admit_*` observations.
+Low-level hydration remains for explicit installed-runtime relocation and its
+physical-copy benchmark; those consumers need a new storage location. Folding
+the WASM store into the product store is open.
 
 Host-wide build state keeps three retention policies, one per kind of
 content; section 2.9 item 4's single table will carry the same rows (HF-434).
