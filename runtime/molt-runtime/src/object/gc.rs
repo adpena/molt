@@ -634,16 +634,68 @@ pub(crate) fn gc_clear_api_roots(py: &PyToken<'_>) -> bool {
 /// Side registry of live cycle-capable objects (CPython's three gc-tracked
 /// generations). Each pointer receives a
 /// monotonic allocation ordinal, and collection snapshots sort by that ordinal;
-/// allocator addresses and randomized hash iteration therefore cannot change
+/// allocator addresses and hash iteration therefore cannot change
 /// finalizer/clear order across identical runs. Populated at allocation of a
 /// non-GREEN object and removed at free. GREEN/atomic objects are never inserted.
 ///
 /// This is its OWN structure, not the provenance pointer registry — the latter is
 /// populated only in debug builds (`from_ptr` skips `register_ptr` in release), so
 /// it cannot enumerate live objects in the shipped profile.
+///
+/// CPython links each tracked object into a generation list through a 16-byte
+/// `PyGC_Head` before the object, so track and untrack are four pointer
+/// writes. Molt's 24-byte header has no free word or flag bit, and
+/// `docs/design/foundation/rc_gc_redesign.md` keeps both the GC head and
+/// registry identity out of the header and its aux word. The registry is
+/// therefore keyed by address, and both maps hash that address with one folded
+/// multiply ([`RegistryAddressHasher`]) instead of keyed SipHash.
 struct TrackedRegistryShard {
-    entries: HashMap<PtrSlot, TrackedEntry>,
-    native_nodes: HashMap<usize, NativeTrackedEntry>,
+    entries: HashMap<PtrSlot, TrackedEntry, RegistryAddressHash>,
+    native_nodes: HashMap<usize, NativeTrackedEntry, RegistryAddressHash>,
+}
+
+impl TrackedRegistryShard {
+    const fn new() -> Self {
+        Self {
+            entries: HashMap::with_hasher(RegistryAddressHash::new()),
+            native_nodes: HashMap::with_hasher(RegistryAddressHash::new()),
+        }
+    }
+}
+
+/// Registry keys are heap addresses that the allocator, not the program,
+/// chooses, so the maps need no keyed (HashDoS-resistant) hash. SwissTable
+/// takes its bucket from the low hash bits and its control tag from the top
+/// seven, and a heap address has zero low bits. The folded 64x64->128-bit
+/// multiply (the foldhash and aHash mixing step) spreads every address bit
+/// into both ends in one `mul`/`umulh` pair.
+#[derive(Default)]
+struct RegistryAddressHasher(u64);
+
+type RegistryAddressHash = std::hash::BuildHasherDefault<RegistryAddressHasher>;
+
+impl std::hash::Hasher for RegistryAddressHasher {
+    #[inline(always)]
+    fn write_usize(&mut self, address: usize) {
+        self.0 = registry_address_hash(address);
+    }
+
+    fn write(&mut self, _bytes: &[u8]) {
+        // `PtrSlot` and native addresses each hash as one `write_usize`.
+        unreachable!("GC registry keys hash as one address word");
+    }
+
+    #[inline(always)]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+#[inline(always)]
+fn registry_address_hash(address: usize) -> u64 {
+    const MULTIPLIER: u64 = 0x9e37_79b9_7f4a_7c15;
+    let product = u128::from(address as u64) * u128::from(MULTIPLIER);
+    (product as u64) ^ ((product >> 64) as u64)
 }
 
 #[derive(Clone, Copy)]
@@ -689,19 +741,27 @@ struct TrackedRegistry {
     retained_isolates: AtomicUsize,
 }
 
+static TRACKED_REGISTRY: TrackedRegistry = TrackedRegistry {
+    shards: [const { Mutex::new(TrackedRegistryShard::new()) }; TRACKED_REGISTRY_SHARDS],
+    next_allocation_id: AtomicU64::new(1),
+    owner_runtime: AtomicUsize::new(0),
+    retained_isolates: AtomicUsize::new(0),
+};
+
+#[inline(always)]
 fn tracked_registry() -> &'static TrackedRegistry {
-    static REGISTRY: OnceLock<TrackedRegistry> = OnceLock::new();
-    REGISTRY.get_or_init(|| TrackedRegistry {
-        shards: std::array::from_fn(|_| {
-            Mutex::new(TrackedRegistryShard {
-                entries: HashMap::new(),
-                native_nodes: HashMap::new(),
-            })
-        }),
-        next_allocation_id: AtomicU64::new(1),
-        owner_runtime: AtomicUsize::new(0),
-        retained_isolates: AtomicUsize::new(0),
-    })
+    &TRACKED_REGISTRY
+}
+
+/// Take the next deterministic allocation ordinal.
+#[inline]
+fn next_allocation_ordinal() -> u64 {
+    tracked_registry()
+        .next_allocation_id
+        .try_update(AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |next| {
+            next.checked_add(1)
+        })
+        .expect("GC allocation ordinal exhausted")
 }
 
 #[inline]
@@ -807,27 +867,22 @@ pub(crate) fn gc_registry_owner_identity() -> usize {
         .load(AtomicOrdering::Acquire)
 }
 
-#[inline]
+#[inline(always)]
 fn tracked_registry_shard_index(ptr: *mut u8) -> usize {
-    tracked_registry_shard_index_from_address(ptr.expose_provenance())
+    tracked_registry_shard_index_from_address(ptr.addr())
 }
 
-#[inline]
+#[inline(always)]
 fn tracked_registry_shard_index_from_address(address: usize) -> usize {
-    // Heap pointers are aligned, so their low bits carry no entropy. Drop those
-    // bits, then use the SplitMix64 finalizer to spread both compact arenas and
-    // discontiguous system allocations across every shard. The explicit u64
-    // lane is portable to wasm32 (where shifting a usize by 33 does not compile).
-    let mut mixed = (address as u64) >> 3;
-    mixed ^= mixed >> 30;
-    mixed = mixed.wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    mixed ^= mixed >> 27;
-    mixed = mixed.wrapping_mul(0x94d0_49bb_1331_11eb);
-    mixed ^= mixed >> 31;
-    (mixed as usize) & (TRACKED_REGISTRY_SHARDS - 1)
+    // A shard's table takes its bucket from the low hash bits and its control
+    // tag from the top seven, so the shard takes bits 32.. of the same hash.
+    // The explicit u64 lane is portable to wasm32.
+    ((registry_address_hash(address) >> 32) as usize) & (TRACKED_REGISTRY_SHARDS - 1)
 }
 
-fn lock_tracked_registry_shard(index: usize) -> MutexGuard<'static, TrackedRegistryShard> {
+type TrackedRegistryGuard = MutexGuard<'static, TrackedRegistryShard>;
+
+fn lock_tracked_registry_shard(index: usize) -> TrackedRegistryGuard {
     #[cfg(test)]
     GC_REGISTRY_ACCESS_COUNT.fetch_add(1, AtomicOrdering::Relaxed);
     let shard = &tracked_registry().shards[index];
@@ -926,10 +981,10 @@ enum GcMembershipAdmission {
 /// Constructors may enter more than once as a native class edge is initialized;
 /// the existing header owns the one allocation claim, not the current projection.
 #[inline]
-unsafe fn gc_account_allocation(py: &PyToken<'_>, ptr: *mut u8) {
+unsafe fn gc_account_allocation(state: &crate::RuntimeState, ptr: *mut u8) {
     let header = unsafe { &*header_from_obj_ptr(ptr) };
     if header.fetch_or_flags(HEADER_FLAG_GC_ACCOUNTED) & HEADER_FLAG_GC_ACCOUNTED == 0 {
-        crate::runtime_state(py).gc.on_allocation();
+        state.gc.on_allocation();
     }
 }
 
@@ -942,7 +997,9 @@ fn gc_admit_membership(py: &PyToken<'_>, ptr: *mut u8) -> GcMembershipAdmission 
         unsafe { (*header_from_obj_ptr(ptr)).has_flag(super::HEADER_FLAG_HAS_ABI_VIEW) }
             && molt_cpython_abi::bridge::GLOBAL_BRIDGE
                 .is_immortal_c_view(MoltObject::from_ptr(ptr).bits());
-    let owner = crate::runtime_state(py).identity();
+    // One runtime-state resolution serves the owner check and the count.
+    let state = crate::runtime_state(py);
+    let owner = state.identity();
     let shard_index = tracked_registry_shard_index(ptr);
     let mut shard = lock_tracked_registry_shard(shard_index);
     let admission = match shard.entries.entry(PtrSlot(ptr)) {
@@ -950,15 +1007,9 @@ fn gc_admit_membership(py: &PyToken<'_>, ptr: *mut u8) -> GcMembershipAdmission 
             if immortal_root {
                 return GcMembershipAdmission::ImmortalRoot;
             }
-            let allocation_id = tracked_registry()
-                .next_allocation_id
-                .try_update(AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |next| {
-                    next.checked_add(1)
-                })
-                .expect("GC allocation ordinal exhausted");
             entry.insert(TrackedEntry {
                 runtime_owner: owner,
-                allocation_id,
+                allocation_id: next_allocation_ordinal(),
                 generation: 0,
             });
             profile_gc_track();
@@ -974,7 +1025,7 @@ fn gc_admit_membership(py: &PyToken<'_>, ptr: *mut u8) -> GcMembershipAdmission 
         }
     };
     drop(shard);
-    unsafe { gc_account_allocation(py, ptr) };
+    unsafe { gc_account_allocation(state, ptr) };
     admission
 }
 
@@ -1123,7 +1174,7 @@ pub(crate) unsafe fn gc_track_if_cyclic(py: &PyToken<'_>, ptr: *mut u8, type_id:
         // Count the allocation once even while the empty dictionary is
         // untracked. Insertions promote it without recounting; deallocation
         // retires this allocation independently of current membership.
-        unsafe { gc_account_allocation(py, ptr) };
+        unsafe { gc_account_allocation(crate::runtime_state(py), ptr) };
         return;
     }
     gc_admit_membership(py, ptr);
@@ -1172,13 +1223,15 @@ pub(crate) unsafe fn gc_untrack(
         return;
     }
     let projection = super::heap_track_projection(type_id);
+    // One runtime-state resolution serves the owner check and the count.
+    let state = crate::runtime_state(py);
     let shard_index = tracked_registry_shard_index(ptr);
     let mut shard = lock_tracked_registry_shard(shard_index);
     let entry = shard.entries.entry(PtrSlot(ptr));
     if let Entry::Occupied(entry) = &entry {
         assert_eq!(
             entry.get().runtime_owner,
-            crate::runtime_state(py).identity(),
+            state.identity(),
             "GC deallocation/untracking crossed runtime ownership"
         );
     }
@@ -1210,7 +1263,7 @@ pub(crate) unsafe fn gc_untrack(
         );
     }
     if reason == GcUntrackReason::Deallocation {
-        crate::runtime_state(py).gc.on_deallocation();
+        state.gc.on_deallocation();
     }
 }
 
@@ -1238,13 +1291,13 @@ pub(crate) fn native_gc_allocate(py: &PyToken<'_>, address: usize) -> bool {
     if address == 0 {
         return false;
     }
-    let registry = tracked_registry();
+    let state = crate::runtime_state(py);
     let shard_index = tracked_registry_shard_index_from_address(address);
     let mut shard = lock_tracked_registry_shard(shard_index);
     if let Some(entry) = shard.native_nodes.get(&address) {
         assert_eq!(
             entry.runtime_owner,
-            crate::runtime_state(py).identity(),
+            state.identity(),
             "native GC admission crossed runtime ownership"
         );
         // Generic `tp_alloc` and a subtype's `tp_new` may both publish the same
@@ -1252,17 +1305,11 @@ pub(crate) fn native_gc_allocate(py: &PyToken<'_>, address: usize) -> bool {
         // impossible until the matching deallocate-before-free transition.
         return true;
     }
-    let allocation_id = registry
-        .next_allocation_id
-        .try_update(AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |next| {
-            next.checked_add(1)
-        })
-        .expect("GC allocation ordinal exhausted");
     shard.native_nodes.insert(
         address,
         NativeTrackedEntry {
-            runtime_owner: crate::runtime_state(py).identity(),
-            allocation_id,
+            runtime_owner: state.identity(),
+            allocation_id: next_allocation_ordinal(),
             generation: 0,
             tracked: false,
             finalized: false,
@@ -1273,7 +1320,7 @@ pub(crate) fn native_gc_allocate(py: &PyToken<'_>, address: usize) -> bool {
         },
     );
     drop(shard);
-    crate::runtime_state(py).gc.on_allocation();
+    state.gc.on_allocation();
     true
 }
 
@@ -1527,7 +1574,7 @@ pub(crate) fn gc_reset_registry(state: &crate::RuntimeState) {
     // Hold every shard until the ordinal is reset. This makes teardown a single
     // registry transaction and prevents a future free-threaded allocator from
     // inserting between a partial clear and the return to ordinal 1.
-    let mut shards: [MutexGuard<'static, TrackedRegistryShard>; TRACKED_REGISTRY_SHARDS] =
+    let mut shards: [TrackedRegistryGuard; TRACKED_REGISTRY_SHARDS] =
         std::array::from_fn(lock_tracked_registry_shard);
     let native_live = shards
         .iter()
@@ -1548,9 +1595,8 @@ pub(crate) fn gc_reset_registry(state: &crate::RuntimeState) {
     for shard in &mut shards {
         removed = removed.saturating_add(shard.entries.len() as u64);
         // Full embedded-runtime teardown must release peak registry capacity;
-        // `HashMap::clear` would pin the largest prior heap in this OnceLock.
-        shard.entries = HashMap::new();
-        shard.native_nodes = HashMap::new();
+        // `HashMap::clear` would pin the largest prior heap in this static.
+        **shard = TrackedRegistryShard::new();
     }
     registry
         .next_allocation_id
@@ -1598,7 +1644,7 @@ fn snapshot_registry(
     // traversal still requires the runtime's stop-the-world/GIL collection
     // boundary, but tracking metadata itself is now coherent under a future
     // free-threaded allocator rather than a per-shard temporal patchwork.
-    let shards: [MutexGuard<'static, TrackedRegistryShard>; TRACKED_REGISTRY_SHARDS] =
+    let shards: [TrackedRegistryGuard; TRACKED_REGISTRY_SHARDS] =
         std::array::from_fn(lock_tracked_registry_shard);
     candidates.clear();
     let entry_count = shards
@@ -1666,7 +1712,7 @@ fn snapshot_tracked_registry(
 /// snapshots exclude these entries until `unfreeze()` restores generation 2.
 pub(crate) fn freeze_tracked_registry(py: &PyToken<'_>) {
     let owner = crate::runtime_state(py).identity();
-    let mut shards: [MutexGuard<'static, TrackedRegistryShard>; TRACKED_REGISTRY_SHARDS] =
+    let mut shards: [TrackedRegistryGuard; TRACKED_REGISTRY_SHARDS] =
         std::array::from_fn(lock_tracked_registry_shard);
     for shard in &mut shards {
         for entry in shard.entries.values_mut() {
@@ -1687,7 +1733,7 @@ pub(crate) fn freeze_tracked_registry(py: &PyToken<'_>) {
 
 pub(crate) fn unfreeze_tracked_registry(py: &PyToken<'_>) {
     let owner = crate::runtime_state(py).identity();
-    let mut shards: [MutexGuard<'static, TrackedRegistryShard>; TRACKED_REGISTRY_SHARDS] =
+    let mut shards: [TrackedRegistryGuard; TRACKED_REGISTRY_SHARDS] =
         std::array::from_fn(lock_tracked_registry_shard);
     for shard in &mut shards {
         for entry in shard.entries.values_mut() {
@@ -1708,7 +1754,7 @@ pub(crate) fn unfreeze_tracked_registry(py: &PyToken<'_>) {
 
 pub(crate) fn permanent_generation_count(py: &PyToken<'_>) -> usize {
     let owner = crate::runtime_state(py).identity();
-    let shards: [MutexGuard<'static, TrackedRegistryShard>; TRACKED_REGISTRY_SHARDS] =
+    let shards: [TrackedRegistryGuard; TRACKED_REGISTRY_SHARDS] =
         std::array::from_fn(lock_tracked_registry_shard);
     shards
         .iter()
@@ -1743,7 +1789,7 @@ fn promote_marked_candidates(
     selected_mark: u8,
     target_generation: u8,
 ) -> usize {
-    let mut shards: [MutexGuard<'static, TrackedRegistryShard>; TRACKED_REGISTRY_SHARDS] =
+    let mut shards: [TrackedRegistryGuard; TRACKED_REGISTRY_SHARDS] =
         std::array::from_fn(lock_tracked_registry_shard);
     let mut promoted = 0usize;
     for (index, candidate) in candidates.iter().enumerate() {
@@ -3120,7 +3166,7 @@ fn retired_unreachable_count(scratch: &GcScratch) -> usize {
     if scratch.first_unreachable.is_empty() {
         return 0;
     }
-    let shards: [MutexGuard<'static, TrackedRegistryShard>; TRACKED_REGISTRY_SHARDS] =
+    let shards: [TrackedRegistryGuard; TRACKED_REGISTRY_SHARDS] =
         std::array::from_fn(lock_tracked_registry_shard);
     scratch
         .first_unreachable
@@ -4288,17 +4334,56 @@ mod tests {
         });
     }
 
+    /// The registry hash feeds three consumers: the SwissTable bucket (low
+    /// bits), its control tag (top seven bits) and the registry shard (bits
+    /// 32..38). Aligned heap addresses have zero low bits, so a plain
+    /// multiply leaves the bucket bits empty and an identity hash leaves all
+    /// three skewed; both fail these bounds.
     #[test]
-    fn compact_aligned_arenas_spread_across_every_registry_shard() {
-        let mut counts = [0usize; TRACKED_REGISTRY_SHARDS];
-        for index in 0..4096usize {
-            let address = 0x1_0000usize + index * 24;
-            counts[tracked_registry_shard_index_from_address(address)] += 1;
+    fn registry_address_hash_spreads_compact_arenas_across_every_consumer() {
+        for stride in [16usize, 24, 32, 48, 4096] {
+            let mut buckets = [0usize; 64];
+            let mut tags = [0usize; 128];
+            let mut shards = [0usize; 64];
+            for index in 0..4096usize {
+                let hash = registry_address_hash(0x1_0000 + index * stride);
+                buckets[(hash & 63) as usize] += 1;
+                tags[(hash >> 57) as usize] += 1;
+                shards[((hash >> 32) & 63) as usize] += 1;
+            }
+            for (name, counts, low, high) in [
+                ("bucket", &buckets[..], 32, 100),
+                ("tag", &tags[..], 16, 64),
+                ("shard", &shards[..], 32, 100),
+            ] {
+                assert!(
+                    counts.iter().all(|&count| (low..high).contains(&count)),
+                    "stride {stride}: {name} distribution is skewed: {counts:?}"
+                );
+            }
         }
-        assert!(counts.iter().all(|count| *count > 0), "{counts:?}");
-        assert!(
-            counts.iter().copied().max().unwrap_or(0) < 100,
-            "compact arena distribution is pathologically skewed: {counts:?}"
+        let address = 0x1_0000usize + 24 * 77;
+        assert_eq!(
+            tracked_registry_shard_index_from_address(address),
+            ((registry_address_hash(address) >> 32) as usize) & (TRACKED_REGISTRY_SHARDS - 1)
+        );
+    }
+
+    /// Both registry maps must hash their key as exactly one address word, so
+    /// a runtime pointer and a native address use the registry hash.
+    #[test]
+    fn registry_keys_hash_as_their_address() {
+        use std::hash::BuildHasher;
+        let build = RegistryAddressHash::default();
+        let mut slot = 0u64;
+        let pointer = std::ptr::from_mut(&mut slot).cast::<u8>();
+        assert_eq!(
+            build.hash_one(PtrSlot(pointer)),
+            registry_address_hash(pointer.addr())
+        );
+        assert_eq!(
+            build.hash_one(0x7f00_1230usize),
+            registry_address_hash(0x7f00_1230)
         );
     }
 
