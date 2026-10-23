@@ -263,24 +263,36 @@ semantic inputs, and import requests complete against the current project
 roots and custody after reuse. SQL applies each reader's byte bound before
 payload allocation; lowering explicitly retains its uncapped role. There is
 one decode per hit, no retained parsed-document cache, and no per-project copy.
-Schema version two stores opaque payloads in an ordinary rowid table with a
-unique `(kind, key)` primary-key index. The small generation table retains its
-`WITHOUT ROWID` layout. [SQLite's layout guidance](https://sqlite.org/withoutrowid.html#when_to_use_without_rowid)
+The schema stores opaque payloads in an ordinary rowid table with a
+unique `(kind, key)` primary-key index. Each record's last use lives in a
+separate narrow `recency` table (`WITHOUT ROWID`, ordered by a
+`(used_ns, kind, key)` index), because SQLite rewrites a whole row on
+`UPDATE`: with the stamp in the payload row, 10.8k import-scan renewals
+rewrote their payloads, 3.6 s and 33.1 MB of WAL, against 0.11 s and 0.7 MB in
+the narrow table. A record write stamps it in the same transaction, and a
+delete trigger retires the stamp of a deleted record. Renewals are queued and
+saved in one transaction when 4,096 accumulate and when the store closes, as
+Cargo's `DeferredGlobalLastUse` saves last-use stamps; each renewal stays
+fenced on the revision and stamp it observed. The small generation table
+retains its `WITHOUT ROWID` layout. [SQLite's layout guidance](https://sqlite.org/withoutrowid.html#when_to_use_without_rowid)
 recommends small rows for `WITHOUT ROWID`: its intermediate nodes carry record
 content, reducing fan-out for large values. Source records include uncapped
 binary lowerings, so key lookup uses the narrow index, followed by a rowid-table
 lookup; record data lives in table leaves and their overflow pages. This changes no
 semantic key, byte bound, revision fence or consumer codec.
-Each schema version owns its own store file,
-`source_records.v<version>.sqlite`. Checkouts of different code versions share
-one cache root, so a store migrated in place by a newer checkout refused the
-whole cache to every older one: every record read missed, every write was
-dropped, and each operation reconnected. On 2026-10-23 a 27-line asyncio program
-spent 349 s in `module_graph`, 253 s of it reconnecting. As rustc keys
-incremental state by compiler version, a new schema version starts an empty
-store; the cache pruner retires the files of other versions, and of the
-unversioned store before them, by last use (`superseded_store_file`). A fresh
-file at version zero enters one cold bootstrap owner through the existing
+Each schema owns its own store file, `source_records.<digest>.sqlite`, named by
+the first 16 hex digits of the SHA-256 of its DDL; `user_version` holds 28 bits
+of the same digest. Checkouts of different code share one cache root, so a store
+migrated in place by a newer checkout refused the whole cache to every older
+one: every record read missed, every write was dropped, and each operation
+reconnected. On 2026-10-23 a 27-line asyncio program spent 349 s in
+`module_graph`, 253 s of it reconnecting. A hand-numbered version did not keep
+schemas apart either: two changes that both bump to the next number merge
+without a conflict and would share one file. As rustc keys incremental state by
+compiler identity, a different schema starts an empty store; the cache pruner
+retires the files of other schemas, including the earlier `v<n>` and
+unversioned names, by last use (`superseded_store_file`). A fresh file at
+version zero enters one cold bootstrap owner through the existing
 portable file lock; that owner rechecks admission, establishes incremental
 vacuum and WAL, then publishes the schema, indexes and the version in one SQL
 transaction. Failure rolls back the whole transition and refuses the optional
