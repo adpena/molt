@@ -11,8 +11,6 @@ use num_traits::{Signed, ToPrimitive};
 use std::borrow::Cow;
 
 use super::ops::range_components_bigint;
-#[cfg(test)]
-use super::ops::unicode_data;
 
 /// A Python renderer either returns the callback's owned string unchanged or
 /// builds lossless WTF-8 bytes. Rust String is only a host diagnostic adapter.
@@ -1779,6 +1777,7 @@ mod tests {
         format_string_repr_bytes, zero_pad_grouped,
     };
     use crate::builtins::attr::attr_name_bits_from_bytes;
+    use crate::object::ops::unicode_data;
     use crate::{
         alloc_dict_with_pairs, alloc_module_obj, alloc_string, alloc_tuple, dict_set_in_place,
         module_dict_bits, obj_from_bits,

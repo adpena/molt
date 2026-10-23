@@ -2793,7 +2793,7 @@ mod tests {
     use crate::object::HEADER_FLAG_CONTAINS_REFS;
     use crate::{
         MoltObject, alloc_dict_with_pairs, alloc_string, dec_ref_bits, header_from_obj_ptr,
-        molt_dict_items, molt_unpack_sequence,
+        molt_dict_items, molt_reversed_builtin, molt_unpack_sequence,
     };
 
     unsafe fn refcount(bits: u64) -> u32 {
