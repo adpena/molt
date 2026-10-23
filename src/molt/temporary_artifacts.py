@@ -40,6 +40,7 @@ import warnings
 import weakref
 
 from molt.exact_json import (
+    ExactJsonError,
     canonical_json_sha256,
     encode_exact,
     read_exact,
@@ -260,9 +261,12 @@ def _same_owned_path(expected: object, observed: object) -> bool:
 def _read_receipt(path: Path, *, label: str, absent_is_residue: bool = True) -> object:
     """Decode one receipt; name what only a crash leaves as residue.
 
-    An empty, torn or undecodable leaf is residue. An absent leaf is residue
-    only where the protocol published it before the reader can look; a
-    pending index can vanish under another locked transition instead.
+    An empty, torn or undecodable leaf is residue, and so is one over the
+    receipt size bound or outside the exact interchange format: no current
+    writer produces it, and its generation must block alone rather than fail
+    every sweep that meets it (HF-479). An absent leaf is residue only where
+    the protocol published it before the reader can look; a pending index can
+    vanish under another locked transition instead.
     """
     try:
         return read_exact(
@@ -279,7 +283,7 @@ def _read_receipt(path: Path, *, label: str, absent_is_residue: bool = True) -> 
         if not os.path.lexists(path.parent):
             raise
         raise _CrashResidue(f"{label} is absent: {path}") from error
-    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+    except (json.JSONDecodeError, UnicodeDecodeError, ExactJsonError) as error:
         raise _CrashResidue(f"{label} is undecodable: {path}: {error}") from error
 
 
