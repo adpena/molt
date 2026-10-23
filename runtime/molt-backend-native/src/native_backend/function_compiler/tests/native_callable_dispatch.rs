@@ -2896,6 +2896,9 @@ fn subscript_words(values:&[u64], expected:&[u64]) -> bool {
 #[no_mangle] pub extern "C" fn molt_dict_update_missing(obj:u64,key:u64,value:u64)->u64 {
     molt_store_index(obj,key,value)
 }
+#[no_mangle] pub extern "C" fn molt_dict_set(obj:u64,key:u64,value:u64)->u64 {
+    molt_store_index(obj,key,value)
+}
 #[no_mangle] pub extern "C" fn molt_dict_get(obj:u64,key:u64,default:u64)->u64 {
     if !subscript_words(&[obj,key,default],&[0x101,0x101,0x102]) {return NONE;}
     molt_inc_ref_obj(default); default

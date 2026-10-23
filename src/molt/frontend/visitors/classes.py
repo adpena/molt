@@ -746,6 +746,9 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         class_id = self._class_id_for_definition(node)
         self.local_class_ids.append(class_id)
+        # CPython 3.13 added __firstlineno__ and __static_attributes__ to every
+        # class namespace; earlier targets never see either key.
+        source_keys = self.target_python >= (3, 13)
         prev_class_annotations = self.class_annotation_items
         prev_class_exec_map = self.class_annotation_exec_map
         prev_class_exec_counter = self.class_annotation_exec_counter
@@ -1446,7 +1449,8 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                         result=MoltValue("none"),
                     )
                 )
-                # __firstlineno__ (CPython 3.13+) — line number of the class statement
+            if dynamic_namespace is not None and source_keys:
+                # __firstlineno__: the line number of the class statement.
                 key_val = MoltValue(self.next_var(), type_hint="str")
                 self.emit(
                     MoltOp(kind="CONST_STR", args=["__firstlineno__"], result=key_val)
@@ -1545,9 +1549,9 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 self._class_ns_store(
                     class_ns_scope, "__annotate_func__", annotate_value
                 )
-            # __static_attributes__ (CPython 3.13+) — always emitted after class
-            # body, even when empty.  Appears after methods in namespace event order.
-            if dynamic_namespace is not None:
+            # __static_attributes__ is emitted after the class body, even when
+            # empty. It follows the methods in namespace event order.
+            if dynamic_namespace is not None and source_keys:
                 static_attrs = self._collect_static_attributes(node)
                 attr_vals: list[MoltValue] = []
                 for attr_name in static_attrs:
@@ -1660,19 +1664,16 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         else:
             # Outlined class definition: collect attrs, emit single CLASS_DEF op
             class_def_attrs: list[tuple[MoltValue, MoltValue]] = []
-            # __firstlineno__ (CPython 3.13+)
-            lineno_val = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[node.lineno], result=lineno_val))
-            for attr_str, attr_val in [
-                ("__qualname__", qualname_val),
-                ("__module__", module_val),
-                ("__firstlineno__", lineno_val),
-            ]:
+            source_attrs = [("__qualname__", qualname_val), ("__module__", module_val)]
+            if source_keys:
+                lineno_val = MoltValue(self.next_var(), type_hint="int")
+                self.emit(MoltOp(kind="CONST", args=[node.lineno], result=lineno_val))
+                source_attrs.append(("__firstlineno__", lineno_val))
+            for attr_str, attr_val in source_attrs:
                 key = MoltValue(self.next_var(), type_hint="str")
                 self.emit(MoltOp(kind="CONST_STR", args=[attr_str], result=key))
                 class_def_attrs.append((key, attr_val))
-            # __static_attributes__ (CPython 3.13+)
-            static_attrs = self._collect_static_attributes(node)
+            static_attrs = self._collect_static_attributes(node) if source_keys else ()
             if static_attrs:
                 sa_vals: list[MoltValue] = []
                 for sa_name in static_attrs:
