@@ -1,3 +1,4 @@
+# MOLT_ENV: MOLT_CAPABILITIES=net
 """Purpose: asyncio TLS open_connection path is runtime-executed (not fail-fast placeholder)."""
 
 import asyncio

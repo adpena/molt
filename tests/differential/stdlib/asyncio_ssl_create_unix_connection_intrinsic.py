@@ -1,3 +1,4 @@
+# MOLT_ENV: MOLT_CAPABILITIES=net
 """Purpose: loop.create_unix_connection SSL path should avoid unsupported-op fallback."""
 
 import asyncio
