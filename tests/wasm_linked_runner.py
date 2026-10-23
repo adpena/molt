@@ -89,6 +89,7 @@ def _run_wasm_test_process(
     capture_output: bool = True,
     text: bool = True,
     check: bool = False,
+    input: str | bytes | None = None,
 ) -> subprocess.CompletedProcess[str]:
     return process_guard_common.run_guarded_test_process(
         list(args),
@@ -99,6 +100,7 @@ def _run_wasm_test_process(
         text=text,
         timeout=timeout,
         check=check,
+        input=input,
     )
 
 

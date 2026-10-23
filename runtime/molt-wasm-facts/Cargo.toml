@@ -8,7 +8,6 @@ license = "Apache-2.0"
 
 [dependencies]
 molt-artifact-publish = { path = "../molt-artifact-publish", optional = true }
-memmap2 = { version = "0.9", optional = true }
 serde_json = { workspace = true, optional = true }
 molt-host-process = { path = "../molt-host-process", optional = true }
 serde = { version = "1.0", features = ["derive"] }
@@ -18,7 +17,7 @@ wasm-encoder = { version = "0.262.0", features = ["wasmparser"] }
 # The library remains usable without host executable admission dependencies.
 [features]
 default = []
-host-tool = ["dep:molt-artifact-publish", "dep:memmap2", "dep:serde_json", "dep:molt-host-process"]
+host-tool = ["dep:molt-artifact-publish", "dep:serde_json", "dep:molt-host-process"]
 
 [[bin]]
 name = "molt-wasm-facts"

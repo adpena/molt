@@ -218,7 +218,6 @@ def _wasm_from_wat(
     publish_command = [
         str(_wasm_backend()),
         "--publish-wasm-link-facts",
-        str(wasm_path),
         "--output",
         str(published),
     ]
@@ -231,11 +230,14 @@ def _wasm_from_wat(
                 "monolithic",
             ]
         )
+    # The facts tool reads the module from stdin.
     result = _run_wasm_test_process(
         publish_command,
         cwd=ROOT,
         env=os.environ,
         timeout=300,
+        input=wasm_path.read_bytes(),
+        text=False,
     )
     assert result.returncode == 0, result.stderr
     published.replace(wasm_path)

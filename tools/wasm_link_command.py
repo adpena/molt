@@ -130,11 +130,12 @@ def _deduplicated_export_flags(*groups: Iterable[str]) -> list[str]:
 def _preflight_relocatable_runtime(
     wasm_ld: str,
     runtime: Path,
-    scratch_root: Path,
 ) -> str | None:
-    output = scratch_root / "runtime_reloc_preflight.wasm"
+    # The relink is the check; nothing reads its output. lld buffers a
+    # non-regular output in memory, so the null device takes it without the
+    # 80 MB scratch write (8 s against 0.3 s on a USB volume).
     result = _run_external_tool(
-        [wasm_ld, "-r", "-o", str(output), str(runtime)],
+        [wasm_ld, "-r", "-o", os.devnull, str(runtime)],
         capture_output=True,
         text=True,
     )
