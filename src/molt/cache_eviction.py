@@ -567,7 +567,7 @@ def _prune_locked(
             if maintenance is None or inventory is None:
                 return
             try:
-                for observed in maintenance.iter_lru():
+                for observed in maintenance.iter_lru(inventory):
                     if not row_enabled:
                         return
                     yield observed

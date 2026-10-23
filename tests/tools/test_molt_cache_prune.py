@@ -367,11 +367,10 @@ print(json.dumps({'elapsed_seconds': time.perf_counter() - started,
 _CACHE_OWNER_CODE = r"""
 import json, os, socket, sys
 from pathlib import Path
-mode, cache, project, port = sys.argv[1:]
-cache, project = Path(cache), Path(project)
+cache, port = sys.argv[1:]
+cache = Path(cache)
 os.environ['MOLT_CACHE'] = str(cache)
-os.environ['MOLT_MAX_CONCURRENT_BUILDS'] = '1'
-from molt.default_paths import shared_cache_lock_path, shared_stdlib_publish_lock_path
+from molt.default_paths import shared_stdlib_publish_lock_path
 
 def barrier(entry, lock):
     # The OS lock is held before the child announces readiness. Timeouts bound
@@ -381,31 +380,23 @@ def barrier(entry, lock):
                                     'lock': str(lock)}) + '\n').encode())
         assert channel.recv(1) == b'R'
 
-if mode == 'slot':
-    from molt.cli.cargo_execution import _build_slot, _build_slot_dir
-    with _build_slot() as index:
-        assert index == 0
-        barrier(None, _build_slot_dir() / 'slot-0.lock')
-elif mode == 'stdlib':
-    from molt.cli.backend_cache import _stdlib_object_cache_path, _shared_stdlib_cache_lock
-    from molt.file_publication import staged_file_path
-    archive = _stdlib_object_cache_path(cache / 'program.o', 'a' * 64)
-    with _shared_stdlib_cache_lock(archive):
-        archive.parent.mkdir(parents=True, exist_ok=True)
-        archive.write_bytes(b'shared archive generation')
-        for suffix in ('.count', '.key', '.manifest.json', '.partition.json',
-                       '.sha256', '.symbol-contract.json', '.symbols.json'):
-            archive.with_suffix(suffix).write_bytes(suffix.encode())
-        staged_file_path(archive).write_bytes(b'in-flight publication')
-        barrier(archive.parent, shared_stdlib_publish_lock_path(archive))
-else:
-    raise AssertionError(mode)
+from molt.cli.backend_cache import _stdlib_object_cache_path, _shared_stdlib_cache_lock
+from molt.file_publication import staged_file_path
+archive = _stdlib_object_cache_path(cache / 'program.o', 'a' * 64)
+with _shared_stdlib_cache_lock(archive):
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    archive.write_bytes(b'shared archive generation')
+    for suffix in ('.count', '.key', '.manifest.json', '.partition.json',
+                   '.sha256', '.symbol-contract.json', '.symbols.json'):
+        archive.with_suffix(suffix).write_bytes(suffix.encode())
+    staged_file_path(archive).write_bytes(b'in-flight publication')
+    barrier(archive.parent, shared_stdlib_publish_lock_path(archive))
 print('RELEASED')
 """
 
 
 @contextmanager
-def _active_cache_owner(mode: str, cache: Path, project: Path):
+def _active_cache_owner(cache: Path):
     with socket.socket() as server:
         server.bind(("127.0.0.1", 0))
         server.listen(1)
@@ -416,9 +407,7 @@ def _active_cache_owner(mode: str, cache: Path, project: Path):
                 "-B",
                 "-c",
                 _CACHE_OWNER_CODE,
-                mode,
                 str(cache),
-                str(project),
                 str(server.getsockname()[1]),
             ],
             stdout=subprocess.PIPE,
@@ -469,23 +458,15 @@ finally:
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-@pytest.mark.parametrize("mode", ["slot", "stdlib"])
 def test_real_pruner_respects_other_process_owner_and_reclaims_after_release(
-    tmp_path, monkeypatch, mode
+    tmp_path, monkeypatch
 ):
     from molt.default_paths import shared_stdlib_cache_entry
 
     cache = tmp_path / "cache"
-    project = tmp_path / "project"
-    namespace = project / "ns_pkg"
-    namespace.mkdir(parents=True)
-    (project / "main.py").write_text(
-        "import ns_pkg.leaf\nprint(ns_pkg.leaf.VALUE)\n", encoding="utf-8"
-    )
-    (namespace / "leaf.py").write_text("VALUE = 7\n", encoding="utf-8")
-    (project / "pyproject.toml").write_text(
-        '[project]\nname = "active-planner"\nversion = "0.1.0"\n', encoding="utf-8"
-    )
+    # Build slots live in control_state_dir, outside this cache. Their routing
+    # and exclusion are owned by test_manifest_cli_integration; acquiring a
+    # host-wide slot here would contend with unrelated real builds.
     monkeypatch.setenv("MOLT_CACHE", str(cache))
     monkeypatch.delenv("MOLT_HOME", raising=False)
     monkeypatch.delenv("MOLT_BIN", raising=False)
@@ -494,13 +475,13 @@ def test_real_pruner_respects_other_process_owner_and_reclaims_after_release(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"durable owner state")
     snapshots = {path: (path.stat().st_ino, path.read_bytes()) for path in retained}
-    with _active_cache_owner(mode, cache, project) as ready:
+    with _active_cache_owner(cache) as ready:
         lock = Path(ready["lock"])
-        entry = Path(ready["entry"]) if ready["entry"] else None
+        entry = Path(ready["entry"])
         os.utime(lock, (1, 1))
         lock_before = lock.stat()
-        entry_before = _snapshot_tree(entry) if entry else None
-        first_byte = "00" if entry is None or entry.name[:2] != "00" else "ff"
+        entry_before = _snapshot_tree(entry)
+        first_byte = "00" if entry.name[:2] != "00" else "ff"
         inactive, _name = shared_stdlib_cache_entry(cache, first_byte * 32)
         inactive.mkdir(parents=True)
         (inactive / "stale.py").write_bytes(b"old generation")
@@ -513,9 +494,8 @@ def test_real_pruner_respects_other_process_owner_and_reclaims_after_release(
         assert not inactive.exists() and retired_flat.exists()
         assert (unknown.stat().st_ino, unknown.read_bytes()) == unknown_before
         assert "failed.entries=0" in output
-        if entry is not None:
-            assert "busy.entries=1" in output
-            assert _snapshot_tree(entry) == entry_before
+        assert "busy.entries=1" in output
+        assert _snapshot_tree(entry) == entry_before
         assert (lock.stat().st_dev, lock.stat().st_ino, lock.stat().st_mtime_ns) == (
             lock_before.st_dev,
             lock_before.st_ino,
@@ -530,7 +510,7 @@ def test_real_pruner_respects_other_process_owner_and_reclaims_after_release(
     _assert_external_lock_availability(lock, True)
     output = _run_pruner(cache)
     assert "busy.entries=0" in output
-    assert entry is None or not entry.exists()
+    assert not entry.exists()
     assert lock.stat().st_ino == lock_before.st_ino
     assert all(
         (path.stat().st_ino, path.read_bytes()) == snapshots[path] for path in retained
@@ -1427,6 +1407,7 @@ def test_dry_run_reports_an_unmigrated_store_without_failing(tmp_path: Path) -> 
 
 def test_row_batches_commit_before_interleaved_file_eviction(tmp_path, monkeypatch):
     import sqlite3
+    from contextlib import closing
     from molt.cli import source_record_store as records
     from molt.default_paths import SHARED_SOURCE_RECORDS_DIRECTORY
 
@@ -1461,6 +1442,10 @@ def test_row_batches_commit_before_interleaved_file_eviction(tmp_path, monkeypat
                 observed.append(remaining)
             finally:
                 peer.execute("ROLLBACK")
+            # The sweep is paused in unrelated file work. Its source-record
+            # reader must not pin the committed row deletion in the WAL.
+            with closing(peer.execute("PRAGMA wal_checkpoint(TRUNCATE)")) as cursor:
+                assert cursor.fetchone() == (0, 0, 0)
             return remove_file(candidate, dry_run)
 
         monkeypatch.setattr(module, "_remove_entry", observe_file)
@@ -1508,3 +1493,36 @@ def test_later_zero_delete_sweep_continues_bounded_physical_reclamation(tmp_path
         assert peer.execute("SELECT count(*) FROM records").fetchone() == (0,)
     finally:
         peer.close()
+
+
+def test_global_row_budget_replaces_generation_count_retirement(tmp_path, monkeypatch):
+    import sqlite3
+    from contextlib import closing
+    from molt.cli import source_record_store as records
+    from molt.default_paths import SHARED_SOURCE_RECORDS_DIRECTORY
+
+    cache = tmp_path / "cache"
+    store = records.source_record_store(cache / SHARED_SOURCE_RECORDS_DIRECTORY)
+    clock = [100 * 86400 * 1_000_000_000]
+    install_module_view(monkeypatch, "time", time, records, time_ns=lambda: clock[0])
+    kinds = ("import-scan", "intrinsic-facts", "module-analysis", "module-lowering")
+    for index in range(8):
+        assert store.put(
+            kinds[index % 4], str(index), b"x" * 100, generation=f"g{index}"
+        )
+        clock[0] += 2 * 3600 * 1_000_000_000
+    refreshed = store.get("import-scan", "0", generation="g0", max_bytes=None)
+    assert refreshed is not None and refreshed.refresh()
+    module = _load_molt_cache_prune()
+    result = module._prune(cache, max_bytes=400, max_age_days=None, dry_run=False)
+    assert result["source_records_before"] == 8
+    assert result["source_records_removed"] == 4
+    assert result["bytes_remaining"] == 400
+    assert result["entries_failed"] == 0
+    with closing(sqlite3.connect(store.path)) as peer:
+        assert {row[0] for row in peer.execute("SELECT key FROM records")} == {
+            "0",
+            "5",
+            "6",
+            "7",
+        }

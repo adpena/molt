@@ -159,40 +159,36 @@ def _read_in_child(root: str) -> object:
     )
 
 
-def test_retired_generations_lose_their_records(
+def test_generation_is_provenance_and_global_policy_owns_retirement(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     clock = [100 * _DAY]
     install_module_view(monkeypatch, "time", time, records, time_ns=lambda: clock[0])
-
-    # Six compiler generations, one an hour apart; each process uses one.
+    store = _store(tmp_path)
     for index in range(6):
         clock[0] += 2 * _HOUR
-        _store(tmp_path).put(
+        assert store.put(
             "import-scan", f"k{index}", str(index).encode(), generation=f"g{index}"
         )
-
-    kept = {
-        index
-        for index in range(6)
-        if _store(tmp_path).get(
-            "import-scan", f"k{index}", generation=f"g{index}", max_bytes=_LIMIT
-        )
-        is not None
-    }
-    # Only the four most recently used generations keep their records.
-    assert kept == {2, 3, 4, 5}
-
-    # A week without use retires even a recent generation.
     clock[0] += 8 * _DAY
-    _store(tmp_path).put("import-scan", "fresh", b"9", generation="g9")
-    survivors = {
-        key
-        for (key,) in sqlite3.connect(tmp_path / records.STORE_NAME).execute(
-            "SELECT key FROM records"
+    assert store.put("import-scan", "fresh", b"9", generation="g9")
+    for index in range(6):
+        observed = store.get(
+            "import-scan", f"k{index}", generation=f"g{index}", max_bytes=None
         )
-    }
-    assert survivors == {"fresh"}
+        assert observed is not None and observed.payload == str(index).encode()
+        assert (
+            store.get("import-scan", f"k{index}", generation="wrong", max_bytes=None)
+            is None
+        )
+    with closing(sqlite3.connect(store.path)) as peer:
+        assert peer.execute("SELECT count(*) FROM records").fetchone() == (7,)
+        assert (
+            peer.execute(
+                "SELECT name FROM sqlite_schema WHERE name IN ('generations','trims','records_generation')"
+            ).fetchall()
+            == []
+        )
 
 
 def test_corrupt_store_is_unavailable_without_unlinking_peer_files(
@@ -360,7 +356,7 @@ def test_metadata_pages_do_not_select_payload_and_deletion_is_observation_fenced
 
         maintenance._connection.row_factory = metadata_only
         inventory = maintenance.inventory()
-        observed = list(maintenance.iter_lru())
+        observed = list(maintenance.iter_lru(maintenance.inventory()))
         assert [row.key for row in observed] == [str(i) for i in range(5)]
         assert inventory.entries == 5 and inventory.size_bytes == 50000
         candidate = store.get("module-analysis", "0", generation="g", max_bytes=None)
@@ -413,7 +409,9 @@ def test_old_four_column_store_migrates_without_losing_opaque_payload(
         }
         assert connection.execute("SELECT count(*) FROM records").fetchone() == (2,)
         assert connection.execute("PRAGMA auto_vacuum").fetchone() == (2,)
-        assert connection.execute("PRAGMA user_version").fetchone() == (2,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (
+            records._SCHEMA_VERSION,
+        )
         assert connection.execute("PRAGMA index_info(records)").fetchall() == []
 
 
@@ -437,14 +435,20 @@ def test_version_one_migration_preserves_observations_and_live_peer_snapshot(tmp
         assert set(peer.execute("SELECT * FROM records")) == set(expected)
         assert peer.execute("PRAGMA user_version").fetchone() == (1,)
         peer.execute("ROLLBACK").close()
-        assert peer.execute("PRAGMA user_version").fetchone() == (2,)
+        assert peer.execute("PRAGMA user_version").fetchone() == (
+            records._SCHEMA_VERSION,
+        )
         assert peer.execute("PRAGMA index_info(records)").fetchall() == []
         assert set(peer.execute("SELECT * FROM records")) == set(expected)
         assert peer.execute("PRAGMA integrity_check").fetchone() == ("ok",)
-        assert {row[1] for row in peer.execute("PRAGMA index_list(records)")} >= {
-            "records_generation",
-            "records_recency",
-        }
+        indexes = {row[1] for row in peer.execute("PRAGMA index_list(records)")}
+        assert "records_recency" in indexes and "records_generation" not in indexes
+        assert (
+            peer.execute(
+                "SELECT name FROM sqlite_schema WHERE name IN ('generations','trims')"
+            ).fetchall()
+            == []
+        )
         observed = store.get("import-scan", "old", generation="g", max_bytes=None)
         peer.execute(
             "UPDATE records SET payload=?,revision=? WHERE kind=? AND key=?",
@@ -542,7 +546,9 @@ def test_ready_opens_do_not_write_or_wait_for_a_writer(tmp_path, monkeypatch):
             assert observed is not None and observed.payload == b"preserved"
             with store.maintenance(dry_run=False) as maintenance:
                 assert maintenance.inventory().entries == 1
-                assert maintenance.remove(list(maintenance.iter_lru())) == ("busy",)
+                assert maintenance.remove(
+                    list(maintenance.iter_lru(maintenance.inventory()))
+                ) == ("busy",)
             assert not store.put("import-scan", "blocked", b"no", generation="g")
         finally:
             peer.execute("ROLLBACK").close()
@@ -679,7 +685,7 @@ def test_schema_failure_rolls_back_the_whole_bootstrap(tmp_path, initial):
     assert store.put("import-scan", "after", b"yes", generation="g")
 
 
-@pytest.mark.parametrize("version", [-1, 3])
+@pytest.mark.parametrize("version", [-1, records._SCHEMA_VERSION + 1])
 @pytest.mark.parametrize("dry_run", [False, True])
 def test_unknown_schema_is_unavailable_without_downgrade(tmp_path, version, dry_run):
     store = _store(tmp_path)
@@ -734,7 +740,9 @@ def test_maintenance_admits_its_independently_opened_snapshot(
             # An independently opened handle must qualify the actual snapshot,
             # even after the first handle admitted the previous schema version.
             with closing(original_connect(store.path, isolation_level=None)) as peer:
-                peer.execute("PRAGMA user_version = 3").close()
+                peer.execute(
+                    f"PRAGMA user_version = {records._SCHEMA_VERSION + 1}"
+                ).close()
         return original_connect(*args, **kwargs)
 
     install_module_view(monkeypatch, "sqlite3", sqlite3, records, connect=connect)
@@ -745,7 +753,9 @@ def test_maintenance_admits_its_independently_opened_snapshot(
         assert peer.execute("SELECT payload FROM records").fetchall() == [
             (b"preserved",)
         ]
-        assert peer.execute("PRAGMA user_version").fetchone() == (3,)
+        assert peer.execute("PRAGMA user_version").fetchone() == (
+            records._SCHEMA_VERSION + 1,
+        )
 
 
 def test_database_error_closes_only_owned_connection_and_preserves_live_peer(
@@ -820,7 +830,7 @@ def test_maintenance_refuses_a_live_writer_without_failure_or_retry(
     store = _store(tmp_path)
     assert store.put("module-analysis", "k", b"preserved", generation="g")
     with store.maintenance(dry_run=False) as maintenance:
-        observed = next(maintenance.iter_lru())
+        observed = next(maintenance.iter_lru(maintenance.inventory()))
         assert maintenance._current.execute("PRAGMA busy_timeout").fetchone() == (0,)
         statements = []
         maintenance._current.set_trace_callback(statements.append)
@@ -885,7 +895,9 @@ def test_other_operational_errors_remain_failures(
     assert store.put("module-analysis", "keep", b"preserved", generation="g")
     assert store.put("module-analysis", "victim", b"x" * 100000, generation="g")
     with store.maintenance(dry_run=False) as maintenance:
-        observed = {row.key: row for row in maintenance.iter_lru()}
+        observed = {
+            row.key: row for row in maintenance.iter_lru(maintenance.inventory())
+        }
         if operation == "reclaim":
             assert maintenance.remove([observed["victim"]]) == ("removed",)
             assert maintenance._current.execute("PRAGMA freelist_count").fetchone()[0]
@@ -934,7 +946,9 @@ def test_batch_admission_and_single_oversized_record(
     assert store.put("module-lowering", "large", b"x" * ((1 << 20) + 1), generation="g")
     assert store.put("module-analysis", "small", b"preserved", generation="g")
     with store.maintenance(dry_run=False) as maintenance:
-        observed = {row.key: row for row in maintenance.iter_lru()}
+        observed = {
+            row.key: row for row in maintenance.iter_lru(maintenance.inventory())
+        }
         statements = []
         maintenance._current.set_trace_callback(statements.append)
         assert maintenance.remove([]) == ()
@@ -956,7 +970,9 @@ def test_dry_run_batch_forecasts_in_order_without_writing(tmp_path: Path) -> Non
     for key in ("first", "second", "third"):
         assert store.put("module-analysis", key, key.encode(), generation="g")
     with store.maintenance(dry_run=True) as maintenance:
-        observed = {row.key: row for row in maintenance.iter_lru()}
+        observed = {
+            row.key: row for row in maintenance.iter_lru(maintenance.inventory())
+        }
         assert store.put("module-analysis", "second", b"replacement", generation="g")
         statements = []
         maintenance._current.set_trace_callback(statements.append)
@@ -988,7 +1004,9 @@ def test_batch_failures_roll_back_every_staged_deletion(
     for key in ("first", "second", "third"):
         assert store.put("module-analysis", key, key.encode(), generation="g")
     with store.maintenance(dry_run=False) as maintenance:
-        observed = {row.key: row for row in maintenance.iter_lru()}
+        observed = {
+            row.key: row for row in maintenance.iter_lru(maintenance.inventory())
+        }
         if phase == "statement":
             maintenance._current.execute(
                 "CREATE TRIGGER refuse_second BEFORE DELETE ON records"
@@ -1027,10 +1045,7 @@ def test_batch_failures_roll_back_every_staged_deletion(
             assert maintenance._current.execute("SELECT * FROM child").fetchall() == []
 
 
-@pytest.mark.parametrize("consumer", ["maintenance", "generation-trim"])
-def test_bounded_vacuum_drains_pages_and_later_passes_converge(
-    tmp_path: Path, consumer: str
-) -> None:
+def test_bounded_vacuum_drains_pages_and_later_passes_converge(tmp_path: Path) -> None:
     store = _store(tmp_path)
     assert store.put("module-lowering", "discard", b"x" * (3 << 20), generation="g")
     assert store.put("module-analysis", "keep", b"preserved", generation="g")
@@ -1039,7 +1054,9 @@ def test_bounded_vacuum_drains_pages_and_later_passes_converge(
     with closing(connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")) as cursor:
         assert cursor.fetchone()[0] == 0
     with store.maintenance(dry_run=False) as maintenance:
-        observed = {row.key: row for row in maintenance.iter_lru()}
+        observed = {
+            row.key: row for row in maintenance.iter_lru(maintenance.inventory())
+        }
         assert maintenance.remove([observed["discard"]]) == ("removed",)
 
     def page_state():
@@ -1052,22 +1069,14 @@ def test_bounded_vacuum_drains_pages_and_later_passes_converge(
     initial_pages, free, page_size = page_state()
     assert 512 < free < 1024, "known3MiB fixture must span several bounded passes"
     initial_physical = store.path.stat().st_size
-    now = time.time_ns()
     previous_pages = initial_pages
     passes = (free + 255) // 256
-    for number in range(passes):
+    for _ in range(passes):
         expected = min(256, free)
-        if consumer == "maintenance":
-            with store.maintenance(dry_run=False) as maintenance:
-                # No new deletion here: later cold passes must finish backlog.
-                maintenance.reclaim()
-                assert maintenance.checkpoint_busy is False
-        else:
-            store._trim_if_due(connection, now + (number + 1) * 2 * _HOUR)
-            with closing(
-                connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            ) as cursor:
-                assert cursor.fetchone()[0] == 0
+        with store.maintenance(dry_run=False) as maintenance:
+            # No new deletion here: later cold passes must finish backlog.
+            maintenance.reclaim()
+            assert maintenance.checkpoint_busy is False
         pages, remaining, observed_page_size = page_state()
         assert observed_page_size == page_size
         assert free - remaining == expected
@@ -1092,7 +1101,7 @@ def test_malformed_metadata_refuses_maintenance_without_loading_payload(
         with pytest.raises(
             records.SourceRecordUnavailable, match="invalid source record metadata"
         ):
-            list(maintenance.iter_lru())
+            list(maintenance.iter_lru(maintenance.inventory()))
 
 
 def test_factory_releases_abandoned_roots_and_closes_their_connections(tmp_path):
@@ -1343,3 +1352,119 @@ def test_fork_finalization_keeps_a_directly_constructed_handle_inert(
         _close_fork_observer(child)
     holder.clear()
     assert connection_ref() is None
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_paused_metadata_page_releases_wal_and_fences_newer_rows(
+    tmp_path, monkeypatch, dry_run
+):
+    clock = [100 * _DAY]
+    install_module_view(monkeypatch, "time", time, records, time_ns=lambda: clock[0])
+    monkeypatch.setattr(records, "_PAGE_SIZE", 2)
+    store = _store(tmp_path)
+    for key in ("a", "b", "c", "d"):
+        assert store.put("module-analysis", key, b"original", generation="g")
+    with closing(sqlite3.connect(store.path, isolation_level=None, timeout=0)) as peer:
+        peer.execute("PRAGMA wal_autocheckpoint=0").close()
+        with store.maintenance(dry_run=dry_run) as maintenance:
+            iterator = maintenance.iter_lru(maintenance.inventory())
+            first = next(iterator)
+            assert first.key == "a"
+            # A real competing publication modifies pages that the paused sweep
+            # observed. Checkpoint success is the oracle for released read locks.
+            clock[0] += 301 * 1_000_000_000
+            peer.execute(
+                "UPDATE records SET payload=?, used_ns=? WHERE key='a'",
+                (b"renewed", clock[0]),
+            ).close()
+            peer.execute(
+                "INSERT INTO records VALUES('module-analysis','later','g',?,randomblob(16),?)",
+                (b"x" * (2 << 20), clock[0]),
+            ).close()
+            with closing(peer.execute("PRAGMA wal_checkpoint(TRUNCATE)")) as cursor:
+                assert cursor.fetchone() == (0, 0, 0)
+            assert Path(str(store.path) + "-wal").stat().st_size == 0
+            assert maintenance.remove([first]) == ("busy",)
+            assert [row.key for row in iterator] == ["b", "c", "d"]
+            assert peer.execute(
+                "SELECT payload FROM records WHERE key='a'"
+            ).fetchone() == (b"renewed",)
+
+
+def test_version_two_migration_retires_only_redundant_policy_metadata(tmp_path):
+    path = tmp_path / records.STORE_NAME
+    expected = _seed_version_one_store(path)
+    with closing(sqlite3.connect(path, isolation_level=None)) as peer:
+        peer.executescript("""
+            DROP INDEX records_generation;
+            DROP INDEX records_recency;
+            ALTER TABLE records RENAME TO old_records;
+            CREATE TABLE records(kind TEXT NOT NULL,key TEXT NOT NULL,generation TEXT NOT NULL,payload BLOB NOT NULL,revision BLOB NOT NULL,used_ns INTEGER NOT NULL,PRIMARY KEY(kind,key));
+            INSERT INTO records SELECT * FROM old_records;
+            DROP TABLE old_records;
+            CREATE INDEX records_generation ON records(generation);
+            CREATE INDEX records_recency ON records(used_ns,kind,key);
+            PRAGMA user_version=2;
+        """)
+    store = _store(tmp_path)
+    for kind, key, generation, payload, revision, used_ns in expected:
+        observed = store.get(kind, key, generation=generation, max_bytes=None)
+        assert observed is not None
+        assert (observed.payload, observed.revision, observed.used_ns) == (
+            payload,
+            revision,
+            used_ns,
+        )
+    with closing(sqlite3.connect(path)) as peer:
+        assert peer.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        assert peer.execute("PRAGMA user_version").fetchone() == (
+            records._SCHEMA_VERSION,
+        )
+        assert (
+            peer.execute(
+                "SELECT name FROM sqlite_schema WHERE name IN ('generations','trims','records_generation')"
+            ).fetchall()
+            == []
+        )
+        assert set(peer.execute("SELECT * FROM records")) == set(expected)
+
+
+def test_backward_clock_and_interleaved_publication_have_finite_observation_budget(
+    tmp_path, monkeypatch
+):
+    clock = [100 * _DAY]
+    install_module_view(monkeypatch, "time", time, records, time_ns=lambda: clock[0])
+    monkeypatch.setattr(records, "_PAGE_SIZE", 1)
+    store = _store(tmp_path)
+    for offset, key in enumerate(("a", "b", "c", "d")):
+        clock[0] = (100 + offset) * _DAY
+        assert store.put("module-analysis", key, b"original", generation="g")
+    with store.maintenance(dry_run=False) as maintenance:
+        statements = []
+        maintenance._connection.set_trace_callback(statements.append)
+        inventory = maintenance.inventory()
+        iterator = maintenance.iter_lru(inventory)
+        first = next(iterator)
+        assert first.key == "a"
+        # Real admitted reuse occurs after wall time moves backward from the
+        # last publication. Its recency advances but remains below the fence.
+        clock[0] = 100 * _DAY + 301 * 1_000_000_000
+        admitted = store.get("module-analysis", "a", generation="g", max_bytes=None)
+        assert admitted is not None and admitted.refresh()
+        second = next(iterator)
+        assert second.key == "a" and second.used_ns > first.used_ns
+        assert maintenance.remove([first]) == ("busy",)
+        # Keep publishing between the forward cursor and captured upper key.
+        # The initial inventory, rather than publisher quiescence, ends work.
+        for index in range(inventory.entries - 2):
+            clock[0] += 1
+            key = f"interleaved-{index}"
+            assert store.put("module-analysis", key, b"new", generation="g")
+            assert next(iterator).key == key
+        clock[0] += 1
+        assert store.put("module-analysis", "must-wait", b"new", generation="g")
+        with pytest.raises(StopIteration):
+            next(iterator)
+        assert sum("SELECT count(*)" in statement for statement in statements) == 1
+        current = store.get("module-analysis", "a", generation="g", max_bytes=None)
+        assert current is not None and current.payload == b"original"
