@@ -1197,8 +1197,8 @@ def test_pressure_evicts_checkout_state_by_last_use_outside_the_window(tmp_path)
     assert roots["recent"].is_dir(), "a root used within the window survives pressure"
 
 
-def test_retirement_reclaims_only_its_checkouts_state_at_once(tmp_path):
-    from molt import checkout_state
+def test_retirement_reclaims_only_its_checkouts_state_at_once(tmp_path, monkeypatch):
+    from molt import build_state_layout, checkout_state
     from molt.memory_guard_paths import active_guard_marker_dirs_of
 
     ext, projects, env = _checkout_family(tmp_path)
@@ -1209,6 +1209,26 @@ def test_retirement_reclaims_only_its_checkouts_state_at_once(tmp_path):
     earlier_roots = _checkout_state(ext, earlier)
     checkout_state.stamp_checkout_state(retired, env)
     checkout_state.stamp_checkout_state(earlier, env)
+    # A matching owner is only a selection hint: a copied record under the
+    # wrong target hash must not grant deletion authority.
+    control = retired_roots["build-control"]
+    wrong_name = ("0" if control.name[0] != "0" else "1") + control.name[1:]
+    forged = control.with_name(wrong_name)
+    forged.mkdir()
+    (forged / checkout_state.OWNER_RECORD).write_bytes(
+        (control / checkout_state.OWNER_RECORD).read_bytes()
+    )
+    resolve_owned_path = build_state_layout.resolve_owned_path
+    resolved_owners = []
+
+    def resolve_selected_owner(path):
+        assert path != earlier_roots["cargo-target"], (
+            "retirement resolved an unrelated target before selecting its owner"
+        )
+        resolved_owners.append(path)
+        return resolve_owned_path(path)
+
+    monkeypatch.setattr(build_state_layout, "resolve_owned_path", resolve_selected_owner)
     retired.rmdir()
     earlier.rmdir()
     # A guard elsewhere in the artifact root says nothing about these roots.
@@ -1223,6 +1243,8 @@ def test_retirement_reclaims_only_its_checkouts_state_at_once(tmp_path):
     assert not any(path.exists() for path in retired_roots.values())
     # Fresh state of another removed checkout waits for the protection window.
     assert all(path.is_dir() for path in earlier_roots.values())
+    assert forged.is_dir(), "selection must not replace target-address binding"
+    assert retired_roots["cargo-target"] in resolved_owners
 
 
 def test_the_running_interpreters_environment_is_never_reclaimed(tmp_path):

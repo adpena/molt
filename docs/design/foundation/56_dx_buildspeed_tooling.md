@@ -547,6 +547,14 @@ retires the worktree's daemons, removes it, and then reclaims its roots at
 once, without the idle window: it is the explicit owner action, as `bazel
 clean --expunge` is. A failed removal keeps the roots.
 
+Explicit checkout retirement reads bounded owner records first to reject unrelated
+roots before resolving their paths or target addresses. This still inventories
+all managed roots, including build controls whose target has disappeared: O(N)
+record reads and full binding only for the K matching candidates. A matching
+record is never deletion authority; the original binding, absence, protection,
+lock and exclusive owner reread checks remain required. Ordinary global GC must
+still validate every candidate against its own retention policy.
+
 Before removing a worktree, the canonical
 retirement consumer binds its complete known inventory from
 `checkout_state_roots`, including pinned sessions and their build controls.
