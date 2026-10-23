@@ -442,6 +442,17 @@ const runMainWithWasiExit = (fn) => {
     throw err;
   }
 };
+// After the entry returns, inside its execution boundary, the runtime reports
+// an exception the entry left pending (CPython's PyErr_Print) and returns the
+// exit status, as the native main stub does. A WASI proc_exit keeps its own
+// code (`wasiExitCode`).
+const mainExitStatus = (runtimeExports) => {
+  if (wasiExitCode !== null) return 0;
+  if (typeof runtimeExports.molt_main_exit_status !== 'function') {
+    throw new Error('runtime missing molt_main_exit_status export');
+  }
+  return Number(runtimeExports.molt_main_exit_status());
+};
 
 const setWasmMemory = (mem) => {
   if (mem) wasmMemory = mem;
@@ -5540,7 +5551,7 @@ const runDirectLink = async () => {
   });
   traceMark('direct:bootstrap:completed');
   traceMark('direct:execution:enter');
-  withRuntimeExecution(runtimeInst, () => {
+  const exitStatus = withRuntimeExecution(runtimeInst, () => {
     if (process.env.MOLT_WASM_CALL_INDIRECT_SMOKE === '1') {
       if (typeof outputInstance.exports.molt_call_indirect2 !== 'function') {
         throw new Error('molt_call_indirect2 export missing for smoke test');
@@ -5557,8 +5568,10 @@ const runDirectLink = async () => {
       molt_main();
     });
     traceMark('direct:guest:completed');
+    return mainExitStatus(runtimeInst.exports);
   });
   traceMark('direct:execution:completed');
+  return exitStatus;
 };
 
 const runLinked = async () => {
@@ -5716,15 +5729,17 @@ const runLinked = async () => {
   });
   traceMark('linked:bootstrap:completed');
   traceMark('linked:execution:enter');
-  withRuntimeExecution(linkedModule.instance, () => {
+  const exitStatus = withRuntimeExecution(linkedModule.instance, () => {
     // The generated molt_main wrapper is the sole normal-startup authority.
     runMainWithWasiExit(() => {
       traceMark('linked:guest:enter');
       molt_main();
     });
     traceMark('linked:guest:completed');
+    return mainExitStatus(linkedModule.instance.exports);
   });
   traceMark('linked:execution:completed');
+  return exitStatus;
 };
 
 const runMain = async () => {
@@ -5789,10 +5804,15 @@ const runMain = async () => {
     if (traceRun) {
       console.error(`[molt wasm] runner=${useLinked ? 'linked' : 'direct'}`);
     }
-    await runner();
+    const exitStatus = await runner();
     traceMark('runMain:runner_completed');
     if (traceRun) {
       console.error('[molt wasm] runner completed');
+    }
+    if (exitStatus !== 0) {
+      // A nonzero status ends the program before its host exports run.
+      traceMark(`runMain:exit_status:${exitStatus}`);
+      return exitStatus;
     }
     // Host exports require successful initialization; their own invoker checks
     // each call for runtime exceptions before continuing to the next call.

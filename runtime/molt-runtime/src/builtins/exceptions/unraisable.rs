@@ -371,7 +371,7 @@ pub(crate) fn report_captured_unraisable(
     }
 }
 
-fn sys_attr_bits(_py: &PyToken<'_>, name: &[u8]) -> u64 {
+pub(super) fn sys_attr_bits(_py: &PyToken<'_>, name: &[u8]) -> u64 {
     let Some(sys_bits) = crate::builtins::modules::interpreter_sys_module(_py) else {
         return MoltObject::none().bits();
     };

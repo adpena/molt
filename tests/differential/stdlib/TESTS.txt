@@ -1832,7 +1832,10 @@ tests/differential/stdlib/sys_basic.py
 tests/differential/stdlib/sys_bootstrap_env.py
 tests/differential/stdlib/sys_encoding_basic.py
 tests/differential/stdlib/sys_exc_info_nested.py
+tests/differential/stdlib/sys_excepthook_raises_systemexit.py
+tests/differential/stdlib/sys_excepthook_uncaught_exit.py
 tests/differential/stdlib/sys_exit_code_and_args.py
+tests/differential/stdlib/sys_exit_message_to_stderr.py
 tests/differential/stdlib/sys_flags_intrinsic.py
 tests/differential/stdlib/sys_float_info.py
 tests/differential/stdlib/sys_getframe_fields.py
