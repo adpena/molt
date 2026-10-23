@@ -120,6 +120,7 @@ pub(crate) use unraisable::{
 };
 
 mod exception_state_abi;
+mod main_exit;
 #[cfg(test)]
 use exception_state_abi::{exception_last_pending_bits, exception_last_public_bits};
 pub(crate) use exception_state_abi::{
@@ -703,8 +704,11 @@ pub(crate) fn system_exit_code(_py: &PyToken<'_>, ptr: *mut u8) -> i32 {
         // the conventional all-bits-set failure status without presentation.
         return to_i64(code_obj).map_or(-1, |code| code as i32);
     }
-    let message = format_obj(_py, code_obj);
-    eprintln!("{message}");
+    // `_Py_HandleSystemExit` writes `str(code)` (Py_PRINT_RAW) and a newline
+    // to `sys.stderr`.
+    let mut message = crate::object::ops_format::format_obj_str(_py, code_obj);
+    message.push('\n');
+    main_exit::write_sys_stderr(_py, &message);
     1
 }
 

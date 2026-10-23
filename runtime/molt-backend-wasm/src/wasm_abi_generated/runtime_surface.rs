@@ -127,6 +127,7 @@ pub(crate) const RUNTIME_HOST_EXPORTS: &[&str] = &[
     "molt_profile_dump",
     "molt_profile_epoch_dump",
     "molt_profile_epoch_reset",
+    "molt_main_exit_status",
     "molt_runtime_shutdown",
     "molt_scratch_alloc",
     "molt_scratch_free",

@@ -547,51 +547,6 @@ pub extern "C" fn molt_raise(exc_bits: u64) -> u64 {
     })
 }
 
-/// Report one exception that escaped the outer application boundary and return
-/// its process exit code without terminating inside the runtime.
-///
-/// Process termination belongs to the host boundary so persistent GIL,
-/// lifecycle-lease, and PyThreadState custody always reaches
-/// `molt_runtime_exit`. Raising inside a function or async task therefore only
-/// publishes pending state; this reporter is the single traceback/SystemExit
-/// policy authority used by the native main stub.
-#[unsafe(no_mangle)]
-#[cfg(not(target_arch = "wasm32"))]
-pub extern "C" fn molt_exception_report_uncaught(exc_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let Some(exc_ptr) = obj_from_bits(exc_bits).as_ptr() else {
-            eprintln!("RuntimeError: invalid uncaught exception payload");
-            return 1;
-        };
-        if !exception_is_instance(_py, exc_bits) {
-            eprintln!("RuntimeError: uncaught payload is not an exception");
-            return 1;
-        }
-        if exception_matches_builtin_name(_py, exc_bits, "SystemExit") {
-            return super::system_exit_code(_py, exc_ptr) as u32 as u64;
-        }
-        // CPython `run_eval_code_obj`: only an exact KeyboardInterrupt makes
-        // the process exit by SIGINT once finalization completes.
-        let keyboard_interrupt = exception_type_bits_from_name(_py, "KeyboardInterrupt");
-        if keyboard_interrupt != 0
-            && exception_class(_py, exc_bits)
-                .is_some_and(|class| class.bits() == keyboard_interrupt)
-        {
-            crate::builtins::signal_ext::signal_note_unhandled_keyboard_interrupt(_py);
-        }
-        let formatted = format_exception_with_traceback(_py, exc_ptr);
-        eprintln!("{formatted}");
-        if let Some(path) = crate::runtime_state(_py)
-            .policy()
-            .exception_log_path
-            .as_ref()
-        {
-            let _ = std::fs::write(path, formatted.as_bytes());
-        }
-        1
-    })
-}
-
 #[cfg(test)]
 mod diagnostic_tests {
     use super::*;

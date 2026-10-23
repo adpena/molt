@@ -264,7 +264,9 @@ their order; `tools/gen_native_launch_abi.py` generates the stub's C declaration
 runner's `RuntimeLaunchApi` from it. The runner performs the stub's sequence in order:
 install the environment, register compiled sources, set the app callable resolver, install
 the module registry, `molt_runtime_init`, take the GIL, set argv, call `molt_main`, and
-leave through `molt_runtime_exit` after reporting an uncaught exception. The runner's own
+leave through `molt_runtime_exit` with the status `molt_main_exit_status` returns. That
+runtime entry reports an exception the program left pending as CPython's `PyErr_Print`
+does, and the WASM hosts call the same entry after `molt_main`. The runner's own
 failures exit with status 125, as the stub's do. With `--start-receipt <path>` the runner
 also creates `<path>` after the program compiled, immediately before the runtime starts,
 so a caller can tell a failure to compile from a program that exits with status 125;

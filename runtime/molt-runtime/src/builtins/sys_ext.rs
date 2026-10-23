@@ -1046,6 +1046,12 @@ fn dispatch_audit_event(py: &PyToken<'_>, event_bits: u64, args_bits: u64) -> bo
 }
 
 pub(crate) fn audit_event_noargs(py: &PyToken<'_>, event: &str) -> bool {
+    audit_event(py, event, &[])
+}
+
+/// Raise one audit event with positional arguments (`PySys_Audit`): hooks run
+/// in order, and a hook's exception stays pending when this returns false.
+pub(crate) fn audit_event(py: &PyToken<'_>, event: &str, args: &[u64]) -> bool {
     if sys_state(py)
         .audit_hooks
         .lock()
@@ -1059,7 +1065,7 @@ pub(crate) fn audit_event_noargs(py: &PyToken<'_>, event: &str) -> bool {
         if obj_from_bits(event_bits).is_none() {
             return false;
         }
-        let args = alloc_tuple(py, &[]);
+        let args = alloc_tuple(py, args);
         if args.is_null() {
             dec_ref_bits(py, event_bits);
             return false;
