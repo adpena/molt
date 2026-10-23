@@ -51,12 +51,15 @@ fn daemon_request_parse_accepts_a_probe_without_ir_custody() {
         "version": BACKEND_DAEMON_PROTOCOL_VERSION,
         "jobs": [{
             "id": "probe", "is_wasm": cfg!(feature = "wasm-backend"),
-            "output": "unused", "cache_key": "module", "probe_cache_only": true,
+            "output": "unused", "cache_key": "module", "probe_cache_only": true, "function_digests": "",
         }],
     }))
     .unwrap();
     let request = DaemonRequest::from_json_bytes(&frame).expect("probe request");
-    assert_eq!(request.jobs.unwrap()[0].ir_source, DaemonIrSource::Probe);
+    assert_eq!(
+        request.jobs.unwrap()[0].ir_source,
+        DaemonIrSource::Probe(Vec::new())
+    );
 }
 
 #[cfg(feature = "wasm-backend")]
@@ -69,7 +72,7 @@ fn daemon_request_parse_reads_split_runtime_app_table_base() {
             "wasm_data_base": 1048576, "wasm_table_base": 4096,
             "wasm_split_runtime_app_table_base": 8192, "wasm_runtime_poll_slots": 6,
             "output": "/tmp/out.wasm",
-            "cache_key": "module", "probe_cache_only": true,
+            "cache_key": "module", "probe_cache_only": true, "function_digests": "",
         }],
     }))
     .unwrap();
@@ -98,7 +101,7 @@ fn daemon_response_payload_omits_false_optional_fields() {
             cached: false,
             cache_tier: None,
             output_written: true,
-            needs_ir: false,
+            missing_functions: None,
             message: None,
             warnings: Vec::new(),
         }],

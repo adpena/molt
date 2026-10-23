@@ -6,7 +6,7 @@ use std::thread;
 fn key(source: &str) -> Arc<DaemonCacheKey> {
     let mut job = DaemonJobRequest::from_json_value(
         &serde_json::json!({"id":"flight", "is_wasm":cfg!(feature="wasm-backend"),
-            "output":"unused", "cache_key":source, "probe_cache_only":true}),
+            "output":"unused", "cache_key":source, "probe_cache_only":true, "function_digests": ""}),
         "job",
     )
     .expect("job");
@@ -93,7 +93,7 @@ fn same_source_different_target_has_independent_flight_state() {
     let first = key("same");
     let mut changed = DaemonJobRequest::from_json_value(
         &serde_json::json!({"id":"flight", "is_wasm":cfg!(feature="wasm-backend"),
-            "output":"unused", "cache_key":"same", "probe_cache_only":true,
+            "output":"unused", "cache_key":"same", "probe_cache_only":true, "function_digests": "",
             "wasm_data_base":4096, "target_triple":"aarch64-unknown-linux-gnu"}),
         "job",
     )

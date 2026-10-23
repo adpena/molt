@@ -165,19 +165,21 @@ fn native_compile_request(
         .create_new(true)
         .open(&lease)
         .expect("create compile IR lease");
-    rmp_serde::encode::write_named(
+    let document = molt_ir::ir::BackendIrDocument::from_json_value(&serde_json::json!({
+        "functions": [
+            {"return_abi": "void", "name": "molt_main", "params": [], "ops": [
+                {"kind": "call", "s_value": "helper"}, {"kind": "ret_void"}
+            ]},
+            {"return_abi": "void", "name": "helper", "params": [], "ops": [{"kind": "ret_void"}]}
+        ],
+        "profile": null
+    }))
+    .expect("valid compile IR");
+    std::io::Write::write_all(
         &mut file,
-        &serde_json::json!({
-            "functions": [
-                {"return_abi": "void", "name": "molt_main", "params": [], "ops": [
-                    {"kind": "call", "s_value": "helper"}, {"kind": "ret_void"}
-                ]},
-                {"return_abi": "void", "name": "helper", "params": [], "ops": [{"kind": "ret_void"}]}
-            ],
-            "profile": null
-        }),
+        &molt_ir::addressed_program::encode_complete_lease(&document).expect("encode lease"),
     )
-    .expect("encode compile IR lease");
+    .expect("write compile IR lease");
 
     serde_json::json!({
         "version": PROTOCOL_VERSION,

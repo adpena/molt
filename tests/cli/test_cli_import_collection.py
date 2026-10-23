@@ -233,6 +233,9 @@ BACKEND_EXECUTION = importlib.import_module("molt.cli.backend_execution")
 BACKEND_IR = importlib.import_module("molt.cli.backend_ir")
 CACHE_FINGERPRINTS = importlib.import_module("molt.cli.cache_fingerprints")
 CACHE_KEYS = importlib.import_module("molt.cli.cache_keys")
+BackendIrProgram = importlib.import_module(
+    "molt.cli.backend_ir_transport"
+).BackendIrProgram
 COMMAND_RUNTIME = importlib.import_module("molt.cli.command_runtime")
 LOCKFILES = importlib.import_module("molt.cli.lockfiles")
 PROJECT_ROOTS = importlib.import_module("molt.cli.project_roots")
@@ -12229,23 +12232,23 @@ def test_backend_ir_lease_streams_msgpack_without_json_bytes_helper(
 
     artifacts = tmp_path / "artifacts"
     monkeypatch.setenv("MOLT_EXT_ROOT", str(artifacts))
+    ir = {
+        "functions": [
+            {
+                "name": "main",
+                "return_abi": "value",
+                "ops": [{"kind": "ret_void"}],
+            }
+        ]
+    }
     lease_path = BACKEND_EXECUTION._write_backend_ir_lease(
-        tmp_path / "project",
-        {
-            "functions": [
-                {
-                    "name": "main",
-                    "return_abi": "value",
-                    "ops": [{"kind": "ret_void"}],
-                }
-            ]
-        },
+        tmp_path / "project", BackendIrProgram(ir, CACHE_KEYS.FunctionDigests())
     )
 
     assert lease_path.parent == artifacts.resolve() / "tmp" / "backend-ir-leases"
     assert lease_path.suffix == ".msgpack"
     payload = msgpack.unpackb(lease_path.read_bytes(), raw=False)
-    assert payload["functions"][0]["name"] == "main"
+    assert msgpack.unpackb(payload["function_bodies"][0])["name"] == "main"
 
 
 def _backend_ir_json_export_fixture() -> dict[Any, Any]:
@@ -19681,14 +19684,13 @@ def _compile_with_backend_daemon_non_wasm(
     stdlib_object_cache_key: str | None = None,
     stdlib_object_manifest: str | None = None,
     stdlib_module_symbols_json: str | None = None,
-    stdlib_module_symbols: set[str] | frozenset[str] | None = None,
     timeout: float | None,
     daemon_identity: BACKEND_EXECUTION._BackendDaemonIdentity | None = None,
 ) -> _BackendDaemonCompileResult:
     return BACKEND_EXECUTION._compile_with_backend_daemon(
         socket_path,
         project_root=backend_output.parent,
-        ir=ir,
+        program=BackendIrProgram(ir, CACHE_KEYS.FunctionDigests()),
         backend_output=backend_output,
         artifact_contract=resolve_backend_artifact_contract(
             target=admit_target(target_triple or "native"), emit_mode="bin"
@@ -19705,7 +19707,6 @@ def _compile_with_backend_daemon_non_wasm(
         stdlib_object_cache_key=stdlib_object_cache_key,
         stdlib_object_manifest=stdlib_object_manifest,
         stdlib_module_symbols_json=stdlib_module_symbols_json,
-        stdlib_module_symbols=stdlib_module_symbols,
         timeout=timeout,
         daemon_identity=daemon_identity,
         native_runtime_codegen_binding=transport_codegen_binding(
@@ -28103,7 +28104,7 @@ def test_native_backend_compile_routes_stdlib_object_env(
             cache_hit_tier=None,
         ),
         backend_daemon_config_digest=None,
-        ir={"functions": []},
+        program=BackendIrProgram({"functions": []}, CACHE_KEYS.FunctionDigests()),
         json_output=False,
         warnings=[],
         verbose=False,
@@ -28207,7 +28208,7 @@ def test_native_backend_compile_overrides_stale_ambient_partition_env(
             stdlib_module_symbols_json='["builtins","sys"]',
         ),
         backend_daemon_config_digest=None,
-        ir={"functions": []},
+        program=BackendIrProgram({"functions": []}, CACHE_KEYS.FunctionDigests()),
         json_output=False,
         warnings=[],
         verbose=False,
@@ -28307,7 +28308,7 @@ def test_native_backend_compile_clears_stale_partition_env_without_split(
             stdlib_module_symbols_json=None,
         ),
         backend_daemon_config_digest=None,
-        ir={"functions": []},
+        program=BackendIrProgram({"functions": []}, CACHE_KEYS.FunctionDigests()),
         json_output=False,
         warnings=[],
         verbose=False,
@@ -28412,7 +28413,7 @@ def test_backend_compile_stages_one_shot_output_into_cache(
         ),
         backend_daemon_config_digest=None,
         entry_module="pkg.app",
-        ir={"functions": []},
+        program=BackendIrProgram({"functions": []}, CACHE_KEYS.FunctionDigests()),
         json_output=json_output,
         warnings=[],
         verbose=verbose,
@@ -28549,7 +28550,9 @@ def test_execute_backend_compile_defers_full_daemon_request_encode_until_probe_m
         ),
         backend_daemon_config_digest="digest123",
         entry_module="pkg.app",
-        ir={"functions": [{"name": "heavy"}]},
+        program=BackendIrProgram(
+            {"functions": [{"name": "heavy"}]}, CACHE_KEYS.FunctionDigests()
+        ),
         json_output=False,
         warnings=[],
         verbose=False,
@@ -28690,7 +28693,9 @@ def test_execute_backend_compile_keeps_probe_path_across_daemon_restart(
         ),
         backend_daemon_config_digest="digest123",
         entry_module="pkg.app",
-        ir={"functions": [{"name": "heavy"}]},
+        program=BackendIrProgram(
+            {"functions": [{"name": "heavy"}]}, CACHE_KEYS.FunctionDigests()
+        ),
         json_output=False,
         warnings=[],
         verbose=False,
@@ -28736,7 +28741,12 @@ def test_execute_backend_compile_does_not_retry_after_full_daemon_request(
     ) -> _BackendDaemonCompileResult:
         nonlocal compile_attempts
         assert socket_path == tmp_path / "daemon.sock"
-        assert kwargs["ir"] == {"functions": [{"name": "heavy"}]}
+        program = cast(BackendIrProgram, kwargs["program"])
+        assert program.digests == (
+            BackendIrProgram(
+                {"functions": [{"name": "heavy"}]}, CACHE_KEYS.FunctionDigests()
+            ).digests
+        )
         compile_attempts += 1
         return _BackendDaemonCompileResult(
             False,
@@ -28814,7 +28824,9 @@ def test_execute_backend_compile_does_not_retry_after_full_daemon_request(
         ),
         backend_daemon_config_digest="digest123",
         entry_module="pkg.app",
-        ir={"functions": [{"name": "heavy"}]},
+        program=BackendIrProgram(
+            {"functions": [{"name": "heavy"}]}, CACHE_KEYS.FunctionDigests()
+        ),
         json_output=True,
         warnings=[],
         verbose=False,
@@ -28924,7 +28936,9 @@ def test_execute_backend_compile_fails_closed_after_daemon_failure(
         ),
         backend_daemon_config_digest="digest123",
         entry_module="pkg.app",
-        ir={"functions": [{"name": "heavy"}]},
+        program=BackendIrProgram(
+            {"functions": [{"name": "heavy"}]}, CACHE_KEYS.FunctionDigests()
+        ),
         json_output=True,
         warnings=[],
         verbose=False,
@@ -29032,7 +29046,9 @@ def test_execute_backend_compile_verbose_prints_only_fresh_daemon_log(
         ),
         backend_daemon_config_digest="digest123",
         entry_module="pkg.app",
-        ir={"functions": [{"name": "changed"}]},
+        program=BackendIrProgram(
+            {"functions": [{"name": "changed"}]}, CACHE_KEYS.FunctionDigests()
+        ),
         json_output=False,
         warnings=[],
         verbose=True,
@@ -29121,7 +29137,9 @@ def test_execute_backend_compile_rejects_unsynced_daemon_output_skip(
         ),
         backend_daemon_config_digest="digest123",
         entry_module="pkg.app",
-        ir={"functions": [{"name": "heavy"}]},
+        program=BackendIrProgram(
+            {"functions": [{"name": "heavy"}]}, CACHE_KEYS.FunctionDigests()
+        ),
         json_output=True,
         warnings=[],
         verbose=False,
@@ -29301,6 +29319,7 @@ def test_backend_daemon_compile_request_selects_exact_compile_or_probe_state(
 ) -> None:
     request_bytes, error = BACKEND_EXECUTION._backend_daemon_compile_request_bytes(
         ir_path=None if probe else tmp_path / "backend-ir.msgpack",
+        probe_function_digests=("cd" * 32) if probe else None,
         backend_output=tmp_path / "output.o",
         artifact_contract=resolve_backend_artifact_contract(
             target=admit_target("native"), emit_mode="obj"
@@ -29329,8 +29348,10 @@ def test_backend_daemon_compile_request_selects_exact_compile_or_probe_state(
     assert ("probe_cache_only" in job) is probe
     if probe:
         assert job["probe_cache_only"] is True
+        assert job["function_digests"] == "cd" * 32
     else:
         assert job["ir_path"] == str(tmp_path / "backend-ir.msgpack")
+        assert "function_digests" not in job
 
 
 def test_backend_daemon_compile_request_includes_batch_op_budget_env(
@@ -30163,6 +30184,7 @@ def test_compile_with_backend_daemon_surfaces_failed_job_message_after_probe_mis
                             "cached": False,
                             "output_written": False,
                             "needs_ir": True,
+                            "missing_functions": [0],
                         }
                     ],
                 },
@@ -30228,13 +30250,28 @@ def test_compile_with_backend_daemon_lazily_encodes_full_request_once(
         project_root: Path | None = None,
     ) -> tuple[dict[str, object], None]:
         del socket_path, timeout, daemon_identity, project_root
-        assert len(encoded_payloads) == 1
         payload = json.loads(data)
-        assert payload == encoded_payloads[0]
+        assert payload == encoded_payloads[-1]
         job = payload["jobs"][0]
-        assert "probe_cache_only" not in job
         assert "ir" not in job
         assert job["cache_key"] == job["function_cache_key"] == ""
+        if job.get("probe_cache_only"):
+            # The probe names the (empty) program; nothing is resident.
+            assert job["function_digests"] == ""
+            return (
+                {
+                    "ok": True,
+                    "jobs": [
+                        {
+                            "id": "job0",
+                            "ok": True,
+                            "needs_ir": True,
+                            "missing_functions": [],
+                        }
+                    ],
+                },
+                None,
+            )
         assert job["native_output_kind"] == "archive"
         assert (
             job["target_triple"]
@@ -30243,7 +30280,10 @@ def test_compile_with_backend_daemon_lazily_encodes_full_request_once(
             ).target_triple
         )
         lease = Path(job["ir_path"])
-        assert msgpack.unpackb(lease.read_bytes(), raw=False) == {"functions": []}
+        assert msgpack.unpackb(lease.read_bytes(), raw=False) == {
+            "function_bodies": [],
+            "function_digests": b"",
+        }
         leases.append(lease)
         backend_output.write_bytes(b"\x7fELF")
         return (
@@ -30276,7 +30316,8 @@ def test_compile_with_backend_daemon_lazily_encodes_full_request_once(
     assert result.ok is True
     assert result.output_written is True
     assert result.output_exists is True
-    assert len(encoded_payloads) == 1
+    # One probe, then one lease request; each payload is encoded once.
+    assert len(encoded_payloads) == 2
     assert len(leases) == 1 and not leases[0].exists()
 
 
@@ -30407,6 +30448,7 @@ def test_compile_with_backend_daemon_retries_with_ir_after_probe_miss(
                             "cached": False,
                             "output_written": False,
                             "needs_ir": True,
+                            "missing_functions": [0],
                         }
                     ],
                 }
@@ -30414,9 +30456,10 @@ def test_compile_with_backend_daemon_retries_with_ir_after_probe_miss(
                 job = cast(dict[str, object], payload["jobs"][0])
                 assert "ir" not in job
                 ir_path = Path(cast(str, job["ir_path"]))
-                assert msgpack.unpackb(ir_path.read_bytes(), raw=False) == {
-                    "functions": [{"name": "heavy"}]
-                }
+                lease = msgpack.unpackb(ir_path.read_bytes(), raw=False)
+                assert [msgpack.unpackb(body) for body in lease["function_bodies"]] == [
+                    {"name": "heavy"}
+                ]
                 ir_lease_paths.append(ir_path)
                 backend_output.write_bytes(
                     static_archive_bytes(
@@ -30465,12 +30508,6 @@ def test_compile_with_backend_daemon_retries_with_ir_after_probe_miss(
         stdlib_object_cache_key="stdlib-cache-key",
         stdlib_object_manifest=stdlib_manifest,
         stdlib_module_symbols_json='["importlib","importlib_machinery","importlib_util","sys"]',
-        stdlib_module_symbols={
-            "importlib",
-            "importlib_machinery",
-            "importlib_util",
-            "sys",
-        },
         timeout=0.1,
     )
 
@@ -30482,6 +30519,11 @@ def test_compile_with_backend_daemon_retries_with_ir_after_probe_miss(
         for payload in seen_payloads
     )
     assert seen_payloads[0]["jobs"][0]["probe_cache_only"] is True
+    assert seen_payloads[0]["jobs"][0]["function_digests"] == (
+        CACHE_KEYS.function_records.function_body_digest(
+            msgpack.packb({"name": "heavy"})
+        ).hex()
+    )
     assert "ir" not in seen_payloads[0]["jobs"][0]
     assert seen_payloads[0]["env"]["MOLT_STDLIB_OBJ"] == str(stdlib_object_path)
     assert seen_payloads[0]["env"]["MOLT_STDLIB_CACHE_KEY"] == "stdlib-cache-key"
@@ -30503,79 +30545,68 @@ def test_compile_with_backend_daemon_retries_with_ir_after_probe_miss(
     assert not ir_lease_paths[0].exists()
 
 
-def test_compile_with_backend_daemon_sends_ir_when_shared_stdlib_cache_missing(
+def test_compile_with_backend_daemon_probes_when_the_shared_stdlib_archive_is_missing(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    # The daemon owns shared-stdlib cache admission; the client always asks it
+    # which bodies it lacks before writing a lease (HF-516).
     backend_output = tmp_path / "output.o"
     stdlib_object_path = tmp_path / "cache" / "missing.stdlib.o"
     seen_payloads: list[dict[str, object]] = []
 
-    class _FakeSocket:
-        def __init__(self) -> None:
-            self._chunks: list[bytes] = []
-
-        def __enter__(self) -> "_FakeSocket":
-            return self
-
-        def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
-            return False
-
-        def settimeout(self, timeout: float) -> None:
-            assert timeout == 0.1
-
-        def connect(self, address: str) -> None:
-            assert address == str(Path("/tmp/fake.sock"))
-
-        def sendall(self, data: bytes) -> None:
-            payload = json.loads(data)
-            seen_payloads.append(payload)
-            job = payload["jobs"][0]
-            assert "probe_cache_only" not in job
-            assert "ir" not in job
-            ir_path = Path(cast(str, job["ir_path"]))
-            assert msgpack.unpackb(ir_path.read_bytes(), raw=False) == {
-                "functions": [{"name": "heavy"}]
-            }
-            assert payload["env"]["MOLT_STDLIB_OBJ"] == str(stdlib_object_path)
-            assert payload["env"]["MOLT_STDLIB_CACHE_KEY"] == "stdlib-cache-key"
-            assert payload["env"]["MOLT_STDLIB_CACHE_MANIFEST"] == (
-                '{"cache_key":"stdlib-cache-key"}'
+    def _fake_request(
+        socket_path: Path,
+        data: bytes,
+        *,
+        timeout: float | None,
+        daemon_identity: object | None = None,
+        project_root: Path | None = None,
+    ) -> tuple[dict[str, object], None]:
+        del socket_path, timeout, daemon_identity, project_root
+        payload = json.loads(data)
+        seen_payloads.append(payload)
+        job = payload["jobs"][0]
+        assert "ir" not in job
+        assert payload["env"]["MOLT_STDLIB_OBJ"] == str(stdlib_object_path)
+        assert payload["env"]["MOLT_STDLIB_CACHE_KEY"] == "stdlib-cache-key"
+        assert payload["env"]["MOLT_STDLIB_CACHE_MANIFEST"] == (
+            '{"cache_key":"stdlib-cache-key"}'
+        )
+        assert payload["env"]["MOLT_STDLIB_MODULE_SYMBOLS"] == '["sys"]'
+        if job.get("probe_cache_only"):
+            return (
+                {
+                    "ok": True,
+                    "jobs": [
+                        {
+                            "id": "job0",
+                            "ok": True,
+                            "needs_ir": True,
+                            "missing_functions": [0],
+                        }
+                    ],
+                },
+                None,
             )
-            assert payload["env"]["MOLT_STDLIB_MODULE_SYMBOLS"] == '["sys"]'
-            backend_output.write_bytes(b"\x7fELF")
-            self._chunks = [
-                json.dumps(
-                    {
-                        "ok": True,
-                        "jobs": [
-                            {
-                                "id": "job0",
-                                "ok": True,
-                                "cached": False,
-                                "output_written": True,
-                            }
-                        ],
-                    }
-                ).encode("utf-8")
-                + b"\n"
-            ]
+        lease = msgpack.unpackb(Path(job["ir_path"]).read_bytes(), raw=False)
+        assert [msgpack.unpackb(body) for body in lease["function_bodies"]] == [
+            {"name": "heavy"}
+        ]
+        backend_output.write_bytes(b"\x7fELF")
+        return (
+            {
+                "ok": True,
+                "jobs": [
+                    {"id": "job0", "ok": True, "cached": False, "output_written": True}
+                ],
+            },
+            None,
+        )
 
-        def shutdown(self, how: int) -> None:
-            assert how in (socket.SHUT_WR,)
-
-        def recv_into(self, buffer: memoryview) -> int:
-            if not self._chunks:
-                return 0
-            chunk = self._chunks.pop(0)
-            buffer[: len(chunk)] = chunk
-            return len(chunk)
-
-        def close(self) -> None:
-            return None
-
-    _enable_fake_backend_daemon_unix_socket(monkeypatch)
-    monkeypatch.setattr(BACKEND_EXECUTION.socket, "socket", lambda *args: _FakeSocket())
+    monkeypatch.setattr(
+        BACKEND_EXECUTION, "_backend_daemon_request_bytes", _fake_request
+    )
     result = _compile_with_backend_daemon_non_wasm(
         Path("/tmp/fake.sock"),
         ir={"functions": [{"name": "heavy"}]},
@@ -30590,13 +30621,15 @@ def test_compile_with_backend_daemon_sends_ir_when_shared_stdlib_cache_missing(
         stdlib_object_cache_key="stdlib-cache-key",
         stdlib_object_manifest='{"cache_key":"stdlib-cache-key"}',
         stdlib_module_symbols_json='["sys"]',
-        stdlib_module_symbols={"sys"},
         timeout=0.1,
     )
 
-    assert result.ok is True
-    assert len(seen_payloads) == 1
-    ir_path = Path(cast(str, seen_payloads[0]["jobs"][0]["ir_path"]))
+    assert result.ok is True, result.error
+    assert [bool(p["jobs"][0].get("probe_cache_only")) for p in seen_payloads] == [
+        True,
+        False,
+    ]
+    ir_path = Path(cast(str, seen_payloads[1]["jobs"][0]["ir_path"]))
     assert not ir_path.exists()
 
 

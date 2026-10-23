@@ -282,17 +282,18 @@ fn program(extra_import: Option<&str>, filler: usize) -> Vec<u8> {
     functions.extend(
         (0..filler).map(|index| function(&format!("filler_{index}"), false, vec![op("ret_void")])),
     );
-    #[derive(serde::Serialize)]
-    struct Document {
-        functions: Vec<FunctionIR>,
-        module_registry: ModuleRegistryIR,
-    }
-    rmp_serde::to_vec_named(&Document {
-        functions,
-        module_registry: ModuleRegistryIR {
+    // The content-addressed lease `src/molt/cli/jit_image.py` writes: every
+    // body shipped, each named by its digest (backend daemon protocol 3).
+    molt_ir::addressed_program::encode_complete_lease(&molt_ir::ir::BackendIrDocument {
+        ir: molt_ir::ir::SimpleIR {
+            functions,
+            profile: None,
+        },
+        module_registry: Some(ModuleRegistryIR {
             blob: vec![0; 8],
             ..ModuleRegistryIR::default()
-        },
+        }),
+        code_slots: Default::default(),
     })
     .expect("encode the program")
 }

@@ -5,6 +5,7 @@ from molt.compilation_target import admit_target
 from tests.cli.native_link_test_support import transport_codegen_binding
 
 import copy
+import hashlib
 import io
 import json
 import os
@@ -17,11 +18,31 @@ import pytest
 
 from molt.backend_protocol import BACKEND_DAEMON_PROTOCOL_VERSION
 from molt.cli import native_symbol_inspection
-from molt.cli.backend_ir_transport import write_backend_ir
+from molt.cli.backend_ir_transport import (
+    BackendIrProgram,
+    _bin_header,
+    _container_header,
+)
+from molt.cli.cache_keys import FunctionDigests
+from molt.cli.function_records import FunctionDigestSeed, function_body_digest
 
 from molt.cli import backend_cache, backend_execution, build_output_layout, factgraph
 from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
 from molt.native_target import NativeArtifactKind
+
+
+def _program(functions, **header):
+    """An addressed program whose digests the transport computes itself."""
+    return BackendIrProgram({"functions": functions, **header}, FunctionDigests())
+
+
+_DOMAIN = b"molt.function-body.msgpack.v1\0"
+
+
+def _lease(program, shipped=None):
+    output = io.BytesIO()
+    program.write(output, shipped)
+    return output.getvalue()
 
 
 @pytest.mark.parametrize("kind", list(NativeArtifactKind))
@@ -36,6 +57,7 @@ def test_native_output_kind_is_explicit_in_full_and_probe_requests(
     stdlib_key = "stdlib-key" if kind is NativeArtifactKind.ARCHIVE else None
     payload, error = backend_execution._backend_daemon_compile_request_bytes(
         ir_path=None if probe else Path("backend-ir.msgpack"),
+        probe_function_digests=("ab" * 32) if probe else None,
         backend_output=Path("arbitrary.filename"),
         artifact_contract=contract,
         wasm_link=False,
@@ -61,6 +83,7 @@ def test_native_output_kind_is_explicit_in_full_and_probe_requests(
     job = request["jobs"][0]
     assert ("probe_cache_only" in job) is probe
     assert ("ir_path" in job) is not probe
+    assert job.get("function_digests") == (("ab" * 32) if probe else None)
     assert "ir" not in job
     assert job["native_output_kind"] == kind.value
     assert job["target_triple"] == contract.target_triple
@@ -81,6 +104,7 @@ def test_wasm_requests_omit_native_output_kind(target: str, probe: bool) -> None
     )
     payload, error = backend_execution._backend_daemon_compile_request_bytes(
         ir_path=None if probe else Path("backend-ir.msgpack"),
+        probe_function_digests="" if probe else None,
         backend_output=Path("output.wasm"),
         artifact_contract=contract,
         wasm_link=True,
@@ -115,6 +139,7 @@ def test_wasm_requests_omit_native_output_kind(target: str, probe: bool) -> None
     assert job["wasm_table_base"] == 8
     assert ("probe_cache_only" in job) is probe
     assert ("ir_path" in job) is not probe
+    assert job.get("function_digests") == ("" if probe else None)
     assert "ir" not in job
 
 
@@ -142,12 +167,23 @@ def test_daemon_probe_and_full_request_preserve_cache_setup_contract(
         job = json.loads(payload)["jobs"][0]
         jobs.append(job)
         if job.get("probe_cache_only"):
+            assert job["function_digests"] == ""
             return {
                 "ok": True,
-                "jobs": [{"ok": True, "needs_ir": True, "output_written": False}],
+                "jobs": [
+                    {
+                        "ok": True,
+                        "needs_ir": True,
+                        "missing_functions": [],
+                        "output_written": False,
+                    }
+                ],
             }, None
         lease = Path(job["ir_path"])
-        assert msgpack.unpackb(lease.read_bytes(), raw=False) == {"functions": []}
+        assert msgpack.unpackb(lease.read_bytes(), raw=False) == {
+            "function_bodies": [],
+            "function_digests": b"",
+        }
         leases.append(lease)
         return {
             "ok": True,
@@ -158,7 +194,7 @@ def test_daemon_probe_and_full_request_preserve_cache_setup_contract(
     result = backend_execution._compile_with_backend_daemon(
         tmp_path / "daemon.sock",
         project_root=tmp_path,
-        ir={"functions": []},
+        program=_program([]),
         backend_output=output,
         artifact_contract=contract,
         wasm_link=contract.is_wasm,
@@ -193,6 +229,105 @@ def test_daemon_probe_and_full_request_preserve_cache_setup_contract(
             )
 
 
+def _needs(missing):
+    return {
+        "ok": True,
+        "jobs": [
+            {
+                "ok": True,
+                "needs_ir": True,
+                "missing_functions": missing,
+                "output_written": False,
+            }
+        ],
+    }
+
+
+_COMPILED = {
+    "ok": True,
+    "jobs": [{"ok": True, "cached": False, "output_written": False}],
+}
+_CACHED = {
+    "ok": True,
+    "jobs": [
+        {"ok": True, "cached": True, "cache_tier": "module", "output_written": False}
+    ],
+}
+
+
+@pytest.mark.parametrize(
+    "replies,expected_shipped,expected_error",
+    [
+        # A warm artifact cache: one probe, no lease.
+        ([_CACHED], [], None),
+        # The store lacks one body; the lease ships exactly that body.
+        ([_needs([1]), _COMPILED], [[1]], None),
+        # Every body is resident; the lease ships none.
+        ([_needs([]), _COMPILED], [[]], None),
+        # A body was evicted after the probe; the second lease ships every body.
+        ([_needs([1]), _needs([0]), _COMPILED], [[1], [0, 1, 2]], None),
+        # A complete lease cannot miss: a daemon that still asks is an error.
+        (
+            [_needs([1]), _needs([0]), _needs([0])],
+            [[1], [0, 1, 2]],
+            "lacks function bodies after a complete IR lease",
+        ),
+        # Positions must name the program's functions.
+        ([_needs([3])], [], "lacks valid missing_functions"),
+        ([_needs(None)], [], "lacks valid missing_functions"),
+    ],
+)
+def test_daemon_client_ships_only_the_bodies_the_daemon_lacks(
+    tmp_path, monkeypatch, replies, expected_shipped, expected_error
+):
+    contract = resolve_backend_artifact_contract(
+        target=admit_target("wasm"), emit_mode="wasm"
+    )
+    functions = [
+        {"name": f"f{index}", "ops": [{"kind": "ret_void"}]} for index in range(3)
+    ]
+    program = _program(functions)
+    bodies = [msgpack.packb(function, use_bin_type=True) for function in functions]
+    pending = list(replies)
+    shipped = []
+
+    def request(socket_path, payload, **kwargs):
+        job = json.loads(payload)["jobs"][0]
+        if job.get("probe_cache_only"):
+            assert job["function_digests"] == program.digest_hex()
+        else:
+            lease = msgpack.unpackb(Path(job["ir_path"]).read_bytes(), raw=False)
+            assert lease["function_digests"] == bytes.fromhex(program.digest_hex())
+            shipped.append([bodies.index(body) for body in lease["function_bodies"]])
+        return pending.pop(0), None
+
+    monkeypatch.setattr(backend_execution, "_backend_daemon_request_bytes", request)
+    result = backend_execution._compile_with_backend_daemon(
+        tmp_path / "daemon.sock",
+        project_root=tmp_path,
+        program=program,
+        backend_output=tmp_path / "output.wasm",
+        artifact_contract=contract,
+        wasm_link=True,
+        wasm_data_base=None,
+        wasm_table_base=None,
+        cache_key="module-key",
+        function_cache_key=None,
+        config_digest=None,
+        timeout=None,
+        request_environment=os.environ,
+    )
+    assert not pending, "every scripted reply is consumed"
+    assert shipped == expected_shipped
+    if expected_error is None:
+        assert result.ok, result.error
+        assert result.full_request_sent is bool(expected_shipped)
+    else:
+        assert not result.ok
+        assert expected_error in (result.error or "")
+    assert not list((tmp_path).rglob("*.msgpack")), "every lease is released"
+
+
 @pytest.mark.parametrize("target", ["rust", "luau", "mlir"])
 def test_daemon_rejects_text_contract_before_ir_lease_or_transport(
     tmp_path, monkeypatch, target
@@ -225,7 +360,7 @@ def test_daemon_rejects_text_contract_before_ir_lease_or_transport(
     result = backend_execution._compile_with_backend_daemon(
         tmp_path / "daemon.sock",
         project_root=tmp_path,
-        ir={"functions": []},
+        program=_program([]),
         backend_output=tmp_path / "output",
         artifact_contract=contract,
         wasm_link=False,
@@ -350,19 +485,25 @@ def test_missing_archive_member_definition_remains_a_closure_error(monkeypatch):
 
 def test_failed_ir_lease_write_leaves_no_partial_lease(tmp_path, monkeypatch):
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
-    good = backend_execution._write_backend_ir_lease(
-        tmp_path / "project", {"functions": []}
-    )
+    good = backend_execution._write_backend_ir_lease(tmp_path / "project", _program([]))
     lease_dir = good.parent
-    assert msgpack.unpackb(good.read_bytes(), raw=False) == {"functions": []}
+    assert msgpack.unpackb(good.read_bytes(), raw=False) == {
+        "function_bodies": [],
+        "function_digests": b"",
+    }
 
     class Unencodable:
         pass
 
-    # The first function streams out before the encoder meets the bad value.
-    ir = {"functions": [{"name": "main"}, {"name": Unencodable()}]}
+    # A seeded digest admits the program without encoding it, so the first
+    # body streams out before the encoder meets the bad value.
+    bad = {"name": Unencodable()}
+    program = BackendIrProgram(
+        {"functions": [{"name": "main"}, bad]},
+        FunctionDigests([FunctionDigestSeed(bad, b"\0" * 32)]),
+    )
     with pytest.raises(TypeError):
-        backend_execution._write_backend_ir_lease(tmp_path / "project", ir)
+        backend_execution._write_backend_ir_lease(tmp_path / "project", program)
     assert sorted(lease_dir.iterdir()) == [good]
 
 
@@ -378,20 +519,17 @@ def test_failed_ir_lease_write_leaves_no_partial_lease(tmp_path, monkeypatch):
 def test_binary_ir_container_headers_follow_messagepack_boundaries(
     count, map_header, array_header
 ):
-    mapping = {str(index): index for index in range(count)}
-    output = io.BytesIO()
-    write_backend_ir(output, mapping)
-    encoded = output.getvalue()
-    assert encoded.startswith(map_header)
-    assert msgpack.unpackb(encoded, raw=False) == mapping
+    assert _container_header(count, array=False) == map_header
+    assert _container_header(count, array=True) == array_header
+    # The reference encoder frames containers of the same size identically.
+    assert msgpack.packb({str(i): 0 for i in range(count)}).startswith(map_header)
+    assert msgpack.packb([0] * count).startswith(array_header)
 
-    values = list(range(count))
-    output = io.BytesIO()
-    write_backend_ir(output, {"values": values})
-    encoded = output.getvalue()
-    # One-entry map, six-byte string key, then the actual array header.
-    assert encoded.startswith(b"\x81\xa6values" + array_header)
-    assert msgpack.unpackb(encoded, raw=False) == {"values": values}
+
+@pytest.mark.parametrize("length", [0, 255, 256, 65535, 65536])
+def test_binary_ir_bin_headers_follow_messagepack_boundaries(length):
+    payload = b"\x07" * length
+    assert _bin_header(length) + payload == msgpack.packb(payload, use_bin_type=True)
 
 
 def test_binary_ir_function_values_preserve_exact_f64_bits():
@@ -407,36 +545,24 @@ def test_binary_ir_function_values_preserve_exact_f64_bits():
         "0000000000000001",
     ]
     values = [struct.unpack(">d", bytes.fromhex(bits))[0] for bits in bit_patterns]
-    ir = {
-        "functions": [
-            {
-                "name": "main",
-                "ops": [{"kind": "const_float", "f_value": value} for value in values],
-            }
-        ]
+    function = {
+        "name": "main",
+        "ops": [{"kind": "const_float", "f_value": value} for value in values],
     }
-    output = io.BytesIO()
-    write_backend_ir(output, ir)
-    encoded = output.getvalue()
-    decoded = msgpack.unpackb(encoded, raw=False)
-    decoded_values = [op["f_value"] for op in decoded["functions"][0]["ops"]]
+    decoded = msgpack.unpackb(_lease(_program([function])), raw=False)
+    (body,) = decoded["function_bodies"]
+    decoded_values = [op["f_value"] for op in msgpack.unpackb(body)["ops"]]
     assert [struct.pack(">d", value).hex() for value in decoded_values] == bit_patterns
-    assert [struct.pack(">d", value).hex() for value in values] == bit_patterns
     # Independent encoder agreement also rejects f32 or JSON float projection.
     canonical = {
-        "functions": [
-            {
-                "name": "main",
-                "ops": [{"f_value": value, "kind": "const_float"} for value in values],
-            }
-        ]
+        "name": "main",
+        "ops": [{"f_value": value, "kind": "const_float"} for value in values],
     }
-    assert encoded == msgpack.packb(
-        canonical, use_bin_type=True, use_single_float=False
-    )
+    assert body == msgpack.packb(canonical, use_bin_type=True, use_single_float=False)
+    assert decoded["function_digests"] == hashlib.sha256(_DOMAIN + body).digest()
 
 
-def test_binary_ir_writes_bounded_elements_without_mutating_source():
+def test_binary_ir_lease_ships_selected_bodies_without_mutating_source():
     functions = [
         {
             "name": f"function_{index}",
@@ -447,11 +573,13 @@ def test_binary_ir_writes_bounded_elements_without_mutating_source():
     ]
     ir = {
         "functions": functions,
-        "modules": [{"name": "module", "payload": b"\x00\xff"}],
+        "code_slots": {"function_0": 0},
+        "module_registry": None,
         "profile": {"enabled": True, "label": "é"},
-        "empty": [],
+        "runtime_feedback": {"not": "a backend input"},
     }
     before = copy.deepcopy(ir)
+    program = BackendIrProgram(ir, FunctionDigests())
     writes = []
 
     class RecordingHandle:
@@ -460,36 +588,45 @@ def test_binary_ir_writes_bounded_elements_without_mutating_source():
             writes.append(data)
             return len(data)
 
-    write_backend_ir(RecordingHandle(), ir)
+    program.write(RecordingHandle(), [3, 1, 1])
     encoded = b"".join(writes)
-    assert msgpack.unpackb(encoded, raw=False) == before
+    decoded = msgpack.unpackb(encoded, raw=False)
     assert ir == before
-    elements = [
-        element
-        for value in before.values()
-        for element in (value if isinstance(value, list) else [value])
+    # Sorted keys; only the header fields the backend admits travel.
+    assert list(decoded) == [
+        "code_slots",
+        "function_bodies",
+        "function_digests",
+        "module_registry",
+        "profile",
     ]
-    largest_element = max(
-        len(msgpack.packb(element, use_bin_type=True)) for element in elements
-    )
-    assert max(map(len, writes)) == largest_element < len(encoded)
-    assert len(writes) <= 1 + 2 * len(ir) + len(elements)
-    # A complete function is emitted once, rather than token by token.
-    assert all(
-        msgpack.packb(function, use_bin_type=True) in writes for function in functions
-    )
+    assert decoded["code_slots"] == before["code_slots"]
+    assert decoded["profile"] == before["profile"]
+    bodies = [msgpack.packb(f, use_bin_type=True) for f in functions]
+    expected_digests = [hashlib.sha256(_DOMAIN + body).digest() for body in bodies]
+    assert decoded["function_digests"] == b"".join(expected_digests)
+    assert program.digest_hex() == b"".join(expected_digests).hex()
+    # Program order ships each selected body once, as its exact bytes.
+    assert decoded["function_bodies"] == [bodies[1], bodies[3]]
+    assert function_body_digest(decoded["function_bodies"][0]) == expected_digests[1]
+    # One body (or the 32-byte-per-function digest list) is resident at a
+    # time, never the whole document.
+    largest = max(32 * len(functions), *(len(body) for body in bodies))
+    assert max(map(len, writes)) == largest < len(encoded)
+    with pytest.raises(ValueError, match="outside the program"):
+        program.write(RecordingHandle(), [4])
 
 
 def test_ir_leases_are_exclusive_and_preserve_an_existing_owner(tmp_path, monkeypatch):
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
     project = tmp_path / "project"
-    ir = {"functions": []}
-    first = backend_execution._write_backend_ir_lease(project, ir)
-    second = backend_execution._write_backend_ir_lease(project, ir)
+    empty = {"function_bodies": [], "function_digests": b""}
+    first = backend_execution._write_backend_ir_lease(project, _program([]))
+    second = backend_execution._write_backend_ir_lease(project, _program([]))
     assert first != second
     assert first.suffix == second.suffix == ".msgpack"
-    assert msgpack.unpackb(first.read_bytes(), raw=False) == ir
-    assert msgpack.unpackb(second.read_bytes(), raw=False) == ir
+    assert msgpack.unpackb(first.read_bytes(), raw=False) == empty
+    assert msgpack.unpackb(second.read_bytes(), raw=False) == empty
     original = first.read_bytes()
     first_uuid = first.stem.rsplit("-", 1)[1]
     monkeypatch.setattr(
@@ -497,7 +634,7 @@ def test_ir_leases_are_exclusive_and_preserve_an_existing_owner(tmp_path, monkey
     )
     with pytest.raises(FileExistsError):
         backend_execution._write_backend_ir_lease(
-            project, {"functions": [{"name": "other"}]}
+            project, _program([{"name": "other"}])
         )
     assert first.read_bytes() == original
     assert set(first.parent.iterdir()) == {first, second}
@@ -506,18 +643,16 @@ def test_ir_leases_are_exclusive_and_preserve_an_existing_owner(tmp_path, monkey
 def test_partial_ir_write_failure_releases_only_its_lease(tmp_path, monkeypatch):
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
     project = tmp_path / "project"
-    good = backend_execution._write_backend_ir_lease(project, {"functions": []})
+    good = backend_execution._write_backend_ir_lease(project, _program([]))
     original = good.read_bytes()
 
-    def fail_after_write(handle, ir):
-        handle.write(b"\x81\xa9functions\x91")
+    def fail_after_write(self, handle, shipped=None):
+        handle.write(b"\x82\xaffunction_bodies\x91")
         handle.flush()
         raise OSError("injected write failure")
 
-    monkeypatch.setattr(backend_execution, "write_backend_ir", fail_after_write)
+    monkeypatch.setattr(BackendIrProgram, "write", fail_after_write)
     with pytest.raises(OSError, match="injected write failure"):
-        backend_execution._write_backend_ir_lease(
-            project, {"functions": [{"name": "main"}]}
-        )
+        backend_execution._write_backend_ir_lease(project, _program([{"name": "main"}]))
     assert good.read_bytes() == original
     assert list(good.parent.iterdir()) == [good]

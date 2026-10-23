@@ -10,7 +10,7 @@ fn cache_fixture_job(target: DaemonJobTarget, source: &str) -> DaemonJobRequest 
         function_cache_key: None,
         skip_module_output_if_synced: false,
         skip_function_output_if_synced: false,
-        ir_source: DaemonIrSource::Probe,
+        ir_source: DaemonIrSource::Probe(Vec::new()),
         config_namespace: None,
     }
 }
@@ -22,7 +22,7 @@ fn seed_daemon_cache(cache: &DaemonCache, kind: &str, source: &str, bytes: &[u8]
         "id": "cache-fixture", "output": "unused", "cache_key": source,
         "is_wasm": kind == "wasm",
         "native_output_kind": if kind == "wasm" { None } else { Some(kind) },
-        "probe_cache_only": true,
+        "probe_cache_only": true, "function_digests": "",
     });
     let mut job = DaemonJobRequest::from_json_value(&value, "fixture").unwrap();
     let key = job
@@ -75,6 +75,9 @@ fn daemon_non_unicode_stdlib_request_cannot_bypass_admission_on_any_native_trans
                     "id":"invalid", "is_wasm":false, "native_output_kind":kind,
                     "output":output.to_string_lossy(), "cache_key":"same", "probe_cache_only":probe
                 });
+                if probe {
+                    value["function_digests"] = "".into();
+                }
                 if !probe {
                     value["ir_path"] = root
                         .join("absent-ir.msgpack")
@@ -86,7 +89,12 @@ fn daemon_non_unicode_stdlib_request_cannot_bypass_admission_on_any_native_trans
                     DaemonJobRequest::from_json_value(&value, "job").expect("parse job"),
                     &cache,
                 );
-                assert!(!result.ok && !result.cached && !result.needs_ir && !result.output_written);
+                assert!(
+                    !result.ok
+                        && !result.cached
+                        && !result.missing_functions.is_some()
+                        && !result.output_written
+                );
                 assert!(
                     result
                         .message
@@ -105,7 +113,7 @@ fn daemon_non_unicode_stdlib_request_cannot_bypass_admission_on_any_native_trans
         let output = root.join("wasm-output");
         let value = serde_json::json!({
             "id":"wasm", "is_wasm":true, "output":output.to_string_lossy(),
-            "cache_key":"same", "probe_cache_only":true
+            "cache_key":"same", "probe_cache_only":true, "function_digests": ""
         });
         let result = compile_single_job(
             DaemonJobRequest::from_json_value(&value, "job").expect("parse wasm"),
@@ -166,6 +174,9 @@ fn daemon_native_object_contract_is_checked_before_cached_or_probe_admission() {
                 "id": "invalid-object", "is_wasm": false, "native_output_kind": "object",
                 "output": output.to_string_lossy(), "cache_key": "same", "probe_cache_only": probe
             });
+            if probe {
+                value["function_digests"] = "".into();
+            }
             if !probe {
                 value["ir_path"] = root
                     .join("absent-ir.msgpack")
@@ -175,7 +186,12 @@ fn daemon_native_object_contract_is_checked_before_cached_or_probe_admission() {
             }
             let job = DaemonJobRequest::from_json_value(&value, "job").expect("parse job");
             let result = compile_single_job(job, &cache);
-            assert!(!result.ok && !result.cached && !result.needs_ir && !result.output_written);
+            assert!(
+                !result.ok
+                    && !result.cached
+                    && !result.missing_functions.is_some()
+                    && !result.output_written
+            );
             assert!(
                 result
                     .message
@@ -193,7 +209,7 @@ fn daemon_native_object_contract_is_checked_before_cached_or_probe_admission() {
         let output = root.join("wasm-output.wasm");
         let value = serde_json::json!({
             "id": "wasm", "is_wasm": true, "output": output.to_string_lossy(),
-            "cache_key": "same", "probe_cache_only": true
+            "cache_key": "same", "probe_cache_only": true, "function_digests": ""
         });
         let result = compile_single_job(
             DaemonJobRequest::from_json_value(&value, "job").expect("parse wasm job"),
@@ -227,11 +243,11 @@ fn daemon_cache_artifact_kinds_cannot_alias_even_for_equal_caller_keys() {
         ("archive", b"archive".as_slice()),
     ] {
         let output = root.join(kind);
-        let request = serde_json::json!({"id":kind, "is_wasm":false, "native_output_kind":kind, "output":output.to_string_lossy(), "cache_key":"same", "function_cache_key":"same-functions", "probe_cache_only":true});
+        let request = serde_json::json!({"id":kind, "is_wasm":false, "native_output_kind":kind, "output":output.to_string_lossy(), "cache_key":"same", "function_cache_key":"same-functions", "probe_cache_only":true, "function_digests": ""});
         let job = DaemonJobRequest::from_json_value(&request, "job").expect("parse job");
         let miss = compile_single_job(job, &cache);
         assert!(
-            miss.needs_ir,
+            miss.missing_functions.is_some(),
             "other artifact kinds cannot satisfy this cache probe"
         );
         seed_daemon_cache(&cache, kind, "same-functions", expected);
@@ -288,6 +304,7 @@ fn assert_compiled_cache_target_isolation(
         std::fs::remove_file(&lease).expect("retire producer lease");
         request.as_object_mut().unwrap().remove("ir_path");
         request["probe_cache_only"] = true.into();
+        request["function_digests"] = "".into();
         for (index, (field, value)) in alternatives.iter().enumerate() {
             let output = root.join(format!("{tier}-different-{index}"));
             let mut changed = request.clone();
@@ -295,7 +312,7 @@ fn assert_compiled_cache_target_isolation(
             changed["output"] = output.to_str().unwrap().into();
             let miss = compile(&changed);
             assert!(
-                miss.ok && miss.needs_ir && !miss.cached && !miss.output_written,
+                miss.ok && miss.missing_functions.is_some() && !miss.cached && !miss.output_written,
                 "{tier}/{field}={value}: different target reused cached bytes: {miss:?}"
             );
             assert!(!output.exists(), "a miss must not publish output");
@@ -306,10 +323,14 @@ fn assert_compiled_cache_target_isolation(
         request["id"] = "replay".into();
         request["output"] = replay.to_str().unwrap().into();
         let hit = compile(&request);
-        assert!(hit.ok && hit.cached && !hit.needs_ir && hit.output_written);
+        assert!(hit.ok && hit.cached && !hit.missing_functions.is_some() && hit.output_written);
         assert_eq!(std::fs::read(replay).unwrap(), expected);
         assert!(!lease.exists());
-        assert_eq!(cache.usage().0, 1, "only the actual producer inserts");
+        assert_eq!(
+            cache.artifact_entries(),
+            1,
+            "only the actual producer inserts"
+        );
     }
     std::fs::remove_dir_all(root).expect("remove fixture");
 }
@@ -407,18 +428,23 @@ fn daemon_actual_environment_scopes_compiled_module_and_function_reuse() {
             .unwrap()
             .remove("ir_path");
         request["jobs"][0]["probe_cache_only"] = true.into();
+        request["jobs"][0]["function_digests"] = "".into();
 
         let changed_output = root.join(format!("{tier}-changed.wasm"));
         request["jobs"][0]["output"] = changed_output.to_str().unwrap().into();
         request["env"]["MOLT_WASM_MIN_PAGES"] = "2048".into();
         let miss = run(&request);
         assert!(
-            miss.ok && miss.needs_ir && !miss.cached && !miss.output_written,
+            miss.ok && miss.missing_functions.is_some() && !miss.cached && !miss.output_written,
             "{miss:?}"
         );
         assert!(!changed_output.exists());
         // Compile the changed semantics and inspect its literal binary effect.
         request["jobs"][0]["probe_cache_only"] = false.into();
+        request["jobs"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("function_digests");
         request["jobs"][0]["ir_path"] = lease.clone().into();
         let changed = run(&request);
         assert!(
@@ -435,6 +461,7 @@ fn daemon_actual_environment_scopes_compiled_module_and_function_reuse() {
             .unwrap()
             .remove("ir_path");
         request["jobs"][0]["probe_cache_only"] = true.into();
+        request["jobs"][0]["function_digests"] = "".into();
         request["env"] = serde_json::json!({"MOLT_WASM_MIN_PAGES":"1024"});
         for (case, additions) in [
             ("same", serde_json::json!({})),
@@ -460,12 +487,12 @@ fn daemon_actual_environment_scopes_compiled_module_and_function_reuse() {
             replay["jobs"][0]["output"] = output.to_str().unwrap().into();
             let hit = run(&replay);
             assert!(
-                hit.ok && hit.cached && !hit.needs_ir && hit.output_written,
+                hit.ok && hit.cached && !hit.missing_functions.is_some() && hit.output_written,
                 "{tier}/{case}: {hit:?}"
             );
             assert_eq!(std::fs::read(output).unwrap(), expected);
         }
-        assert_eq!(cache.usage().0, 2, "only real producers insert");
+        assert_eq!(cache.artifact_entries(), 2, "only real producers insert");
         assert_eq!(
             std::fs::read(&lease).unwrap(),
             lease_bytes,
@@ -745,7 +772,7 @@ fn daemon_probe_cache_only_returns_needs_ir_on_miss() {
             function_cache_key: Some("function".to_string()),
             skip_module_output_if_synced: false,
             skip_function_output_if_synced: false,
-            ir_source: DaemonIrSource::Probe,
+            ir_source: DaemonIrSource::Probe(Vec::new()),
             config_namespace: None,
         },
         &cache,
@@ -753,7 +780,7 @@ fn daemon_probe_cache_only_returns_needs_ir_on_miss() {
 
     assert!(result.ok);
     assert!(!result.cached);
-    assert!(result.needs_ir);
+    assert!(result.missing_functions.is_some());
     assert!(!result.output_written);
 }
 
@@ -775,7 +802,7 @@ fn daemon_probes_and_full_cache_hits_do_not_open_ir() {
     let missing_lease = output.with_extension("missing-ir");
     assert!(!missing_lease.exists());
     for ir_source in [
-        DaemonIrSource::Probe,
+        DaemonIrSource::Probe(Vec::new()),
         DaemonIrSource::Lease(missing_lease.to_string_lossy().into_owned()),
     ] {
         let result = compile_single_job(
@@ -795,7 +822,7 @@ fn daemon_probes_and_full_cache_hits_do_not_open_ir() {
 
         assert!(result.ok);
         assert!(result.cached);
-        assert!(!result.needs_ir);
+        assert!(!result.missing_functions.is_some());
         assert!(output.exists());
     }
     let _ = std::fs::remove_file(output);
@@ -834,7 +861,7 @@ fn daemon_cache_hit_requires_matching_shared_stdlib_artifact() {
             function_cache_key: Some("function".to_string()),
             skip_module_output_if_synced: false,
             skip_function_output_if_synced: false,
-            ir_source: DaemonIrSource::Probe,
+            ir_source: DaemonIrSource::Probe(Vec::new()),
             config_namespace: None,
         },
         &cache,
@@ -842,7 +869,7 @@ fn daemon_cache_hit_requires_matching_shared_stdlib_artifact() {
 
     assert!(result.ok);
     assert!(!result.cached);
-    assert!(result.needs_ir);
+    assert!(result.missing_functions.is_some());
     assert!(!output.exists());
     let _ = std::fs::remove_dir_all(root);
 }
@@ -889,7 +916,7 @@ fn daemon_diagnostics_bypass_warm_module_and_function_cache_entries() {
                     "id": case, "is_wasm": is_wasm,
                     "output": output.to_string_lossy(),
                     "cache_key": "module", "function_cache_key": "function",
-                    "probe_cache_only": true,
+                    "probe_cache_only": true, "function_digests": "",
                 });
                 if !is_wasm {
                     request["native_output_kind"] = kind.into();
@@ -901,7 +928,11 @@ fn daemon_diagnostics_bypass_warm_module_and_function_cache_entries() {
                 let expected_hit = dump.is_none();
                 assert!(result.ok, "{kind}/{tier}/{case}: {:?}", result.message);
                 assert_eq!(result.cached, expected_hit, "{kind}/{tier}/{case}");
-                assert_eq!(result.needs_ir, !expected_hit, "{kind}/{tier}/{case}");
+                assert_eq!(
+                    result.missing_functions.is_some(),
+                    !expected_hit,
+                    "{kind}/{tier}/{case}"
+                );
                 assert_eq!(result.output_written, expected_hit, "{kind}/{tier}/{case}");
                 assert_eq!(output.exists(), expected_hit, "{kind}/{tier}/{case}");
                 if expected_hit {
@@ -1010,8 +1041,8 @@ fn daemon_messagepack_lease_rejects_suffix_before_output_publication() {
     std::fs::create_dir(&root).unwrap();
     let lease = root.join("input.msgpack");
     let output = root.join("output.o");
-    // Literal wire bytes independent of the fixture encoder: {"functions": []}.
-    let frame = b"\x81\xa9functions\x90";
+    // Literal wire bytes independent of the fixture encoder: the empty lease.
+    let frame = b"\x82\xaffunction_bodies\x90\xb0function_digests\xc4\x00";
     for suffix in [frame.as_slice(), b"\x00", b"\xc1", b" "] {
         let mut bytes = frame.to_vec();
         bytes.extend_from_slice(suffix);
@@ -1057,5 +1088,131 @@ fn daemon_rejects_retired_json_lease_without_replacing_output() {
     let error = response.message.expect("invalid MessagePack diagnostic");
     assert!(error.contains("msgpack IR"), "{error}");
     assert_eq!(std::fs::read(output).unwrap(), b"previous output");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// One daemon request for `document`: a probe naming its digests, or a compile
+/// whose lease ships the positions `ship` selects.
+#[cfg(all(molt_backend_daemon, feature = "native-backend"))]
+fn content_addressed_request(
+    document: &molt_ir::ir::BackendIrDocument,
+    output: &std::path::Path,
+    key: &str,
+    lease: Option<&dyn Fn(usize) -> bool>,
+) -> DaemonRequest {
+    let mut job = serde_json::json!({
+        "id": key, "is_wasm": false, "native_output_kind": "archive",
+        "output": output.to_string_lossy(), "cache_key": key,
+    });
+    match lease {
+        None => {
+            job["probe_cache_only"] = true.into();
+            job["function_digests"] = molt_ir::addressed_program::lease_function_digests(document)
+                .unwrap()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<String>()
+                .into();
+        }
+        Some(ship) => {
+            let path = output.with_extension(format!("{key}.msgpack"));
+            let bytes = molt_ir::addressed_program::encode_lease(document, ship).unwrap();
+            std::fs::write(&path, bytes).unwrap();
+            job["ir_path"] = path.to_string_lossy().as_ref().into();
+        }
+    }
+    let request = serde_json::json!({
+        "version": BACKEND_DAEMON_PROTOCOL_VERSION, "config_digest": "store", "env": {},
+        "jobs": [job],
+    });
+    DaemonRequest::from_json_bytes(&serde_json::to_vec(&request).unwrap()).unwrap()
+}
+
+#[cfg(all(molt_backend_daemon, feature = "native-backend"))]
+fn run_content_addressed(cache: &DaemonCache, request: DaemonRequest) -> DaemonJobResponse {
+    let _scope = molt_ir::backend_environment::enter(request.environment);
+    let job = request.jobs.expect("jobs").pop().expect("job");
+    compile_single_job(job, cache)
+}
+
+#[test]
+#[cfg(all(molt_backend_daemon, feature = "native-backend"))]
+fn the_function_store_ships_each_body_once_and_asks_again_after_eviction() {
+    let _env_guard = TestEnvGuard::clear(&DAEMON_REQUEST_ENV_KEYS);
+    let root = molt_ir::debug_artifacts::prepare_unique_debug_artifact_path("daemon-store")
+        .expect("unique fixture path");
+    std::fs::create_dir(&root).unwrap();
+    let program = |extra_op: bool| {
+        let mut main_ops = vec![
+            serde_json::json!({"kind": "call", "s_value": "helper"}),
+            serde_json::json!({"kind": "ret_void"}),
+        ];
+        if extra_op {
+            main_ops.insert(0, serde_json::json!({"kind": "nop"}));
+        }
+        molt_ir::ir::BackendIrDocument::from_json_value(&serde_json::json!({
+            "functions": [
+                {"return_abi": "void", "name": "molt_main", "params": [], "ops": main_ops},
+                {"return_abi": "void", "name": "helper", "params": [], "ops": [{"kind": "ret_void"}]}
+            ],
+            "profile": null
+        }))
+        .unwrap()
+    };
+    let (first, edited) = (program(false), program(true));
+    let missing = |response: &DaemonJobResponse| {
+        assert!(response.ok, "{:?}", response.message);
+        response.missing_functions.clone()
+    };
+
+    let cache = DaemonCache::new(None);
+    let output = root.join("first.a");
+    let probe = run_content_addressed(
+        &cache,
+        content_addressed_request(&first, &output, "first", None),
+    );
+    assert_eq!(
+        missing(&probe),
+        Some(vec![0, 1]),
+        "a cold store lacks every body"
+    );
+    let compiled = run_content_addressed(
+        &cache,
+        content_addressed_request(&first, &output, "first", Some(&|_| true)),
+    );
+    assert_eq!(missing(&compiled), None);
+    assert!(compiled.output_written && output.exists());
+
+    // An edit changes one body; the probe asks for that body alone, and a lease
+    // that ships only it compiles the whole program.
+    let output = root.join("edited.a");
+    let probe = run_content_addressed(
+        &cache,
+        content_addressed_request(&edited, &output, "edited", None),
+    );
+    assert_eq!(missing(&probe), Some(vec![0]));
+    let compiled = run_content_addressed(
+        &cache,
+        content_addressed_request(&edited, &output, "edited", Some(&|position| position == 0)),
+    );
+    assert_eq!(missing(&compiled), None);
+    assert!(compiled.output_written && output.exists());
+
+    // A store too small for any body keeps none: a partial lease names exactly
+    // the unshipped position, and the complete lease that follows compiles.
+    let starved = DaemonCache::new(Some(1));
+    let output = root.join("starved.a");
+    let partial = run_content_addressed(
+        &starved,
+        content_addressed_request(&edited, &output, "starved", Some(&|position| position == 0)),
+    );
+    assert_eq!(missing(&partial), Some(vec![1]));
+    assert!(!partial.output_written && !output.exists());
+    let complete = run_content_addressed(
+        &starved,
+        content_addressed_request(&edited, &output, "starved", Some(&|_| true)),
+    );
+    assert_eq!(missing(&complete), None);
+    assert!(complete.output_written && output.exists());
     std::fs::remove_dir_all(root).unwrap();
 }

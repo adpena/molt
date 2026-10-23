@@ -28,6 +28,7 @@ from molt.cli.build_request import FactGraphRequest
 from molt.cli import frontend_pipeline as _frontend_pipeline
 from molt.cli import runtime_features as _runtime_features
 from molt.cli.backend_execution import _write_backend_ir_lease
+from molt.cli.backend_ir_transport import BackendIrProgram
 from molt.cli.command_runtime import _run_subprocess_captured_to_tempfiles
 from molt.cli.build_diagnostics import _emit_build_diagnostics_for_result
 from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE, ENTRY_OVERRIDE_ENV
@@ -189,6 +190,8 @@ def _run_backend_pipeline(
     assert prepared_backend_ir is not None
     ir = prepared_backend_ir.ir
     function_digests = FunctionDigests(prepared_backend_ir.function_digest_seeds)
+    # The one addressed form of this IR every backend transport writes (HF-516).
+    program = BackendIrProgram(ir, function_digests)
     required_link_features = prepared_backend_ir.required_link_features
     app_export_contract_path: Path | None = None
     if prepared_backend_ir.module_registry is not None and artifacts_root is not None:
@@ -266,7 +269,7 @@ def _run_backend_pipeline(
         nonlocal backend_ir_file_path
         if backend_ir_file_path is None:
             backend_ir_file_path = _write_backend_ir_lease(
-                prepared_build_roots.project_root, ir
+                prepared_build_roots.project_root, program
             )
         return backend_ir_file_path
 
@@ -436,7 +439,7 @@ def _run_backend_pipeline(
                     backend_daemon_config_digest=prepared_build_preamble.backend_daemon_config_digest,
                     entry_module=resolved_build_entry.entry_module,
                     artifacts_root=artifacts_root,
-                    ir=ir,
+                    program=program,
                     _ensure_backend_ir_file_path=_ensure_backend_ir_file_path,
                     backend_daemon_cached=prepared_build_preamble.backend_daemon_cached,
                     backend_daemon_cache_tier=prepared_build_preamble.backend_daemon_cache_tier,

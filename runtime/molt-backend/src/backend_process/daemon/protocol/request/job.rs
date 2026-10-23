@@ -72,11 +72,27 @@ impl DaemonJobRequest {
         }
         let ir_path = optional_string(obj, "ir_path", ctx)?;
         let probe = optional_bool(obj, "probe_cache_only", ctx)?.unwrap_or(false);
-        let ir_source = match (probe, ir_path) {
-            (true, None) if !obj.contains_key("ir_path") => DaemonIrSource::Probe,
-            (false, Some(path)) if !path.is_empty() => DaemonIrSource::Lease(path),
-            (true, _) => return Err(format!("{ctx} cache probe must not contain ir_path")),
-            (false, _) => return Err(format!("{ctx} compile requires a nonempty ir_path")),
+        let function_digests = optional_string(obj, "function_digests", ctx)?;
+        let ir_source = match (probe, ir_path, function_digests) {
+            (true, None, Some(digests)) if !obj.contains_key("ir_path") => DaemonIrSource::Probe(
+                molt_ir::addressed_program::FunctionDigest::parse_concatenated_hex(&digests)
+                    .map_err(|error| format!("{ctx}.function_digests: {error}"))?,
+            ),
+            (false, Some(path), None)
+                if !path.is_empty() && !obj.contains_key("function_digests") =>
+            {
+                DaemonIrSource::Lease(path)
+            }
+            (true, None, None) => {
+                return Err(format!("{ctx} cache probe requires function_digests"));
+            }
+            (true, _, _) => return Err(format!("{ctx} cache probe must not contain ir_path")),
+            (false, Some(_), Some(_)) => {
+                return Err(format!(
+                    "{ctx} compile names its functions in the ir_path lease, not function_digests"
+                ));
+            }
+            (false, _, _) => return Err(format!("{ctx} compile requires a nonempty ir_path")),
         };
         Ok(Self {
             id: required_string(obj, "id", ctx)?,

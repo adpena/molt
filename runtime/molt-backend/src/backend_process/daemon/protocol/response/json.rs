@@ -1,6 +1,6 @@
 use serde_json::Value as JsonValue;
 
-use super::model::{DaemonHealthResponse, DaemonJobResponse, DaemonResponse, is_false};
+use super::model::{DaemonHealthResponse, DaemonJobResponse, DaemonResponse};
 
 impl DaemonJobResponse {
     pub(crate) fn to_json_value(&self) -> JsonValue {
@@ -18,8 +18,12 @@ impl DaemonJobResponse {
             "output_written".to_string(),
             JsonValue::Bool(self.output_written),
         );
-        if !is_false(&self.needs_ir) {
-            obj.insert("needs_ir".to_string(), JsonValue::Bool(self.needs_ir));
+        if let Some(missing) = &self.missing_functions {
+            obj.insert("needs_ir".to_string(), JsonValue::Bool(true));
+            obj.insert(
+                "missing_functions".to_string(),
+                JsonValue::Array(missing.iter().map(|&position| position.into()).collect()),
+            );
         }
         if let Some(message) = &self.message {
             obj.insert("message".to_string(), JsonValue::String(message.clone()));
@@ -63,6 +67,10 @@ impl DaemonHealthResponse {
         obj.insert(
             "cache_entries".to_string(),
             JsonValue::from(self.cache_entries),
+        );
+        obj.insert(
+            "resident_functions".to_string(),
+            JsonValue::from(self.resident_functions),
         );
         obj.insert("cache_bytes".to_string(), JsonValue::from(self.cache_bytes));
         if let Some(cache_max_bytes) = self.cache_max_bytes {

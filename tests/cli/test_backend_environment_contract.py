@@ -190,6 +190,7 @@ def test_optional_stdlib_cache_requires_distinct_owned_output(tmp_path, output, 
 
     payload, error = _backend_daemon_compile_request_bytes(
         ir_path=None if probe else Path("backend-ir.msgpack"),
+        probe_function_digests="" if probe else None,
         backend_output=tmp_path / "app.a",
         artifact_contract=resolve_backend_artifact_contract(
             target=admit_target("native"), emit_mode="bin"

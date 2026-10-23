@@ -2599,7 +2599,6 @@ dependencies = [
  "molt-codegen-abi",
  "molt-ir",
  "molt-runtime-core",
- "rmp-serde",
  "serde",
  "serde_json",
  "toml",

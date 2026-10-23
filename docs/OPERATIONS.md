@@ -626,20 +626,22 @@ uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic/exec_
   through the limit; JSON and CBOR stdin paths reject oversized input before
   deserialization rather than buffering unbounded request bodies.
 - **Backend IR lease custody**: CLI backend dispatch writes request IR as a
-  MessagePack lease under `tmp/backend-ir-leases/` and passes `ir_path` or
-  `--ir-format msgpack --ir-file` to daemon and one-shot backends, including
-  factgraph. The writer reuses the sorted function-body codec and retains at
-  most one encoded top-level array element. It creates each lease exclusively,
+  content-addressed MessagePack lease under `tmp/backend-ir-leases/` and passes
+  `ir_path` or `--ir-format msgpack --ir-file` to daemon and one-shot backends,
+  including factgraph. A one-shot lease ships every function body; a daemon
+  lease ships only the bodies the daemon's probe named as missing (HF-516,
+  `docs/design/backend_compile_daemon.md`). The writer reuses the sorted
+  function-body codec and retains at most one encoded body. It creates each lease exclusively,
   preserves an existing path on collision, removes its own partial writes, and
   removes the lease after the request completes. Both receivers use the same
   typed complete-frame reader and reject nonregular file descriptors before
   reading. File inputs have no additional byte ceiling; the stdin ceiling
-  above applies only to stdin. Daemon protocol 2 has only cache-probe and
+  above applies only to stdin. Daemon protocol 3 has only digest-probe and
   MessagePack-file states; inline IR is retired. Its version is shared through
   `src/molt/backend_daemon_protocol_version.txt`. JSON exports and MLIR stdin
   retain their separate JSON contracts. These are compiler-side costs and
   dependencies; emitted programs do not carry the transport codec.
-- **Daemon warm-hit probe path**: when cache keys are present, the build pipeline now lets the daemon send a probe-only request first and only encodes full IR after a daemon-declared miss. This preserves warm daemon hits without paying full IR encode/send cost on every run.
+- **Daemon probe path**: every daemon build first sends a probe that names its function digests. A warm artifact hit answers it; a miss answers with the positions the daemon's function store lacks, and the CLI encodes only those bodies. A body evicted after the probe makes the daemon ask again, and the second lease ships every body.
 - **Daemon socket placement**: sockets default to a local temp dir (`MOLT_BACKEND_DAEMON_SOCKET_DIR`, or explicit `MOLT_BACKEND_DAEMON_SOCKET`) so shared/external volumes that do not support Unix sockets do not break daemon startup.
 - **Daemon lifecycle**: with the ordinary persistent target root, daemon logs
   and identity/fingerprint sidecars live in `backend_daemon/` under the resolved
