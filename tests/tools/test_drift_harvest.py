@@ -296,3 +296,37 @@ def test_no_fetch_flag_skips_origin_refresh(monkeypatch, capsys):
     assert dh.main() == 0
     assert ["fetch", "origin", "--quiet"] not in calls
     assert "DRIFT GATE PASSED" in capsys.readouterr().out
+
+
+def test_free_lane_slots_are_neither_live_nor_prunable(monkeypatch, tmp_path):
+    """A released lane slot is detached at a slot path: a warm cache, not work
+    in progress (HF-491). The SPRAWL count and --prune skip it; a slot that
+    holds a lane, or one with changes, stays an ordinary worktree."""
+    main = tmp_path / "molt-src"
+    slots = tmp_path / "worktrees"
+    for path in (main, slots / "slot-01", slots / "slot-02", slots / "slot-03"):
+        path.mkdir(parents=True)
+    wts = [
+        {"path": str(main), "branch": "main"},
+        {"path": str(slots / "slot-01"), "head": "a" * 40},
+        {"path": str(slots / "slot-02"), "branch": "lane/busy"},
+        {"path": str(slots / "slot-03"), "head": "b" * 40},
+    ]
+    monkeypatch.setattr(dh, "_worktrees", lambda _root: wts)
+    monkeypatch.setattr(dh, "_worktree_exists", lambda _path: True)
+    monkeypatch.setattr(
+        dh, "_dirty_count", lambda path: 1 if path.endswith("slot-03") else 0
+    )
+    monkeypatch.setattr(dh, "_last_commit_epoch", lambda _path: 0)
+    monkeypatch.setattr(dh, "_unique_commit_count", lambda _ref, _root: 0)
+
+    assert dh.live_worktree_count(main) == 2
+    states = {
+        Path(row["path"]).name: row["state"]
+        for row in dh.classify(fresh_hours=24.0, now=1_000_000.0, root=main)
+    }
+    assert states["slot-01"] == "SLOT"
+    assert states["slot-02"] == "SUPERSEDED"
+    assert states["slot-03"] == "FRESH"
+    rows = dh.classify(fresh_hours=24.0, now=1_000_000.0, root=main)
+    assert not dh.gate(rows, 1_000_000.0, max_worktrees=3, max_signal_age_hours=1.0)
