@@ -155,9 +155,11 @@ class Formatter:
                     auto_arg_index = int(auto_arg_index) + 1
                 elif field_name.isdigit():
                     if auto_arg_index:
+                        # CPython's Lib/string.py raises the same text in both
+                        # directions; str.format alone names this one exactly.
                         raise ValueError(
-                            "cannot switch from automatic field "
-                            "numbering to manual field specification"
+                            "cannot switch from manual field "
+                            "specification to automatic field numbering"
                         )
                     auto_arg_index = False
                 obj, arg_used = self.get_field(field_name, args, kwargs)

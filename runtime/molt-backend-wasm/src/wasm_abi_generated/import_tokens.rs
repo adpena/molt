@@ -367,6 +367,7 @@ pub(crate) enum WasmRuntimeImport {
     Iter,
     IterNext,
     IterNextUnboxed,
+    IterBuiltin,
     IterSentinel,
     Len,
     LenDict,

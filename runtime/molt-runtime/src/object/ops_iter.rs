@@ -2574,7 +2574,11 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                 result
             }
             Ok(SpecialIterationStep::Missing) => {
-                raise_exception::<_>(_py, "TypeError", "object is not an iterator")
+                let msg = format!(
+                    "'{}' object is not an iterator",
+                    type_name(_py, obj_from_bits(iter_bits))
+                );
+                raise_exception::<_>(_py, "TypeError", &msg)
             }
             Err(()) => MoltObject::none().bits(),
         }

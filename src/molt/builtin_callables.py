@@ -102,7 +102,9 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
         bind_kind=MOLT_BIND_KIND_CLINIC_NAMED,
         text_signature="($module, /, number, ndigits=None)",
     ),
-    "iter": BuiltinFuncSpec("molt_iter_checked", ("obj",)),
+    "iter": BuiltinFuncSpec(
+        "molt_iter_builtin", ("object", "sentinel"), (_MOLT_MISSING,)
+    ),
     "map": BuiltinFuncSpec("molt_map_builtin", ("func",), vararg="iterables"),
     "filter": BuiltinFuncSpec("molt_filter_builtin", ("func", "iterable")),
     "zip": BuiltinFuncSpec(

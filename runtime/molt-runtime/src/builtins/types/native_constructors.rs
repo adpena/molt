@@ -98,13 +98,17 @@ fn codec_arguments(py: &PyToken<'_>, label: &str, bound: &[Option<u64>; 3]) -> b
             .as_ptr()
             .filter(|&ptr| unsafe { object_type_id(ptr) == TYPE_ID_STRING })
         else {
+            // Argument Clinic names None by value, every other type by name.
+            let given = obj_from_bits(bits);
+            let given = if given.is_none() {
+                "None".into()
+            } else {
+                type_name(py, given)
+            };
             raise_exception::<()>(
                 py,
                 "TypeError",
-                &format!(
-                    "{label}() argument '{name}' must be str, not {}",
-                    type_name(py, obj_from_bits(bits))
-                ),
+                &format!("{label}() argument '{name}' must be str, not {given}"),
             );
             return false;
         };
@@ -409,11 +413,9 @@ fn bytes_value(py: &PyToken<'_>, bound: [Option<u64>; 3]) -> u64 {
     match bound {
         [None, None, None] => pointer_bits(alloc_bytes(py, &[])),
         [Some(value), None, None] => molt_bytes_from_obj(value),
-        [Some(value), Some(encoding), errors] => molt_bytes_from_str(
-            value,
-            encoding,
-            errors.unwrap_or_else(|| MoltObject::none().bits()),
-        ),
+        [Some(value), Some(encoding), errors] => {
+            molt_bytes_from_str(value, encoding, errors.unwrap_or_else(|| missing_bits(py)))
+        }
         [source, encoding, _] => {
             let message = if encoding.is_some() {
                 "encoding without a string argument"
@@ -456,9 +458,27 @@ fn native_text_result(py: &PyToken<'_>, class: u64, kind: NativePayload, result:
 
 fn decode_string(py: &PyToken<'_>, value: u64, encoding: Option<u64>, errors: Option<u64>) -> u64 {
     use crate::object::buffer_exports::ScopedBuffer;
+    // CPython's PyUnicode_FromEncodedObject refuses str before it requests a
+    // buffer. Unlike other buffer consumers, it then replaces any failed
+    // request, a pending exporter error included, with its own TypeError.
+    if obj_from_bits(value)
+        .as_ptr()
+        .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_STRING })
+    {
+        return raise_exception::<_>(py, "TypeError", "decoding str is not supported");
+    }
     let buffer = match ScopedBuffer::simple(py, value) {
         Ok(buffer) => buffer,
-        Err(error) => return error.raise(py, "decoding to str: need a bytes-like object"),
+        Err(_) => {
+            if exception_pending(py) {
+                crate::builtins::exceptions::clear_exception(py);
+            }
+            let message = format!(
+                "decoding to str: need a bytes-like object, {} found",
+                type_name(py, obj_from_bits(value))
+            );
+            return raise_exception::<_>(py, "TypeError", &message);
+        }
     };
     let len = match buffer.contiguous_len() {
         Ok(len) => len,
@@ -487,10 +507,12 @@ fn decode_string(py: &PyToken<'_>, value: u64, encoding: Option<u64>, errors: Op
         dec_ref_bits(py, copied);
         return MoltObject::none().bits();
     }
+    // The decoder applies its own defaults only to an absent argument.
+    let missing = missing_bits(py);
     let out = molt_bytes_decode(
         copied,
-        encoding.unwrap_or_else(|| MoltObject::none().bits()),
-        errors.unwrap_or_else(|| MoltObject::none().bits()),
+        encoding.unwrap_or(missing),
+        errors.unwrap_or(missing),
     );
     dec_ref_bits(py, copied);
     out
@@ -533,13 +555,13 @@ pub(crate) extern "C" fn dict_init(args: u64, kwargs: u64) -> u64 {
                 "descriptor '__init__' requires a 'dict' object",
             );
         };
-        if call.values().len() > 1 {
-            return raise_exception::<_>(py, "TypeError", "dict expected at most 1 argument");
-        }
+        let Some(source) = call.positional_only(py, "dict", true) else {
+            return MoltObject::none().bits();
+        };
         inc_ref_bits(py, storage);
         let _storage = PtrDropGuard::new(obj_from_bits(storage).as_ptr().unwrap());
-        if let Some(&value) = call.values().first()
-            && !unsafe { dict_update_apply(py, storage, dict_update_set_in_place, value) }
+        if source != missing_bits(py)
+            && !unsafe { dict_update_apply(py, storage, dict_update_set_in_place, source) }
         {
             return MoltObject::none().bits();
         }
