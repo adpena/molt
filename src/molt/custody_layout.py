@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import stat
 import tempfile
 from pathlib import Path
@@ -28,6 +29,15 @@ WORKTREES_DIRNAME = "worktrees"
 SCRATCH_DIRNAME = "tmp"
 # Git bundles of retired, unlanded branches: a child of the custody root.
 BUNDLES_DIRNAME = "drift-bundles"
+# The SPRAWL threshold (M67): at most this many live worktrees, and `lane
+# start` refuses a lane that would pass it (owner, 2026-10-22: 12).
+LIVE_WORKTREE_LIMIT = 12
+# Lanes reuse the slot worktrees `<root>/worktrees/slot-01` to `slot-12`. A
+# released slot stays registered and detached, so the next lane inherits its
+# path-keyed Cargo target, sccache keys and checkout inputs warm (HF-491). A
+# free slot is no live worktree.
+LANE_SLOT_LIMIT = LIVE_WORKTREE_LIMIT
+_LANE_SLOT_NAME = re.compile(r"slot-([0-9]{2})")
 _GIT_PATH_BYTES = 64 * 1024
 
 
@@ -137,6 +147,24 @@ def family_worktrees_root(main_checkout: str | Path) -> Path | None:
     if root.name != MAIN_CHECKOUT_DIRNAME:
         return None
     return root.parent / WORKTREES_DIRNAME
+
+
+def lane_slot_path(worktrees_root: str | Path, index: int) -> Path:
+    """The slot worktree path with number `index` (1-based)."""
+    return Path(worktrees_root) / f"slot-{index:02d}"
+
+
+def lane_slot_index(path: str | Path, worktrees_root: str | Path | None) -> int | None:
+    """The slot number of `path` when it is a lane slot under `worktrees_root`."""
+    if worktrees_root is None:
+        return None
+    candidate = Path(path)
+    match = _LANE_SLOT_NAME.fullmatch(candidate.name)
+    if match is None or not 1 <= int(match.group(1)) <= LANE_SLOT_LIMIT:
+        return None
+    if candidate.resolve().parent != Path(worktrees_root).resolve():
+        return None
+    return int(match.group(1))
 
 
 def _identity_name(path: str | Path) -> str:

@@ -2,22 +2,27 @@
 """The lane command family: the driver creates, provisions and retires lanes.
 
 docs/design/landing_queue.md, "Orchestrator-owned lanes". A lane is the branch
-``lane/<slug>`` and its worktree. By default the worktree is
-``<root>/worktrees/<slug>`` beside the main checkout ``<root>/molt-src``
-(`molt.custody_layout`). Its coordination record is
-``logs/agents/lane-<slug>/coordination.json`` in the main checkout, written by
-`tools/agent_coordination.py`.
+``lane/<slug>`` checked out in a slot worktree. The slots are
+``<root>/worktrees/slot-01`` to ``slot-12`` beside the main checkout
+``<root>/molt-src`` (`molt.custody_layout`; twelve is the live worktree
+limit). A slot outlives its lanes: its Cargo target, sccache keys and checkout
+inputs are keyed by its path, so each lane inherits them warm (HF-491). Its
+coordination record is ``logs/agents/lane-<slug>/coordination.json`` in the
+main checkout, written by `tools/agent_coordination.py`.
 
-- ``lane start`` fetches the base, creates the branch and the worktree,
-  writes the record and provisions every checkout input
-  (`molt.checkout_provisioning`).
+- ``lane start`` fetches the base, takes the first clean, detached slot (or
+  adds the next one), switches it to the new branch, writes the record and
+  provisions every checkout input (`molt.checkout_provisioning`).
 - ``lane retire`` accepts a landed lane (`landing_representation`: every
   commit is on main by Change-Id or patch-id). With ``--abandon`` it accepts
   an unlanded lane after it writes and verifies a Git bundle in
   ``<custody root>/drift-bundles``, where ``tools/drift_harvest.py`` keeps its
-  bundles. It removes the worktree through ``molt_dev_retire.cleanup_worktree``, which also
-  retires the checkout's daemons and reclaims its checkout state (HF-313).
-  Then it deletes the remote and the local branch and closes the record. It
+  bundles. It releases a slot: the clean slot detaches at the upstream
+  commit and keeps its checkout state. A lane recorded before slots existed
+  has its own worktree, which it removes through
+  ``molt_dev_retire.cleanup_worktree``; that also retires the checkout's
+  daemons and reclaims its checkout state (HF-313). Then it deletes the remote
+  and the local branch and closes the record. It
   refuses a dirty worktree, and it refuses to retire the checkout that runs
   it.
 - ``lane list`` reports each lane's state.
@@ -45,7 +50,13 @@ from typing import Any
 
 from molt import checkout_provisioning
 from molt.checkout_state import is_checkout_state_lock_file
-from molt.custody_layout import BUNDLES_DIRNAME, family_worktrees_root
+from molt.custody_layout import (
+    BUNDLES_DIRNAME,
+    LANE_SLOT_LIMIT,
+    family_worktrees_root,
+    lane_slot_index,
+    lane_slot_path,
+)
 from molt.path_custody import host_path_is_within
 from molt.portable_paths import portable_path_component
 from molt.file_locks import FileLockTimeout, _acquire_file_lock, _release_file_lock
@@ -72,6 +83,8 @@ TASK_PREFIX = "lane-"
 # filesystem, and one Git ref component.
 _SLUG = re.compile(r"[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?")
 _WORKTREE_ADD_TIMEOUT_S = 600.0
+# One start chooses and claims a slot at a time; a claim takes seconds.
+_SLOT_LOCK_WAIT_S = 120.0
 # The landing runner retires a landed lane in its own process. A start's
 # checks hold the slug's lock for tens of milliseconds and an operator's
 # `lane retire` for seconds, so the runner waits up to this long for the lock
@@ -567,6 +580,62 @@ def _lane_slug_lock(repo: Path, slug: str, *, wait_s: float = 0.0) -> Generator[
         _release_file_lock(handle)
 
 
+@contextmanager
+def _lane_slots_lock(repo: Path) -> Generator[None]:
+    """Hold the slot table while one start chooses and claims its slot."""
+    common = _driver()._git_common_directory(repo)
+    if common is None:
+        raise DriverError(f"cannot resolve the Git common directory of {repo}")
+    path = common / "molt" / "lane-start" / "slots.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        handle = _acquire_file_lock(
+            path,
+            timeout_s=_SLOT_LOCK_WAIT_S,
+            timeout_message="another `lane start` held the slot table for "
+            f"{_SLOT_LOCK_WAIT_S:g} s",
+        )
+    except FileLockTimeout as exc:
+        raise DriverError(str(exc)) from exc
+    try:
+        yield
+    finally:
+        _release_file_lock(handle)
+
+
+def _choose_slot(
+    worktrees: list[dict[str, Any]], root: Path, ignore_globs: tuple[str, ...]
+) -> tuple[Path, bool]:
+    """The slot a start takes: the first clean, detached slot, reused, or the
+    first unused slot name, to add. A detached slot with changes is skipped
+    and named, never reset; an unregistered path with a slot's name belongs to
+    someone else and is skipped untouched."""
+    taken: set[int] = set()
+    skipped: list[str] = []
+    for row in sorted(worktrees, key=lambda row: str(row["path"])):
+        path = Path(row["path"])
+        index = lane_slot_index(path, root)
+        if index is None:
+            continue
+        taken.add(index)
+        if not row["detached"]:
+            continue
+        dirty = _dirty_paths(_driver().Git(path), ignore_globs)
+        if dirty:
+            skipped.append(f"{path} ({', '.join(dirty[:3])})")
+            continue
+        return path, True
+    for index in range(1, LANE_SLOT_LIMIT + 1):
+        path = lane_slot_path(root, index)
+        if index not in taken and not (path.exists() or path.is_symlink()):
+            return path, False
+    raise DriverError(
+        f"all {LANE_SLOT_LIMIT} lane slots under {root} hold lanes"
+        + (f"; detached slots with changes: {'; '.join(skipped)}" if skipped else "")
+        + ". Retire a landed lane first."
+    )
+
+
 def _undo_lane_start(
     git: Any,
     repo: Path,
@@ -574,6 +643,8 @@ def _undo_lane_start(
     branch: str,
     base: str,
     env: Mapping[str, str],
+    *,
+    reused: bool = False,
 ) -> str:
     """Undo what a lane start that stopped before its record created.
 
@@ -597,7 +668,22 @@ def _undo_lane_start(
     )
     removed: list[str] = []
     kept: list[str] = []
-    if registered:
+    if reused:
+        # A reused slot stays: it detaches at the base again (its tree is clean
+        # unless this start failed mid-switch), and the branch goes below.
+        proc = _run_fast_captured_command(
+            ["git", "-C", str(worktree), "switch", "--quiet", "--detach", base],
+            env=ProcessEnvironment(env),
+            timeout=_WORKTREE_ADD_TIMEOUT_S,
+        )
+        if proc.returncode != 0:
+            return (
+                f"kept {worktree} on {branch}: git switch --detach refused "
+                f"({proc.stderr.strip()}); inspect the slot, then "
+                f"`git -C {worktree} switch --detach {base[:12]}` and "
+                f"`git branch -D {branch}`"
+            )
+    elif registered:
         proc = git_in_repo("worktree", "remove", str(worktree))
         if proc.returncode != 0:
             return (
@@ -643,12 +729,12 @@ def cmd_lane_start(args: argparse.Namespace) -> int:
     git = driver.Git(repo)
     main = _main_checkout(_worktrees(git))
     root = Path(args.root).expanduser().resolve() if args.root else _default_root(main)
-    worktree = root / slug
+    ignore_globs = tuple(driver.DEFAULT_IGNORE_GLOBS)
     # The slug's lock, from the checks through provisioning: a second start or
     # a retirement of the slug refuses, so no start's undo meets another
     # start's worktree or branch, and no retirement removes a lane that is
     # still provisioning (reviews v4 and v5).
-    with _lane_slug_lock(repo, slug):
+    with _lane_slug_lock(repo, slug), _lane_slots_lock(repo):
         if _ref_sha(git, f"refs/heads/{branch}") is not None:
             status = _record_status(main, slug)
             if status in agent_coordination.ACTIVE_STATUSES:
@@ -667,10 +753,6 @@ def cmd_lane_start(args: argparse.Namespace) -> int:
                 f"{branch} exists with {found}; {_hand_removal(git, branch)}, or "
                 "choose another slug"
             )
-        if worktree.exists() or worktree.is_symlink():
-            raise DriverError(
-                f"{worktree} already exists; choose another slug or --root"
-            )
         if _record_status(main, slug) in agent_coordination.ACTIVE_STATUSES:
             raise DriverError(
                 f"{_record_path(main, slug)} is an active record without its branch; "
@@ -685,33 +767,37 @@ def cmd_lane_start(args: argparse.Namespace) -> int:
         base_ref = args.base or f"{args.remote}/{args.branch}"
         base = git.rev_parse(f"{base_ref}^{{commit}}")
 
-        _step(f"create {branch} at {git.short(base)} in {worktree}")
+        worktree, reused = _choose_slot(_worktrees(git), root, ignore_globs)
+        if not reused and (worktree.exists() or worktree.is_symlink()):
+            raise DriverError(
+                f"{worktree} exists but is no registered slot; reconcile it"
+            )
+        _step(
+            f"create {branch} at {git.short(base)} in "
+            f"{'reused ' if reused else 'new '}slot {worktree}"
+        )
         root.mkdir(parents=True, exist_ok=True)
         env = immutable_git_environment(os.environ)
         env["GIT_TERMINAL_PROMPT"] = "0"
         try:
+            argv = (
+                ["git", "-C", str(worktree), "switch", "--quiet", "--no-track"]
+                + ["-c", branch, base]
+                if reused
+                else ["git", "-C", str(repo), "worktree", "add", "--no-track"]
+                + ["-b", branch, str(worktree), base]
+            )
             proc = _run_fast_captured_command(
-                [
-                    "git",
-                    "-C",
-                    str(repo),
-                    "worktree",
-                    "add",
-                    "--no-track",
-                    "-b",
-                    branch,
-                    str(worktree),
-                    base,
-                ],
+                argv,
                 env=ProcessEnvironment(env),
                 timeout=_WORKTREE_ADD_TIMEOUT_S,
             )
             if proc.returncode != 0:
                 raise DriverError(
-                    f"git worktree add failed (exit {proc.returncode}): "
-                    f"{proc.stderr.strip()}"
+                    f"git {'switch' if reused else 'worktree add'} failed "
+                    f"(exit {proc.returncode}): {proc.stderr.strip()}"
                 )
-            _ok(f"created {worktree}")
+            _ok(f"{'switched' if reused else 'created'} {worktree}")
             record = agent_coordination.create_task(
                 registry_root=main,
                 source_root=worktree,
@@ -724,6 +810,7 @@ def cmd_lane_start(args: argparse.Namespace) -> int:
                         "base_ref": base_ref,
                         "base_commit": base,
                         "worktree": str(worktree),
+                        "slot": True,
                         "controller": controller,
                     }
                 },
@@ -732,7 +819,9 @@ def cmd_lane_start(args: argparse.Namespace) -> int:
             # `git worktree add` can fail after it made the branch (a hook, the
             # deadline, an interrupt), and the record can fail after the add;
             # either way undo what this command created before it reports.
-            undone = _undo_lane_start(git, repo, worktree, branch, base, env)
+            undone = _undo_lane_start(
+                git, repo, worktree, branch, base, env, reused=reused
+            )
             if isinstance(exc, Exception):
                 raise DriverError(f"cannot start {branch}: {exc}; {undone}") from exc
             _fail(f"interrupted; {undone}")
@@ -818,14 +907,16 @@ def write_lane_bundle(
 
 
 def _verify_retirement_absence(
-    git: Any, branch: str, worktree: Path, remote: str
+    git: Any, branch: str, worktree: Path, remote: str, *, slot: bool
 ) -> None:
+    """A retired lane leaves no branch, no remote ref and no worktree holding
+    it; a slot's worktree stays, released for the next lane."""
     ref = f"refs/heads/{branch}"
     if (
-        worktree.exists()
-        or worktree.is_symlink()
+        (not slot and (worktree.exists() or worktree.is_symlink()))
         or any(
-            row["branch"] == branch or Path(row["path"]).resolve() == worktree
+            row["branch"] == branch
+            or (not slot and Path(row["path"]).resolve() == worktree)
             for row in _worktrees(git)
         )
         or _ref_sha(git, ref) is not None
@@ -897,6 +988,7 @@ def _retire_lane(
         )
     record = _managed_record(main, slug)
     recorded_worktree = Path(record["lane"].get("worktree", "")).resolve()
+    slot = record["lane"].get("slot") is True
     if (
         record["lane"].get("branch") != branch
         or record.get("branch") != branch
@@ -921,7 +1013,9 @@ def _retire_lane(
             raise DriverError(
                 f"no lane branch {branch}; reconcile its retirement receipt"
             )
-        _verify_retirement_absence(git, branch, recorded_worktree, args.remote)
+        _verify_retirement_absence(
+            git, branch, recorded_worktree, args.remote, slot=slot
+        )
         if receipt["disposition"] == "abandoned":
             bundle = receipt.get("bundle")
             if not bundle:
@@ -1008,7 +1102,14 @@ def _retire_lane(
         fields={"lane_retirement": retirement},
         note=f"retiring tip={tip}",
     )
-    if worktree is not None:
+    if worktree is not None and slot:
+        # The checks above proved the slot clean and the lane landed or
+        # bundled, so detaching it at the upstream commit loses nothing.
+        _step(f"release slot {worktree}")
+        rc = molt_dev_retire.release_slot(driver.Git(worktree), worktree, upstream)
+        if rc != EXIT_OK:
+            return rc
+    elif worktree is not None:
         _step(f"remove worktree {worktree}")
         rc = molt_dev_retire.cleanup_worktree(
             driver.Git(worktree),
@@ -1040,7 +1141,7 @@ def _retire_lane(
     git._run(["update-ref", "-d", ref, tip])
     _ok(f"deleted {branch} ({git.short(tip)})")
 
-    _verify_retirement_absence(git, branch, recorded_worktree, args.remote)
+    _verify_retirement_absence(git, branch, recorded_worktree, args.remote, slot=slot)
     _complete_retirement(main, slug, retirement)
     return EXIT_OK
 
@@ -1228,7 +1329,8 @@ def add_lane_arguments(
     commands = lane.add_subparsers(dest="lane_command", required=True)
 
     start = commands.add_parser(
-        "start", help="create lane/<slug> and its worktree, record and provision it"
+        "start",
+        help="create lane/<slug> in a free slot worktree, record and provision it",
     )
     start.add_argument("slug")
     start.add_argument(
@@ -1236,7 +1338,7 @@ def add_lane_arguments(
     )
     start.add_argument(
         "--root",
-        help="directory for the worktree (default: <root>/worktrees beside "
+        help="directory of the slot worktrees (default: <root>/worktrees beside "
         "<root>/molt-src)",
     )
     add_repo_arg(start)
@@ -1245,7 +1347,8 @@ def add_lane_arguments(
     start.set_defaults(func=cmd_lane_start)
 
     retire = commands.add_parser(
-        "retire", help="remove a landed (or bundled, abandoned) lane completely"
+        "retire",
+        help="retire a landed (or bundled, abandoned) lane and release its slot",
     )
     retire.add_argument("slug")
     retire.add_argument(
