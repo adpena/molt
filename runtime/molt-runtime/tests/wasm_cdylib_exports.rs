@@ -108,9 +108,11 @@ fn expected_cpython_abi_requested_exports() -> BTreeSet<String> {
 }
 
 fn expected_compression_exports(enabled: bool) -> BTreeSet<String> {
-    // Independent raw symbol witnesses also exist in the feature-off micro ABI.
-    let mut names = BTreeSet::from(["molt_deflate_raw".to_owned(), "molt_inflate_raw".to_owned()]);
+    // A runtime without stdlib_compression defines no compression symbol, the
+    // raw ones included (HF-487): the feature-off cell must export none.
+    let mut names = BTreeSet::new();
     if enabled {
+        names.extend(["molt_deflate_raw".to_owned(), "molt_inflate_raw".to_owned()]);
         let manifest: JsonValue =
             serde_json::from_str(include_str!("../../../wasm/wasm_abi_generated.json"))
                 .expect("generated WASM ABI manifest");
@@ -416,7 +418,7 @@ fn cargo_cdylib_selection_reports_runtime_wasm_with_fixed_abi_surface() {
                 .collect();
             assert!(
                 unexpected.is_empty(),
-                "feature-disabled LZMA exports: {unexpected:?}"
+                "feature-disabled compression exports: {unexpected:?}"
             );
         }
         let missing_compression: Vec<_> = expected_compression.difference(&export_names).collect();

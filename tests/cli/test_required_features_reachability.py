@@ -285,6 +285,24 @@ def test_builtin_func_direct_symbol_is_a_requirement() -> None:
     assert by_feature == {"stdlib_regex": {"molt_re_compile"}}
 
 
+def test_typed_runtime_symbol_carrier_is_a_requirement() -> None:
+    functions = [
+        {
+            "name": "molt_main",
+            "params": [],
+            "ops": [
+                {
+                    "kind": "module_get_attr",
+                    "args": ["sys", "attr"],
+                    "out": "f",
+                    "runtime_symbol": "molt_getframe",
+                }
+            ],
+        }
+    ]
+    assert "molt_getframe" in RF.reached_intrinsic_symbols(functions)
+
+
 @pytest.mark.parametrize("kind", ["call", "func_new", "func_new_closure"])
 def test_named_runtime_entries_and_addresses_contribute_reached_features(
     kind: str,
@@ -522,8 +540,10 @@ def test_refusal_fires_when_reached_feature_excluded() -> None:
     assert "stdlib_regex" in message
     assert "molt_re_compile" in message
     assert "'micro'" in message
-    assert "--stdlib-profile full" in message
-    assert "MOLT_STDLIB_PROFILE=full" in message
+    # The remedy names the smallest tier that provides the feature.
+    assert "--stdlib-profile edge" in message
+    assert "MOLT_STDLIB_PROFILE=edge" in message
+    assert "--stdlib-profile full" not in message
     assert "statically retained" in message
     assert "executed code paths" not in message
 
@@ -723,10 +743,10 @@ def test_protected_entrypoints_match_runtime_roots_rs() -> None:
     )
 
 
-def test_real_re_module_intrinsics_are_link_affecting_regex() -> None:
+def test_real_re_module_intrinsics_require_regex() -> None:
     # Sanity: every molt_re_* symbol the real re module reaches maps to
     # stdlib_regex (the feature-gate authority), so the requirement is truthful.
-    from molt._runtime_feature_gates import link_affecting_feature_gate_for_symbol
+    from molt._runtime_feature_gates import feature_for_symbol
 
     for symbol in (
         "molt_re_compile",
@@ -737,7 +757,7 @@ def test_real_re_module_intrinsics_are_link_affecting_regex() -> None:
         "molt_re_subject_snapshot",
         "molt_re_subject_view",
     ):
-        assert link_affecting_feature_gate_for_symbol(symbol) == "stdlib_regex"
+        assert feature_for_symbol(symbol) == "stdlib_regex"
 
 
 @pytest.mark.parametrize(

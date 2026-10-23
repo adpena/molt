@@ -66,3 +66,22 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         _ => None,
     }
 }
+
+#[cfg(not(feature = "stdlib_regex"))]
+const _: () = {
+    use super::declared_absent::*;
+    #[allow(unused_imports)]
+    use crate::*;
+    let _ = molt_re_group_values;
+    let _ = molt_re_expand_replacement;
+    let _ = molt_re_subject_snapshot;
+    let _ = molt_re_subject_view;
+    let _ = molt_re_compile;
+    let _ = molt_re_execute;
+    let _ = molt_re_scanner_new;
+    let _ = molt_re_finditer_next;
+    let _ = molt_re_pattern_info;
+    let _ = molt_re_escape;
+    let _ = molt_re_split;
+    let _ = molt_re_sub;
+};

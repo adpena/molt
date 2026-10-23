@@ -41,3 +41,17 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         _ => None,
     }
 }
+
+#[cfg(not(feature = "stdlib_zoneinfo"))]
+const _: () = {
+    use super::declared_absent::*;
+    #[allow(unused_imports)]
+    use crate::*;
+    let _ = molt_zoneinfo_available_timezones;
+    let _ = molt_zoneinfo_drop;
+    let _ = molt_zoneinfo_dst;
+    let _ = molt_zoneinfo_key;
+    let _ = molt_zoneinfo_new;
+    let _ = molt_zoneinfo_tzname;
+    let _ = molt_zoneinfo_utcoffset;
+};

@@ -32,19 +32,29 @@ fn main() {
     // report, rather than a fixed-name target alias, owns publication identity.
     emit_cpython_abi_requested_export_anchors(&out_dir, &target_arch);
 
-    // Emit `molt_has_net_io` only when the target has Molt's native socket ABI
-    // implementation, not merely because the stdlib_net Cargo feature was
-    // requested. WASM uses the host-call socket ABI under target_arch = "wasm32";
-    // Windows stays on the explicit no-net intrinsic surface until the WinSock
-    // constants, sockaddr storage, resolver, SSL fd ownership, and poller
-    // contracts land as one coherent target implementation.
+    // Networking providers. The stdlib_net Cargo feature requests networking;
+    // these cfgs name the provider that implements it:
+    // - `molt_has_net_io`: the native socket ABI (unix targets);
+    // - `molt_wasm_net`: the WASM host-call socket ABI;
+    // - `molt_net`: either provider.
+    // Without a provider the runtime defines no networking symbol. The
+    // intrinsic manifest declares those symbols `feature = "stdlib_net",
+    // not(target_os = "windows")`, so reachability selects the feature or
+    // refuses the build (HF-487); nothing raises "not available" at run time.
+    // Windows has no provider until the WinSock constants, sockaddr storage,
+    // resolver, SSL fd ownership, and poller contracts land as one coherent
+    // target implementation.
     println!("cargo:rustc-check-cfg=cfg(molt_has_net_io)");
-    let native_net_target_supported =
-        target_arch != "wasm32" && target_family.split(',').any(|family| family == "unix");
-    if native_net_target_supported {
-        // CARGO_FEATURE_<NAME> is set for every enabled Cargo feature.
-        if env::var("CARGO_FEATURE_STDLIB_NET").is_ok() {
+    println!("cargo:rustc-check-cfg=cfg(molt_wasm_net)");
+    println!("cargo:rustc-check-cfg=cfg(molt_net)");
+    // CARGO_FEATURE_<NAME> is set for every enabled Cargo feature.
+    if env::var("CARGO_FEATURE_STDLIB_NET").is_ok() {
+        if target_arch == "wasm32" {
+            println!("cargo:rustc-cfg=molt_wasm_net");
+            println!("cargo:rustc-cfg=molt_net");
+        } else if target_family.split(',').any(|family| family == "unix") {
             println!("cargo:rustc-cfg=molt_has_net_io");
+            println!("cargo:rustc-cfg=molt_net");
         }
     }
 

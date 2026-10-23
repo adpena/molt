@@ -39,13 +39,14 @@ A build computes ``ReachedIntrinsics`` once (``reached_intrinsic_symbols``)
 and derives both the refusal and ``RequiredLinkFeatures`` from that one symbol
 set, so the whole-program closure runs once per build.
 
-``RequiredLinkFeatures`` maps each reached intrinsic to its link-affecting Cargo
-feature via the generated
-``molt._runtime_feature_gates.link_affecting_feature_gate_for_symbol`` authority
-(``None`` for core/ungated/resolver-only symbols, which are always linkable and
-thus never a requirement). This is the exact "does dropping this feature remove
-the symbol definition" predicate the refusal must compare against the profile's
-feature ceiling.
+``RequiredLinkFeatures`` maps each reached intrinsic to the Cargo feature its
+manifest entry declares, via the generated
+``molt._runtime_feature_gates.feature_for_symbol`` authority (``None`` for an
+always-defined symbol, which is never a requirement). The generated resolvers
+prove at compile time that a runtime built without that feature defines no such
+symbol, so the declaration is exactly the "does dropping this feature remove the
+symbol definition" predicate the refusal compares against the profile's feature
+ceiling. No runtime provides a feature-off substitute (HF-487).
 
 This module is intentionally backend-uniform: it is a property of the reached
 SimpleIR, identical for native/WASM/LLVM/Luau. Only the per-target profile
@@ -62,12 +63,19 @@ from molt._intrinsic_symbols import (
     intrinsic_runtime_symbol_name,
 )
 from molt._runtime_feature_gates import (
-    link_affecting_feature_gate_for_symbol,
+    feature_for_symbol,
     runtime_symbol_available_on_target,
     supported_target_oses_for_symbol,
+    symbol_availability_depends_on_target_os,
+    target_os_from_triple,
     unsupported_target_arches_for_symbol,
+    unsupported_target_oses_for_symbol,
 )
 from molt.cli import function_references as _function_references
+from molt.cli.runtime_features import (
+    profile_link_features,
+    runtime_stdlib_profile_for_required_features,
+)
 from molt.frontend.lowering.op_kinds_generated import (
     SIMPLEIR_CALL_TARGET_ROLES,
     SIMPLEIR_FUNCTION_REFERENCE_S_VALUE_KINDS,
@@ -105,17 +113,15 @@ _INTRINSIC_SYMBOL_OP_KINDS: frozenset[str] = frozenset({"builtin_func", "const_s
 def reached_intrinsic_symbols_by_feature(
     reached_symbols: Iterable[str],
 ) -> dict[str, set[str]]:
-    """Map each required link-affecting feature to its reached intrinsic symbols.
+    """Map each required feature to its reached intrinsic symbols.
 
-    Groups ``reached_symbols`` (``reached_intrinsic_symbols``) by the
-    link-affecting feature that defines each one (per
-    ``link_affecting_feature_gate_for_symbol``). Core/ungated/resolver-only
-    symbols map to ``None`` and are dropped (they are always linkable, never a
-    requirement).
+    Groups ``reached_symbols`` (``reached_intrinsic_symbols``) by the feature
+    that defines each one (per ``feature_for_symbol``). Always-defined symbols
+    map to ``None`` and are dropped (they are never a requirement).
     """
     by_feature: dict[str, set[str]] = {}
     for symbol in reached_symbols:
-        feature = link_affecting_feature_gate_for_symbol(symbol)
+        feature = feature_for_symbol(symbol)
         if feature is None:
             continue
         by_feature.setdefault(feature, set()).add(symbol)
@@ -155,6 +161,12 @@ def reached_intrinsic_symbols(
             kind = op.get("kind")
             if not isinstance(kind, str):
                 continue
+            # A typed runtime-symbol carrier (a qualified runtime callable
+            # such as `sys._getframe`) names the callable it acquires; the
+            # app-callable collector admits the same symbol.
+            carried = op.get("runtime_symbol")
+            if isinstance(carried, str) and carried in _RUNTIME_INTRINSIC_SYMBOL_NAMES:
+                symbols.add(carried)
             symbol = op.get("s_value")
             if not isinstance(symbol, str):
                 continue
@@ -174,10 +186,10 @@ def reached_intrinsic_symbols(
 
 
 def required_link_features(reached_symbols: Iterable[str]) -> frozenset[str]:
-    """The minimal set of link-affecting Cargo features the reached code needs.
+    """The minimal set of Cargo features the reached code needs.
 
-    ``RequiredLinkFeatures`` in the design: every distinct link-affecting feature
-    that defines a reached intrinsic symbol. This is the single requirement
+    ``RequiredLinkFeatures`` in the design: every distinct feature that defines a
+    reached intrinsic symbol. This is the single requirement
     authority - the build must link a runtime archive whose feature set is a
     superset of this, and the compile-time refusal fires when the selected
     profile's ceiling omits any of these.
@@ -211,13 +223,10 @@ def reachability_profile_feature_refusal(
     link error" contract.
     """
     target_os: str | None = None
-    if any(supported_target_oses_for_symbol(symbol) for symbol in reached_symbols):
-        if target_triple in {"wasm32-wasip1", "wasm32-unknown-unknown"}:
-            target_os = "wasi" if target_triple == "wasm32-wasip1" else "none"
-        else:
-            from molt.native_target import resolve_native_target_spec
-
-            target_os = resolve_native_target_spec(target_triple).os
+    if any(
+        symbol_availability_depends_on_target_os(symbol) for symbol in reached_symbols
+    ):
+        target_os = target_os_from_triple(target_triple)
     unavailable_symbols: list[str] = []
     blocked: dict[str, list[str]] = {}
     for symbol in reached_symbols:
@@ -225,7 +234,7 @@ def reachability_profile_feature_refusal(
             symbol, target_triple=target_triple, target_os=target_os
         ):
             unavailable_symbols.append(symbol)
-        feature = link_affecting_feature_gate_for_symbol(symbol)
+        feature = feature_for_symbol(symbol)
         if feature is not None and feature not in profile_features:
             blocked.setdefault(feature, []).append(symbol)
 
@@ -244,6 +253,8 @@ def reachability_profile_feature_refusal(
                 restrictions.append(f"unsupported on {', '.join(arches)}")
             if oses := supported_target_oses_for_symbol(symbol):
                 restrictions.append(f"requires target OS {', '.join(oses)}")
+            if oses := unsupported_target_oses_for_symbol(symbol):
+                restrictions.append(f"unsupported on target OS {', '.join(oses)}")
             symbol_details.append(f"{symbol} ({'; '.join(restrictions)})")
         details = ", ".join(symbol_details)
         messages.append(
@@ -265,24 +276,53 @@ def reachability_profile_feature_refusal(
             if len(excluded_features) == 1
             else "runtime features " + ", ".join(repr(f) for f in excluded_features)
         )
+        unprovidable = sorted(
+            set(excluded_features)
+            - profile_link_features("full", target_triple=target_triple)
+        )
+        providable = [f for f in excluded_features if f not in unprovidable]
+        remedies: list[str] = []
+        if providable:
+            tier = runtime_stdlib_profile_for_required_features(
+                "auto", providable, target_triple=target_triple
+            )
+            provided = (
+                f"the {providable[0]!r} runtime feature"
+                if len(providable) == 1
+                else "runtime features " + ", ".join(repr(f) for f in providable)
+            )
+            remedies.append(
+                "Remove the dependency that retains these bodies, or rebuild with "
+                f"the smallest stdlib profile that provides {provided}:\n"
+                f"    --stdlib-profile {tier}\n"
+                "or set the environment knob the build reads as its canonical "
+                "profile:\n"
+                f"    MOLT_STDLIB_PROFILE={tier}\n"
+                "or let reachability select it:\n"
+                "    --stdlib-profile auto"
+                + (
+                    f"\nThe {tier} stdlib profile does not provide symbols "
+                    "unavailable on the selected target."
+                    if unavailable_symbols
+                    else ""
+                )
+            )
+        if unprovidable:
+            remedies.append(
+                "No stdlib profile provides "
+                + ", ".join(repr(f) for f in unprovidable)
+                + " on the selected target; remove the dependency that retains "
+                "these bodies or choose a target that provides it."
+            )
         messages.append(
             f"Profile '{profile_name}' excludes {feature_phrase} that this program's "
             f"statically retained code requires.\n"
-            "These runtime intrinsics are referenced by retained function bodies, so their "
-            f"symbols would be undefined at link under '{profile_name}':\n"
+            "These runtime intrinsics are referenced by retained function bodies, "
+            "and a runtime built without the feature does not define them "
+            f"under '{profile_name}':\n"
             + "\n".join(lines)
             + "\n\nRequirements follow the static link closure, including published "
             "functions and module-registry roots; they do not prove execution. "
-            "Remove the dependency that retains these bodies, or rebuild with the "
-            "full stdlib profile for features supported by the selected target:\n"
-            "    --stdlib-profile full\n"
-            "or set the environment knob the build reads as its canonical profile:\n"
-            "    MOLT_STDLIB_PROFILE=full"
-            + (
-                "\nThe full stdlib profile does not provide symbols unavailable "
-                "on the selected target."
-                if unavailable_symbols
-                else ""
-            )
+            + "\n".join(remedies)
         )
     return "\n\n".join(messages)

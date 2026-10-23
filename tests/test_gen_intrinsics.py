@@ -168,50 +168,64 @@ def test_distinct_public_aliases_share_only_the_executable_symbol() -> None:
         assert by_name[alias].defaults == by_name[target].defaults
 
 
-def test_ssl_intrinsic_abi_is_not_profile_gated() -> None:
+def test_ssl_intrinsics_split_core_state_from_networking() -> None:
     module = gen_intrinsics
-    _raw, entries = module._load_manifest()
-
-    ssl_symbols = sorted(
-        {entry.symbol for entry in entries if entry.symbol.startswith("molt_ssl_")}
-    )
-    assert ssl_symbols
-    for symbol in ssl_symbols:
-        assert module._feature_gate_for_symbol(symbol) is None
-
-    assert (
-        module._feature_gate_for_symbol("molt_http_client_connection_new")
-        == "stdlib_http"
-    )
-    assert module._feature_gate_for_symbol("molt_html_escape") == "stdlib_text"
-    assert module._feature_gate_for_symbol("molt_unicodedata_category") == "stdlib_text"
-    assert (
-        module._feature_gate_for_symbol("molt_zoneinfo_available_timezones")
-        == "stdlib_zoneinfo"
-    )
+    net_cfg = 'all(feature = "stdlib_net", not(target_os = "windows"))'
+    # Context objects and constants need no socket; socket operations do.
+    for symbol in (
+        "molt_ssl_context_new",
+        "molt_ssl_create_default_context",
+        "molt_ssl_cert_none",
+        "molt_ssl_socket_close",
+    ):
+        assert module._cfg_gate_for_symbol(symbol) is None, symbol
+    for symbol in (
+        "molt_ssl_wrap_socket",
+        "molt_ssl_socket_do_handshake",
+        "molt_ssl_socket_read",
+        "molt_ssl_socket_unwrap",
+    ):
+        assert module._cfg_gate_for_symbol(symbol) == net_cfg, symbol
 
     generated = (
         ROOT / "runtime/molt-runtime/src/intrinsics/generated_resolvers/ssl_resolver.rs"
     ).read_text(encoding="utf-8")
-    ssl_block = generated.split("pub(super) fn resolve_symbol", 1)[1].split(
-        "        _ => None,",
-        1,
-    )[0]
-    assert '#[cfg(feature = "stdlib_net")]' not in ssl_block
+    assert f'#[cfg({net_cfg})]\n        "molt_ssl_wrap_socket" =>' in generated
+    assert '"molt_ssl_context_new" =>' in generated
+    assert f'#[cfg({net_cfg})]\n        "molt_ssl_context_new"' not in generated
 
 
-def test_intrinsic_target_availability_is_toml_owned() -> None:
+def test_reported_hidden_feature_symbols_declare_their_features() -> None:
+    # HF-487: these were reachable under `auto` while their prefix mapped to
+    # no feature, so a micro runtime linked a stub that failed at run time.
     module = gen_intrinsics
+    # compile() is a core builtin; the stubs that hid it are gone.
+    assert module._feature_gate_for_symbol("molt_compile_builtin") is None
+    assert module._feature_gate_for_symbol("molt_codeop_compile") is None
+    assert module._feature_gate_for_symbol("molt_ast_parse") == "stdlib_ast"
+    for symbol in ("molt_socketpair", "molt_socket_new", "molt_io_wait_new"):
+        assert module._feature_gate_for_symbol(symbol) == "stdlib_net", symbol
+    # Pure socket helpers need no networking provider.
+    for symbol in ("molt_socket_htons", "molt_socket_inet_pton"):
+        assert module._feature_gate_for_symbol(symbol) is None, symbol
 
-    assert module._target_arch_exclusions_for_symbol("molt_db_query_obj") == ()
-    assert module._target_arch_exclusions_for_symbol("molt_sqlite3_connect") == (
+
+def test_intrinsic_target_availability_is_manifest_owned() -> None:
+    module = gen_intrinsics
+    availability = module._RUNTIME_AVAILABILITY
+
+    assert module._cfg_gate_for_symbol("molt_db_query_obj") is None
+    assert availability.target_arch_exclusions_for_symbol("molt_sqlite3_connect") == (
         "wasm32",
     )
     assert module._cfg_gate_for_symbol("molt_sqlite3_connect") == (
         'all(feature = "sqlite", not(target_arch = "wasm32"))'
     )
-    assert module._FEATURE_TARGET_ARCH_EXCLUSIONS == [("sqlite", ("wasm32",))]
-    assert module._RUNTIME_AVAILABILITY.supported_target_oses_for_symbol(
+    assert availability.feature_target_arch_exclusions() == (("sqlite", ("wasm32",)),)
+    assert availability.feature_target_os_exclusions() == (
+        ("stdlib_net", ("windows",)),
+    )
+    assert availability.supported_target_oses_for_symbol(
         "molt_locale_getdefaultlocale"
     ) == ("windows",)
     assert module._cfg_gate_for_symbol("molt_locale_getdefaultlocale") == (
@@ -239,112 +253,108 @@ def test_intrinsic_target_availability_is_toml_owned() -> None:
     )
 
 
-def test_exact_builtin_category_precedes_feature_and_target_prefixes(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    ("declaration", "expected"),
+    [
+        ('feature = "stdlib_math"', 'feature = "stdlib_math"'),
+        (
+            'feature = "sqlite", not(target_arch = "wasm32")',
+            'all(feature = "sqlite", not(target_arch = "wasm32"))',
+        ),
+        ('target_os = "windows"', 'target_os = "windows"'),
+        (
+            'feature = "stdlib_net", not(target_os = "windows")',
+            'all(feature = "stdlib_net", not(target_os = "windows"))',
+        ),
+        (
+            'any(target_os = "linux", target_os = "macos")',
+            'any(target_os = "linux", target_os = "macos")',
+        ),
+    ],
+)
+def test_cfg_declarations_round_trip_to_rust_predicates(
+    declaration: str, expected: str
 ) -> None:
-    module = gen_intrinsics
-    categories = tmp_path / "categories.toml"
-    categories.write_text(
-        """
-[builtin]
-functions = ["molt_hash_builtin", "molt_hash_new_builtin"]
-type_constructors = ["molt_hash_builtin"]
-
-[stdlib.crypto]
-prefixes = ["hash_"]
-feature = "stdlib_crypto"
-unsupported_target_arches = ["wasm32"]
-supported_target_oses = ["windows"]
-""".strip(),
-        encoding="utf-8",
+    (entry,) = parse_intrinsic_manifest(
+        f"# cfg: {declaration}\ndef molt_probe(x: Any) -> Any: ...\n"
     )
-
-    availability = module.load_intrinsic_availability(categories)
-
-    assert availability.builtin_symbols == (
-        "molt_hash_builtin",
-        "molt_hash_new_builtin",
-    )
-    for symbol in availability.builtin_symbols:
-        assert availability.feature_gate_for_symbol(symbol) is None
-        assert availability.target_arch_exclusions_for_symbol(symbol) == ()
-        assert availability.supported_target_oses_for_symbol(symbol) == ()
-        assert availability.symbol_available_on_target(
-            symbol, target_arch="wasm32", target_os=None
-        )
-    assert availability.feature_gate_for_symbol("molt_hash_new") == "stdlib_crypto"
-    assert availability.target_arch_exclusions_for_symbol("molt_hash_new") == (
-        "wasm32",
-    )
-    assert not availability.symbol_available_on_target(
-        "molt_hash_new", target_arch="x86_64", target_os=None
-    )
-    assert not availability.symbol_available_on_target(
-        "molt_hash_new", target_arch="wasm32", target_os="windows"
-    )
-    assert availability.symbol_available_on_target(
-        "molt_hash_new", target_arch="x86_64", target_os="windows"
-    )
+    assert entry.cfg.declaration() == declaration
+    assert entry.cfg.rust_predicate() == expected
 
 
 @pytest.mark.parametrize(
-    "oses",
+    ("declaration", "message"),
     [
-        "[]",
-        '["windwos"]',
-        '["win32"]',
-        '["WINDOWS"]',
-        '["windows", "win32"]',
-        '"windows"',
-        "[false]",
+        ('feature = "a", feature = "b"', "more than one feature"),
+        ("feature = stdlib_math", "unsupported cfg conjunct"),
+        ('not(feature = "stdlib_math")', "unsupported cfg conjunct"),
+        ('target_os = "linux", not(target_os = "windows")', "requires and excludes"),
+        ('not(target_arch = "wasm32"), feature = "sqlite"', "not canonical"),
+        ('any(target_os = "linux")', "two or more"),
+        ('not(target_arch = "wasm32"), not(target_arch = "wasm32")', "repeats"),
     ],
 )
-def test_target_os_schema_rejects_empty_unknown_or_untyped_requirements(
-    tmp_path: Path, oses: str
+def test_cfg_declarations_reject_ambiguous_or_noncanonical_spellings(
+    declaration: str, message: str
 ) -> None:
-    categories = tmp_path / "categories.toml"
-    categories.write_text(
-        f'[stdlib.locale]\nprefixes = ["locale_"]\nsupported_target_oses = {oses}\n',
-        encoding="utf-8",
-    )
-    with pytest.raises(TypeError, match="supported_target_oses"):
-        gen_intrinsics.load_intrinsic_availability(categories)
-
-
-def test_target_os_schema_rejects_conflicting_prefix_owners(tmp_path: Path) -> None:
-    categories = tmp_path / "categories.toml"
-    categories.write_text(
-        '[stdlib.first]\nprefixes = ["locale_"]\nsupported_target_oses = ["windows"]\n'
-        '[stdlib.second]\nprefixes = ["locale_"]\nsupported_target_oses = ["linux"]\n',
-        encoding="utf-8",
-    )
-    with pytest.raises(TypeError, match="conflicts.*molt_locale_"):
-        gen_intrinsics.load_intrinsic_availability(categories)
-
-
-def test_target_os_requirements_use_longest_prefix_and_fail_closed(
-    tmp_path: Path,
-) -> None:
-    categories = tmp_path / "categories.toml"
-    categories.write_text(
-        '[stdlib.first]\nprefixes = ["locale_"]\nsupported_target_oses = ["linux"]\n'
-        '[stdlib.second]\nprefixes = ["locale_getdefaultlocale"]\nsupported_target_oses = ["windows"]\n',
-        encoding="utf-8",
-    )
-    availability = gen_intrinsics.load_intrinsic_availability(categories)
-    for symbol, target_os, expected in (
-        ("molt_locale_getdefaultlocale", "windows", True),
-        ("molt_locale_getdefaultlocale", "linux", False),
-        ("molt_locale_getencoding", "linux", True),
-        ("molt_locale_getencoding", "windows", False),
-        ("molt_locale_getdefaultlocale", None, False),
-    ):
-        assert (
-            availability.symbol_available_on_target(
-                symbol, target_arch="x86_64", target_os=target_os
-            )
-            is expected
+    with pytest.raises(ValueError, match=message):
+        parse_intrinsic_manifest(
+            f"# cfg: {declaration}\ndef molt_probe(x: Any) -> Any: ...\n"
         )
+
+
+def test_cfg_belongs_to_the_executable_not_an_alias() -> None:
+    entries = {
+        entry.name: entry
+        for entry in parse_intrinsic_manifest(
+            '# cfg: feature = "stdlib_math"\n'
+            "def molt_target(x: Any) -> Any: ...\n"
+            "# runtime-symbol: molt_target\n"
+            "def molt_alias(x: Any) -> Any: ...\n"
+        )
+    }
+    assert entries["molt_alias"].cfg == entries["molt_target"].cfg
+    with pytest.raises(ValueError, match="canonical declaration"):
+        parse_intrinsic_manifest(
+            "def molt_target(x: Any) -> Any: ...\n"
+            '# cfg: feature = "stdlib_math"\n'
+            "# runtime-symbol: molt_target\n"
+            "def molt_alias(x: Any) -> Any: ...\n"
+        )
+
+
+@pytest.mark.parametrize(
+    ("declaration", "message"),
+    [
+        ('not(target_arch = "riscv64")', "unknown target_arch"),
+        ('target_os = "win32"', "unknown target_os"),
+    ],
+)
+def test_availability_rejects_unknown_targets(declaration: str, message: str) -> None:
+    from tools.wasm_abi_gen.intrinsic_availability import (
+        intrinsic_availability_from_entries,
+    )
+
+    entries = parse_intrinsic_manifest(
+        f"# cfg: {declaration}\ndef molt_probe(x: Any) -> Any: ...\n"
+    )
+    with pytest.raises(TypeError, match=message):
+        intrinsic_availability_from_entries(entries)
+
+
+def test_declared_features_must_be_runtime_cargo_features() -> None:
+    from tools.wasm_abi_gen.intrinsic_availability import (
+        intrinsic_availability_from_entries,
+    )
+
+    gen_intrinsics._validate_declared_features(gen_intrinsics._RUNTIME_AVAILABILITY)
+    bogus = intrinsic_availability_from_entries(
+        parse_intrinsic_manifest(
+            '# cfg: feature = "stdlib_imaginary"\ndef molt_probe(x: Any) -> Any: ...\n'
+        )
+    )
+    with pytest.raises(RuntimeError, match="stdlib_imaginary"):
+        gen_intrinsics._validate_declared_features(bogus)
 
 
 def test_all_canonical_builtin_symbols_are_ungated() -> None:
@@ -352,10 +362,8 @@ def test_all_canonical_builtin_symbols_are_ungated() -> None:
     builtin_symbols, _internal_prefixes, _stdlib_modules = module._load_categories()
 
     assert builtin_symbols
-    assert set(builtin_symbols) == set(module._RUNTIME_AVAILABILITY.builtin_symbols)
     for symbol in builtin_symbols:
-        assert module._feature_gate_for_symbol(symbol) is None
-        assert module._target_arch_exclusions_for_symbol(symbol) == ()
+        assert module._cfg_gate_for_symbol(symbol) is None
 
     assert module._feature_gate_for_symbol("molt_hash_builtin") is None
     for symbol in (
@@ -367,25 +375,53 @@ def test_all_canonical_builtin_symbols_are_ungated() -> None:
         assert module._feature_gate_for_symbol(symbol) == "stdlib_crypto"
 
 
-def test_runtime_feature_gates_are_generated_from_categories() -> None:
+def test_runtime_feature_gates_are_generated_from_the_manifest() -> None:
     module = gen_intrinsics
     gates_path = ROOT / "src/molt/_runtime_feature_gates.py"
     gates_module = importlib.import_module(str(molt_module_name(gates_path)))
+    availability = module._RUNTIME_AVAILABILITY
 
-    expected_gates = module._load_runtime_feature_gates_from_categories()
-    assert gates_module.RUNTIME_BUILTIN_SYMBOLS == frozenset(
-        module._RUNTIME_AVAILABILITY.builtin_symbols
+    assert gates_module.RUNTIME_SYMBOL_FEATURES == {
+        symbol: cfg.feature
+        for symbol, cfg in availability.symbol_cfgs.items()
+        if cfg.feature is not None
+    }
+    assert gates_module.RUNTIME_FEATURES == availability.features()
+    assert gates_module.RUNTIME_SYMBOL_UNSUPPORTED_TARGET_OSES["molt_socketpair"] == (
+        "windows",
     )
-    assert list(gates_module.RUNTIME_FEATURE_GATES) == expected_gates
-    assert gates_module.RUNTIME_TARGET_OS_REQUIREMENTS == (
-        module._RUNTIME_AVAILABILITY.target_os_requirements
-    )
-    assert tuple(sorted(gates_module.LINK_AFFECTING_FEATURES)) == (
-        module._mechanically_derived_link_affecting_features(expected_gates)
-    )
+    assert not hasattr(gates_module, "LINK_AFFECTING_FEATURES")
     assert "# @generated by tools/gen_intrinsics.py. DO NOT EDIT." in (
         gates_path.read_text(encoding="utf-8")
     )
+
+
+def test_gated_core_symbols_carry_compile_time_absence_probes() -> None:
+    """A build outside a declared cfg must not define the symbol (HF-487).
+
+    Each gated core resolver names its symbols in a probe compiled only
+    outside the declared cfg. There the name must resolve to the
+    `declared_absent` sentinel; a surviving definition (a hand stub, or a
+    definition gated more widely than declared) makes it ambiguous, so rustc
+    rejects the build.
+    """
+    resolvers = ROOT / "runtime/molt-runtime/src/intrinsics/generated_resolvers"
+    ast_resolver = (resolvers / "ast_resolver.rs").read_text(encoding="utf-8")
+    assert '#[cfg(not(feature = "stdlib_ast"))]\nconst _: () = {' in ast_resolver
+    assert "    let _ = molt_ast_parse;\n" in ast_resolver
+    socket_resolver = (resolvers / "socket_resolver.rs").read_text(encoding="utf-8")
+    assert (
+        '#[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]'
+        in socket_resolver
+    )
+    index = (resolvers / "mod.rs").read_text(encoding="utf-8")
+    assert "mod declared_absent {" in index
+    assert "    pub(super) const molt_ast_parse: () = ();\n" in index
+    assert "molt_compile_builtin" not in index
+    assert "    pub(super) const molt_socketpair: () = ();\n" in index
+    # Leaf crates are optional dependencies: dropping the feature drops the
+    # crate, so their symbols need no probe.
+    assert "molt_math_sqrt" not in index
 
 
 def test_intrinsic_symbol_table_is_generated_from_manifest() -> None:

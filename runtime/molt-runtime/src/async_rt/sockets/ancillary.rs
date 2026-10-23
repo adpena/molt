@@ -2,10 +2,10 @@
 // This module owns ancillary payload parsing, host/native control-message encoding,
 // non-Unix peer ancillary queues, and recvmsg result materialization.
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 use super::*;
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 pub(super) fn collect_sendmsg_payload(
     _py: &PyToken<'_>,
     buffers_bits: u64,
@@ -28,7 +28,7 @@ pub(super) fn collect_sendmsg_payload(
     Ok(out)
 }
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 pub(super) type AncillaryItem = (i32, i32, Vec<u8>);
 
 #[cfg(all(molt_has_net_io, not(unix)))]
@@ -58,7 +58,7 @@ pub(super) fn socket_clip_ancillary_for_bufsize(
     (out, truncated)
 }
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 pub(super) fn parse_sendmsg_ancillary_items(
     _py: &PyToken<'_>,
     ancdata_bits: u64,
@@ -270,7 +270,7 @@ pub(super) fn parse_recvmsg_ancillary_items(msg: &libc::msghdr) -> Vec<Ancillary
     out
 }
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 pub(super) fn build_ancillary_list_bits(
     _py: &PyToken<'_>,
     items: &[(i32, i32, Vec<u8>)],
@@ -307,7 +307,7 @@ pub(super) fn build_ancillary_list_bits(
     Ok(MoltObject::from_ptr(list_ptr).bits())
 }
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 pub(super) fn build_recvmsg_result_with_anc(
     _py: &PyToken<'_>,
     data: &[u8],
@@ -333,10 +333,10 @@ pub(super) fn build_recvmsg_result_with_anc(
     MoltObject::from_ptr(tuple_ptr).bits()
 }
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 use crate::object::buffer_exports::ScopedWritableBuffer;
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 pub(super) fn collect_recvmsg_into_targets<'a, 'py>(
     _py: &'a PyToken<'py>,
     buffers_bits: u64,
@@ -361,7 +361,7 @@ pub(super) fn collect_recvmsg_into_targets<'a, 'py>(
     Ok(out)
 }
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 pub(super) fn write_recvmsg_into_targets(targets: &[ScopedWritableBuffer<'_, '_>], data: &[u8]) {
     let mut offset = 0usize;
     for target in targets {

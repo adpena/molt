@@ -19,12 +19,17 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
     import tomli as tomllib  # type: ignore[no-redef]
 
-from tools.intrinsic_manifest import IntrinsicEntry, parse_intrinsic_manifest
+from tools.intrinsic_manifest import (
+    ALWAYS_DEFINED,
+    IntrinsicEntry,
+    RuntimeCfg,
+    parse_intrinsic_manifest,
+    parse_runtime_cfg,
+)
 
 from tools.wasm_abi_gen.paths import (
     CPYTHON_ABI_SOURCE_ROOT,
     CPYTHON_ABI_VARIADIC_SHIM,
-    INTRINSIC_CATEGORIES,
     INTRINSICS_MANIFEST,
     BUILTIN_CALLABLES,
     MANIFEST,
@@ -35,7 +40,7 @@ from tools.wasm_abi_gen.paths import (
 )
 from tools.wasm_abi_gen.intrinsic_availability import (
     IntrinsicAvailability,
-    load_intrinsic_availability,
+    intrinsic_availability_from_entries,
 )
 
 WASM_VAL_TYPES = {
@@ -667,27 +672,54 @@ def _intrinsic_manifest_names() -> set[str]:
 
 
 @lru_cache(maxsize=1)
-def _load_runtime_availability_from_categories() -> IntrinsicAvailability:
+def _runtime_intrinsic_availability() -> IntrinsicAvailability:
     try:
-        return load_intrinsic_availability(INTRINSIC_CATEGORIES)
-    except (TypeError, tomllib.TOMLDecodeError) as exc:
+        return intrinsic_availability_from_entries(_intrinsic_declarations())
+    except TypeError as exc:
         raise WasmAbiManifestError(
             f"invalid intrinsic target availability: {exc}"
         ) from exc
 
 
-def _runtime_feature_gate_for_symbol(
-    symbol: str,
-    availability: IntrinsicAvailability | None = None,
-) -> str | None:
-    availability = availability or _load_runtime_availability_from_categories()
-    return availability.feature_gate_for_symbol(symbol)
+@lru_cache(maxsize=1)
+def _intrinsic_runtime_symbols() -> frozenset[str]:
+    return frozenset(entry.symbol for entry in _intrinsic_declarations())
 
 
-def _runtime_symbol_available_on_wasm(symbol: str) -> bool:
-    return _load_runtime_availability_from_categories().symbol_available_on_target(
-        symbol, target_arch="wasm32", target_os="wasi"
+def _declared_runtime_cfg(
+    export_name: str | None, declared: object, context: str
+) -> RuntimeCfg:
+    """The declared cfg of one runtime export.
+
+    An intrinsic's cfg is its manifest.pyi declaration; any other runtime
+    export declares its own ``cfg`` on its import entry. Each executable has
+    exactly one declaration site.
+    """
+    if export_name in _intrinsic_runtime_symbols():
+        if declared is not None:
+            raise WasmAbiManifestError(
+                f"{context} ({export_name}) is an intrinsic; declare its cfg in "
+                "runtime/molt-runtime/src/intrinsics/manifest.pyi"
+            )
+        return _runtime_intrinsic_availability().cfg_for_symbol(export_name)
+    if declared is None:
+        return ALWAYS_DEFINED
+    if not isinstance(declared, str):
+        raise WasmAbiManifestError(f"{context} cfg must be a string")
+    try:
+        return parse_runtime_cfg(declared)
+    except ValueError as exc:
+        raise WasmAbiManifestError(f"{context}: {exc}") from exc
+
+
+def _runtime_cfg_for_import(entry: dict, idx: int) -> RuntimeCfg:
+    return _declared_runtime_cfg(
+        runtime_export_name(entry), entry.get("cfg"), f"import entry {idx}"
     )
+
+
+def _available_on_wasm(cfg: RuntimeCfg) -> bool:
+    return cfg.available_on_target(target_arch="wasm32", target_os="wasi")
 
 
 def _wasm_provider_imports(imports: list[dict]) -> list[dict]:
@@ -699,10 +731,10 @@ def _wasm_provider_imports(imports: list[dict]) -> list[dict]:
     """
     return [
         entry
-        for entry in imports
+        for idx, entry in enumerate(imports)
         if (
-            (export_name := runtime_export_name(entry)) is None
-            or _runtime_symbol_available_on_wasm(export_name)
+            runtime_export_name(entry) is None
+            or _available_on_wasm(_runtime_cfg_for_import(entry, idx))
         )
     ]
 
@@ -1058,30 +1090,36 @@ def _annotate_runtime_callable_features(
     *,
     reject_existing: bool = False,
 ) -> None:
+    """Project each runtime export's declared cfg onto its import entry."""
     for idx, entry in enumerate(imports):
         export_name = runtime_export_name(entry)
         if not isinstance(export_name, str):
-            if entry.get("runtime_feature") is not None:
+            if any(
+                entry.get(key) is not None
+                for key in ("cfg", "runtime_cfg", "runtime_feature")
+            ):
                 raise WasmAbiManifestError(
-                    f"import entry {idx} has runtime_feature without a valid name"
+                    f"import entry {idx} has a runtime cfg without a valid name"
                 )
             continue
-        feature = _runtime_feature_gate_for_symbol(export_name)
-        existing = entry.get("runtime_feature")
-        if existing is not None:
+        cfg = _runtime_cfg_for_import(entry, idx)
+        derived = {"runtime_cfg": cfg.rust_predicate(), "runtime_feature": cfg.feature}
+        existing = {key: entry.get(key) for key in derived}
+        if any(value is not None for value in existing.values()):
             if reject_existing:
                 raise WasmAbiManifestError(
-                    "runtime_feature is generated from intrinsics/categories.toml; "
-                    f"remove manual runtime_feature from import entry {idx}"
+                    "runtime_cfg and runtime_feature are generated from declared "
+                    f"cfgs; remove them from import entry {idx}"
                 )
-            if existing != feature:
+            if existing != derived:
                 raise WasmAbiManifestError(
-                    f"import entry {idx} has stale runtime_feature {existing!r}; "
-                    f"expected {feature!r} from intrinsics/categories.toml"
+                    f"import entry {idx} has stale runtime availability "
+                    f"{existing!r}; expected {derived!r} from its declared cfg"
                 )
             continue
-        if feature is not None:
-            entry["runtime_feature"] = feature
+        for key, value in derived.items():
+            if value is not None:
+                entry[key] = value
 
 
 @lru_cache(maxsize=1)
@@ -1580,7 +1618,14 @@ def _materialize_reserved_runtime_callable_imports(
                 _format_runtime_callable_signature(runtime_name, params, "i64")
             )
             continue
-        if not _runtime_symbol_available_on_wasm(runtime_name):
+        import_entry = explicit_imports_by_name.get(import_name)
+        if not _available_on_wasm(
+            _declared_runtime_cfg(
+                runtime_name,
+                None if import_entry is None else import_entry.get("cfg"),
+                f"reserved runtime callable {runtime_name!r}",
+            )
+        ):
             raise WasmAbiManifestError(
                 f"reserved runtime callable {runtime_name!r} has no wasm32 target"
             )
@@ -1986,7 +2031,7 @@ DERIVED_MANIFEST_FIELDS = frozenset(
 def validate_loaded_manifest(
     data: dict,
     *,
-    reject_manual_runtime_features: bool = False,
+    reject_manual_runtime_cfgs: bool = False,
 ) -> dict:
     unknown_fields = data.keys() - MANIFEST_FIELDS - DERIVED_MANIFEST_FIELDS
     if unknown_fields:
@@ -2080,7 +2125,7 @@ def validate_loaded_manifest(
     )
     _annotate_runtime_callable_features(
         imports,
-        reject_existing=reject_manual_runtime_features,
+        reject_existing=reject_manual_runtime_cfgs,
     )
     seen_imports: set[str] = set()
     seen_runtime_names: set[str] = set()
@@ -2859,7 +2904,7 @@ def load_manifest(path: Path = MANIFEST) -> dict:
             )
     return validate_loaded_manifest(
         _add_generated_cpython_abi_link_imports(data),
-        reject_manual_runtime_features=True,
+        reject_manual_runtime_cfgs=True,
     )
 
 
@@ -2882,7 +2927,7 @@ def generator_input_files(path: Path = MANIFEST) -> tuple[Path, ...]:
         ).resolve(),
         INTRINSICS_MANIFEST,
         Path(parse_intrinsic_manifest.__code__.co_filename).resolve(),
-        INTRINSIC_CATEGORIES,
+        Path(intrinsic_availability_from_entries.__code__.co_filename).resolve(),
         ROOT / "src/molt/_host_capabilities_generated.py",
         BUILTIN_CALLABLES,
         CPYTHON_ABI_VARIADIC_SHIM,

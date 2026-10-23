@@ -302,3 +302,64 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         _ => None,
     }
 }
+
+#[cfg(not(feature = "molt_gpu_primitives"))]
+const _: () = {
+    use super::declared_absent::*;
+    #[allow(unused_imports)]
+    use crate::*;
+    let _ = molt_gpu_linear_contiguous;
+    let _ = molt_gpu_linear_split_last_dim_contiguous;
+    let _ = molt_gpu_tensor__tensor_linear_split_last_dim;
+    let _ = molt_gpu_tensor__tensor_scaled_dot_product_attention;
+    let _ = molt_gpu_turboquant_attention_packed;
+    let _ = molt_gpu_tensor__tensor_concat_first_dim;
+    let _ = molt_gpu_tensor__tensor_scatter_rows;
+    let _ = molt_gpu_tensor__tensor_take_rows;
+    let _ = molt_gpu_linear_squared_relu_gate_interleaved_contiguous;
+    let _ = molt_gpu_tensor_from_parts;
+    let _ = molt_gpu_repeat_axis_contiguous;
+    let _ = molt_gpu_tensor_from_buffer;
+    let _ = molt_gpu_tensor__zeros;
+    let _ = molt_gpu_kernel_launch_python;
+    let _ = molt_gpu_thread_id;
+    let _ = molt_gpu_block_id;
+    let _ = molt_gpu_block_dim;
+    let _ = molt_gpu_grid_dim;
+    let _ = molt_gpu_barrier;
+    let _ = molt_gpu_buffer_to_list;
+    let _ = molt_gpu_interop_decode_bf16_bytes_to_f32;
+    let _ = molt_gpu_interop_decode_f16_bytes_to_f32;
+    let _ = molt_gpu_broadcast_binary_contiguous;
+    let _ = molt_gpu_matmul_contiguous;
+    let _ = molt_gpu_rope_apply_contiguous;
+    let _ = molt_gpu_permute_contiguous;
+    let _ = molt_gpu_softmax_last_axis_contiguous;
+    let _ = molt_gpu_rms_norm_last_axis_contiguous;
+    let _ = molt_gpu_squared_relu_gate_interleaved_contiguous;
+    let _ = molt_gpu_prim_create_tensor;
+    let _ = molt_gpu_prim_create_tensor_raw;
+    let _ = molt_gpu_prim_zeros;
+    let _ = molt_gpu_prim_zeros_dtype;
+    let _ = molt_gpu_prim_realize;
+    let _ = molt_gpu_prim_dtype;
+    let _ = molt_gpu_prim_nbytes;
+    let _ = molt_gpu_prim_read_data_raw;
+    let _ = molt_gpu_prim_free;
+    let _ = molt_gpu_prim_unary;
+    let _ = molt_gpu_prim_cast;
+    let _ = molt_gpu_prim_binary;
+    let _ = molt_gpu_prim_ternary;
+    let _ = molt_gpu_prim_reduce;
+    let _ = molt_gpu_prim_reduce_all;
+    let _ = molt_gpu_prim_reshape;
+    let _ = molt_gpu_prim_expand;
+    let _ = molt_gpu_prim_permute;
+    let _ = molt_gpu_prim_pad;
+    let _ = molt_gpu_prim_shrink;
+    let _ = molt_gpu_prim_flip;
+    let _ = molt_gpu_prim_contiguous;
+    let _ = molt_gpu_prim_shape;
+    let _ = molt_gpu_prim_numel;
+    let _ = molt_gpu_prim_device;
+};

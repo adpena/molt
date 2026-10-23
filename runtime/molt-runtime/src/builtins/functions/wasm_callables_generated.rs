@@ -2,7 +2,6 @@
 // runtime/molt-backend-wasm/src/wasm_abi_manifest.toml
 // runtime/molt-runtime/src/intrinsics/manifest.pyi
 // src/molt/builtin_callables.py
-// runtime/molt-runtime/src/intrinsics/categories.toml
 // DO NOT EDIT BY HAND.
 
 #![allow(dead_code)]
@@ -805,24 +804,41 @@ fn runtime_poll_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {
         2 => Some(crate::molt_anext_default_poll as *const ()),
         3 => Some(crate::molt_asyncgen_poll as *const ()),
         4 => Some(crate::molt_promise_poll as *const ()),
+        #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
         5 => Some(crate::molt_io_wait as *const ()),
         6 => Some(crate::molt_thread_poll as *const ()),
         7 => Some(crate::molt_process_poll as *const ()),
+        #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
         8 => Some(crate::molt_ws_wait as *const ()),
+        #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
         9 => Some(crate::molt_asyncio_socket_reader_read_poll as *const ()),
+        #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
         10 => Some(crate::molt_asyncio_socket_reader_readline_poll as *const ()),
+        #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
         11 => Some(crate::molt_asyncio_stream_reader_read_poll as *const ()),
+        #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
         12 => Some(crate::molt_asyncio_stream_reader_readline_poll as *const ()),
+        #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
         13 => Some(crate::molt_asyncio_stream_send_all_poll as *const ()),
+        #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
         14 => Some(crate::molt_asyncio_sock_recv_poll as *const ()),
+        #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
         15 => Some(crate::molt_asyncio_sock_connect_poll as *const ()),
+        #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
         16 => Some(crate::molt_asyncio_sock_accept_poll as *const ()),
+        #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
         17 => Some(crate::molt_asyncio_sock_recv_into_poll as *const ()),
+        #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
         18 => Some(crate::molt_asyncio_sock_sendall_poll as *const ()),
+        #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
         19 => Some(crate::molt_asyncio_sock_recvfrom_poll as *const ()),
+        #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
         20 => Some(crate::molt_asyncio_sock_recvfrom_into_poll as *const ()),
+        #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
         21 => Some(crate::molt_asyncio_sock_sendto_poll as *const ()),
+        #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
         22 => Some(crate::molt_asyncio_fd_watcher_poll as *const ()),
+        #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
         23 => Some(crate::molt_asyncio_server_accept_loop_poll as *const ()),
         24 => Some(crate::molt_contextlib_asyncgen_enter_poll as *const ()),
         25 => Some(crate::molt_contextlib_asyncgen_exit_poll as *const ()),
@@ -1687,24 +1703,41 @@ pub(crate) fn assert_reserved_runtime_symbols_resolve() {
     assert_runtime_symbol_key(fn_key!(crate::molt_anext_default_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 2, crate::molt_anext_default_poll as *const ());
     assert_runtime_symbol_key(fn_key!(crate::molt_asyncgen_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 3, crate::molt_asyncgen_poll as *const ());
     assert_runtime_symbol_key(fn_key!(crate::molt_promise_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 4, crate::molt_promise_poll as *const ());
+    #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
     assert_runtime_symbol_key(fn_key!(crate::molt_io_wait), RUNTIME_POLL_CALLABLE_KEY_BASE, 5, crate::molt_io_wait as *const ());
     assert_runtime_symbol_key(fn_key!(crate::molt_thread_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 6, crate::molt_thread_poll as *const ());
     assert_runtime_symbol_key(fn_key!(crate::molt_process_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 7, crate::molt_process_poll as *const ());
+    #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
     assert_runtime_symbol_key(fn_key!(crate::molt_ws_wait), RUNTIME_POLL_CALLABLE_KEY_BASE, 8, crate::molt_ws_wait as *const ());
+    #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
     assert_runtime_symbol_key(fn_key!(crate::molt_asyncio_socket_reader_read_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 9, crate::molt_asyncio_socket_reader_read_poll as *const ());
+    #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
     assert_runtime_symbol_key(fn_key!(crate::molt_asyncio_socket_reader_readline_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 10, crate::molt_asyncio_socket_reader_readline_poll as *const ());
+    #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
     assert_runtime_symbol_key(fn_key!(crate::molt_asyncio_stream_reader_read_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 11, crate::molt_asyncio_stream_reader_read_poll as *const ());
+    #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
     assert_runtime_symbol_key(fn_key!(crate::molt_asyncio_stream_reader_readline_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 12, crate::molt_asyncio_stream_reader_readline_poll as *const ());
+    #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
     assert_runtime_symbol_key(fn_key!(crate::molt_asyncio_stream_send_all_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 13, crate::molt_asyncio_stream_send_all_poll as *const ());
+    #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
     assert_runtime_symbol_key(fn_key!(crate::molt_asyncio_sock_recv_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 14, crate::molt_asyncio_sock_recv_poll as *const ());
+    #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
     assert_runtime_symbol_key(fn_key!(crate::molt_asyncio_sock_connect_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 15, crate::molt_asyncio_sock_connect_poll as *const ());
+    #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
     assert_runtime_symbol_key(fn_key!(crate::molt_asyncio_sock_accept_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 16, crate::molt_asyncio_sock_accept_poll as *const ());
+    #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
     assert_runtime_symbol_key(fn_key!(crate::molt_asyncio_sock_recv_into_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 17, crate::molt_asyncio_sock_recv_into_poll as *const ());
+    #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
     assert_runtime_symbol_key(fn_key!(crate::molt_asyncio_sock_sendall_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 18, crate::molt_asyncio_sock_sendall_poll as *const ());
+    #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
     assert_runtime_symbol_key(fn_key!(crate::molt_asyncio_sock_recvfrom_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 19, crate::molt_asyncio_sock_recvfrom_poll as *const ());
+    #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
     assert_runtime_symbol_key(fn_key!(crate::molt_asyncio_sock_recvfrom_into_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 20, crate::molt_asyncio_sock_recvfrom_into_poll as *const ());
+    #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
     assert_runtime_symbol_key(fn_key!(crate::molt_asyncio_sock_sendto_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 21, crate::molt_asyncio_sock_sendto_poll as *const ());
+    #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
     assert_runtime_symbol_key(fn_key!(crate::molt_asyncio_fd_watcher_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 22, crate::molt_asyncio_fd_watcher_poll as *const ());
+    #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
     assert_runtime_symbol_key(fn_key!(crate::molt_asyncio_server_accept_loop_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 23, crate::molt_asyncio_server_accept_loop_poll as *const ());
     assert_runtime_symbol_key(fn_key!(crate::molt_contextlib_asyncgen_enter_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 24, crate::molt_contextlib_asyncgen_enter_poll as *const ());
     assert_runtime_symbol_key(fn_key!(crate::molt_contextlib_asyncgen_exit_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 25, crate::molt_contextlib_asyncgen_exit_poll as *const ());
