@@ -1588,7 +1588,7 @@ pub extern "C" fn molt_any_builtin(iter_bits: u64) -> u64 {
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
-            if truth == true {
+            if truth {
                 return MoltObject::from_bool(true).bits();
             }
         }
@@ -1612,7 +1612,7 @@ pub extern "C" fn molt_all_builtin(iter_bits: u64) -> u64 {
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
-            if truth == false {
+            if !truth {
                 return MoltObject::from_bool(false).bits();
             }
         }

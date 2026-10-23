@@ -560,7 +560,6 @@ unsafe fn tuple_cache_mutation_allowed(ptr: *mut u8, len: usize) -> bool {
 /// A scoped mutation claim on an existing owned tuple. The initial edge count
 /// is O(arity); each published slot replacement is O(1), including flag updates.
 /// Counting once avoids rescanning the result after every removed heap edge.
-
 pub(crate) struct TupleCacheMutation<'a, 'py> {
     py: &'a PyToken<'py>,
     owner: molt_runtime_core::OwnedRuntimeValue<'a>,
