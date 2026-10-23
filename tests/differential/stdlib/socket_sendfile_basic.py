@@ -1,3 +1,4 @@
+# MOLT_ENV: MOLT_CAPABILITIES=net,fs.read,fs.write,env.read
 """Purpose: differential coverage for socket.sendfile intrinsic path."""
 
 import os

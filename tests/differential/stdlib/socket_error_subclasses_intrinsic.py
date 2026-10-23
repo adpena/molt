@@ -1,3 +1,4 @@
+# MOLT_ENV: MOLT_CAPABILITIES=net
 """Purpose: validate socket error subclass mapping for intrinsic-backed lookups."""
 
 import socket

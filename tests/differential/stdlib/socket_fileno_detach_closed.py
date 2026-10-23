@@ -1,3 +1,4 @@
+# MOLT_ENV: MOLT_CAPABILITIES=net
 """Purpose: differential coverage for fileno/close/detach."""
 
 import socket
