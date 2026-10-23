@@ -1,3 +1,4 @@
+# MOLT_ENV: MOLT_CAPABILITIES=net
 """Purpose: ssl=False unix-connection path should avoid NotImplemented fallback errors."""
 
 import asyncio
