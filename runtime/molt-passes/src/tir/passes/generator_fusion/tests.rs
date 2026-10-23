@@ -50,13 +50,23 @@ fn const_int(f: &mut TirFunction, value: i64) -> ValueId {
     id
 }
 
+/// The completion report a generator body stores before its normal return
+/// (`molt_codegen_abi::GENERATOR_RESUME_RETURNED`).
+fn completion_report() -> TirOp {
+    let mut report = op(OpCode::StateSet, vec![], vec![]);
+    report
+        .attrs
+        .insert("value".into(), AttrValue::Int(i64::MIN));
+    report
+}
+
 /// Build a `counter(n)`-shaped single-yield-in-loop generator poll:
 ///   entry: i=0 (closure_store 56); br header
 ///   header: i=load56; n=load48; cond = i<n; not; br test
 ///   test: cond_br not -> exhausted, body
-///   body: x = load56; pair=(x,false); state_yield pair,5;
+///   body: x = load56; state_yield x,5;
 ///         (post) i2 = load56 + 1; closure_store 56, i2; br header
-///   exhausted: closure_store 16 true; ret (None,True)
+///   exhausted: state_set RETURNED; ret None
 fn counter_poll() -> TirFunction {
     let mut f = TirFunction::new(
         "counter_poll".into(),
@@ -130,19 +140,14 @@ fn counter_poll() -> TirFunction {
             },
         },
     );
-    // body: x=load56; pair=(x,false); yield; post: i2=load56+1; store56; br header
+    // body: x=load56; yield x; post: i2=load56+1; store56; br header
     let x = f.fresh_value();
     f.value_types.insert(x, TirType::DynBox);
-    let falsev = f.fresh_value();
-    f.value_types.insert(falsev, TirType::Bool);
-    let pair = f.fresh_value();
-    f.value_types.insert(pair, TirType::DynBox);
     let i_b = f.fresh_value();
     f.value_types.insert(i_b, TirType::DynBox);
     let one = const_int(&mut f, 1);
     let i2 = f.fresh_value();
     f.value_types.insert(i2, TirType::DynBox);
-    let pair_op = op(OpCode::BuildTuple, vec![x, falsev], vec![pair]);
     f.blocks.insert(
         body,
         TirBlock {
@@ -150,13 +155,7 @@ fn counter_poll() -> TirFunction {
             args: vec![],
             ops: vec![
                 op_v(OpCode::ClosureLoad, vec![ValueId(0)], vec![x], 56),
-                {
-                    let mut o = op(OpCode::ConstBool, vec![], vec![falsev]);
-                    o.attrs.insert("value".into(), AttrValue::Bool(false));
-                    o
-                },
-                pair_op,
-                op_v(OpCode::StateYield, vec![pair], vec![], 5),
+                op_v(OpCode::StateYield, vec![x], vec![], 5),
                 op_v(OpCode::ClosureLoad, vec![ValueId(0)], vec![i_b], 56),
                 op_v(OpCode::ConstInt, vec![], vec![one], 1),
                 op(OpCode::Add, vec![i_b, one], vec![i2]),
@@ -173,14 +172,9 @@ fn counter_poll() -> TirFunction {
             },
         },
     );
-    // exhausted: store closed; ret (None, True)
+    // exhausted: report completion; ret None
     let none_v = f.fresh_value();
     f.value_types.insert(none_v, TirType::None);
-    let true_v = f.fresh_value();
-    f.value_types.insert(true_v, TirType::Bool);
-    let donepair = f.fresh_value();
-    f.value_types.insert(donepair, TirType::DynBox);
-    let dp = op(OpCode::BuildTuple, vec![none_v, true_v], vec![donepair]);
     f.blocks.insert(
         exhausted,
         TirBlock {
@@ -188,16 +182,10 @@ fn counter_poll() -> TirFunction {
             args: vec![],
             ops: vec![
                 op(OpCode::ConstNone, vec![], vec![none_v]),
-                {
-                    let mut o = op(OpCode::ConstBool, vec![], vec![true_v]);
-                    o.attrs.insert("value".into(), AttrValue::Bool(true));
-                    o
-                },
-                op_v(OpCode::ClosureStore, vec![ValueId(0), true_v], vec![], 16),
-                dp,
+                completion_report(),
             ],
             terminator: Terminator::Return {
-                values: vec![donepair],
+                values: vec![none_v],
             },
         },
     );
@@ -371,8 +359,7 @@ fn consumer() -> TirFunction {
     f
 }
 
-/// A poll with no Python callback sites: fresh tuples, a yield, and a done
-/// return. The looping variant requires a latch observation but omits it, so
+/// A poll with no Python callback sites: a yield and a completed return. The looping variant requires a latch observation but omits it, so
 /// preparation admission can be tested without an unrelated recursion refusal.
 fn constant_poll(looping: bool) -> TirFunction {
     let mut f = TirFunction::new(
@@ -384,24 +371,10 @@ fn constant_poll(looping: bool) -> TirFunction {
     let entry = f.entry_block;
     let body = if looping { f.fresh_block() } else { entry };
     let none = f.fresh_value();
-    let pending = f.fresh_value();
-    let pair = f.fresh_value();
-    let done = f.fresh_value();
-    let done_pair = f.fresh_value();
-    let boolean = |value: bool, result: ValueId| {
-        let mut operation = op(OpCode::ConstBool, vec![], vec![result]);
-        operation
-            .attrs
-            .insert("value".into(), AttrValue::Bool(value));
-        operation
-    };
     let ops = vec![
         op(OpCode::ConstNone, vec![], vec![none]),
-        boolean(false, pending),
-        op(OpCode::BuildTuple, vec![none, pending], vec![pair]),
-        op_v(OpCode::StateYield, vec![pair], vec![], 5),
-        boolean(true, done),
-        op(OpCode::BuildTuple, vec![none, done], vec![done_pair]),
+        op_v(OpCode::StateYield, vec![none], vec![], 5),
+        completion_report(),
     ];
     if looping {
         f.blocks.get_mut(&entry).unwrap().terminator = Terminator::Branch {
@@ -423,9 +396,7 @@ fn constant_poll(looping: bool) -> TirFunction {
     } else {
         let block = f.blocks.get_mut(&entry).unwrap();
         block.ops = ops;
-        block.terminator = Terminator::Return {
-            values: vec![done_pair],
-        };
+        block.terminator = Terminator::Return { values: vec![none] };
     }
     crate::tir::type_refine::refine_types(&mut f);
     crate::tir::verify::verify_function(&f).expect("constant poll must be valid TIR");
@@ -479,7 +450,7 @@ fn clone_late_bail_is_byte_identical_including_id_allocators() {
     let mut caller = consumer();
     let candidate = only_candidate(&poll, &caller);
 
-    // Strip the yield's pair operand. The clone discovers this malformed yield
+    // Strip the yield's operand. The clone discovers this malformed yield
     // only after it has allocated every value/block id and inserted earlier
     // cloned blocks into its staging function.
     for block in poll.blocks.values_mut() {
@@ -495,7 +466,7 @@ fn clone_late_bail_is_byte_identical_including_id_allocators() {
     let mut stats = FusionStats::default();
     assert!(
         !apply_fusion(&mut caller, &poll, &candidate, &mut stats),
-        "a yield without its pair must conservatively reject fusion"
+        "a yield without its value must conservatively reject fusion"
     );
     assert_eq!(
         canonical_function_bytes(&caller),
@@ -849,8 +820,8 @@ fn fusion_admits_unreachable_predecessor_to_explicitly_rewired_header() {
 
 /// Build `def g(a): yield a`, a straight-line single-yield generator poll whose
 /// yield and return share its entry block:
-///   entry: switch; x = load48; pair = (x, false); state_yield pair, 5;
-///          (post) closed = true; ret (None, True)
+///   entry: switch; x = load48; state_yield x, 5;
+///          (post) state_set RETURNED; ret None
 fn echo_poll() -> TirFunction {
     let mut f = TirFunction::new(
         "echo_poll".into(),
@@ -860,38 +831,19 @@ fn echo_poll() -> TirFunction {
     );
     let x = f.fresh_value();
     f.value_types.insert(x, TirType::DynBox);
-    let falsev = f.fresh_value();
-    f.value_types.insert(falsev, TirType::Bool);
-    let pair = f.fresh_value();
-    f.value_types.insert(pair, TirType::DynBox);
     let none_v = f.fresh_value();
     f.value_types.insert(none_v, TirType::None);
-    let true_v = f.fresh_value();
-    f.value_types.insert(true_v, TirType::Bool);
-    let done_pair = f.fresh_value();
-    f.value_types.insert(done_pair, TirType::DynBox);
-    let tuple =
-        |operands: Vec<ValueId>, result: ValueId| op(OpCode::BuildTuple, operands, vec![result]);
-    let boolean = |value: bool, result: ValueId| {
-        let mut o = op(OpCode::ConstBool, vec![], vec![result]);
-        o.attrs.insert("value".into(), AttrValue::Bool(value));
-        o
-    };
     let entry = f.entry_block;
     let e = f.blocks.get_mut(&entry).unwrap();
     e.ops = vec![
         op(OpCode::StateSwitch, vec![], vec![]),
         op_v(OpCode::ClosureLoad, vec![ValueId(0)], vec![x], 48),
-        boolean(false, falsev),
-        tuple(vec![x, falsev], pair),
-        op_v(OpCode::StateYield, vec![pair], vec![], 5),
+        op_v(OpCode::StateYield, vec![x], vec![], 5),
         op(OpCode::ConstNone, vec![], vec![none_v]),
-        boolean(true, true_v),
-        op_v(OpCode::ClosureStore, vec![ValueId(0), true_v], vec![], 16),
-        tuple(vec![none_v, true_v], done_pair),
+        completion_report(),
     ];
     e.terminator = Terminator::Return {
-        values: vec![done_pair],
+        values: vec![none_v],
     };
     f
 }
@@ -918,13 +870,12 @@ fn definition(func: &TirFunction, value: ValueId) -> &TirOp {
         .unwrap_or_else(|| panic!("{value:?} has no defining op"))
 }
 
-/// The op defining the first element of the pair the fused element comes from:
-/// the read the poll yielded.
+/// The op defining the value the fused element copies: the read the poll
+/// yielded.
 fn yielded_read<'f>(func: &'f TirFunction, candidate: &FusionCandidate) -> &'f TirOp {
-    let index = definition(func, candidate.elem_val);
-    assert_eq!(index.opcode, OpCode::Index);
-    let pair = definition(func, index.operands[0]);
-    definition(func, pair.operands[0])
+    let element = definition(func, candidate.elem_val);
+    assert_eq!(element.opcode, OpCode::Copy);
+    definition(func, element.operands[0])
 }
 
 /// Whether `operation` is an owned alias, a copy whose result holds a reference
@@ -934,23 +885,24 @@ fn is_owned_alias(operation: &TirOp) -> bool {
         && operation.attrs.get("_original_kind") == Some(&AttrValue::Str("binding_alias".into()))
 }
 
-/// The fused element is the result of `Index(pair, 0)`, which the runtime
-/// returns owned, as it did the eliminated `IterNext` pair's element. Fusion
-/// places no reference operation, and the drop plane releases the element
-/// once, after the consumer body's read, and retains it nowhere.
+/// The fused element is a copy of the yielded value that keeps the reference
+/// the yield hands its consumer, as the eliminated `IterNext` returned its
+/// element owned. Fusion places no reference operation, and the drop plane
+/// releases the element once, after the consumer body's read, and retains it
+/// nowhere.
 #[test]
-fn fused_element_is_owned_once_by_its_index() {
+fn fused_element_is_owned_once_by_its_yield() {
     // Yield a string: a heap element whatever the counter's facts prove.
     let mut poll = counter_poll();
     let text = poll.fresh_value();
     poll.value_types.insert(text, TirType::DynBox);
     let block = yield_block(&mut poll);
-    let pair = block
+    let yielded = block
         .ops
         .iter_mut()
-        .find(|operation| operation.opcode == OpCode::BuildTuple)
-        .expect("the yield builds its pair");
-    pair.operands[0] = text;
+        .find(|operation| operation.opcode == OpCode::StateYield)
+        .expect("the poll yields");
+    yielded.operands[0] = text;
     let mut string = op(OpCode::ConstStr, vec![], vec![text]);
     string
         .attrs
@@ -969,10 +921,7 @@ fn fused_element_is_owned_once_by_its_index() {
             .any(|operation| matches!(operation.opcode, OpCode::IncRef | OpCode::DecRef)),
         "fusion places no reference operation"
     );
-    assert_eq!(
-        definition(&caller, candidate.elem_val).opcode,
-        OpCode::Index
-    );
+    assert_eq!(definition(&caller, candidate.elem_val).opcode, OpCode::Copy);
 
     crate::tir::passes::drop_insertion::run(
         &mut caller,
@@ -1005,10 +954,10 @@ fn fused_element_is_owned_once_by_its_index() {
 fn promoted_read_after_a_store_sees_the_stored_value() {
     let mut poll = counter_poll();
     let block = yield_block(&mut poll);
-    // [x, false, pair, yield, i, one, i + 1, store, check]
-    //   -> [i, one, i + 1, store, x, false, pair, yield, check]
+    // [x, yield, i, one, i + 1, store, check]
+    //   -> [i, one, i + 1, store, x, yield, check]
     let ops = std::mem::take(&mut block.ops);
-    block.ops = [4, 5, 6, 7, 0, 1, 2, 3, 8]
+    block.ops = [2, 3, 4, 5, 0, 1, 6]
         .iter()
         .map(|&index| ops[index].clone())
         .collect();
