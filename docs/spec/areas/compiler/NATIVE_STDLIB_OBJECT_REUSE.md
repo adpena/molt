@@ -1,9 +1,11 @@
 # Native stdlib constituent object reuse
 
 The shared stdlib archive remains the reachability, runtime admission and final
-publication authority. An archive miss compiles only incompatible constituent
-objects, then passes both restored and newly emitted ordinary objects through
-the existing native archive validator/assembler and archive publisher.
+publication authority. A program-key miss first looks the archive up by its
+content: an unchanged partition transfers whole. Otherwise only incompatible
+constituent objects compile, and both admitted and newly emitted ordinary
+objects pass through the existing native archive validator/assembler and
+archive publisher.
 
 ## Closed native object inputs
 
@@ -165,10 +167,61 @@ Even zero- and one-body archives use this same path. An empty partition emits
 one real native object containing the ABI anchor. The former direct-only
 stdlib compiler path is removed.
 
+## Archive reuse by content
+
+The archive key binds the program (its entry module and stdlib module set),
+because the CLI must find the archive before any backend work. Two programs
+with the same stdlib partition therefore had different keys, and each new
+program restored all constituents, assembled the archive and copied it into
+the cache: 67 MB written three times for a 91-line asyncio program whose 171
+constituents all hit.
+
+The archive is a pure function of its ordered constituent inputs. Each input
+key already binds the complete job, the program-independent manifest, the
+executing backend bytes and the effective ISA (see "Closed native object
+inputs"). So the backend first plans the constituent jobs and hashes them
+(`PlannedStdlibArchive`, 0.23 s for 3,592 functions), then derives the
+archive's content key from the ordered input keys
+(`StdlibObjectCache::archive_key`). A content-addressed generation lives in
+`<cache>/native-stdlib-archives-v1/<content-key>/stdlib.a` with the shared
+sidecar contract: the key sidecar holds the content key and the manifest
+sidecar the program-independent constituent manifest. When it is present and
+admits, it transfers whole to the build path, which records the program's key
+and manifest: no constituent admission, no assembly. Otherwise the plan
+assembles, and the new archive publishes to both the content entry and the
+program entry. Go's build cache serves an unchanged package archive by its
+action ID in the same way; the program entry stays the CLI's lookup key, as
+Go's action ID maps to an output ID.
+
+Every archive transfer is a platform copy
+(`molt_artifact_publish::copy_file_atomically`, Rust's `std::fs::copy`): a
+copy-on-write clone on APFS, btrfs, XFS and ReFS writes no data, and other
+volumes copy in the kernel. A transfer verifies the private copy against the
+source's recorded digest before it replaces the destination; a mismatch is a
+miss, as for any archive admission. That one read also leaves the copy's pages
+cached for the CLI admission and the linker. A clone is a new file, so its
+first read goes to disk: on the USB build volume that read costs about 1.8 s
+for 67 MB, against 3-5 s for the writes it replaces. Sidecars of a transferred
+copy record the verified digest instead of hashing the copy again.
+
+Interleaved A/B, macOS arm64, the 91-line asyncio program as a new program
+(new entry module) each build, warm constituents, `MOLT_BACKEND_DAEMON=0`,
+host load 8.7-18.3 (four builds per arm): wall 23.2 s to 16.2 s and CPU 16.05 s
+to 14.89 s (medians). The stdlib step fell from 0.9-2.9 s of constituent
+restore plus 2.5-4.5 s of publication to 0.23 s of planning plus 1.8-2.0 s of
+transfer. A content miss with warm constituents (the content store moved
+aside) kept its wall time (23.4 s and 23.35 s); constituent admission fell from
+0.9-2.9 s to 0.02 s. An edit of one program in one output directory reuses the
+build path as before (13.8 s and 14.9 s). Every archive in these builds, cold,
+transferred or assembled from mapped constituents, is byte-identical
+(sha256 `181e8f015a7d259c...`).
+
 ## Admission and publication
 
 The canonical archive and sidecars live in
-`<cache>/shared-stdlib/<archive-key>/stdlib.a`. Constituent generations live in
+`<cache>/shared-stdlib/<archive-key>/stdlib.a`. Content-addressed archives
+live in `<cache>/native-stdlib-archives-v1/<content-key>/stdlib.a` with their
+own lock stripe. Constituent generations live in
 `<cache>/native-stdlib-objects-v1/<input-digest>/object.entry`, independently of
 an archive generation. Persistent bounded lock stripes in `<cache>/locks/`
 serialize each archive or constituent generation across publishers, readers
@@ -195,9 +248,13 @@ contract as archive assembly. There is no separate sidecar generation to mix.
 
 Only a missing generation is a cache miss. Malformed content, digest mismatch,
 I/O errors, publication failures and divergent outputs for identical inputs
-return errors. Admission copies validated bytes to the job's private ordinary
-object file, so existing archive assembly and cleanup retain custody. Cache
-errors never silently fall back to compilation. Standalone backend invocations
+return errors. Admission verifies a constituent under its lock and keeps a
+read-only mapping of it (`MappedObject`); archive assembly reads the object in
+place, so no private copy is written. Publication never edits a generation in
+place. On POSIX a mapping keeps its generation's bytes when retention unlinks
+the entry; on Windows retention cannot delete a mapped entry until assembly
+drops the mapping (not yet run on Windows). Cache errors never silently fall
+back to compilation. Standalone backend invocations
 without an admitted compiler manifest explicitly report reuse unavailable and
 use the same compilation/assembly path.
 

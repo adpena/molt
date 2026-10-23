@@ -1,0 +1,7 @@
+# Host-tool settings come from the generated host-process environment catalog
+# (`molt_host_process::host_process_environment_generated::HostProcessEnv`). A
+# process-level read states its reason with `#[expect(clippy::disallowed_methods)]`.
+disallowed-methods = [
+    { path = "std::env::var", reason = "read host-tool settings by HostProcessEnv catalog name" },
+    { path = "std::env::var_os", reason = "read host-tool settings by HostProcessEnv catalog name" },
+]

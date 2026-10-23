@@ -91,6 +91,7 @@ fn shared_stdlib_cache_requires_matching_key() {
         Some("abc123"),
         Some("{\"cache_key\":\"abc123\"}"),
         "partition-a",
+        None,
     )
     .expect("write sidecars");
     assert!(shared_stdlib_cache_matches(
@@ -152,6 +153,7 @@ fn shared_stdlib_cache_requires_matching_key() {
         Some("abc123"),
         Some("{\"cache_key\":\"abc123\"}"),
         "partition-a",
+        None,
     )
     .expect("rewrite sidecars");
     std::fs::write(&stdlib_path, b"changed-object").expect("mutate object");
@@ -170,6 +172,7 @@ fn shared_stdlib_cache_requires_matching_key() {
         Some("abc123"),
         Some("{\"cache_key\":\"abc123\"}"),
         "partition-a",
+        None,
     )
     .expect("write matching object sidecars");
     assert!(!shared_stdlib_cache_matches(
@@ -446,6 +449,7 @@ fn shared_stdlib_cache_sidecar_write_failures_propagate() {
         Some("abc123"),
         Some("{\"cache_key\":\"abc123\"}"),
         "partition-a",
+        None,
     )
     .expect_err("sidecar writes should fail when parent is not a directory");
     assert!(!err.to_string().is_empty());
@@ -777,16 +781,20 @@ fn compile_stdlib_cache_archive_emits_parseable_empty_member() {
     std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
     let stdlib = tmp_dir.join("empty-stdlib.a");
 
-    compile_stdlib_cache_archive(
+    let planned = plan_stdlib_cache_archive(
         Vec::new(),
         None,
         None,
-        "MOLT_BACKEND(test)",
         molt_backend::NativeBackendModuleContext::default(),
         None,
-        |objects| crate::backend_process::write_native_archive_objects(&stdlib, objects),
     )
-    .expect("empty stdlib cache must emit an object");
+    .expect("plan empty stdlib cache");
+    assert_eq!(planned.archive_key(), None, "no reuse without a manifest");
+    planned
+        .assemble("MOLT_BACKEND(test)", None, |objects| {
+            crate::backend_process::write_native_archive_objects(&stdlib, objects)
+        })
+        .expect("empty stdlib cache must emit an object");
 
     let bytes = std::fs::read(&stdlib).expect("read emitted empty stdlib object");
     assert!(

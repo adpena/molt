@@ -54,7 +54,7 @@ fn exact_cache_key(path: &Path) -> io::Result<&str> {
 pub(crate) fn canonical_stdlib_cache_root(archive: &Path) -> io::Result<Option<PathBuf>> {
     let parent = archive.parent().unwrap_or_else(|| Path::new("."));
     if archive.file_name() == Some(OsStr::new("stdlib.a"))
-        && parent.parent().and_then(Path::file_name) == Some(OsStr::new("shared-stdlib"))
+        && parent.parent().and_then(Path::file_name) == Some(OsStr::new(SHARED_STDLIB_DIRECTORY))
     {
         exact_cache_key(parent)?;
         return Ok(Some(
@@ -159,7 +159,7 @@ pub(super) fn stdlib_cache_producer_lock_path(path: &Path) -> io::Result<Option<
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let namespace = parent.parent();
     let shared = path.file_name() == Some(OsStr::new("stdlib.a"))
-        && namespace.and_then(Path::file_name) == Some(OsStr::new("shared-stdlib"));
+        && namespace.and_then(Path::file_name) == Some(OsStr::new(SHARED_STDLIB_DIRECTORY));
     if !shared {
         return Ok(None);
     }
@@ -173,28 +173,99 @@ pub(super) fn stdlib_cache_producer_lock_path(path: &Path) -> io::Result<Option<
     ))))
 }
 
+/// Cross-language namespace contract owned on the CLI side by
+/// molt.default_paths (`*_CACHE_DIRECTORY`): program-keyed archives, archives
+/// keyed by their ordered constituents, and the constituents themselves.
+pub(super) const SHARED_STDLIB_DIRECTORY: &str = "shared-stdlib";
+pub(super) const NATIVE_STDLIB_ARCHIVE_DIRECTORY: &str = "native-stdlib-archives-v1";
+pub(super) const NATIVE_STDLIB_OBJECT_DIRECTORY: &str = "native-stdlib-objects-v1";
+
+/// A retained cache entry family. Each owns one namespace directory, one leaf
+/// name and one stripe of persistent lock files.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CacheEntryFamily {
+    /// Archives keyed by the program (the CLI's lookup key).
+    SharedStdlib,
+    /// Archives keyed by their ordered constituent inputs (content).
+    NativeStdlibArchive,
+    /// Constituent object envelopes keyed by their complete job input.
+    NativeStdlibObject,
+}
+
+impl CacheEntryFamily {
+    const ALL: [Self; 3] = [
+        Self::SharedStdlib,
+        Self::NativeStdlibArchive,
+        Self::NativeStdlibObject,
+    ];
+
+    fn namespace(self) -> &'static str {
+        match self {
+            Self::SharedStdlib => SHARED_STDLIB_DIRECTORY,
+            Self::NativeStdlibArchive => NATIVE_STDLIB_ARCHIVE_DIRECTORY,
+            Self::NativeStdlibObject => NATIVE_STDLIB_OBJECT_DIRECTORY,
+        }
+    }
+
+    fn leaf(self) -> &'static str {
+        match self {
+            Self::SharedStdlib | Self::NativeStdlibArchive => "stdlib.a",
+            Self::NativeStdlibObject => "object.entry",
+        }
+    }
+
+    fn lock_stem(self) -> &'static str {
+        match self {
+            Self::SharedStdlib => "shared-stdlib",
+            Self::NativeStdlibArchive => "native-stdlib-archive",
+            Self::NativeStdlibObject => "native-stdlib-object",
+        }
+    }
+
+    /// The family of a cache entry leaf, or `None` for any other path.
+    fn of(path: &Path) -> Option<Self> {
+        let leaf = path.file_name()?;
+        let namespace = path
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::file_name)?;
+        Self::ALL
+            .into_iter()
+            .find(|family| leaf == family.leaf() && namespace == family.namespace())
+    }
+}
+
+/// Whether `path` names an archive inside a retained cache entry, whose
+/// directory recency the Python eviction owner reads.
+pub(super) fn is_stdlib_archive_cache_entry(path: &Path) -> bool {
+    matches!(
+        CacheEntryFamily::of(path),
+        Some(CacheEntryFamily::SharedStdlib | CacheEntryFamily::NativeStdlibArchive)
+    )
+}
+
+/// The content-addressed archive generation for `key` under `cache_root`.
+pub(super) fn native_stdlib_archive_entry_path(cache_root: &Path, key: &str) -> PathBuf {
+    let family = CacheEntryFamily::NativeStdlibArchive;
+    cache_root
+        .join(family.namespace())
+        .join(key)
+        .join(family.leaf())
+}
+
 pub(super) fn stdlib_cache_publish_lock_path(path: &Path) -> io::Result<PathBuf> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let namespace = parent.parent();
-    let family = match (path.file_name(), namespace.and_then(Path::file_name)) {
-        (Some(leaf), Some(family)) if leaf == "stdlib.a" && family == "shared-stdlib" => {
-            Some("shared-stdlib")
-        }
-        (Some(leaf), Some(family))
-            if leaf == "object.entry" && family == "native-stdlib-objects-v1" =>
-        {
-            Some("native-stdlib-object")
-        }
-        _ => None,
-    };
-    if let Some(family) = family {
+    if let Some(family) = CacheEntryFamily::of(path) {
         let key = exact_cache_key(parent)?;
         let cache_root = namespace
             .and_then(Path::parent)
             .unwrap_or_else(|| Path::new("."));
-        return Ok(cache_root
-            .join("locks")
-            .join(format!("{family}.{}.lock", &key[..2])));
+        return Ok(cache_root.join("locks").join(format!(
+            "{}.{}.lock",
+            family.lock_stem(),
+            &key[..2]
+        )));
     }
     let mut name = path
         .file_name()
@@ -262,6 +333,22 @@ mod tests {
             stdlib_cache_publish_lock_path(&object).unwrap(),
             cache.join("locks/native-stdlib-object.ab.lock")
         );
+        let content = native_stdlib_archive_entry_path(cache, &key);
+        assert_eq!(
+            content,
+            cache
+                .join("native-stdlib-archives-v1")
+                .join(&key)
+                .join("stdlib.a")
+        );
+        assert_eq!(
+            stdlib_cache_publish_lock_path(&content).unwrap(),
+            cache.join("locks/native-stdlib-archive.ab.lock")
+        );
+        assert!(is_stdlib_archive_cache_entry(&archive));
+        assert!(is_stdlib_archive_cache_entry(&content));
+        assert!(!is_stdlib_archive_cache_entry(&object));
+        assert!(!is_stdlib_archive_cache_entry(Path::new("build/stdlib.a")));
         assert_eq!(
             stdlib_cache_publish_lock_path(Path::new("explicit/stdlib.a")).unwrap(),
             Path::new("explicit/stdlib.a.publish.lock")

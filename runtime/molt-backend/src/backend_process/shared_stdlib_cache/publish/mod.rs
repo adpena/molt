@@ -4,13 +4,13 @@ mod files;
 mod lock;
 mod objects;
 mod paths;
-pub(crate) use objects::StdlibObjectCache;
+pub(crate) use objects::{ContentArchive, StdlibObjectCache};
 mod sidecars;
 
 #[cfg(any(unix, test))]
 pub(crate) use admission::shared_stdlib_cache_matches;
 pub(crate) use admission::{
-    admit_or_invalidate_shared_stdlib_cache, hydrate_shared_stdlib_cache_archive,
+    ArchiveGeneration, admit_or_invalidate_shared_stdlib_cache, hydrate_shared_stdlib_cache_archive,
 };
 pub(crate) use archive::publish_shared_stdlib_cache_archive;
 pub(crate) use lock::with_shared_stdlib_cache_producer_lock;

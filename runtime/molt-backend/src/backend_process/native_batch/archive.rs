@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use ar_archive_writer::{ArchiveKind, DEFAULT_OBJECT_READER, NewArchiveMember};
 use object::{Architecture, BinaryFormat, Endianness, Object, ObjectKind, SubArchitecture};
@@ -179,24 +179,63 @@ pub(crate) fn write_native_archive_bytes(output: &Path, bytes: &[u8]) -> io::Res
     )
 }
 
-pub(crate) fn write_native_archive_objects(output: &Path, paths: &[PathBuf]) -> io::Result<()> {
-    let members = paths
+/// One ordinary object held as a read-only mapping: a completed private worker
+/// output, or an admitted immutable cache generation whose object follows an
+/// envelope header. A mapping keeps its file's bytes, even after an unlink or a
+/// replacement of the path, so assembly needs no private copy of cached bytes.
+pub(crate) struct MappedObject {
+    map: memmap2::Mmap,
+    offset: usize,
+}
+
+impl MappedObject {
+    /// Map a completed private object. Its producer has exited; no writer may
+    /// mutate it until this mapping is dropped.
+    pub(crate) fn file(path: &Path) -> io::Result<Self> {
+        let file = std::fs::File::open(path)?;
+        let map = unsafe { memmap2::MmapOptions::new().map(&file) }?;
+        Ok(Self { map, offset: 0 })
+    }
+
+    /// An object that starts `offset` bytes into an admitted mapping.
+    pub(crate) fn within(map: memmap2::Mmap, offset: usize) -> io::Result<Self> {
+        if offset > map.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "native object offset exceeds its mapping",
+            ));
+        }
+        Ok(Self { map, offset })
+    }
+
+    pub(crate) fn len(&self) -> u64 {
+        (self.map.len() - self.offset) as u64
+    }
+}
+
+impl AsRef<[u8]> for MappedObject {
+    fn as_ref(&self) -> &[u8] {
+        &self.map[self.offset..]
+    }
+}
+
+pub(crate) fn write_native_archive_objects(
+    output: &Path,
+    objects: &[MappedObject],
+) -> io::Result<()> {
+    let members = objects
         .iter()
         .enumerate()
-        .map(|(index, path)| {
-            let file = std::fs::File::open(path)?;
-            // These are completed, private batch-worker outputs. Their producer
-            // has exited; no writer may mutate them until this publication and
-            // the enclosing batch cleanup have finished. Map instead of copying
-            // every member into a second archive-sized resident allocation.
-            let bytes = unsafe { memmap2::MmapOptions::new().map(&file) }?;
-            Ok(NewArchiveMember::new(
-                bytes,
+        .map(|(index, object)| {
+            // Map instead of copying every member into a second archive-sized
+            // resident allocation.
+            NewArchiveMember::new(
+                object.as_ref(),
                 &DEFAULT_OBJECT_READER,
                 format!("molt_{index:08}.o"),
-            ))
+            )
         })
-        .collect::<io::Result<Vec<_>>>()?;
+        .collect::<Vec<_>>();
     publish_native_archive(output, &members)
 }
 
@@ -204,6 +243,7 @@ pub(crate) fn write_native_archive_objects(output: &Path, paths: &[PathBuf]) -> 
 mod tests {
     use super::*;
     use object::{ObjectSymbol, SectionKind, SymbolFlags, SymbolKind, SymbolScope};
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NONCE: AtomicU64 = AtomicU64::new(0);
@@ -226,6 +266,13 @@ mod tests {
         fn drop(&mut self) {
             std::fs::remove_dir_all(&self.0).expect("clean test directory");
         }
+    }
+
+    fn mapped(paths: &[PathBuf]) -> Vec<MappedObject> {
+        paths
+            .iter()
+            .map(|path| MappedObject::file(path).expect("map fixture object"))
+            .collect()
     }
 
     fn object_bytes(format: BinaryFormat, architecture: Architecture, symbol: &str) -> Vec<u8> {
@@ -259,7 +306,7 @@ mod tests {
                 std::fs::write(&paths[0], &first).expect("write first object");
                 std::fs::write(&paths[1], &second).expect("write second object");
                 let output = directory.0.join("first.a");
-                write_native_archive_objects(&output, &paths).expect("publish archive");
+                write_native_archive_objects(&output, &mapped(&paths)).expect("publish archive");
                 validate_native_archive_file(&output)
                     .expect("published archive passes cache admission");
                 let bytes = std::fs::read(&output).expect("read archive");
@@ -270,11 +317,28 @@ mod tests {
                 for (source, destination) in paths.iter().zip(&renamed) {
                     std::fs::rename(source, destination).expect("rename inputs");
                 }
-                write_native_archive_objects(&directory.0.join("second.a"), &renamed)
+                write_native_archive_objects(&directory.0.join("second.a"), &mapped(&renamed))
                     .expect("publish renamed inputs");
                 assert_eq!(
                     bytes,
                     std::fs::read(directory.0.join("second.a")).expect("read replay")
+                );
+                // An object inside an envelope mapping is the same member.
+                let enveloped = directory.0.join("enveloped.entry");
+                std::fs::write(&enveloped, [b"header!!".as_slice(), &first].concat())
+                    .expect("write enveloped object");
+                let file = std::fs::File::open(&enveloped).expect("open envelope");
+                let map = unsafe { memmap2::MmapOptions::new().map(&file) }.expect("map");
+                let members = [
+                    MappedObject::within(map, 8).expect("object within envelope"),
+                    MappedObject::file(&renamed[1]).expect("map second"),
+                ];
+                assert_eq!(members[0].len(), first.len() as u64);
+                write_native_archive_objects(&directory.0.join("third.a"), &members)
+                    .expect("publish enveloped member");
+                assert_eq!(
+                    bytes,
+                    std::fs::read(directory.0.join("third.a")).expect("read enveloped")
                 );
                 let archive = object::read::archive::ArchiveFile::parse(bytes.as_slice())
                     .expect("parse archive");
@@ -351,7 +415,7 @@ mod tests {
         ] {
             std::fs::write(&paths[1], object_bytes(format, architecture, "second"))
                 .expect("write conflicting member");
-            let error = write_native_archive_objects(&output, &paths)
+            let error = write_native_archive_objects(&output, &mapped(&paths))
                 .expect_err("mixed target identity must fail");
             assert!(error.to_string().contains("incompatible"));
         }

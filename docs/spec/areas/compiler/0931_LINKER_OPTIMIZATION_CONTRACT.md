@@ -97,12 +97,25 @@ the manifest-owned prebuilt tool; missing, damaged or wrong-host tools fail
 admission, with no source build or PATH discovery.
 
 Only linked and split WASM output admits this executable. Raw WASM, native and
-source-emitter output do not pay its admission cost. The scanner protocol and
-required validation work are unchanged. `molt-host-process` owns the shared
-host process-budget scalar/default/OS policy; guest runtimes do not depend on
-it. Artifact publication and opened-regular-file admission remain shared in
-`molt-artifact-publish`, including nonblocking FIFO/device refusal and existing
-regular-file symlink behavior. Every mapping closes before output replacement.
+source-emitter output do not pay its admission cost. The tool reads the module
+from stdin: `--scan-wasm-link-facts` takes no path, and
+`--publish-wasm-link-facts --output <path>` writes the attested module once,
+atomically. The Python provider already holds every module it asks about, so a
+pipe replaces the scratch file each query used to write and the tool to read
+back: a 91-line asyncio program makes 13 queries over 46-83 MB modules, 865 MB
+each way per link. `WasmArtifactState.apply_facts_publication` hands its owned
+bytes to that one publication write; no persisted copy precedes it. The tool
+holds one module on its heap per short-lived request instead of a mapping.
+The relocatable runtime preflight relinks to the null device, since nothing
+reads its output (0.3 s against 8.0-8.5 s with an 83 MB scratch file on the
+USB build volume). Interleaved dev builds of the 91-line asyncio program as a
+new program (macOS arm64, load 7.3-15.1), with these changes and the clone and
+move transfers of the final module (docs/OPERATIONS.md): the link phase fell
+from 97.8 s to 68.9 s and the build from 182.1 s to 158.9 s (medians of four
+and three builds); CPU did not change (92.4 s and 93.2 s).
+`molt-host-process` owns the shared host process-budget scalar/default/OS
+policy; guest runtimes do not depend on it. Artifact publication is shared in
+`molt-artifact-publish`.
 
 The dependency trade is explicit: the publication crate gains one host
 consumer (reverse dependency count 2→3), facts loses the compiler consumer
