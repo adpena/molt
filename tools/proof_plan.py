@@ -144,28 +144,24 @@ RELEASE_PROJECTIONS = frozenset({"tool-release", "runtime-tool-release"})
 def _tool_release_kinds(root: Path) -> dict[str, str]:
     """Each pinned tool release and the projection that names it.
 
-    Cached per manifest state, not per root: the landing runner validates
-    batch after batch in one sandbox path, each with its own manifest.
+    Cached by the manifest's text, never by its root or file metadata: the
+    landing runner validates batch after batch in one sandbox path, each with
+    its own manifest, and an in-place rewrite can keep the file's size and
+    mtime (HF-456 follow-up review, L-2). Reading the 10 KB manifest costs
+    microseconds; the parse it saves costs a millisecond.
     """
-    from molt.tool_releases import tool_releases_path
+    from molt.tool_releases import read_tool_releases_text
 
-    try:
-        stat = tool_releases_path(root).stat()
-        signature = (stat.st_ino, stat.st_mtime_ns, stat.st_size)
-    except OSError:
-        signature = None  # the loader reports the missing manifest
-    return _tool_release_kinds_of(root, signature)
+    return _tool_release_kinds_of(*read_tool_releases_text(root))
 
 
 @functools.lru_cache(maxsize=8)
-def _tool_release_kinds_of(
-    root: Path, signature: tuple[int, int, int] | None
-) -> dict[str, str]:
-    from molt.tool_releases import load_tool_releases
+def _tool_release_kinds_of(path: Path, text: str) -> dict[str, str]:
+    from molt.tool_releases import parse_tool_releases
 
     return {
         name: "tool-release" if release.runtime is None else "runtime-tool-release"
-        for name, release in load_tool_releases(root).items()
+        for name, release in parse_tool_releases(path, text).items()
     }
 
 

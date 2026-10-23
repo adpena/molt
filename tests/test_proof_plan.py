@@ -9157,6 +9157,8 @@ def test_tool_release_kinds_follow_the_manifest_not_the_root(tmp_path) -> None:
     """The landing runner validates each batch in one sandbox path; a batch
     that changes the manifest must not be judged by an earlier one's
     (HF-456 v3 review A3-5)."""
+    from molt import tool_releases
+
     root = tmp_path / "repo"
     (root / "config").mkdir(parents=True)
     manifest = root / "config" / "tool_releases.toml"
@@ -9168,6 +9170,24 @@ def test_tool_release_kinds_follow_the_manifest_not_the_root(tmp_path) -> None:
     without_npm = text[: text.index("[tools.npm]")]
     manifest.write_text(without_npm, encoding="utf-8")
     assert "npm" not in proof_plan._tool_release_kinds(root)
+
+    # An in-place rewrite that keeps the size and resets the mtime is still
+    # another manifest (follow-up review L-2): this one names a tool `nqm`
+    # whose executable is `npm`, which the loader refuses.
+    manifest.write_text(text, encoding="utf-8")
+    assert proof_plan._tool_release_kinds(root)["npm"] == "runtime-tool-release"
+    before = manifest.stat()
+    with manifest.open("r+", encoding="utf-8") as handle:
+        handle.write(text.replace("[tools.npm]", "[tools.nqm]"))
+    os.utime(manifest, ns=(before.st_atime_ns, before.st_mtime_ns))
+    after = manifest.stat()
+    assert (after.st_ino, after.st_size, after.st_mtime_ns) == (
+        before.st_ino,
+        before.st_size,
+        before.st_mtime_ns,
+    )
+    with pytest.raises(tool_releases.ToolReleaseError, match="tools.nqm"):
+        proof_plan._tool_release_kinds(root)
 
 
 def test_a_failed_checkout_input_never_claims_admission_does_not_download(
