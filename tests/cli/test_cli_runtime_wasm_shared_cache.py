@@ -105,10 +105,10 @@ def test_pair_cache_admits_interleaved_families_without_copy_or_publication(
     for seed in ("A", "B", "A"):
         identities, generation, pinned, before = families[seed]
         ledger_path = generation.manifest.parent / ".runtime-wasm-store.json"
-        ledger = json.loads(ledger_path.read_text())
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
         for path in (generation.shared, generation.reloc):
             ledger["last_used"][path.name] = 0
-        ledger_path.write_text(json.dumps(ledger))
+        ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
         admitted = cache.admit_runtime_wasm_pair_from_shared_cache(
             shared_identity=identities[0],
             reloc_identity=identities[1],
@@ -116,7 +116,7 @@ def test_pair_cache_admits_interleaved_families_without_copy_or_publication(
         )
         assert admitted is not None
         # Admission itself renews retention before the later codegen binding.
-        renewed = json.loads(ledger_path.read_text())
+        renewed = json.loads(ledger_path.read_text(encoding="utf-8"))
         assert all(
             renewed["last_used"][path.name] > 0
             for path in (generation.shared, generation.reloc)
@@ -138,7 +138,9 @@ def test_pair_cache_admits_interleaved_families_without_copy_or_publication(
         )
         assert after == before
         ledger = json.loads(
-            (admitted.manifest.parent / ".runtime-wasm-store.json").read_text()
+            (admitted.manifest.parent / ".runtime-wasm-store.json").read_text(
+                encoding="utf-8"
+            )
         )
         assert all(
             path.name in ledger["last_used"]

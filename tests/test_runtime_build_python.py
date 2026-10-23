@@ -129,7 +129,9 @@ def _emitted_unicode_tables(source: str, target: tuple[int, int]):
 
 def test_unicode_facts_match_every_running_cpython_codepoint():
     """The public interpreter is the oracle, never the generator's C parser."""
-    source = (ROOT / "runtime/molt-obj-model/src/unicode_generated.rs").read_text()
+    source = (ROOT / "runtime/molt-obj-model/src/unicode_generated.rs").read_text(
+        encoding="utf-8"
+    )
     version, shift, index, pages, records, cases, numbers, categories, bidis, widths = (
         _emitted_unicode_tables(source, sys.version_info[:2])
     )
@@ -214,7 +216,7 @@ def test_unicode_generation_consumes_only_pinned_sources(monkeypatch):
     monkeypatch.setenv("MOLT_BUILD_PYTHON", "/nonexistent/unicode-frontend")
     monkeypatch.setenv("PYTHON", "/nonexistent/other-frontend")
     assert gen_unicode_width.generated_outputs() == {
-        gen_unicode_width.OUTPUT: gen_unicode_width.OUTPUT.read_text()
+        gen_unicode_width.OUTPUT: gen_unicode_width.OUTPUT.read_text(encoding="utf-8")
     }
 
 

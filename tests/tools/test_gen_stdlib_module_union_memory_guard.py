@@ -1144,7 +1144,8 @@ def test_refresh_never_writes_partial_evidence_on_late_failure(
         _rewrite_snapshot(gen.SNAPSHOT_PATH, corrupt)
         if failure == "prior_canonical":
             gen.SNAPSHOT_PATH.write_text(
-                json.dumps(json.loads(gen.SNAPSHOT_PATH.read_text())), encoding="utf-8"
+                json.dumps(json.loads(gen.SNAPSHOT_PATH.read_text(encoding="utf-8"))),
+                encoding="utf-8",
             )
     before = gen.SNAPSHOT_PATH.read_bytes()
     _write_pins(
