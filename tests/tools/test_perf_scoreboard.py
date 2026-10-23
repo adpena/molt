@@ -1662,7 +1662,7 @@ def test_host_tools_reach_quiescence_through_platform_discovery(
     install_module_view(monkeypatch, "sys", sys, ps, platform=platform)
     monkeypatch.setattr(ps.os, "getpid", lambda: 10)
     monkeypatch.setattr(ps.os, "getppid", lambda: 11)
-    command = f"/compiler/bin/{image} --scan-wasm-link-facts input.wasm"
+    command = f"/compiler/bin/{image} --scan-wasm-link-facts"
 
     def probe(argv, **kwargs):
         if os_name == "posix":

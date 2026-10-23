@@ -333,9 +333,7 @@ def _run_wasm_ld(
                 # not relink it again merely to repeat the same admission.
                 started = time.perf_counter()
                 try:
-                    error = _link_command._preflight_relocatable_runtime(
-                        wasm_ld, path, snapshot_root
-                    )
+                    error = _link_command._preflight_relocatable_runtime(wasm_ld, path)
                     if error is not None:
                         raise ValueError(error)
                     return True

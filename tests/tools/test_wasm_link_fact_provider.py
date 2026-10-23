@@ -14,13 +14,15 @@ from molt.cli.wasm_deployment import WasmDeploymentGeneration, WasmDeploymentPla
 from tools import wasm_link_fact_provider as provider
 
 
-def _rejected_run(argv, **_kwargs):
+def _rejected_run(argv, *, input, **_kwargs):
+    # The scanner reads the module from stdin.
+    assert argv[1:] == ["--scan-wasm-link-facts"] and input
     payload = {
         "schema_version": provider.WASM_LINK_FACTS_SCHEMA_VERSION,
         "ok": False,
         "error": "section out of order (at offset 0x8459)",
     }
-    return subprocess.CompletedProcess(argv, 1, json.dumps(payload), "")
+    return subprocess.CompletedProcess(argv, 1, json.dumps(payload).encode(), b"")
 
 
 def test_rejected_scan_input_outlives_scratch_and_private_generation(
@@ -49,7 +51,12 @@ def test_rejected_scan_input_outlives_scratch_and_private_generation(
             == f"facts-scan-{hashlib.sha256(module).hexdigest()}.wasm.rejected"
         )
         assert kept.read_bytes() == module
-        assert not list(scratch.glob("wasm-facts-*.wasm"))
+        # A scan writes no module copy: only the captured scanner is in scratch.
+        assert [
+            path.parent.name.startswith("wasm-facts-scanner-")
+            for path in scratch.rglob("*")
+            if path.is_file()
+        ] == [True]
         # The captured executable stays in scratch until its invocation ends.
         assert provide.scanner_identity.path.read_bytes() == b"scanner"
     assert not generation.root.exists()

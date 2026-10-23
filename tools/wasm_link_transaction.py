@@ -102,13 +102,25 @@ class WasmArtifactState:
         self._admit_path_bytes()
         return result
 
-    def apply_atomic_facts_publication(
+    def apply_facts_publication(
         self,
-        publication: Callable[[Path], WasmLinkFacts],
+        publication: Callable[[bytes, Path], WasmLinkFacts],
     ) -> WasmLinkFacts:
-        """Admit an atomic facts publication and retain its exact projection."""
+        """Publish the owned bytes through one producer write and admit them.
 
-        facts = self.apply_atomic_path_mutation(publication)
+        The producer reads the owned bytes and commits `path` once, atomically,
+        so no persisted copy precedes it. On success the committed bytes and
+        their exact facts projection become the state. On failure the owned
+        bytes stay; the path may hold an earlier or the attempted generation,
+        so it no longer counts as materialized.
+        """
+
+        try:
+            facts = publication(self._data, self.path)
+        except BaseException:
+            self._materialized = False
+            raise
+        self._admit_path_bytes()
         self._facts = facts
         return facts
 

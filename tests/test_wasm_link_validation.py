@@ -918,14 +918,15 @@ class _FixtureWasmFactsProvider:
         assert isinstance(facts, dict)
         return wasm_link_fact_provider.WasmLinkFacts(facts)
 
-    def publish_in_place(
+    def publish(
         self,
+        data: bytes,
         artifact: Path,
         *,
         layout=None,  # type: ignore[no-untyped-def]
         role: str = "monolithic",
     ) -> wasm_link_fact_provider.WasmLinkFacts:
-        published = _with_test_link_facts(artifact.read_bytes(), role=role)
+        published = _with_test_link_facts(data, role=role)
         artifact.write_bytes(published)
         facts = _rust_facts_fixture(published)
         if layout is not None:
@@ -1048,6 +1049,50 @@ def test_wasm_artifact_state_atomic_path_mutation_invalidates_facts(
     assert state.revision == 2
     assert state.facts() is not changed_facts
     assert calls == [initial, changed, committed_before_error]
+
+
+def test_wasm_artifact_state_facts_publication_writes_once_from_owned_bytes(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "artifact.wasm"
+    initial = b"\0asm\x01\0\0\0"
+    attested = wasm_link_operations.build_sections(
+        [(0, wasm_link_format._build_custom_section("molt.attested", b"yes"))]
+    )
+    state = wasm_link_transaction.WasmArtifactState.from_bytes(
+        path,
+        initial,
+        facts_provider=_facts_provider,
+    )
+    received: list[tuple[bytes, bool]] = []
+
+    def publish(data: bytes, artifact: Path):  # type: ignore[no-untyped-def]
+        # The producer reads the owned bytes; nothing was persisted first.
+        received.append((data, artifact.exists()))
+        artifact.write_bytes(attested)
+        return _facts_provider(attested)
+
+    facts = state.apply_facts_publication(publish)
+    assert received == [(initial, False)]
+    assert state.data == attested
+    assert state.facts() is facts
+    assert state.revision == 1
+    # The committed generation is the materialized path: persist writes nothing.
+    path.write_bytes(b"sentinel")
+    state.persist()
+    assert path.read_bytes() == b"sentinel"
+
+    def fail(data: bytes, artifact: Path):  # type: ignore[no-untyped-def]
+        artifact.write_bytes(b"attempted generation")
+        raise ValueError("publication response failed")
+
+    with pytest.raises(ValueError, match="response failed"):
+        state.apply_facts_publication(fail)
+    # The owned bytes stay; the path no longer counts as their copy.
+    assert state.data == attested
+    assert state.revision == 1
+    state.persist()
+    assert path.read_bytes() == attested
 
 
 @pytest.mark.parametrize(
@@ -1198,7 +1243,6 @@ def test_rust_facts_publication_is_admitted_through_artifact_state(
         initial,
         facts_provider=provider,
     )
-    state.persist()
     scanner.write_bytes(b"different scanner generation")
     payload = json.dumps(
         {
@@ -1210,11 +1254,12 @@ def test_rust_facts_publication_is_admitted_through_artifact_state(
     publication_paths: list[Path] = []
     scans: list[bytes] = []
 
-    def fake_run(command, **_kwargs):  # type: ignore[no-untyped-def]
+    def fake_run(command, *, input, **_kwargs):  # type: ignore[no-untyped-def]
         assert Path(command[0]) == provider.scanner_identity.path
         if command[1] == "--scan-wasm-link-facts":
-            scanned = Path(command[2]).read_bytes()
-            scans.append(scanned)
+            # The module arrives on stdin; no scratch file names it.
+            assert len(command) == 2
+            scans.append(input)
             return subprocess.CompletedProcess(
                 command,
                 0,
@@ -1222,27 +1267,28 @@ def test_rust_facts_publication_is_admitted_through_artifact_state(
                     {
                         "schema_version": 7,
                         "ok": True,
-                        "facts": _rust_facts_fixture(scanned),
+                        "facts": _rust_facts_fixture(input),
                     }
-                ),
-                "",
+                ).encode(),
+                b"",
             )
-        assert command[1:3] == ["--publish-wasm-link-facts", str(path)]
+        assert command[1:4] == ["--publish-wasm-link-facts", "--output", str(path)]
         assert command[-2:] == ["--callable-table-role", role]
-        output = Path(command[4])
-        assert command[3] == "--output"
-        assert output == path
-        assert path.read_bytes() == initial
+        # No persisted copy precedes the single publication write.
+        assert input == initial
+        assert publication_paths or not path.exists()
+        output = Path(command[3])
         output.write_bytes(published)
         publication_paths.append(output)
-        return subprocess.CompletedProcess(command, 0, payload, "")
+        return subprocess.CompletedProcess(command, 0, payload.encode(), b"")
 
     monkeypatch.setattr(
         wasm_link_fact_provider, "_COMMANDS", SimpleNamespace(run=fake_run)
     )
 
-    facts = state.apply_atomic_facts_publication(
-        lambda artifact: provider.publish_in_place(
+    facts = state.apply_facts_publication(
+        lambda data, artifact: provider.publish(
+            data,
             artifact,
             role=role,
             layout=wasm_link_format.CallableTableLayout(0, 0, 0, 0)
@@ -1279,7 +1325,8 @@ def test_rust_facts_publication_is_admitted_through_artifact_state(
 
     # Publication itself obeys the same eviction bound when the cache is full.
     evicted = next(iter(provider._cache))
-    provider.publish_in_place(
+    provider.publish(
+        initial,
         path,
         role=role,
         layout=wasm_link_format.CallableTableLayout(0, 0, 0, 0)
@@ -1311,19 +1358,20 @@ def test_rust_facts_publication_rejects_failed_or_changed_output_without_caching
     scanner = tmp_path / "scanner"
     scanner.write_bytes(b"scanner")
     path = tmp_path / "owned-stage.wasm"
-    path.write_bytes(b"\0asm\x01\0\0\0")
-    published = path.read_bytes() + b"\0\x03\x01xa"
+    initial = b"\0asm\x01\0\0\0"
+    published = initial + b"\0\x03\x01xa"
     provider = _REAL_MAKE_RUST_WASM_FACTS_PROVIDER(
         scanner, tmp_path / "scratch", evidence_root=tmp_path / "evidence"
     )
 
-    def fake_run(command, **_kwargs):  # type: ignore[no-untyped-def]
+    def fake_run(command, *, input, **_kwargs):  # type: ignore[no-untyped-def]
+        assert input == initial
         if failure == "error":
             return subprocess.CompletedProcess(
                 command,
                 2,
-                '{"schema_version":7,"ok":false,"error":"fixture rejection"}',
-                "",
+                b'{"schema_version":7,"ok":false,"error":"fixture rejection"}',
+                b"",
             )
         path.write_bytes(published)
         facts = _rust_facts_fixture(published)
@@ -1332,10 +1380,10 @@ def test_rust_facts_publication_rejects_failed_or_changed_output_without_caching
         return subprocess.CompletedProcess(
             command,
             0,
-            "{"
+            b"{"
             if failure == "bad-json"
-            else json.dumps({"schema_version": 7, "ok": True, "facts": facts}),
-            "",
+            else json.dumps({"schema_version": 7, "ok": True, "facts": facts}).encode(),
+            b"",
         )
 
     monkeypatch.setattr(
@@ -1355,7 +1403,7 @@ def test_rust_facts_publication_rejects_failed_or_changed_output_without_caching
             wasm_link_fact_provider, "_decode_wasm_facts_response", decode_and_swap
         )
     with pytest.raises(ValueError, match=message):
-        provider.publish_in_place(path)
+        provider.publish(initial, path)
     assert not provider._cache
 
 
@@ -1377,17 +1425,13 @@ def test_rust_facts_provider_attests_scan_cost_and_content_cache(
     calls = 0
     invoked_scanners: list[Path] = []
 
-    def fake_run(command, **_kwargs):
+    def fake_run(command, *, input, **_kwargs):
         nonlocal calls
         calls += 1
         invoked_scanners.append(Path(command[0]))
-
-        class Result:
-            returncode = 0
-            stdout = payload
-            stderr = ""
-
-        return Result()
+        assert command[1:] == ["--scan-wasm-link-facts"]
+        assert input.startswith(b"representative-wasm")
+        return subprocess.CompletedProcess(command, 0, payload.encode(), b"")
 
     monkeypatch.setattr(
         wasm_link_fact_provider, "_COMMANDS", SimpleNamespace(run=fake_run)
@@ -2349,6 +2393,8 @@ def test_relocatable_runtime_preflight_classifies_linker_crash(
     runtime.write_bytes(b"\0asm\x01\0\0\0")
 
     def fake_run(cmd, **_kwargs):  # type: ignore[no-untyped-def]
+        # The relink is the check: its output goes to the null device.
+        assert cmd == ["wasm-ld", "-r", "-o", os.devnull, str(runtime)]
         return wasm_link_command.subprocess.CompletedProcess(
             cmd,
             3221225477,
@@ -2358,9 +2404,8 @@ def test_relocatable_runtime_preflight_classifies_linker_crash(
 
     monkeypatch.setattr(wasm_link_command, "_run_external_tool", fake_run)
 
-    error = wasm_link_command._preflight_relocatable_runtime(
-        "wasm-ld", runtime, tmp_path
-    )
+    error = wasm_link_command._preflight_relocatable_runtime("wasm-ld", runtime)
+    assert not list(tmp_path.glob("*preflight*"))
 
     assert error is not None
     assert "linking/reloc custom-section indices" in error
@@ -4719,17 +4764,17 @@ def test_restore_split_runtime_contract_exports_scans_contract_once(
     stripped = _strip_export(_strip_export(app, "molt_memory"), "molt_table")
     parse_calls = 0
 
-    def scan(command, **_kwargs):  # type: ignore[no-untyped-def]
+    def scan(command, *, input, **_kwargs):  # type: ignore[no-untyped-def]
         nonlocal parse_calls
         parse_calls += 1
-        data = Path(command[-1]).read_bytes()
+        assert command[1:] == ["--scan-wasm-link-facts"]
         return subprocess.CompletedProcess(
             command,
             0,
             json.dumps(
-                {"schema_version": 7, "ok": True, "facts": _rust_facts_fixture(data)}
-            ),
-            "",
+                {"schema_version": 7, "ok": True, "facts": _rust_facts_fixture(input)}
+            ).encode(),
+            b"",
         )
 
     scanner = tmp_path / "scanner"
@@ -6347,8 +6392,7 @@ def test_primary_runtime_fixture_passes_actual_relocatable_admission(
     )
     linker = wasm_toolchain.resolve_wasm_linker().path
     assert (
-        wasm_link_command._preflight_relocatable_runtime(str(linker), runtime, tmp_path)
-        is None
+        wasm_link_command._preflight_relocatable_runtime(str(linker), runtime) is None
     )
 
 
@@ -12549,8 +12593,8 @@ def test_wasm_scanner_copy_uses_owned_scratch_not_cached_platform_temp(
                     "ok": False,
                     "error": "scratch-routing-witness",
                 }
-            ),
-            "",
+            ).encode(),
+            b"",
         )
 
     def make_provider(selected, selected_scratch, metrics=None, **kwargs):
