@@ -1,3 +1,4 @@
+# MOLT_ENV: MOLT_CAPABILITIES=net
 """Purpose: asyncio SSL gate is intrinsic-backed and never raises NotImplementedError."""
 
 import asyncio
