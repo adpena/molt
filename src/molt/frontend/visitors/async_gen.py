@@ -208,10 +208,14 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                 frame_plan.payload_slots,
                 include_gen_control=frame_plan.include_gen_control,
             )
-            self.globals[func_name] = MoltValue(
-                func_name,
-                type_hint=frame_plan.function_type_hint(closure_size),
-            )
+            # Only a module-namespace definition may publish a global binding
+            # hint; a nested or method definition writing here leaked its name
+            # to every later function in the module (HF-496).
+            if self._binding_targets_module_namespace(func_name):
+                self.globals[func_name] = MoltValue(
+                    func_name,
+                    type_hint=frame_plan.function_type_hint(closure_size),
+                )
 
             prev_state = self._capture_function_state()
             prev_first_param = self.current_method_first_param
@@ -413,7 +417,6 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
         cell_plan = self._callable_cell_plan(node)
         cell_vars = cell_plan.cellvars
 
-        # Add to globals to support calls from other scopes
         frame_plan = stateful_function_frame_plan(
             kind=FunctionKind.ASYNC,
             poll_symbol=poll_func_name,
@@ -425,10 +428,15 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
             frame_plan.payload_slots,
             include_gen_control=frame_plan.include_gen_control,
         )
-        self.globals[func_name] = MoltValue(
-            func_name,
-            type_hint=frame_plan.function_type_hint(closure_size),
-        )  # Placeholder size
+        # Only a module-namespace definition may publish a global binding hint,
+        # here before the body so that a recursive call resolves; a nested or
+        # method definition writing here leaked its name to every later
+        # function in the module (HF-496).
+        if self._binding_targets_module_namespace(func_name):
+            self.globals[func_name] = MoltValue(
+                func_name,
+                type_hint=frame_plan.function_type_hint(closure_size),
+            )
 
         prev_state = self._capture_function_state()
         prev_first_param = self.current_method_first_param
