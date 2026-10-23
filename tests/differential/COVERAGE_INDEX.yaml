@@ -513,7 +513,7 @@ stdlib:
       - tests/differential/stdlib/subprocess_shell_args.py
   sys:
     tests:
-      - tests/differential/basic/sys_exception_across_resume.py
+      - tests/differential/stdlib/sys_exception_across_resume.py
       - tests/differential/stdlib/sys_basic.py
       - tests/differential/stdlib/sys_encoding_basic.py
       - tests/differential/stdlib/sys_getframe_fields.py
@@ -978,7 +978,7 @@ stdlib:
       - tests/differential/stdlib/logging_record_thread_process.py
   traceback:
     tests:
-      - tests/differential/basic/traceback_tb_next_assignment.py
+      - tests/differential/stdlib/traceback_tb_next_assignment.py
       - tests/differential/stdlib/traceback_chain.py
       - tests/differential/stdlib/traceback_extract_tb_payload.py
       - tests/differential/stdlib/traceback_exception_object.py
