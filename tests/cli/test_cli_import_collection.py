@@ -219,6 +219,7 @@ from molt.cli.frontend_execution import (
     _FrontendLayerExecutionContext,
     _FrontendLayerRuntimeHooks,
 )
+from molt.cli import process_execution as cli_process_execution
 from molt.cli.process_execution import _TimedResult
 
 cli_deps = importlib.import_module("molt.cli.deps")
@@ -27540,7 +27541,7 @@ def test_run_script_cross_respects_pythonpath_for_module_artifact_resolution(
         cli_wrapper_build, "_run_completed_command", fake_run_completed_command
     )
     monkeypatch.setattr(
-        cli_commands, "_run_completed_command", fake_run_completed_command
+        cli_process_execution, "_run_completed_command", fake_run_completed_command
     )
     original_which = shutil.which
     install_module_view(
@@ -27648,7 +27649,7 @@ def test_run_script_cross_wasm_honors_build_json_output_and_linked_artifact(
         cli_wrapper_build, "_run_completed_command", fake_run_completed_command
     )
     monkeypatch.setattr(
-        cli_commands, "_run_completed_command", fake_run_completed_command
+        cli_process_execution, "_run_completed_command", fake_run_completed_command
     )
     node_path = tmp_path / "node runtime"
     monkeypatch.setattr(

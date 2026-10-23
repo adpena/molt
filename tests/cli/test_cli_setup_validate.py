@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from molt.compilation_target import admit_target
+from molt.compilation_target import TargetKind, admit_target
 
 from molt.cli import wasm_link_inputs
 from molt.tool_releases import run_command
@@ -884,9 +884,27 @@ def test_cli_compare_uses_diff_memory_guard_for_children(
     assert commands[1][:5] == ["py", "-3.14", "-m", "molt.cli", "build"]
 
 
+@pytest.mark.parametrize(
+    "target", [TargetKind.WASM, TargetKind.WASI, TargetKind.LUAU, TargetKind.MLIR]
+)
+@pytest.mark.parametrize(
+    "json_output,timing,returncode",
+    [
+        (False, False, 0),
+        (False, True, 7),
+        (True, False, 0),
+        (True, True, 0),
+        (True, True, 7),
+    ],
+)
 def test_cli_cross_run_uses_cross_memory_guard(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    target: TargetKind,
+    json_output: bool,
+    timing: bool,
+    returncode: int,
 ) -> None:
     from molt.cli import build_inputs as cli_build_inputs
 
@@ -894,7 +912,13 @@ def test_cli_cross_run_uses_cross_memory_guard(
     project.mkdir()
     entry = project / "main.py"
     entry.write_text("print('ok')\n", encoding="utf-8")
-    artifact = project / "out.wasm"
+    artifact = project / (
+        "out.mlir"
+        if target is TargetKind.MLIR
+        else "out.luau"
+        if target is TargetKind.LUAU
+        else "out.wasm"
+    )
     artifact.write_text("", encoding="utf-8")
     manifest = project / "manifest.json"
     manifest.write_text("{}", encoding="utf-8")
@@ -920,7 +944,12 @@ def test_cli_cross_run_uses_cross_memory_guard(
 
     def fake_run_completed_command(cmd: list[str], **kwargs: object):
         run_calls.append({"cmd": cmd, **kwargs})
-        result = subprocess.CompletedProcess(cmd, 0, "", "")
+        result = subprocess.CompletedProcess(
+            cmd,
+            returncode,
+            "guest output ☃\n" if kwargs["capture_output"] else None,
+            "guest stderr\n" if kwargs["capture_output"] else None,
+        )
         result.elapsed_s = 0.02  # type: ignore[attr-defined]
         return result
 
@@ -943,7 +972,7 @@ def test_cli_cross_run_uses_cross_memory_guard(
         script_commands, "_run_wrapper_build", fake_run_wrapper_build, raising=True
     )
     monkeypatch.setattr(
-        script_commands,
+        process_execution,
         "_run_completed_command",
         fake_run_completed_command,
         raising=True,
@@ -955,24 +984,61 @@ def test_cli_cross_run_uses_cross_memory_guard(
         raising=True,
     )
 
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        script_commands,
+        which=lambda name: "/usr/bin/lune" if name == "lune" else None,
+    )
     rc = script_commands._run_script_cross(
-        admit_target("wasm"),
+        target,
         str(entry),
         None,
         [],
-        build_args=["--target", "wasm"],
+        build_args=["--target", target.value],
+        json_output=json_output,
+        timing=timing,
+        verbose=True,
     )
 
-    assert rc == 0
-    assert build_calls[0]["build_args"] == [
-        "--target",
-        "wasm",
-        "--linked",
-        "--require-linked",
-    ]
+    assert rc == (0 if target is TargetKind.MLIR else returncode)
+    expected_build_args = ["--target", target.value]
+    if target in {TargetKind.WASM, TargetKind.WASI}:
+        expected_build_args += ["--linked", "--require-linked"]
+    assert build_calls[0]["build_args"] == expected_build_args
     assert build_calls[0]["memory_guard_prefix"] == "MOLT_CROSS"
-    assert run_calls[0]["memory_guard_prefix"] == "MOLT_CROSS"
-    assert run_calls[0]["capture_output"] is False
+    captured = capsys.readouterr()
+    if target is TargetKind.MLIR:
+        assert run_calls == []
+    else:
+        assert len(run_calls) == 1
+        assert run_calls[0]["memory_guard_prefix"] == "MOLT_CROSS"
+        assert run_calls[0]["capture_output"] is json_output
+    if json_output:
+        assert captured.err == ""
+        payload = json.loads(captured.out)
+        assert payload["command"] == "run"
+        assert payload["status"] == ("ok" if rc == 0 else "error")
+        if target is TargetKind.MLIR:
+            expected: dict[str, object] = {"output": str(artifact), "executed": False}
+            if timing:
+                expected["timing"] = {"build_s": 0.01, "total_s": 0.01}
+        else:
+            expected = {
+                "returncode": returncode,
+                "stdout": "guest output ☃\n",
+                "stderr": "guest stderr\n",
+            }
+            if timing:
+                expected["timing"] = {"build_s": 0.01, "run_s": 0.02, "total_s": 0.03}
+        assert payload["data"] == expected
+    else:
+        assert captured.out == ""
+        if timing:
+            assert (
+                "timing: build" if target is TargetKind.MLIR else "Timing (compiled):"
+            ) in captured.err
 
 
 def test_cli_bench_outer_process_uses_bench_memory_guard(
