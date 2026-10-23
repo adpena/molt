@@ -69,6 +69,8 @@ class SelectedGate:
     concurrent: bool = False
     # The merged pytest session or one pytest_select cohort.
     pytest: bool = False
+    # Named-node admission never replaces mandatory execution.
+    collection_command: tuple[str, ...] | None = None
 
     @property
     def precheck(self) -> bool:
@@ -279,7 +281,12 @@ class GateConfig:
         to the merged pytest invocation supply its tools; each selector cohort
         keeps its own. Command binding happens after this policy selection.
         """
-        from tools.proof_plan import PLAN_PATH, local_pytest_argv, plan_claim_matches
+        from tools.proof_plan import (
+            PLAN_PATH,
+            local_pytest_argv,
+            local_pytest_collection_argv,
+            plan_claim_matches,
+        )
 
         plan_touched = PLAN_PATH in touched
         if plan_touched and plan_changes is None:
@@ -306,6 +313,7 @@ class GateConfig:
             *,
             concurrent: bool = False,
             pytest: bool = False,
+            collection_command: tuple[str, ...] | None = None,
         ) -> None:
             key = command_key(command)
             if key in indices:
@@ -315,10 +323,13 @@ class GateConfig:
                     prior,
                     toolchains=tuple(dict.fromkeys((*prior.toolchains, *tools))),
                     pytest=prior.pytest or pytest,
+                    collection_command=prior.collection_command or collection_command,
                 )
             else:
                 indices[key] = len(selected)
-                selected.append(SelectedGate(command, tools, concurrent, pytest))
+                selected.append(
+                    SelectedGate(command, tools, concurrent, pytest, collection_command)
+                )
 
         def tools(identifier: str) -> tuple[str, ...]:
             return self.prerequisites[identifier][1]
@@ -357,6 +368,11 @@ class GateConfig:
                     command,
                     tools(f"{owner}.pytest-select-{index}"),
                     pytest=True,
+                    collection_command=(
+                        local_pytest_collection_argv(command)
+                        if any("::" in target for target in targets)
+                        else None
+                    ),
                 )
             for target in rule.pytest:
                 if target not in seen_pytest:
@@ -383,8 +399,23 @@ class GateConfig:
                 pytest_targets, memory_units=self.pytest_memory_units
             )
             pytest_commands.add(command_key(command))
+            # File-only targets run once; only explicit named nodes collect early.
+            named_targets = tuple(target for target in pytest_targets if "::" in target)
             size = len(selected)
-            add(command, tuple(pytest_tools), pytest=True)
+            add(
+                command,
+                tuple(pytest_tools),
+                pytest=True,
+                collection_command=(
+                    local_pytest_collection_argv(
+                        local_pytest_argv(
+                            named_targets, memory_units=self.pytest_memory_units
+                        )
+                    )
+                    if named_targets
+                    else None
+                ),
+            )
             if len(selected) != size:
                 selected.insert(pytest_index, selected.pop())
         # Run declared source/metadata and compilation controls before Python
@@ -498,6 +529,13 @@ def select_landing_gates(
             replace(
                 gate,
                 command=bind_local_gate_command(gate.command, upstream_commit=upstream),
+                collection_command=(
+                    bind_local_gate_command(
+                        gate.collection_command, upstream_commit=upstream
+                    )
+                    if gate.collection_command is not None
+                    else None
+                ),
             )
             for gate in gates
         ]

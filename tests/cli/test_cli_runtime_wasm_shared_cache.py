@@ -35,57 +35,229 @@ def _isolated_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     diagnostics._reset_runtime_wasm_cache_diagnostics()
 
 
-def test_pair_cache_is_session_independent_and_hydrates_both(
+def test_pair_cache_admits_interleaved_families_without_copy_or_publication(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    shared = tmp_path / "built" / "molt_runtime.wasm"
-    reloc = tmp_path / "built" / "molt_runtime_reloc.wasm"
-    shared.parent.mkdir()
-    shared.write_bytes(b"shared")
-    reloc.write_bytes(b"reloc")
-    shared_identity = _identity("shared")
-    reloc_identity = _identity("reloc")
+    from molt.cli import runtime_wasm_generation as generation_module
+    from molt.toolchain_identity import stable_regular_file_identity
+
+    families = {}
+    for seed in ("A", "B"):
+        source = tmp_path / seed
+        source.mkdir()
+        shared, reloc = source / "molt_runtime.wasm", source / "molt_runtime_reloc.wasm"
+        shared.write_bytes((seed + "-shared").encode())
+        reloc.write_bytes((seed + "-reloc").encode())
+        identities = _identity("shared", seed), _identity("reloc", seed)
+        assert (
+            cache.publish_runtime_wasm_pair_to_shared_cache(
+                shared=shared,
+                reloc=reloc,
+                shared_identity=identities[0],
+                reloc_identity=identities[1],
+                cargo_environment=runtime_cargo_environment_inputs(),
+            )
+            is None
+        )
+        _, _, manifest = cache._cached_pair_paths(identities[0])
+        generation = cache.read_runtime_wasm_generation(
+            manifest,
+            expected_shared_identity=identities[0],
+            expected_reloc_identity=identities[1],
+        )
+        assert generation is not None
+        pinned = generation_module.bind_runtime_wasm_codegen(generation, set())
+        members = (generation.shared, generation.reloc, pinned.generation.manifest)
+        families[seed] = (
+            identities,
+            generation,
+            pinned,
+            tuple(
+                stable_regular_file_identity(path, label="test retained generation")
+                for path in members
+            ),
+        )
+
+    # The common host selection belongs to B; A still exists in the canonical
+    # family cache. An A/B/A sequence must never replace that pointer or members.
+    host = tmp_path / "host"
+    b_identities, b_generation, _, _ = families["B"]
+    selected = generation_module.publish_runtime_wasm_generation(
+        host / "molt_runtime.wasm",
+        host / "molt_runtime_reloc.wasm",
+        shared_identity=b_identities[0],
+        reloc_identity=b_identities[1],
+        source_shared=b_generation.shared,
+        source_reloc=b_generation.reloc,
+        cargo_environment=runtime_cargo_environment_inputs(),
+    )
+    host_before = stable_regular_file_identity(
+        selected.manifest, label="test host selection"
+    )
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("ordinary family admission copied or published runtime bytes")
+
+    monkeypatch.setattr(cache, "publish_runtime_wasm_generation", forbidden)
+    monkeypatch.setattr(generation_module, "publish_runtime_wasm_generation", forbidden)
+    monkeypatch.setattr(generation_module, "hydrate_runtime_wasm_generation", forbidden)
+    monkeypatch.setattr(generation_module, "_stage_artifact", forbidden)
+    for seed in ("A", "B", "A"):
+        identities, generation, pinned, before = families[seed]
+        ledger_path = generation.manifest.parent / ".runtime-wasm-store.json"
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        for path in (generation.shared, generation.reloc):
+            ledger["last_used"][path.name] = 0
+        ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+        admitted = cache.admit_runtime_wasm_pair_from_shared_cache(
+            shared_identity=identities[0],
+            reloc_identity=identities[1],
+            environment=ProcessEnvironment(os.environ),
+        )
+        assert admitted is not None
+        # Admission itself renews retention before the later codegen binding.
+        renewed = json.loads(ledger_path.read_text(encoding="utf-8"))
+        assert all(
+            renewed["last_used"][path.name] > 0
+            for path in (generation.shared, generation.reloc)
+        )
+        assert (
+            admitted.shared == generation.shared and admitted.reloc == generation.reloc
+        )
+        assert (admitted.shared.read_bytes(), admitted.reloc.read_bytes()) == (
+            (seed + "-shared").encode(),
+            (seed + "-reloc").encode(),
+        )
+        bound = generation_module.bind_runtime_wasm_codegen(admitted, set())
+        assert bound == pinned
+        after = tuple(
+            stable_regular_file_identity(
+                identity.path, label="test retained generation"
+            )
+            for identity in before
+        )
+        assert after == before
+        ledger = json.loads(
+            (admitted.manifest.parent / ".runtime-wasm-store.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert all(
+            path.name in ledger["last_used"]
+            for path in (admitted.shared, admitted.reloc)
+        )
     assert (
-        cache.publish_runtime_wasm_pair_to_shared_cache(
-            shared=shared,
-            reloc=reloc,
-            shared_identity=shared_identity,
-            reloc_identity=reloc_identity,
-            cargo_environment=runtime_cargo_environment_inputs(),
+        stable_regular_file_identity(selected.manifest, label="test host selection")
+        == host_before
+    )
+
+    # Missing/corrupt members and absent families remain misses without a copy
+    # fallback, even though the other family's host selection is still usable.
+    for seed, damage in (("A", "missing"), ("B", "corrupt")):
+        identities, generation, _, _ = families[seed]
+        if damage == "missing":
+            generation.shared.unlink()
+        else:
+            generation.reloc.write_bytes(b"corrupt")
+        assert (
+            cache.admit_runtime_wasm_pair_from_shared_cache(
+                shared_identity=identities[0],
+                reloc_identity=identities[1],
+                environment=ProcessEnvironment(os.environ),
+            )
+            is None
+        )
+    assert (
+        cache.admit_runtime_wasm_pair_from_shared_cache(
+            shared_identity=_identity("shared", "absent"),
+            reloc_identity=_identity("reloc", "absent"),
+            environment=ProcessEnvironment(os.environ),
         )
         is None
     )
+    snapshot = diagnostics._runtime_wasm_cache_diagnostics_snapshot()
+    assert snapshot is not None
+    assert (
+        snapshot["admit_hits"],
+        snapshot["admit_failures"],
+        snapshot["admit_misses"],
+    ) == (3, 2, 1)
 
+
+def test_admitted_cache_generation_retains_custody_across_selection_and_eviction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from molt.cli import generation_store
     from molt.cli import runtime_wasm_generation as generation_module
+    from tools import wasm_link
 
-    reads = []
-    read = cache.read_runtime_wasm_generation
+    hour = 60 * 60
+    now = 1_000_000.0
+    monkeypatch.setattr(generation_store, "time", SimpleNamespace(time=lambda: now))
+    shared_identity, reloc_identity = _identity("shared"), _identity("reloc")
+    shared, reloc = tmp_path / "shared.wasm", tmp_path / "reloc.wasm"
 
-    def capture(*args, **kwargs):
-        reads.append(args[0])
-        return read(*args, **kwargs)
+    def publish(value: bytes) -> None:
+        shared.write_bytes(value + b"-shared")
+        reloc.write_bytes(value + b"-reloc")
+        assert (
+            cache.publish_runtime_wasm_pair_to_shared_cache(
+                shared=shared,
+                reloc=reloc,
+                shared_identity=shared_identity,
+                reloc_identity=reloc_identity,
+                cargo_environment=runtime_cargo_environment_inputs(),
+            )
+            is None
+        )
 
-    monkeypatch.setattr(cache, "read_runtime_wasm_generation", capture)
-    monkeypatch.setattr(
-        generation_module,
-        "read_runtime_wasm_generation",
-        lambda *args, **kwargs: pytest.fail("hydration re-read its admitted source"),
-    )
-    dest_shared = tmp_path / "other-session" / "molt_runtime.wasm"
-    dest_reloc = tmp_path / "other-session" / "molt_runtime_reloc.wasm"
-    hydrated = cache.hydrate_runtime_wasm_pair_from_shared_cache(
-        dest_shared=dest_shared,
-        dest_reloc=dest_reloc,
+    publish(b"held")
+    now += 25 * hour
+    admitted = cache.admit_runtime_wasm_pair_from_shared_cache(
         shared_identity=shared_identity,
         reloc_identity=reloc_identity,
         environment=ProcessEnvironment(os.environ),
     )
-    assert hydrated is not None
-    assert len(reads) == 1
-    assert hydrated.shared.read_bytes() == b"shared"
-    assert hydrated.reloc.read_bytes() == b"reloc"
-    assert not dest_shared.exists()
-    assert not dest_reloc.exists()
+    assert admitted is not None
+    binding = generation_module.bind_runtime_wasm_codegen(admitted, None)
+    pinned = binding.generation
+    expected = tmp_path / "expected.json"
+    generation_module.RuntimeWasmExpectedPair(shared_identity, reloc_identity).write(
+        expected
+    )
+
+    def link_admission():
+        return wasm_link._verify_runtime_generation(
+            shared=pinned.shared,
+            reloc=pinned.reloc,
+            generation_manifest=pinned.manifest,
+            expected_identity=expected,
+        )
+
+    now += hour
+    publish(b"replacement")
+    now += 22 * hour
+    publish(b"later")  # Runs actual store eviction, 23h after admission/binding.
+    binding.verify()
+    linked = link_admission()
+    assert (linked.shared.read_bytes(), linked.reloc.read_bytes()) == (
+        b"held-shared",
+        b"held-reloc",
+    )
+    # Retention is bounded, not a permanent exemption. Once both the binding
+    # and replaced selection have been unused for a day, the same authority
+    # may evict them; binding and final-link admission must then fail closed.
+    now += 3 * hour
+    publish(b"current")
+    assert not any(
+        path.exists() for path in (pinned.shared, pinned.reloc, pinned.manifest)
+    )
+    with pytest.raises((OSError, ValueError)):
+        binding.verify()
+    with pytest.raises(SystemExit, match="does not match the trusted caller identity"):
+        link_admission()
 
 
 def test_pair_cache_rejects_cross_identity_and_single_artifact_tamper(
@@ -114,16 +286,12 @@ def test_pair_cache_rejects_cross_identity_and_single_artifact_tamper(
     immutable_reloc.write_bytes(b"tampered")
 
     dest = tmp_path / "dest"
-    assert not cache.hydrate_runtime_wasm_pair_from_shared_cache(
-        dest_shared=dest / shared.name,
-        dest_reloc=dest / reloc.name,
+    assert not cache.admit_runtime_wasm_pair_from_shared_cache(
         shared_identity=shared_identity,
         reloc_identity=reloc_identity,
         environment=ProcessEnvironment(os.environ),
     )
-    assert not cache.hydrate_runtime_wasm_pair_from_shared_cache(
-        dest_shared=dest / shared.name,
-        dest_reloc=dest / reloc.name,
+    assert not cache.admit_runtime_wasm_pair_from_shared_cache(
         shared_identity=shared_identity,
         reloc_identity=_identity("reloc", "other"),
         environment=ProcessEnvironment(os.environ),
@@ -162,9 +330,7 @@ def test_pair_cache_rejects_excessive_receipt_nesting(tmp_path: Path) -> None:
     manifest.write_text("[" * 100_000 + "]" * 100_000, encoding="utf-8")
     dest = tmp_path / "dest"
     assert (
-        cache.hydrate_runtime_wasm_pair_from_shared_cache(
-            dest_shared=dest / "molt_runtime.wasm",
-            dest_reloc=dest / "molt_runtime_reloc.wasm",
+        cache.admit_runtime_wasm_pair_from_shared_cache(
             shared_identity=shared_identity,
             reloc_identity=reloc_identity,
             environment=ProcessEnvironment(os.environ),
@@ -173,9 +339,9 @@ def test_pair_cache_rejects_excessive_receipt_nesting(tmp_path: Path) -> None:
     )
     snapshot = diagnostics._runtime_wasm_cache_diagnostics_snapshot()
     assert snapshot is not None
-    assert snapshot["hydrate_attempts"] == 1
-    assert snapshot["hydrate_failures"] == 1
-    assert snapshot["hydrate_hits"] == 0
+    assert snapshot["admit_attempts"] == 1
+    assert snapshot["admit_failures"] == 1
+    assert snapshot["admit_hits"] == 0
     assert not dest.exists()
 
 
@@ -219,7 +385,7 @@ def test_cargo_build_env_defaults_jobs_but_respects_override(
 
 
 @pytest.mark.parametrize("before,after", [("first", "second"), (None, ""), ("", None)])
-def test_shared_cache_checks_exact_observation_before_copy(
+def test_shared_cache_checks_exact_observation_before_admission(
     tmp_path, monkeypatch, before, after
 ):
     name = "MOLT_TEST_RUNTIME_INPUT"
@@ -248,12 +414,22 @@ def test_shared_cache_checks_exact_observation_before_copy(
         )
         is None
     )
+    from molt.cli import runtime_wasm_generation as generation_module
+
+    monkeypatch.setattr(
+        generation_module,
+        "_stage_artifact",
+        lambda *_a, **_k: pytest.fail("environment admission copied runtime bytes"),
+    )
+    monkeypatch.setattr(
+        generation_module,
+        "publish_runtime_wasm_generation",
+        lambda *_a, **_k: pytest.fail("environment admission published runtime bytes"),
+    )
     select(after)
     destination = tmp_path / "refused"
     assert (
-        cache.hydrate_runtime_wasm_pair_from_shared_cache(
-            dest_shared=destination / shared.name,
-            dest_reloc=destination / reloc.name,
+        cache.admit_runtime_wasm_pair_from_shared_cache(
             shared_identity=identities[0],
             reloc_identity=identities[1],
             environment=ProcessEnvironment(os.environ),
@@ -262,9 +438,7 @@ def test_shared_cache_checks_exact_observation_before_copy(
     )
     assert not destination.exists()
     select(before)
-    admitted = cache.hydrate_runtime_wasm_pair_from_shared_cache(
-        dest_shared=destination / shared.name,
-        dest_reloc=destination / reloc.name,
+    admitted = cache.admit_runtime_wasm_pair_from_shared_cache(
         shared_identity=identities[0],
         reloc_identity=identities[1],
         environment=ProcessEnvironment(os.environ),

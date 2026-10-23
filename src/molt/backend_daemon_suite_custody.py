@@ -31,6 +31,7 @@ from molt.file_locks import (
 )
 
 from molt.process_spawn import PROCESS_STATE_HANDOFF_TIMEOUT_S
+from molt.process_model import CustodyInterest
 
 LEASE_ENV = "MOLT_BACKEND_DAEMON_SUITE_LEASE"
 SCHEMA = "molt.backend_daemon.suite-lease.v2"
@@ -714,6 +715,49 @@ def _custody_records(
         if lock is not None:
             _release_file_lock(lock)
     return tuple(records.values()), errors
+
+
+def sentinel_sampling_interest(
+    environ: Mapping[str, str],
+    *,
+    project_root: Path,
+    receiver: SuiteDaemonLease | None = None,
+) -> CustodyInterest:
+    """Rows to observe, never permission to adopt or signal those instances.
+
+    A receiver can first observe an already reparented daemon. Discover its
+    roots and recorded members through the same custody receipts that
+    registered_groups will validate against the fresh snapshot. Read again on
+    each poll so a new adoption cannot be hidden by a cached interest. A busy
+    adoption lock contributes no new hints; remembered births remain watched.
+    """
+    if os.name != "posix":
+        return CustodyInterest(frozenset(), frozenset())
+    if receiver is not None and receiver.record["owner_pid"] == os.getpid():
+        path, lease = receiver.path, receiver.record
+        daemon_root = None
+    else:
+        raw = environ.get(LEASE_ENV)
+        if not raw:
+            return CustodyInterest(frozenset(), frozenset())
+        path = Path(raw)
+        lease = read_lease(path)
+        if lease is None:
+            return CustodyInterest(frozenset(), frozenset())
+        daemon_root = daemon.backend_daemon_root_from_env(
+            environ, project_root=project_root
+        )
+    records, _errors = _custody_records(
+        path, lease=lease, daemon_root=daemon_root, timeout_s=0
+    )
+    return CustodyInterest(
+        tree_pids=frozenset(
+            pid
+            for record, members in records
+            for pid in (record.identity.pid, *members)
+        ),
+        exact_pids=frozenset((lease["owner_pid"], lease["guardian_pid"])),
+    )
 
 
 def _seal_adoption_index(

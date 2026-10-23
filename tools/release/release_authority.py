@@ -94,7 +94,7 @@ _COMMANDS = CommandExecutor.for_file(__file__)
 
 CANDIDATE_SCHEMA = "molt.release-candidate.v6"
 CONSUMER_EXPECTED_OUTPUT = "MOLT_RELEASE_CONSUMER_OK"
-CONSUMER_SCHEMA = "molt.release-consumer-proof.v9"
+CONSUMER_SCHEMA = "molt.release-consumer-proof.v10"
 
 
 def consumer_lanes() -> tuple[ReleaseLane, ...]:
@@ -138,6 +138,7 @@ def consumer_guest_command(
     diagnostics: str,
     output: str,
     source: str,
+    capture_link_inputs: bool = False,
 ) -> list[str]:
     """Installed native build, or the one public WASM build-and-run command."""
     if lane.target == "native":
@@ -156,6 +157,7 @@ def consumer_guest_command(
             diagnostics,
             "--output",
             output,
+            *(["--capture-link-inputs"] if capture_link_inputs else []),
             source,
         ]
     if lane.target != "wasm" or lane.backend != "wasm":
@@ -172,6 +174,7 @@ def consumer_guest_command(
         python_minor,
         f"--build-arg=--diagnostics-file={diagnostics}",
         f"--build-arg=--output={output}",
+        *(["--build-arg=--capture-link-inputs"] if capture_link_inputs else []),
         source,
         "--",
         *CONSUMER_GUEST_ARGV,
@@ -842,9 +845,12 @@ def _validate_consumer_guest_cells(
             launcher,
             lane=lane,
             python_minor=python_minor,
-            diagnostics=cell["diagnostics"],
-            output=cell["output"],
-            source=source,
+            diagnostics="/work/output/diagnostics.json",
+            output="/work/output/program.wasm"
+            if target == "wasm"
+            else "/work/output/program",
+            source="/app/source.py",
+            capture_link_inputs=True,
         )
         output = path_type(cell["output"])
         run = by_role[f"{role_prefix}run_{lane.id}"]
@@ -1014,6 +1020,7 @@ def validate_consumer_proof(
                 "source_sha256",
                 "commands",
                 "cells",
+                "compilation",
             }
             or proof.get("python") != minor
             or proof.get("reference_python") != reference
@@ -1037,6 +1044,15 @@ def validate_consumer_proof(
             reference_python=reference,
             python_executable=executable,
         )
+        if (
+            path_type(proof["source"])
+            != path_type(commands["environment"]["argv"][-1]).parent
+            / "project"
+            / "release_consumer.py"
+        ):
+            raise ValueError(
+                "release consumer preparation source differs from its environment"
+            )
         launchers.add(tuple(launcher))
         fingerprint, cell_directories = _validate_consumer_guest_cells(
             proof["cells"],
@@ -1047,6 +1063,18 @@ def validate_consumer_proof(
             source=proof["source"],
             compiler_sha256=candidate["compiler"]["sha256"],
             role_prefix="",
+        )
+        from tools.release import consumer_replay
+
+        consumer_replay.validate_installed_compilation(
+            proof["compilation"],
+            evidence_root=evidence_root,
+            candidate=candidate,
+            proof=proof,
+            launcher=launcher,
+            controller_python=Path(executable),
+            owner="bundle",
+            supervisor=supervisor,
         )
         fingerprints.add(fingerprint)
         directories.update(cell_directories)
@@ -1063,7 +1091,12 @@ def validate_consumer_proof(
             "release consumer coordinates must share one installed launcher "
             "and build into separate output directories"
         )
-    _validate_consumer_pip_proof(consumer["pip_proof"], candidate)
+    _validate_consumer_pip_proof(
+        consumer["pip_proof"],
+        candidate,
+        evidence_root=evidence_root,
+        supervisor=supervisor,
+    )
     from tools.release import consumer_replay
 
     consumer_replay.validate(
@@ -1078,7 +1111,9 @@ def validate_consumer_proof(
     )
 
 
-def _validate_consumer_pip_proof(proof: object, candidate: dict[str, Any]) -> None:
+def _validate_consumer_pip_proof(
+    proof: object, candidate: dict[str, Any], *, evidence_root: Path, supervisor: Path
+) -> None:
     """The same logical products through one ordinary platform-wheel install."""
     windows = candidate["target"]["platform"] == "windows"
     path_type = PureWindowsPath if windows else PurePosixPath
@@ -1093,8 +1128,10 @@ def _validate_consumer_pip_proof(proof: object, candidate: dict[str, Any]) -> No
             "wheel",
             "python",
             "reference_python",
+            "execution",
             "commands",
             "cells",
+            "compilation",
             "source",
             "source_sha256",
             "compiler_sha256",
@@ -1119,6 +1156,11 @@ def _validate_consumer_pip_proof(proof: object, candidate: dict[str, Any]) -> No
         raise ValueError(
             "release consumer pip proof is not bound to the candidate wheel"
         )
+    python_executable = _validate_consumer_python_identity(
+        proof["execution"],
+        target=candidate["target"],
+        reference_python=proof["reference_python"],
+    )
     by_role = _validate_consumer_command_records(
         proof["commands"], roles=consumer_command_roles(pip=True)
     )
@@ -1128,6 +1170,10 @@ def _validate_consumer_pip_proof(proof: object, candidate: dict[str, Any]) -> No
     if len(environment) != 6 or len(install) != 7:
         raise ValueError("release consumer pip commands are not one pip installation")
     venv = path_type(environment[-1])
+    if path_type(proof["source"]) != venv.parent / "project" / "release_consumer.py":
+        raise ValueError(
+            "release consumer pip preparation source differs from its environment"
+        )
     first_build = by_role[f"pip_build_{consumer_lanes()[0].id}"]["argv"]
     launcher = first_build[:1]
     if (
@@ -1139,6 +1185,7 @@ def _validate_consumer_pip_proof(proof: object, candidate: dict[str, Any]) -> No
         or path_type(launcher[0])
         != venv.joinpath("Scripts/molt.exe" if windows else "bin/molt")
         or install[1:5] != ["pip", "install", "--no-config", "--python"]
+        or path_type(install[5]) != path_type(python_executable)
         or path_type(install[5])
         != venv.joinpath("Scripts/python.exe" if windows else "bin/python")
         or path_type(install[6]).name != wheel["filename"]
@@ -1155,6 +1202,19 @@ def _validate_consumer_pip_proof(proof: object, candidate: dict[str, Any]) -> No
         source=proof["source"],
         compiler_sha256=candidate["compiler"]["sha256"],
         role_prefix="pip_",
+    )
+
+    from tools.release import consumer_replay
+
+    consumer_replay.validate_installed_compilation(
+        proof["compilation"],
+        evidence_root=evidence_root,
+        candidate=candidate,
+        proof=proof,
+        launcher=launcher,
+        controller_python=Path(install[5]),
+        owner="pip",
+        supervisor=supervisor,
     )
 
 

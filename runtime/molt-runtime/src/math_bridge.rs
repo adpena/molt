@@ -1467,3 +1467,32 @@ mod numeric_protocol_tests {
         });
     }
 }
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_math_exact_builtin_sequence(bits: u64) -> bool {
+    crate::with_gil_entry_nopanic!(py, {
+        let classes = builtin_classes(py);
+        let class = _type_of_bits(py, bits);
+        class == classes.list || class == classes.tuple
+    })
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_math_exact_builtin_real(bits: u64) -> bool {
+    crate::with_gil_entry_nopanic!(py, {
+        let classes = builtin_classes(py);
+        let class = _type_of_bits(py, bits);
+        class == classes.int || class == classes.bool || class == classes.float
+    })
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_math_not_implemented_bits() -> u64 {
+    crate::with_gil_entry_nopanic!(py, { not_implemented_bits(py) })
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_math_molt_add(a: u64, b: u64) -> u64 {
+    molt_add(a, b)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_math_molt_div(a: u64, b: u64) -> u64 {
+    molt_div(a, b)
+}

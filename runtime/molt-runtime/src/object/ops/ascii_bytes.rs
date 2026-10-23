@@ -281,7 +281,7 @@ fn simd_is_all_ascii_whitespace_impl<const TEXT: bool>(bytes: &[u8]) -> bool {
     // Scalar tail
     while i < bytes.len() {
         let whitespace = if TEXT {
-            unicode_space_table::is_space(u32::from(bytes[i]))
+            bytes_ascii_space(bytes[i]) || matches!(bytes[i], 0x1c..=0x1f)
         } else {
             bytes_ascii_space(bytes[i])
         };

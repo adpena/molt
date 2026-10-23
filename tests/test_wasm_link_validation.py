@@ -12,6 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from tools.wasm_link_transaction import WasmArtifactState
 from molt.cli.source_extension_link_requirements import (
     merge_source_extension_link_requirements,
     source_extension_link_requirements,
@@ -2147,13 +2148,13 @@ def test_app_export_adapters_sweep_arity_and_forward_owned_result_boundary(
     temp_dir = OwnedTemporaryDirectory(dir=tmp_path)
     try:
         adapted_path, adapter_map = wasm_link_edit._inject_app_export_adapters(
-            output,
+            _rewrite_input(output),
             temp_dir,
             public_export_names=("probe__f0", "probe__f1", "probe__f2"),
             call_abi=_app_adapter_call_abi(),
             facts_provider=_facts_provider,
         )
-        adapted = adapted_path.read_bytes()
+        adapted = adapted_path.path.read_bytes()
     finally:
         temp_dir.cleanup()
 
@@ -2199,13 +2200,13 @@ def test_app_export_adapter_validator_replaces_raw_target_identity(
     temp_dir = OwnedTemporaryDirectory(dir=tmp_path)
     try:
         adapted_path, adapter_map = wasm_link_edit._inject_app_export_adapters(
-            output,
+            _rewrite_input(output),
             temp_dir,
             public_export_names=("probe__f0", "probe__f1"),
             call_abi=_app_adapter_call_abi(),
             facts_provider=_facts_provider,
         )
-        adapted = adapted_path.read_bytes()
+        adapted = adapted_path.path.read_bytes()
     finally:
         temp_dir.cleanup()
 
@@ -2255,14 +2256,14 @@ def test_app_export_adapter_identity_survives_metadata_strip_and_rejects_wrong_c
     temp_dir = OwnedTemporaryDirectory(dir=tmp_path)
     try:
         adapted_path, adapter_map = wasm_link_edit._inject_app_export_adapters(
-            output,
+            _rewrite_input(output),
             temp_dir,
             public_export_names=("probe__f0", "probe__f1"),
             call_abi=_app_adapter_call_abi(),
             facts_provider=_facts_provider,
         )
         adapted = wasm_link_export_contract._restore_public_output_exports(
-            adapted_path.read_bytes(),
+            adapted_path.path.read_bytes(),
             adapter_map,
             facts_provider=_facts_provider,
         )
@@ -2322,13 +2323,17 @@ def test_app_export_adapter_identity_survives_metadata_strip_and_rejects_wrong_c
     # The monolithic keep set names only public exports; the split-app keep
     # set also names the identity roots it carried through the optimizer.
     for keep in (set(), set(identity_exports)):
-        stripped = wasm_link_export_contract._strip_app_export_identity_markers(
-            metadata_free,
+        artifact = wasm_link_transaction.WasmArtifactState.from_bytes(
+            tmp_path / "stripped.wasm", metadata_free, facts_provider=_facts_provider
+        )
+        edit = artifact.section_edit()
+        wasm_link_export_contract._strip_app_export_identity_markers(
+            edit,
             identity_exports=identity_exports,
             preserve_exports={"probe__f0", "probe__f1", *keep},
-            facts_provider=_facts_provider,
         )
-        exports = wasm_link_format._collect_function_exports(stripped).keys()
+        assert edit.commit(validate_facts=True)
+        exports = wasm_link_format._collect_function_exports(artifact.data).keys()
         assert not set(identity_exports) & exports
         assert {"probe__f0", "probe__f1"} <= exports
 
@@ -2341,13 +2346,13 @@ def test_app_export_adapters_have_no_ownership_import_dependency(
     temp_dir = OwnedTemporaryDirectory(dir=tmp_path)
     try:
         adapted_path, _adapter_map = wasm_link_edit._inject_app_export_adapters(
-            output,
+            _rewrite_input(output),
             temp_dir,
             public_export_names=("probe__f0",),
             call_abi=_app_adapter_call_abi(),
             facts_provider=_facts_provider,
         )
-        imports = wasm_link_format._collect_imports(adapted_path.read_bytes())
+        imports = wasm_link_format._collect_imports(adapted_path.path.read_bytes())
         assert all(
             name != "molt_inc_ref_obj" for _module, name, _kind, _desc in imports
         )
@@ -2364,7 +2369,7 @@ def test_app_export_adapters_fail_closed_on_noncanonical_target_signature(
     try:
         with pytest.raises(ValueError, match=r"canonical \(i64\.\.\.\) -> i64"):
             wasm_link_edit._inject_app_export_adapters(
-                output,
+                _rewrite_input(output),
                 temp_dir,
                 public_export_names=("probe__f0",),
                 call_abi=_app_adapter_call_abi(),
@@ -5225,7 +5230,9 @@ def test_split_combined_post_link_preserves_linker_memory_and_table_aliases() ->
     }
 
 
-def test_split_combined_post_link_restores_real_defined_memory_export() -> None:
+def test_split_combined_post_link_restores_real_defined_memory_export(
+    tmp_path: Path,
+) -> None:
     linked = _strip_export(_build_linked_ref_func_module(), "molt_memory")
     optimized = wasm_link_optimize._post_link_optimize(
         linked,
@@ -5237,26 +5244,32 @@ def test_split_combined_post_link_restores_real_defined_memory_export() -> None:
     )
 
     optimized_facts = _facts_provider(optimized)
-    restored = wasm_link_export_contract._ensure_defined_memory_export(
-        optimized,
-        facts=optimized_facts,
+    artifact = wasm_link_transaction.WasmArtifactState.from_bytes(
+        tmp_path / "restored.wasm", optimized, facts_provider=_facts_provider
     )
+    edit = artifact.section_edit()
+    wasm_link_export_contract._ensure_defined_memory_export(edit, facts=optimized_facts)
 
-    assert restored is not None
-    facts = _facts_provider(restored)
+    assert edit.commit(validate_facts=True)
+    facts = _facts_provider(artifact.data)
     assert not [entry for entry in facts.imports if entry.kind == 2]
     assert facts.exports["molt_memory"].kind == 2
     assert facts.exports["molt_memory"].index == 0
 
 
-def test_defined_memory_export_restoration_rejects_imported_memory() -> None:
+def test_defined_memory_export_restoration_rejects_imported_memory(
+    tmp_path: Path,
+) -> None:
     app = _strip_export(_build_split_runtime_app_module([]), "molt_memory")
+    artifact = wasm_link_transaction.WasmArtifactState.from_bytes(
+        tmp_path / "app.wasm", app, facts_provider=_facts_provider
+    )
 
     with pytest.raises(
         ValueError, match="cannot restore linked memory export from an imported memory"
     ):
         wasm_link_export_contract._ensure_defined_memory_export(
-            app,
+            artifact.section_edit(),
             facts=_facts_provider(app),
         )
 
@@ -6030,6 +6043,7 @@ def test_link_transaction_cleans_owned_resources_when_command_planning_fails(
     timings = {}
     real_staged_output_path = wasm_link_pipeline.artifact_publish.staged_output_path
     loaded = wasm_link_pipeline._LoadedLinkContract(
+        runtime_data=b"\0asm\x01\0\0\0",
         runtime_exports=frozenset({"molt_main"}),
         output_data=b"\0asm\x01\0\0\0",
         app_export_contract={},
@@ -6057,12 +6071,16 @@ def test_link_transaction_cleans_owned_resources_when_command_planning_fails(
         app_identity_exports={},
         preserved_output_exports=(),
         user_export_symbol_names=(),
-        rewritten_path=output,
+        rewritten_path=WasmArtifactState.from_bytes(
+            output, loaded.output_data, facts_provider=_facts_provider
+        ),
         rewritten_requirements=_native_link_requirements(),
         force_exports=(),
         base_allowlist=tmp_path / "allowlist",
         allowlist=tmp_path / "allowlist",
-        linked_rewritten_path=output,
+        linked_rewritten_path=WasmArtifactState.from_bytes(
+            output, loaded.output_data, facts_provider=_facts_provider
+        ),
         linked_requirements=_native_link_requirements(),
     )
 
@@ -7694,7 +7712,7 @@ def test_rewrite_output_imports_uses_generated_runtime_export_names(
 
     owned_temp_dir = OwnedTemporaryDirectory()
     rewritten = wasm_link_edit._rewrite_output_imports(
-        output,
+        _rewrite_input(output),
         {"molt_socket_drop", "molt_alloc"},
         owned_temp_dir,
     )
@@ -7703,7 +7721,7 @@ def test_rewrite_output_imports_uses_generated_runtime_export_names(
     rewritten_path, temp_dir, force_exports = rewritten
     try:
         assert force_exports == []
-        assert _function_import_pairs(rewritten_path.read_bytes()) == [
+        assert _function_import_pairs(rewritten_path.path.read_bytes()) == [
             ("molt_runtime", "molt_socket_drop"),
             ("molt_runtime", "molt_alloc"),
         ]
@@ -9444,7 +9462,9 @@ def test_strip_internal_exports_dedupes_duplicate_export_names() -> None:
     assert list(name for name in exports if name == "molt_main") == ["molt_main"]
 
 
-def test_required_linked_table_min_respects_final_active_elements() -> None:
+def test_required_linked_table_min_respects_final_active_elements(
+    tmp_path: Path,
+) -> None:
     write_varuint = wasm_link_format._write_varuint
 
     sections: list[tuple[int, bytes]] = []
@@ -9496,15 +9516,20 @@ def test_required_linked_table_min_respects_final_active_elements() -> None:
         )
         == 21
     )
-    updated = wasm_link_edit._rewrite_table_import_min(
-        data,
+    artifact = wasm_link_transaction.WasmArtifactState.from_bytes(
+        tmp_path / "table.wasm", data, facts_provider=_facts_provider
+    )
+    edit = artifact.section_edit()
+    wasm_link_edit._rewrite_table_import_min(
+        edit,
         wasm_link_edit._required_linked_table_min(
             data, 5, facts, facts_provider=_facts_provider
         ),
     )
-    assert updated is not None
+    assert edit.commit(validate_facts=True)
     assert (
-        wasm_link_edit._table_import_min(updated, facts_provider=_facts_provider) == 21
+        wasm_link_edit._table_import_min(artifact.data, facts_provider=_facts_provider)
+        == 21
     )
 
 
@@ -11413,12 +11438,18 @@ def test_ensure_function_exports_rewrites_an_export_section_after_a_tag_section(
     assert set(exports) == {"molt_main", "main_molt__init"}
 
 
-def test_ensure_table_export_inserts_the_export_section_after_a_tag_section() -> None:
-    updated = wasm_link_format._ensure_table_export(
+def test_ensure_table_export_inserts_the_export_section_after_a_tag_section(
+    tmp_path: Path,
+) -> None:
+    artifact = wasm_link_transaction.WasmArtifactState.from_bytes(
+        tmp_path / "table.wasm",
         _module_with_tag_section(export_section=None, with_table=True),
         facts_provider=_facts_provider,
     )
-    assert updated is not None
+    edit = artifact.section_edit()
+    wasm_link_format._ensure_table_export(edit, facts=artifact.facts())
+    assert edit.commit(validate_facts=True)
+    updated = artifact.data
     assert wasm_link_edit._standard_section_order_error(updated) is None
     assert _standard_section_ids(updated) == [1, 3, 4, 5, 13, 6, 7, 10]
     assert "molt_table" in wasm_link_format._collect_exports(updated)
@@ -12277,9 +12308,12 @@ def test_call_indirect_aliases_join_indices_and_batch_all_names(
         temporary = OwnedTemporaryDirectory(prefix="molt-alias-test-")
         with temporary:
             result = wasm_link_command._inject_call_indirect_alias(
-                output, runtime, temporary, facts_provider=_facts_provider
+                _rewrite_input(output),
+                runtime,
+                temporary,
+                facts_provider=_facts_provider,
             )
-            publications.append(result.read_bytes())
+            publications.append(result.path.read_bytes())
     assert publications[0] == publications[1]
     assert (
         wasm_link_command._call_indirect_alias_entries(
@@ -12386,7 +12420,10 @@ def test_call_indirect_aliases_refuse_incomplete_or_conflicting_edges(
     with temporary:
         with pytest.raises(ValueError, match=message):
             wasm_link_command._inject_call_indirect_alias(
-                output, runtime, temporary, facts_provider=_facts_provider
+                _rewrite_input(output),
+                runtime,
+                temporary,
+                facts_provider=_facts_provider,
             )
         assert not list(Path(temporary.name).iterdir())
     assert output.read_bytes() == app_bytes
@@ -12641,3 +12678,290 @@ def test_wasm_scanner_copy_uses_owned_scratch_not_cached_platform_temp(
     assert scratch.is_dir() and list(scratch.iterdir()) == []
     assert list(platform_temp.iterdir()) == []
     assert not linked.exists()
+
+
+# The real scanner is an independent process. Exclude this test authority's
+# Python fixture-decoding walks from the link editor's operation accounting.
+def _normalization_facts(data: bytes):  # type: ignore[no-untyped-def]
+    with wasm_link_operations.bind_whole_artifact_operation_counts({}):
+        return _facts_provider(data)
+
+
+def _resource_normalization_module(*, normalized: bool = False) -> bytes:
+    w = wasm_link_format._write_varuint
+    name = wasm_link_format._write_string
+    limits = bytes([1, 9, 9] if normalized else [1, 1, 2])
+    exports = [("molt_main", 0, 0)]
+    exports += (
+        [("molt_table", 1, 0), ("molt_memory", 2, 0)]
+        if normalized
+        else [("internal.identity", 0, 0)]
+    )
+    return wasm_link_operations.build_sections(
+        [
+            (0, name("before") + b"metadata"),
+            (1, b"\x01\x60\x00\x00"),
+            (
+                2,
+                w(1)
+                + name("env")
+                + name("__indirect_function_table")
+                + b"\x01\x70"
+                + limits,
+            ),
+            (3, b"\x01\x00"),
+            (5, b"\x01" + limits),
+            (
+                7,
+                w(len(exports))
+                + b"".join(name(n) + bytes([k, i]) for n, k, i in exports),
+            ),
+            (10, b"\x01\x02\x00\x0b"),
+            (0, name("after") + b"unaltered" * 1024),
+        ]
+    )
+
+
+def test_linked_resource_normalization_has_one_atomic_section_edit(
+    tmp_path: Path,
+) -> None:
+    initial = _resource_normalization_module()
+    expected = _resource_normalization_module(normalized=True)
+    calls: list[bytes] = []
+
+    def provider(data: bytes):  # type: ignore[no-untyped-def]
+        calls.append(data)
+        return _normalization_facts(data)
+
+    artifact = wasm_link_transaction.WasmArtifactState.from_bytes(
+        tmp_path / "linked.wasm", initial, facts_provider=provider
+    )
+    artifact.persist()
+    counts: dict[str, int | float] = {}
+    with wasm_link_operations.bind_whole_artifact_operation_counts(counts):
+        assert wasm_link_pipeline._normalize_linked_resources_stage(
+            artifact,
+            output_table_min=9,
+            output_memory_min=9,
+            split_runtime=False,
+            app_identity_exports=("internal.identity",),
+            preserved_output_exports=("molt_main", "internal.identity"),
+            freestanding=False,
+        )
+    assert artifact.data == expected
+    assert artifact.revision == 1
+    assert artifact.path.read_bytes() == initial
+    assert counts == {
+        "wasm_whole_artifact_section_walks": 1,
+        "wasm_whole_artifact_reserializations": 1,
+    }
+    assert set(calls) == {initial, expected}
+    final_facts = artifact.facts()
+    assert final_facts.exports["molt_table"].kind == 1
+    assert final_facts.exports["molt_memory"].kind == 2
+    assert "internal.identity" not in final_facts.exports
+    # Repeating the phase on the exact revision needs no serialization or facts rescan.
+    calls.clear()
+    counts.clear()
+    with wasm_link_operations.bind_whole_artifact_operation_counts(counts):
+        assert wasm_link_pipeline._normalize_linked_resources_stage(
+            artifact,
+            output_table_min=9,
+            output_memory_min=9,
+            split_runtime=False,
+            app_identity_exports=("internal.identity",),
+            preserved_output_exports=("molt_main",),
+            freestanding=False,
+        )
+    assert artifact.data is not initial
+    assert artifact.data == expected
+    assert artifact.revision == 1
+    assert artifact.facts() is final_facts
+    assert counts == {"wasm_whole_artifact_section_walks": 1}
+    # The table-min helper still asks the content-addressed facts authority for
+    # the already-owned bytes. It must never ask about an intermediate revision.
+    assert all(data is artifact.data for data in calls)
+
+
+@pytest.mark.parametrize("mutation", ["replace", "external"])
+def test_wasm_section_edit_rejects_obsolete_same_size_revision(
+    tmp_path: Path, mutation: str
+) -> None:
+    initial = _resource_normalization_module()
+    artifact = wasm_link_transaction.WasmArtifactState.from_bytes(
+        tmp_path / "artifact.wasm", initial, facts_provider=_normalization_facts
+    )
+    artifact.persist()
+    edit = artifact.section_edit()
+    wasm_link_edit._rewrite_memory_min(edit, 9)
+    replacement = initial.replace(b"metadata", b"Metadata")
+    assert len(replacement) == len(initial) and replacement != initial
+    if mutation == "replace":
+        artifact.replace(replacement)
+    else:
+        artifact.apply_atomic_path_mutation(lambda path: path.write_bytes(replacement))
+    with pytest.raises(ValueError, match="obsolete artifact revision"):
+        edit.commit(validate_facts=True)
+    assert artifact.data == replacement
+    assert artifact.revision == 1
+
+
+def test_wasm_section_edit_validation_failure_preserves_owner_and_disk(
+    tmp_path: Path,
+) -> None:
+    initial = _resource_normalization_module()
+
+    def reject_changed(data: bytes):  # type: ignore[no-untyped-def]
+        if data != initial:
+            raise ValueError("independent validator rejected candidate")
+        return _normalization_facts(data)
+
+    artifact = wasm_link_transaction.WasmArtifactState.from_bytes(
+        tmp_path / "artifact.wasm", initial, facts_provider=reject_changed
+    )
+    artifact.persist()
+    initial_facts = artifact.facts()
+    assert not wasm_link_pipeline._normalize_linked_resources_stage(
+        artifact,
+        output_table_min=9,
+        output_memory_min=9,
+        split_runtime=False,
+        app_identity_exports=("internal.identity",),
+        preserved_output_exports=("molt_main",),
+        freestanding=False,
+    )
+    assert artifact.data is initial
+    assert artifact.facts() is initial_facts
+    assert artifact.revision == 0
+    assert artifact.path.read_bytes() == initial
+
+
+def test_wasm_section_edit_rejects_duplicate_standard_sections(tmp_path: Path) -> None:
+    invalid = wasm_link_operations.build_sections([(5, b"\x00"), (5, b"\x00")])
+    artifact = wasm_link_transaction.WasmArtifactState.from_bytes(
+        tmp_path / "invalid.wasm", invalid, facts_provider=_normalization_facts
+    )
+    with pytest.raises(ValueError, match="Duplicate wasm section id 5"):
+        artifact.section_edit()
+    assert artifact.data is invalid and artifact.revision == 0
+
+
+@pytest.mark.parametrize("changed_edit", [False, True])
+def test_wasm_section_edit_rejects_validator_reentry_without_rollback(
+    tmp_path: Path, changed_edit: bool
+) -> None:
+    initial = _resource_normalization_module()
+    replacement = initial.replace(b"metadata", b"Metadata")
+    validated: list[bytes] = []
+
+    def publish_during_validation(data: bytes):  # type: ignore[no-untyped-def]
+        validated.append(data)
+        artifact.apply_atomic_path_mutation(lambda path: path.write_bytes(replacement))
+        return _normalization_facts(data)
+
+    artifact = wasm_link_transaction.WasmArtifactState.from_bytes(
+        tmp_path / "artifact.wasm", initial, facts_provider=publish_during_validation
+    )
+    artifact.persist()
+    edit = artifact.section_edit()
+    if changed_edit:
+        wasm_link_edit._rewrite_memory_min(edit, 9)
+    with pytest.raises(ValueError, match="obsolete artifact revision"):
+        edit.commit(validate_facts=True)
+    assert len(validated) == 1
+    assert (validated[0] != initial) == changed_edit
+    assert artifact.data == replacement
+    assert artifact.path.read_bytes() == replacement
+    assert artifact.revision == 1
+    assert artifact._facts is None  # No old/candidate facts attached to new bytes.
+
+
+def _rewrite_input(path):
+    return WasmArtifactState.from_materialized_bytes(
+        path, path.read_bytes(), facts_provider=_facts_provider
+    )
+
+
+@pytest.mark.parametrize("substitution", [None, "compiler", "runtime"])
+def test_admission_link_capture_uses_retained_rewrite_buffers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, substitution: str | None
+) -> None:
+    import io
+    import tarfile
+    from tools import wasm_link_pipeline as pipeline
+    from molt.cli.link_input_observation import LinkInputObservation
+
+    emitted = b"\x00asm\x01\x00\x00\x00"
+    rewritten = WasmArtifactState.from_bytes(
+        tmp_path / "rewrite.wasm", emitted, facts_provider=_facts_provider
+    )
+    rewritten.persist()
+    runtime = tmp_path / "runtime.wasm"
+    runtime_bytes = b"runtime-original"
+    runtime.write_bytes(runtime_bytes)
+    report = tmp_path / "inputs.tar"
+    expected = {
+        "compiler_rewritten": (
+            rewritten.path,
+            {
+                "size": len(rewritten.data),
+                "sha256": hashlib.sha256(rewritten.data).hexdigest(),
+            },
+        ),
+        "runtime": (
+            runtime,
+            {
+                "size": len(runtime_bytes),
+                "sha256": hashlib.sha256(runtime_bytes).hexdigest(),
+            },
+        ),
+    }
+    if substitution == "compiler":
+        rewritten.path.write_bytes(b"X" * len(emitted))
+    elif substitution == "runtime":
+        runtime.write_bytes(b"X" * len(runtime_bytes))
+
+    def linker(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        assert "--reproduce=" + str(report) in command
+        # The tool's retained buffers are independent of the expected emitter
+        # identities. This simulates actual post-substitution reads by LLD.
+        entries = {
+            "inputs/response.txt": b"wasm-ld",
+            "inputs/version.txt": b"23",
+            "inputs/" + str(rewritten.path).lstrip("/"): rewritten.path.read_bytes(),
+            "inputs/" + str(runtime).lstrip("/"): runtime.read_bytes(),
+        }
+        with tarfile.open(report, "w") as archive:
+            for name, data in entries.items():
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                archive.addfile(info, io.BytesIO(data))
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(pipeline._command, "_run_external_tool", linker)
+    observations: dict[str, object] = {}
+
+    def run() -> None:
+        pipeline._run_admitted_link(
+            ["/wasm-ld"],
+            selection=None,
+            why_extract=tmp_path / "why.txt",
+            role="linked",
+            selection_roles={},
+            capture=(report, expected),
+            input_observations=observations,
+        )
+
+    if substitution is None:
+        run()
+        observation = LinkInputObservation.from_record(observations["linked"])
+        assert dict(observation.roles) == {
+            "compiler_rewritten": str(rewritten.path),
+            "runtime": str(runtime),
+        }
+    else:
+        with pytest.raises(ValueError, match="did not consume the admitted"):
+            run()
+        assert observations == {}

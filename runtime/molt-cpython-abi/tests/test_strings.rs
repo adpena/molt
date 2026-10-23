@@ -7,6 +7,7 @@ mod support;
 use std::ptr;
 
 thread_local! {
+    static UNICODE_TARGET: std::cell::Cell<(i64, i64)> = const { std::cell::Cell::new((3, 12)) };
     static STRING_ALLOCATION_ENABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static SELECTED_ALLOCATION_ERROR: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static FAILED_ALLOCATION_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -35,12 +36,18 @@ unsafe extern "C" fn fail_allocation(_data: *const u8, _len: usize) -> u64 {
     0
 }
 
+unsafe extern "C" fn unicode_target_at_least(major: i64, minor: i64) -> bool {
+    UNICODE_TARGET.with(std::cell::Cell::get) >= (major, minor)
+}
+
 fn init() -> support::AbiTestThreadStateTransaction {
+    UNICODE_TARGET.with(|minor| minor.set((3, 12)));
     STRING_ALLOCATION_ENABLED.with(|enabled| enabled.set(false));
     SELECTED_ALLOCATION_ERROR.with(|selected| selected.set(0));
     FAILED_ALLOCATION_CALLS.with(|calls| calls.set(0));
     let mut hooks = support::stub_runtime_hooks();
     support::fake_runtime::wire(&mut hooks);
+    hooks.target_python_at_least = unicode_target_at_least;
     hooks.alloc_str = Some(alloc_string);
     hooks.alloc_bytes = fail_allocation;
     hooks.alloc_bytearray = fail_allocation;
@@ -809,4 +816,96 @@ fn installed_diagnostic_allocator_zero_without_error_is_a_contract_failure() {
         );
         assert!(selected_traceback.is_null());
     }
+}
+
+use molt_cpython_abi::api::strings::{
+    _PyUnicode_IsAlpha, _PyUnicode_IsDecimalDigit, _PyUnicode_IsDigit, _PyUnicode_IsLinebreak,
+    _PyUnicode_IsLowercase, _PyUnicode_IsNumeric, _PyUnicode_IsPrintable, _PyUnicode_IsTitlecase,
+    _PyUnicode_IsUppercase, _PyUnicode_IsWhitespace,
+};
+#[test]
+fn unicode_predicates_match_cpython_category_boundaries() {
+    let _abi_test = init();
+    assert_eq!(_PyUnicode_IsAlpha('A' as u32), 1);
+    assert_eq!(_PyUnicode_IsAlpha('é' as u32), 1);
+    assert_eq!(_PyUnicode_IsAlpha('一' as u32), 1);
+    assert_eq!(_PyUnicode_IsAlpha('1' as u32), 0);
+
+    assert_eq!(_PyUnicode_IsUppercase('A' as u32), 1);
+    assert_eq!(_PyUnicode_IsLowercase('é' as u32), 1);
+    assert_eq!(_PyUnicode_IsTitlecase('\u{01c5}' as u32), 1);
+    assert_eq!(_PyUnicode_IsTitlecase('A' as u32), 0);
+}
+
+#[test]
+fn unicode_numeric_predicates_preserve_decimal_digit_numeric_split() {
+    let _abi_test = init();
+    assert_eq!(_PyUnicode_IsDecimalDigit('0' as u32), 1);
+    assert_eq!(_PyUnicode_IsDecimalDigit('\u{0660}' as u32), 1);
+    assert_eq!(_PyUnicode_IsDecimalDigit('\u{00b2}' as u32), 0);
+
+    assert_eq!(_PyUnicode_IsDigit('\u{00b2}' as u32), 1);
+    assert_eq!(_PyUnicode_IsDigit('\u{2160}' as u32), 0);
+
+    assert_eq!(_PyUnicode_IsNumeric('\u{2160}' as u32), 1);
+    assert_eq!(_PyUnicode_IsNumeric('一' as u32), 1);
+    assert_eq!(_PyUnicode_IsNumeric('A' as u32), 0);
+}
+
+#[test]
+fn unicode_space_printable_linebreak_and_invalid_scalar_predicates() {
+    let _abi_test = init();
+    assert_eq!(_PyUnicode_IsWhitespace(' ' as u32), 1);
+    assert_eq!(_PyUnicode_IsWhitespace('\u{2003}' as u32), 1);
+    assert_eq!(_PyUnicode_IsWhitespace('A' as u32), 0);
+
+    assert_eq!(_PyUnicode_IsLinebreak('\n' as u32), 1);
+    assert_eq!(_PyUnicode_IsLinebreak('\u{2028}' as u32), 1);
+    assert_eq!(_PyUnicode_IsLinebreak(' ' as u32), 0);
+
+    assert_eq!(_PyUnicode_IsPrintable('A' as u32), 1);
+    assert_eq!(_PyUnicode_IsPrintable('\n' as u32), 0);
+    assert_eq!(_PyUnicode_IsAlpha(0x11_0000), 0);
+    assert_eq!(_PyUnicode_IsLowercase(0x11_0000), 0);
+}
+
+#[test]
+fn unicode_exports_follow_each_selected_target_without_sticky_state() {
+    let _abi_test = init();
+    // Independent pinned CPython outputs: Unicode15.1 adds U+2FFC;
+    // Unicode16 adds Cyrillic U+1C89; Unicode17 reclassifies U+0295 to Lo.
+    for (minor, ideographic, cyrillic, glottal) in
+        [(15, 1, 1, 0), (12, 0, 0, 1), (14, 1, 1, 1), (13, 1, 0, 1)]
+    {
+        if !molt_lang_obj_model::python_version_generated::SUPPORTED_TARGET_PYTHON_VERSIONS
+            .contains(&format!("3.{minor}").as_str())
+        {
+            continue;
+        }
+        UNICODE_TARGET.with(|selected| selected.set((3, minor)));
+        assert_eq!(_PyUnicode_IsPrintable(0x2ffc), ideographic);
+        assert_eq!(_PyUnicode_IsUppercase(0x1c89), cyrillic);
+        assert_eq!(_PyUnicode_IsLowercase(0x0295), glottal);
+        assert_eq!(_PyUnicode_IsAlpha(0xd800), 0);
+        assert!(!molt_cpython_abi::api::errors::raised_error_pending());
+    }
+    let unsupported =
+        molt_lang_obj_model::python_version_generated::SUPPORTED_TARGET_PYTHON_VERSIONS
+            .iter()
+            .map(|version| version.split_once('.').unwrap().1.parse::<i64>().unwrap())
+            .max()
+            .unwrap()
+            + 1;
+    UNICODE_TARGET.with(|selected| selected.set((3, unsupported)));
+    assert_eq!(_PyUnicode_IsAlpha(0x41), 0);
+    let error =
+        molt_cpython_abi::api::errors::take_current_error().expect("unsupported target error");
+    assert_eq!(
+        error.exc_type,
+        (&raw mut molt_cpython_abi::abi_types::PyExc_SystemError).cast()
+    );
+    drop(error);
+    UNICODE_TARGET.with(|selected| selected.set((3, 12)));
+    assert_eq!(_PyUnicode_IsAlpha(0x41), 1);
+    assert!(!molt_cpython_abi::api::errors::raised_error_pending());
 }

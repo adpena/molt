@@ -12,10 +12,11 @@ pub(super) fn read_msgpack_backend_ir_document(
     ir_file_path: Option<&str>,
 ) -> io::Result<molt_backend::BackendIrDocument> {
     if let Some(ir_path) = ir_file_path {
-        let file = open_ir_file(ir_path)?;
-        return decode(&mut io::BufReader::new(file));
+        return decode(&mut io::BufReader::with_capacity(
+            8192,
+            open_ir_file(ir_path)?,
+        ));
     }
-
     let stdin = io::stdin();
     let bounded = RequestBoundedRead::new(
         stdin.lock(),

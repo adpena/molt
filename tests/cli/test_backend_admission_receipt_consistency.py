@@ -459,6 +459,7 @@ def test_wasm_member_lock_boundary_distinguishes_acquisition_from_work(
     from molt.cli.runtime_artifact_selection import RUNTIME_CDYLIB_ARTIFACTS
 
     spec = _RuntimeWasmBuildSpec(
+        publication_name="runtime.wasm",
         requested_cargo_profile="dev-fast",
         cargo_profile="dev-fast",
         profile_dir="dev-fast",

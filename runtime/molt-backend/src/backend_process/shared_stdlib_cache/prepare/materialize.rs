@@ -101,7 +101,10 @@ pub(crate) fn materialize_stdlib_cache(
             planned.assemble(request.log_prefix, object_cache.as_ref(), |objects| {
                 digest = Some(publish_shared_stdlib_cache_archive(
                     stdlib_path,
-                    |destination| write_native_archive_objects(destination, objects).map(|()| None),
+                    |destination| {
+                        write_native_archive_objects(destination, objects)
+                            .map(|identity| Some(identity.sha256))
+                    },
                     stdlib_count,
                     request.expected_cache_key,
                     request.expected_cache_manifest,

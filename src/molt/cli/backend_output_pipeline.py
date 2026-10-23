@@ -65,6 +65,7 @@ def _emit_backend_pipeline_outputs(
     trusted: bool,
     verbose: bool,
     require_linked: bool,
+    capture_link_inputs: bool = False,
     wasm_opt_level: str | None = "Oz",
     precompile: bool = False,
     snapshot: bool = False,
@@ -104,14 +105,6 @@ def _emit_backend_pipeline_outputs(
     backend_daemon_cache_tier = prepared_backend_compile.backend_daemon_cache_tier
     backend_daemon_config_digest = prepared_backend_compile.backend_daemon_config_digest
     wasm_table_base = prepared_backend_compile.wasm_table_base
-    input_admission = (
-        prepared_backend_runtime_context.runtime_state.build_python_admission
-    )
-
-    def finalize_inputs() -> None:
-        validate_inputs()
-        if input_admission is not None:
-            input_admission.close()
 
     def snapshot_build_diagnostics() -> tuple[dict[str, Any] | None, Path | None]:
         if not prepared_build_preamble.diagnostics_enabled:
@@ -128,6 +121,16 @@ def _emit_backend_pipeline_outputs(
                 "fingerprint": prepared_backend_runtime_context.backend_compiler_fingerprint,
             }
             diagnostics_payload["program"] = dict(selected_profiles)
+            from molt.cli.installed_runtime import installed_runtime_selection
+
+            wasm_binding = runtime_state.runtime_wasm_codegen_binding
+            diagnostics_payload["installed_runtime_selection"] = (
+                installed_runtime_selection(
+                    prepared_build_roots.project_root,
+                    native=runtime_state.installed_native_admission,
+                    wasm=wasm_binding.generation if wasm_binding is not None else None,
+                )
+            )
         return diagnostics_payload, diagnostics_path
 
     def return_after_build_diagnostics(result: int) -> int:
@@ -199,6 +202,8 @@ def _emit_backend_pipeline_outputs(
                 wasm_table_base=wasm_table_base,
                 linked=output_layout.linked,
                 require_linked=require_linked,
+                capture_link_inputs=capture_link_inputs,
+                daemon_job_origin=prepared_backend_compile.backend_daemon_origin,
                 linked_output_path=output_layout.linked_output_path,
                 output_artifact=output_layout.output_artifact,
                 json_output=json_output,
@@ -289,13 +294,15 @@ def _emit_backend_pipeline_outputs(
                 "observed_toolchain": _observed_build_toolchain(
                     backend_bin=prepared_backend_runtime_context.backend_bin,
                     selected_profiles=selected_profiles,
+                    daemon_job_origin=prepared_backend_compile.backend_daemon_origin,
+                    link_input_observation=prepared_non_native_result.link_input_observation,
                     runtime_lib=None,  # No verified runtime artifact binding for this lane.
                     output=prepared_non_native_result.primary_output,
                 ),
             },
             artifacts=prepared_non_native_result.artifacts,
             success_messages=prepared_non_native_result.success_messages,
-            finalize_inputs=finalize_inputs,
+            finalize_inputs=validate_inputs,
         )
 
     native_target = prepared_backend_setup.cache_setup.artifact_contract.native_target
@@ -430,13 +437,14 @@ def _emit_backend_pipeline_outputs(
                 "observed_toolchain": _observed_build_toolchain(
                     backend_bin=prepared_backend_runtime_context.backend_bin,
                     selected_profiles=selected_profiles,
+                    daemon_job_origin=prepared_backend_compile.backend_daemon_origin,
                     runtime_lib=None,
                     output=prepared_object_output,
                 )
             },
             artifacts={"object": str(prepared_object_output)},
             success_messages=[f"Successfully built {prepared_object_output}"],
-            finalize_inputs=finalize_inputs,
+            finalize_inputs=validate_inputs,
         )
 
     stdlib_link_obj_path = prepared_backend_setup.cache_setup.stdlib_object_path
@@ -468,6 +476,8 @@ def _emit_backend_pipeline_outputs(
             native_artifact_plan=native_artifact_plan,
             compiled_source_paths=compiled_source_paths,
             bolt_requested=bolt_requested,
+            capture_link_inputs=capture_link_inputs,
+            daemon_job_origin=prepared_backend_compile.backend_daemon_origin,
         )
     )
     if prepared_native_link_error is not None:
@@ -491,6 +501,7 @@ def _emit_backend_pipeline_outputs(
                 prepared_native_link.link_fingerprint,
             ),
             link_selection=prepared_native_link.link_selection,
+            link_input_artifacts=prepared_native_link.link_input_artifacts,
             validate_inputs=validate_inputs,
         )
         if bolt_rc != 0:
@@ -502,6 +513,7 @@ def _emit_backend_pipeline_outputs(
                 )
             )
     return _emit_native_link_result(
+        daemon_job_origin=prepared_backend_compile.backend_daemon_origin,
         selected_profiles=selected_profiles,
         backend_bin=prepared_backend_runtime_context.backend_bin,
         link_process=prepared_native_link.link_process,
@@ -552,6 +564,8 @@ def _emit_backend_pipeline_outputs(
         resolved_diagnostics_verbosity=prepared_build_preamble.resolved_diagnostics_verbosity,
         strip_after_link=prepared_native_link.strip_after_link,
         link_selection=prepared_native_link.link_selection,
-        finalize_inputs=finalize_inputs,
+        link_input_artifacts=prepared_native_link.link_input_artifacts,
+        link_input_observation=prepared_native_link.link_input_observation,
         validate_inputs=validate_inputs,
+        finalize_inputs=validate_inputs,
     )

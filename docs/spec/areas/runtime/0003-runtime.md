@@ -291,10 +291,23 @@ struct MoltHeader {
   the peer. Both exports remain live through comparison and release in that
   order. Buffer acquisition, contiguous-span admission and writable admission
   share one scoped owner; capability checks never acquire an export.
-- **Strings**: UTF-8 surrogatepass buffers use the same inline length/data/NUL storage as
-  bytes. Embedded NULs remain ordinary content. Allocation and unique-owner
-  append initialize the trailing NUL through `InlineBytesStorage`; native
-  subclass slots and dictionaries start after the terminator and alignment.
+- **Strings**: UTF-8 surrogatepass buffers retain the inline length/data/NUL
+  prefix and own one atomic classification byte after the NUL. `StringStorage`
+  owns the complete extent and the Unknown/Ascii/NonAscii fact; bytes storage
+  and generated length/data offsets are unchanged. Embedded NULs remain content.
+  `InlineBytesStorage::set_len` initializes the NUL and resets the string fact
+  under exclusive construction or resize authority. Native string fields begin
+  after the classification trailer and alignment. Allocation rounding may move
+  a string to the next size class despite the one-byte logical increase.
+  No-intern and direct-fill constructors do no classification scan. First use
+  scans unknown content once; warm reads are constant work. Ordinary allocation
+  reuses its existing ASCII check after filling bytes. Concurrent first readers
+  may compute the same immutable fact and publish it with Release/Acquire;
+  no global classification cache or lock is introduced. Whole-string UTF-8
+  consumers share the fact, while sliced/unkeyed byte inputs retain their own
+  classification. Unique append and the C-API Unicode construction commit reset
+  the fact and retire hash/UTF-8 state; C-API raw writes remain governed by the
+  existing open construction transaction, not ordinary immutable mutation.
   `find/split/replace/startswith/endswith/count/join` use ASCII fast paths with
   codepoint indexing for non-ASCII.
   Runtime core's `text_storage` owns code-point iteration and encoding; adjacent
@@ -399,6 +412,203 @@ Counter handle registry or independent key-equality index. The shared streaming
 tally primitive reuses a key's hash only when the receiver's actual get/store
 descriptors admit the native dictionary path; overridden methods retain normal
 dispatch. Callback exceptions propagate with the already completed mutations.
+
+### Immediate synchronous iterator invocation
+
+Exception ownership remains explicit across iterator callbacks: `molt_raise`
+borrows its argument, while `record_exception_owned` transfers an owned error.
+Satellite diagnostic raising delegates to the canonical main-runtime exception
+constructor and its owned publication path. An empty diagnostic has no arguments;
+an explicit Python `StopIteration("")` retains its one empty-string argument.
+Canonical diagnostic construction selects failure from its returned pointer;
+a preexisting raised exception does not reject successful diagnostic construction.
+Explicit class/argument constructors retain their distinct argument semantics and
+temporary-owner obligations.
+
+Native pickle validation uses the canonical exception classes exported by its
+public facade, while exceptions raised by user callbacks propagate unchanged.
+Reduce iterator slots use the canonical iterator-capability predicate, without
+calling `__iter__` merely to probe the supplied value.
+
+Builtin argument policy is a closed declaration in `builtin_callables.py`,
+projected into the runtime's typed callable metadata. The positional-range policy
+uses the existing frame binder's ownership and default filling, with no extra
+packing for valid full-arity calls. It rejects keywords before checking the
+positional range, after Python has evaluated and expanded every argument.
+The contract follows CPython v3.12.15's `_PyArg_CheckPositional` and
+`PyArg_UnpackTuple` family ([builtin source](https://raw.githubusercontent.com/python/cpython/e848e4b09ca4bc67c0041c9ce7526dae471d4c36/Python/bltinmodule.c),
+[Clinic projection](https://raw.githubusercontent.com/python/cpython/e848e4b09ca4bc67c0041c9ce7526dae471d4c36/Python/clinic/bltinmodule.c.h)).
+Named Clinic binding and C function conventions retain their distinct protocols.
+
+The public `iter(object[, sentinel])` callable has one positional-only signature
+and a private missing-argument default. Observable calls and direct two-argument
+calls select that overload owner; direct unary calls use the same checked
+acquisition primitive. Explicit `None` remains a real sentinel. Unary iteration
+acquisition and callable/sentinel construction retain their separate protocol
+primitives, including callable admission and callback exception custody.
+
+Generic synchronous iterator steps use the shared owned `SpecialIterationStep`
+result. The public boxed ABI wraps successful values in its public `(value, done)`
+tuple; the unboxed API transfers the value directly and retires exhaustion
+payloads before publishing its output. Native iterator pair caches retain their
+existing ownership and ABI. All satellite consumers continue through the same
+`molt_iter_next_unboxed` entry and `iter_next_owned` ownership projection.
+
+Special `__next__` and sequence-fallback `__getitem__` calls use raw type/MRO
+lookup and the existing descriptor invocation authority. Exact functions and
+admitted native method descriptors pass the receiver as a direct argument;
+arbitrary descriptors still bind and call their actual result. Instance shadows
+and custom `__getattribute__` do not participate. The selected callable and
+receiver stay pinned across callbacks, class mutation and reentry. Errors from
+binding and invocation share the existing iteration exception transaction.
+Foreign receiver lookup retains its C-API descriptor contract.
+
+Ordinary native iterator classes declare `__iter__` and `__next__` together in
+one method-family table, which drives class lookup and namespace publication.
+Both are unary wrapper descriptors whose declaring class owns receiver
+admission; `__next__` uses the same result and exception owner as public `next()`.
+Generator and asynchronous suspension adapters retain their distinct protocols.
+Native iterators preselect the existing inline common class lane before GC
+publication. String iterators leave that initialized lane empty until a public
+type/descriptor query or live source retirement resolves and pins their class.
+Other source-dependent iterator types initialize it eagerly. One resolver owns
+query, exhaustion and nonterminal cycle-clear publication; committed terminal
+cleanup never resolves a discarded prefix iterator. Thus construction, prefix
+advance and drop do not scan an unknown string. An explicit first class query
+can cost O(n); complete traversal plus final classification stays O(n). Dropping
+an exhausted source cannot change its class or invalidate a bound descriptor. No iterator
+payload field or extra class side table is required. String class selection
+uses the shared object-owned ASCII fact, so repeated acquisitions do not
+rescan immutable content. CPython likewise keeps
+[list iterator type identity independent of its source](https://github.com/python/cpython/blob/v3.12.15/Objects/listobject.c#L2997-L3081)
+and publishes unary iteration wrappers through its
+[slot definitions](https://github.com/python/cpython/blob/v3.12.15/Objects/typeobject.c#L8890-L8893).
+
+This follows CPython's `slot_tp_iternext`/`vectorcall_method` path in
+[3.12.15](https://github.com/python/cpython/blob/v3.12.15/Objects/typeobject.c)
+and [3.15.1](https://github.com/python/cpython/blob/v3.15.1/Objects/typeobject.c).
+For warmed direct-function or admitted native-method calls whose callback
+allocates nothing, unboxed successful steps require no runtime heap allocation,
+while the boxed API requires its result tuple. Public `next()` also transfers
+the raw owned value and introduces no status tuple.
+The public exception policy follows CPython's
+[`builtin_next`](https://github.com/python/cpython/blob/v3.12.15/Python/bltinmodule.c):
+a successful owned item transfers to the caller; a default normalizes only
+StopIteration, and absent a default the original pending exception survives.
+Its [`zip_next`](https://github.com/python/cpython/blob/v3.12.15/Python/bltinmodule.c)
+also pins a uniquely reusable result before source callbacks and publishes each
+slot before retiring its old item. These semantic controls govern the shared
+native and WASM ownership paths; interpreter oracles run on the development
+side and do not provide a runtime fallback.
+Descriptor callbacks and foreign binding can still allocate. The owning test
+measures both public APIs independently and checks exact result ownership.
+This is an allocation contract, not a throughput claim; target execution and
+before/after cost measurements remain necessary for acceptance. Async
+`__anext__`, send and throw retain their distinct protocols; an await iterator's
+existing send(None) path shares this ordinary synchronous step.
+
+Public `next()` without a default preserves the original `StopIteration`
+instance, arguments and traceback. The typed exhaustion policy passes through
+map, filter, enumerate and non-strict zip; strict zip and tee normalize their
+sources. Loop/status consumers normalize exhaustion and retire its payload.
+The existing exception scope owns callback unwinding; one normalizer handles
+native adapters and Python special methods.
+
+Runtime collectors consume owned items and hold acquired iterators until every
+success, early return or error path has retired them. Serial string collection
+uses core `iter_next_owned`; RuntimeVtable ABI 10 removes its obsolete boxed-next
+slot. Both producer and subscriber use the shared version and size checks.
+The unused path iteration bridge and its generated test declarations are retired.
+
+### Iterator partial-result ownership
+
+Map retires partially collected arguments in source order when a later source
+fails. Zip instead owns one tuple cache of its arity, initially filled with
+`None`. When exclusive and without an exported ABI view, that tuple is pinned
+before invoking any source. Each new slot is published, its GC reference flag
+and membership are updated, and only then is the displaced item released.
+Reentrant iteration therefore allocates an independent result; an aliased or
+exported cache remains unchanged. A fresh partial result is released in reverse
+slot order, while an exclusive cached partial result survives until replacement
+or zip destruction. Strict zip stops at the first established mismatch.
+
+The shared tuple mutation claim is also used by existing fixed pair caches.
+C-API tuple initialization keeps its separate authorization to write through an
+ABI view; only runtime cache reuse applies the export barrier. Zip's `repr(C)`
+payload owns its iterator backing, strict flag and result edge with one extent
+and accessor authority on every pointer width. GC traces and clears the cached
+result, and destruction releases iterator references before the cache.
+
+This follows the lifetime, publication and retracking contracts of
+[CPython 3.12.15 zip_next and map_next](https://github.com/python/cpython/blob/v3.12.15/Python/bltinmodule.c).
+The cold cost is one cached tuple per zip. A row requires O(arity) source work
+and one O(arity) initial reference count over its slots; slot publication is
+O(1), with no per-slot full-tuple scan or additional temporary backing vector.
+Cache retention is bounded by one row. Aliased results require the independent
+tuples their observable lifetime demands. Existing boxed native iterator status
+results remain separate from the zero-temporary generic special-call contract.
+These are algorithmic bounds; compiled allocation and timing controls determine
+performance acceptance.
+
+### Shared tee storage
+
+Physical shape declarations in `runtime/heap_kinds.toml` explicitly state whether
+their payload reserves shared class fields and a dictionary tail. The generated
+`ObjectShapeId::has_class_fields` policy controls field access, reset and tracing;
+logical class membership cannot turn a native capture, counter or pointer into
+instance storage. Task captures and the typed tee cursor/cache block own their
+complete payloads and reserve no dictionary tail. Iterator shapes with a reserved
+eight-byte tail after their native prefix retain that tail under the common
+class lifecycle, even when Python attribute creation is disabled. In particular,
+groupby's five owned values, state word and borrowed active-grouper identity
+precede its dictionary at byte 56 of the 64-byte payload; the borrowed identity
+must never become a dictionary owner. Other native shapes with reserved tails
+and the separate native-instance field owner retain their storage contracts.
+
+`itertools.tee` readers own a `(block, offset)` cursor. Each block is a separate
+GC-tracked runtime object owning its source iterator, up to 57 cached values,
+and its successor. `runtime/heap_kinds.toml` declares both shapes;
+`molt-runtime-core::itertools_tee` owns their `repr(C, align(8))` payloads and
+allocation extents (16-byte cursor, 480-byte block, excluding runtime headers).
+The in-tree and satellite profiles use the same implementation and lifecycle.
+There are no raw reader-owner lists, first-reader GC attribution, or secondary
+reference-count/identity registries. Clearing a reader detaches only its block.
+Clearing a block detaches its own edges before any Python destructor runs.
+
+This follows the linked GC data-object design in CPython
+[3.12.15](https://github.com/python/cpython/blob/v3.12.15/Modules/itertoolsmodule.c)
+and [3.15.1](https://github.com/python/cpython/blob/v3.15.1/Modules/itertoolsmodule.c),
+including the 57-value allocation/retirement tradeoff. Copies and tee-of-tee
+share a block at the current offset. Cache misses retain their block and source
+across Python callbacks; the shared running state rejects recursive fetches.
+Exceptions and exhaustion leave the cursor unchanged and permit a later retry.
+Rollover publishes the successor before retiring the prior block, then resets
+the offset, preserving CPython's observable value-finalizer callback order.
+
+Terminal destruction transfers a committed-dead block's successor to the
+existing decref caller. That caller iterates through the ordinary refcount,
+ABI-view, finalizer and physical-free transactions. It stops at an independently
+owned successor; releasing that owner later resumes normal retirement. This
+bounds stack use independently of lag, including chains with C views. Cyclic
+GC still uses the same per-object edge visitor and detach transaction.
+
+Cached reads cost one indexed load and result retain, without allocation or a
+scan of readers. A source fetch adds temporary block/iterator owners around one
+iterator call. Source dispatch can itself allocate temporary objects; measure
+that cost independently through the same iterator protocol. Outside reentrant
+retirement, tee cache storage costs one block per 57 fetched values. Lockstep
+readers retain at most 57 cached values; with lag
+`L`, retained blocks are bounded by `floor(L / 57) + 2`, plus reader cursors.
+Retirement work is linear in the number of blocks and values actually freed,
+with constant stack use along successor links. No syscalls, process spawns,
+serialization, or additional locks are introduced; runtime mutation uses the
+existing GIL custody. These are structural cost bounds, not measured speedups.
+The owning `itertools_class` tests report total, source and cache allocation
+counts/bytes separately, require cached peer reads to allocate nothing, and
+verify retention and native/C-view retirement. The existing
+`itertools_tee_independence` differential witness covers Python-visible lifetime,
+copying, exceptions, callback reentry and cycles. Native/WASM and profile,
+free-threaded and performance acceptance require their actual consumer proofs.
 
 ## 5. Concurrency: GIL-Like Serialization (Current)
 Molt currently serializes runtime mutation with a GIL-like lock. The concurrency

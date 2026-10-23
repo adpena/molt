@@ -5,14 +5,14 @@
 
 use crate::*;
 use molt_obj_model::MoltObject;
-use unicode_casefold::{Locale, UnicodeCaseFold, Variant};
+use molt_obj_model::unicode::CaseOperation;
 
 use super::ops::{
     bytes_ascii_capitalize, bytes_ascii_swapcase, bytes_ascii_title, format_with_spec,
     parse_codec_arg, parse_format_spec, simd_has_any_ascii_lower, simd_has_any_ascii_upper,
     simd_is_all_ascii_alnum, simd_is_all_ascii_alpha, simd_is_all_ascii_digit,
     simd_is_all_ascii_printable, simd_is_all_ascii_text_whitespace, slice_bounds_from_args,
-    slice_match, unicode_classification_table,
+    slice_match, unicode_data,
 };
 
 #[path = "ops_string_predicates.rs"]
@@ -38,7 +38,7 @@ pub(crate) fn require_strict_utf8(py: &PyToken<'_>, bits: u64) -> bool {
     if std::str::from_utf8(value).is_ok() {
         return true;
     }
-    let mut points = molt_runtime_core::text_storage::code_points(value)
+    let mut points = molt_obj_model::text_storage::code_points(value)
         .enumerate()
         .peekable();
     while let Some((start, code)) = points.next() {
@@ -1473,7 +1473,7 @@ pub extern "C" fn molt_string_lower(hay_bits: u64) -> u64 {
                 ascii_lower_into(hay_bytes, out);
                 return MoltObject::from_ptr(ptr).bits();
             }
-            let lowered = molt_runtime_platform::utils::python_lowercase(hay_bytes);
+            let lowered = unicode_data(_py).transform(hay_bytes, CaseOperation::Lower);
             let ptr = alloc_string_nointern(_py, &lowered);
             if ptr.is_null() {
                 return MoltObject::none().bits();
@@ -1495,13 +1495,8 @@ pub extern "C" fn molt_string_casefold(hay_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             }
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
-            let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
-                return MoltObject::none().bits();
-            };
-            let folded: String = hay_str
-                .case_fold_with(Variant::Full, Locale::NonTurkic)
-                .collect();
-            let ptr = alloc_string(_py, folded.as_bytes());
+            let folded = unicode_data(_py).transform(hay_bytes, CaseOperation::Fold);
+            let ptr = alloc_string(_py, &folded);
             if ptr.is_null() {
                 return MoltObject::none().bits();
             }
@@ -1551,26 +1546,14 @@ pub extern "C" fn molt_string_upper(hay_bits: u64) -> u64 {
                 ascii_upper_into(hay_bytes, out);
                 return MoltObject::from_ptr(ptr).bits();
             }
-            let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
-                return MoltObject::none().bits();
-            };
-            let uppered = hay_str.to_uppercase();
-            let ptr = alloc_string_nointern(_py, uppered.as_bytes());
+            let uppered = unicode_data(_py).transform(hay_bytes, CaseOperation::Upper);
+            let ptr = alloc_string_nointern(_py, &uppered);
             if ptr.is_null() {
                 return MoltObject::none().bits();
             }
             MoltObject::from_ptr(ptr).bits()
         }
     })
-}
-
-#[inline]
-fn string_push_titlecase(out: &mut String, ch: char) {
-    if let Some(mapped) = unicode_titlecase_table::titlecase(ch as u32) {
-        out.push_str(mapped);
-    } else {
-        out.extend(ch.to_uppercase());
-    }
 }
 
 #[unsafe(no_mangle)]
@@ -1594,20 +1577,9 @@ pub extern "C" fn molt_string_swapcase(hay_bits: u64) -> u64 {
                 }
                 return MoltObject::from_ptr(ptr).bits();
             }
-            let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
-                return MoltObject::none().bits();
-            };
-            let mut out = String::with_capacity(hay_str.len());
-            for ch in hay_str.chars() {
-                if ch.is_lowercase() {
-                    out.extend(ch.to_uppercase());
-                } else if ch.is_uppercase() {
-                    out.extend(ch.to_lowercase());
-                } else {
-                    out.push(ch);
-                }
-            }
-            let ptr = alloc_string(_py, out.as_bytes());
+            let out = crate::object::ops::unicode_data_for_bytes(_py, hay_bytes)
+                .transform(hay_bytes, CaseOperation::Swapcase);
+            let ptr = alloc_string(_py, &out);
             if ptr.is_null() {
                 return MoltObject::none().bits();
             }
@@ -1637,18 +1609,9 @@ pub extern "C" fn molt_string_capitalize(hay_bits: u64) -> u64 {
                 }
                 return MoltObject::from_ptr(ptr).bits();
             }
-            let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
-                return MoltObject::none().bits();
-            };
-            let mut out = String::with_capacity(hay_str.len());
-            let mut chars = hay_str.chars();
-            if let Some(first) = chars.next() {
-                string_push_titlecase(&mut out, first);
-                for ch in chars {
-                    out.extend(ch.to_lowercase());
-                }
-            }
-            let ptr = alloc_string(_py, out.as_bytes());
+            let out = crate::object::ops::unicode_data_for_bytes(_py, hay_bytes)
+                .transform(hay_bytes, CaseOperation::Capitalize);
+            let ptr = alloc_string(_py, &out);
             if ptr.is_null() {
                 return MoltObject::none().bits();
             }
@@ -1669,9 +1632,6 @@ pub extern "C" fn molt_string_title(hay_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             }
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
-            let Ok(hay_str) = std::str::from_utf8(hay_bytes) else {
-                return MoltObject::none().bits();
-            };
             // ASCII fast path: if all bytes < 0x80, use SIMD-accelerated bytes_ascii_title
             if hay_bytes.iter().all(|&b| b < 0x80) {
                 let titled = bytes_ascii_title(hay_bytes);
@@ -1681,22 +1641,9 @@ pub extern "C" fn molt_string_title(hay_bits: u64) -> u64 {
                 }
                 return MoltObject::from_ptr(ptr).bits();
             }
-            let mut out = String::with_capacity(hay_str.len());
-            let mut prev_cased = false;
-            for ch in hay_str.chars() {
-                if unicode_classification_table::is_cased(ch as u32) {
-                    if prev_cased {
-                        out.extend(ch.to_lowercase());
-                    } else {
-                        string_push_titlecase(&mut out, ch);
-                    }
-                    prev_cased = true;
-                } else {
-                    out.push(ch);
-                    prev_cased = false;
-                }
-            }
-            let ptr = alloc_string(_py, out.as_bytes());
+            let out = crate::object::ops::unicode_data_for_bytes(_py, hay_bytes)
+                .transform(hay_bytes, CaseOperation::Title);
+            let ptr = alloc_string(_py, &out);
             if ptr.is_null() {
                 return MoltObject::none().bits();
             }

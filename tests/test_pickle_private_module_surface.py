@@ -17,6 +17,7 @@ from tests.stdlib_intrinsic_registry import install_registry
 
 
 install_registry({{
+    "molt_builtin_class_lookup": lambda name: getattr(__import__("_pickle"), name),
     "molt_pickle_dumps_core": lambda obj, protocol, fix_imports, _persistent_id, buffer_callback, _dispatch_table: _host_pickle.dumps(
         obj,
         protocol=protocol,

@@ -2119,6 +2119,129 @@ pub extern "C" fn molt_decimal_pos(ctx_bits: u64, a_bits: u64) -> u64 {
     })
 }
 
+/// CPython's coefficient/ideal-exponent square root, with one guard digit.
+/// https://github.com/python/cpython/blob/ead82c07db1f111d613926ed1b6667411d768125/Lib/_pydecimal.py
+/// Scaling depends on coefficient digits and precision, not the input exponent.
+/// An inexact trailing 0/5 becomes sticky before the shared half-even context
+/// fit; exact results retain floor(input exponent / 2), including signed zero.
+fn sqrt_decimal(
+    ctx: &DecimalContextHandle,
+    a: &DecimalHandle,
+) -> Result<(DecimalHandle, u32), u32> {
+    let mut status = 0;
+    let mut out = DecimalHandle {
+        sign: a.sign,
+        coeff: BigInt::zero(),
+        exp: a.exp,
+        special: a.special,
+    };
+    match a.special {
+        DecimalSpecial::SNan => {
+            out.coeff = a.coeff.clone();
+            out.special = DecimalSpecial::Nan;
+            return Ok((out, MPD_INVALID_OPERATION));
+        }
+        DecimalSpecial::Nan => {
+            out.coeff = a.coeff.clone();
+            return Ok((out, 0));
+        }
+        DecimalSpecial::Infinity if !a.sign => return Ok((out, 0)),
+        DecimalSpecial::Infinity => {
+            out.sign = false;
+            out.coeff = BigInt::zero();
+            out.exp = 0;
+            out.special = DecimalSpecial::Nan;
+            return Ok((out, MPD_INVALID_OPERATION));
+        }
+        DecimalSpecial::Finite => {}
+    }
+    if a.coeff.is_zero() {
+        out.exp = a.exp.div_euclid(2);
+        fix_decimal(ctx, &mut out, &mut status)?;
+        return Ok((out, status));
+    }
+    if a.sign {
+        out.sign = false;
+        out.coeff = BigInt::zero();
+        out.exp = 0;
+        out.special = DecimalSpecial::Nan;
+        return Ok((out, MPD_INVALID_OPERATION));
+    }
+    let precision = ctx
+        .prec
+        .checked_add(1)
+        .filter(|p| *p > 1)
+        .ok_or(MPD_INVALID_CONTEXT)?;
+    let digits = digits_len(&a.coeff);
+    let odd_exp = a.exp & 1 != 0;
+    let pair_digits = if odd_exp {
+        digits / 2 + 1
+    } else {
+        (digits + 1) / 2
+    };
+    let shift = precision
+        .checked_sub(pair_digits)
+        .ok_or(MPD_INVALID_CONTEXT)?;
+    let scale_exp = shift.checked_mul(2).ok_or(MPD_INVALID_CONTEXT)?;
+    let mut coeff = if odd_exp {
+        &a.coeff * 10u8
+    } else {
+        a.coeff.clone()
+    };
+    // Exact roots do not need precision padding. Restrict the probe to the
+    // positive-padding case so a long input at low precision is truncated
+    // before the expensive integer square root.
+    if shift > 0 {
+        let root = coeff.sqrt();
+        if &root * &root == coeff {
+            out.coeff = root;
+            out.exp = a.exp.div_euclid(2);
+            let mut rounded = ctx.clone();
+            rounded.rounding = MPD_ROUND_HALF_EVEN;
+            fix_decimal(&rounded, &mut out, &mut status)?;
+            return Ok((out, status));
+        }
+    }
+    // The coefficient algorithm's power is bounded by actual precision/input
+    // digits, not the decimal exponent. Do not impose pow10_i64's unrelated
+    // 200000-place cap on legal contexts. BigInt's power operand is u32;
+    // an unrepresentable allocation request is a memory failure.
+    let scale = |exp: i64| -> Result<BigInt, u32> {
+        Ok(pow10_u32(u32::try_from(exp).map_err(|_| MPD_MALLOC_ERROR)?))
+    };
+    let mut exact = true;
+    if scale_exp >= 0 {
+        coeff *= scale(scale_exp)?;
+    } else {
+        let divisor = scale(scale_exp.checked_neg().ok_or(MPD_INVALID_CONTEXT)?)?;
+        exact = (&coeff % &divisor).is_zero();
+        coeff /= divisor;
+    }
+    let mut root = coeff.sqrt();
+    exact = exact && &root * &root == coeff;
+    out.exp = a
+        .exp
+        .div_euclid(2)
+        .checked_sub(shift)
+        .ok_or(MPD_INVALID_CONTEXT)?;
+    if exact {
+        if shift >= 0 {
+            root /= scale(shift)?;
+        } else {
+            root *= scale(shift.checked_neg().ok_or(MPD_INVALID_CONTEXT)?)?;
+        }
+        out.exp = a.exp.div_euclid(2);
+    } else if (&root % 5u8).is_zero() {
+        root += 1u8;
+    }
+    out.coeff = root;
+    // Decimal.sqrt always rounds half-even, independently of Context.rounding.
+    let mut rounded = ctx.clone();
+    rounded.rounding = MPD_ROUND_HALF_EVEN;
+    fix_decimal(&rounded, &mut out, &mut status)?;
+    Ok((out, status))
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_sqrt(ctx_bits: u64, a_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
@@ -2130,16 +2253,19 @@ pub extern "C" fn molt_decimal_sqrt(ctx_bits: u64, a_bits: u64) -> u64 {
             return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
         };
         let ctx = unsafe { &mut *ctx_ptr };
-        if a.special == DecimalSpecial::Infinity {
-            if a.sign {
-                return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+        let (out, status) = match sqrt_decimal(ctx, a) {
+            Ok(result) => result,
+            Err(flag) => {
+                if let Err(bits) = apply_status(_py, ctx, flag) {
+                    return bits;
+                }
+                return raise_exception::<u64>(_py, decimal_signal_name(flag), "decimal signal");
             }
-            return decimal_bits(a.clone());
+        };
+        if let Err(bits) = apply_status(_py, ctx, status) {
+            return bits;
         }
-        if a.sign && !a.coeff.is_zero() {
-            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
-        }
-        transcendental_via_f64(_py, ctx, a, libm::sqrt)
+        decimal_bits(out)
     })
 }
 

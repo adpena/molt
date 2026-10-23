@@ -1,5 +1,4 @@
 use crate::PyToken;
-use crate::object::ops::unicode_space_table;
 use crate::object::ops_bytes::bytes_ascii_space;
 use crate::object::ops_string::wtf8_step;
 use crate::runtime_flags::{self, RuntimeFlag};
@@ -1497,9 +1496,14 @@ where
 
 /// Advance one Python string code point in either direction. The storage is
 /// WTF-8, not UTF-8: lone surrogates are ordinary non-whitespace code points.
-fn string_whitespace_step(hay: &[u8], cursor: usize, from_right: bool) -> Option<(usize, bool)> {
+fn string_whitespace_step(
+    data: &molt_obj_model::unicode::UnicodeData,
+    hay: &[u8],
+    cursor: usize,
+    from_right: bool,
+) -> Option<(usize, bool)> {
     let (next, code) = wtf8_step(hay, cursor, from_right)?;
-    Some((next, unicode_space_table::is_space(code)))
+    Some((next, data.is_space(code)))
 }
 
 /// The byte bounds of the words `str.split()` (or `str.rsplit()`, `from_right`)
@@ -1507,6 +1511,7 @@ fn string_whitespace_step(hay: &[u8], cursor: usize, from_right: bool) -> Option
 /// negative). This is the one `str` whitespace tokenization; fused consumers
 /// read words through it rather than their own whitespace set.
 pub(crate) fn string_whitespace_parts(
+    data: &molt_obj_model::unicode::UnicodeData,
     hay: &[u8],
     maxsplit: i64,
     from_right: bool,
@@ -1515,7 +1520,7 @@ pub(crate) fn string_whitespace_parts(
     let mut parts = Vec::new();
     let mut splits = 0i64;
     loop {
-        while let Some((next, true)) = string_whitespace_step(hay, cursor, from_right) {
+        while let Some((next, true)) = string_whitespace_step(data, hay, cursor, from_right) {
             cursor = next;
         }
         if if from_right {
@@ -1534,7 +1539,7 @@ pub(crate) fn string_whitespace_parts(
             break;
         }
         let boundary = cursor;
-        while let Some((next, false)) = string_whitespace_step(hay, cursor, from_right) {
+        while let Some((next, false)) = string_whitespace_step(data, hay, cursor, from_right) {
             cursor = next;
         }
         parts.push(if from_right {
@@ -1556,7 +1561,12 @@ fn string_whitespace_split(
     maxsplit: i64,
     from_right: bool,
 ) -> Option<u64> {
-    let parts = string_whitespace_parts(hay, maxsplit, from_right);
+    let parts = string_whitespace_parts(
+        crate::object::ops::unicode_data_for_bytes(_py, hay),
+        hay,
+        maxsplit,
+        from_right,
+    );
     let list_ptr = alloc_list_empty_with_capacity(_py, parts.len());
     if list_ptr.is_null() {
         return None;

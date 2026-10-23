@@ -48,8 +48,15 @@ impl AppCallableRequirements {
 /// Compiler metadata creates executable identity edges without allocating a
 /// second Python callable. Only the internal publisher consumes this JSON;
 /// merely spelling one of these symbols in guest data creates no edge.
-pub(crate) fn gpu_descriptor_body_symbols(function: &FunctionIR) -> BTreeSet<String> {
-    let mut symbols = BTreeSet::new();
+pub(crate) fn visit_gpu_descriptor_body_symbols(
+    function: &FunctionIR,
+    mut visit: impl FnMut(&str),
+) {
+    if !function.ops.iter().any(|op| {
+        op.kind == "call" && op.s_value.as_deref() == Some("molt_gpu_kernel_descriptor_set")
+    }) {
+        return;
+    }
     let constants: BTreeMap<&str, &str> = function
         .ops
         .iter()
@@ -79,11 +86,10 @@ pub(crate) fn gpu_descriptor_body_symbols(function: &FunctionIR) -> BTreeSet<Str
                     .get("symbol")
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or_else(|| panic!("GPU body identity lacks its executable symbol"));
-                symbols.insert(symbol.to_owned());
+                visit(symbol);
             }
         }
     }
-    symbols
 }
 
 /// One collector for native app resolvers and WASM imports/table/resolvers.
@@ -94,13 +100,13 @@ pub fn collect_app_callable_requirements(functions: &[FunctionIR]) -> AppCallabl
     let defined_functions: BTreeSet<&str> = functions.iter().map(|f| f.name.as_str()).collect();
     let mut requirements = AppCallableRequirements::default();
     for function in functions {
-        for symbol in gpu_descriptor_body_symbols(function) {
+        visit_gpu_descriptor_body_symbols(function, |symbol| {
             assert!(
-                defined_functions.contains(symbol.as_str()),
+                defined_functions.contains(symbol),
                 "GPU body identity names an absent application function: {symbol}"
             );
-            requirements.compiled_body_symbols.insert(symbol);
-        }
+            requirements.compiled_body_symbols.insert(symbol.to_owned());
+        });
         // SimpleIR is mutable transport, not SSA. A whole-function constant
         // needs exactly one definition, including parameters and store targets.
         let mut definitions = BTreeMap::<&str, usize>::new();

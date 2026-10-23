@@ -867,10 +867,7 @@ pub extern "C" fn molt_urllib_request_response_readinto(handle_bits: u64, buffer
             return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
         };
         let export = match unsafe {
-            molt_cpython_abi::native_custody::acquire_buffer(
-                buffer_bits,
-                molt_cpython_abi::native_custody::PyBUF_WRITABLE,
-            )
+            molt_runtime_capi::acquire_buffer(buffer_bits, molt_runtime_capi::PyBUF_WRITABLE)
         } {
             Ok(export) => export,
             Err(_) => return MoltObject::none().bits(),

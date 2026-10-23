@@ -1818,3 +1818,69 @@ fn native_child_of_managed_exception_initializes_real_physical_payload() {
         }
     });
 }
+
+#[test]
+fn missing_iteration_diagnostic_preserves_pending_error_identity_and_owners() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    assert!(crate::cpython_abi_hooks::register_cpython_hooks());
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let input = MoltObject::from_int(7).bits();
+            let none = MoltObject::none().bits();
+            assert_eq!(raise_not_iterable::<u64>(py, input), none);
+            assert!(exception_matches_builtin_name(
+                py,
+                exception_last_bits_noinc(py).unwrap(),
+                "TypeError"
+            ));
+            clear_exception(py);
+            for (runtime_pending, c_pending) in [(true, false), (false, true), (true, true)] {
+                let managed = ExceptionValue::adopt(py, managed_exception(py, "LookupError"));
+                let native = native_exception(&raw mut PyExc_KeyError);
+                if c_pending {
+                    refcount::Py_INCREF(native);
+                    refcount::Py_INCREF((&raw mut PyExc_KeyError).cast());
+                    let c_error = errors::OwnedCError {
+                        exc_type: (&raw mut PyExc_KeyError).cast(),
+                        value: native,
+                        traceback: ptr::null_mut(),
+                    };
+                    if runtime_pending {
+                        // Semantic C publication supersedes the runtime error.
+                        // This law instead restores two independently saved owners.
+                        crate::test_support::restore_pending_channels(py, c_error, managed.bits());
+                    } else {
+                        errors::restore_current_error_exact(c_error);
+                    }
+                } else if runtime_pending {
+                    crate::test_support::restore_runtime_raised(py, managed.bits());
+                }
+                let refs = (*native).ob_refcnt;
+                let managed_refs =
+                    (*header_from_obj_ptr(obj_from_bits(managed.bits()).as_ptr().unwrap()))
+                        .ref_count_snapshot();
+                assert_eq!(raise_not_iterable::<u64>(py, input), none);
+                assert_eq!(exception_pending(py), runtime_pending);
+                if runtime_pending {
+                    assert_eq!(exception_last_bits_noinc(py), Some(managed.bits()));
+                }
+                assert_eq!((*native).ob_refcnt, refs);
+                assert_eq!(
+                    (*header_from_obj_ptr(obj_from_bits(managed.bits()).as_ptr().unwrap()))
+                        .ref_count_snapshot(),
+                    managed_refs
+                );
+                let c_error = errors::take_current_error();
+                assert_eq!(c_error.is_some(), c_pending);
+                if let Some(error) = c_error {
+                    assert_eq!(error.exc_type, (&raw mut PyExc_KeyError).cast());
+                    assert_eq!(error.value, native);
+                    assert!(error.traceback.is_null());
+                    drop(error);
+                }
+                clear_exception(py);
+                refcount::Py_DECREF(native);
+            }
+        }
+    });
+}

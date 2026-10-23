@@ -1503,8 +1503,12 @@ mod numeric_hash_tests {
                 (TYPE_ID_STRING, builtins.str, b"subclass-string".as_slice()),
                 (TYPE_ID_BYTES, builtins.bytes, b"subclass-bytes".as_slice()),
             ] {
-                let total =
-                    super::super::layout::InlineBytesStorage::object_size(bytes.len()).unwrap();
+                let total = if type_id == TYPE_ID_STRING {
+                    super::super::layout::StringStorage::object_size(bytes.len())
+                } else {
+                    super::super::layout::InlineBytesStorage::object_size(bytes.len())
+                }
+                .unwrap();
                 let ptr =
                     alloc_object_with_aux(_py, total, type_id, ObjectAuxPreselection::Sidecar);
                 assert!(!ptr.is_null());

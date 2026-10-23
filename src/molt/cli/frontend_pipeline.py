@@ -176,6 +176,8 @@ def _output_base_for_entry(entry_module: str, source_path: Path) -> str:
 
 
 def _syntax_error_info_from_exception(exc: SyntaxError) -> ModuleSyntaxErrorInfo:
+    from molt.frontend.lowering.exception_lowering import SYNTAX_ERROR_ATTRIBUTES
+
     name: SyntaxErrorName
     if type(exc) is TabError:
         name = "TabError"
@@ -185,10 +187,17 @@ def _syntax_error_info_from_exception(exc: SyntaxError) -> ModuleSyntaxErrorInfo
         name = "SyntaxError"
     else:
         raise TypeError("module parser returned a non-builtin SyntaxError subclass")
+    constructed = type(exc)(*exc.args)
+    overrides = []
+    for attribute in SYNTAX_ERROR_ATTRIBUTES:
+        actual = getattr(exc, attribute)
+        initial = getattr(constructed, attribute)
+        if type(actual) is not type(initial) or actual != initial:
+            overrides.append((attribute, actual))
     return ModuleSyntaxErrorInfo(
         exception_name=name,
         args=exc.args,
-        print_file_and_line=exc.print_file_and_line,
+        attribute_overrides=tuple(overrides),
     )
 
 
@@ -308,7 +317,7 @@ def _prepare_frontend_analysis(
                 runtime_import_custody=runtime_import_scan_custody,
                 native_support_function_roots=source_authorities[
                     module_name
-                ].native_support_function_roots,
+                ].body_selection.roots,
                 source=None,
                 source_snapshot=snapshot,
                 logical_source_path=module_graph_metadata.logical_source_path_by_module[

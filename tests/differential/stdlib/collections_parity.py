@@ -57,6 +57,19 @@ print("nt hash as key", {Point(1, 2): "origin"}[Point(1, 2)])
 print("nt lt", Point(1, 2) < Point(2, 0))
 print("nt le", Point(1, 2) <= Point(1, 2))
 
+# Public identifier admission distinguishes XID from Rust alphanumeric facts.
+for field in ("a²", "℘", "a\u0301", "\ud800", "\u1c89"):
+    try:
+        unicode_point = namedtuple("UnicodePoint", [field])
+    except ValueError:
+        print("nt unicode", repr(field), "ValueError")
+        renamed = namedtuple("UnicodePoint", [field], rename=True)
+        assert renamed._fields == ("_0",)
+    else:
+        assert unicode_point._fields == (field,)
+        assert unicode_point(7)[0] == 7
+        print("nt unicode", repr(field), "accepted")
+
 # ========== OrderedDict ==========
 
 od = OrderedDict()

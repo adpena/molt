@@ -317,7 +317,6 @@ def test_local_clippy_reuses_only_the_declared_host_execution(
         {"argv": ["cargo", "clippy", "--workspace", "--all-features"]},
         {"cwd": "."},
         {"toolchains": ["rustc", "cargo", "python"]},
-        {"cargo_build_python": False},
         {"cargo_native_units": {"host": ["c", "c++"]}},
         {"env": {"CARGO_INCREMENTAL": "1"}},
         {"dependencies": ["rust.test.tir"]},

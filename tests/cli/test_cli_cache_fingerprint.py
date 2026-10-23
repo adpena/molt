@@ -1523,7 +1523,7 @@ def test_huge_hex_source_and_folded_literals_have_identical_binary_backend_and_c
     import io
     import sys
     from molt.frontend import SimpleTIRGenerator
-    from molt.cli.backend_ir_transport import write_backend_ir
+    from molt.cli.backend_ir_transport import BackendIrProgram
     from molt.opcode_literal_payloads import integer_literal_value
 
     huge_hex = "0x1" + "0" * 5000
@@ -1562,10 +1562,13 @@ def test_huge_hex_source_and_folded_literals_have_identical_binary_backend_and_c
             assert streamed.getvalue().encode() == payload
             assert json.loads(payload) == ir
             binary = io.BytesIO()
-            write_backend_ir(binary, ir)
+            BackendIrProgram(ir, CACHE_KEYS.FunctionDigests()).write(binary)
             import msgpack
 
-            assert msgpack.unpackb(binary.getvalue()) == ir
+            lease = msgpack.unpackb(binary.getvalue())
+            assert [msgpack.unpackb(body) for body in lease["function_bodies"]] == ir[
+                "functions"
+            ]
             outputs.append((payload, CACHE_KEYS._cache_payload_digest(ir)))
         assert outputs[0] == outputs[1]
         changed = dict(ir, constants={"changed": expected + 7})

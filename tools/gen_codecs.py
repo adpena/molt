@@ -364,7 +364,7 @@ def _render_charmap_unformatted() -> str:
         "",
         "use crate::codec_errors::DecodeFailure;",
         "use crate::codec_registry::EncodingKind;",
-        "use molt_runtime_core::text_storage::{push_backslash_bytes, push_code_point};",
+        "use molt_obj_model::text_storage::{push_backslash_bytes, push_code_point};",
         "",
         "pub struct SingleByteCharmap {",
         "    decode_table: &'static [u16; 128],",

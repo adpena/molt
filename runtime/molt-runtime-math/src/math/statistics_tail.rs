@@ -227,7 +227,7 @@ fn statistics_normal_dist_samples_mode(
         if object_type_id(seed_ptr) != TYPE_ID_TUPLE {
             None
         } else {
-            let elems = seq_snapshot(seed_ptr);
+            let elems = seq_snapshot(seed_ptr)?;
             if elems.len() == 2 {
                 Some((elems[0], elems[1]))
             } else {
@@ -441,90 +441,75 @@ fn statistics_normal_dist_cdf_raw(x: f64, mu: f64, sigma: f64) -> f64 {
     0.5 * (1.0 + math_erf((x - mu) / (sigma * core::f64::consts::SQRT_2)))
 }
 
-fn materialize_statistics_slice(
-    _py: &PyToken,
-    data_bits: u64,
-    start_bits: u64,
-    end_bits: u64,
-    has_start_bits: u64,
-    has_end_bits: u64,
-) -> Option<u64> {
-    let none_bits = MoltObject::none().bits();
-    let start_obj = if is_truthy(_py, obj_from_bits(has_start_bits)) {
-        start_bits
-    } else {
-        none_bits
-    };
-    let end_obj = if is_truthy(_py, obj_from_bits(has_end_bits)) {
-        end_bits
-    } else {
-        none_bits
-    };
-    let slice_bits = molt_slice_new(start_obj, end_obj, none_bits);
-    if exception_pending(_py) {
-        return None;
-    }
-    let sliced_bits = molt_index(data_bits, slice_bits);
-    if maybe_ptr_from_bits(slice_bits).is_some() {
-        dec_ref_bits(_py, slice_bits);
-    }
-    if exception_pending(_py) {
-        return None;
-    }
-    Some(sliced_bits)
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_statistics_mean(data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let Some(mean) = statistics_mean_value(_py, data_bits) else {
-            return MoltObject::none().bits();
-        };
-        MoltObject::from_float(mean).bits()
+    molt_runtime_core::with_gil_entry!(py, {
+        statistics_builtin_reduction(
+            py,
+            data_bits,
+            MoltObject::none().bits(),
+            StatisticsReduction::Mean,
+        )
     })
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_statistics_stdev(data_bits: u64, xbar_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let Some(stdev) = statistics_stdev_value(_py, data_bits, xbar_bits) else {
-            return MoltObject::none().bits();
-        };
-        MoltObject::from_float(stdev).bits()
+pub extern "C" fn molt_statistics_stdev(data_bits: u64, center_bits: u64) -> u64 {
+    molt_runtime_core::with_gil_entry!(py, {
+        statistics_builtin_reduction(
+            py,
+            data_bits,
+            center_bits,
+            StatisticsReduction::Variance {
+                population: false,
+                sqrt: true,
+            },
+        )
     })
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_statistics_variance(data_bits: u64, xbar_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let Some(variance) =
-            statistics_variance_value(_py, data_bits, xbar_bits, false, "variance")
-        else {
-            return MoltObject::none().bits();
-        };
-        MoltObject::from_float(variance).bits()
+pub extern "C" fn molt_statistics_variance(data_bits: u64, center_bits: u64) -> u64 {
+    molt_runtime_core::with_gil_entry!(py, {
+        statistics_builtin_reduction(
+            py,
+            data_bits,
+            center_bits,
+            StatisticsReduction::Variance {
+                population: false,
+                sqrt: false,
+            },
+        )
     })
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_statistics_pvariance(data_bits: u64, mu_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let Some(variance) = statistics_variance_value(_py, data_bits, mu_bits, true, "pvariance")
-        else {
-            return MoltObject::none().bits();
-        };
-        MoltObject::from_float(variance).bits()
+pub extern "C" fn molt_statistics_pvariance(data_bits: u64, center_bits: u64) -> u64 {
+    molt_runtime_core::with_gil_entry!(py, {
+        statistics_builtin_reduction(
+            py,
+            data_bits,
+            center_bits,
+            StatisticsReduction::Variance {
+                population: true,
+                sqrt: false,
+            },
+        )
     })
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_statistics_pstdev(data_bits: u64, mu_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let Some(variance) = statistics_variance_value(_py, data_bits, mu_bits, true, "pstdev")
-        else {
-            return MoltObject::none().bits();
-        };
-        MoltObject::from_float(math_sqrt(variance)).bits()
+pub extern "C" fn molt_statistics_pstdev(data_bits: u64, center_bits: u64) -> u64 {
+    molt_runtime_core::with_gil_entry!(py, {
+        statistics_builtin_reduction(
+            py,
+            data_bits,
+            center_bits,
+            StatisticsReduction::Variance {
+                population: true,
+                sqrt: true,
+            },
+        )
     })
 }
 
@@ -547,18 +532,31 @@ pub extern "C" fn molt_statistics_fmean(data_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_statistics_median(data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let Some(values) = statistics_collect_sorted_real(_py, data_bits, "median") else {
+    molt_runtime_core::with_gil_entry!(py, {
+        let Some(sorted_bits) = statistics_sorted_values(py, data_bits) else {
+            return MoltObject::none().bits();
+        };
+        let sorted = unsafe { OwnedRuntimeValue::from_owned_bits(py, sorted_bits) };
+        let Some(values) =
+            (unsafe { seq_snapshot(obj_from_bits(sorted.bits()).as_ptr().unwrap()) })
+        else {
             return MoltObject::none().bits();
         };
         let n = values.len();
-        let mid = n / 2;
-        let out = if n % 2 == 1 {
-            values[mid]
-        } else {
-            (values[mid - 1] + values[mid]) / 2.0
+        if n == 0 {
+            return raise_exception::<u64>(py, "StatisticsError", "no median for empty data");
+        }
+        if n % 2 == 1 {
+            inc_ref_bits(py, values[n / 2]);
+            return values[n / 2];
+        }
+        let sum = unsafe {
+            OwnedRuntimeValue::from_owned_bits(py, molt_add(py, values[n / 2 - 1], values[n / 2]))
         };
-        MoltObject::from_float(out).bits()
+        if exception_pending(py) {
+            return MoltObject::none().bits();
+        }
+        molt_div(py, sum.bits(), MoltObject::from_int(2).bits())
     })
 }
 
@@ -583,7 +581,10 @@ pub extern "C" fn molt_statistics_median_low(data_bits: u64) -> u64 {
                     "median_low expected sorted list payload",
                 );
             }
-            let elems = seq_snapshot(sorted_ptr);
+            let Some(elems) = seq_snapshot(sorted_ptr) else {
+                dec_ref_bits(_py, sorted_bits);
+                return MoltObject::none().bits();
+            };
             if elems.is_empty() {
                 if maybe_ptr_from_bits(sorted_bits).is_some() {
                     dec_ref_bits(_py, sorted_bits);
@@ -626,7 +627,10 @@ pub extern "C" fn molt_statistics_median_high(data_bits: u64) -> u64 {
                     "median_high expected sorted list payload",
                 );
             }
-            let elems = seq_snapshot(sorted_ptr);
+            let Some(elems) = seq_snapshot(sorted_ptr) else {
+                dec_ref_bits(_py, sorted_bits);
+                return MoltObject::none().bits();
+            };
             if elems.is_empty() {
                 if maybe_ptr_from_bits(sorted_bits).is_some() {
                     dec_ref_bits(_py, sorted_bits);
@@ -721,7 +725,7 @@ pub extern "C" fn molt_statistics_harmonic_mean(data_bits: u64) -> u64 {
         let Some(value) = statistics_harmonic_mean_value(_py, data_bits) else {
             return MoltObject::none().bits();
         };
-        MoltObject::from_float(value).bits()
+        value
     })
 }
 
@@ -976,153 +980,5 @@ pub extern "C" fn molt_statistics_normal_dist_overlap(
             - statistics_normal_dist_cdf_raw(x2, mu_x, sigma_x))
         .abs();
         MoltObject::from_float(1.0 - (delta1 + delta2)).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_statistics_mean_slice(
-    data_bits: u64,
-    start_bits: u64,
-    end_bits: u64,
-    has_start_bits: u64,
-    has_end_bits: u64,
-) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let data = obj_from_bits(data_bits);
-        if let Some(data_ptr) = data.as_ptr() {
-            unsafe {
-                let ty = object_type_id(data_ptr);
-                if ty == TYPE_ID_LIST || ty == TYPE_ID_TUPLE {
-                    let elems = seq_snapshot(data_ptr);
-                    let Some((start, end)) = normalize_slice_step1_bounds(
-                        _py,
-                        elems.len(),
-                        start_bits,
-                        end_bits,
-                        has_start_bits,
-                        has_end_bits,
-                    ) else {
-                        return MoltObject::none().bits();
-                    };
-                    if start >= end {
-                        return raise_exception::<_>(
-                            _py,
-                            "StatisticsError",
-                            "mean requires at least one data point",
-                        );
-                    }
-                    let mut sum = 0.0_f64;
-                    let mut compensation = 0.0_f64;
-                    let mut count: usize = 0;
-                    for &val_bits in &elems[start..end] {
-                        let Some(f) = statistics_coerce_elem_fast_f64(_py, val_bits, "mean") else {
-                            return MoltObject::none().bits();
-                        };
-                        let y = f - compensation;
-                        let t = sum + y;
-                        compensation = (t - sum) - y;
-                        sum = t;
-                        count += 1;
-                    }
-                    return MoltObject::from_float(sum / count as f64).bits();
-                }
-            }
-        }
-        let Some(sliced_bits) = materialize_statistics_slice(
-            _py,
-            data_bits,
-            start_bits,
-            end_bits,
-            has_start_bits,
-            has_end_bits,
-        ) else {
-            return MoltObject::none().bits();
-        };
-        let out = match statistics_mean_value(_py, sliced_bits) {
-            Some(mean) => MoltObject::from_float(mean).bits(),
-            None => MoltObject::none().bits(),
-        };
-        if maybe_ptr_from_bits(sliced_bits).is_some() {
-            dec_ref_bits(_py, sliced_bits);
-        }
-        out
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_statistics_stdev_slice(
-    data_bits: u64,
-    start_bits: u64,
-    end_bits: u64,
-    has_start_bits: u64,
-    has_end_bits: u64,
-) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let data = obj_from_bits(data_bits);
-        if let Some(data_ptr) = data.as_ptr() {
-            unsafe {
-                let ty = object_type_id(data_ptr);
-                if ty == TYPE_ID_LIST || ty == TYPE_ID_TUPLE {
-                    let elems = seq_snapshot(data_ptr);
-                    let Some((start, end)) = normalize_slice_step1_bounds(
-                        _py,
-                        elems.len(),
-                        start_bits,
-                        end_bits,
-                        has_start_bits,
-                        has_end_bits,
-                    ) else {
-                        return MoltObject::none().bits();
-                    };
-                    let n = end.saturating_sub(start);
-                    if n < 2 {
-                        return raise_exception::<_>(
-                            _py,
-                            "StatisticsError",
-                            "stdev requires at least two data points",
-                        );
-                    }
-                    let mut count = 0.0_f64;
-                    let mut mean = 0.0_f64;
-                    let mut m2 = 0.0_f64;
-                    for &val_bits in &elems[start..end] {
-                        let Some(x) = statistics_coerce_elem_fast_f64(_py, val_bits, "stdev")
-                        else {
-                            return MoltObject::none().bits();
-                        };
-                        count += 1.0;
-                        let delta = x - mean;
-                        mean += delta / count;
-                        let delta2 = x - mean;
-                        m2 += delta * delta2;
-                    }
-                    let variance = if m2 < 0.0 && m2 > -f64::EPSILON {
-                        0.0
-                    } else {
-                        m2 / (count - 1.0)
-                    };
-                    return MoltObject::from_float(math_sqrt(variance)).bits();
-                }
-            }
-        }
-        let Some(sliced_bits) = materialize_statistics_slice(
-            _py,
-            data_bits,
-            start_bits,
-            end_bits,
-            has_start_bits,
-            has_end_bits,
-        ) else {
-            return MoltObject::none().bits();
-        };
-        let none_bits = MoltObject::none().bits();
-        let out = match statistics_stdev_value(_py, sliced_bits, none_bits) {
-            Some(stdev) => MoltObject::from_float(stdev).bits(),
-            None => MoltObject::none().bits(),
-        };
-        if maybe_ptr_from_bits(sliced_bits).is_some() {
-            dec_ref_bits(_py, sliced_bits);
-        }
-        out
     })
 }

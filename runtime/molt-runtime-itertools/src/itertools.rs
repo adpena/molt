@@ -9,6 +9,7 @@ use crate::bridge::{
     seq_read_len, seq_snapshot, tuple_from_iter_bits,
 };
 use molt_runtime_core::ObjectShapeId;
+use molt_runtime_core::itertools_tee::{TEE_BLOCK_CAPACITY, TeeBlock, TeeCursor};
 use molt_runtime_core::prelude::*;
 
 // The itertools class/sentinel slots must live in the runtime's
@@ -69,6 +70,7 @@ define_itertools_runtime_state! {
     starmap_class,
     takewhile_class,
     tee_iter_class,
+    tee_block_class,
     zip_longest_class,
 }
 
@@ -748,34 +750,6 @@ unsafe fn zip_longest_set_data_ptr(ptr: *mut u8, data: *mut ZipLongestData) {
     }
 }
 
-unsafe fn tee_data_ptr(ptr: *mut u8) -> *mut TeeData {
-    unsafe { *(ptr as *mut *mut TeeData) }
-}
-
-unsafe fn tee_index(ptr: *mut u8) -> i64 {
-    unsafe { *(ptr.add(std::mem::size_of::<*mut TeeData>()) as *const i64) }
-}
-
-unsafe fn tee_set_data_ptr(ptr: *mut u8, data: *mut TeeData) {
-    unsafe {
-        *(ptr as *mut *mut TeeData) = data;
-    }
-}
-
-unsafe fn tee_set_index(ptr: *mut u8, val: i64) {
-    unsafe {
-        *(ptr.add(std::mem::size_of::<*mut TeeData>()) as *mut i64) = val;
-    }
-}
-
-struct TeeData {
-    owners: Vec<*mut u8>,
-    iter_bits: u64,
-    values: Vec<u64>,
-    done: bool,
-    running: bool,
-}
-
 struct CombinationsData {
     pool_bits: u64,
     indices: Vec<usize>,
@@ -1077,12 +1051,70 @@ fn tee_iter_class(_py: &PyToken) -> u64 {
     itertools_class(
         _py,
         &state.tee_iter_class,
-        "tee",
-        24,
+        "_tee",
+        std::mem::size_of::<TeeCursor>() as i64,
         molt_itertools_tee_next as *const () as usize as u64,
         ObjectShapeId::ItertoolsTee,
-        None,
+        Some((molt_itertools_tee_new as *const () as usize as u64, 2, &[])),
     )
+}
+
+fn tee_block_class(py: &PyToken) -> u64 {
+    let state = itertools_state(py);
+    let bits = init_atomic_bits(py, &state.tee_block_class, || {
+        let class = alloc_itertools_class(
+            py,
+            "_tee_dataobject",
+            std::mem::size_of::<TeeBlock>() as i64,
+            ObjectShapeId::ItertoolsTeeBlock,
+            0,
+            0,
+            None,
+        );
+        if obj_from_bits(class).as_ptr().is_none() {
+            0
+        } else {
+            class
+        }
+    });
+    if bits == 0 {
+        MoltObject::none().bits()
+    } else {
+        bits
+    }
+}
+
+fn tee_new_block<'py>(py: &'py PyToken, iterator: u64) -> Option<OwnedRuntimeValue<'py>> {
+    let class = tee_block_class(py);
+    if exception_pending(py) {
+        return None;
+    }
+    let bits = alloc_instance_for_class(py, class);
+    let ptr = obj_from_bits(bits).as_ptr()?;
+    let iterator = OwnedRuntimeValue::retain(py, iterator);
+    unsafe {
+        ptr.cast::<TeeBlock>()
+            .write(TeeBlock::new(iterator.into_bits()))
+    };
+    Some(unsafe { OwnedRuntimeValue::from_owned_bits(py, bits) })
+}
+
+fn tee_new_cursor<'py>(
+    py: &'py PyToken,
+    class: u64,
+    block: u64,
+    index: u32,
+) -> Option<OwnedRuntimeValue<'py>> {
+    let bits = alloc_instance_for_class(py, class);
+    let ptr = obj_from_bits(bits).as_ptr()?;
+    let block = OwnedRuntimeValue::retain(py, block);
+    unsafe {
+        ptr.cast::<TeeCursor>().write(TeeCursor {
+            block_bits: block.into_bits(),
+            index,
+        })
+    };
+    Some(unsafe { OwnedRuntimeValue::from_owned_bits(py, bits) })
 }
 
 fn zip_longest_class(_py: &PyToken) -> u64 {
@@ -2956,120 +2988,177 @@ pub extern "C" fn molt_itertools_zip_longest_next(self_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_tee(iterable_bits: u64, n_bits: u64) -> u64 {
-    with_core_gil!(_py, {
-        let n = index_i64_from_obj(_py, n_bits, "n must be an integer");
-        if exception_pending(_py) {
+    with_core_gil!(py, {
+        let n = index_i64_from_obj(py, n_bits, "n must be an integer");
+        if exception_pending(py) {
             return MoltObject::none().bits();
         }
+        let Ok(n) = isize::try_from(n) else {
+            return raise_exception::<u64>(
+                py,
+                "OverflowError",
+                "Python int too large to convert to C ssize_t",
+            );
+        };
         if n < 0 {
-            return raise_exception::<_>(_py, "ValueError", "n must be >= 0");
+            return raise_exception::<u64>(py, "ValueError", "n must be >= 0");
         }
-        if n == 0 {
-            let tuple_ptr = alloc_tuple(_py, &[]);
-            if tuple_ptr.is_null() {
+        let mut readers = Vec::new();
+        if readers.try_reserve_exact(n as usize).is_err() {
+            return raise_exception::<u64>(py, "MemoryError", "");
+        }
+        if n != 0 {
+            // CPython gets the iterable's iterator, then constructs a tee from
+            // that iterator. Both __iter__ calls and their exceptions matter.
+            let iterator_bits = molt_iter(py, iterable_bits);
+            if obj_from_bits(iterator_bits).is_none() {
+                return raise_not_iterable(py, iterable_bits);
+            }
+            let iterator = unsafe { OwnedRuntimeValue::from_owned_bits(py, iterator_bits) };
+            if exception_pending(py) {
                 return MoltObject::none().bits();
             }
-            return MoltObject::from_ptr(tuple_ptr).bits();
+            let class = tee_iter_class(py);
+            if exception_pending(py) {
+                return MoltObject::none().bits();
+            }
+            let first_bits = molt_itertools_tee_new(class, iterator.bits());
+            let first = unsafe { OwnedRuntimeValue::from_owned_bits(py, first_bits) };
+            if exception_pending(py) {
+                return MoltObject::none().bits();
+            }
+            readers.push(first);
+            for _ in 1..n {
+                let copied_bits = molt_itertools_tee_copy(readers[0].bits());
+                let copied = unsafe { OwnedRuntimeValue::from_owned_bits(py, copied_bits) };
+                if exception_pending(py) {
+                    return MoltObject::none().bits();
+                }
+                readers.push(copied);
+            }
         }
-        let iter_bits = molt_iter(_py, iterable_bits);
-        if obj_from_bits(iter_bits).is_none() {
-            return raise_not_iterable(_py, iterable_bits);
+        let tuple = alloc_tuple(py, OwnedRuntimeValue::as_bits_slice(&readers));
+        if tuple.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(tuple).bits()
         }
-        inc_ref_bits(_py, iter_bits);
-        let data = Box::new(TeeData {
-            owners: Vec::with_capacity(n as usize),
-            iter_bits,
-            values: Vec::new(),
-            done: false,
-            running: false,
-        });
-        let data_ptr = Box::into_raw(data);
-        let class_bits = tee_iter_class(_py);
-        let Some(_class_ptr) = obj_from_bits(class_bits).as_ptr() else {
-            unsafe {
-                dec_ref_bits(_py, (*data_ptr).iter_bits);
-                drop(Box::from_raw(data_ptr));
-            };
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_itertools_tee_new(_cls_bits: u64, iterable_bits: u64) -> u64 {
+    with_core_gil!(py, {
+        let iterator_bits = molt_iter(py, iterable_bits);
+        if obj_from_bits(iterator_bits).is_none() {
+            return raise_not_iterable(py, iterable_bits);
+        }
+        let iterator = unsafe { OwnedRuntimeValue::from_owned_bits(py, iterator_bits) };
+        if exception_pending(py) {
+            return MoltObject::none().bits();
+        }
+        let class = tee_iter_class(py);
+        if exception_pending(py) {
+            return MoltObject::none().bits();
+        }
+        let iterator_ptr = obj_from_bits(iterator.bits())
+            .as_ptr()
+            .expect("iterator object");
+        if unsafe { bridge::object_class_bits(iterator_ptr) } == class {
+            // Flatten tee-of-tee by copying its current block and offset.
+            return molt_itertools_tee_copy(iterator.bits());
+        }
+        let Some(block) = tee_new_block(py, iterator.bits()) else {
             return MoltObject::none().bits();
         };
-        let mut iters: Vec<u64> = Vec::with_capacity(n as usize);
-        for _ in 0..n {
-            let inst_bits = alloc_instance_for_class(_py, class_bits);
-            if obj_from_bits(inst_bits).is_none() {
-                if iters.is_empty() {
-                    unsafe {
-                        dec_ref_bits(_py, (*data_ptr).iter_bits);
-                        drop(Box::from_raw(data_ptr));
-                    }
-                } else {
-                    for bits in iters.iter() {
-                        dec_ref_bits(_py, *bits);
-                    }
-                }
-                return MoltObject::none().bits();
-            }
-            let inst_ptr = obj_from_bits(inst_bits).as_ptr().unwrap();
-            unsafe {
-                tee_set_data_ptr(inst_ptr, data_ptr);
-                tee_set_index(inst_ptr, 0);
-                (*data_ptr).owners.push(inst_ptr);
-            }
-            iters.push(inst_bits);
-        }
-        let tuple_ptr = alloc_tuple(_py, iters.as_slice());
-        if tuple_ptr.is_null() {
-            for bits in iters.iter() {
-                dec_ref_bits(_py, *bits);
-            }
+        tee_new_cursor(py, class, block.bits(), 0)
+            .map(OwnedRuntimeValue::into_bits)
+            .unwrap_or_else(|| MoltObject::none().bits())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_itertools_tee_copy(self_bits: u64) -> u64 {
+    with_core_gil!(py, {
+        let ptr = obj_from_bits(self_bits).as_ptr().expect("tee reader");
+        let cursor = unsafe { ptr.cast::<TeeCursor>().read() };
+        let class = tee_iter_class(py);
+        if exception_pending(py) {
             return MoltObject::none().bits();
         }
-        for bits in iters.iter() {
-            dec_ref_bits(_py, *bits);
-        }
-        MoltObject::from_ptr(tuple_ptr).bits()
+        tee_new_cursor(py, class, cursor.block_bits, cursor.index)
+            .map(OwnedRuntimeValue::into_bits)
+            .unwrap_or_else(|| MoltObject::none().bits())
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_tee_next(self_bits: u64) -> u64 {
-    with_core_gil!(_py, {
-        let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
-        let data_ptr = unsafe { tee_data_ptr(self_ptr) };
-        if data_ptr.is_null() {
-            return raise_exception::<u64>(_py, "StopIteration", "");
-        }
-        let idx = unsafe { tee_index(self_ptr) } as usize;
-        if idx < unsafe { (*data_ptr).values.len() } {
-            let value = unsafe { (&(*data_ptr).values)[idx] };
-            unsafe { tee_set_index(self_ptr, (idx + 1) as i64) };
-            inc_ref_bits(_py, value);
-            return value;
-        }
-        if unsafe { (*data_ptr).done } {
-            return raise_exception::<u64>(_py, "StopIteration", "");
-        }
-        if unsafe { (*data_ptr).running } {
-            return raise_exception::<u64>(_py, "RuntimeError", "cannot re-enter the tee iterator");
-        }
-        let iterator = OwnedRuntimeValue::retain(_py, unsafe { (*data_ptr).iter_bits });
-        unsafe { (*data_ptr).running = true };
-        let step = iter_next_owned(_py, &iterator);
-        unsafe { (*data_ptr).running = false };
-        let value = match step {
-            Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
-            Ok(None) => {
-                unsafe { (*data_ptr).done = true };
-                return raise_exception::<u64>(_py, "StopIteration", "");
+    with_core_gil!(py, {
+        let self_ptr = obj_from_bits(self_bits)
+            .as_ptr()
+            .expect("tee reader")
+            .cast::<TeeCursor>();
+        // Reload after retiring a block: value finalizers can advance this
+        // cursor. CPython publishes the new block before retirement and resets
+        // the offset afterward. Preserve that observable callback ordering.
+        // No Rust reference into either payload crosses a Python callback.
+        loop {
+            let cursor = unsafe { self_ptr.read() };
+            let Some(block_ptr) = obj_from_bits(cursor.block_bits).as_ptr() else {
+                return raise_exception::<u64>(py, "StopIteration", "");
+            };
+            let block_ptr = block_ptr.cast::<TeeBlock>();
+            if cursor.index as usize == TEE_BLOCK_CAPACITY {
+                let mut next = unsafe { (*block_ptr).next_bits };
+                if next == 0 {
+                    let Some(block) = tee_new_block(py, unsafe { (*block_ptr).iterator_bits })
+                    else {
+                        return MoltObject::none().bits();
+                    };
+                    next = block.into_bits();
+                    unsafe { (*block_ptr).next_bits = next };
+                }
+                let next = OwnedRuntimeValue::retain(py, next);
+                unsafe { (*self_ptr).block_bits = next.into_bits() };
+                drop(unsafe { OwnedRuntimeValue::from_owned_bits(py, cursor.block_bits) });
+                unsafe { (*self_ptr).index = 0 };
+                continue;
             }
-            Ok(Some(value)) => value,
-        };
-        let result = value.bits();
-        unsafe {
-            (*data_ptr).values.push(value.into_bits());
-            tee_set_index(self_ptr, (idx + 1) as i64);
+            let index = cursor.index as usize;
+            if index < unsafe { (*block_ptr).len as usize } {
+                let value = unsafe { (*block_ptr).values[index] };
+                unsafe { (*self_ptr).index += 1 };
+                return OwnedRuntimeValue::retain(py, value).into_bits();
+            }
+            if unsafe { (*block_ptr).running } != 0 {
+                return raise_exception::<u64>(
+                    py,
+                    "RuntimeError",
+                    "cannot re-enter the tee iterator",
+                );
+            }
+            // The stack owners remain visible to GC while user __next__ runs.
+            // A callback can delete peers or collect cycles without retiring
+            // the block or the iterator currently in use.
+            let _block = OwnedRuntimeValue::retain(py, cursor.block_bits);
+            let iterator = OwnedRuntimeValue::retain(py, unsafe { (*block_ptr).iterator_bits });
+            unsafe { (*block_ptr).running = 1 };
+            let step = iter_next_owned(py, &iterator);
+            unsafe { (*block_ptr).running = 0 };
+            let value = match step {
+                Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
+                Ok(None) => return raise_exception::<u64>(py, "StopIteration", ""),
+                Ok(Some(value)) => value,
+            };
+            let result = OwnedRuntimeValue::retain(py, value.bits());
+            unsafe {
+                (*block_ptr).values[index] = value.into_bits();
+                (*block_ptr).len += 1;
+                (*self_ptr).index += 1;
+            }
+            return result.into_bits();
         }
-        inc_ref_bits(_py, result);
-        result
     })
 }
 
@@ -3164,14 +3253,14 @@ pub unsafe fn itertools_visit_owned_edges(shape_id: u16, ptr: *mut u8, mut visit
                 visit(takewhile_predicate_bits(ptr));
                 visit(takewhile_iter_bits(ptr));
             }
-            ObjectShapeId::ItertoolsTee => {
-                let data = tee_data_ptr(ptr);
-                if !data.is_null() && (*data).owners.first().copied() == Some(ptr) {
-                    visit((*data).iter_bits);
-                    for &bits in &(*data).values {
-                        visit(bits);
-                    }
+            ObjectShapeId::ItertoolsTee => visit((*ptr.cast::<TeeCursor>()).block_bits),
+            ObjectShapeId::ItertoolsTeeBlock => {
+                let block = &*ptr.cast::<TeeBlock>();
+                visit(block.iterator_bits);
+                for &bits in &block.values[..block.len as usize] {
+                    visit(bits);
                 }
+                visit(block.next_bits);
             }
             ObjectShapeId::ItertoolsZipLongest => {
                 let data = zip_longest_data_ptr(ptr);
@@ -3339,14 +3428,22 @@ pub unsafe fn itertools_detach_owned_edges(
                 detached.into_iter().for_each(&mut detach);
             }
             ObjectShapeId::ItertoolsTee => {
-                let data = tee_data_ptr(ptr);
-                if !data.is_null() && (*data).owners.first().copied() == Some(ptr) {
-                    let iter = std::mem::replace(&mut (*data).iter_bits, none);
-                    let values = std::mem::take(&mut (*data).values);
-                    (*data).done = true;
-                    detach(iter);
-                    values.into_iter().for_each(&mut detach);
+                let cursor = &mut *ptr.cast::<TeeCursor>();
+                let block = std::mem::replace(&mut cursor.block_bits, 0);
+                cursor.index = 0;
+                detach(block);
+            }
+            ObjectShapeId::ItertoolsTeeBlock => {
+                let block = &mut *ptr.cast::<TeeBlock>();
+                let iterator = std::mem::replace(&mut block.iterator_bits, 0);
+                let next = std::mem::replace(&mut block.next_bits, 0);
+                let len = std::mem::replace(&mut block.len, 0) as usize;
+                block.running = 0;
+                detach(iterator);
+                for bits in &mut block.values[..len] {
+                    detach(std::mem::replace(bits, 0));
                 }
+                detach(next);
             }
             ObjectShapeId::ItertoolsZipLongest => {
                 let data = zip_longest_data_ptr(ptr);
@@ -3389,29 +3486,6 @@ pub unsafe fn itertools_detach_typed_resources(
     let shape = ObjectShapeId::from_u16(shape_id).expect("invalid itertools shape id");
     unsafe {
         match shape {
-            ObjectShapeId::ItertoolsTee => {
-                let data_ptr = tee_data_ptr(ptr);
-                tee_set_data_ptr(ptr, std::ptr::null_mut());
-                let detached = if data_ptr.is_null() {
-                    std::ptr::null_mut()
-                } else {
-                    let data = &mut *data_ptr;
-                    if let Some(index) = data.owners.iter().position(|&owner| owner == ptr) {
-                        data.owners.swap_remove(index);
-                    }
-                    if data.owners.is_empty() {
-                        debug_assert!(obj_from_bits(data.iter_bits).is_none());
-                        debug_assert!(data.values.is_empty());
-                        data_ptr.cast::<()>()
-                    } else {
-                        std::ptr::null_mut()
-                    }
-                };
-                DetachedItertoolsResource {
-                    pointer: detached,
-                    drop_fn: drop_detached_box::<TeeData>,
-                }
-            }
             ObjectShapeId::ItertoolsCombinations => DetachedItertoolsResource {
                 pointer: {
                     let data = combinations_data_ptr(ptr);

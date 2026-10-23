@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.cargo_execution_policy import cargo_profile_directory
+
 import os
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -20,7 +22,6 @@ from molt.cli.native_link_custody import (
 )
 from molt.native_target import resolve_native_target_spec
 from molt.cli.runtime_artifact_selection import RUNTIME_STATICLIB_ARTIFACTS
-from molt.cli.runtime_paths import _cargo_profile_dir
 from molt.cli.runtime_identity_schema import (
     RuntimeBuildIdentity,
     require_native_runtime_staticlib_identity,
@@ -624,7 +625,7 @@ def manifest_from_cargo_json(
         "cargo_environment": cargo_environment.to_dict(),
         "cargo": {
             "profile": cargo_profile,
-            "profile_dir": _cargo_profile_dir(cargo_profile),
+            "profile_dir": cargo_profile_directory(cargo_profile),
             "target_triple": target_triple,
         },
         "link_plan": link_plan,
@@ -728,7 +729,7 @@ def validate_native_link_dependency_manifest(
         expected=runtime_build_identity,
         context=context,
     )
-    expected_dir_for_profile = _cargo_profile_dir(cargo_profile_value)
+    expected_dir_for_profile = cargo_profile_directory(cargo_profile_value)
     if expected_dir_for_profile != cargo["profile_dir"]:
         raise NativeLinkDependencyManifestError(
             f"native link manifest Cargo profile identity is inconsistent: {context}"

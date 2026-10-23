@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compiler_analysis.native_support_slice import ModuleBodySelection
+
 from molt.process_environment import ProcessEnvironmentBuilder
 
 import os
@@ -741,7 +743,9 @@ def test_native_support_pruning_preserves_only_unchanged_body_origins() -> None:
             decorator + "def unpack_from(format, buffer, offset=0): return buffer\n"
         )
         evidence = body_origin_evidence("struct", tree, (3, 12))
-        selected, _, missing = prune_native_support_module(tree, {"unpack_from"})
+        selected, _, missing = prune_native_support_module(
+            tree, ModuleBodySelection("native_support", ("unpack_from",))
+        )
         assert not missing
         assert selected.body[0] is not tree.body[0]
         rebound = rebind_pruned_body_origins(selected, evidence)

@@ -10,7 +10,7 @@ use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive};
 use std::borrow::Cow;
 
-use super::ops::{range_components_bigint, unicode_printable_table};
+use super::ops::range_components_bigint;
 
 /// A Python renderer either returns the callback's owned string unchanged or
 /// builds lossless WTF-8 bytes. Rust String is only a host diagnostic adapter.
@@ -1374,7 +1374,11 @@ pub(crate) fn format_obj_output(_py: &PyToken<'_>, obj: MoltObject) -> FormatOut
             if type_id == TYPE_ID_STRING {
                 let len = string_len(ptr);
                 let bytes = std::slice::from_raw_parts(string_bytes(ptr), len);
-                return format_string_repr_bytes(bytes).into();
+                return format_string_repr_bytes(
+                    crate::object::ops::unicode_data_for_bytes(_py, bytes),
+                    bytes,
+                )
+                .into();
             }
             if let Some(payload) = index_integral_payload_bits(obj.bits()) {
                 let value = obj_from_bits(payload);
@@ -1773,6 +1777,7 @@ mod tests {
         format_string_repr_bytes, zero_pad_grouped,
     };
     use crate::builtins::attr::attr_name_bits_from_bytes;
+    use crate::object::ops::unicode_data;
     use crate::{
         alloc_dict_with_pairs, alloc_module_obj, alloc_string, alloc_tuple, dict_set_in_place,
         module_dict_bits, obj_from_bits,
@@ -2212,7 +2217,8 @@ mod tests {
                 (0.0, "#g", "0.00000"),
             ];
             for (value, spec, expected) in cases {
-                let spec = super::parse_format_spec(spec.as_bytes(), false).unwrap();
+                let spec =
+                    super::parse_format_spec(unicode_data(py), spec.as_bytes(), false).unwrap();
                 let value = MoltObject::from_float(value);
                 let text = super::format_float_with_spec(py, value, &spec)
                     .unwrap_or_else(|_| panic!("nonfinite formatting failed"));
@@ -2227,7 +2233,8 @@ mod tests {
                 (10.0, 100.0, ".3", "(10+100j)"),
                 (1.0, 2.0, "x>08", "xx(1+2j)"),
             ] {
-                let spec = super::parse_format_spec(spec.as_bytes(), false).unwrap();
+                let spec =
+                    super::parse_format_spec(unicode_data(py), spec.as_bytes(), false).unwrap();
                 let bits = crate::molt_complex_from_obj(
                     MoltObject::from_float(re).bits(),
                     MoltObject::from_float(im).bits(),
@@ -2362,12 +2369,39 @@ mod tests {
 
     #[test]
     fn string_repr_uses_generated_unicode_printability_table() {
-        assert_eq!(format_string_repr_bytes("\u{00a0}".as_bytes()), "'\\xa0'");
-        assert_eq!(format_string_repr_bytes("\u{200b}".as_bytes()), "'\\u200b'");
-        assert_eq!(format_string_repr_bytes("\u{e000}".as_bytes()), "'\\ue000'");
-        assert_eq!(format_string_repr_bytes("\u{0378}".as_bytes()), "'\\u0378'");
         assert_eq!(
-            format_string_repr_bytes("\u{00e9}".as_bytes()),
+            format_string_repr_bytes(
+                molt_obj_model::unicode::UnicodeData::for_version((3, 12)).unwrap(),
+                "\u{00a0}".as_bytes()
+            ),
+            "'\\xa0'"
+        );
+        assert_eq!(
+            format_string_repr_bytes(
+                molt_obj_model::unicode::UnicodeData::for_version((3, 12)).unwrap(),
+                "\u{200b}".as_bytes()
+            ),
+            "'\\u200b'"
+        );
+        assert_eq!(
+            format_string_repr_bytes(
+                molt_obj_model::unicode::UnicodeData::for_version((3, 12)).unwrap(),
+                "\u{e000}".as_bytes()
+            ),
+            "'\\ue000'"
+        );
+        assert_eq!(
+            format_string_repr_bytes(
+                molt_obj_model::unicode::UnicodeData::for_version((3, 12)).unwrap(),
+                "\u{0378}".as_bytes()
+            ),
+            "'\\u0378'"
+        );
+        assert_eq!(
+            format_string_repr_bytes(
+                molt_obj_model::unicode::UnicodeData::for_version((3, 12)).unwrap(),
+                "\u{00e9}".as_bytes()
+            ),
             "'\u{00e9}'"
         );
     }
@@ -2510,12 +2544,15 @@ pub(crate) fn format_bytes(bytes: &[u8]) -> String {
     out
 }
 
-pub(crate) fn format_string_repr_bytes(bytes: &[u8]) -> String {
+pub(crate) fn format_string_repr_bytes(
+    data: &molt_obj_model::unicode::UnicodeData,
+    bytes: &[u8],
+) -> String {
     let use_double = bytes.contains(&b'\'') && !bytes.contains(&b'"');
     let quote = if use_double { '"' } else { '\'' };
     let mut out = String::new();
     out.push(quote);
-    for code in molt_runtime_core::text_storage::code_points(bytes) {
+    for code in molt_obj_model::text_storage::code_points(bytes) {
         match code {
             0x5C => out.push_str("\\\\"),
             0x0A => out.push_str("\\n"),
@@ -2530,7 +2567,7 @@ pub(crate) fn format_string_repr_bytes(bytes: &[u8]) -> String {
             }
             _ => {
                 let ch = char::from_u32(code).unwrap_or('\u{FFFD}');
-                if !is_printable_for_repr(ch) {
+                if !data.is_printable(ch as u32) {
                     out.push_str(&unicode_escape(ch));
                 } else {
                     out.push(ch);
@@ -2540,12 +2577,6 @@ pub(crate) fn format_string_repr_bytes(bytes: &[u8]) -> String {
     }
     out.push(quote);
     out
-}
-
-/// CPython-compatible printability test for repr escaping.
-/// Keep repr() and str.isprintable() on the same generated table authority.
-fn is_printable_for_repr(ch: char) -> bool {
-    unicode_printable_table::is_printable(ch as u32)
 }
 
 #[derive(Clone, Copy)]
@@ -2677,10 +2708,11 @@ impl FormatParseError {
 /// Parse Python code points directly. Width and precision accumulate without
 /// temporary strings, bounded by the target's Py_ssize_t rather than usize.
 pub(crate) fn parse_format_spec(
+    data: &molt_obj_model::unicode::UnicodeData,
     bytes: &[u8],
     fractional_grouping: bool,
 ) -> Result<FormatSpec, FormatParseError> {
-    let mut codes = molt_runtime_core::text_storage::code_points(bytes).peekable();
+    let mut codes = molt_obj_model::text_storage::code_points(bytes).peekable();
     let mut result = FormatSpec::default();
     let alignment = |code| char::from_u32(code).filter(|ch| matches!(ch, '<' | '>' | '^' | '='));
     let mut lookahead = codes.clone();
@@ -2720,11 +2752,11 @@ pub(crate) fn parse_format_spec(
         result.zero_flag = true;
         codes.next();
     }
-    result.width = parse_format_integer(&mut codes)?;
+    result.width = parse_format_integer(data, &mut codes)?;
     result.grouping = parse_format_grouping(&mut codes)?;
     if codes.peek() == Some(&u32::from('.')) {
         codes.next();
-        result.precision = parse_format_integer(&mut codes)?;
+        result.precision = parse_format_integer(data, &mut codes)?;
         if fractional_grouping {
             result.fractional_grouping = parse_format_grouping(&mut codes)?;
         }
@@ -2742,13 +2774,11 @@ pub(crate) fn parse_format_spec(
 }
 
 pub(crate) fn parse_format_integer(
+    data: &molt_obj_model::unicode::UnicodeData,
     codes: &mut std::iter::Peekable<impl Iterator<Item = u32>>,
 ) -> Result<Option<usize>, FormatParseError> {
     let mut value = None;
-    while let Some(digit) = codes
-        .peek()
-        .and_then(|code| super::ops::unicode_decimal_table::decimal(*code))
-    {
+    while let Some(digit) = codes.peek().and_then(|code| data.decimal(*code)) {
         let next = value
             .unwrap_or(0usize)
             .checked_mul(10)
@@ -2855,7 +2885,7 @@ fn grouped_digits(
 
 fn format_fill_bytes(fill: u32) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(4);
-    molt_runtime_core::text_storage::push_code_point(&mut bytes, fill);
+    molt_obj_model::text_storage::push_code_point(&mut bytes, fill);
     bytes
 }
 
@@ -2887,7 +2917,7 @@ pub(crate) fn format_character_codepoint(value: &BigInt) -> Result<Vec<u8>, Form
             Cow::Borrowed("%c arg not in range(0x110000)"),
         ))?;
     let mut out = format_buffer(4)?;
-    molt_runtime_core::text_storage::push_code_point(&mut out, code);
+    molt_obj_model::text_storage::push_code_point(&mut out, code);
     Ok(out)
 }
 

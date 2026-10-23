@@ -314,6 +314,23 @@ encoding callbacks precede reads of the later fields. The owned result and exact
 callback error survive temporary-owner cleanup. Diagnostic rendering detaches
 and restores the existing raised state through the exception transaction.
 
+Imported parser failures preserve the exact builtin exception class and `args`,
+plus public syntax attributes changed after construction. CPython's
+[3.12 location attachment](https://github.com/python/cpython/blob/v3.12.0/Python/errors.c)
+and [3.15 location attachment](https://github.com/python/cpython/blob/v3.15.0/Python/errors.c)
+can assign filename, span and text independently of the constructor tuple;
+the [constructor and attribute members](https://github.com/python/cpython/blob/v3.15.0/Objects/exceptions.c)
+are separate state. The compiler captures only differences from a fresh exact
+builtin constructor in `ModuleSyntaxErrorInfo`. The compiler-owned
+`MoltSyntaxError` AST carries those literal values through captured parser
+state and serial lowering in `frontend_worker`. Imported parser failures remain
+excluded from parallel worker candidates; the captured state is pickle-safe. Lowering uses the protected exception constructor, then the existing
+exception attribute stores and pending-error checks. It neither rewrites `args`
+to manufacture location state nor looks up a mutable builtin exception binding.
+Ordinary constructor-complete errors emit no extra attribute stores. This costs
+one host exception allocation and eight comparisons only when capturing a parser
+failure; guest work scales with the attributes that actually differ.
+
 The runtime renderer owns either an unchanged callback string or lossless WTF-8
 bytes. A root str/repr result keeps the callback's string identity; container,
 exception, percent, format-field, pprint and traceback composition preserves its

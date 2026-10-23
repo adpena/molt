@@ -550,6 +550,26 @@ uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic/exec_
 - **Concurrent rebuild suppression**: backend/runtime Cargo rebuilds acquire file locks under the resolved build-state root's `build_locks/` directory. A shared Cargo target resolves to shared control state regardless of per-run receipt or disposable output placement. Distinct session targets have distinct target-addressed control roots; an explicit `MOLT_BUILD_STATE_DIR` remains authoritative. Ordinary DX environments default `CARGO_INCREMENTAL=1`; deterministic proof/CI environments may select `0` explicitly. Configured sccache wrappers require `0` through the shared Cargo environment policy. Interrupted Cargo work quarantines only incremental payload under its target rather than deleting shared artifacts. Exact-key backend cache publication uses session-independent locks under the resolved cache root's `locks/compile.<key>.lock`, so separate target/session roots still serialize publication to a shared cache entry.
 - **Project Cargo target**: [`molt.dx.project_cargo_target_dir`](../src/molt/dx.py) is the one rule for the Cargo target a Molt command builds a project into. An explicit `CARGO_TARGET_DIR` wins (a relative value is relative to the working directory, as Cargo reads it). Otherwise `MOLT_PREFER_EXTERNAL_ARTIFACTS` or `MOLT_REQUIRE_EXTERNAL_ARTIFACTS` selects `<artifact root>/target/checkouts/<checkout-component>`, as `molt dx run` does, and without them the project keeps `<project>/target`; `MOLT_EXT_ROOT` alone does not move it. A pinned `MOLT_SESSION_ID` adds `sessions/<component>` below the selected checkout target; a generated one never does. The runtime and backend builds, build control, the backend daemon and its suite lease, the compile governor, the lock-check cache, the WASM host and the MLIR backend all read it.
 - **Checkout state lifecycle**: under a shared artifact root a checkout keeps state roots named by `molt.dx.checkout_component`: its Cargo target (`target/checkouts/<component>`), its uv environments (`uv-project-envs/*__src-<component>`), its pytest cache (`tmp/pytest-cache/<component>`) and its Hypothesis home (`tmp/hypothesis/<component>`); each target owns a build-control root (`tmp/build-control/<address>`). [`molt.checkout_state`](../src/molt/checkout_state.py) owns their layout, an owner record (`.molt-state-owner.json`) and a last-use stamp (`.molt-last-use`) in each root, and the retirement policy ([design 56, section 2.6](design/foundation/56_dx_buildspeed_tooling.md#26-checkout-state-retention-hf-313)). A pinned session's target (`<target>/sessions/<session>`) is a root of the same policy. `RunContext.canonical_env` stamps a checkout's roots (a uv environment only after uv wrote its `pyvenv.cfg`) and a pinned session's target, and a CLI build marks the checkout target, session target and build control it selects as used. The disk guard retires a root unused for `MOLT_CHECKOUT_STATE_MAX_AGE_DAYS` (default 30) whatever its owner, a session target unused for `MOLT_SESSION_TARGET_IDLE_HOURS` (default 6), a root whose recorded owner is gone once unused for two hours (build control right after its target or session), and, under disk pressure, roots unused for two hours oldest first. A checkout target's retirement takes its session targets along. Inside the roots that stay, the same pass retires the per-target layout the host's product store replaced (`.molt-native-generations`, `.molt-backend-generations`, runtime `*.generation.json` receipts, `backend_probe_validations/`) once idle for two hours and under the root's exclusive retirement lock ([design 56, section 2.8](design/foundation/56_dx_buildspeed_tooling.md#28-one-product-store-per-host-hf-390)). It runs at most once a day from `RunContext.canonical_env` and on demand with `tools/disk_guard.py --gc`. `tools/molt_dev.py integrate --cleanup-worktree` and `lane retire` retire the worktree's daemons, remove it, then reclaim its roots and its targets' build control at once; a failed removal keeps them. A held lock (Cargo's per-profile `.cargo-lock`, build control's build, diff and daemon-suite owner locks, including those of a session inside a target), `CARGO_TARGET_DIR`, the current `MOLT_SESSION_ID`'s target and the running interpreter's own environment always keep a root; guard markers elsewhere in the artifact root do not. A plain clone keeps its target in the checkout and its scratch in the host temporary folder, so it has no such roots.
+- **Completed Cargo incremental retirement**: plan with `tools/disk_guard.py
+  --root <artifact-root> --retire-cargo-incremental <path>
+  --guard-receipt <retired-guard.json>`; after independent review, repeat with
+  `--inventory-sha256 <reviewed-digest> --apply`. This explicit operation never
+  enters automatic GC. It accepts only a bound checkout session's
+  `.molt-toolchains/<digest>/[<target>/]<profile>/incremental`, a successful
+  descendant-closed Cargo guard binding both roots, and an unchanged inventory.
+  Checkout-state custody excludes managed readers. The intermediate profile's
+  existing `.cargo-build-lock` and output profile's existing `.cargo-lock` stay
+  held through canonical durable removal ([Cargo layout](https://doc.rust-lang.org/beta/nightly-rustc/src/cargo/compiler/layout.rs.html)).
+  Missing locks, indirect paths, unknown file kinds and changed custody refuse.
+  Deps, products, fingerprints, seals, source, receipts and external hardlinks
+  remain; externally linked storage contributes zero estimated reclaimed bytes.
+  Raw Rustc writers bypassing Cargo locks and concurrent raw Cargo clean are
+  unsupported. Each inventory visits at most 100,000 entries within ten seconds;
+  payload bytes are not read, locks are nonblocking, and no process is launched.
+  Apply inventories twice; failed durable removal leaves named residue for
+  recovery review. Build admission must remeasure actual free space afterward.
+
+
 - **Build-state authority**: [`molt.build_state_layout.build_state_root`](../src/molt/build_state_layout.py) is the shared projection for CLI builds, daemon custody, governors, and differential harness locks; `project_build_state_root` applies it to the project's Cargo target. Explicit `MOLT_BUILD_STATE_DIR` selects the state root (relative paths are project-relative). Otherwise, with `MOLT_EXT_ROOT`, state lives at `<MOLT_EXT_ROOT>/tmp/build-control/<target-address>/`; the address comes from the canonical Cargo-target identity, not the receipt or guest directory. Only environments without an artifact root use `<CARGO_TARGET_DIR>/.molt_state/`. Select disposable payload locations separately; never hand-compute the address. CI failure-artifact uploads resolve this same authority under the admitted harness environment.
 - **Benchmark build-cache policy**: `tools/bench.py` and `tools/bench_wasm.py`
   use cache-enabled Molt builds by default, preserving non-destructive
@@ -560,7 +580,7 @@ uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic/exec_
 - **sccache server temp dir**: the shared sccache server keeps the temporary directory of the client that starts it, and sccache has no setting of its own for it. Every Cargo child whose wrapper is sccache, and every direct CLI sccache client, therefore runs with `TMPDIR`, `TMP` and `TEMP` set to `$SCCACHE_DIR-tmp` (`$MOLT_EXT_ROOT/.sccache-tmp`), never a run's scratch directory (`src/molt/cargo_execution_policy.py`).
 - **sccache server endpoint**: sccache's default endpoint, TCP `127.0.0.1:4226`, is shared by every sccache on the host, including a VM's forwarded guest port (Molt's own VMs forward none: [Linux VMs](#linux-vms-lima)); a foreign server there runs Molt's compiles in its own environment (2026-10-16: a Lima Linux guest's server made every macOS `rustc -vV` probe fail with "Compiler not supported"). Molt pins each cache's clients to a private server: `SCCACHE_SERVER_UDS=$SCCACHE_DIR-server.sock`, or `SCCACHE_SERVER_PORT` derived from the cache path where a socket path would exceed 103 bytes or on Windows. An endpoint the caller sets is kept, and `molt dx` exports the same endpoint, so `sccache --stop-server` and `-s` in those shells reach Molt's server.
 - **Dev profile routing**: `molt ... --profile dev` maps to Cargo profile `dev-fast` by default. Override with `MOLT_DEV_CARGO_PROFILE`; use `MOLT_RELEASE_CARGO_PROFILE` for release lane overrides.
-- **Runtime artifact stability**: runtime Cargo feature sets are stable for the selected stdlib profile and target. User import graphs and required WASM exports must not mutate the runtime Cargo command or fingerprint; they affect user-code lowering, linking/export validation, and user-artifact cache keys only. Shared and relocatable WASM runtimes publish as one manifest-last generation whose location-independent identity covers the exact source closure, immutable provisioned toolchain content, resolved profile/features/flags/link plan, and publication transforms for both members. Cache hydration, linker admission, and deployment require caller-trusted identities plus both exact hashes; adjacent checksum/receipt files, path freshness, and cross-profile substitution have no authority. Exact uncached identities are compared before and after Cargo, input mutation refuses publication, and a successful Cargo run without the matching `molt_runtime` artifact fails closed. Native static archives use an ordered semantic identity over linkable member names and contents, excluding only derived archive metadata and local Molt rustc CGU discriminators; candidates without that identity are rebuilt rather than hydrated.
+- **Runtime artifact stability**: runtime Cargo feature sets are stable for the selected stdlib profile and target. User import graphs and required WASM exports must not mutate the runtime Cargo command or fingerprint; they affect user-code lowering, linking/export validation, and user-artifact cache keys only. Shared and relocatable WASM runtimes publish as one manifest-last generation whose location-independent identity covers the exact source closure, immutable provisioned toolchain content, resolved profile/features/flags/link plan, and publication transforms for both members. Ordinary shared-cache hits admit the existing family-addressed WASM generation in place, renew its store use, and pin its receipt before codegen; they do not copy or republish members when another family replaces the host selection. The existing generation-store lock serializes admission renewal and eviction: selected members remain available, and use renews the 24-hour idle window. Codegen binding renews its pinned receipt and members; same-family replacement preserves that window. Missing or changed members fail exact binding and linker admission, including after expiry; this is bounded retention, not an indefinite build lease. Cache admission, explicit relocation, linker admission, and deployment require caller-trusted identities plus both exact hashes; adjacent checksum/receipt files, path freshness, and cross-profile substitution have no authority. Exact uncached identities are compared before and after Cargo, input mutation refuses publication, and a successful Cargo run without the matching `molt_runtime` artifact fails closed. Native static archives use an ordered semantic identity over linkable member names and contents, excluding only derived archive metadata and local Molt rustc CGU discriminators; candidates without that identity are rebuilt rather than hydrated.
 - **Native runtime archive aliases**: Cargo still produces scratch
   `libmolt_runtime.a`, but Molt publishes and links profile-qualified aliases
   under the selected target/profile directory:
@@ -626,20 +646,22 @@ uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic/exec_
   through the limit; JSON and CBOR stdin paths reject oversized input before
   deserialization rather than buffering unbounded request bodies.
 - **Backend IR lease custody**: CLI backend dispatch writes request IR as a
-  MessagePack lease under `tmp/backend-ir-leases/` and passes `ir_path` or
-  `--ir-format msgpack --ir-file` to daemon and one-shot backends, including
-  factgraph. The writer reuses the sorted function-body codec and retains at
-  most one encoded top-level array element. It creates each lease exclusively,
+  content-addressed MessagePack lease under `tmp/backend-ir-leases/` and passes
+  `ir_path` or `--ir-format msgpack --ir-file` to daemon and one-shot backends,
+  including factgraph. A one-shot lease ships every function body; a daemon
+  lease ships only the bodies the daemon's probe named as missing (HF-516,
+  `docs/design/backend_compile_daemon.md`). The writer reuses the sorted
+  function-body codec and retains at most one encoded body. It creates each lease exclusively,
   preserves an existing path on collision, removes its own partial writes, and
   removes the lease after the request completes. Both receivers use the same
   typed complete-frame reader and reject nonregular file descriptors before
   reading. File inputs have no additional byte ceiling; the stdin ceiling
-  above applies only to stdin. Daemon protocol 2 has only cache-probe and
+  above applies only to stdin. Daemon protocol 4 has only digest-probe and
   MessagePack-file states; inline IR is retired. Its version is shared through
   `src/molt/backend_daemon_protocol_version.txt`. JSON exports and MLIR stdin
   retain their separate JSON contracts. These are compiler-side costs and
   dependencies; emitted programs do not carry the transport codec.
-- **Daemon warm-hit probe path**: when cache keys are present, the build pipeline now lets the daemon send a probe-only request first and only encodes full IR after a daemon-declared miss. This preserves warm daemon hits without paying full IR encode/send cost on every run.
+- **Daemon probe path**: every daemon build first sends a probe that names its function digests. A warm artifact hit answers it; a miss answers with the positions the daemon's function store lacks, and the CLI encodes only those bodies. A body evicted after the probe makes the daemon ask again, and the second lease ships every body.
 - **Daemon socket placement**: sockets default to a local temp dir (`MOLT_BACKEND_DAEMON_SOCKET_DIR`, or explicit `MOLT_BACKEND_DAEMON_SOCKET`) so shared/external volumes that do not support Unix sockets do not break daemon startup.
 - **Daemon lifecycle**: with the ordinary persistent target root, daemon logs
   and identity/fingerprint sidecars live in `backend_daemon/` under the resolved
@@ -1017,19 +1039,42 @@ fail closed; the inventory itself makes no claim about current file bytes.
 - `MOLT_CLI_PROFILE=<dir>/{pid}.prof` writes a cProfile of each `molt` command;
   `{pid}` keeps parallel builds apart. Read it with `python -m pstats`.
 - Import scans, intrinsic source facts, module analyses and binary module
-  lowerings share `source_records.<schema digest>.sqlite` (one file per schema,
-  named by a digest of its DDL, so checkouts of different code never lock each
-  other out) under
-  `<Molt cache>/toolchain_source_records` (`molt.cli.source_record_store`). Every
-  project/session uses that store; no project copy is hydrated. Source/context
-  admission precedes recency refresh; renewals are saved in one transaction per
-  4,096 and at close, into a narrow `recency` table that leaves payload rows
-  untouched. Existing generation retirement keeps at
-  most four generations used within a week; the global byte/age cache budget
-  also includes all four record kinds. Run the existing `molt_cache_prune.py`
+  lowerings share `<schema digest>/records.sqlite`, named by the DDL digest,
+  under `<Molt cache>/toolchain_source_records`
+  (`molt.cli.source_record_store`). Every project/session uses that store;
+  no project copy is hydrated. Each SQLite connection holds one shared
+  cache-control lifetime lock; warm record operations add no lock syscall.
+  Other recognized namespaces retire only under an exclusive lifetime lock
+  through atomic whole-directory retirement. Unknown future version namespaces
+  and flat legacy stores remain protected; the latter are reported in
+  `legacy_source_record_state`. SQLite/WAL/SHM files never retire independently.
+  Source/context admission precedes recency refresh. Due renewals enter a bounded
+  queue, saved in one nonwaiting transaction per 4,096 observations, at
+  the owning operation boundary or explicit close, into a narrow `recency` table that leaves payload rows untouched.
+  GC closes SQLite without writing advisory renewals and defers only the lifetime
+  lease until safe normal-context release. Exact compiler generation remains
+  part of read admission; retention belongs solely to the configured global
+  byte/age cache budget for all four kinds. There is no generation trim or
+  in-place migration. Run the existing `molt_cache_prune.py`
   command to inspect or apply it. Its totals combine file bytes and logical
   source payload bytes; separate DB/WAL/SHM measurements report physical storage.
-  A peer snapshot can defer physical reclamation. Row deletion uses bounded
+  Each metadata page releases its read snapshot before yielding to row or file
+  eviction. The existing inventory count bounds examined observations, including
+  repeated rows after recency changes or backward clock movement; an upper key
+  and forward cursor constrain selection. Concurrent totals and selection are
+  approximate. Deletion requires the exact observed revision and recency, so a
+  stale observation cannot delete a replaced or renewed row. Other peer snapshots
+  can still defer physical reclamation; the logical byte budget is not a hard
+  DB/WAL physical-size limit. Admitted source-record reuse keeps the five-minute
+  recency interval and exact generation/revision/use comparison, but skips a busy
+  process-local lock or SQLite writer. It does not reopen a closed store solely
+  for advisory recency. A flush saves, temporarily disables, then restores
+  the existing connection busy timeout under its lock: three constant metadata
+  statements replace up to 60 seconds of writer-lock waiting. Ordinary reads,
+  publication and initialization retain their policies. This bounds contention
+  admission, not I/O latency; checkpoint sync can still block. WAL uses
+  synchronous NORMAL and default automatic
+  checkpointing, so sync cost remains possible. Row deletion uses bounded
   transactions (256 rows/1 MiB, with one oversized row allowed), and later sweeps
   continue bounded vacuum work even when no new rows are removed. BUSY deferral
   is reported separately from maintenance failure. Dry-run never changes rows,

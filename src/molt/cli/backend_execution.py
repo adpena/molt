@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.cargo_execution_policy import cargo_profile_directory
+
 from molt.compilation_target import Target, TargetKind
 
 from molt.process_environment import NameRule, ProcessEnvironment
@@ -31,8 +33,11 @@ from molt.backend_environment import (
     request_environment_inputs,
 )
 from molt import backend_daemon_custody as _daemon_custody
-from molt.backend_protocol import BACKEND_DAEMON_PROTOCOL_VERSION
-from molt.cli.backend_ir_transport import write_backend_ir
+from molt.backend_protocol import (
+    BACKEND_DAEMON_PROTOCOL_VERSION,
+    BackendDaemonJobOrigin,
+)
+from molt.cli.backend_ir_transport import BackendIrProgram
 from molt.backend_executable_names import (
     DEFAULT_BACKEND_FEATURES as _DEFAULT_BACKEND_FEATURES,
     CodegenBackend,
@@ -53,7 +58,6 @@ from molt.file_publication import is_link_like, resolve_owned_path
 from molt.backend_binary_identity import identify_backend_binary
 from molt.cli.backend_cache import (
     _backend_artifact_source_key,
-    _shared_stdlib_cache_matches_key_locked,
 )
 from molt.cli.backend_daemon_logs import (
     _backend_daemon_log_tail,
@@ -85,7 +89,6 @@ from molt.cli.runtime_native_codegen import (
 from molt.cli.backend_artifact_contract import BackendArtifactContract
 from molt.cli.runtime_paths import (
     _build_state_root,
-    _cargo_profile_dir,
     _cargo_target_root,
     _molt_session_id,
 )
@@ -100,6 +103,7 @@ class _BackendDaemonCompileResult(NamedTuple):
     output_written: bool
     output_exists: bool
     full_request_sent: bool = False
+    origin: BackendDaemonJobOrigin | None = None
 
 
 _BACKEND_CODEGEN_ENV_DIGEST_SCHEMA_VERSION = 8
@@ -115,7 +119,7 @@ def _backend_bin_path_cached(
     os_name: str,
     backend_features: tuple[str, ...] = _DEFAULT_BACKEND_FEATURES,
 ) -> Path:
-    profile_dir = _cargo_profile_dir(cargo_profile)
+    profile_dir = cargo_profile_directory(cargo_profile)
     # Cargo's unqualified output is mutable publication input, including for
     # native. Every selected variant has its own admitted executable so a
     # different target's Cargo build cannot replace it.
@@ -940,17 +944,24 @@ def _backend_daemon_request_payload_bytes(
     return encoded + b"\n", None
 
 
-def _write_backend_ir_lease(project_root: Path, ir: Mapping[str, Any]) -> Path:
-    """Publish one uniquely named IR lease; a failed write leaves no file."""
+def _write_backend_ir_lease(
+    project_root: Path,
+    program: BackendIrProgram,
+    shipped: Collection[int] | None = None,
+) -> Path:
+    """Publish one uniquely named IR lease; a failed write leaves no file.
+
+    The lease ships the bodies at ``shipped``; ``None`` ships every body.
+    """
     lease_dir = scratch_dir(project_root, "backend-ir-leases")
     lease_dir.mkdir(parents=True, exist_ok=True)
     lease_path = lease_dir / f"ir-{os.getpid()}-{uuid.uuid4().hex}.msgpack"
     handle = lease_path.open("xb")
     try:
         with handle:
-            write_backend_ir(handle, ir)
+            program.write(handle, shipped)
     except BaseException:
-        # The IR streams element by element, so an encoder error can stop it
+        # The IR streams body by body, so an encoder error can stop it
         # midway. Nothing returned the path yet, so nothing else owns it.
         lease_path.unlink(missing_ok=True)
         raise
@@ -975,6 +986,7 @@ def _backend_daemon_artifact_contract_error(
 def _backend_daemon_compile_request_bytes(
     *,
     ir_path: Path | None,
+    probe_function_digests: str | None = None,
     backend_output: Path,
     artifact_contract: BackendArtifactContract,
     wasm_link: bool,
@@ -1063,8 +1075,12 @@ def _backend_daemon_compile_request_bytes(
     if artifact_contract.is_native:
         assert artifact_contract.native_kind is not None
         job["native_output_kind"] = artifact_contract.native_kind.value
+    # A probe names the program's function digests; a compile's lease does.
+    if (ir_path is None) == (probe_function_digests is None):
+        return None, "a backend daemon job is either a digest probe or a lease"
     if ir_path is None:
         job["probe_cache_only"] = True
+        job["function_digests"] = probe_function_digests
     else:
         job["ir_path"] = str(ir_path)
     jobs: list[dict[str, Any]] = [job]
@@ -1118,6 +1134,7 @@ def _backend_daemon_health_from_response(
         "pid",
         "uptime_ms",
         "cache_entries",
+        "resident_functions",
         "cache_bytes",
         "cache_max_bytes",
         "request_limit_bytes",
@@ -1601,12 +1618,46 @@ def _start_backend_daemon(
             daemon_sentinel.__exit__(None, None, None)
 
 
+def _backend_daemon_first_job(
+    response: dict[str, Any] | None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """The first job of a daemon response, or why the response has none."""
+    if response is None:
+        return None, "backend daemon returned no response"
+    if not bool(response.get("ok")):
+        return None, _backend_daemon_response_failure_message(
+            response, default="backend daemon compile request failed"
+        )
+    jobs = response.get("jobs")
+    if not isinstance(jobs, list) or not jobs:
+        return None, "backend daemon response missing job results"
+    first = jobs[0]
+    if not isinstance(first, dict):
+        return None, "backend daemon response had malformed job payload"
+    return first, None
+
+
+def _backend_daemon_missing_functions(
+    job: Mapping[str, Any], function_count: int
+) -> tuple[list[int] | None, str | None]:
+    """The program positions a ``needs_ir`` job asks for; None when it needs none."""
+    if not bool(job.get("needs_ir")):
+        return None, None
+    missing = job.get("missing_functions")
+    if not isinstance(missing, list) or not all(
+        type(position) is int and 0 <= position < function_count for position in missing
+    ):
+        return None, "backend daemon needs_ir reply lacks valid missing_functions"
+    return missing, None
+
+
 def _compile_with_backend_daemon(
     socket_path: Path,
     *,
     project_root: Path,
-    ir: Mapping[str, Any],
+    program: BackendIrProgram,
     backend_output: Path,
+    synced_output: Path | None = None,
     artifact_contract: BackendArtifactContract,
     wasm_link: bool,
     wasm_data_base: int | None,
@@ -1623,12 +1674,18 @@ def _compile_with_backend_daemon(
     stdlib_object_cache_key: str | None = None,
     stdlib_object_manifest: str | None = None,
     stdlib_module_symbols_json: str | None = None,
-    stdlib_module_symbols: Collection[str] | None = None,
     timeout: float | None,
     daemon_identity: _BackendDaemonIdentity | None = None,
     native_runtime_codegen_binding: NativeRuntimeCodegenBinding | None = None,
     request_environment: Mapping[str, str],
 ) -> _BackendDaemonCompileResult:
+    """Compile ``program`` on the daemon, shipping only the bodies it lacks.
+
+    A probe names every function digest; the daemon answers from its artifact
+    cache or with the positions its function store lacks. The lease then
+    ships those bodies. A body evicted after the probe makes the daemon ask
+    again, and the second lease ships every body, which cannot miss (HF-516).
+    """
     contract_error = _backend_daemon_artifact_contract_error(
         artifact_contract,
         shared_stdlib=bool(
@@ -1642,23 +1699,14 @@ def _compile_with_backend_daemon(
         return _BackendDaemonCompileResult(
             False, contract_error, None, None, None, True, False
         )
-    full_request_bytes: bytes | None = None
-    probe_request_bytes: bytes | None = None
-    ir_lease_path: Path | None = None
-    cache_probe_allowed = True
 
-    def encode_full_request_bytes() -> tuple[bytes | None, str | None]:
-        nonlocal full_request_bytes, ir_lease_path
-        if full_request_bytes is not None:
-            return full_request_bytes, None
-        if ir_lease_path is None:
-            try:
-                ir_lease_path = _write_backend_ir_lease(project_root, ir)
-            except (OSError, TypeError, ValueError, OverflowError) as exc:
-                return None, f"backend daemon IR lease write failed: {exc}"
-        full_request_bytes, encode_err = _backend_daemon_compile_request_bytes(
+    ir_lease_identity: tuple[str, int] | None = None
+
+    def request_bytes(*, ir_path: Path | None) -> tuple[bytes | None, str | None]:
+        return _backend_daemon_compile_request_bytes(
             artifact_contract=artifact_contract,
-            ir_path=ir_lease_path,
+            ir_path=ir_path,
+            probe_function_digests=None if ir_path else program.digest_hex(),
             backend_output=backend_output,
             wasm_link=wasm_link,
             wasm_data_base=wasm_data_base,
@@ -1679,247 +1727,92 @@ def _compile_with_backend_daemon(
             native_runtime_codegen_binding=native_runtime_codegen_binding,
             request_environment=request_environment,
         )
-        return full_request_bytes, encode_err
 
-    def cleanup_ir_lease() -> None:
-        nonlocal ir_lease_path
-        if ir_lease_path is None:
-            return
-        with contextlib.suppress(OSError):
-            ir_lease_path.unlink()
-        ir_lease_path = None
-
-    if artifact_contract.is_native and stdlib_object_path is not None:
-        cache_probe_allowed = _shared_stdlib_cache_matches_key_locked(
-            stdlib_object_path,
-            stdlib_object_cache_key,
-            stdlib_object_manifest=stdlib_object_manifest,
-            stdlib_module_symbols=stdlib_module_symbols,
-            target_triple=artifact_contract.target_triple,
-        )
-    if (cache_key or function_cache_key) and cache_probe_allowed:
-        probe_request_bytes, probe_encode_err = _backend_daemon_compile_request_bytes(
-            ir_path=None,
-            artifact_contract=artifact_contract,
-            backend_output=backend_output,
-            wasm_link=wasm_link,
-            wasm_data_base=wasm_data_base,
-            wasm_table_base=wasm_table_base,
-            wasm_split_runtime_app_table_base=wasm_split_runtime_app_table_base,
-            wasm_runtime_poll_slots=wasm_runtime_poll_slots,
-            cache_key=cache_key,
-            function_cache_key=function_cache_key,
-            config_digest=config_digest,
-            skip_module_output_if_synced=skip_module_output_if_synced,
-            skip_function_output_if_synced=skip_function_output_if_synced,
-            entry_module=entry_module,
-            stdlib_object_path=stdlib_object_path,
-            stdlib_object_cache_key=stdlib_object_cache_key,
-            stdlib_object_manifest=stdlib_object_manifest,
-            stdlib_module_symbols_json=stdlib_module_symbols_json,
-            include_health=False,
-            native_runtime_codegen_binding=native_runtime_codegen_binding,
-            request_environment=request_environment,
-        )
-        if probe_encode_err is not None:
-            return _BackendDaemonCompileResult(
-                False, probe_encode_err, None, None, None, True, False
-            )
-    elif full_request_bytes is None:
-        full_request_bytes, encode_err = encode_full_request_bytes()
-        if encode_err is not None:
-            cleanup_ir_lease()
-            return _BackendDaemonCompileResult(
-                False, encode_err, None, None, None, True, False
-            )
-        assert full_request_bytes is not None
-    if probe_request_bytes is not None:
-        full_request_sent = False
-        response, err = _backend_daemon_request_bytes(
+    def send(data: bytes) -> tuple[dict[str, Any] | None, str | None]:
+        return _backend_daemon_request_bytes(
             socket_path,
-            probe_request_bytes,
+            data,
             timeout=timeout,
             daemon_identity=daemon_identity,
             project_root=project_root,
         )
-    else:
-        assert full_request_bytes is not None
-        full_request_sent = True
-        response, err = _backend_daemon_request_bytes(
-            socket_path,
-            full_request_bytes,
-            timeout=timeout,
-            daemon_identity=daemon_identity,
-            project_root=project_root,
-        )
-        cleanup_ir_lease()
-    if err is not None:
+
+    probe, error = request_bytes(ir_path=None)
+    if error is not None:
+        return _BackendDaemonCompileResult(False, error, None, None, None, True, False)
+    assert probe is not None
+    response, error = send(probe)
+    if error is not None:
+        return _BackendDaemonCompileResult(False, error, None, None, None, True, False)
+    health = _backend_daemon_health_from_response(response) if response else None
+    first, error = _backend_daemon_first_job(response)
+    if error is not None:
         return _BackendDaemonCompileResult(
-            False, err, None, None, None, True, False, full_request_sent
+            False, error, health, None, None, True, False
         )
-    if response is None:
-        return _BackendDaemonCompileResult(
-            False,
-            "backend daemon returned no response",
-            None,
-            None,
-            None,
-            True,
-            False,
-            full_request_sent,
-        )
-    health = _backend_daemon_health_from_response(response)
-    if not bool(response.get("ok")):
-        return _BackendDaemonCompileResult(
-            False,
-            _backend_daemon_response_failure_message(
-                response,
-                default="backend daemon compile request failed",
-            ),
-            health,
-            None,
-            None,
-            True,
-            False,
-            full_request_sent,
-        )
-    response_jobs = response.get("jobs")
-    if not isinstance(response_jobs, list) or not response_jobs:
-        return _BackendDaemonCompileResult(
-            False,
-            "backend daemon response missing job results",
-            health,
-            None,
-            None,
-            True,
-            False,
-            full_request_sent,
-        )
-    first = response_jobs[0]
-    if not isinstance(first, dict):
-        return _BackendDaemonCompileResult(
-            False,
-            "backend daemon response had malformed job payload",
-            health,
-            None,
-            None,
-            True,
-            False,
-            full_request_sent,
-        )
-    cached: bool | None = (
-        first.get("cached") if isinstance(first.get("cached"), bool) else None
+    assert first is not None
+    shipped, error = _backend_daemon_missing_functions(first, len(program))
+    full_request_sent = False
+    # A probe miss ships the positions the daemon named, then, if a body was
+    # evicted meanwhile, every body: a complete lease cannot miss.
+    leases: tuple[list[int] | None, ...] = (
+        (shipped, None) if error is None and shipped is not None else ()
     )
+    for lease_shipped in leases:
+        try:
+            lease_path = _write_backend_ir_lease(project_root, program, lease_shipped)
+        except (OSError, TypeError, ValueError, OverflowError) as exc:
+            error = f"backend daemon IR lease write failed: {exc}"
+            break
+        try:
+            from molt.toolchain_identity import stable_regular_file_identity
+
+            identity = stable_regular_file_identity(
+                lease_path, label="backend daemon addressed input lease"
+            )
+            ir_lease_identity = (identity.sha256, identity.size)
+            compile_request, error = request_bytes(ir_path=lease_path)
+            if error is not None:
+                break
+            assert compile_request is not None
+            full_request_sent = True
+            response, error = send(compile_request)
+        except (OSError, ValueError) as exc:
+            error = f"backend daemon IR lease identity failed: {exc}"
+        finally:
+            with contextlib.suppress(OSError):
+                lease_path.unlink()
+        if error is not None:
+            break
+        health = _backend_daemon_health_from_response(response) if response else None
+        first, error = _backend_daemon_first_job(response)
+        if error is not None:
+            break
+        assert first is not None
+        missing, error = _backend_daemon_missing_functions(first, len(program))
+        if error is not None or missing is None:
+            break
+        if lease_shipped is None:
+            error = "backend daemon lacks function bodies after a complete IR lease"
+            break
+    if error is not None:
+        return _BackendDaemonCompileResult(
+            False, error, health, None, None, True, False, full_request_sent
+        )
+    assert first is not None
+    raw_cached = first.get("cached")
+    cached = raw_cached if isinstance(raw_cached, bool) else None
     raw_tier = first.get("cache_tier")
     cache_tier = (
         raw_tier.strip() if isinstance(raw_tier, str) and raw_tier.strip() else None
     )
-    output_written = (
-        first.get("output_written")
-        if isinstance(first.get("output_written"), bool)
-        else True
-    )
-    needs_ir = bool(first.get("needs_ir"))
-    output_exists = not output_written
-    if needs_ir and probe_request_bytes is not None:
-        if full_request_bytes is None:
-            full_request_bytes, encode_err = encode_full_request_bytes()
-            if encode_err is not None:
-                cleanup_ir_lease()
-                return _BackendDaemonCompileResult(
-                    False, encode_err, health, None, None, True, False
-                )
-            assert full_request_bytes is not None
-        response, err = _backend_daemon_request_bytes(
-            socket_path,
-            full_request_bytes,
-            timeout=timeout,
-            daemon_identity=daemon_identity,
-            project_root=project_root,
-        )
-        full_request_sent = True
-        cleanup_ir_lease()
-        if err is not None:
-            return _BackendDaemonCompileResult(
-                False, err, health, None, None, True, False, full_request_sent
-            )
-        if response is None:
-            return _BackendDaemonCompileResult(
-                False,
-                "backend daemon returned no response",
-                health,
-                None,
-                None,
-                True,
-                False,
-                full_request_sent,
-            )
-        health = _backend_daemon_health_from_response(response)
-        if not bool(response.get("ok")):
-            return _BackendDaemonCompileResult(
-                False,
-                _backend_daemon_response_failure_message(
-                    response,
-                    default="backend daemon compile request failed",
-                ),
-                health,
-                None,
-                None,
-                True,
-                False,
-                full_request_sent,
-            )
-        response_jobs = response.get("jobs")
-        if not isinstance(response_jobs, list) or not response_jobs:
-            return _BackendDaemonCompileResult(
-                False,
-                "backend daemon response missing job results",
-                health,
-                None,
-                None,
-                True,
-                False,
-                full_request_sent,
-            )
-        first = response_jobs[0]
-        if not isinstance(first, dict):
-            return _BackendDaemonCompileResult(
-                False,
-                "backend daemon response had malformed job payload",
-                health,
-                None,
-                None,
-                True,
-                False,
-                full_request_sent,
-            )
-        cached = first.get("cached") if isinstance(first.get("cached"), bool) else None
-        raw_tier = first.get("cache_tier")
-        cache_tier = (
-            raw_tier.strip() if isinstance(raw_tier, str) and raw_tier.strip() else None
-        )
-        output_written = (
-            first.get("output_written")
-            if isinstance(first.get("output_written"), bool)
-            else True
-        )
-        output_exists = not output_written
+    raw_written = first.get("output_written")
+    output_written = raw_written if isinstance(raw_written, bool) else True
     if not bool(first.get("ok")):
-        message = _backend_daemon_job_failure_message(first)
-        if message is not None:
-            return _BackendDaemonCompileResult(
-                False,
-                message,
-                health,
-                cached,
-                cache_tier,
-                output_written,
-                False,
-                full_request_sent,
-            )
         return _BackendDaemonCompileResult(
             False,
-            "backend daemon failed to compile job",
+            _backend_daemon_job_failure_message(first)
+            or "backend daemon failed to compile job",
             health,
             cached,
             cache_tier,
@@ -1938,7 +1831,41 @@ def _compile_with_backend_daemon(
             False,
             full_request_sent,
         )
-    output_exists = True
+    try:
+        origin = BackendDaemonJobOrigin.from_payload(first.get("origin"))
+        if output_written:
+            origin.verify_output(backend_output)
+        else:
+            synced = cached is True and (
+                cache_tier == "module"
+                and skip_module_output_if_synced
+                or cache_tier == "function"
+                and skip_function_output_if_synced
+            )
+            if not synced or synced_output is None:
+                raise ValueError(
+                    "backend daemon skipped output without an explicit synced artifact"
+                )
+            origin.verify_output(synced_output)
+        if cached is not True and (
+            ir_lease_identity is None
+            or (origin.input.lease_sha256, origin.input.lease_size) != ir_lease_identity
+            or origin.input.function_digests != program.digest_hex()
+        ):
+            raise ValueError(
+                "backend daemon origin names different addressed input assembly"
+            )
+    except (OSError, ValueError) as exc:
+        return _BackendDaemonCompileResult(
+            False,
+            str(exc),
+            health,
+            cached,
+            cache_tier,
+            output_written,
+            False,
+            full_request_sent,
+        )
     return _BackendDaemonCompileResult(
         True,
         None,
@@ -1946,6 +1873,7 @@ def _compile_with_backend_daemon(
         cached,
         cache_tier,
         output_written,
-        output_exists,
+        True,
         full_request_sent,
+        origin,
     )

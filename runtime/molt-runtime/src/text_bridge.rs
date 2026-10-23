@@ -6,7 +6,6 @@
 
 use crate::object::ops::string_obj_to_owned as _string_obj_to_owned;
 use crate::object::ops::type_name as _type_name;
-use crate::object::ops_sys::runtime_target_version;
 use crate::*;
 
 #[unsafe(no_mangle)]
@@ -19,7 +18,7 @@ pub extern "C" fn __molt_text_east_asian_width(bits: u64) -> u64 {
             return raise_exception::<u64>(_py, "TypeError", "argument must be str");
         };
         let bytes = unsafe { std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr)) };
-        let mut codes = molt_runtime_core::text_storage::code_points(bytes);
+        let mut codes = molt_obj_model::text_storage::code_points(bytes);
         let Some(code) = codes.next().filter(|_| codes.next().is_none()) else {
             return raise_exception::<u64>(
                 _py,
@@ -27,10 +26,7 @@ pub extern "C" fn __molt_text_east_asian_width(bits: u64) -> u64 {
                 "need a single Unicode character as parameter",
             );
         };
-        let width = crate::object::ops::unicode_east_asian_width_table::width(
-            code,
-            runtime_target_version(_py),
-        );
+        let width = crate::object::ops::unicode_data(_py).east_asian_width(code);
         let ptr = alloc_string(_py, width.as_bytes());
         if ptr.is_null() {
             MoltObject::none().bits()
@@ -43,10 +39,7 @@ pub extern "C" fn __molt_text_east_asian_width(bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_text_unidata_version() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let (version, _) = crate::object::ops::unicode_east_asian_width_table::for_version(
-            runtime_target_version(_py),
-        )
-        .expect("unsupported target Python Unicode version");
+        let version = crate::object::ops::unicode_data(_py).version;
         let ptr = alloc_string(_py, version.as_bytes());
         if ptr.is_null() {
             MoltObject::none().bits()

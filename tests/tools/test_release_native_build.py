@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 from dataclasses import asdict
 import copy
 import hashlib
@@ -23,7 +22,6 @@ from molt.process_environment import (
 )
 from molt.release_matrix import RUST_TARGET_BY_COORDINATE
 from tests.native_artifact_fixtures import elf_header, macho_header, pe_header
-from tests.runtime_build_identity_helper import build_python_identity_fixture
 from tests.process_guard_common import install_module_view
 from tools.release import native_build
 from tools.release.git_source_snapshot import GitSourceFile, GitSourceSnapshot
@@ -95,7 +93,6 @@ def native_build_fixture(
     """Transport fixture with real schema/header admission and no host tools."""
     triple = RUST_TARGET_BY_COORDINATE[(platform, arch)]
     plans = native_build.component_plan(platform, arch)
-    python = build_python_identity_fixture()
     tools = {
         role: {
             "entrypoint": role,
@@ -113,7 +110,6 @@ def native_build_fixture(
             "ranlib",
             "linker",
             "linker_backend",
-            "python",
             "cmake",
             "ninja",
             *(("nasm",) if (platform, arch) == ("windows", "x86_64") else ()),
@@ -121,7 +117,6 @@ def native_build_fixture(
     }
     tools["cargo"]["version"] = "cargo 1.96.1 (fixture 2026-01-01)"
     tools["rustc"]["version"] = f"rustc 1.96.1 (fixture 2026-01-01)\nhost: {triple}"
-    tools["python"] = {**python["selected_executable"], "version": ""}
     receipt = {
         "schema": native_build.SCHEMA,
         "source": native_build.source_record(snapshot),
@@ -146,7 +141,6 @@ def native_build_fixture(
             "components": plans,
         },
         "tools": tools,
-        "build_python": python,
         "llvm": llvm_input_fixture(snapshot, arch=arch),
         "artifacts": {},
     }
@@ -276,7 +270,7 @@ def test_receipt_binds_complete_source_identity(tmp_path, snapshot, field, value
         "tool",
         "path",
         "host",
-        "python",
+        "obsolete-generator",
         "legacy",
     ],
 )
@@ -298,8 +292,8 @@ def test_receipt_rejects_policy_and_identity_drift(tmp_path, snapshot, mutation)
         receipt["tools"]["rustc"]["version"] = (
             "rustc 1.96.1 (fixture)\nhost: aarch64-unknown-linux-gnu"
         )
-    elif mutation == "python":
-        receipt["tools"]["python"]["sha256"] = "d" * 64
+    elif mutation == "obsolete-generator":
+        receipt["build_python"] = {"identity_sha256": "d" * 64}
     else:
         receipt["schema"] = "molt.release-worker-build.v1"
     with pytest.raises(ValueError):
@@ -538,14 +532,13 @@ def test_receipt_rejects_self_consistent_rust_channel_not_selected_by_source(
         )
 
 
-def test_python_tool_cross_check_reaches_cross_check_after_valid_runtime(
+def test_native_build_receipt_rejects_the_retired_python_bound_schema(
     tmp_path, snapshot
 ):
     receipt = native_build_fixture(tmp_path, snapshot)
-    receipt["tools"]["python"]["sha256"] = "d" * 64
-    with pytest.raises(
-        ValueError, match="Python closure differs from selected executable"
-    ):
+    assert "python" not in receipt["tools"] and "build_python" not in receipt
+    receipt["schema"] = "molt.release-native-build.v4"
+    with pytest.raises(ValueError, match="schema"):
         native_build.validate_receipt(receipt)
 
 
@@ -570,7 +563,7 @@ def test_dependency_tools_fail_by_name_before_build(
         native_build._tool_paths(tmp_path, {}, platform=platform, arch=arch)
 
 
-@pytest.mark.parametrize("failure", [None, "source", "tool", "cargo", "python", "llvm"])
+@pytest.mark.parametrize("failure", [None, "source", "tool", "cargo", "llvm"])
 def test_producer_publishes_only_complete_verified_generation(
     tmp_path, snapshot, monkeypatch, failure
 ):
@@ -652,18 +645,6 @@ def test_producer_publishes_only_complete_verified_generation(
         return result
 
     monkeypatch.setattr(native_build, "_tool_identities", identities)
-
-    @contextmanager
-    def python_scope(_state):
-        def capture(_env):
-            result = copy.deepcopy(template["build_python"])
-            if observations and failure == "python":
-                result["identity_sha256"] = "d" * 64
-            return result
-
-        yield SimpleNamespace(capture=capture)
-
-    monkeypatch.setattr(native_build, "build_python_scope", python_scope)
 
     def cargo(argv, *, cwd, env, check):
         observations.append((argv, cwd, env))

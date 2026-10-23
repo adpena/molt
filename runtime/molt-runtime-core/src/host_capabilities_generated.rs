@@ -214,10 +214,6 @@ pub const SUPPORTED_EXECUTION_TARGETS: [&str; 5] =
     ["browser", "cloudflare", "fastly", "native", "wasi"];
 pub const SUPPORTED_TARGET_PLATFORMS: [&str; 4] = ["linux", "macos", "wasi", "windows"];
 pub const SUPPORTED_TARGET_ARCHITECTURES: [&str; 3] = ["aarch64", "wasm32", "x86_64"];
-pub const SUPPORTED_TARGET_PYTHON_VERSIONS: [&str; 3] = ["3.12", "3.13", "3.14"];
-
-pub const DEFAULT_TARGET_PYTHON_VERSION: (i64, i64, i64, &str, i64) = (3, 12, 0, "final", 0);
-
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum OperationId {
     NetSocket,

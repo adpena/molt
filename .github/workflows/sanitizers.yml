@@ -120,8 +120,8 @@ jobs:
 
       - name: Miri — obj-model lib unit tests
         # Permissive provenance: molt's NaN-boxing recovers TAG_PTR values via
-        # exposed provenance by design (the registry is a debug-only checker), so
-        # strict-provenance is intentionally NOT enabled.
+        # exposed provenance by design; explicit registry membership does not
+        # govern object decoding. Strict provenance is intentionally NOT enabled.
         env:
           RUST_NIGHTLY: ${{ steps.project.outputs.rust-toolchain }}
         run: |

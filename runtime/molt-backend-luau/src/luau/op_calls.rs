@@ -52,7 +52,9 @@ pub(super) fn builtin_runtime_adapter(symbol: &str) -> Option<&'static str> {
         "molt_repr_builtin" => "function(a, ...) return molt_repr(a[1]) end",
         "molt_id" => "function(a, ...) return molt_id(a[1]) end",
         "molt_callable_builtin" => "function(a, ...) return type(a[1]) == \"function\" end",
-        "molt_iter_checked" => "function(a, ...) return molt_iter(a[1]) end",
+        "molt_iter_builtin" => {
+            "function(a, ...) return molt_iter(table.unpack(a, 1, molt_sequence_len(a))) end"
+        }
         "molt_next_builtin" => {
             "function(a, ...) return molt_next(table.unpack(a, 1, molt_sequence_len(a))) end"
         }

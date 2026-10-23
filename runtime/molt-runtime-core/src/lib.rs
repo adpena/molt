@@ -13,8 +13,10 @@ pub mod crc32;
 pub mod float_repr;
 pub mod host_capabilities_generated;
 pub mod integer_decimal;
+pub mod itertools_tee;
 pub mod numeric_error_policy_generated;
-pub mod text_storage;
+pub mod numeric_ratio;
+pub mod unicode_target;
 
 // ---------------------------------------------------------------------------
 // Convenience helpers (mirror the signatures in molt-runtime/src/object/mod.rs)
@@ -490,6 +492,15 @@ pub mod ffi {
 
         // -- Exception machinery (builtins/exceptions.rs) --------------------
 
+        /// Raise the canonical diagnostic exception. Empty messages carry no
+        /// arguments; nonempty messages carry one string argument.
+        pub fn molt_bridge_raise_exception(
+            kind_ptr: *const u8,
+            kind_len: usize,
+            msg_ptr: *const u8,
+            msg_len: usize,
+        ) -> u64;
+
         /// Create a new exception object.
         /// `kind_bits`: NaN-boxed string for the exception class name.
         /// `args_bits`: NaN-boxed tuple of arguments.
@@ -901,22 +912,22 @@ pub fn rt_exception_pending_fast() -> bool {
     unsafe { ffi::molt_exception_pending_fast() != 0 }
 }
 
-/// Raise an already-constructed exception. Returns None bits.
+/// Borrow an already-constructed exception and publish a retained raised owner.
+/// Returns None bits; the caller still owns its input reference.
 #[inline]
 pub fn rt_raise(exc_bits: u64) -> u64 {
     unsafe { ffi::molt_raise(exc_bits) }
 }
 
-/// Create and raise an exception from kind name + message strings.
-/// Returns None bits (the caller should return early on exception).
+/// Raise a diagnostic through the runtime's canonical exception constructor.
+/// Empty diagnostics produce no arguments; nonempty diagnostics produce one
+/// string argument. Explicit Python arguments use the exception constructors.
+/// Construction and raised-owner transfer remain in the runtime authority.
+#[inline]
 pub fn rt_raise_str(kind: &str, message: &str) -> u64 {
-    let kind_bits = rt_string_from(kind);
-    let msg_bits = rt_string_from(message);
-    let args_bits = rt_tuple(&[msg_bits]);
-    let exc_bits = unsafe { ffi::molt_exception_new(kind_bits, args_bits) };
-    rt_dec_ref(kind_bits);
-    rt_dec_ref(args_bits);
-    unsafe { ffi::molt_raise(exc_bits) }
+    unsafe {
+        ffi::molt_bridge_raise_exception(kind.as_ptr(), kind.len(), message.as_ptr(), message.len())
+    }
 }
 
 /// Raise the owning module's actual exception class, retaining each temporary
@@ -1255,9 +1266,9 @@ pub type RuntimeExtensionStateDrop = unsafe extern "C" fn(*mut u8);
 
 /// `MOLTVTAB` encoded as a little-endian `u64`.
 pub const RUNTIME_VTABLE_ABI_MAGIC: u64 = 0x4241_5456_544c_4f4d;
-// Version 9 adds atomic replacement through the existing raised-exception owner
-// for consumers whose Argument Clinic converter replaces exporter failures.
-pub const RUNTIME_VTABLE_ABI_VERSION: u32 = 9;
+// Version 10 retires the serial boxed-next transport. Serial consumers use
+// the canonical core owned unboxed iterator contract; later slot offsets move.
+pub const RUNTIME_VTABLE_ABI_VERSION: u32 = 10;
 
 /// Native binascii module exception identities; exported names are metadata.
 #[repr(u32)]
@@ -1369,7 +1380,6 @@ pub struct RuntimeVtable {
 
     // --- Iteration ---
     pub molt_iter: unsafe extern "C" fn(u64) -> u64,
-    pub molt_iter_next: unsafe extern "C" fn(u64, *mut u64) -> i32,
     pub raise_not_iterable: unsafe extern "C" fn(u64) -> u64,
     pub molt_sorted_builtin: unsafe extern "C" fn(u64) -> u64,
     pub molt_mul: unsafe extern "C" fn(u64, u64) -> u64,

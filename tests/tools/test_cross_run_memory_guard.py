@@ -331,21 +331,62 @@ def test_docker_client_failure_cannot_retire_a_live_bind_source(
         assert starts == [["container", "start", "--attach", daemon.identifier]]
 
 
-def test_sealed_configuration_failure_uses_the_same_container_retirement(
+def test_sealed_configuration_failure_retires_only_owned_systemd_unit(
     monkeypatch, tmp_path
 ):
-    transport, daemon, _ = _docker_transport(monkeypatch, tmp_path, "normal")
-    transport._sealed_image = "sha256:" + "a" * 64
-    transport._sealed_evidence = tmp_path
-    monkeypatch.setattr(transport, "_sealed_command", daemon.execute)
-    # The fake daemon deliberately omits isolation. The real validator refuses
-    # entry, but its newly created container must still be retired.
-    with pytest.raises(ValueError, match="violates guest isolation"):
-        transport.run_sealed(["/bin/guest"], timeout=9)
-    assert daemon.identifier not in daemon.containers
-    assert not any(c[:2] == ["container", "start"] for c in daemon.calls)
-    assert daemon.containers[daemon.sibling] == {"sentinel": "untouched"}
-    transport.cleanup()
+    from tests.tools.test_release_sealed_replay import (
+        _systemd_observation,
+        _typed_observation,
+    )
+
+    nonce, root, command, interfaces = _systemd_observation()
+    interfaces["Service"]["PrivateNetwork"] = False
+    raw = _typed_observation(interfaces)
+    transport = cross_run.SealedRootTransport()
+    transport._root = root
+    transport._files = []
+    transport._execution = cross_run.SEALED_REPLAY_EXECUTION
+    transport._provider_identity = {}
+    transport._evidence = tmp_path
+    monkeypatch.setattr(cross_run, "_sealed_owned_root", lambda root: [])
+    monkeypatch.setattr(transport, "_provider", lambda: {})
+    monkeypatch.setattr(cross_run.secrets, "token_hex", lambda size: nonce)
+    monkeypatch.setattr(
+        transport, "_show", lambda unit: (raw, cross_run.parse_systemd_observation(raw))
+    )
+    calls = []
+    stopped = False
+
+    def control(args, **kwargs):
+        nonlocal stopped
+        calls.append(args)
+        if args[1:3] == ["stop", "--"]:
+            stopped = True
+        return subprocess.CompletedProcess(
+            args, 0, "not-found\n" if stopped else "loaded\n", ""
+        )
+
+    # stop stdout is empty, while its following LoadState observation is absent.
+    def dispatch(args, **kwargs):
+        result = control(args, **kwargs)
+        if args[1:3] == ["stop", "--"]:
+            result.stdout = ""
+        return result
+
+    monkeypatch.setattr(transport, "_control", dispatch)
+
+    def guarded(args, **kwargs):
+        kwargs["stdout_capture_path"].write_bytes(b"")
+        kwargs["stderr_capture_path"].write_bytes(b"")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(cross_run, "_guarded_run", guarded)
+    with pytest.raises(ValueError, match="PrivateNetwork"):
+        transport.run_sealed(command, timeout=9)
+    assert [args for args in calls if args[1:3] == ["stop", "--"]] == [
+        ["/usr/bin/systemctl", "stop", "--", f"molt-release-{nonce}.service"]
+    ]
+    assert transport._owned == {} and transport._unresolved == set()
 
 
 @pytest.mark.parametrize(
@@ -707,15 +748,459 @@ def test_cleanup_diagnostic_reaches_matrix_report_and_exit_status(
 
 
 def test_sealed_unacknowledged_create_keeps_unknown_custody(monkeypatch, tmp_path):
-    transport, daemon, stage = _docker_transport(monkeypatch, tmp_path, "create-before")
-    transport._sealed_image = "sha256:" + "a" * 64
-    transport._sealed_evidence = tmp_path
-    monkeypatch.setattr(transport, "_sealed_command", daemon.execute)
-    with pytest.raises(ExceptionGroup) as error:
-        transport.run_sealed(["/bin/guest"], timeout=9)
-    assert isinstance(error.value.exceptions[0], subprocess.TimeoutExpired)
-    assert "creation outcome unknown" in str(error.value.exceptions[1])
-    with pytest.raises(RuntimeError, match="retirement unproved"):
-        transport.cleanup()
-    assert stage.exists()
-    assert daemon.containers == {daemon.sibling: {"sentinel": "untouched"}}
+    transport = cross_run.SealedRootTransport()
+    transport._root_unit = "molt-release-import-" + "b" * 32 + ".service"
+    transport._unresolved.add("molt-release-" + "a" * 32 + ".service")
+    calls = []
+    monkeypatch.setattr(transport, "_stop", lambda unit: calls.append(unit))
+    sentinel = tmp_path / "retained-root"
+    sentinel.write_bytes(b"sealed source")
+    with pytest.raises(RuntimeError, match="creation outcome unknown"):
+        transport.remove_sealed_root()
+    assert calls == [] and sentinel.read_bytes() == b"sealed source"
+
+
+@pytest.mark.parametrize("operation", ["claim", "stop"])
+@pytest.mark.parametrize("index", [0, 1])
+def test_sealed_provider_rejects_boolean_invocation_before_control(
+    monkeypatch, operation, index
+):
+    from tests.tools.test_release_sealed_replay import (
+        _systemd_observation,
+        _typed_observation,
+    )
+
+    _, _, _, interfaces = _systemd_observation()
+    unit = interfaces["Unit"]["Id"]
+    invocation = [0, 1] * 8
+    interfaces["Unit"]["InvocationID"] = invocation.copy()
+    interfaces["Unit"]["InvocationID"][index] = bool(invocation[index])
+    raw = _typed_observation(interfaces)
+    transport = cross_run.SealedRootTransport()
+    transport._owned[unit] = invocation
+    monkeypatch.setattr(
+        transport, "_show", lambda _: (raw, cross_run.parse_systemd_observation(raw))
+    )
+    calls = []
+    monkeypatch.setattr(transport, "_control", lambda *a, **kw: calls.append(a))
+    with pytest.raises(ValueError):
+        if operation == "claim":
+            transport._claim(unit, interfaces["Unit"]["Description"])
+        else:
+            transport._stop(unit)
+    assert calls == [] and transport._owned[unit] == invocation
+
+
+def _compilation_execution_record():
+    # Independent wire oracle: deliberately distinct from replay's budgets.
+    return {
+        "schema": "molt.sealed-execution.v1",
+        "mode": "compilation",
+        "memory_max_bytes": 2147483648,
+        "workspace_max_bytes": 536870912,
+        "runtime_max_seconds": 300,
+    }
+
+
+def _compilation_systemd_observation():
+    from tests.tools.test_release_sealed_replay import _systemd_observation
+
+    nonce, root, command, interfaces = _systemd_observation()
+    service = interfaces["Service"]
+    service.update(
+        WorkingDirectory="/work",
+        ReadWritePaths=["/work"],
+        NoExecPaths=["/evidence", "/work"],
+        MemoryMax=2147483648,
+        RuntimeMaxUSec=300000000,
+        LimitFSIZE=536870912,
+        LimitFSIZESoft=536870912,
+    )
+    service["TemporaryFileSystem"] = [
+        row for row in service["TemporaryFileSystem"] if row[0] != "/tmp"
+    ]
+    service["TemporaryFileSystem"].append(
+        ["/work", "rw,noexec,nosuid,nodev,size=536870912,mode=1777"]
+    )
+    return nonce, root, command, interfaces
+
+
+def test_sealed_execution_projection_has_one_strict_wire_contract():
+    record = _compilation_execution_record()
+    execution = cross_run.SealedExecutionProjection.compilation(
+        memory_max_bytes=2147483648,
+        workspace_max_bytes=536870912,
+        runtime_max_seconds=300,
+    )
+    assert execution.to_dict() == record
+    assert cross_run.SealedExecutionProjection.from_dict(record) == execution
+    assert cross_run.SEALED_REPLAY_EXECUTION.to_dict() == {
+        "schema": "molt.sealed-execution.v1",
+        "mode": "replay",
+        "memory_max_bytes": 1073741824,
+        "workspace_max_bytes": 67108864,
+        "runtime_max_seconds": 60,
+    }
+
+
+@pytest.mark.parametrize(
+    "field", ["memory_max_bytes", "workspace_max_bytes", "runtime_max_seconds"]
+)
+@pytest.mark.parametrize("value", [True, False, 0, -1, 1.0, "300", None, 2**63])
+def test_sealed_execution_projection_rejects_invalid_budget(field, value):
+    record = _compilation_execution_record()
+    record[field] = value
+    with pytest.raises(ValueError, match="bounded positive integer"):
+        cross_run.SealedExecutionProjection.from_dict(record)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda row: row.update(schema="molt.sealed-execution.v0"),
+        lambda row: row.update(mode="compile"),
+        lambda row: row.update(mode=True),
+        lambda row: row.update(exec_workspace=True),
+        lambda row: row.pop("workspace_max_bytes"),
+        lambda row: row.update(mode="replay"),
+    ],
+)
+def test_sealed_execution_projection_rejects_unknown_or_incomplete_policy(change):
+    record = _compilation_execution_record()
+    change(record)
+    with pytest.raises(ValueError):
+        cross_run.SealedExecutionProjection.from_dict(record)
+
+
+def test_sealed_compilation_and_replay_use_independent_effective_policy_oracles():
+    from tests.tools.test_release_sealed_replay import (
+        _systemd_observation,
+        _typed_observation,
+    )
+
+    nonce, root, command, replay = _systemd_observation()
+    cross_run.validate_sealed_systemd_configuration(
+        _typed_observation(replay), nonce=nonce, root=root, command=command
+    )
+    nonce, root, command, compilation = _compilation_systemd_observation()
+    projection = cross_run.SealedExecutionProjection.from_dict(
+        _compilation_execution_record()
+    )
+    cross_run.validate_sealed_systemd_configuration(
+        _typed_observation(compilation),
+        nonce=nonce,
+        root=root,
+        command=command,
+        projection=projection,
+    )
+    # Neither the legacy replay boundary nor a different trusted budget may
+    # approve an otherwise well-formed compilation observation.
+    for expected in (
+        cross_run.SEALED_REPLAY_EXECUTION,
+        cross_run.SealedExecutionProjection.compilation(
+            memory_max_bytes=1073741824,
+            workspace_max_bytes=536870912,
+            runtime_max_seconds=300,
+        ),
+    ):
+        with pytest.raises(ValueError, match="effective configuration differs"):
+            cross_run.validate_sealed_systemd_configuration(
+                _typed_observation(compilation),
+                nonce=nonce,
+                root=root,
+                command=command,
+                projection=expected,
+            )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("ReadOnlyPaths", []),
+        ("ReadWritePaths", ["/work", "/bin"]),
+        ("NoExecPaths", ["/tmp", "/evidence"]),
+        ("WorkingDirectory", "/app"),
+        ("MemoryMax", 2147483649),
+        ("RuntimeMaxUSec", 300000001),
+        ("LimitFSIZE", 536870913),
+        ("LimitFSIZESoft", 536870913),
+        ("PrivateNetwork", False),
+        ("BindPaths", [["/host", "/work", False, 0]]),
+        ("Environment", ["PATH=/bin", "HOME=/work"]),
+    ],
+)
+def test_sealed_compilation_rejects_policy_weakening(field, value):
+    from tests.tools.test_release_sealed_replay import _typed_observation
+
+    nonce, root, command, interfaces = _compilation_systemd_observation()
+    interfaces["Service"][field] = value
+    with pytest.raises(ValueError, match=field):
+        cross_run.validate_sealed_systemd_configuration(
+            _typed_observation(interfaces),
+            nonce=nonce,
+            root=root,
+            command=command,
+            projection=cross_run.SealedExecutionProjection.from_dict(
+                _compilation_execution_record()
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        "rw,nosuid,nodev,size=536870912,mode=1777",
+        "rw,noexec,nosuid,nodev,size=536870913,mode=1777",
+        "rw,noexec,nosuid,nodev,mode=1777",
+    ],
+)
+def test_sealed_compilation_rejects_executable_or_unbounded_workspace(options):
+    from tests.tools.test_release_sealed_replay import _typed_observation
+
+    nonce, root, command, interfaces = _compilation_systemd_observation()
+    interfaces["Service"]["TemporaryFileSystem"][-1] = ["/work", options]
+    with pytest.raises(ValueError, match="TemporaryFileSystem"):
+        cross_run.validate_sealed_systemd_configuration(
+            _typed_observation(interfaces),
+            nonce=nonce,
+            root=root,
+            command=command,
+            projection=cross_run.SealedExecutionProjection.from_dict(
+                _compilation_execution_record()
+            ),
+        )
+
+
+@pytest.mark.parametrize("compilation", [False, True])
+@pytest.mark.parametrize(
+    "extent", [None, "large-export", "stdout-over-budget", "stderr-over-budget"]
+)
+def test_sealed_transport_retains_the_executed_projection(
+    monkeypatch, tmp_path, compilation, extent
+):
+    from tests.tools.test_release_sealed_replay import (
+        _systemd_observation,
+        _typed_observation,
+    )
+
+    nonce, root, command, interfaces = (
+        _compilation_systemd_observation() if compilation else _systemd_observation()
+    )
+    projection = (
+        cross_run.SealedExecutionProjection.from_dict(_compilation_execution_record())
+        if compilation
+        else cross_run.SEALED_REPLAY_EXECUTION
+    )
+    raw = _typed_observation(interfaces)
+    transport = cross_run.SealedRootTransport()
+    transport._root = root
+    transport._files = []
+    transport._execution = projection
+    transport._provider_identity = {}
+    transport._evidence = tmp_path
+    monkeypatch.setattr(cross_run, "_sealed_owned_root", lambda root: [])
+    monkeypatch.setattr(transport, "_provider", lambda: {})
+    monkeypatch.setattr(cross_run.secrets, "token_hex", lambda size: nonce)
+    monkeypatch.setattr(
+        transport, "_show", lambda unit: (raw, cross_run.parse_systemd_observation(raw))
+    )
+    monkeypatch.setattr(
+        transport,
+        "_control",
+        lambda args, **kwargs: subprocess.CompletedProcess(args, 0, "loaded\n", ""),
+    )
+
+    def stop(unit):
+        transport._owned.pop(unit)
+        transport._unresolved.discard(unit)
+        return {"fixture": "transport teardown only"}
+
+    monkeypatch.setattr(transport, "_stop", stop)
+    launches = []
+
+    def guarded(args, **kwargs):
+        launches.append(args)
+        kwargs["stdout_capture_path"].write_bytes(b"")
+        kwargs["stderr_capture_path"].write_bytes(b"")
+        if extent is not None:
+            stream = (
+                "stderr_capture_path"
+                if extent == "stderr-over-budget"
+                else "stdout_capture_path"
+            )
+            size = (
+                16 * 1024 * 1024 + 1
+                if extent in {"large-export", "stderr-over-budget"}
+                else projection.stdout_max_bytes + 1
+            )
+            with kwargs[stream].open("r+b") as output:
+                output.truncate(size)  # Sparse fixture; no large allocation.
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(cross_run, "_guarded_run", guarded)
+    if (
+        extent in {"stdout-over-budget", "stderr-over-budget"}
+        or extent == "large-export"
+        and not compilation
+    ):
+        with pytest.raises(ValueError, match="bounded transport"):
+            transport.run_sealed(command, timeout=9, projection=projection)
+        assert not transport._owned and not transport._unresolved
+        return
+    result = transport.run_sealed(command, timeout=9, projection=projection)
+    assert result["execution"] == projection.to_dict()
+    assert "--property=ReadOnlyPaths=/" in launches[0]
+    assert (
+        "--property=ReadWritePaths=/work"
+        if compilation
+        else "--property=ReadWritePaths="
+    ) in launches[0]
+    intent = json.loads(
+        (tmp_path / (nonce + ".intent.json")).read_text(encoding="utf-8")
+    )
+    assert intent["execution"] == result["execution"]
+
+
+@pytest.mark.parametrize("imported_mode", [None, "replay", "compilation"])
+def test_sealed_execution_rejects_projection_substitution_before_observation(
+    monkeypatch, imported_mode
+):
+    compilation = cross_run.SealedExecutionProjection.from_dict(
+        _compilation_execution_record()
+    )
+    transport = cross_run.SealedRootTransport()
+    transport._execution = (
+        cross_run.SEALED_REPLAY_EXECUTION
+        if imported_mode == "replay"
+        else compilation
+        if imported_mode == "compilation"
+        else None
+    )
+    requested = (
+        cross_run.SEALED_REPLAY_EXECUTION
+        if imported_mode == "compilation"
+        else compilation
+    )
+    monkeypatch.setattr(
+        transport, "_provider", lambda: pytest.fail("mismatch reached provider")
+    )
+    monkeypatch.setattr(
+        cross_run,
+        "_sealed_owned_root",
+        lambda _: pytest.fail("mismatch reached imported root"),
+    )
+    with pytest.raises(ValueError, match="imported root projection"):
+        transport.run_sealed([], timeout=9, projection=requested)
+
+
+@pytest.mark.parametrize("compilation", [False, True])
+def test_sealed_import_passes_projection_to_archive_admission(
+    monkeypatch, tmp_path, compilation
+):
+    from types import SimpleNamespace
+    from molt import toolchain_identity
+    from tools.release import execution_root
+
+    projection = (
+        cross_run.SealedExecutionProjection.from_dict(_compilation_execution_record())
+        if compilation
+        else cross_run.SEALED_REPLAY_EXECUTION
+    )
+    transport = cross_run.SealedRootTransport()
+    archive = tmp_path / "rootfs.tar"
+    digest = "a" * 64
+    install_module_view(monkeypatch, "sys", cross_run.sys, cross_run, platform="linux")
+    monkeypatch.setattr(transport, "_provider", lambda: {})
+    monkeypatch.setattr(
+        cross_run, "validate_sealed_systemd_provider", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        toolchain_identity,
+        "capture_stable_regular_file",
+        lambda *a, **k: (SimpleNamespace(sha256=digest, size=7), b"archive"),
+    )
+    monkeypatch.setattr(execution_root, "root_inventory", lambda _: [])
+
+    class ArchiveBoundaryReached(Exception):
+        pass
+
+    def admit(path, root, *, expected_archive, projection):
+        assert path == archive and root == tmp_path / "rootfs"
+        assert expected_archive == {"sha256": digest, "size": 7}
+        assert projection.to_dict() == (
+            _compilation_execution_record()
+            if compilation
+            else {
+                "schema": "molt.sealed-execution.v1",
+                "mode": "replay",
+                "memory_max_bytes": 1073741824,
+                "workspace_max_bytes": 67108864,
+                "runtime_max_seconds": 60,
+            }
+        )
+        # Stop at the real archive-admission boundary, before memfd, directory
+        # creation or service dispatch. Failed admission must not arm execution.
+        raise ArchiveBoundaryReached
+
+    monkeypatch.setattr(execution_root, "validate_sealed_tar", admit)
+    monkeypatch.setattr(
+        transport,
+        "_control",
+        lambda *a, **k: pytest.fail("unadmitted import dispatched"),
+    )
+    with pytest.raises(ArchiveBoundaryReached):
+        transport.import_sealed_root(
+            archive,
+            sha256=digest,
+            arch="aarch64",
+            evidence=tmp_path / "evidence",
+            projection=projection,
+        )
+    assert transport._execution is None
+    assert not (tmp_path / "evidence").exists()
+
+
+def test_sealed_import_rejects_replacement_of_active_projection(monkeypatch, tmp_path):
+    transport = cross_run.SealedRootTransport()
+    transport._execution = cross_run.SEALED_REPLAY_EXECUTION
+    monkeypatch.setattr(
+        transport, "_provider", lambda: pytest.fail("second import reached provider")
+    )
+    with pytest.raises(ValueError, match="existing root or unresolved custody"):
+        transport.import_sealed_root(
+            tmp_path / "another.tar",
+            sha256="a" * 64,
+            arch="aarch64",
+            evidence=tmp_path / "evidence",
+            projection=cross_run.SealedExecutionProjection.from_dict(
+                _compilation_execution_record()
+            ),
+        )
+
+
+@pytest.mark.parametrize("change", ["writable-tmp", "masked-tmp", "noexec-tmp"])
+def test_sealed_compilation_cannot_replace_readonly_installed_tmp_inputs(change):
+    from tests.tools.test_release_sealed_replay import _typed_observation
+
+    nonce, root, command, interfaces = _compilation_systemd_observation()
+    service = interfaces["Service"]
+    assert service["ReadOnlyPaths"] == ["/"]
+    assert all(row[0] != "/tmp" for row in service["TemporaryFileSystem"])
+    if change == "writable-tmp":
+        service["ReadWritePaths"].append("/tmp")
+    elif change == "masked-tmp":
+        service["TemporaryFileSystem"].append(
+            ["/tmp", "rw,noexec,nosuid,nodev,size=64m,mode=1777"]
+        )
+    else:
+        service["NoExecPaths"].append("/tmp")
+    with pytest.raises(ValueError, match="effective configuration differs"):
+        cross_run.validate_sealed_systemd_configuration(
+            _typed_observation(interfaces),
+            nonce=nonce,
+            root=root,
+            command=command,
+            projection=cross_run.SealedExecutionProjection.from_dict(
+                _compilation_execution_record()
+            ),
+        )

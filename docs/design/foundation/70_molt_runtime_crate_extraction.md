@@ -8,7 +8,7 @@ subsystems move into lower-layer crates that compile independently.
 
 - `runtime/crate_graph.toml` owns the exact dependency depths and semantic roles.
   Satellites depend on runtime core; the five native-buffer consumers also
-  depend directly on the C-API owner. The runtime crate fans them in. Core never
+  depend on the runtime/C-API integration owner. The runtime crate fans them in. Core never
   depends on the C API, stdlib consumers, or runtime fan-in.
 - A split is valid only when it moves one real subsystem authority, deletes the
   old in-crate module tree, wires the feature/dependency owner, and adds the
@@ -19,20 +19,45 @@ subsystems move into lower-layer crates that compile independently.
   `molt-runtime` consumer check. Non-build gates do not prove the compiler can
   still link the runtime.
 
-Native reference and buffer custody belongs to `molt-cpython-abi::native_custody`,
-alongside its existing typed `PyObjectOwner`, `BufferLease`, and acquisition
-errors. The C API depends downward on runtime core for execution-bound value
-owners. Only compression, crypto, HTTP, path, and serial need this native
-protocol dependency; unrelated core consumers remain independent of C-API edits.
-The generic Arc transfer helpers remain in core. There is one owner for each
-protocol, with no forwarding module or second callback registry.
+Runtime-bound native reference and buffer custody belongs to `molt-runtime-capi`,
+which depends on core and the C API. The C API retains `PyObjectOwner`,
+`BufferLease`, acquisition errors, and semantic exporter preparation; it does not
+link runtime-core. Compression, crypto, HTTP, path, serial, and the runtime fan-in
+consume the integration crate directly. Core stays independent of the C API.
+The integration crate moves the existing direct completion calls and generic
+reference-retirement specialization; it adds no hooks, embedded interpreter,
+allocation, or second lifetime protocol.
+
+Pure Unicode facts and surrogate-preserving text storage belong to
+`molt-obj-model`. Runtime target selection stays in core; C-API operations select
+through their existing runtime hook. The existing generators own all data and
+version/default projections. No data implementation is re-exported from core.
+
+The standalone Windows C-API link exposed the earlier graph's defect: using a
+pure Unicode descriptor pulled a runtime-core archive member with unresolved
+runtime bridge imports. The integration split removes that dependency instead
+of relying on linker garbage collection, codegen-unit placement, or fake exports.
+Cranelift similarly keeps reusable data structures in its dependency-light
+[`entity` crate](https://github.com/bytecodealliance/wasmtime/blob/v39.0.0/cranelift/entity/Cargo.toml).
+Wasmtime's [C API](https://github.com/bytecodealliance/wasmtime/blob/v39.0.0/crates/c-api/Cargo.toml)
+is a runtime integration consumer. Molt needs a distinct integration crate because
+its standalone C-API protocol library also supports injected runtime hooks, while
+satellites require execution-bound owners without a back-edge to the runtime hub.
+
+The moved table and storage bytes are unchanged. Lookup remains two integer
+indexes and one record; selecting a descriptor remains once per operation.
+Exact-byte input retains the existing runtime value owner, and an exported
+buffer retains the existing one-word lease. The graph adds one small compilation
+unit and no execution indirection. Link size, compile latency, and real target
+execution require the owning native/WASM proof; source relocation proves none of
+those measurements by itself.
 
 This follows CPython's actual module boundary:
 [`zlibmodule.c`](https://github.com/python/cpython/blob/main/Modules/zlibmodule.c)
 uses the C object API, and its
 [buffer contract](https://docs.python.org/3/c-api/buffer.html) pairs successful
 acquisition with release of the retained exporter. The graph therefore names
-`c_api` explicitly below stdlib, rather than classifying that protocol as a
+`c_api` and `runtime_c_api` explicitly below stdlib, rather than classifying that protocol as a
 third-party package implementation. Its positive dependency rules still reject
 core-to-C-API and C-API-to-stdlib/runtime edges. Exact-byte input retains the
 existing runtime owner without allocating a native view; other inputs use the

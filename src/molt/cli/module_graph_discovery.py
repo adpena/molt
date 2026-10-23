@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compiler_analysis.native_support_slice import ModuleBodySelection
+
 from molt.compiler_analysis import python_import_scan as _source_import_scan
 from molt.compiler_analysis.python_source_demands import PythonSourceDemands
 from molt.compiler_analysis.native_support_slice import (
@@ -205,7 +207,9 @@ def _bind_precomputed_module_import_scan(
             namespace_premise=namespace_premise,
             source_sha256=snapshot.sha256,
             package_paths=package_paths,
-            native_support_function_roots=native_support_function_roots,
+            body_selection=ModuleBodySelection.from_requested_roots(
+                native_support_function_roots
+            ),
         ),
         target_python.tag,
         scan,
@@ -564,11 +568,12 @@ def _discover_module_graph_from_paths(
         if previous is not None:
             previous_raw = (
                 previous.precomputed is None
-                or not previous.precomputed.authority.native_support_function_roots
+                or previous.precomputed.authority.body_selection.kind
+                == "complete_source"
             )
             requested_raw = (
                 precomputed is None
-                or not precomputed.authority.native_support_function_roots
+                or precomputed.authority.body_selection.kind == "complete_source"
             )
             if previous_raw and (not requested_raw or previous.full_scan):
                 source_context, precomputed = previous.context, previous.precomputed
@@ -579,8 +584,8 @@ def _discover_module_graph_from_paths(
                 and not requested_raw
             ):
                 if (
-                    previous.precomputed.authority.native_support_function_roots
-                    != precomputed.authority.native_support_function_roots
+                    previous.precomputed.authority.body_selection.roots
+                    != precomputed.authority.body_selection.roots
                 ):
                     raise ValueError(
                         "queued source views disagree on native root custody"
@@ -691,7 +696,7 @@ def _discover_module_graph_from_paths(
                     continue
                 touched.add(candidate)
                 prior = scan_sources.get(candidate)
-                if prior is None or prior.native_support_function_roots:
+                if prior is None or prior.body_selection.kind == "native_support":
                     queue_entry(resolved, candidate, source_context.dependency)
 
     demands = state.demands
@@ -812,7 +817,7 @@ def _discover_module_graph_from_paths(
             touched.add(execution_name)
             if (
                 existing is None
-                or scan_sources[execution_name].native_support_function_roots
+                or scan_sources[execution_name].body_selection.kind == "native_support"
             ):
                 execution_scan = precomputed_scans_by_path.get(
                     resolution_cache.resolved_path(execution_path)
@@ -820,7 +825,7 @@ def _discover_module_graph_from_paths(
                 if execution_scan is not None and (
                     execution_scan.authority.module_name != execution_name
                     or execution_scan.authority.mode != "module_init"
-                    or execution_scan.authority.native_support_function_roots
+                    or execution_scan.authority.body_selection.kind == "native_support"
                 ):
                     execution_scan = None
                 queue_entry(
@@ -872,7 +877,7 @@ def _discover_module_graph_from_paths(
             authority = scan_sources[module_name]
             receipt = (
                 authority.namespace_premise,
-                authority.native_support_function_roots,
+                authority.body_selection.roots,
                 authority.mode,
                 state.context_epochs[module_name],
             )
@@ -896,7 +901,7 @@ def _discover_module_graph_from_paths(
                 target_python=target_python,
                 runtime_import_custody=source_context.runtime_import_custody,
                 namespace_premise=authority.namespace_premise,
-                native_support_function_roots=authority.native_support_function_roots,
+                native_support_function_roots=authority.body_selection.roots,
             )
             scan_receipts[job] = receipt
             if job.source is not None:
@@ -948,6 +953,7 @@ def _discover_module_graph_from_paths(
                     module_name, full_scan=full
                 ),
                 admitted.is_package if admitted is not None else None,
+                body_selection=ModuleBodySelection("complete_source"),
                 package_paths=admitted.package_paths if admitted is not None else (),
                 # An ordinary Python import requests the original initializer.
                 source_sha256=previous.source_sha256 if previous is not None else None,
@@ -972,7 +978,7 @@ def _discover_module_graph_from_paths(
             previous_context is not None
             and previous is not None
             and previous.source_sha256 is not None
-            and not previous.native_support_function_roots
+            and previous.body_selection.kind == "complete_source"
         ):
             # Full-depth runtime custody can widen an existing source without
             # changing its original import roots or application admission rules.
@@ -1008,7 +1014,7 @@ def _discover_module_graph_from_paths(
             authority = scan_sources[module_name]
         receipt = (
             authority.namespace_premise,
-            authority.native_support_function_roots,
+            authority.body_selection.roots,
             authority.mode,
             state.context_epochs[module_name],
         )
@@ -1052,8 +1058,7 @@ def _discover_module_graph_from_paths(
         # Its cached scan cannot be rebound to different selection or depth.
         if precomputed is not None and (
             precomputed.authority.mode != authority.mode
-            or precomputed.authority.native_support_function_roots
-            != authority.native_support_function_roots
+            or precomputed.authority.body_selection != authority.body_selection
         ):
             precomputed = None
         try:
@@ -1071,7 +1076,7 @@ def _discover_module_graph_from_paths(
                 runtime_import_custody=source_context.runtime_import_custody,
                 precomputed_scan=precomputed,
                 namespace_premise=authority.namespace_premise,
-                native_support_function_roots=authority.native_support_function_roots,
+                native_support_function_roots=authority.body_selection.roots,
                 source_snapshot=source_generations.get(module_name, (None, None))[1],
             )
         except (OSError, SyntaxError, UnicodeDecodeError):
@@ -1098,8 +1103,7 @@ def _discover_module_graph_from_paths(
         )
         if (
             previous is not None
-            and previous.native_support_function_roots
-            != authority.native_support_function_roots
+            and previous.body_selection.roots != authority.body_selection.roots
         ):
             for owner, arguments in sorted(scanned_bodies.get(module_name, ())):
                 queue_scan(module_name, owner, arguments)
@@ -1251,7 +1255,7 @@ def _load_module_import_scan(
                 f"precomputed package scan authority changed: {module_name!r}"
             )
         if (
-            precomputed_scan.authority.native_support_function_roots
+            precomputed_scan.authority.body_selection.roots
             != native_support_function_roots
         ):
             raise ValueError(f"precomputed source selection changed: {module_name!r}")
@@ -1378,7 +1382,7 @@ def _load_module_import_scan(
         selected, source_pruned = resolution_cache.native_support_view(
             path,
             tree,
-            native_support_function_roots,
+            ModuleBodySelection.from_requested_roots(native_support_function_roots),
             ast_digest_admission=ast_digest_admission,
             target_python=target_python,
         )

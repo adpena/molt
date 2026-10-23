@@ -241,8 +241,8 @@ def test_split_app_wholearchives_longdouble_when_libc_present(selected_c_abi) ->
         "--whole-archive",
         str(selected_c_abi.path("long_double")),
         "--no-whole-archive",
-        str(selected_c_abi.path("libc")),
-        str(selected_c_abi.path("compiler_rt")),
+        selected_c_abi.path("libc"),
+        selected_c_abi.path("compiler_rt"),
     ]
 
 
@@ -280,18 +280,18 @@ def test_reloc_and_split_share_the_selected_complete_family(selected_c_abi) -> N
         selected_c_abi.path("long_double"),
         selected_c_abi.path("compiler_rt"),
     )
-    argv = wasm_link_inputs.long_double_whole_archive_link_argv(
+    argv = wasm_link_inputs.long_double_whole_archive_link_inputs(
         policy,
-        whole_archive=["staticlib.a"],
-        trailing=[str(selected_c_abi.path("libc"))],
+        whole_archive=[Path("staticlib.a")],
+        trailing=[selected_c_abi.path("libc")],
     )
     assert argv == [
         "--whole-archive",
-        "staticlib.a",
-        str(selected_c_abi.path("long_double")),
+        Path("staticlib.a"),
+        selected_c_abi.path("long_double"),
         "--no-whole-archive",
-        str(selected_c_abi.path("libc")),
-        str(selected_c_abi.path("compiler_rt")),
+        selected_c_abi.path("libc"),
+        selected_c_abi.path("compiler_rt"),
     ]
 
 

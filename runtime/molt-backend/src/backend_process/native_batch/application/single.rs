@@ -23,14 +23,15 @@ pub(crate) fn compile_single_native_application_artifact_to_path(
         backend.set_module_context(module_context);
     }
     let obj_output = backend.compile(ir);
-    match options.native_output_kind {
+    let output = match options.native_output_kind {
         crate::backend_process::NativeArtifactKind::Object => {
-            write_output_path(output_path, &obj_output.bytes)?
+            write_output_path(output_path, &obj_output.bytes)?;
+            crate::backend_process::input::ContentIdentity::of_bytes(&obj_output.bytes)
         }
         crate::backend_process::NativeArtifactKind::Archive => {
             super::super::write_native_archive_bytes(output_path, &obj_output.bytes)?
         }
-    }
+    };
     eprintln!(
         "Successfully compiled to {} ({} functions)",
         output_path.display(),
@@ -39,5 +40,7 @@ pub(crate) fn compile_single_native_application_artifact_to_path(
     Ok(NativeApplicationArtifactResult {
         function_count,
         batch_count: 1,
+        workers: None,
+        output,
     })
 }

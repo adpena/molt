@@ -23,6 +23,15 @@ from molt.python_native_locations import loaded_native_module_paths
 PYTHON_ENVIRONMENT_LOCATION_SCHEMA = "molt.python-environment-location.v1"
 
 
+def environment_python_path(root: Path) -> Path:
+    """The host interpreter entrypoint of a standard Python environment.
+
+    The environment entrypoint preserves its prefix and installed packages;
+    resolving its symlink would select the base interpreter instead.
+    """
+    return root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+
+
 def editable_direct_url_path(data: bytes, *, distribution: str) -> Path:
     """Decode one strict local editable PEP 610 source authority."""
 
@@ -36,7 +45,9 @@ def editable_direct_url_path(data: bytes, *, distribution: str) -> Path:
         not isinstance(payload, dict)
         or set(payload) != {"url", "dir_info"}
         or not isinstance(payload.get("url"), str)
-        or payload.get("dir_info") != {"editable": True}
+        or not isinstance(payload.get("dir_info"), dict)
+        or set(payload["dir_info"]) != {"editable"}
+        or payload["dir_info"]["editable"] is not True
     ):
         raise PythonEnvironmentIdentityError(
             f"installed distribution {distribution!r} is not an admitted editable source"
@@ -198,6 +209,62 @@ def _site_roots(root: Path) -> tuple[Path, ...]:
             seen.add(key)
             paths.append(resolved)
     return tuple(paths)
+
+
+def locate_editable_project(root: Path, project: str) -> str | None:
+    """Find one project's PEP 610 record without importing installed packages.
+
+    Run under the selected interpreter with site startup disabled: its sysconfig
+    owns platform/version site paths, while the caller supplies the venv prefix.
+    The returned path is relative to that prefix and is never a package import.
+    """
+    from molt.python_identity_common import _canonicalize_name
+
+    root = root.resolve(strict=True)
+    matches = [
+        dist
+        for dist in metadata.distributions(path=[str(p) for p in _site_roots(root)])
+        if _canonicalize_name(str(dist.metadata.get("Name", "")))
+        == _canonicalize_name(project)
+    ]
+    if len(matches) > 1:
+        raise PythonEnvironmentIdentityError(
+            f"multiple installed distributions for {project!r}"
+        )
+    if not matches:
+        return None
+    dist = matches[0]
+    text = dist.read_text("direct_url.json")
+    if text is None:
+        return None  # A noneditable/manual environment retains its existing contract.
+    try:
+        payload = loads_exact(text)
+    except (json.JSONDecodeError, ExactJsonError) as exc:
+        raise PythonEnvironmentIdentityError(
+            f"invalid direct_url.json for {project!r}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise PythonEnvironmentIdentityError(f"invalid direct_url.json for {project!r}")
+    if "dir_info" not in payload:
+        return None  # Archive/VCS installs have no editable directory authority.
+    directory = payload["dir_info"]
+    if isinstance(directory, dict) and (
+        "editable" not in directory or directory["editable"] is False
+    ):
+        return None  # PEP 610: absent or boolean false means noneditable.
+    # All other directory markers must satisfy the existing strict editable
+    # decoder. Unsupported fields and malformed markers cannot become manual.
+    editable_direct_url_path(text.encode("utf-8"), distribution=project)
+    candidates = [
+        Path(str(dist.locate_file(entry))).resolve(strict=True)
+        for entry in dist.files or ()
+        if entry.name == "direct_url.json"
+    ]
+    if len(candidates) != 1:
+        raise PythonEnvironmentIdentityError(
+            f"editable project {project!r} has no unique recorded direct_url.json"
+        )
+    return candidates[0].relative_to(root).as_posix()
 
 
 def locate_current_python_environment() -> dict[str, object]:

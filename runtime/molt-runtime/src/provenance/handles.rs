@@ -6,8 +6,8 @@ use crate::{HANDLE_RESOLVE_COUNT, object::accessors::resolve_obj_ptr, profile_hi
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_handle_resolve(bits: u64) -> *mut u8 {
-    // GIL-exempt by contract: resolve path must stay read-only and rely on the
-    // pointer registry's sharded read locks for safety.
+    // GIL-exempt: decoding is read-only and does not dereference the result.
+    // The caller owns the exposed allocation's lifetime and any later access.
     profile_hit_unchecked(&HANDLE_RESOLVE_COUNT);
     resolve_obj_ptr(bits).unwrap_or(std::ptr::null_mut())
 }
@@ -15,8 +15,8 @@ pub extern "C" fn molt_handle_resolve(bits: u64) -> *mut u8 {
 #[cfg(not(target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_handle_resolve(bits: u64) -> u64 {
-    // GIL-exempt by contract: resolve path must stay read-only and rely on the
-    // pointer registry's sharded read locks for safety.
+    // GIL-exempt: decoding is read-only and does not dereference the result.
+    // The caller owns the exposed allocation's lifetime and any later access.
     profile_hit_unchecked(&HANDLE_RESOLVE_COUNT);
     resolve_obj_ptr(bits).map_or(0, |ptr| ptr as u64)
 }

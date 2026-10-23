@@ -4,7 +4,7 @@ use crate::stream::{DecodeError, DecodeStep, Decoder, StreamDecoder};
 use bzip2::Compression as BzCompression;
 use bzip2::read::BzDecoder;
 use bzip2::write::BzEncoder;
-use molt_cpython_abi::native_custody::ByteInput;
+use molt_runtime_capi::ByteInput;
 use molt_runtime_core::prelude::*;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Read, Write};

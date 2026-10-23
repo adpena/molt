@@ -1077,36 +1077,6 @@ pub(super) fn importlib_spec_from_file_location_payload(
     }
 }
 
-pub(super) fn importlib_iter_next_value_bits(
-    _py: &PyToken<'_>,
-    iter_bits: u64,
-) -> Result<Option<u64>, u64> {
-    let pair_bits = molt_iter_next(iter_bits);
-    let Some(pair_ptr) = maybe_ptr_from_bits(pair_bits) else {
-        return Err(MoltObject::none().bits());
-    };
-    unsafe {
-        if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-            return Err(MoltObject::none().bits());
-        }
-    }
-    if unsafe { crate::object::seq_access::locked_len(pair_ptr) } < 2 {
-        return Err(MoltObject::none().bits());
-    }
-    let Some(done) = (unsafe { crate::object::seq_access::pin_item(_py, pair_ptr, 1) }) else {
-        return Err(MoltObject::none().bits());
-    };
-    if is_truthy(_py, obj_from_bits(done.bits())) {
-        return Ok(None);
-    }
-    let Some(value) = (unsafe { crate::object::seq_access::pin_item(_py, pair_ptr, 0) }) else {
-        return Err(MoltObject::none().bits());
-    };
-    let value_bits = value.bits();
-    inc_ref_bits(_py, value_bits);
-    Ok(Some(value_bits))
-}
-
 pub(super) fn importlib_best_effort_str(_py: &PyToken<'_>, value_bits: u64) -> String {
     let text_bits = unsafe { call_callable1(_py, builtin_classes(_py).str, value_bits) };
     if exception_pending(_py) {

@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import os
 import re
@@ -58,6 +59,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 from tools import harness_memory_guard  # noqa: E402
+from tools.git_identity import read_git_blob_batch  # noqa: E402
 from tools.cpython_regrtest import (  # noqa: E402
     CPYTHON_SOURCES,
     CPythonSource,
@@ -103,6 +105,11 @@ EVIDENCE_PATHS = (
     ("token_grammar", "Grammar/Tokens"),
     ("token_module", "Lib/token.py"),
     ("token_generator", "Tools/build/generate_token.py"),
+    ("unicode_type_table", "Objects/unicodetype_db.h"),
+    ("unicode_database_table", "Modules/unicodedata_db.h"),
+    ("unicode_generator", "Tools/unicode/makeunicodedata.py"),
+    ("unicode_type_implementation", "Objects/unicodectype.c"),
+    ("unicode_database_implementation", "Modules/unicodedata.c"),
 )
 HEADER_PATH = "Python/stdlib_module_names.h"
 LIB_PATH = "Lib"
@@ -290,40 +297,42 @@ def version_data(snapshot: SourceSnapshot) -> VersionData:
 # ---------------------------------------------------------------------------
 
 
-def render_snapshot(snapshots: Mapping[str, SourceSnapshot]) -> str:
-    sources = []
-    for version in sorted(snapshots, key=_version_key):
-        snapshot = snapshots[version]
-        receipts = snapshot.receipts()
-        sources.append(
+def _snapshot_row(snapshot: SourceSnapshot) -> dict[str, object]:
+    receipts = snapshot.receipts()
+    return {
+        "python": snapshot.python,
+        "tag": snapshot.tag,
+        "revision": snapshot.revision,
+        "header": {
+            "path": HEADER_PATH,
+            "git_object": receipts[HEADER_PATH][0],
+            "sha256": receipts[HEADER_PATH][1],
+            "lines": list(snapshot.header_lines),
+        },
+        "inputs": [
             {
-                "python": snapshot.python,
-                "tag": snapshot.tag,
-                "revision": snapshot.revision,
-                "header": {
-                    "path": HEADER_PATH,
-                    "git_object": receipts[HEADER_PATH][0],
-                    "sha256": receipts[HEADER_PATH][1],
-                    "lines": list(snapshot.header_lines),
-                },
-                "inputs": [
-                    {
-                        "role": item.role,
-                        "path": item.path,
-                        "git_object": item.git_object,
-                        "sha256": item.sha256(),
-                        "text": item.text,
-                    }
-                    for item in snapshot.inputs
-                ],
-                "lib": {
-                    "path": LIB_PATH,
-                    "git_object": receipts[LIB_PATH][0],
-                    "sha256": receipts[LIB_PATH][1],
-                    "entries": list(snapshot.lib_entries),
-                },
+                "role": item.role,
+                "path": item.path,
+                "git_object": item.git_object,
+                "sha256": item.sha256(),
+                "text": item.text,
             }
-        )
+            for item in snapshot.inputs
+        ],
+        "lib": {
+            "path": LIB_PATH,
+            "git_object": receipts[LIB_PATH][0],
+            "sha256": receipts[LIB_PATH][1],
+            "entries": list(snapshot.lib_entries),
+        },
+    }
+
+
+def render_snapshot(snapshots: Mapping[str, SourceSnapshot]) -> str:
+    sources = [
+        _snapshot_row(snapshots[version])
+        for version in sorted(snapshots, key=_version_key)
+    ]
     return json.dumps({"schema": SNAPSHOT_SCHEMA, "sources": sources}, indent=2) + "\n"
 
 
@@ -347,7 +356,9 @@ def _strings(row: Mapping[str, object], key: str, where: str) -> tuple[str, ...]
     return tuple(value)
 
 
-def _snapshot_from_row(row: object, where: str) -> SourceSnapshot:
+def _snapshot_from_row(
+    row: object, where: str, *, refresh_prior: bool = False
+) -> SourceSnapshot:
     source = _exact_keys(
         row, {"python", "tag", "revision", "header", "lib", "inputs"}, where
     )
@@ -361,13 +372,27 @@ def _snapshot_from_row(row: object, where: str) -> SourceSnapshot:
         raise ValueError(f"{where}: input paths must be {HEADER_PATH} and {LIB_PATH}")
     python = _string(source, "python", where)
     inputs = source["inputs"]
-    if not isinstance(inputs, list) or len(inputs) != len(EVIDENCE_PATHS):
+    if (
+        not isinstance(inputs, list)
+        or not inputs
+        or (not refresh_prior and len(inputs) != len(EVIDENCE_PATHS))
+    ):
         raise ValueError(f"{where}: complete source evidence is required")
     parsed_inputs = []
-    for item, (role, template) in zip(inputs, EVIDENCE_PATHS):
+    evidence_paths = iter(EVIDENCE_PATHS)
+    for item in inputs:
         item = _exact_keys(
             item, {"role", "path", "git_object", "sha256", "text"}, where
         )
+        expected = next(evidence_paths, None)
+        # Only refresh may read an older ordered subset. Never normalize away
+        # unknown, duplicate or reordered roles, or bypass a retained receipt.
+        if refresh_prior:
+            while expected is not None and expected[0] != item["role"]:
+                expected = next(evidence_paths, None)
+        if expected is None:
+            raise ValueError(f"{where}: source evidence role/path mismatch")
+        role, template = expected
         if item["role"] != role or item["path"] != template.format(python=python):
             raise ValueError(f"{where}: source evidence role/path mismatch")
         observed = SourceInput(
@@ -421,7 +446,11 @@ def _snapshot_from_row(row: object, where: str) -> SourceSnapshot:
 
 
 def load_snapshot(path: Path) -> dict[str, SourceSnapshot]:
-    """Every version's inputs, each verified against its receipt."""
+    """Every version's complete inputs, each verified against its receipt."""
+    return _load_snapshot(path, refresh_prior=False)
+
+
+def _load_snapshot(path: Path, *, refresh_prior: bool) -> dict[str, SourceSnapshot]:
     try:
         text = canonical_generated_bytes(path.read_bytes()).decode("utf-8")
     except FileNotFoundError:
@@ -436,7 +465,9 @@ def load_snapshot(path: Path) -> dict[str, SourceSnapshot]:
         raise ValueError(f"{display_path(path)}: sources must be a list")
     snapshots: dict[str, SourceSnapshot] = {}
     for index, row in enumerate(rows):
-        snapshot = _snapshot_from_row(row, f"{display_path(path)} sources[{index}]")
+        snapshot = _snapshot_from_row(
+            row, f"{display_path(path)} sources[{index}]", refresh_prior=refresh_prior
+        )
         if snapshot.python in snapshots:
             raise ValueError(
                 f"{display_path(path)}: duplicate source for {snapshot.python}"
@@ -486,15 +517,14 @@ def pinned_snapshots(versions: Sequence[str]) -> dict[str, SourceSnapshot]:
 # ---------------------------------------------------------------------------
 
 
-def _git(args: Sequence[str], *, cwd: Path) -> bytes:
+def _git(args: Sequence[str], *, cwd: Path, input: bytes | None = None) -> bytes:
     command = ["git", *args]
-    result = harness_memory_guard.guarded_completed_process(
+    result = harness_memory_guard.guarded_completed_process_to_tempfiles(
         command,
         prefix="MOLT_GENERATOR",
         cwd=cwd,
         env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
-        capture_output=True,
-        text=False,
+        input=input,
         timeout=_GIT_TIMEOUT_SECONDS,
     )
     if result.returncode != 0:
@@ -537,6 +567,43 @@ def _lib_entries(listing: bytes, modules: Sequence[str]) -> tuple[str, ...]:
     return tuple(sorted(entries))
 
 
+def _git_source_objects(
+    repo: Path, revision: str, paths: Sequence[tuple[str, Literal["blob", "tree"]]]
+) -> tuple[dict[str, str], dict[str, bytes]]:
+    """Resolve all paths together, then read all blobs with the shared parser."""
+    queries = "".join(f"{revision}:{path}\n" for path, _ in paths).encode("utf-8")
+    metadata = _git(
+        ["-C", str(repo), "cat-file", "--batch-check"], cwd=repo, input=queries
+    )
+    lines = metadata.split(b"\n")
+    if len(lines) != len(paths) + 1 or lines[-1] != b"":
+        raise ValueError("Git source batch metadata has invalid framing")
+    identities: dict[str, str] = {}
+    blobs = []
+    for (path, expected_kind), line in zip(paths, lines[:-1], strict=True):
+        # Batch lookup reports a missing path successfully; preserve the source
+        # acquisition failure contract without accepting misbound responses.
+        if line == f"{revision}:{path} missing".encode("utf-8"):
+            raise RuntimeError(f"CPython source {revision} is missing {path}")
+        match = re.fullmatch(rb"([0-9a-f]{40}) (blob|tree) (0|[1-9][0-9]*)", line)
+        if match is None or match[2].decode("ascii") != expected_kind:
+            raise ValueError(f"Git source batch metadata is invalid: {path}")
+        oid, size = match[1].decode("ascii"), int(match[3])
+        identities[path] = oid
+        if expected_kind == "blob":
+            blobs.append((path, oid, size))
+    request = "".join(f"{oid}\n" for _, oid, _ in blobs).encode("ascii")
+    payload = _git(["-C", str(repo), "cat-file", "--batch"], cwd=repo, input=request)
+    verified = read_git_blob_batch(
+        io.BytesIO(payload), [(oid, size) for _, oid, size in blobs]
+    )
+    # Exhaust the parser even after the last requested blob: trailing data fails.
+    contents = {
+        path: data for (path, _, _), (data, _) in zip(blobs, verified, strict=True)
+    }
+    return identities, contents
+
+
 def fetch_pinned_source(pin: CPythonSource) -> SourceSnapshot:
     """Fetch one pinned tag without blobs and read its stdlib inputs.
 
@@ -570,26 +637,30 @@ def fetch_pinned_source(pin: CPythonSource) -> SourceSnapshot:
                 f"CPython tag {pin.tag} resolves to {revision}, but "
                 f"{display_path(PINS_PATH)} pins {pin.revision}"
             )
-        header_object = git("rev-parse", "--verify", f"{revision}:{HEADER_PATH}")
-        header_object_id = header_object.decode().strip()
-        header = git("cat-file", "blob", header_object_id)
-        if _git_blob_id(header) != header_object_id:
-            raise RuntimeError(f"{HEADER_PATH}: blob does not hash to its object id")
-        lib_object = git("rev-parse", "--verify", f"{revision}:{LIB_PATH}")
-        lib_object_id = lib_object.decode().strip()
+        paths: list[tuple[str, Literal["blob", "tree"]]] = [
+            (HEADER_PATH, "blob"),
+            (LIB_PATH, "tree"),
+            *(
+                (
+                    template.format(python=pin.python),
+                    "tree" if role == "public_headers" else "blob",
+                )
+                for role, template in EVIDENCE_PATHS
+            ),
+        ]
+        identities, contents = _git_source_objects(repo, revision, paths)
+        header_object_id = identities[HEADER_PATH]
+        header = contents[HEADER_PATH]
+        lib_object_id = identities[LIB_PATH]
         listing = git("ls-tree", "-r", "-t", "-z", lib_object_id)
         inputs = []
         for role, template in EVIDENCE_PATHS:
             path = template.format(python=pin.python)
-            object_id = (
-                git("rev-parse", "--verify", f"{revision}:{path}").decode().strip()
-            )
+            object_id = identities[path]
             if role == "public_headers":
                 payload = git("ls-tree", "-r", object_id)
             else:
-                payload = git("cat-file", "blob", object_id)
-                if _git_blob_id(payload) != object_id:
-                    raise RuntimeError(f"{path}: blob does not hash to its object id")
+                payload = contents[path]
             inputs.append(SourceInput(role, path, object_id, payload.decode("utf-8")))
     lines = _header_lines(header)
     return SourceSnapshot(
@@ -610,7 +681,9 @@ def refresh_sources(
     """Re-fetch every pinned input; write the snapshot only if all agree.
 
     Content at a revision the snapshot already records must match its
-    receipt; a moved pin replaces that version's inputs.
+    receipt; a moved pin replaces that version's inputs. Only this conversion
+    accepts prior ordered subsets of today's evidence roles. Every fetched
+    cohort must supply the complete current roles before any publication.
     """
     pins = load_cpython_sources(PINS_PATH)
     versions = tuple(sorted(pins, key=_version_key))
@@ -619,10 +692,25 @@ def refresh_sources(
         raise RuntimeError(
             f"{display_path(PINS_PATH)} pins no CPython source for {unpinned}"
         )
-    current = load_snapshot(SNAPSHOT_PATH) if SNAPSHOT_PATH.exists() else {}
+    current = (
+        _load_snapshot(SNAPSHOT_PATH, refresh_prior=True)
+        if SNAPSHOT_PATH.exists()
+        else {}
+    )
     refreshed: dict[str, SourceSnapshot] = {}
     for version in versions:
-        fetched = fetch(pins[version])
+        pin = pins[version]
+        fetched = _snapshot_from_row(
+            _snapshot_row(fetch(pin)), f"fetched CPython {version}"
+        )
+        if (fetched.python, fetched.tag, fetched.revision) != (
+            pin.python,
+            pin.tag,
+            pin.revision,
+        ):
+            raise RuntimeError(
+                f"fetched CPython {version} does not match its pin; nothing was written"
+            )
         prior = current.get(version)
         if prior is not None and prior.revision == fetched.revision:
             expected, actual = prior.receipts(), fetched.receipts()
@@ -1028,7 +1116,6 @@ def _prerequisite_assessment(
                     else None,
                 )
             )
-    index = numeric.TARGETS.index(candidate) if candidate in numeric.TARGETS else None
     numeric_rows = [
         NumericAssessment(
             context=context.name,
@@ -1036,8 +1123,8 @@ def _prerequisite_assessment(
             operand_kind=context.operand_kind,
             error_class=context.error_class,
             candidate=candidate,
-            declared_observation=index is not None,
-            message=context.messages[index] if index is not None else None,
+            declared_observation=candidate in context.messages,
+            message=context.messages.get(candidate),
         )
         for context in contexts
     ]

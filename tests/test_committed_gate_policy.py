@@ -120,11 +120,11 @@ def test_structural_audit_producers_select_all_parser_consumers(source):
     }
 
 
-def test_unicode_width_source_keeps_its_admitted_runtime_replay_control():
+def test_unicode_source_facts_select_their_complete_pinned_source_owner():
     cfg = GateConfig.load(COMMITTED_GATES)
     assert _selected_pytest_targets(cfg, ["tools/gen_unicode_width.py"]) == {
         "tests/tools/test_import_file.py",
-        "tests/test_runtime_build_python.py::test_unicode_width_facts_replay_keyed_by_the_admitted_runtime",
+        "tests/test_runtime_build_python.py",
     }
 
 
@@ -161,7 +161,6 @@ def test_shared_scan_record_producers_select_all_consumer_owners(source):
         "tests/test_structural_audit.py",
         "tests/test_generator_manifest.py",
         "tests/test_gen_stringprep_tables.py",
-        "tests/test_runtime_build_python.py::test_unicode_width_facts_replay_keyed_by_the_admitted_runtime",
     }
 
 

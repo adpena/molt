@@ -1767,6 +1767,10 @@ def test_provider_keeps_effective_cargo_flags_and_refuses_weakened_coordinate(
                     [
                         "-p",
                         "molt-runtime",
+                        "-p",
+                        "molt-runtime-core",
+                        "-p",
+                        "molt-runtime-math",
                         "--lib",
                         "--no-run",
                         "--message-format=json",
@@ -1912,3 +1916,158 @@ def test_runtime_cargo_operation_c_declaration_preserves_supersets_and_roles():
     (provider,) = cargo_operations("zlib-wasi", "dev-fast", cargo="cargo")
     assert provider.admits_native_requirements({})
     assert not provider.admits_native_requirements({"target": ["c"]})
+
+
+@pytest.mark.parametrize(
+    "mutation", [None, "missing_image", "foreign_package", "missing_case", "ignored"]
+)
+def test_semantic_build_owns_exact_satellite_controls_in_one_cargo_lifecycle(
+    monkeypatch, tmp_path, mutation, selected_cargo
+):
+    import json
+    from types import SimpleNamespace
+
+    # Independent semantic names, not a copy of the policy's descriptor object.
+    required = {
+        "molt_runtime_core": {
+            "numeric_ratio::tests::ratio_to_f64_matches_cpython_bit_exact",
+            "numeric_ratio::tests::ratio_to_f64_overflows_past_f64_max",
+            "numeric_ratio::tests::binary64_rounding_boundaries",
+        },
+        "molt_runtime_math": {
+            "math::statistics_reduction_tests::exact_reduction_oracles_and_primitive_cost"
+        },
+    }
+    inventories = {
+        "molt_runtime": [
+            *gate.isolated_for(gate.sys.platform),
+            *gate.probes_for(gate.sys.platform),
+            *REMAINDER,
+        ],
+        **{
+            target: [*sorted(cases), "unselected::other_case"]
+            for target, cases in required.items()
+        },
+    }
+    images = {target: support.make_image(tmp_path / target) for target in inventories}
+    metadata, abi = abi_compiler_fixture(gate.ROOT, [], artifact_root=tmp_path)
+    artifacts = [abi]
+    for package, target, kind in (
+        ("molt-runtime", "molt_runtime", "rlib"),
+        ("molt-runtime-core", "molt_runtime_core", "lib"),
+        ("molt-runtime-math", "molt_runtime_math", "lib"),
+    ):
+        if mutation == "foreign_package" and target == "molt_runtime_core":
+            package = "foreign-core"
+        package_id = f"path+file:///fixture/{package}#{package}@0.1.0"
+        metadata["packages"].append(
+            {"id": package_id, "name": package, "version": "0.1.0"}
+        )
+        artifacts.append(
+            {
+                "reason": "compiler-artifact",
+                "package_id": package_id,
+                "target": {"name": target, "kind": [kind]},
+                "profile": {"test": True, "debug_assertions": False, "opt_level": "z"},
+                "features": [],
+                "executable": str(images[target]),
+            }
+        )
+    if mutation == "missing_image":
+        artifacts.pop()
+    if mutation == "missing_case":
+        inventories["molt_runtime_core"].remove(
+            sorted(required["molt_runtime_core"])[0]
+        )
+    monkeypatch.setattr(gate.truth, "git_source_identity", lambda: support.SOURCE)
+    discoveries, builds, children = [], [], []
+
+    def discover(binary, args, **kwargs):
+        target = next(name for name, path in images.items() if str(path) == binary)
+        discoveries.append(target)
+        return inventories[target], SimpleNamespace(succeeded=True, receipt=lambda: {})
+
+    monkeypatch.setattr(gate.runner, "listed_tests", discover)
+
+    class Commands:
+        def run(self, argv, **kwargs):
+            result = SimpleNamespace(stdout="", stderr="", returncode=0)
+            if argv[:2] == [selected_cargo, "metadata"]:
+                result.stdout = json.dumps(metadata)
+            elif argv[:2] == [selected_cargo, "test"]:
+                builds.append(argv)
+                result.stdout = "\n".join(json.dumps(row) for row in artifacts)
+            elif argv[0] in {selected_cargo, "rustc"}:
+                result.stdout = "fixture-toolchain"
+            else:
+                # All required images and inventories precede the first child.
+                assert set(discoveries) == set(inventories)
+                split = argv.index("--")
+                binary, args = Path(argv[split + 1]), argv[split + 2 :]
+                target = next(name for name, path in images.items() if path == binary)
+                if target in required:
+                    cases = required[target]
+                    assert args[0] == "--exact"
+                    assert set(args[1:-2]) == cases
+                    assert args[-2:] == ["--test-threads=1", "--nocapture"]
+                else:
+                    cases = {args[1]} if args[0] == "--exact" else set(REMAINDER)
+                required_passed = [
+                    argv[i + 1]
+                    for i, value in enumerate(argv[:-1])
+                    if value == "--require-passed-test"
+                ]
+                assert set(required_passed) == (cases if target in required else set())
+                directory = Path(argv[argv.index("--receipt-dir") + 1])
+                owners = [name for name in cases if name in support.MODES]
+                receipt = support.binary_receipt(
+                    directory,
+                    binary,
+                    sorted(cases),
+                    support.family_records(binary, owners),
+                    args=args,
+                    retained_root=Path(argv[argv.index("--retained-root") + 1]),
+                    run_id=argv[argv.index("--run-id") + 1],
+                    invocation=f"child-{len(children)}",
+                    statuses=(
+                        {sorted(cases)[0]: "ignored"}
+                        if mutation == "ignored" and target == "molt_runtime_core"
+                        else None
+                    ),
+                )
+                receipt["required_passed_tests"] = required_passed
+                gate.runner.write_receipt(directory / "receipt.json", receipt)
+                children.append((target, cases))
+            return result
+
+    monkeypatch.setattr(gate, "COMMANDS", Commands())
+    root = tmp_path / "receipts"
+    code = gate.main(["--receipt-root", str(root)])
+    aggregate = json.loads(
+        next(root.glob("*/aggregate.json")).read_text(encoding="utf-8")
+    )
+    assert len(builds) == 1
+    assert builds[0][builds[0].index("--profile") + 1] == "release-output"
+    assert [
+        builds[0][i + 1] for i, arg in enumerate(builds[0][:-1]) if arg == "-p"
+    ] == ["molt-runtime", "molt-runtime-core", "molt-runtime-math"]
+    if mutation:
+        assert code == 1 and aggregate["status"] == "failed"
+        assert "passed_test_count" not in aggregate
+        if mutation != "ignored":
+            assert children == []
+        else:
+            assert "verification_error" in aggregate["images"]["molt_runtime_core"]
+            assert "passed_test_count" not in aggregate["images"]["molt_runtime_core"]
+        return
+    assert code == 0 and aggregate["status"] == "success"
+    for target, cases in required.items():
+        image = aggregate["images"][target]
+        assert image["passed_test_count"] == len(cases)
+        assert {row["identity"] for row in image["unrun"]} == {"unselected::other_case"}
+        assert (
+            image["unrun"][0]["reason"] == "outside declared satellite numeric controls"
+        )
+    assert aggregate["passed_test_count"] == (
+        len(gate.isolated_for(gate.sys.platform)) + len(REMAINDER) + 4
+    )

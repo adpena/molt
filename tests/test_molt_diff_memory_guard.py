@@ -1034,7 +1034,9 @@ def test_sentinel_publishes_live_request_ancestry_before_termination(
     victim = samples[22]
     marker = tmp_path / "trip.json"
     monkeypatch.delenv("MOLT_BACKEND_DAEMON_SUITE_LEASE", raising=False)
-    monkeypatch.setattr(module.memory_guard, "sample_processes", lambda: samples)
+    monkeypatch.setattr(
+        module.memory_guard, "sample_processes_custody", lambda _interest: samples
+    )
     install_thread_module_view(
         monkeypatch,
         "time",

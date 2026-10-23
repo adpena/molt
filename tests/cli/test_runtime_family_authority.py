@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.cargo_execution_policy import cargo_command_options
+
 from molt.process_environment import (
     NameRule,
     ProcessEnvironment,
@@ -50,7 +52,6 @@ from tests.rustc_test_support import (
 )
 from tests.runtime_build_identity_helper import (
     RuntimeFixtureRoot,
-    build_python_identity_fixture,
     native_runtime_staticlib_identity,
     provisioned_wasi_sdk_fixture,
     runtime_build_identity,
@@ -354,7 +355,7 @@ def test_resealed_empty_compile_subauthorities_are_rejected(field: str) -> None:
         "foreign-path",
         "wrong-target",
         "unknown-config",
-        "missing-python",
+        "retired-python",
         "unknown-wrapper",
     ],
 )
@@ -374,8 +375,8 @@ def test_resealed_toolchain_and_config_drift_is_rejected(mutation: str) -> None:
         compile_payload["common_config"]["target_triple"] = "aarch64-apple-darwin"
     elif mutation == "unknown-config":
         compile_payload["common_config"]["legacy"] = True
-    elif mutation == "missing-python":
-        del toolchain["tools"]["build_python"]
+    elif mutation == "retired-python":
+        toolchain["tools"]["build_python"] = {}
     else:
         toolchain["wrappers"]["UNRECOGNIZED"] = toolchain["tools"]["rustc"]
     _reseal(value)
@@ -383,7 +384,7 @@ def test_resealed_toolchain_and_config_drift_is_rejected(mutation: str) -> None:
         RuntimeBuildIdentity.from_dict(value)
 
 
-def test_publication_change_reuses_only_compile_and_member_output() -> None:
+def test_publication_action_change_reuses_only_compile() -> None:
     before = runtime_build_identity(
         "shared", "old-publication", compile_seed="same-compile"
     )
@@ -399,7 +400,7 @@ def test_publication_change_reuses_only_compile_and_member_output() -> None:
     for scope in ("compile", "member-output"):
         first = runtime_build_fingerprint(before, scope=scope)
         second = runtime_build_fingerprint(after, scope=scope)
-        assert first["hash"] == second["hash"]
+        assert (first["hash"] == second["hash"]) is (scope == "compile")
         assert fingerprints._runtime_fingerprint_payload_is_valid(
             {"version": 4, **first}
         )
@@ -1132,32 +1133,26 @@ def test_configuration_parse_and_receipt_share_one_generation(plan_root: Path) -
 
 
 @pytest.mark.parametrize("mutation", ["rustc", "resource", "config", "new-config"])
-def test_native_capture_closes_custody_after_python_probe(
-    plan_root: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
-) -> None:
+def test_native_capture_rechecks_custody_before_toolchain_projection(
+    plan_root, mutation
+):
     from molt.cli import runtime_build_identity as identity
-    from tests.runtime_build_identity_helper import build_python_identity_fixture
 
     config = _config(plan_root, '[build]\nrustflags="--cfg before"\n')
     plan = _plan(plan_root)
-
-    def capture_python(_env, **_kwargs):
-        if mutation == "new-config":
-            extra = plan_root / "cargo-home" / "config.toml"
-            extra.parent.mkdir(exist_ok=True)
-            extra.write_text('[build]\nrustflags="--cfg inserted"\n', encoding="utf-8")
-        else:
-            path = {
-                "rustc": plan.tools["rustc"],
-                "resource": plan_root / "rust-resources" / "libcore.rlib",
-                "config": config,
-            }[mutation]
-            before = path.stat()
-            path.write_bytes(path.read_bytes().replace(b"before", b"after!") + b"!")
-            os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
-        return build_python_identity_fixture()
-
-    monkeypatch.setattr(identity, "_python_identity", capture_python)
+    if mutation == "new-config":
+        extra = plan_root / "cargo-home" / "config.toml"
+        extra.parent.mkdir(exist_ok=True)
+        extra.write_text('[build]\nrustflags="--cfg inserted"\n', encoding="utf-8")
+    else:
+        path = {
+            "rustc": plan.tools["rustc"],
+            "resource": plan_root / "rust-resources" / "libcore.rlib",
+            "config": config,
+        }[mutation]
+        before = path.stat()
+        path.write_bytes(path.read_bytes().replace(b"before", b"after!") + b"!")
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
     with pytest.raises((ValueError, OSError), match="changed"):
         identity.provision_native_runtime_toolchain_content_manifest(
             project_root=plan_root,
@@ -1622,17 +1617,25 @@ def test_native_dependency_observation_changes_without_changing_plan_fingerprint
 ) -> None:
     from molt.cli import runtime_build_identity as builder
     from molt.cli.runtime_artifact_selection import RUNTIME_STATICLIB_ARTIFACTS
+    from molt.cli.runtime_identity_schema import (
+        RuntimePublicationTransform,
+        runtime_publication_executor_paths,
+    )
+
+    for relative in runtime_publication_executor_paths(
+        RuntimePublicationTransform.NATIVE_STATICLIB
+    ):
+        executor = plan_root / relative
+        executor.parent.mkdir(parents=True, exist_ok=True)
+        executor.write_text("# publication executor fixture\n", encoding="utf-8")
 
     admitted = native_runtime_staticlib_identity()
     family = admitted.payload["family"]
     monkeypatch.setattr(builder, "runtime_source_roots", lambda *_args: ())
     monkeypatch.setattr(
         builder,
-        "_capture_runtime_build_trees",
-        lambda *_args: (
-            family["compile"]["sources"],
-            family["publication_authority"],
-        ),
+        "_capture_runtime_build_sources",
+        lambda *_args: family["compile"]["sources"],
     )
     monkeypatch.setattr(
         builder,
@@ -1918,7 +1921,7 @@ def test_cli_tool_selectors_are_pinned_after_original_overrides(
             "panic=abort",
         ),
     )
-    selected = cargo_argv._command_options(plan.command)[1]
+    selected = cargo_command_options(plan.command)[1]
     pinned = cargo_argv._pinned_tool_configurations(
         plan.tools,
         plan.wrappers,
@@ -2007,10 +2010,6 @@ def test_supplied_manifest_cannot_attest_a_different_live_plan(
         (plan_root / "rust-resources" / "libcore.rlib").write_bytes(b"new core")
     else:
         _config(plan_root, '[build]\nrustflags="--cfg changed"\n')
-    monkeypatch.setattr(
-        "molt.cli.runtime_build_identity._python_identity",
-        lambda *_args, **_kwargs: build_python_identity_fixture(),
-    )
     # Captured projections remain pure. Runtime admission owns the live
     # mutable-input fence before those facts can authorize execution.
     with pytest.raises(ValueError, match="changed"):
@@ -2425,9 +2424,11 @@ def test_expected_runtime_identity_rejects_changed_or_resealed_claims(mutation) 
         member = wire["payload"]["family"]["members"]["shared"]
         if mutation == "bool":
             # Python equality conflates True with 1; canonical JSON does not.
-            member["preserve_debug"] = int(member["preserve_debug"])
+            member["publication"]["preserve_debug"] = int(
+                member["publication"]["preserve_debug"]
+            )
         else:
-            member["publication_transform"] = "different-publication"
+            member["publication"]["transform"] = "different-publication"
             _reseal(wire)
     with pytest.raises(ValueError):
         RuntimeBuildIdentity.from_dict(wire, expected=expected)
@@ -2567,27 +2568,30 @@ def test_runtime_family_shares_immutable_capture_and_exports_detached_wire(
     )
     wire = original.to_dict()
     validations = []
-    validate = schema.validate_python_runtime_identity
+    validate = schema._validated_executable_content_identity
 
-    def counted(value):
-        validations.append(value)
-        return validate(value)
+    def counted(value, *, logical_name):
+        validations.append(logical_name)
+        return validate(value, logical_name=logical_name)
 
-    monkeypatch.setattr(schema, "validate_python_runtime_identity", counted)
+    monkeypatch.setattr(schema, "_validated_executable_content_identity", counted)
     captured = RuntimeBuildIdentity.from_dict(wire)
     family = captured.payload["family"]
     compilation = family["compile"]
     manifest = captured.toolchain_manifest
-    python = compilation["toolchain"]["tools"]["build_python"]
-    assert schema._runtime_toolchain_build_python(manifest) is python
-    assert schema._runtime_toolchain_build_python(manifest) is python
+    tools = compilation["toolchain"]["tools"]
+    assert "build_python" not in tools
+    initial_validations = tuple(validations)
+    assert set(initial_validations) == set(tools)
+    assert len(initial_validations) == len(tools)
     members = tuple(
         schema.RuntimeBuildMemberPlan(
             kind=kind,
             resolved_rustflags=tuple(member["resolved_rustflags"]),
             link_args=tuple(member["link_args"]),
-            publication_transform=member["publication_transform"],
-            preserve_debug=member["preserve_debug"],
+            publication=schema.RuntimePublicationAction.from_dict(
+                member["publication"]
+            ),
         )
         for kind, member in family["members"].items()
     )
@@ -2596,7 +2600,6 @@ def test_runtime_family_shares_immutable_capture_and_exports_detached_wire(
         toolchain_manifest=manifest,
         target_triple=compilation["common_config"]["target_triple"],
         common_config=compilation["common_config"],
-        publication_authority=family["publication_authority"],
         members=members,
     )
     assert len(identities) == (1 if target == "native" else 2)
@@ -2623,22 +2626,22 @@ def test_runtime_family_shares_immutable_capture_and_exports_detached_wire(
         )
         wire["payload"]["family"]["compile"]["toolchain"].clear()
         assert identity.payload["family"]["compile"]["toolchain"]
-    # Every projection consumes one admitted graph; a new wire graph must still
-    # receive its own complete Python closure admission.
-    assert len(validations) == 1
+    # Projections share one admitted immutable graph. A new wire graph still
+    # receives its own complete executable content validation.
+    assert tuple(validations) == initial_validations
     detached = original.to_dict()
     assert RuntimeBuildIdentity.from_dict(detached) == original
-    assert len(validations) == 2
+    assert tuple(validations) == initial_validations * 2
 
 
 @pytest.mark.parametrize("origin", ["mutable", "proxy", "subclass"])
-def test_schema_admission_does_not_trust_foreign_success_markers(origin) -> None:
+def test_schema_admission_does_not_trust_foreign_success_markers(origin):
     from molt.cli import runtime_identity_schema as schema
-    from tests.runtime_build_identity_helper import build_python_identity_fixture
+    from tests.runtime_build_identity_helper import runtime_toolchain_content_manifest
 
-    source = build_python_identity_fixture()
+    source = runtime_toolchain_content_manifest().to_dict()["payload"]["toolchain"]
     owned = schema._freeze_json(source)
-    schema._validated_build_python_identity(owned)
+    schema._validated_runtime_toolchain_content(owned, target_triple="native")
 
     class Unowned(schema._FrozenJsonObject):
         def __post_init__(self):
@@ -2650,36 +2653,44 @@ def test_schema_admission_does_not_trust_foreign_success_markers(origin) -> None
     elif origin == "subclass":
         value = Unowned(source)
         object.__setattr__(value, "_validated_schemas", owned._validated_schemas)
-    assert schema._validated_build_python_identity(value) is value
-    source["selected_executable"]["size"] = -1
-    with pytest.raises(ValueError, match="executable identity is invalid"):
-        schema._validated_build_python_identity(value)
-    # Admission never lends the caller an alias into the captured graph.
-    assert schema._validated_build_python_identity(owned) is owned
-    assert owned["selected_executable"]["size"] == 6
+    assert (
+        schema._validated_runtime_toolchain_content(value, target_triple="native")
+        is value
+    )
+    source["tools"]["rustc"]["size"] = -1
+    with pytest.raises(ValueError, match="runtime tool rustc identity is invalid"):
+        schema._validated_runtime_toolchain_content(value, target_triple="native")
+    assert (
+        schema._validated_runtime_toolchain_content(owned, target_triple="native")
+        is owned
+    )
+    assert owned["tools"]["rustc"]["size"] >= 0
 
 
-def test_schema_admission_never_caches_failure_or_confuses_schemas(monkeypatch) -> None:
+def test_schema_admission_never_caches_failure_or_confuses_schemas(monkeypatch):
     from molt.cli import runtime_identity_schema as schema
-    from tests.runtime_build_identity_helper import build_python_identity_fixture
+    from tests.runtime_build_identity_helper import runtime_toolchain_content_manifest
 
-    source = build_python_identity_fixture()
-    source["identity_sha256"] = "0" * 64
+    source = runtime_toolchain_content_manifest().to_dict()["payload"]["toolchain"]
+    source["tools"]["rustc"]["size"] = -1
     invalid = schema._freeze_json(source)
     validations = []
-    validate = schema.validate_python_runtime_identity
+    validate = schema._validated_executable_content_identity
 
-    def counted(value):
-        validations.append(value)
-        return validate(value)
+    def counted(value, *, logical_name):
+        if logical_name == "rustc":
+            validations.append(value)
+        return validate(value, logical_name=logical_name)
 
-    monkeypatch.setattr(schema, "validate_python_runtime_identity", counted)
+    monkeypatch.setattr(schema, "_validated_executable_content_identity", counted)
     for _ in range(2):
-        with pytest.raises(ValueError, match="Python identity digest is invalid"):
-            schema._validated_build_python_identity(invalid)
+        with pytest.raises(ValueError, match="runtime tool rustc identity is invalid"):
+            schema._validated_runtime_toolchain_content(invalid, target_triple="native")
     assert len(validations) == 2
-    valid = schema._freeze_json(build_python_identity_fixture())
-    schema._validated_build_python_identity(valid)
+    valid = schema._freeze_json(
+        runtime_toolchain_content_manifest().to_dict()["payload"]["toolchain"]
+    )
+    schema._validated_runtime_toolchain_content(valid, target_triple="native")
     with pytest.raises(ValueError, match="manifest content shape is invalid"):
         schema._validated_toolchain_manifest_payload(valid)
 
@@ -3062,6 +3073,7 @@ def test_combined_runtime_plan_applies_target_policy_after_cargo_features(
             ("-C", "target-feature=-reference-types")
         )
     shared = specs._RuntimeWasmBuildSpec(
+        publication_name="runtime.wasm",
         requested_cargo_profile="dev-fast",
         cargo_profile="dev-fast",
         profile_dir="dev-fast",
@@ -3137,7 +3149,6 @@ def test_combined_runtime_plan_applies_target_policy_after_cargo_features(
 def test_standalone_cpython_abi_plan_applies_simd_after_cargo_features(
     plan_root, monkeypatch, flag_origin, readonly_wasi_sdk
 ):
-    from contextlib import nullcontext
     from molt.cli import runtime_wasm_build_support as support
 
     _config(
@@ -3155,7 +3166,6 @@ def test_standalone_cpython_abi_plan_applies_simd_after_cargo_features(
         environment[flag_origin] = separator.join(
             ("-C", "target-feature=-reference-types")
         )
-    monkeypatch.setattr(support, "build_python_scope", lambda state: nullcontext())
     monkeypatch.setattr(support, "_cargo_build_env", lambda: dict(environment))
     monkeypatch.setattr(
         support, "_cargo_target_root", lambda root: plan_root / "target"

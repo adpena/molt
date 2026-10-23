@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compiler_analysis.native_support_slice import ModuleBodySelection
+
 from molt.compiler_analysis import python_import_scan as _source_import_scan
 
 import ast
@@ -103,7 +105,14 @@ def test_role_receipt_survives_cache_hits_and_protocol_detection(
         graph = {**result.graph, "entry": entry}
         authority = result.scan_authority.merged(
             _ModuleGraphScanAuthority(
-                (_ModuleSourceScanAuthority("entry", entry, "full"),)
+                (
+                    _ModuleSourceScanAuthority(
+                        "entry",
+                        entry,
+                        "full",
+                        body_selection=ModuleBodySelection("complete_source"),
+                    ),
+                )
             )
         )
         policy = scanner._module_graph_needs_runtime_import_support(
@@ -128,7 +137,14 @@ def test_full_role_promotes_existing_source_without_downgrade(tmp_path: Path) ->
     with pytest.raises(ValueError, match="source authority"):
         _ModuleGraphScanAuthority(tuple(roles.values())).merged(
             _ModuleGraphScanAuthority(
-                (_ModuleSourceScanAuthority("helper", other, "full"),)
+                (
+                    _ModuleSourceScanAuthority(
+                        "helper",
+                        other,
+                        "full",
+                        body_selection=ModuleBodySelection("complete_source"),
+                    ),
+                )
             )
         )
 
@@ -154,12 +170,24 @@ def test_scan_authority_merge_and_payload_preserve_namespace_proof(
 ) -> None:
     source = _source(tmp_path / "owner.py", "pass\n")
     first = _ModuleGraphScanAuthority(
-        (_ModuleSourceScanAuthority("owner", source, "full", namespace_premise=left),)
+        (
+            _ModuleSourceScanAuthority(
+                "owner",
+                source,
+                "full",
+                body_selection=ModuleBodySelection("complete_source"),
+                namespace_premise=left,
+            ),
+        )
     )
     second = _ModuleGraphScanAuthority(
         (
             _ModuleSourceScanAuthority(
-                "owner", source, "module_init", namespace_premise=right
+                "owner",
+                source,
+                "module_init",
+                body_selection=ModuleBodySelection("complete_source"),
+                namespace_premise=right,
             ),
         )
     )
@@ -194,14 +222,24 @@ def test_scan_merge_preserves_depth_and_dynamic_package_requirement(
     left = _ModuleGraphScanAuthority(
         (
             _ModuleSourceScanAuthority(
-                "pkg.owner", source, left_mode, False, left_dynamic
+                "pkg.owner",
+                source,
+                left_mode,
+                False,
+                left_dynamic,
+                body_selection=ModuleBodySelection("complete_source"),
             ),
         )
     )
     right = _ModuleGraphScanAuthority(
         (
             _ModuleSourceScanAuthority(
-                "pkg.owner", source, right_mode, False, right_dynamic
+                "pkg.owner",
+                source,
+                right_mode,
+                False,
+                right_dynamic,
+                body_selection=ModuleBodySelection("complete_source"),
             ),
         )
     )
@@ -690,7 +728,7 @@ def test_native_slice_preserves_original_source_for_both_scan_projections(
         result.scan.authority.source_sha256
         == hashlib.sha256(source.read_bytes()).hexdigest()
     )
-    assert result.scan.authority.native_support_function_roots == ("used",)
+    assert result.scan.authority.body_selection.roots == ("used",)
     assert result.scan.authority.mode == "full"
     assert result.scan.authority.package_paths == (
         (source.parent,) if source.name == "__init__.py" else ()
@@ -801,7 +839,7 @@ def test_native_view_growth_reuses_one_live_solver_and_preserves_later_source_ke
             if roots == ("later",)
             else {"support": source, "leaf1": leaf1, "leaf2": leaf2}
         )
-        assert roles["support"].native_support_function_roots == roots
+        assert roles["support"].body_selection.roots == roots
         assert roles["support"].source_sha256 == snapshot.sha256
         assert expected_key in {
             row.owner for row in result.scan.source_values.functions
@@ -920,7 +958,7 @@ def test_native_selected_source_cycle_preserves_raw_acquisition_in_both_seed_ord
     }
     assert result.graph == state.graph == expected
     owner = result.scan_authority.by_module["support"]
-    assert owner.native_support_function_roots == ()
+    assert owner.body_selection.roots == ()
     assert owner.mode == "full"
     assert owner.source_sha256 == snapshot.sha256
     solver = state.demands
@@ -1061,13 +1099,13 @@ def test_native_slice_root_growth_retains_source_and_dependency_identity(
     graphs._extend_native_support_source_closure(**common)
     assert graph["support"] == support
     first_sha = roles["support"].source_sha256
-    assert roles["support"].native_support_function_roots == ("first",)
+    assert roles["support"].body_selection.roots == ("first",)
     assert "leaf1" in graph and "leaf2" not in graph
     selected = ("first", "second")
     graphs._extend_native_support_source_closure(**common)
     assert graph["support"] == support
     assert roles["support"].source_sha256 == first_sha
-    assert roles["support"].native_support_function_roots == ("first", "second")
+    assert roles["support"].body_selection.roots == ("first", "second")
     assert {"leaf1", "leaf2"} <= set(graph)
     counts_after_growth = dict(counts)
     graphs._extend_native_support_source_closure(**common)
@@ -1098,7 +1136,7 @@ def test_native_slice_root_growth_retains_source_and_dependency_identity(
     assert set(result.graph) == {"consumer", "support", "leaf1", "leaf2"}
     discovery._merge_discovered_module_graph(graph, roles, result)
     assert roles["support"].mode == "full"
-    assert roles["support"].native_support_function_roots == ()
+    assert roles["support"].body_selection.roots == ()
     assert roles["support"].source_sha256 == first_sha
     assert roles["support"].package_paths == (
         (support.parent,) if support.name == "__init__.py" else ()
@@ -1162,9 +1200,7 @@ def test_native_raw_source_dominates_selected_roots_without_losing_depth(
         operation_counts=counts,
     )
     graphs._extend_native_support_source_closure(**common)
-    assert roles["support"].native_support_function_roots == (
-        () if raw_first else ("used",)
-    )
+    assert roles["support"].body_selection.roots == (() if raw_first else ("used",))
     assert set(graph) == (
         {"support", "initializer"} if raw_first else {"support", "selected"}
     )
@@ -1175,7 +1211,7 @@ def test_native_raw_source_dominates_selected_roots_without_losing_depth(
         roles["support"].source_sha256
         == hashlib.sha256(support.read_bytes()).hexdigest()
     )
-    assert roles["support"].native_support_function_roots == ()
+    assert roles["support"].body_selection.roots == ()
     assert roles["support"].mode == ("module_init" if raw_first else "full")
     assert set(graph) == (
         {"support", "initializer"}
@@ -1211,7 +1247,14 @@ def test_graph_cache_binds_admitted_source_generation(
             set(),
             full_scan_roots=True,
             enclosing_scan_authority=_ModuleGraphScanAuthority(
-                (_ModuleSourceScanAuthority("support", generation, "full"),)
+                (
+                    _ModuleSourceScanAuthority(
+                        "support",
+                        generation,
+                        "full",
+                        body_selection=ModuleBodySelection("complete_source"),
+                    ),
+                )
             ),
         )
 
@@ -1306,6 +1349,7 @@ def test_generated_package_graph_cache_validates_source_role_authority(
         generated,
         "full",
         True,
+        body_selection=ModuleBodySelection("complete_source"),
         package_paths=(child.parent,),
     )
     source_inputs = {}
@@ -1418,13 +1462,16 @@ def test_package_search_paths_are_canonical_ordered_source_authority(tmp_path):
     generated = _source(tmp_path / "generated.py", "pass\n")
     second_root = tmp_path / "second" / "pkg"
     second_root.mkdir(parents=True)
-    regular = _ModuleSourceScanAuthority("pkg", source, "full")
+    regular = _ModuleSourceScanAuthority(
+        "pkg", source, "full", body_selection=ModuleBodySelection("complete_source")
+    )
     assert regular.package_paths == (source.parent,)
     roots = (source.parent, second_root.resolve())
     generated_owner = _ModuleSourceScanAuthority(
         "pkg",
         generated,
         "full",
+        body_selection=ModuleBodySelection("complete_source"),
         is_package=True,
         package_paths=(source.parent / ".", second_root, source.parent),
     )
@@ -1441,6 +1488,7 @@ def test_package_search_paths_are_canonical_ordered_source_authority(tmp_path):
             "pkg",
             generated,
             "full",
+            body_selection=ModuleBodySelection("complete_source"),
             is_package=True,
             package_paths=changed_roots,
         )
@@ -1459,9 +1507,21 @@ def test_package_search_paths_are_canonical_ordered_source_authority(tmp_path):
                 ),
             )
     with pytest.raises(ValueError, match="lacks original search paths"):
-        _ModuleSourceScanAuthority("pkg", generated, "full", is_package=True)
+        _ModuleSourceScanAuthority(
+            "pkg",
+            generated,
+            "full",
+            body_selection=ModuleBodySelection("complete_source"),
+            is_package=True,
+        )
     with pytest.raises(ValueError, match="non-package"):
-        _ModuleSourceScanAuthority("plain", generated, "full", package_paths=roots)
+        _ModuleSourceScanAuthority(
+            "plain",
+            generated,
+            "full",
+            body_selection=ModuleBodySelection("complete_source"),
+            package_paths=roots,
+        )
 
 
 def test_generated_package_discovery_uses_original_paths_and_reuses_child_inventory(

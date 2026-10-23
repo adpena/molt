@@ -494,6 +494,7 @@ mod catalog_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::object::seq_access::pin_item;
 
     fn text(py: &PyToken<'_>, value: &[u8]) -> u64 {
         let ptr = alloc_string(py, value);

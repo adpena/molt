@@ -1370,7 +1370,7 @@ fn cpython_raw_codepoint_identity_and_offsets() {
             .unwrap();
         let mut storage = Vec::new();
         for &unit in text {
-            molt_runtime_core::text_storage::push_code_point(&mut storage, unit);
+            molt_obj_model::text_storage::push_code_point(&mut storage, unit);
         }
         let found = execute_match(
             &compiled,

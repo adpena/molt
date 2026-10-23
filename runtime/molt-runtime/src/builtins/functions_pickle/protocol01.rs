@@ -77,7 +77,7 @@ fn pickle_dump_obj(
     }
     let Some(ptr) = obj.as_ptr() else {
         let message = format!("pickle.dumps: unsupported type: {}", type_name(_py, obj));
-        return Err(pickle_raise(_py, &message));
+        return Err(PickleError::Pickling.raise(_py, &message));
     };
     let type_id = unsafe { object_type_id(ptr) };
     if type_id == crate::TYPE_ID_BIGINT {
@@ -102,10 +102,8 @@ fn pickle_dump_obj(
     }
     if type_id == crate::TYPE_ID_BYTES {
         let Some(raw) = (unsafe { bytes_like_slice(ptr) }) else {
-            return Err(pickle_raise(
-                _py,
-                "pickle.dumps: internal error reading bytes payload",
-            ));
+            return Err(PickleError::Pickling
+                .raise(_py, "pickle.dumps: internal error reading bytes payload"));
         };
         pickle_dump_global(out, "_codecs", "encode");
         out.push('(');
@@ -124,7 +122,7 @@ fn pickle_dump_obj(
     }
     if type_id == crate::TYPE_ID_BYTEARRAY {
         let Some(raw) = (unsafe { bytes_like_slice(ptr) }) else {
-            return Err(pickle_raise(
+            return Err(PickleError::Pickling.raise(
                 _py,
                 "pickle.dumps: internal error reading bytearray payload",
             ));
@@ -216,7 +214,7 @@ fn pickle_dump_obj(
         return Ok(());
     }
     let message = format!("pickle.dumps: unsupported type: {}", type_name(_py, obj));
-    Err(pickle_raise(_py, &message))
+    Err(PickleError::Pickling.raise(_py, &message))
 }
 
 fn pickle_read_line<'a>(
@@ -226,11 +224,11 @@ fn pickle_read_line<'a>(
 ) -> Result<&'a str, u64> {
     let bytes = text.as_bytes();
     if *idx > bytes.len() {
-        return Err(pickle_raise(_py, "pickle.loads: unexpected end of stream"));
+        return Err(PickleError::Unpickling.raise(_py, "pickle.loads: unexpected end of stream"));
     }
     let start = *idx;
     let Some(rel_end) = bytes[start..].iter().position(|b| *b == b'\n') else {
-        return Err(pickle_raise(_py, "pickle.loads: unexpected end of stream"));
+        return Err(PickleError::Unpickling.raise(_py, "pickle.loads: unexpected end of stream"));
     };
     let end = start + rel_end;
     *idx = end + 1;
@@ -239,7 +237,7 @@ fn pickle_read_line<'a>(
 
 fn pickle_parse_memo_key(_py: &crate::PyToken<'_>, text: &str) -> Result<i64, u64> {
     text.parse::<i64>()
-        .map_err(|_| pickle_raise(_py, "pickle.loads: invalid memo key"))
+        .map_err(|_| PickleError::Unpickling.raise(_py, "pickle.loads: invalid memo key"))
 }
 
 fn pickle_stack_item_to_value(
@@ -249,7 +247,9 @@ fn pickle_stack_item_to_value(
     match item {
         PickleStackItem::Value(bits) => Ok(*bits),
         PickleStackItem::Global(global) => pickle_global_callable_bits(_py, *global),
-        PickleStackItem::Mark => Err(pickle_raise(_py, "pickle.loads: mark not found")),
+        PickleStackItem::Mark => {
+            Err(PickleError::Unpickling.raise(_py, "pickle.loads: mark not found"))
+        }
     }
 }
 
@@ -265,7 +265,7 @@ fn pickle_pop_mark_items(
         }
         out.push(item);
     }
-    Err(pickle_raise(_py, "pickle.loads: mark not found"))
+    Err(PickleError::Unpickling.raise(_py, "pickle.loads: mark not found"))
 }
 
 fn pickle_items_to_value_bits(
@@ -284,7 +284,9 @@ fn pickle_pop_stack_item(
     stack: &mut Vec<PickleStackItem>,
     message: &'static str,
 ) -> Result<PickleStackItem, u64> {
-    stack.pop().ok_or_else(|| pickle_raise(_py, message))
+    stack
+        .pop()
+        .ok_or_else(|| PickleError::Unpickling.raise(_py, message))
 }
 
 fn pickle_pop_value(
@@ -302,10 +304,10 @@ fn pickle_apply_reduce(
     args_bits: u64,
 ) -> Result<u64, u64> {
     let Some(args_ptr) = obj_from_bits(args_bits).as_ptr() else {
-        return Err(pickle_raise(_py, "pickle.loads: reduce args must be tuple"));
+        return Err(PickleError::Unpickling.raise(_py, "pickle.loads: reduce args must be tuple"));
     };
     if unsafe { object_type_id(args_ptr) } != TYPE_ID_TUPLE {
-        return Err(pickle_raise(_py, "pickle.loads: reduce args must be tuple"));
+        return Err(PickleError::Unpickling.raise(_py, "pickle.loads: reduce args must be tuple"));
     }
     let Some(args) = (unsafe {
         crate::object::seq_access::snapshot(_py, args_ptr, "sequence snapshot allocation failed")
@@ -313,13 +315,13 @@ fn pickle_apply_reduce(
         return Err(MoltObject::none().bits());
     };
     match func_item {
-        PickleStackItem::Mark => Err(pickle_raise(_py, "pickle.loads: mark cannot be called")),
+        PickleStackItem::Mark => {
+            Err(PickleError::Unpickling.raise(_py, "pickle.loads: mark cannot be called"))
+        }
         PickleStackItem::Global(PickleGlobal::CodecsEncode) => {
             if args.is_empty() || args.len() > 2 {
-                return Err(pickle_raise(
-                    _py,
-                    "pickle.loads: _codecs.encode expects 1 or 2 arguments",
-                ));
+                return Err(PickleError::Unpickling
+                    .raise(_py, "pickle.loads: _codecs.encode expects 1 or 2 arguments"));
             }
             let Some(text) = string_obj_to_owned(obj_from_bits(args[0])) else {
                 return Err(raise_exception::<u64>(
@@ -451,7 +453,7 @@ pub extern "C" fn molt_pickle_loads_protocol01(data_bits: u64) -> u64 {
                     };
                     let parsed = match pickle_parse_string_literal(line) {
                         Ok(value) => value,
-                        Err(message) => return pickle_raise(_py, message),
+                        Err(message) => return PickleError::Unpickling.raise(_py, message),
                     };
                     let out_ptr = alloc_string(_py, parsed.as_bytes());
                     if out_ptr.is_null() {
@@ -515,7 +517,8 @@ pub extern "C" fn molt_pickle_loads_protocol01(data_bits: u64) -> u64 {
                         Err(err_bits) => return err_bits,
                     };
                     if values.len() % 2 != 0 {
-                        return pickle_raise(_py, "pickle.loads: dict has odd number of items");
+                        return PickleError::Unpickling
+                            .raise(_py, "pickle.loads: dict has odd number of items");
                     }
                     let dict_ptr = alloc_dict_with_pairs(_py, &values);
                     if dict_ptr.is_null() {
@@ -537,10 +540,12 @@ pub extern "C" fn molt_pickle_loads_protocol01(data_bits: u64) -> u64 {
                             Err(err_bits) => return err_bits,
                         };
                     let Some(target_ptr) = obj_from_bits(target_bits).as_ptr() else {
-                        return pickle_raise(_py, "pickle.loads: append target is not list");
+                        return PickleError::Unpickling
+                            .raise(_py, "pickle.loads: append target is not list");
                     };
                     if unsafe { object_type_id(target_ptr) } != TYPE_ID_LIST {
-                        return pickle_raise(_py, "pickle.loads: append target is not list");
+                        return PickleError::Unpickling
+                            .raise(_py, "pickle.loads: append target is not list");
                     }
                     let _ = crate::molt_list_append(target_bits, item_bits);
                     if exception_pending(_py) {
@@ -565,10 +570,12 @@ pub extern "C" fn molt_pickle_loads_protocol01(data_bits: u64) -> u64 {
                             Err(err_bits) => return err_bits,
                         };
                     let Some(target_ptr) = obj_from_bits(target_bits).as_ptr() else {
-                        return pickle_raise(_py, "pickle.loads: setitem target is not dict");
+                        return PickleError::Unpickling
+                            .raise(_py, "pickle.loads: setitem target is not dict");
                     };
                     if unsafe { object_type_id(target_ptr) } != TYPE_ID_DICT {
-                        return pickle_raise(_py, "pickle.loads: setitem target is not dict");
+                        return PickleError::Unpickling
+                            .raise(_py, "pickle.loads: setitem target is not dict");
                     }
                     let completed =
                         unsafe { crate::dict_set_in_place(_py, target_ptr, key_bits, value_bits) };
@@ -589,7 +596,7 @@ pub extern "C" fn molt_pickle_loads_protocol01(data_bits: u64) -> u64 {
                     let Some(global) = pickle_resolve_global(module, name) else {
                         let message =
                             format!("pickle.loads: unsupported global {}.{}", module, name);
-                        return pickle_raise(_py, &message);
+                        return PickleError::Unpickling.raise(_py, &message);
                     };
                     stack.push(PickleStackItem::Global(global));
                 }
@@ -651,18 +658,18 @@ pub extern "C" fn molt_pickle_loads_protocol01(data_bits: u64) -> u64 {
                     };
                     let Some(item) = memo.get(&key).cloned() else {
                         let message = format!("pickle.loads: memo key {} missing", key);
-                        return pickle_raise(_py, &message);
+                        return PickleError::Unpickling.raise(_py, &message);
                     };
                     stack.push(item);
                 }
                 _ => {
                     let message = format!("pickle.loads: unsupported opcode {:?}", op);
-                    return pickle_raise(_py, &message);
+                    return PickleError::Unpickling.raise(_py, &message);
                 }
             }
         }
         let Some(item) = stack.last() else {
-            return pickle_raise(_py, "pickle.loads: pickle stack empty");
+            return PickleError::Unpickling.raise(_py, "pickle.loads: pickle stack empty");
         };
         match pickle_stack_item_to_value(_py, item) {
             Ok(value) => value,

@@ -189,13 +189,20 @@ Outputs:
 ### 2.3 `molt run`
 **Status:** Implemented (compiled-by-default).
 
-Purpose: Compile with Molt and run the native binary.
+Purpose: Compile with Molt and run the selected native, JIT, WASM/WASI or Luau program.
+The MLIR target produces an artifact without executing it.
 
 Key flags:
 - `--module <name>` (use `name.__main__` when present)
 - `--build-arg <arg>` (forwarded to `molt build`)
 - `--rebuild` (disable build cache for the compiled run)
 - `--timing` (emit compile/run timing)
+- `--json` (one `run` result containing the guest return code and any stdout/stderr;
+  `--timing` adds build/run/total seconds). Native, JIT, WASM/WASI and Luau use
+  the same result contract. WASM/WASI JSON keeps guest stderr in `stderr` and
+  Node/host diagnostics in `host_stderr`; neither stream is warning-filtered.
+  Non-JSON output continues to inherit the original streams. MLIR reports `output` and `executed: false`, with
+  build/total timing when requested; it reports no guest return code or run time.
 - `--capabilities <file|profile|list>` (capability profiles/tokens or manifest path)
 - `--trusted/--no-trusted` (select the finite generated maximum built-in capability tier).
 - Script args are forwarded by default; use `--` to separate.

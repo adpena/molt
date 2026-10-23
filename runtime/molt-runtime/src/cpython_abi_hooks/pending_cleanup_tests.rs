@@ -2696,10 +2696,8 @@ fn writable_buffer_preparation_case(deny_lease: bool) {
             {
                 // Warm only projection. The first denied allocation is the stable
                 // lease master, before any Python exporter callback can run.
-                let projected = unsafe {
-                    molt_cpython_abi::native_custody::project_buffer_object(instance.bits())
-                }
-                .unwrap();
+                let projected =
+                    unsafe { molt_runtime_capi::project_buffer_object(instance.bits()) }.unwrap();
                 let denied = DenyPreparationCAllocations::enter();
                 let result = molt_file_readinto(stream.bits(), instance.bits());
                 drop(denied);
@@ -2932,7 +2930,7 @@ fn buffer_consumers_preserve_cold_semantic_class_preparation_failure() {
             // With that same class legitimately prepared, the real exporter is
             // called once and releases once. Denial never warms a fake success.
             let projected = unsafe {
-                molt_cpython_abi::native_custody::NativeObjectOwner::from_owned(
+                molt_runtime_capi::NativeObjectOwner::from_owned(
                     GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(class.bits()),
                 )
             };
@@ -3094,7 +3092,7 @@ fn buffer_eligibility_preparation_failure_never_selects_a_fallback_protocol() {
             crate::test_support::assert_and_clear_emergency_memory_error(py);
 
             let projected = unsafe {
-                molt_cpython_abi::native_custody::NativeObjectOwner::from_owned(
+                molt_runtime_capi::NativeObjectOwner::from_owned(
                     GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(class.bits()),
                 )
             };
@@ -3168,8 +3166,7 @@ fn bytearray_normalization_preserves_lease_preparation() {
                 MoltObject::from_ptr(crate::alloc_bytearray(py, b"A")).bits(),
             );
             let projected =
-                unsafe { molt_cpython_abi::native_custody::project_buffer_object(instance.bits()) }
-                    .unwrap();
+                unsafe { molt_runtime_capi::project_buffer_object(instance.bits()) }.unwrap();
             PREPARATION_BUFFER.with(|probe| {
                 probe.set(PreparationBufferProbe {
                     view: view.bits(),

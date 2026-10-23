@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from molt.cli.link_input_observation import CompilationInputRecord
+
+from molt.backend_protocol import BackendDaemonJobOrigin
+
 from molt.compilation_target import target_name
 
 from molt.compilation_target import Target
@@ -60,6 +64,8 @@ def _observed_build_toolchain(
     runtime_lib: Path | None,
     output: Path,
     selected_profiles: Mapping[str, str] | None = None,
+    daemon_job_origin: BackendDaemonJobOrigin | None = None,
+    link_input_observation: CompilationInputRecord | None = None,
 ) -> dict[str, Any]:
     """Observe selected bytes; unknown or failed observations never become claims.
 
@@ -70,6 +76,10 @@ def _observed_build_toolchain(
         "kind": "molt-build-observation-v1",
         "compiled_with_verified": False,
     }
+    if link_input_observation is not None:
+        facts["link_input_observation"] = dict(link_input_observation)
+    if daemon_job_origin is not None:
+        facts["daemon_job_origin"] = daemon_job_origin.payload()
     if selected_profiles is not None:
         facts["selected_profiles"] = dict(selected_profiles)
     for name, path, executable in (
@@ -89,6 +99,13 @@ def _observed_build_toolchain(
             facts[name] = {"path": str(path), "identity": identity}
         except (OSError, ValueError) as exc:
             facts[name] = {"error": str(exc)}
+    if runtime_lib is None and link_input_observation is not None:
+        link = link_input_observation["link"]
+        if link["schema"] == "molt.wasm-link-inputs.v1":
+            facts["runtime"] = {
+                "identity": dict(link["source_inputs"]["runtime"]),
+                "observation": "linker-input-buffer",
+            }
     return facts
 
 
@@ -440,6 +457,7 @@ def _finalize_native_link_candidate(
     phase_times: MutableMapping[str, int] | None = None,
     receipt: link_fingerprints.FinalLinkReceiptRequest | None = None,
     link_selection: tuple[Path, Path] | None = None,
+    link_input_artifacts: dict[str, tuple[Path, Path]] | None = None,
     validate_inputs: Callable[[], None] | None = None,
 ) -> str | None:
     """Finalize and validate a private candidate before atomic publication."""
@@ -447,7 +465,10 @@ def _finalize_native_link_candidate(
         candidate = canonical_file_leaf(
             candidate, create_parent=False, role="native candidate"
         )
-        outputs = {"binary": output_binary}
+        outputs = {
+            "binary": output_binary,
+            **{k: v[1] for k, v in (link_input_artifacts or {}).items()},
+        }
         if link_selection is not None:
             outputs["selection"] = link_selection[1]
         if receipt is not None:
@@ -456,6 +477,7 @@ def _finalize_native_link_candidate(
             outputs,
             inputs=(
                 candidate,
+                *(v[0] for v in (link_input_artifacts or {}).values()),
                 *((link_selection[0],) if link_selection is not None else ()),
             ),
         )
@@ -503,6 +525,7 @@ def _finalize_native_link_candidate(
                 link_fingerprints.publish_link_outputs(
                     {
                         "binary": (signed, output_binary),
+                        **(link_input_artifacts or {}),
                         **(
                             {"selection": link_selection}
                             if link_selection is not None
@@ -525,6 +548,8 @@ def _finalize_native_link_candidate(
     finally:
         cleanup_started = time.perf_counter_ns() if phase_times is not None else 0
         discard_staged_output(candidate)
+        for stage, _ in (link_input_artifacts or {}).values():
+            discard_staged_output(stage)
         if link_selection is not None:
             discard_staged_output(link_selection[0])
         if phase_times is not None:
@@ -575,10 +600,13 @@ def _emit_native_link_result(
     resolved_diagnostics_verbosity: str,
     strip_after_link: bool = True,
     link_selection: tuple[Path, Path] | None = None,
+    link_input_artifacts: dict[str, tuple[Path, Path]] | None = None,
     backend_bin: Path | None = None,
     selected_profiles: Mapping[str, str] | None = None,
     finalize_inputs: Callable[[], None] | None = None,
     validate_inputs: Callable[[], None] | None = None,
+    daemon_job_origin: BackendDaemonJobOrigin | None = None,
+    link_input_observation: CompilationInputRecord | None = None,
 ) -> int:
     def emit_finalization_failure(message: str) -> int:
         diagnostics_payload, diagnostics_error = _emit_build_diagnostics_if_present(
@@ -629,6 +657,7 @@ def _emit_native_link_result(
                 strip=strip_after_link,
                 validate_inputs=validate_inputs,
                 link_selection=link_selection,
+                link_input_artifacts=link_input_artifacts,
                 receipt=link_fingerprints.FinalLinkReceiptRequest.from_fingerprint(
                     link_fingerprint_path, link_fingerprint
                 ),
@@ -704,6 +733,8 @@ def _emit_native_link_result(
                 runtime_lib=runtime_lib,
                 output=output_binary,
                 selected_profiles=selected_profiles,
+                daemon_job_origin=daemon_job_origin,
+                link_input_observation=link_input_observation,
             )
             _attach_build_metadata(
                 data,

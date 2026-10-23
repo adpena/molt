@@ -5,7 +5,7 @@ use super::*;
 fn native_artifact_job_contract_defaults_and_rejects_unknown_kinds() {
     let _scope = molt_backend::backend_environment::enter(Arc::default());
     use crate::backend_process::{NativeArtifactKind, NativeTargetOptions};
-    let mut value = serde_json::json!({"id":"job", "is_wasm":false, "output":"output", "cache_key":"same", "probe_cache_only":true});
+    let mut value = serde_json::json!({"id":"job", "is_wasm":false, "output":"output", "cache_key":"same", "probe_cache_only":true, "function_digests": ""});
     let mut job = DaemonJobRequest::from_json_value(&value, "job").expect("default object job");
     assert_eq!(
         job.target,
@@ -39,7 +39,7 @@ fn native_artifact_job_contract_defaults_and_rejects_unknown_kinds() {
 fn wasm_job_carries_its_complete_layout() {
     // src/molt/cli/backend_execution.py sends every layout field.
     let value = serde_json::json!({
-        "id": "job", "is_wasm": true, "output": "app.wasm", "cache_key": "same", "probe_cache_only": true,
+        "id": "job", "is_wasm": true, "output": "app.wasm", "cache_key": "same", "probe_cache_only": true, "function_digests": "",
         "target_triple": "wasm32-wasip1", "wasm_link": true, "wasm_data_base": 1048576,
         "wasm_table_base": 4096, "wasm_split_runtime_app_table_base": 8192,
         "wasm_runtime_poll_slots": 6,
@@ -68,7 +68,7 @@ fn wasm_job_carries_its_complete_layout() {
 #[test]
 fn daemon_without_wasm_backend_refuses_wasm_jobs_when_parsing() {
     let value = serde_json::json!({
-        "id": "job", "is_wasm": true, "output": "app.wasm", "cache_key": "same", "probe_cache_only": true,
+        "id": "job", "is_wasm": true, "output": "app.wasm", "cache_key": "same", "probe_cache_only": true, "function_digests": "",
     });
     let error = DaemonJobRequest::from_json_value(&value, "request.jobs[0]")
         .expect_err("a native-only daemon cannot build WASM");
@@ -103,6 +103,7 @@ fn daemon_ir_source_rejects_inline_documents_and_ambiguous_probe_custody() {
         let mut value = base.clone();
         value["ir_path"] = path;
         value["probe_cache_only"] = true.into();
+        value["function_digests"] = "".into();
         let error = DaemonJobRequest::from_json_value(&value, "job").unwrap_err();
         assert!(error.contains("ir_path"), "{error}");
     }
@@ -138,5 +139,43 @@ fn full_daemon_job_requires_a_nonempty_messagepack_lease_path() {
     assert_eq!(
         job.ir_source,
         DaemonIrSource::Lease("fixture.msgpack".to_owned())
+    );
+}
+
+#[test]
+fn a_probe_names_its_program_and_a_lease_names_none() {
+    use molt_ir::addressed_program::FunctionDigest;
+    let probe = serde_json::json!({
+        "id": "job", "is_wasm": cfg!(feature = "wasm-backend"),
+        "output": "unused", "cache_key": "same", "probe_cache_only": true,
+    });
+    let error = DaemonJobRequest::from_json_value(&probe, "job").unwrap_err();
+    assert!(error.contains("requires function_digests"), "{error}");
+    let digests = [FunctionDigest::of_body(b"a"), FunctionDigest::of_body(b"b")];
+    let mut named = probe.clone();
+    named["function_digests"] = digests
+        .iter()
+        .map(ToString::to_string)
+        .collect::<String>()
+        .into();
+    assert_eq!(
+        DaemonJobRequest::from_json_value(&named, "job")
+            .unwrap()
+            .ir_source,
+        DaemonIrSource::Probe(digests.to_vec())
+    );
+    for malformed in ["0", "zz", &"A".repeat(64)] {
+        named["function_digests"] = malformed.into();
+        let error = DaemonJobRequest::from_json_value(&named, "job").unwrap_err();
+        assert!(error.contains("function_digests"), "{error}");
+    }
+    let mut lease = probe;
+    lease["probe_cache_only"] = false.into();
+    lease["ir_path"] = "fixture.msgpack".into();
+    lease["function_digests"] = "".into();
+    let error = DaemonJobRequest::from_json_value(&lease, "job").unwrap_err();
+    assert!(
+        error.contains("names its functions in the ir_path lease"),
+        "{error}"
     );
 }

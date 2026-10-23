@@ -195,6 +195,18 @@ def test_ssl_intrinsics_split_core_state_from_networking() -> None:
     assert f'#[cfg({net_cfg})]\n        "molt_ssl_context_new"' not in generated
 
 
+def test_unicode_names_feature_refines_module_without_reclassifying_it() -> None:
+    module = gen_intrinsics
+    builtin, internal, stdlib = module._load_categories()
+    for symbol in ("molt_unicodedata_name", "molt_unicodedata_lookup"):
+        assert module._feature_gate_for_symbol(symbol) == "stdlib_unicode_names"
+        assert module._cfg_gate_for_symbol(symbol) == 'feature = "stdlib_unicode_names"'
+        assert (
+            module._classify_symbol(symbol, builtin, internal, stdlib) == "unicodedata"
+        )
+    assert module._feature_gate_for_symbol("molt_unicodedata_category") == "stdlib_text"
+
+
 def test_reported_hidden_feature_symbols_declare_their_features() -> None:
     # HF-487: these were reachable under `auto` while their prefix mapped to
     # no feature, so a micro runtime linked a stub that failed at run time.

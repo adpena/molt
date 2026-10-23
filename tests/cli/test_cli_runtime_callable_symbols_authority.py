@@ -4,6 +4,7 @@ from molt.compilation_target import admit_target
 
 from tests.runtime_build_identity_helper import native_runtime_build_inputs
 
+from molt.cli.backend_ir_transport import BackendIrProgram
 from molt.cli.cache_keys import FunctionDigests
 
 import hashlib
@@ -276,10 +277,7 @@ def test_final_codegen_admission_recaptures_once_without_reselecting(
 ):
     from molt.cli import runtime_native_build
 
-    from molt.python_runtime_admission import BuildPythonAdmission
-
     state = admitted_runtime
-    state.build_python_admission = BuildPythonAdmission()
     original = state.native_runtime_codegen_binding
     captured = []
 
@@ -302,12 +300,9 @@ def test_final_codegen_admission_recaptures_once_without_reselecting(
                 "stdlib_profile": "micro",
                 "extra_runtime_features": (),
                 "rust_cpu": state.rust_cpu,
-                "build_python_admission": state.build_python_admission,
             },
         )
     ]
-
-    state.build_python_admission.close()
 
 
 def test_final_codegen_admission_reverifies_original_observed_environment(
@@ -388,7 +383,7 @@ def test_source_codegen_pins_original_generation_without_rehashing_archive(
         assert state.native_runtime_codegen_binding.manifest is generation.members[1][1]
 
 
-@pytest.mark.parametrize("changed_input", ["source", "configuration", "python"])
+@pytest.mark.parametrize("changed_input", ["source", "configuration", "rustc"])
 def test_final_codegen_admission_rejects_current_input_drift(
     admitted_runtime, tmp_path, monkeypatch, changed_input
 ):
@@ -402,8 +397,8 @@ def test_final_codegen_admission_rejects_current_input_drift(
 
     # Independently derive simulated resolver receipts from real mutable inputs.
     # These tests own the codegen/final-consumer boundary; resolver closure and
-    # isolated-Python capture behavior retain their existing dedicated tests.
-    inputs = {name: tmp_path / name for name in ("source", "configuration", "python")}
+    # executable/resource capture behavior retain their existing dedicated tests.
+    inputs = {name: tmp_path / name for name in ("source", "configuration", "rustc")}
     for path in inputs.values():
         path.write_bytes(b"before")
 
@@ -738,6 +733,7 @@ def test_callable_dispatch_and_all_cache_tiers_are_operation_owned(
     for probe in (True, False):
         payload, error = backend_execution._backend_daemon_compile_request_bytes(
             ir_path=None if probe else Path("backend-ir.msgpack"),
+            probe_function_digests="" if probe else None,
             backend_output=tmp_path / "out.a",
             artifact_contract=resolve_backend_artifact_contract(
                 target=admit_target("native"), emit_mode="bin"
@@ -795,7 +791,7 @@ def test_callable_dispatch_and_all_cache_tiers_are_operation_owned(
         cache_setup=first_cache,
         backend_daemon_config_digest=None,
         entry_module="__main__",
-        ir={"functions": []},
+        program=BackendIrProgram({"functions": []}, FunctionDigests()),
         json_output=True,
         warnings=[],
         verbose=False,
@@ -874,16 +870,13 @@ def test_native_object_output_rejects_runtime_generation_drift(
     from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
     from molt.cli.models import (
         _BackendCacheSetup,
+        _PreparedBackendCompile,
         _PreparedBackendSetup,
         _PreparedBuildConfig,
     )
-    from molt.python_runtime_admission import BuildPythonAdmission
     from molt.target_python import TargetPythonVersion
 
     state = admitted_runtime
-    admission = BuildPythonAdmission()
-    request.addfinalizer(admission.close)
-    state.build_python_admission = admission
     binding = state.native_runtime_codegen_binding
     calls = []
     staged_object = file_publication.staged_file_path(
@@ -1002,12 +995,13 @@ def test_native_object_output_rejects_runtime_generation_drift(
             cache_path=None,
             function_cache_path=None,
         ),
-        prepared_backend_compile=NS(
+        prepared_backend_compile=_PreparedBackendCompile(
             cache_enabled=False,
             cache_hit=False,
             cache_hit_tier=None,
             backend_daemon_cached=False,
             backend_daemon_cache_tier=None,
+            backend_daemon_health=None,
             backend_daemon_config_digest=None,
             wasm_table_base=None,
         ),

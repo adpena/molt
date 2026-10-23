@@ -1545,25 +1545,41 @@ fn dead_loop_phi_function() -> (TirFunction, BlockId, ValueId) {
     (func, header, d_phi)
 }
 
-/// A loop phi that nothing reads is dead as soon as its header is entered.
-/// Every arc into the header moves an owned list into it, so the header
-/// releases it on entry, once per entry. That includes the value the loop
-/// exits with, which a back-edge-only release leaked.
+/// Dead transport is removed before ownership planning. Each incoming list
+/// keeps its source owner until its real last use, so both entry and backedge
+/// lists are released even when the loop exits without another iteration.
 #[test]
-fn dead_loop_phi_is_released_on_header_entry() {
+fn dead_loop_phi_sources_are_released_without_transport() {
     let (mut func, header, d_phi) = dead_loop_phi_function();
-    insert(&mut func);
-
-    let header_entry: Vec<ValueId> = func.blocks[&header]
-        .ops
-        .iter()
-        .take_while(|op| op.opcode == OpCode::DecRef)
-        .map(|op| op.operands[0])
+    let owners: Vec<_> = func
+        .blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .filter(|op| op.opcode == OpCode::BuildList)
+        .map(|op| op.results[0])
         .collect();
-    assert_eq!(
-        header_entry,
-        vec![d_phi],
-        "the dead phi is released as the header is entered"
+    assert_eq!(owners.len(), 2);
+    insert(&mut func);
+    assert!(
+        func.blocks[&header].args.is_empty(),
+        "unused phi must be pruned"
+    );
+    for owner in owners {
+        assert_eq!(
+            func.blocks
+                .values()
+                .flat_map(|block| &block.ops)
+                .filter(|op| op.opcode == OpCode::DecRef && op.operands == [owner])
+                .count(),
+            1,
+            "each incoming list has exactly one release site"
+        );
+    }
+    assert!(
+        func.blocks
+            .values()
+            .flat_map(|block| &block.ops)
+            .all(|op| !op.operands.contains(&d_phi))
     );
     let paths: [&[bool]; 3] = [&[], &[true], &[true, true]];
     for path in paths {
@@ -1572,27 +1588,31 @@ fn dead_loop_phi_is_released_on_header_entry() {
 }
 
 #[test]
-fn dead_loop_phi_header_release_survives_refcount_elim_post() {
-    let (mut func, header, d_phi) = dead_loop_phi_function();
+fn dead_loop_phi_source_releases_survive_refcount_elim_post() {
+    let (mut func, header, _) = dead_loop_phi_function();
     run(&mut func, &mut AnalysisManager::new());
+    assert!(func.blocks[&header].args.is_empty());
+    let paths: [&[bool]; 3] = [&[], &[true], &[true, true]];
+    let before: Vec<_> = paths.iter().map(|path| trace(&func, 0, path)).collect();
+    let releases = count_decrefs(&func);
     assert!(
-        func.blocks[&header]
-            .ops
-            .iter()
-            .any(|op| op.opcode == OpCode::DecRef && op.operands[0] == d_phi),
-        "precondition: drop_insertion must release the dead phi on header entry",
+        releases > 0,
+        "source owners must be released before RC elimination"
     );
-
     let mut am = AnalysisManager::new();
     molt_passes::tir::passes::refcount_elim::run_post_drop(&mut func, &mut am);
-
-    assert!(
-        func.blocks
-            .values()
-            .flat_map(|block| block.ops.iter())
-            .any(|op| op.opcode == OpCode::DecRef && op.operands[0] == d_phi),
-        "the header-entry DecRef(d_phi) must survive refcount_elim::run_post_drop",
+    assert_eq!(
+        count_decrefs(&func),
+        releases,
+        "source releases must survive"
     );
+    for (path, expected) in paths.iter().zip(before) {
+        assert_eq!(
+            trace(&func, 0, path),
+            expected,
+            "post-drop elimination must preserve exact release order"
+        );
+    }
 }
 
 /// `IterNextUnboxed` writes its value result only on the not-done edge. A

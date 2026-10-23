@@ -3063,8 +3063,8 @@ def test_repo_process_sentinel_scopes_automatic_kills_to_current_tree(
     _patch_guard_operation(
         monkeypatch,
         harness_memory_guard.memory_guard,
-        "sample_processes",
-        lambda: samples,
+        "sample_processes_custody",
+        lambda _interest: samples,
     )
     _patch_guard_operation(
         monkeypatch, harness_memory_guard, "_claim_terminated_pgid", lambda pgid: True
@@ -3145,8 +3145,8 @@ def test_repo_process_sentinel_does_not_churn_codex_helper_descendant(
     _patch_guard_operation(
         monkeypatch,
         harness_memory_guard.memory_guard,
-        "sample_processes",
-        lambda: samples,
+        "sample_processes_custody",
+        lambda _interest: samples,
     )
     terminated: list[int] = []
     _patch_guard_operation(
@@ -3225,13 +3225,13 @@ def test_repo_process_sentinel_keeps_reparented_observed_child_in_scope(
     ]
     sample_index = 0
 
-    def fake_sample_processes():
+    def fake_sample_processes(_interest):
         return sample_sets[sample_index]
 
     _patch_guard_operation(
         monkeypatch,
         harness_memory_guard.memory_guard,
-        "sample_processes",
+        "sample_processes_custody",
         fake_sample_processes,
     )
     _patch_guard_operation(
@@ -3310,8 +3310,8 @@ def test_repo_process_sentinel_rejects_codex_parented_sibling_group(
     _patch_guard_operation(
         monkeypatch,
         harness_memory_guard.memory_guard,
-        "sample_processes",
-        lambda: samples,
+        "sample_processes_custody",
+        lambda _interest: samples,
     )
     _patch_guard_operation(
         monkeypatch, harness_memory_guard, "_claim_terminated_pgid", lambda pgid: True
@@ -3380,13 +3380,13 @@ def test_repo_process_sentinel_rejects_reused_current_tree_pgid_without_repo_ide
     ]
     sample_index = 0
 
-    def fake_sample_processes():
+    def fake_sample_processes(_interest):
         return sample_sets[sample_index]
 
     _patch_guard_operation(
         monkeypatch,
         harness_memory_guard.memory_guard,
-        "sample_processes",
+        "sample_processes_custody",
         fake_sample_processes,
     )
     _patch_guard_operation(
@@ -3716,14 +3716,14 @@ def test_repo_sentinel_takes_a_baseline_census_only_when_it_drains(
     """Only the exit drain reads the entry baseline, so only a drain pays it."""
     calls: list[str] = []
 
-    def sample_processes():  # type: ignore[no-untyped-def]
+    def sample_processes(_interest):  # type: ignore[no-untyped-def]
         calls.append("sample")
         return {}
 
     _patch_guard_operation(
         monkeypatch,
         harness_memory_guard.memory_guard,
-        "sample_processes",
+        "sample_processes_custody",
         sample_processes,
     )
     limits = harness_memory_guard.HarnessMemoryLimits(
@@ -4341,3 +4341,125 @@ def test_guard_boundary_bounds_a_git_transfer_whichever_tool_starts_it(
     # curl's low-speed limit and the guard's output bound are both 2 s here;
     # either ends it. The 120 s deadline is a hang guard only.
     assert "too slow" in stderr.lower() or "no output for 2.00s" in stderr
+
+
+@pytest.mark.parametrize("peer_count", [0, 1000])
+def test_current_tree_sentinel_reads_kernel_interest_and_retains_reparenting(
+    monkeypatch, tmp_path, peer_count
+):
+    """Host size must not change visited rows or the independent custody oracle."""
+    from types import SimpleNamespace
+    from molt import process_model as model
+
+    root, child = os.getpid(), os.getpid() + 100000
+
+    def row(pid, parent, born):
+        return model.ProcessSample(
+            pid=pid,
+            ppid=parent,
+            pgid=pid,
+            rss_kb=64,
+            command=f"{tmp_path}/target/molt-backend",
+            started_at_ns=born,
+        )
+
+    table = {1: row(1, 0, 1), root: row(root, 1, 100), child: row(child, root, 200)}
+    table.update({child + n + 1: row(child + n + 1, 1, 300) for n in range(peer_count)})
+    reads = []
+
+    def kernel_row(pid):
+        reads.append(pid)
+        return table.get(pid)
+
+    def child_pids(parent):
+        # A kernel index, not a user-space host scan.
+        return [child] if table[child].ppid == parent else []
+
+    monkeypatch.setattr(
+        model,
+        "_darwin_process_authority",
+        lambda: SimpleNamespace(
+            kernel_row=kernel_row,
+            child_pids=child_pids,
+        ),
+    )
+    _patch_guard_operation(
+        monkeypatch, model, "posix_custody_lineage", lambda _pid: frozenset({1, root})
+    )
+    _patch_guard_operation(
+        monkeypatch,
+        harness_memory_guard.memory_guard,
+        "sample_processes_custody",
+        model._darwin_custody_rows,
+    )
+    _patch_guard_operation(
+        monkeypatch,
+        harness_memory_guard.memory_guard,
+        "sample_processes",
+        lambda: pytest.fail("current-tree poll read the host table"),
+    )
+    monkeypatch.delenv("MOLT_BACKEND_DAEMON_SUITE_LEASE", raising=False)
+    sentinel = harness_memory_guard.repo_process_sentinel(
+        repo_root=tmp_path,
+        artifact_root=tmp_path,
+        label="interest",
+        drain_on_exit=False,
+    )
+    first = sentinel._current_groups()
+    assert {pid for group in first for pid in group.pids} == {child}
+    first_reads = len(reads)
+    assert set(reads) == {1, root, child}
+    table[child] = row(child, 1, 200)
+    second = sentinel._current_groups()
+    assert {pid for group in second for pid in group.pids} == {child}
+    assert len(reads) - first_reads == 3
+    table[child] = row(child, 1, 201)
+    assert sentinel._current_groups() == []
+    assert set(reads) == {1, root, child}
+    # Diagnostic history is deliberately retained, but it is not sampling
+    # custody. Retired children and a foreign reused PID must not grow polls.
+    for n in range(1000):
+        pid = child + 10000 + n
+        sentinel._observed_process_identities[pid] = model.process_identity(
+            row(pid, root, 400)
+        )
+    foreign = child + 10000
+    table[foreign] = row(foreign, 1, 401)
+    table[foreign + 1] = row(foreign + 1, foreign, 402)
+    monkeypatch.setattr(
+        model,
+        "_darwin_process_authority",
+        lambda: SimpleNamespace(
+            kernel_row=kernel_row,
+            child_pids=lambda parent: [foreign + 1] if parent == foreign else [],
+        ),
+    )
+    reads.clear()
+    assert sentinel._current_groups() == []
+    assert set(reads) == {1, root}
+    assert foreign in sentinel._observed_process_identities
+
+
+def test_explicit_repo_sentinel_keeps_host_snapshot(monkeypatch, tmp_path):
+    calls = []
+    _patch_guard_operation(
+        monkeypatch,
+        harness_memory_guard.memory_guard,
+        "sample_processes",
+        lambda: calls.append("host") or {},
+    )
+    _patch_guard_operation(
+        monkeypatch,
+        harness_memory_guard.memory_guard,
+        "sample_processes_custody",
+        lambda _interest: pytest.fail("repo scope filtered its host"),
+    )
+    sentinel = harness_memory_guard.repo_process_sentinel(
+        repo_root=tmp_path,
+        artifact_root=tmp_path,
+        label="explicit-repo",
+        scope_to_current_tree=False,
+        drain_on_exit=False,
+    )
+    assert sentinel._current_groups() == []
+    assert calls == ["host"]

@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 if TYPE_CHECKING:
-    from tools.wasm_link_fact_provider import WasmFactsProvider
+    from tools.wasm_link_fact_provider import WasmFactsProvider, WasmLinkFacts
+    from tools.wasm_link_transaction import WasmSectionEdit
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
@@ -209,9 +210,12 @@ def _write_string(value: str) -> bytes:
 _parse_sections = parse_wasm_sections
 
 
+_Payload = TypeVar("_Payload", bound=bytes | memoryview)
+
+
 def _insert_standard_section(
-    sections: list[tuple[int, bytes]], section_id: int, payload: bytes
-) -> list[tuple[int, bytes]]:
+    sections: Sequence[tuple[int, _Payload]], section_id: int, payload: _Payload
+) -> list[tuple[int, _Payload]]:
     """Return ``sections`` with one standard section inserted at its canonical
     position: before the first standard section that must follow it (custom
     sections carry no order constraint and stay where they are). Section ids
@@ -231,7 +235,7 @@ def _insert_standard_section(
     return [*sections, (section_id, payload)]
 
 
-def _build_sections(sections: list[tuple[int, bytes]]) -> bytes:
+def _build_sections(sections: Sequence[tuple[int, bytes | memoryview]]) -> bytes:
     output = bytearray()
     output.extend(WASM_MAGIC)
     output.extend(WASM_VERSION)
@@ -641,40 +645,31 @@ def _collect_imports(data: bytes) -> list[WasmImport]:
 
 
 def _ensure_table_export(
-    data: bytes, export_name: str = "molt_table", *, facts_provider: WasmFactsProvider
-) -> bytes | None:
-    facts = facts_provider(data)
+    edit: WasmSectionEdit, export_name: str = "molt_table", *, facts: WasmLinkFacts
+) -> None:
     if not facts["tables"]:
-        return None
-    if any(
-        fact.kind == 1 and name in (export_name, "__indirect_function_table")
-        for name, fact in facts.exports.items()
+        return
+    payload = edit.payload(7)
+    if payload is not None and any(
+        entry.kind == 1 and entry.name in (export_name, "__indirect_function_table")
+        for entry in parse_wasm_export_section(payload)
     ):
-        return None
-    sections = _parse_sections(data)
-    new_sections: list[tuple[int, bytes]] = []
-    modified = False
-    saw_export = False
-    for section_id, payload in sections:
-        if section_id != 7:
-            new_sections.append((section_id, payload))
-            continue
-        saw_export = True
-        offset = 0
-        count, offset = _read_varuint(payload, offset)
-        entries_offset = offset
-        entry = _write_string(export_name) + bytes([1]) + _write_varuint(0)
-        new_payload = _write_varuint(count + 1) + payload[entries_offset:] + entry
-        new_sections.append((section_id, new_payload))
-        modified = True
-    if not saw_export:
-        entry = _write_string(export_name) + bytes([1]) + _write_varuint(0)
-        export_payload = _write_varuint(1) + entry
-        new_sections = _insert_standard_section(new_sections, 7, export_payload)
-        modified = True
-    if not modified:
-        return None
-    return _build_sections(new_sections)
+        return
+    _append_export_entry(edit, name=export_name, kind=1, index=0)
+
+
+def _append_export_entry(
+    edit: WasmSectionEdit, *, name: str, kind: int, index: int
+) -> None:
+    payload = edit.payload(7)
+    count, offset = (0, 0) if payload is None else _read_varuint(payload, 0)
+    entry = _write_string(name) + bytes([kind]) + _write_varuint(index)
+    edit.replace(
+        7,
+        _write_varuint(count + 1)
+        + (b"" if payload is None else payload[offset:])
+        + entry,
+    )
 
 
 def _collect_custom_names(data: bytes) -> list[str]:

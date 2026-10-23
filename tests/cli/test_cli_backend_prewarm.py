@@ -9,6 +9,8 @@ feature lane, binary path, Cargo timeout, or Rust CPU policy fails here.
 
 from __future__ import annotations
 
+from molt.cargo_execution_policy import cargo_profile_directory
+
 from molt.compilation_target import Target, TargetKind, admit_target
 
 from molt.cli.cache_keys import FunctionDigests
@@ -35,7 +37,7 @@ from molt.cli.build_output_layout import _resolve_build_output_layout
 from molt.cli.build_request import BuildRequest
 from molt.cli.models import _BackendCacheSetup
 from molt.cli.project_roots import _find_project_root
-from molt.cli.runtime_paths import _cargo_profile_dir, _cargo_target_root
+from molt.cli.runtime_paths import _cargo_target_root
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.exact_json import canonical_json_sha256
 from molt.host_tool_products import HostToolProduct
@@ -346,7 +348,7 @@ def _fake_backend_toolchain(
         profile = cmd[cmd.index("--profile") + 1]
         output = (
             Path(plan.environment["CARGO_TARGET_DIR"])
-            / _cargo_profile_dir(profile)
+            / cargo_profile_directory(profile)
             / f"molt-backend{_EXE}"
         )
         output.parent.mkdir(parents=True, exist_ok=True)

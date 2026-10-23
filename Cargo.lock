@@ -2599,7 +2599,6 @@ dependencies = [
  "molt-codegen-abi",
  "molt-ir",
  "molt-runtime-core",
- "rmp-serde",
  "serde",
  "serde_json",
  "toml",
@@ -2615,13 +2614,11 @@ dependencies = [
  "molt-codegen-abi",
  "molt-cpython-abi-test-support",
  "molt-lang-obj-model",
- "molt-runtime-core",
  "molt-runtime-platform",
  "once_cell",
  "parking_lot 0.13.0",
  "serde_json",
  "sha2 0.11.1",
- "unicode-properties",
  "windows-sys 0.61.2",
 ]
 
@@ -2683,6 +2680,7 @@ dependencies = [
  "molt-lang-obj-model",
  "molt-runtime-asyncio",
  "molt-runtime-audit",
+ "molt-runtime-capi",
  "molt-runtime-collections",
  "molt-runtime-compression",
  "molt-runtime-constants",
@@ -2727,7 +2725,6 @@ dependencies = [
  "tempfile",
  "trybuild",
  "tungstenite",
- "unicode-casefold",
  "unicode_names2 4.0.0",
  "webpki-roots 1.0.10",
  "windows-sys 0.61.2",
@@ -2747,6 +2744,14 @@ name = "molt-runtime-audit"
 version = "0.1.0"
 
 [[package]]
+name = "molt-runtime-capi"
+version = "0.1.0"
+dependencies = [
+ "molt-lang-cpython-abi",
+ "molt-runtime-core",
+]
+
+[[package]]
 name = "molt-runtime-collections"
 version = "0.1.0"
 dependencies = [
@@ -2762,6 +2767,7 @@ dependencies = [
  "flate2",
  "libz-rs-sys",
  "molt-lang-cpython-abi",
+ "molt-runtime-capi",
  "molt-runtime-core",
  "xz2",
  "zip",
@@ -2778,6 +2784,7 @@ dependencies = [
  "crc32fast",
  "molt-lang-obj-model",
  "num-bigint 0.5.1",
+ "num-integer",
  "num-traits",
 ]
 
@@ -2793,6 +2800,7 @@ dependencies = [
  "md4",
  "molt-lang-cpython-abi",
  "molt-lang-obj-model",
+ "molt-runtime-capi",
  "molt-runtime-core",
  "num-bigint 0.5.1",
  "num-traits",
@@ -2815,8 +2823,8 @@ name = "molt-runtime-http"
 version = "0.1.0"
 dependencies = [
  "libc",
- "molt-lang-cpython-abi",
  "molt-lang-obj-model",
+ "molt-runtime-capi",
  "molt-runtime-core",
  "num-bigint 0.5.1",
  "num-traits",
@@ -2883,8 +2891,8 @@ version = "0.1.0"
 dependencies = [
  "filetime",
  "libc",
- "molt-lang-cpython-abi",
  "molt-lang-obj-model",
+ "molt-runtime-capi",
  "molt-runtime-core",
  "molt-runtime-platform",
  "num_cpus",
@@ -2935,6 +2943,7 @@ dependencies = [
  "memchr",
  "molt-lang-cpython-abi",
  "molt-lang-obj-model",
+ "molt-runtime-capi",
  "molt-runtime-core",
  "num-bigint 0.5.1",
  "num-traits",

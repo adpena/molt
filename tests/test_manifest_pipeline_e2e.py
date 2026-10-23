@@ -369,6 +369,9 @@ def test_native_stdlib_objects_reuse_across_code_slot_layouts() -> None:
     from molt.cli.native_symbol_inspection import _native_archive_global_symbol_facts
     from molt.memory_guard_paths import harness_guard_artifact_dir
     from molt.toolchain_identity import stable_file_content_identity
+    from molt.cli.function_records import decode_lowering_record
+    from molt.cli.source_record_store import STORE_RELATIVE_PATH
+    import sqlite3
     from tests.executable_test_support import native_executable_name
 
     # Keep reviewable evidence beside the existing guard receipts. The queue
@@ -405,6 +408,7 @@ def test_native_stdlib_objects_reuse_across_code_slot_layouts() -> None:
         prefix="molt-stdlib-reuse-"
     ) as scratch:
         cache = scratch / "code-cache"
+        environment["MOLT_CACHE"] = str(cache)
         empty_path = scratch / "no-python-on-path"
         empty_path.mkdir()
         known_archives: set[Path] = set()
@@ -455,6 +459,30 @@ def test_native_stdlib_objects_reuse_across_code_slot_layouts() -> None:
                 f"build {index}: stdout:\n{built.stdout}\nstderr:\n{built.stderr}"
             )
             assert output.is_file()
+            # Inspect the real producer records from this same build. Object
+            # reuse must not turn a missing source selection into completeness.
+            source_store = cache / STORE_RELATIVE_PATH
+            assert source_store.is_file()
+            with sqlite3.connect(source_store.as_uri() + "?mode=ro", uri=True) as db:
+                producer_rows = db.execute(
+                    "SELECT payload FROM records WHERE kind = 'module-lowering'"
+                ).fetchall()
+            assert producer_rows
+            selections = []
+            for (encoded,) in producer_rows:
+                producer = json.loads(decode_lowering_record(encoded).metadata)[
+                    "result"
+                ]
+                selection = producer["body_selection"]
+                assert set(selection) == {"kind", "roots"}
+                assert selection["kind"] in {"complete_source", "native_support"}
+                assert bool(selection["roots"]) is (
+                    selection["kind"] == "native_support"
+                )
+                selections.append(selection)
+            (case / "producer-selections.json").write_text(
+                json.dumps(selections, sort_keys=True), encoding="utf-8"
+            )
             cache_lines = [
                 line for line in built.stdout.splitlines() if line.startswith("Cache: ")
             ]
@@ -551,7 +579,8 @@ def test_native_stdlib_objects_reuse_across_code_slot_layouts() -> None:
                 f"native-stdlib-reuse-build case={index} elapsed_seconds={elapsed:.3f} "
                 f"diagnostics_seconds={diagnostics['total_sec']} slots={len(layouts[-1])} "
                 f"application_key={application_keys[-1]} stdlib_key={archive_keys[-1]} "
-                f"{reuse_lines[0]} stdout={executed.stdout!r}",
+                f"{reuse_lines[0]} stdout={executed.stdout!r} "
+                f"phase_sec={json.dumps(diagnostics['phase_sec'], sort_keys=True)}",
                 flush=True,
             )
 
