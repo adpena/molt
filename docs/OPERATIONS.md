@@ -1017,7 +1017,8 @@ fail closed; the inventory itself makes no claim about current file bytes.
 - `MOLT_CLI_PROFILE=<dir>/{pid}.prof` writes a cProfile of each `molt` command;
   `{pid}` keeps parallel builds apart. Read it with `python -m pstats`.
 - Import scans, intrinsic source facts, module analyses and binary module
-  lowerings share `source_records.sqlite` under
+  lowerings share `source_records.v<schema>.sqlite` (one file per schema
+  version, so checkouts of different versions never lock each other out) under
   `<Molt cache>/toolchain_source_records` (`molt.cli.source_record_store`). Every
   project/session uses that store; no project copy is hydrated. Source/context
   admission precedes recency refresh. Existing generation retirement keeps at
