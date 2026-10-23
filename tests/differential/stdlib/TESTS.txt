@@ -237,6 +237,7 @@ tests/differential/stdlib/contextlib_redirect_stderr.py
 tests/differential/stdlib/contextlib_redirect_stdout.py
 tests/differential/stdlib/contextlib_suppress.py
 tests/differential/stdlib/contextlib_suppress_multiple.py
+tests/differential/stdlib/contextmanager_exit_outcomes.py
 tests/differential/stdlib/contextvars_basic.py
 tests/differential/stdlib/contextvars_task_propagation.py
 tests/differential/stdlib/copy_basic.py
