@@ -613,25 +613,49 @@ pub(crate) fn inflight_joined_service_finishes_under_retained_origin(foreign_c: 
                     let count = active_runtime_execution_lease_count();
                     let c_state = unsafe { molt_cpython_abi::api::object::PyGILState_Ensure() };
                     assert!(crate::gil_held());
-                    assert_eq!(crate::state::runtime_state::runtime_state_for_gil().unwrap().identity(), origin.identity());
-                    assert_eq!(unsafe { molt_cpython_abi::api::object::PyThreadState_Get() }, retained);
-                    assert!(crate::state::runtime_state::current_thread_holds_runtime_service_execution_lease());
+                    assert_eq!(
+                        crate::state::runtime_state::runtime_state_for_gil()
+                            .unwrap()
+                            .identity(),
+                        origin.identity()
+                    );
+                    assert_eq!(
+                        unsafe { molt_cpython_abi::api::object::PyThreadState_Get() },
+                        retained
+                    );
+                    assert!(
+                        crate::state::execution_tls().lease_depth.get()
+                            & crate::state::runtime_state::RUNTIME_EXECUTION_SERVICE_ROLE
+                            != 0
+                    );
                     assert_eq!(origin.state().thread_borrow_count(), 1);
-                    assert!(obj_from_bits(crate::molt_getrecursionlimit()).as_int().unwrap() > 0);
-                    assert_eq!(crate::runtime_state(&work.token()).identity(), origin.identity());
+                    assert!(
+                        obj_from_bits(crate::molt_getrecursionlimit())
+                            .as_int()
+                            .unwrap()
+                            > 0
+                    );
+                    assert_eq!(
+                        crate::runtime_state(&work.token()).identity(),
+                        origin.identity()
+                    );
                     assert_eq!(active_runtime_execution_lease_count(), count);
                     unsafe { molt_cpython_abi::api::object::PyGILState_Release(c_state) };
                     assert!(!crate::gil_held());
                     assert!(molt_cpython_abi::api::object::runtime_execution_thread_is_attached());
-                    assert!(molt_cpython_abi::api::object::current_thread_has_retained_runtime_state());
+                    assert!(
+                        molt_cpython_abi::api::object::current_thread_has_retained_runtime_state()
+                    );
                     assert_eq!(active_runtime_execution_lease_count(), count);
                     // Reacquire solely for observing identity; the matching guard
                     // drops before _release restores the original execution lane.
                     {
                         let _observe = crate::GilGuard::new();
-                        assert_eq!(unsafe { molt_cpython_abi::api::object::PyThreadState_Get() }, retained);
+                        assert_eq!(
+                            unsafe { molt_cpython_abi::api::object::PyThreadState_Get() },
+                            retained
+                        );
                     }
-
                 }
                 assert!(!crate::state::runtime_state::runtime_is_ready());
                 assert_eq!(

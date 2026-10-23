@@ -123,21 +123,24 @@ impl Drop for ThreadLocalGuard {
     }
 }
 
-thread_local! {
-    static TLS_GUARD_TOUCHED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+pub(crate) fn touch_tls_guard() {
+    touch_tls_guard_in(crate::state::execution_tls());
 }
 
-pub(crate) fn touch_tls_guard() {
+/// `touch_tls_guard` for a caller that has already read this thread's facts.
+#[inline(always)]
+pub(crate) fn touch_tls_guard_in(tls: &crate::state::ExecutionTls) {
     // Every key below only moves forward (the C-API preparation never returns
     // to Unprepared), so after the first ordered pass a repeat changes nothing.
-    if TLS_GUARD_TOUCHED
-        .try_with(std::cell::Cell::get)
-        .unwrap_or(false)
-    {
-        return;
+    if !tls.tls_guard_touched.get() {
+        order_destructor_thread_locals(&tls.tls_guard_touched);
     }
+}
+
+#[cold]
+#[inline(never)]
+fn order_destructor_thread_locals(touched: &std::cell::Cell<bool>) {
     molt_cpython_abi::api::object::prepare_runtime_thread_state_lifetime();
-    crate::state::runtime_state::touch_runtime_execution_lease_tls_lifetime();
     crate::concurrency::gil::touch_gil_tls_lifetime();
     crate::object::heap_lifecycle::touch_terminal_sink_tls_lifetime();
     let _ = PARSE_ARENA.try_with(|_| {});
@@ -153,7 +156,7 @@ pub(crate) fn touch_tls_guard() {
     // record while the GIL, heap-lifecycle sink pools, and runtime guard TLS
     // above are all still reachable.
     molt_cpython_abi::api::object::arm_runtime_thread_state_lifetime();
-    let _ = TLS_GUARD_TOUCHED.try_with(|touched| touched.set(true));
+    touched.set(true);
 }
 
 pub(crate) fn runtime_teardown(_py: &PyToken<'_>, state: &RuntimeState) {

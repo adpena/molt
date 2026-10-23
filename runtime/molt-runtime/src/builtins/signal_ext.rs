@@ -317,10 +317,8 @@ fn quiesce_admitted_notifications() {
         return;
     }
     #[cfg(not(target_arch = "wasm32"))]
-    let _release = crate::GIL_DEPTH
-        .try_with(|depth| depth.get() > 0)
-        .unwrap_or(false)
-        .then(crate::GilReleaseGuard::suspend);
+    let _release =
+        (crate::state::execution_tls().gil_depth.get() > 0).then(crate::GilReleaseGuard::suspend);
     let mut spins = 0u32;
     while ASYNC_WORK_NOTIFIERS_IN_FLIGHT.load(Ordering::SeqCst) != 0 {
         if spins < 64 {
