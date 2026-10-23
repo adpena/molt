@@ -498,7 +498,9 @@ def test_exhaustive_no_wildcard_match_is_not_flagged():
 # --- 2b. proven-to-find-debt: end-to-end regression detection -------------
 
 
-def _mirror_min_tree(tmp_path: Path) -> Path:
+def _mirror_min_tree(
+    tmp_path: Path, *, exclude_toolchains: frozenset[str] = frozenset()
+) -> Path:
     """Build a minimal but VALID mirror of the meta-gate's inputs in tmp_path:
     the manifest, closed-domain enum files, and a CI file that satisfies every
     ci_checkable generator's --check-step requirement (so the only gating signal
@@ -544,6 +546,7 @@ def _mirror_min_tree(tmp_path: Path) -> Path:
             for g in manifest.generators
             if g.get("ci_checkable", True) and not g.get("discovery_only", False)
             for name in g.get("toolchains", [])
+            if name not in exclude_toolchains
         }
     )
     (tmp_path / "tools" / "proof_plan.toml").write_text(
@@ -1021,11 +1024,12 @@ def test_generator_without_the_contract_fails_gate(tmp_path: Path) -> None:
 def test_generator_toolchain_missing_from_proof_receipt_fails_gate(
     tmp_path: Path,
 ) -> None:
-    root = _mirror_min_tree(tmp_path)
+    import tomllib
+
+    root = _mirror_min_tree(tmp_path, exclude_toolchains=frozenset({"rustfmt"}))
     proof_plan_path = root / "tools" / "proof_plan.toml"
-    text = proof_plan_path.read_text(encoding="utf-8")
-    proof_plan_path.write_text(text.replace('"rustfmt", ', ""), encoding="utf-8")
-    assert "rustfmt" not in proof_plan_path.read_text(encoding="utf-8")
+    plan = tomllib.loads(proof_plan_path.read_text(encoding="utf-8"))
+    assert "rustfmt" not in plan["command"][0]["toolchains"]
 
     _violations, _summary, gating = CGM.run_all(root)
     assert any(

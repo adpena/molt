@@ -2448,6 +2448,7 @@ def test_wasm_host_export_applications_have_independent_cold_partitions() -> Non
         "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_open_reports_all_missing_grants_before_mutation",
         "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_compiled_finder_describes_module_before_initialization",
         "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_final_tir_preserves_effects_scalar_proofs_and_escaped_calls",
+        "tests/test_wasm_runtime_heavy_regressions.py::test_wasm_imported_syntax_errors_keep_native_identity_and_payload",
     )
     assert boundaries.data["timeout_budget"] == "cold"
     assert set(boundaries.dependencies) == {
