@@ -242,20 +242,18 @@ pub struct BackendIrDocument {
 }
 
 impl BackendIrDocument {
-    /// Decode one MessagePack document (the CLI's backend IR lease format) and
-    /// require that the reader holds nothing after it.
+    /// Decode one content-addressed MessagePack lease that ships every body
+    /// (`crate::addressed_program`), and require that the reader holds nothing
+    /// after it. The backend daemon assembles partial leases itself.
     pub fn from_msgpack_reader(reader: &mut impl std::io::Read) -> Result<Self, String> {
-        let document: Self =
-            rmp_serde::from_read(&mut *reader).map_err(|error| error.to_string())?;
-        let mut suffix = [0_u8; 1];
-        loop {
-            match reader.read(&mut suffix) {
-                Ok(0) => return Ok(document),
-                Ok(_) => return Err("trailing bytes after the IR value".to_string()),
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(error) => return Err(error.to_string()),
-            }
-        }
+        crate::addressed_program::AddressedProgram::from_msgpack_reader(reader)?
+            .into_complete_document()
+    }
+
+    /// [`Self::from_msgpack_reader`] over a lease already in memory.
+    pub fn from_msgpack_bytes(bytes: &[u8]) -> Result<Self, String> {
+        crate::addressed_program::AddressedProgram::from_msgpack_bytes(bytes)?
+            .into_complete_document()
     }
 
     pub fn from_json_str(input: &str) -> Result<Self, String> {
@@ -1697,9 +1695,15 @@ mod json_parse_tests {
                     functions: vec![function],
                     profile: None,
                 };
-                let wire = rmp_serde::to_vec_named(&ir).expect("encode backend input");
-                let document: super::BackendIrDocument =
-                    rmp_serde::from_read(wire.as_slice()).expect("real binary document boundary");
+                let wire =
+                    crate::addressed_program::encode_complete_lease(&super::BackendIrDocument {
+                        ir,
+                        module_registry: None,
+                        code_slots: Default::default(),
+                    })
+                    .expect("encode backend lease");
+                let document = super::BackendIrDocument::from_msgpack_reader(&mut wire.as_slice())
+                    .expect("real binary document boundary");
                 assert_eq!(
                     document.ir.functions[0].ops[0].f_value.unwrap().to_bits(),
                     value.to_bits()

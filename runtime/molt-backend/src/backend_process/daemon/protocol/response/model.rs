@@ -5,15 +5,14 @@ pub(crate) struct DaemonJobResponse {
     pub(crate) cached: bool,
     pub(crate) cache_tier: Option<String>,
     pub(crate) output_written: bool,
-    pub(crate) needs_ir: bool,
+    /// Program positions whose bodies the daemon lacks. `Some` asks the
+    /// caller to ship them (`needs_ir` on the wire); a probe miss with every
+    /// body resident answers `Some(vec![])`.
+    pub(crate) missing_functions: Option<Vec<usize>>,
     pub(crate) message: Option<String>,
     /// Function names that were replaced with trap stubs due to Cranelift
     /// compilation failures.  Propagated to the CLI for build warnings.
     pub(crate) warnings: Vec<String>,
-}
-
-pub(super) fn is_false(value: &bool) -> bool {
-    !*value
 }
 
 #[derive(Debug)]
@@ -23,7 +22,10 @@ pub(crate) struct DaemonHealthResponse {
     pub(crate) spawn_config_digest: Option<String>,
     pub(crate) active_config_digest: Option<String>,
     pub(crate) uptime_ms: u64,
+    /// Every resident entry: compiled artifacts and function bodies.
     pub(crate) cache_entries: usize,
+    /// Resident function bodies of the content-addressed store (HF-516).
+    pub(crate) resident_functions: usize,
     pub(crate) cache_bytes: usize,
     pub(crate) cache_max_bytes: Option<usize>,
     pub(crate) request_limit_bytes: Option<usize>,

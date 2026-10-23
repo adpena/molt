@@ -20,6 +20,7 @@ from molt.cli import backend_binary as _backend_binary
 from molt.cli import backend_cache_setup as _backend_cache_setup
 from molt.cli import factgraph as _factgraph
 from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
+from molt.cli.backend_ir_transport import BackendIrProgram
 from molt.cli.backend_cache import (
     _artifact_sync_state_path,
     _backend_daemon_skip_output_sync_flags,
@@ -719,7 +720,7 @@ def _execute_backend_compile(
     cache_setup: _BackendCacheSetup,
     backend_daemon_config_digest: str | None,
     entry_module: str,
-    ir: Mapping[str, Any],
+    program: BackendIrProgram,
     json_output: bool,
     warnings: list[str],
     verbose: bool,
@@ -895,7 +896,7 @@ def _execute_backend_compile(
                 daemon_socket,
                 native_runtime_codegen_binding=native_runtime_codegen_binding,
                 project_root=molt_root,
-                ir=ir,
+                program=program,
                 backend_output=backend_output,
                 artifact_contract=cache_setup.artifact_contract,
                 wasm_link=wasm_link,
@@ -913,7 +914,6 @@ def _execute_backend_compile(
                 stdlib_object_cache_key=cache_setup.stdlib_object_cache_key,
                 stdlib_object_manifest=cache_setup.stdlib_object_manifest,
                 stdlib_module_symbols_json=cache_setup.stdlib_module_symbols_json,
-                stdlib_module_symbols=cache_setup.stdlib_module_symbols,
                 timeout=None,
                 daemon_identity=daemon_identity,
                 request_environment=backend_env,
@@ -966,7 +966,7 @@ def _execute_backend_compile(
                         daemon_socket,
                         native_runtime_codegen_binding=native_runtime_codegen_binding,
                         project_root=molt_root,
-                        ir=ir,
+                        program=program,
                         backend_output=backend_output,
                         artifact_contract=cache_setup.artifact_contract,
                         wasm_link=wasm_link,
@@ -984,7 +984,6 @@ def _execute_backend_compile(
                         stdlib_object_cache_key=cache_setup.stdlib_object_cache_key,
                         stdlib_object_manifest=cache_setup.stdlib_object_manifest,
                         stdlib_module_symbols_json=cache_setup.stdlib_module_symbols_json,
-                        stdlib_module_symbols=cache_setup.stdlib_module_symbols,
                         timeout=None,
                         request_environment=backend_env,
                         daemon_identity=(
@@ -1203,7 +1202,7 @@ def _prepare_backend_compile(
     backend_daemon_config_digest: str | None,
     entry_module: str,
     artifacts_root: Path,
-    ir: Mapping[str, Any],
+    program: BackendIrProgram,
     _ensure_backend_ir_file_path: Callable[[], Path],
     backend_daemon_cached: bool | None,
     backend_daemon_cache_tier: str | None,
@@ -1331,7 +1330,7 @@ def _prepare_backend_compile(
                         prepared_backend_dispatch.backend_daemon_config_digest
                     ),
                     entry_module=entry_module,
-                    ir=ir,
+                    program=program,
                     json_output=json_output,
                     warnings=warnings,
                     verbose=verbose,

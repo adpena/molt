@@ -60,6 +60,11 @@ impl<K: Eq + Hash, V> ResidentCache<K, V> {
         self.entries.get(key).map(|entry| &entry.value)
     }
 
+    /// Resident values, oldest first, without promoting any of them.
+    pub fn values(&self) -> impl Iterator<Item = &V> {
+        self.entries.values().map(|entry| &entry.value)
+    }
+
     /// Promote in place. No key clone, allocation, clock or stale generation.
     pub fn get<Q: Hash + Eq + ?Sized>(&mut self, key: &Q) -> Option<&V>
     where

@@ -17,10 +17,12 @@ pub(crate) struct DaemonJobRequest {
     pub(crate) config_namespace: Option<String>,
 }
 
-/// A cache probe opens no IR. An admitted compile owns exactly one file lease.
+/// A cache probe opens no IR; it names the program's functions so a miss can
+/// answer which bodies the resident store lacks. An admitted compile owns
+/// exactly one content-addressed lease, which names its own functions.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum DaemonIrSource {
-    Probe,
+    Probe(Vec<molt_ir::addressed_program::FunctionDigest>),
     Lease(String),
 }
 

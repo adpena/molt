@@ -7,6 +7,8 @@ import pytest
 from molt._wasm_abi_generated import WASM_POLL_TABLE_IMPORTS
 from molt.backend_environment import CodegenSelection
 from molt.cli import backend_compile
+from molt.cli.backend_ir_transport import BackendIrProgram
+from molt.cli.cache_keys import FunctionDigests
 from molt.cli.backend_artifact_contract import (
     BackendArtifactContract,
     BackendArtifactKind,
@@ -131,7 +133,7 @@ def _compile(
         backend_daemon_config_digest=None,
         entry_module="main",
         artifacts_root=root,
-        ir={"functions": []},
+        program=BackendIrProgram({"functions": []}, FunctionDigests()),
         _ensure_backend_ir_file_path=lambda: root / "ir.json",
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,

@@ -4,6 +4,8 @@ mod msgpack;
 mod ndjson;
 mod source;
 
+pub(crate) use source::open_ir_file;
+
 #[cfg(test)]
 mod tests;
 

@@ -4,6 +4,7 @@ from molt.compilation_target import admit_target
 
 from tests.runtime_build_identity_helper import native_runtime_build_inputs
 
+from molt.cli.backend_ir_transport import BackendIrProgram
 from molt.cli.cache_keys import FunctionDigests
 
 import hashlib
@@ -738,6 +739,7 @@ def test_callable_dispatch_and_all_cache_tiers_are_operation_owned(
     for probe in (True, False):
         payload, error = backend_execution._backend_daemon_compile_request_bytes(
             ir_path=None if probe else Path("backend-ir.msgpack"),
+            probe_function_digests="" if probe else None,
             backend_output=tmp_path / "out.a",
             artifact_contract=resolve_backend_artifact_contract(
                 target=admit_target("native"), emit_mode="bin"
@@ -795,7 +797,7 @@ def test_callable_dispatch_and_all_cache_tiers_are_operation_owned(
         cache_setup=first_cache,
         backend_daemon_config_digest=None,
         entry_module="__main__",
-        ir={"functions": []},
+        program=BackendIrProgram({"functions": []}, FunctionDigests()),
         json_output=True,
         warnings=[],
         verbose=False,

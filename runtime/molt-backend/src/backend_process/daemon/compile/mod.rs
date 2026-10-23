@@ -73,8 +73,9 @@ fn compile_job<Slot>(
         return response;
     }
 
-    if matches!(job.ir_source, DaemonIrSource::Probe) {
-        return response::daemon_job_probe_cache_miss_response(job.id);
+    if let DaemonIrSource::Probe(digests) = &job.ir_source {
+        let missing = cache.missing_functions(digests);
+        return response::daemon_job_needs_functions_response(job.id, missing);
     }
 
     // Concurrent requests for one artifact compile it once: the leader holds
@@ -103,8 +104,11 @@ fn compile_job<Slot>(
     };
     let _slot = compile_slot();
 
-    let document = match document::read_daemon_job_document(&job) {
-        Ok(document) => document,
+    let document = match document::read_daemon_job_document(&job, cache) {
+        Ok(document::DaemonJobDocument::Ready(document)) => *document,
+        Ok(document::DaemonJobDocument::MissingFunctions(positions)) => {
+            return response::daemon_job_needs_functions_response(job.id, positions);
+        }
         Err(err) => return response::daemon_job_error_response(job.id, err),
     };
 
