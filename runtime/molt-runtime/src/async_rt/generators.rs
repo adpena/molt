@@ -8,6 +8,7 @@ use molt_obj_model::MoltObject;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 use super::generators_async::molt_future_new;
+use crate::builtins::exceptions::{ActivationExceptionScope, ActivationKind};
 use crate::object::accessors::resolve_obj_ptr;
 use crate::object::{
     HEADER_FLAG_COROUTINE, ObjectAuxPreselection, object_init_poll_fn_unpublished,
@@ -15,20 +16,16 @@ use crate::object::{
     task_shape_for_poll_fn,
 };
 use crate::{
-    ACTIVE_EXCEPTION_STACK, ASYNCGEN_CONTROL_SIZE, ASYNCGEN_FINALIZER_OFFSET,
-    ASYNCGEN_FIRSTITER_OFFSET, ASYNCGEN_GEN_OFFSET, ASYNCGEN_OP_ACLOSE, ASYNCGEN_OP_ANEXT,
-    ASYNCGEN_OP_ASEND, ASYNCGEN_OP_ATHROW, ASYNCGEN_PENDING_OFFSET, ASYNCGEN_RUNNING_OFFSET,
-    GEN_CONTROL_SIZE, GEN_EXC_DEPTH_OFFSET, GEN_SEND_OFFSET, GEN_STATE_OFFSET, GEN_THROW_OFFSET,
-    GEN_YIELD_FROM_OFFSET, HEADER_FLAG_CORO_RUNNING, HEADER_FLAG_CORO_STARTED,
-    HEADER_FLAG_TASK_DONE, MoltHeader, TASK_KIND_COROUTINE, TASK_KIND_FUTURE, TASK_KIND_GENERATOR,
-    TYPE_ID_ASYNC_GENERATOR, TYPE_ID_GENERATOR, TYPE_ID_OBJECT, TYPE_ID_TUPLE, alloc_exception,
-    alloc_object, alloc_object_with_aux, alloc_tuple, asyncgen_poll_fn_addr, call_callable1,
-    call_poll_fn, clear_exception, context_stack_store, context_stack_take, current_task_ptr,
-    dec_ref_bits, exception_clear_reason_set, exception_context_align_depth,
-    exception_context_fallback_pop, exception_context_fallback_push, exception_pending,
-    exception_stack_depth, exception_stack_set_depth, exception_type_bits_from_name,
-    generator_context_stack_store, generator_context_stack_take, generator_exception_stack_store,
-    generator_exception_stack_take, generator_raise_active, header_from_obj_ptr, inc_ref_bits,
+    ASYNCGEN_CONTROL_SIZE, ASYNCGEN_FINALIZER_OFFSET, ASYNCGEN_FIRSTITER_OFFSET,
+    ASYNCGEN_GEN_OFFSET, ASYNCGEN_OP_ACLOSE, ASYNCGEN_OP_ANEXT, ASYNCGEN_OP_ASEND,
+    ASYNCGEN_OP_ATHROW, ASYNCGEN_PENDING_OFFSET, ASYNCGEN_RUNNING_OFFSET, GEN_CONTROL_SIZE,
+    GEN_SEND_OFFSET, GEN_STATE_OFFSET, GEN_THROW_OFFSET, GEN_YIELD_FROM_OFFSET,
+    HEADER_FLAG_CORO_RUNNING, HEADER_FLAG_CORO_STARTED, HEADER_FLAG_TASK_DONE, MoltHeader,
+    TASK_KIND_COROUTINE, TASK_KIND_FUTURE, TASK_KIND_GENERATOR, TYPE_ID_ASYNC_GENERATOR,
+    TYPE_ID_GENERATOR, TYPE_ID_OBJECT, TYPE_ID_TUPLE, alloc_exception, alloc_object,
+    alloc_object_with_aux, alloc_tuple, asyncgen_poll_fn_addr, call_callable1, call_poll_fn,
+    clear_exception, current_task_ptr, dec_ref_bits, exception_clear_reason_set, exception_pending,
+    exception_type_bits_from_name, generator_raise_active, header_from_obj_ptr, inc_ref_bits,
     maybe_ptr_from_bits, molt_exception_clear, molt_exception_last_pending,
     molt_exception_set_last, molt_raise, obj_from_bits, object_mark_has_ptrs, object_type_id,
     pending_bits_i64, ptr_from_bits, raise_exception, register_task_execution, resolve_task_ptr,
@@ -272,16 +269,6 @@ unsafe fn generator_pending_throw(ptr: *mut u8) -> bool {
     }
 }
 
-/// The exception-stack depth the body resumes at: a raw word in the control
-/// region (`GEN_EXC_DEPTH_OFFSET`), never an edge.
-unsafe fn generator_exception_depth(ptr: *mut u8) -> usize {
-    unsafe { *generator_slot_ptr(ptr, GEN_EXC_DEPTH_OFFSET) as usize }
-}
-
-unsafe fn generator_set_exception_depth(ptr: *mut u8, depth: usize) {
-    unsafe { *generator_slot_ptr(ptr, GEN_EXC_DEPTH_OFFSET) = depth as u64 }
-}
-
 /// What one resume of a generator body produced. Each value is owned.
 pub(crate) enum GeneratorStep {
     /// The body yielded the value; the generator is suspended.
@@ -446,7 +433,9 @@ fn task_new_with_context(
                 ptr.add(GEN_STATE_OFFSET).cast::<AtomicU64>(),
                 AtomicU64::new(FrameState::Created as u64),
             );
-            generator_set_exception_depth(ptr, 1);
+            for offset in crate::GEN_RESERVED_OFFSETS {
+                *generator_slot_ptr(ptr, offset) = 0;
+            }
         }
     }
     if !crate::builtins::exceptions::task_raised_slot_admit(_py, ptr) {
@@ -599,7 +588,7 @@ fn generator_receiver(py: &PyToken<'_>, bits: u64) -> Option<*mut u8> {
 }
 
 /// Run the body once under `execution`, on the generator's own exception and
-/// context stacks, and read how it stopped. The poll returns the yielded or
+/// context-manager state (`ActivationExceptionScope`), and read how it stopped. The poll returns the yielded or
 /// returned value itself; a completed body stored `GENERATOR_RESUME_RETURNED`
 /// in its resume label first (the frontend's normal-return boundary). The
 /// runtime turns that report into `FrameState::Completed` here, and nothing
@@ -616,22 +605,7 @@ unsafe fn generator_run_body(
             generator_complete(py, ptr, execution.from != FrameState::Created);
             return Ok(GeneratorStep::Returned(MoltObject::none().bits()));
         }
-        let caller_depth = exception_stack_depth();
-        let caller_active =
-            ACTIVE_EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
-        let caller_context_stack = context_stack_take();
-        let caller_context = caller_active
-            .last()
-            .copied()
-            .unwrap_or(MoltObject::none().bits());
-        exception_context_fallback_push(caller_context);
-        let gen_active = generator_exception_stack_take(ptr);
-        let gen_context_stack = generator_context_stack_take(ptr);
-        ACTIVE_EXCEPTION_STACK.with(|stack| {
-            *stack.borrow_mut() = gen_active;
-        });
-        context_stack_store(gen_context_stack);
-        exception_stack_set_depth(py, generator_exception_depth(ptr));
+        let exceptions = ActivationExceptionScope::enter(py, ptr, ActivationKind::Generator);
         let prev_raise = generator_raise_active();
         set_generator_raise(true);
         execution.run();
@@ -656,20 +630,7 @@ unsafe fn generator_run_body(
         } else {
             MoltObject::none().bits()
         };
-        let new_depth = exception_stack_depth();
-        generator_set_exception_depth(ptr, new_depth);
-        exception_context_align_depth(py, new_depth);
-        let gen_active =
-            ACTIVE_EXCEPTION_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
-        generator_exception_stack_store(ptr, gen_active);
-        let gen_context_stack = context_stack_take();
-        generator_context_stack_store(ptr, gen_context_stack);
-        ACTIVE_EXCEPTION_STACK.with(|stack| {
-            *stack.borrow_mut() = caller_active;
-        });
-        context_stack_store(caller_context_stack);
-        exception_stack_set_depth(py, caller_depth);
-        exception_context_fallback_pop(py);
+        exceptions.exit(py);
         if pending {
             return generator_raise_from_pending(py, ptr, exc_bits);
         }
@@ -2725,16 +2686,18 @@ mod frame_state_tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let (bits, ptr) = generator(count_poll);
-            // Raw words that a boxed-value reader would misread; neither may
+            // Raw words that a boxed-value reader would misread; none may
             // reach an edge visitor or the detachment sink.
-            let depth = 0x0000_dead_beef_usize;
+            let reserved = 0x0000_dead_beef_u64;
             unsafe {
                 generator_set_state_for_test(ptr, FrameState::Completed);
-                generator_set_exception_depth(ptr, depth);
+                for offset in crate::GEN_RESERVED_OFFSETS {
+                    *generator_slot_ptr(ptr, offset) = reserved;
+                }
             }
             let mut visited = Vec::new();
             unsafe { visit_owned_values(py, ptr, &mut |edge| visited.push(edge)) };
-            for raw in [FrameState::Completed as u64, depth as u64] {
+            for raw in [FrameState::Completed as u64, reserved] {
                 assert!(
                     !visited.contains(&raw),
                     "raw word {raw:#x} visited as an edge"
@@ -2746,11 +2709,13 @@ mod frame_state_tests {
             sink.release_all(py);
             unsafe {
                 assert_eq!(generator_state(ptr), FrameState::Cleared);
-                assert_eq!(
-                    generator_exception_depth(ptr),
-                    depth,
-                    "detachment never takes a raw word"
-                );
+                for offset in crate::GEN_RESERVED_OFFSETS {
+                    assert_eq!(
+                        *generator_slot_ptr(ptr, offset),
+                        reserved,
+                        "detachment never takes a raw word"
+                    );
+                }
             }
             dec_ref_bits(py, bits);
         });
