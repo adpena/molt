@@ -1,3 +1,4 @@
+# MOLT_ENV: MOLT_CAPABILITIES=net
 """Purpose: asyncio unix-socket gate is intrinsic-backed and avoids NotImplementedError."""
 
 import asyncio
