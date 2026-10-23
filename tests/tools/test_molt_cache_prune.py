@@ -1374,7 +1374,9 @@ def test_corrupt_source_database_is_reported_and_never_unlinked(tmp_path: Path) 
     assert (database.stat().st_ino, database.read_bytes()) == before
 
 
-def test_source_record_busy_migration_is_reported_separately(tmp_path: Path) -> None:
+def test_source_record_busy_initialization_is_reported_separately(
+    tmp_path: Path,
+) -> None:
     import sqlite3
     from molt.cli.source_record_store import STORE_NAME
     from molt.default_paths import SHARED_SOURCE_RECORDS_DIRECTORY
@@ -1385,18 +1387,9 @@ def test_source_record_busy_migration_is_reported_separately(tmp_path: Path) -> 
     database = record_root / STORE_NAME
     connection = sqlite3.connect(database, isolation_level=None)
     try:
-        connection.execute("PRAGMA auto_vacuum=INCREMENTAL")
-        connection.execute("PRAGMA journal_mode=WAL")
-        # An actual historical store awaiting the metadata migration. A peer
-        # writer owns its transaction; the nonwaiting pruner must defer it.
-        connection.executescript("""
-            CREATE TABLE records(kind TEXT,key TEXT,generation TEXT,payload BLOB,
-                PRIMARY KEY(kind,key)) WITHOUT ROWID;
-            CREATE INDEX records_generation ON records(generation);
-            CREATE TABLE generations(generation TEXT PRIMARY KEY,used_ns INTEGER) WITHOUT ROWID;
-            CREATE TABLE trims(singleton INTEGER PRIMARY KEY,trimmed_ns INTEGER);
-            INSERT INTO records VALUES('module-lowering','old','g',X'616263');
-        """)
+        # A store file awaiting initialization. A peer writer owns its
+        # transaction; the nonwaiting pruner must defer it.
+        connection.execute("CREATE TABLE sentinel(value BLOB)")
         identity = database.stat().st_ino
         connection.execute("BEGIN IMMEDIATE")
         result = _load_molt_cache_prune()._prune(
@@ -1405,9 +1398,6 @@ def test_source_record_busy_migration_is_reported_separately(tmp_path: Path) -> 
         assert result["source_record_maintenance_busy"] is True
         assert result["source_record_maintenance_failed"] is False
         assert result["entries_failed"] == result["entries_removed"] == 0
-        assert connection.execute("SELECT payload FROM records").fetchall() == [
-            (b"abc",)
-        ]
         assert database.stat().st_ino == identity
         connection.execute("COMMIT")
         completed = _load_molt_cache_prune()._prune(
@@ -1415,17 +1405,16 @@ def test_source_record_busy_migration_is_reported_separately(tmp_path: Path) -> 
         )
         assert completed["source_record_maintenance_busy"] is False
         assert completed["entries_failed"] == 0
-        assert completed["source_records_removed"] == 1
-        assert connection.execute("SELECT payload FROM records").fetchall() == []
         assert database.stat().st_ino == identity
+        assert connection.execute("PRAGMA user_version").fetchone() != (0,)
     finally:
         connection.close()
 
 
 def test_dry_run_reports_an_unmigrated_store_without_failing(tmp_path: Path) -> None:
-    # A dry run opens the store read-only, so it cannot migrate a historical
-    # schema; that is an unmigrated store to report, not a failed entry. The
-    # writing sweep migrates it and manages its rows.
+    # A dry run opens the store without initializing it, so an uninitialized
+    # store is one to report, not a failed entry. The writing sweep
+    # initializes it.
     import sqlite3
     from molt.cli.source_record_store import STORE_NAME
     from molt.default_paths import SHARED_SOURCE_RECORDS_DIRECTORY
@@ -1435,13 +1424,7 @@ def test_dry_run_reports_an_unmigrated_store_without_failing(tmp_path: Path) -> 
     record_root.mkdir(parents=True)
     connection = sqlite3.connect(record_root / STORE_NAME, isolation_level=None)
     try:
-        connection.executescript("""
-            CREATE TABLE records(kind TEXT,key TEXT,generation TEXT,payload BLOB,
-                PRIMARY KEY(kind,key)) WITHOUT ROWID;
-            CREATE TABLE generations(generation TEXT PRIMARY KEY,used_ns INTEGER) WITHOUT ROWID;
-            CREATE TABLE trims(singleton INTEGER PRIMARY KEY,trimmed_ns INTEGER);
-            INSERT INTO records VALUES('module-lowering','old','g',X'616263');
-        """)
+        connection.execute("CREATE TABLE sentinel(value BLOB)")
     finally:
         connection.close()
     module = _load_molt_cache_prune()
@@ -1456,7 +1439,42 @@ def test_dry_run_reports_an_unmigrated_store_without_failing(tmp_path: Path) -> 
 
     swept = module._prune(cache, max_bytes=0, max_age_days=None, dry_run=False)
     assert swept["source_record_store_unmigrated"] is False
-    assert swept["entries_failed"] == 0 and swept["source_records_removed"] == 1
+    assert swept["entries_failed"] == 0
+
+
+def test_superseded_source_record_stores_retire_as_cache_entries(
+    tmp_path: Path,
+) -> None:
+    """Each schema version owns a store file; the pruner retires the files of
+    other versions, and of the unversioned store before them, by last use,
+    and leaves the current store to its row maintenance."""
+    from molt.cli.source_record_store import STORE_NAME, source_record_store
+    from molt.default_paths import SHARED_SOURCE_RECORDS_DIRECTORY
+
+    cache = tmp_path / "cache"
+    record_root = cache / SHARED_SOURCE_RECORDS_DIRECTORY
+    record_root.mkdir(parents=True)
+    store = source_record_store(record_root)
+    assert store.put("import-scan", "k", b"current", generation="g")
+    store.close()
+    current = record_root / STORE_NAME
+    superseded = [
+        record_root / "source_records.sqlite",
+        record_root / "source_records.sqlite-wal",
+        record_root / "source_records.sqlite.initialize.lock",
+        record_root / "source_records.v1.sqlite",
+    ]
+    for path in superseded:
+        path.write_bytes(b"old store bytes")
+    module = _load_molt_cache_prune()
+
+    dry = module._prune(cache, max_bytes=0, max_age_days=None, dry_run=True)
+    assert all(path.exists() for path in superseded)
+    swept = module._prune(cache, max_bytes=0, max_age_days=None, dry_run=False)
+    assert swept["entries_failed"] == 0
+    assert not any(path.exists() for path in superseded)
+    assert dry["entries_removed"] == swept["entries_removed"] >= len(superseded)
+    assert current.is_file(), "the current store is never a retired entry"
 
 
 def test_row_batches_commit_before_interleaved_file_eviction(tmp_path, monkeypatch):
