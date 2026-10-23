@@ -1,5 +1,5 @@
 use super::*;
-use crate::backend_process::daemon::origin::DaemonCacheEntry;
+use crate::backend_process::origin::DaemonCacheEntry;
 use std::sync::Arc;
 
 fn cache_fixture_job(target: DaemonJobTarget, source: &str) -> DaemonJobRequest {
@@ -430,12 +430,18 @@ fn daemon_actual_environment_scopes_compiled_module_and_function_reuse() {
         assert_eq!(origin.input.lease.size, lease_bytes.len() as u64);
         assert_eq!(
             origin.input.lease.sha256,
-            format!("{:x}", <sha2::Sha256 as sha2::Digest>::digest(&lease_bytes))
+            <sha2::Sha256 as sha2::Digest>::digest(&lease_bytes)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
         );
         assert_eq!(origin.output.size, expected.len() as u64);
         assert_eq!(
             origin.output.sha256,
-            format!("{:x}", <sha2::Sha256 as sha2::Digest>::digest(&expected))
+            <sha2::Sha256 as sha2::Digest>::digest(&expected)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
         );
         assert_eq!(memory_minimum(&expected), 1024);
         request["jobs"][0]
@@ -524,7 +530,7 @@ fn daemon_actual_environment_scopes_compiled_module_and_function_reuse() {
 
 #[test]
 fn daemon_cache_hit_does_not_retag_the_original_emitter() {
-    use crate::backend_process::daemon::origin::CodegenOrigin;
+    use crate::backend_process::origin::CodegenOrigin;
     let _scope = molt_backend::backend_environment::enter(Arc::default());
     let root =
         molt_ir::debug_artifacts::prepare_unique_debug_artifact_path("daemon-origin-hit").unwrap();
@@ -1133,9 +1139,13 @@ fn concurrent_requests_for_one_artifact_compile_it_once() {
         .find(|(response, _)| !response.cached)
         .unwrap();
     let origin = producer.0.origin.as_ref().expect("producer origin");
+    assert_eq!(origin.output.size, producer.1.len() as u64);
     assert_eq!(
-        origin.output,
-        crate::backend_process::input::ContentIdentity::of_bytes(&producer.1)
+        origin.output.sha256,
+        <sha2::Sha256 as sha2::Digest>::digest(&producer.1)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
     );
     for (response, _) in &results {
         assert_eq!(
@@ -1346,7 +1356,10 @@ fn the_function_store_ships_each_body_once_and_asks_again_after_eviction() {
     assert_eq!(origin.input.lease.size, lease.len() as u64);
     assert_eq!(
         origin.input.lease.sha256,
-        format!("{:x}", <sha2::Sha256 as sha2::Digest>::digest(&lease))
+        <sha2::Sha256 as sha2::Digest>::digest(&lease)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
     );
     let hit_output = root.join("edited-hit.a");
     let hit = run_content_addressed(

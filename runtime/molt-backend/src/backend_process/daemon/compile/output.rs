@@ -13,6 +13,7 @@ use super::super::origin::DaemonCacheEntry;
 use super::super::origin::DaemonJobOrigin;
 use super::super::protocol::DaemonCacheKey;
 use super::target::DaemonCompiledOutput;
+#[cfg(feature = "wasm-backend")]
 use crate::backend_process::input::ContentIdentity;
 use crate::backend_process::input::content::AddressedInputIdentity;
 use std::sync::Arc;

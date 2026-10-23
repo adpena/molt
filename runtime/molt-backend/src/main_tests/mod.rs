@@ -40,12 +40,12 @@ use super::{
     compile_native_application_artifact_to_path, external_function_declarations,
     is_user_owned_symbol, partition_functions_for_batches, plan_stdlib_cache_archive,
     preserve_native_batch_worker_failure_artifacts, prune_and_partition_native_stdlib,
-    read_json_artifact, read_stdlib_cache_key, read_stdlib_cache_manifest,
-    remove_native_batch_temp_dir, resolved_batch_op_budget_limit, resolved_batch_size_limit,
-    shared_stdlib_cache_matches, shared_stdlib_partition_closure_issue,
-    shared_stdlib_partition_manifest, stdlib_cache_count_sidecar_path,
-    stdlib_cache_partition_manifest_sidecar_path, validate_shared_stdlib_partition,
-    with_shared_stdlib_cache_publish_lock, write_shared_stdlib_cache_sidecars,
+    read_stdlib_cache_key, read_stdlib_cache_manifest, remove_native_batch_temp_dir,
+    resolved_batch_op_budget_limit, resolved_batch_size_limit, shared_stdlib_cache_matches,
+    shared_stdlib_partition_closure_issue, shared_stdlib_partition_manifest,
+    stdlib_cache_count_sidecar_path, stdlib_cache_partition_manifest_sidecar_path,
+    validate_shared_stdlib_partition, with_shared_stdlib_cache_publish_lock,
+    write_shared_stdlib_cache_sidecars,
 };
 #[cfg(feature = "native-backend")]
 use super::{NativeArtifactKind, NativeTargetOptions};

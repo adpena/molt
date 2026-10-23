@@ -232,9 +232,11 @@ fn concurrent_compiles_run_under_their_own_request_settings() {
 fn daemon_origin_tracks_production_workers_and_original_cache_entry() {
     use sha2::{Digest, Sha256};
     let identity = |bytes: &[u8]| {
-        serde_json::json!({
-            "sha256": format!("{:x}", Sha256::digest(bytes)), "size": bytes.len()
-        })
+        let sha256: String = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        serde_json::json!({"sha256": sha256, "size": bytes.len()})
     };
     let daemon = Daemon::start("origins");
     for (key, kind, batch_size, batched) in [
@@ -292,7 +294,10 @@ fn daemon_origin_tracks_production_workers_and_original_cache_entry() {
                         && pid != u64::from(std::process::id())
                 );
                 assert_eq!(member.name(), format!("molt_{index:08}.o").as_bytes());
-                assert_eq!(worker["output"], identity(member.data(&emitted).unwrap()));
+                assert_eq!(
+                    worker["output"],
+                    identity(member.data(emitted.as_slice()).unwrap())
+                );
             }
         } else {
             assert_eq!(
