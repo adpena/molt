@@ -78,23 +78,6 @@ pub extern "C" fn molt_bridge_index_i64_from_obj(
 // -- Exceptions ---------------------------------------------------------------
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_bridge_raise_exception(
-    kind_ptr: *const u8,
-    kind_len: usize,
-    msg_ptr: *const u8,
-    msg_len: usize,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let kind = unsafe {
-            std::str::from_utf8_unchecked(std::slice::from_raw_parts(kind_ptr, kind_len))
-        };
-        let msg =
-            unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg_ptr, msg_len)) };
-        raise_exception::<u64>(_py, kind, msg)
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_bridge_exception_pending() -> bool {
     crate::with_gil_entry_nopanic!(_py, { exception_pending(_py) })
 }

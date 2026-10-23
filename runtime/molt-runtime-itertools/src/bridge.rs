@@ -112,14 +112,7 @@ unsafe extern "C" {
 // ---------------------------------------------------------------------------
 
 pub fn raise_exception<T: ExceptionSentinel>(_py: &PyToken, type_name: &str, msg: &str) -> T {
-    let kind_bits = unsafe { ffi::molt_string_from(type_name.as_ptr(), type_name.len() as u64) };
-    let msg_bits = unsafe { ffi::molt_string_from(msg.as_ptr(), msg.len() as u64) };
-    let args_bits = unsafe { ffi::molt_tuple_from_array(&msg_bits as *const u64, 1) };
-    let exc_bits = unsafe { ffi::molt_exception_new(kind_bits, args_bits) };
-    unsafe { ffi::molt_dec_ref_obj(kind_bits) };
-    unsafe { ffi::molt_dec_ref_obj(args_bits) };
-    let result = unsafe { ffi::molt_raise(exc_bits) };
-    T::from_bits(result)
+    T::from_bits(rt_raise_str(type_name, msg))
 }
 
 pub fn exception_pending(_py: &PyToken) -> bool {

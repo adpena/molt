@@ -1093,3 +1093,101 @@ fn store_failure_edge_preserves_handler_and_custody_before_later_effects() {
         }
     }
 }
+
+/// An initially unbound loop local contributes a raw placeholder to an unused
+/// header argument. Its later home-store view must not acquire a second owner
+/// merely because SSA carries that dead lane around the loop. Observe exact
+/// rebinding/exit order, including an exception edge leaving the loop body.
+#[test]
+fn dead_loop_payload_does_not_retain_a_home_view() {
+    let mut func = function("dead_loop_payload", &[]);
+    let placeholder = flag(&mut func);
+    let more = flag(&mut func);
+    let more_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
+    let (current, next, view, handled) = (
+        owned(&mut func),
+        owned(&mut func),
+        owned(&mut func),
+        owned(&mut func),
+    );
+    let (header, loop_body, after, handler) = (
+        func.fresh_block(),
+        func.fresh_block(),
+        func.fresh_block(),
+        func.fresh_block(),
+    );
+    func.loop_roles.insert(header, LoopRole::LoopHeader);
+    func.label_id_map.insert(handler.0, 93);
+    // The RC oracle uses Bool as the initialized non-heap placeholder. Its
+    // value never controls the loop, and the mixed phi is still DynBox.
+    let mut initial = op(OpCode::ConstBool, vec![], vec![placeholder]);
+    initial.attrs.insert("value".into(), AttrValue::Bool(false));
+    body(&mut func, vec![initial], jump(header, vec![placeholder]));
+    let mut head = block(
+        header,
+        vec![op(OpCode::Copy, vec![more_input], vec![more])],
+        choose(more, loop_body, after),
+    );
+    argument(&mut head, current);
+    func.blocks.insert(header, head);
+    let mut check = observe(93);
+    check.operands = vec![view];
+    func.blocks.insert(
+        loop_body,
+        block(
+            loop_body,
+            vec![produce(next), store(0, next, view), read(vec![view]), check],
+            jump(header, vec![view]),
+        ),
+    );
+    func.blocks
+        .insert(after, block(after, vec![marker(), exit()], done(vec![])));
+    let mut failure = block(handler, vec![marker(), exit()], done(vec![]));
+    argument(&mut failure, handled);
+    func.blocks.insert(handler, failure);
+
+    insert(&mut func);
+    assert_eq!(
+        count_increfs(&func),
+        0,
+        "dead transport cannot retain a home view"
+    );
+    for iterations in 0..4 {
+        let mut choices = Vec::new();
+        let mut expected = Vec::new();
+        for iteration in 0..iterations {
+            choices.extend([true, false]);
+            if iteration != 0 {
+                expected.push(Event::Freed(iteration - 1));
+            }
+            expected.push(Event::Marker);
+        }
+        choices.push(false);
+        expected.push(Event::Marker);
+        if iterations != 0 {
+            expected.push(Event::Freed(iterations - 1));
+        }
+        assert_eq!(
+            trace(&func, 0, &choices),
+            expected,
+            "{iterations} iterations"
+        );
+    }
+    for iterations in 1..4 {
+        let mut choices = Vec::new();
+        let mut expected = Vec::new();
+        for iteration in 0..iterations {
+            choices.extend([true, iteration + 1 == iterations]);
+            if iteration != 0 {
+                expected.push(Event::Freed(iteration - 1));
+            }
+            expected.push(Event::Marker);
+        }
+        expected.extend([Event::Marker, Event::Freed(iterations - 1)]);
+        assert_eq!(
+            trace(&func, 0, &choices),
+            expected,
+            "exception after {iterations}"
+        );
+    }
+}

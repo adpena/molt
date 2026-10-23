@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import signal
+import threading
 import weakref
 import time
 from pathlib import Path
@@ -383,7 +384,10 @@ def suite(tmp_path, monkeypatch):
         def __init__(self, **kwargs):
             self.max_workers = kwargs["max_workers"]
             assert kwargs["mp_context"] is worker_context
-            assert kwargs["initargs"] == (state.shared_stop,)
+            assert kwargs["initargs"] in (
+                (state.shared_stop,),
+                (state.shared_stop, True),
+            )
             state.executor_kwargs = kwargs
 
         def __enter__(self):
@@ -1482,3 +1486,178 @@ def test_pruning_a_stale_build_lock_takes_its_holder_record_along(
         "fresh.lock",
         "fresh.lock.holder",
     ]
+
+
+def _install_held_backend_probe(initializer, initargs, released, entered):
+    """Use the real worker/capture/comparison path with build-free backends."""
+    initializer(*initargs)
+    backends = molt_diff.compat_backends
+    version = molt_diff.TargetPythonVersion(3, 12, 0)
+    molt_diff._resolve_python_command = lambda *a, **k: (sys.executable,)
+    molt_diff._python_exe_version = lambda *a, **k: (3, 12)
+    molt_diff._backend_execution_context = lambda *a, **k: (
+        backends.BackendExecutionContext(
+            target_python=version,
+            build_profile="dev",
+            capabilities="",
+            environment=dict(os.environ),
+            budget=k["budget"],
+        )
+    )
+    molt_diff.run_cpython = lambda *a, **k: backends.BackendResult("oracle\n", "", 0)
+
+    def backend(*, backend, file_path, context):
+        if backend == "native":
+            return backends.BackendResult(
+                "X" * (256 * 1024) + "NATIVE_END\n", "native diagnostic-tail", 1
+            )
+        assert backend == "wasm"
+        entered.set()
+        assert released.wait(15), "test must release the admitted WASM backend"
+        return backends.BackendResult("oracle\n", "", 0)
+
+    molt_diff._run_backend_for_diff = backend
+
+
+@pytest.mark.parametrize("live", [False, True])
+def test_live_backend_failure_is_visible_while_later_backend_is_held(
+    suite, tmp_path, monkeypatch, capfd, live
+):
+    from concurrent.futures._base import wait
+    from concurrent.futures.process import ProcessPoolExecutor
+
+    context = molt_diff.compiler_process.worker_context()
+    released, entered = context.Event(), context.Event()
+    for path in suite.files:
+        path.write_text("print('oracle')\n", encoding="utf-8")
+    records = tmp_path / "backend-results.jsonl"
+    monkeypatch.setenv("MOLT_DIFF_RESULTS_JSONL", str(records))
+
+    class Executor(ProcessPoolExecutor):
+        def __init__(self, *, initializer, initargs, **kwargs):
+            super().__init__(
+                initializer=_install_held_backend_probe,
+                initargs=(initializer, initargs, released, entered),
+                **kwargs,
+            )
+
+    monkeypatch.setattr(molt_diff.concurrent.futures, "ProcessPoolExecutor", Executor)
+    monkeypatch.setattr(molt_diff.concurrent.futures, "wait", wait)
+    seen = []
+    observed = SimpleNamespace(prompt=False, output="", error="")
+
+    def observe():
+        try:
+            assert entered.wait(10), "a later backend must actually start"
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                captured = capfd.readouterr()
+                observed.output += captured.out
+                observed.error += captured.err
+                previews = [
+                    line
+                    for line in observed.output.splitlines()
+                    if line.startswith("[BACKEND FAIL]")
+                ]
+                if not live:
+                    assert not previews, "non-live workers keep completion-only output"
+                    observed.prompt = True
+                    return
+                if len(previews) == 2:
+                    assert not released.is_set()
+                    assert all(
+                        "(native)" in line and "rc=1" in line for line in previews
+                    )
+                    assert all("native diagnostic-tail" in line for line in previews)
+                    assert all("final verdict pending" in line for line in previews)
+                    assert len(observed.output) < 4096, (
+                        "full output stays with the result"
+                    )
+                    observed.prompt = True
+                    return
+                time.sleep(0.01)
+        except BaseException as error:
+            seen.append(error)
+        finally:
+            released.set()
+
+    observer = threading.Thread(target=observe)
+    observer.start()
+    aggregate = tmp_path / "aggregate.log"
+    try:
+        summary = molt_diff.run_diff(
+            suite.files,
+            sys.executable,
+            jobs=2,
+            targets=("native", "wasm"),
+            live=live,
+            fail_fast=True,
+            log_aggregate=aggregate,
+            failures_output=tmp_path / "failures.txt",
+        )
+    finally:
+        released.set()
+        observer.join(timeout=20)
+    assert not observer.is_alive()
+    assert not seen, seen
+    assert observed.prompt, "known native failure was buffered behind WASM completion"
+    captured = capfd.readouterr()
+    output = observed.output + captured.out
+    assert output.count("[BACKEND FAIL]") == (2 if live else 0)
+    assert "Molt    stdout:" not in output
+    assert summary["failed"] == 2 and summary["not_run"] == 3
+    assert len(summary["item_results"]) == len(suite.files)
+    detail = aggregate.read_text(encoding="utf-8")
+    assert detail.count("NATIVE_END") == 2
+    assert "[BACKEND FAIL]" not in detail
+    rows = [
+        json.loads(line) for line in records.read_text(encoding="utf-8").splitlines()
+    ]
+    backend_rows = [row for row in rows if row.get("record_type") == "backend"]
+    assert sorted((row["backend"], row["raw_status"]) for row in backend_rows) == [
+        ("native", "fail"),
+        ("native", "fail"),
+        ("wasm", "pass"),
+        ("wasm", "pass"),
+    ]
+
+
+@pytest.mark.parametrize("error", [BrokenPipeError(), ValueError("closed stream")])
+def test_optional_live_preview_failure_does_not_replace_captured_verdict(
+    monkeypatch, capsys, error
+):
+    class FailedPreview:
+        def write(self, _text):
+            raise error
+
+        def flush(self):
+            raise AssertionError("failed write must not flush")
+
+    monkeypatch.setattr(molt_diff, "_WORKER_DIAGNOSTIC_STDOUT", FailedPreview())
+    outcome = molt_diff.compat_backends.BackendResult("wrong", "callback error", 1)
+    molt_diff._emit_backend_fail(
+        "case.py", "native", "oracle", "", 0, outcome, "mismatch"
+    )
+    captured = capsys.readouterr()
+    assert "[FAIL] case.py (native) mismatch" in captured.out
+    assert "Molt    return: 1" in captured.out
+    assert "callback error" in captured.out
+
+
+def test_live_preview_is_one_bounded_write_and_not_a_full_result_copy(monkeypatch):
+    writes = []
+
+    class Preview:
+        def write(self, text):
+            writes.append(text)
+
+        def flush(self):
+            pass
+
+    monkeypatch.setattr(molt_diff, "_WORKER_DIAGNOSTIC_STDOUT", Preview())
+    molt_diff._publish_backend_diagnostic(
+        "case.py", "wasm", "uncalibrated", "x" * 100000
+    )
+    assert len(writes) == 1 and len(writes[0]) < 900
+    assert writes[0].startswith("[BACKEND UNCALIBRATED]")
+    assert writes[0].endswith("[matrix still running; final verdict pending]\n")

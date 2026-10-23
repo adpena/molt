@@ -662,15 +662,7 @@ pub(crate) fn type_of_bits(_py: &PyToken<'_>, val_bits: u64) -> u64 {
                             }
                             TYPE_ID_TUPLE => builtins.tuple_iterator,
                             TYPE_ID_STRING => {
-                                let bytes = std::slice::from_raw_parts(
-                                    string_bytes(target_ptr),
-                                    string_len(target_ptr),
-                                );
-                                if bytes.is_ascii() {
-                                    builtins.str_ascii_iterator
-                                } else {
-                                    builtins.str_iterator
-                                }
+                                crate::object::ops_iter::resolve_deferred_iterator_class(_py, ptr)
                             }
                             TYPE_ID_BYTES => builtins.bytes_iterator,
                             TYPE_ID_BYTEARRAY => builtins.bytearray_iterator,

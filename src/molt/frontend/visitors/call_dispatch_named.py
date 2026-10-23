@@ -177,10 +177,6 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                     return native_call
                 if func_id == "field" and allowlist_key == "dataclasses":
                     return self._emit_dataclasses_field_call(allowlist_key, node)
-                if allowlist_key == "statistics" and func_id in {"mean", "stdev"}:
-                    lowered_stats = self._lower_statistics_slice_call(func_id, node)
-                    if lowered_stats is not None:
-                        return lowered_stats
                 original_attr = self._imported_attr_name(func_id)
                 known_func_hint = self._known_module_function_type_hint(
                     allowlist_key, original_attr
@@ -336,13 +332,12 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                     return self._emit_type_error_value(msg, "dict")
                 return self._emit_locals_dict()
             if func_id == "vars":
-                if node.keywords:
-                    return self._emit_type_error_value(
-                        "vars() takes no keyword arguments", "dict"
-                    )
-                if len(node.args) > 1:
-                    msg = f"vars() takes at most 1 argument ({len(node.args)} given)"
-                    return self._emit_type_error_value(msg, "dict")
+                if (
+                    node.keywords
+                    or len(node.args) > 1
+                    or any(isinstance(arg, ast.Starred) for arg in node.args)
+                ):
+                    return CALL_NOT_HANDLED
                 if not node.args:
                     return self._emit_locals_dict()
                 obj = self.visit(node.args[0])
@@ -376,13 +371,12 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                 )
                 return res
             if func_id == "dir":
-                if node.keywords:
-                    return self._emit_type_error_value(
-                        "dir() takes no keyword arguments", "list"
-                    )
-                if len(node.args) > 1:
-                    msg = f"dir() takes at most 1 argument ({len(node.args)} given)"
-                    return self._emit_type_error_value(msg, "list")
+                if (
+                    node.keywords
+                    or len(node.args) > 1
+                    or any(isinstance(arg, ast.Starred) for arg in node.args)
+                ):
+                    return CALL_NOT_HANDLED
                 if not node.args:
                     locals_dict = self._emit_locals_dict()
                     keys = MoltValue(self.next_var(), type_hint="dict_keys")

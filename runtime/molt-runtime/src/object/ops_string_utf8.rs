@@ -10,6 +10,23 @@ use std::sync::Arc;
 
 use super::bytes_count_impl;
 
+/// A cache key identifies a live runtime string. Slices must not publish a
+/// whole-string classification; unkeyed byte buffers have no object metadata.
+fn whole_string_is_ascii(bytes: &[u8], cache_key: Option<usize>) -> bool {
+    if let Some(key) = cache_key {
+        let object = key as *mut u8;
+        unsafe {
+            if object_type_id(object) == TYPE_ID_STRING
+                && string_bytes(object) == bytes.as_ptr()
+                && string_len(object) == bytes.len()
+            {
+                return crate::object::layout::StringStorage::is_ascii(object);
+            }
+        }
+    }
+    bytes.is_ascii()
+}
+
 fn build_utf8_cache(bytes: &[u8]) -> Utf8IndexCache {
     let mut offsets = Vec::new();
     let mut prefix = Vec::new();
@@ -35,7 +52,7 @@ fn utf8_cache_get_or_build(
     key: usize,
     bytes: &[u8],
 ) -> Option<Arc<Utf8IndexCache>> {
-    if bytes.len() < UTF8_CACHE_MIN_LEN || bytes.is_ascii() {
+    if bytes.len() < UTF8_CACHE_MIN_LEN || whole_string_is_ascii(bytes, Some(key)) {
         return None;
     }
     if let Ok(store) = runtime_state(_py).utf8_index_cache.lock()
@@ -301,7 +318,7 @@ pub(crate) fn utf8_codepoint_count_cached(
     bytes: &[u8],
     cache_key: Option<usize>,
 ) -> i64 {
-    if bytes.is_ascii() {
+    if whole_string_is_ascii(bytes, cache_key) {
         return bytes.len() as i64;
     }
     if let Some(key) = cache_key
@@ -321,7 +338,7 @@ pub(super) fn utf8_byte_to_char_index_cached(
     if byte_idx == 0 {
         return 0;
     }
-    if bytes.is_ascii() {
+    if whole_string_is_ascii(bytes, cache_key) {
         return byte_idx.min(bytes.len()) as i64;
     }
     let prefix_len = byte_idx.min(bytes.len());
@@ -399,7 +416,7 @@ pub(crate) fn utf8_char_to_byte_index_cached(
     if char_idx <= 0 {
         return 0;
     }
-    if bytes.is_ascii() {
+    if whole_string_is_ascii(bytes, cache_key) {
         return (char_idx as usize).min(bytes.len());
     }
     let total = utf8_codepoint_count_cached(_py, bytes, cache_key);

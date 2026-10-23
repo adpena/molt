@@ -15,12 +15,12 @@ use crate::builtins::exceptions::{
 use crate::{
     ClassEdgeOwnership, FIELD_OFFSET_IC_HIT_COUNT, FIELD_OFFSET_IC_MISS_COUNT, TYPE_ID_CALL_ITER,
     TYPE_ID_CLASSMETHOD, TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_ENUMERATE, TYPE_ID_FILE_HANDLE,
-    TYPE_ID_FILTER, TYPE_ID_FUNCTION, TYPE_ID_GENERATOR, TYPE_ID_GLOB_ITER, TYPE_ID_ITER,
-    TYPE_ID_MAP, TYPE_ID_NATIVE_DESCRIPTOR, TYPE_ID_PROPERTY, TYPE_ID_REVERSED,
+    TYPE_ID_FILTER, TYPE_ID_FOREIGN, TYPE_ID_FUNCTION, TYPE_ID_GENERATOR, TYPE_ID_GLOB_ITER,
+    TYPE_ID_ITER, TYPE_ID_MAP, TYPE_ID_NATIVE_DESCRIPTOR, TYPE_ID_PROPERTY, TYPE_ID_REVERSED,
     TYPE_ID_STATICMETHOD, TYPE_ID_STRING, TYPE_ID_TYPE, TYPE_ID_ZIP, alloc_dict_with_pairs,
     alloc_function_obj, alloc_property_obj, alloc_string, alloc_tuple, builtin_class_method_bits,
-    builtin_classes, builtin_func_bits, call_callable1, call_callable2, call_callable3,
-    class_bases_bits, class_bases_vec, class_dict_bits, class_layout_version_bits,
+    builtin_classes, builtin_func_bits, call_callable0, call_callable1, call_callable2,
+    call_callable3, class_bases_bits, class_bases_vec, class_dict_bits, class_layout_version_bits,
     class_mro_pinned, class_mro_view, class_name_bits, clear_exception, dataclass_desc_ptr,
     dec_ref_bits, dict_get_in_place, dict_set_in_place, exception_last_bits_noinc,
     exception_pending, inc_ref_bits, init_atomic_bits, intern_static_name, is_builtin_class_bits,
@@ -1804,6 +1804,54 @@ pub(crate) unsafe fn lookup_special_method_bits(
     }
 }
 
+/// Invoke an implicit type protocol without materializing a bound method.
+/// Raw MRO lookup and descriptor invocation remain the shared authorities;
+/// instance attributes and custom __getattribute__ do not participate.
+/// Foreign receivers retain their C-API type-only lookup and binding contract.
+/// The result owns a value, reports absence, or preserves the pending error.
+///
+/// # Safety
+/// The receiver must remain owned by the caller while Python callbacks run.
+pub(crate) unsafe fn invoke_special_method(
+    py: &PyToken<'_>,
+    receiver: u64,
+    name: &[u8],
+    args: DescriptorArguments,
+) -> Result<Option<u64>, ()> {
+    unsafe {
+        let name = attr_name_bits_from_bytes(py, name).ok_or(())?;
+        let result = (|| {
+            let Some(instance) = obj_from_bits(receiver).as_ptr() else {
+                return Ok(None);
+            };
+            if object_type_id(instance) == TYPE_ID_FOREIGN {
+                let Some(callable) = lookup_special_method_bits(py, receiver, name)? else {
+                    return Ok(None);
+                };
+                let result = args.call(py, callable);
+                dec_ref_bits(py, callable);
+                return result.map(Some);
+            }
+            let Some(class) = obj_from_bits(type_of_bits(py, receiver)).as_ptr() else {
+                return Ok(None);
+            };
+            let Some(value) = class_attr_lookup_raw_mro(py, class, name)? else {
+                return Ok(None);
+            };
+            descriptor_invoke(
+                py,
+                value,
+                class,
+                Some(receiver),
+                args,
+                DescriptorCallPolicy::Required,
+            )
+        })();
+        molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, name));
+        result
+    }
+}
+
 /// Async slot wrappers in CPython before 3.14 replace descriptor lookup
 /// failures. Keep that target-version rule separate from generic special lookup.
 pub(crate) unsafe fn lookup_async_special_method(
@@ -2358,8 +2406,10 @@ pub(crate) unsafe fn descriptor_special_call1(
     }
 }
 
+/// Positional arguments for one immediate descriptor invocation.
 #[derive(Clone, Copy)]
-enum DescriptorArguments {
+pub(crate) enum DescriptorArguments {
+    Zero,
     One(u64),
     Two(u64, u64),
 }
@@ -2390,6 +2440,7 @@ impl DescriptorArguments {
     unsafe fn call(self, py: &PyToken<'_>, callable: u64) -> Result<u64, ()> {
         unsafe {
             let value = match self {
+                Self::Zero => call_callable0(py, callable),
                 Self::One(arg) => call_callable1(py, callable, arg),
                 Self::Two(first, second) => call_callable2(py, callable, first, second),
             };
@@ -2409,6 +2460,7 @@ impl DescriptorArguments {
     ) -> Result<u64, ()> {
         unsafe {
             let value = match self {
+                Self::Zero => call_callable1(py, callable, receiver),
                 Self::One(arg) => call_callable2(py, callable, receiver, arg),
                 Self::Two(first, second) => call_callable3(py, callable, receiver, first, second),
             };

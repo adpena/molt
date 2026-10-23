@@ -1574,43 +1574,22 @@ pub extern "C" fn molt_round_builtin(val_bits: u64, ndigits_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_any_builtin(iter_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let iter_obj = molt_iter(iter_bits);
-        if obj_from_bits(iter_obj).is_none() {
-            return raise_not_iterable(_py, iter_bits);
-        }
+        let Some(mut iterator) = crate::object::iterable::OwnedIterator::new(_py, iter_bits) else {
+            return MoltObject::none().bits();
+        };
         loop {
-            let pair_bits = molt_iter_next(iter_obj);
-            let pair_obj = obj_from_bits(pair_bits);
-            let Some(pair_ptr) = pair_obj.as_ptr() else {
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
-                }
-                return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
+            let value = match iterator.next() {
+                Ok(Some(value)) => value,
+                Ok(None) => return MoltObject::from_bool(false).bits(),
+                Err(_) => return MoltObject::none().bits(),
             };
-            unsafe {
-                if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
-                    return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
-                }
-                let Some((val_bits, done_bits)) =
-                    crate::object::seq_access::with_immutable_tuple_slice(pair_ptr, |items| {
-                        items.first().copied().zip(items.get(1).copied())
-                    })
-                    .flatten()
-                else {
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
-                    return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
-                };
-                if is_truthy(_py, obj_from_bits(done_bits)) {
-                    return MoltObject::from_bool(false).bits();
-                }
-                if is_truthy(_py, obj_from_bits(val_bits)) {
-                    return MoltObject::from_bool(true).bits();
-                }
+            let truth = is_truthy(_py, obj_from_bits(value));
+            dec_ref_bits(_py, value);
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            if truth {
+                return MoltObject::from_bool(true).bits();
             }
         }
     })
@@ -1619,43 +1598,22 @@ pub extern "C" fn molt_any_builtin(iter_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_all_builtin(iter_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let iter_obj = molt_iter(iter_bits);
-        if obj_from_bits(iter_obj).is_none() {
-            return raise_not_iterable(_py, iter_bits);
-        }
+        let Some(mut iterator) = crate::object::iterable::OwnedIterator::new(_py, iter_bits) else {
+            return MoltObject::none().bits();
+        };
         loop {
-            let pair_bits = molt_iter_next(iter_obj);
-            let pair_obj = obj_from_bits(pair_bits);
-            let Some(pair_ptr) = pair_obj.as_ptr() else {
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
-                }
-                return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
+            let value = match iterator.next() {
+                Ok(Some(value)) => value,
+                Ok(None) => return MoltObject::from_bool(true).bits(),
+                Err(_) => return MoltObject::none().bits(),
             };
-            unsafe {
-                if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
-                    return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
-                }
-                let Some((val_bits, done_bits)) =
-                    crate::object::seq_access::with_immutable_tuple_slice(pair_ptr, |items| {
-                        items.first().copied().zip(items.get(1).copied())
-                    })
-                    .flatten()
-                else {
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
-                    return raise_exception::<_>(_py, "TypeError", "object is not an iterator");
-                };
-                if is_truthy(_py, obj_from_bits(done_bits)) {
-                    return MoltObject::from_bool(true).bits();
-                }
-                if !is_truthy(_py, obj_from_bits(val_bits)) {
-                    return MoltObject::from_bool(false).bits();
-                }
+            let truth = is_truthy(_py, obj_from_bits(value));
+            dec_ref_bits(_py, value);
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            if !truth {
+                return MoltObject::from_bool(false).bits();
             }
         }
     })

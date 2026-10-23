@@ -1,6 +1,7 @@
 """Landing-gate execution for ``tools/molt_dev.py integrate``.
 
-Gates report in declared order and the first failure in that order halts the
+Explicit pytest nodes collect first under the same environment without executing
+test bodies or replacing mandatory gates. Gates report in declared order and the first failure in that order halts the
 landing. A gate's nonzero exit raises ``GateFailure``, a ``CandidateFailure``
 the landing queue bisects on; a stop of the runner itself stays a plain
 ``DriverError``. Every gate executes through the one proof executor
@@ -55,6 +56,7 @@ class Gate(Protocol):
     command: str | tuple[str, ...]
     toolchains: tuple[str, ...]
     concurrent: bool
+    collection_command: tuple[str, ...] | None
     pytest: bool
 
 
@@ -374,6 +376,9 @@ def run_selected_gates(
     within a phase halts the landing and cancels the gates declared after it.
     """
     ordered = list(enumerate(gates, start=1))
+    for ordinal, gate in ordered:
+        if gate.collection_command is not None:
+            _run_serial_gate(ordinal, gate, runtime, gate_seconds, collection=True)
     light = [
         (ordinal, gate)
         for ordinal, gate in ordered
@@ -407,11 +412,15 @@ def _run_serial_gate(
     gate: Gate,
     runtime: GateRuntime,
     gate_seconds: list[tuple[float, str]],
+    *,
+    collection: bool = False,
 ) -> None:
-    cmd = gate.command
+    cmd = gate.collection_command if collection else gate.command
+    assert cmd is not None
+    phase = "collection" if collection else "gate"
     shown = display(cmd)
     runtime.check_source()
-    paths = runtime.cargo_outputs.get(gate.toolchains, ())
+    paths = () if collection else runtime.cargo_outputs.get(gate.toolchains, ())
     required = runtime.capacity_requirements.get(gate.toolchains, 0)
     before = (
         runtime.observe_capacity(
@@ -422,10 +431,15 @@ def _run_serial_gate(
     )
     started = time.monotonic()
     details = gate_details(ordinal, gate)
-    runtime.progress.emit("gate_started", **details)
+    if collection:
+        details["command"] = {"kind": "argv", "argv": list(cmd)}
+    runtime.progress.emit(f"{phase}_started", **details)
     rc = None
     outcome: GateOutcome | None = None
-    streams, stream_error = prepare_gate_streams(runtime.output_dir, ordinal)
+    streams, stream_error = prepare_gate_streams(
+        runtime.output_dir / "collection" if collection else runtime.output_dir,
+        ordinal,
+    )
     record = stream_record(streams, stream_error)
     try:
         outcome = runtime.run_captured_gate(
@@ -439,7 +453,7 @@ def _run_serial_gate(
     finally:
         elapsed = time.monotonic() - started
         runtime.progress.emit(
-            "gate_finished",
+            f"{phase}_finished",
             **details,
             **record,
             returncode=rc,
@@ -453,14 +467,20 @@ def _run_serial_gate(
                 gate=shown,
                 before=before,
             )
-    gate_seconds.append((elapsed, shown))
+    if not collection:
+        gate_seconds.append((elapsed, shown))
     runtime.check_source()
     if rc != 0:
         runtime.say(f"    gate: {shown}")
         sys.stderr.write(gate_failure_report(outcome, record))
         sys.stderr.flush()
-        raise gate_failure(rc, elapsed, shown, gate_seconds, record)
-    runtime.ok(f"gate passed in {elapsed:.1f} s: {shown}")
+        timings = [*gate_seconds, (elapsed, shown)] if collection else gate_seconds
+        raise gate_failure(rc, elapsed, shown, timings, record)
+    runtime.ok(
+        f"pytest collection passed in {elapsed:.1f} s (execution still required): {shown}"
+        if collection
+        else f"gate passed in {elapsed:.1f} s: {shown}"
+    )
 
 
 @dataclass(frozen=True)

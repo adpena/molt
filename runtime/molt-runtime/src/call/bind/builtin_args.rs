@@ -107,7 +107,9 @@ pub(super) unsafe fn builtin_call_binding(
             crate::call::function::FunctionBindingField::BindKind,
         ))
         .as_int();
-        if bind_kind == Some(BIND_KIND_CLINIC_NAMED) {
+        if bind_kind.and_then(BuiltinBindingPolicy::from_abi)
+            == Some(BuiltinBindingPolicy::ClinicNamed)
+        {
             return Some(BuiltinCallBinding::Arguments(bind_builtin_named));
         }
         if matches_builtin!(crate::builtins::exceptions::molt_exception_new_bound) {

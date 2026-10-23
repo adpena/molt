@@ -759,7 +759,9 @@ pub extern "C" fn molt_random_setstate(handle_bits: u64, state_bits: u64) -> u64
             return raise_exception::<u64>(_py, "TypeError", "state must be a tuple");
         }
 
-        let outer_elems = unsafe { seq_snapshot(state_ptr) };
+        let Some(outer_elems) = (unsafe { seq_snapshot(state_ptr) }) else {
+            return MoltObject::none().bits();
+        };
         if outer_elems.len() < 3 {
             return raise_exception::<u64>(_py, "ValueError", "state tuple must have 3 elements");
         }
@@ -774,7 +776,9 @@ pub extern "C" fn molt_random_setstate(handle_bits: u64, state_bits: u64) -> u64
         if inner_type != TYPE_ID_TUPLE && inner_type != TYPE_ID_LIST {
             return raise_exception::<u64>(_py, "TypeError", "internalstate must be a tuple");
         }
-        let inner_elems = unsafe { seq_snapshot(inner_ptr) };
+        let Some(inner_elems) = (unsafe { seq_snapshot(inner_ptr) }) else {
+            return MoltObject::none().bits();
+        };
         if inner_elems.len() != MT_N + 1 {
             return raise_exception::<u64>(
                 _py,
@@ -1313,7 +1317,9 @@ pub extern "C" fn molt_random_choices(
         if pop_type != TYPE_ID_LIST && pop_type != TYPE_ID_TUPLE {
             return raise_exception::<u64>(_py, "TypeError", "population must be a list or tuple");
         }
-        let pop_elems = unsafe { seq_snapshot(pop_ptr) };
+        let Some(pop_elems) = (unsafe { seq_snapshot(pop_ptr) }) else {
+            return MoltObject::none().bits();
+        };
         let pop_len = pop_elems.len();
 
         if pop_len == 0 {
@@ -1349,7 +1355,9 @@ pub extern "C" fn molt_random_choices(
                     "cum_weights must be a list or tuple",
                 );
             }
-            let cw_elems = unsafe { seq_snapshot(cw_ptr) };
+            let Some(cw_elems) = (unsafe { seq_snapshot(cw_ptr) }) else {
+                return MoltObject::none().bits();
+            };
             if cw_elems.len() != pop_len {
                 return raise_exception::<u64>(
                     _py,
@@ -1425,7 +1433,9 @@ pub extern "C" fn molt_random_sample(handle_bits: u64, population_bits: u64, k_b
         if pop_type != TYPE_ID_LIST && pop_type != TYPE_ID_TUPLE {
             return raise_exception::<u64>(_py, "TypeError", "population must be a list or tuple");
         }
-        let pop_elems = unsafe { seq_snapshot(pop_ptr) };
+        let Some(pop_elems) = (unsafe { seq_snapshot(pop_ptr) }) else {
+            return MoltObject::none().bits();
+        };
         let n = pop_elems.len();
 
         let k_obj = obj_from_bits(k_bits);

@@ -145,8 +145,8 @@ GUEST_COMMAND_SECONDS = 120.0
 LIFECYCLE_SECONDS = 900.0
 PREVIOUS_CONFIG = "lima.yaml.molt-previous"
 NEXT_CONFIG = "lima.yaml.molt-next"
-# `push` writes only under this namespace of the guest clone, so its
-# `--force` never moves a branch a guest user works on.
+# Host transport refs are separate from guest branches. Ordinary Git
+# fast-forward protection also preserves divergent work in this namespace.
 PUSH_NAMESPACE = "refs/heads/host/"
 DEFAULT_PUSH_REF = "head"
 # The guest checkout's exit status when the clone is dirty or in use.
@@ -1551,8 +1551,8 @@ def release_for_paths(
 def push_ref(ref: str) -> str | None:
     """``refs/heads/host/<ref>``, or None when Git would refuse the name.
 
-    Every push lands under ``PUSH_NAMESPACE``, which only the host writes, so
-    a forced push never moves a branch someone made in the guest.
+    Every push lands under ``PUSH_NAMESPACE``. Ordinary Git fast-forward
+    protection preserves divergent work in both host and guest namespaces.
     """
     parts = ref.split("/")
     if (
@@ -1690,7 +1690,6 @@ def push(
             "-C",
             str(repo),
             "push",
-            "--force",
             "--no-verify",
             "--quiet",
             f"lima-{name}:{vm.clone}",

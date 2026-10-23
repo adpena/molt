@@ -1708,7 +1708,7 @@ def _shared_runtime_callables(data: dict) -> list[dict]:
 def _python_builtin_global_callables(data: dict) -> list[dict]:
     from molt.builtin_callables import (  # noqa: PLC0415
         BUILTIN_FUNC_SPECS,
-        MOLT_BIND_KIND_CLINIC_NAMED,
+        BuiltinBindingPolicy,
         builtin_func_declared_arity,
     )
 
@@ -1719,7 +1719,21 @@ def _python_builtin_global_callables(data: dict) -> list[dict]:
     }
     entries: list[dict] = []
     for python_name, spec in BUILTIN_FUNC_SPECS.items():
-        if spec.bind_kind == MOLT_BIND_KIND_CLINIC_NAMED and (
+        if spec.bind_kind is not None and not isinstance(
+            spec.bind_kind, BuiltinBindingPolicy
+        ):
+            raise ValueError(f"builtin {python_name!r} has unknown binding policy")
+        if spec.bind_kind == BuiltinBindingPolicy.POSITIONAL_RANGE and (
+            spec.pos_or_kw_params
+            or spec.vararg
+            or spec.kwonly_params
+            or spec.kw_defaults
+            or len(spec.defaults) > len(spec.params)
+        ):
+            raise ValueError(
+                f"builtin {python_name!r} has invalid fixed positional metadata"
+            )
+        if spec.bind_kind == BuiltinBindingPolicy.CLINIC_NAMED and (
             spec.params
             or spec.vararg
             or spec.kwonly_params
@@ -1840,15 +1854,52 @@ def _rust_str_slice(values: list[str]) -> str:
 
 
 def render_runtime_callables_rs(data: dict) -> str:
+    from molt.builtin_callables import BuiltinBindingPolicy
+
     lines: list[str] = [_runtime_callables_header("//")]
+    lines.extend(["#![allow(dead_code)]\n\n", "use super::*;\n\n"])
+
+    lines.extend(
+        [
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "#[repr(i64)]\n",
+            "pub(crate) enum BuiltinBindingPolicy {\n",
+        ]
+    )
+    for policy in BuiltinBindingPolicy:
+        variant = policy.name.title().replace("_", "")
+        lines.append(f"    {variant} = {int(policy)},\n")
+    lines.extend(
+        [
+            "}\n\n",
+            "impl BuiltinBindingPolicy {\n",
+            "    pub fn from_abi(value: i64) -> Option<Self> {\n",
+            "        match value {\n",
+        ]
+    )
+    for policy in BuiltinBindingPolicy:
+        variant = policy.name.title().replace("_", "")
+        lines.append(f"            {int(policy)} => Some(Self::{variant}),\n")
+    lines.extend(
+        [
+            "            _ => None,\n",
+            "        }\n",
+            "    }\n",
+            "    pub fn requires_custom_binding(self) -> bool {\n",
+            "        match self {\n",
+        ]
+    )
+    for policy in BuiltinBindingPolicy:
+        variant = policy.name.title().replace("_", "")
+        required = str(policy.requires_custom_binding).lower()
+        lines.append(f"            Self::{variant} => {required},\n")
+    lines.extend(["        }\n", "    }\n", "}\n\n"])
     non_runtime_callables = sorted(data.get("non_runtime_callable_intrinsic", []))
     poll_imports = _runtime_poll_imports(data)
     reserved_callables = _shared_runtime_callables(data)
     python_builtin_callables = _python_builtin_global_callables(data)
     lines.extend(
         [
-            "#![allow(dead_code)]\n\n",
-            "use super::*;\n\n",
             "pub(crate) const RUNTIME_CALLABLE_KEY_BASE: u64 = ",
             f"0x{NATIVE_RUNTIME_CALLABLE_KEY_BASE:016X};\n",
             "pub(crate) const RUNTIME_POLL_CALLABLE_KEY_BASE: u64 =\n",
@@ -1907,7 +1958,7 @@ def render_runtime_callables_rs(data: dict) -> str:
             "    pub(crate) varkw: Option<&'static str>,\n",
             "    pub(crate) defaults: &'static [GeneratedBuiltinDefaultValue],\n",
             "    pub(crate) kw_defaults: &'static [(&'static str, GeneratedBuiltinDefaultValue)],\n",
-            "    pub(crate) bind_kind: Option<i64>,\n",
+            "    pub(crate) bind_kind: Option<BuiltinBindingPolicy>,\n",
             "}\n\n",
             "#[rustfmt::skip]\n",
             "pub(crate) const RESERVED_RUNTIME_CALLABLES: &[ReservedRuntimeCallableInfo] = &[\n",
@@ -2060,7 +2111,15 @@ def render_runtime_callables_rs(data: dict) -> str:
                 f"            varkw: {_rust_optional_str(entry['varkw'])},\n",
                 f"            defaults: {_rust_builtin_default_slice(entry['defaults'])},\n",
                 f"            kw_defaults: {_rust_builtin_kw_default_slice(entry['kw_defaults'])},\n",
-                f"            bind_kind: {_rust_optional_i64(entry['bind_kind'])},\n",
+                "            bind_kind: "
+                + (
+                    "None"
+                    if entry["bind_kind"] is None
+                    else "Some(BuiltinBindingPolicy::"
+                    + entry["bind_kind"].name.title().replace("_", "")
+                    + ")"
+                )
+                + ",\n",
                 "        },\n",
             ]
         )
