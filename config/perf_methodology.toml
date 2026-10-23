@@ -5,7 +5,7 @@
 # change can move a number or a verdict, else `--relock`.
 schema = "molt-perf-methodology-v1"
 version = 7
-content_sha256 = "43f1fae9391b5e61b6c3c6c1f475adbfb36cc3ed7b85aafab5bf666c5892cd2c"
+content_sha256 = "f217f35ed62131965a3455e26010b8501101c5e5263cb0a242fe32f282258655"
 
 [[methodology]]
 path = "tools/safe_run.py"

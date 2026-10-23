@@ -1017,11 +1017,14 @@ fail closed; the inventory itself makes no claim about current file bytes.
 - `MOLT_CLI_PROFILE=<dir>/{pid}.prof` writes a cProfile of each `molt` command;
   `{pid}` keeps parallel builds apart. Read it with `python -m pstats`.
 - Import scans, intrinsic source facts, module analyses and binary module
-  lowerings share `source_records.v<schema>.sqlite` (one file per schema
-  version, so checkouts of different versions never lock each other out) under
+  lowerings share `source_records.<schema digest>.sqlite` (one file per schema,
+  named by a digest of its DDL, so checkouts of different code never lock each
+  other out) under
   `<Molt cache>/toolchain_source_records` (`molt.cli.source_record_store`). Every
   project/session uses that store; no project copy is hydrated. Source/context
-  admission precedes recency refresh. Existing generation retirement keeps at
+  admission precedes recency refresh; renewals are saved in one transaction per
+  4,096 and at close, into a narrow `recency` table that leaves payload rows
+  untouched. Existing generation retirement keeps at
   most four generations used within a week; the global byte/age cache budget
   also includes all four record kinds. Run the existing `molt_cache_prune.py`
   command to inspect or apply it. Its totals combine file bytes and logical

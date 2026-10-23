@@ -282,14 +282,19 @@ def test_only_admitted_use_refreshes_and_stale_observations_cannot_renew(
     connection = store._connect()
     assert connection is not None
     assert connection.execute(
-        "SELECT used_ns FROM records WHERE key = 'invalid'"
+        "SELECT used_ns FROM recency WHERE key = 'invalid'"
     ).fetchone() == (original.used_ns,)
     stale = store.get("module-lowering", "k", generation="g", max_bytes=None)
     assert stale is not None
     # Successful independent semantic admission precedes either refresh.
     assert json.loads(original.payload) == json.loads(stale.payload) == {"valid": True}
+    # A renewal is queued once per observation and written in one transaction.
     assert original.refresh()
     assert not stale.refresh()
+    assert connection.execute(
+        "SELECT used_ns FROM recency WHERE key = 'k'"
+    ).fetchone() == (original.used_ns,)
+    assert store.save_renewals() == 1
     refreshed = store.get("module-lowering", "k", generation="g", max_bytes=None)
     assert refreshed is not None and refreshed.used_ns == clock[0]
     assert not refreshed.refresh()
@@ -297,12 +302,112 @@ def test_only_admitted_use_refreshes_and_stale_observations_cannot_renew(
     replacement = store.get("module-lowering", "k", generation="g", max_bytes=None)
     assert replacement is not None and replacement.revision != refreshed.revision
     clock[0] += 301 * 1_000_000_000
-    assert not refreshed.refresh()
+    # The stale observation queues, but its revision fence renews nothing.
+    assert refreshed.refresh()
+    assert store.save_renewals() == 0
     latest = store.get("module-lowering", "k", generation="g", max_bytes=None)
     assert latest is not None and latest.used_ns == replacement.used_ns
     assert connection.execute(
-        "SELECT used_ns FROM records WHERE key = 'invalid'"
+        "SELECT used_ns FROM recency WHERE key = 'invalid'"
     ).fetchone() == (original.used_ns,)
+
+
+@pytest.mark.parametrize("ending", ["close", "drop"])
+def test_renewals_are_written_in_batches_and_saved_when_the_store_ends(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ending: str
+) -> None:
+    import gc
+
+    clock = [100 * _DAY]
+    install_module_view(monkeypatch, "time", time, records, time_ns=lambda: clock[0])
+    monkeypatch.setattr(records, "_RENEWAL_BATCH_LIMIT", 3)
+    store = _store(tmp_path)
+    for index in range(5):
+        assert store.put("import-scan", str(index), b"scan", generation="g")
+    observations = [
+        store.get("import-scan", str(index), generation="g", max_bytes=None)
+        for index in range(5)
+    ]
+    stamped = observations[0].used_ns
+    clock[0] += 301 * 1_000_000_000
+    connection = store._connect()
+    assert connection is not None
+    transactions: list[str] = []
+    connection.set_trace_callback(
+        lambda statement: (
+            transactions.append(statement) if statement == "BEGIN IMMEDIATE" else None
+        )
+    )
+    assert observations[0].refresh() and observations[1].refresh()
+    # Queued renewals write nothing until the batch fills.
+    assert transactions == []
+    assert observations[2].refresh()
+    assert transactions == ["BEGIN IMMEDIATE"]
+    assert observations[3].refresh() and observations[4].refresh()
+    if ending == "close":
+        store.close()
+    else:
+        del observations, connection, store
+        gc.collect()
+    assert transactions == ["BEGIN IMMEDIATE"] * 2
+    with closing(sqlite3.connect(tmp_path / records.STORE_NAME)) as reader:
+        used = dict(reader.execute("SELECT key, used_ns FROM recency").fetchall())
+    assert stamped != clock[0]
+    assert used == {str(index): clock[0] for index in range(5)}
+
+
+def test_a_renewal_updates_only_the_stamp_not_the_payload_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [100 * _DAY]
+    install_module_view(monkeypatch, "time", time, records, time_ns=lambda: clock[0])
+    store = _store(tmp_path)
+    assert store.put("module-lowering", "k", b"x" * 100_000, generation="g")
+    observation = store.get("module-lowering", "k", generation="g", max_bytes=None)
+    assert observation is not None
+    clock[0] += 301 * 1_000_000_000
+    assert observation.refresh()
+    connection = store._connect()
+    assert connection is not None
+    updated: set[tuple[str, str]] = set()
+
+    def authorize(action, table, column, *_args):
+        if action == sqlite3.SQLITE_UPDATE:
+            updated.add((table, column))
+        return sqlite3.SQLITE_OK
+
+    connection.set_authorizer(authorize)
+    assert store.save_renewals() == 1
+    connection.set_authorizer(None)
+    # SQLite rewrites a whole row on UPDATE; the stamp must not share the payload's.
+    assert updated == {("recency", "used_ns")}
+
+
+def test_deleting_or_replacing_a_record_leaves_no_orphan_or_stale_stamp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [100 * _DAY]
+    install_module_view(monkeypatch, "time", time, records, time_ns=lambda: clock[0])
+    store = _store(tmp_path)
+    for index in range(3):
+        assert store.put("module-analysis", str(index), b"body", generation="g")
+    clock[0] += 301 * 1_000_000_000
+    assert store.put("module-analysis", "0", b"replacement", generation="g")
+    replaced = store.get("module-analysis", "0", generation="g", max_bytes=None)
+    assert replaced is not None and replaced.used_ns == clock[0]
+    with store.maintenance(dry_run=False) as maintenance:
+        oldest = next(maintenance.iter_lru())
+        assert (oldest.kind, oldest.key) == ("module-analysis", "1")
+        assert maintenance.remove([oldest]) == ("removed",)
+    connection = store._connect()
+    assert connection is not None
+    stamps = connection.execute("SELECT key, used_ns FROM recency ORDER BY key")
+    assert stamps.fetchall() == [("0", clock[0]), ("2", 100 * _DAY)]
+    orphans = connection.execute(
+        "SELECT count(*) FROM recency WHERE NOT EXISTS (SELECT 1 FROM records"
+        " WHERE records.kind = recency.kind AND records.key = recency.key)"
+    )
+    assert orphans.fetchone() == (0,)
 
 
 def test_metadata_pages_do_not_select_payload_and_deletion_is_observation_fenced(
@@ -334,6 +439,7 @@ def test_metadata_pages_do_not_select_payload_and_deletion_is_observation_fenced
         assert candidate is not None
         clock[0] += 301 * 1_000_000_000
         assert candidate.refresh()
+        assert store.save_renewals() == 1
         assert store.put("module-analysis", "1", b"replacement", generation="g")
         assert maintenance.remove(observed[:3]) == ("busy", "busy", "removed")
     assert store.get("module-analysis", "0", generation="g", max_bytes=None) is not None
@@ -387,7 +493,8 @@ def test_concurrent_connections_keep_all_record_kinds(
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
         assert connection.execute("PRAGMA journal_mode").fetchone() == ("wal",)
         assert connection.execute(
-            "SELECT count(*) FROM records WHERE length(revision)!=16 OR used_ns<=0"
+            "SELECT count(*) FROM records JOIN recency USING (kind, key)"
+            " WHERE length(revision)!=16 OR used_ns<=0"
         ).fetchone() == (0,)
 
 
@@ -517,7 +624,7 @@ def test_schema_failure_rolls_back_the_whole_bootstrap(tmp_path):
         connection.set_authorizer(
             lambda action, name, *_args: (
                 sqlite3.SQLITE_DENY
-                if action == sqlite3.SQLITE_CREATE_INDEX and name == "records_recency"
+                if action == sqlite3.SQLITE_CREATE_INDEX and name == "recency_order"
                 else sqlite3.SQLITE_OK
             )
         )
@@ -530,7 +637,7 @@ def test_schema_failure_rolls_back_the_whole_bootstrap(tmp_path):
     assert store.put("import-scan", "after", b"yes", generation="g")
 
 
-@pytest.mark.parametrize("version", [-1, 3])
+@pytest.mark.parametrize("version", [-1, records._SCHEMA_VERSION + 1])
 @pytest.mark.parametrize("dry_run", [False, True])
 def test_unknown_schema_is_unavailable_without_downgrade(tmp_path, version, dry_run):
     store = _store(tmp_path)
@@ -585,7 +692,9 @@ def test_maintenance_admits_its_independently_opened_snapshot(
             # An independently opened handle must qualify the actual snapshot,
             # even after the first handle admitted the previous schema version.
             with closing(original_connect(store.path, isolation_level=None)) as peer:
-                peer.execute("PRAGMA user_version = 3").close()
+                peer.execute(
+                    f"PRAGMA user_version = {records._SCHEMA_VERSION + 1}"
+                ).close()
         return original_connect(*args, **kwargs)
 
     install_module_view(monkeypatch, "sqlite3", sqlite3, records, connect=connect)
@@ -596,7 +705,9 @@ def test_maintenance_admits_its_independently_opened_snapshot(
         assert peer.execute("SELECT payload FROM records").fetchall() == [
             (b"preserved",)
         ]
-        assert peer.execute("PRAGMA user_version").fetchone() == (3,)
+        assert peer.execute("PRAGMA user_version").fetchone() == (
+            records._SCHEMA_VERSION + 1,
+        )
 
 
 def test_database_error_closes_only_owned_connection_and_preserves_live_peer(
@@ -937,7 +1048,7 @@ def test_malformed_metadata_refuses_maintenance_without_loading_payload(
     store = _store(tmp_path)
     assert store.put("module-analysis", "k", b"opaque", generation="g")
     with sqlite3.connect(store.path) as connection:
-        connection.execute("UPDATE records SET used_ns = 'not a timestamp'")
+        connection.execute("UPDATE recency SET used_ns = 'not a timestamp'")
     assert store.get("module-analysis", "k", generation="g", max_bytes=None) is None
     with store.maintenance(dry_run=True) as maintenance:
         with pytest.raises(
@@ -1196,11 +1307,17 @@ def test_fork_finalization_keeps_a_directly_constructed_handle_inert(
     assert connection_ref() is None
 
 
-def test_each_schema_version_owns_its_store_file(tmp_path: Path) -> None:
+def test_each_schema_owns_its_store_file(tmp_path: Path) -> None:
     """A store another code version migrated in place made the shared cache
-    unavailable to every older checkout. Each version now names its own file,
-    so a newer schema beside it changes nothing."""
-    assert records.STORE_NAME == f"source_records.v{records._SCHEMA_VERSION}.sqlite"
+    unavailable to every older checkout. Each schema now names its own file,
+    so a different schema beside it changes nothing."""
+    assert records.STORE_NAME == f"source_records.{records._SCHEMA_DIGEST}.sqlite"
+    # The name is the schema's own text: any change to a statement, even one
+    # two lanes both call "the next version", names a different file.
+    changed = (*records._SCHEMA[:-1], records._SCHEMA[-1] + " ")
+    assert records._schema_identity(changed) != records._SCHEMA_DIGEST
+    assert records._schema_identity(records._SCHEMA) == records._SCHEMA_DIGEST
+    assert 0 < records._SCHEMA_VERSION < 2**31
     newer = tmp_path / "source_records.sqlite"
     with closing(sqlite3.connect(newer, isolation_level=None)) as peer:
         peer.execute("PRAGMA user_version = 99").close()
@@ -1234,14 +1351,15 @@ def test_an_unsupported_schema_disables_the_store_after_one_attempt(
     assert len(attempts) == 1
 
 
-def test_superseded_store_files_are_named_by_their_version() -> None:
+def test_superseded_store_files_are_named_by_another_schema() -> None:
     current = records.STORE_NAME
     assert not records.superseded_store_file(current)
     for suffix in ("-wal", "-shm", ".initialize.lock"):
         assert not records.superseded_store_file(current + suffix)
         assert records.superseded_store_file("source_records.sqlite" + suffix)
-    other = f"source_records.v{records._SCHEMA_VERSION + 1}.sqlite"
-    assert records.superseded_store_file(other)
+        assert records.superseded_store_file("source_records.v2.sqlite" + suffix)
+    other = "source_records." + "0" * 16 + ".sqlite"
+    assert other != current and records.superseded_store_file(other)
     assert records.superseded_store_file("source_records.sqlite")
     for unrelated in ("source_records.sqlite.bak", "records.sqlite", "notes.txt"):
         assert not records.superseded_store_file(unrelated)

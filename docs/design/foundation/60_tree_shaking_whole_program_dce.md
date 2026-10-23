@@ -226,8 +226,8 @@ applied to *reachability edges*, *roots*, and *backend keep policy*.
 - **Linker tier (native).** Per-*symbol* DCE via section GC: macOS `-Wl,-dead_strip` +
   `-exported_symbols_list` (`cli/__init__.py:20202`/`:20208`), Linux
   `-ffunction-sections`/`-fdata-sections` + `--gc-sections` + version-script `{ global:
-  main; local: *; }` (`:20221`/`:20236`), Windows `/OPT:REF` (`:20241`), plus
-  `_post_link_strip` (`:20252`). The archive is linked WITHOUT `--whole-archive`/
+  main; local: *; }` (`:20221`/`:20236`), Windows `/OPT:REF` (`:20241`), plus the
+  release symbol strip (`NativeSymbolStrip` in `cli/native_link_plan.py`). The archive is linked WITHOUT `--whole-archive`/
   `-force_load` (`:20165`) so the linker only pulls referenced objects. The intrinsic
   manifest (#4) is what keeps name-resolved intrinsics from being stripped
   (`llvm_backend/mod.rs:308-310`).

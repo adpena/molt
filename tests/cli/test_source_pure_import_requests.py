@@ -2053,7 +2053,7 @@ def test_source_request_recency_requires_complete_admission(tmp_path):
     def age_record():
         with sqlite3.connect(store.path) as connection:
             connection.execute(
-                "UPDATE records SET used_ns = 0 WHERE kind = ? AND key = ?",
+                "UPDATE recency SET used_ns = 0 WHERE kind = ? AND key = ?",
                 ("import-scan", key),
             )
 
@@ -2068,11 +2068,14 @@ def test_source_request_recency_requires_complete_admission(tmp_path):
     replace_source_record("import-scan", key, malformed)
     age_record()
     assert records._read_persisted_import_scan_record(source, **options) is None
+    # A refused record queues no renewal.
+    assert store.save_renewals() == 0
     assert used_ns() == 0
 
     replace_source_record("import-scan", key, payload)
     age_record()
     assert records._read_persisted_import_scan_record(source, **options) is not None
+    assert store.save_renewals() == 1
     assert used_ns() > 0
 
 
