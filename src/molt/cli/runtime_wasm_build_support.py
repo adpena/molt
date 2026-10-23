@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 from typing import (
     Any,
+    Mapping,
     Sequence,
 )
 
@@ -22,7 +23,8 @@ from molt.cli.artifact_state import (
     _runtime_target_fingerprint_path,
 )
 from molt.cli.build_locks import _build_lock
-from molt.cli.cargo_build_reads import cargo_build_reads
+from molt.cli.cargo_build_reads import cargo_build_reads, uncovered_build_inputs
+from molt.cli.runtime_source_closure import wasm_cpython_abi_source_paths
 from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
 from molt.process_environment import ProcessEnvironment
 from molt.cli.cargo_execution import (
@@ -46,6 +48,11 @@ from molt.cli.runtime_artifact_selection import (
 )
 from molt.cli.runtime_build_identity import resolve_wasm_cpython_abi_build_identity
 from molt.cli.runtime_identity_schema import runtime_build_fingerprint
+from molt.cli.runtime_identity_schema import (
+    RuntimePublicationAction,
+    RuntimePublicationInput,
+    RuntimePublicationTransform,
+)
 from molt.cli.runtime_cargo_plan import (
     RuntimeCargoPlan,
     resolve_runtime_cargo_plan,
@@ -352,6 +359,11 @@ def _ensure_wasm_cpython_abi_staticlib(
                 toolchain_roots=_wasm_cargo_toolchain_input_paths(plan),
                 environment=plan.environment,
             )
+            uncovered = uncovered_build_inputs(
+                reads, root, wasm_cpython_abi_source_paths(root), identity="WASM CAPI"
+            )
+            if uncovered is not None:
+                raise ValueError(uncovered)
             plan.verify()
             stage = "metadata-publication"
             fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
@@ -679,6 +691,45 @@ def _run_runtime_wasm_cargo_build(
     return build, reported_artifact
 
 
+def runtime_reloc_publication_action(
+    export_link_args: tuple[str, ...],
+    *,
+    module_name: str,
+    executor: Mapping[str, object] | None,
+) -> RuntimePublicationAction:
+    """Resolve the complete wasm-ld action once, before selecting a generation."""
+    if (
+        type(module_name) is not str
+        or not module_name
+        or module_name in {".", ".."}
+        or any(char in module_name for char in "/\\\0")
+    ):
+        raise ValueError("runtime WASM publication requires a module basename")
+    exports = tuple(_wasm_link_args_from_rust_flag_tokens(export_link_args))
+    role = RuntimePublicationInput
+    return RuntimePublicationAction(
+        RuntimePublicationTransform.RELOC,
+        preserve_debug=True,
+        executor=executor,
+        link_command=(
+            "-r",
+            *((role.EXPORT_RESPONSE,) if exports else ()),
+            *wasm_link_inputs.long_double_whole_archive_link_inputs(
+                wasm_link_inputs.LongDoubleLinkPolicy(
+                    role.LONG_DOUBLE, role.COMPILER_RT
+                ),
+                whole_archive=(role.STATICLIB,),
+                trailing=(role.LIBC,),
+            ),
+            *wasm_link_output_arguments(
+                Path(module_name), staged_output=Path(module_name)
+            )[:-1],
+            role.OUTPUT,
+        ),
+        link_exports=exports,
+    )
+
+
 class RuntimeWasmLinkError(ValueError):
     def __init__(
         self,
@@ -706,7 +757,7 @@ def _link_runtime_staticlib_to_reloc_wasm(
     json_output: bool,
     link_timeout: float | None,
     cargo_plan: RuntimeCargoPlan,
-    export_link_args: tuple[str, ...] = (),
+    publication: RuntimePublicationAction,
 ) -> bool:
     c_abi = cargo_plan.wasi_c_abi
     if c_abi is None:
@@ -720,32 +771,28 @@ def _link_runtime_staticlib_to_reloc_wasm(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_output_path = staged_file_path(output_path, purpose="wasm-reloc")
     # All runtime families capture the complete mandatory archive closure.
-    long_double_argv = wasm_link_inputs.long_double_whole_archive_link_argv(
-        wasm_link_inputs.LongDoubleLinkPolicy(
-            c_abi.path("long_double"), c_abi.path("compiler_rt")
-        ),
-        whole_archive=[str(staticlib_path)],
-        trailing=[str(libc_archive)],
-    )
-    export_args = _wasm_link_args_from_rust_flag_tokens(export_link_args)
+    if publication.transform is not RuntimePublicationTransform.RELOC:
+        raise ValueError("runtime reloc linker received another publication action")
+    role = RuntimePublicationInput
+    operands = {
+        role.STATICLIB: str(staticlib_path),
+        role.LONG_DOUBLE: str(c_abi.path("long_double")),
+        role.COMPILER_RT: str(c_abi.path("compiler_rt")),
+        role.LIBC: str(libc_archive),
+        role.OUTPUT: str(tmp_output_path),
+    }
     export_response_identity = None
-    if export_args:
+    if publication.link_exports:
         export_response_path = _write_wasm_link_args_response_file(
             output_path.parent / ".molt_link_args",
             label=f"{output_path.stem}.reloc",
-            link_args=export_args,
+            link_args=publication.link_exports,
         )
         export_response_identity = stable_regular_file_identity(
             export_response_path, label="runtime WASM export response"
         )
-        export_args = (f"@{export_response_path}",)
-    command = (
-        wasm_ld,
-        "-r",
-        *export_args,
-        *long_double_argv,
-        *wasm_link_output_arguments(output_path, staged_output=tmp_output_path),
-    )
+        operands[role.EXPORT_RESPONSE] = f"@{export_response_path}"
+    command = (wasm_ld, *publication.render_link_command(operands))
     process = None
     staticlib_identity = stable_regular_file_identity(
         staticlib_path, label="runtime WASM staticlib link input"

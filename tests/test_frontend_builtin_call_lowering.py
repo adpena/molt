@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compiler_analysis.native_support_slice import ModuleBodySelection
+
 import ast
 import builtins
 import shutil
@@ -3021,7 +3023,9 @@ def test_imported_exception_class_ctor_uses_imported_class_value() -> None:
         known_modules={"numpy.exceptions", "scipy._lib._util"},
         known_classes=known_classes,
         direct_call_modules={"scipy._lib._util"},
-        native_support_function_roots={"normalize_axis_index"},
+        module_body_selection=ModuleBodySelection.from_requested_roots(
+            {"normalize_axis_index"}
+        ),
     )
     gen.visit(
         ast.parse(
@@ -3062,7 +3066,9 @@ def test_imported_uppercase_constructor_uses_live_binding_outside_module_scope()
         module_name="scipy._lib._util",
         known_modules={"scipy._lib._util"},
         direct_call_modules={"scipy._lib._util"},
-        native_support_function_roots={"normalize_axis_index"},
+        module_body_selection=ModuleBodySelection.from_requested_roots(
+            {"normalize_axis_index"}
+        ),
     )
     gen.visit(
         ast.parse(

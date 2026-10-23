@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import ast
 from contextlib import contextmanager
-from typing import Generator, Literal, Sequence
+from typing import Generator, Literal, Sequence, get_args
 
 from molt.frontend._types import (
     ActiveException,
@@ -31,6 +31,21 @@ from molt.frontend.diagnostics import FrontendRejection, raise_compatibility_err
 SyntaxErrorName = Literal["SyntaxError", "IndentationError", "TabError"]
 
 
+SyntaxErrorAttribute = Literal[
+    "msg",
+    "filename",
+    "lineno",
+    "offset",
+    "text",
+    "end_lineno",
+    "end_offset",
+    "print_file_and_line",
+]
+SYNTAX_ERROR_ATTRIBUTES: tuple[SyntaxErrorAttribute, ...] = get_args(
+    SyntaxErrorAttribute
+)
+
+
 class MoltSyntaxError(ast.expr):
     """Compiler-owned parser failure; never a mutable Python builtin lookup.
 
@@ -38,18 +53,20 @@ class MoltSyntaxError(ast.expr):
     lexical/source traversal. Only the exception class identity is protected.
     """
 
-    _fields = ("exception_name", "args", "print_file_and_line")
+    _fields = ("exception_name", "args", "attribute_names", "attribute_values")
 
     def __init__(
         self,
         exception_name: SyntaxErrorName,
         args: list[ast.expr],
-        print_file_and_line: ast.expr,
+        attribute_overrides: list[tuple[SyntaxErrorAttribute, ast.expr]],
     ) -> None:
         super().__init__()
         self.exception_name = exception_name
         self.args = args
-        self.print_file_and_line = print_file_and_line
+        # Keep values as ordinary AST children, so every visitor sees them.
+        self.attribute_names = [name for name, _value in attribute_overrides]
+        self.attribute_values = [value for _name, value in attribute_overrides]
 
 
 class ExceptionLoweringMixin(GeneratorMixinBase):
@@ -57,14 +74,14 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
         args = [self.visit(arg) for arg in node.args]
         error = self._emit_exception_new_from_args(node.exception_name, args)
         self._emit_raise_if_pending()
-        # This flag is not a constructor operand. All location/message fields
-        # belong to the existing SyntaxError constructor's structured args.
-        if not (
-            isinstance(node.print_file_and_line, ast.Constant)
-            and node.print_file_and_line.value is None
+        # CPython can attach parser location state after construction without
+        # updating args. Restore only the observed differences, through the
+        # same typed exception attributes used by ordinary Python stores.
+        for name, expression in zip(
+            node.attribute_names, node.attribute_values, strict=True
         ):
-            flag = self.visit(node.print_file_and_line)
-            self._emit_attribute_store(error, None, None, "print_file_and_line", flag)
+            value = self.visit(expression)
+            self._emit_attribute_store(error, None, None, name, value)
             self._emit_raise_if_pending()
         return error
 

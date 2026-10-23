@@ -116,7 +116,7 @@ def _add_build_parser(
         "--python-version",
         default=None,
         help=(
-            "Target Python semantics (3.12, 3.13, or 3.14). Defaults from "
+            "Target Python major.minor semantics. Defaults from "
             "[tool.molt.build] or project.requires-python."
         ),
     )
@@ -1221,7 +1221,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--python-version",
         default=None,
-        help=("Target Python semantics for the build side (3.12, 3.13, or 3.14)."),
+        help="Target Python major.minor semantics for the build side.",
     )
     run_parser.add_argument(
         "--profile",

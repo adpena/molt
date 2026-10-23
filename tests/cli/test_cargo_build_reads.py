@@ -443,21 +443,19 @@ def test_the_runtime_identity_covers_what_its_build_reads(tmp_path) -> None:
                 *runtime_native_build.runtime_source_paths(
                     ROOT, plan.fingerprint_features
                 ),
-                *runtime_native_build.runtime_build_tooling_paths(ROOT),
             ),
         )
         == ()
     )
 
 
+@pytest.mark.parametrize("uncovered", ["README.md", "src/molt/dx.py"])
 def test_publication_refuses_a_build_input_the_identity_misses(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, uncovered
 ) -> None:
     from molt.cli import runtime_native_build
 
-    plan, build = _native_plan(
-        tmp_path, ["runtime/molt-runtime/src/lib.rs", "README.md"]
-    )
+    plan, build = _native_plan(tmp_path, ["runtime/molt-runtime/src/lib.rs", uncovered])
     failures: list[dict[str, object]] = []
 
     def record_failure(_state, **fields) -> bool:
@@ -476,7 +474,7 @@ def test_publication_refuses_a_build_input_the_identity_misses(
 
     assert runtime_native_build._publish_native_runtime_build(plan, build) is False
     assert [failure["stage"] for failure in failures] == ["build-input-coverage"]
-    assert "README.md" in str(failures[0]["summary"])
+    assert uncovered in str(failures[0]["summary"])
 
 
 def test_uplifted_units_resolve_to_the_dep_info_this_build_used(workspace) -> None:
@@ -1269,9 +1267,6 @@ def test_publication_requires_the_watched_root_not_only_present_files(
     )
     monkeypatch.setattr(
         runtime_native_build, "runtime_source_paths", lambda *_: covered
-    )
-    monkeypatch.setattr(
-        runtime_native_build, "runtime_build_tooling_paths", lambda *_: ()
     )
     failures = []
 

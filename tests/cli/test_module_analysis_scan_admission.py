@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compiler_analysis.native_support_slice import ModuleBodySelection
+
 import ast
 import sys
 from pathlib import Path
@@ -79,6 +81,7 @@ def test_native_selection_keeps_imports_and_function_facts_in_one_cache_scope(
     cases = (
         (("later",), ("beta",), {"later": "async"}),
         (("first",), ("alpha",), {"first": "sync"}),
+        (("first", "later"), ("alpha", "beta"), {"first": "sync", "later": "async"}),
         ((), ("alpha", "beta", "excluded"), {"first": "sync", "later": "async"}),
     )
     for index, (roots, imports, kinds) in enumerate((*cases, *cases)):
@@ -92,6 +95,32 @@ def test_native_selection_keeps_imports_and_function_facts_in_one_cache_scope(
         assert result[4] == source
         assert path.read_bytes() == original
         assert result[5] is (index >= len(cases))
+    # The wire must retain the distinction even when a support slice includes
+    # every definition: complete source also executes imports and decorators.
+    for kind in ("module-analysis", "import-scan"):
+        selections = [
+            record["body_selection"] for record in source_records(kind).values()
+        ]
+        assert {"kind": "complete_source", "roots": []} in selections
+        assert {"kind": "native_support", "roots": ["first", "later"]} in selections
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        None,
+        {},
+        [],
+        {"kind": "native_support", "roots": []},
+        {"kind": "complete_source", "roots": ["f"]},
+        {"kind": "native_support", "roots": ["g", "f"]},
+        {"kind": "native_support", "roots": ["f", "f"]},
+        {"kind": "complete_source", "roots": [], "legacy": True},
+    ],
+)
+def test_producer_selection_requires_explicit_canonical_wire_authority(payload) -> None:
+    with pytest.raises(ValueError):
+        ModuleBodySelection.from_payload(payload)
 
 
 def test_native_selection_reuses_cached_scan_for_missing_syntax_facts(
@@ -189,7 +218,10 @@ def test_frontend_analysis_uses_admitted_native_selection(
     authority = _ModuleGraphScanAuthority(
         (
             _ModuleSourceScanAuthority(
-                "app", path, "full", native_support_function_roots=("later",)
+                "app",
+                path,
+                "full",
+                body_selection=ModuleBodySelection.from_requested_roots(("later",)),
             ),
         )
     )
@@ -500,7 +532,7 @@ def test_function_metadata_payload_requires_current_schema_without_imports(
         - (0 if current_schema else 1),
         "compiler_fingerprint": "scan-admission",
         "import_scan_mode": "full",
-        "native_support_function_roots": [],
+        "body_selection": {"kind": "complete_source", "roots": []},
         "func_defaults": {},
         "func_kinds": {},
         "size": len(snapshot.content),

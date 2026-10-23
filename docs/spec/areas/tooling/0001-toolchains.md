@@ -1261,3 +1261,43 @@ that boundary. Installed readiness checks delivered compiler/runtime capability
 and does not require source-development SDK tools. Full SDK provisioning uses the
 existing Linux package and non-Linux source-build owners. None of these source
 contracts constitutes actual six-host execution or release acceptance.
+
+
+## Runtime compilation and publication identity
+
+The runtime family identity binds its resolved Cargo action, source closure,
+observed build environment and tool/resource bytes. The member identity also
+binds a closed publication action (`RuntimePublicationAction`): shared WASM
+export renames and debug retention, or the ordered relocatable linker arguments,
+response-file exports and typed archive/output operands. Publication executes
+that captured action. Each action also binds the content of its actual Python
+byte/sidecar executor modules, listed by `runtime_publication_executor_paths`.
+Native products bind Cargo-note interpretation and custody/manifest generation;
+WASM products bind rewriting, dispatch and reloc response/argument encoding.
+The native manifest retains derived link semantics, so byte validation alone
+cannot replace this executor identity. Standalone WASM C-ABI publication copies
+Cargo's complete archive unchanged and requires a null executor fact.
+
+Executor content affects member/family identity, never Cargo compile identity.
+The existing input recapture after staging native sidecars or both WASM members
+checks it again before publication. Module-level capture deliberately overkeys
+edits elsewhere in those few executor modules; planner/spec/launcher imports
+are excluded. It reads six native modules, two shared modules and five reloc
+modules per capture, with no new processes, writes or persistent index. Existing
+manifest/custody validation remains mandatory.
+Member/family schema v5 rejects older projections rather than interpreting them
+through a compatibility lane.
+
+Python planner source files are not runtime archive inputs. An edit to a planner
+that resolves to the same actions can reuse the same runtime product. A changed
+Cargo action, consumed source/tool/resource, ABI or publication action changes
+its relevant identity. Cargo dep-info and build-script observations must remain
+inside the declared source/toolchain closure for native, paired WASM and C-ABI
+publication; observing an undeclared Python input refuses publication. Product
+stores and installed readers still verify artifact bytes, manifests, symbols,
+owned paths and custody independently of this action identity.
+
+This follows the action-input model described in
+[Bazel's remote caching documentation](https://bazel.build/remote/caching): the
+resolved command and consumed input content determine reuse. It does not claim
+that an action description proves kernel consumption or loaded-image identity.

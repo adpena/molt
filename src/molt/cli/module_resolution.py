@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compiler_analysis.native_support_slice import ModuleBodySelection
+
 import ast
 from collections.abc import Callable
 import functools
@@ -433,7 +435,7 @@ class _ModuleResolutionCache:
     source_parse_count: int = 0
     source_prune_count: int = 0
     native_support_view_cache: dict[
-        tuple[Path, str], tuple[str, tuple[str, ...], _ParsedModuleAst]
+        tuple[Path, str], tuple[str, ModuleBodySelection, _ParsedModuleAst]
     ] = field(default_factory=dict)
 
     def roots_for_module(
@@ -757,7 +759,7 @@ class _ModuleResolutionCache:
             parsed, _pruned = self.native_support_view(
                 path,
                 parsed.tree,
-                native_roots,
+                ModuleBodySelection.from_requested_roots(native_roots),
                 ast_digest_admission=parsed.admission,
                 target_python=target_python,
             )
@@ -771,7 +773,7 @@ class _ModuleResolutionCache:
         self,
         path: Path,
         tree: ast.Module,
-        roots: tuple[str, ...],
+        selection: ModuleBodySelection,
         *,
         ast_digest_admission: _PythonAstDigestAdmission,
         target_python: TargetPythonVersion,
@@ -783,17 +785,17 @@ class _ModuleResolutionCache:
         admission = _PythonAstDigestAdmission.for_tree(tree, ast_digest_admission)
         key = (self.resolved_path(path), target_python.tag)
         cached = self.native_support_view_cache.get(key)
-        if cached is not None and cached[:2] == (admission.digest, roots):
+        if cached is not None and cached[:2] == (admission.digest, selection):
             return cached[2], False
         self.source_prune_count += 1
-        tree, _reachable, missing = prune_native_support_module(tree, roots)
+        tree, _reachable, missing = prune_native_support_module(tree, selection)
         if missing:
             raise ValueError(
                 f"native support roots lack source custody in {path}: {list(missing)}"
             )
         selected = _ParsedModuleAst(tree)
         # One current view per source/target, never a retained AST per root prefix.
-        self.native_support_view_cache[key] = (admission.digest, roots, selected)
+        self.native_support_view_cache[key] = (admission.digest, selection, selected)
         return selected, True
 
     def collect_graph_imports(

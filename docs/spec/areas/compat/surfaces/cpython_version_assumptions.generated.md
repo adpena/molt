@@ -19,7 +19,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `src/molt/cache_eviction.py` | 1 | scattered-assumption | `3.12` |
 | `src/molt/cli/build_results.py` | 1 | scattered-assumption | `3.2` |
 | `src/molt/cli/deps.py` | 1 | operational-tooling | `sys.version_info` |
-| `src/molt/cli/entrypoint_parser.py` | 18 | scattered-assumption | `3.12` |
+| `src/molt/cli/entrypoint_parser.py` | 12 | scattered-assumption | `3.12` |
 | `src/molt/cli/extension_scan_surface.py` | 1 | scattered-assumption | `PY_VERSION_HEX` |
 | `src/molt/cli/factgraph.py` | 3 | scattered-assumption | `3.12` |
 | `src/molt/cli/native_link_plan.py` | 1 | scattered-assumption | `3.2` |

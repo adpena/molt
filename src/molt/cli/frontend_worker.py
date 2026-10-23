@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.compiler_analysis.native_support_slice import ModuleBodySelection
+
 import ast
 import contextlib
 import os
@@ -69,13 +71,14 @@ def _syntax_error_stub_ast(info: ModuleSyntaxErrorInfo) -> ast.Module:
     error = MoltSyntaxError(
         info.exception_name,
         [literal(value) for value in info.args],
-        literal(info.print_file_and_line),
+        [(name, literal(value)) for name, value in info.attribute_overrides],
     )
     module = ast.Module(body=[ast.Raise(exc=error, cause=None)], type_ignores=[])
     return ast.fix_missing_locations(module)
 
 
 def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
+    body_selection = ModuleBodySelection.from_payload(payload.get("body_selection"))
     worker_started_ns = time.time_ns()
     worker_pid = os.getpid()
     module_name = str(payload["module_name"])
@@ -121,9 +124,6 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
     )
     native_python_exports = set(
         cast(list[str], payload.get("native_python_exports", []))
-    )
-    native_support_function_roots = set(
-        cast(list[str], payload.get("native_support_function_roots", []))
     )
     module_chunking = bool(payload["module_chunking"])
     module_chunk_max_ops = int(payload["module_chunk_max_ops"])
@@ -184,7 +184,7 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
         known_func_kinds=known_func_kinds,
         native_callable_exports=native_callable_exports,
         native_python_exports=native_python_exports,
-        native_support_function_roots=native_support_function_roots,
+        module_body_selection=body_selection,
         target_python=target_python.feature_version,
         target_sys_platform=target_sys_platform,
         module_chunking=module_chunking,
@@ -247,6 +247,7 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "ok": True,
         "source_sha256": source_lease.source_sha256,
+        "body_selection": gen.module_body_selection.payload(),
         "functions": ir["functions"],
         "function_metadata": ir["function_metadata"],
         "function_digest_seeds": (),
@@ -282,6 +283,7 @@ def _module_frontend_payload(
 ) -> dict[str, Any]:
     return {
         "source_sha256": source_sha256,
+        "body_selection": gen.module_body_selection.payload(),
         "functions": ir["functions"],
         "function_metadata": ir["function_metadata"],
         "function_digest_seeds": (),
@@ -336,9 +338,7 @@ def _module_frontend_generator(
         known_func_kinds=scoped_inputs.known_func_kinds,
         native_callable_exports=scoped_inputs.native_callable_exports,
         native_python_exports=set(scoped_inputs.native_python_exports_set),
-        native_support_function_roots=set(
-            scoped_inputs.native_support_function_roots_set
-        ),
+        module_body_selection=scoped_inputs.body_selection,
         target_python=target_python.feature_version,
         target_sys_platform=target_sys_platform,
         module_chunking=module_chunking,
@@ -470,6 +470,7 @@ def _lower_module_serial_with_context(
                 source_lease=source_lease,
                 module_name=module_name,
                 context_digest=context_digest,
+                body_selection=scoped_inputs.body_selection,
                 known_modules=lowering_context.known_modules,
             )
             if cached_payload is not None:

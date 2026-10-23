@@ -75,6 +75,28 @@ additional attribute call. Frontend native-support slicing also removes
 definitions and imports before lowering. The backend cannot reconstruct a
 complete provider module from those sliced inputs.
 
+The existing frontend producer now carries a required `ModuleBodySelection`:
+`complete_source` or `native_support` with nonempty canonical binding roots.
+Discovery, source-scan merging, AST selection, scoped lowering, worker transport,
+and persisted scan/analysis/lowering records consume this same selection.
+Application import requests may still supply optional support roots; admission
+converts them to the typed selection. An absent serialized selection is never
+interpreted as complete source. Current cache schemas reject retired records,
+and lowering replay checks the selection against the request before decoding
+function bodies or refreshing the record. A support selection containing every
+definition still differs from complete source: it removes unrelated imports,
+top-level statements and decorators.
+
+This is source-production authority, not a certificate that every body is
+target-lowerable or that the resulting provider closes over its dependencies.
+It adds no body retention, new process, filesystem object, optimizer or object
+cache. Record identity changes once with the schema; steady-state selection
+comparison is proportional to the selected roots. The next migration must
+transport the admitted lowered module inventory and its existing reference/ABI
+dependencies before partitioning. Only then can application reachability select
+final sections without changing the producer inventory. V1-07 remains open;
+the typed selection alone establishes no compile-time or reuse improvement.
+
 The intended boundary is one admitted, closed module producer independent of
 application export selection, with application roots selecting final sections.
 Reuse the existing module payload, projected ABI, reference edges, object cache

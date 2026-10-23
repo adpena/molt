@@ -384,7 +384,7 @@ def test_resealed_toolchain_and_config_drift_is_rejected(mutation: str) -> None:
         RuntimeBuildIdentity.from_dict(value)
 
 
-def test_publication_change_reuses_only_compile_and_member_output() -> None:
+def test_publication_action_change_reuses_only_compile() -> None:
     before = runtime_build_identity(
         "shared", "old-publication", compile_seed="same-compile"
     )
@@ -400,7 +400,7 @@ def test_publication_change_reuses_only_compile_and_member_output() -> None:
     for scope in ("compile", "member-output"):
         first = runtime_build_fingerprint(before, scope=scope)
         second = runtime_build_fingerprint(after, scope=scope)
-        assert first["hash"] == second["hash"]
+        assert (first["hash"] == second["hash"]) is (scope == "compile")
         assert fingerprints._runtime_fingerprint_payload_is_valid(
             {"version": 4, **first}
         )
@@ -1626,11 +1626,8 @@ def test_native_dependency_observation_changes_without_changing_plan_fingerprint
     monkeypatch.setattr(builder, "runtime_source_roots", lambda *_args: ())
     monkeypatch.setattr(
         builder,
-        "_capture_runtime_build_trees",
-        lambda *_args: (
-            family["compile"]["sources"],
-            family["publication_authority"],
-        ),
+        "_capture_runtime_build_sources",
+        lambda *_args: family["compile"]["sources"],
     )
     monkeypatch.setattr(
         builder,
@@ -2419,9 +2416,11 @@ def test_expected_runtime_identity_rejects_changed_or_resealed_claims(mutation) 
         member = wire["payload"]["family"]["members"]["shared"]
         if mutation == "bool":
             # Python equality conflates True with 1; canonical JSON does not.
-            member["preserve_debug"] = int(member["preserve_debug"])
+            member["publication"]["preserve_debug"] = int(
+                member["publication"]["preserve_debug"]
+            )
         else:
-            member["publication_transform"] = "different-publication"
+            member["publication"]["transform"] = "different-publication"
             _reseal(wire)
     with pytest.raises(ValueError):
         RuntimeBuildIdentity.from_dict(wire, expected=expected)
@@ -2582,8 +2581,9 @@ def test_runtime_family_shares_immutable_capture_and_exports_detached_wire(
             kind=kind,
             resolved_rustflags=tuple(member["resolved_rustflags"]),
             link_args=tuple(member["link_args"]),
-            publication_transform=member["publication_transform"],
-            preserve_debug=member["preserve_debug"],
+            publication=schema.RuntimePublicationAction.from_dict(
+                member["publication"]
+            ),
         )
         for kind, member in family["members"].items()
     )
@@ -2592,7 +2592,6 @@ def test_runtime_family_shares_immutable_capture_and_exports_detached_wire(
         toolchain_manifest=manifest,
         target_triple=compilation["common_config"]["target_triple"],
         common_config=compilation["common_config"],
-        publication_authority=family["publication_authority"],
         members=members,
     )
     assert len(identities) == (1 if target == "native" else 2)
@@ -3066,6 +3065,7 @@ def test_combined_runtime_plan_applies_target_policy_after_cargo_features(
             ("-C", "target-feature=-reference-types")
         )
     shared = specs._RuntimeWasmBuildSpec(
+        publication_name="runtime.wasm",
         requested_cargo_profile="dev-fast",
         cargo_profile="dev-fast",
         profile_dir="dev-fast",

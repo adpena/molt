@@ -1411,7 +1411,10 @@ def _distribution_wasm_identities(key, **facts):
     receipt fact, to model a shipped cell whose receipt disagrees with its key.
     """
     from molt.cli.runtime_build_identity import _resolve_runtime_build_family_identities
-    from molt.cli.runtime_identity_schema import RuntimeBuildMemberPlan
+    from molt.cli.runtime_identity_schema import (
+        RuntimeBuildMemberPlan,
+        RuntimePublicationAction,
+    )
     from tests.runtime_build_identity_helper import (
         runtime_toolchain_content_manifest,
     )
@@ -1451,14 +1454,14 @@ def _distribution_wasm_identities(key, **facts):
         ),
         target_triple=target,
         common_config=config,
-        publication_authority=family["publication_authority"],
         members=tuple(
             RuntimeBuildMemberPlan(
                 kind=kind,
                 resolved_rustflags=tuple(members[kind]["resolved_rustflags"]),
                 link_args=tuple(members[kind]["link_args"]),
-                publication_transform=members[kind]["publication_transform"],
-                preserve_debug=members[kind]["preserve_debug"],
+                publication=RuntimePublicationAction.from_dict(
+                    members[kind]["publication"]
+                ),
             )
             for kind in ("shared", "reloc")
         ),

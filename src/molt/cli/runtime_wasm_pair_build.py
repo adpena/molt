@@ -19,7 +19,8 @@ from molt.cli.artifact_state import (
     _build_state_root,
     _runtime_target_fingerprint_path,
 )
-from molt.cli.cargo_build_reads import cargo_build_reads
+from molt.cli.cargo_build_reads import cargo_build_reads, uncovered_build_inputs
+from molt.cli.runtime_source_closure import runtime_source_paths
 from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
 from molt.cli.cargo_execution import (
     CargoPlanExecutionError,
@@ -244,6 +245,16 @@ def _publish_combined_runtime_wasm_target(
             toolchain_roots=_wasm_cargo_toolchain_input_paths(plan),
             environment=plan.environment,
         )
+        uncovered = uncovered_build_inputs(
+            reads,
+            ctx.project_root,
+            runtime_source_paths(
+                ctx.project_root, ctx.shared_spec.fingerprint_features
+            ),
+            identity="WASM runtime",
+        )
+        if uncovered is not None:
+            raise ValueError(uncovered)
         plan.verify()
         for artifact, fingerprint in (
             (cdylib, ctx.shared_spec.fingerprint),

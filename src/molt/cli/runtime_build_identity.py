@@ -13,14 +13,19 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Callable, Iterator, Mapping, Sequence, TypeVar, cast
 
 from molt import input_report as _input_report
-from molt.cli.cargo_source_closure import _cargo_crate_source_closure
 from molt.cli.runtime_artifact_selection import RuntimeArtifactSelection
-from molt.cli.runtime_source_closure import runtime_source_paths
+from molt.cli.runtime_source_closure import (
+    runtime_source_paths,
+    wasm_cpython_abi_source_paths,
+)
 from molt.cli.runtime_cargo_plan import RuntimeCargoPlan, resolve_runtime_cargo_plan
 from molt.cli.runtime_identity_schema import (
     RuntimeBuildIdentity,
     RuntimeBuildMemberPlan,
+    RuntimePublicationAction,
+    RuntimePublicationTransform,
     RuntimeToolchainContentManifest,
+    runtime_publication_executor_paths,
     _FAMILY_SCHEMA,
     _digest,
     _freeze_json,
@@ -43,108 +48,6 @@ _TREE_HASH_MEMORY_HEADROOM_BYTES = 256 * 1024 * 1024
 _TREE_HASH_MAX_WORKERS = 32
 _TREE_HASH_BATCH_SIZE = 32
 _TREE_HASH_LOCAL = threading.local()
-
-
-_RUNTIME_BUILD_TOOLING_RELPATHS = (
-    "src/molt/__init__.py",
-    "src/molt/_version.py",
-    "src/molt/source_root.py",
-    "src/molt/temporary_artifacts.py",
-    "src/molt/disk_capacity.py",
-    "src/molt/file_deletion.py",
-    "src/molt/custody_layout.py",
-    "src/molt/memory_guard_paths.py",
-    "src/molt/process_spawn.py",
-    "src/molt/windows_process_api.py",
-    "src/molt/backend_daemon_paths.py",
-    "src/molt/host_capacity.py",
-    "src/molt/process_environment.py",
-    "src/molt/default_paths.py",
-    "src/molt/environment_registry.py",
-    "src/molt/_environment_registry.py",
-    "src/molt/tool_releases.py",
-    "src/molt/path_custody.py",
-    "src/molt/package_import_custody.py",
-    "src/molt/native_artifact_header.py",
-    "src/molt/native_target_shape.py",
-    "src/molt/python_identity_common.py",
-    "src/molt/input_report.py",
-    "src/molt/file_publication.py",
-    "src/molt/portable_paths.py",
-    "pyproject.toml",
-    "src/molt/_host_capabilities_generated.py",
-    "src/molt/_runtime_feature_gates.py",
-    "src/molt/_wasm_abi_generated.py",
-    "src/molt/_wasm_runtime_exports.py",
-    "src/molt/cargo_execution_policy.py",
-    "src/molt/capability_policy.py",
-    "src/molt/cli/cargo_build_reads.py",
-    "src/molt/cli/cargo_environment_inputs.py",
-    "src/molt/cli/cargo_command.py",
-    "src/molt/cli/cargo_execution.py",
-    "src/molt/cli/cargo_profiles.py",
-    "src/molt/cli/cargo_source_closure.py",
-    "src/molt/cli/artifact_state.py",
-    "src/molt/cli/atomic_io.py",
-    "src/molt/cli/build_locks.py",
-    "src/molt/file_locks.py",
-    "src/molt/cli/command_runtime.py",
-    "src/molt/cli/compiler_metadata.py",
-    "src/molt/cli/config_resolution.py",
-    "src/molt/cli/diagnostic_text.py",
-    "src/molt/cli/installed_runtime.py",
-    "src/molt/cli/installed_runtime_contract.py",
-    "src/molt/cli/json_cache.py",
-    "src/molt/llvm_wasi_tools.py",
-    "src/molt/cli/models.py",
-    "src/molt/cli/native_link_custody.py",
-    "src/molt/cli/native_link_manifest.py",
-    "src/molt/cli/native_link_plan.py",
-    "src/molt/cli/project_roots.py",
-    "src/molt/cli/runtime_artifact_selection.py",
-    "src/molt/cli/runtime_build_identity.py",
-    "src/molt/process_guard.py",
-    "src/molt/rust_toolchain.py",
-    "tools/command_execution.py",
-    "tools/import_file.py",
-    "src/molt/cli/runtime_identity_schema.py",
-    "src/molt/cli/runtime_cargo_plan.py",
-    "src/molt/cli/runtime_features.py",
-    "src/molt/cli/runtime_fingerprints.py",
-    "src/molt/cli/runtime_native_build.py",
-    "src/molt/cli/runtime_native_codegen.py",
-    "src/molt/cli/runtime_native_generation.py",
-    "src/molt/cli/runtime_paths.py",
-    "src/molt/cli/runtime_source_closure.py",
-    "src/molt/cli/runtime_wasm_build.py",
-    "src/molt/cli/runtime_wasm_build_policy.py",
-    "src/molt/cli/runtime_wasm_build_spec.py",
-    "src/molt/cli/runtime_wasm_build_support.py",
-    "src/molt/cli/runtime_wasm_build_timings.py",
-    "src/molt/cli/runtime_wasm_cache.py",
-    "src/molt/cli/runtime_wasm_cache_diagnostics.py",
-    "src/molt/cli/runtime_wasm_failure.py",
-    "src/molt/cli/runtime_wasm_generation.py",
-    "src/molt/cli/runtime_wasm_pair_build.py",
-    "src/molt/cli/runtime_wasm_validation.py",
-    "src/molt/cli/static_archive_identity.py",
-    "src/molt/cli/wasm_link_args.py",
-    "src/molt/cli/wasm_link_inputs.py",
-    "src/molt/cli/wasm_toolchain.py",
-    "src/molt/dx.py",
-    "src/molt/file_hashing.py",
-    "src/molt/llvm_linker_roles.py",
-    "src/molt/exact_json.py",
-    "src/molt/toolchain_identity.py",
-    "src/molt/ustar.py",
-    "src/molt/wasm_artifact.py",
-    "src/molt/wasm_linking_symbols.py",
-    "src/molt/wasi_sysroot.py",
-    "src/molt/wasi_sdk_identity.py",
-    "src/molt/wasi_c_abi_protocol.txt",
-    "src/molt/llvm_toolchain.py",
-    "runtime/build_support/wasi_sysroot.rs",
-)
 
 
 def _runtime_tree_candidates(
@@ -826,33 +729,27 @@ def _runtime_build_environment_identity(
     }
 
 
-def runtime_build_tooling_paths(project_root: Path) -> tuple[Path, ...]:
-    """Project the canonical implementation closure into a source checkout."""
-    root = project_root.resolve(strict=False)
-    paths = {root / relative for relative in _RUNTIME_BUILD_TOOLING_RELPATHS}
-    return tuple(sorted(paths))
-
-
-def _capture_runtime_build_trees(
+def _capture_runtime_build_sources(
     project_root: Path, source_roots: Sequence[tuple[str, Path]]
-) -> tuple[dict[str, object], dict[str, object]]:
-    """Capture source and publication trees together for one live resolution.
-
-    Their logical labels and receipt roles stay separate. Each resolver call
-    owns a fresh index, including post-build and final-link recaptures.
-    """
-
-    root = project_root.resolve(strict=False)
-    tooling_roots = tuple(
-        ("runtime-tooling/" + path.relative_to(root).as_posix(), path)
-        for path in runtime_build_tooling_paths(root)
+) -> dict[str, object]:
+    """Cargo-declared source inputs; planner implementation is not an input."""
+    return RuntimeTreeIndex.capture(source_roots).identity(
+        source_roots, require_all=False
     )
-    index = RuntimeTreeIndex.capture((*source_roots, *tooling_roots))
-    publication_authority = {
-        "schema": "molt.runtime-build-tooling-authority.v2",
-        **index.identity(tooling_roots, require_all=True),
-    }
-    return index.identity(source_roots, require_all=False), publication_authority
+
+
+def capture_runtime_publication_executor(
+    project_root: Path,
+    transform: RuntimePublicationTransform,
+) -> Mapping[str, object] | None:
+    """Capture only the code that produces retained publication semantics."""
+    roots = tuple(
+        (path, project_root / path)
+        for path in runtime_publication_executor_paths(transform)
+    )
+    if not roots:
+        return None
+    return RuntimeTreeIndex.capture(roots).identity(roots, require_all=True)
 
 
 def _capture_plan_toolchain(cargo_plan: RuntimeCargoPlan) -> dict[str, object]:
@@ -1081,7 +978,7 @@ def resolve_native_runtime_build_identity(
         (*plan.logical_paths, ("source", root)), cargo_plan=plan
     )
     source_roots = runtime_source_roots(root, runtime_features)
-    sources, publication_authority = _capture_runtime_build_trees(root, source_roots)
+    sources = _capture_runtime_build_sources(root, source_roots)
     toolchain_manifest = provision_native_runtime_toolchain_content_manifest(
         project_root=root,
         env=env,
@@ -1102,8 +999,13 @@ def resolve_native_runtime_build_identity(
             "native-static-libs",
             *flag_projection.link_args(final_link_arguments),
         ),
-        publication_transform="native-staticlib-and-link-manifest-v1",
-        preserve_debug=plan.preserve_debug_for_profile(cargo_profile),
+        publication=RuntimePublicationAction(
+            RuntimePublicationTransform.NATIVE_STATICLIB,
+            plan.preserve_debug_for_profile(cargo_profile),
+            capture_runtime_publication_executor(
+                root, RuntimePublicationTransform.NATIVE_STATICLIB
+            ),
+        ),
     )
     identities = _resolve_runtime_build_family_identities(
         sources=sources,
@@ -1126,7 +1028,6 @@ def resolve_native_runtime_build_identity(
                 target_triple=logical_target,
             ),
         },
-        publication_authority=publication_authority,
         members=(member,),
     )
     return identities[0]
@@ -1138,7 +1039,6 @@ def _resolve_runtime_build_family_identities(
     toolchain_manifest: RuntimeToolchainContentManifest,
     target_triple: str,
     common_config: Mapping[str, object],
-    publication_authority: Mapping[str, object],
     members: Sequence[RuntimeBuildMemberPlan],
 ) -> tuple[RuntimeBuildIdentity, ...]:
     manifest = RuntimeToolchainContentManifest.from_dict(toolchain_manifest)
@@ -1157,12 +1057,8 @@ def _resolve_runtime_build_family_identities(
             "kind": plan.kind,
             "resolved_rustflags": list(plan.resolved_rustflags),
             "link_args": list(plan.link_args),
-            "publication_transform": plan.publication_transform,
-            "preserve_debug": plan.preserve_debug,
+            "publication": plan.publication.to_dict(),
         }
-    publication_payload = _freeze_json(publication_authority)
-    if not isinstance(publication_payload, Mapping):
-        raise ValueError("runtime publication authority is invalid")
     compile_payload = _freeze_json(
         {
             "sources": sources,
@@ -1176,7 +1072,6 @@ def _resolve_runtime_build_family_identities(
             "schema": _FAMILY_SCHEMA,
             "compile_digest": compile_digest,
             "compile": compile_payload,
-            "publication_authority": publication_payload,
             "members": member_payloads,
         }
     )
@@ -1217,13 +1112,7 @@ def resolve_wasm_cpython_abi_build_identity(
     )
     env = plan.environment
     cargo_command = plan.command
-    crate_root = root / "runtime" / "molt-cpython-abi"
-    source_paths = _cargo_crate_source_closure(
-        project_root=root,
-        crate_root=crate_root,
-        crate_features=(),
-        extra_source_paths=(root / "Cargo.toml", root / "Cargo.lock"),
-    )
+    source_paths = wasm_cpython_abi_source_paths(root)
     source_roots: list[tuple[str, Path]] = []
     for path in source_paths:
         resolved = path.resolve(strict=False)
@@ -1234,7 +1123,7 @@ def resolve_wasm_cpython_abi_build_identity(
                 f"CPython ABI source escaped project root: {resolved}"
             ) from exc
         source_roots.append((label, resolved))
-    sources, publication_authority = _capture_runtime_build_trees(root, source_roots)
+    sources = _capture_runtime_build_sources(root, source_roots)
     toolchain_manifest = provision_wasm_cpython_abi_toolchain_content_manifest(
         project_root=root,
         env=env,
@@ -1257,8 +1146,11 @@ def resolve_wasm_cpython_abi_build_identity(
         kind="staticlib",
         resolved_rustflags=tuple(flag_projection.rustflags(plan.rustflags)),
         link_args=(),
-        publication_transform="wasm-cpython-abi-staticlib-v1",
-        preserve_debug=plan.preserve_debug_for_profile(cargo_profile),
+        publication=RuntimePublicationAction(
+            RuntimePublicationTransform.WASM_STATICLIB,
+            plan.preserve_debug_for_profile(cargo_profile),
+            None,
+        ),
     )
     identity = _resolve_runtime_build_family_identities(
         sources=sources,
@@ -1282,7 +1174,6 @@ def resolve_wasm_cpython_abi_build_identity(
                 ),
             },
         },
-        publication_authority=publication_authority,
         members=(member,),
     )
     return identity[0]
@@ -1320,7 +1211,7 @@ def resolve_wasm_runtime_build_family_identities(
     env = plan.environment
     cargo_command = plan.command
     source_roots = runtime_source_roots(root, runtime_features)
-    sources, publication_authority = _capture_runtime_build_trees(root, source_roots)
+    sources = _capture_runtime_build_sources(root, source_roots)
     toolchain_manifest = provision_wasm_runtime_toolchain_content_manifest(
         project_root=root,
         env=env,
@@ -1354,8 +1245,7 @@ def resolve_wasm_runtime_build_family_identities(
                     )
                 )
             ),
-            publication_transform=member.publication_transform,
-            preserve_debug=member.preserve_debug,
+            publication=member.publication,
         )
         for member in members
     )
@@ -1384,6 +1274,5 @@ def resolve_wasm_runtime_build_family_identities(
                 target_triple=target_triple,
             ),
         },
-        publication_authority=publication_authority,
         members=canonical_members,
     )

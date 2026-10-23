@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 from molt import compiler_process
 from molt import input_report as _input_report
 from molt.compiler_analysis.python_function_kind import FunctionKind
@@ -725,7 +727,7 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
 
 
 # Completed projections from older schemas are never admitted as source requests.
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 35
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 36
 
 
 def _import_scan_cache_key(
@@ -748,7 +750,7 @@ def _import_scan_cache_key(
         "runtime-owner" if runtime_catalog_owner else "strict",
         repr(source_owner),
         repr(source_arguments),
-        repr(native_support_function_roots),
+        repr(ModuleBodySelection.from_requested_roots(native_support_function_roots)),
         repr(_namespace_premise_cache_identity(namespace_premise)),
         target_python.tag,
         _frontend_semantic_tooling_fingerprint(),
@@ -870,7 +872,7 @@ def _read_persisted_import_scan_record(
         "source_owner",
         "source_arguments",
         "namespace_premise",
-        "native_support_function_roots",
+        "body_selection",
         "source_demands",
         "source_sites",
         "all_exports",
@@ -916,8 +918,10 @@ def _read_persisted_import_scan_record(
         != _frontend_semantic_tooling_fingerprint()
         or payload.get("module_name") != module_name
         or payload.get("is_package") != is_package
-        or payload.get("native_support_function_roots")
-        != list(native_support_function_roots)
+        or payload.get("body_selection")
+        != ModuleBodySelection.from_requested_roots(
+            native_support_function_roots
+        ).payload()
         or payload.get("target_python") != target_python.tag
         or payload.get("parser") != [sys.implementation.name, sys.version]
         or payload.get("import_scan_mode") != import_scan_mode
@@ -1228,7 +1232,9 @@ def _write_persisted_import_scan(
         "compiler_fingerprint": _frontend_semantic_tooling_fingerprint(),
         "module_name": module_name,
         "is_package": is_package,
-        "native_support_function_roots": list(native_support_function_roots),
+        "body_selection": ModuleBodySelection.from_requested_roots(
+            native_support_function_roots
+        ).payload(),
         "import_scan_mode": import_scan_mode,
         "source_owner": source_owner,
         "source_arguments": source_arguments,
