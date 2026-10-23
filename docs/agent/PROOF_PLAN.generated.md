@@ -359,7 +359,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `frontend-ir-assembly` | 64 | 1 |
 | `build-output-identity` | 6 | 0 |
 | `backend-environment-contract` | 22 | 0 |
-| `bootstrap-stdlib` | 4 | 1 |
+| `stdlib-intrinsic-contracts` | 7 | 1 |
 | `heap-kind-lifetime-authority` | 6 | 0 |
 | `host-capability-authority` | 9 | 0 |
 | `runtime-profile-schema-authority` | 6 | 0 |
