@@ -512,7 +512,12 @@ def _remove_entry(entry: CacheEntry, dry_run: bool) -> str:
         if dry_run:
             return "removed"
         if entry.retirement_scope is not None:
-            durable_remove_path(entry.path, retirement_scope=entry.retirement_scope)
+            try:
+                durable_remove_path(entry.path, retirement_scope=entry.retirement_scope)
+            except ValueError:
+                # Malformed/changed retirement residue stays as evidence. It
+                # must fail this entry without abandoning unrelated eviction.
+                return "failed"
         elif _is_direct_directory(entry.path):
             try:
                 shutil.rmtree(entry.path, ignore_errors=False)
@@ -609,8 +614,8 @@ def _prune_locked(
                     store_busy = True
                     maintenance = None
                 except SourceRecordUnmigrated:
-                    # A dry run cannot migrate a legacy store; report it rather
-                    # than count a failure. A writing sweep migrates it.
+                    # A dry run cannot publish a virgin schema; report it rather
+                    # than count a failure. A writing sweep initializes it.
                     store_unmigrated = True
                     maintenance = None
                 except SourceRecordUnavailable:

@@ -277,12 +277,23 @@ store derives its database, namespace and persistent lifetime lock from one
 cache root. A shared lock in the existing cache control directory protects every
 SQLite connection, including maintenance, until SQLite closes. Warm record
 operations take no additional file lock or syscall. A contested retirement lock
-is a retryable miss before SQLite opens.
+is a retryable miss before SQLite opens. Explicit close releases the paired
+SQLite connection and lease synchronously. Implicit weakref or generator-context
+finalization closes SQLite first and parks its small lock handle for bounded
+release at a normal cold admission or explicit close (or OS process exit); it never enters
+Python file-lock mutexes from GC. This also covers abandoned context generators:
+[CPython 3.12.15's `_PyGen_Finalize`](https://github.com/python/cpython/blob/v3.12.15/Objects/genobject.c#L63)
+closes suspended generators, and [PEP 442](https://peps.python.org/pep-0442/)
+includes their cyclic finalization. The short conservative lease extension avoids
+reentrant deadlock without retaining SQLite page caches or adding a worker.
 
 The existing pruner exclusively locks only older namespaces, then uses the
 shared atomic namespace-retirement authority before physical deletion. A
 partial reclamation remains isolated from any new live database and is retried
-under the existing prune owner. Current and newer schemas remain outside file
+under the existing prune owner. A post-rename reclamation failure is reported as
+failed without crediting reclaimed bytes; malformed or changed residue remains
+evidence while unrelated entries continue. A read-only sweep cannot recreate a
+missing lifetime control and reports that store unavailable. Current and newer schemas remain outside file
 eviction; current rows keep their bounded metadata/CAS policy. Flat legacy
 stores cannot prove connection lifetime and are reported as
 `legacy_source_record_state`, without automatic unlinking. New namespace

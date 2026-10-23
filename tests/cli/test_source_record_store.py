@@ -331,7 +331,7 @@ def test_advisory_refresh_declines_busy_owners_without_reopening(tmp_path, monke
     with monkeypatch.context() as closed:
         closed.setattr(store, "_connect", no_reopen)
         assert all(record.refresh() is False for record in old)
-    assert store._connection is None
+    assert store._connection_resources is None
     observed = [store.get(kind, "k", generation="g", max_bytes=None) for kind in kinds]
     connection = store._connect()
     assert connection is not None
@@ -1471,3 +1471,68 @@ def test_namespace_retirement_refusal_is_retryable_without_sqlite_open(
     exclusive = records._try_acquire_file_lock(store.lifetime_lock)
     assert exclusive is not None
     records._release_file_lock(exclusive)
+
+
+def _gc_inside_file_lock_mutex(cache_text, mutex_name, owner_kind, channel):
+    import gc
+    from molt import file_locks
+
+    gc.disable()
+    cache = Path(cache_text)
+    store = records.source_record_store(cache)
+    assert store.put("import-scan", "k", b"body", generation="g")
+    lifetime_lock = store.lifetime_lock
+    if owner_kind == "store":
+        connection, owner = store._connect(), store
+    else:
+        store.close()
+        owner = store.maintenance(dry_run=False)
+        maintenance = owner.__enter__()
+        connection = maintenance._connection
+        del maintenance
+    cycle = [owner]
+    cycle.append(cycle)
+    del store, owner, cycle
+    channel.send("ready")
+    with getattr(file_locks, mutex_name):
+        gc.collect()
+    try:
+        connection.execute("SELECT 1")
+    except sqlite3.ProgrammingError:
+        pass
+    else:
+        raise AssertionError("GC did not close the abandoned SQLite connection")
+    # A normal later cold open releases parked leases without doing lock work
+    # from GC. Its independent cache root must not reacquire the original lease.
+    probe = records.source_record_store(cache / "next")
+    assert probe.put("import-scan", "probe", b"body", generation="g")
+    exclusive = file_locks._try_acquire_file_lock(lifetime_lock)
+    assert exclusive is not None
+    file_locks._release_file_lock(exclusive)
+    probe.close()
+    channel.send("closed-and-released")
+    channel.close()
+
+
+@pytest.mark.parametrize("owner_kind", ["store", "maintenance"])
+@pytest.mark.parametrize(
+    "mutex_name", ["_IN_PROCESS_LOCK_REGISTRY_GUARD", "_FILE_LOCK_LIFECYCLE_CONDITION"]
+)
+def test_gc_cannot_reenter_file_lock_mutexes(tmp_path, mutex_name, owner_kind):
+    ctx = multiprocessing.get_context("spawn")
+    parent, channel = ctx.Pipe()
+    child = ctx.Process(
+        target=_gc_inside_file_lock_mutex,
+        args=(str(tmp_path), mutex_name, owner_kind, channel),
+    )
+    child.start()
+    channel.close()
+    try:
+        assert parent.poll(30) and parent.recv() == "ready", "observer did not start"
+        assert parent.poll(5), "GC reentered a non-reentrant file-lock mutex"
+        assert parent.recv() == "closed-and-released"
+        child.join(5)
+        assert child.exitcode == 0
+    finally:
+        parent.close()
+        _close_fork_observer(child)

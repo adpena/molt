@@ -19,6 +19,7 @@ import re
 import sqlite3
 import threading
 import time
+from collections import deque
 from collections.abc import Generator, Iterator, Sequence
 from contextlib import closing, contextmanager
 from dataclasses import dataclass, field
@@ -101,6 +102,40 @@ _RECORD_OBSERVATION_PREDICATE = "kind = ? AND key = ? AND revision = ? AND used_
 # PID-fenced callback must retain its argument: dropping it could invoke the
 # SQLite connection's C finalizer in that child.
 _INHERITED_CONNECTIONS: list[sqlite3.Connection] = []
+_ConnectionResources = tuple[sqlite3.Connection, _FileLockHandle]
+_DEFERRED_LIFETIME_RELEASES: deque[_FileLockHandle] = deque()
+
+
+def _finalize_connection(resources: _ConnectionResources, pid: int) -> None:
+    # GC can run while either file-lock mutex is already held on this thread.
+    # SQLite may close here; Python file-lock bookkeeping must wait for normal
+    # context. deque append takes no Python mutex and retains the exact lease.
+    connection, lifetime = resources
+    _close_connection(connection, pid, None)
+    _defer_lifetime_release(lifetime)
+
+
+def _defer_lifetime_release(lifetime: _FileLockHandle) -> None:
+    if lifetime.owner_process_id == os.getpid():
+        _DEFERRED_LIFETIME_RELEASES.append(lifetime)
+
+
+def _release_deferred_lifetimes() -> None:
+    # Bound one cold admission to the work observed here; concurrent GC may
+    # append more owners, which a later cold admission will release.
+    pending = len(_DEFERRED_LIFETIME_RELEASES)
+    if not pending:
+        return
+    for _ in range(pending):
+        try:
+            lifetime = _DEFERRED_LIFETIME_RELEASES.popleft()
+        except IndexError:
+            break
+        try:
+            _release_file_lock(lifetime)
+        except BaseException:
+            _DEFERRED_LIFETIME_RELEASES.appendleft(lifetime)
+            raise
 
 
 def _close_connection(
@@ -155,7 +190,7 @@ class SourceRecordBusy(SourceRecordUnavailable):
 
 
 class SourceRecordUnmigrated(SourceRecordUnavailable):
-    """A dry run met a legacy schema that only a writing sweep may migrate."""
+    """A read-only sweep found a store before its first committed bootstrap."""
 
 
 def _maintenance_error(error: sqlite3.Error) -> SourceRecordUnavailable:
@@ -385,7 +420,7 @@ class SourceRecordStore:
         self.path = cache_root / STORE_RELATIVE_PATH
         self._pid = os.getpid()
         self._lock = threading.Lock()
-        self._connection: sqlite3.Connection | None = None
+        self._connection_resources: _ConnectionResources | None = None
         self._connection_finalizer: finalize | None = None
         self._unavailable = False
 
@@ -395,12 +430,14 @@ class SourceRecordStore:
             return
         with self._lock:
             self._release_connection()
+        _release_deferred_lifetimes()
 
     def _release_connection(self) -> None:
         finalizer, self._connection_finalizer = self._connection_finalizer, None
-        self._connection = None
-        if finalizer is not None:
-            finalizer()
+        resources, self._connection_resources = self._connection_resources, None
+        if finalizer is not None and finalizer.detach() is not None:
+            assert resources is not None
+            _close_connection(resources[0], self._pid, resources[1])
 
     def get(
         self, kind: RecordKind, key: str, *, generation: str, max_bytes: int | None
@@ -470,7 +507,7 @@ class SourceRecordStore:
         try:
             # An old observation must not reopen/bootstrap a closed store only
             # to renew optional metadata. Ordinary get/put retain reopening.
-            if self._connection is None:
+            if self._connection_resources is None:
                 return False
 
             def refresh(connection: sqlite3.Connection) -> int:
@@ -523,9 +560,10 @@ class SourceRecordStore:
     def _connect(self) -> sqlite3.Connection | None:
         if self._pid != os.getpid() or self._unavailable:
             return None
-        if self._connection is not None:
-            return self._connection
+        if self._connection_resources is not None:
+            return self._connection_resources[0]
         try:
+            _release_deferred_lifetimes()
             lifetime = _try_acquire_file_lock(self.lifetime_lock, shared=True)
         except OSError:
             return None
@@ -542,12 +580,10 @@ class SourceRecordStore:
                 check_same_thread=False,
             )
             self._initialize(connection)
-            self._connection = connection
-            # The finalizer owns both resources without keeping this store alive.
-            # Close SQLite before releasing the namespace's shared lifetime lock.
-            self._connection_finalizer = finalize(
-                self, _close_connection, connection, self._pid, lifetime
-            )
+            resources = (connection, lifetime)
+            finalizer = finalize(self, _finalize_connection, resources, self._pid)
+            self._connection_resources = resources
+            self._connection_finalizer = finalizer
             admitted = True
             return connection
         except (SourceRecordBusy, OSError, sqlite3.OperationalError):
@@ -628,7 +664,9 @@ class SourceRecordStore:
         current: sqlite3.Connection | None = None
         maintenance: SourceRecordMaintenance | None = None
         lifetime = None
+        implicit_close = False
         try:
+            _release_deferred_lifetimes()
             lifetime = _try_acquire_file_lock(
                 self.lifetime_lock, create=not dry_run, shared=True
             )
@@ -657,6 +695,11 @@ class SourceRecordStore:
                 raise SourceRecordUnavailable("source record schema is not initialized")
             maintenance = SourceRecordMaintenance(snapshot, current, dry_run=dry_run)
             yield maintenance
+        except GeneratorExit:
+            # Abandoned generator contexts finalize inside arbitrary GC sites,
+            # just like weakref finalizers; SQLite closes before the lease parks.
+            implicit_close = True
+            raise
         except SourceRecordUnavailable as exc:
             cause = exc.__cause__
             if isinstance(cause, sqlite3.DatabaseError) and not isinstance(
@@ -683,7 +726,10 @@ class SourceRecordStore:
             if current is not None:
                 _close_connection(current, self._pid, None)
             if lifetime is not None:
-                _release_file_lock(lifetime)
+                if implicit_close:
+                    _defer_lifetime_release(lifetime)
+                elif self._pid == os.getpid():
+                    _release_file_lock(lifetime)
 
     def physical_bytes(self) -> dict[str, int | None]:
         sizes: dict[str, int | None] = {}
@@ -711,8 +757,10 @@ _STORES_LOCK = threading.Lock()
 
 
 def _after_fork() -> None:
-    global _STORES_LOCK
+    global _STORES_LOCK, _DEFERRED_LIFETIME_RELEASES
     _STORES_LOCK = threading.Lock()
+    # File-lock fork custody already closed the inherited descriptor copies.
+    _DEFERRED_LIFETIME_RELEASES = deque()
 
 
 if hasattr(os, "register_at_fork"):
