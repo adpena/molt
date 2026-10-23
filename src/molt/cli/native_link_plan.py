@@ -37,6 +37,21 @@ class NativeLinkerKind(str, Enum):
     ZIG = "zig"
 
 
+class NativeSymbolStrip(str, Enum):
+    """Where a release plan removes non-global symbols from the image.
+
+    ``AT_LINK`` passes the strip to the linker (ld64 ``-x -S``, ELF
+    ``--strip-all``), as Go's ``-ldflags=-s -w`` and rustc's ELF
+    ``--strip-all`` do. The linked image is final: no tool rewrites it, and
+    Apple ld's ad hoc signature stands. ``AFTER_LINK`` runs the strip tool on
+    the linked image, for a linker that cannot omit every local symbol.
+    """
+
+    NONE = "none"
+    AT_LINK = "at-link"
+    AFTER_LINK = "after-link"
+
+
 @dataclass(frozen=True, slots=True)
 class NativeLinkCapabilities:
     linker: NativeLinkerKind
@@ -46,6 +61,9 @@ class NativeLinkCapabilities:
     # private stage is signed as the published binary at link time. ld64.lld
     # and zig name the signature after the -o operand instead.
     signs_as_final_output: bool
+    # The linker omits every non-global symbol on request. zig's Mach-O
+    # linker keeps the local thunks it synthesizes under -x.
+    strips_local_symbols: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,7 +71,7 @@ class NativeLinkPolicy:
     preserve_function_identity: bool
     dead_strip: bool
     emit_relocations: bool
-    strip_after_link: bool
+    symbol_strip: NativeSymbolStrip
     bolt_requested: bool
 
 
@@ -316,12 +334,17 @@ def native_link_capabilities(
             target.object_format is NativeObjectFormat.MACHO
             and linker is NativeLinkerKind.SYSTEM
         ),
+        strips_local_symbols=not (
+            target.object_format is NativeObjectFormat.MACHO
+            and linker is NativeLinkerKind.ZIG
+        ),
     )
 
 
 def native_link_policy(
     *,
     target: NativeTargetSpec,
+    capabilities: NativeLinkCapabilities,
     profile: str,
     keep_symbols: bool,
     bolt_requested: bool,
@@ -331,18 +354,43 @@ def native_link_policy(
             raise RuntimeError("BOLT requires the release build profile.")
         if error := target.bolt_support_error:
             raise RuntimeError(error)
+    # A BOLT plan keeps symbols and relocations; its executor strips the
+    # optimized image.
+    if (
+        profile != "release"
+        or target.object_format
+        not in {NativeObjectFormat.ELF, NativeObjectFormat.MACHO}
+        or keep_symbols
+        or bolt_requested
+    ):
+        symbol_strip = NativeSymbolStrip.NONE
+    elif capabilities.strips_local_symbols:
+        symbol_strip = NativeSymbolStrip.AT_LINK
+    else:
+        symbol_strip = NativeSymbolStrip.AFTER_LINK
     return NativeLinkPolicy(
         preserve_function_identity=True,
         dead_strip=True,
         emit_relocations=bolt_requested,
-        strip_after_link=(
-            profile == "release"
-            and target.object_format
-            in {NativeObjectFormat.ELF, NativeObjectFormat.MACHO}
-            and not keep_symbols
-            and not bolt_requested
-        ),
+        symbol_strip=symbol_strip,
         bolt_requested=bolt_requested,
+    )
+
+
+def native_link_strip_flags(target: NativeTargetSpec) -> tuple[str, ...]:
+    """Return the driver flags of an ``AT_LINK`` strip.
+
+    They remove what ``native_strip_flags`` removes after a link: ld64 ``-x``
+    drops the non-global symbols and ``-S`` the debug-map stabs, both of
+    which ``strip -x`` drops.
+    """
+    if target.object_format is NativeObjectFormat.MACHO:
+        return ("-Wl,-x", "-Wl,-S")
+    if target.object_format is NativeObjectFormat.ELF:
+        return ("-Wl,--strip-all",)
+    raise RuntimeError(
+        "Link-time stripping has no policy for object format "
+        f"{target.object_format.value!r}."
     )
 
 

@@ -55,7 +55,7 @@ from molt.cli.native_link_manifest import (  # noqa: E402
     native_link_dependency_manifest_path,
     _read_native_link_dependency_manifest,
 )
-from molt.cli.native_link_plan import NativeLinkPlan  # noqa: E402
+from molt.cli.native_link_plan import NativeLinkPlan, NativeSymbolStrip  # noqa: E402
 from molt.native_target import _host_target_triple, resolve_native_target_spec  # noqa: E402
 from molt.cli.python_source_closure import local_python_import_closure  # noqa: E402
 from molt.cli.runtime_identity_schema import RuntimeBuildIdentity  # noqa: E402
@@ -1082,7 +1082,7 @@ def run_benchmark(args: argparse.Namespace) -> BenchmarkReport:
     input_facts = collect_input_facts(inputs)
     plan_payload = normalized_plan_payload(plan, inputs=inputs, output=output)
     plan_payload["finalization_policy"] = {
-        "ordinary_strip": plan.policy.strip_after_link,
+        "ordinary_symbol_strip": plan.policy.symbol_strip.value,
         "bolt_strip": (
             os.environ.get("MOLT_KEEP_SYMBOLS") != "1"
             if plan.policy.bolt_requested
@@ -1273,7 +1273,7 @@ def run_benchmark(args: argparse.Namespace) -> BenchmarkReport:
                     strip=(
                         os.environ.get("MOLT_KEEP_SYMBOLS") != "1"
                         if args.bolt
-                        else plan.policy.strip_after_link
+                        else plan.policy.symbol_strip is NativeSymbolStrip.AFTER_LINK
                     ),
                     phase_times=finalize_phases,
                     link_selection=(selection_candidate, link_selection_path(output))

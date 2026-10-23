@@ -6,7 +6,7 @@ authority. A link is planned once as an immutable tuple of:
 - resolved target OS, architecture, and object format;
 - selected linker and its demonstrated capabilities;
 - optimization policy (dead stripping, function identity, relocations,
-  post-link stripping, and BOLT intent); and
+  the symbol-strip stage, and BOLT intent); and
 - the exact command used by the fingerprint and executor.
 
 Main executables and source-built native extensions consume the same dead-strip
@@ -67,7 +67,34 @@ therefore preserves the previously published artifact. Each BOLT run starts
 from a fresh ordinary link because the link-input fingerprint does not describe
 workload profile data.
 
-Release stripping is target-aware: exact-host targets may use the resolved
+## Symbol stripping
+
+A release Mach-O or ELF image keeps only its global symbols. The plan's
+`NativeSymbolStrip` stage says where that happens:
+
+| Stage | When | How |
+| --- | --- | --- |
+| `AT_LINK` | the linker omits every local symbol on request | ld64 and ld64.lld: `-Wl,-x -Wl,-S`; every ELF linker: `-Wl,--strip-all` |
+| `AFTER_LINK` | zig's Mach-O linker, which keeps the local thunks it synthesizes under `-x` | `strip -x` on the linked image |
+| `NONE` | dev profile, `MOLT_KEEP_SYMBOLS=1`, COFF, or a BOLT plan | BOLT's executor strips the optimized image itself |
+
+`AT_LINK` follows Go (`-ldflags=-s -w` tells the Go linker to omit the symbol
+table and DWARF) and rustc, which passes `--strip-all` to ELF linkers. rustc
+runs an external strip on Apple targets because ld64 dropped `-s`, the full
+strip; Molt removes only local symbols, and ld64's `-x` (drop non-global
+symbols) with `-S` (drop the debug-map stabs) is the documented equivalent of
+`strip -x`. The real-link oracle test compares both images symbol by symbol.
+
+The linked image is then final. No tool rewrites it, and Apple ld's ad hoc
+signature, made under the published name, stands. A separate strip and
+re-sign each rewrote the whole image: on a 50 MB release binary on macOS arm64
+`strip -x` cost 0.9-5.7 s and `codesign` 0.9-6.9 s, depending on volume load.
+The trade is the signature's page size: ld64 signs 4 KiB pages and `codesign`
+16 KiB pages, so the linker-signed image is 275,200 B (0.55%) larger. Startup
+is unchanged (63.9 ms minimum for both images over 45 runs), and a
+distribution signature with a real identity replaces the ad hoc one anyway.
+
+An `AFTER_LINK` strip is target-aware: exact-host targets may use the resolved
 native strip tool, while a foreign OS or architecture requires `llvm-strip`.
 Missing or failed target stripping fails the release build instead of silently
 publishing an artifact outside the plan.
