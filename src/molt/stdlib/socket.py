@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import errno
+import io
 import sys
 from typing import Any
 
@@ -606,26 +607,82 @@ class socket:
             )
         )
 
+    def _check_sendfile_params(
+        self, file: Any, offset: int, count: int | None
+    ) -> None:
+        if "b" not in getattr(file, "mode", "b"):
+            raise ValueError("file should be opened in binary mode")
+        if not self.type & _CONSTANTS.get("SOCK_STREAM", 1):
+            raise ValueError("only SOCK_STREAM type sockets are supported")
+        if count is not None:
+            if not isinstance(count, int):
+                raise TypeError(
+                    "count must be a positive integer (got {!r})".format(count)
+                )
+            if count <= 0:
+                raise ValueError(
+                    "count must be a positive integer (got {!r})".format(count)
+                )
+
+    def _sendfile_use_send(
+        self, file: Any, offset: int = 0, count: int | None = None
+    ) -> int:
+        # CPython's fallback for a file with no usable descriptor.
+        self._check_sendfile_params(file, offset, count)
+        if self.gettimeout() == 0:
+            raise ValueError("non-blocking sockets are not supported")
+        if offset:
+            file.seek(offset)
+        blocksize = min(count, 8192) if count else 8192
+        total_sent = 0
+        file_read = file.read
+        sock_send = self.send
+        try:
+            while True:
+                if count:
+                    blocksize = min(count - total_sent, blocksize)
+                    if blocksize <= 0:
+                        break
+                data = memoryview(file_read(blocksize))
+                if not data:
+                    break
+                while True:
+                    try:
+                        sent = sock_send(data)
+                    except BlockingIOError:
+                        continue
+                    else:
+                        total_sent += sent
+                        if sent < len(data):
+                            data = data[sent:]
+                        else:
+                            break
+            return total_sent
+        finally:
+            if total_sent > 0 and hasattr(file, "seek"):
+                file.seek(offset + total_sent)
+
     def sendfile(self, file: Any, offset: int = 0, count: int | None = None) -> int:
+        # As CPython does, the zero-copy path gives up on a file whose fileno()
+        # is missing or unsupported, and the send loop then reads the file.
+        self._check_sendfile_params(file, offset, count)
         try:
             fileno = file.fileno()
-        except (AttributeError, OSError) as exc:
-            raise OSError("file should have a valid fileno()") from exc
-        if not isinstance(fileno, int):
-            raise OSError("file.fileno() must return an integer")
-        if offset < 0:
-            raise ValueError("offset must be non-negative")
-        if count is not None and count <= 0:
-            raise ValueError("count must be a positive integer (got {})".format(count))
-        effective_count = 0 if count is None else int(count)
-        return int(
+        except (AttributeError, io.UnsupportedOperation):
+            return self._sendfile_use_send(file, offset, count)
+        if self.gettimeout() == 0:
+            raise ValueError("non-blocking sockets are not supported")
+        total_sent = int(
             _require_socket_intrinsic(_molt_socket_sendfile, "sendfile")(
                 self._require_handle(),
                 int(fileno),
                 int(offset),
-                effective_count,
+                0 if count is None else count,
             )
         )
+        if total_sent > 0 and hasattr(file, "seek"):
+            file.seek(offset + total_sent)
+        return total_sent
 
     def recvmsg(
         self, bufsize: int, ancbufsize: int = 0, flags: int = 0

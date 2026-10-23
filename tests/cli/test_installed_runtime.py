@@ -541,7 +541,7 @@ def test_wasm_receipts_must_carry_distribution_semantics(bundle):
             "target_triple": "wasm32-wasip1",
             "cargo_profile": "release",
             "stdlib_profile": "micro",
-            "runtime_features": [],
+            "runtime_features": ["no-default-features"],
             "simd": True,
             "freestanding": False,
         },

@@ -32,3 +32,12 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         _ => None,
     }
 }
+
+#[cfg(not(feature = "stdlib_serialization"))]
+const _: () = {
+    use super::declared_absent::*;
+    #[allow(unused_imports)]
+    use crate::*;
+    let _ = molt_msgpack_parse_scalar_obj;
+    let _ = molt_cbor_parse_scalar_obj;
+};

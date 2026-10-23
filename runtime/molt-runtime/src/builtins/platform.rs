@@ -28,8 +28,12 @@ use molt_runtime_platform::uuid_support::{
 
 // --- Platform constants ---
 
+// I/O readiness events shared by the networking I/O driver and `select`.
+#[cfg(any(molt_net, feature = "stdlib_select"))]
 pub(crate) const IO_EVENT_READ: u32 = 1;
+#[cfg(any(molt_net, feature = "stdlib_select"))]
 pub(crate) const IO_EVENT_WRITE: u32 = 1 << 1;
+#[cfg(any(molt_net, feature = "stdlib_select"))]
 pub(crate) const IO_EVENT_ERROR: u32 = 1 << 2;
 
 // --- errno/socket/env helpers ---

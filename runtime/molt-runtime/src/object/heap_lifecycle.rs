@@ -77,7 +77,9 @@ pub(crate) enum DetachedResource {
     ListProjection(molt_cpython_abi::bridge::RetiredClearedListProjection),
     OwnedCFields(molt_cpython_abi::bridge::RetiredOwnedCFields),
     TypeProjection(molt_cpython_abi::bridge::RetiredTypeCycleProjection),
+    #[cfg(molt_net)]
     IoSocket(u64),
+    #[cfg(molt_net)]
     Websocket(u64),
     Native(super::native_handle::DetachedNativeHandle),
     Foreign(usize),
@@ -241,9 +243,11 @@ impl DetachedEdgeSink {
                 DetachedResource::TypeProjection(fields) => {
                     crate::object::foreign::retire_native_reference(|| drop(fields));
                 }
+                #[cfg(molt_net)]
                 DetachedResource::IoSocket(bits) => {
                     crate::io_wait_release_detached_resource(py, bits)
                 }
+                #[cfg(molt_net)]
                 DetachedResource::Websocket(bits) => {
                     crate::ws_wait_release_detached_resource(py, bits)
                 }

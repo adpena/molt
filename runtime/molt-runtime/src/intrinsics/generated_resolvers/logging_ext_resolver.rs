@@ -88,3 +88,26 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         _ => None,
     }
 }
+
+#[cfg(not(feature = "stdlib_logging_ext"))]
+const _: () = {
+    use super::declared_absent::*;
+    #[allow(unused_imports)]
+    use crate::*;
+    let _ = molt_logging_handler_new;
+    let _ = molt_logging_handler_set_level;
+    let _ = molt_logging_handler_flush;
+    let _ = molt_logging_handler_close;
+    let _ = molt_logging_handler_drop;
+    let _ = molt_logging_logger_new;
+    let _ = molt_logging_logger_set_level;
+    let _ = molt_logging_logger_add_handler;
+    let _ = molt_logging_logger_remove_handler;
+    let _ = molt_logging_logger_is_enabled_for;
+    let _ = molt_logging_logger_get_effective_level;
+    let _ = molt_logging_logger_drop;
+    let _ = molt_logging_shutdown;
+    let _ = molt_logging_get_level_name;
+    let _ = molt_logging_add_level_name;
+    let _ = molt_logging_level_to_int;
+};

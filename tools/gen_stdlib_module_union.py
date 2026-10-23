@@ -581,6 +581,10 @@ def _git_source_objects(
     identities: dict[str, str] = {}
     blobs = []
     for (path, expected_kind), line in zip(paths, lines[:-1], strict=True):
+        # Batch lookup reports a missing path successfully; preserve the source
+        # acquisition failure contract without accepting misbound responses.
+        if line == f"{revision}:{path} missing".encode("utf-8"):
+            raise RuntimeError(f"CPython source {revision} is missing {path}")
         match = re.fullmatch(rb"([0-9a-f]{40}) (blob|tree) (0|[1-9][0-9]*)", line)
         if match is None or match[2].decode("ascii") != expected_kind:
             raise ValueError(f"Git source batch metadata is invalid: {path}")

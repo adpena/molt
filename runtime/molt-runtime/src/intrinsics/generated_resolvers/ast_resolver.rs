@@ -31,3 +31,15 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         _ => None,
     }
 }
+
+#[cfg(not(feature = "stdlib_ast"))]
+const _: () = {
+    use super::declared_absent::*;
+    #[allow(unused_imports)]
+    use crate::*;
+    let _ = molt_ast_parse;
+    let _ = molt_ast_walk;
+    let _ = molt_ast_get_docstring;
+    let _ = molt_ast_iter_fields;
+    let _ = molt_ast_iter_child_nodes;
+};

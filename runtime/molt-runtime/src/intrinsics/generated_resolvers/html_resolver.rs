@@ -51,3 +51,19 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         _ => None,
     }
 }
+
+#[cfg(not(feature = "stdlib_text"))]
+const _: () = {
+    use super::declared_absent::*;
+    #[allow(unused_imports)]
+    use crate::*;
+    let _ = molt_html_entities_codepoint2name;
+    let _ = molt_html_entities_html5;
+    let _ = molt_html_entities_name2codepoint;
+    let _ = molt_html_escape;
+    let _ = molt_html_parser_close;
+    let _ = molt_html_parser_drop;
+    let _ = molt_html_parser_feed;
+    let _ = molt_html_parser_new;
+    let _ = molt_html_unescape;
+};

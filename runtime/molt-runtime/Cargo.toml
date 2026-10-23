@@ -67,7 +67,7 @@ stdlib_full = [
     "stdlib_crypto_legacy", "stdlib_serialization",
     "stdlib_archive", "stdlib_ast", "stdlib_fs_extra", "stdlib_unicode_names",
     "stdlib_tk", "stdlib_decimal",
-    "stdlib_dbm", "stdlib_importlib_extra",
+    "stdlib_dbm",
     "stdlib_logging_ext", "stdlib_stringprep", "stdlib_xml", "stdlib_ipaddress", "stdlib_zoneinfo",
     "stdlib_graphlib",
     "builtin_fcntl",
@@ -87,7 +87,6 @@ stdlib_micro = [
     "stdlib_asyncio",
     "stdlib_collections",
     "stdlib_fs_extra",
-    "stdlib_logging",
     "stdlib_logging_ext",
 ]
 
@@ -104,7 +103,7 @@ stdlib_edge = [
 # Good balance of functionality and binary size for server/CLI apps.
 stdlib_standard = [
     "stdlib_edge",
-    "stdlib_path", "stdlib_signal",
+    "stdlib_path",
     "stdlib_text",
     "builtin_complex",
 ]
@@ -115,7 +114,7 @@ stdlib_server = [
     "stdlib_standard",
     "stdlib_crypto", "stdlib_compression", "stdlib_net", "stdlib_asyncio",
     "stdlib_http", "stdlib_serial", "stdlib_email",
-    "stdlib_concurrent", "stdlib_select",
+    "stdlib_select",
     "builtin_memoryview",
 ]
 
@@ -134,8 +133,9 @@ stdlib_crypto_legacy = [
 stdlib_compression = ["dep:molt-runtime-compression"]
 stdlib_serialization = ["dep:rmpv", "dep:serde_cbor"]
 stdlib_archive = ["dep:zip", "stdlib_serial"]
-# Gates the Python ast APIs. The parser also owns traceback expression ranges
-# for every profile; diagnostics must not substitute punctuation heuristics.
+# Gates the Python ast module. The parser itself is linked into every profile:
+# it owns traceback expression ranges (diagnostics must not substitute
+# punctuation heuristics) and the core `compile()` builtin.
 stdlib_ast = []
 stdlib_fs_extra = ["dep:glob", "dep:tempfile"]
 # Granular domain feature gates for resolve_symbol: when disabled, the
@@ -146,10 +146,7 @@ stdlib_asyncio = ["dep:molt-runtime-asyncio"]
 stdlib_email = ["stdlib_serial"]
 stdlib_math = ["dep:molt-runtime-math"]
 stdlib_decimal = ["stdlib_math", "stdlib_serial"]
-stdlib_logging = []
-stdlib_concurrent = []
 stdlib_dbm = []
-stdlib_importlib_extra = []
 stdlib_path = ["dep:molt-runtime-path"]
 stdlib_collections = ["dep:molt-runtime-collections"]
 stdlib_regex = ["dep:molt-runtime-regex"]
@@ -164,7 +161,6 @@ stdlib_stringprep = ["dep:molt-runtime-stringprep"]
 stdlib_xml = ["dep:molt-runtime-xml"]
 stdlib_ipaddress = ["dep:molt-runtime-ipaddress"]
 stdlib_zoneinfo = ["dep:molt-runtime-zoneinfo"]
-stdlib_signal = []
 stdlib_select = []
 # sqlite3 driver: pulls in `molt-db/sqlite` which transitively pulls in
 # `rusqlite` with the bundled SQLite amalgamation (~1MB binary).  Gated

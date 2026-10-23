@@ -12,11 +12,12 @@ use super::{
     runtime_reset_for_init, runtime_teardown, runtime_teardown_for_process_exit, touch_tls_guard,
 };
 
+#[cfg(molt_net)]
 use crate::IoPoller;
 use crate::ProcessTaskState;
 use crate::async_rt::event_loop::{EventLoopRegistry, PipeTransportRegistry};
 use crate::async_rt::scheduler::{AsyncioEventWaiterIndex, AwaitWaiterIndex};
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 use crate::async_rt::sockets::SocketRuntimeState;
 use crate::builtins::attributes::AttributesRuntimeState;
 use crate::builtins::concurrent::ConcurrentRuntimeState;
@@ -413,6 +414,7 @@ pub(crate) struct RuntimeState {
     pub(crate) utf8_count_cache: Vec<Mutex<Utf8CountCacheStore>>,
     pub(crate) scheduler: OnceLock<MoltScheduler>,
     pub(crate) sleep_queue: OnceLock<Arc<SleepQueue>>,
+    #[cfg(molt_net)]
     pub(crate) io_poller: OnceLock<Arc<IoPoller>>,
     pub(crate) capabilities: OnceLock<HashSet<String>>,
     pub(crate) execution_target: OnceLock<String>,
@@ -461,7 +463,7 @@ pub(crate) struct RuntimeState {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) thread_tasks: Mutex<HashMap<PtrSlot, Arc<ThreadTaskState>>>,
     pub(crate) process_registry: ProcessRegistry,
-    #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+    #[cfg(molt_net)]
     pub(crate) socket_state: SocketRuntimeState,
     pub(crate) signal: SignalRuntimeState,
     pub(crate) process_tasks: Mutex<HashMap<PtrSlot, Arc<ProcessTaskState>>>,
@@ -582,6 +584,7 @@ impl RuntimeState {
             utf8_count_cache: build_utf8_count_cache(),
             scheduler: OnceLock::new(),
             sleep_queue: OnceLock::new(),
+            #[cfg(molt_net)]
             io_poller: OnceLock::new(),
             capabilities: OnceLock::new(),
             execution_target: OnceLock::new(),
@@ -629,7 +632,7 @@ impl RuntimeState {
             #[cfg(not(target_arch = "wasm32"))]
             thread_tasks: Mutex::new(HashMap::new()),
             process_registry,
-            #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+            #[cfg(molt_net)]
             socket_state: SocketRuntimeState::new(),
             signal: SignalRuntimeState::new(),
             process_tasks: Mutex::new(HashMap::new()),
@@ -662,6 +665,7 @@ impl RuntimeState {
         queue
     }
 
+    #[cfg(molt_net)]
     pub(crate) fn io_poller(&self) -> &Arc<IoPoller> {
         let poller = self.io_poller.get_or_init(|| Arc::new(IoPoller::new()));
         #[cfg(not(target_arch = "wasm32"))]

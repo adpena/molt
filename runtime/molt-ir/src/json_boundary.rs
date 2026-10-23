@@ -68,6 +68,16 @@ pub fn optional_u32(obj: &JsonObject, key: &str, ctx: &str) -> Result<Option<u32
     }
 }
 
+pub fn optional_u64(obj: &JsonObject, key: &str, ctx: &str) -> Result<Option<u64>, String> {
+    match obj.get(key) {
+        None | Some(JsonValue::Null) => Ok(None),
+        Some(value) => value
+            .as_u64()
+            .map(Some)
+            .ok_or_else(|| format!("{ctx}.{key} must be a non-negative integer")),
+    }
+}
+
 pub fn required_string_list(obj: &JsonObject, key: &str, ctx: &str) -> Result<Vec<String>, String> {
     parse_string_list(required_field(obj, key, ctx)?, &format!("{ctx}.{key}"))
 }

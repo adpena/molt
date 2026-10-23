@@ -10,10 +10,7 @@ from typing import (
     Sequence,
 )
 
-from molt._runtime_feature_gates import (
-    LINK_AFFECTING_FEATURES,
-    link_affecting_features_unsupported_on_target,
-)
+from molt._runtime_feature_gates import RUNTIME_FEATURES
 from molt.cli.atomic_io import (
     _atomic_write_text,
 )
@@ -25,6 +22,7 @@ from molt.cli.config_resolution import (
 from molt.cli.build_request import BuildProfile
 from molt.cli.models import _RuntimeArtifactState
 from molt.cli.runtime_features import (
+    runtime_features_unsupported_on_target,
     runtime_stdlib_profile_for_required_features,
 )
 from molt.cli.runtime_paths import (
@@ -142,8 +140,7 @@ def _prebuild_runtime_wasm(
         return 1
 
     invalid_features = required_link_features - (
-        LINK_AFFECTING_FEATURES
-        - link_affecting_features_unsupported_on_target("wasm32-wasip1")
+        RUNTIME_FEATURES - runtime_features_unsupported_on_target("wasm32-wasip1")
     )
     if invalid_features:
         return fail(

@@ -40,6 +40,7 @@ pub(crate) fn sleep_trace_enabled() -> bool {
     runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_SLEEP)
 }
 
+#[cfg(molt_net)]
 pub(crate) fn asyncio_connect_trace_enabled() -> bool {
     runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_ASYNCIO_CONNECT)
 }

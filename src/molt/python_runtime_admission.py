@@ -455,8 +455,12 @@ class BuildPythonAdmission:
                         process.stdin.close()
                     except BrokenPipeError:
                         pass
-                assert self._executor is not None
-                result = self._executor.wait_owned(process, timeout=10.0)
+                # After EOF the helper's only work is its own teardown, and its
+                # guard keeps enforcing limits until the child exits. Wait for
+                # that exit without a deadline, as `subprocess.Popen.__exit__`
+                # does: a fixed 10 s bound failed builds that had succeeded
+                # whenever host load slowed the exit (HF-512).
+                result = process.wait()
             except BaseException as exc:
                 failure = exc
             # A failed wait can still have completed guardian cancellation.

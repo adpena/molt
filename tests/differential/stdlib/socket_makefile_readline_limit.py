@@ -1,3 +1,4 @@
+# MOLT_ENV: MOLT_CAPABILITIES=net
 import socket
 
 left, right = socket.socketpair()

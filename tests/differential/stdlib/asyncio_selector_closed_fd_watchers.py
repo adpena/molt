@@ -1,3 +1,4 @@
+# MOLT_ENV: MOLT_CAPABILITIES=net
 """Purpose: closed selector loops reject adds and return False on removes."""
 
 import asyncio

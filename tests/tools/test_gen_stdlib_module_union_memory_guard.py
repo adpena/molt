@@ -12,6 +12,7 @@ import sysconfig
 import re
 import tomllib
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
@@ -463,7 +464,8 @@ def test_git_failure_fails_closed_through_the_memory_guard(
 
 
 @pytest.mark.parametrize(
-    "corruption", ["missing", "type", "oid", "size", "extra", "truncated"]
+    "corruption",
+    ["missing-revision", "missing-path", "type", "oid", "size", "extra", "truncated"],
 )
 def test_source_batch_metadata_refuses_incomplete_or_misbound_objects(
     monkeypatch, tmp_path, corruption
@@ -471,8 +473,10 @@ def test_source_batch_metadata_refuses_incomplete_or_misbound_objects(
     first = b"a" * 40 + b" blob 1\n"
     second = b"b" * 40 + b" tree 12\n"
     data = first + second
-    if corruption == "missing":
+    if corruption == "missing-revision":
         data = b"HEAD:source missing\n" + second
+    elif corruption == "missing-path":
+        data = b"c" * 40 + b":other missing\n" + second
     elif corruption == "type":
         data = second + first
     elif corruption == "oid":
@@ -541,6 +545,29 @@ def _fixture_remote(
     git("commit", "--quiet", "--message", "fixture")
     git("tag", "--annotate", "--message", "fixture", "v3.12.1")
     return root, git("rev-parse", "HEAD"), git("rev-parse", "HEAD:Lib")
+
+
+@pytest.mark.parametrize(
+    "path, kind", [("Grammar/python.gram", "blob"), ("Missing", "tree")]
+)
+def test_source_batch_reports_an_exact_missing_pinned_path(
+    tmp_path: Path, monkeypatch, path: str, kind: Literal["blob", "tree"]
+) -> None:
+    remote, revision, _ = _fixture_remote(tmp_path / "cpython", include_grammar=False)
+    git = gen._git
+    replies = []
+
+    def observe_git(args, *, cwd, **kwargs):
+        assert args[-1] == "--batch-check", "missing source reached blob read"
+        reply = git(args, cwd=cwd, **kwargs)
+        replies.append(reply)
+        return reply
+
+    monkeypatch.setattr(gen, "_git", observe_git)
+    with pytest.raises(RuntimeError, match=re.escape(f"{revision} is missing {path}")):
+        gen._git_source_objects(remote, revision, [(path, kind)])
+    # Actual Git output, not a fixture spelling or a parser-derived oracle.
+    assert replies == [f"{revision}:{path} missing\n".encode("utf-8")]
 
 
 def test_fetch_reads_a_pinned_tag_without_blobs(

@@ -51,3 +51,19 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         _ => None,
     }
 }
+
+#[cfg(not(feature = "stdlib_http"))]
+const _: () = {
+    use super::declared_absent::*;
+    #[allow(unused_imports)]
+    use crate::*;
+    let _ = molt_socketserver_register;
+    let _ = molt_socketserver_unregister;
+    let _ = molt_socketserver_dispatch_begin;
+    let _ = molt_socketserver_dispatch_poll;
+    let _ = molt_socketserver_dispatch_cancel;
+    let _ = molt_socketserver_get_request_poll;
+    let _ = molt_socketserver_serve_forever;
+    let _ = molt_socketserver_handle_request;
+    let _ = molt_socketserver_shutdown;
+};

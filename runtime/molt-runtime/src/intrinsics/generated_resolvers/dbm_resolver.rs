@@ -46,3 +46,18 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         _ => None,
     }
 }
+
+#[cfg(not(feature = "stdlib_dbm"))]
+const _: () = {
+    use super::declared_absent::*;
+    #[allow(unused_imports)]
+    use crate::*;
+    let _ = molt_dbm_dumb_open;
+    let _ = molt_dbm_dumb_getitem;
+    let _ = molt_dbm_dumb_setitem;
+    let _ = molt_dbm_dumb_delitem;
+    let _ = molt_dbm_dumb_contains;
+    let _ = molt_dbm_dumb_keys;
+    let _ = molt_dbm_dumb_sync;
+    let _ = molt_dbm_dumb_close;
+};
