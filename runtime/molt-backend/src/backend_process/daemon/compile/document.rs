@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use molt_ir::addressed_program::{AddressedProgram, ProgramAssemblyError};
 
+use super::super::DaemonIrSource;
 use super::super::cache::DaemonCache;
-use super::super::{DaemonIrSource, DaemonJobRequest};
 use crate::backend_process::input::content::{AddressedInputIdentity, ContentReader};
 use crate::backend_process::input::open_ir_file;
 
@@ -16,10 +16,10 @@ pub(super) enum DaemonJobDocument {
 /// Capture the exact lease bytes, admit its shipped bodies, and fill missing
 /// positions from the one resident store. No full-program serialization occurs.
 pub(super) fn read_daemon_job_document(
-    job: &DaemonJobRequest,
+    source: &DaemonIrSource,
     cache: &DaemonCache,
 ) -> Result<DaemonJobDocument, String> {
-    let DaemonIrSource::Lease(path) = &job.ir_source else {
+    let DaemonIrSource::Lease(path) = source else {
         return Err("missing ir for cache miss".to_string());
     };
     let lease_error =
@@ -50,5 +50,52 @@ pub(super) fn read_daemon_job_document(
             Ok(DaemonJobDocument::MissingFunctions(positions))
         }
         Err(ProgramAssemblyError::Invalid(reason)) => Err(lease_error(reason)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn captured_msgpack_identity_describes_only_successful_consumed_frame() {
+        // Independent literal addressed lease; no production encoder or hasher
+        // supplies the expected frame, length or digest.
+        let bytes = b"\x82\xaffunction_bodies\x90\xb0function_digests\xc4\x00";
+        let cache = DaemonCache::new(None);
+        for suffix in [false, true] {
+            let path = molt_ir::debug_artifacts::prepare_unique_debug_artifact_path(
+                "daemon-input-frame-test",
+            )
+            .expect("prepare unique input fixture");
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .unwrap();
+            file.write_all(bytes).unwrap();
+            if suffix {
+                file.write_all(&[0]).unwrap();
+            }
+            drop(file);
+            let source = DaemonIrSource::Lease(path.to_str().unwrap().to_owned());
+            let result = read_daemon_job_document(&source, &cache);
+            std::fs::remove_file(&path).expect("remove owned input fixture");
+            if suffix {
+                assert!(matches!(result, Err(error) if error.contains("trailing bytes")));
+                continue;
+            }
+            let DaemonJobDocument::Ready(document, identity) = result.unwrap() else {
+                panic!("empty lease must assemble without missing functions");
+            };
+            assert!(document.ir.functions.is_empty());
+            assert!(identity.function_digests.is_empty());
+            assert_eq!(identity.lease.size, 37);
+            assert_eq!(
+                identity.lease.sha256,
+                "34b6abb7d6c673da2c027b4727588df7e32b41cdcd938914e023bed019ef686a"
+            );
+        }
     }
 }

@@ -308,21 +308,3 @@ fn messagepack_file_receiver_preserves_literal_float_payload_bits() {
         );
     }
 }
-
-#[test]
-fn captured_msgpack_identity_describes_only_successful_consumed_frame() {
-    // Independent literal addressed lease; no production encoder supplies this oracle.
-    let bytes = MSGPACK;
-    let input = InputFile::new(bytes);
-    let (document, identity) = read_captured_msgpack(Some(input.path())).unwrap();
-    assert!(document.ir.functions.is_empty());
-    assert_eq!(identity.size, 37);
-    assert_eq!(
-        identity.sha256,
-        "34b6abb7d6c673da2c027b4727588df7e32b41cdcd938914e023bed019ef686a"
-    );
-    let mut changed = bytes.to_vec();
-    changed.push(0);
-    let invalid = InputFile::new(&changed);
-    assert!(read_captured_msgpack(Some(invalid.path())).is_err());
-}
