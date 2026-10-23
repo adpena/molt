@@ -848,6 +848,11 @@ def clone_file(source: Path, destination: Path) -> None:
             except OSError as exc:
                 if exc.errno not in _CLONE_UNSUPPORTED_ERRNOS:
                     raise
+        shutil.copyfile(source, destination)
+        return
+    # The exclusive create keeps the missing-leaf contract on every platform.
+    with open(destination, "xb"):
+        pass
     shutil.copyfile(source, destination)
 
 
