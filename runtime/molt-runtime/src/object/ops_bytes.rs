@@ -1767,7 +1767,7 @@ pub(crate) fn bytearray_init_from_arguments(
         let encoded = molt_bytes_from_str(
             source,
             encoding,
-            bound[2].unwrap_or_else(|| MoltObject::none().bits()),
+            bound[2].unwrap_or_else(|| missing_bits(py)),
         );
         if exception_pending(py) {
             dec_ref_bits(py, encoded);
@@ -1888,27 +1888,32 @@ fn bytes_from_str_impl(
     errors_bits: u64,
     kind: BytesCtorKind,
 ) -> u64 {
-    let encoding_obj = obj_from_bits(encoding_bits);
-    let errors_obj = obj_from_bits(errors_bits);
-    let encoding = if encoding_obj.is_none() {
-        None
-    } else {
-        let Some(encoding) = string_obj_to_owned(encoding_obj) else {
-            let type_name = class_name_for_error(type_of_bits(_py, encoding_bits));
-            let msg = kind.arg_type_message("encoding", &type_name);
-            return raise_exception::<_>(_py, "TypeError", &msg);
+    // An omitted argument arrives as `missing`; an explicit None is a value
+    // of the wrong type, named by value as Argument Clinic names it.
+    let missing = missing_bits(_py);
+    let codec_arg = |bits: u64, arg: &str| -> Result<Option<String>, u64> {
+        if bits == missing {
+            return Ok(None);
+        }
+        let obj = obj_from_bits(bits);
+        if let Some(text) = string_obj_to_owned(obj) {
+            return Ok(Some(text));
+        }
+        let type_name = if obj.is_none() {
+            "None".to_string()
+        } else {
+            class_name_for_error(type_of_bits(_py, bits))
         };
-        Some(encoding)
+        let msg = kind.arg_type_message(arg, &type_name);
+        Err(raise_exception::<_>(_py, "TypeError", &msg))
     };
-    let errors = if errors_obj.is_none() {
-        None
-    } else {
-        let Some(errors) = string_obj_to_owned(errors_obj) else {
-            let type_name = class_name_for_error(type_of_bits(_py, errors_bits));
-            let msg = kind.arg_type_message("errors", &type_name);
-            return raise_exception::<_>(_py, "TypeError", &msg);
-        };
-        Some(errors)
+    let encoding = match codec_arg(encoding_bits, "encoding") {
+        Ok(encoding) => encoding,
+        Err(raised) => return raised,
+    };
+    let errors = match codec_arg(errors_bits, "errors") {
+        Ok(errors) => errors,
+        Err(raised) => return raised,
     };
     let src_obj = obj_from_bits(src_bits);
     let Some(src_ptr) = src_obj.as_ptr() else {

@@ -24,6 +24,9 @@ fn discard_itertools_class(py: &crate::PyToken<'_>, class: u64) -> u64 {
 /// and retained trailing defaults. Attribute lookup never binds `cls` implicitly:
 /// type.__call__ prepends it, while explicit __new__ callers supply it themselves.
 /// The namespace owns the callables; there is no parallel method cache.
+/// The `__next__` callback is also the exact class native next slot.
+/// Its immutable namespace keeps the method and slot coherent; tee and
+/// groupby iterator classes remain final.
 pub(crate) fn alloc_itertools_class(
     py: &crate::PyToken<'_>,
     name: &str,
@@ -151,6 +154,16 @@ pub(crate) fn alloc_itertools_class(
     {
         return discard_itertools_class(py, class_bits);
     }
+    if !is_tee_block {
+        // SAFETY: `next_fn` is the address of the `(self)` callback just declared
+        // as `__next__`; the class is unpublished.
+        unsafe {
+            crate::object::layout::class_declare_native_next(
+                class_ptr,
+                std::mem::transmute::<usize, crate::object::layout::NativeNextFn>(next_fn as usize),
+            );
+        }
+    }
     if let Some((callback, arity, defaults)) = constructor
         && crate::builtins::methods::builtin_func_bits_with_defaults_tuple(
             py,
@@ -162,8 +175,32 @@ pub(crate) fn alloc_itertools_class(
     {
         return discard_itertools_class(py, class_bits);
     }
-    if exception_pending(py)
+    let module_key = attr_name_bits_from_bytes(py, b"__module__");
+    let module_value = attr_name_bits_from_bytes(py, b"itertools");
+    let (Some(module_key), Some(module_value)) = (module_key, module_value) else {
+        for bits in module_key.into_iter().chain(module_value) {
+            dec_ref_bits(py, bits);
+        }
+        return discard_itertools_class(py, class_bits);
+    };
+    let module_set = unsafe { dict_set_in_place(py, dict_ptr, module_key, module_value) };
+    dec_ref_bits(py, module_key);
+    dec_ref_bits(py, module_value);
+    let basetype = !matches!(
+        shape,
+        ObjectShapeId::ItertoolsTee | ObjectShapeId::ItertoolsGroupbyIter
+    );
+    if !module_set
+        || exception_pending(py)
+        || unsafe {
+            crate::object::class_storage::class_capture_native_module(py, class_ptr, false)
+        }
+        .is_err()
         || unsafe { crate::object::class_finish_definition(py, class_ptr) }.is_err()
+        || !unsafe {
+            crate::object::class_storage::ClassSemanticPolicy::heap(true, basetype)
+                .apply(py, class_ptr)
+        }
     {
         return discard_itertools_class(py, class_bits);
     }
@@ -330,6 +367,13 @@ mod tests {
                 .as_ptr()
                 .unwrap();
             let class = unsafe { object_class_bits(block) };
+            assert!(
+                unsafe {
+                    crate::object::layout::class_native_next(obj_from_bits(class).as_ptr().unwrap())
+                }
+                .is_none(),
+                "tee storage blocks have no iterator callback or native next slot"
+            );
             inc_ref_bits(py, class);
             dec_ref_bits(py, first);
             dec_ref_bits(py, second);
@@ -559,6 +603,98 @@ mod tests {
                 count,
                 repeat,
             ] {
+                dec_ref_bits(py, owned);
+            }
+        });
+    }
+
+    #[test]
+    fn exact_itertools_class_owns_its_native_next_and_seals_its_namespace() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let int = |value| MoltObject::from_int(value).bits();
+            let count = crate::molt_itertools_count(int(5), int(2));
+            let source = MoltObject::from_ptr(alloc_tuple(py, &[int(1)])).bits();
+            let tees = crate::molt_itertools_tee(source, int(1));
+            assert!(!exception_pending(py));
+            let tee = unsafe {
+                crate::object::seq_access::item(obj_from_bits(tees).as_ptr().unwrap(), 0)
+            }
+            .expect("one tee");
+            for (instance, callback, basetype) in [
+                (
+                    count,
+                    crate::molt_itertools_count_next as *const () as usize,
+                    true,
+                ),
+                (
+                    tee,
+                    crate::molt_itertools_tee_next as *const () as usize,
+                    false,
+                ),
+            ] {
+                let class_bits =
+                    unsafe { object_class_bits(obj_from_bits(instance).as_ptr().unwrap()) };
+                let class = obj_from_bits(class_bits).as_ptr().unwrap();
+                let next = unsafe { crate::object::layout::class_native_next(class) }
+                    .expect("the exact class declares its native next");
+                // One callback is both the slot and the `__next__` descriptor.
+                assert_eq!(next as usize, callback);
+                assert!(unsafe { crate::object::class_is_immutable(py, class) });
+                assert_eq!(
+                    unsafe { crate::object::class_is_not_base(py, class) },
+                    !basetype
+                );
+                let key = attr_name_bits_from_bytes(py, b"__module__").unwrap();
+                let module = crate::molt_get_attr_name(class_bits, key);
+                dec_ref_bits(py, key);
+                assert_eq!(
+                    string_obj_to_owned(obj_from_bits(module)).as_deref(),
+                    Some("itertools")
+                );
+                dec_ref_bits(py, module);
+            }
+            // CPython itertools types are immutable heap types.
+            let key = attr_name_bits_from_bytes(py, b"__next__").unwrap();
+            let count_class = unsafe { object_class_bits(obj_from_bits(count).as_ptr().unwrap()) };
+            let _ = crate::molt_set_attr_name(count_class, key, int(0));
+            assert!(
+                exception_pending(py),
+                "an immutable type rejects __next__ rebinding"
+            );
+            let error = crate::molt_exception_last();
+            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                py,
+                error,
+                "TypeError"
+            ));
+            crate::clear_exception(py);
+            dec_ref_bits(py, error);
+            dec_ref_bits(py, key);
+            // The slot is the iteration step: no lookup, bound method or binding.
+            for expected in [5, 7, 9] {
+                match crate::object::ops_iter::iteration_step(
+                    py,
+                    count,
+                    crate::object::iterable::IterationExhaustion::Normalize,
+                ) {
+                    Ok(crate::object::iterable::SpecialIterationStep::Item(value)) => {
+                        assert_eq!(obj_from_bits(value).as_int(), Some(expected));
+                    }
+                    _ => panic!("count must advance through its native next"),
+                }
+            }
+            // A heap subclass declares no slot; its own or inherited __next__
+            // is reached through the special-method protocol.
+            let name = attr_name_bits_from_bytes(py, b"CountChild").unwrap();
+            let child = crate::molt_class_new(name);
+            dec_ref_bits(py, name);
+            let base = crate::molt_class_set_base(child, count_class);
+            assert!(!exception_pending(py));
+            dec_ref_bits(py, base);
+            let child_ptr = obj_from_bits(child).as_ptr().unwrap();
+            assert!(unsafe { crate::object::layout::class_native_next(child_ptr) }.is_none());
+            for owned in [child, tees, source, count] {
                 dec_ref_bits(py, owned);
             }
         });

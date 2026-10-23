@@ -15,7 +15,7 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 import sys as _sys
 from reprlib import recursive_repr
-from types import MappingProxyType
+from types import MappingProxyType, MemberDescriptorType
 from typing import Any, Callable, ClassVar, cast
 
 _MOLT_DATACLASSES_MAKE_DATACLASS = _require_intrinsic("molt_dataclasses_make_dataclass")
@@ -582,6 +582,9 @@ def _molt_apply_dataclass(
         if isinstance(default, Field):
             field_obj = default
         else:
+            if isinstance(default, MemberDescriptorType):
+                # A field in __slots__ has no default value.
+                default = MISSING
             field_obj = Field(default)
         field_obj.name = name
         field_obj.type = annotation

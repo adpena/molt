@@ -2524,7 +2524,11 @@ pub(crate) const CLASS_DECLARATIONS_WORD: usize = 10;
 /// reference slots so no existing word moves. It is a plain scalar: the class
 /// owns no reference through it, and teardown leaves it alone.
 pub(crate) const CLASS_DEFINITION_WORD: usize = ClassReferenceSlot::NativeModule as usize + 1;
-pub(crate) const CLASS_PAYLOAD_WORDS: usize = CLASS_DEFINITION_WORD + 1;
+/// The native iterator advance of this exact class, CPython's `tp_iternext`.
+/// A plain scalar code address like the definition word: no reference, no
+/// inheritance, and teardown leaves it alone.
+pub(crate) const CLASS_NATIVE_NEXT_WORD: usize = CLASS_DEFINITION_WORD + 1;
+pub(crate) const CLASS_PAYLOAD_WORDS: usize = CLASS_NATIVE_NEXT_WORD + 1;
 
 /// The identity of one compiled class statement (HF-220): its program slot
 /// plus one, so zero stays the word of every class no compiled statement
@@ -2572,6 +2576,44 @@ pub(crate) unsafe fn class_set_definition(ptr: *mut u8, definition: ClassDefinit
         std::sync::atomic::Ordering::Acquire,
     )
     .is_ok()
+}
+
+/// A native iterator's `__next__` callback with the positional `(self)` ABI:
+/// an owned item, or a pending exception where StopIteration is exhaustion.
+pub(crate) type NativeNextFn = extern "C" fn(u64) -> u64;
+
+/// # Safety
+/// `ptr` must be a live class object payload that outlives the reference.
+unsafe fn class_native_next_word<'a>(ptr: *mut u8) -> &'a std::sync::atomic::AtomicU64 {
+    unsafe {
+        &*(ptr.add(CLASS_NATIVE_NEXT_WORD * std::mem::size_of::<u64>())
+            as *const std::sync::atomic::AtomicU64)
+    }
+}
+
+/// The native advance this exact class declared. A subclass declares none and
+/// so reaches its own or an inherited `__next__` through the special protocol.
+///
+/// # Safety
+/// `ptr` must be a live class object payload.
+#[inline]
+pub(crate) unsafe fn class_native_next(ptr: *mut u8) -> Option<NativeNextFn> {
+    let address = unsafe { class_native_next_word(ptr) }.load(std::sync::atomic::Ordering::Acquire);
+    // SAFETY: only `class_declare_native_next` writes this word, and only with
+    // the address of a `NativeNextFn`.
+    (address != 0).then(|| unsafe { std::mem::transmute::<usize, NativeNextFn>(address as usize) })
+}
+
+/// Register the native advance of an unpublished class once, beside the
+/// `__next__` descriptor built from the same callback. The class must be
+/// sealed immutable before publication, so its namespace cannot diverge.
+///
+/// # Safety
+/// `ptr` must be an unpublished class object payload.
+pub(crate) unsafe fn class_declare_native_next(ptr: *mut u8, next: NativeNextFn) {
+    let previous = unsafe { class_native_next_word(ptr) }
+        .swap(next as usize as u64, std::sync::atomic::Ordering::Release);
+    assert_eq!(previous, 0, "a class declares its native next once");
 }
 
 pub(crate) unsafe fn class_slot_declaration_bits(ptr: *mut u8) -> u64 {
