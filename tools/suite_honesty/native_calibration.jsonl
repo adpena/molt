@@ -510,7 +510,7 @@
 {"expect_molt_fail": false, "file": "tests/differential/basic/genexpr_inline_any_all_scope.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/getattr_calls.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/getattribute_basic.py", "raw_status": "pass"}
-{"expect_molt_fail": false, "file": "tests/differential/basic/global_nonlocal_conflict.py", "raw_status": "fail"}
+{"expect_molt_fail": false, "file": "tests/differential/basic/global_nonlocal_conflict.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/globals_callable.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/guard_dict_shape_mutation.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/guard_tag_type_hint_fail.py", "raw_status": "pass"}
@@ -834,12 +834,12 @@
 {"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_ensure_future_loop_mismatch.py", "raw_status": "fail"}
 {"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_sock_recv_cancel_deterministic.py", "raw_status": "fail"}
 {"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_sock_recv_into_sendall.py", "raw_status": "fail"}
-{"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_ssl_capability_intrinsic.py", "raw_status": "fail"}
-{"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_ssl_create_unix_connection_intrinsic.py", "raw_status": "fail"}
-{"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_ssl_false_open_connection_intrinsic.py", "raw_status": "fail"}
-{"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_ssl_false_start_server_intrinsic.py", "raw_status": "fail"}
-{"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_ssl_false_unix_connection_intrinsic.py", "raw_status": "fail"}
-{"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_ssl_unix_connection_intrinsic.py", "raw_status": "fail"}
+{"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_ssl_capability_intrinsic.py", "raw_status": "pass"}
+{"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_ssl_create_unix_connection_intrinsic.py", "raw_status": "pass"}
+{"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_ssl_false_open_connection_intrinsic.py", "raw_status": "pass"}
+{"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_ssl_false_start_server_intrinsic.py", "raw_status": "pass"}
+{"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_ssl_false_unix_connection_intrinsic.py", "raw_status": "pass"}
+{"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_ssl_unix_connection_intrinsic.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_task_cancelling_uncancel.py", "raw_status": "fail"}
 {"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_task_context_explicit.py", "raw_status": "fail"}
 {"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_task_current_identity.py", "raw_status": "fail"}
@@ -855,3 +855,7 @@
 {"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_taskgroup_exceptiongroup_order.py", "raw_status": "fail"}
 {"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_timeout_at_basic.py", "raw_status": "fail"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/module_attribute_miss.py", "raw_status": "pass"}
+{"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_subprocess_cancel_io.py", "raw_status": "pass"}
+{"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_tls_open_connection_invalid_host_intrinsic.py", "raw_status": "pass"}
+{"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_unix_socket_capability_intrinsic.py", "raw_status": "pass"}
+{"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_child_watcher_capability_intrinsic.py", "raw_status": "pass"}
