@@ -1033,12 +1033,22 @@ fail closed; the inventory itself makes no claim about current file bytes.
   lowerings share `source_records.sqlite` under
   `<Molt cache>/toolchain_source_records` (`molt.cli.source_record_store`). Every
   project/session uses that store; no project copy is hydrated. Source/context
-  admission precedes recency refresh. Existing generation retirement keeps at
-  most four generations used within a week; the global byte/age cache budget
-  also includes all four record kinds. Run the existing `molt_cache_prune.py`
+  admission precedes recency refresh. Exact compiler generation remains part
+  of read admission; retention belongs solely to the configured global byte/age
+  cache budget for all four kinds. Schema three retires the former four-generation,
+  seven-day trim and its metadata after preserving legacy row observations.
+  Run the existing `molt_cache_prune.py`
   command to inspect or apply it. Its totals combine file bytes and logical
   source payload bytes; separate DB/WAL/SHM measurements report physical storage.
-  A peer snapshot can defer physical reclamation. Row deletion uses bounded
+  Each metadata page releases its read snapshot before yielding to row or file
+  eviction. The existing inventory count bounds examined observations, including
+  repeated rows after recency changes or backward clock movement; an upper key
+  and forward cursor constrain selection. Concurrent totals and selection are
+  approximate. Deletion requires the exact observed revision and recency, so a
+  stale observation cannot delete a replaced or renewed row. Other peer snapshots
+  can still defer physical reclamation; the logical byte budget is not a hard
+  DB/WAL physical-size limit. WAL uses synchronous NORMAL and default automatic
+  checkpointing, so sync cost remains possible. Row deletion uses bounded
   transactions (256 rows/1 MiB, with one oversized row allowed), and later sweeps
   continue bounded vacuum work even when no new rows are removed. BUSY deferral
   is reported separately from maintenance failure. Dry-run never changes rows,

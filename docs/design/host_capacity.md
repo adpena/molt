@@ -187,13 +187,20 @@ more under suite load (that test took 43 s alone and 295 s in its suite).
 Small, hot metadata belongs on the fastest local volume with room for it, and
 bulk artifacts (Cargo targets, linked outputs) on the large one. The canonical
 source-record authority instead uses one shared four-kind
-SQLite table with generation retirement and global byte/age retention; see
+SQLite table whose row recency and global byte/age budget own retention; compiler
+generation remains read provenance. Short metadata snapshots release the WAL
+before eviction work; see
 [the record contract](../spec/areas/compiler/SIMPLE_IR_JSON_SCHEMA.md). The
 previous per-generation-file proposal is retired: retained scan-key replays
 under HF-285 do not establish a persistent-storage bottleneck. Frontend
 operations and live observations own connections; a weak identity registry
 releases abandoned roots rather than retaining a connection per historical
 root. Volume choice still requires measurement per machine.
+
+[SQLite WAL checkpointing](https://sqlite.org/wal.html#checkpointing) requires
+readers to release their snapshots before the WAL can reset. Maintenance uses
+short page snapshots and the existing inventory count as a finite observation
+budget; synchronous NORMAL and automatic checkpointing remain enabled.
 
 ## Migration
 
