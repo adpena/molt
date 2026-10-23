@@ -2187,6 +2187,12 @@ return_contract = "owned_object"
 type = 3
 
 [[import]]
+name = "iter_builtin"
+type = 3
+runtime_name = "molt_iter_builtin"
+callable_arity = 2
+
+[[import]]
 name = "iter_sentinel"
 type = 3
 runtime_name = "molt_iter_sentinel"

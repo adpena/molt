@@ -847,8 +847,12 @@ class LocalBindingMixin(GeneratorMixinBase):
             return value
         # A static namespace projection and a live mapping have the same miss
         # law. Neither may skip the enclosing cell or consult an outer class.
-        fallback = None
-        if name not in scope.local_names or name in scope.nonlocal_names:
+        # A generic class body sits inside its type-parameter scope, which
+        # CPython consults after the class mapping (LOAD_FROM_DICT_OR_DEREF).
+        fallback = self.annotation_type_params.get(name)
+        if fallback is None and (
+            name not in scope.local_names or name in scope.nonlocal_names
+        ):
             saved_scopes, saved_locals = self._class_ns_stack, self.locals
             self._class_ns_stack, self.locals = [], scope.enclosing_locals
             try:
