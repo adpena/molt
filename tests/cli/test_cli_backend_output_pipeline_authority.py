@@ -25,6 +25,7 @@ from molt.cli.models import (
     _BackendCacheSetup,
     _BuildDiagnosticsContext,
     _ExternalPackageNativeArtifactPlan,
+    _PreparedBackendCompile,
 )
 from molt.cli.build_output_layout import _BuildOutputLayout
 from molt.cli.module_source import _ModuleSourceCatalog, _ModuleSourceLease
@@ -249,13 +250,14 @@ def terminal_build(
             backend_bin=backend_runtime.backend_bin,
         ),
         prepared_backend_runtime_context=backend_runtime,
-        prepared_backend_compile=SimpleNamespace(
+        prepared_backend_compile=_PreparedBackendCompile(
             cache_enabled=True,
             cache_hit=True,
             cache_hit_tier="module",
             backend_daemon_origin=None,
             backend_daemon_cached=None,
             backend_daemon_cache_tier=None,
+            backend_daemon_health=None,
             backend_daemon_config_digest=None,
             wasm_table_base=0,
         ),

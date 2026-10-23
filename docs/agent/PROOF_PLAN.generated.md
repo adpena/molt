@@ -418,7 +418,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `rust-clippy-changed` | 8 | 1 |
 | `backend-native` | 9 | 1 |
 | `wasm-facts-host-tool` | 7 | 2 |
-| `backend-daemon-cache` | 6 | 2 |
+| `backend-daemon-cache` | 12 | 2 |
 | `backend-ir-framing` | 4 | 1 |
 | `native-object-emission` | 5 | 1 |
 | `maintained-zlib-counters` | 14 | 2 |

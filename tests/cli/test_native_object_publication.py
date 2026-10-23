@@ -28,6 +28,7 @@ from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
 from molt.cli.models import (
     _BackendCacheSetup,
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
+    _PreparedBackendCompile,
     _PreparedBackendSetup,
     _PreparedBuildConfig,
     _RuntimeArtifactState,
@@ -224,12 +225,13 @@ def test_native_object_publication_is_one_admitted_transaction(
         cache_path=cache_path,
         function_cache_path=None,
     )
-    compile_result = NS(
+    compile_result = _PreparedBackendCompile(
         cache_enabled=True,
         cache_hit=cache_hit,
         cache_hit_tier="module" if cache_hit else None,
         backend_daemon_cached=False,
         backend_daemon_cache_tier=None,
+        backend_daemon_health=None,
         backend_daemon_config_digest=None,
         wasm_table_base=None,
     )
