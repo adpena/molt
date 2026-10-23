@@ -44,10 +44,10 @@
 {"expect_molt_fail": false, "file": "tests/differential/basic/async_generator_completion_more.py", "raw_status": "fail"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/async_generator_finalization.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/async_generator_ge_after_stop.py", "raw_status": "fail"}
-{"expect_molt_fail": false, "file": "tests/differential/basic/async_generator_introspection.py", "raw_status": "fail"}
+{"expect_molt_fail": false, "file": "tests/differential/basic/async_generator_introspection.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/async_generator_post_stop_edges.py", "raw_status": "fail"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/async_generator_protocol.py", "raw_status": "pass"}
-{"expect_molt_fail": false, "file": "tests/differential/basic/async_generator_reentrancy.py", "raw_status": "fail"}
+{"expect_molt_fail": false, "file": "tests/differential/basic/async_generator_reentrancy.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/async_hang_probe.py", "raw_status": "fail"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/async_long_running.py", "raw_status": "fail"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/async_loop_sleep.py", "raw_status": "fail"}
@@ -823,7 +823,7 @@
 {"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_as_completed_timeout_results.py", "raw_status": "fail"}
 {"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_barrier_basic.py", "raw_status": "fail"}
 {"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_bounded_semaphore_overrelease.py", "raw_status": "pass"}
-{"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_call_at_fifo_tiebreak.py", "raw_status": "fail"}
+{"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_call_at_equal_deadline.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_call_later_call_at_context_closed.py", "raw_status": "fail"}
 {"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_call_later_cancel.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_call_later_fifo_tiebreak.py", "raw_status": "fail"}
@@ -843,7 +843,7 @@
 {"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_task_cancelling_uncancel.py", "raw_status": "fail"}
 {"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_task_context_explicit.py", "raw_status": "fail"}
 {"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_task_current_identity.py", "raw_status": "fail"}
-{"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_task_factory_invalid.py", "raw_status": "fail"}
+{"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_task_factory_invalid.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_task_factory_naming.py", "raw_status": "fail"}
 {"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_task_registry_introspection.py", "raw_status": "fail"}
 {"expect_molt_fail": false, "file": "tests/differential/stdlib/asyncio_taskgroup_basic.py", "raw_status": "fail"}

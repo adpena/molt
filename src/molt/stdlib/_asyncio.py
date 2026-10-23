@@ -22,10 +22,6 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 _MOLT_ASYNCIO_RUNNING_LOOP_GET = _require_intrinsic("molt_asyncio_running_loop_get")
 _MOLT_ASYNCIO_RUNNING_LOOP_SET = _require_intrinsic("molt_asyncio_running_loop_set")
-_MOLT_ASYNCIO_EVENT_LOOP_GET = _require_intrinsic("molt_asyncio_event_loop_get")
-_MOLT_ASYNCIO_EVENT_LOOP_POLICY_GET = _require_intrinsic(
-    "molt_asyncio_event_loop_policy_get"
-)
 
 # ---------------------------------------------------------------------------
 # Task-context intrinsics (new — _asyncio C-extension surface)
@@ -63,22 +59,15 @@ def get_running_loop():
     return loop
 
 
-def get_event_loop(
-    _get_event_loop_intrinsic=_MOLT_ASYNCIO_EVENT_LOOP_GET,
-    _get_event_loop_policy_intrinsic=_MOLT_ASYNCIO_EVENT_LOOP_POLICY_GET,
-):
-    loop = _get_event_loop_intrinsic()
-    if loop is not None:
-        return loop
+def get_event_loop():
+    """Return the running loop, else the policy's loop.
 
-    policy = _get_event_loop_policy_intrinsic()
-    if policy is None:
-        raise RuntimeError(
-            "_asyncio event loop policy is unset; initialize policy via "
-            "asyncio.set_event_loop_policy(...) before calling "
-            "_asyncio.get_event_loop()"
-        )
-    return policy.get_event_loop()
+    CPython's ``asyncio.events.get_event_loop`` is this ``_asyncio`` function;
+    Molt keeps the one implementation in ``asyncio.events``.
+    """
+    from asyncio import events
+
+    return events.get_event_loop()
 
 
 # ---------------------------------------------------------------------------
@@ -93,16 +82,12 @@ def current_task(
 ):
     """Return the currently running task for *loop*, or ``None``.
 
-    When *loop* is ``None``, attempts to get the running loop.  If no loop
-    is running, returns ``None`` without raising — this matches CPython's
-    ``_asyncio.current_task()`` C implementation which clears the error
-    and returns ``None`` (unlike ``asyncio.current_task()`` which raises
-    via ``get_running_loop()``).
+    When *loop* is ``None`` the running loop is required: with none running,
+    ``RuntimeError`` propagates, as CPython's ``_asyncio_current_task_impl``
+    raises through ``_asyncio_get_running_loop_impl``.
     """
     if loop is None:
-        loop = _get_running_loop()
-        if loop is None:
-            return None
+        get_running_loop()
         return _current_task_intrinsic()
     return _current_task_for_loop_intrinsic(loop)
 
@@ -235,8 +220,6 @@ __all__ = [
 for _name in (
     "_MOLT_ASYNCIO_RUNNING_LOOP_GET",
     "_MOLT_ASYNCIO_RUNNING_LOOP_SET",
-    "_MOLT_ASYNCIO_EVENT_LOOP_GET",
-    "_MOLT_ASYNCIO_EVENT_LOOP_POLICY_GET",
     "_MOLT_ASYNCIO_TASK_REGISTRY_CURRENT",
     "_MOLT_ASYNCIO_TASK_REGISTRY_CURRENT_FOR_LOOP",
     "_MOLT_ASYNCIO_ENTER_TASK",

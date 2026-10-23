@@ -385,7 +385,6 @@ INTRINSIC_SIGNATURES: dict[str, tuple[str, int]] = {
     "molt_asyncio_require_child_watcher_support": ("molt_asyncio_require_child_watcher_support", 0),
     "molt_asyncio_running_loop_get": ("molt_asyncio_running_loop_get", 0),
     "molt_asyncio_running_loop_set": ("molt_asyncio_running_loop_set", 1),
-    "molt_asyncio_event_loop_get": ("molt_asyncio_event_loop_get", 0),
     "molt_asyncio_event_loop_get_current": ("molt_asyncio_event_loop_get_current", 0),
     "molt_asyncio_event_loop_set": ("molt_asyncio_event_loop_set", 1),
     "molt_asyncio_event_loop_policy_get": ("molt_asyncio_event_loop_policy_get", 0),
