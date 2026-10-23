@@ -44,6 +44,73 @@ fn traceback_attribute<'a, 'py>(
         .map(|value| value.map(|bits| ExceptionValue::adopt(py, bits)))
 }
 
+/// Set (`Some`) or delete (`None`) a field of a traceback, as CPython's
+/// traceback type does (`Objects/traceback.c`): `tb_next` takes None or a
+/// traceback that does not lead back to this one and cannot be deleted;
+/// `tb_frame`, `tb_lasti` and `tb_lineno` are read-only. `Ok(false)` means
+/// `name` is not a traceback field.
+pub(crate) fn traceback_mutate_field(
+    py: &PyToken<'_>,
+    tb_ptr: *mut u8,
+    name: &str,
+    value: Option<u64>,
+) -> Result<bool, ()> {
+    match name {
+        "tb_frame" | "tb_lasti" => {
+            raise_exception::<()>(py, "AttributeError", "readonly attribute");
+            return Err(());
+        }
+        "tb_lineno" => {
+            raise_exception::<()>(
+                py,
+                "AttributeError",
+                "attribute 'tb_lineno' of 'traceback' objects is not writable",
+            );
+            return Err(());
+        }
+        "tb_next" => {}
+        _ => return Ok(false),
+    }
+    let Some(next) = value else {
+        raise_exception::<()>(py, "TypeError", "can't delete tb_next attribute");
+        return Err(());
+    };
+    let traceback_type = crate::builtins::classes::builtin_classes(py).traceback;
+    if !obj_from_bits(next).is_none()
+        && !unsafe { crate::object::class_layout::is_real_instance(py, next, traceback_type) }
+    {
+        let message = format!(
+            "expected traceback object, got '{}'",
+            type_name(py, obj_from_bits(next))
+        );
+        raise_exception::<()>(py, "TypeError", &message);
+        return Err(());
+    }
+    let self_bits = MoltObject::from_ptr(tb_ptr).bits();
+    let next_name = intern_static_name(py, &runtime_state(py).interned.tb_next_name, b"tb_next");
+    let mut cursor = ExceptionValue::pin(py, next);
+    while !obj_from_bits(cursor.bits()).is_none() {
+        if cursor.bits() == self_bits {
+            raise_exception::<()>(py, "ValueError", "traceback loop detected");
+            return Err(());
+        }
+        let Some(following) = traceback_attribute(py, cursor.bits(), next_name)? else {
+            break;
+        };
+        cursor = following;
+    }
+    let dict_bits = unsafe { instance_dict_bits(tb_ptr) };
+    let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+        raise_exception::<()>(py, "AttributeError", "readonly attribute");
+        return Err(());
+    };
+    if unsafe { crate::dict_set_in_place(py, dict_ptr, next_name, next) } {
+        Ok(true)
+    } else {
+        Err(())
+    }
+}
+
 pub(crate) type TracebackFrameInfo = (Vec<u8>, i64, Vec<u8>);
 
 fn traceback_frame_info(py: &PyToken<'_>, frame: u64) -> Result<Option<TracebackFrameInfo>, ()> {
