@@ -919,7 +919,7 @@ like the build host.
   `MOLT_DIFF_TMPDIR`, `UV_CACHE_DIR`, `TMPDIR`, `CARGO_INCREMENTAL`, and
   `MOLT_SESSION_ID` are preserved independently when set; only unset keys are
   derived from the selected artifact root.
-- Throughput bootstrap defaults `CARGO_INCREMENTAL=0` to maximize cacheability/shared throughput under multi-agent contention. Set `CARGO_INCREMENTAL=1` only for local incremental-debug sessions.
+- Local runs leave `CARGO_INCREMENTAL` unset. The Cargo profile then builds workspace crates incrementally, and sccache still caches every registry crate (Cargo never builds those incrementally). sccache refuses an explicit nonzero value, so the Cargo execution policy removes one. A one-line `molt-runtime` edit rebuilt in 68 s with incremental forced off and 35 s with the profile deciding (macOS arm64, 2026-10-23). CI sets `CARGO_INCREMENTAL=0`, because incremental state never outlives a CI job.
 - Prefer `molt build --build-profile dev` for build-only iteration loops, and `--profile dev` for `molt run/compare/diff/test`; reserve release profiles for release gates and perf publication.
 - `--build-profile dev` routes build mode to Cargo `dev` by default; override with `MOLT_DEV_CARGO_PROFILE` when profiling alternative dev profiles.
 - Compiler IR and backend cache payload identities do not depend on the host

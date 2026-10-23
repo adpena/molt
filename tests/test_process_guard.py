@@ -289,7 +289,8 @@ def test_cargo_metadata_probe_normalizes_wrapper_incremental_conflict(
     )
 
     assert calls[0]["env"][wrapper_env] == "sccache"  # type: ignore[index]
-    assert calls[0]["env"]["CARGO_INCREMENTAL"] == "0"  # type: ignore[index]
+    # sccache refuses an explicit nonzero value; the Cargo profile decides.
+    assert "CARGO_INCREMENTAL" not in calls[0]["env"]  # type: ignore[operator]
 
 
 def test_guarded_boundary_rejects_false_stderr_interleaving_contract() -> None:
