@@ -14,6 +14,7 @@ remain optional cache misses or failed writes, with no alternate cache lane.
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -38,11 +39,20 @@ from molt.default_paths import (
 RecordKind = Literal[
     "import-scan", "intrinsic-facts", "module-analysis", "module-lowering"
 ]
-STORE_NAME = "source_records.sqlite"
 SOURCE_RECORD_BATCH_MAX_RECORDS = 256
 SOURCE_RECORD_BATCH_MAX_BYTES = 1 << 20
 
 _SCHEMA_VERSION = 2
+# Each schema version owns its own store file. One file shared by checkouts of
+# different code versions cannot migrate in place: a newer checkout's
+# migration made the whole cache unavailable to every older one. As rustc keys
+# incremental state by compiler version, a new schema starts an empty store,
+# and the cache pruner retires superseded store files by last use.
+STORE_NAME = f"source_records.v{_SCHEMA_VERSION}.sqlite"
+_STORE_FILE = re.compile(
+    r"source_records(?:\.v(?P<version>[0-9]+))?\.sqlite"
+    r"(?:-wal|-shm|\.initialize\.lock)?"
+)
 _SCHEMA = (
     """CREATE TABLE IF NOT EXISTS records (
         kind TEXT NOT NULL,
@@ -62,7 +72,17 @@ _SCHEMA = (
         singleton INTEGER PRIMARY KEY CHECK (singleton = 0),
         trimmed_ns INTEGER NOT NULL
     )""",
+    "CREATE INDEX IF NOT EXISTS records_recency ON records (used_ns, kind, key)",
 )
+
+
+def superseded_store_file(name: str) -> bool:
+    """Whether ``name`` belongs to a store of another schema version (or to the
+    unversioned store before versioned names): cache entries to retire."""
+    match = _STORE_FILE.fullmatch(name)
+    return match is not None and match["version"] != str(_SCHEMA_VERSION)
+
+
 _HOUR_NS = 3600 * 1_000_000_000
 _UNUSED_LIMIT_NS = 7 * 24 * _HOUR_NS
 _REFRESH_INTERVAL_NS = _HOUR_NS
@@ -457,8 +477,17 @@ class SourceRecordStore:
             return None
         try:
             self._initialize(connection)
-        except (OSError, SourceRecordUnavailable, sqlite3.OperationalError):
+        except (SourceRecordBusy, OSError, sqlite3.OperationalError):
+            # Another owner is initializing or the file is briefly locked: a
+            # later operation may succeed.
             connection.close()
+            return None
+        except SourceRecordUnavailable:
+            # An unsupported schema or an unavailable WAL does not change
+            # within a process: stop here instead of reconnecting for every
+            # record operation.
+            connection.close()
+            self._disable()
             return None
         except sqlite3.DatabaseError:
             connection.close()
@@ -511,7 +540,6 @@ class SourceRecordStore:
             try:
                 for statement in _SCHEMA:
                     connection.execute(statement).close()
-                self._migrate(connection)
                 connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}").close()
                 connection.execute("COMMIT").close()
             except BaseException:
@@ -525,53 +553,9 @@ class SourceRecordStore:
     def _schema_ready(connection: sqlite3.Connection) -> bool:
         with closing(connection.execute("PRAGMA user_version")) as cursor:
             version = cursor.fetchone()[0]
-        if version not in (0, 1, _SCHEMA_VERSION):
+        if version not in (0, _SCHEMA_VERSION):
             raise SourceRecordUnavailable("source record schema version is unsupported")
         return version == _SCHEMA_VERSION
-
-    def _migrate(self, connection: sqlite3.Connection) -> None:
-        # The initialization owner holds one write transaction for schema,
-        # legacy row migration, indexes and the version's publication.
-        with closing(connection.execute("PRAGMA table_info(records)")) as cursor:
-            columns = {row[1] for row in cursor}
-        if "revision" not in columns:
-            connection.execute(
-                "ALTER TABLE records ADD COLUMN revision BLOB NOT NULL DEFAULT X''"
-            ).close()
-            connection.execute("UPDATE records SET revision = randomblob(16)").close()
-        if "used_ns" not in columns:
-            connection.execute(
-                "ALTER TABLE records ADD COLUMN used_ns INTEGER NOT NULL DEFAULT 0"
-            ).close()
-            connection.execute(
-                "UPDATE records SET used_ns = coalesce((SELECT used_ns FROM generations"
-                " WHERE generations.generation = records.generation), ?)",
-                (time.time_ns(),),
-            ).close()
-        # Large opaque payloads belong in rowid-table leaves, not in the
-        # search tree's interior keys. index_info(table) returns rows only for
-        # WITHOUT ROWID tables; a fresh version-two table needs no copy.
-        with closing(connection.execute("PRAGMA index_info(records)")) as cursor:
-            without_rowid = cursor.fetchone() is not None
-        if without_rowid:
-            connection.execute("DROP INDEX IF EXISTS records_generation").close()
-            connection.execute("DROP INDEX IF EXISTS records_recency").close()
-            connection.execute(
-                "ALTER TABLE records RENAME TO records_without_rowid"
-            ).close()
-            connection.execute(_SCHEMA[0]).close()
-            # SQLite streams this copy inside the existing bootstrap
-            # transaction. No Python payload list or second store escapes.
-            connection.execute(
-                "INSERT INTO records (kind, key, generation, payload, revision, used_ns)"
-                " SELECT kind, key, generation, payload, revision, used_ns"
-                " FROM records_without_rowid"
-            ).close()
-            connection.execute("DROP TABLE records_without_rowid").close()
-            connection.execute(_SCHEMA[1]).close()
-        connection.execute(
-            "CREATE INDEX IF NOT EXISTS records_recency ON records (used_ns, kind, key)"
-        ).close()
 
     def _refresh_generation(
         self, connection: sqlite3.Connection, generation: str, now: int
