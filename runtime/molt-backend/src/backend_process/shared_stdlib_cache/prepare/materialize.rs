@@ -1,10 +1,14 @@
 use std::io;
 use std::path::Path;
+use std::time::Instant;
 
 use molt_backend::SimpleIR;
 
 use super::super::super::native_batch::write_native_archive_objects;
-use super::super::{compile_stdlib_cache_archive, publish_shared_stdlib_cache_archive};
+use super::super::publish::{
+    ArchiveGeneration, ContentArchive, StdlibObjectCache, hydrate_shared_stdlib_cache_archive,
+};
+use super::super::{plan_stdlib_cache_archive, publish_shared_stdlib_cache_archive};
 use super::request::NativeStdlibCachePrepare;
 
 /// Materializations per cache key, so tests can prove single production.
@@ -41,47 +45,97 @@ pub(crate) fn materialize_stdlib_cache(
         .cache_archive_path
         .map(|path| super::super::publish::resolved_archive_path(Path::new(path)))
         .transpose()?;
-    let object_cache = super::super::publish::StdlibObjectCache::for_archive(
+    let object_cache = StdlibObjectCache::for_archive(
         cache_path.as_deref().unwrap_or(stdlib_path),
         request.expected_cache_key,
         request.expected_cache_manifest,
         request.target_triple,
     )?;
-    // Codegen and constituent reuse run in native-batch scratch. Only the
-    // final archive assembly/sidecars acquire the shared publication stripe.
-    compile_stdlib_cache_archive(
+    let started = Instant::now();
+    let planned = plan_stdlib_cache_archive(
         std::mem::take(stdlib_funcs),
         ir.profile.clone(),
         request.target_triple,
-        request.log_prefix,
         module_context.clone(),
         object_cache.as_ref(),
-        |objects| {
-            publish_shared_stdlib_cache_archive(
-                stdlib_path,
-                |destination| write_native_archive_objects(destination, objects),
-                stdlib_count,
-                request.expected_cache_key,
-                request.expected_cache_manifest,
-                current_partition_manifest,
-            )
-        },
     )?;
+    let content = object_cache
+        .as_ref()
+        .zip(planned.archive_key())
+        .map(|(cache, key)| cache.content_archive(&key))
+        .transpose()?;
+    let plan_elapsed = started.elapsed();
+    let build = ArchiveGeneration {
+        path: stdlib_path,
+        key: request.expected_cache_key,
+        manifest: request.expected_cache_manifest,
+    };
+    // An unchanged partition is one archive generation for every program that
+    // compiles it: transfer it whole. Codegen and constituent reuse run in
+    // native-batch scratch otherwise; only archive publication takes a stripe.
+    let transfer_started = Instant::now();
+    let reused = match &content {
+        Some(content) => hydrate_shared_stdlib_cache_archive(
+            content_generation(content),
+            build,
+            current_partition_manifest,
+            stdlib_count,
+        )?,
+        None => None,
+    };
+    let digest = match reused {
+        Some(digest) => {
+            eprintln!(
+                "{}: stdlib archive reuse: content {} ({} functions planned in {:?}, transferred in {:?})",
+                request.log_prefix,
+                content.as_ref().expect("reused content").key,
+                stdlib_count,
+                plan_elapsed,
+                transfer_started.elapsed(),
+            );
+            drop(planned);
+            digest
+        }
+        None => {
+            let mut digest = None;
+            planned.assemble(request.log_prefix, object_cache.as_ref(), |objects| {
+                digest = Some(publish_shared_stdlib_cache_archive(
+                    stdlib_path,
+                    |destination| write_native_archive_objects(destination, objects).map(|()| None),
+                    stdlib_count,
+                    request.expected_cache_key,
+                    request.expected_cache_manifest,
+                    current_partition_manifest,
+                )?);
+                Ok(())
+            })?;
+            let digest = digest.expect("assembly publishes the archive");
+            if let Some(content) = &content {
+                // Later programs with this partition transfer the generation.
+                publish_copy(
+                    stdlib_path,
+                    &digest,
+                    content_generation(content),
+                    stdlib_count,
+                    current_partition_manifest,
+                )?;
+            }
+            digest
+        }
+    };
 
     if let Some(cache_path) = cache_path.as_deref() {
         // Required bytes remain in build custody throughout optional cache
         // publication. Eviction after this stripe releases cannot break linking.
-        publish_shared_stdlib_cache_archive(
-            cache_path,
-            |destination| {
-                molt_artifact_publish::write_atomically(destination, |writer| {
-                    let mut source = std::fs::File::open(stdlib_path)?;
-                    io::copy(&mut source, writer).map(|_| ())
-                })
+        publish_copy(
+            stdlib_path,
+            &digest,
+            ArchiveGeneration {
+                path: cache_path,
+                key: request.expected_cache_key,
+                manifest: request.expected_cache_manifest,
             },
             stdlib_count,
-            request.expected_cache_key,
-            request.expected_cache_manifest,
             current_partition_manifest,
         )?;
     }
@@ -93,4 +147,36 @@ pub(crate) fn materialize_stdlib_cache(
         ir.functions.len()
     );
     Ok(())
+}
+
+fn content_generation(content: &ContentArchive) -> ArchiveGeneration<'_> {
+    ArchiveGeneration {
+        path: &content.path,
+        key: Some(&content.key),
+        manifest: Some(&content.manifest),
+    }
+}
+
+/// Publish a copy of the build's archive, whose `digest` this build recorded,
+/// as the cache generation `destination`. The platform copy clones where the
+/// volume supports it, so no archive bytes are rewritten.
+fn publish_copy(
+    archive: &Path,
+    digest: &str,
+    destination: ArchiveGeneration<'_>,
+    stdlib_count: usize,
+    partition: &str,
+) -> io::Result<()> {
+    publish_shared_stdlib_cache_archive(
+        destination.path,
+        |target| {
+            molt_artifact_publish::copy_file_atomically(archive, target, |_| Ok(()))
+                .map(|()| Some(digest.to_string()))
+        },
+        stdlib_count,
+        destination.key,
+        destination.manifest,
+        partition,
+    )
+    .map(drop)
 }

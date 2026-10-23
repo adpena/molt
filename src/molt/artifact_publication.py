@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, TypedDict
 
 from molt.file_publication import (
+    clone_file,
     durable_namespace_replace as _durable_namespace_replace,
     durable_replace as _durable_replace,
     canonical_file_leaf,
@@ -219,7 +220,10 @@ def staged_copy_file(
     try:
         if observed is None:
             destination.close()
-            shutil.copyfile(src, tmp_path)
+            # The name stays reserved by its unique stage; a clone needs the
+            # leaf absent, and shares the source's blocks where it can.
+            tmp_path.unlink()
+            clone_file(src, tmp_path)
         else:
             with (
                 destination,

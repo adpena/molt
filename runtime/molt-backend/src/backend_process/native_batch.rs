@@ -6,8 +6,8 @@ mod worker;
 
 pub(crate) use application::compile_native_application_artifact_to_path;
 pub(crate) use archive::{
-    validate_native_archive_file, validate_native_object_bytes, write_native_archive_bytes,
-    write_native_archive_objects,
+    MappedObject, validate_native_archive_file, validate_native_object_bytes,
+    write_native_archive_bytes, write_native_archive_objects,
 };
 pub(crate) use batching::{
     ExternalFunctionDeclarations, NativeApplicationArtifactOptions,

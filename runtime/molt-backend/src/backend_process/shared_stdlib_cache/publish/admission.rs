@@ -5,7 +5,8 @@ use super::lock::with_shared_stdlib_cache_publish_lock;
 use super::paths::stdlib_cache_count_sidecar_path;
 use super::sidecars::{
     read_stdlib_cache_key, read_stdlib_cache_manifest, read_stdlib_cache_partition_manifest,
-    remove_shared_stdlib_cache_artifacts, shared_stdlib_cache_matches_unlocked,
+    remove_shared_stdlib_cache_artifacts, shared_stdlib_archive_payload_matches,
+    shared_stdlib_cache_matches_unlocked, shared_stdlib_cache_recorded_digest,
 };
 
 /// A reader observes the archive and all sidecars from one published generation.
@@ -34,47 +35,74 @@ pub(crate) fn shared_stdlib_cache_matches(
     })
 }
 
-/// Transfer an admitted optional cache generation to the required build output
-/// before releasing cache custody. Downstream work never reopens this cache.
+/// One archive generation's path and the identity its sidecars record.
+#[derive(Clone, Copy)]
+pub(crate) struct ArchiveGeneration<'a> {
+    pub(crate) path: &'a Path,
+    pub(crate) key: Option<&'a str>,
+    pub(crate) manifest: Option<&'a str>,
+}
+
+/// Transfer an admitted cache generation to `destination`, recording the
+/// destination's own identity, and return the archive digest; `None` is a miss.
+///
+/// The transfer is a platform copy, a copy-on-write clone where the volume
+/// supports it, so republishing 67 MB of unchanged archive writes no data. The
+/// private copy is verified against the source's recorded digest before it
+/// replaces the destination: one read, which also leaves the destination's
+/// pages cached for the CLI admission and the linker that read it next. A
+/// mismatched payload is a miss, as for the source's own admission. Downstream
+/// work never reopens the cache entry.
 pub(crate) fn hydrate_shared_stdlib_cache_archive(
-    source: &Path,
-    destination: &Path,
-    expected_key: Option<&str>,
-    expected_manifest: Option<&str>,
+    source: ArchiveGeneration<'_>,
+    destination: ArchiveGeneration<'_>,
     partition: &str,
     stdlib_count: usize,
-) -> io::Result<bool> {
-    super::paths::validate_required_stdlib_output(destination, Some(source))?;
-    let resolved_source = super::paths::resolved_archive_path(source)?;
-    let source = resolved_source.as_path();
-    with_shared_stdlib_cache_publish_lock(source, || {
-        if !shared_stdlib_cache_matches_unlocked(
-            source,
-            expected_key,
-            expected_manifest,
+) -> io::Result<Option<String>> {
+    super::paths::validate_required_stdlib_output(destination.path, Some(source.path))?;
+    let resolved_source = super::paths::resolved_archive_path(source.path)?;
+    let source_path = resolved_source.as_path();
+    with_shared_stdlib_cache_publish_lock(source_path, || {
+        let Some(digest) = shared_stdlib_cache_recorded_digest(
+            source_path,
+            source.key,
+            source.manifest,
             Some(partition),
-        ) {
-            return Ok(false);
-        }
-        let key = read_stdlib_cache_key(source);
-        let manifest = read_stdlib_cache_manifest(source);
-        super::archive::publish_shared_stdlib_cache_archive(
-            destination,
+        ) else {
+            return Ok(None);
+        };
+        let mut mismatched = false;
+        let published = super::archive::publish_shared_stdlib_cache_archive(
+            destination.path,
             |target| {
-                molt_artifact_publish::write_atomically(target, |writer| {
-                    let mut input = std::fs::File::open(source)?;
-                    io::copy(&mut input, writer).map(|_| ())
+                molt_artifact_publish::copy_file_atomically(source_path, target, |staged| {
+                    if shared_stdlib_archive_payload_matches(staged, &digest) {
+                        Ok(())
+                    } else {
+                        mismatched = true;
+                        Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "shared stdlib cache payload disagrees with its recorded digest",
+                        ))
+                    }
                 })
+                .map(|()| Some(digest.clone()))
             },
             stdlib_count,
-            key.as_deref(),
-            manifest.as_deref(),
+            destination.key,
+            destination.manifest,
             partition,
-        )?;
-        if super::paths::canonical_stdlib_cache_root(source)?.is_some() {
-            refresh_cache_entry_recency(source.parent().expect("archive entry owner"));
+        );
+        let published = match published {
+            Ok(published) => published,
+            // The destination is unchanged; a corrupt source is not reuse.
+            Err(_) if mismatched => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        if super::paths::is_stdlib_archive_cache_entry(source_path) {
+            refresh_cache_entry_recency(source_path.parent().expect("archive entry owner"));
         }
-        Ok(true)
+        Ok(Some(published))
     })
 }
 
@@ -175,7 +203,7 @@ mod tests {
         object.add_section(Vec::new(), b".text".to_vec(), object::SectionKind::Text);
         write_native_archive_bytes(path, &object.write().expect("fixture object"))
             .expect("fixture archive");
-        write_shared_stdlib_cache_sidecars(path, 0, Some(key), Some("manifest"), "partition")
+        write_shared_stdlib_cache_sidecars(path, 0, Some(key), Some("manifest"), "partition", None)
             .expect("fixture sidecars");
     }
 
@@ -203,7 +231,9 @@ mod tests {
                     Some("new"),
                     Some("manifest"),
                     "partition",
+                    None,
                 )
+                .map(drop)
             })
             .expect("publish complete generation");
         });
