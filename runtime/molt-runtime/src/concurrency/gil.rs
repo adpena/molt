@@ -272,10 +272,13 @@ impl GilGuard {
                 _not_send_sync: std::marker::PhantomData,
             });
         }
-        if tls_destruction_gil_held() {
-            return Some(Self::tls_destruction_new());
-        }
-        None
+        Self::nested_in_tls_destruction()
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn nested_in_tls_destruction() -> Option<Self> {
+        tls_destruction_gil_held().then(Self::tls_destruction_new)
     }
 
     pub(crate) fn new() -> Self {
@@ -378,7 +381,25 @@ impl GilGuard {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl Drop for GilGuard {
+    #[inline(always)]
     fn drop(&mut self) {
+        // The nested guard of a runtime entry only gives back its depth unit.
+        if let GilGuardLane::Main = self.lane {
+            let current = self.tls.gil_depth.get();
+            if current > 1 {
+                self.tls.gil_depth.set(current - 1);
+                return;
+            }
+        }
+        self.drop_cold();
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl GilGuard {
+    #[cold]
+    #[inline(never)]
+    fn drop_cold(&mut self) {
         match self.lane {
             GilGuardLane::Transferred => {}
             GilGuardLane::TlsDestruction => {

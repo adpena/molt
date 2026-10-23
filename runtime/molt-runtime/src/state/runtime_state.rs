@@ -1722,7 +1722,7 @@ pub(crate) fn runtime_state(py: &PyToken<'_>) -> &'static RuntimeState {
     {
         return state;
     }
-    touch_tls_guard();
+    crate::state::lifecycle::touch_tls_guard_in(tls);
     let state = match runtime_state_for_gil_in(tls) {
         Some(state) => state,
         None => {
