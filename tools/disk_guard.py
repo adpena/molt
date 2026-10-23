@@ -126,6 +126,7 @@ from molt.checkout_state import (  # noqa: E402
     newest_activity_mtime as _newest_activity_mtime,
     superseded_layout_paths,
     owner_is_absent,
+    read_checkout_owner,
     retention_limits,
     session_target_dirs,
     target_build_control_dirs,
@@ -1424,6 +1425,18 @@ def reclaim_checkout_state(
     for owner_root, children in roots_by_owner.items():
         # Build control follows its target, so the targets go first.
         for child in children:
+            # This record only rejects unrelated roots. Binding every recorded
+            # target first resolves its ancestors, even for another checkout.
+            # Matching records still need full binding and the locked reread.
+            recorded_owner = read_checkout_owner(child)
+            if recorded_owner is None:
+                continue
+            recorded_target = checkout_target_of(recorded_owner)
+            if recorded_target is None:
+                if recorded_owner.path != checkout:
+                    continue
+            elif recorded_target.name != component:
+                continue
             owner = bound_checkout_owner(child.resolve(), owner_root.resolve())
             if owner is None:
                 continue
