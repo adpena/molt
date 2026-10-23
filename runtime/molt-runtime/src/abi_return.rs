@@ -111,9 +111,9 @@ mod tests {
             include_str!("wasm_abi_exports.rs"),
         ),
         (
-            "molt_exception_pending_flag_ptr",
+            "molt_thread_record",
             AbiReturnKind::RawAddress,
-            include_str!("builtins/exceptions/exception_state_abi.rs"),
+            include_str!("state/tls.rs"),
         ),
         (
             "molt_handle_resolve",

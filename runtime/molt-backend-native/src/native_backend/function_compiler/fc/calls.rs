@@ -53,6 +53,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
     cleanup_roots: &mut NativeCleanupRoots,
     local_dec_ref_obj: FuncRef,
+    thread_record_slot: Option<cranelift_codegen::ir::StackSlot>,
     nbc: &crate::NanBoxConsts,
 ) {
     let names = op.args.as_deref().unwrap_or(&[]);
@@ -145,6 +146,8 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             declared_func_arities,
             function_has_ret,
             defined_functions,
+            thread_record_slot
+                .expect("a function with direct Python calls holds its thread record"),
         ),
         "call_func" => handle_call_func_op(
             op,
@@ -159,6 +162,8 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             representation_plan,
             first_defined_at,
             last_use,
+            thread_record_slot
+                .expect("a function with direct Python calls holds its thread record"),
             nbc,
         ),
         "invoke_ffi" => handle_invoke_ffi_op(
@@ -902,6 +907,47 @@ fn emit_positional_call_bind(
     builder.inst_results(fallback_call)[0]
 }
 
+/// Hand `callee_bits` to the compiled frame entry the next call reaches, with
+/// plain loads and stores of the thread record's invocation word, as CPython's
+/// caller builds the callee frame from the function object. Returns the record
+/// and the outer handoff, which [`emit_invocation_restore`] puts back once the
+/// call returns. The caller keeps the callee alive for the call; the entry
+/// that takes the handoff retains what its frame keeps.
+#[cfg(feature = "native-backend")]
+fn emit_invocation_publish(
+    builder: &mut FunctionBuilder<'_>,
+    thread_record_slot: cranelift_codegen::ir::StackSlot,
+    callee_bits: Value,
+) -> (Value, Value) {
+    // Native targets are 64-bit: the record's address is an i64.
+    let record = builder
+        .ins()
+        .stack_load(types::I64, types::I64, thread_record_slot, 0);
+    let previous = builder.ins().load(
+        types::I64,
+        MemFlagsData::trusted(),
+        record,
+        molt_codegen_abi::THREAD_RECORD_PENDING_INVOCATION_OFFSET,
+    );
+    builder.ins().store(
+        MemFlagsData::trusted(),
+        callee_bits,
+        record,
+        molt_codegen_abi::THREAD_RECORD_PENDING_INVOCATION_OFFSET,
+    );
+    (record, previous)
+}
+
+#[cfg(feature = "native-backend")]
+fn emit_invocation_restore(builder: &mut FunctionBuilder<'_>, record: Value, previous: Value) {
+    builder.ins().store(
+        MemFlagsData::trusted(),
+        previous,
+        record,
+        molt_codegen_abi::THREAD_RECORD_PENDING_INVOCATION_OFFSET,
+    );
+}
+
 #[cfg(feature = "native-backend")]
 #[allow(clippy::too_many_arguments, clippy::manual_map)]
 fn handle_call_guarded_op(
@@ -922,6 +968,7 @@ fn handle_call_guarded_op(
     declared_func_arities: &BTreeMap<String, usize>,
     function_has_ret: &BTreeMap<String, bool>,
     defined_functions: &BTreeSet<String>,
+    thread_record_slot: cranelift_codegen::ir::StackSlot,
 ) {
     let target_name = require_static_target_symbol(op);
     let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -999,7 +1046,7 @@ fn handle_call_guarded_op(
         &mut *import_ids,
         &mut *builder,
         &mut *import_refs,
-        "molt_recursion_guard_enter",
+        "molt_recursion_enter_fast",
         &[],
         &[types::I64],
     );
@@ -1008,27 +1055,9 @@ fn handle_call_guarded_op(
         &mut *import_ids,
         &mut *builder,
         &mut *import_refs,
-        "molt_recursion_guard_exit",
+        "molt_recursion_exit_fast",
         &[],
         &[],
-    );
-    let invocation_enter_local = import_func_ref(
-        &mut *module,
-        &mut *import_ids,
-        &mut *builder,
-        &mut *import_refs,
-        "molt_frame_invocation_enter",
-        &[types::I64],
-        &[types::I64],
-    );
-    let invocation_exit_local = import_func_ref(
-        &mut *module,
-        &mut *import_ids,
-        &mut *builder,
-        &mut *import_refs,
-        "molt_frame_invocation_exit",
-        &[types::I64],
-        &[types::I64],
     );
     let supplied = builder.ins().iconst(types::I64, args.len() as i64);
     // Bit 0: the entry takes the closure first; bit 1: the entry's custody
@@ -1107,23 +1136,8 @@ fn handle_call_guarded_op(
 
     switch_to_block_materialized(&mut *builder, then_call_block);
     seal_block_once(&mut *builder, &mut *sealed_blocks, then_call_block);
-    let invocation_call = builder.ins().call(invocation_enter_local, &[*callee_bits]);
-    let invocation_token = builder.inst_results(invocation_call)[0];
-    let invocation_ok = builder
-        .ins()
-        .icmp_imm_s(IntCC::NotEqual, invocation_token, 0);
-    let then_invoke_block = builder.create_block();
-    let then_invocation_fail_block = builder.create_block();
-    builder.ins().brif(
-        invocation_ok,
-        then_invoke_block,
-        &[],
-        then_invocation_fail_block,
-        &[],
-    );
-
-    switch_to_block_materialized(&mut *builder, then_invoke_block);
-    seal_block_once(&mut *builder, &mut *sealed_blocks, then_invoke_block);
+    let (record, outer_invocation) =
+        emit_invocation_publish(&mut *builder, thread_record_slot, *callee_bits);
     // Closure is an ABI argument, never a Python positional argument. Its owner
     // is the admitted actual callable, not the lexical target's first object.
     // The failure blocks below still release the adopted operands themselves.
@@ -1149,42 +1163,25 @@ fn handle_call_guarded_op(
     } else {
         direct_results[0]
     };
-    let _ = builder
-        .ins()
-        .call(invocation_exit_local, &[invocation_token]);
+    emit_invocation_restore(&mut *builder, record, outer_invocation);
     let _ = builder.ins().call(guard_exit_local, &[]);
     // The adopting entry ended its parameters; the instruction's callable ends
     // after it returns, identically to the owned fallback leg.
     release_adopted_callable(op, *callee_bits, module, import_ids, builder, import_refs);
     jump_block(&mut *builder, merge_block, &[direct_res]);
 
-    switch_to_block_materialized(&mut *builder, then_invocation_fail_block);
-    seal_block_once(
-        &mut *builder,
-        &mut *sealed_blocks,
-        then_invocation_fail_block,
-    );
-    let _ = builder.ins().call(guard_exit_local, &[]);
-    release_adopted_call_inputs(
-        op,
-        Some(*callee_bits),
-        1,
-        &args,
-        module,
-        import_ids,
-        builder,
-        import_refs,
-    );
-    operands.release_temporaries(module, import_ids, builder, import_refs);
-    if returns_value {
-        let none_bits = builder.ins().iconst(types::I64, box_none());
-        jump_block(builder, master_return_block, &[none_bits]);
-    } else {
-        jump_block(builder, master_return_block, &[]);
-    }
-
     switch_to_block_materialized(&mut *builder, then_fail_block);
     seal_block_once(&mut *builder, &mut *sealed_blocks, then_fail_block);
+    let raise_local = import_func_ref(
+        &mut *module,
+        &mut *import_ids,
+        &mut *builder,
+        &mut *import_refs,
+        "molt_raise_recursion_error",
+        &[],
+        &[types::I64],
+    );
+    let _ = builder.ins().call(raise_local, &[]);
     release_adopted_call_inputs(
         op,
         Some(*callee_bits),
@@ -1195,11 +1192,10 @@ fn handle_call_guarded_op(
         builder,
         import_refs,
     );
-    // Recursion guard failed — exception is already pending
-    // from molt_recursion_guard_enter.  Return immediately so
-    // the pending RecursionError propagates to the caller
-    // instead of being silently swallowed as None (which
-    // caused TypeError: NoneType + int downstream).
+    // The recursion limit refused the call and RecursionError is now
+    // pending. Return at once so it propagates to the caller instead of
+    // being swallowed as None (which caused TypeError: NoneType + int
+    // downstream).
     operands.release_temporaries(module, import_ids, builder, import_refs);
     if returns_value {
         let none_bits = builder.ins().iconst(types::I64, box_none());
@@ -1229,6 +1225,7 @@ fn handle_call_func_op(
     representation_plan: &ScalarRepresentationPlan,
     first_defined_at: &BTreeMap<String, usize>,
     last_use: &BTreeMap<String, usize>,
+    thread_record_slot: cranelift_codegen::ir::StackSlot,
     nbc: &crate::NanBoxConsts,
 ) {
     // Inline codegen and runtime dispatch share one Python-call admission gate.
@@ -1364,50 +1361,8 @@ fn handle_call_func_op(
             &[],
             &[],
         );
-        let invocation_enter = import_func_ref(
-            module,
-            import_ids,
-            builder,
-            import_refs,
-            "molt_frame_invocation_enter",
-            &[types::I64],
-            &[types::I64],
-        );
-        let invocation_call = builder.ins().call(invocation_enter, &[*func_bits]);
-        let invocation_token = builder.inst_results(invocation_call)[0];
-        let invocation_ok = builder
-            .ins()
-            .icmp_imm_s(IntCC::NotEqual, invocation_token, 0);
-        let invoke_block = builder.create_block();
-        let invocation_fail_block = builder.create_block();
-        brif_block(
-            builder,
-            invocation_ok,
-            invoke_block,
-            &[],
-            invocation_fail_block,
-            &[],
-        );
-
-        switch_to_block_materialized(builder, invocation_fail_block);
-        seal_block_once(builder, sealed_blocks, invocation_fail_block);
-        builder.ins().call(guard_exit, &[]);
-        release_adopted_call_inputs(
-            op,
-            Some(*func_bits),
-            1,
-            &args,
-            module,
-            import_ids,
-            builder,
-            import_refs,
-        );
-        let none = builder.ins().iconst(types::I64, box_none());
-        let fail_args = merge_args_with_live_through(none, &inline_live_through);
-        jump_block(builder, merge_block, &fail_args);
-
-        switch_to_block_materialized(builder, invoke_block);
-        seal_block_once(builder, sealed_blocks, invoke_block);
+        let (record, outer_invocation) =
+            emit_invocation_publish(builder, thread_record_slot, *func_bits);
         let mut call_sig = module.make_signature();
         for _ in 0..nargs {
             call_sig.params.push(AbiParam::new(types::I64));
@@ -1416,16 +1371,7 @@ fn handle_call_func_op(
         let sig_ref = builder.import_signature(call_sig);
         let indirect_call = builder.ins().call_indirect(sig_ref, fn_ptr_v, &args);
         let direct_res = builder.inst_results(indirect_call)[0];
-        let invocation_exit = import_func_ref(
-            module,
-            import_ids,
-            builder,
-            import_refs,
-            "molt_frame_invocation_exit",
-            &[types::I64],
-            &[types::I64],
-        );
-        builder.ins().call(invocation_exit, &[invocation_token]);
+        emit_invocation_restore(builder, record, outer_invocation);
         builder.ins().call(guard_exit, &[]);
         // The adopting entry ended its parameters; the instruction's callable
         // ends after it returns.

@@ -149,6 +149,17 @@ pub const FRAME_HOME_PRIVATE_CELL: i64 = 5;
 /// Set in exactly the kinds that own a reference to their bits.
 pub const FRAME_HOME_HOLDS_REFERENCE: i64 = 1;
 
+// The thread record: the per-thread execution facts compiled code reads and
+// writes with plain loads and stores, as CPython's code reads its
+// `PyThreadState`. `molt_thread_record` lends its address; compiled code takes
+// it once per invocation. The layout is `ExecutionTls` in
+// runtime/molt-runtime/src/state/tls.rs, which asserts every offset below.
+/// One byte: an exception is pending in the active execution context.
+pub const THREAD_RECORD_EXCEPTION_PENDING_OFFSET: i32 = 0;
+/// u64: the callable an invoker hands to the next compiled frame entry
+/// (a borrowed function or task object), or zero.
+pub const THREAD_RECORD_PENDING_INVOCATION_OFFSET: i32 = 8;
+
 /// A compiled function object's entry custody, passed to `molt_func_new` and
 /// `molt_func_new_closure`: the entry adopts every Python argument. Zero: it
 /// borrows them. The closure or runtime-context transport is never adopted.

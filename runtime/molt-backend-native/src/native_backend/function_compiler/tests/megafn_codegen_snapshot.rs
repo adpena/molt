@@ -472,14 +472,17 @@ fn megafn_call_family_codegen_snapshot() {
             );
         }
         if name == "call_func_inline_probe" {
-            for required in [
-                "molt_function_direct_call_eligible",
-                "molt_frame_invocation_enter",
-                "molt_frame_invocation_exit",
-            ] {
+            for required in ["molt_function_direct_call_eligible", "molt_thread_record"] {
                 assert!(
                     symbols.undefined.contains(required),
                     "inline calls must consume {required}"
+                );
+            }
+            // The handoff is a store into the thread record, not a runtime call.
+            for removed in ["molt_frame_invocation_enter", "molt_frame_invocation_exit"] {
+                assert!(
+                    !symbols.undefined.contains(removed),
+                    "inline calls must not enter the runtime through {removed}"
                 );
             }
         }
