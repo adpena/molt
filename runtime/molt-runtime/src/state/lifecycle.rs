@@ -124,12 +124,22 @@ impl Drop for ThreadLocalGuard {
 }
 
 pub(crate) fn touch_tls_guard() {
+    touch_tls_guard_in(crate::state::execution_tls());
+}
+
+/// `touch_tls_guard` for a caller that has already read this thread's facts.
+#[inline(always)]
+pub(crate) fn touch_tls_guard_in(tls: &crate::state::ExecutionTls) {
     // Every key below only moves forward (the C-API preparation never returns
     // to Unprepared), so after the first ordered pass a repeat changes nothing.
-    let touched = &crate::state::execution_tls().tls_guard_touched;
-    if touched.get() {
-        return;
+    if !tls.tls_guard_touched.get() {
+        order_destructor_thread_locals(&tls.tls_guard_touched);
     }
+}
+
+#[cold]
+#[inline(never)]
+fn order_destructor_thread_locals(touched: &std::cell::Cell<bool>) {
     molt_cpython_abi::api::object::prepare_runtime_thread_state_lifetime();
     crate::concurrency::gil::touch_gil_tls_lifetime();
     crate::object::heap_lifecycle::touch_terminal_sink_tls_lifetime();

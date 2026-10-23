@@ -537,18 +537,33 @@ impl RuntimeExecutionGuard {
         Self::enter_with_policy(true, ExecutionCleanupPolicy::BoundaryCreated)
     }
 
+    /// Compiled code enters here on every runtime operation, already holding
+    /// a lease and the GIL: one thread-local read answers both, and the nested
+    /// guard is the whole cost. Everything else is the cold path, kept out of
+    /// line so its frame and saved registers stay off the hot one.
+    #[inline(always)]
     fn enter_with_policy(initialize_runtime: bool, cleanup_policy: ExecutionCleanupPolicy) -> Self {
-        // Compiled code enters here on every runtime operation, already
-        // holding a lease and the GIL: one thread-local read answers both.
         let tls = crate::state::execution_tls();
+        if (tls.lease_depth.get() != 0 || tls.shutdown_drain_depth.get() != 0)
+            && let Some(gil) = GilGuard::new_if_held_in(tls)
+        {
+            return Self {
+                gil: Some(gil),
+                custody: None,
+                active_lifecycle_lease: false,
+            };
+        }
+        Self::enter_cold(tls, initialize_runtime, cleanup_policy)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn enter_cold(
+        tls: &'static crate::state::ExecutionTls,
+        initialize_runtime: bool,
+        cleanup_policy: ExecutionCleanupPolicy,
+    ) -> Self {
         if tls.lease_depth.get() != 0 || tls.shutdown_drain_depth.get() != 0 {
-            if let Some(gil) = GilGuard::new_if_held_in(tls) {
-                return Self {
-                    gil: Some(gil),
-                    custody: None,
-                    active_lifecycle_lease: false,
-                };
-            }
             // Admission/retained shutdown custody survives GIL suspension.
             // Reentry must not wait for Ready: the finalization owner may be
             // joining this very worker. Own only newly acquired GIL/attachment
@@ -695,12 +710,21 @@ impl RuntimeExecutionGuard {
 }
 
 impl Drop for RuntimeExecutionGuard {
+    #[inline(always)]
     fn drop(&mut self) {
         if let Some(custody) = self.custody.take() {
-            let gil = self.gil.as_ref().expect("execution custody lost GIL");
-            finish_execution(custody, &gil.token(), self.active_lifecycle_lease);
-            self.active_lifecycle_lease = false;
+            self.finish_cold(custody);
         }
+    }
+}
+
+impl RuntimeExecutionGuard {
+    #[cold]
+    #[inline(never)]
+    fn finish_cold(&mut self, custody: RuntimeExecutionCustody) {
+        let gil = self.gil.as_ref().expect("execution custody lost GIL");
+        finish_execution(custody, &gil.token(), self.active_lifecycle_lease);
+        self.active_lifecycle_lease = false;
     }
 }
 
