@@ -3,7 +3,7 @@ mod partition;
 mod prepare;
 mod publish;
 
-pub(crate) use compile::compile_stdlib_cache_archive;
+pub(crate) use compile::plan_stdlib_cache_archive;
 #[cfg(test)]
 pub(crate) use partition::{is_user_owned_symbol, shared_stdlib_partition_closure_issue};
 pub(crate) use partition::{
