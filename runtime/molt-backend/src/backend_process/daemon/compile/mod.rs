@@ -104,7 +104,7 @@ fn compile_job<Slot>(
     };
     let _slot = compile_slot();
 
-    let (document, input) = match document::read_daemon_job_document(&job, cache) {
+    let (document, input) = match document::read_daemon_job_document(&job.ir_source, cache) {
         Ok(document::DaemonJobDocument::Ready(document, input)) => (*document, input),
         Ok(document::DaemonJobDocument::MissingFunctions(positions)) => {
             return response::daemon_job_needs_functions_response(job.id, positions);
