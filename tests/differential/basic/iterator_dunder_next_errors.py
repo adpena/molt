@@ -451,6 +451,183 @@ assert reference() is None
 print("zip cache cycle retired", reference() is None)
 
 
+# Both iter overloads remain available through the observable public callable.
+import builtins
+
+try:
+    iter(None)
+except TypeError:
+    pass
+else:
+    raise AssertionError("direct iter(None) admitted")
+assert next(iter(lambda: None, None), "exhausted") == "exhausted"
+
+iter_alias = iter
+for make_iter in (iter, builtins.iter, iter_alias):
+    assert list(make_iter([1, 2])) == [1, 2]
+    calls = []
+    remaining = [None, "done"]
+
+    def step():
+        calls.append("call")
+        return remaining.pop(0)
+
+    stream = make_iter(step, "done")
+    assert calls == []
+    assert next(stream) is None
+    assert next(stream, "exhausted") == "exhausted"
+    assert calls == ["call", "call"]
+    assert next(stream, "exhausted") == "exhausted"
+    assert len(calls) == 2
+    assert next(make_iter(lambda: None, None), "exhausted") == "exhausted"
+    failure = RuntimeError("iter callback")
+
+    def fail():
+        raise failure
+
+    try:
+        next(make_iter(fail, None))
+    except RuntimeError as caught:
+        assert caught is failure
+    else:
+        raise AssertionError("callback error lost")
+    terminal = StopIteration("payload", "second")
+
+    def stop():
+        raise terminal
+
+    try:
+        next(make_iter(stop, None))
+    except StopIteration as caught:
+        assert caught is not terminal and caught.args == ()
+    else:
+        raise AssertionError("callback exhaustion lost")
+    for args in ((), (None,), ([], None), (lambda: 1, 1, 2)):
+        try:
+            make_iter(*args)
+        except TypeError:
+            pass
+        else:
+            raise AssertionError("invalid iter arguments admitted")
+    for kwargs in ({"obj": []}, {"sentinel": None}):
+        try:
+            make_iter(lambda: None, **kwargs)
+        except TypeError:
+            pass
+        else:
+            raise AssertionError("iter keyword admitted")
+    print("iter overload callable", len(calls), True)
+
+effects = []
+
+
+def argument(label, value):
+    effects.append(label)
+    return value
+
+
+for invalid_call, expected in (
+    (
+        lambda: iter(argument("a", []), argument("b", None), argument("c", 3)),
+        ["a", "b", "c"],
+    ),
+    (
+        lambda: iter(argument("a", []), sentinel=argument("keyword", None)),
+        ["a", "keyword"],
+    ),
+    (
+        lambda: iter(argument("a", []), **argument("expanded", {"sentinel": None})),
+        ["a", "expanded"],
+    ),
+    (lambda: vars(argument("a", []), argument("b", [])), ["a", "b"]),
+    (lambda: dir(obj=argument("keyword", [])), ["keyword"]),
+    (lambda: isinstance(1, int, ignored=argument("keyword", [])), ["keyword"]),
+    (lambda: issubclass(int, int, ignored=argument("keyword", [])), ["keyword"]),
+):
+    effects.clear()
+    try:
+        invalid_call()
+    except TypeError:
+        assert effects == expected
+    else:
+        raise AssertionError("invalid iter shape admitted")
+argument_failure = RuntimeError("iter argument")
+
+
+def raise_argument():
+    raise argument_failure
+
+
+for invalid_call in (
+    lambda: iter([], None, raise_argument()),
+    lambda: iter([], sentinel=raise_argument()),
+    lambda: iter([], **raise_argument()),
+    lambda: vars([], raise_argument()),
+    lambda: dir(obj=raise_argument()),
+    lambda: isinstance(1, int, ignored=raise_argument()),
+    lambda: issubclass(int, int, ignored=raise_argument()),
+):
+    try:
+        invalid_call()
+    except RuntimeError as caught:
+        assert caught is argument_failure
+    else:
+        raise AssertionError("iter argument error lost")
+print("iter argument evaluation", True)
+
+# Independent CPython positional-range family diagnostics. These ordinary
+# callable aliases all use the same declaration policy, including zero minima.
+for public, minimum, maximum in (
+    (iter, 1, 2),
+    (next, 1, 2),
+    (getattr, 2, 3),
+    (dir, 0, 1),
+    (vars, 0, 1),
+    (format, 1, 2),
+    (divmod, 2, 2),
+    (hasattr, 2, 2),
+    (setattr, 3, 3),
+    (delattr, 2, 2),
+    (anext, 1, 2),
+    (isinstance, 2, 2),
+    (issubclass, 2, 2),
+):
+    for count in ([0] if minimum else []) + [maximum + 1]:
+        try:
+            public(*([None] * count))
+        except TypeError as caught:
+            expected = minimum if count < minimum else maximum
+            qualifier = (
+                ""
+                if minimum == maximum
+                else ("at least " if count < minimum else "at most ")
+            )
+            plural = "" if expected == 1 else "s"
+            assert (
+                str(caught)
+                == f"{public.__name__} expected {qualifier}{expected} argument{plural}, got {count}"
+            ), str(caught)
+        else:
+            raise AssertionError("positional range admitted")
+    try:
+        public(unexpected=None)
+    except TypeError as caught:
+        assert str(caught) == f"{public.__name__}() takes no keyword arguments", str(
+            caught
+        )
+    else:
+        raise AssertionError("positional keyword admitted")
+print("builtin positional range diagnostics", True)
+
+saved_iter = builtins.iter
+try:
+    builtins.iter = lambda *args: ("rebound", len(args))
+    assert iter(lambda: 1, 1) == ("rebound", 2)
+finally:
+    builtins.iter = saved_iter
+print("iter overload live binding", True)
+
+
 # Native iterator class descriptors share receiver admission with ordinary
 # wrappers; retaining a descriptor must work after the iterator drops its source.
 class IndexedSource:

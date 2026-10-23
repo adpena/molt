@@ -562,7 +562,7 @@ fn init_python_builtin_function_metadata(
     };
     let bind_kind_bits = info
         .bind_kind
-        .map(|kind| MoltObject::from_int(kind).bits())
+        .map(|kind| MoltObject::from_int(kind as i64).bits())
         .unwrap_or_else(|| MoltObject::none().bits());
     let result = molt_function_init_metadata_packed(
         func_bits,

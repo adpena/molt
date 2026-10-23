@@ -411,6 +411,23 @@ public facade, while exceptions raised by user callbacks propagate unchanged.
 Reduce iterator slots use the canonical iterator-capability predicate, without
 calling `__iter__` merely to probe the supplied value.
 
+Builtin argument policy is a closed declaration in `builtin_callables.py`,
+projected into the runtime's typed callable metadata. The positional-range policy
+uses the existing frame binder's ownership and default filling, with no extra
+packing for valid full-arity calls. It rejects keywords before checking the
+positional range, after Python has evaluated and expanded every argument.
+The contract follows CPython v3.12.15's `_PyArg_CheckPositional` and
+`PyArg_UnpackTuple` family ([builtin source](https://raw.githubusercontent.com/python/cpython/e848e4b09ca4bc67c0041c9ce7526dae471d4c36/Python/bltinmodule.c),
+[Clinic projection](https://raw.githubusercontent.com/python/cpython/e848e4b09ca4bc67c0041c9ce7526dae471d4c36/Python/clinic/bltinmodule.c.h)).
+Named Clinic binding and C function conventions retain their distinct protocols.
+
+The public `iter(object[, sentinel])` callable has one positional-only signature
+and a private missing-argument default. Observable calls and direct two-argument
+calls select that overload owner; direct unary calls use the same checked
+acquisition primitive. Explicit `None` remains a real sentinel. Unary iteration
+acquisition and callable/sentinel construction retain their separate protocol
+primitives, including callable admission and callback exception custody.
+
 Generic synchronous iterator steps use the shared owned `SpecialIterationStep`
 result. The public boxed ABI wraps successful values in its public `(value, done)`
 tuple; the unboxed API transfers the value directly and retires exhaustion
