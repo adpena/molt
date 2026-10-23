@@ -162,7 +162,7 @@ def test_disabled_pair_build_still_admits_cached_generation(
         )
         if cache == "corrupt":
             _, _, manifest = pair_cache._cached_pair_paths(shared)
-            payload = json.loads(manifest.read_text())
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
             (manifest.parent / payload["receipts"]["shared"]["member"]).write_bytes(
                 b"corrupt"
             )
@@ -697,12 +697,12 @@ def test_synthetic_runtime_writes_require_typed_fixture_ownership(
 def test_unconsumed_tooling_does_not_change_runtime_source_identity(tmp_path):
     source = tmp_path / "runtime/lib.rs"
     source.parent.mkdir()
-    source.write_text("pub fn runtime() {}")
+    source.write_text("pub fn runtime() {}", encoding="utf-8")
     roots = (("source/runtime", source.parent),)
     before = runtime_build_identity._capture_runtime_build_sources(tmp_path, roots)
     planner = tmp_path / "src/molt/cli/runtime_wasm_build.py"
     planner.parent.mkdir(parents=True)
-    planner.write_text("# changed orchestration")
+    planner.write_text("# changed orchestration", encoding="utf-8")
     assert (
         runtime_build_identity._capture_runtime_build_sources(tmp_path, roots) == before
     )
@@ -2514,7 +2514,8 @@ def test_reloc_link_executes_captured_publication_action(
         seen.append(command)
         assert command[1] == "-r"
         assert (
-            Path(command[2][1:]).read_text().strip() == "--export-if-defined=molt_add"
+            Path(command[2][1:]).read_text(encoding="utf-8").strip()
+            == "--export-if-defined=molt_add"
         )
         expected_archives = [
             str(plan.wasi_c_abi.path("libc")),

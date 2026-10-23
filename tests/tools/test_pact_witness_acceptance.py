@@ -806,7 +806,8 @@ def test_build_diagnostics_report_runtime_cache_admission(tmp_path, capsys):
                     "publish_attempts": 0,
                 }
             }
-        )
+        ),
+        encoding="utf-8",
     )
     acceptance._summarize_build_diagnostics(path)
     output = capsys.readouterr().out

@@ -17,8 +17,8 @@
 
 ## Progress Summary (Generated)
 - Total audited modules: `949`
-- `intrinsic-backed`: `37`
-- `intrinsic-partial`: `162`
+- `intrinsic-backed`: `38`
+- `intrinsic-partial`: `161`
 - `intrinsic-support`: `27`
 - `python-compiled`: `344`
 - `stub`: `379`
@@ -94,6 +94,7 @@
 - `hmac`
 - `imghdr`
 - `itertools`
+- `keyword`
 - `math`
 - `opcode`
 - `pwd`
@@ -207,7 +208,6 @@
 - `inspect`
 - `ipaddress`
 - `json`
-- `keyword`
 - `linecache`
 - `locale`
 - `logging`

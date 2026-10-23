@@ -303,7 +303,7 @@ def identity_root(
         for relative in schema.runtime_publication_executor_paths(transform):
             executor = tmp_path / relative
             executor.parent.mkdir(parents=True, exist_ok=True)
-            executor.write_text("# publication executor fixture\n")
+            executor.write_text("# publication executor fixture\n", encoding="utf-8")
     tooling = tmp_path / "runtime-planner.py"
     tooling.write_text("# runtime planning authority\n", encoding="utf-8")
     archive_root = tmp_path / "archives"
@@ -716,7 +716,7 @@ def test_tooling_source_is_not_a_product_input(identity_root, relative, kind):
     before = _resolve(identity_root, kind=kind, publication="stable")
     path = identity_root / relative
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("# unrelated implementation edit\n")
+    path.write_text("# unrelated implementation edit\n", encoding="utf-8")
     after = _resolve(identity_root, kind=kind, publication="stable")
     assert before == after
 
@@ -2485,7 +2485,9 @@ def test_executor_edit_changes_publication_only_and_planner_edit_reuses(
     assert before.family_digest != after.family_digest
     planner = identity_root / "src/molt/cli/runtime_wasm_build_spec.py"
     planner.parent.mkdir(parents=True, exist_ok=True)
-    planner.write_text("# planner change with identical resolved action\n")
+    planner.write_text(
+        "# planner change with identical resolved action\n", encoding="utf-8"
+    )
     assert after == _resolve(identity_root, kind=kind, publication="stable")
 
 
@@ -2520,7 +2522,9 @@ def test_publication_executor_receipt_rejects_incomplete_closure(mutation):
 
 def test_copy_only_capi_has_no_python_executor(identity_root):
     before = _resolve(identity_root, kind="cpython-abi", publication="stable")
-    (identity_root / "src/molt/wasm_artifact.py").write_text("# changed rewrite\n")
+    (identity_root / "src/molt/wasm_artifact.py").write_text(
+        "# changed rewrite\n", encoding="utf-8"
+    )
     assert _resolve(identity_root, kind="cpython-abi", publication="stable") == before
     action = schema.runtime_publication_action(before)
     assert action.executor is None
