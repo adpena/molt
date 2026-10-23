@@ -1290,7 +1290,7 @@ def test_source_record_dry_run_and_age_policy_preserve_database_owner(
     assert store.put("module-lowering", "old", b"payload", generation="g")
     with sqlite3.connect(store.path) as connection:
         connection.execute(
-            "UPDATE records SET used_ns = ?",
+            "UPDATE recency SET used_ns = ?",
             (time.time_ns() - 2 * 86400 * 1_000_000_000,),
         )
         before = connection.execute("SELECT * FROM records").fetchall()
@@ -1340,6 +1340,7 @@ def test_source_record_prune_cannot_delete_a_changed_observation(
         clock[0] += 301 * 1_000_000_000
         if change == "refresh":
             assert candidate.refresh()
+            assert store.save_renewals() == 1
         else:
             assert store.put("module-analysis", "k", b"replacement", generation="g")
         return remove(maintenance, observed)
@@ -1490,7 +1491,7 @@ def test_row_batches_commit_before_interleaved_file_eviction(tmp_path, monkeypat
     try:
         for key, stamp in (("first", 10), ("second", 30), ("third", 50)):
             peer.execute(
-                "UPDATE records SET used_ns=? WHERE key=?", (stamp * 10**9, key)
+                "UPDATE recency SET used_ns=? WHERE key=?", (stamp * 10**9, key)
             )
         entry = _cache_entry(cache, "middle-file")
         with _locked_wasm_link_cache_entry(entry):
