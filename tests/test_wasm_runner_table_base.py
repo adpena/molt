@@ -4,7 +4,6 @@ import functools
 import json
 import os
 import shutil
-import sys
 from pathlib import Path
 
 import pytest
@@ -162,31 +161,17 @@ def _split_manifest(app_path: Path, runtime_path: Path) -> Path:
 
 
 @functools.cache
-def _wasm_backend() -> Path:
-    """The backend `molt build --target wasm` selects; CI builds it first.
+def _wasm_facts_tool() -> Path:
+    """The facts tool `molt build --target wasm` admits for linked output.
 
-    Fixtures with callable entries publish their link facts with that binary;
+    Fixtures with callable entries publish their link facts with that tool;
     known-empty synthetic tables use the generated ABI's empty attestation.
-    A `cargo run` per fixture built a second, dev-profile backend, and parallel
-    workers queued behind its cold build until they timed out.
+    The codegen backend exposes no facts mode since the tool was separated
+    (docs/spec/areas/compiler/0931_LINKER_OPTIMIZATION_CONTRACT.md).
     """
-    result = _run_wasm_test_process(
-        [
-            sys.executable,
-            "-m",
-            "molt.cli",
-            "internal-backend-build",
-            "--target",
-            "wasm",
-            "--json",
-        ],
-        cwd=ROOT,
-        env=os.environ,
-        timeout=1800,
-    )
-    payload = json.loads(result.stdout)
-    assert payload["status"] == "ok", payload["errors"]
-    return Path(payload["data"]["compiler"]["path"])
+    from molt.cli.wasm_facts_tool import ensure_wasm_facts_tool
+
+    return ensure_wasm_facts_tool(ROOT, env=os.environ)
 
 
 def _wasm_from_wat(
@@ -216,7 +201,7 @@ def _wasm_from_wat(
         return wasm_path
     published = wasm_path.with_suffix(".published.wasm")
     publish_command = [
-        str(_wasm_backend()),
+        str(_wasm_facts_tool()),
         "--publish-wasm-link-facts",
         "--output",
         str(published),
