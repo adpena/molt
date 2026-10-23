@@ -1679,10 +1679,7 @@ fn native_step(
             TYPE_ID_REVERSED => reversed_next(py, ptr),
             TYPE_ID_CALL_ITER => call_iter_next(py, ptr),
             // Send owns completion, including terminal binding release.
-            TYPE_ID_GENERATOR => step_from_pair(
-                py,
-                molt_generator_send(iter_bits, MoltObject::none().bits()),
-            ),
+            TYPE_ID_GENERATOR => generator_next_step(py, ptr),
             TYPE_ID_GLOB_ITER => glob_iter_next(py, ptr),
             _ => {
                 let class = obj_from_bits(object_class_bits(ptr)).as_ptr()?;
@@ -1752,37 +1749,25 @@ fn class_native_next_step(
     }
 }
 
-/// Destructure a `(value, done)` pair from a kind whose own protocol is the
-/// pair ABI (generator send).
-fn step_from_pair(py: &PyToken<'_>, pair: u64) -> IterationResult {
-    if exception_pending(py) {
-        dec_ref_bits(py, pair);
-        return Err(());
+/// A generator's `tp_iternext` (CPython's `gen_iternext`): its typed resume
+/// step, with no `(value, done)` tuple.
+#[inline]
+unsafe fn generator_next_step(py: &PyToken<'_>, ptr: *mut u8) -> IterationResult {
+    use crate::async_rt::generators::{GeneratorStep, generator_send_step};
+    match unsafe { generator_send_step(py, ptr, MoltObject::none().bits()) } {
+        Ok(GeneratorStep::Yielded(value)) => Ok(SpecialIterationStep::Item(value)),
+        Ok(GeneratorStep::Returned(value)) => Ok(SpecialIterationStep::Exhausted(value)),
+        Ok(GeneratorStep::Pending) => {
+            // Only an async generator's own operations drive an awaiting body.
+            raise_exception::<()>(
+                py,
+                "SystemError",
+                "generator awaited outside its async generator",
+            );
+            Err(())
+        }
+        Err(()) => Err(()),
     }
-    let parts = obj_from_bits(pair)
-        .as_ptr()
-        .and_then(|ptr| unsafe { crate::object::seq_access::tuple_pair(ptr) });
-    let Some((value, done)) = parts else {
-        dec_ref_bits(py, pair);
-        raise_exception::<()>(py, "SystemError", "iterator returned an invalid pair");
-        return Err(());
-    };
-    let Some(exhausted) = obj_from_bits(done).as_bool() else {
-        dec_ref_bits(py, pair);
-        raise_exception::<()>(
-            py,
-            "SystemError",
-            "iterator returned an invalid completion flag",
-        );
-        return Err(());
-    };
-    inc_ref_bits(py, value);
-    dec_ref_bits(py, pair);
-    Ok(if exhausted {
-        SpecialIterationStep::Exhausted(value)
-    } else {
-        SpecialIterationStep::Item(value)
-    })
 }
 
 #[inline(always)]
@@ -2600,16 +2585,11 @@ unsafe fn pair_from_step(py: &PyToken<'_>, iter_bits: u64, step: IterationResult
     }
 }
 
-/// The `(value, done)` pair ABI. A generator's send already speaks it; every
-/// other kind projects the one iteration step.
+/// The `(value, done)` pair ABI: every kind, generators included, projects
+/// the one iteration step.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if let Some(ptr) = maybe_ptr_from_bits(iter_bits)
-            && unsafe { object_type_id(ptr) } == TYPE_ID_GENERATOR
-        {
-            return molt_generator_send(iter_bits, MoltObject::none().bits());
-        }
         unsafe {
             pair_from_step(
                 _py,

@@ -155,27 +155,17 @@ fn code_slot_acquire(_py: &PyToken<'_>, code_id: u64) -> Option<CodeNamespace> {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_frame_invocation_enter(callee_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        FrameInvocationGuard::for_callable(_py, callee_bits)
-            .map_or(0, FrameInvocationGuard::into_token)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_frame_invocation_exit(token: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        FrameInvocationGuard::exit_token(_py, token);
-        MoltObject::none().bits()
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_trace_enter_slot(code_id: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
+        let handed = match take_invocation_namespace(_py, code_id) {
+            Ok(handed) => handed,
+            Err(()) => {
+                TRACE_FRAME_PUSH_STACK.with(|stack| stack.borrow_mut().push(false));
+                return MoltObject::none().bits();
+            }
+        };
         let (binding, builtins_bits, activation_bits) =
-            if let Some([globals, builtins, code, activation]) = take_invocation_namespace(code_id)
-            {
+            if let Some([globals, builtins, code, activation]) = handed {
                 // The invocation already owns every edge. Do not acquire and then
                 // discard unrelated lexical owners from the mutable default slot.
                 (
@@ -354,9 +344,7 @@ pub unsafe extern "C" fn molt_guarded_call_obj(
         let Some(_recursion) = RecursionGuard::enter(_py) else {
             return MoltObject::none().bits();
         };
-        let Some(_invocation) = FrameInvocationGuard::for_callable(_py, callee_bits) else {
-            return MoltObject::none().bits();
-        };
+        let _invocation = FrameInvocationGuard::for_callable(_py, callee_bits);
         unsafe { molt_guarded_call_dispatch(fn_target, args.as_ptr(), args.len()) }
     })
 }
@@ -1013,9 +1001,7 @@ pub(crate) fn molt_call_func_direct(
     let Some(_recursion) = RecursionGuard::enter(_py) else {
         return MoltObject::none().bits();
     };
-    let Some(_invocation) = FrameInvocationGuard::for_callable(_py, callable_bits) else {
-        return MoltObject::none().bits();
-    };
+    let _invocation = FrameInvocationGuard::for_callable(_py, callable_bits);
     unsafe { molt_guarded_call_dispatch(call_target, args.as_ptr(), args.len()) }
 }
 
@@ -1403,9 +1389,7 @@ pub extern "C" fn molt_call_func_fast0(func_bits: u64) -> u64 {
                 let Some(_recursion) = RecursionGuard::enter(_py) else {
                     return MoltObject::none().bits();
                 };
-                let Some(_invocation) = FrameInvocationGuard::for_callable(_py, func_bits) else {
-                    return MoltObject::none().bits();
-                };
+                let _invocation = FrameInvocationGuard::for_callable(_py, func_bits);
                 return direct_call_0(call_target);
             }
             let args: [u64; 0] = [];

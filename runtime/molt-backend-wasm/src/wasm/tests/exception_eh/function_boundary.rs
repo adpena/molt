@@ -133,8 +133,10 @@ const config = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
 const none = BigInt(config.none), yes = BigInt(config.yes);
 for (const test of config.cases) {
   const module = new WebAssembly.Module(fs.readFileSync(test.path));
-  let frames=0, handlers=0, recursion=0, invocations=0, owners=1, pending=false;
-  const lines=[];
+  let frames=0, handlers=0, recursion=0, owners=1, pending=false;
+  const lines=[], handed=[];
+  // The thread record: the direct call writes its invocation word.
+  const record=256, handoff=record+8;
   const imports = {env:{
     memory:new WebAssembly.Memory({initial:test.memory_pages}),
     __indirect_function_table:new WebAssembly.Table({initial:test.table_entries,element:'anyfunc'})
@@ -147,15 +149,16 @@ for (const test of config.cases) {
     exception_push: () => { handlers++; return none; },
     exception_pop: () => { assert.equal(handlers,1); handlers--; return none; },
     exception_pending: () => pending ? 1n : 0n,
-    raise: bits => { assert.equal(bits,yes); assert.equal(handlers,1); pending=true; return none; },
+    raise: bits => {
+      assert.equal(bits,yes); assert.equal(handlers,1); pending=true;
+      handed.push(new DataView(imports.env.memory.buffer).getBigInt64(handoff,true));
+      return none;
+    },
     function_direct_call_eligible: () => 1n,
     handle_resolve: bits => { assert.equal(bits,777n); return 128; },
-    recursion_guard_enter: () => { recursion++; return 1n; },
-    recursion_guard_exit: () => { assert.equal(recursion,1); recursion--; },
-    frame_invocation_enter: () => { invocations++; return 42n; },
-    frame_invocation_exit: token => {
-      assert.equal(token,42n); assert.equal(invocations,1); invocations--; return none;
-    },
+    recursion_enter_fast: () => { recursion++; return 1n; },
+    recursion_exit_fast: () => { assert.equal(recursion,1); recursion--; },
+    thread_record: () => BigInt(record),
     inc_ref_obj: bits => { if(bits===777n) owners++; },
     dec_ref_obj: bits => { if(bits===777n) { assert.ok(owners>0); owners--; } },
   };
@@ -172,10 +175,14 @@ for (const test of config.cases) {
   for(let i=0;i<table.length;i++) if(table.get(i)===app.callee) { target=i; break; }
   assert.ok(target>=0,'callee must have its real table identity');
   new DataView(imports.env.memory.buffer).setBigInt64(128,BigInt(target),true);
+  new DataView(imports.env.memory.buffer).setBigInt64(handoff,5n,true);
   assert.equal(test.mode==='stateful' ? app.molt_main(64n,777n) : app.molt_main(777n),none);
   assert.deepEqual(lines,[3],test.mode+': failed call must reach its handler');
   assert.equal(pending,true);
-  assert.deepEqual([frames,handlers,recursion,invocations,owners],[0,0,0,0,1],test.mode);
+  assert.deepEqual([frames,handlers,recursion,owners],[0,0,0,1],test.mode);
+  // The callee ran with itself handed over; the outer handoff came back.
+  assert.deepEqual(handed,[777n],test.mode);
+  assert.equal(new DataView(imports.env.memory.buffer).getBigInt64(handoff,true),5n,test.mode);
 }
 "#,
         &[&config],

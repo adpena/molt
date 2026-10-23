@@ -417,11 +417,8 @@ unsafe fn call_function_obj_bound1(_py: &PyToken<'_>, func_bits: u64, arg0_bits:
         let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
             return crate::MoltObject::none().bits();
         };
-        let Some(_invocation) =
-            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr)
-        else {
-            return crate::MoltObject::none().bits();
-        };
+        let _invocation =
+            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr);
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
@@ -643,11 +640,8 @@ unsafe fn call_function_obj_bound0(_py: &PyToken<'_>, func_bits: u64) -> u64 {
         let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
             return crate::MoltObject::none().bits();
         };
-        let Some(_invocation) =
-            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr)
-        else {
-            return crate::MoltObject::none().bits();
-        };
+        let _invocation =
+            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr);
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
@@ -786,11 +780,8 @@ unsafe fn call_function_obj_bound2(
         let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
             return crate::MoltObject::none().bits();
         };
-        let Some(_invocation) =
-            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr)
-        else {
-            return crate::MoltObject::none().bits();
-        };
+        let _invocation =
+            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr);
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
@@ -896,11 +887,8 @@ unsafe fn call_function_obj_bound3(
         let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
             return crate::MoltObject::none().bits();
         };
-        let Some(_invocation) =
-            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr)
-        else {
-            return crate::MoltObject::none().bits();
-        };
+        let _invocation =
+            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr);
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
@@ -1003,11 +991,8 @@ unsafe fn call_function_obj_bound4(
         let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
             return crate::MoltObject::none().bits();
         };
-        let Some(_invocation) =
-            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr)
-        else {
-            return crate::MoltObject::none().bits();
-        };
+        let _invocation =
+            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr);
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
@@ -1113,11 +1098,8 @@ unsafe fn call_function_obj_bound5(
         let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
             return crate::MoltObject::none().bits();
         };
-        let Some(_invocation) =
-            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr)
-        else {
-            return crate::MoltObject::none().bits();
-        };
+        let _invocation =
+            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr);
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
@@ -1247,11 +1229,8 @@ unsafe fn call_function_obj_bound6(
         let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
             return crate::MoltObject::none().bits();
         };
-        let Some(_invocation) =
-            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr)
-        else {
-            return crate::MoltObject::none().bits();
-        };
+        let _invocation =
+            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr);
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
@@ -1396,11 +1375,8 @@ unsafe fn call_function_obj_bound7(
         let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
             return crate::MoltObject::none().bits();
         };
-        let Some(_invocation) =
-            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr)
-        else {
-            return crate::MoltObject::none().bits();
-        };
+        let _invocation =
+            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr);
 
         if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
@@ -1554,11 +1530,8 @@ unsafe fn call_function_obj_bound8(
         let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
             return crate::MoltObject::none().bits();
         };
-        let Some(_invocation) =
-            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr)
-        else {
-            return crate::MoltObject::none().bits();
-        };
+        let _invocation =
+            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr);
 
         if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
@@ -1719,11 +1692,8 @@ unsafe fn call_function_obj_bound9(
         let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
             return crate::MoltObject::none().bits();
         };
-        let Some(_invocation) =
-            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr)
-        else {
-            return crate::MoltObject::none().bits();
-        };
+        let _invocation =
+            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr);
 
         if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
@@ -1899,11 +1869,8 @@ unsafe fn call_function_obj_bound10(
         let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
             return crate::MoltObject::none().bits();
         };
-        let Some(_invocation) =
-            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr)
-        else {
-            return crate::MoltObject::none().bits();
-        };
+        let _invocation =
+            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr);
 
         if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
@@ -2106,11 +2073,8 @@ unsafe fn call_function_obj_bound11(
         let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
             return crate::MoltObject::none().bits();
         };
-        let Some(_invocation) =
-            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr)
-        else {
-            return crate::MoltObject::none().bits();
-        };
+        let _invocation =
+            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr);
 
         if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
@@ -2332,11 +2296,8 @@ unsafe fn call_function_obj_bound12(
         let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
             return crate::MoltObject::none().bits();
         };
-        let Some(_invocation) =
-            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr)
-        else {
-            return crate::MoltObject::none().bits();
-        };
+        let _invocation =
+            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr);
 
         if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
@@ -2665,11 +2626,8 @@ unsafe fn invoke_function_trampoline(
         let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
             return crate::MoltObject::none().bits();
         };
-        let Some(_invocation) =
-            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr)
-        else {
-            return crate::MoltObject::none().bits();
-        };
+        let _invocation =
+            crate::builtins::frames::FrameInvocationGuard::for_function(_py, func_ptr);
         // Nothing fails between here and the entry. An adopting entry owns one
         // reference to each Python argument: moved ones are the instruction's,
         // borrowed ones are retained here, the borrowed lane's only retain.

@@ -35,14 +35,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_weakref_count",
             crate::molt_weakref_count as *const (),
         )),
-        "molt_weakref_finalize_track" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_weakref_finalize_track",
-            crate::molt_weakref_finalize_track as *const (),
-        )),
-        "molt_weakref_finalize_untrack" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_weakref_finalize_untrack",
-            crate::molt_weakref_finalize_untrack as *const (),
-        )),
         "molt_weakcontainer_new" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_weakcontainer_new",
             crate::molt_weakcontainer_new as *const (),

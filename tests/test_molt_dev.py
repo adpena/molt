@@ -483,7 +483,7 @@ def test_run_gate_compound_shell_preserves_durable_cargo_environment(
         "from pathlib import Path\n"
         "keys = ('TMPDIR', 'TMP', 'TEMP', 'CARGO_INCREMENTAL', "
         "'SCCACHE_SERVER_PORT', sys.argv[2])\n"
-        "Path(sys.argv[1]).write_text(json.dumps({key: os.environ[key] "
+        "Path(sys.argv[1]).write_text(json.dumps({key: os.environ.get(key) "
         "for key in keys}), encoding='utf-8')\n",
         encoding="utf-8",
     )
@@ -499,7 +499,8 @@ def test_run_gate_compound_shell_preserves_durable_cargo_environment(
     assert first == second
     assert first[wrapper] == env[wrapper]
     assert first["SCCACHE_SERVER_PORT"] == "49971"
-    assert first["CARGO_INCREMENTAL"] == "0"
+    # sccache refuses an explicit nonzero CARGO_INCREMENTAL; the profile decides.
+    assert first["CARGO_INCREMENTAL"] is None
     temporary = Path(first["TMPDIR"])
     assert temporary.is_dir() and temporary != scratch
     assert first["TMP"] == first["TEMP"] == str(temporary)

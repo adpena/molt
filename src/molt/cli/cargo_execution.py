@@ -283,10 +283,22 @@ def _sccache_diag(msg: str) -> None:
     print(f"[molt sccache] {msg}", file=sys.stderr, flush=True)
 
 
+def _adopt_normalized_cargo_environment(env: ProcessEnvironmentBuilder) -> None:
+    """Make ``env`` exactly its normalized Cargo environment.
+
+    Normalization may remove a variable (an explicit nonzero
+    ``CARGO_INCREMENTAL`` that sccache refuses), so adopting it must delete
+    names as well as update them.
+    """
+    normalized, _applied = normalize_cargo_environment(env)
+    for name in [name for name in env if name not in normalized]:
+        del env[name]
+    env.update(normalized)
+
+
 def _maybe_enable_sccache(env: ProcessEnvironmentBuilder) -> None:
     if cargo_compiler_wrappers(env):
-        normalized, _applied = normalize_cargo_environment(env)
-        env.update(normalized)
+        _adopt_normalized_cargo_environment(env)
         return
     mode = env.get("MOLT_USE_SCCACHE", "auto").strip().lower()
     if mode in {"0", "false", "no", "off"}:
@@ -322,8 +334,7 @@ def _maybe_enable_sccache(env: ProcessEnvironmentBuilder) -> None:
     cache_env.setdefault("SCCACHE_CACHE_SIZE", DEFAULT_SCCACHE_CACHE_SIZE)
     env.update(cache_env)
     env["RUSTC_WRAPPER"] = sccache
-    normalized, _applied = normalize_cargo_environment(env)
-    env.update(normalized)
+    _adopt_normalized_cargo_environment(env)
     _sccache_diag(
         f"enabled (RUSTC_WRAPPER={sccache}); post-build stats report cumulative counts."
     )
@@ -347,13 +358,12 @@ def _cargo_build_env(
         )
     # Incremental compilation is the primary WARM-REBUILD accelerator: edit one
     # file -> recompile only that crate's changed codegen units, not the whole
-    # runtime cold. Default it ON. It is mutually exclusive with sccache (which
-    # skips incremental units), so the sccache-enable paths force it back to "0";
-    # with sccache OFF (the Windows default) incremental is the ONLY compiler
-    # cache we have and must be on, else every rebuild pays the full cold compile.
-    # Explicit incremental policy wins only when it is compatible with the
-    # active wrapper. The invariant is enforced here because every production
-    # nested Cargo build obtains its environment through this authority.
+    # runtime cold (2026-10-23, molt-runtime one-line edit: 68 s without it,
+    # 35 s with it). Without sccache it defaults ON here. With sccache the
+    # normalization below removes an explicit nonzero value, which sccache
+    # refuses, so the Cargo profile turns it on for workspace crates while
+    # sccache caches registry crates. Every production nested Cargo build
+    # obtains its environment through this authority.
     normalized_env, _applied = normalize_cargo_environment(env, default_incremental="1")
     env = ProcessEnvironmentBuilder(normalized_env)
     _apply_memory_bounded_cargo_jobs(env)

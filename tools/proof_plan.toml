@@ -4352,16 +4352,23 @@ pytest = [
   "tests/cli/test_cli_backend_prewarm.py",
 ]
 
-# --- Bootstrap-critical stdlib modules (extra intrinsic audits) ----------
+# --- Stdlib intrinsic contracts ------------------------------------------
+# The audit checks every stdlib and moltlib module against the intrinsic
+# manifest and the full-coverage contracts, so any of its inputs selects it
+# (about 10 s locally). A narrower glob let a retired `_asyncio` intrinsic
+# stay in the contract on main.
 [[rule]]
-name = "bootstrap-stdlib"
+name = "stdlib-intrinsic-contracts"
 toolchains = ["python"]
-description = "builtins/sys/importlib/_intrinsics: stdlib-intrinsic audits (Bootstrap Authority)."
+description = "Every stdlib module's intrinsic reads match the manifest and its full-coverage contract."
 globs = [
-  "src/molt/stdlib/builtins.py",
-  "src/molt/stdlib/sys.py",
-  "src/molt/stdlib/importlib/**/*.py",
-  "src/molt/stdlib/_intrinsics.py",
+  "src/molt/stdlib/**/*.py",
+  "src/moltlib/**/*.py",
+  "runtime/molt-runtime/src/intrinsics/manifest.pyi",
+  "tools/check_stdlib_intrinsics.py",
+  "tools/stdlib_full_coverage_manifest.py",
+  "tools/stdlib_module_union.py",
+  "tools/stdlib_intrinsics_ratchet.json",
 ]
 gates = [
   "python tools/check_stdlib_intrinsics.py --critical-allowlist",

@@ -559,8 +559,8 @@ fn fatal_invalid_release(label: &str, previous: u32) -> ! {
 /// Flags in this class directly coordinate cross-thread state or object
 /// lifetime. Every other flag is metadata whose payload visibility is already
 /// established by `GC_UNPUBLISHED` publication, the GIL, or its owning lock.
-const HEADER_FLAG_SYNCHRONIZED_STATE_MASK: u32 = HEADER_FLAG_GEN_RUNNING
-    | HEADER_FLAG_GEN_STARTED
+const HEADER_FLAG_SYNCHRONIZED_STATE_MASK: u32 = HEADER_FLAG_CORO_RUNNING
+    | HEADER_FLAG_CORO_STARTED
     | HEADER_FLAG_SPAWN_RETAIN
     | HEADER_FLAG_CANCEL_PENDING
     | HEADER_FLAG_BLOCK_ON
@@ -1118,8 +1118,11 @@ pub(crate) const HEADER_FLAG_HAS_PTRS: u32 = molt_codegen_abi::HEADER_FLAG_HAS_P
 /// upgrade this pin into an external owner; ordinary owned resurrection remains
 /// legal until death commits with `DEALLOCATING`.
 pub(crate) const HEADER_FLAG_REVIVAL_WINDOW: u32 = 1 << 1;
-pub(crate) const HEADER_FLAG_GEN_RUNNING: u32 = 1 << 2;
-pub(crate) const HEADER_FLAG_GEN_STARTED: u32 = 1 << 3;
+/// A native coroutine's body runs (`cr_running`). A generator keeps its whole
+/// frame state in its control region's state word instead.
+pub(crate) const HEADER_FLAG_CORO_RUNNING: u32 = 1 << 2;
+/// A native coroutine's body has run at least once.
+pub(crate) const HEADER_FLAG_CORO_STARTED: u32 = 1 << 3;
 pub(crate) const HEADER_FLAG_SPAWN_RETAIN: u32 = 1 << 4;
 pub(crate) const HEADER_FLAG_CANCEL_PENDING: u32 = 1 << 5;
 pub(crate) const HEADER_FLAG_BLOCK_ON: u32 = 1 << 6;
@@ -1216,8 +1219,8 @@ pub(crate) const HEADER_FLAG_IS_WEAKREF: u32 = 1 << 31;
 const HEADER_FLAG_REGISTRY: [u32; 32] = [
     HEADER_FLAG_HAS_PTRS,
     HEADER_FLAG_REVIVAL_WINDOW,
-    HEADER_FLAG_GEN_RUNNING,
-    HEADER_FLAG_GEN_STARTED,
+    HEADER_FLAG_CORO_RUNNING,
+    HEADER_FLAG_CORO_STARTED,
     HEADER_FLAG_SPAWN_RETAIN,
     HEADER_FLAG_CANCEL_PENDING,
     HEADER_FLAG_BLOCK_ON,
@@ -2881,6 +2884,9 @@ pub(crate) unsafe fn object_has_finalizer(_py: &PyToken<'_>, ptr: *mut u8) -> bo
         if object_type_id(ptr) == TYPE_ID_ASYNC_GENERATOR {
             return crate::async_rt::generators::asyncgen_needs_finalizer(ptr);
         }
+        if object_type_id(ptr) == TYPE_ID_GENERATOR {
+            return crate::async_rt::generators::generator_needs_finalizer(ptr);
+        }
         let Some(class_ptr) = obj_from_bits(object_class_bits(ptr)).as_ptr() else {
             return false;
         };
@@ -3582,6 +3588,13 @@ unsafe fn run_object_finalizer_in_revival_window(py: &PyToken<'_>, ptr: *mut u8)
         unsafe {
             (*header_ptr).fetch_or_flags(HEADER_FLAG_FINALIZER_RAN);
             asyncgen_call_finalizer(py, ptr);
+        }
+        return;
+    }
+    if unsafe { object_type_id(ptr) } == TYPE_ID_GENERATOR {
+        unsafe {
+            (*header_ptr).fetch_or_flags(HEADER_FLAG_FINALIZER_RAN);
+            crate::async_rt::generators::generator_call_finalizer(py, ptr);
         }
         return;
     }

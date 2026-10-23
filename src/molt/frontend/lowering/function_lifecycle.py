@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.frontend._types import (
     GEN_CONTROL_SIZE,
+    GEN_RESUME_RETURNED,
     CodeSlotDeclaration,
     FuncInfo,
     MoltOp,
@@ -545,6 +546,22 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
             MoltOp(kind="JUMP", args=[self.return_label], result=MoltValue("none"))
         )
 
+    def _emit_generator_falloff(self) -> None:
+        """Return None from a generator body that falls off its end.
+
+        The return terminator reports completion (``_emit_return_terminator``).
+        """
+        if self.return_label is not None:
+            if not self._ends_with_return_jump():
+                none_val = MoltValue(self.next_var(), type_hint="None")
+                self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
+                self._emit_return_value(none_val)
+            self._emit_return_label()
+        elif not (self.current_ops and self.current_ops[-1].kind == "ret"):
+            none_val = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
+            self._emit_normal_return_terminator(none_val)
+
     def _emit_return_label(self) -> None:
         if self.return_label is None or self.return_slot is None:
             return
@@ -574,11 +591,27 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
         self._emit_return_terminator("ret_void", [])
 
     def _emit_return_terminator(self, kind: str, args: list[MoltValue]) -> None:
-        if (
-            kind == "ret"
-            and self.funcs_map[self.current_func_name]["return_abi"] != "value"
-        ):
+        function = self.funcs_map[self.current_func_name]
+        if kind == "ret" and function["return_abi"] != "value":
             raise ValueError("a void function ABI cannot return a value")
+        plan = function.get("stateful_frame_plan")
+        if kind == "ret" and plan is not None and plan.include_gen_control:
+            # A generator body's normal return reports completion through its
+            # resume label; the poll returns the value itself, as a yield does
+            # (no ``(value, done)`` tuple). Every completion passes this one
+            # boundary, after any ``finally`` that may still yield, and the
+            # report precedes the frame exit that must stay adjacent to ``ret``.
+            if self.current_ops and self.current_ops[-1].kind == "TRACE_EXIT":
+                raise ValueError(
+                    "a generator return reports completion before TRACE_EXIT"
+                )
+            self.emit(
+                MoltOp(
+                    kind="STATE_SET",
+                    args=[GEN_RESUME_RETURNED],
+                    result=MoltValue("none"),
+                )
+            )
         if self._function_needs_frame_trace() and (
             not self.current_ops or self.current_ops[-1].kind != "TRACE_EXIT"
         ):

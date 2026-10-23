@@ -114,6 +114,13 @@ pub const LIST_INT_STORAGE_DATA_OFFSET: i32 = 0;
 pub const LIST_INT_STORAGE_LEN_OFFSET: i32 = 8;
 
 pub const GENERATOR_CONTROL_BYTES: i32 = 48;
+/// The resume label a generator body stores at its normal return. The poll
+/// returns the yielded or returned value itself, with no `(value, done)`
+/// tuple, and this label tells the runtime that the body completed, as a Rust
+/// coroutine's `Returned` discriminant does. No resume label is `i64::MIN`:
+/// native labels are small and non-negative, and WASM stores `!index` of a
+/// dispatch target. The runtime turns the report into its frame state at once.
+pub const GENERATOR_RESUME_RETURNED: i64 = i64::MIN;
 pub const TASK_KIND_FUTURE: i64 = 0;
 pub const TASK_KIND_GENERATOR: i64 = 1;
 pub const TASK_KIND_COROUTINE: i64 = 2;
@@ -148,6 +155,17 @@ pub const FRAME_HOME_CELL: i64 = 3;
 pub const FRAME_HOME_PRIVATE_CELL: i64 = 5;
 /// Set in exactly the kinds that own a reference to their bits.
 pub const FRAME_HOME_HOLDS_REFERENCE: i64 = 1;
+
+// The thread record: the per-thread execution facts compiled code reads and
+// writes with plain loads and stores, as CPython's code reads its
+// `PyThreadState`. `molt_thread_record` lends its address; compiled code takes
+// it once per invocation. The layout is `ExecutionTls` in
+// runtime/molt-runtime/src/state/tls.rs, which asserts every offset below.
+/// One byte: an exception is pending in the active execution context.
+pub const THREAD_RECORD_EXCEPTION_PENDING_OFFSET: i32 = 0;
+/// u64: the callable an invoker hands to the next compiled frame entry
+/// (a borrowed function or task object), or zero.
+pub const THREAD_RECORD_PENDING_INVOCATION_OFFSET: i32 = 8;
 
 /// A compiled function object's entry custody, passed to `molt_func_new` and
 /// `molt_func_new_closure`: the entry adopts every Python argument. Zero: it
@@ -378,10 +396,11 @@ pub struct GeneratedObjectAbiFacts {
     pub type_id_type: u32,
     pub type_id_list_bool: u32,
     pub frame_binding_abi: u64,
+    pub generator_resume_returned: i64,
 }
 
 impl GeneratedObjectAbiFacts {
-    pub const fn words(self) -> [u64; 57] {
+    pub const fn words(self) -> [u64; 58] {
         [
             self.header_size as i64 as u64,
             self.header_align as u64,
@@ -440,6 +459,7 @@ impl GeneratedObjectAbiFacts {
             self.type_id_type as u64,
             self.type_id_list_bool as u64,
             self.frame_binding_abi,
+            self.generator_resume_returned as u64,
         ]
     }
 
@@ -521,6 +541,7 @@ pub const GENERATED_OBJECT_ABI_FACTS: GeneratedObjectAbiFacts = GeneratedObjectA
     type_id_type: TYPE_ID_TYPE,
     type_id_list_bool: TYPE_ID_LIST_BOOL,
     frame_binding_abi: frame_binding_abi_word(),
+    generator_resume_returned: GENERATOR_RESUME_RETURNED,
 };
 
 /// Ratchet binding every hardcoded generated-code header fact. A layout/offset
@@ -531,16 +552,20 @@ pub const GENERATED_OBJECT_ABI_FACTS: GeneratedObjectAbiFacts = GeneratedObjectA
 /// generated code addresses (`frame_binding_abi_word`); the value continues
 /// revision 2's FNV-1a state over that one appended word. Revision 4 removes
 /// signed pointer reconstruction: all 48 payload bits form an unsigned user
-/// address, including bit 47 on AArch64. Old generated code cannot link to it.
-pub const GENERATED_OBJECT_ABI_FINGERPRINT_V4: u64 = 0x4cd0_6d21_4d67_4e1b;
+/// address, including bit 47 on AArch64. Revision 5 binds the generator poll
+/// protocol: a body returns its yielded or returned value with no
+/// `(value, done)` tuple and reports completion through
+/// `GENERATOR_RESUME_RETURNED`, one appended word. Old generated code cannot
+/// link to it.
+pub const GENERATED_OBJECT_ABI_FINGERPRINT_V5: u64 = 0xcc3e_3a1c_d01a_b8fb;
 const _: () = assert!(
-    GENERATED_OBJECT_ABI_FACTS.fingerprint() == GENERATED_OBJECT_ABI_FINGERPRINT_V4,
+    GENERATED_OBJECT_ABI_FACTS.fingerprint() == GENERATED_OBJECT_ABI_FINGERPRINT_V5,
     "native generated-object ABI changed: bump the fingerprint revision and link symbols",
 );
 pub const GENERATED_OBJECT_ABI_GIL_SYMBOL: &str =
-    "molt_generated_object_abi_4cd06d214d674e1b_gil_v4";
+    "molt_generated_object_abi_cc3e3a1cd01ab8fb_gil_v5";
 pub const GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL: &str =
-    "molt_generated_object_abi_4cd06d214d674e1b_free_threaded_v4";
+    "molt_generated_object_abi_cc3e3a1cd01ab8fb_free_threaded_v5";
 /// Compile-time authority consumed by runtime storage and generated native
 /// access. Cargo feature unification may enable this through any dependency;
 /// consumers must branch on this value rather than a crate-local feature.
@@ -1467,14 +1492,14 @@ mod tests {
         let canonical = GENERATED_OBJECT_ABI_FACTS.words();
         assert_eq!(
             fingerprint_words(canonical),
-            GENERATED_OBJECT_ABI_FINGERPRINT_V4
+            GENERATED_OBJECT_ABI_FINGERPRINT_V5
         );
         for index in 0..canonical.len() {
             let mut changed = canonical;
             changed[index] ^= 1;
             assert_ne!(
                 fingerprint_words(changed),
-                GENERATED_OBJECT_ABI_FINGERPRINT_V4,
+                GENERATED_OBJECT_ABI_FINGERPRINT_V5,
                 "generated-object ABI word {index} is not fingerprinted"
             );
         }
@@ -1482,13 +1507,13 @@ mod tests {
 
     #[test]
     fn generated_object_link_symbols_embed_fingerprint_and_revision() {
-        let fingerprint = std::format!("{:016x}", GENERATED_OBJECT_ABI_FINGERPRINT_V4);
+        let fingerprint = std::format!("{:016x}", GENERATED_OBJECT_ABI_FINGERPRINT_V5);
         for symbol in [
             GENERATED_OBJECT_ABI_GIL_SYMBOL,
             GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL,
         ] {
             assert!(symbol.contains(&fingerprint), "{symbol}");
-            assert!(symbol.ends_with("_v4"), "{symbol}");
+            assert!(symbol.ends_with("_v5"), "{symbol}");
         }
     }
 

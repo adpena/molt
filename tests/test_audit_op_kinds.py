@@ -814,7 +814,6 @@ def test_d10_projects_full_runtime_return_authority_and_actual_aliases(
         "trace_enter_slot",
         "trace_exit",
         "trace_set_line",
-        "frame_invocation_exit",
     ):
         assert contracts[kind] == "borrowed_object", kind
         assert kind not in d10_audit_result.owned_result_runtime_kinds

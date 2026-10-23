@@ -703,7 +703,7 @@ uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic/exec_
   - `MOLT_DIFF_ROOT=<scratch>/diff`, `MOLT_DIFF_TMPDIR=<scratch>` and `TMPDIR=<scratch>`, where `<scratch>` is `molt.dx.scratch_root`: `$MOLT_EXT_ROOT/tmp`, or a per-checkout folder under the host temp root when that path would fall inside the checkout
   - `UV_CACHE_DIR=$MOLT_EXT_ROOT/.uv-cache`
   - `SCCACHE_DIR=$MOLT_EXT_ROOT/.sccache` and `SCCACHE_CACHE_SIZE=<policy default>`
-  - `MOLT_USE_SCCACHE=1`, `MOLT_DIFF_ALLOW_RUSTC_WRAPPER=1`, and `CARGO_INCREMENTAL=0` for better cross-agent cacheability
+  - `MOLT_USE_SCCACHE=1` and `MOLT_DIFF_ALLOW_RUSTC_WRAPPER=1`; `CARGO_INCREMENTAL` stays unset, so the Cargo profile builds workspace crates incrementally while sccache caches registry crates
 - **Scratch storage and budget**: `MOLT_SCRATCH_STORAGE` selects run scratch
   storage: `disk` (the default), `memory` (Linux `/dev/shm`), or the absolute
   path of a memory-backed directory you mounted, such as a macOS RAM disk.

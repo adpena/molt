@@ -65,7 +65,7 @@ def _emit_backend_pipeline_outputs(
     trusted: bool,
     verbose: bool,
     require_linked: bool,
-    wasm_opt_level: str = "Oz",
+    wasm_opt_level: str | None = "Oz",
     precompile: bool = False,
     snapshot: bool = False,
     profile: BuildProfile = "dev",

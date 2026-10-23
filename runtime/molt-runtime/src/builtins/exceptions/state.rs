@@ -29,10 +29,6 @@ thread_local! {
     /// they re-enter `THREAD_LAST_EXCEPTION`; a slot with its own destructor is
     /// inaccessible while that destructor runs and would abort the thread.
     static THREAD_EXCEPTION_RELEASE: ThreadExceptionRelease = const { ThreadExceptionRelease };
-    /// Inline fast byte for the active execution context. It mirrors the
-    /// thread slot outside async execution and the active task's suspended
-    /// slot while a task is installed on this native thread.
-    pub(crate) static CURRENT_EXCEPTION_PENDING: Cell<bool> = const { Cell::new(false) };
     pub(crate) static EXCEPTION_STACK: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
     pub(crate) static EXCEPTION_STACK_BASELINE: Cell<usize> = const { Cell::new(0) };
     pub(crate) static ACTIVE_EXCEPTION_STACK: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
@@ -41,6 +37,15 @@ thread_local! {
         RefCell::new(HashMap::new());
     pub(crate) static GENERATOR_RAISE: Cell<bool> = const { Cell::new(false) };
     pub(crate) static TASK_RAISE_ACTIVE: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Inline fast byte for the active execution context, in this thread's
+/// record, where compiled code tests it with one load. It mirrors the thread
+/// slot outside async execution and the active task's suspended slot while a
+/// task is installed on this native thread.
+#[inline(always)]
+pub(crate) fn exception_pending_flag() -> &'static Cell<bool> {
+    &crate::state::execution_tls().exception_pending
 }
 
 pub(crate) struct ThreadExceptionState {

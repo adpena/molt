@@ -306,14 +306,9 @@ impl NativeBackendModuleContext {
     pub fn object_dependencies(functions: &[FunctionIR]) -> BTreeSet<String> {
         let mut names: BTreeSet<String> = functions.iter().map(|f| f.name.clone()).collect();
         for function in functions {
-            for op in &function.ops {
-                if crate::tir::op_kinds_generated::simpleir_kind_references_defined_function(
-                    &op.kind,
-                ) && let Some(name) = op.s_value.as_ref()
-                {
-                    names.insert(name.clone());
-                }
-            }
+            molt_tir::passes::visit_function_reference_targets(function, |name| {
+                names.insert(name.to_owned());
+            });
         }
         names.extend(
             molt_tir::trampolines::CallableMetadata::from_functions(functions)
@@ -437,6 +432,18 @@ impl NativeBackendModuleContext {
     pub(in crate::native_backend::simple_backend) fn from_functions(
         functions: &mut Vec<FunctionIR>,
     ) -> Self {
+        Self::from_functions_with_carrier_cache(
+            functions,
+            crate::tir::cache::CompilationCache::open_backend_namespace().as_mut(),
+        )
+    }
+
+    /// `carrier_cache` serves unchanged bodies' linkage carriers by content
+    /// (`linkage_carriers`); `None` computes every row.
+    pub(in crate::native_backend::simple_backend) fn from_functions_with_carrier_cache(
+        functions: &mut Vec<FunctionIR>,
+        carrier_cache: Option<&mut crate::tir::cache::CompilationCache>,
+    ) -> Self {
         // Capture source task/closure facts without constructing unbounded TIR.
         let source_callables = molt_tir::trampolines::CallableMetadata::from_functions(functions);
         let mut ir = SimpleIR {
@@ -461,29 +468,28 @@ impl NativeBackendModuleContext {
         // Freeze the source machine ABI before partitioning. These bodies have
         // not completed worker lifetime finalization and cannot certify leaves.
         // Final callback effects are derived only by the codegen worker.
-        let tir_functions: Vec<crate::tir::TirFunction> = functions
+        let defined: Vec<&FunctionIR> = functions
             .iter()
             .filter(|function| !function.is_extern)
-            .map(crate::tir::lower_from_simple::lower_to_tir)
             .collect();
-        let function_linkage_abis = functions
+        let carriers = super::linkage_carriers::linkage_carriers(&defined, carrier_cache);
+        let reused_carriers = carriers.reused;
+        let function_linkage_abis = defined
             .iter()
-            .filter(|function| !function.is_extern)
-            .zip(&tir_functions)
-            .map(|(function, tir)| {
+            .zip(carriers.rows)
+            .map(|(function, carriers)| {
                 let source_signature = function
                     .function_signature()
                     .unwrap_or_else(|error| panic!("invalid linkage ABI source: {error}"));
-                let param_types = crate::representation_plan::native_linkage_param_types(tir);
                 let return_type = source_signature
                     .returns_value
-                    .then(|| tir.return_type.clone());
+                    .then_some(carriers.return_type);
                 (
                     function.name.clone(),
                     NativeFunctionLinkageAbi {
                         source_signature,
                         parameter_custody: function.parameter_custody.clone(),
-                        param_types,
+                        param_types: carriers.param_types,
                         return_type,
                     },
                 )
@@ -513,8 +519,9 @@ impl NativeBackendModuleContext {
                 .map(|abi| abi.param_types.len() + usize::from(abi.return_type.is_some()))
                 .sum::<usize>();
             eprintln!(
-                "MOLT_BACKEND_TIMING: froze {} native linkage ABI rows / {} carriers from {} functions in {:.2?}",
+                "MOLT_BACKEND_TIMING: froze {} native linkage ABI rows ({} reused) / {} carriers from {} functions in {:.2?}",
                 context.function_linkage_abis.len(),
+                reused_carriers,
                 carrier_count,
                 functions.len(),
                 started.elapsed(),

@@ -1122,12 +1122,8 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "frame_locals_set",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::FrameInvocationEnter,
-        name: "frame_invocation_enter",
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::FrameInvocationExit,
-        name: "frame_invocation_exit",
+        import: WasmRuntimeImport::ThreadRecord,
+        name: "thread_record",
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TraceEnterSlot,
@@ -1246,12 +1242,16 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "task_register_execution",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::RecursionGuardEnter,
-        name: "recursion_guard_enter",
+        import: WasmRuntimeImport::RecursionEnterFast,
+        name: "recursion_enter_fast",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::RecursionGuardExit,
-        name: "recursion_guard_exit",
+        import: WasmRuntimeImport::RecursionExitFast,
+        name: "recursion_exit_fast",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::RaiseRecursionError,
+        name: "raise_recursion_error",
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::SetIntrinsicManifest,
@@ -3678,14 +3678,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "weakref_count",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::WeakrefFinalizeTrack,
-        name: "weakref_finalize_track",
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::WeakrefFinalizeUntrack,
-        name: "weakref_finalize_untrack",
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::WeakrefFindNocallback,
         name: "weakref_find_nocallback",
     },
@@ -5292,10 +5284,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioRunningLoopSet,
         name: "asyncio_running_loop_set",
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::AsyncioEventLoopGet,
-        name: "asyncio_event_loop_get",
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioEventLoopGetCurrent,
@@ -10726,18 +10714,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "sys_addaudithook",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::SysExit,
-        name: "sys_exit",
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::SysDisplayhookWrite,
-        name: "sys_displayhook_write",
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::SysExcepthookWrite,
-        name: "sys_excepthook_write",
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::OsMakedirs,
         name: "os_makedirs",
     },
@@ -11606,10 +11582,8 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_code_slots_init" => Some(WasmRuntimeImport::CodeSlotsInit),
         "frame_locals_set" => Some(WasmRuntimeImport::FrameLocalsSet),
         "molt_frame_locals_set" => Some(WasmRuntimeImport::FrameLocalsSet),
-        "frame_invocation_enter" => Some(WasmRuntimeImport::FrameInvocationEnter),
-        "molt_frame_invocation_enter" => Some(WasmRuntimeImport::FrameInvocationEnter),
-        "frame_invocation_exit" => Some(WasmRuntimeImport::FrameInvocationExit),
-        "molt_frame_invocation_exit" => Some(WasmRuntimeImport::FrameInvocationExit),
+        "thread_record" => Some(WasmRuntimeImport::ThreadRecord),
+        "molt_thread_record" => Some(WasmRuntimeImport::ThreadRecord),
         "trace_enter_slot" => Some(WasmRuntimeImport::TraceEnterSlot),
         "molt_trace_enter_slot" => Some(WasmRuntimeImport::TraceEnterSlot),
         "trace_exit" => Some(WasmRuntimeImport::TraceExit),
@@ -11668,10 +11642,12 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_task_new" => Some(WasmRuntimeImport::TaskNew),
         "task_register_execution" => Some(WasmRuntimeImport::TaskRegisterExecution),
         "molt_task_register_execution" => Some(WasmRuntimeImport::TaskRegisterExecution),
-        "recursion_guard_enter" => Some(WasmRuntimeImport::RecursionGuardEnter),
-        "molt_recursion_guard_enter" => Some(WasmRuntimeImport::RecursionGuardEnter),
-        "recursion_guard_exit" => Some(WasmRuntimeImport::RecursionGuardExit),
-        "molt_recursion_guard_exit" => Some(WasmRuntimeImport::RecursionGuardExit),
+        "recursion_enter_fast" => Some(WasmRuntimeImport::RecursionEnterFast),
+        "molt_recursion_enter_fast" => Some(WasmRuntimeImport::RecursionEnterFast),
+        "recursion_exit_fast" => Some(WasmRuntimeImport::RecursionExitFast),
+        "molt_recursion_exit_fast" => Some(WasmRuntimeImport::RecursionExitFast),
+        "raise_recursion_error" => Some(WasmRuntimeImport::RaiseRecursionError),
+        "molt_raise_recursion_error" => Some(WasmRuntimeImport::RaiseRecursionError),
         "set_intrinsic_manifest" => Some(WasmRuntimeImport::SetIntrinsicManifest),
         "molt_set_intrinsic_manifest" => Some(WasmRuntimeImport::SetIntrinsicManifest),
         "del_attr_generic" => Some(WasmRuntimeImport::DelAttrGeneric),
@@ -13098,10 +13074,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_weakref_callback_get" => Some(WasmRuntimeImport::WeakrefCallbackGet),
         "weakref_count" => Some(WasmRuntimeImport::WeakrefCount),
         "molt_weakref_count" => Some(WasmRuntimeImport::WeakrefCount),
-        "weakref_finalize_track" => Some(WasmRuntimeImport::WeakrefFinalizeTrack),
-        "molt_weakref_finalize_track" => Some(WasmRuntimeImport::WeakrefFinalizeTrack),
-        "weakref_finalize_untrack" => Some(WasmRuntimeImport::WeakrefFinalizeUntrack),
-        "molt_weakref_finalize_untrack" => Some(WasmRuntimeImport::WeakrefFinalizeUntrack),
         "weakref_find_nocallback" => Some(WasmRuntimeImport::WeakrefFindNocallback),
         "molt_weakref_find_nocallback" => Some(WasmRuntimeImport::WeakrefFindNocallback),
         "weakref_get" => Some(WasmRuntimeImport::WeakrefGet),
@@ -14154,8 +14126,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_asyncio_running_loop_get" => Some(WasmRuntimeImport::AsyncioRunningLoopGet),
         "asyncio_running_loop_set" => Some(WasmRuntimeImport::AsyncioRunningLoopSet),
         "molt_asyncio_running_loop_set" => Some(WasmRuntimeImport::AsyncioRunningLoopSet),
-        "asyncio_event_loop_get" => Some(WasmRuntimeImport::AsyncioEventLoopGet),
-        "molt_asyncio_event_loop_get" => Some(WasmRuntimeImport::AsyncioEventLoopGet),
         "asyncio_event_loop_get_current" => Some(WasmRuntimeImport::AsyncioEventLoopGetCurrent),
         "molt_asyncio_event_loop_get_current" => {
             Some(WasmRuntimeImport::AsyncioEventLoopGetCurrent)
@@ -17090,12 +17060,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_sys_call_tracing_validate" => Some(WasmRuntimeImport::SysCallTracingValidate),
         "sys_addaudithook" => Some(WasmRuntimeImport::SysAddaudithook),
         "molt_sys_addaudithook" => Some(WasmRuntimeImport::SysAddaudithook),
-        "sys_exit" => Some(WasmRuntimeImport::SysExit),
-        "molt_sys_exit" => Some(WasmRuntimeImport::SysExit),
-        "sys_displayhook_write" => Some(WasmRuntimeImport::SysDisplayhookWrite),
-        "molt_sys_displayhook_write" => Some(WasmRuntimeImport::SysDisplayhookWrite),
-        "sys_excepthook_write" => Some(WasmRuntimeImport::SysExcepthookWrite),
-        "molt_sys_excepthook_write" => Some(WasmRuntimeImport::SysExcepthookWrite),
         "os_makedirs" => Some(WasmRuntimeImport::OsMakedirs),
         "molt_os_makedirs" => Some(WasmRuntimeImport::OsMakedirs),
         "sys_path" => Some(WasmRuntimeImport::SysPath),

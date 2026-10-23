@@ -21,7 +21,7 @@ tests/differential/stdlib/asyncio_asyncgen_loop_lifecycle.py
 tests/differential/stdlib/asyncio_barrier_basic.py
 tests/differential/stdlib/asyncio_basic.py
 tests/differential/stdlib/asyncio_bounded_semaphore_overrelease.py
-tests/differential/stdlib/asyncio_call_at_fifo_tiebreak.py
+tests/differential/stdlib/asyncio_call_at_equal_deadline.py
 tests/differential/stdlib/asyncio_call_later_call_at_context_closed.py
 tests/differential/stdlib/asyncio_call_later_cancel.py
 tests/differential/stdlib/asyncio_call_later_fifo_tiebreak.py
@@ -1832,11 +1832,13 @@ tests/differential/stdlib/sys_basic.py
 tests/differential/stdlib/sys_bootstrap_env.py
 tests/differential/stdlib/sys_encoding_basic.py
 tests/differential/stdlib/sys_exc_info_nested.py
+tests/differential/stdlib/sys_exit_code_and_args.py
 tests/differential/stdlib/sys_flags_intrinsic.py
 tests/differential/stdlib/sys_float_info.py
 tests/differential/stdlib/sys_getframe_fields.py
 tests/differential/stdlib/sys_int_info_hash_info.py
 tests/differential/stdlib/sys_intern_getsizeof.py
+tests/differential/stdlib/sys_is_finalizing_exit_phases.py
 tests/differential/stdlib/sys_maxsize_byteorder.py
 tests/differential/stdlib/sys_metadata_intrinsics.py
 tests/differential/stdlib/sys_modules_main.py
@@ -2008,6 +2010,7 @@ tests/differential/stdlib/weakref_finalize_atexit_order_finalize_first.py
 tests/differential/stdlib/weakref_finalize_atexit_order_register_first.py
 tests/differential/stdlib/weakref_finalize_atexit_unregister_rewrite.py
 tests/differential/stdlib/weakref_finalize_detach_peek_edges.py
+tests/differential/stdlib/weakref_finalize_exit_protocol.py
 tests/differential/stdlib/weakref_getrefs_callbacks.py
 tests/differential/stdlib/weakref_ref_constructor_identity.py
 tests/differential/stdlib/weakref_weakcontainers_methods.py

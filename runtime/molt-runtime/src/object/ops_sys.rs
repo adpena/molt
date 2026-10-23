@@ -2990,28 +2990,10 @@ pub extern "C" fn molt_traceback_extract_tb(tb_bits: u64, limit_bits: u64) -> u6
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_recursion_guard_enter() -> i64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        if recursion_guard_enter() {
-            1
-        } else {
-            raise_exception::<i64>(_py, "RecursionError", "maximum recursion depth exceeded")
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_recursion_guard_exit() {
-    crate::with_gil_entry_nopanic!(_py, {
-        recursion_guard_exit();
-    })
-}
-
-/// Lightweight recursion guard for direct calls to known functions.
-/// Shares thread depth and interpreter policy with every runtime call guard.
-/// Returns 1 on success, 0 if the recursion limit is exceeded (caller must
-/// handle the error).
+/// The recursion charge of a direct call from compiled code, the same thread
+/// depth and limit every runtime call guard charges, taken without entering
+/// the object runtime. Returns 1 on success, 0 when the limit refuses the
+/// call; the caller then raises through `molt_raise_recursion_error`.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_recursion_enter_fast() -> i64 {
     if recursion_guard_enter() { 1 } else { 0 }

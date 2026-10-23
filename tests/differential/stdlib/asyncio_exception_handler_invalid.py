@@ -10,7 +10,10 @@ try:
         try:
             loop.set_exception_handler(value)
         except Exception as exc:
-            print(type(exc).__name__, str(exc))
+            # The message ends with the handler's repr, which for object()
+            # carries an address; compare it rather than print it.
+            expected = f"A callable object or None is expected, got {value!r}"
+            print(type(exc).__name__, str(exc) == expected)
 finally:
     loop.close()
     asyncio.set_event_loop(None)

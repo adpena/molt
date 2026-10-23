@@ -5988,6 +5988,10 @@ kind = "STATE_YIELD"
 opcode = "StateYield"
 
 [[frontend_check_exception_skip]]
+kind = "STATE_SET"
+opcode = "StateSet"
+
+[[frontend_check_exception_skip]]
 kind = "CONST"
 opcode = "ConstInt"
 

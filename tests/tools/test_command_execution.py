@@ -597,7 +597,7 @@ def test_owned_cargo_process_normalizes_wrapper_incremental_conflict(
 
     kwargs = captured["kwargs"]
     assert isinstance(kwargs, dict)
-    assert kwargs["env"]["CARGO_INCREMENTAL"] == "0"
+    assert "CARGO_INCREMENTAL" not in kwargs["env"]
 
 
 def test_executor_loads_process_guard_without_repo_package_importable(
@@ -625,8 +625,8 @@ def test_executor_loads_process_guard_without_repo_package_importable(
         "normalized, applied = authority.cargo_subprocess_environment("
         "['cargo', '--version'], "
         "{'RUSTC_WORKSPACE_WRAPPER': 'sccache', 'CARGO_INCREMENTAL': '1'})\n"
-        "assert normalized['CARGO_INCREMENTAL'] == '0'\n"
-        "assert applied == ('sccache-disables-incremental',)\n"
+        "assert 'CARGO_INCREMENTAL' not in normalized\n"
+        "assert applied == ('sccache-profile-incremental',)\n"
         "assert authority.cargo_subprocess_environment.__module__.startswith("
         "authority.__package__)\n",
         encoding="utf-8",

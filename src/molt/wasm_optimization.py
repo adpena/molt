@@ -4,8 +4,15 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 WASM_OPT_LEVELS = ("O1", "O2", "O3", "O4", "Os", "Oz")
-WASM_OPT_DEV_DEFAULT = "O1"
+# Dev builds run no post-link optimizer, as Go and Cargo debug builds run none.
+# For a 91-line asyncio program, `-O1 -g` over the 75 MB linked module cost 267
+# CPU seconds, 54 s and 4.2 GB peak RSS to save 10.4 MB; Node then ran the
+# smaller module in 2.1-2.3 s against 4.0-4.6 s (2026-10-23, WASM optimization
+# plan section 4.4). An explicit `--wasm-opt-level` selects a level for dev.
+WASM_OPT_DEV_DEFAULT: str | None = None
 WASM_OPT_RELEASE_DEFAULT = "Oz"
+# The one level that runs a single pass rather than to a fixed point.
+_SINGLE_PASS_LEVEL = "O1"
 
 # Explicit feature set instead of --all-features. Binaryen's
 # --enable-custom-descriptors and GC rec-group encodings are not accepted by
@@ -79,7 +86,7 @@ def wasm_opt_converges(level: str) -> bool:
 
     if level not in WASM_OPT_LEVELS:
         raise ValueError(f"unsupported wasm-opt level: {level!r}")
-    return level != WASM_OPT_DEV_DEFAULT
+    return level != _SINGLE_PASS_LEVEL
 
 
 def wasm_opt_pipeline(

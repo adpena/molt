@@ -10,7 +10,16 @@ the existing native archive validator/assembler and archive publisher.
 `NativeBatchObjectJob` carries its module context inline. `close_dependencies`
 uses `NativeBackendModuleContext::object_dependencies` to select all definitions
 and the generated defined-function reference edges, including indirect calls,
-name-taking constructors and task targets. Canonical callable metadata adds
+name-taking constructors and task targets. DFE, native object dependencies and
+provider closure share `visit_function_reference_targets`: generated opcode roles plus
+compiler-owned GPU descriptor body identities. In particular async targets and
+GPU bodies cannot pass provider closure while depending on application code;
+ordinary guest strings remain data. The visitor borrows ordinary target names;
+closure checking allocates only for violations, and DFE filters external names
+before cloning. No per-function temporary reference set is constructed for
+object projection or closure checking. Descriptor parsing runs only in functions
+that publish GPU metadata and reuses the existing descriptor authority.
+Canonical callable metadata adds
 escaped callable targets; an application job also includes its resolver and
 module-registry symbols. It retains exact external/import decisions for those
 names. There is no body-only key and no whole-program context path to consult.
@@ -44,6 +53,32 @@ builds bind the host triple, CPU and features used by its target-machine owner.
 Transport paths and timestamps are never content identity. The existing CLI
 runtime-codegen binding still owns file verification and worker environment
 inheritance; constituent reuse does not relax or replace that admission.
+
+## Linkage carriers
+
+Before partitioning, the backend freezes one native linkage ABI row per
+defined function (`NativeBackendModuleContext`). The source signature and
+parameter custody come from the `FunctionIR`. The machine carriers (parameter
+carriers and the inferred return type) come from the function's TIR lowering
+and its value-range and representation facts, so they are a pure function of
+one `FunctionIR` contract and the backend code.
+
+The carriers live in the backend binary's TIR cache namespace
+(`molt-passes::tir::cache`), keyed by the function's contract digest
+(`linkage_carriers.rs`). An unchanged body costs one digest and one verified
+read. A changed body has a new key; its row is computed on the request's
+compiler pool and published. Compilation diagnostics bypass this reuse, as they
+bypass every other backend cache. Go's build cache serves an unchanged package
+by its action ID in the same way.
+
+Before this, every build that reached the backend lowered every defined body,
+the unchanged stdlib included: 5.6 s on one thread for a 91-line asyncio
+program (3,612 functions, 3,592 of them stdlib). Reuse takes 0.24 s. In an
+interleaved comparison of the same edit-rebuild (macOS arm64, load 9-11,
+three builds each), build CPU fell from 22.5 s to 17.2 s and wall time from
+27.8 s to 21.7 s (medians). Computed and reused rows link byte-identical
+binaries, and computed rows hit all 171 constituents published from reused
+rows.
 
 ## Stable bounded batches
 

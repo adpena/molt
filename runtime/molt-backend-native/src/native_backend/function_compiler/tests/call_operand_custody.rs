@@ -474,17 +474,13 @@ fn refs(word:u64)->Option<&'static AtomicU64>{match word{0x101=>Some(&FIRST),0x1
 #[no_mangle] pub extern "C" fn molt_exception_pending_fast()->u64{u64::from(ERROR.load(SeqCst)!=0)}
 #[no_mangle] pub extern "C" fn molt_exception_pending()->u64{molt_exception_pending_fast()}
 #[no_mangle] pub extern "C" fn molt_async_work_poll_and_exception_pending()->u64{molt_exception_pending_fast()}
-#[no_mangle] pub extern "C" fn molt_exception_pending_flag_ptr()->u64{core::ptr::addr_of!(PENDING) as u64}
+#[no_mangle] pub extern "C" fn molt_thread_record()->u64{core::ptr::addr_of!(PENDING) as u64}
 #[no_mangle] pub extern "C" fn molt_is_truthy(word:u64)->u64{assert!(word==TRUE||word==FALSE);u64::from(word==TRUE)}
 #[no_mangle] pub extern "C" fn molt_recursion_enter_fast()->u64{1-GUARD_FAIL.load(SeqCst)}
 #[no_mangle] pub extern "C" fn molt_recursion_exit_fast(){}
 #[no_mangle] pub extern "C" fn molt_raise_recursion_error()->u64{ERROR.store(0xc000,SeqCst);unsafe{PENDING=1;}NONE}
 #[no_mangle] pub extern "C" fn molt_function_direct_call_eligible(_:u64,_:u64,_:u64)->u64{0}
 #[no_mangle] pub extern "C" fn molt_handle_resolve(_:u64)->u64{panic!("ineligible callable must not be resolved")}
-#[no_mangle] pub extern "C" fn molt_recursion_guard_enter()->u64{1}
-#[no_mangle] pub extern "C" fn molt_recursion_guard_exit(){}
-#[no_mangle] pub extern "C" fn molt_frame_invocation_enter(_:u64)->u64{1}
-#[no_mangle] pub extern "C" fn molt_frame_invocation_exit(_:u64)->u64{NONE}
 unsafe fn words<'a>(p:u64,n:u64)->&'a[u64]{if n==0{&[]}else{unsafe{core::slice::from_raw_parts(p as *const u64,n as usize)}}}
 fn release(words:&[u64]){for &word in words{molt_dec_ref_obj(word);}}
 fn result()->u64{CALLS.fetch_add(1,SeqCst);assert_eq!(RESULT.swap(1,SeqCst),0);0x200}
