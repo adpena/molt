@@ -811,8 +811,13 @@ def _render_resolver_modules(
         )
         mod_lines.append("#[allow(dead_code, non_upper_case_globals)]\n")
         mod_lines.append("mod declared_absent {\n")
+        # A marker type, not `()`: a probe's `let _ =` then binds no unit
+        # value (clippy::let_unit_value).
+        mod_lines.append("    pub(super) struct DeclaredAbsent;\n")
         for sym in sorted(declared_absent):
-            mod_lines.append(f"    pub(super) const {sym}: () = ();\n")
+            mod_lines.append(
+                f"    pub(super) const {sym}: DeclaredAbsent = DeclaredAbsent;\n"
+            )
         mod_lines.append("}\n")
     sources[OUT_RS_RESOLVERS_DIR / "mod.rs"] = "".join(mod_lines)
     for index_path, modules in leaf_indexes.items():
