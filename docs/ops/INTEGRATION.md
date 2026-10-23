@@ -234,7 +234,10 @@ is lost. `--candidate-controller` runs the calling checkout's own driver. A
 start and a retirement of one slug never run together: each holds the
 slug's lock (`<git-common-dir>/molt/lane-start/<slug>.lock`), a start from
 its checks through provisioning and a retirement for its whole run, and the
-second refuses at once. A start that stops before its lane's record (a failed
+second refuses at once. The landing runner's own retirement of a landed lane
+waits up to 60 s for the lock (`LANDED_RETIREMENT_LOCK_WAIT_S`), so a
+start's checks or an operator's `lane retire` do not turn the landing into
+`landed_retirement_failed`. A start that stops before its lane's record (a failed
 `git worktree add`, a failed record, an interrupt) undoes what it created:
 the worktree while Git finds it clean, then the branch once no worktree holds
 it and while it still points at its base. A path that exists but is no
@@ -263,9 +266,11 @@ worktree. A slug is 1 to 64 lower-case letters, digits, `.`, `_` or `-`.
   (`molt.checkout_provisioning`): the uv environment `<lane>/.venv`, the Acorn
   tree, and the managed Git hooks. An inherited `UV_PROJECT_ENVIRONMENT`
   names the caller's environment, so provisioning drops it. It refuses an
-  existing branch, an existing path and an active record, and a branch with
-  no record (a start that stopped, or a branch made by hand) with the Git
-  commands that remove it. A provisioning failure keeps the lane and prints
+  existing branch, an existing path and an active record. For a branch with
+  no record (a start that stopped, or a branch made by hand) or a closed
+  record, it names the Git commands that remove the branch and the
+  worktree that holds it; `lane retire` of a branch with no record names
+  the same commands. A provisioning failure keeps the lane and prints
   the command that finishes it.
 - **`lane retire <slug>`** fetches, then accepts the lane only when it is
   landed. *Landed* is one predicate, `molt_dev_change_ids.landing_representation`:

@@ -827,6 +827,7 @@ def _after_landing(
                     retire,
                     expected_tip=request.head,
                     expected_worktree=Path(request.worktree),
+                    lock_wait_s=molt_dev_lanes.LANDED_RETIREMENT_LOCK_WAIT_S,
                 )
                 if rc != EXIT_OK:
                     raise DriverError(
