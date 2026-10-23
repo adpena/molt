@@ -43,6 +43,31 @@ this page explains them and never restates their content.
   with the reviewed declaration. A snapshot update cannot bless a stale or
   undeclared schema; producer, declaration and generated surface must agree.
 
+## Opt-in linker input capture
+
+`molt build --capture-link-inputs` retains development/admission metadata: the
+linker's input buffers and a content observation published with the output.
+It defaults to off and forces a fresh final link, including a full reproducer
+write proportional to the consumed inputs. Ordinary builds do not create this
+capture.
+
+The implemented producer requires Cranelift output with retained daemon emission
+origin. Native capture requires an ELF final link through LLD; WASM capture
+requires `--linked` and WASM LLD. JIT, factgraph, object-only, transpiler, MLIR and
+LLVM capture are refused. Missing emission origin, including unsupported
+one-shot or persisted-cache origin, is also refused rather than reconstructed
+from the currently selected compiler. These capture constraints do not change
+the release-target or Python-version matrices.
+
+The release-consumer receipt requires retained compilation evidence, and its
+receiver rechecks the raw linker inputs, output publication and original emission
+identity. Capture alone does not verify the compiler's loaded process image,
+authenticate a kernel receipt, establish performance admission or satisfy H0.
+It never sets `compiled_with_verified`. The
+[toolchain contract](areas/tooling/0001-toolchains.md#explicit-final-link-input-capture)
+owns the evidence joins and remaining admission obligations; recording this
+option in the stable build surface does not certify those obligations.
+
 ## Tiers
 
 | Tier | Promise |
