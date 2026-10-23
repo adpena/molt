@@ -1,3 +1,4 @@
+# MOLT_ENV: MOLT_CAPABILITIES=net
 """Purpose: ssl=False stays on intrinsic path without NotImplemented fallback errors."""
 
 import asyncio

@@ -1,3 +1,4 @@
+# MOLT_ENV: MOLT_CAPABILITIES=net
 """Purpose: asyncio server creation with ssl=False avoids NotImplemented fallback lanes."""
 
 import asyncio
