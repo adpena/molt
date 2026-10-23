@@ -24,7 +24,7 @@ extern "C" fn inc_ref(_: u64) {}
 extern "C" fn exception_pending_fast() -> u64 {
     0
 }
-extern "C" fn exception_pending_flag_ptr() -> u64 {
+extern "C" fn thread_record() -> u64 {
     std::ptr::addr_of!(EXCEPTION_PENDING) as u64
 }
 extern "C" fn int_from_i64(value: i64) -> u64 {
@@ -52,8 +52,8 @@ fn provider() -> BTreeMap<&'static str, usize> {
             exception_pending_fast as extern "C" fn() -> u64 as usize,
         ),
         (
-            "molt_exception_pending_flag_ptr",
-            exception_pending_flag_ptr as extern "C" fn() -> u64 as usize,
+            "molt_thread_record",
+            thread_record as extern "C" fn() -> u64 as usize,
         ),
         (
             "molt_int_from_i64",

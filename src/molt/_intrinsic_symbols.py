@@ -1294,8 +1294,6 @@ INTRINSIC_SIGNATURES: dict[str, tuple[str, int]] = {
     "molt_sys_copyright": ("molt_sys_copyright", 0),
     "molt_trace_enter_slot": ("molt_trace_enter_slot", 1),
     "molt_trace_exit": ("molt_trace_exit", 0),
-    "molt_frame_invocation_enter": ("molt_frame_invocation_enter", 1),
-    "molt_frame_invocation_exit": ("molt_frame_invocation_exit", 1),
     "molt_trace_set_line": ("molt_trace_set_line", 1),
     "molt_operator_abs": ("molt_operator_abs", 1),
     "molt_operator_add": ("molt_operator_add", 2),

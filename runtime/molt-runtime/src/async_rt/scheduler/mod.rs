@@ -1394,7 +1394,7 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
                 .unwrap()
                 .get_mut(&PtrSlot(task_ptr))
                 .and_then(Option::take);
-            crate::CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(false));
+            crate::builtins::exceptions::exception_pending_flag().set(false);
             trace_step("task_exc_slot_taken");
             let pending_bits = if let Some(exc_slot) = task_exc_slot {
                 MoltObject::from_ptr(exc_slot.0).bits()

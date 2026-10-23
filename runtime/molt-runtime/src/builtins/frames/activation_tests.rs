@@ -218,7 +218,7 @@ fn created_and_suspended_generator_locals_follow_the_registered_layout() {
             assert_eq!(lookup(py, live, x), Some(int(19)));
             assert_eq!(lookup(py, live, body), None);
             dec_ref_bits(py, live);
-            assert!(take_invocation_namespace(slot).is_none());
+            assert_eq!(take_invocation_namespace(py, slot), Ok(None));
             let payload = frame_stack_trace_payload_bits(py, None, false).unwrap();
             drop(scope);
             payload
@@ -442,14 +442,16 @@ fn live_poll_frame_owns_locals_across_partial_cell_publication_and_terminal_unwi
                         .fetch_or_flags(crate::HEADER_FLAG_GEN_STARTED)
                 };
                 let baseline = refs(task);
-                let guard = FrameInvocationGuard::for_activation_namespace(
-                    py, code, globals, builtins, task,
-                )
-                .unwrap();
-                assert_eq!(refs(task), baseline + 1);
+                let guard = FrameInvocationGuard::for_activation(py, ptr);
+                assert_eq!(refs(task), baseline, "a handoff borrows its activation");
                 crate::molt_trace_enter_slot(slot);
                 assert_eq!(frame_stack_active_activation_bits(), task);
-                assert!(take_invocation_namespace(slot).is_none());
+                assert_eq!(
+                    refs(task),
+                    baseline + 1,
+                    "the entered frame owns its activation"
+                );
+                assert_eq!(take_invocation_namespace(py, slot), Ok(None));
                 let before = unsafe { activation_locals_bits(py, ptr) }.unwrap();
                 assert_eq!(lookup(py, before, x), Some(raw_cell));
                 assert_eq!(lookup(py, before, body), None);

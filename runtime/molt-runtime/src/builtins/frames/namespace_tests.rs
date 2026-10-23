@@ -379,7 +379,7 @@ fn compiled_slots_hold_atomic_owned_pairs_and_release_after_detachment() {
 }
 
 #[test]
-fn invocation_handoff_is_keyed_nested_single_use_and_balanced_when_unconsumed() {
+fn invocation_handoff_is_keyed_nested_single_use_and_restored_when_unconsumed() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         let (first_ptr, first_code) = super::tests::alloc_test_code(py);
@@ -388,51 +388,57 @@ fn invocation_handoff_is_keyed_nested_single_use_and_balanced_when_unconsumed() 
             code_set_frame_slot_id(first_ptr, 0);
             code_set_frame_slot_id(second_ptr, 1);
         }
-        bind_code_target(py, first_code, 101);
-        bind_code_target(py, second_code, 102);
         let first = dict(py);
         let second = dict(py);
-        let outer =
-            FrameInvocationGuard::for_suspended_namespace(py, first_code, first, first).unwrap();
-        assert!(take_invocation_namespace(1).is_none());
+        let first_fn = super::tests::alloc_invoked_function(py, first_code, 101, first);
+        let second_fn = super::tests::alloc_invoked_function(py, second_code, 102, second);
+        let second_builtins = unsafe { function_builtins_bits(second_fn) };
+        let pending = || crate::state::execution_tls().pending_invocation.get();
+        let outer = FrameInvocationGuard::for_function(py, first_fn);
+        assert_eq!(take_invocation_namespace(py, 1), Ok(None));
         {
-            let inner =
-                FrameInvocationGuard::for_suspended_namespace(py, second_code, second, second)
-                    .unwrap();
+            let inner = FrameInvocationGuard::for_function(py, second_fn);
             assert!(acquire_pending_invocation_context(py, 101).is_none());
             let captured = acquire_pending_invocation_context(py, 102).unwrap();
-            assert_eq!(captured, [second, second, second_code]);
-            assert_eq!(refs(second), 5);
+            assert_eq!(captured, [second, second_builtins, second_code]);
+            assert_eq!(refs(second), 3, "caller, function and capture");
             for bits in captured {
                 dec_ref_bits(py, bits);
             }
-            assert!(take_invocation_namespace(0).is_none());
-            let [globals, builtins, code, activation] = take_invocation_namespace(1).unwrap();
+            assert_eq!(take_invocation_namespace(py, 0), Ok(None));
+            let [globals, builtins, code, activation] =
+                take_invocation_namespace(py, 1).unwrap().unwrap();
             assert_eq!(activation, 0);
-            assert_eq!([globals, builtins, code], [second, second, second_code]);
+            assert_eq!(
+                [globals, builtins, code],
+                [second, second_builtins, second_code]
+            );
             dec_ref_bits(py, globals);
             dec_ref_bits(py, builtins);
             dec_ref_bits(py, code);
-            assert!(take_invocation_namespace(1).is_none());
+            assert_eq!(take_invocation_namespace(py, 1), Ok(None));
             assert!(acquire_pending_invocation_context(py, 102).is_none());
             drop(inner);
         }
-        let token = outer.into_token();
-        assert_eq!(refs(first), 3);
-        FrameInvocationGuard::exit_token(py, token);
-        assert_eq!(refs(first), 1);
-        let consumed =
-            FrameInvocationGuard::for_suspended_namespace(py, first_code, first, second).unwrap();
-        let [globals, builtins, code, activation] = take_invocation_namespace(0).unwrap();
-        assert!(
-            take_invocation_namespace(0).is_none(),
+        // The inner call's return restores the outer handoff, untaken.
+        assert_eq!(pending(), MoltObject::from_ptr(first_fn).bits());
+        let [globals, builtins, code, activation] =
+            take_invocation_namespace(py, 0).unwrap().unwrap();
+        assert_eq!(
+            take_invocation_namespace(py, 0),
+            Ok(None),
             "a recursive symbol entry cannot consume twice"
         );
-        assert_eq!(activation, 0);
-        drop(consumed);
+        assert_eq!([globals, code, activation], [first, first_code, 0]);
         dec_ref_bits(py, globals);
         dec_ref_bits(py, builtins);
         dec_ref_bits(py, code);
+        drop(outer);
+        assert_eq!(pending(), 0);
+        // A handoff is borrowed: only the callers and the functions own edges.
+        for function in [first_fn, second_fn] {
+            dec_ref_bits(py, MoltObject::from_ptr(function).bits());
+        }
         for bits in [first_code, second_code, first, second] {
             assert_eq!(refs(bits), 1);
             dec_ref_bits(py, bits);
@@ -480,10 +486,11 @@ fn object_and_typed_invocation_share_one_frame_and_preserve_rebound_namespace() 
                     crate::molt_guarded_call_obj(address, std::ptr::null(), 0, callable)
                 },
                 _ => {
-                    let token = crate::molt_frame_invocation_enter(callable);
-                    assert_ne!(token, 0);
+                    // A compiled direct call: the caller hands the callee over
+                    // through the thread record around the entry call.
+                    let invocation = FrameInvocationGuard::for_callable(py, callable);
                     let result = namespace_probe();
-                    crate::molt_frame_invocation_exit(token);
+                    drop(invocation);
                     result
                 }
             };
@@ -534,10 +541,9 @@ fn function_type_code_slot_and_invocation_preserve_dict_subclass_identity() {
         assert!(obj_from_bits(set).is_none());
         assert!(!crate::exception_pending(py));
 
-        let token = crate::molt_frame_invocation_enter(callable);
-        assert_ne!(token, 0);
+        let invocation = FrameInvocationGuard::for_callable(py, callable);
         let observed = namespace_probe();
-        crate::molt_frame_invocation_exit(token);
+        drop(invocation);
         assert_eq!(observed, globals);
         assert_eq!(
             unsafe { crate::object_class_bits(obj_from_bits(observed).as_ptr().unwrap()) },
@@ -813,11 +819,11 @@ fn invocation_retains_exact_code_when_a_later_definition_replaces_the_slot() {
     crate::with_gil_entry_nopanic!(py, {
         let (_, original) = super::tests::alloc_test_code(py);
         let (_, replacement) = super::tests::alloc_test_code(py);
-        bind_code_target(py, original, 103);
         bind_code_target(py, replacement, 103);
         let globals = dict(py);
         crate::molt_code_slot_set(0, original, globals);
-        let invocation = FrameInvocationGuard::for_namespace(py, original, globals).unwrap();
+        let function = super::tests::alloc_invoked_function(py, original, 103, globals);
+        let invocation = FrameInvocationGuard::for_function(py, function);
         crate::molt_code_slot_set(0, replacement, globals);
         let pending = acquire_pending_invocation_context(py, 103).unwrap();
         assert_eq!(pending[2], original);
@@ -833,11 +839,21 @@ fn invocation_retains_exact_code_when_a_later_definition_replaces_the_slot() {
         );
         crate::molt_trace_exit();
         drop(invocation);
+        dec_ref_bits(py, MoltObject::from_ptr(function).bits());
         assert_eq!(refs(original), 1);
         for bits in [original, replacement, globals] {
             dec_ref_bits(py, bits);
         }
     });
+}
+
+/// `globals` names `builtins` as its `__builtins__`, as a function's builtins
+/// are those of its globals.
+fn set_builtins(py: &PyToken<'_>, globals: u64, builtins: u64) {
+    let key = MoltObject::from_ptr(crate::alloc_string(py, b"__builtins__")).bits();
+    let globals_ptr = obj_from_bits(globals).as_ptr().unwrap();
+    assert!(unsafe { dict_set_in_place(py, globals_ptr, key, builtins) });
+    dec_ref_bits(py, key);
 }
 
 #[test]
@@ -848,16 +864,20 @@ fn failed_task_allocation_releases_acquired_context_without_consuming_invocation
         unsafe {
             code_set_frame_slot_id(code_ptr, 0);
         }
-        bind_code_target(py, code, 104);
         let globals = dict(py);
         let builtins = dict(py);
+        set_builtins(py, globals, builtins);
+        let function = super::tests::alloc_invoked_function(py, code, 104, globals);
+        assert_eq!(unsafe { function_builtins_bits(function) }, builtins);
+        // The caller and the function own each edge; the globals entry owns
+        // one more builtins edge. A handoff owns none.
+        let baseline = [2, 2, 3];
         for kind in [
             crate::TASK_KIND_FUTURE,
             crate::TASK_KIND_COROUTINE,
             crate::TASK_KIND_GENERATOR,
         ] {
-            let invocation =
-                FrameInvocationGuard::for_suspended_namespace(py, code, globals, builtins).unwrap();
+            let invocation = FrameInvocationGuard::for_function(py, function);
             // Exceeds every supported address space or overflows the header addition;
             // no machine-wide allocator exhaustion is required to prove the failure.
             assert_eq!(
@@ -866,13 +886,11 @@ fn failed_task_allocation_releases_acquired_context_without_consuming_invocation
             );
             assert!(crate::exception_pending(py));
             crate::molt_exception_clear();
-            for bits in [code, globals, builtins] {
-                assert_eq!(
-                    refs(bits),
-                    2,
-                    "only the caller and invocation retain custody"
-                );
-            }
+            assert_eq!(
+                [code, globals, builtins].map(refs),
+                baseline,
+                "a failed task releases the context it acquired"
+            );
             let pending = acquire_pending_invocation_context(py, 104).unwrap();
             assert_eq!(pending, [globals, builtins, code]);
             for bits in pending {
@@ -880,10 +898,9 @@ fn failed_task_allocation_releases_acquired_context_without_consuming_invocation
             }
             drop(invocation);
             assert!(acquire_pending_invocation_context(py, 104).is_none());
-            for bits in [code, globals, builtins] {
-                assert_eq!(refs(bits), 1);
-            }
+            assert_eq!([code, globals, builtins].map(refs), baseline);
         }
+        dec_ref_bits(py, MoltObject::from_ptr(function).bits());
         for bits in [code, globals, builtins] {
             dec_ref_bits(py, bits);
         }
@@ -891,19 +908,31 @@ fn failed_task_allocation_releases_acquired_context_without_consuming_invocation
 }
 
 #[test]
-fn invalid_compiled_namespace_is_diagnosed_without_publishing_an_invocation() {
+fn handed_namespace_without_globals_fails_the_entry_that_takes_it() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         let (ptr, code) = super::tests::alloc_test_code(py);
         unsafe {
             code_set_frame_slot_id(ptr, 0);
         }
-        assert!(FrameInvocationGuard::for_namespace(py, code, MoltObject::none().bits()).is_none());
+        let globals = dict(py);
+        let function = super::tests::alloc_invoked_function(py, code, 106, globals);
+        // A malformed function whose globals are not a mapping.
+        unsafe { function_set_globals_bits(py, function, MoltObject::none().bits()) }.unwrap();
+        let invocation = FrameInvocationGuard::for_function(py, function);
+        // Another slot's entry leaves the handoff alone.
+        assert_eq!(take_invocation_namespace(py, 1), Ok(None));
+        assert!(!crate::exception_pending(py));
+        assert_eq!(take_invocation_namespace(py, 0), Err(()));
         assert!(crate::exception_pending(py));
-        assert!(take_invocation_namespace(0).is_none());
+        assert_eq!(take_invocation_namespace(py, 0), Ok(None), "taken once");
         crate::molt_exception_clear();
+        drop(invocation);
+        dec_ref_bits(py, MoltObject::from_ptr(function).bits());
         assert_eq!(refs(code), 1);
-        dec_ref_bits(py, code);
+        for bits in [code, globals] {
+            dec_ref_bits(py, bits);
+        }
     });
 }
 
@@ -914,12 +943,15 @@ fn frame_entry_result_disposal_preserves_direct_and_invoked_code_owners() {
         let (_, code) = super::tests::alloc_test_code(py);
         let globals = dict(py);
         crate::molt_code_slot_set(0, code, globals);
+        let function = super::tests::alloc_invoked_function(py, code, 107, globals);
         let baseline = refs(code);
-        assert_eq!(baseline, 2, "caller and lexical code slot own the code");
+        assert_eq!(
+            baseline, 3,
+            "caller, lexical code slot and function own the code"
+        );
         for invoked in [false, true] {
             for _ in 0..4 {
-                let invocation = invoked
-                    .then(|| FrameInvocationGuard::for_namespace(py, code, globals).unwrap());
+                let invocation = invoked.then(|| FrameInvocationGuard::for_function(py, function));
                 let result = crate::molt_trace_enter_slot(0);
                 assert!(obj_from_bits(result).is_none());
                 // Every backend can discard this owned ABI result. The frame's
@@ -937,6 +969,7 @@ fn frame_entry_result_disposal_preserves_direct_and_invoked_code_owners() {
                 assert!(FRAME_STACK.with(|stack| stack.borrow().is_empty()));
             }
         }
+        dec_ref_bits(py, MoltObject::from_ptr(function).bits());
         for bits in [code, globals] {
             dec_ref_bits(py, bits);
         }
@@ -1142,13 +1175,21 @@ mod task_growth_refusal {
             }
             let active = obj_from_bits(held[0].bits()).as_ptr().unwrap();
             let suspended = obj_from_bits(held[1].bits()).as_ptr().unwrap();
-            let invocation = FrameInvocationGuard::for_suspended_namespace(
+            super::set_builtins(py, globals.bits(), builtins.bits());
+            let function = ExceptionValue::adopt(
                 py,
-                code.bits(),
-                globals.bits(),
-                builtins.bits(),
-            )
-            .unwrap();
+                MoltObject::from_ptr(crate::builtins::frames::tests::alloc_invoked_function(
+                    py,
+                    code.bits(),
+                    TARGET,
+                    globals.bits(),
+                ))
+                .bits(),
+            );
+            let invocation = FrameInvocationGuard::for_function(
+                py,
+                obj_from_bits(function.bits()).as_ptr().unwrap(),
+            );
             let baseline_refs = input_refs(&inputs);
 
             for anext in [false, true] {

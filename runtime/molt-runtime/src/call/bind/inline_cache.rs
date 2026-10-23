@@ -1002,10 +1002,7 @@ pub(super) unsafe fn try_call_bind_ic_fast(
             // Direct IC calls borrow `self` exactly like the generic function
             // call path. The freshly allocated instance's original ref remains
             // the constructor result; no extra callee-owned self lane exists.
-            let Some(_invocation) = FrameInvocationGuard::for_function(_py, init_ptr) else {
-                dec_ref_bits(_py, inst_bits);
-                return Some(MoltObject::none().bits());
-            };
+            let _invocation = FrameInvocationGuard::for_function(_py, init_ptr);
             // The direct entry calls below bypass the runtime's borrowed lane,
             // so an adopting `__init__` receives its own reference to the
             // instance and to each argument here. Construction keeps the

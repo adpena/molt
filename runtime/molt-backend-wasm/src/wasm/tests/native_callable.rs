@@ -58,8 +58,10 @@ fn guarded_python_calls_bind_nonexact_shapes_and_share_direct_admission() {
             .is_some_and(|index| calls.contains(index));
         assert_eq!(admitted, supplied == 1, "supplied={supplied}");
         if supplied == 1 {
-            assert!(calls.contains(&imports["frame_invocation_enter"]));
-            assert!(calls.contains(&imports["frame_invocation_exit"]));
+            // The direct leg hands the callee over through the thread record.
+            assert!(calls.contains(&imports["thread_record"]));
+            assert!(!imports.contains_key("frame_invocation_enter"));
+            assert!(!imports.contains_key("frame_invocation_exit"));
         }
     }
 }
