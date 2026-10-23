@@ -2,10 +2,6 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-#[path = "../build_support/build_python.rs"]
-mod build_python;
-#[path = "../build_support/unicode_tables.rs"]
-mod unicode_tables;
 #[path = "../build_support/variadic_exports.rs"]
 mod variadic_exports;
 #[path = "../build_support/wasi_sysroot.rs"]
@@ -24,7 +20,6 @@ fn main() {
     emit_wasm_long_double_link_policy(&target_arch, &out_dir);
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     emit_c_api_version(&manifest_dir, &out_dir);
-    let build_python = build_python::resolve();
     emit_cpython_abi_variadic_export_anchors(&manifest_dir, &out_dir);
 
     // The manifest owns only the dependency rlib. Final native/WASM producers
@@ -58,8 +53,6 @@ fn main() {
         }
     }
 
-    unicode_tables::emit_runtime_unicode_tables(&out_dir, &build_python);
-    println!("cargo:rerun-if-changed=../build_support/unicode_tables.rs");
     println!("cargo:rerun-if-changed=../build_support/wasi_sysroot.rs");
     println!("cargo:rerun-if-changed=../build_support/variadic_exports.rs");
     println!("cargo:rerun-if-changed=src/object/ops.rs");

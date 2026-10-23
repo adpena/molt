@@ -547,6 +547,14 @@ retires the worktree's daemons, removes it, and then reclaims its roots at
 once, without the idle window: it is the explicit owner action, as `bazel
 clean --expunge` is. A failed removal keeps the roots.
 
+Explicit checkout retirement reads bounded owner records first to reject unrelated
+roots before resolving their paths or target addresses. This still inventories
+all managed roots, including build controls whose target has disappeared: O(N)
+record reads and full binding only for the K matching candidates. A matching
+record is never deletion authority; the original binding, absence, protection,
+lock and exclusive owner reread checks remain required. Ordinary global GC must
+still validate every candidate against its own retention policy.
+
 Before removing a worktree, the canonical
 retirement consumer binds its complete known inventory from
 `checkout_state_roots`, including pinned sessions and their build controls.
@@ -846,16 +854,15 @@ tests that place their target in a temporary directory.
   sources by content and logical root and never by checkout path. A store miss
   builds once in the checkout's own target and publishes; every later build of
   the same inputs on the host reuses the entry with no Cargo build. "The same
-  inputs" is narrower than "unchanged Rust": the identity also covers the
-  toolchain content root, and the runtime's covers about 116 Python tooling
-  files (`runtime_build_tooling_paths`), so a lane that edits only, say,
-  `src/molt/dx.py` rebuilds the runtime cold, and a clone with its own toolchain root shares nothing
-  (one such clone's first build took 710.2 s with four Cargo runs, against the
-  330.8 s baseline). Measured after this change on the integrator Mac
-  (2026-10-21, another session and load than the baseline, so not a paired
-  comparison): a second clone of one commit and toolchain built
-  `examples/hello.py` in 39.4 s with no Cargo build; one 1.3 s Cargo probe and
-  three `rustc` version probes still ran.
+  inputs" includes the resolved Cargo action and its source/tool/resource closure,
+  plus each member's captured publication action and narrow actual byte/sidecar
+  executor content. Python planner source bytes do
+  not independently invalidate runtime products: a planner edit that changes the
+  resolved action changes its identity; an unrelated edit can reuse the archive.
+  See [runtime compilation and publication identity](../../spec/areas/tooling/0001-toolchains.md#runtime-compilation-and-publication-identity).
+  The historical broad tooling-source key caused runtime rebuilds after unrelated
+  tooling edits. The action migration retains product-byte admission and does not
+  by itself establish a measured warm-build latency improvement.
 - A variant inside an entry holds what one observed Cargo environment
   (`CargoEnvironmentInputs`) produced, named by its digest. A build-script
   variable can change bytes without changing the declared identity, so a
@@ -1049,8 +1056,16 @@ section 2.9 item 4 requires.
 The runtime WASM pair already lives in one host directory
 (`<MOLT_EXT_ROOT>/wasm`, `molt.cli.runtime_wasm_generation`) keyed by a
 location-independent identity, so it is built once per input on a host that
-sets an artifact root; it has its own store and retention. Folding it into
-this store is open.
+sets an artifact root; it has its own store and retention. Ordinary cache hits
+admit the existing family-addressed generation under
+`MOLT_CACHE/runtime_wasm_generations/<family digest>` directly. Cargo environment,
+member content and exports still pass their owning admission checks, and the
+existing generation ledger renews member use before codegen pins the receipt.
+A different family's mutable host selection cannot force copying or publication
+of the retained pair. The diagnostics call these `admit_*` observations.
+Low-level hydration remains for explicit installed-runtime relocation and its
+physical-copy benchmark; those consumers need a new storage location. Folding
+the WASM store into the product store is open.
 
 Host-wide build state keeps three retention policies, one per kind of
 content; section 2.9 item 4's single table will carry the same rows (HF-434).

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from molt.compilation_target import admit_target
+from molt.compilation_target import TargetKind, admit_target
 
 from molt.cli import wasm_link_inputs
 from molt.tool_releases import run_command
@@ -445,14 +445,17 @@ def test_cli_run_command_uses_memory_guard_prefix(
     assert calls[1]["capture_output"] is False
 
 
+@pytest.mark.parametrize("closed", [False, True])
 def test_cli_timed_command_uses_memory_guard_elapsed(
     monkeypatch: pytest.MonkeyPatch,
+    closed: bool,
 ) -> None:
 
     calls: list[dict[str, object]] = []
 
     def result_factory(cmd: list[str]) -> subprocess.CompletedProcess[str]:
         result = subprocess.CompletedProcess(cmd, 0, "stdout\n", "stderr\n")
+        result.descendants_closed = closed
         result.elapsed_s = 0.125  # type: ignore[attr-defined]
         return result
 
@@ -477,6 +480,7 @@ def test_cli_timed_command_uses_memory_guard_elapsed(
         memory_guard_prefix="MOLT_CLI",
     )
 
+    assert result.descendants_closed is closed
     assert result.returncode == 0
     assert result.stdout == "stdout\n"
     assert result.stderr == "stderr\n"
@@ -884,9 +888,27 @@ def test_cli_compare_uses_diff_memory_guard_for_children(
     assert commands[1][:5] == ["py", "-3.14", "-m", "molt.cli", "build"]
 
 
+@pytest.mark.parametrize(
+    "target", [TargetKind.WASM, TargetKind.WASI, TargetKind.LUAU, TargetKind.MLIR]
+)
+@pytest.mark.parametrize(
+    "json_output,timing,returncode",
+    [
+        (False, False, 0),
+        (False, True, 7),
+        (True, False, 0),
+        (True, True, 0),
+        (True, True, 7),
+    ],
+)
 def test_cli_cross_run_uses_cross_memory_guard(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    target: TargetKind,
+    json_output: bool,
+    timing: bool,
+    returncode: int,
 ) -> None:
     from molt.cli import build_inputs as cli_build_inputs
 
@@ -894,7 +916,13 @@ def test_cli_cross_run_uses_cross_memory_guard(
     project.mkdir()
     entry = project / "main.py"
     entry.write_text("print('ok')\n", encoding="utf-8")
-    artifact = project / "out.wasm"
+    artifact = project / (
+        "out.mlir"
+        if target is TargetKind.MLIR
+        else "out.luau"
+        if target is TargetKind.LUAU
+        else "out.wasm"
+    )
     artifact.write_text("", encoding="utf-8")
     manifest = project / "manifest.json"
     manifest.write_text("{}", encoding="utf-8")
@@ -920,8 +948,20 @@ def test_cli_cross_run_uses_cross_memory_guard(
 
     def fake_run_completed_command(cmd: list[str], **kwargs: object):
         run_calls.append({"cmd": cmd, **kwargs})
-        result = subprocess.CompletedProcess(cmd, 0, "", "")
+        host_stderr = "guest stderr\n"
+        if "--guest-stderr" in cmd:
+            capture = Path(cmd[cmd.index("--guest-stderr") + 1])
+            assert capture.read_bytes() == b""
+            capture.write_bytes(b"guest stderr\n")
+            host_stderr = "ExperimentalWarning: host\n"
+        result = subprocess.CompletedProcess(
+            cmd,
+            returncode,
+            "guest output ☃\n" if kwargs["capture_output"] else None,
+            host_stderr if kwargs["capture_output"] else None,
+        )
         result.elapsed_s = 0.02  # type: ignore[attr-defined]
+        result.descendants_closed = True
         return result
 
     monkeypatch.setattr(
@@ -943,7 +983,7 @@ def test_cli_cross_run_uses_cross_memory_guard(
         script_commands, "_run_wrapper_build", fake_run_wrapper_build, raising=True
     )
     monkeypatch.setattr(
-        script_commands,
+        process_execution,
         "_run_completed_command",
         fake_run_completed_command,
         raising=True,
@@ -955,24 +995,67 @@ def test_cli_cross_run_uses_cross_memory_guard(
         raising=True,
     )
 
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        script_commands,
+        which=lambda name: "/usr/bin/lune" if name == "lune" else None,
+    )
     rc = script_commands._run_script_cross(
-        admit_target("wasm"),
+        target,
         str(entry),
         None,
         [],
-        build_args=["--target", "wasm"],
+        build_args=["--target", target.value],
+        json_output=json_output,
+        timing=timing,
+        verbose=True,
     )
 
-    assert rc == 0
-    assert build_calls[0]["build_args"] == [
-        "--target",
-        "wasm",
-        "--linked",
-        "--require-linked",
-    ]
+    assert rc == (0 if target is TargetKind.MLIR else returncode)
+    expected_build_args = ["--target", target.value]
+    if target in {TargetKind.WASM, TargetKind.WASI}:
+        expected_build_args += ["--linked", "--require-linked"]
+    assert build_calls[0]["build_args"] == expected_build_args
     assert build_calls[0]["memory_guard_prefix"] == "MOLT_CROSS"
-    assert run_calls[0]["memory_guard_prefix"] == "MOLT_CROSS"
-    assert run_calls[0]["capture_output"] is False
+    captured = capsys.readouterr()
+    if target is TargetKind.MLIR:
+        assert run_calls == []
+    else:
+        assert len(run_calls) == 1
+        assert run_calls[0]["memory_guard_prefix"] == "MOLT_CROSS"
+        assert run_calls[0]["capture_output"] is json_output
+    if json_output:
+        assert captured.err == ""
+        payload = json.loads(captured.out)
+        assert payload["command"] == "run"
+        assert payload["status"] == ("ok" if rc == 0 else "error")
+        if target is TargetKind.MLIR:
+            expected: dict[str, object] = {"output": str(artifact), "executed": False}
+            if timing:
+                expected["timing"] = {"build_s": 0.01, "total_s": 0.01}
+        else:
+            expected = {
+                "returncode": returncode,
+                "stdout": "guest output ☃\n",
+                "stderr": "guest stderr\n",
+            }
+            if target in {TargetKind.WASM, TargetKind.WASI}:
+                expected["host_stderr"] = "ExperimentalWarning: host\n"
+                command = run_calls[0]["cmd"]
+                assert not Path(
+                    command[command.index("--guest-stderr") + 1]
+                ).parent.exists()
+            if timing:
+                expected["timing"] = {"build_s": 0.01, "run_s": 0.02, "total_s": 0.03}
+        assert payload["data"] == expected
+    else:
+        assert captured.out == ""
+        if timing:
+            assert (
+                "timing: build" if target is TargetKind.MLIR else "Timing (compiled):"
+            ) in captured.err
 
 
 def test_cli_bench_outer_process_uses_bench_memory_guard(
@@ -1873,3 +1956,82 @@ def test_update_provisions_managed_validator_even_with_ambient_tool(monkeypatch)
         str(ROOT),
     ]
     assert all(step.name != "cargo-install-wasm-tools" for step in steps)
+
+
+@pytest.mark.parametrize("closure", [True, False, None])
+def test_wasm_json_capture_failure_retains_only_unclosed_allocation(
+    tmp_path, monkeypatch, closure
+):
+    from types import SimpleNamespace
+    from molt.temporary_artifacts import OwnedTemporaryDirectory
+    from molt.process_environment import ProcessEnvironment
+
+    owners = []
+
+    def allocate(**kwargs):
+        owner = OwnedTemporaryDirectory(dir=tmp_path, **kwargs)
+        owners.append(owner)
+        return owner
+
+    failure = RuntimeError("guard failure")
+    if closure is not None:
+        failure.guarded_result = SimpleNamespace(descendants_closed=closure)
+
+    def fail(command, **kwargs):
+        path = Path(command[command.index("--guest-stderr") + 1])
+        path.write_bytes(b"still-writing")
+        raise failure
+
+    monkeypatch.setattr(script_commands, "OwnedTemporaryDirectory", allocate)
+    monkeypatch.setattr(script_commands, "_run_command_timed", fail)
+    with pytest.raises(RuntimeError, match="guard failure") as caught:
+        script_commands._run_program(
+            ["node", "runner", "manifest"],
+            env=ProcessEnvironment({}),
+            cwd=tmp_path,
+            json_output=True,
+            verbose=False,
+            timing=False,
+            build_duration_s=0,
+            start_receipt=None,
+            wasm_guest_stderr=True,
+        )
+    path = Path(owners[0].name)
+    assert path.exists() is (closure is not True)
+    if closure is not True:
+        assert any(str(path) in note for note in caught.value.__notes__)
+        assert (path / "guest-stderr.bin").read_bytes() == b"still-writing"
+        owners[0].cleanup()  # synthetic test has no live child
+
+
+def test_wasm_json_capture_refuses_unclosed_normal_result(tmp_path, monkeypatch):
+    from molt.temporary_artifacts import OwnedTemporaryDirectory
+    from molt.process_environment import ProcessEnvironment
+
+    owners = []
+
+    def allocate(**kwargs):
+        owner = OwnedTemporaryDirectory(dir=tmp_path, **kwargs)
+        owners.append(owner)
+        return owner
+
+    monkeypatch.setattr(script_commands, "OwnedTemporaryDirectory", allocate)
+    monkeypatch.setattr(
+        script_commands,
+        "_run_command_timed",
+        lambda *args, **kwargs: process_execution._TimedResult(0, "guest", "host", 0.1),
+    )
+    with pytest.raises(RuntimeError, match="process-tree closure"):
+        script_commands._run_program(
+            ["node", "runner", "manifest"],
+            env=ProcessEnvironment({}),
+            cwd=tmp_path,
+            json_output=True,
+            verbose=False,
+            timing=False,
+            build_duration_s=0,
+            start_receipt=None,
+            wasm_guest_stderr=True,
+        )
+    assert Path(owners[0].name).exists()
+    owners[0].cleanup()

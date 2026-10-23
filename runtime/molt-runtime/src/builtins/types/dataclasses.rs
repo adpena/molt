@@ -59,7 +59,7 @@ pub extern "C" fn molt_dataclasses_make_dataclass(
         let mut bases_tuple_bits = 0u64;
         let mut body_bits = 0u64;
         let mut annotations_bits = 0u64;
-        let mut fields_iter_bits = 0u64;
+        let mut fields_iterator = None;
 
         'compute: {
             let Some(cls_name_ptr) = obj_from_bits(cls_name_bits).as_ptr() else {
@@ -239,19 +239,30 @@ pub extern "C" fn molt_dataclasses_make_dataclass(
                 }
             }
 
-            fields_iter_bits = molt_iter(fields_bits);
+            let fields_iter_bits = molt_iter(fields_bits);
+            fields_iterator = Some(unsafe {
+                molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
+                    _py.core_token(),
+                    fields_iter_bits,
+                )
+            });
             if exception_pending(_py) {
                 result_bits = MoltObject::none().bits();
                 break 'compute;
             }
             loop {
-                let Some((field_spec_bits, done)) = iter_next_pair(_py, fields_iter_bits) else {
-                    result_bits = MoltObject::none().bits();
-                    break 'compute;
+                let field_spec_owner = match molt_runtime_core::iter_next_owned(
+                    _py.core_token(),
+                    fields_iterator.as_ref().expect("acquired fields iterator"),
+                ) {
+                    Ok(Some(value)) => value,
+                    Ok(None) => break,
+                    Err(_) => {
+                        result_bits = MoltObject::none().bits();
+                        break 'compute;
+                    }
                 };
-                if done {
-                    break;
-                }
+                let field_spec_bits = field_spec_owner.bits();
 
                 let mut raw_name_bits = field_spec_bits;
                 let mut field_type_bits = default_field_type_bits;
@@ -382,9 +393,7 @@ pub extern "C" fn molt_dataclasses_make_dataclass(
             result_bits = MoltObject::from_ptr(out_ptr).bits();
         }
 
-        if !obj_from_bits(fields_iter_bits).is_none() {
-            dec_ref_bits(_py, fields_iter_bits);
-        }
+        drop(fields_iterator);
         if !obj_from_bits(annotations_bits).is_none() {
             dec_ref_bits(_py, annotations_bits);
         }

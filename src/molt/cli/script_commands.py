@@ -10,15 +10,16 @@ from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuild
 
 import contextlib
 import json
+import os
 import shlex
 import shutil
 import sys
 import tempfile
-import time
 from dataclasses import replace
 from pathlib import Path
 from collections.abc import Mapping
 from typing import Any, cast
+from molt.temporary_artifacts import OwnedTemporaryDirectory
 from molt.source_root import compiler_source_root
 from molt.cli import build_inputs as _build_inputs
 from molt.browser_asset_closure import (
@@ -59,7 +60,6 @@ from molt.cli.command_runtime import (
     _CLI_MEMORY_GUARD_PREFIX,
     _CROSS_MEMORY_GUARD_PREFIX,
     _DIFF_MEMORY_GUARD_PREFIX,
-    _run_completed_command,
 )
 from molt.cli.env_paths import _base_env
 from molt.cli.build_request import BuildProfile
@@ -93,6 +93,7 @@ from molt.cli.wrapper_build import (
     _run_wrapper_build,
 )
 from molt.cli.process_execution import (
+    _TimedResult,
     _format_duration,
     _run_command,
     _run_command_timed,
@@ -392,13 +393,15 @@ def _run_script_cross(
                 json_output,
                 command="run",
             )
-        if not json_output:
+        if json_output:
+            data: dict[str, Any] = {"output": str(mlir_artifact), "executed": False}
+            if timing:
+                data["timing"] = {"build_s": t_build, "total_s": t_build}
+            _emit_json(_json_payload("run", "ok", data=data), json_output=True)
+        else:
             _success(f"MLIR output: {mlir_artifact}", file=sys.stderr)
-        if timing and not json_output:
-            print(
-                f"\n--- timing: build {t_build:.3f}s ---",
-                file=sys.stderr,
-            )
+            if timing:
+                print(f"\n--- timing: build {t_build:.3f}s ---", file=sys.stderr)
         return 0
     else:
         return _fail(
@@ -407,28 +410,18 @@ def _run_script_cross(
             command="run",
         )
 
-    if not json_output and verbose:
-        print(f"Running: {shlex.join(run_cmd)}", file=sys.stderr)
-
-    t_run_start = time.monotonic()
-    run_res = _run_completed_command(
+    return _run_program(
         run_cmd,
         env=env,
         cwd=project_root,
-        capture_output=False,
+        json_output=json_output,
+        verbose=verbose,
+        timing=timing,
+        build_duration_s=t_build,
+        start_receipt=None,
         memory_guard_prefix=_CROSS_MEMORY_GUARD_PREFIX,
+        wasm_guest_stderr=json_output and target in {TargetKind.WASM, TargetKind.WASI},
     )
-    t_run = getattr(run_res, "elapsed_s", None)
-    if t_run is None:
-        t_run = time.monotonic() - t_run_start
-
-    if timing and not json_output:
-        print(
-            f"\n--- timing: build {t_build:.3f}s | run {t_run:.3f}s | "
-            f"total {t_build + t_run:.3f}s ---",
-            file=sys.stderr,
-        )
-    return run_res.returncode
 
 
 def _deploy(
@@ -809,6 +802,66 @@ def run_script(
 _JIT_BUILD_FAILURE_STATUS = 1
 
 
+def _run_wasm_with_guest_stderr(
+    command: list[str], *, env: ProcessEnvironment, cwd: Path, memory_guard_prefix: str
+) -> tuple[_TimedResult, str]:
+    """Capture the guest stream through the existing runner, after guard closure."""
+    owner = OwnedTemporaryDirectory(prefix="molt-run-wasm-")
+    capture_path = Path(owner.name) / "guest-stderr.bin"
+    launched = False
+    closed = False
+    primary: BaseException | None = None
+    try:
+        # Hold the created inode; never reopen a guest-visible path for reading.
+        with capture_path.open("x+b") as capture:
+            argv = [
+                *command[:2],
+                "--guest-stderr",
+                str(capture_path),
+                "--",
+                *command[2:],
+            ]
+            launched = True
+            result = _run_command_timed(
+                argv,
+                env=env,
+                cwd=cwd,
+                capture_output=True,
+                memory_guard_prefix=memory_guard_prefix,
+            )
+            closed = result.descendants_closed is True
+            if not closed:
+                raise RuntimeError("WASM host returned without process-tree closure")
+            if not os.path.samestat(capture_path.lstat(), os.fstat(capture.fileno())):
+                raise ValueError("WASM guest stderr capture was substituted")
+            capture.seek(0)
+            guest_stderr = capture.read().decode("utf-8", "surrogateescape")
+            return result, guest_stderr
+    except BaseException as error:
+        primary = error
+        guarded = getattr(error, "guarded_result", None)
+        closed = closed or (guarded is not None and guarded.descendants_closed is True)
+        raise
+    finally:
+        if not launched or closed:
+            try:
+                owner.cleanup()
+            except BaseException as error:
+                if primary is None:
+                    raise
+                primary.add_note(
+                    f"WASM capture cleanup failed at {owner.name}: {error!r}"
+                )
+        else:
+            # Unknown/live descendants may still write here. Retain the owned
+            # allocation instead of allowing its GC finalizer to remove it.
+            owner.retain()
+            if primary is not None:
+                primary.add_note(
+                    f"WASM capture retained pending process-tree closure: {owner.name}"
+                )
+
+
 def _run_program(
     program_command: list[str],
     *,
@@ -819,6 +872,8 @@ def _run_program(
     timing: bool,
     build_duration_s: float,
     start_receipt: Path | None,
+    memory_guard_prefix: str = _CLI_MEMORY_GUARD_PREFIX,
+    wasm_guest_stderr: bool = False,
 ) -> int:
     """Run a built program and report it.
 
@@ -826,14 +881,24 @@ def _run_program(
     runner failed to compile it, which ``molt run`` reports as a failed build,
     not as the program's exit status.
     """
-    run_res = _run_command_timed(
-        program_command,
-        env=env,
-        cwd=cwd,
-        verbose=verbose and not json_output,
-        capture_output=json_output,
-        memory_guard_prefix=_CLI_MEMORY_GUARD_PREFIX,
-    )
+    guest_stderr = None
+    if wasm_guest_stderr:
+        assert json_output and start_receipt is None
+        run_res, guest_stderr = _run_wasm_with_guest_stderr(
+            program_command,
+            env=env,
+            cwd=cwd,
+            memory_guard_prefix=memory_guard_prefix,
+        )
+    else:
+        run_res = _run_command_timed(
+            program_command,
+            env=env,
+            cwd=cwd,
+            verbose=verbose and not json_output,
+            capture_output=json_output,
+            memory_guard_prefix=memory_guard_prefix,
+        )
     if start_receipt is not None and not jit_program_started(start_receipt):
         # As a failed AOT build reports its compiler's stderr (wrapper_build).
         return _fail(
@@ -858,7 +923,12 @@ def _run_program(
             }
         if run_res.stdout:
             data["stdout"] = run_res.stdout
-        if run_res.stderr:
+        if guest_stderr is not None:
+            if guest_stderr:
+                data["stderr"] = guest_stderr
+            if run_res.stderr:
+                data["host_stderr"] = run_res.stderr
+        elif run_res.stderr:
             data["stderr"] = run_res.stderr
         _emit_json(
             _json_payload(

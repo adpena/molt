@@ -146,10 +146,10 @@ class CallNamedBuiltinIterDispatchMixin(GeneratorMixinBase):
                 )
             return res
         if func_id == "iter":
-            if node.keywords:
-                return self._emit_type_error_value(
-                    "iter() takes no keyword arguments", "iter"
-                )
+            if node.keywords or len(node.args) not in (1, 2):
+                # The generic binder evaluates every argument before rejecting
+                # an invalid shape, preserving effects and raised exceptions.
+                return CALL_NOT_HANDLED
             if len(node.args) == 1:
                 iterable = self.visit(node.args[0])
                 if iterable is None:
@@ -165,44 +165,9 @@ class CallNamedBuiltinIterDispatchMixin(GeneratorMixinBase):
                     raise FrontendRejection(
                         Diagnostic.OPERAND_VALUE, "Unsupported iter() arguments"
                     )
-                callee = MoltValue(self.next_var(), type_hint="function")
-                self.emit(
-                    MoltOp(
-                        kind="BUILTIN_FUNC",
-                        args=["molt_iter_sentinel", 2],
-                        result=callee,
-                    )
+                return self._emit_runtime_call(
+                    BUILTIN_FUNC_SPECS[func_id].runtime,
+                    [callable_val, sentinel_val],
+                    type_hint="iter",
                 )
-                self._emit_function_metadata(
-                    callee,
-                    code_symbol=None,
-                    name="iter",
-                    qualname="iter",
-                    posonly_params=["callable", "sentinel"],
-                    pos_or_kw_params=[],
-                    kwonly_params=[],
-                    vararg=None,
-                    varkw=None,
-                    default_exprs=[],
-                    kw_default_exprs=[],
-                    docstring=None,
-                    module_override="builtins",
-                    freevars=(),
-                    cellvars=(),
-                )
-                res = MoltValue(self.next_var(), type_hint="iter")
-                self.emit(
-                    MoltOp(
-                        kind="CALL_FUNC",
-                        args=[callee, callable_val, sentinel_val],
-                        result=res,
-                    )
-                )
-                return res
-            if not node.args:
-                return self._emit_type_error_value(
-                    "iter expected 1 argument, got 0", "iter"
-                )
-            msg = f"iter expected at most 2 arguments, got {len(node.args)}"
-            return self._emit_type_error_value(msg, "iter")
         return CALL_NOT_HANDLED

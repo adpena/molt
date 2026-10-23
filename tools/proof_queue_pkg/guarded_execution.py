@@ -775,25 +775,6 @@ def execute_guarded_request(request_path: Path) -> int:
             command_identity._validate_toolchain_identity(
                 plan, name, identity, full_capture=True, envelope=envelope
             )
-        if "build-python" in toolchains_full:
-            policy = next(
-                policy
-                for policy in plan.toolchain_policies
-                if policy.name == "build-python"
-            )
-            invocation = admission.cargo_invocation_for_envelope(envelope)
-            execution_env = toolchain_capture.bind_build_python_environment(
-                toolchains_full["build-python"],
-                policy=policy,
-                env=execution_env,
-                cwd=cwd,
-                cargo_command=(admission._nested_command(exact) or exact)
-                if invocation is not None
-                else ("cargo",),
-            )
-            environment_contract["passed_names"] = sorted(
-                execution_env, key=str.casefold
-            )
         toolchains, capture_ref, capture_telemetry = toolchain_capture.publish_capture(
             result_path.parent / "custody-cas", toolchains_full
         )

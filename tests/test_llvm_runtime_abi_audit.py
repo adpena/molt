@@ -37,7 +37,7 @@ def test_boxed_projection_does_not_infer_semantics_from_machine_facts() -> None:
     for symbol, arity in (
         ("molt_cell_new", 1),
         ("molt_math_sin", 1),
-        ("molt_statistics_mean_slice", 5),
+        ("molt_statistics_mean", 1),
     ):
         assert boxed[(symbol, arity)] == AUDIT.AbiFact(
             symbol, arity, "I64", ("I64",) * arity
@@ -135,8 +135,8 @@ def test_machine_i64_fact_cannot_hide_missing_generic_semantics(monkeypatch) -> 
 
 def test_runtime_export_scan_includes_runtime_leaf_crates() -> None:
     exports = AUDIT.runtime_exports(AUDIT.runtime_src_roots(ROOT))
-    mean_source = exports["molt_statistics_mean_slice"].source.replace("\\", "/")
-    stdev_source = exports["molt_statistics_stdev_slice"].source.replace("\\", "/")
+    mean_source = exports["molt_statistics_mean"].source.replace("\\", "/")
+    stdev_source = exports["molt_statistics_stdev"].source.replace("\\", "/")
 
     assert mean_source.endswith("runtime/molt-runtime-math/src/math/statistics_tail.rs")
     assert stdev_source.endswith(

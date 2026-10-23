@@ -35,23 +35,6 @@ from tools.proof_queue_pkg import (
 pytestmark = pytest.mark.usefixtures("admitted_build_capacity")
 
 
-@pytest.mark.parametrize("rule", list(NameRule))
-def test_toolchain_environment_plan_preserves_child_rule(tmp_path, rule):
-    inherited = ProcessEnvironment({"Path": "mixed", "PATH": "tools"}, rule=rule)
-    before = dict(inherited)
-    selected = toolchain_capture.toolchain_capture_environment(
-        SimpleNamespace(data={}), environment=inherited, cwd=tmp_path
-    )
-    assert isinstance(selected, ProcessEnvironment)
-    assert selected.rule is rule
-    assert dict(selected) == (
-        {"Path": "tools"}
-        if rule is NameRule.WINDOWS
-        else {"Path": "mixed", "PATH": "tools"}
-    )
-    assert dict(inherited) == before
-
-
 def _identity(path: Path, *, rows: int = 1) -> dict[str, object]:
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     files = [
@@ -2932,7 +2915,7 @@ def test_native_c_armed_capture_covers_membership_and_reads_each_input_once(
         command_identity, "_python_identity", lambda *args, **kwargs: None
     )
     envelope = command_admission.envelope_for_command(command)
-    assert envelope["toolchains"] == ["rustc", "cargo", "git", "build-python"]
+    assert envelope["toolchains"] == ["rustc", "cargo", "git"]
     assert envelope["cargo_native_units"] == {"target": ["c"]}
     env["CARGO"] = str(tools["cargo"])
     # Git is admitted for source custody in addition to the build's Rust tools.
@@ -2940,17 +2923,6 @@ def test_native_c_armed_capture_covers_membership_and_reads_each_input_once(
     tools["git"] = tools["as"].with_name("git.exe" if os.name == "nt" else "git")
     tools["git"].write_bytes(b"fixture git executable")
     tools["git"].chmod(0o755)
-    from tests.tools.test_tool_identity_reuse import selected_runtime_fixture
-
-    python_root = tmp_path / "generator"
-    python_root.mkdir()
-    original_which = command_identity._which_in_command_environment
-    generator = selected_runtime_fixture(python_root, monkeypatch)
-    monkeypatch.setattr(
-        command_identity, "_which_in_command_environment", original_which
-    )
-    generator_run = command_identity._run_captured
-    env["MOLT_BUILD_PYTHON"] = str(generator.selected[0])
     version_calls = []
     # Rust version probes use the resolved component; Git uses its selected
     # custody entrypoint. Product/native-C configuration coordinates stay raw.
@@ -2960,8 +2932,6 @@ def test_native_c_armed_capture_covers_membership_and_reads_each_input_once(
     }
 
     def tool_version(argv, **kwargs):
-        if argv[0] == str(generator.selected[0]):
-            return generator_run(argv, **kwargs)
         version_calls.append(list(argv))
         assert list(argv) == [argv[0], "--version"]
         return subprocess.CompletedProcess(argv, 0, versions[argv[0]], "")
@@ -2980,7 +2950,7 @@ def test_native_c_armed_capture_covers_membership_and_reads_each_input_once(
         [str(tools["cargo"].resolve(strict=True)), "--version"],
         [process_image_capture._image_path_key(tools["git"]), "--version"],
     ]
-    assert set(located) == {"rustc", "cargo", "git", "build-python"}
+    assert set(located) == {"rustc", "cargo", "git"}
     assert located["git"]["path"] == process_image_capture._image_path_key(tools["git"])
     assert located["git"]["version"] == "git version 2.49.0"
     # Git's canonical selector currently has no configuration-file inputs;
@@ -3009,7 +2979,7 @@ def test_native_c_armed_capture_covers_membership_and_reads_each_input_once(
     with monkeypatch.context() as scope:
         scope.setattr(Path, "open", counted_open)
         _, captured = capture()
-    assert set(captured) == {"rustc", "cargo", "git", "build-python"}
+    assert set(captured) == {"rustc", "cargo", "git"}
     assert captured["git"]["process_images"] == located["git"]["process_images"]
     for name in located:
         assert (
@@ -5084,158 +5054,19 @@ def test_runtime_gate_lifecycle_hashes_shared_linker_only_once_at_capture(
     assert captured[str(tools["linker"].resolve())] == 1
 
 
-@pytest.mark.parametrize("relative_selector", [False, True])
-def test_build_python_cargo_selection_signature_and_unicode_custody(
-    tmp_path, monkeypatch, relative_selector
-):
-    from dataclasses import replace
-    from tools import proof_plan
-    from tools.proof_queue_pkg import (
-        command_admission,
-        command_identity,
-        execution_environment,
-    )
-    from tests.tools.test_tool_identity_reuse import selected_runtime_fixture
-
-    policy = next(
-        p
-        for p in proof_plan.ProofPlan.load().toolchain_policies
-        if p.name == "build-python"
-    )
-    fixture = selected_runtime_fixture(tmp_path, monkeypatch)
-    policy = replace(policy, root=tmp_path)
-    plan = replace(fixture.plan, toolchain_policies=(policy,))
-    monkeypatch.setattr(proof_plan.ProofPlan, "load", lambda *a, **kw: plan)
-    selected = fixture.selected[0]
-    other = next(
-        Path(path)
-        for path in fixture.installations
-        if path != custody_spelling(selected)
-    )
-    config = tmp_path / "selected.toml"
-    config.write_text(
-        "[env]\nMOLT_BUILD_PYTHON = { value = "
-        + json.dumps(
-            str(selected.relative_to(tmp_path) if relative_selector else selected)
-        )
-        + ", force = true }\n",
-        encoding="utf-8",
-    )
-    command = ["cargo", "--config", str(config), "check"]
-    envelope = {
-        **command_admission.envelope_for_command(command),
-        "toolchains": [policy.name],
-    }
-    env = {
-        **os.environ,
-        "MOLT_BUILD_PYTHON": str(other),
-        "CARGO_HOME": str(tmp_path / "cargo-home"),
-    }
-
-    def capture():
-        identity = command_identity._tool_identity(
-            plan, policy.name, envelope, command, cwd=tmp_path, env=env
-        )
-        command_identity._validate_toolchain_identity(
-            plan, policy.name, identity, full_capture=True
-        )
-        return identity
-
-    first = capture()
-    assert first["content_path"] == custody_spelling(selected)
-    assert first["content_path"] != sys.executable
-    bound = toolchain_capture.bind_build_python_environment(
-        first, policy=policy, env=env, cwd=tmp_path, cargo_command=command
-    )
-    assert isinstance(bound, ProcessEnvironment)
-    assert bound.rule is NameRule.host()
-    assert bound["MOLT_BUILD_PYTHON"] == custody_spelling(selected)
-    assert len(bound["MOLT_BUILD_PYTHON_SIGNATURE"]) == 64
-    projected, _updates = command_admission._supervised_execution_command(
-        command_admission.envelope_for_command(command),
-        command,
-        {},
-        environment=env,
-        cwd=tmp_path,
-    )
-    effective_child = toolchain_capture.toolchain_capture_environment(
-        policy, environment=bound, cwd=tmp_path, cargo_command=projected
-    )
-    assert isinstance(effective_child, ProcessEnvironment)
-    assert effective_child.rule is bound.rule
-    assert effective_child["MOLT_BUILD_PYTHON"] == custody_spelling(selected)
-    # The full capture consumer must repeat the isolated startup fence in the
-    # same effective Cargo environment, even though the ambient selector differs.
-    full = execution_environment._capture_toolchains(
-        envelope,
-        command,
-        cwd=tmp_path,
-        env=env,
-        source_root=tmp_path,
-        hash_workers=1,
-        located_toolchains={policy.name: first},
-    )[1]
-    assert (
-        full[policy.name]["python_runtime"]["runtime"]
-        == first["python_runtime"]["runtime"]
-    )
-    _, unicode_file = fixture.installations[custody_spelling(selected)]
-    before = unicode_file.stat()
-    changed_bytes = bytearray(unicode_file.read_bytes())
-    changed_bytes[-1] ^= 1
-    unicode_file.write_bytes(changed_bytes)
-    os.utime(unicode_file, ns=(before.st_atime_ns, before.st_mtime_ns))
-    assert unicode_file.stat().st_size == before.st_size
-    second = capture()
-    changed = toolchain_capture.bind_build_python_environment(
-        second, policy=policy, env=env, cwd=tmp_path, cargo_command=command
-    )
-    assert first["executable_sha256"] == second["executable_sha256"]
-    assert (
-        bound["MOLT_BUILD_PYTHON_SIGNATURE"] != changed["MOLT_BUILD_PYTHON_SIGNATURE"]
-    )
-    with pytest.raises(ValueError, match="differs from its isolated capture"):
-        toolchain_capture.bind_build_python_environment(
-            second, policy=policy, env=bound, cwd=tmp_path, cargo_command=command
-        )
-    conflict = [
-        *command,
-        "--config",
-        'env.MOLT_BUILD_PYTHON_SIGNATURE={value="forged",force=true}',
-    ]
-    with pytest.raises(ValueError, match="overrides the admitted"):
-        toolchain_capture.bind_build_python_environment(
-            second, policy=policy, env=env, cwd=tmp_path, cargo_command=conflict
-        )
-    # A changed forced selector cannot redirect replay to an unadmitted runtime.
-    conflict = [
-        *command,
-        "--config",
-        "env.MOLT_BUILD_PYTHON={value=" + json.dumps(str(other)) + ",force=true}",
-    ]
-    with pytest.raises(ValueError, match="overrides the admitted"):
-        toolchain_capture.bind_build_python_environment(
-            second, policy=policy, env=env, cwd=tmp_path, cargo_command=conflict
-        )
-
-
-def test_cargo_generator_is_contextual_and_its_receipt_cannot_omit_it(tmp_path):
+def test_cargo_receipt_cannot_omit_an_actual_rust_tool(tmp_path):
     from tools import proof_plan
     from tools.proof_queue_pkg import command_admission, runner
 
     plan = proof_plan.ProofPlan.load()
-    assert "build-python" not in plan.toolchain_closure(["cargo"])
-    for command in (["cargo", "--version"], ["cargo", "audit"], ["cargo", "fmt"]):
-        assert (
-            "build-python"
-            not in command_admission.envelope_for_command(command)["toolchains"]
-        )
+    assert "build-python" not in {policy.name for policy in plan.toolchain_policies}
     for command in (
         ["cargo", "test"],
         _runtime_gate_registered_command("wasi-lifecycle"),
     ):
         envelope = command_admission.envelope_for_command(command)
-        assert "build-python" in envelope["toolchains"]
+        assert "build-python" not in envelope["toolchains"]
+        assert {"cargo", "rustc", "git"} <= set(envelope["toolchains"])
         assert envelope["toolchains"] == envelope["process_closure"]["toolchains"]
         nonce = "a" * 64
         context = {
@@ -5245,7 +5076,7 @@ def test_cargo_generator_is_contextual_and_its_receipt_cannot_omit_it(tmp_path):
             "toolchains": {
                 name: {"identity_sha256": "b" * 64}
                 for name in envelope["toolchains"]
-                if name != "build-python"
+                if name != "rustc"
             },
         }
         with pytest.raises(ValueError, match="toolchain closure is incomplete"):
@@ -5259,118 +5090,67 @@ def test_cargo_generator_is_contextual_and_its_receipt_cannot_omit_it(tmp_path):
             )
 
 
-@pytest.mark.parametrize(
-    "command_id",
-    [
-        "rust.clippy.feature-surfaces",
-        "rust.clippy.backend-wasm-only",
-        "llvm.build.backend",
-        "wasm.build.native-backend",
-        "rust.check.math-aarch64",
-        "rust.test.zlib-wasi-counters",
-    ],
-)
-def test_declared_python_free_cargo_never_selects_a_generator(
-    tmp_path, monkeypatch, command_id
-):
+@pytest.mark.parametrize("rule", list(NameRule))
+def test_all_cargo_owners_do_not_admit_a_python_generator(monkeypatch, rule):
     from molt import python_runtime_admission
     from tools import proof_plan
     from tools.proof_queue_pkg import command_admission
 
     def forbidden(*args, **kwargs):
-        pytest.fail("Python-free command attempted generator admission")
+        pytest.fail("Rust build attempted Python generator admission")
 
     monkeypatch.setattr(python_runtime_admission, "resolve_build_python", forbidden)
     monkeypatch.setattr(
         python_runtime_admission.BuildPythonAdmission, "capture", forbidden
     )
     plan = proof_plan.ProofPlan.load()
-    command = next(row.argv for row in plan.commands if row.id == command_id)
-    variants = [command]
-    if command[0] == "cargo":
-        variants.append([sys.executable, "tools/guarded_exec.py", "--", *command])
-    for argv in variants:
+    inherited = ProcessEnvironment(
+        {"Path": "fixture", "MOLT_BUILD_PYTHON": "missing-poison"}, rule=rule
+    )
+    before = dict(inherited)
+    owners = [
+        row for row in (*plan.commands, *plan.named_lanes) if "cargo" in row.toolchains
+    ]
+    assert owners
+    for owner in owners:
+        assert "cargo_build_python" not in owner.data
+        argv = owner.argv
         envelope = command_admission.envelope_for_command(argv)
         assert "build-python" not in envelope["toolchains"]
-        assert "build-python" not in envelope["process_closure"]["toolchains"]
-        command_admission._supervised_execution_command(
-            envelope,
-            argv,
-            {
-                "python": {
-                    "executable": sys.executable,
-                    "base_executable": sys._base_executable,
-                }
-            },
-            environment={"MOLT_BUILD_PYTHON": "missing-poison"},
-            cwd=tmp_path,
-        )
-
-
-def test_runtime_and_named_consumers_keep_exact_generator_requirement():
-    from tools import proof_plan
-    from tools.proof_queue_pkg import command_admission
-
-    plan = proof_plan.ProofPlan.load()
-    for owner in (
-        next(
-            row for row in plan.commands if row.id == "rust.test.compiler-authorities"
-        ),
-        next(
-            row for row in plan.commands if row.id == "rust.test.wasi-runtime-lifecycle"
-        ),
-        plan.named_lane("runtime.abi-fixture-authorities"),
-    ):
-        envelope = command_admission.envelope_for_command(owner.argv)
-        assert "build-python" in envelope["toolchains"]
-        assert envelope["process_closure"]["toolchains"] == envelope["toolchains"]
-    contradictory = command_admission.envelope_for_command(["cargo", "--version"])
-    contradictory["proof_plan_command_ids"] = ["rust.test.wasi-runtime-lifecycle"]
-    with pytest.raises(ValueError, match="noncompiling Cargo command"):
-        command_admission.cargo_build_python_required(contradictory)
+        assert envelope["toolchains"] == envelope["process_closure"]["toolchains"]
+        # The outer frontend/proof Python remains a real dependency when present.
+        assert ("python" in envelope["toolchains"]) == ("python" in owner.toolchains)
+        # These are declarations, before exact executable/console-script
+        # resolution. Launch rewriting consumes that resolved command, not this
+        # raw argv; the adjacent execution control exercises its real boundary.
+    assert dict(inherited) == before and inherited.rule is rule
 
 
 @pytest.mark.parametrize("subcommand", ["test", "--version", "audit", "fmt"])
-def test_build_python_execution_pins_forced_configuration_before_passthrough(
+def test_cargo_execution_does_not_rewrite_unconsumed_python_configuration(
     tmp_path, subcommand
 ):
     from copy import deepcopy
-    from molt.cli.runtime_cargo_plan import capture_cargo_configuration_inputs
     from tools.proof_queue_pkg import command_admission
 
     command = [
         "cargo",
         "--config",
         'env.MOLT_BUILD_PYTHON={value="relative/python",force=true}',
-        "--config",
-        'env.MOLT_BUILD_PYTHON_SIGNATURE={value="captured",force=true}',
         subcommand,
     ]
     if subcommand == "test":
         command += ["--", "--exact", "test_name"]
     envelope = command_admission.envelope_for_command(command)
     original = deepcopy(envelope)
-    env = {
+    inherited = {
         "CARGO_HOME": str(tmp_path / "cargo-home"),
-        "MOLT_BUILD_PYTHON": str(tmp_path / "captured/python"),
-        "MOLT_BUILD_PYTHON_SIGNATURE": "captured",
+        "MOLT_BUILD_PYTHON": "missing-poison",
     }
     projected, updates = command_admission._supervised_execution_command(
-        envelope, command, {}, environment=env, cwd=tmp_path
+        envelope, command, {}, environment=inherited, cwd=tmp_path
     )
-    assert envelope == original
-    assert envelope["argv"] == command
-    assert not updates
-    if subcommand != "test":
-        assert projected == command
-        return
-    assert projected != command
-    assert projected[projected.index("--") :] == ["--", "--exact", "test_name"]
-    effective = capture_cargo_configuration_inputs(
-        tmp_path, env=env, cargo_command=projected
-    )[1]
-    assert effective["MOLT_BUILD_PYTHON"] == env["MOLT_BUILD_PYTHON"]
-    assert effective["MOLT_BUILD_PYTHON_SIGNATURE"] == "captured"
+    assert envelope == original and projected == command and not updates
 
 
 def test_runtime_gate_resolver_replaces_same_base_forged_resource_generation(

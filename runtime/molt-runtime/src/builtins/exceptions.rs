@@ -339,6 +339,25 @@ crate::builtins::methods::native_method_table!(exception_group_method_bits, publ
         )),
 });
 
+/// Shared satellite diagnostic transport. Empty diagnostics have no arguments;
+/// explicit Python exception arguments remain owned by their constructors.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bridge_raise_exception(
+    kind_ptr: *const u8,
+    kind_len: usize,
+    msg_ptr: *const u8,
+    msg_len: usize,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let kind = unsafe {
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(kind_ptr, kind_len))
+        };
+        let msg =
+            unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg_ptr, msg_len)) };
+        raise_exception::<u64>(_py, kind, msg)
+    })
+}
+
 #[track_caller]
 pub(crate) fn raise_exception<T: ExceptionSentinel>(
     _py: &PyToken<'_>,
@@ -623,7 +642,13 @@ pub(crate) fn raise_unicode_encode_error<T: ExceptionSentinel>(
     T::exception_sentinel()
 }
 
+/// Supply the missing-iteration diagnostic only when acquisition has not already
+/// selected an error. Raw `molt_iter` uses the same None sentinel for an absent
+/// protocol and a failing callback; do not replace the latter or format its type.
 pub(crate) fn raise_not_iterable<T: ExceptionSentinel>(_py: &PyToken<'_>, bits: u64) -> T {
+    if exception_pending(_py) || molt_cpython_abi::api::errors::raised_error_pending() {
+        return T::exception_sentinel();
+    }
     let msg = if obj_from_bits(bits).is_none() {
         "'NoneType' object is not iterable".to_string()
     } else {
@@ -4834,6 +4859,180 @@ mod tests {
     };
     use molt_obj_model::MoltObject;
     use std::sync::atomic::Ordering;
+
+    fn assert_bridge_raise_owns_only_pending_and_observers(
+        py: &crate::PyToken<'_>,
+        raise: impl FnOnce() -> u64,
+    ) {
+        assert!(!exception_pending(py));
+        assert_eq!(raise(), MoltObject::none().bits());
+        assert!(exception_pending(py));
+        let error = exception_last_pending_bits(py);
+        let error_ptr = obj_from_bits(error).as_ptr().unwrap();
+        assert!(super::exception_matches_builtin_name(
+            py,
+            error,
+            "RuntimeError"
+        ));
+        assert_eq!(
+            unsafe { (*header_from_obj_ptr(error_ptr)).ref_count_snapshot() },
+            2,
+            "only the raised slot and this observer own the exception"
+        );
+        let args_ptr = obj_from_bits(unsafe { super::exception_args_bits(error_ptr) })
+            .as_ptr()
+            .unwrap();
+        let message = unsafe {
+            crate::object::seq_access::with_immutable_tuple_slice(args_ptr, |args| {
+                assert_eq!(args.len(), 1);
+                super::ExceptionValue::pin(py, args[0])
+            })
+        }
+        .unwrap();
+        assert_eq!(
+            string_obj_to_owned(obj_from_bits(message.bits())).as_deref(),
+            Some("bridge ownership regression: independently pinned message")
+        );
+        clear_exception(py);
+        assert_eq!(
+            unsafe { (*header_from_obj_ptr(error_ptr)).ref_count_snapshot() },
+            1,
+            "clearing the raised slot leaves only the observer"
+        );
+        dec_ref_bits(py, error);
+        let message_ptr = obj_from_bits(message.bits()).as_ptr().unwrap();
+        assert_eq!(
+            unsafe { (*header_from_obj_ptr(message_ptr)).ref_count_snapshot() },
+            1,
+            "retiring the exception and its args leaves only the message observer"
+        );
+        assert!(!exception_pending(py));
+    }
+
+    #[test]
+    fn core_string_raise_retires_constructor_temporaries() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            assert_bridge_raise_owns_only_pending_and_observers(py, || {
+                molt_runtime_core::rt_raise_str(
+                    "RuntimeError",
+                    "bridge ownership regression: independently pinned message",
+                )
+            });
+        });
+    }
+
+    #[test]
+    fn core_string_raise_empty_diagnostics_have_no_argument_owner() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            for kind in ["StopIteration", "RuntimeError"] {
+                super::raise_exception::<u64>(py, "ValueError", "prior raised error");
+                let prior = exception_last_pending_bits(py);
+                assert_eq!(
+                    molt_runtime_core::rt_raise_str(kind, ""),
+                    MoltObject::none().bits()
+                );
+                let error = exception_last_pending_bits(py);
+                assert_ne!(error, prior);
+                assert!(super::exception_matches_builtin_name(py, error, kind));
+                let error_ptr = obj_from_bits(error).as_ptr().unwrap();
+                let args_ptr = obj_from_bits(unsafe { super::exception_args_bits(error_ptr) })
+                    .as_ptr()
+                    .unwrap();
+                assert_eq!(unsafe { tuple_len(args_ptr) }, 0);
+                assert_eq!(
+                    unsafe { (*header_from_obj_ptr(error_ptr)).ref_count_snapshot() },
+                    2,
+                    "only the raised slot and this observer own the exception"
+                );
+                let prior_ptr = obj_from_bits(prior).as_ptr().unwrap();
+                assert_eq!(
+                    unsafe { (*header_from_obj_ptr(prior_ptr)).ref_count_snapshot() },
+                    1,
+                    "replacing a pending exception retires its raised owner"
+                );
+                clear_exception(py);
+                assert_eq!(
+                    unsafe { (*header_from_obj_ptr(error_ptr)).ref_count_snapshot() },
+                    1
+                );
+                dec_ref_bits(py, error);
+                dec_ref_bits(py, prior);
+                assert!(!exception_pending(py));
+            }
+            // An explicit Python empty-string argument is distinct from an
+            // absent diagnostic. The constructor must retain that argument.
+            let message = crate::alloc_string(py, b"");
+            assert!(!message.is_null());
+            let message = MoltObject::from_ptr(message).bits();
+            let args = crate::alloc_tuple(py, &[message]);
+            assert!(!args.is_null());
+            let args = MoltObject::from_ptr(args).bits();
+            let class = super::exception_type_bits_from_name(py, "StopIteration");
+            let error = super::molt_exception_new_from_class(class, args);
+            assert!(!exception_pending(py));
+            let ptr = obj_from_bits(error).as_ptr().expect("explicit exception");
+            let stored = super::exception_materialized_args_bits(py, ptr).unwrap();
+            let stored = obj_from_bits(stored).as_ptr().unwrap();
+            unsafe {
+                assert_eq!(tuple_len(stored), 1);
+                assert_eq!(crate::object::seq_access::item(stored, 0), Some(message));
+            }
+            dec_ref_bits(py, error);
+            dec_ref_bits(py, args);
+            dec_ref_bits(py, message);
+        });
+    }
+
+    #[test]
+    fn core_string_raise_replaces_only_the_prior_raised_owner() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            super::raise_exception::<u64>(py, "ValueError", "previous raised error");
+            let original = exception_last_pending_bits(py);
+            assert_eq!(
+                molt_runtime_core::rt_raise_str("RuntimeError", "replacement bridge error"),
+                MoltObject::none().bits()
+            );
+            let observed = exception_last_pending_bits(py);
+            assert_ne!(observed, original);
+            assert!(super::exception_matches_builtin_name(
+                py,
+                observed,
+                "RuntimeError"
+            ));
+            let original_ptr = obj_from_bits(original).as_ptr().unwrap();
+            assert_eq!(
+                unsafe { (*header_from_obj_ptr(original_ptr)).ref_count_snapshot() },
+                1,
+                "successful replacement must release the prior raised owner"
+            );
+            clear_exception(py);
+            let observed_ptr = obj_from_bits(observed).as_ptr().unwrap();
+            assert_eq!(
+                unsafe { (*header_from_obj_ptr(observed_ptr)).ref_count_snapshot() },
+                1
+            );
+            dec_ref_bits(py, observed);
+            dec_ref_bits(py, original);
+        });
+    }
+
+    #[cfg(feature = "stdlib_itertools")]
+    #[test]
+    fn itertools_bridge_raise_retires_constructor_temporaries() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            assert_bridge_raise_owns_only_pending_and_observers(py, || {
+                molt_runtime_itertools::bridge::raise_exception::<u64>(
+                    py.core_token(),
+                    "RuntimeError",
+                    "bridge ownership regression: independently pinned message",
+                )
+            });
+        });
+    }
 
     #[test]
     fn notes_dictionary_and_reserved_metadata_preserve_independent_ownership() {

@@ -14,7 +14,10 @@ from contextlib import contextmanager
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from collections.abc import Callable, Iterator
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from multiprocessing.process import BaseProcess
 
 from tools import harness_memory_guard
 from molt.temporary_artifacts import new_guarded_directory
@@ -337,14 +340,15 @@ def _role_prefix(prefix: str, role: GuardedProcessRole) -> str:
     return f"{prefix}_{role.value.upper()}"
 
 
-def _timeout_from_role_env(
+def resolve_test_process_timeout(
     prefix: str,
     role: GuardedProcessRole,
     env: Mapping[str, str],
     *,
-    explicit: float | None,
-    default: float | None,
+    explicit: float | None = None,
+    default: float | None = None,
 ) -> float | None:
+    """Select one existing role budget for a fixture's build and first execution."""
     if explicit is not None:
         return explicit
     role_default = (
@@ -448,7 +452,7 @@ def run_guarded_test_process(
     command = list(args)
     process_env = os.environ if env is None else env
     role = guarded_process_role(command)
-    resolved_timeout = _timeout_from_role_env(
+    resolved_timeout = resolve_test_process_timeout(
         prefix,
         role,
         process_env,
@@ -697,3 +701,19 @@ def close_owned_test_process(process: subprocess.Popen[Any]) -> None:
     if process.poll() is None:
         harness_memory_guard.force_close_process_group(process)
     process.wait()
+
+
+def close_owned_multiprocessing_child(child: BaseProcess) -> None:
+    """Reap only the caller's directly created multiprocessing observer.
+
+    BaseProcess checks its creator PID before is_alive/join. The child remains
+    unreaped until this owner joins it; cleanup never signals a process group.
+    """
+    if child.is_alive():
+        child.terminate()
+    child.join(10)
+    if child.is_alive():
+        child.kill()
+        child.join(10)
+    assert not child.is_alive(), "owned multiprocessing observer did not stop"
+    child.close()

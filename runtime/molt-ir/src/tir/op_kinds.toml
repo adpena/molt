@@ -1017,8 +1017,6 @@ classifier_owned_value = [
     "slice_new",
     "stateful_locals_register",
     "staticmethod_new",
-    "statistics_mean_slice",
-    "statistics_stdev_slice",
     "str_from_obj",
     "string_capitalize",
     "string_count",

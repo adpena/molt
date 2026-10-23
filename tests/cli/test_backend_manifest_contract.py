@@ -410,7 +410,7 @@ def test_runtime_wasm_pair_materializes_only_from_one_combined_observation(
 
     monkeypatch.setattr(pair, "_build_state_root", lambda _root: tmp_path / "state")
     monkeypatch.setattr(
-        pair, "hydrate_runtime_wasm_pair_from_shared_cache", lambda **_k: None
+        pair, "admit_runtime_wasm_pair_from_shared_cache", lambda **_k: None
     )
     monkeypatch.setattr(pair, "_prepopulate_combined_runtime_wasm_target", combined)
     monkeypatch.setattr(

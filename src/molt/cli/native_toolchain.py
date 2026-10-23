@@ -67,6 +67,7 @@ def _run_bolt_post_link(
     json_output: bool,
     receipt: FinalLinkReceiptRequest | None = None,
     link_selection: tuple[Path, Path] | None = None,
+    link_input_artifacts: dict[str, tuple[Path, Path]] | None = None,
     validate_inputs: Callable[[], None] | None = None,
 ) -> int:
     """Run BOLT post-link optimization after a successful native build.
@@ -81,7 +82,17 @@ def _run_bolt_post_link(
 
     owned_input: Path | None = None
     owned_selection: Path | None = None
+    owned_captures: list[Path] = []
     try:
+        for stage, destination in (link_input_artifacts or {}).values():
+            if (
+                file_publication.is_owned_staged_file_path(
+                    stage, destination, purpose="link-inputs", suffix=stage.suffix
+                )
+                and stage.is_file()
+                and stage.stat().st_nlink == 1
+            ):
+                owned_captures.append(stage)
         # Determine the output binary path.  When --output is given we can
         # resolve it directly; otherwise BOLT requires it explicitly because
         # the default output path lives inside internal build state.
@@ -245,6 +256,7 @@ def _run_bolt_post_link(
             strip=os.environ.get("MOLT_KEEP_SYMBOLS") != "1",
             receipt=receipt,
             link_selection=link_selection,
+            link_input_artifacts=link_input_artifacts,
             validate_inputs=validate_inputs,
         )
         if finalize_error is not None:
@@ -272,6 +284,8 @@ def _run_bolt_post_link(
             discard_staged_output(owned_input)
         if owned_selection is not None:
             discard_staged_output(owned_selection)
+        for stage in owned_captures:
+            discard_staged_output(stage)
 
 
 def _detect_macos_arch(obj_path: Path) -> str | None:

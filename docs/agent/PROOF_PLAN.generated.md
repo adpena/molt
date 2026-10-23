@@ -45,12 +45,12 @@ GitHub job budgets cover the deterministic command-deadline DAG projection plus 
 
 | Family | Tiers | Required | Executor | Timeout | Commands | Reserve | Headroom | Resource | Selection parents | Admission | Inputs |
 |---|---|---:|---|---:|---:|---:|---:|---|---|---|---:|
-| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2820 s | 120 s | 660 s | `repository-policy` | none | `docs-gates` needs none | 229 |
+| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2820 s | 120 s | 660 s | `repository-policy` | none | `docs-gates` needs none | 230 |
 | `wasm` | pr, main | yes | `github-job` | 333 min | 19800 s | 180 s | 0 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 53 |
 | `python_static` | pre-push, pr, main | yes | `github-job` | 16 min | 900 s | 60 s | 0 s | `python-static` | none | `python-static` needs `classify-changes` | 10 |
 | `python_unit` | pre-push, pr, main | yes | `github-matrix` | 43 min | 2520 s per cell | 60 s | 0 s | `python-tests` | none | `python-unit` needs `classify-changes` | 11 |
 | `python_unit_collection` | pr, main | yes | `github-matrix` | 24 min | 1320 s per cell | 60 s | 60 s | `python-tests` | none | `python-unit-collection` needs `classify-changes` | 11 |
-| `native_integration` | pr, main | yes | `github-job` | 63 min | 3600 s | 180 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 36 |
+| `native_integration` | pr, main | yes | `github-job` | 63 min | 3600 s | 180 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 35 |
 | `browser_simd` | pre-push, pr, main | yes | `github-job` | 10 min | 480 s | 120 s | 0 s | `compiler-build-resource` | none | `browser-simd` needs `classify-changes` | 12 |
 | `rust` | pre-push, pr, main | yes | `github-job` | 342 min | 20280 s | 240 s | 0 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 22 |
 | `llvm` | pre-push, pr, main, scheduled | yes | `github-job` | 75 min | 4200 s | 120 s | 180 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 44 |
@@ -127,13 +127,12 @@ Executable identities bind resolved path, version text, and the repository-relat
 | `target-pythons.3.13` | `executable` | — | `^Python 3\.13\.[0-9]+$` | `.` | `3.13` | 1 |
 | `target-pythons.3.14` | `executable` | — | `^Python 3\.14\.[0-9]+$` | `.` | `3.14` | 1 |
 | `target-pythons` | `group` | `target-pythons.3.12`, `target-pythons.3.13`, `target-pythons.3.14` | `selection only` | — | — | — |
-| `generators` | `group` | `target-pythons`, `rustfmt`, `browser-acorn` | `selection only` | — | — | — |
+| `generators` | `group` | `rustfmt`, `browser-acorn` | `selection only` | — | — | — |
 | `browser-acorn` | `executable` | — | `^8\.19\.0$` | `tools/browser_asset_graph` | `8.19.0` | 1 |
 | `npm` | `executable` | — | `^12\.2\.1$` | `.` | `12.2.1` | 4 |
 | `edgebox-typescript` | `executable` | — | `^7\.0\.2$` | `examples/edgebox/packages/edgebox-cloudflare` | `7.0.2` | 1 |
 | `rustc` | `executable` | — | `^rustc 1\.99\.1\b` | `.` | `1.99.1` | 3 |
 | `lune` | `executable` | — | `^lune 0\.11\.1$` | `.` | `0.11.1` | 2 |
-| `build-python` | `executable` | `compiler:build-python` | `^Python 3\.[0-9]+\.[0-9]+.*$` | `.` | `effective Cargo build Python` | 1 |
 | `cargo` | `executable` | — | `^cargo 1\.99\.1\b` | `.` | `1.99.1` | 3 |
 | `git` | `executable` | — | `^git version 2\.` | `.` | `2.x` | 1 |
 | `rustfmt` | `executable` | — | `^rustfmt 1\.10\.0-stable\b` | `.` | `1.10.0` | 3 |
@@ -390,14 +389,14 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `subprocess-guard-coverage` | 2 | 0 |
 | `environment-registry-audit` | 2 | 0 |
 | `cpython-coverage-generation` | 2 | 0 |
-| `unicode-width-scan-records` | 1 | 0 |
+| `unicode-source-facts` | 1 | 0 |
 | `structural-audit` | 7 | 0 |
 | `structural-audit-records` | 5 | 0 |
 | `generator-manifest` | 8 | 0 |
 | `host-fact-test-isolation` | 2 | 0 |
 | `backend-daemon-custody` | 11 | 0 |
 | `encoding-diagnostics` | 2 | 0 |
-| `runtime-cargo-input-custody` | 55 | 0 |
+| `runtime-cargo-input-custody` | 54 | 0 |
 | `rust-toolchain` | 11 | 1 |
 | `table-drift` | 18 | 1 |
 | `findings-registry` | 4 | 0 |
@@ -419,7 +418,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `rust-clippy-changed` | 8 | 1 |
 | `backend-native` | 9 | 1 |
 | `wasm-facts-host-tool` | 7 | 2 |
-| `backend-daemon-cache` | 6 | 2 |
+| `backend-daemon-cache` | 12 | 2 |
 | `backend-ir-framing` | 4 | 1 |
 | `native-object-emission` | 5 | 1 |
 | `maintained-zlib-counters` | 14 | 2 |
@@ -429,7 +428,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `wasm-host` | 5 | 1 |
 | `gpu-runtime` | 3 | 1 |
 | `runtime-vfs` | 4 | 2 |
-| `runtime-lib` | 3 | 1 |
+| `runtime-lib` | 5 | 1 |
 | `python-effect-capability-authority` | 6 | 1 |
 | `python-identity-catalog-authority` | 7 | 0 |
 | `builtin-binding-guard-authority` | 9 | 1 |

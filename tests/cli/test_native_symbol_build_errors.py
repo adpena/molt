@@ -125,7 +125,10 @@ def test_symbol_reader_failure_is_a_build_error_and_releases_ir_lease(
         phases.append("compile")
         lease = kwargs["_ensure_backend_ir_file_path"]()
         assert lease.is_file()
-        assert msgpack.unpackb(lease.read_bytes(), raw=False) == {"functions": []}
+        assert msgpack.unpackb(lease.read_bytes(), raw=False) == {
+            "function_bodies": [],
+            "function_digests": b"",
+        }
         assert kwargs["_ensure_backend_ir_file_path"]() == lease
         leases.append(lease)
         fail_symbol_inspection()

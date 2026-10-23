@@ -572,12 +572,13 @@ def test_llvm_prefix_bytes_belong_to_selected_compiler_identity(
 def test_compiler_cargo_projection_never_admits_runtime_build_python(
     tmp_path, monkeypatch
 ):
-    from molt.cli import cargo_execution, runtime_cargo_plan, runtime_build_identity
+    from molt.cli import cargo_execution, runtime_cargo_plan
+    from molt.python_runtime_admission import BuildPythonAdmission
 
     monkeypatch.setattr(cargo_execution, "_cargo_build_env", lambda env: dict(env))
     monkeypatch.setattr(
-        runtime_build_identity,
-        "_python_identity",
+        BuildPythonAdmission,
+        "capture",
         lambda *args, **kw: pytest.fail(
             "compiler does not execute runtime Python generators"
         ),
@@ -611,18 +612,16 @@ def test_compiler_cargo_projection_never_admits_runtime_build_python(
     assert key("missing-runtime-python-a") == key("missing-runtime-python-b")
 
 
-def test_runtime_augments_shared_cargo_projection_with_required_python(monkeypatch):
+def test_runtime_captures_shared_cargo_projection_without_python(monkeypatch):
     from molt.cli import runtime_build_identity
+    from molt.python_runtime_admission import BuildPythonAdmission
 
     calls = []
-
-    def python(env, *, admission):
-        calls.append("python")
-        return {"identity": env["MOLT_BUILD_PYTHON"]}
+    cargo_content = {"tools": {"rustc": "content"}, "cargo_configuration": "config"}
 
     def cargo():
         calls.append("cargo-custody")
-        return {"tools": {"rustc": "content"}, "cargo_configuration": "config"}
+        return cargo_content
 
     cargo_custody = cargo_resource_custody.CargoResourceCustody.capture(())
 
@@ -630,14 +629,18 @@ def test_runtime_augments_shared_cargo_projection_with_required_python(monkeypat
         calls.append("cargo-verify")
         cargo_custody.verify()
 
-    monkeypatch.setattr(runtime_build_identity, "_python_identity", python)
+    monkeypatch.setattr(
+        BuildPythonAdmission,
+        "capture",
+        lambda *_a, **_k: pytest.fail("Rust capture admitted Python"),
+    )
     result = runtime_build_identity._capture_plan_toolchain(
         SimpleNamespace(
-            environment={"MOLT_BUILD_PYTHON": "runtime-python"},
+            environment={"MOLT_BUILD_PYTHON": "missing-generator"},
             toolchain_identity=cargo,
             verify=verify,
         )
     )
-    assert calls == ["python", "cargo-verify", "cargo-custody"]
-    assert result["tools"]["build_python"] == {"identity": "runtime-python"}
-    assert result["tools"]["rustc"] == "content"
+    assert calls == ["cargo-verify", "cargo-custody"]
+    assert result is cargo_content
+    assert "build_python" not in result["tools"]

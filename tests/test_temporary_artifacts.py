@@ -1753,3 +1753,19 @@ def test_same_spelling_reuses_validation_but_never_admits_a_link(tmp_path, monke
     with pytest.raises((ValueError, OSError)):
         scratch._same_owned_path(str(link), str(link))
     assert calls[-1] == link
+
+
+def test_owned_temporary_directory_explicit_retention_and_later_cleanup(tmp_path):
+    import gc
+
+    owner = scratch.OwnedTemporaryDirectory(dir=tmp_path)
+    retained = owner.retain()
+    (retained / "evidence").write_bytes(b"live-child-output")
+    del owner
+    gc.collect()
+    assert (retained / "evidence").read_bytes() == b"live-child-output"
+    # Retention detaches automatic reclamation, not explicit ownership cleanup.
+    another = scratch.OwnedTemporaryDirectory(dir=tmp_path)
+    path = another.retain()
+    another.cleanup()
+    assert not path.exists()

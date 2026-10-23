@@ -18,10 +18,10 @@ fn pickle_apply_dict_state(
         return Ok(());
     }
     let Some(state_ptr) = obj_from_bits(dict_state_bits).as_ptr() else {
-        return Err(pickle_raise(_py, "pickle.loads: BUILD state must be dict"));
+        return Err(PickleError::Unpickling.raise(_py, "pickle.loads: BUILD state must be dict"));
     };
     if unsafe { object_type_id(state_ptr) } != TYPE_ID_DICT {
-        return Err(pickle_raise(_py, "pickle.loads: BUILD state must be dict"));
+        return Err(PickleError::Unpickling.raise(_py, "pickle.loads: BUILD state must be dict"));
     }
 
     // CPython BUILD updates __dict__ directly; only the separate slot-state
@@ -44,10 +44,9 @@ fn pickle_apply_dict_state(
         .filter(|target| unsafe { object_type_id(*target) == TYPE_ID_DICT })
     else {
         dec_ref_bits(_py, dictionary);
-        return Err(pickle_raise(
-            _py,
-            "pickle.loads: instance __dict__ must be dict",
-        ));
+        return Err(
+            PickleError::Unpickling.raise(_py, "pickle.loads: instance __dict__ must be dict")
+        );
     };
     let completed = unsafe {
         crate::dict_update_apply(
@@ -71,7 +70,9 @@ pub(crate) fn pickle_vm_item_to_bits(
     match item {
         PickleVmItem::Value(bits) => Ok(*bits),
         PickleVmItem::Global(global) => pickle_global_callable_bits(_py, *global),
-        PickleVmItem::Mark => Err(pickle_raise(_py, "pickle.loads: mark not found")),
+        PickleVmItem::Mark => {
+            Err(PickleError::Unpickling.raise(_py, "pickle.loads: mark not found"))
+        }
     }
 }
 
@@ -87,7 +88,7 @@ pub(crate) fn pickle_vm_pop_mark_items(
         }
         out.push(item);
     }
-    Err(pickle_raise(_py, "pickle.loads: mark not found"))
+    Err(PickleError::Unpickling.raise(_py, "pickle.loads: mark not found"))
 }
 
 pub(crate) fn pickle_vm_pop_value(
@@ -96,7 +97,7 @@ pub(crate) fn pickle_vm_pop_value(
 ) -> Result<u64, u64> {
     let item = stack
         .pop()
-        .ok_or_else(|| pickle_raise(_py, "pickle.loads: stack underflow"))?;
+        .ok_or_else(|| PickleError::Unpickling.raise(_py, "pickle.loads: stack underflow"))?;
     pickle_vm_item_to_bits(_py, &item)
 }
 
@@ -163,17 +164,15 @@ pub(crate) fn pickle_lookup_extension_bits(
     let copyreg_bits = pickle_resolve_global_bits(_py, "copyreg", "_inverted_registry")?;
     let Some(dict_ptr) = obj_from_bits(copyreg_bits).as_ptr() else {
         dec_ref_bits(_py, copyreg_bits);
-        return Err(pickle_raise(
-            _py,
-            "pickle.loads: extension registry unavailable",
-        ));
+        return Err(
+            PickleError::Unpickling.raise(_py, "pickle.loads: extension registry unavailable")
+        );
     };
     if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
         dec_ref_bits(_py, copyreg_bits);
-        return Err(pickle_raise(
-            _py,
-            "pickle.loads: extension registry unavailable",
-        ));
+        return Err(
+            PickleError::Unpickling.raise(_py, "pickle.loads: extension registry unavailable")
+        );
     }
     let code_bits = MoltObject::from_int(code).bits();
     let entry_bits = unsafe { dict_get_in_place(_py, dict_ptr, code_bits) };
@@ -186,15 +185,15 @@ pub(crate) fn pickle_lookup_extension_bits(
     };
     let Some(entry_bits) = entry_bits else {
         dec_ref_bits(_py, copyreg_bits);
-        return Err(pickle_raise(_py, "pickle.loads: unknown extension code"));
+        return Err(PickleError::Unpickling.raise(_py, "pickle.loads: unknown extension code"));
     };
     let Some(entry_ptr) = obj_from_bits(entry_bits).as_ptr() else {
         dec_ref_bits(_py, copyreg_bits);
-        return Err(pickle_raise(_py, "pickle.loads: invalid extension entry"));
+        return Err(PickleError::Unpickling.raise(_py, "pickle.loads: invalid extension entry"));
     };
     if unsafe { object_type_id(entry_ptr) } != TYPE_ID_TUPLE {
         dec_ref_bits(_py, copyreg_bits);
-        return Err(pickle_raise(_py, "pickle.loads: invalid extension entry"));
+        return Err(PickleError::Unpickling.raise(_py, "pickle.loads: invalid extension entry"));
     }
     let Some(fields) = (unsafe {
         crate::object::seq_access::snapshot(_py, entry_ptr, "sequence snapshot allocation failed")
@@ -204,15 +203,15 @@ pub(crate) fn pickle_lookup_extension_bits(
     };
     if fields.len() != 2 {
         dec_ref_bits(_py, copyreg_bits);
-        return Err(pickle_raise(_py, "pickle.loads: invalid extension entry"));
+        return Err(PickleError::Unpickling.raise(_py, "pickle.loads: invalid extension entry"));
     }
     let Some(module) = string_obj_to_owned(obj_from_bits(fields[0])) else {
         dec_ref_bits(_py, copyreg_bits);
-        return Err(pickle_raise(_py, "pickle.loads: invalid extension entry"));
+        return Err(PickleError::Unpickling.raise(_py, "pickle.loads: invalid extension entry"));
     };
     let Some(name) = string_obj_to_owned(obj_from_bits(fields[1])) else {
         dec_ref_bits(_py, copyreg_bits);
-        return Err(pickle_raise(_py, "pickle.loads: invalid extension entry"));
+        return Err(PickleError::Unpickling.raise(_py, "pickle.loads: invalid extension entry"));
     };
     dec_ref_bits(_py, copyreg_bits);
     pickle_resolve_global_with_hook(_py, &module, &name, find_class_bits)
@@ -224,14 +223,14 @@ pub(crate) fn pickle_apply_newobj(
     args_bits: u64,
     kwargs_bits: Option<u64>,
 ) -> Result<u64, u64> {
-    let new_bits = pickle_attr_required(_py, cls_bits, b"__new__")?;
+    let new_bits = pickle_attr_required(_py, PickleError::Unpickling, cls_bits, b"__new__")?;
     let Some(args_ptr) = obj_from_bits(args_bits).as_ptr() else {
         dec_ref_bits(_py, new_bits);
-        return Err(pickle_raise(_py, "pickle.loads: NEWOBJ args must be tuple"));
+        return Err(PickleError::Unpickling.raise(_py, "pickle.loads: NEWOBJ args must be tuple"));
     };
     if unsafe { object_type_id(args_ptr) } != TYPE_ID_TUPLE {
         dec_ref_bits(_py, new_bits);
-        return Err(pickle_raise(_py, "pickle.loads: NEWOBJ args must be tuple"));
+        return Err(PickleError::Unpickling.raise(_py, "pickle.loads: NEWOBJ args must be tuple"));
     }
     let Some(args) = (unsafe {
         crate::object::seq_access::snapshot(_py, args_ptr, "sequence snapshot allocation failed")
@@ -242,17 +241,15 @@ pub(crate) fn pickle_apply_newobj(
     if let Some(kw_bits) = kwargs_bits {
         let Some(kw_ptr) = obj_from_bits(kw_bits).as_ptr() else {
             dec_ref_bits(_py, new_bits);
-            return Err(pickle_raise(
-                _py,
-                "pickle.loads: NEWOBJ_EX kwargs must be dict",
-            ));
+            return Err(
+                PickleError::Unpickling.raise(_py, "pickle.loads: NEWOBJ_EX kwargs must be dict")
+            );
         };
         if unsafe { object_type_id(kw_ptr) } != TYPE_ID_DICT {
             dec_ref_bits(_py, new_bits);
-            return Err(pickle_raise(
-                _py,
-                "pickle.loads: NEWOBJ_EX kwargs must be dict",
-            ));
+            return Err(
+                PickleError::Unpickling.raise(_py, "pickle.loads: NEWOBJ_EX kwargs must be dict")
+            );
         }
     }
     let mapping = kwargs_bits.unwrap_or_else(|| MoltObject::none().bits());
@@ -316,16 +313,14 @@ pub(crate) fn pickle_apply_build(
         && !obj_from_bits(slot_bits).is_none()
     {
         let Some(slot_ptr) = obj_from_bits(slot_bits).as_ptr() else {
-            return Err(pickle_raise(
-                _py,
-                "pickle.loads: BUILD slot state must be dict",
-            ));
+            return Err(
+                PickleError::Unpickling.raise(_py, "pickle.loads: BUILD slot state must be dict")
+            );
         };
         if unsafe { object_type_id(slot_ptr) } != TYPE_ID_DICT {
-            return Err(pickle_raise(
-                _py,
-                "pickle.loads: BUILD slot state must be dict",
-            ));
+            return Err(
+                PickleError::Unpickling.raise(_py, "pickle.loads: BUILD slot state must be dict")
+            );
         }
         let Some(pairs) = (unsafe {
             crate::object::ops_dict::dict_snapshot(
@@ -356,10 +351,10 @@ pub(crate) fn pickle_apply_reduce_vm(
     args_bits: u64,
 ) -> Result<u64, u64> {
     let Some(args_ptr) = obj_from_bits(args_bits).as_ptr() else {
-        return Err(pickle_raise(_py, "pickle.loads: reduce args must be tuple"));
+        return Err(PickleError::Unpickling.raise(_py, "pickle.loads: reduce args must be tuple"));
     };
     if unsafe { object_type_id(args_ptr) } != TYPE_ID_TUPLE {
-        return Err(pickle_raise(_py, "pickle.loads: reduce args must be tuple"));
+        return Err(PickleError::Unpickling.raise(_py, "pickle.loads: reduce args must be tuple"));
     }
     let Some(args) = (unsafe {
         crate::object::seq_access::snapshot(_py, args_ptr, "sequence snapshot allocation failed")
@@ -368,29 +363,23 @@ pub(crate) fn pickle_apply_reduce_vm(
     };
     let out_bits = match callable {
         PickleVmItem::Mark => {
-            return Err(pickle_raise(_py, "pickle.loads: mark cannot be called"));
+            return Err(PickleError::Unpickling.raise(_py, "pickle.loads: mark cannot be called"));
         }
         PickleVmItem::Global(PickleGlobal::CodecsEncode) => {
             if args.is_empty() || args.len() > 2 {
-                return Err(pickle_raise(
-                    _py,
-                    "pickle.loads: _codecs.encode expects 1 or 2 arguments",
-                ));
+                return Err(PickleError::Unpickling
+                    .raise(_py, "pickle.loads: _codecs.encode expects 1 or 2 arguments"));
             }
             let Some(text) = string_obj_to_owned(obj_from_bits(args[0])) else {
-                return Err(pickle_raise(
-                    _py,
-                    "pickle.loads: _codecs.encode text must be str",
-                ));
+                return Err(PickleError::Unpickling
+                    .raise(_py, "pickle.loads: _codecs.encode text must be str"));
             };
             let encoding = if args.len() == 1 {
                 "utf-8".to_string()
             } else {
                 let Some(enc) = string_obj_to_owned(obj_from_bits(args[1])) else {
-                    return Err(pickle_raise(
-                        _py,
-                        "pickle.loads: _codecs.encode encoding must be str",
-                    ));
+                    return Err(PickleError::Unpickling
+                        .raise(_py, "pickle.loads: _codecs.encode encoding must be str"));
                 };
                 enc
             };
@@ -421,10 +410,10 @@ pub(crate) fn pickle_apply_reduce_bits(
     args_bits: u64,
 ) -> Result<u64, u64> {
     let Some(args_ptr) = obj_from_bits(args_bits).as_ptr() else {
-        return Err(pickle_raise(_py, "pickle.loads: reduce args must be tuple"));
+        return Err(PickleError::Unpickling.raise(_py, "pickle.loads: reduce args must be tuple"));
     };
     if unsafe { object_type_id(args_ptr) } != TYPE_ID_TUPLE {
-        return Err(pickle_raise(_py, "pickle.loads: reduce args must be tuple"));
+        return Err(PickleError::Unpickling.raise(_py, "pickle.loads: reduce args must be tuple"));
     }
     let Some(args) = (unsafe {
         crate::object::seq_access::snapshot(_py, args_ptr, "sequence snapshot allocation failed")
@@ -460,5 +449,5 @@ pub(crate) fn pickle_memo_get(
         return Ok(item.clone());
     }
     let msg = format!("pickle.loads: memo key {} missing", index);
-    Err(pickle_raise(_py, &msg))
+    Err(PickleError::Unpickling.raise(_py, &msg))
 }

@@ -4,6 +4,8 @@ import ast
 from molt.python_private_names import python_import_binding
 import copy
 from collections.abc import Collection, Sequence
+from dataclasses import dataclass
+from typing import Literal
 
 SupportDef = ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef
 SupportBinding = SupportDef | ast.Assign | ast.AnnAssign
@@ -15,6 +17,51 @@ def canonical_native_support_roots(roots: Collection[str]) -> tuple[str, ...]:
     if any(not isinstance(name, str) or not name.isidentifier() for name in roots):
         raise ValueError("invalid native support source binding roots")
     return tuple(sorted(set(roots)))
+
+
+@dataclass(frozen=True, slots=True)
+class ModuleBodySelection:
+    """The source statements a module producer is authorized to lower.
+
+    Complete source is distinct from a support slice, including on the wire.
+    Neither variant certifies target lowerability or a closed object provider.
+    """
+
+    kind: Literal["complete_source", "native_support"]
+    roots: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        roots = canonical_native_support_roots(self.roots)
+        if self.kind == "complete_source":
+            if roots:
+                raise ValueError("complete source selection cannot have support roots")
+        elif self.kind == "native_support":
+            if not roots:
+                raise ValueError("native support selection requires binding roots")
+        else:
+            raise ValueError("invalid module body selection kind")
+        object.__setattr__(self, "roots", roots)
+
+    @classmethod
+    def from_requested_roots(cls, roots: Collection[str]) -> ModuleBodySelection:
+        """Convert the import request's optional support roots once at admission."""
+        roots = canonical_native_support_roots(roots)
+        return cls("native_support", roots) if roots else cls("complete_source")
+
+    def payload(self) -> dict[str, object]:
+        return {"kind": self.kind, "roots": list(self.roots)}
+
+    @classmethod
+    def from_payload(cls, payload: object) -> ModuleBodySelection:
+        if not isinstance(payload, dict) or set(payload) != {"kind", "roots"}:
+            raise ValueError("missing or invalid module body selection")
+        roots = payload["roots"]
+        if not isinstance(roots, list):
+            raise ValueError("invalid module body selection roots")
+        selection = cls(payload["kind"], tuple(roots))
+        if selection.payload() != payload:
+            raise ValueError("noncanonical module body selection")
+        return selection
 
 
 def top_level_support_defs(tree: ast.Module) -> dict[str, SupportDef]:
@@ -114,11 +161,11 @@ def reachable_support_bindings(
 
 def prune_native_support_module(
     tree: ast.Module,
-    roots: Collection[str],
+    selection: ModuleBodySelection,
 ) -> tuple[ast.Module, frozenset[str], tuple[str, ...]]:
-    root_set = frozenset(name for name in roots if name)
-    if not root_set:
+    if selection.kind == "complete_source":
         return tree, frozenset(), ()
+    root_set = frozenset(selection.roots)
     reachable, missing = reachable_support_bindings(tree, root_set)
     if missing:
         return ast.Module(body=[], type_ignores=tree.type_ignores), reachable, missing

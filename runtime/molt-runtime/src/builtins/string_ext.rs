@@ -478,7 +478,7 @@ extern "C" fn formatter_field_name_next(state_bits: u64) -> u64 {
         };
         let text =
             unsafe { std::slice::from_raw_parts(string_bytes(source_ptr), string_len(source_ptr)) };
-        let next = next_format_lookup(text, &mut offset);
+        let next = next_format_lookup(crate::object::ops::unicode_data(py), text, &mut offset);
         if !formatter_set_offset(py, cell_ptr, offset) {
             return MoltObject::none().bits();
         }
@@ -525,10 +525,11 @@ pub extern "C" fn molt_string_formatter_field_name_split(field_name_bits: u64) -
         };
         let text =
             unsafe { std::slice::from_raw_parts(string_bytes(source_ptr), string_len(source_ptr)) };
-        let (first, offset) = match split_format_field_name(text) {
-            Ok(first) => first,
-            Err(message) => return raise_exception(py, "ValueError", message),
-        };
+        let (first, offset) =
+            match split_format_field_name(crate::object::ops::unicode_data(py), text) {
+                Ok(first) => first,
+                Err(message) => return raise_exception(py, "ValueError", message),
+            };
         let Some((first_bits, _first_owner)) = formatter_name(py, first) else {
             return MoltObject::none().bits();
         };

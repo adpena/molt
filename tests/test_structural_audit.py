@@ -2486,6 +2486,18 @@ def test_rust_admitted_domain_numeric_total_rejection_requires_each_branch(
             "rust_backend_rejection_applicability",
         ),
         (
+            "runtime/molt-ir/src/ir.rs",
+            ".try_for_each(validate_function_transport_contract)?;",
+            ".for_each(drop);",
+            "rust_backend_rejection_applicability",
+        ),
+        (
+            "runtime/molt-ir/src/ir.rs",
+            "        ir_schema::validate_required_fields(op)\n",
+            "        let _ = op;\n        ir_schema::validate_function_param_types\n",
+            "rust_backend_rejection_applicability",
+        ),
+        (
             "runtime/molt-ir/src/ir_schema.rs",
             "validate_value_transport(op)?;",
             "",
@@ -2848,6 +2860,68 @@ def test_compatibility_protocol_generation_requires_receipts_and_witnesses(
     assert protocol.main(["--write"]) == 0
     assert protocol.main(["--check"]) == 0
     assert protocol.projection_errors(tmp_path) == []
+
+
+def test_compatibility_source_refresh_preserves_independent_evidence_and_is_atomic(
+    tmp_path, monkeypatch, capsys
+):
+    import hashlib
+    import json
+
+    protocol = SA.compatibility_errors
+    monkeypatch.setattr(protocol, "ROOT", tmp_path)
+    receipt = tmp_path / protocol.SOURCE_RECEIPTS
+    receipt.parent.mkdir(parents=True)
+    original = (ROOT / protocol.SOURCE_RECEIPTS).read_bytes()
+    receipt.write_bytes(original)
+    pins = tmp_path / protocol.CPYTHON_SOURCES.relative_to(ROOT)
+    pins.write_bytes(protocol.CPYTHON_SOURCES.read_bytes())
+    for facts in protocol.OUTCOMES.values():
+        witness = tmp_path / facts.witness
+        witness.parent.mkdir(parents=True, exist_ok=True)
+        witness.touch()
+    document = json.loads(original)
+    expected = [row for row in document["sources"] if "revision" not in row]
+    calls = []
+    count = len([row for row in document["sources"] if "revision" in row])
+
+    def fail_late(url):
+        calls.append(url)
+        if len(calls) == count:
+            raise OSError("last source unavailable")
+        return url.encode("utf-8")
+
+    with pytest.raises(OSError, match="last source unavailable"):
+        protocol.refresh_sources(tmp_path, fetch=fail_late)
+    assert receipt.read_bytes() == original
+    assert not (tmp_path / protocol.RUST_PATH).exists()
+
+    def changed_receipt(url):
+        receipt.write_bytes(original + b"\n")
+        return url.encode("utf-8")
+
+    with pytest.raises(ValueError, match="changed during refresh"):
+        protocol.refresh_sources(tmp_path, fetch=changed_receipt)
+    assert receipt.read_bytes() == original + b"\n"
+    receipt.write_bytes(original)
+    assert (
+        protocol.refresh_sources(tmp_path, fetch=lambda url: url.encode("utf-8")) == 0
+    )
+    captured = json.loads(receipt.read_bytes())
+    assert [row for row in captured["sources"] if "revision" not in row] == expected
+    fresh = [row for row in captured["sources"] if "revision" in row]
+    assert len(fresh) == count
+    for row in fresh:
+        assert row["sha256"] == hashlib.sha256(row["url"].encode("utf-8")).hexdigest()
+        assert f"/{row['revision']}/{row['path']}" in row["url"]
+    assert protocol.source_errors(tmp_path) == []
+    with pytest.raises(SystemExit):
+        protocol.main(["--refresh-sources", "--check"])
+    assert json.loads(receipt.read_bytes()) == captured
+    with pytest.raises(SystemExit) as help_exit:
+        protocol.main(["--help"])
+    assert help_exit.value.code == 0
+    assert "--refresh-sources" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(

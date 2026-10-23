@@ -5,7 +5,11 @@ import os
 import shutil
 from pathlib import Path
 
-from tests.process_guard_common import run_guarded_test_process
+from tests.process_guard_common import (
+    GuardedProcessRole,
+    resolve_test_process_timeout,
+    run_guarded_test_process,
+)
 from molt.process_environment import NameRule, ProcessEnvironment
 import molt.dx as dx
 from molt import custody_layout
@@ -2182,11 +2186,14 @@ def test_workspace_targets_execute_own_cargo_sources(tmp_path):
 
     def build_and_run(name, expected, *, fresh):
         env = environments[name]
+        cold_timeout = resolve_test_process_timeout(
+            "MOLT_PYTEST", GuardedProcessRole.BUILD, env
+        )
         built = run_guarded_test_process(
             [cargo, "build", "--offline", "--message-format=json"],
             cwd=roots[name],
             env=env,
-            timeout=30,
+            timeout=cold_timeout,
         )
         assert built.returncode == 0, built.stderr
         records = [json.loads(line) for line in built.stdout.splitlines()]
@@ -2201,7 +2208,12 @@ def test_workspace_targets_execute_own_cargo_sources(tmp_path):
             f"Cargo stdout:\n{built.stdout}\nCargo stderr:\n{built.stderr}"
         )
         ran = run_guarded_test_process(
-            [binary["executable"]], cwd=roots[name], env=env, timeout=10
+            [binary["executable"]],
+            cwd=roots[name],
+            env=env,
+            # The preceding assertions establish this fixture's exact sequence:
+            # fresh=False owns a new image; fresh=True already completed here.
+            timeout=10 if fresh else cold_timeout,
         )
         assert (ran.returncode, ran.stdout, ran.stderr) == (0, expected + "\n", "")
 

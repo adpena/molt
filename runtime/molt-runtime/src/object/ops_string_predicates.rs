@@ -1,127 +1,138 @@
 //! String descriptor predicates over Python code points, including surrogates.
 //!
 //! Admission is shared with strip/split. Scalar properties come from the selected
-//! CPython build's generated Unicode tables; Rust UTF-8/Unicode properties are
+//! interpreter target's pinned Unicode tables; Rust UTF-8/Unicode properties are
 //! not a second semantic authority. Classification never allocates or calls a
 //! receiver protocol, and ASCII paths keep their existing SIMD kernels.
 
 use super::*;
-use molt_runtime_core::text_storage::code_points;
+use molt_obj_model::text_storage::code_points;
 
 fn all_nonempty(bytes: &[u8], predicate: impl FnMut(u32) -> bool) -> bool {
     !bytes.is_empty() && code_points(bytes).all(predicate)
 }
 
-pub(crate) fn is_identifier_bytes(bytes: &[u8]) -> bool {
+pub(crate) fn is_identifier_bytes(py: &PyToken<'_>, bytes: &[u8]) -> bool {
+    let data = unicode_data(py);
     let mut codes = code_points(bytes);
     let Some(first) = codes.next() else {
         return false;
     };
-    unicode_classification_table::is_identifier_start(first)
-        && codes.all(unicode_classification_table::is_identifier_continue)
+    data.is_identifier_start(first) && codes.all(|code| data.is_identifier_continue(code))
 }
 
-fn isdigit(bytes: &[u8]) -> bool {
+fn isdigit(py: &PyToken<'_>, bytes: &[u8]) -> bool {
     if bytes.is_ascii() {
         simd_is_all_ascii_digit(bytes)
     } else {
-        all_nonempty(bytes, unicode_digit_table::is_digit)
+        {
+            let data = unicode_data(py);
+            all_nonempty(bytes, |code| data.is_digit(code))
+        }
     }
 }
 
-fn isdecimal(bytes: &[u8]) -> bool {
+fn isdecimal(py: &PyToken<'_>, bytes: &[u8]) -> bool {
     if bytes.is_ascii() {
         simd_is_all_ascii_digit(bytes)
     } else {
-        all_nonempty(bytes, unicode_decimal_table::is_decimal)
+        {
+            let data = unicode_data(py);
+            all_nonempty(bytes, |code| data.is_decimal(code))
+        }
     }
 }
 
-fn isnumeric(bytes: &[u8]) -> bool {
+fn isnumeric(py: &PyToken<'_>, bytes: &[u8]) -> bool {
     if bytes.is_ascii() {
         simd_is_all_ascii_digit(bytes)
     } else {
-        all_nonempty(bytes, unicode_numeric_table::is_numeric)
+        {
+            let data = unicode_data(py);
+            all_nonempty(bytes, |code| data.is_numeric(code))
+        }
     }
 }
 
-fn isspace(bytes: &[u8]) -> bool {
+fn isspace(py: &PyToken<'_>, bytes: &[u8]) -> bool {
     if bytes.is_ascii() {
         simd_is_all_ascii_text_whitespace(bytes)
     } else {
-        all_nonempty(bytes, unicode_space_table::is_space)
+        {
+            let data = unicode_data(py);
+            all_nonempty(bytes, |code| data.is_space(code))
+        }
     }
 }
 
-fn isalpha(bytes: &[u8]) -> bool {
+fn isalpha(py: &PyToken<'_>, bytes: &[u8]) -> bool {
     if bytes.is_ascii() {
         simd_is_all_ascii_alpha(bytes)
     } else {
-        all_nonempty(bytes, unicode_classification_table::is_alpha)
+        {
+            let data = unicode_data(py);
+            all_nonempty(bytes, |code| data.is_alpha(code))
+        }
     }
 }
 
-fn isalnum(bytes: &[u8]) -> bool {
+fn isalnum(py: &PyToken<'_>, bytes: &[u8]) -> bool {
     if bytes.is_ascii() {
         simd_is_all_ascii_alnum(bytes)
     } else {
-        all_nonempty(bytes, |code| {
-            unicode_classification_table::is_alpha(code) || unicode_numeric_table::is_numeric(code)
-        })
+        let data = unicode_data(py);
+        all_nonempty(bytes, |code| data.is_alpha(code) || data.is_numeric(code))
     }
 }
 
-fn islower(bytes: &[u8]) -> bool {
+fn islower(py: &PyToken<'_>, bytes: &[u8]) -> bool {
     if bytes.is_ascii() {
         return simd_has_any_ascii_lower(bytes) && !simd_has_any_ascii_upper(bytes);
     }
+    let data = unicode_data(py);
     let mut seen_lower = false;
     for code in code_points(bytes) {
-        if unicode_classification_table::is_lower(code) {
+        if data.is_lower(code) {
             seen_lower = true;
-        } else if unicode_classification_table::is_upper(code)
-            || unicode_classification_table::is_title(code)
-        {
+        } else if data.is_upper(code) || data.is_title(code) {
             return false;
         }
     }
     seen_lower
 }
 
-fn isupper(bytes: &[u8]) -> bool {
+fn isupper(py: &PyToken<'_>, bytes: &[u8]) -> bool {
     if bytes.is_ascii() {
         return simd_has_any_ascii_upper(bytes) && !simd_has_any_ascii_lower(bytes);
     }
+    let data = unicode_data(py);
     let mut seen_upper = false;
     for code in code_points(bytes) {
-        if unicode_classification_table::is_upper(code) {
+        if data.is_upper(code) {
             seen_upper = true;
-        } else if unicode_classification_table::is_lower(code)
-            || unicode_classification_table::is_title(code)
-        {
+        } else if data.is_lower(code) || data.is_title(code) {
             return false;
         }
     }
     seen_upper
 }
 
-fn isascii(bytes: &[u8]) -> bool {
+fn isascii(_py: &PyToken<'_>, bytes: &[u8]) -> bool {
     bytes.is_ascii()
 }
 
-fn istitle(bytes: &[u8]) -> bool {
+fn istitle(py: &PyToken<'_>, bytes: &[u8]) -> bool {
+    let data = unicode_data(py);
     let mut seen_cased = false;
     let mut previous_cased = false;
     for code in code_points(bytes) {
-        if unicode_classification_table::is_upper(code)
-            || unicode_classification_table::is_title(code)
-        {
+        if data.is_upper(code) || data.is_title(code) {
             if previous_cased {
                 return false;
             }
             seen_cased = true;
             previous_cased = true;
-        } else if unicode_classification_table::is_lower(code) {
+        } else if data.is_lower(code) {
             if !previous_cased {
                 return false;
             }
@@ -136,11 +147,14 @@ fn istitle(bytes: &[u8]) -> bool {
     seen_cased
 }
 
-fn isprintable(bytes: &[u8]) -> bool {
+fn isprintable(py: &PyToken<'_>, bytes: &[u8]) -> bool {
     if bytes.is_ascii() {
         simd_is_all_ascii_printable(bytes)
     } else {
-        code_points(bytes).all(unicode_printable_table::is_printable)
+        {
+            let data = unicode_data(py);
+            code_points(bytes).all(|code| data.is_printable(code))
+        }
     }
 }
 
@@ -148,13 +162,13 @@ fn string_predicate(
     py: &PyToken<'_>,
     hay_bits: u64,
     method: &str,
-    classify: impl FnOnce(&[u8]) -> bool,
+    classify: impl FnOnce(&PyToken<'_>, &[u8]) -> bool,
 ) -> u64 {
     let Some(hay_ptr) = validate_string_receiver(py, hay_bits, method) else {
         return MoltObject::none().bits();
     };
     let bytes = unsafe { std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr)) };
-    MoltObject::from_bool(classify(bytes)).bits()
+    MoltObject::from_bool(classify(py, bytes)).bits()
 }
 
 // Keep concrete exported signatures visible to runtime symbol/ABI discovery.
@@ -227,7 +241,11 @@ pub extern "C" fn molt_string_isprintable(hay_bits: u64) -> u64 {
 }
 
 #[cfg(test)]
-type Predicate = (&'static str, extern "C" fn(u64) -> u64, fn(&[u8]) -> bool);
+type Predicate = (
+    &'static str,
+    extern "C" fn(u64) -> u64,
+    fn(&PyToken<'_>, &[u8]) -> bool,
+);
 
 #[cfg(test)]
 const PREDICATES: &[Predicate] = &[
@@ -252,6 +270,54 @@ const PREDICATES: &[Predicate] = &[
 #[cfg(test)]
 mod predicate_contract_tests {
     use super::*;
+
+    #[test]
+    fn exported_predicates_follow_provisional_and_committed_target_facts() {
+        let transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let cyrillic = MoltObject::from_ptr(alloc_string(py, "\u{1c89}".as_bytes())).bits();
+            let glottal = MoltObject::from_ptr(alloc_string(py, "\u{295}".as_bytes())).bits();
+            let symbol = MoltObject::from_ptr(alloc_string(py, "\u{2ffc}".as_bytes())).bits();
+            transaction.with_target_python(py, None, || {
+                assert_eq!(
+                    obj_from_bits(molt_string_isupper(cyrillic)).as_bool(),
+                    Some(false)
+                );
+                assert!(
+                    crate::runtime_state(py)
+                        .sys_version_info
+                        .lock()
+                        .unwrap()
+                        .is_none()
+                );
+                for (minor, new_upper, old_lower, new_symbol) in [
+                    (15, true, false, true),
+                    (12, false, true, false),
+                    (14, true, true, true),
+                    (13, false, true, true),
+                ] {
+                    transaction.with_target_python_minor(py, minor, || {
+                        assert_eq!(
+                            obj_from_bits(molt_string_isupper(cyrillic)).as_bool(),
+                            Some(new_upper)
+                        );
+                        assert_eq!(
+                            obj_from_bits(molt_string_islower(glottal)).as_bool(),
+                            Some(old_lower)
+                        );
+                        assert_eq!(
+                            obj_from_bits(molt_string_isprintable(symbol)).as_bool(),
+                            Some(new_symbol)
+                        );
+                    });
+                }
+            });
+            for bits in [cyrillic, glottal, symbol] {
+                dec_ref_bits(py, bits);
+            }
+            assert!(!exception_pending(py));
+        });
+    }
 
     #[test]
     fn split_contract_string_predicates_reject_scalar_and_heap_receivers() {
@@ -414,7 +480,7 @@ mod predicate_contract_tests {
                 let receiver = MoltObject::from_ptr(receiver).bits();
                 for (name, entry, classify) in PREDICATES {
                     let expected = expected.contains(name);
-                    assert_eq!(classify(bytes), expected, "{name} {bytes:?}");
+                    assert_eq!(classify(py, bytes), expected, "{name} {bytes:?}");
                     assert_eq!(
                         entry(receiver),
                         MoltObject::from_bool(expected).bits(),
@@ -429,36 +495,27 @@ mod predicate_contract_tests {
 
     #[test]
     fn split_contract_string_predicate_ascii_kernels_match_scalar_authority() {
-        for code in 0u8..128 {
-            let scalar = u32::from(code);
-            for len in [1, 15, 16, 17, 33] {
-                let bytes = vec![code; len];
-                assert_eq!(isdigit(&bytes), unicode_digit_table::is_digit(scalar));
-                assert_eq!(isdecimal(&bytes), unicode_decimal_table::is_decimal(scalar));
-                assert_eq!(isnumeric(&bytes), unicode_numeric_table::is_numeric(scalar));
-                assert_eq!(isspace(&bytes), unicode_space_table::is_space(scalar));
-                assert_eq!(
-                    isalpha(&bytes),
-                    unicode_classification_table::is_alpha(scalar)
-                );
-                assert_eq!(
-                    isalnum(&bytes),
-                    unicode_classification_table::is_alpha(scalar)
-                        || unicode_numeric_table::is_numeric(scalar)
-                );
-                assert_eq!(
-                    islower(&bytes),
-                    unicode_classification_table::is_lower(scalar)
-                );
-                assert_eq!(
-                    isupper(&bytes),
-                    unicode_classification_table::is_upper(scalar)
-                );
-                assert_eq!(
-                    isprintable(&bytes),
-                    unicode_printable_table::is_printable(scalar)
-                );
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let data = unicode_data(py);
+            for code in 0u8..128 {
+                let scalar = u32::from(code);
+                for len in [1, 15, 16, 17, 33] {
+                    let bytes = vec![code; len];
+                    assert_eq!(isdigit(py, &bytes), data.is_digit(scalar));
+                    assert_eq!(isdecimal(py, &bytes), data.is_decimal(scalar));
+                    assert_eq!(isnumeric(py, &bytes), data.is_numeric(scalar));
+                    assert_eq!(isspace(py, &bytes), data.is_space(scalar));
+                    assert_eq!(isalpha(py, &bytes), data.is_alpha(scalar));
+                    assert_eq!(
+                        isalnum(py, &bytes),
+                        data.is_alpha(scalar) || data.is_numeric(scalar)
+                    );
+                    assert_eq!(islower(py, &bytes), data.is_lower(scalar));
+                    assert_eq!(isupper(py, &bytes), data.is_upper(scalar));
+                    assert_eq!(isprintable(py, &bytes), data.is_printable(scalar));
+                }
             }
-        }
+        });
     }
 }

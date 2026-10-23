@@ -330,6 +330,8 @@ def test_the_same_volume_store_is_the_one_dx_chooses(
 def test_default_and_explicit_inputs_use_the_same_real_provisioner(
     checkout: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
+    # This fixture provisions generic trees, without an editable distribution.
+    (checkout / "pyproject.toml").write_text("[tool.fixture]\n", encoding="utf-8")
     (checkout / "named_provision.py").write_text(
         "import sys\nfrom pathlib import Path\n"
         "name = sys.argv[1]\n"
@@ -491,12 +493,18 @@ def test_declared_inputs_name_their_locks_and_trees(tmp_path: Path) -> None:
     assert cp.declares(uv)
 
 
-def _uv_project(root: Path) -> None:
+def _uv_project(root: Path, *, editable: bool = False) -> None:
     (root / "pyproject.toml").write_text(
         '[project]\nname = "fixture"\nversion = "0"\nrequires-python = ">=3.12"\n'
         "dependencies = []\n",
         encoding="utf-8",
     )
+    if editable:
+        with (root / "pyproject.toml").open("a", encoding="utf-8") as project:
+            project.write(
+                '[build-system]\nrequires = ["setuptools"]\nbuild-backend = "setuptools.build_meta"\n'
+            )
+        (root / "fixture.py").write_text("VALUE = 'owner'\n", encoding="utf-8")
     (root / ".python-version").write_text("3.12\n", encoding="utf-8")
     uv = os.environ.get("UV") or shutil.which("uv")
     assert uv, "the uv environment input requires uv"
@@ -504,13 +512,14 @@ def _uv_project(root: Path) -> None:
     assert locked.returncode == 0, locked.stderr
 
 
+@pytest.mark.parametrize("editable", [False, True], ids=["manual", "editable"])
 @pytest.mark.parametrize("named", [False, True], ids=["dot-venv", "named"])
 def test_uv_environment_builds_the_selected_environment(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, named: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, named: bool, editable: bool
 ) -> None:
     root = tmp_path / "project"
     _init_repo(root)
-    _uv_project(root)
+    _uv_project(root, editable=editable)
     # The memory guard installs dx's defaults (environment, cache) into each
     # child; keep them private, so a misdirected sync stays visible.
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
@@ -532,6 +541,129 @@ def test_uv_environment_builds_the_selected_environment(
     assert not (tmp_path / "artifacts" / "uv-project-envs").exists()
     assert not (tmp_path / "artifacts" / ".uv-cache").exists()
     assert not cp.ensure("uv-environment", root, environ).provisioned
+
+    if not editable:
+        # A stamp is freshness evidence, not an ownership registry. A manual
+        # environment with no editable project remains usable from another
+        # checkout; the real installed metadata decides cold admission.
+        other = tmp_path / "manual-other"
+        _init_repo(other)
+        for name in ("pyproject.toml", "uv.lock", ".python-version"):
+            shutil.copyfile(root / name, other / name)
+        shared = {**environ, "UV_PROJECT_ENVIRONMENT": str(selected)}
+        assert cp.ensure("uv-environment", other, shared).provisioned
+        assert not cp.ensure("uv-environment", other, shared).provisioned
+        return
+    # Read the real installed PEP 610 record independently of the provisioner.
+    records = list(selected.glob("**/fixture-*.dist-info/direct_url.json"))
+    assert len(records) == 1
+    metadata = records[0]
+    installed = metadata.read_bytes()
+    assert json.loads(installed)["url"] == root.as_uri()
+    # A shipped module invoked outside a checkout cannot import tools. Use its
+    # actual UV-created launcher and no-site probe without exposing tools at all.
+    import packaging
+
+    isolated = run_guarded_test_process(
+        [
+            sys.executable,
+            "-I",
+            "-S",
+            "-c",
+            "import sys, importlib.util\n"
+            "sys.path[:0] = sys.argv[1:3]\n"
+            "assert importlib.util.find_spec('tools') is None\n"
+            "from molt import checkout_provisioning as cp\n"
+            "from pathlib import Path\n"
+            "spec = cp.checkout_input('uv-environment', Path(sys.argv[3]), "
+            "{'UV_PROJECT_ENVIRONMENT': sys.argv[4]})\n"
+            "assert cp._uv_editable_project(spec) is not None\n",
+            str(Path(cp.__file__).resolve().parents[1]),
+            str(Path(packaging.__file__).resolve().parents[1]),
+            str(root),
+            str(selected),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert isolated.returncode == 0, isolated.stderr
+    stamp = (selected / cp.STAMP_NAME).read_bytes()
+    other = tmp_path / "other"
+    _init_repo(other)
+    for name in ("pyproject.toml", "uv.lock", ".python-version", "fixture.py"):
+        shutil.copyfile(root / name, other / name)
+    shared = {**environ, "UV_PROJECT_ENVIRONMENT": str(selected)}
+    other_spec = cp.checkout_input("uv-environment", other, shared)
+    own_spec = cp.checkout_input("uv-environment", root, shared)
+    assert cp.input_state(other_spec) == "stale", (
+        "equal locks cannot transfer an editable source"
+    )
+    with pytest.raises(cp.ProvisioningError, match="MOLT_VENV.*read-only"):
+        cp.ensure_input(other_spec)
+    assert metadata.read_bytes() == installed
+    assert (selected / cp.STAMP_NAME).read_bytes() == stamp
+    from tools.molt_dev import _resolve_repo_venv
+
+    # Explicit borrowing is a read-only contract even for this foreign source.
+    borrowed = ProcessEnvironment({**shared, "MOLT_VENV": str(selected)})
+    assert _resolve_repo_venv(other, borrowed) == selected.resolve()
+    assert metadata.read_bytes() == installed
+    assert (selected / cp.STAMP_NAME).read_bytes() == stamp
+    # An unstamped legacy environment must be inspected, not blindly rewritten.
+    (selected / cp.STAMP_NAME).unlink()
+    with pytest.raises(cp.ProvisioningError, match="MOLT_VENV.*read-only"):
+        cp.ensure_input(other_spec)
+    assert metadata.read_bytes() == installed
+    assert not (selected / cp.STAMP_NAME).exists()
+    assert cp.ensure_input(own_spec).provisioned
+    # The warm path must inspect actual metadata, not trust a matching stamp.
+    foreign = {"url": other.as_uri(), "dir_info": {"editable": True}}
+    metadata.write_text(json.dumps(foreign), encoding="utf-8")
+    assert cp.input_state(own_spec) == "stale"
+    with pytest.raises(cp.ProvisioningError, match="MOLT_VENV.*read-only"):
+        cp.ensure_input(own_spec)
+    assert json.loads(metadata.read_bytes()) == foreign
+    metadata.write_bytes(installed)
+    assert not cp.ensure_input(own_spec).provisioned
+    # A malformed editable authority is not a manual environment. Exercise
+    # actual installed metadata on both stamped and unstamped cold paths;
+    # refusal must precede sync or any stamp/metadata mutation.
+    stamp_path = selected / cp.STAMP_NAME
+    current_stamp = stamp_path.read_bytes()
+    for dir_info in (
+        {"editable": True, "extra": "unsupported"},
+        {"editable": 1},
+        {"editable": 0},
+        {"editable": None},
+        {"editable": "false"},
+        None,
+    ):
+        altered = json.dumps({"url": other.as_uri(), "dir_info": dir_info}).encode()
+        for stamped in (True, False):
+            metadata.write_bytes(altered)
+            if stamped:
+                stamp_path.write_bytes(current_stamp)
+            else:
+                stamp_path.unlink(missing_ok=True)
+            with pytest.raises(cp.ProvisioningError):
+                cp.ensure_input(own_spec)
+            assert metadata.read_bytes() == altered
+            if stamped:
+                assert stamp_path.read_bytes() == current_stamp
+            else:
+                assert not stamp_path.exists()
+    # PEP 610 explicitly defines absent and boolean-false editable markers as
+    # noneditable. Inspect these real records without syncing the fixture.
+    for dir_info in ({}, {"editable": False}):
+        manual = json.dumps({"url": other.as_uri(), "dir_info": dir_info}).encode()
+        metadata.write_bytes(manual)
+        assert cp._uv_editable_project(own_spec) is None
+        assert metadata.read_bytes() == manual
+        assert not stamp_path.exists()
+    metadata.write_bytes(installed)
+    stamp_path.write_bytes(current_stamp)
+    assert not cp.ensure_input(own_spec).provisioned
 
 
 def test_integrate_child_builds_a_missing_inherited_uv_environment(

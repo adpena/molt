@@ -7,7 +7,6 @@ from molt.cli.native_symbol_inspection import (
 )
 
 import contextlib
-from molt.python_runtime_admission import BuildPythonAdmission
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -28,6 +27,7 @@ from molt.cli.build_request import FactGraphRequest
 from molt.cli import frontend_pipeline as _frontend_pipeline
 from molt.cli import runtime_features as _runtime_features
 from molt.cli.backend_execution import _write_backend_ir_lease
+from molt.cli.backend_ir_transport import BackendIrProgram
 from molt.cli.command_runtime import _run_subprocess_captured_to_tempfiles
 from molt.cli.build_diagnostics import _emit_build_diagnostics_for_result
 from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE, ENTRY_OVERRIDE_ENV
@@ -95,6 +95,7 @@ def _run_backend_pipeline(
     trusted: bool,
     verbose: bool,
     require_linked: bool,
+    capture_link_inputs: bool = False,
     wasm_opt_level: str | None = "Oz",
     precompile: bool = False,
     snapshot: bool = False,
@@ -103,22 +104,14 @@ def _run_backend_pipeline(
     bolt_training_cmd: str | None = None,
     fact_graph_request: FactGraphRequest | None = None,
 ) -> int:
-    build_python_admission: BuildPythonAdmission | None = None
-
-    def record_backend_result(result: int) -> int:
-        if result != 0 and build_python_admission is not None:
-            build_python_admission.record_failure(result)
-        return result
 
     def return_after_build_diagnostics(result: int) -> int:
-        return record_backend_result(
-            _emit_build_diagnostics_for_result(
-                result,
-                diagnostics_enabled=prepared_build_preamble.diagnostics_enabled,
-                build_diagnostics_payload=build_diagnostics_payload,
-                json_output=json_output,
-                verbosity=prepared_build_preamble.resolved_diagnostics_verbosity,
-            )
+        return _emit_build_diagnostics_for_result(
+            result,
+            diagnostics_enabled=prepared_build_preamble.diagnostics_enabled,
+            build_diagnostics_payload=build_diagnostics_payload,
+            json_output=json_output,
+            verbosity=prepared_build_preamble.resolved_diagnostics_verbosity,
         )
 
     if prepared_build_preamble.diagnostics_enabled:
@@ -189,6 +182,8 @@ def _run_backend_pipeline(
     assert prepared_backend_ir is not None
     ir = prepared_backend_ir.ir
     function_digests = FunctionDigests(prepared_backend_ir.function_digest_seeds)
+    # The one addressed form of this IR every backend transport writes (HF-516).
+    program = BackendIrProgram(ir, function_digests)
     required_link_features = prepared_backend_ir.required_link_features
     app_export_contract_path: Path | None = None
     if prepared_backend_ir.module_registry is not None and artifacts_root is not None:
@@ -266,7 +261,7 @@ def _run_backend_pipeline(
         nonlocal backend_ir_file_path
         if backend_ir_file_path is None:
             backend_ir_file_path = _write_backend_ir_lease(
-                prepared_build_roots.project_root, ir
+                prepared_build_roots.project_root, program
             )
         return backend_ir_file_path
 
@@ -283,12 +278,9 @@ def _run_backend_pipeline(
             )
         )
     with contextlib.ExitStack() as output_scope:
-        build_python_admission = output_scope.enter_context(BuildPythonAdmission())
 
         def finish_inputs() -> None:
             prepared_frontend_pipeline_bundle.module_source_catalog.validate()
-            assert build_python_admission is not None
-            build_python_admission.close()
 
         try:
             output_layout, backend_output_destination = output_scope.enter_context(
@@ -307,7 +299,6 @@ def _run_backend_pipeline(
         backend_setup_start = time.perf_counter()
         prepared_backend_setup, prepared_backend_setup_error = (
             _backend_compile._prepare_backend_setup(
-                build_python_admission=build_python_admission,
                 is_rust_transpile=output_layout.is_rust_transpile,
                 is_luau_transpile=output_layout.is_luau_transpile,
                 is_wasm=output_layout.is_wasm,
@@ -401,7 +392,7 @@ def _run_backend_pipeline(
                 entry_override_env=ENTRY_OVERRIDE_ENV,
                 finalize_inputs=finish_inputs,
             )
-            return record_backend_result(result)
+            return result
         try:
             backend_compile_start = time.perf_counter()
             prepared_backend_compile, prepared_backend_compile_error = (
@@ -436,7 +427,7 @@ def _run_backend_pipeline(
                     backend_daemon_config_digest=prepared_build_preamble.backend_daemon_config_digest,
                     entry_module=resolved_build_entry.entry_module,
                     artifacts_root=artifacts_root,
-                    ir=ir,
+                    program=program,
                     _ensure_backend_ir_file_path=_ensure_backend_ir_file_path,
                     backend_daemon_cached=prepared_build_preamble.backend_daemon_cached,
                     backend_daemon_cache_tier=prepared_build_preamble.backend_daemon_cache_tier,
@@ -492,6 +483,7 @@ def _run_backend_pipeline(
             trusted=trusted,
             verbose=verbose,
             require_linked=require_linked,
+            capture_link_inputs=capture_link_inputs,
             wasm_opt_level=wasm_opt_level,
             precompile=precompile,
             snapshot=snapshot,
@@ -501,4 +493,4 @@ def _run_backend_pipeline(
             bolt_requested=bolt_requested,
             bolt_training_cmd=bolt_training_cmd,
         )
-        return record_backend_result(result)
+        return result

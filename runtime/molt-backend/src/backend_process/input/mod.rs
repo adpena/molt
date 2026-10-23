@@ -1,8 +1,15 @@
 mod cbor;
+#[cfg(any(feature = "native-backend", molt_backend_daemon))]
+pub(crate) mod content;
+#[cfg(any(feature = "native-backend", molt_backend_daemon))]
+pub(crate) use content::ContentIdentity;
 mod json;
 mod msgpack;
 mod ndjson;
 mod source;
+
+#[cfg(molt_backend_daemon)]
+pub(crate) use source::open_ir_file;
 
 #[cfg(test)]
 mod tests;

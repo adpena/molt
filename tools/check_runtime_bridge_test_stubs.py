@@ -37,7 +37,7 @@ FN_DECL_RE = re.compile(
 def bridge_sources() -> list[Path]:
     sources = [
         REPO_ROOT / "runtime/molt-runtime-core/src/lib.rs",
-        REPO_ROOT / "runtime/molt-cpython-abi/src/native_custody.rs",
+        REPO_ROOT / "runtime/molt-runtime-capi/src/lib.rs",
     ]
     sources.append(REPO_ROOT / "runtime/molt-gpu-runtime/src/bridge.rs")
     sources.extend(sorted((REPO_ROOT / "runtime").glob("molt-runtime-*/src/bridge.rs")))

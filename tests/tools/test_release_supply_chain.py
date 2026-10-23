@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 from dataclasses import replace
 import copy
 import json
@@ -27,7 +28,7 @@ from tools.release import release_model
 from tools.release import release_evidence
 from tools import release_exit_gate
 from tools.command_execution import CommandExecutor
-from tools.git_identity import clean_checkout_status_arguments
+from tools.git_identity import clean_checkout_status_arguments, read_git_blob_batch
 from tools.release import update_manifests
 from tools.release import verify_consumer
 from tools.release import compiler_payload
@@ -617,6 +618,64 @@ def test_compiler_snapshot_excludes_only_development_evidence_before_blob_reads(
     assert full_files.keys() == files.keys() | {omitted}
 
 
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        None,
+        "header",
+        "missing",
+        "type",
+        "size",
+        "separator",
+        "truncated",
+        "hash",
+        "extra",
+    ],
+)
+def test_git_blob_batch_keeps_exact_framing(corruption):
+    # Binary body delimiters are not framing; declared byte lengths are.
+    bodies = [b"first\x00\r\nlast", b""]
+    objects = [
+        (hashlib.sha1(f"blob {len(body)}\0".encode() + body).hexdigest(), len(body))
+        for body in bodies
+    ]
+    header = f"{objects[0][0]} blob {objects[0][1]}\n".encode()
+    stream = b"".join(
+        f"{oid} blob {size}\n".encode() + body + b"\n"
+        for (oid, size), body in zip(objects, bodies, strict=True)
+    )
+    if corruption == "header":
+        stream = stream.replace(header, header.replace(b" ", b"\t", 1), 1)
+    elif corruption == "missing":
+        stream = f"{objects[0][0]} missing\n".encode()
+    elif corruption == "type":
+        stream = stream.replace(b" blob ", b" tree ", 1)
+    elif corruption == "size":
+        stream = stream.replace(header, f"{objects[0][0]} blob 999\n".encode(), 1)
+    elif corruption == "separator":
+        end = len(header) + len(bodies[0])
+        stream = stream[:end] + b"!" + stream[end + 1 :]
+    elif corruption == "truncated":
+        stream = stream[:-1]
+    elif corruption == "hash":
+        stream = stream.replace(b"first", b"other", 1)
+    elif corruption == "extra":
+        stream += b"unexpected\n"
+
+    class BoundedHeaderStream(io.BytesIO):
+        def readline(self, size=-1):
+            assert 0 < size <= len(header) + 1, "batch headers need bounded reads"
+            return super().readline(size)
+
+    if corruption is None:
+        assert list(read_git_blob_batch(BoundedHeaderStream(stream), objects)) == [
+            (body, hashlib.sha256(body).hexdigest()) for body in bodies
+        ]
+    else:
+        with pytest.raises(ValueError, match="Git source snapshot"):
+            list(read_git_blob_batch(BoundedHeaderStream(stream), objects))
+
+
 def test_guarded_git_snapshot_preserves_binary_blobs_beyond_capture_tail(tmp_path):
     root = tmp_path / "repository"
     root.mkdir()
@@ -1071,6 +1130,23 @@ def _assemble_transport_inputs(tmp_path: Path, snapshot):
         evidence = output / "consumer-evidence"
         evidence.mkdir()
         (evidence / "replay.json").write_bytes(_transport_replay_bytes(candidate))
+        for owner, proof in [
+            *(
+                ("bundle", row)
+                for row in _consumer_transport_receipt(candidate)["python_proofs"]
+            ),
+            ("pip", _consumer_transport_receipt(candidate)["pip_proof"]),
+        ]:
+            record = (
+                output
+                / _transport_compilation_reference(candidate, owner, proof["python"])[
+                    "path"
+                ]
+            )
+            record.parent.mkdir(parents=True)
+            record.write_bytes(
+                _transport_compilation_bytes(candidate, owner, proof["python"])
+            )
         consumer_replay.publish_archive(
             candidate_dir=output,
             receipt=output / "consumer-verification.json",
@@ -1101,6 +1177,43 @@ def consumer_transport_boundary(monkeypatch):
         consumer_replay, "provision_verifier", lambda: (Path("/fixture-supervisor"), {})
     )
     monkeypatch.setattr(consumer_replay, "validate", validate)
+
+    def validate_compilation(reference, **kwargs):
+        candidate, owner, minor = (
+            kwargs["candidate"],
+            kwargs["owner"],
+            kwargs["proof"]["python"],
+        )
+        if reference != _transport_compilation_reference(candidate, owner, minor) or (
+            kwargs["evidence_root"] / reference["path"]
+        ).read_bytes() != _transport_compilation_bytes(candidate, owner, minor):
+            raise ValueError("compilation transport fixture reference differs")
+
+    monkeypatch.setattr(
+        consumer_replay, "validate_installed_compilation", validate_compilation
+    )
+
+
+def _transport_compilation_bytes(candidate, owner, minor):
+    return json.dumps(
+        {
+            "boundary": "fixture, no kernel admission",
+            "candidate": canonical_json_sha256(candidate),
+            "owner": owner,
+            "python": minor,
+        },
+        sort_keys=True,
+    ).encode()
+
+
+def _transport_compilation_reference(candidate, owner, minor):
+    content = _transport_compilation_bytes(candidate, owner, minor)
+    return {
+        "path": f"compilation-evidence/{owner}-{minor}/compilation.json",
+        "filename": "compilation.json",
+        "size": len(content),
+        "sha256": hashlib.sha256(content).hexdigest(),
+    }
 
 
 def _transport_replay_reference(candidate):
@@ -1238,10 +1351,11 @@ def _consumer_transport_receipt(candidate):
                             "--python-version",
                             minor,
                             "--diagnostics-file",
-                            diagnostics,
+                            "/work/output/diagnostics.json",
                             "--output",
-                            output,
-                            source,
+                            "/work/output/program",
+                            "--capture-link-inputs",
+                            "/app/source.py",
                         ],
                     )
                 )
@@ -1263,9 +1377,10 @@ def _consumer_transport_receipt(candidate):
                             profile,
                             "--python-version",
                             minor,
-                            f"--build-arg=--diagnostics-file={diagnostics}",
-                            f"--build-arg=--output={output}",
-                            source,
+                            "--build-arg=--diagnostics-file=/work/output/diagnostics.json",
+                            "--build-arg=--output=/work/output/program.wasm",
+                            "--build-arg=--capture-link-inputs",
+                            "/app/source.py",
                             "--",
                             *guest_argv,
                         ],
@@ -1313,6 +1428,9 @@ def _consumer_transport_receipt(candidate):
                 "source_sha256": hashlib.sha256(guest_source.encode()).hexdigest(),
                 "commands": commands,
                 "cells": cells,
+                "compilation": _transport_compilation_reference(
+                    candidate, "bundle", minor
+                ),
             }
         )
     wheel_record = next(
@@ -1382,10 +1500,17 @@ def _consumer_transport_receipt(candidate):
             "wheel": {key: wheel_record[key] for key in ("filename", "sha256", "size")},
             "python": first_minor,
             "reference_python": first_reference,
+            "execution": {
+                **copy.deepcopy(first["execution"]),
+                "python": {**first["execution"]["python"], "executable": pip_python},
+            },
             "commands": pip_commands,
             "source": pip_products["source"],
             "source_sha256": first["source_sha256"],
             "cells": pip_products["cells"],
+            "compilation": _transport_compilation_reference(
+                candidate, "pip", first_minor
+            ),
             "compiler_sha256": candidate["compiler"]["sha256"],
             "wasm_facts_sha256": candidate["wasm_facts"]["sha256"],
         },
@@ -2057,8 +2182,17 @@ def test_installed_consumer_rejects_extracted_native_receipt_substitution(
         )
     ).unlink()
     shutil.rmtree(candidate_dir / "consumer-evidence")
+    shutil.rmtree(candidate_dir / "compilation-evidence")
     with pytest.raises(ValueError, match=message):
-        verify_consumer.verify(candidate_dir, receipt)
+        verify_consumer.verify(
+            candidate_dir,
+            receipt,
+            compilation_projection=verify_consumer.SealedExecutionProjection.compilation(
+                memory_max_bytes=2**30,
+                workspace_max_bytes=2**28,
+                runtime_max_seconds=60,
+            ),
+        )
     assert not receipt.exists()
 
 
@@ -2274,6 +2408,7 @@ def test_consumer_admission_requires_bound_target_profile_python_closure(
         "reference_python",
         "source",
         "source_sha256",
+        "compilation",
     ):
         payload = copy.deepcopy(valid)
         del payload["python_proofs"][0][field]

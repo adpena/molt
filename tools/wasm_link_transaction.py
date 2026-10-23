@@ -7,7 +7,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TypeVar
 
+from molt.wasm_artifact import parse_wasm_section_spans
 from tools.wasm_link_fact_provider import WasmFactsProvider, WasmLinkFacts
+from tools import wasm_link_operations
+from tools.wasm_link_format import _STANDARD_SECTION_ORDER, _insert_standard_section
 
 
 _T = TypeVar("_T")
@@ -74,6 +77,15 @@ class WasmArtifactState:
             self.revision += 1
         return changed
 
+    def section_edit(self) -> WasmSectionEdit:
+        return WasmSectionEdit(self)
+
+    def derive(self, path: Path, data: bytes) -> WasmArtifactState:
+        """Retain a rewrite's emitted buffer while materializing its link input."""
+        derived = type(self).from_bytes(path, data, facts_provider=self.facts_provider)
+        derived.persist()
+        return derived
+
     def persist(self) -> None:
         """Write the owned bytes without pretending the in-memory state changed."""
 
@@ -131,3 +143,78 @@ class WasmArtifactState:
             self._facts = None
             self.revision += 1
         self._materialized = True
+
+
+class WasmSectionEdit:
+    """One sparse edit of an artifact revision; untouched payloads stay borrowed."""
+
+    def __init__(self, artifact: WasmArtifactState) -> None:
+        self._artifact = artifact
+        self._revision = artifact.revision
+        self._data = artifact.data
+        wasm_link_operations.increment_whole_artifact_operation("section_walks")
+        self._spans = parse_wasm_section_spans(self._data)
+        self._standard = {span.id: span for span in self._spans if span.id != 0}
+        self._replacements: dict[int, bytes] = {}
+
+    def payload(self, section_id: int) -> bytes | None:
+        if section_id in self._replacements:
+            return self._replacements[section_id]
+        span = self._standard.get(section_id)
+        if span is None:
+            return None
+        return self._data[span.offset : span.offset + span.size]
+
+    def replace(self, section_id: int, payload: bytes) -> None:
+        if section_id not in _STANDARD_SECTION_ORDER or not isinstance(payload, bytes):
+            raise ValueError(
+                "section edit requires a standard section and bytes payload"
+            )
+        span = self._standard.get(section_id)
+        original = (
+            None if span is None else self._data[span.offset : span.offset + span.size]
+        )
+        if payload == original:
+            self._replacements.pop(section_id, None)
+        else:
+            self._replacements[section_id] = payload
+
+    def _check_revision(self) -> None:
+        if (
+            self._artifact.revision != self._revision
+            or self._artifact.data is not self._data
+        ):
+            raise ValueError(
+                "WASM section edit belongs to an obsolete artifact revision"
+            )
+
+    def commit(self, *, validate_facts: bool = False) -> bool:
+        artifact = self._artifact
+        self._check_revision()
+        if not self._replacements:
+            if validate_facts and artifact._facts is None:
+                facts = artifact.facts_provider(self._data)
+                self._check_revision()
+                artifact._facts = facts
+            return False
+        view = memoryview(self._data)
+        sections: list[tuple[int, bytes | memoryview]] = [
+            (
+                span.id,
+                self._replacements[span.id]
+                if span.id in self._replacements
+                else view[span.offset : span.offset + span.size],
+            )
+            for span in self._spans
+        ]
+        for section_id, payload in self._replacements.items():
+            if section_id not in self._standard:
+                sections = _insert_standard_section(sections, section_id, payload)
+        data = wasm_link_operations.build_sections(sections)
+        facts = artifact.facts_provider(data) if validate_facts else None
+        self._check_revision()
+        # A rejecting validator leaves the owned bytes, revision and file intact.
+        changed = artifact.replace(data)
+        if facts is not None:
+            artifact._facts = facts
+        return changed

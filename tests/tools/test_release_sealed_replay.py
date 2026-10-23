@@ -183,7 +183,7 @@ def test_execute_refuses_staged_drift_before_transport_construction(
     (root / "app/program").write_bytes(b"forged!!")
     monkeypatch.setattr(
         consumer_replay,
-        "DockerTransport",
+        "SealedRootTransport",
         lambda *_: pytest.fail("changed inputs reached transport"),
     )
     with pytest.raises(ValueError, match="before execution"):
@@ -424,136 +424,710 @@ def test_missing_and_changed_os_archive_fail_without_network(tmp_path, monkeypat
             pass
 
 
-def _image():
-    return {
-        "Id": "sha256:" + "a" * 64,
-        "Os": "linux",
-        "Architecture": "amd64",
-        "RootFS": {"Type": "layers", "Layers": ["sha256:" + "b" * 64]},
-        "Config": {},
-    }
-
-
-@pytest.mark.parametrize(
-    "mutate",
-    [
-        lambda x: x.update(Architecture="arm64"),
-        lambda x: x["RootFS"].update(Layers=["sha256:" + "c" * 64]),
-        lambda x: x["RootFS"]["Layers"].append("sha256:" + "d" * 64),
-        lambda x: x["Config"].update(Env=["LD_PRELOAD=/host/libpython.so"]),
-        lambda x: x["Config"].update(Volumes={"/host": {}}),
-    ],
-)
-def test_imported_image_binds_exact_uncompressed_tar_and_has_no_inherited_inputs(
-    mutate,
-):
-    value = _image()
-    cross_run.validate_sealed_docker_image(value, sha256="b" * 64, arch="x86_64")
-    mutate(value)
-    with pytest.raises(ValueError):
-        cross_run.validate_sealed_docker_image(value, sha256="b" * 64, arch="x86_64")
-
-
-def _container():
-    command = ["/bin/molt-proof-supervisor", "run-export"]
-    return command, {
-        "Image": "sha256:" + "a" * 64,
-        "Path": command[0],
-        "Args": command[1:],
-        "Config": {
-            "Entrypoint": command[:1],
-            "Cmd": command[1:],
-            "WorkingDir": "/app",
-            "User": "65534:65534",
-            "Env": ["PATH=/absent", "HOME=/absent", "LANG=C", "LC_ALL=C"],
-            "Hostname": "molt-guest",
-            "Tty": False,
-            "OpenStdin": False,
-        },
-        "HostConfig": {
-            "NetworkMode": "none",
-            "ReadonlyRootfs": True,
-            "Privileged": False,
-            "CapDrop": ["ALL"],
-            "SecurityOpt": ["no-new-privileges"],
-            "PidMode": "",
-            "IpcMode": "private",
-            "UTSMode": "",
-            "UsernsMode": "",
-            "CgroupnsMode": "private",
-            "Runtime": "runc",
-            "ShmSize": 16777216,
-            "LogConfig": {"Type": "none", "Config": {}},
-            "Dns": ["127.0.0.1"],
-            "DnsSearch": ["."],
-            "DnsOptions": ["ndots:0"],
-            "Tmpfs": {
-                "/tmp": "rw,noexec,nosuid,nodev,size=64m,mode=1777",
-                "/evidence": "rw,noexec,nosuid,nodev,size=16m,mode=1777",
-            },
-            "Memory": 1073741824,
-            "MemorySwap": 1073741824,
-            "PidsLimit": 64,
-            "NanoCpus": 1000000000,
-            "AutoRemove": False,
-            "RestartPolicy": {"Name": "no"},
-            "ReadonlyPaths": [
-                "/proc/bus",
-                "/proc/fs",
-                "/proc/irq",
-                "/proc/sys",
-                "/proc/sysrq-trigger",
-            ],
-            "MaskedPaths": ["/proc/kcore", "/sys/firmware"],
-        },
-        "State": {"Running": False},
-        "Mounts": [],
-        "NetworkSettings": {"Networks": {"none": {}}},
-    }
-
-
-@pytest.mark.parametrize(
-    "section,key,value",
-    [
-        ("HostConfig", "NetworkMode", "host"),
-        ("HostConfig", "PidMode", "host"),
-        ("HostConfig", "Runtime", "unknown-runtime"),
-        ("HostConfig", "ReadonlyRootfs", False),
-        ("HostConfig", "Privileged", True),
-        ("HostConfig", "Binds", ["/usr:/host:ro"]),
-        ("HostConfig", "Devices", [{"PathOnHost": "/dev/sda"}]),
-        ("HostConfig", "ReadonlyPaths", []),
-        ("Config", "Env", ["PATH=/usr/bin", "PYTHONPATH=/host"]),
-        ("Config", "Entrypoint", ["/bin/python3"]),
-    ],
-)
-def test_effective_container_isolation_rejects_positive_host_contamination(
-    section, key, value
-):
-    command, observed = _container()
-    cross_run.validate_sealed_docker_configuration(
-        observed, image=observed["Image"], command=command
-    )
-    observed[section][key] = value
-    with pytest.raises(ValueError):
-        cross_run.validate_sealed_docker_configuration(
-            observed, image=observed["Image"], command=command
-        )
-
-
-def test_effective_mounts_cannot_hide_socket_or_host_bind():
-    command, observed = _container()
-    observed["Mounts"] = [
-        {
-            "Type": "bind",
-            "Source": "/var/run/docker.sock",
-            "Destination": "/tmp/control",
-        }
+def _systemd_observation():
+    # Independent protocol fixture. No process or kernel absence is proved here.
+    nonce = "a" * 32
+    root = "/run/molt-release-" + "b" * 32 + "/rootfs"
+    command = [
+        "/bin/molt-proof-supervisor",
+        "run-export",
+        "--policy",
+        "/policies/test.json",
+        "--receipt",
+        "/evidence/receipt.json",
     ]
-    with pytest.raises(ValueError, match="host mount"):
-        cross_run.validate_sealed_docker_configuration(
-            observed, image=observed["Image"], command=command
+    unit = {
+        "Id": "molt-release-" + nonce + ".service",
+        "Description": "molt-sealed:" + nonce,
+        "InvocationID": [17] * 16,
+        "Transient": True,
+        "DropInPaths": [],
+        "JoinsNamespaceOf": [],
+        "TriggeredBy": [],
+        "ActiveState": "active",
+        "SubState": "exited",
+    }
+    service = {
+        "Type": "exec",
+        "ExitType": "cgroup",
+        "RemainAfterExit": True,
+        "Restart": "no",
+        "RootDirectory": root,
+        "RootImage": "",
+        "RootEphemeral": True,
+        "WorkingDirectory": "/app",
+        "User": "65534",
+        "Group": "65534",
+        "SupplementaryGroups": [],
+        "PAMName": "",
+        "SetLoginEnvironment": False,
+        "Environment": ["PATH=/absent", "HOME=/absent", "LANG=C", "LC_ALL=C"],
+        "EnvironmentFiles": [],
+        "PassEnvironment": [],
+        "ExecSearchPath": [],
+        "PrivatePIDs": "yes",
+        "PrivateUsers": True,
+        "PrivateUsersEx": "self",
+        "PrivateNetwork": True,
+        "PrivateIPC": True,
+        "PrivateMounts": True,
+        "PrivateDevices": True,
+        "ProtectHostname": True,
+        "ProtectHostnameEx": ["yes", ""],
+        "ProtectControlGroups": True,
+        "ProtectControlGroupsEx": "strict",
+        "ProtectKernelTunables": True,
+        "ProtectKernelLogs": True,
+        "ProtectClock": True,
+        "MountAPIVFS": True,
+        "ProtectSystem": "strict",
+        "ReadOnlyPaths": ["/"],
+        "ReadWritePaths": [],
+        "NoExecPaths": ["/tmp", "/evidence"],
+        "InaccessiblePaths": ["-/run/host", "-/proc/kcore", "-/sys/firmware"],
+        "TemporaryFileSystem": [
+            ["/tmp", "rw,noexec,nosuid,nodev,size=64m,mode=1777"],
+            ["/evidence", "rw,noexec,nosuid,nodev,size=16m,mode=1777"],
+            ["/dev/shm", "rw,noexec,nosuid,nodev,size=16m,mode=1777"],
+        ],
+        "BindPaths": [],
+        "BindReadOnlyPaths": [],
+        "MountImages": [],
+        "ExtensionImages": [],
+        "ExtensionDirectories": [],
+        "NetworkNamespacePath": "",
+        "IPCNamespacePath": "",
+        "UserNamespacePath": "",
+        "CapabilityBoundingSet": 0,
+        "AmbientCapabilities": 0,
+        "NoNewPrivileges": True,
+        "RestrictSUIDSGID": True,
+        "RestrictNamespaces": 0,
+        "DevicePolicy": "closed",
+        "DeviceAllow": [],
+        "MemoryMax": 1073741824,
+        "MemorySwapMax": 0,
+        "TasksMax": 64,
+        "CPUQuotaPerSecUSec": 1000000,
+        "KillMode": "control-group",
+        "SendSIGKILL": True,
+        "TimeoutStartUSec": 60000000,
+        "TimeoutStopUSec": 10000000,
+        "RuntimeMaxUSec": 60000000,
+        "Delegate": False,
+        "StandardInput": "null",
+        "FileDescriptorStoreMax": 0,
+        "LimitFSIZE": 16777216,
+        "LimitFSIZESoft": 16777216,
+        "ExecStartPre": [],
+        "ExecStartPost": [],
+        "ExecStop": [],
+        "ExecStopPost": [],
+        "ExecCondition": [],
+        "ExecReload": [],
+        "ExecStart": [[command[0], command, False, 1, 1, 2, 2, 42, 1, 0]],
+        "OpenFile": [],
+        "ExtraFileDescriptorNames": [],
+        "NFileDescriptorStore": 0,
+        "BindLogSockets": False,
+        "RootDirectoryStartOnly": False,
+        "NotifyAccess": "none",
+        "MainPID": 0,
+        "ControlPID": 0,
+        "ExecMainCode": 1,
+        "ExecMainStatus": 0,
+        "Result": "success",
+        "NRestarts": 0,
+    }
+    return nonce, root, command, {"Unit": unit, "Service": service}
+
+
+def _typed_observation(interfaces):
+    def value(v):
+        if type(v) is bool:
+            signature = "b"
+        elif type(v) is int:
+            signature = "t"
+        elif isinstance(v, str):
+            signature = "s"
+        else:
+            signature = "av"
+        return {"type": signature, "data": v}
+
+    return json.dumps(
+        {
+            name: json.dumps(
+                {"type": "a{sv}", "data": [{k: value(v) for k, v in fields.items()}]}
+            )
+            for name, fields in interfaces.items()
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("PrivateNetwork", False),
+        ("PrivatePIDs", "no"),
+        ("PrivateUsers", False),
+        ("RootEphemeral", False),
+        ("ProtectSystem", "no"),
+        ("ReadOnlyPaths", []),
+        ("User", "0"),
+        ("CapabilityBoundingSet", 1),
+        ("NoNewPrivileges", False),
+        ("BindPaths", [["/usr", "/host", False, 0]]),
+        ("BindReadOnlyPaths", [["/usr/bin/python3", "/bin/python3", False, 0]]),
+        ("DeviceAllow", [["/dev/sda", "rw"]]),
+        ("ProtectKernelTunables", False),
+        ("Environment", ["PATH=/usr/bin", "PYTHONPATH=/host"]),
+        (
+            "ExecStart",
+            [["/bin/python3", ["/bin/python3"], False, 1, 1, 2, 2, 42, 1, 0]],
+        ),
+        ("MemoryMax", 1073741825),
+        ("MemorySwapMax", 1),
+        ("TasksMax", 65),
+        ("CPUQuotaPerSecUSec", 1000001),
+        ("NoExecPaths", []),
+        ("TemporaryFileSystem", [["/tmp", "rw,nosuid,nodev,size=64m,mode=1777"]]),
+        ("ExitType", "main"),
+        ("ExtraFileDescriptorNames", ["host-root"]),
+    ],
+)
+def test_effective_systemd_isolation_rejects_host_and_resource_contamination(
+    key, value
+):
+    nonce, root, command, interfaces = _systemd_observation()
+    cross_run.validate_sealed_systemd_configuration(
+        _typed_observation(interfaces), nonce=nonce, root=root, command=command
+    )
+    interfaces["Service"][key] = value
+    with pytest.raises(ValueError):
+        cross_run.validate_sealed_systemd_configuration(
+            _typed_observation(interfaces), nonce=nonce, root=root, command=command
         )
+
+
+def test_systemd_required_properties_cannot_be_omitted():
+    nonce, root, command, interfaces = _systemd_observation()
+    for name in (
+        "EnvironmentFiles",
+        "BindPaths",
+        "TemporaryFileSystem",
+        "RootDirectory",
+        "PrivatePIDs",
+        "NoNewPrivileges",
+        "ExecStart",
+        "ExitType",
+    ):
+        modified = copy.deepcopy(interfaces)
+        del modified["Service"][name]
+        with pytest.raises(ValueError):
+            cross_run.validate_sealed_systemd_configuration(
+                _typed_observation(modified), nonce=nonce, root=root, command=command
+            )
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("MainPID", 77),
+        ("ControlPID", 77),
+        ("ExecMainStatus", 1),
+        ("ExecMainCode", 2),
+        ("NRestarts", 1),
+        ("Result", "oom-kill"),
+        ("MainPID", False),
+        ("ControlPID", False),
+        ("ExecMainStatus", False),
+        ("ExecMainCode", True),
+        ("NRestarts", False),
+    ],
+)
+def test_systemd_terminal_rejects_failure_or_unclosed_custody(key, value):
+    nonce, root, command, interfaces = _systemd_observation()
+    cross_run.validate_sealed_systemd_terminal(
+        _typed_observation(interfaces), invocation=[17] * 16
+    )
+    interfaces["Service"][key] = value
+    with pytest.raises(ValueError):
+        cross_run.validate_sealed_systemd_terminal(
+            _typed_observation(interfaces), invocation=[17] * 16
+        )
+
+
+def test_systemd_custody_and_provider_omissions_reject():
+    nonce, root, command, interfaces = _systemd_observation()
+    for key, value in [
+        ("DropInPaths", ["/etc/systemd/system/service.d/override.conf"]),
+        ("InvocationID", [18] * 15),
+        ("InvocationID", [0] * 16),
+        ("Id", "foreign.service"),
+    ]:
+        modified = copy.deepcopy(interfaces)
+        modified["Unit"][key] = value
+        with pytest.raises(ValueError):
+            cross_run.validate_sealed_systemd_configuration(
+                _typed_observation(modified), nonce=nonce, root=root, command=command
+            )
+    for provider in (
+        {},
+        {"version": "259.5-0ubuntu3.4"},
+        {
+            "schema": "molt.sealed-systemd.v1",
+            "version": "255",
+            "platform": "linux",
+            "arch": "aarch64",
+            "kernel": "6.8",
+            "tools": {},
+        },
+    ):
+        with pytest.raises(ValueError):
+            cross_run.validate_sealed_systemd_provider(provider, arch="aarch64")
+
+
+def test_systemd_patch_version_is_provenance_not_a_capability_allowlist():
+    provider = {
+        "schema": "molt.sealed-systemd.v1",
+        "version": "259.5-0ubuntu3.4",
+        "platform": "linux",
+        "arch": "aarch64",
+        "kernel": "7.0.0-38-generic",
+        "tools": {
+            path: "a" * 64
+            for path in (
+                "/usr/bin/systemd-run",
+                "/usr/bin/systemctl",
+                "/usr/bin/busctl",
+                "/usr/bin/tar",
+                "/usr/bin/true",
+            )
+        },
+    }
+    cross_run.validate_sealed_systemd_provider(provider, arch="aarch64")
+    cross_run.validate_sealed_systemd_provider(
+        {**provider, "version": "259.9-0ubuntu0.1"}, arch="aarch64"
+    )
+    for version in (None, "", False, "x" * 129):
+        with pytest.raises(ValueError):
+            cross_run.validate_sealed_systemd_provider(
+                {**provider, "version": version}, arch="aarch64"
+            )
+    # A syntactically recorded version grants no isolation capability.
+    nonce, root, command, interfaces = _systemd_observation()
+    del interfaces["Service"]["PrivatePIDs"]
+    with pytest.raises(ValueError):
+        cross_run.validate_sealed_systemd_configuration(
+            _typed_observation(interfaces), nonce=nonce, root=root, command=command
+        )
+
+
+def _systemd_import_observation():
+    # Literal independent importer expectation, including archive and command.
+    nonce = "b" * 32
+    digest = "d" * 64
+    root = f"/run/molt-release-{nonce}/rootfs"
+    command = [
+        "/usr/bin/tar",
+        "--extract",
+        "--file=-",
+        "--directory=" + root,
+        "--no-same-owner",
+        "--same-permissions",
+        "--delay-directory-restore",
+    ]
+    unit = {
+        "Id": f"molt-release-import-{nonce}.service",
+        "Description": f"molt-sealed-import:{nonce}:{digest}",
+        "InvocationID": [22] * 16,
+        "Transient": True,
+        "DropInPaths": [],
+        "JoinsNamespaceOf": [],
+        "TriggeredBy": [],
+        "ActiveState": "active",
+        "SubState": "exited",
+    }
+    service = {
+        "Type": "oneshot",
+        "RemainAfterExit": True,
+        "RuntimeDirectory": [f"molt-release-{nonce}/rootfs"],
+        "RuntimeDirectoryMode": 493,
+        "RuntimeDirectoryPreserve": "no",
+        "User": "root",
+        "Group": "root",
+        "NoNewPrivileges": True,
+        "CapabilityBoundingSet": 0,
+        "AmbientCapabilities": 0,
+        "PrivateNetwork": True,
+        "PrivateIPC": True,
+        "PrivateDevices": True,
+        "PrivateMounts": True,
+        "ProtectSystem": "strict",
+        "ProtectHome": "yes",
+        "ProtectKernelTunables": True,
+        "ProtectKernelLogs": True,
+        "ProtectControlGroups": True,
+        "ProtectControlGroupsEx": "strict",
+        "RestrictSUIDSGID": True,
+        "RestrictNamespaces": 0,
+        "ReadWritePaths": [root],
+        "StandardInput": "file",
+        "StandardOutput": "null",
+        "StandardError": "null",
+        "Environment": ["LANG=C", "LC_ALL=C"],
+        "EnvironmentFiles": [],
+        "PassEnvironment": [],
+        "UMask": 18,
+        "TimeoutStartUSec": 120000000,
+        "TimeoutStopUSec": 10000000,
+        "Restart": "no",
+        "MemoryMax": 2147483648,
+        "MemorySwapMax": 0,
+        "TasksMax": 16,
+        "CPUQuotaPerSecUSec": 1000000,
+        "LimitFSIZE": 1073741824,
+        "LimitFSIZESoft": 1073741824,
+        "KillMode": "control-group",
+        "SendSIGKILL": True,
+        "Delegate": False,
+        "ExecStartPre": [],
+        "ExecStartPost": [],
+        "ExecStopPost": [],
+        "ExecCondition": [],
+        "ExecStart": [[command[0], command, False, 1, 1, 2, 2, 42, 1, 0]],
+        "ExecStop": [["/usr/bin/true", ["/usr/bin/true"], False, 0, 0, 0, 0, 0, 0, 0]],
+        "MainPID": 0,
+        "ControlPID": 0,
+        "ExecMainCode": 1,
+        "ExecMainStatus": 0,
+        "Result": "success",
+        "NRestarts": 0,
+    }
+    return nonce, digest, root, {"Unit": unit, "Service": service}
+
+
+def test_systemd_import_archive_substitution_and_omission_reject():
+    nonce, digest, root, interfaces = _systemd_import_observation()
+    raw = _typed_observation(interfaces)
+    cross_run.validate_sealed_systemd_import(raw, nonce=nonce, sha256=digest, root=root)
+    with pytest.raises(ValueError):
+        cross_run.validate_sealed_systemd_import(
+            raw, nonce=nonce, sha256="e" * 64, root=root
+        )
+    for name in (
+        "EnvironmentFiles",
+        "StandardInput",
+        "ReadWritePaths",
+        "CapabilityBoundingSet",
+        "MemoryMax",
+        "CPUQuotaPerSecUSec",
+        "ExecStart",
+        "ExecStop",
+        "RuntimeDirectory",
+    ):
+        modified = copy.deepcopy(interfaces)
+        del modified["Service"][name]
+        with pytest.raises(ValueError):
+            cross_run.validate_sealed_systemd_import(
+                _typed_observation(modified), nonce=nonce, sha256=digest, root=root
+            )
+    for name, value in (
+        ("ReadWritePaths", ["/"]),
+        ("MemorySwapMax", 1),
+        ("StandardInput", "null"),
+        ("ExecMainStatus", 1),
+        ("RuntimeDirectory", ["sibling/rootfs"]),
+        ("ProtectSystem", "no"),
+    ):
+        modified = copy.deepcopy(interfaces)
+        modified["Service"][name] = value
+        with pytest.raises(ValueError):
+            cross_run.validate_sealed_systemd_import(
+                _typed_observation(modified), nonce=nonce, sha256=digest, root=root
+            )
+
+
+def test_systemd_teardown_requires_exact_completed_stop_job():
+    nonce, root, command, interfaces = _systemd_observation()
+    unit = interfaces["Unit"]["Id"]
+    invocation = interfaces["Unit"]["InvocationID"]
+    record = {
+        "unit": unit,
+        "invocation": invocation,
+        "before": _typed_observation(interfaces),
+        "stop_returncode": 0,
+        "stop_stdout": "",
+        "stop_stderr": "",
+        "load_state": "not-found\n",
+        "after": None,
+    }
+    cross_run.validate_sealed_systemd_stop(record, unit=unit, invocation=invocation)
+    for name, value in (
+        ("unit", "sibling.service"),
+        ("invocation", [99] * 16),
+        ("stop_returncode", 1),
+        ("stop_returncode", False),
+        ("stop_stderr", "denied"),
+        ("load_state", "loaded\n"),
+        ("after", record["before"]),
+    ):
+        modified = {**record, name: value}
+        with pytest.raises(ValueError):
+            cross_run.validate_sealed_systemd_stop(
+                modified, unit=unit, invocation=invocation
+            )
+    for name in record:
+        modified = dict(record)
+        del modified[name]
+        with pytest.raises(ValueError):
+            cross_run.validate_sealed_systemd_stop(
+                modified, unit=unit, invocation=invocation
+            )
+    after = copy.deepcopy(interfaces)
+    after["Unit"].update(ActiveState="inactive", SubState="dead")
+    retained = {**record, "load_state": "loaded\n", "after": _typed_observation(after)}
+    cross_run.validate_sealed_systemd_stop(retained, unit=unit, invocation=invocation)
+    after["Service"]["MainPID"] = False
+    with pytest.raises(ValueError):
+        cross_run.validate_sealed_systemd_stop(
+            {**retained, "after": _typed_observation(after)},
+            unit=unit,
+            invocation=invocation,
+        )
+    after["Service"]["MainPID"] = 42
+    with pytest.raises(ValueError):
+        cross_run.validate_sealed_systemd_stop(
+            {**retained, "after": _typed_observation(after)},
+            unit=unit,
+            invocation=invocation,
+        )
+
+
+@pytest.mark.parametrize("owner", ["guest", "import"])
+@pytest.mark.parametrize(
+    "key",
+    [
+        "MemoryMax",
+        "MemorySwapMax",
+        "TasksMax",
+        "CPUQuotaPerSecUSec",
+        "TimeoutStartUSec",
+        "TimeoutStopUSec",
+        "LimitFSIZE",
+        "LimitFSIZESoft",
+        "CapabilityBoundingSet",
+        "AmbientCapabilities",
+        "RestrictNamespaces",
+        "MainPID",
+        "ControlPID",
+        "ExecMainCode",
+        "ExecMainStatus",
+        "NRestarts",
+    ],
+)
+def test_systemd_numeric_fields_reject_booleans(owner, key):
+    if owner == "guest":
+        nonce, root, command, interfaces = _systemd_observation()
+
+        def admit():
+            raw = _typed_observation(interfaces)
+            cross_run.validate_sealed_systemd_configuration(
+                raw, nonce=nonce, root=root, command=command
+            )
+            cross_run.validate_sealed_systemd_terminal(raw, invocation=[17] * 16)
+    else:
+        nonce, digest, root, interfaces = _systemd_import_observation()
+
+        def admit():
+            cross_run.validate_sealed_systemd_import(
+                _typed_observation(interfaces), nonce=nonce, sha256=digest, root=root
+            )
+
+    admit()
+    interfaces["Service"][key] = bool(interfaces["Service"][key])
+    with pytest.raises(ValueError):
+        admit()
+
+
+@pytest.mark.parametrize(
+    "owner,key",
+    [
+        ("guest", "RuntimeMaxUSec"),
+        ("guest", "FileDescriptorStoreMax"),
+        ("guest", "NFileDescriptorStore"),
+        ("import", "RuntimeDirectoryMode"),
+        ("import", "UMask"),
+    ],
+)
+def test_systemd_remaining_numeric_policy_rejects_booleans(owner, key):
+    if owner == "guest":
+        nonce, root, command, interfaces = _systemd_observation()
+        interfaces["Service"][key] = bool(interfaces["Service"][key])
+        with pytest.raises(ValueError):
+            cross_run.validate_sealed_systemd_configuration(
+                _typed_observation(interfaces), nonce=nonce, root=root, command=command
+            )
+    else:
+        nonce, digest, root, interfaces = _systemd_import_observation()
+        interfaces["Service"][key] = bool(interfaces["Service"][key])
+        with pytest.raises(ValueError):
+            cross_run.validate_sealed_systemd_import(
+                _typed_observation(interfaces), nonce=nonce, sha256=digest, root=root
+            )
+
+
+@pytest.mark.parametrize(
+    "owner,field",
+    [("guest", "ExecStart"), ("import", "ExecStart"), ("import", "ExecStop")],
+)
+@pytest.mark.parametrize("index", range(2, 10))
+def test_systemd_execution_rows_preserve_numeric_and_boolean_types(owner, field, index):
+    # Positions 3..9 are four timestamps, PID, exit code and exit status.
+    # Position 2 is genuinely boolean and rejects numeric zero.
+    if owner == "guest":
+        nonce, root, command, interfaces = _systemd_observation()
+
+        def admit():
+            cross_run.validate_sealed_systemd_configuration(
+                _typed_observation(interfaces), nonce=nonce, root=root, command=command
+            )
+    else:
+        nonce, digest, root, interfaces = _systemd_import_observation()
+
+        def admit():
+            cross_run.validate_sealed_systemd_import(
+                _typed_observation(interfaces), nonce=nonce, sha256=digest, root=root
+            )
+
+    admit()
+    row = interfaces["Service"][field][0]
+    row[index] = 0 if index == 2 else bool(row[index])
+    with pytest.raises(ValueError):
+        admit()
+
+
+@pytest.mark.parametrize(
+    "owner", ["configuration", "import", "terminal", "terminal_argument"]
+)
+@pytest.mark.parametrize("index", [0, 1, 8, 15])
+def test_systemd_invocation_octets_reject_equal_boolean_substitution(owner, index):
+    # 0/1 ensure Python equality would accept the substituted false/true.
+    invocation = [0, 1] * 8
+    if owner == "import":
+        nonce, digest, root, interfaces = _systemd_import_observation()
+    else:
+        nonce, root, command, interfaces = _systemd_observation()
+    interfaces["Unit"]["InvocationID"] = invocation.copy()
+
+    def admit():
+        raw = _typed_observation(interfaces)
+        if owner == "configuration":
+            cross_run.validate_sealed_systemd_configuration(
+                raw, nonce=nonce, root=root, command=command
+            )
+        elif owner == "import":
+            cross_run.validate_sealed_systemd_import(
+                raw, nonce=nonce, sha256=digest, root=root
+            )
+        else:
+            cross_run.validate_sealed_systemd_terminal(raw, invocation=invocation)
+
+    admit()
+    target = (
+        invocation
+        if owner == "terminal_argument"
+        else interfaces["Unit"]["InvocationID"]
+    )
+    target[index] = bool(target[index])
+    with pytest.raises(ValueError):
+        admit()
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "invocation",
+        "argument",
+        "before",
+        "after",
+        "MainPID",
+        "ControlPID",
+        "stop_returncode",
+    ],
+)
+def test_systemd_stop_numeric_custody_rejects_booleans(location):
+    _, _, _, before = _systemd_observation()
+    invocation = [0, 1] * 8
+    before["Unit"]["InvocationID"] = invocation.copy()
+    after = copy.deepcopy(before)
+    after["Unit"].update(ActiveState="inactive", SubState="dead")
+    record = {
+        "unit": before["Unit"]["Id"],
+        "invocation": invocation.copy(),
+        "before": _typed_observation(before),
+        "stop_returncode": 0,
+        "stop_stdout": "",
+        "stop_stderr": "",
+        "load_state": "loaded\n",
+        "after": _typed_observation(after),
+    }
+
+    def admit():
+        cross_run.validate_sealed_systemd_stop(
+            record, unit=record["unit"], invocation=invocation
+        )
+
+    admit()
+    if location in {"invocation", "argument"}:
+        (invocation if location == "argument" else record["invocation"])[0] = False
+    elif location in {"before", "after"}:
+        source = before if location == "before" else after
+        source["Unit"]["InvocationID"][1] = True
+        record[location] = _typed_observation(source)
+    elif location == "stop_returncode":
+        record[location] = False
+    else:
+        after["Service"][location] = False
+        record["after"] = _typed_observation(after)
+    with pytest.raises(ValueError):
+        admit()
+
+
+@pytest.mark.parametrize("signature", ["u", "t", "i", "x", "q", "n", "y"])
+@pytest.mark.parametrize("substitution", [False, True])
+def test_systemd_typed_numeric_observation_rejects_boolean(signature, substitution):
+    # Actual D-Bus numeric signatures cover counters, status and timestamps,
+    # including metadata not used for release admission.
+    envelope = {
+        "Unit": json.dumps(
+            {
+                "type": "a{sv}",
+                "data": [
+                    {"StateChangeTimestamp": {"type": signature, "data": substitution}}
+                ],
+            }
+        ),
+        "Service": json.dumps({"type": "a{sv}", "data": [{}]}),
+    }
+    with pytest.raises(ValueError):
+        cross_run.parse_systemd_observation(json.dumps(envelope))
+
+
+@pytest.mark.parametrize("job_id", [False, True])
+def test_systemd_job_observation_rejects_boolean_id(job_id):
+    # Real systemd GetAll represents Job as (uo), independently of stop status.
+    envelope = {
+        "Unit": json.dumps(
+            {
+                "type": "a{sv}",
+                "data": [{"Job": {"type": "(uo)", "data": [job_id, "/"]}}],
+            }
+        ),
+        "Service": json.dumps({"type": "a{sv}", "data": [{}]}),
+    }
+    with pytest.raises(ValueError):
+        cross_run.parse_systemd_observation(json.dumps(envelope))
 
 
 def test_success_gate_rejects_failed_or_incomplete_terminal():
@@ -585,8 +1159,13 @@ def test_success_gate_rejects_failed_or_incomplete_terminal():
         ("capability", {"admission": {"state": "eligible"}}),
         ("capability", {"admission": {"state": "ineligible", "reason": "denied"}}),
         ("root_exit_code", 1),
+        ("root_exit_code", False),
         ("error_count", 1),
+        ("error_count", False),
         ("violation_count", 1),
+        ("violation_count", False),
+        ("accounting", {"active_processes": False}),
+        ("accounting", None),
     ):
         invalid = copy.deepcopy(valid)
         invalid[key] = value
@@ -833,10 +1412,13 @@ def test_explicit_provision_failure_preserves_verified_entries_and_consumer_refu
         tool_releases.urllib.request, "build_opener", lambda *_: Opener()
     )
     cache = tmp_path / "cache"
-    with pytest.raises(TimeoutError):
+    with pytest.raises(
+        tool_releases.ToolReleaseError, match="independent interrupted second transfer"
+    ) as failed:
         provision_execution_archives.provision(
             target_id="linux-x86_64", downloads=cache, source_root=source
         )
+    assert isinstance(failed.value.__cause__, TimeoutError)
     first = next(iter(archives))
     assert (cache / first.rsplit("/", 1)[-1]).read_bytes() == archives[first]
     with pytest.raises(tool_releases.ToolReleaseError, match="no automatic fetch"):
@@ -1207,3 +1789,957 @@ def test_rooted_verifier_binds_guest_receipt_and_requires_native_custody(
         assert validated == receipt
         consumer_replay.require_success(validated)
     assert len(observed) == 1
+
+
+def test_compile_root_projection_cannot_be_replayed_as_an_ordinary_guest(tmp_path):
+    projection = cross_run.SealedExecutionProjection.compilation(
+        memory_max_bytes=512 * 1024 * 1024,
+        workspace_max_bytes=128 * 1024 * 1024,
+        runtime_max_seconds=90,
+    )
+    root = tmp_path / "root"
+    root.mkdir()
+    row = execution_root.write_payload(
+        root, "app/input.py", b"print(37)\n", executable=False
+    )
+    archive = tmp_path / "root.tar"
+    seal = execution_root.seal_root(
+        root, archive, expected_files=[row], projection=projection
+    )
+    execution_root.validate_sealed_tar(
+        archive, root, expected_archive=seal["archive"], projection=projection
+    )
+    with pytest.raises(ValueError, match="unadmitted directory"):
+        execution_root.validate_sealed_tar(
+            archive, root, expected_archive=seal["archive"]
+        )
+    assert (root / "work").is_dir()
+    assert not tuple((root / "work").iterdir())
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [
+        None,
+        "old-cache-pid",
+        "worker-substitution",
+        "worker-omission",
+        "linker-omission",
+        "driver-omission",
+        "driver-substitution",
+        "forged-summary",
+    ],
+)
+def test_compilation_process_join_replays_native_receipt_before_origin_join(
+    tmp_path, monkeypatch, defect
+):
+    # These are receiver controls over independently authored journal bytes.
+    # Native verification is a seam, so this never claims a kernel positive.
+    from molt.backend_protocol import (
+        BackendDaemonJobOrigin,
+        BackendAddressedProgramInput,
+        BackendCodegenOrigin,
+        BackendNativeWorkerOrigin,
+    )
+    from molt.cli.link_input_observation import compilation_input_observation
+
+    compiler_image = ("/compiler", "a" * 64, 17)
+    linker_image = ("/ld.lld", "b" * 64, 19)
+    driver_image = ("/clang", "2" * 64, 23)
+    output = {"size": 3, "sha256": hashlib.sha256(b"obj").hexdigest()}
+    runtime = {"size": 3, "sha256": hashlib.sha256(b"lib").hexdigest()}
+    worker = BackendNativeWorkerOrigin(8, "d" * 64, 5, "e" * 64, 3)
+    origin = BackendDaemonJobOrigin(
+        7,
+        BackendAddressedProgramInput("c" * 64, 5, "1" * 64 + "2" * 64),
+        output["sha256"],
+        output["size"],
+        BackendCodegenOrigin(None, (worker,)),
+    )
+    observation = compilation_input_observation(
+        origin.payload(),
+        {
+            "schema": "molt.link-input-observation.v1",
+            "dialect": "elf-gnu",
+            "linker_path": "/ld.lld",
+            "inputs": [{"path": "/object", **output}, {"path": "/runtime", **runtime}],
+            "roles": {"compiler_output": "/object", "runtime": "/runtime"},
+            "reproducer": {"size": 2048, "sha256": "f" * 64},
+        },
+    )
+    records = []
+    for pid, image in [
+        (7, compiler_image),
+        (8, compiler_image),
+        (9, linker_image),
+        (10, driver_image),
+    ]:
+        if (
+            defect == "old-cache-pid"
+            and pid == 7
+            or defect == "worker-omission"
+            and pid == 8
+            or defect == "linker-omission"
+            and pid == 9
+            or defect == "driver-omission"
+            and pid == 10
+        ):
+            continue
+        if defect == "driver-substitution" and pid == 10:
+            image = (driver_image[0], "0" * 64, driver_image[2])
+        if defect == "worker-substitution" and pid == 8:
+            image = ("/other", "0" * 64, 17)
+        records.append(
+            {
+                "sequence": len(records),
+                "process_id": pid,
+                "stable_process_id": f"linux:{pid}:1",
+                "event": {
+                    "kind": "exec",
+                    "image": {
+                        "path": image[0],
+                        "sha256": image[1],
+                        "size_bytes": image[2],
+                    },
+                },
+            }
+        )
+    raw = b"".join(json.dumps(row).encode() + b"\n" for row in records)
+    digest = hashlib.sha256(raw).hexdigest()
+    receipt_path = tmp_path / "receipt.json"
+    journal = receipt_path.with_name(f"{receipt_path.name}.events.{digest}.jsonl")
+    journal.write_bytes(raw)
+    receipt = {
+        "complete": True,
+        "state": "COMPLETE",
+        "capability": {"admission": {"state": "admitted"}},
+        "root_exit_code": 0,
+        "error_count": 0,
+        "violation_count": 0,
+        "errors": [],
+        "violations": [],
+        "accounting": {"active_processes": 0},
+        "identity_sha256": "1" * 64,
+        "event_log": {
+            "schema": supervisor_custody.SUPERVISOR_EVENT_LOG_SCHEMA,
+            "file": journal.name,
+            "bytes": len(raw),
+            "count": len(records),
+            "sha256": digest,
+        },
+    }
+    invoked = []
+
+    def replay(**kwargs):
+        invoked.append(kwargs)
+        assert kwargs["require_closed"] is True
+        assert kwargs["rootfs"] == tmp_path / "rootfs"
+        if defect == "forged-summary":
+            raise ValueError("native replay rejected forged summary")
+        return receipt
+
+    monkeypatch.setattr(supervisor_custody, "_validated_supervisor_receipt", replay)
+    kwargs = dict(
+        supervisor=tmp_path / "supervisor",
+        rootfs=tmp_path / "rootfs",
+        policy_path=tmp_path / "policy.json",
+        receipt_path=receipt_path,
+        observation=observation,
+        compiler_image=compiler_image,
+        linker_image=linker_image,
+        additional_images=(driver_image,),
+    )
+    if defect is not None:
+        with pytest.raises(ValueError):
+            consumer_replay.compilation_process_images(**kwargs)
+    else:
+        joined = consumer_replay.compilation_process_images(**kwargs)
+        assert [
+            (row["process_id"], row["stable_process_id"])
+            for row in joined["compiler_processes"]
+        ] == [(7, "linux:7:1"), (8, "linux:8:1")]
+        assert joined["receipt_identity_sha256"] == receipt["identity_sha256"]
+    assert len(invoked) == 1
+
+
+@pytest.mark.parametrize(
+    "defect", [None, "missing-binding", "ambiguous-root", "changed-node"]
+)
+def test_compilation_python_projection_uses_semantic_aliases_and_retained_nodes(defect):
+    from molt.python_capture import _file_nodes, PYTHON_CAPTURE_SCHEMA
+    from molt.exact_json import canonical_json_sha256
+    from tests.python_environment_test_support import (
+        runtime_identity_manifest,
+        realized_environment_manifest,
+    )
+
+    environment = realized_environment_manifest(
+        runtime_identity_manifest(), [("example", "1.0")]
+    )
+    selected = environment["selected_executable"]
+    entry = next(
+        row for row in environment["tree"]["entries"] if row["path"] == selected["path"]
+    )
+    alias = selected["path"] + "-alias"
+    environment["tree"]["entries"].append({**entry, "path": alias, "kind": "hardlink"})
+    environment["tree"]["entries"].sort(
+        key=lambda row: (row["path"].casefold(), row["path"])
+    )
+    environment["tree"]["file_count"] += 1
+    environment["tree"]["manifest_sha256"] = canonical_json_sha256(
+        environment["tree"]["entries"]
+    )
+    environment["environment_closure_sha256"] = canonical_json_sha256(
+        {k: v for k, v in environment.items() if k != "environment_closure_sha256"}
+    )
+    by_node = {
+        row["node"]: row["path"]
+        for row in environment["tree"]["entries"]
+        if row["kind"] == "file"
+    }
+    nodes = sorted(_file_nodes(environment).items())
+    entries = []
+    for pointer, node in nodes:
+        path = (
+            "/runtime/os.py"
+            if pointer.startswith("/runtime/")
+            else "/frontend/" + by_node[node["id"]]
+        )
+        entries.append(
+            (pointer, {"path": path, "size": node["size"], "sha256": node["sha256"]})
+        )
+    entries.sort(key=lambda item: item[1]["path"])
+    capture = {
+        "schema": PYTHON_CAPTURE_SCHEMA,
+        "identity": environment,
+        "file_custody": [row for _, row in entries],
+        "node_custody": sorted(
+            [
+                {"node": pointer, "file_index": index}
+                for index, (pointer, _) in enumerate(entries)
+            ],
+            key=lambda row: row["node"],
+        ),
+        "inventory_profile": {
+            "hash_workers": 1,
+            "hashed_files": len(entries),
+            "hashed_bytes": len(entries),
+            "hash_seconds": 0.0,
+        },
+    }
+    if defect == "missing-binding":
+        capture["node_custody"].pop()
+    elif defect == "changed-node":
+        capture["file_custody"][0]["sha256"] = "f" * 64
+    elif defect == "ambiguous-root":
+        next(row for row in capture["file_custody"] if row["path"] == "/runtime/os.py")[
+            "path"
+        ] = "/runtime/unrelated.py"
+    if defect:
+        with pytest.raises(ValueError):
+            execution_root.compilation_python_files(capture)
+    else:
+        projected = dict(execution_root.compilation_python_files(capture))
+        assert (
+            projected[Path("/frontend") / alias]
+            == projected[Path("/frontend") / selected["path"]]
+        )
+        assert projected[Path("/runtime/os.py")]["sha256"] == "a" * 64
+        assert len(projected) == len(entries) + 1
+
+
+@pytest.mark.parametrize("metadata", [None, {"comment": "hidden"}, {"mtime": "1"}])
+def test_sealed_root_long_runtime_names_use_one_exact_pax_encoding(tmp_path, metadata):
+    root = tmp_path / "root"
+    name = "runtime/" + "a" * 120 + ".native-link-custody.json"
+    row = execution_root.write_payload(
+        root, name, b"retained runtime custody", executable=False
+    )
+    archive = tmp_path / "root.tar"
+    seal = execution_root.seal_root(root, archive, expected_files=[row])
+    # An independent standard reader must see the exact long semantic name.
+    with tarfile.open(archive, "r:") as handle:
+        assert handle.extractfile(name).read() == b"retained runtime custody"
+    if metadata is None:
+        execution_root.validate_sealed_tar(
+            archive, root, expected_archive=seal["archive"]
+        )
+        return
+    replacement = tmp_path / "other.tar"
+    with (
+        tarfile.open(archive, "r:") as source,
+        tarfile.open(replacement, "w", format=tarfile.PAX_FORMAT) as target,
+    ):
+        for member in source:
+            if member.name == name:
+                member.pax_headers.update(metadata)
+            stream = source.extractfile(member) if member.isfile() else None
+            target.addfile(member, stream)
+    with pytest.raises(ValueError, match="metadata|closure differs"):
+        execution_root.validate_sealed_tar(
+            replacement,
+            root,
+            expected_archive=execution_root.file_identity(replacement),
+        )
+
+
+def _compilation_export_fixture(tmp_path, target, defect=None):
+    from molt.backend_protocol import (
+        BackendDaemonJobOrigin,
+        BackendCodegenOrigin,
+        BackendAddressedProgramInput,
+    )
+    from molt.artifact_publication import publication_receipt_path
+    from molt.cli.runtime_fingerprints import _fingerprint_payload
+    from molt.cli.static_archive_identity import artifact_content_identity
+    from tools.release.archive import write_reproducible_zip
+
+    source = tmp_path / "export"
+    source.mkdir()
+    primary = "binary" if target == "native" else "linked"
+    program = source / ("program" if target == "native" else "program.wasm")
+    program.write_bytes(b"executable")
+    command = ["/installed/molt", "build", "/app/source.py"]
+    (source / "command.json").write_text(
+        json.dumps({"argv": command, "returncode": 0, "duration_sec": 0.25}),
+        encoding="utf-8",
+    )
+    (source / "command.stdout").write_bytes(b"")
+    (source / "command.stderr").write_bytes(b"")
+
+    def content(data):
+        return {"size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+
+    emitted, runtime = b"object", b"runtime"
+    buffers = {"/work/object": emitted, "/installed/runtime": runtime}
+    if target == "native":
+        buffers["/usr/lib/molt-capture-fixture-crt.o"] = (
+            b"CRT input from the linker buffer"
+        )
+    report = source / (program.name + ".molt-link-inputs.tar")
+    with tarfile.open(report, "w") as archive:
+        for name, data in {
+            "link/response.txt": b"/work/object /installed/runtime",
+            "link/version.txt": b"LLD",
+            **{"link" + name: data for name, data in buffers.items()},
+        }.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            archive.addfile(info, io.BytesIO(data))
+    observed = {
+        "schema": "molt.link-input-observation.v1",
+        "dialect": "elf-gnu" if target == "native" else "wasm",
+        "linker_path": "/ld.lld" if target == "native" else "/wasm-ld",
+        "inputs": [
+            {"path": name, **content(data)} for name, data in sorted(buffers.items())
+        ],
+        "roles": {
+            "compiler_output"
+            if target == "native"
+            else "compiler_rewritten": "/work/object",
+            "runtime": "/installed/runtime",
+        },
+        "reproducer": content(report.read_bytes()),
+    }
+    if defect == "forged-summary":
+        observed["inputs"][0]["sha256"] = "f" * 64
+    link = (
+        observed
+        if target == "native"
+        else {
+            "schema": "molt.wasm-link-inputs.v1",
+            "source_inputs": {
+                "compiler_output": content(emitted),
+                "runtime": content(runtime),
+                "deployment_runtime": None,
+            },
+            "links": {"linked": observed},
+        }
+    )
+    origin = BackendDaemonJobOrigin(
+        7,
+        BackendAddressedProgramInput("a" * 64, 12, "b" * 64),
+        content(emitted)["sha256"],
+        len(emitted),
+        BackendCodegenOrigin(7, ()),
+    )
+    observation = source / (program.name + ".molt-link-inputs.json")
+    observation.write_text(
+        json.dumps(
+            {
+                "schema": "molt.compilation-inputs.v1",
+                "compiler": origin.payload(),
+                "link": link,
+            }
+        ),
+        encoding="utf-8",
+    )
+    outputs = {
+        primary: program,
+        "input_observation": observation,
+        "input_reproducer" if target == "native" else "linked_input_reproducer": report,
+    }
+    if target == "native":
+        dependency = source / "program.molt-native-inputs.d"
+        dependency.write_text("output: /work/main_stub.c\n", encoding="utf-8")
+        preparation = source / "program.molt-native-inputs.json"
+        preparation.write_text(
+            json.dumps(
+                {
+                    "schema": "molt.native-link-preparation.v1",
+                    "driver": {
+                        "path": "/clang",
+                        "content_path": "/clang",
+                        **content(b"driver"),
+                    },
+                    "source": "/work/main_stub.c",
+                    "files": [
+                        {
+                            "path": "/work/main_stub.c",
+                            "content_path": "/work/main_stub.c",
+                            **content(b"stub"),
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        outputs.update(driver_dependencies=dependency, driver_preparation=preparation)
+    receipt = {
+        "schema": "molt.final-link.v2",
+        "fingerprint": _fingerprint_payload({"hash": "a" * 64}),
+        "outputs": {
+            role: {
+                "path": "/work/output/" + path.name,
+                "identity": artifact_content_identity(path),
+            }
+            for role, path in outputs.items()
+        },
+    }
+    if defect == "escaped-output":
+        receipt["outputs"][primary]["path"] = "/work/output/../elsewhere"
+    publication_receipt_path(program).write_text(json.dumps(receipt), encoding="utf-8")
+    if defect == "output-substitution":
+        program.write_bytes(b"substitute")
+    elif defect == "omitted-report":
+        report.unlink()
+    archive = tmp_path / "output.zip"
+    write_reproducible_zip(source, archive, source_date_epoch=315532800)
+    runtime_cell = {
+        "files": [
+            {
+                "role": "runtime_archive"
+                if target == "native"
+                else "wasm_reloc_member",
+                **content(b"changed" if defect == "runtime-substitution" else runtime),
+            }
+        ]
+    }
+    projection = cross_run.SealedExecutionProjection.compilation(
+        memory_max_bytes=512 * 1024 * 1024,
+        workspace_max_bytes=128 * 1024 * 1024,
+        runtime_max_seconds=90,
+    )
+    args = dict(
+        archive=archive,
+        output=tmp_path / "received",
+        projection=projection,
+        command=["/other"] if defect == "wrong-command" else command,
+        runtime_cell=runtime_cell,
+        target=target,
+    )
+    return args, content, emitted
+
+
+@pytest.mark.parametrize("target", ["native", "wasm"])
+@pytest.mark.parametrize(
+    "defect",
+    [
+        None,
+        "runtime-substitution",
+        "output-substitution",
+        "forged-summary",
+        "omitted-report",
+        "wrong-command",
+        "escaped-output",
+    ],
+)
+def test_compilation_export_rechecks_raw_buffers_and_publication(
+    tmp_path, target, defect
+):
+    args, content, emitted = _compilation_export_fixture(tmp_path, target, defect)
+    archive = args["archive"]
+    if defect:
+        with pytest.raises((ValueError, OSError)):
+            consumer_replay.receive_compilation_outputs(**args)
+    else:
+        received = consumer_replay.receive_compilation_outputs(**args)
+        assert (
+            received["artifact"]["sha256"] == hashlib.sha256(b"executable").hexdigest()
+        )
+        assert received["observation"]["compiler"]["output"] == content(emitted)
+        assert received["observation"]["compiler"]["input"] == {
+            "schema": "molt.addressed-program-input.v1",
+            "lease": {"sha256": "a" * 64, "size": 12},
+            "function_digests": "b" * 64,
+        }
+        assert received["archive"] == content(archive.read_bytes())
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [
+        None,
+        "duplicate",
+        "controller",
+        "cell-omission",
+        "policy",
+        "foreign-guard",
+        "launcher",
+        "interpreter",
+    ],
+)
+def test_compilation_preparation_shares_input_bytes_and_keeps_cell_policies(
+    tmp_path, monkeypatch, defect
+):
+    duplicate = defect == "duplicate"
+    # This tests the preparation/output boundary only. The capture materializers
+    # are explicit fixture seams; no installed/kernel execution is claimed.
+    from molt.compiler_distribution import InstalledCompiler
+    from molt.release_lanes import capture_release_lanes
+    from molt.exact_json import read_exact
+    from tools.release.release_model import ROOT
+
+    inventory = capture_release_lanes(ROOT)
+    native = next(
+        lane
+        for lane in inventory.lanes
+        if lane.target == "native" and lane.backend != "llvm"
+    )
+    wasm = next(lane for lane in inventory.lanes if lane.target == "wasm")
+    compiler = InstalledCompiler(
+        Path("/installed/source"),
+        "a" * 40,
+        {"platform": "linux", "arch": "x86_64", "path": "bin/compiler"},
+        {},
+        {},
+        (),
+        {},
+    )
+    monkeypatch.setattr(consumer_replay, "capture_release_lanes", lambda _: inventory)
+    staged = []
+
+    def inputs(root, **kwargs):
+        staged.append("inputs")
+        execution_root.write_payload(
+            root, "installed/bin/compiler", b"compiler", executable=True
+        )
+        execution_root.write_payload(
+            root, "python/bin/python", b"interpreter", executable=True
+        )
+        execution_root.write_payload(
+            root, "sdk/input", b"one shared SDK", executable=False
+        )
+        return execution_root.root_inventory(root)
+
+    def runtime(root, **kwargs):
+        staged.append(kwargs["key"]["cell"])
+        return [], {"id": kwargs["key"]["cell"], "files": []}
+
+    monkeypatch.setattr(execution_root, "stage_compilation_inputs", inputs)
+    monkeypatch.setattr(execution_root, "stage_compilation_runtime", runtime)
+    monkeypatch.setattr(execution_root, "support_payloads", lambda *a, **k: ({}, []))
+    supervisor = tmp_path / "supervisor"
+    supervisor.write_bytes(b"supervisor")
+    generation = {
+        "binary": {
+            "size_bytes": 10,
+            "sha256": hashlib.sha256(b"supervisor").hexdigest(),
+        }
+    }
+    projection = cross_run.SealedExecutionProjection.compilation(
+        memory_max_bytes=512 * 1024 * 1024,
+        workspace_max_bytes=128 * 1024 * 1024,
+        runtime_max_seconds=90,
+    )
+    cells = [
+        (native, "native", {"cell": native.id}),
+        (native if duplicate else wasm, "wasm", {"cell": wasm.id}),
+    ]
+    args = dict(
+        evidence=tmp_path / "evidence",
+        compiler=compiler,
+        launcher=["/installed/bin/molt"],
+        python_executable=Path("/python/bin/python"),
+        python_captures=[{}],
+        toolchain_capture={},
+        cas_root=tmp_path / "cas",
+        native_link_inputs={native.id: (tmp_path / "native-inputs.tar", {}, {})},
+        environment={
+            "MOLT_HOME": "/installed-home",
+            "PATH": "/sdk/bin",
+            "MOLT_MEMORY_GUARD_TOKEN": "foreign-token",
+        },
+        cells=cells,
+        python_minor="3.12",
+        projection=projection,
+        archive_cache=tmp_path / "archives",
+        supervisor=supervisor,
+        generation=generation,
+    )
+    if duplicate:
+        with pytest.raises(ValueError, match="no applicable"):
+            consumer_replay.prepare_compilation(**args)
+        assert not staged
+        return
+    monkeypatch.setattr(
+        execution_root, "stage_compilation_link_inputs", lambda *args, **kwargs: []
+    )
+    monkeypatch.setattr(
+        execution_root, "stage_compilation_driver_inputs", lambda *args, **kwargs: []
+    )
+    prepared = consumer_replay.prepare_compilation(**args)
+    assert staged == ["inputs", native.id, wasm.id]
+    assert [row["id"] for row in prepared["cells"]] == [native.id, wasm.id]
+    root = args["evidence"] / "rootfs"
+    assert (
+        len([row for row in prepared["root"]["files"] if row["path"] == "sdk/input"])
+        == 1
+    )
+    policies = []
+    for lane, cell in zip((native, wasm), prepared["cells"], strict=True):
+        policy = read_exact(
+            root / cell["policy"], max_bytes=65536, label="fixture compilation policy"
+        )
+        config = read_exact(
+            root / policy["command"][-1].removeprefix("/"),
+            max_bytes=65536,
+            label="fixture compilation controller",
+        )
+        policies.append(policy)
+        assert config["command"] == cell["command"]
+        assert config["environment"]["MOLT_WASM_CARGO_PROFILE"] == lane.runtime_profile
+        assert "MOLT_MEMORY_GUARD_TOKEN" not in config["environment"]
+        assert policy["derived_roots"] == []
+        assert any(
+            row["path"] == "/installed/bin/compiler"
+            and row["root_exit_disposition"] == "terminate"
+            for row in policy["fixed_images"]
+        )
+        assert (
+            "--capture-link-inputs"
+            if lane.target == "native"
+            else "--build-arg=--capture-link-inputs"
+        ) in config["command"]
+    assert policies[0]["nonce"] != policies[1]["nonce"]
+    execution_root.validate_sealed_tar(
+        args["evidence"] / "rootfs.tar",
+        root,
+        expected_archive=prepared["root"]["archive"],
+        projection=projection,
+    )
+
+    if defect == "launcher":
+        prepared["launcher"] = ["/python/bin/python", "/app/forged.py"]
+    elif defect == "interpreter":
+        prepared["controller_python"] = "/other/python"
+    elif defect == "controller":
+        controller = root / "app/compilation-controller.py"
+        controller.chmod(0o644)
+        controller.write_bytes(b"X" * controller.stat().st_size)
+    elif defect == "cell-omission":
+        prepared["cells"].pop()
+    elif defect in {"policy", "foreign-guard"}:
+        cell = prepared["cells"][0]
+        selected = root / (
+            cell["policy"]
+            if defect == "policy"
+            else "app/compilation-" + cell["id"] + ".json"
+        )
+        value = json.loads(selected.read_text(encoding="utf-8"))
+        if defect == "policy":
+            value["fixed_images"][0]["sha256"] = "0" * 64
+        else:
+            value["environment"]["MOLT_MEMORY_GUARD_TOKEN"] = "foreign-token"
+        selected.chmod(0o644)
+        selected.write_text(json.dumps(value), encoding="utf-8")
+    if defect is not None:
+        with pytest.raises(ValueError):
+            consumer_replay._validate_compilation_plan(
+                rootfs=root,
+                compilation=prepared,
+                lanes=(native, wasm),
+                python_minor="3.12",
+                launcher=args["launcher"],
+                controller_python=args["python_executable"],
+            )
+    else:
+        consumer_replay._validate_compilation_plan(
+            rootfs=root,
+            compilation=prepared,
+            lanes=(native, wasm),
+            python_minor="3.12",
+            launcher=args["launcher"],
+            controller_python=args["python_executable"],
+        )
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [
+        None,
+        "forged-output-summary",
+        "forged-process-summary",
+        "retained-output-substitution",
+    ],
+)
+def test_retained_compilation_replays_export_before_accepting_summary(
+    tmp_path, monkeypatch, defect
+):
+    # Namespace/native admission are independently tested seams here. This
+    # exercises retained readback, the real ZIP/raw-link receiver, publication
+    # identities and final equality; it does not simulate a kernel positive.
+    args, _, _ = _compilation_export_fixture(tmp_path, "native")
+    evidence = tmp_path / "retained"
+    (evidence / "transport").mkdir(parents=True)
+    archive = evidence / "transport/abc.stdout"
+    archive.write_bytes(args["archive"].read_bytes())
+    rootfs = evidence / "rootfs"
+    rootfs.mkdir()
+    compiler_path = rootfs / "compiler"
+    compiler_path.write_bytes(b"compiler")
+    (rootfs / "ld.lld").write_bytes(b"linker")
+    (rootfs / "clang").write_bytes(b"driver")
+    lane = consumer_replay.capture_release_lanes(consumer_replay.ROOT).lanes[0]
+    assert lane.target == "native"
+    cell = {
+        "id": lane.id,
+        "lane": lane.as_record(),
+        "command": args["command"],
+        "runtime_cell": args["runtime_cell"],
+        "policy": "policies/cell.json",
+        "execution": {
+            "execution": args["projection"].to_dict(),
+            "observation": {},
+            "nonce": "abc",
+            "teardown": {},
+            "stdout": "transport/abc.stdout",
+            "stderr": "transport/abc.stderr",
+            "receipt": f"runs/{lane.id}/receipt.json",
+        },
+    }
+    installed = SimpleNamespace(
+        binary=compiler_path,
+        runtime={"cells": [args["runtime_cell"]]},
+        verify_binary=lambda *args: None,
+    )
+    monkeypatch.setattr(
+        consumer_replay, "_validate_compilation_inputs", lambda **kwargs: installed
+    )
+    monkeypatch.setattr(
+        consumer_replay, "_validate_transport", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        consumer_replay,
+        "validate_sealed_systemd_configuration",
+        lambda *args, **kwargs: {"InvocationID": "abc", "Id": "unit"},
+    )
+    monkeypatch.setattr(
+        consumer_replay,
+        "validate_sealed_systemd_terminal",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        consumer_replay, "validate_sealed_systemd_stop", lambda *args, **kwargs: None
+    )
+    process_calls = []
+
+    def native_join(**kwargs):
+        assert kwargs["additional_images"] == (
+            ("/clang", hashlib.sha256(b"driver").hexdigest(), len(b"driver")),
+        )
+        process_calls.append(kwargs)
+        return {"receipt_identity_sha256": "a" * 64}
+
+    monkeypatch.setattr(consumer_replay, "compilation_process_images", native_join)
+    compilation = {
+        name: None
+        for name in (
+            "schema",
+            "execution",
+            "target",
+            "source_sha",
+            "cells",
+            "python",
+            "source_sha256",
+            "launcher",
+            "controller_python",
+            "compiler",
+            "compiler_source_root",
+            "environment_contract",
+            "providers",
+            "root",
+            "supervisor_generation",
+            "transport",
+            "files",
+        )
+    }
+    compilation.update(
+        execution=args["projection"].to_dict(),
+        target={"arch": "x86_64"},
+        transport={"root": "/root"},
+        cells=[cell],
+    )
+    consumer_replay._receive_compilation_cell(
+        evidence=evidence,
+        rootfs=rootfs,
+        compilation=compilation,
+        cell=cell,
+        installed=installed,
+        supervisor=tmp_path / "supervisor",
+    )
+    assert cell["outputs"]["artifact"]["path"] == "program"
+    assert len(process_calls) == 1
+    if defect == "forged-output-summary":
+        cell["outputs"]["artifact"]["sha256"] = "0" * 64
+    elif defect == "forged-process-summary":
+        cell["processes"]["receipt_identity_sha256"] = "0" * 64
+    elif defect == "retained-output-substitution":
+        (evidence / "outputs" / lane.id / "program").write_bytes(b"substitute")
+    # A forged summary may recompute this outer inventory. Raw export readback
+    # must still reject altered retained bytes and derived claims.
+    compilation["files"] = execution_root.root_inventory(evidence)
+    (evidence / "compilation.json").write_text(
+        json.dumps(compilation), encoding="utf-8"
+    )
+    kwargs = dict(
+        evidence=evidence,
+        compilation=compilation,
+        compiler=installed,
+        lanes=(lane,),
+        python_minor="3.12",
+        supervisor=tmp_path / "supervisor",
+        launcher=["/installed/molt"],
+        controller_python=Path("/python"),
+    )
+    if defect:
+        with pytest.raises(ValueError, match="summary differs|output differs"):
+            consumer_replay.validate_compilation(**kwargs)
+    else:
+        consumer_replay.validate_compilation(**kwargs)
+    assert len(process_calls) == 2
+
+
+@pytest.mark.parametrize(
+    "defect", [None, "conflicting-root-input", "buffer-substitution", "forged-summary"]
+)
+def test_compilation_native_resources_come_from_captured_buffers(tmp_path, defect):
+    _compilation_export_fixture(tmp_path, "native")
+    source = tmp_path / "export"
+    report = source / "program.molt-link-inputs.tar"
+    observation = json.loads(
+        (source / "program.molt-link-inputs.json").read_text(encoding="utf-8")
+    )["link"]
+    root = tmp_path / "rootfs"
+    root.mkdir()
+    crt = "usr/lib/molt-capture-fixture-crt.o"
+    if defect == "conflicting-root-input":
+        execution_root.write_payload(
+            root, crt, b"X" * len(b"CRT input from the linker buffer"), executable=False
+        )
+    elif defect == "buffer-substitution":
+        with tarfile.open(report) as archive:
+            offset = archive.getmember("link/" + crt).offset_data
+        raw = bytearray(report.read_bytes())
+        raw[offset] ^= 1
+        report.write_bytes(raw)
+    elif defect == "forged-summary":
+        next(row for row in observation["inputs"] if row["path"] == "/" + crt)[
+            "sha256"
+        ] = "0" * 64
+    kwargs = dict(root=root, reproducer=report, observation=observation)
+    if defect:
+        with pytest.raises(ValueError):
+            execution_root.stage_compilation_link_inputs(**kwargs)
+        assert not (tmp_path / "root.tar").exists()
+        if defect == "conflicting-root-input":
+            assert (root / crt).read_bytes().startswith(b"XXXX")
+    else:
+        rows = execution_root.stage_compilation_link_inputs(**kwargs)
+        assert [row["path"] for row in rows] == [crt]
+        assert (root / crt).read_bytes() == b"CRT input from the linker buffer"
+        assert not (root / "work/object").exists()
+        assert not (root / "installed/runtime").exists()
+        projection = cross_run.SealedExecutionProjection.compilation(
+            memory_max_bytes=512 * 1024 * 1024,
+            workspace_max_bytes=128 * 1024 * 1024,
+            runtime_max_seconds=90,
+        )
+        sealed = execution_root.seal_root(
+            root, tmp_path / "root.tar", expected_files=rows, projection=projection
+        )
+        execution_root.validate_sealed_tar(
+            tmp_path / "root.tar",
+            root,
+            expected_archive=sealed["archive"],
+            projection=projection,
+        )
+
+
+@pytest.mark.parametrize(
+    "defect", [None, "header-substitution", "driver-substitution", "omitted-source"]
+)
+def test_native_preparation_stages_lexical_header_inputs_without_readmitting_changes(
+    tmp_path, defect
+):
+    from molt.cli.link_input_observation import capture_native_link_preparation
+
+    source = tmp_path / "main.c"
+    source.write_bytes(b"#include <selected.h>\n")
+    header = tmp_path / "content.h"
+    header.write_bytes(b"#define VALUE 1\n")
+    alias = tmp_path / "selected.h"
+    alias.symlink_to(header.name)
+    driver = tmp_path / "clang"
+    driver.write_bytes(b"selected driver")
+    dependencies = tmp_path / "driver.d"
+    dependencies.write_text(
+        "program: "
+        + ("" if defect == "omitted-source" else "main.c ")
+        + "selected.h\n",
+        encoding="utf-8",
+    )
+    if defect == "omitted-source":
+        with pytest.raises(ValueError, match="omitted its source"):
+            capture_native_link_preparation(
+                dependencies, source=source, driver=driver, cwd=tmp_path
+            )
+        return
+    captured = capture_native_link_preparation(
+        dependencies, source=source, driver=driver, cwd=tmp_path
+    )
+    row = next(row for row in captured["files"] if row["path"] == str(alias))
+    assert row["content_path"] == str(header)
+    root = tmp_path / "rootfs"
+    root.mkdir()
+    execution_root.stage_file(
+        root, str(driver).removeprefix("/"), driver, executable=True
+    )
+    if defect == "header-substitution":
+        header.write_bytes(b"#define VALUE 9\n")
+    elif defect == "driver-substitution":
+        captured["driver"]["sha256"] = hashlib.sha256(b"replaced driver").hexdigest()
+    if defect:
+        with pytest.raises(
+            ValueError, match="changed before staging|conflicts with an admitted"
+        ):
+            execution_root.stage_compilation_driver_inputs(root, preparation=captured)
+    else:
+        retained = execution_root.stage_compilation_driver_inputs(
+            root, preparation=captured
+        )
+        staged_alias = root / str(alias).removeprefix("/")
+        assert staged_alias.is_file() and not staged_alias.is_symlink()
+        assert staged_alias.read_bytes() == b"#define VALUE 1\n"
+        assert not (root / str(source).removeprefix("/")).exists()
+        assert {row["path"] for row in retained} == {str(alias).removeprefix("/")}

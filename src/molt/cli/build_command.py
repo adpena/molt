@@ -110,6 +110,7 @@ def _early_cutoff_request(request: BuildRequest) -> tuple[str, Path] | None:
         or request.diagnostics
         or request.diagnostics_file is not None
         or request.cache_report
+        or request.capture_link_inputs
         or request.audit_log is not None
         or request.codegen_backend != DEFAULT_CODEGEN_BACKEND
         # Inputs named by path whose loaders do not yet report to the record.
@@ -267,8 +268,23 @@ def _in_build_scope(
 
     @functools.wraps(build_function)
     def build(request: BuildRequest) -> int:
-        from molt.cli.build_output_layout import build_scope
+        from molt.cli.build_output_layout import (
+            build_scope,
+            resolve_build_output_options,
+        )
 
+        try:
+            resolve_build_output_options(
+                target=request.target,
+                trusted=request.trusted,
+                split_runtime=request.split_runtime,
+                require_linked=request.require_linked,
+                linked=request.linked,
+                linked_output=request.linked_output,
+                emit=request.emit,
+            )
+        except ValueError as exc:
+            return _fail(str(exc), request.json_output, command="build")
         with build_scope():
             return build_function(request)
 
@@ -432,6 +448,7 @@ def build(request: BuildRequest) -> int:
             trusted=request.trusted,
             verbose=request.verbose,
             require_linked=request.require_linked,
+            capture_link_inputs=request.capture_link_inputs,
             wasm_opt_level=request.wasm_opt_level,
             precompile=request.precompile,
             snapshot=request.snapshot,

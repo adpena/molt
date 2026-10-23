@@ -457,12 +457,11 @@ making it absolute for a different child working directory. Resolving a virtual
 environment's interpreter symlink to its base executable changes its import
 environment. Guarded commands and benchmark interpreter selection share the
 lexical executable-path authority; content identity remains a separate check.
-The runtime build Python is the one exception: build scripts run it with
-`-B -I -S`, which imports no virtual environment site, and its path is a Cargo
-rerun input recorded with every stored product, so
-`molt.cli.runtime_build_python` pins the base interpreter (a link's target, or
-the `executable` or `home` that a launcher copy's `pyvenv.cfg` names, as on
-Windows) and every checkout of one host records one value.
+Runtime builds consume committed Unicode facts generated from pinned CPython
+source by `tools/gen_unicode_width.py`. Their Cargo inputs contain no Python
+generator or interpreter identity. Regenerating those facts is development
+work; frontend Python selection and source-package build interpreters retain
+their own executable and environment custody.
 Captured environment launchers include executable interpreter aliases in its
 scripts directory when their captured content matches the selected interpreter.
 Copied files, hardlinks and same-root or base-runtime symlinks retain their
@@ -1131,10 +1130,11 @@ the checkout), and any run that would not load the custody plugins. An in-proces
 `pytest.main()` that passes both an `addopts` override and `--noconftest` runs
 no repository code inside pytest, so no check sees it; that gap remains. Each
 selection needs a plan row that declares it, a directory holding it, or a node
-in it. The proof admits the union of the toolchains, native units and one
-`cargo_build_python` role of every row whose targets lie on, above or inside a
-selection, so it discards no authority those rows declare. It never stands in
-for a row's receipt.
+in it. The proof admits the union of the toolchains and native units of every
+row whose targets lie on, above or inside a selection, so it discards no
+authority those rows declare. Runtime Cargo builds have no build-Python role;
+source generators and frontend/oracle commands retain their declared Python
+toolchain. Focused admission never stands in for a row's receipt.
 
 ### Native C/C++ processes in development proofs
 
@@ -1261,3 +1261,187 @@ that boundary. Installed readiness checks delivered compiler/runtime capability
 and does not require source-development SDK tools. Full SDK provisioning uses the
 existing Linux package and non-Linux source-build owners. None of these source
 contracts constitutes actual six-host execution or release acceptance.
+
+
+## Runtime compilation and publication identity
+
+The runtime family identity binds its resolved Cargo action, source closure,
+observed build environment and tool/resource bytes. The member identity also
+binds a closed publication action (`RuntimePublicationAction`): shared WASM
+export renames and debug retention, or the ordered relocatable linker arguments,
+response-file exports and typed archive/output operands. Publication executes
+that captured action. Each action also binds the content of its actual Python
+byte/sidecar executor modules, listed by `runtime_publication_executor_paths`.
+Native products bind Cargo-note interpretation and custody/manifest generation;
+WASM products bind rewriting, dispatch and reloc response/argument encoding.
+The native manifest retains derived link semantics, so byte validation alone
+cannot replace this executor identity. Standalone WASM C-ABI publication copies
+Cargo's complete archive unchanged and requires a null executor fact.
+
+Executor content affects member/family identity, never Cargo compile identity.
+The existing input recapture after staging native sidecars or both WASM members
+checks it again before publication. Module-level capture deliberately overkeys
+edits elsewhere in those few executor modules; planner/spec/launcher imports
+are excluded. It reads six native modules, two shared modules and five reloc
+modules per capture, with no new processes, writes or persistent index. Existing
+manifest/custody validation remains mandatory.
+Member/family schema v5 rejects older projections rather than interpreting them
+through a compatibility lane.
+
+Python planner source files are not runtime archive inputs. An edit to a planner
+that resolves to the same actions can reuse the same runtime product. A changed
+Cargo action, consumed source/tool/resource, ABI or publication action changes
+its relevant identity. Cargo dep-info and build-script observations must remain
+inside the declared source/toolchain closure for native, paired WASM and C-ABI
+publication; observing an undeclared Python input refuses publication. Product
+stores and installed readers still verify artifact bytes, manifests, symbols,
+owned paths and custody independently of this action identity.
+
+This follows the action-input model described in
+[Bazel's remote caching documentation](https://bazel.build/remote/caching): the
+resolved command and consumed input content determine reuse. It does not claim
+that an action description proves kernel consumption or loaded-image identity.
+
+
+### Daemon emission origin
+
+Daemon protocol 4 retains one typed origin with each in-memory artifact cache
+entry. `backend_process/input` hashes the exact addressed MessagePack lease while
+the canonical decoder consumes it. That lease can omit resident bodies: it is
+not a full serialized program. Only after ordered assembly and program validation
+succeed, `molt.addressed-program-input.v1` records the lease's SHA-256/size plus
+the concatenated lowercase digests of every assembled function in program order.
+The lease binds header fields and shipped bytes; the ordered digest list binds
+the validated resident bodies. `molt.daemon-job-origin.v2` records that input,
+the emitted output content, the serving daemon PID and the code-generating
+processes. Native output identity is retained from the emitted object bytes or
+the existing private archive publication handle; later readback must match it
+before cache insertion. Module and function cache hits, probes, synchronized-output replies
+and concurrent followers reuse the original entry; they never manufacture a new
+origin from the process or request serving the hit. Cache eviction accounts for
+the origin's retained strings (including 64 bytes per function digest) and worker
+vector along with the output bytes. Origin transport adds O(functions) response
+bytes; it never re-encodes resident function bodies. This join has no new timing
+claim; qualification must measure that cost alongside the avoided body transport.
+
+Direct native and WASM code generation identify the daemon itself. Native batch
+workers hash their consumed JSON job and emitted object, then return a bounded
+internal stdout record. The spawning parent checks the actual child PID, the
+streamed job identity and the opened object content. Ordered worker records flow
+through archive assembly into the same daemon cache entry. The Python daemon
+receiver requires the strict origin shape, verifies the actual output (the
+explicit retained artifact when a cache reply skips writing), and checks
+every native archive member against its corresponding worker record. Fresh
+compiles compare the observed lease bytes and ordered assembled digests with the
+current request. Cached inputs identify the original assembly and partial lease;
+that identity alone is not a proof of
+semantic equivalence to a later request. Existing target/environment cache-key
+authorities continue to own lookup semantics.
+
+This is an emission observation, not authenticated used-byte admission. A PID is
+not a kernel process generation or loaded-image identity. The existing supervisor
+journal must independently bind producing process generations and executable
+images before release consumers can admit them. Runtime compilation and linkage
+remain governed by the native/WASM generation and link-custody authorities; this
+observation does not establish the final artifact's complete runtime closure.
+Publication exposes the optional `daemon_job_origin` in `observed_toolchain` for
+native and WASM and always leaves `compiled_with_verified` false. Performance and
+release consumers continue to reject unavailable compiler/runtime used-byte
+receipts, including when a caller supplies a true flag or complete-looking
+publication hashes.
+
+Disk backend caches, one-shot compilation and persisted shared stdlib generations
+have no retained daemon origin and remain explicitly unknown. The stdlib object
+cache has its own atomic object/envelope and immutable archive generation owner;
+it does not store this daemon entry. Its worker transport consumes the new result
+but does not invent an origin for persisted cache hits. None of these coordinates
+is admitted by partial daemon metadata. Later admission must migrate those
+producer and consumer contracts together and retain the original compile-session
+supervisor evidence before post-uninstall replay.
+
+The cold path adds streaming SHA-256 over consumed input and emitted output.
+Native worker input hashing occurs during decoding; the parent additionally hashes
+the already serialized job and reads the published object once. The daemon reads
+native output in 64 KiB blocks, retaining it only when cache policy allows it.
+Worker stdout is bounded to 16 KiB. No extra compiler processes, artifact sidecars,
+flushes or scheduler are introduced. Warm hits retain the original origin and the
+Python receiver reads the output once, plus archive member contents when batched.
+These are source-level costs; latency/RSS and real subprocess validation require
+the owning native executor and are not implied by Python receiver tests.
+
+### Explicit final-link input capture
+
+`--capture-link-inputs` is an admission-only build request. ELF LLD and WASM LLD
+retain their actual input buffers in a reproducer. The final-link publisher
+publishes that archive and a strict observation with the output family under its
+existing receipt. Capture forces a fresh final link. Ordinary builds do not
+produce a reproducer or copy toolchain roots.
+
+The observation separates the selected linker path from consumed content and
+process-image evidence. A selected path does not prove an image ran. The receiver
+reopens the retained reproducer, verifies every buffer and its complete inventory,
+and compares compiler input with the retained emission identity. Native runtime
+input must match its installed archive; WASM keeps the original emission, rewritten
+link buffer, relocatable runtime, and deployment runtime as distinct identities.
+Output substitution, a missing raw reproducer, or a summary that disagrees with
+raw buffers fails admission. Link-input capture never sets
+`compiled_with_verified`.
+
+The release compilation projection reuses the sealed systemd provider and native
+supervisor. One immutable compiler/Python/toolchain root serves the declared
+cells of an installed frontend coordinate; each cell gets its own controller
+configuration, native policy, fresh noexec workspace, journal and exported output
+archive. The receiver verifies the owning controller source and exact public
+commands, imported root, namespace configuration, terminal process closure and
+teardown. Retained daemon and worker PIDs must join unique kernel-observed process
+generations with the installed compiler image. The recorded linker selection must
+join the corresponding actual image. None of these observations replaces a
+measurement-to-artifact join or authenticated release evidence.
+
+Capture adds a linker reproducer write proportional to consumed input bytes and
+bounded streaming reads for its content and inventory checks. WASM retains the
+already-read rewrite/runtime buffers through command preparation. A compilation
+coordinate copies and hashes its compiler, Python and toolchain inputs once per
+capture, then imports one sealed archive for its cells. Output ZIP extraction
+uses the existing bounded release archive owner. These operations are confined
+to admission; their real installed latency, bytes written and peak memory require
+measurement on the owning executor. Unsupported emission origins and unavailable
+kernel or authenticated evidence remain unknown and cannot earn performance or
+release credit.
+
+Native input preparation uses the existing compiler Make-dependency authority for
+C entrypoint headers and the LLD reproducer for link-only resources. Header
+selection snapshots cannot prove what the earlier compiler consumed; they supply
+read-only inputs to the subsequent supervised build. Lexical dependency paths and
+resolved content paths remain distinct so an alias does not disappear from the
+sealed namespace. The selected C driver must be present in the admitted toolchain
+root and in the actual process journal. Only explicit admission captures request
+depfiles and hash these extra inputs; ordinary link commands retain their cost.
+
+
+Installed release verification owns two separate evidence phases. Each portable
+bundle/Python coordinate and the platform wheel first prepare inputs with the
+public CLI, then compile the complete declared lane set in the compilation
+projection before uninstall. Preparation results never become replay products
+or measurement samples. The fresh compilation exports its final-link family,
+command streams and native process journal. Consumer proof v10 binds each
+coordinate to `compilation-evidence/<owner>-<python>/compilation.json`; the
+existing reproducible consumer archive retains that tree alongside
+`consumer-evidence`. Admission replays each raw compilation export and journal,
+checks the installed manifest against the candidate's source inventory,
+compiler, launcher, facts tool and runtime cells, and joins the exact exported
+artifact and command streams to standalone replay. A missing cell or compilation
+record cannot fall back to the prior selection-only receipt.
+
+The verifier requires explicit `--compile-memory-max-bytes`,
+`--compile-workspace-max-bytes` and `--compile-runtime-max-seconds` budgets. Its
+workflow supplies those limits; the transport's existing input-import bound is
+unchanged. Canonical Python captures and toolchain CAS captures prepare the
+read-only input root, including the bootstrap owner's selected private frontend.
+The fresh workspace owns cache, daemon sockets, temporary files and outputs.
+This cold preparation cost is confined to release admission, never ordinary warm
+builds. Installed Linux execution and its resource costs require qualification;
+LLVM, one-shot or persisted-cache emission origins that are unavailable continue
+to refuse capture. The full lane matrix is unchanged. These compilation receipts
+alone do not admit performance measurements or authenticated H0/full-release
+claims.

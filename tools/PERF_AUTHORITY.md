@@ -521,3 +521,99 @@ second backlog system. Gain and cost are relative planning estimates.
 | runtime-wasm cache authority | 8 | 2 |
 | witness lowering-context stability | 10 | 4 |
 | seal relocation-root reuse | 4 | 2 |
+
+## Linux sealed release replay provider
+
+`tools/release/consumer_replay.py` owns one post-uninstall native/WASM replay
+contract. Its Linux provider is `SealedRootTransport` in `tools/cross_run.py`:
+a system-manager-owned import and ephemeral execution root, using the existing
+Linux proof supervisor for actual guest executable identity and complete process
+receipts. It does not provision Docker, a new VM, a scheduler, or an end-user
+dependency. Generic Docker cross-platform smoke transport is a separate producer.
+
+The initial reviewed provider source coordinate is systemd `259.5-0ubuntu3.4` on native
+Linux aarch64 or x86_64. The installed Ubuntu security package includes the
+fixes in [USN-8626-1](https://ubuntu.com/security/notices/USN-8626-1)
+(published 2026-08-10); no package install or seven-day age exception is needed
+for that recorded coordinate. Package versions are provenance, not a permanent
+single-patch admission gate. Every invocation must supply the required effective
+API properties; unsupported settings fail without retry or fallback. Recheck the
+runner before dispatch. A VM name does not establish its ISA. The host kernel,
+system manager and root-owned control tools form the trusted execution base.
+Recorded tool hashes identify selected files, not the manager's loaded image;
+they must never be projected as compiler/runtime used-byte admission. macOS
+remains ineligible for this Linux execution-root contract.
+
+The orchestrator validates the exact sealed tar and sends its captured bytes
+through a write/grow/shrink/seal-locked memfd. The manager opens that descriptor
+while its owner keeps it alive; a constrained, bounded tar service imports into
+a fresh root-owned runtime directory. Exact payload inventory, archive binding,
+root ownership and permissions are checked before execution. Each guest service
+uses `RootEphemeral=yes`, a read-only root, private PID/user/network/IPC/mount
+namespaces, no capabilities, no-new-privileges, and bounded noexec tmpfs scratch.
+No host root or host executable bind is admitted. Guest stdin is null; only the
+owned stdout/stderr capture descriptors cross the manager boundary.
+
+This follows systemd's maintained [execution sandbox contract](https://www.freedesktop.org/software/systemd/man/259/systemd.exec.html)
+and [transient service interface](https://www.freedesktop.org/software/systemd/man/259/systemd-run.html).
+The [v259.5 executor](https://github.com/systemd/systemd/blob/v259.5/src/core/exec-invoke.c)
+implements the ephemeral directory snapshot with a copy fallback on ext4.
+The [service lifecycle](https://github.com/systemd/systemd/blob/v259.5/src/core/service.c)
+implements `ExitType=cgroup`: main-process exit alone is insufficient. No custom
+namespace, capability-drop or privileged Python helper replaces these owners.
+
+The receiver requires the retained typed D-Bus Unit and Service observations,
+including empty properties; omitted fields do not mean default isolation. It
+checks the exact supervisor argv, transient invocation, resource configuration,
+terminal cgroup-owned state, successful blocking stop job, and invocation-bound
+retirement. The existing supervisor receipt verifier independently checks actual
+guest image bytes, policy, stdout and complete process closure. An uncertain
+creation/stop retains the imported source and nonce-bound intent for recovery;
+a failed lookup is never proof that a delayed creation cannot arrive.
+
+Cold cost is bounded archive capture plus one import, one snapshot and two
+inventory passes per guest, selected-tool hashes, and manager control queries.
+Archive input is capped at 1 GiB. Import has 2 GiB memory, no swap, one CPU and
+16 tasks; guest services have 1 GiB memory, no swap, one CPU and 64 tasks.
+Scratch totals 96 MiB and captured streams are bounded to 16 MiB each. Existing
+cross-run guards own control clients and captures. These are development proof
+costs; emitted programs receive no added work. Actual latency and peak memory
+remain a real-run measurement obligation.
+
+A successful Python protocol fixture is not kernel isolation, native/WASM product
+success, performance admission, or authenticated H0. Acceptance still requires
+an explicitly authorized real Linux run of the exact provider postimage, existing
+supervisor generation and installed native/WASM subjects, followed by retained
+receipt replay and independent archive/identity/omission rejection. This provider
+prerequisite does not close the missing consumed compiler/runtime identity
+producer or H0 signing producer, change thresholds, or shrink the release matrix.
+
+The same provider has a typed compilation projection with explicit memory,
+workspace and runtime budgets. It gives compiler scratch a writable noexec `/work`; imported
+compiler, frontend, toolchain and installed runtime inputs remain read-only.
+The compilation projection leaves captured `/tmp` installation paths read-only
+instead of masking them with replay's disposable `/tmp` mount; `TMPDIR` points
+to `/work/tmp`.
+Preparation and import are shared across the declared cells of one installed
+frontend coordinate. Each invocation has a fresh workspace and independent
+supervisor policy, journal and output export. Replay retains its original fixed
+limits. Compilation stdout carries the release ZIP export and is bounded by its
+workspace budget and the existing ZIP32 archive limit; stderr retains the 16 MiB
+supervisor transport bound. Both streams are checked again after pipe completion.
+
+Raw linker reproducers and the final-link publication receipt are checked before
+compiler/runtime content can be joined to actual supervisor-observed images.
+The controller and cell configuration are themselves reconstructed from source;
+sealing an arbitrary controller cannot authorize a caller-written summary.
+These source mechanisms do not remove the current performance and full-release
+refusals: installed caller coverage, measurement/artifact binding, real kernel
+execution and authenticated H0 still require their owning producers and receivers.
+
+Native admission capture also retains the C driver dependency report. Its
+header paths are preparation selections, not consumed-byte claims. The canonical
+Make parser retains lexical and resolved coordinates: installed roots copy the
+selected contents at the lexical header names, while existing extension/Cython
+content closures continue to deduplicate resolved files. Selected driver bytes
+must already belong to the admitted toolchain root and join the native journal.
+CRT objects and link libraries are copied from the LLD reproducer buffers. The
+fresh supervised build still supplies the actual link-consumption evidence.

@@ -504,22 +504,6 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "STATISTICS_MEAN_SLICE":
-            ctx.json_ops.append(
-                {
-                    "kind": "statistics_mean_slice",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == "STATISTICS_STDEV_SLICE":
-            ctx.json_ops.append(
-                {
-                    "kind": "statistics_stdev_slice",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
         elif op.kind == "BYTES_REPLACE":
             ctx.json_ops.append(
                 {

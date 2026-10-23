@@ -73,7 +73,6 @@ pub(in crate::native_backend::function_compiler) enum NativeOpFamily {
     BoxedRuntimeCalls,
     TextTransform,
     RuntimeOps,
-    Statistics,
     TypeConversions,
     Dataclass,
     Compare,
@@ -164,7 +163,6 @@ pub(in crate::native_backend::function_compiler) const FAMILY_DISPATCH_TABLE: &[
         NativeOpFamily::RuntimeOps,
         super::runtime_ops::HANDLED_KINDS,
     ),
-    (NativeOpFamily::Statistics, super::statistics::HANDLED_KINDS),
     (
         NativeOpFamily::TypeConversions,
         super::type_conversions::HANDLED_KINDS,

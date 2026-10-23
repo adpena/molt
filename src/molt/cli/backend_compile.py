@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.backend_protocol import BackendDaemonJobOrigin
+
 from molt.compilation_target import target_name
 
 from molt.compilation_target import Target
@@ -20,6 +22,7 @@ from molt.cli import backend_binary as _backend_binary
 from molt.cli import backend_cache_setup as _backend_cache_setup
 from molt.cli import factgraph as _factgraph
 from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
+from molt.cli.backend_ir_transport import BackendIrProgram
 from molt.cli.backend_cache import (
     _artifact_sync_state_path,
     _backend_daemon_skip_output_sync_flags,
@@ -79,7 +82,6 @@ from molt.cli.output import (
     subprocess_output_text as _subprocess_output_text,
 )
 from molt.cli.runtime_build import _initialize_runtime_artifact_state
-from molt.python_runtime_admission import BuildPythonAdmission
 from molt.cli.runtime_callable_symbols import (
     _stage_runtime_callable_symbols_for_native_codegen,
 )
@@ -120,6 +122,7 @@ class _BackendExecutionResult:
     backend_daemon_cached: bool | None
     backend_daemon_cache_tier: str | None
     backend_daemon_health: dict[str, Any] | None
+    backend_daemon_origin: BackendDaemonJobOrigin | None = None
 
 
 def _record_pipeline_stage_ms(
@@ -236,7 +239,6 @@ def _prepare_backend_setup(
     codegen: CodegenSelection,
     rust_cpu: RustCpuPolicy,
     stage_timings_ms: dict[str, float] | None = None,
-    build_python_admission: BuildPythonAdmission | None = None,
 ) -> tuple[_PreparedBackendSetup | None, _CliFailure | None]:
     try:
         artifact_contract = resolve_backend_artifact_contract(
@@ -263,7 +265,6 @@ def _prepare_backend_setup(
         )
     except InstalledRuntimeError as exc:
         return None, _fail(str(exc), json_output, command="build")
-    runtime_state.build_python_admission = build_python_admission
     runtime_callable_symbols_digest = ""
     callable_symbols_start = time.perf_counter()
     runtime_callable_symbols_digest, callable_symbols_error = (
@@ -719,7 +720,7 @@ def _execute_backend_compile(
     cache_setup: _BackendCacheSetup,
     backend_daemon_config_digest: str | None,
     entry_module: str,
-    ir: Mapping[str, Any],
+    program: BackendIrProgram,
     json_output: bool,
     warnings: list[str],
     verbose: bool,
@@ -736,6 +737,7 @@ def _execute_backend_compile(
     codegen: CodegenSelection,
     native_runtime_codegen_binding: NativeRuntimeCodegenBinding | None = None,
 ) -> tuple[_BackendExecutionResult | None, _CliFailure | None]:
+    backend_daemon_origin: BackendDaemonJobOrigin | None = None
     target_triple = cache_setup.artifact_contract.target_triple
     # Both daemon and one-shot dispatch consume the same effective operation.
     backend_env = _backend_request_environment(
@@ -895,8 +897,9 @@ def _execute_backend_compile(
                 daemon_socket,
                 native_runtime_codegen_binding=native_runtime_codegen_binding,
                 project_root=molt_root,
-                ir=ir,
+                program=program,
                 backend_output=backend_output,
+                synced_output=output_artifact,
                 artifact_contract=cache_setup.artifact_contract,
                 wasm_link=wasm_link,
                 wasm_data_base=wasm_data_base,
@@ -913,7 +916,6 @@ def _execute_backend_compile(
                 stdlib_object_cache_key=cache_setup.stdlib_object_cache_key,
                 stdlib_object_manifest=cache_setup.stdlib_object_manifest,
                 stdlib_module_symbols_json=cache_setup.stdlib_module_symbols_json,
-                stdlib_module_symbols=cache_setup.stdlib_module_symbols,
                 timeout=None,
                 daemon_identity=daemon_identity,
                 request_environment=backend_env,
@@ -932,6 +934,7 @@ def _execute_backend_compile(
                 if daemon_log_delta:
                     print(daemon_log_delta, file=sys.stderr)
             if daemon_compile.cached is not None:
+                backend_daemon_origin = daemon_compile.origin
                 backend_daemon_cached = daemon_compile.cached
             if daemon_compile.cache_tier is not None:
                 backend_daemon_cache_tier = daemon_compile.cache_tier
@@ -966,8 +969,9 @@ def _execute_backend_compile(
                         daemon_socket,
                         native_runtime_codegen_binding=native_runtime_codegen_binding,
                         project_root=molt_root,
-                        ir=ir,
+                        program=program,
                         backend_output=backend_output,
+                        synced_output=output_artifact,
                         artifact_contract=cache_setup.artifact_contract,
                         wasm_link=wasm_link,
                         wasm_data_base=wasm_data_base,
@@ -984,7 +988,6 @@ def _execute_backend_compile(
                         stdlib_object_cache_key=cache_setup.stdlib_object_cache_key,
                         stdlib_object_manifest=cache_setup.stdlib_object_manifest,
                         stdlib_module_symbols_json=cache_setup.stdlib_module_symbols_json,
-                        stdlib_module_symbols=cache_setup.stdlib_module_symbols,
                         timeout=None,
                         request_environment=backend_env,
                         daemon_identity=(
@@ -998,6 +1001,7 @@ def _execute_backend_compile(
                     daemon_error = daemon_compile.error
                     backend_output_exists = daemon_compile.output_exists
                     if daemon_compile.cached is not None:
+                        backend_daemon_origin = daemon_compile.origin
                         backend_daemon_cached = daemon_compile.cached
                     if daemon_compile.cache_tier is not None:
                         backend_daemon_cache_tier = daemon_compile.cache_tier
@@ -1165,6 +1169,7 @@ def _execute_backend_compile(
             if stage_error is not None:
                 return None, _fail(stage_error, json_output, command="build")
     return _BackendExecutionResult(
+        backend_daemon_origin=backend_daemon_origin,
         backend_daemon_cached=backend_daemon_cached,
         backend_daemon_cache_tier=backend_daemon_cache_tier,
         backend_daemon_health=backend_daemon_health,
@@ -1203,7 +1208,7 @@ def _prepare_backend_compile(
     backend_daemon_config_digest: str | None,
     entry_module: str,
     artifacts_root: Path,
-    ir: Mapping[str, Any],
+    program: BackendIrProgram,
     _ensure_backend_ir_file_path: Callable[[], Path],
     backend_daemon_cached: bool | None,
     backend_daemon_cache_tier: str | None,
@@ -1213,6 +1218,7 @@ def _prepare_backend_compile(
     backend_bin: Path | None = None,
     backend_compiler_fingerprint: str | None = None,
 ) -> tuple[_PreparedBackendCompile | None, _CliFailure | None]:
+    backend_daemon_origin: BackendDaemonJobOrigin | None = None
     if diagnostics_enabled:
         phase_starts["cache_lookup"] = time.perf_counter()
     cache_enabled = cache_setup.cache_enabled
@@ -1331,7 +1337,7 @@ def _prepare_backend_compile(
                         prepared_backend_dispatch.backend_daemon_config_digest
                     ),
                     entry_module=entry_module,
-                    ir=ir,
+                    program=program,
                     json_output=json_output,
                     warnings=warnings,
                     verbose=verbose,
@@ -1351,6 +1357,7 @@ def _prepare_backend_compile(
             if backend_execution_error is not None:
                 return None, backend_execution_error
             assert backend_execution_result is not None
+            backend_daemon_origin = backend_execution_result.backend_daemon_origin
             backend_daemon_cached = backend_execution_result.backend_daemon_cached
             backend_daemon_cache_tier = (
                 backend_execution_result.backend_daemon_cache_tier
@@ -1361,6 +1368,7 @@ def _prepare_backend_compile(
             )
 
     return _PreparedBackendCompile(
+        backend_daemon_origin=backend_daemon_origin,
         cache_enabled=cache_enabled,
         cache_hit=cache_hit,
         cache_hit_tier=cache_hit_tier,

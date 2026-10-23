@@ -13,6 +13,7 @@ from dataclasses import dataclass
 import functools
 import os
 from pathlib import Path
+from typing import Generic, TypeVar
 
 from molt.default_paths import executable_environment_value, expand_user_path
 
@@ -244,30 +245,33 @@ def admit_wasi_provider_inputs(paths: Sequence[Path]) -> WasiCAbiProjection | No
     return plan
 
 
+_LinkInput = TypeVar("_LinkInput")
+
+
 @dataclass(frozen=True)
-class LongDoubleLinkPolicy:
+class LongDoubleLinkPolicy(Generic[_LinkInput]):
     """One SDK's mandatory formatter and binary128 support, in link order."""
 
-    printscan: Path
-    builtins: Path
+    printscan: _LinkInput
+    builtins: _LinkInput
 
 
 def resolve_long_double_link_policy(
     *, env: Mapping[str, str] | None = None
-) -> LongDoubleLinkPolicy:
+) -> LongDoubleLinkPolicy[Path]:
     plan = resolve_wasi_c_abi_plan(env=env)
     return LongDoubleLinkPolicy(plan.path("long_double"), plan.path("compiler_rt"))
 
 
-def long_double_whole_archive_link_argv(
-    policy: LongDoubleLinkPolicy,
+def long_double_whole_archive_link_inputs(
+    policy: LongDoubleLinkPolicy[_LinkInput],
     *,
-    whole_archive: Sequence[str],
-    trailing: Sequence[str],
-) -> list[str]:
+    whole_archive: Sequence[_LinkInput],
+    trailing: Sequence[_LinkInput],
+) -> list[str | _LinkInput]:
     """Raw wasm-ld dialect: real formatters precede lazy libc and builtins."""
-    wa = [*map(str, whole_archive), str(policy.printscan)]
-    tr = list(map(str, trailing))
-    if str(policy.builtins) not in tr:
-        tr.append(str(policy.builtins))
+    wa = [*whole_archive, policy.printscan]
+    tr = list(trailing)
+    if policy.builtins not in tr:
+        tr.append(policy.builtins)
     return ["--whole-archive", *wa, "--no-whole-archive", *tr]

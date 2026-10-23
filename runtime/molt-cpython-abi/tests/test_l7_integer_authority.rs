@@ -216,6 +216,7 @@ fn init() -> support::AbiTestThreadStateTransaction {
     molt_cpython_abi_test_support::link();
     molt_cpython_abi::bridge::molt_cpython_abi_init();
     let mut hooks = STUB_HOOKS;
+    hooks.target_python_at_least = support::fake_runtime::target_python_at_least;
     support::fake_runtime::wire_sequences(&mut hooks);
     hooks.alloc_bytes = support::fake_runtime::alloc_bytes;
     hooks.bytes_data = support::fake_runtime::bytes_data;
@@ -244,6 +245,57 @@ fn proxy(value: i128) -> *mut PyObject {
 
 fn clear_error() {
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+}
+
+#[test]
+fn float_from_string_preserves_str_and_bytes_numeric_whitespace() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    let _abi_test = init();
+    for (text, unicode, accepted) in [
+        ("\u{3000}1.5\u{3000}", true, true),
+        ("\u{3000}1.5\u{3000}", false, false),
+        ("\u{1c}1.5", true, false),
+        ("\u{1c}1.5", false, false),
+        ("\t1.5\r", true, true),
+        ("\t1.5\r", false, true),
+    ] {
+        let input = unsafe {
+            if unicode {
+                molt_cpython_abi::api::strings::PyUnicode_FromStringAndSize(
+                    text.as_ptr().cast(),
+                    text.len() as isize,
+                )
+            } else {
+                molt_cpython_abi::api::strings::PyBytes_FromStringAndSize(
+                    text.as_ptr().cast(),
+                    text.len() as isize,
+                )
+            }
+        };
+        assert!(!input.is_null());
+        let before = unsafe { (*input).ob_refcnt };
+        let output = unsafe { molt_cpython_abi::api::numbers::PyFloat_FromString(input) };
+        assert_eq!(unsafe { (*input).ob_refcnt }, before, "input owner changed");
+        if accepted {
+            assert!(!output.is_null());
+            assert_eq!(
+                unsafe { molt_cpython_abi::api::numbers::PyFloat_AsDouble(output) },
+                1.5
+            );
+            assert!(!molt_cpython_abi::api::errors::raised_error_pending());
+            unsafe { molt_cpython_abi::api::refcount::Py_DECREF(output) };
+        } else {
+            assert!(output.is_null());
+            let error = molt_cpython_abi::api::errors::take_current_error()
+                .expect("rejected literal error");
+            assert_eq!(
+                error.exc_type,
+                (&raw mut molt_cpython_abi::abi_types::PyExc_ValueError).cast()
+            );
+            drop(error);
+        }
+        unsafe { molt_cpython_abi::api::refcount::Py_DECREF(input) };
+    }
 }
 
 #[test]

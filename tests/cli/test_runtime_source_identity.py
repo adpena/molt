@@ -117,25 +117,15 @@ def test_index_rejects_roots_it_did_not_capture(release_source):
 def build_trees(release_source, monkeypatch):
     tooling = release_source / "planner.py"
     tooling.write_bytes(b"before")
-    monkeypatch.setattr(
-        identity, "runtime_build_tooling_paths", lambda _root: (tooling,)
-    )
     source_roots = identity.runtime_source_roots(
         release_source, ("molt_gpu_primitives",)
     )
     return release_source, source_roots, tooling
 
 
-def test_source_and_tooling_union_preserves_separate_tree_receipts(
-    build_trees, monkeypatch
-):
+def test_source_capture_does_not_read_unconsumed_tooling(build_trees, monkeypatch):
     root, sources, tooling = build_trees
-    tooling_roots = (("runtime-tooling/planner.py", tooling),)
-    expected_sources = identity._tree_identity(sources, require_all=False)
-    expected_tooling = {
-        "schema": "molt.runtime-build-tooling-authority.v2",
-        **identity._tree_identity(tooling_roots, require_all=True),
-    }
+    expected = identity._tree_identity(sources, require_all=False)
     hashed = []
     real_hash = identity._hash_tree_input_file
 
@@ -144,15 +134,8 @@ def test_source_and_tooling_union_preserves_separate_tree_receipts(
         return real_hash(file)
 
     monkeypatch.setattr(identity, "_hash_tree_input_file", hash_file)
-    observed_sources, observed_tooling = identity._capture_runtime_build_trees(
-        root, sources
-    )
-
-    assert observed_sources == expected_sources
-    assert observed_tooling == expected_tooling
-    assert observed_sources["missing"] == ["source/runtime/absent"]
+    assert identity._capture_runtime_build_sources(root, sources) == expected
     assert sorted(hashed) == [
-        "runtime-tooling/planner.py",
         "source/runtime/core/lib.rs",
         "source/runtime/core/mod.rs",
         "source/runtime/gpu/lib.rs",
@@ -162,9 +145,7 @@ def test_source_and_tooling_union_preserves_separate_tree_receipts(
 @pytest.mark.parametrize("mutation", ["rewrite", "remove", "missing-root", "tooling"])
 def test_next_live_tree_capture_observes_bytes_and_membership(build_trees, mutation):
     root, sources, tooling = build_trees
-    before_sources, before_tooling = identity._capture_runtime_build_trees(
-        root, sources
-    )
+    before = identity._capture_runtime_build_sources(root, sources)
     if mutation == "missing-root":
         path = root / "runtime/absent/new.rs"
         path.parent.mkdir()
@@ -176,17 +157,14 @@ def test_next_live_tree_capture_observes_bytes_and_membership(build_trees, mutat
         metadata = path.stat()
         path.write_bytes(b"x" * metadata.st_size)
         os.utime(path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
-    after_sources, after_tooling = identity._capture_runtime_build_trees(root, sources)
-    assert (before_sources == after_sources) is (mutation == "tooling")
-    assert (before_tooling == after_tooling) is (mutation != "tooling")
+    after = identity._capture_runtime_build_sources(root, sources)
+    assert (before == after) is (mutation == "tooling")
     if mutation == "missing-root":
-        assert after_sources["missing"] == []
+        assert after["missing"] == []
 
 
-def test_union_still_requires_every_tooling_root(build_trees):
+def test_missing_unconsumed_tooling_does_not_affect_source_identity(build_trees):
     root, sources, tooling = build_trees
+    before = identity._capture_runtime_build_sources(root, sources)
     tooling.unlink()
-    with pytest.raises(
-        ValueError, match="required runtime inputs.*runtime-tooling/planner.py"
-    ):
-        identity._capture_runtime_build_trees(root, sources)
+    assert identity._capture_runtime_build_sources(root, sources) == before

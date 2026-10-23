@@ -34,8 +34,9 @@ differential/runtime proof lane must still exercise the admitted target cells.
 
 `config/python_compatibility_error_sources.json` records SHA-256 hashes and
 version-tagged source URLs for CPython 3.12.0, 3.13.0 and 3.14.0, with
-`memoryobject.c` pinned to the maintained oracle patches 3.12.13, 3.13.11
-and 3.14.3. The evidence
+`memoryobject.c` pinned to the independently reviewed evidence patches 3.12.13,
+3.13.11 and 3.14.3. These historical source coordinates are separate from the
+current reference-executable policy. The evidence
 covers the complete Windows loop inheritance chain and these operation owners:
 
 | Operation | CPython authority | Relevant behavior |
@@ -57,6 +58,16 @@ Memoryview format syntax, leaf scalar admission, rank rejection, and released
 iterator ordering share runtime helpers. Half-float packing/unpacking uses
 `molt_obj_model::float_bits`, including rounding, signed zero, subnormals,
 infinities and overflow. No memoryview-local float codec was introduced.
+
+Pin-bound `RawIoBaseReadinto` and `LoggingHandlerEmit` body receipts follow the
+canonical CPython source registry through their declared outcome versions and
+paths. The stdlib snapshot does not contain these bodies. Run
+`python tools/compatibility_error_protocol.py --refresh-sources` after moving
+those pins. It collects every required body before atomic receipt publication,
+preserves independent evidence rows and reports old/new hashes for review.
+A refreshed hash is source evidence, not semantic approval, target admission or
+execution qualification. Review the applicable function bodies when their hashes
+change; `--check` and `--write` remain offline and refuse stale receipts.
 
 ## Replaying the proof
 

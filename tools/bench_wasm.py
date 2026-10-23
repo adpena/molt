@@ -10,7 +10,6 @@ import shutil
 import statistics
 import subprocess
 import sys
-import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,6 +35,7 @@ from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
 from molt.cli.build_output_layout import _wasm_runtime_root  # noqa: E402
 from molt.cli.wasm_host import resolve_molt_wasm_host_binary  # noqa: E402
 from molt.node_runtime import resolve_node_runtime  # noqa: E402
+from molt.temporary_artifacts import OwnedTemporaryDirectory  # noqa: E402
 from molt.harness_conformance import (  # noqa: E402
     build_molt_conformance_env,
     ensure_molt_conformance_dirs,
@@ -88,7 +88,7 @@ _RUNTIME_SOURCE_MTIME: float | None = None
 @dataclass(frozen=True)
 class WasmBinary:
     run_env: dict[str, str]
-    temp_dir: tempfile.TemporaryDirectory
+    temp_dir: OwnedTemporaryDirectory
     build_s: float
     size_kb: float
     linked_used: bool
@@ -620,13 +620,9 @@ def prepare_wasm_binary(
 ) -> WasmBinary | None:
     global _LAST_BUILD_FAILURE_DETAIL
     _LAST_BUILD_FAILURE_DETAIL = None
-    temp_dir = tempfile.TemporaryDirectory(prefix="molt-wasm-bench-")
+    temp_dir = OwnedTemporaryDirectory(prefix="molt-wasm-bench-")
     if keep_temp:
-        # Prevent TemporaryDirectory cleanup on GC so artifacts stick around.
-        try:
-            temp_dir._finalizer.detach()  # type: ignore[attr-defined]
-        except Exception:
-            pass
+        temp_dir.retain()
     output_path = Path(temp_dir.name) / "output.wasm"
     base_env = _base_env()
     _prune_backend_daemons(base_env)

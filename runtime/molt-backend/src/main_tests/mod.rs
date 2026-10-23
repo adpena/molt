@@ -40,12 +40,12 @@ use super::{
     compile_native_application_artifact_to_path, external_function_declarations,
     is_user_owned_symbol, partition_functions_for_batches, plan_stdlib_cache_archive,
     preserve_native_batch_worker_failure_artifacts, prune_and_partition_native_stdlib,
-    read_json_artifact, read_stdlib_cache_key, read_stdlib_cache_manifest,
-    remove_native_batch_temp_dir, resolved_batch_op_budget_limit, resolved_batch_size_limit,
-    shared_stdlib_cache_matches, shared_stdlib_partition_closure_issue,
-    shared_stdlib_partition_manifest, stdlib_cache_count_sidecar_path,
-    stdlib_cache_partition_manifest_sidecar_path, validate_shared_stdlib_partition,
-    with_shared_stdlib_cache_publish_lock, write_shared_stdlib_cache_sidecars,
+    read_stdlib_cache_key, read_stdlib_cache_manifest, remove_native_batch_temp_dir,
+    resolved_batch_op_budget_limit, resolved_batch_size_limit, shared_stdlib_cache_matches,
+    shared_stdlib_partition_closure_issue, shared_stdlib_partition_manifest,
+    stdlib_cache_count_sidecar_path, stdlib_cache_partition_manifest_sidecar_path,
+    validate_shared_stdlib_partition, with_shared_stdlib_cache_publish_lock,
+    write_shared_stdlib_cache_sidecars,
 };
 #[cfg(feature = "native-backend")]
 use super::{NativeArtifactKind, NativeTargetOptions};
@@ -56,15 +56,22 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 static ENV_TEST_MUTEX: Mutex<()> = Mutex::new(());
 
-/// Publish fixture IR inside the caller's existing artifact root and lifetime.
+/// Publish fixture IR, given as a JSON backend document, as a content-addressed
+/// lease that ships every body, inside the caller's artifact root and lifetime.
 #[cfg(molt_backend_daemon)]
 fn write_daemon_ir_fixture(path: &std::path::Path, ir: &impl serde::Serialize) -> String {
+    let document = molt_ir::ir::BackendIrDocument::from_json_value(
+        &serde_json::to_value(ir).expect("fixture IR is JSON"),
+    )
+    .expect("fixture IR is a valid backend document");
+    let lease = molt_ir::addressed_program::encode_complete_lease(&document)
+        .expect("encode MessagePack IR lease fixture");
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(path)
         .expect("create MessagePack IR fixture");
-    rmp_serde::encode::write_named(&mut file, ir).expect("encode MessagePack IR fixture");
+    std::io::Write::write_all(&mut file, &lease).expect("write MessagePack IR fixture");
     path.to_str().expect("Unicode fixture path").to_owned()
 }
 

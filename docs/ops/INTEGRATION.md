@@ -116,6 +116,16 @@ controller  →  fetch  →  rebase  →  verify-commits  →  cite  →  marker
    fabricate an unavailable image path. Relative interpreter aliases preserve the
    selected entrypoint and canonicalize against the declared probe directory
    without changing the validated executable image.
+   Before these gates, selected explicit pytest nodes are admitted with
+   [pytest's own collection](https://docs.pytest.org/en/stable/how-to/usage.html#specifying-which-tests-to-run)
+   under the cohort's interpreter, configuration and guard. The unfiltered
+   merged cohort collects only its explicit nodes; file-only targets add no
+   collection process. Filtered cohorts retain their declared selection.
+   Collection failure stops the candidate before compilation. Successful
+   collection never replaces test execution or contributes a passing gate.
+   This adds one guarded import pass for the selected modules, with workers
+   disabled, separate collection logs and progress events. Emitted programs
+   perform none of this development validation.
    Declared source, metadata and compilation gates run before the selected
    Python consumer cohorts. A stable linear partition preserves each phase's
    prior order, exact commands, prerequisite unions and de-duplication. This
@@ -124,7 +134,7 @@ controller  →  fetch  →  rebase  →  verify-commits  →  cite  →  marker
    no gate, build, scheduler or result cache is added. A stale methodology lock
    therefore refuses before a multi-minute Python cohort. Review measurement
    changes and update their existing lock before freezing a candidate.
-   The always gates run first, as one block through the proof executor
+   After node admission, the always gates run as one block through the proof executor
    (`tools/molt_dev_gates.py`). The plan's `executor_max_workers`, its
    `repository-policy` resource class and `molt.host_capacity` at one GiB per
    gate bound the block. Each gate reports in declared order, and the first

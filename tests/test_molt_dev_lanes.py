@@ -101,6 +101,8 @@ def family(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     for relative, text in (
         ("provision.py", _PROVISIONER),
         ("fixture.lock", "v1\n"),
+        # A virtual uv project deliberately installs no editable package.
+        ("pyproject.toml", "[tool.fixture]\n"),
         ("tools/install_git_hooks.py", _INSTALLER),
         (".gitignore", "*-tree/\n"),
     ):

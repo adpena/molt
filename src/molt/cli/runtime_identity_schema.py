@@ -7,6 +7,7 @@ import re
 from molt.wasi_sdk_identity import WASI_C_ABI_PLAN_ENV, validate_wasi_c_abi_identity
 
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import MappingProxyType
 from collections.abc import Iterator, Mapping, Sequence
@@ -23,16 +24,12 @@ from molt.exact_json import (
     read_exact,
     string_keyed_mapping,
 )
-from molt.python_identity_common import PythonEnvironmentIdentityError, _valid_sha256
-from molt.python_runtime_identity import (
-    BUILD_PYTHON_IDENTITY_SCHEMA,
-    validate_python_runtime_identity,
-)
+from molt.python_identity_common import _valid_sha256
 
-_SCHEMA = "molt.runtime-build-member-identity.v3"
+_SCHEMA = "molt.runtime-build-member-identity.v5"
 RUNTIME_ARTIFACT_METADATA_MAX_BYTES = 16 * 1024 * 1024
-_FAMILY_SCHEMA = "molt.runtime-build-family.v3"
-_TOOLCHAIN_MANIFEST_SCHEMA = "molt.runtime-toolchain-content.v3"
+_FAMILY_SCHEMA = "molt.runtime-build-family.v5"
+_TOOLCHAIN_MANIFEST_SCHEMA = "molt.runtime-toolchain-content.v4"
 _RUNTIME_BUILD_OUTER_FIELDS = {
     "schema",
     "digest",
@@ -45,7 +42,6 @@ _RUNTIME_BUILD_FAMILY_FIELDS = {
     "schema",
     "compile_digest",
     "compile",
-    "publication_authority",
     "members",
 }
 _RUNTIME_BUILD_COMPILE_FIELDS = {"sources", "toolchain", "common_config"}
@@ -53,8 +49,7 @@ _RUNTIME_BUILD_MEMBER_FIELDS = {
     "kind",
     "resolved_rustflags",
     "link_args",
-    "publication_transform",
-    "preserve_debug",
+    "publication",
 }
 
 
@@ -244,49 +239,22 @@ def _validated_common_config(payload: object) -> Mapping[str, object]:
     return value
 
 
-def _validated_build_script_environment(
-    payload: object, *, target: str, build_python: object
-) -> None:
+def _validated_build_script_environment(payload: object, *, target: str) -> None:
     value = string_keyed_mapping(payload)
     if value is None:
         raise ValueError("runtime build-script environment must be an object")
     schema = value.get("schema")
-    fields = {"schema", "build_python", "python_import_policy", WASI_C_ABI_PLAN_ENV}
-    runtime = schema == "molt.runtime-build-script-environment.v3"
+    fields = {"schema", WASI_C_ABI_PLAN_ENV}
+    runtime = schema == "molt.runtime-build-script-environment.v4"
     if runtime:
         fields |= {
             "MOLT_WASM_CPYTHON_ABI_EXPORTS",
             "MOLT_WASM_CPYTHON_ABI_DATA_EXPORTS",
         }
-    elif schema != "molt.cpython-abi-build-script-environment.v3":
+    elif schema != "molt.cpython-abi-build-script-environment.v4":
         raise ValueError("runtime build-script schema is invalid")
     if set(value) != fields:
         raise ValueError("runtime build-script environment shape is invalid")
-    python = string_keyed_mapping(value["build_python"])
-    if python is None or set(python) != {"selected_by", "selectors", "content_digest"}:
-        raise ValueError("runtime build-script Python selection is invalid")
-    selectors = string_keyed_mapping(python["selectors"])
-    selected = python["selected_by"]
-    if selectors is None or set(selectors) != {"MOLT_BUILD_PYTHON", "PYTHON"}:
-        raise ValueError("runtime build-script Python selectors are invalid")
-    if not isinstance(selected, str) or selected not in {
-        *selectors,
-        "platform-default",
-    }:
-        raise ValueError("runtime build-script Python selector is unknown")
-    if any(
-        not isinstance(state, str) or state not in {"selected", "shadowed", "unset"}
-        for state in selectors.values()
-    ):
-        raise ValueError("runtime build-script Python selector state is invalid")
-    if tuple(name for name, state in selectors.items() if state == "selected") != (
-        () if selected == "platform-default" else (selected,)
-    ):
-        raise ValueError("runtime build-script selected interpreter is inconsistent")
-    if python["content_digest"] != _digest(build_python):
-        raise ValueError("runtime build-script Python differs from toolchain custody")
-    if value["python_import_policy"] != "isolated-no-site-v1":
-        raise ValueError("runtime build-script Python import policy is invalid")
     c_abi = value[WASI_C_ABI_PLAN_ENV]
     if target in {"wasm32-wasip1", "wasm32-unknown-unknown"}:
         if (
@@ -315,56 +283,6 @@ def _validated_build_script_environment(
         symbols.append(items)
     if wasm and not set(symbols[1]).issubset(symbols[0]):
         raise ValueError("runtime build-script data exports are unowned")
-
-
-def _validated_publication_authority(payload: object) -> Mapping[str, object]:
-    value = string_keyed_mapping(payload)
-    if value is None or not isinstance(value.get("schema"), str) or not value["schema"]:
-        raise ValueError("runtime publication authority schema is invalid")
-    if "files" in value:
-        if set(value) != {"schema", "digest", "files"} or not _valid_sha256(
-            value["digest"]
-        ):
-            raise ValueError("runtime publication file authority shape is invalid")
-        files = value["files"]
-        if not isinstance(files, (list, tuple)):
-            raise ValueError("runtime publication files must be an array")
-        paths = []
-        for raw in files:
-            item = string_keyed_mapping(raw)
-            if item is None or set(item) != {"path", "size", "sha256"}:
-                raise ValueError("runtime publication file record is invalid")
-            path, size = item["path"], item["size"]
-            if (
-                not isinstance(path, str)
-                or not path
-                or PurePosixPath(path).is_absolute()
-                or PureWindowsPath(path).drive
-                or "\\" in path
-                or ".." in PurePosixPath(path).parts
-                or type(size) is not int
-                or size < 0
-                or not _valid_sha256(item["sha256"])
-            ):
-                raise ValueError("runtime publication file content is invalid")
-            paths.append(path)
-        if paths != sorted(set(paths)):
-            raise ValueError("runtime publication files must be sorted and unique")
-    else:
-        if set(value) != {
-            "schema",
-            "digest",
-            "file_count",
-            "missing",
-            "roots",
-            "total_size",
-        }:
-            raise ValueError("runtime publication tree authority shape is invalid")
-        _validated_tree_summary(
-            {key: item for key, item in value.items() if key != "schema"},
-            label="publication",
-        )
-    return value
 
 
 def _validated_tree_summary(payload: object, *, label: str) -> Mapping[str, object]:
@@ -441,57 +359,6 @@ def _validated_executable_content_identity(
     return value
 
 
-def _validated_build_python_identity(payload: object) -> Mapping[str, object]:
-    admission = (BUILD_PYTHON_IDENTITY_SCHEMA,)
-    if _has_schema_admission(payload, admission):
-        return cast(Mapping[str, object], payload)
-    value = string_keyed_mapping(payload)
-    if value is None or set(value) != {
-        "identity_sha256",
-        "logical_name",
-        "runtime",
-        "schema",
-        "selected_executable",
-    }:
-        raise ValueError("runtime build Python identity shape is invalid")
-    selected = string_keyed_mapping(value.get("selected_executable"))
-    if selected is None or set(selected) != {
-        "content_filename",
-        "entrypoint",
-        "sha256",
-        "size",
-    }:
-        raise ValueError("runtime build Python executable identity shape is invalid")
-    entrypoint = selected.get("entrypoint")
-    content_filename = selected.get("content_filename")
-    size = selected.get("size")
-    if (
-        value.get("schema") != BUILD_PYTHON_IDENTITY_SCHEMA
-        or value.get("logical_name") != "build_python"
-        or not isinstance(entrypoint, str)
-        or not entrypoint
-        or not _portable_filename(entrypoint)
-        or not isinstance(content_filename, str)
-        or not content_filename
-        or not _portable_filename(content_filename)
-        or not isinstance(size, int)
-        or isinstance(size, bool)
-        or size < 0
-        or not _valid_sha256(selected.get("sha256"))
-    ):
-        raise ValueError("runtime build Python executable identity is invalid")
-    runtime = _thaw_json(value.get("runtime"))
-    try:
-        validate_python_runtime_identity(runtime)
-    except PythonEnvironmentIdentityError as exc:
-        raise ValueError(f"runtime build Python closure is invalid: {exc}") from exc
-    material = {key: value[key] for key in value if key != "identity_sha256"}
-    if value.get("identity_sha256") != _digest(material):
-        raise ValueError("runtime build Python identity digest is invalid")
-    _remember_schema_admission(payload, admission)
-    return value
-
-
 def _validated_runtime_toolchain_content(
     payload: object,
     *,
@@ -516,7 +383,6 @@ def _validated_runtime_toolchain_content(
     tools = string_keyed_mapping(value.get("tools"))
     allowed_tools = {
         "ar",
-        "build_python",
         "cargo",
         "cc",
         "cxx",
@@ -532,15 +398,12 @@ def _validated_runtime_toolchain_content(
     }
     if (
         tools is None
-        or not {"build_python", "cargo", "rustc"}.issubset(tools)
+        or not {"cargo", "rustc"}.issubset(tools)
         or not set(tools).issubset(allowed_tools)
     ):
         raise ValueError("runtime toolchain tools are invalid")
     for name, raw in tools.items():
-        if name == "build_python":
-            _validated_build_python_identity(raw)
-        else:
-            _validated_executable_content_identity(raw, logical_name=name)
+        _validated_executable_content_identity(raw, logical_name=name)
     wrappers = string_keyed_mapping(value.get("wrappers"))
     if wrappers is None:
         raise ValueError("runtime toolchain wrapper identities are invalid")
@@ -626,14 +489,6 @@ def _validated_toolchain_manifest_payload(
     return value
 
 
-def _runtime_toolchain_build_python(
-    manifest: RuntimeToolchainContentManifest,
-) -> Mapping[str, object]:
-    toolchain = cast(Mapping[str, object], manifest.payload["toolchain"])
-    tools = cast(Mapping[str, object], toolchain["tools"])
-    return _validated_build_python_identity(tools["build_python"])
-
-
 def _validated_runtime_build_payload(
     payload: object,
     *,
@@ -655,7 +510,6 @@ def _validated_runtime_build_payload(
     ):
         raise ValueError("runtime build identity family shape is invalid")
     compile_payload = string_keyed_mapping(family.get("compile"))
-    publication = string_keyed_mapping(family.get("publication_authority"))
     members = string_keyed_mapping(family.get("members"))
     if (
         compile_payload is None
@@ -663,7 +517,6 @@ def _validated_runtime_build_payload(
         or string_keyed_mapping(compile_payload.get("sources")) is None
         or string_keyed_mapping(compile_payload.get("toolchain")) is None
         or string_keyed_mapping(compile_payload.get("common_config")) is None
-        or publication is None
         or members is None
         or not members
     ):
@@ -674,13 +527,10 @@ def _validated_runtime_build_payload(
     _validated_runtime_toolchain_content(
         compile_payload["toolchain"], target_triple=target
     )
-    toolchain = cast(Mapping[str, object], compile_payload["toolchain"])
     _validated_build_script_environment(
         config["build_script_environment"],
         target=target,
-        build_python=cast(Mapping[str, object], toolchain["tools"])["build_python"],
     )
-    _validated_publication_authority(publication)
     expected_members = (
         ({"shared", "reloc"}, {"staticlib"})
         if target.startswith("wasm32-")
@@ -711,11 +561,20 @@ def _validated_runtime_build_payload(
             or member is None
             or set(member) != _RUNTIME_BUILD_MEMBER_FIELDS
             or member.get("kind") != kind
-            or not isinstance(member.get("publication_transform"), str)
-            or not member.get("publication_transform")
-            or type(member.get("preserve_debug")) is not bool
         ):
             raise ValueError("runtime build identity member shape is invalid")
+        action = RuntimePublicationAction.from_dict(member.get("publication"))
+        expected_transform = (
+            RuntimePublicationTransform.SHARED
+            if kind == "shared"
+            else RuntimePublicationTransform.RELOC
+            if kind == "reloc"
+            else RuntimePublicationTransform.WASM_STATICLIB
+            if target.startswith("wasm32-")
+            else RuntimePublicationTransform.NATIVE_STATICLIB
+        )
+        if action.transform is not expected_transform:
+            raise ValueError("runtime publication action does not match its member")
         for field_name in ("resolved_rustflags", "link_args"):
             items = member.get(field_name)
             if not isinstance(items, (list, tuple)) or not all(
@@ -952,7 +811,7 @@ class RuntimeBuildIdentity(Mapping[str, object]):
     ) -> RuntimeBuildIdentity:
         # A caller-trusted identity already proves the complete schema. Matching
         # a wire claim requires the same canonical content, not a second semantic
-        # admission of its Python/toolchain/family descendants. Return that owner;
+        # admission of its toolchain/family descendants. Return that owner;
         # the untrusted mapping never becomes an authority or a retained cache.
         if expected is not None:
             expected = RuntimeBuildIdentity.from_dict(expected)
@@ -1100,8 +959,8 @@ def require_native_runtime_staticlib_identity(
         or member.get("kind") != "staticlib"
         or tuple(cast(Sequence[object], member.get("link_args", ())))
         != ("--print", "native-static-libs")
-        or member.get("publication_transform")
-        != "native-staticlib-and-link-manifest-v1"
+        or RuntimePublicationAction.from_dict(member.get("publication")).transform
+        is not RuntimePublicationTransform.NATIVE_STATICLIB
     ):
         raise ValueError(
             "runtime build identity does not match the requested native staticlib"
@@ -1114,10 +973,11 @@ class RuntimeBuildMemberPlan:
     kind: str
     resolved_rustflags: tuple[str, ...]
     link_args: tuple[str, ...]
-    publication_transform: str
-    preserve_debug: bool
+    publication: RuntimePublicationAction
 
     def __post_init__(self) -> None:
+        if type(self.publication) is not RuntimePublicationAction:
+            raise TypeError("runtime member requires its resolved publication action")
         for field_name in ("resolved_rustflags", "link_args"):
             tokens = getattr(self, field_name)
             if type(tokens) is not tuple or not all(
@@ -1126,3 +986,262 @@ class RuntimeBuildMemberPlan:
                 raise TypeError(
                     f"runtime build member {field_name} must be a tuple of tokens"
                 )
+
+
+class RuntimePublicationTransform(Enum):
+    """Closed publication protocols; changes to byte semantics version the protocol."""
+
+    NATIVE_STATICLIB = "native-staticlib-and-link-manifest-v1"
+    WASM_STATICLIB = "wasm-cpython-abi-staticlib-v1"
+    SHARED = "shared-runtime-publication-v3"
+    RELOC = "relocatable-runtime-publication-v2"
+
+
+def runtime_publication_executor_paths(
+    transform: RuntimePublicationTransform,
+) -> tuple[str, ...]:
+    """Actual byte/sidecar executors, not the transitive planning import graph.
+
+    Native Cargo-note interpretation is retained, not rederived on reuse. WASM
+    rewrites and response encoding likewise produce bytes. Include their actual
+    dispatchers; copy/atomic transport and validators that run on reuse do not
+    define additional output semantics. Cargo compilation has a separate key.
+    """
+    match transform:
+        case RuntimePublicationTransform.NATIVE_STATICLIB:
+            return (
+                "src/molt/cli/diagnostic_text.py",
+                "src/molt/cli/native_link_custody.py",
+                "src/molt/cli/native_link_manifest.py",
+                "src/molt/cli/runtime_native_generation.py",
+                "src/molt/native_target.py",
+                "src/molt/native_target_shape.py",
+            )
+        case RuntimePublicationTransform.SHARED:
+            return (
+                "src/molt/cli/runtime_wasm_build.py",
+                "src/molt/wasm_artifact.py",
+            )
+        case RuntimePublicationTransform.RELOC:
+            return (
+                "src/molt/cli/runtime_identity_schema.py",
+                "src/molt/cli/runtime_wasm_build.py",
+                "src/molt/cli/runtime_wasm_build_support.py",
+                "src/molt/cli/wasm_link_args.py",
+                "src/molt/wasm_artifact.py",
+            )
+        case RuntimePublicationTransform.WASM_STATICLIB:
+            # Cargo emits the complete CAPI archive; publication preserves bytes.
+            return ()
+    raise ValueError("invalid runtime publication transform")
+
+
+class RuntimePublicationInput(Enum):
+    STATICLIB = "staticlib"
+    LONG_DOUBLE = "long_double"
+    COMPILER_RT = "compiler_rt"
+    LIBC = "libc"
+    OUTPUT = "output"
+    EXPORT_RESPONSE = "export_response"
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimePublicationAction:
+    """One member's resolved post-Cargo action, shared by identity and execution.
+
+    File operands are roles whose bytes belong to the Cargo/toolchain identity;
+    the output is transaction-local. Literal ordering and response-file content
+    remain exact inputs. This is not permission to trust a detached file digest.
+    """
+
+    transform: RuntimePublicationTransform
+    preserve_debug: bool
+    executor: Mapping[str, object] | None
+    link_command: tuple[str | RuntimePublicationInput, ...] = ()
+    link_exports: tuple[str, ...] = ()
+    export_renames: tuple[tuple[str, str], ...] = ()
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.transform) is not RuntimePublicationTransform
+            or type(self.preserve_debug) is not bool
+        ):
+            raise ValueError("invalid runtime publication transform")
+        paths = runtime_publication_executor_paths(self.transform)
+        if paths:
+            executor = _validated_tree_summary(
+                self.executor, label="publication executor"
+            )
+            if (
+                tuple(cast(Sequence[str], executor["roots"])) != paths
+                or executor["missing"]
+                or executor["file_count"] != len(paths)
+            ):
+                raise ValueError("runtime publication executor closure is incomplete")
+            object.__setattr__(self, "executor", _freeze_json(executor))
+        elif self.executor is not None:
+            raise ValueError("byte-preserving publication has no executor transform")
+        if type(self.link_command) is not tuple or any(
+            not (
+                type(token) is RuntimePublicationInput
+                or type(token) is str
+                and token
+                and "\0" not in token
+            )
+            for token in self.link_command
+        ):
+            raise ValueError("invalid runtime publication command")
+        if type(self.link_exports) is not tuple or any(
+            type(token) is not str or not token or "\0" in token
+            for token in self.link_exports
+        ):
+            raise ValueError("invalid runtime publication export arguments")
+        if (
+            type(self.export_renames) is not tuple
+            or any(
+                type(pair) is not tuple
+                or len(pair) != 2
+                or any(
+                    type(name) is not str or not name or "\0" in name for name in pair
+                )
+                for pair in self.export_renames
+            )
+            or tuple(sorted(self.export_renames)) != self.export_renames
+            or len({pair[0] for pair in self.export_renames})
+            != len(self.export_renames)
+        ):
+            raise ValueError("invalid runtime publication export renames")
+        roles = [
+            token
+            for token in self.link_command
+            if type(token) is RuntimePublicationInput
+        ]
+        if self.transform is RuntimePublicationTransform.RELOC:
+            expected = set(RuntimePublicationInput) - (
+                {RuntimePublicationInput.EXPORT_RESPONSE}
+                if not self.link_exports
+                else set()
+            )
+            if (
+                set(roles) != expected
+                or len(roles) != len(expected)
+                or not self.preserve_debug
+                or self.export_renames
+            ):
+                raise ValueError("incomplete runtime reloc publication action")
+        elif (
+            self.link_command
+            or self.link_exports
+            or (
+                self.transform is not RuntimePublicationTransform.SHARED
+                and self.export_renames
+            )
+        ):
+            raise ValueError("unexpected runtime publication command or renames")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "transform": self.transform.value,
+            "preserve_debug": self.preserve_debug,
+            "executor": _thaw_json(self.executor),
+            "link_command": [
+                {"input": token.value}
+                if type(token) is RuntimePublicationInput
+                else {"literal": token}
+                for token in self.link_command
+            ],
+            "link_exports": list(self.link_exports),
+            "export_renames": [list(pair) for pair in self.export_renames],
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> RuntimePublicationAction:
+        payload = string_keyed_mapping(value)
+        if payload is None or set(payload) != {
+            "transform",
+            "preserve_debug",
+            "executor",
+            "link_command",
+            "link_exports",
+            "export_renames",
+        }:
+            raise ValueError("runtime publication action shape is invalid")
+        command = payload["link_command"]
+        exports, renames = payload["link_exports"], payload["export_renames"]
+        transform, preserve_debug = payload["transform"], payload["preserve_debug"]
+        if (
+            not isinstance(command, (list, tuple))
+            or not isinstance(exports, (list, tuple))
+            or not isinstance(renames, (list, tuple))
+            or type(transform) is not str
+            or type(preserve_debug) is not bool
+        ):
+            raise ValueError("runtime publication action values are invalid")
+        tokens: list[str | RuntimePublicationInput] = []
+        for raw in command:
+            token = string_keyed_mapping(raw)
+            if (
+                token is not None
+                and set(token) == {"input"}
+                and type(token["input"]) is str
+            ):
+                tokens.append(RuntimePublicationInput(token["input"]))
+            elif (
+                token is not None
+                and set(token) == {"literal"}
+                and type(token["literal"]) is str
+            ):
+                tokens.append(token["literal"])
+            else:
+                raise ValueError("runtime publication argument is invalid")
+        pairs: list[tuple[str, str]] = []
+        for pair in renames:
+            if (
+                not isinstance(pair, (list, tuple))
+                or len(pair) != 2
+                or any(type(name) is not str for name in pair)
+            ):
+                raise ValueError("runtime publication rename is invalid")
+            pairs.append((cast(str, pair[0]), cast(str, pair[1])))
+        if any(type(item) is not str for item in exports):
+            raise ValueError("runtime publication exports are invalid")
+        return cls(
+            RuntimePublicationTransform(transform),
+            preserve_debug,
+            cast(Mapping[str, object] | None, payload["executor"]),
+            tuple(tokens),
+            tuple(cast(Sequence[str], exports)),
+            tuple(pairs),
+        )
+
+    def render_link_command(
+        self, inputs: Mapping[RuntimePublicationInput, str]
+    ) -> tuple[str, ...]:
+        roles = {
+            token
+            for token in self.link_command
+            if type(token) is RuntimePublicationInput
+        }
+        if set(inputs) != roles or any(
+            type(value) is not str or not value or "\0" in value
+            for value in inputs.values()
+        ):
+            raise ValueError(
+                "runtime publication operands differ from its resolved roles"
+            )
+        return tuple(
+            inputs[token] if type(token) is RuntimePublicationInput else token
+            for token in self.link_command
+        )
+
+
+def runtime_publication_action(
+    identity: RuntimeBuildIdentity,
+) -> RuntimePublicationAction:
+    value = RuntimeBuildIdentity.from_dict(identity)
+    family = cast(Mapping[str, object], value.payload["family"])
+    members = cast(Mapping[str, object], family["members"])
+    member = cast(
+        Mapping[str, object], members[cast(str, value.payload["member_kind"])]
+    )
+    return RuntimePublicationAction.from_dict(member["publication"])

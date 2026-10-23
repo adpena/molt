@@ -1026,7 +1026,6 @@ def _tool_configuration_identities(
         "rustfmt",
         "cargo-deny",
         "cargo-audit",
-        "build-python",
     }:
         candidates.extend(
             Path(value)
@@ -1143,8 +1142,6 @@ COMPILE_ENVIRONMENT_NAMES = frozenset(
         "CARGO_ENCODED_RUSTDOCFLAGS",
         "RUSTUP_TOOLCHAIN",
         "SOURCE_DATE_EPOCH",
-        "MOLT_BUILD_PYTHON",
-        "MOLT_BUILD_PYTHON_SIGNATURE",
         "PYTHON",
         "CC",
         "CXX",
@@ -1495,16 +1492,6 @@ def _tool_identity(
         from tools.proof_queue_pkg.target_derived_toolchains import capture_identity
 
         return capture_identity(policy, envelope, environment=env)
-    if policy.data.get("compiler_tool_selector") == "build-python":
-        invocation = admission.cargo_invocation_for_envelope(envelope)
-        env = toolchain_capture.toolchain_capture_environment(
-            policy,
-            environment=env,
-            cwd=cwd,
-            cargo_command=(admission._nested_command(exact) or exact)
-            if invocation is not None
-            else ("cargo",),
-        )
     requested = str(policy.data.get("executable") or name)
     if requested == "{python}":
         raise ValueError("Python toolchain identity must use the runtime-closure probe")

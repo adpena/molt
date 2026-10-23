@@ -1651,7 +1651,6 @@ INTRINSIC_SIGNATURES: dict[str, tuple[str, int]] = {
     "molt_fraction_neg": ("molt_fraction_neg", 1),
     "molt_fraction_new": ("molt_fraction_new", 2),
     "molt_fraction_numerator": ("molt_fraction_numerator", 1),
-    "molt_fraction_pow": ("molt_fraction_pow", 2),
     "molt_fraction_sub": ("molt_fraction_sub", 2),
     "molt_fraction_to_float": ("molt_fraction_to_float", 1),
     "molt_fraction_to_str": ("molt_fraction_to_str", 1),

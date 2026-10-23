@@ -1,6 +1,7 @@
 //! FFI bridge to molt-runtime internal functions.
 //!
-//! All dispatch goes through a single `RuntimeVtable` fetched once at init.
+//! Satellite-specific dispatch uses one `RuntimeVtable` fetched once at init.
+//! Common value ownership and iteration reuse the existing core ABI.
 //! The only extern "C" symbol is `__molt_serial_get_vtable`.
 
 use molt_runtime_core::prelude::*;
@@ -704,12 +705,6 @@ pub fn molt_iter(_py: &PyToken, bits: u64) -> u64 {
     unsafe { (vt().molt_iter)(bits) }
 }
 
-pub fn molt_iter_next(_py: &PyToken, iter_bits: u64) -> Option<u64> {
-    let mut out: u64 = 0;
-    let ok = unsafe { (vt().molt_iter_next)(iter_bits, &mut out) };
-    if ok != 0 { Some(out) } else { None }
-}
-
 pub fn raise_not_iterable(_py: &PyToken, bits: u64) -> u64 {
     unsafe { (vt().raise_not_iterable)(bits) }
 }
@@ -806,29 +801,25 @@ pub fn molt_module_import(name_bits: u64) -> u64 {
 /// Iterate over a Python iterable and collect all items as String.
 pub fn iterable_to_string_vec(_py: &PyToken, values_bits: u64) -> Result<Vec<String>, u64> {
     let iter_bits = molt_iter(_py, values_bits);
+    let iterator = unsafe { molt_runtime_core::OwnedRuntimeValue::from_owned_bits(_py, iter_bits) };
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
     }
-    let mut out: Vec<String> = Vec::new();
-    loop {
-        match molt_iter_next(_py, iter_bits) {
-            Some(item_bits) => {
-                let Some(item) = string_obj_to_owned(obj_from_bits(item_bits)) else {
-                    return Err(raise_exception::<u64>(
-                        _py,
-                        "TypeError",
-                        "expected str item",
-                    ));
-                };
-                out.push(item);
-            }
-            None => {
-                if exception_pending(_py) {
-                    return Err(MoltObject::none().bits());
-                }
-                break;
-            }
-        }
+    if obj_from_bits(iter_bits).is_none() {
+        return Err(raise_not_iterable(_py, values_bits));
+    }
+    let mut out = Vec::new();
+    while let Some(value) =
+        molt_runtime_core::iter_next_owned(_py, &iterator).map_err(|_| MoltObject::none().bits())?
+    {
+        let Some(item) = string_obj_to_owned(obj_from_bits(value.bits())) else {
+            return Err(raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "expected str item",
+            ));
+        };
+        out.push(item);
     }
     Ok(out)
 }

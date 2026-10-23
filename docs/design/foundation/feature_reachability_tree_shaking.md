@@ -83,6 +83,22 @@ even without a regex call. Such a program is not promised to fit `micro`.
 A program whose actual module/body closure excludes regex should not acquire
 that feature merely from a host compiler dependency.
 
+The optional public unicodedata.name and lookup exports require
+stdlib_unicode_names on native and WASM. Their reached intrinsic identities
+select that feature through the same generated attribution and profile ceiling:
+auto currently selects full; an explicit smaller tier refuses the requirement.
+Property-only unicodedata operations require stdlib_text, not the names API.
+
+General codec kernels accept runtime-selected encodings and error policies, so
+Unicode named escapes and namereplace require the existing names table even
+when the public names API is absent. The runtime therefore has a mandatory
+unicode_names2 dependency; it never substitutes hexadecimal escapes or unknown
+name errors because a build omitted the table. Normal section reachability owns
+unused data removal. This adds table-crate compilation and may retain name data
+through generic method roots. Artifact size and build cost must be measured for
+minimal/fixed-UTF8 and name workloads; no zero-cost or optimal-retention claim is
+made. Target-version name fidelity remains the separate Unicode-data obligation.
+
 `module_required_intrinsic_names` remains useful for source-policy and wiring
 audits. It must not become a second build link-requirement authority.
 

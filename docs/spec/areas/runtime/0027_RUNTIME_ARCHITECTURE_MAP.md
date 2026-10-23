@@ -37,8 +37,10 @@ before splitting `molt-runtime` into focused modules.
 - Owner: runtime
 - Current location: `runtime/molt-obj-model/src/lib.rs` (pointer registry) with
   adapters and ABI entrypoints in `runtime/molt-runtime/src/provenance/`
-  (`handles.rs`, `pointer_registry.rs`).
-- Notes: sharded pointer registry (read/write locks) for NaN-boxed pointers;
+  (`handles.rs`, `abi.rs`).
+- Notes: object-tag decoding directly reconstructs the canonical exposed address
+  in every profile. The sharded pointer registry (read/write locks) serves explicit
+  raw-address consumers and debug membership diagnostics, not ordinary decoding;
   handle resolve is centralized in `provenance/handles.rs`. Rust-owned opaque
   handles are minted only with `opaque_handle_bits`, which stores the raw Rust
   pointer in a dedicated sharded generational slab and returns a bounded

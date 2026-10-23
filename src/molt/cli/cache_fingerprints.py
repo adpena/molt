@@ -369,7 +369,7 @@ _SOURCE_TREE_FINGERPRINT_TRANSACTION: ContextVar[
 
 
 @contextmanager
-def _source_tree_fingerprint_transaction() -> Generator[None]:
+def _source_tree_fingerprint_transaction(*, fresh: bool = False) -> Generator[None]:
     """Share immutable tooling snapshots within one frontend operation.
 
     Build and shared run/deploy wrappers own the outer transaction. Graph,
@@ -382,17 +382,33 @@ def _source_tree_fingerprint_transaction() -> Generator[None]:
     """
 
     current = _SOURCE_TREE_FINGERPRINT_TRANSACTION.get()
-    if current is not None:
+    if current is not None and not fresh:
         yield
         return
-    transaction_token = _SOURCE_TREE_FINGERPRINT_TRANSACTION.set(
-        _SourceTreeFingerprintTransaction()
-    )
+    transaction = _SourceTreeFingerprintTransaction()
+    transaction_token = _SOURCE_TREE_FINGERPRINT_TRANSACTION.set(transaction)
+    implicit_close = False
     try:
-        with local_python_import_graph_transaction():
-            yield
+        with local_python_import_graph_transaction(fresh=fresh):
+            try:
+                yield
+            except GeneratorExit:
+                # Classify abandonment before graph teardown can replace it
+                # with another exception. GC may hold unrelated Python locks;
+                # only explicit success/error exits may save advisory stamps.
+                implicit_close = True
+                raise
     finally:
-        _SOURCE_TREE_FINGERPRINT_TRANSACTION.reset(transaction_token)
+        try:
+            store = transaction.source_records
+            if (
+                not implicit_close
+                and store is not None
+                and (current is None or store is not current.source_records)
+            ):
+                store.save_renewals()
+        finally:
+            _SOURCE_TREE_FINGERPRINT_TRANSACTION.reset(transaction_token)
 
 
 def _operation_resolved(path: str | os.PathLike[str]) -> Path:
@@ -414,14 +430,8 @@ def _operation_resolved(path: str | os.PathLike[str]) -> Path:
 @contextmanager
 def _fresh_compiler_identity_inputs() -> Generator[None]:
     """Force live publication checks without reusing operation snapshots."""
-    transaction_token = _SOURCE_TREE_FINGERPRINT_TRANSACTION.set(
-        _SourceTreeFingerprintTransaction()
-    )
-    try:
-        with local_python_import_graph_transaction(fresh=True):
-            yield
-    finally:
-        _SOURCE_TREE_FINGERPRINT_TRANSACTION.reset(transaction_token)
+    with _source_tree_fingerprint_transaction(fresh=True):
+        yield
 
 
 def _file_content_signature(path: Path) -> str:

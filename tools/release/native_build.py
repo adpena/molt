@@ -39,8 +39,6 @@ from molt.process_environment import (  # noqa: E402
     ProcessEnvironment,
     ProcessEnvironmentBuilder,
 )
-from molt.cli.runtime_build_python import build_python_scope  # noqa: E402
-from molt.cli.runtime_identity_schema import _validated_build_python_identity  # noqa: E402
 from molt.compiler_distribution import (  # noqa: E402
     PRODUCTION_COMPILER_FEATURES,
     PRODUCTION_COMPILER_PROFILE,
@@ -82,7 +80,7 @@ from tools.release.git_source_snapshot import (  # noqa: E402
 )
 from tools.release.release_model import ROOT, target_by_id  # noqa: E402
 
-SCHEMA = "molt.release-native-build.v4"
+SCHEMA = "molt.release-native-build.v5"
 RECEIPT_NAME = "native-build.json"
 _COMMANDS = CommandExecutor.for_file(__file__)
 _COMPONENTS = {
@@ -111,7 +109,6 @@ _TOOL_ROLES = frozenset(
         "ranlib",
         "linker",
         "linker_backend",
-        "python",
         "cmake",
         "ninja",
     }
@@ -399,7 +396,6 @@ def validate_receipt(payload: object) -> dict[str, Any]:
             "target",
             "policy",
             "tools",
-            "build_python",
             "llvm",
             "artifacts",
         },
@@ -504,11 +500,6 @@ def validate_receipt(payload: object) -> dict[str, Any]:
             raise ValueError("native non-Rust tool identity must use content bytes")
     channel = policy["rust_channel"]
     _validate_rust_tools(tools, channel, triple)
-    python = _validated_build_python_identity(receipt["build_python"])
-    if python["selected_executable"] != {
-        key: value for key, value in tools["python"].items() if key != "version"
-    }:
-        raise ValueError("native build Python closure differs from selected executable")
     llvm = validate_llvm_inputs(receipt["llvm"])
     if not set(required_llvm_targets_for_host(ROOT, target["arch"])).issubset(
         llvm["targets"]
@@ -647,7 +638,6 @@ def _tool_paths(
     }
     for role in ("cargo", "rustc"):
         paths[role] = resolve_rustup_proxy(paths[role], role=role, root=source, env=env)
-    paths["python"] = Path(sys.executable)
     paths["linker_backend"] = paths["linker"]
     if darwin is not None:
         paths["linker_backend"] = darwin.tools["ld"]
@@ -716,8 +706,6 @@ def _select_build_tools(
         ("CXX", "cxx"),
         ("AR", "ar"),
         ("RANLIB", "ranlib"),
-        ("PYTHON", "python"),
-        ("MOLT_BUILD_PYTHON", "python"),
     ):
         env[name] = str(paths[role])
         if name in {"CC", "CXX", "AR", "RANLIB"}:
@@ -861,73 +849,65 @@ def produce_native_build(
         triple = RUST_TARGET_BY_COORDINATE[(platform, arch)]
         _select_build_tools(env, paths, work=work, triple=triple, platform=platform)
         compiler_env = llvm_inputs.environment(env)
-        with build_python_scope(None) as build_python:
-            identities = _tool_identities(paths, env)
-            _validate_rust_tools(identities, env["RUSTUP_TOOLCHAIN"], triple)
-            plans = component_plan(platform, arch)
-            receipt = {
-                "schema": SCHEMA,
-                "source": source_record(snapshot),
-                "source_date_epoch": source_date_epoch,
-                "target": {"platform": platform, "arch": arch, "rust_target": triple},
-                "policy": {
-                    "revision": 2,
-                    "rust_channel": env["RUSTUP_TOOLCHAIN"],
-                    "platform_versions": versions,
-                    "components": plans,
-                },
-                "tools": identities,
-                "build_python": build_python.capture(compiler_env),
-                "llvm": llvm_input_record(llvm_inputs, snapshot),
-                "artifacts": {},
-            }
-            for role, plan in plans.items():
-                if role == "compiler":
-                    llvm_inputs.verify()
-                role_env = ProcessEnvironment(
-                    compiler_env if role == "compiler" else env
-                )
-                command = cargo_command(
-                    plan, source=source, work=work, cargo=paths["cargo"]
-                )
-                admit_cargo_build(command, cwd=work, env=role_env)
-                _COMMANDS.run(command, cwd=work, env=role_env, check=True)
-                binary = (
-                    work / "target" / triple / plan["profile"] / Path(plan["path"]).name
-                )
-                destination = stage / plan["path"]
-                captured = snapshot_stable_regular_file(
-                    binary, destination, label=f"release {role} output"
-                )
-                validate_native_binary_architecture(destination, triple)
-                receipt["artifacts"][role] = {
-                    "path": plan["path"],
-                    "sha256": captured.snapshot.sha256,
-                    "size": captured.snapshot.size,
-                }
-                destination.chmod(0o755)
-            llvm_inputs.verify()
-            snapshot.verify(source)
-            if darwin is not None and darwin != select_darwin_toolchain(
-                env, developer_dir=darwin.developer_dir
-            ):
-                raise ValueError(
-                    "Darwin SDK or tool selection changed during native build"
-                )
-            require_config_free_build_root(work, env)
-            if identities != _tool_identities(paths, env):
-                raise ValueError("native build tool identity changed during build")
-            if receipt["build_python"] != build_python.capture(compiler_env):
-                raise ValueError("native build Python runtime changed during build")
-            write_exact(stage / RECEIPT_NAME, validate_receipt(receipt))
-            read_native_build(
-                stage,
-                snapshot=snapshot,
-                expected_rust_channel=env["RUSTUP_TOOLCHAIN"],
-                source_date_epoch=source_date_epoch,
-                platform=platform,
-                arch=arch,
+        identities = _tool_identities(paths, env)
+        _validate_rust_tools(identities, env["RUSTUP_TOOLCHAIN"], triple)
+        plans = component_plan(platform, arch)
+        receipt = {
+            "schema": SCHEMA,
+            "source": source_record(snapshot),
+            "source_date_epoch": source_date_epoch,
+            "target": {"platform": platform, "arch": arch, "rust_target": triple},
+            "policy": {
+                "revision": 2,
+                "rust_channel": env["RUSTUP_TOOLCHAIN"],
+                "platform_versions": versions,
+                "components": plans,
+            },
+            "tools": identities,
+            "llvm": llvm_input_record(llvm_inputs, snapshot),
+            "artifacts": {},
+        }
+        for role, plan in plans.items():
+            if role == "compiler":
+                llvm_inputs.verify()
+            role_env = ProcessEnvironment(compiler_env if role == "compiler" else env)
+            command = cargo_command(
+                plan, source=source, work=work, cargo=paths["cargo"]
             )
+            admit_cargo_build(command, cwd=work, env=role_env)
+            _COMMANDS.run(command, cwd=work, env=role_env, check=True)
+            binary = (
+                work / "target" / triple / plan["profile"] / Path(plan["path"]).name
+            )
+            destination = stage / plan["path"]
+            captured = snapshot_stable_regular_file(
+                binary, destination, label=f"release {role} output"
+            )
+            validate_native_binary_architecture(destination, triple)
+            receipt["artifacts"][role] = {
+                "path": plan["path"],
+                "sha256": captured.snapshot.sha256,
+                "size": captured.snapshot.size,
+            }
+            destination.chmod(0o755)
+        llvm_inputs.verify()
+        snapshot.verify(source)
+        if darwin is not None and darwin != select_darwin_toolchain(
+            env, developer_dir=darwin.developer_dir
+        ):
+            raise ValueError("Darwin SDK or tool selection changed during native build")
+        require_config_free_build_root(work, env)
+        if identities != _tool_identities(paths, env):
+            raise ValueError("native build tool identity changed during build")
+        write_exact(stage / RECEIPT_NAME, validate_receipt(receipt))
+        read_native_build(
+            stage,
+            snapshot=snapshot,
+            expected_rust_channel=env["RUSTUP_TOOLCHAIN"],
+            source_date_epoch=source_date_epoch,
+            platform=platform,
+            arch=arch,
+        )
         durable_publish_directory_exclusive(stage, output)
     return receipt
 

@@ -1049,14 +1049,15 @@ def regenerate_cython_c_standalone(
             f"(argv: {' '.join(command)}):\n{detail}"
         )
     dependency_file = regenerated_c.with_name(regenerated_c.name + ".dep")
-    dependency_paths, dependency_error = parse_make_depfile(
+    dependency_inputs, dependency_error = parse_make_depfile(
         dependency_file,
         cwd=working_directory,
         producer="Cython",
     )
     if dependency_error is not None:
         return None, dependency_error
-    assert dependency_paths is not None
+    assert dependency_inputs is not None
+    dependency_paths = tuple(dict.fromkeys(row.resolved for row in dependency_inputs))
     resolved_pyx = pyx_path.resolve()
     if resolved_pyx not in dependency_paths:
         return None, (

@@ -9,11 +9,13 @@ code fails admission before any program runs.
 
 from __future__ import annotations
 
+from molt.cargo_execution_policy import cargo_profile_directory
+
 import os
 from pathlib import Path
 
 from molt.cli.backend_binary import _ensure_backend_binary
-from molt.cli.runtime_paths import _cargo_profile_dir, _cargo_target_root
+from molt.cli.runtime_paths import _cargo_target_root
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.host_tool_products import HostToolProduct
 
@@ -22,7 +24,7 @@ def jit_runner_coordinate(root: Path, *, cargo_profile: str) -> Path:
     product = HostToolProduct.JIT
     return (
         _cargo_target_root(root)
-        / _cargo_profile_dir(cargo_profile)
+        / cargo_profile_directory(cargo_profile)
         / product.executable_name(os_name=os.name, features=product.required_features)
     )
 

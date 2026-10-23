@@ -64,14 +64,14 @@ fn memoryview_new_with_flags(_py: &PyToken<'_>, bits: u64, buffer_flags: i32) ->
             // CPython checks the buffer slot before invoking it. A missing
             // slot has memoryview's diagnostic; a real exporter owns its
             // failure. Keep the same projected object for both operations.
-            let object = match molt_cpython_abi::native_custody::project_buffer_object(bits) {
+            let object = match molt_runtime_capi::project_buffer_object(bits) {
                 Ok(object) => object,
                 Err(_) => return MoltObject::none().bits(),
             };
             if molt_cpython_abi::api::buffer::PyObject_CheckBuffer(object.as_ptr()) == 0 {
                 return raise_memoryview_buffer_error(_py, obj);
             }
-            let lease = match molt_cpython_abi::native_custody::acquire_buffer_from_object(
+            let lease = match molt_runtime_capi::acquire_buffer_from_object(
                 object.as_ptr(),
                 buffer_flags,
             ) {

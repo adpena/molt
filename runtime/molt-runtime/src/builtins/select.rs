@@ -9,9 +9,8 @@ use crate::{
     IO_EVENT_ERROR, IO_EVENT_READ, IO_EVENT_WRITE, TYPE_ID_LIST, TYPE_ID_TUPLE,
     alloc_dict_with_pairs, alloc_list, alloc_string, alloc_tuple, attr_name_bits_from_bytes,
     call_callable0, dec_ref_bits, exception_pending, inc_ref_bits, int_bits_from_i64, is_truthy,
-    maybe_ptr_from_bits, missing_bits, molt_getattr_builtin, molt_is_callable, molt_iter,
-    molt_iter_next, monotonic_now_secs, obj_from_bits, opaque_handle_bits, ptr_from_bits,
-    raise_exception, release_ptr, to_f64, to_i64,
+    missing_bits, molt_getattr_builtin, molt_is_callable, monotonic_now_secs, obj_from_bits,
+    opaque_handle_bits, ptr_from_bits, raise_exception, release_ptr, to_f64, to_i64,
 };
 use std::collections::HashMap;
 use std::collections::hash_map::Entry as HashMapEntry;
@@ -108,33 +107,12 @@ fn collect_iterable(_py: &crate::PyToken<'_>, iterable_bits: u64) -> Result<Vec<
         }
     }
 
-    let iter_bits = molt_iter(iterable_bits);
-    if exception_pending(_py) {
-        return Err(MoltObject::none().bits());
-    }
-    let mut out: Vec<u64> = Vec::new();
-    loop {
-        let pair_bits = molt_iter_next(iter_bits);
-        let Some(pair_ptr) = maybe_ptr_from_bits(pair_bits) else {
-            return Err(MoltObject::none().bits());
-        };
-        unsafe {
-            if crate::object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-                return Err(MoltObject::none().bits());
-            }
-        }
-        let Some((obj_bits, done_bits)) =
-            (unsafe { crate::object::seq_access::tuple_pair(pair_ptr) })
-        else {
-            return Err(MoltObject::none().bits());
-        };
-        if is_truthy(_py, obj_from_bits(done_bits)) {
-            break;
-        }
-        inc_ref_bits(_py, obj_bits);
-        out.push(obj_bits);
-    }
-    Ok(out)
+    crate::object::iterable::collect(
+        _py,
+        iterable_bits,
+        crate::object::iterable::LengthHint::Skip,
+    )
+    .ok_or_else(|| MoltObject::none().bits())
 }
 
 fn get_attr_optional(

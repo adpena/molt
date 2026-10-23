@@ -120,7 +120,6 @@ def _proof_command_registry() -> dict[str, object]:
             "id": lane.id,
             "toolchains": tuple(lane.toolchains),
             "cargo_native_units": proof_plan.cargo_native_units(lane.data),
-            "cargo_build_python": proof_plan.cargo_build_python(lane.data),
         }
         entrypoint = _command_entrypoint(argv, root=root)
         if entrypoint is not None:
@@ -150,16 +149,11 @@ def _proof_command_registry() -> dict[str, object]:
                 "ids": [command.id],
                 "toolchains": declared,
                 "cargo_native_units": proof_plan.cargo_native_units(command.data),
-                "cargo_build_python": proof_plan.cargo_build_python(command.data),
             }
         else:
-            if (
-                existing["toolchains"] != declared
-                or existing["cargo_native_units"]
-                != proof_plan.cargo_native_units(command.data)
-                or existing["cargo_build_python"]
-                != proof_plan.cargo_build_python(command.data)
-            ):
+            if existing["toolchains"] != declared or existing[
+                "cargo_native_units"
+            ] != proof_plan.cargo_native_units(command.data):
                 raise ValueError(
                     "identical proof-plan argv has conflicting toolchain authorities: "
                     f"{existing['ids']!r}, {command.id!r}"
@@ -176,10 +170,6 @@ def _proof_command_registry() -> dict[str, object]:
             for name, toolchains in sorted(console_tools.items())
         },
         "policy_executables": policy_executables,
-        "cargo_build_python": {
-            row.id: proof_plan.cargo_build_python(row.data)
-            for row in (*plan.commands, *plan.named_lanes)
-        },
         "plan": plan,
         "entrypoints": entrypoints,
     }
@@ -929,63 +919,6 @@ def cargo_invocation_for_envelope(
     raise ValueError("Cargo policy requires a Cargo payload or declared Python driver")
 
 
-def cargo_build_python_required(envelope: Mapping[str, object]) -> bool:
-    """A build generator is a command-context prerequisite, not a Cargo binary."""
-    requested = envelope.get("toolchains")
-    if not isinstance(requested, list):
-        raise ValueError("Cargo generator selection requires declared toolchains")
-    if "cargo" not in requested:
-        return False
-    owner = envelope.get("delegated")
-    if isinstance(owner, Mapping):
-        return cargo_build_python_required(owner)
-    declarations = []
-    ids = envelope.get("proof_plan_command_ids", [])
-    if not isinstance(ids, list):
-        raise ValueError("Cargo generator selection requires command registration IDs")
-    typed = envelope.get("typed_command")
-    if ids:
-        owners = _proof_command_registry()["cargo_build_python"]
-        assert isinstance(owners, dict)
-        declarations = [owners[str(name)] for name in ids]
-        if len(set(declarations)) != 1:
-            raise ValueError("registered Cargo commands disagree on build Python")
-    elif isinstance(typed, Mapping) and typed.get("family") == "focused-pytest":
-        # Admission carries the one declaration of the proof's Cargo owners
-        # and refuses owners that disagree (HF-179).
-        carried = typed.get("cargo_build_python")
-        if carried is not None and type(carried) is not bool:
-            raise ValueError("focused pytest build Python declaration is malformed")
-        declarations = [carried]
-    declared = declarations[0] if declarations else None
-    closure = envelope.get("process_closure")
-    if isinstance(closure, Mapping) and closure.get("descendants") == "forbidden":
-        if declared is True:
-            raise ValueError(
-                "noncompiling Cargo command declares a build Python generator"
-            )
-        return False
-    invocation = cargo_invocation_for_envelope(envelope)
-    compiling = invocation is None or (
-        not invocation.is_cargo_query
-        and invocation.subcommand
-        in {
-            "build",
-            "check",
-            "clippy",
-            "test",
-            "bench",
-            "run",
-            "doc",
-            "rustdoc",
-            "rustc",
-        }
-    )
-    if declared is True and not compiling:
-        raise ValueError("noncompiling Cargo command declares a build Python generator")
-    return compiling and declared is not False
-
-
 def runtime_gate_arguments(
     envelope: Mapping[str, object],
 ) -> argparse.Namespace | None:
@@ -1451,8 +1384,7 @@ def _focused_pytest_family(invocation: PythonInvocation) -> dict[str, object]:
     or declares a node in it: authority is declared per row, so a node row owns
     its file here (the CI coverage gate keeps its own rule). The run executes everything inside a selected
     directory, so it admits the toolchains and native units of every row whose
-    targets lie on, above or inside a selection, and the one Cargo build-Python
-    role those rows declare. Its receipt never stands in for an owner's proof
+    targets lie on, above or inside a selection. Its receipt never stands in for an owner's proof
     (HF-179).
     """
     plan = _proof_command_registry()["plan"]
@@ -1493,23 +1425,10 @@ def _focused_pytest_family(invocation: PythonInvocation) -> dict[str, object]:
         )
     toolchains: dict[str, None] = {}
     native_units: dict[str, dict[str, None]] = {}
-    build_python: dict[bool | None, list[str]] = {}
     for row in owners:
         toolchains.update(dict.fromkeys(row.toolchains))
         for unit, languages in proof_plan.cargo_native_units(row.data).items():
             native_units.setdefault(unit, {}).update(dict.fromkeys(languages))
-        if "cargo" in row.toolchains:
-            build_python.setdefault(proof_plan.cargo_build_python(row.data), []).append(
-                row.id
-            )
-    if len(build_python) > 1:
-        declared = "; ".join(
-            f"{value} by {', '.join(ids)}" for value, ids in build_python.items()
-        )
-        raise ValueError(
-            "the owners of a focused pytest proof disagree on the Cargo build "
-            f"Python ({declared}); prove their paths separately"
-        )
     return {
         "family": "focused-pytest",
         "selections": list(selections),
@@ -1519,7 +1438,6 @@ def _focused_pytest_family(invocation: PythonInvocation) -> dict[str, object]:
             unit: [language for language in ("c", "c++") if language in languages]
             for unit, languages in native_units.items()
         },
-        "cargo_build_python": next(iter(build_python), None),
     }
 
 
@@ -1776,33 +1694,6 @@ def _supervised_execution_command(
     ``sys.executable`` and ordinary venv discovery while making the kernel root
     the process that actually executes user code.
     """
-    if (
-        cargo_build_python_required(envelope)
-        and cargo_invocation_for_envelope(envelope) is not None
-    ):
-        from molt.cli import cargo_command as cargo_argv
-        from molt.cli.runtime_cargo_plan import capture_cargo_configuration_inputs
-
-        cargo_command = _nested_command(exact) or list(exact)
-        forced = capture_cargo_configuration_inputs(
-            cwd, env=environment, cargo_command=cargo_command
-        )[8]
-        pins = cargo_argv.cargo_environment_force_overrides(
-            [
-                name
-                for name in forced
-                if name in {"MOLT_BUILD_PYTHON", "MOLT_BUILD_PYTHON_SIGNATURE"}
-            ]
-        )
-        separator = (
-            cargo_command.index("--") if "--" in cargo_command else len(cargo_command)
-        )
-        offset = len(exact) - len(cargo_command) + separator
-        exact = [
-            *exact[:offset],
-            *(arg for pin in pins for arg in ("--config", pin)),
-            *exact[offset:],
-        ]
     if os.name != "nt" or not isinstance(envelope.get("python"), Mapping):
         return _python_bootstrap_command(envelope, exact), {}
     python = located_toolchains.get("python")
@@ -1989,11 +1880,6 @@ def _envelope_for_command(
         "typed_command": typed_python,
         "process_closure": process_closure,
     }
-    if cargo_build_python_required(envelope):
-        for name in _toolchain_dependency_closure(["build-python"]):
-            if name not in toolchains:
-                toolchains.append(name)
-        process_closure["toolchains"] = list(toolchains)
     return envelope
 
 

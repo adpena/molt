@@ -193,17 +193,21 @@ role = "TIR->{LIR,SimpleIR,WASM-IR} lowering + representation-plan logic"
 name = "molt-lang-cpython-abi"
 runtime_layer = "c_api"
 layer = 3
-# Native object/buffer custody lives beside its descriptor/reference owners.
-# Five real protocol consumers plus runtime and discovery make radius 7. This
-# replaces the accidental core -> C-API edge (radius 23), not a same-layer waiver.
+# Pure C-API protocols depend on object facts and platform primitives.
+# Runtime-bound reference completion belongs to the integration crate below.
 role = "CPython ABI surface over the object model"
+
+[[crate]]
+name = "molt-runtime-capi"
+runtime_layer = "runtime_c_api"
+layer = 4
+role = "runtime execution custody for native C-API references and buffers"
 
 [[crate]]
 name = "molt-runtime-core"
 runtime_layer = "core"
 layer = 2
-# C-API execution-bound custody is one new direct consumer: radius 22 -> 23.
-# Core has no reverse C-API dependency; unrelated satellites stay independent.
+# Core has no C-API edge. Runtime-bound integration consumes both owners.
 role = "runtime core consumed by every stdlib satellite (deps obj-model)"
 
 # ---------------------------------------------------------------------------
@@ -212,8 +216,8 @@ role = "runtime core consumed by every stdlib satellite (deps obj-model)"
 # (molt-codegen-abi). They MUST be independent of each other; the single
 # documented exception (native -> llvm, 21b flag #2) is whitelisted below and
 # becomes live when molt-backend-llvm is extracted (21f S4).
-# Satellites use core (L2); native-buffer consumers also use the C API (L3)
-# and therefore sit at L4. Core never imports the C API or its consumers.
+# Satellites use core (L2); native-buffer consumers use runtime/C-API
+# integration (L4) and sit at L5. Core never imports those consumers.
 # ---------------------------------------------------------------------------
 
 [[crate]]
@@ -264,14 +268,14 @@ role = "stdlib satellite"
 name = "molt-runtime-compression"
 runtime_layer = "stdlib"
 stdlib_domain = "compression"
-layer = 4
+layer = 5
 role = "stdlib satellite"
 
 [[crate]]
 name = "molt-runtime-crypto"
 runtime_layer = "stdlib"
 stdlib_domain = "crypto"
-layer = 4
+layer = 5
 role = "stdlib satellite"
 
 [[crate]]
@@ -285,7 +289,7 @@ role = "stdlib satellite"
 name = "molt-runtime-http"
 runtime_layer = "stdlib"
 stdlib_domain = "http"
-layer = 4
+layer = 5
 role = "stdlib satellite"
 
 [[crate]]
@@ -327,7 +331,7 @@ role = "stdlib satellite"
 name = "molt-runtime-path"
 runtime_layer = "stdlib"
 stdlib_domain = "path"
-layer = 4
+layer = 5
 role = "stdlib satellite"
 
 [[crate]]
@@ -365,7 +369,7 @@ role = "runtime resource policy satellite"
 name = "molt-runtime-serial"
 runtime_layer = "stdlib"
 stdlib_domain = "serial"
-layer = 4
+layer = 5
 role = "stdlib satellite"
 
 [[crate]]
@@ -432,11 +436,11 @@ role = "development JIT runner: compiles backend IR into process memory"
 [[crate]]
 name = "molt-runtime"
 runtime_layer = "runtime"
-layer = 5
+layer = 6
 role = "runtime fan-in over every stdlib satellite + obj-model/db/gpu"
 
 # ---------------------------------------------------------------------------
-# Layer 6 -- runtime embedders / host surfaces over molt-runtime.
+# Layers 5/7 -- compilation SDK and host surfaces over runtime fan-in.
 # ---------------------------------------------------------------------------
 
 [[crate]]
@@ -448,13 +452,13 @@ role = "compilation SDK invoking the installed CLI; no runtime dependency"
 [[crate]]
 name = "molt-wasm-host"
 runtime_layer = "outside"
-layer = 6
+layer = 7
 role = "WASM host over molt-runtime + obj-model"
 
 [[crate]]
 name = "molt-cext-discovery"
 runtime_layer = "outside"
-layer = 6
+layer = 7
 # Consolidation enrolls this existing runtime-workspace consumer in the root
 # graph. The baseline's +1 runtime cones reflect that scope correction; removing
 # this observer from the measured cones reproduces every prior radius exactly.

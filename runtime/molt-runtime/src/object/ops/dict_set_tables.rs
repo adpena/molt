@@ -712,11 +712,21 @@ const SPLIT_COUNT_MAX_WORDS: usize = 1 << 12;
 /// The words of `line` as `str.split(sep)` delimits them, whitespace words when
 /// `sep` is `None`, in order; `None` when there are more than `limit`, found
 /// without scanning past the word after the limit.
-fn split_word_bounds(line: &[u8], sep: Option<&[u8]>, limit: usize) -> Option<Vec<(usize, usize)>> {
+fn split_word_bounds(
+    py: &PyToken<'_>,
+    line: &[u8],
+    sep: Option<&[u8]>,
+    limit: usize,
+) -> Option<Vec<(usize, usize)>> {
     let Some(sep) = sep else {
         // `limit` splits leave the rest of the line as one more part.
         let maxsplit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let parts = crate::builtins::strings::string_whitespace_parts(line, maxsplit, false);
+        let parts = crate::builtins::strings::string_whitespace_parts(
+            super::unicode_data_for_bytes(py, line),
+            line,
+            maxsplit,
+            false,
+        );
         return (parts.len() <= limit).then_some(parts);
     };
     let separators: Box<dyn Iterator<Item = usize> + '_> = if sep.len() == 1 {
@@ -788,7 +798,7 @@ unsafe fn split_dict_increment_exact(
         {
             return SplitIncrement::Declined;
         }
-        let Some(bounds) = split_word_bounds(line, sep, SPLIT_COUNT_MAX_WORDS) else {
+        let Some(bounds) = split_word_bounds(py, line, sep, SPLIT_COUNT_MAX_WORDS) else {
             return SplitIncrement::Declined;
         };
         if bounds.is_empty() {

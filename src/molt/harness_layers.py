@@ -7,6 +7,8 @@ is a strict superset of the previous one.
 
 from __future__ import annotations
 
+from molt.cargo_execution_policy import cargo_profile_directory
+
 import json
 import os
 import re
@@ -804,11 +806,7 @@ def run_layer_conformance(config: HarnessConfig) -> LayerResult:
 def run_layer_size(config: HarnessConfig) -> LayerResult:
     """Measure CLI and selected native runtime artifacts without rebuilding."""
     from molt.cli.cargo_profiles import _resolve_cargo_profile_name
-    from molt.cli.runtime_paths import (
-        _cargo_profile_dir,
-        _cargo_target_root,
-        _runtime_lib_archive_names,
-    )
+    from molt.cli.runtime_paths import _cargo_target_root, _runtime_lib_archive_names
 
     start = time.monotonic()
     metrics: dict[str, int | float] = {}
@@ -827,7 +825,9 @@ def run_layer_size(config: HarnessConfig) -> LayerResult:
         metrics["molt_binary_bytes"] = os.path.getsize(molt_path)
 
     # Use the same target, profile and platform archive names as the compiler.
-    target_dir = _cargo_target_root(config.project_root) / _cargo_profile_dir(profile)
+    target_dir = _cargo_target_root(config.project_root) / cargo_profile_directory(
+        profile
+    )
     for name in (*_runtime_lib_archive_names(), "libmolt_runtime.rlib"):
         path = target_dir / name
         if path.exists():

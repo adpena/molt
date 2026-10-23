@@ -192,3 +192,133 @@ def test_a_directory_output_never_cuts_off(
     for output in (os.fspath(tmp_path) + os.sep, os.fspath(tmp_path)):
         request = BuildRequest(file_path=os.fspath(project / "app.py"), output=output)
         assert build_command._early_cutoff_request(request) is None
+
+
+@pytest.mark.parametrize(
+    "target,options,error",
+    [
+        *[
+            (
+                target,
+                {"trusted": True},
+                "Trusted mode is not supported for wasm targets",
+            )
+            for target in (
+                "wasm",
+                "wasm-freestanding",
+                "wasm32-wasip1",
+                "wasm32-unknown-unknown",
+            )
+        ],
+        (
+            "native",
+            {"require_linked": True},
+            "--require-linked is only supported for wasm targets",
+        ),
+        ("native", {"linked_output": "out"}, "--linked-output requires --linked"),
+        (
+            "native",
+            {"linked": True},
+            "Linked output is only supported for wasm targets",
+        ),
+        ("wasm", {"emit": "obj"}, "Invalid emit mode for wasm target: obj"),
+        ("native", {"emit": "wasm"}, "emit=wasm requires --target wasm"),
+        ("rust", {"emit": "jit"}, "emit=jit requires the native target"),
+        ("luau", {"emit": "jit"}, "emit=jit requires the native target"),
+        ("mlir", {"emit": "jit"}, "emit=jit requires the native target"),
+        (
+            "native",
+            {"emit": "jit", "split_runtime": True},
+            "emit=jit publishes no linked or split artifact",
+        ),
+    ],
+)
+def test_invalid_output_options_refuse_before_build_scope(
+    target, options, error, tmp_path, monkeypatch, capsys
+):
+    import json
+    from molt.compilation_target import TargetKind
+    from molt.cli import build_output_layout
+
+    def forbidden_scope():
+        pytest.fail("invalid request entered artifact custody before refusal")
+
+    monkeypatch.setattr(build_output_layout, "build_scope", forbidden_scope)
+    # An absent source must not mask an option contradiction or trigger any
+    # input/cache/compiler work. Invoke the actual public build boundary.
+    result = build_command.build(
+        BuildRequest(
+            file_path=str(tmp_path / "absent.py"),
+            target=TargetKind(target),
+            json_output=True,
+            **options,
+        )
+    )
+    assert result == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["command"] == "build" and payload["status"] == "error"
+    assert payload["errors"] == [error]
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "target,options,linked,mode",
+    [
+        ("native", {"trusted": True}, False, "bin"),
+        ("native", {"emit": "obj"}, False, "obj"),
+        ("native", {"emit": "jit"}, False, "jit"),
+        ("wasm", {"linked_output": "linked.wasm"}, True, "wasm"),
+        ("wasm-freestanding", {"require_linked": True}, True, "wasm"),
+        ("wasm32-wasip1", {"split_runtime": True}, True, "wasm"),
+        ("wasm32-unknown-unknown", {}, False, "wasm"),
+        ("rust", {"linked": True}, True, "bin"),
+        ("luau", {"linked": True}, True, "bin"),
+        ("mlir", {}, False, "bin"),
+    ],
+)
+def test_preflight_preserves_target_output_layout(
+    target, options, linked, mode, tmp_path, monkeypatch
+):
+    from molt.compilation_target import TargetKind
+    from molt.cli.build_output_layout import _resolve_build_output_layout
+
+    monkeypatch.setenv("MOLT_WASM_LINKED", "0")
+    arguments = dict(
+        target=TargetKind(target),
+        trusted=False,
+        split_runtime=False,
+        require_linked=False,
+        linked=False,
+        linked_output=None,
+        emit=None,
+    )
+    arguments.update(options)
+    layout = _resolve_build_output_layout(
+        **arguments,
+        output=None,
+        emit_ir=None,
+        artifacts_root=tmp_path / "artifacts",
+        bin_root=tmp_path / "bin",
+        output_root=tmp_path,
+        output_base="program",
+        out_dir_path=None,
+        project_root=tmp_path,
+    )
+    assert (layout.linked, layout.emit_mode) == (linked, mode)
+
+
+def test_input_capture_never_cuts_off_a_fresh_observation(
+    project, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(build_record, "_BUILDS_ENTERED", 0)
+    calls = []
+    build = build_command._with_early_cutoff(_fake_build(calls))
+    request = BuildRequest(
+        file_path=os.fspath(project / "app.py"),
+        output=os.fspath(tmp_path / "app"),
+        capture_link_inputs=True,
+    )
+    for _ in range(2):
+        build_record._BUILDS_ENTERED = 0
+        assert build(request) == 0
+    assert len(calls) == 2, "every capture must produce fresh input observations"

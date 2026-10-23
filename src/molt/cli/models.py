@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from molt.compilation_target import Target
+from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 from molt.compiler_analysis.python_imports import (
     SourceImportSite,
     SourceAllExports,
@@ -46,7 +47,9 @@ from molt.type_facts import TypeFacts
 from molt.toolchain_identity import StableRegularFileIdentity
 
 if TYPE_CHECKING:
+    from molt.backend_protocol import BackendDaemonJobOrigin
     from molt.cli.build_request import BuildProfile, ParseCodec, TypeHintPolicy
+    from molt.cli.link_input_observation import CompilationInputRecord
     from molt.cli.external_native import (
         _ExternalNativeAbiSymbol,
         _ExternalNativeCapiSymbol,
@@ -63,11 +66,13 @@ if TYPE_CHECKING:
     from molt.frontend.module_publication import FunctionAssemblyMetadata
     from molt.cli.wasm_codegen_layout import WasmCodegenLayout
     from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
-    from molt.frontend.lowering.exception_lowering import SyntaxErrorName
+    from molt.frontend.lowering.exception_lowering import (
+        SyntaxErrorAttribute,
+        SyntaxErrorName,
+    )
     from molt.frontend import ClassId, ClassInfo
     from molt.cli.backend_artifact_contract import BackendArtifactContract
     from molt.capability_manifest import ResolvedRuntimePolicy
-    from molt.python_runtime_admission import BuildPythonAdmission
     from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
     from molt.cli.runtime_wasm_generation import RuntimeWasmCodegenBinding
     from molt.cli.runtime_native_codegen import NativeRuntimeCodegenBinding
@@ -97,15 +102,15 @@ BuildEntrySelectorTarget = Literal["file", "module"]
 
 @dataclass(frozen=True)
 class ModuleSyntaxErrorInfo:
-    """Lossless parser exception payload; construction owns derived attributes.
+    """Parser constructor arguments plus observable state changed afterward.
 
-    Parser args contain only immutable literals and the four- or six-field
-    details tuple. Keeping them intact also preserves absent detail fields.
+    Parser args contain only immutable literals and an optional location
+    details tuple. Sparse overrides preserve attributes not represented by args.
     """
 
     exception_name: SyntaxErrorName
     args: tuple[object, ...]
-    print_file_and_line: int | None
+    attribute_overrides: tuple[tuple[SyntaxErrorAttribute, object], ...]
 
 
 class _CanonicalPackagePaths(tuple[Path, ...]):
@@ -132,6 +137,7 @@ class _ModuleSourceScanAuthority:
     module_name: str
     source_path: Path
     mode: ImportScanMode
+    body_selection: ModuleBodySelection = field(kw_only=True)
     is_package: bool | None = None
     requires_runtime_package_anchor: bool = False
     # Some scan of this source reached an import or an import-capable call.
@@ -140,7 +146,6 @@ class _ModuleSourceScanAuthority:
     namespace_premise: PythonNamespacePremise | None = None
     source_sha256: str | None = None
     package_paths: tuple[Path, ...] = ()
-    native_support_function_roots: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.mode not in {"module_init", "full"}:
@@ -167,16 +172,8 @@ class _ModuleSourceScanAuthority:
         elif package_paths:
             raise ValueError("non-package source cannot own package search paths")
         object.__setattr__(self, "package_paths", package_paths)
-        if self.native_support_function_roots:
-            from molt.compiler_analysis.native_support_slice import (
-                canonical_native_support_roots,
-            )
-
-            object.__setattr__(
-                self,
-                "native_support_function_roots",
-                canonical_native_support_roots(self.native_support_function_roots),
-            )
+        if not isinstance(self.body_selection, ModuleBodySelection):
+            raise ValueError("source scan requires a module body selection")
 
     def validate(self, module_name: str, source_path: Path) -> None:
         if self.module_name != module_name or self.source_path != _operation_resolved(
@@ -239,19 +236,17 @@ class _ModuleGraphScanAuthority:
                 if prior.source_sha256 is not None and source.source_sha256 is not None:
                     prior.validate_generation(source.source_sha256)
                 source_sha256 = prior.source_sha256 or source.source_sha256
-                native_support_function_roots = (
-                    ()
+                body_selection = (
+                    ModuleBodySelection("complete_source")
                     if (
-                        not prior.native_support_function_roots
+                        prior.body_selection.kind == "complete_source"
                         and prior.source_sha256 is not None
-                        or not source.native_support_function_roots
+                        or source.body_selection.kind == "complete_source"
                         and source.source_sha256 is not None
                     )
-                    else tuple(
-                        sorted(
-                            set(prior.native_support_function_roots)
-                            | set(source.native_support_function_roots)
-                        )
+                    else ModuleBodySelection.from_requested_roots(
+                        set(prior.body_selection.roots)
+                        | set(source.body_selection.roots)
                     )
                 )
                 requires_runtime_package_anchor = (
@@ -276,8 +271,7 @@ class _ModuleGraphScanAuthority:
                     != source.uses_runtime_import_protocol
                     or namespace_premise != source.namespace_premise
                     or source_sha256 != source.source_sha256
-                    or native_support_function_roots
-                    != source.native_support_function_roots
+                    or body_selection != source.body_selection
                 ):
                     source = replace(
                         source,
@@ -286,7 +280,7 @@ class _ModuleGraphScanAuthority:
                         deferred_owners=deferred_owners,
                         namespace_premise=namespace_premise,
                         source_sha256=source_sha256,
-                        native_support_function_roots=native_support_function_roots,
+                        body_selection=body_selection,
                     )
             sources[source.module_name] = source
         return _ModuleGraphScanAuthority(
@@ -331,9 +325,7 @@ class _ModuleGraphScanAuthority:
                 ],
                 "is_package": source.is_package,
                 "package_paths": [os.fspath(path) for path in source.package_paths],
-                "native_support_function_roots": list(
-                    source.native_support_function_roots
-                ),
+                "body_selection": source.body_selection.payload(),
                 "requires_runtime_package_anchor": (
                     source.requires_runtime_package_anchor
                 ),
@@ -414,7 +406,7 @@ class _ScopedLoweringInputView:
     direct_call_modules: tuple[str, ...] = ()
     native_callable_exports: dict[str, dict[str, Any]] = field(default_factory=dict)
     native_python_exports: tuple[str, ...] = ()
-    native_support_function_roots: tuple[str, ...] = ()
+    body_selection: ModuleBodySelection = field(kw_only=True)
     known_modules_payload: list[str] = field(default_factory=list)
     known_modules_set: frozenset[str] = field(default_factory=frozenset)
     direct_call_modules_payload: list[str] = field(default_factory=list)
@@ -424,8 +416,6 @@ class _ScopedLoweringInputView:
     )
     native_python_exports_payload: list[str] = field(default_factory=list)
     native_python_exports_set: frozenset[str] = field(default_factory=frozenset)
-    native_support_function_roots_payload: list[str] = field(default_factory=list)
-    native_support_function_roots_set: frozenset[str] = field(default_factory=frozenset)
     pgo_hot_function_names_payload: list[str] = field(default_factory=list)
     pgo_hot_function_names_set: frozenset[str] = field(default_factory=frozenset)
 
@@ -467,24 +457,8 @@ class _ScopedLoweringInputView:
                 "native_python_exports_set",
                 frozenset(self.native_python_exports),
             )
-        if (
-            not self.native_support_function_roots_payload
-            and self.native_support_function_roots
-        ):
-            object.__setattr__(
-                self,
-                "native_support_function_roots_payload",
-                list(self.native_support_function_roots),
-            )
-        if (
-            not self.native_support_function_roots_set
-            and self.native_support_function_roots
-        ):
-            object.__setattr__(
-                self,
-                "native_support_function_roots_set",
-                frozenset(self.native_support_function_roots),
-            )
+        if not isinstance(self.body_selection, ModuleBodySelection):
+            raise ValueError("lowering requires a module body selection")
         if not self.pgo_hot_function_names_payload and self.pgo_hot_function_names:
             object.__setattr__(
                 self,
@@ -722,7 +696,6 @@ class _RuntimeArtifactState:
     native_runtime_build_failure: _NativeRuntimeBuildFailure | None = None
     runtime_wasm_build_failure: _RuntimeWasmBuildFailure | None = None
     runtime_lib_ready_future: Future[bool] | None = None
-    build_python_admission: BuildPythonAdmission | None = None
 
     def revoke_native_runtime_admission(self) -> None:
         """Revoke all authority to use this operation's native generation."""
@@ -1924,6 +1897,7 @@ class _PreparedBackendCompile:
     backend_daemon_cache_tier: str | None
     backend_daemon_health: dict[str, Any] | None
     backend_daemon_config_digest: str | None
+    backend_daemon_origin: BackendDaemonJobOrigin | None = None
 
 
 @dataclass(frozen=True)
@@ -1952,3 +1926,4 @@ class _PreparedNonNativeResult:
     success_messages: list[str]
     extra_fields: dict[str, Any]
     artifacts: dict[str, str] | None
+    link_input_observation: CompilationInputRecord | None = None

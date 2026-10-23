@@ -78,10 +78,6 @@ pub fn resolve_symbol_with(
             "molt_runtime_math::fractions::molt_fraction_numerator",
             crate::fractions::molt_fraction_numerator as *const (),
         )),
-        "molt_fraction_pow" => Some(runtime_fn_addr(
-            "molt_runtime_math::fractions::molt_fraction_pow",
-            crate::fractions::molt_fraction_pow as *const (),
-        )),
         "molt_fraction_sub" => Some(runtime_fn_addr(
             "molt_runtime_math::fractions::molt_fraction_sub",
             crate::fractions::molt_fraction_sub as *const (),

@@ -14,7 +14,10 @@ from pathlib import Path
 import pytest
 
 from molt.cli import source_record_store as records
-from tests.process_guard_common import install_module_view
+from tests.process_guard_common import (
+    close_owned_multiprocessing_child,
+    install_module_view,
+)
 
 _HOUR = 3600 * 1_000_000_000
 _DAY = 24 * _HOUR
@@ -22,7 +25,17 @@ _LIMIT = 1 << 20
 
 
 def _store(tmp_path: Path) -> records.SourceRecordStore:
-    return records.SourceRecordStore(tmp_path / records.STORE_NAME)
+    return records.SourceRecordStore(tmp_path)
+
+
+def _fixture_path(cache_root: Path) -> Path:
+    path = cache_root / records.STORE_RELATIVE_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _, lock = records.source_record_namespace_paths(cache_root, path.parent.name)
+    lease = records._try_acquire_file_lock(lock, shared=True)
+    assert lease is not None
+    records._release_file_lock(lease)
+    return path
 
 
 def test_records_round_trip_per_kind_and_key(tmp_path: Path) -> None:
@@ -50,7 +63,7 @@ def test_a_later_record_replaces_the_earlier_one(tmp_path: Path) -> None:
         store.get("import-scan", "k", generation="g", max_bytes=_LIMIT).payload
         == b"new"
     )
-    with sqlite3.connect(tmp_path / records.STORE_NAME) as connection:
+    with sqlite3.connect(tmp_path / records.STORE_RELATIVE_PATH) as connection:
         assert connection.execute("SELECT count(*) FROM records").fetchone() == (1,)
 
 
@@ -126,46 +139,42 @@ def _read_in_child(root: str) -> object:
     )
 
 
-def test_retired_generations_lose_their_records(
+def test_generation_is_provenance_and_global_policy_owns_retirement(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     clock = [100 * _DAY]
     install_module_view(monkeypatch, "time", time, records, time_ns=lambda: clock[0])
-
-    # Six compiler generations, one an hour apart; each process uses one.
+    store = _store(tmp_path)
     for index in range(6):
         clock[0] += 2 * _HOUR
-        _store(tmp_path).put(
+        assert store.put(
             "import-scan", f"k{index}", str(index).encode(), generation=f"g{index}"
         )
-
-    kept = {
-        index
-        for index in range(6)
-        if _store(tmp_path).get(
-            "import-scan", f"k{index}", generation=f"g{index}", max_bytes=_LIMIT
-        )
-        is not None
-    }
-    # Only the four most recently used generations keep their records.
-    assert kept == {2, 3, 4, 5}
-
-    # A week without use retires even a recent generation.
     clock[0] += 8 * _DAY
-    _store(tmp_path).put("import-scan", "fresh", b"9", generation="g9")
-    survivors = {
-        key
-        for (key,) in sqlite3.connect(tmp_path / records.STORE_NAME).execute(
-            "SELECT key FROM records"
+    assert store.put("import-scan", "fresh", b"9", generation="g9")
+    for index in range(6):
+        observed = store.get(
+            "import-scan", f"k{index}", generation=f"g{index}", max_bytes=None
         )
-    }
-    assert survivors == {"fresh"}
+        assert observed is not None and observed.payload == str(index).encode()
+        assert (
+            store.get("import-scan", f"k{index}", generation="wrong", max_bytes=None)
+            is None
+        )
+    with closing(sqlite3.connect(store.path)) as peer:
+        assert peer.execute("SELECT count(*) FROM records").fetchone() == (7,)
+        assert (
+            peer.execute(
+                "SELECT name FROM sqlite_schema WHERE name IN ('generations','trims','records_generation')"
+            ).fetchall()
+            == []
+        )
 
 
 def test_corrupt_store_is_unavailable_without_unlinking_peer_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    path = tmp_path / records.STORE_NAME
+    path = _fixture_path(tmp_path)
     original = b"not a database" * 512
     path.write_bytes(original)
     before = (path.stat().st_ino, path.read_bytes())
@@ -312,102 +321,88 @@ def test_only_admitted_use_refreshes_and_stale_observations_cannot_renew(
     ).fetchone() == (original.used_ns,)
 
 
-@pytest.mark.parametrize("ending", ["close", "drop"])
-def test_renewals_are_written_in_batches_and_saved_when_the_store_ends(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ending: str
-) -> None:
-    import gc
-
+def test_advisory_refresh_declines_busy_owners_without_reopening(tmp_path, monkeypatch):
     clock = [100 * _DAY]
     install_module_view(monkeypatch, "time", time, records, time_ns=lambda: clock[0])
-    monkeypatch.setattr(records, "_RENEWAL_BATCH_LIMIT", 3)
+    kinds = ("import-scan", "intrinsic-facts", "module-analysis", "module-lowering")
     store = _store(tmp_path)
-    for index in range(5):
-        assert store.put("import-scan", str(index), b"scan", generation="g")
-    observations = [
-        store.get("import-scan", str(index), generation="g", max_bytes=None)
-        for index in range(5)
-    ]
-    stamped = observations[0].used_ns
+    for kind in kinds:
+        assert store.put(kind, "k", kind.encode(), generation="g")
+    old = [store.get(kind, "k", generation="g", max_bytes=None) for kind in kinds]
+    assert all(record is not None for record in old)
     clock[0] += 301 * 1_000_000_000
+    store.close()
+
+    # This first boundary makes the old implementation fail immediately,
+    # without running its 60s writer wait or deadlocking on the local lock.
+    def no_reopen():
+        pytest.fail("advisory refresh reopened a closed store")
+
+    with monkeypatch.context() as closed:
+        closed.setattr(store, "_connect", no_reopen)
+        assert all(record.refresh() is False for record in old)
+        assert store.save_renewals() == 0
+    assert store._connection_resources is None
+    observed = [store.get(kind, "k", generation="g", max_bytes=None) for kind in kinds]
     connection = store._connect()
     assert connection is not None
-    transactions: list[str] = []
-    connection.set_trace_callback(
-        lambda statement: (
-            transactions.append(statement) if statement == "BEGIN IMMEDIATE" else None
-        )
-    )
-    assert observations[0].refresh() and observations[1].refresh()
-    # Queued renewals write nothing until the batch fills.
-    assert transactions == []
-    assert observations[2].refresh()
-    assert transactions == ["BEGIN IMMEDIATE"]
-    assert observations[3].refresh() and observations[4].refresh()
-    if ending == "close":
+    # A nondefault value proves exact restoration, not hardcoding 60000.
+    connection.execute("PRAGMA busy_timeout = 12345").close()
+    try:
+        assert store._lock.acquire(blocking=False)
+        try:
+            assert all(record.refresh() is False for record in observed)
+            assert store.save_renewals() == 0
+        finally:
+            store._lock.release()
+        with closing(
+            sqlite3.connect(store.path, isolation_level=None, timeout=0)
+        ) as peer:
+            expected = peer.execute(
+                "SELECT * FROM records ORDER BY kind,key"
+            ).fetchall()
+            peer.execute("BEGIN IMMEDIATE").close()
+            try:
+                assert all(record.refresh() is True for record in observed)
+                assert store.save_renewals() == 0
+                assert not store._renewals
+                assert connection.execute("PRAGMA busy_timeout").fetchone() == (12345,)
+                assert (
+                    peer.execute("SELECT * FROM records ORDER BY kind,key").fetchall()
+                    == expected
+                )
+                assert not store._unavailable
+            finally:
+                peer.execute("ROLLBACK").close()
+            assert all(record.refresh() is True for record in observed)
+            assert connection.execute("PRAGMA busy_timeout").fetchone() == (12345,)
+            # Duplicate queued observations coalesce; persistence is separate.
+            assert all(record.refresh() is False for record in observed)
+            assert store.save_renewals() == len(kinds)
+            assert all(record.refresh() is True for record in observed)
+            assert store.save_renewals() == 0  # Stale recency fails CAS.
+            current = [
+                store.get(kind, "k", generation="g", max_bytes=None) for kind in kinds
+            ]
+            assert all(
+                record.used_ns == clock[0] and record.refresh() is False
+                for record in current
+            )
+            for kind in kinds:
+                assert store.put(kind, "k", b"replacement", generation="g")
+            replacements = peer.execute(
+                "SELECT * FROM records ORDER BY kind,key"
+            ).fetchall()
+            clock[0] += 301 * 1_000_000_000
+            assert all(record.refresh() is True for record in current)
+            assert store.save_renewals() == 0  # Replacement revision fails CAS.
+            assert (
+                peer.execute("SELECT * FROM records ORDER BY kind,key").fetchall()
+                == replacements
+            )
+            assert connection.execute("PRAGMA busy_timeout").fetchone() == (12345,)
+    finally:
         store.close()
-    else:
-        del observations, connection, store
-        gc.collect()
-    assert transactions == ["BEGIN IMMEDIATE"] * 2
-    with closing(sqlite3.connect(tmp_path / records.STORE_NAME)) as reader:
-        used = dict(reader.execute("SELECT key, used_ns FROM recency").fetchall())
-    assert stamped != clock[0]
-    assert used == {str(index): clock[0] for index in range(5)}
-
-
-def test_a_renewal_updates_only_the_stamp_not_the_payload_row(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    clock = [100 * _DAY]
-    install_module_view(monkeypatch, "time", time, records, time_ns=lambda: clock[0])
-    store = _store(tmp_path)
-    assert store.put("module-lowering", "k", b"x" * 100_000, generation="g")
-    observation = store.get("module-lowering", "k", generation="g", max_bytes=None)
-    assert observation is not None
-    clock[0] += 301 * 1_000_000_000
-    assert observation.refresh()
-    connection = store._connect()
-    assert connection is not None
-    updated: set[tuple[str, str]] = set()
-
-    def authorize(action, table, column, *_args):
-        if action == sqlite3.SQLITE_UPDATE:
-            updated.add((table, column))
-        return sqlite3.SQLITE_OK
-
-    connection.set_authorizer(authorize)
-    assert store.save_renewals() == 1
-    connection.set_authorizer(None)
-    # SQLite rewrites a whole row on UPDATE; the stamp must not share the payload's.
-    assert updated == {("recency", "used_ns")}
-
-
-def test_deleting_or_replacing_a_record_leaves_no_orphan_or_stale_stamp(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    clock = [100 * _DAY]
-    install_module_view(monkeypatch, "time", time, records, time_ns=lambda: clock[0])
-    store = _store(tmp_path)
-    for index in range(3):
-        assert store.put("module-analysis", str(index), b"body", generation="g")
-    clock[0] += 301 * 1_000_000_000
-    assert store.put("module-analysis", "0", b"replacement", generation="g")
-    replaced = store.get("module-analysis", "0", generation="g", max_bytes=None)
-    assert replaced is not None and replaced.used_ns == clock[0]
-    with store.maintenance(dry_run=False) as maintenance:
-        oldest = next(maintenance.iter_lru())
-        assert (oldest.kind, oldest.key) == ("module-analysis", "1")
-        assert maintenance.remove([oldest]) == ("removed",)
-    connection = store._connect()
-    assert connection is not None
-    stamps = connection.execute("SELECT key, used_ns FROM recency ORDER BY key")
-    assert stamps.fetchall() == [("0", clock[0]), ("2", 100 * _DAY)]
-    orphans = connection.execute(
-        "SELECT count(*) FROM recency WHERE NOT EXISTS (SELECT 1 FROM records"
-        " WHERE records.kind = recency.kind AND records.key = recency.key)"
-    )
-    assert orphans.fetchone() == (0,)
 
 
 def test_metadata_pages_do_not_select_payload_and_deletion_is_observation_fenced(
@@ -432,7 +427,7 @@ def test_metadata_pages_do_not_select_payload_and_deletion_is_observation_fenced
 
         maintenance._connection.row_factory = metadata_only
         inventory = maintenance.inventory()
-        observed = list(maintenance.iter_lru())
+        observed = list(maintenance.iter_lru(maintenance.inventory()))
         assert [row.key for row in observed] == [str(i) for i in range(5)]
         assert inventory.entries == 5 and inventory.size_bytes == 50000
         candidate = store.get("module-analysis", "0", generation="g", max_bytes=None)
@@ -467,7 +462,7 @@ def _write_concurrent_record(arguments):
 def test_concurrent_connections_keep_all_record_kinds(
     tmp_path: Path, executor: str, initial: str
 ) -> None:
-    path = tmp_path / records.STORE_NAME
+    path = _fixture_path(tmp_path)
     if initial == "current":
         store = _store(tmp_path)
         assert store.put("import-scan", "old", b"\x00\xff", generation="g")
@@ -493,7 +488,7 @@ def test_concurrent_connections_keep_all_record_kinds(
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
         assert connection.execute("PRAGMA journal_mode").fetchone() == ("wal",)
         assert connection.execute(
-            "SELECT count(*) FROM records JOIN recency USING (kind, key)"
+            "SELECT count(*) FROM records JOIN recency USING(kind,key)"
             " WHERE length(revision)!=16 OR used_ns<=0"
         ).fetchone() == (0,)
 
@@ -510,7 +505,9 @@ def test_ready_opens_do_not_write_or_wait_for_a_writer(tmp_path, monkeypatch):
             assert observed is not None and observed.payload == b"preserved"
             with store.maintenance(dry_run=False) as maintenance:
                 assert maintenance.inventory().entries == 1
-                assert maintenance.remove(list(maintenance.iter_lru())) == ("busy",)
+                assert maintenance.remove(
+                    list(maintenance.iter_lru(maintenance.inventory()))
+                ) == ("busy",)
             assert not store.put("import-scan", "blocked", b"no", generation="g")
         finally:
             peer.execute("ROLLBACK").close()
@@ -522,6 +519,7 @@ def test_initialization_lock_is_nonwaiting_for_maintenance(tmp_path, monkeypatch
     from molt.file_locks import _release_file_lock, _try_acquire_file_lock
 
     store = _store(tmp_path)
+    _fixture_path(tmp_path)
     with closing(sqlite3.connect(store.path)):
         pass
     handle = _try_acquire_file_lock(
@@ -552,10 +550,11 @@ def _probe_cold_bootstrap(root):
 
 
 @pytest.mark.parametrize("executor", ["threads", "spawn"])
-def test_cold_peer_cannot_bypass_initialization_owner(tmp_path, executor):
+@pytest.mark.parametrize("initial", ["virgin"])
+def test_cold_peer_cannot_bypass_initialization_owner(tmp_path, executor, initial):
     from molt.file_locks import _release_file_lock, _try_acquire_file_lock
 
-    path = tmp_path / records.STORE_NAME
+    path = _fixture_path(tmp_path)
     with closing(sqlite3.connect(path)) as peer:
         original = list(peer.iterdump())
     handle = _try_acquire_file_lock(path.with_name(path.name + ".initialize.lock"))
@@ -599,7 +598,13 @@ def test_ready_connection_trace_contains_no_persistent_setup(tmp_path, monkeypat
 
     install_module_view(monkeypatch, "sqlite3", sqlite3, records, connect=connect)
     monkeypatch.setattr(records, "_acquire_file_lock", no_bootstrap_lock)
-    monkeypatch.setattr(records, "_try_acquire_file_lock", no_bootstrap_lock)
+    original_try_lock = records._try_acquire_file_lock
+
+    def lease_only(path, **kwargs):
+        assert kwargs.get("shared") is True, "ready connections never bootstrap"
+        return original_try_lock(path, **kwargs)
+
+    monkeypatch.setattr(records, "_try_acquire_file_lock", lease_only)
     assert (
         store.get("import-scan", "k", generation="g", max_bytes=None).payload
         == b"opaque"
@@ -615,8 +620,10 @@ def test_ready_connection_trace_contains_no_persistent_setup(tmp_path, monkeypat
     )
 
 
-def test_schema_failure_rolls_back_the_whole_bootstrap(tmp_path):
+@pytest.mark.parametrize("initial", ["virgin"])
+def test_schema_failure_rolls_back_the_whole_bootstrap(tmp_path, initial):
     store = _store(tmp_path)
+    _fixture_path(tmp_path)
     with closing(sqlite3.connect(store.path, isolation_level=None)) as connection:
         connection.execute("PRAGMA auto_vacuum = INCREMENTAL").close()
         connection.execute("PRAGMA journal_mode = WAL").close()
@@ -637,24 +644,39 @@ def test_schema_failure_rolls_back_the_whole_bootstrap(tmp_path):
     assert store.put("import-scan", "after", b"yes", generation="g")
 
 
-@pytest.mark.parametrize("version", [-1, records._SCHEMA_VERSION + 1])
+@pytest.mark.parametrize("version", [-1, 1, 2, 3, records._SCHEMA_VERSION + 1])
 @pytest.mark.parametrize("dry_run", [False, True])
-def test_unknown_schema_is_unavailable_without_downgrade(tmp_path, version, dry_run):
+def test_unknown_schema_is_unavailable_without_downgrade(
+    tmp_path, version, dry_run, monkeypatch
+):
     store = _store(tmp_path)
+    _fixture_path(tmp_path)
     assert store.put("import-scan", "k", b"preserved", generation="g")
     store.close()
     with closing(sqlite3.connect(store.path, isolation_level=None)) as peer:
         peer.execute(f"PRAGMA user_version = {version}").close()
         original = list(peer.iterdump())
-        assert not store.put("import-scan", "new", b"no", generation="g")
-        # The first failure disables the store for this process.
-        with pytest.raises(records.SourceRecordUnavailable, match="unavailable"):
+        with pytest.raises(records.SourceRecordUnavailable, match="unsupported"):
             with store.maintenance(dry_run=dry_run):
                 pytest.fail("unsupported schema must not be migrated")
-        fresh = _store(tmp_path)
-        with pytest.raises(records.SourceRecordUnavailable, match="unsupported"):
-            with fresh.maintenance(dry_run=dry_run):
-                pytest.fail("unsupported schema must not be migrated")
+        original_initialize = store._initialize
+        attempts = []
+
+        def initialize(connection, **kwargs):
+            attempts.append(1)
+            return original_initialize(connection, **kwargs)
+
+        monkeypatch.setattr(store, "_initialize", initialize)
+        for _ in range(3):
+            assert not store.put("import-scan", "new", b"no", generation="g")
+            assert store.get("import-scan", "k", generation="g", max_bytes=32) is None
+        assert attempts == [1]
+        assert store._unavailable
+        with pytest.raises(
+            records.SourceRecordUnavailable, match="store is unavailable"
+        ):
+            with store.maintenance(dry_run=dry_run):
+                pytest.fail("a disabled optional store cannot reconnect")
         assert list(peer.iterdump()) == original
         assert peer.execute("PRAGMA user_version").fetchone() == (version,)
         assert peer.execute("SELECT payload FROM records").fetchall() == [
@@ -662,8 +684,10 @@ def test_unknown_schema_is_unavailable_without_downgrade(tmp_path, version, dry_
         ]
 
 
-def test_dry_run_refuses_uninitialized_schema_without_bootstrap(tmp_path):
+@pytest.mark.parametrize("initial", ["virgin"])
+def test_dry_run_refuses_uninitialized_schema_without_bootstrap(tmp_path, initial):
     store = _store(tmp_path)
+    _fixture_path(tmp_path)
     with closing(sqlite3.connect(store.path, isolation_level=None)) as peer:
         peer.execute("CREATE TABLE sentinel(value BLOB)").close()
         original = list(peer.iterdump())
@@ -782,7 +806,7 @@ def test_maintenance_refuses_a_live_writer_without_failure_or_retry(
     store = _store(tmp_path)
     assert store.put("module-analysis", "k", b"preserved", generation="g")
     with store.maintenance(dry_run=False) as maintenance:
-        observed = next(maintenance.iter_lru())
+        observed = next(maintenance.iter_lru(maintenance.inventory()))
         assert maintenance._current.execute("PRAGMA busy_timeout").fetchone() == (0,)
         statements = []
         maintenance._current.set_trace_callback(statements.append)
@@ -847,7 +871,9 @@ def test_other_operational_errors_remain_failures(
     assert store.put("module-analysis", "keep", b"preserved", generation="g")
     assert store.put("module-analysis", "victim", b"x" * 100000, generation="g")
     with store.maintenance(dry_run=False) as maintenance:
-        observed = {row.key: row for row in maintenance.iter_lru()}
+        observed = {
+            row.key: row for row in maintenance.iter_lru(maintenance.inventory())
+        }
         if operation == "reclaim":
             assert maintenance.remove([observed["victim"]]) == ("removed",)
             assert maintenance._current.execute("PRAGMA freelist_count").fetchone()[0]
@@ -896,7 +922,9 @@ def test_batch_admission_and_single_oversized_record(
     assert store.put("module-lowering", "large", b"x" * ((1 << 20) + 1), generation="g")
     assert store.put("module-analysis", "small", b"preserved", generation="g")
     with store.maintenance(dry_run=False) as maintenance:
-        observed = {row.key: row for row in maintenance.iter_lru()}
+        observed = {
+            row.key: row for row in maintenance.iter_lru(maintenance.inventory())
+        }
         statements = []
         maintenance._current.set_trace_callback(statements.append)
         assert maintenance.remove([]) == ()
@@ -918,7 +946,9 @@ def test_dry_run_batch_forecasts_in_order_without_writing(tmp_path: Path) -> Non
     for key in ("first", "second", "third"):
         assert store.put("module-analysis", key, key.encode(), generation="g")
     with store.maintenance(dry_run=True) as maintenance:
-        observed = {row.key: row for row in maintenance.iter_lru()}
+        observed = {
+            row.key: row for row in maintenance.iter_lru(maintenance.inventory())
+        }
         assert store.put("module-analysis", "second", b"replacement", generation="g")
         statements = []
         maintenance._current.set_trace_callback(statements.append)
@@ -950,7 +980,9 @@ def test_batch_failures_roll_back_every_staged_deletion(
     for key in ("first", "second", "third"):
         assert store.put("module-analysis", key, key.encode(), generation="g")
     with store.maintenance(dry_run=False) as maintenance:
-        observed = {row.key: row for row in maintenance.iter_lru()}
+        observed = {
+            row.key: row for row in maintenance.iter_lru(maintenance.inventory())
+        }
         if phase == "statement":
             maintenance._current.execute(
                 "CREATE TRIGGER refuse_second BEFORE DELETE ON records"
@@ -989,10 +1021,7 @@ def test_batch_failures_roll_back_every_staged_deletion(
             assert maintenance._current.execute("SELECT * FROM child").fetchall() == []
 
 
-@pytest.mark.parametrize("consumer", ["maintenance", "generation-trim"])
-def test_bounded_vacuum_drains_pages_and_later_passes_converge(
-    tmp_path: Path, consumer: str
-) -> None:
+def test_bounded_vacuum_drains_pages_and_later_passes_converge(tmp_path: Path) -> None:
     store = _store(tmp_path)
     assert store.put("module-lowering", "discard", b"x" * (3 << 20), generation="g")
     assert store.put("module-analysis", "keep", b"preserved", generation="g")
@@ -1001,7 +1030,9 @@ def test_bounded_vacuum_drains_pages_and_later_passes_converge(
     with closing(connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")) as cursor:
         assert cursor.fetchone()[0] == 0
     with store.maintenance(dry_run=False) as maintenance:
-        observed = {row.key: row for row in maintenance.iter_lru()}
+        observed = {
+            row.key: row for row in maintenance.iter_lru(maintenance.inventory())
+        }
         assert maintenance.remove([observed["discard"]]) == ("removed",)
 
     def page_state():
@@ -1014,22 +1045,14 @@ def test_bounded_vacuum_drains_pages_and_later_passes_converge(
     initial_pages, free, page_size = page_state()
     assert 512 < free < 1024, "known3MiB fixture must span several bounded passes"
     initial_physical = store.path.stat().st_size
-    now = time.time_ns()
     previous_pages = initial_pages
     passes = (free + 255) // 256
-    for number in range(passes):
+    for _ in range(passes):
         expected = min(256, free)
-        if consumer == "maintenance":
-            with store.maintenance(dry_run=False) as maintenance:
-                # No new deletion here: later cold passes must finish backlog.
-                maintenance.reclaim()
-                assert maintenance.checkpoint_busy is False
-        else:
-            store._trim_if_due(connection, now + (number + 1) * 2 * _HOUR)
-            with closing(
-                connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            ) as cursor:
-                assert cursor.fetchone()[0] == 0
+        with store.maintenance(dry_run=False) as maintenance:
+            # No new deletion here: later cold passes must finish backlog.
+            maintenance.reclaim()
+            assert maintenance.checkpoint_busy is False
         pages, remaining, observed_page_size = page_state()
         assert observed_page_size == page_size
         assert free - remaining == expected
@@ -1054,7 +1077,7 @@ def test_malformed_metadata_refuses_maintenance_without_loading_payload(
         with pytest.raises(
             records.SourceRecordUnavailable, match="invalid source record metadata"
         ):
-            list(maintenance.iter_lru())
+            list(maintenance.iter_lru(maintenance.inventory()))
 
 
 def test_factory_releases_abandoned_roots_and_closes_their_connections(tmp_path):
@@ -1100,9 +1123,10 @@ def test_record_observation_pins_its_owner_until_admission_ends(tmp_path, monkey
         connection.execute("SELECT 1")
 
 
+@pytest.mark.parametrize("boundary", ["operation", "fresh"])
 @pytest.mark.parametrize("fail", [False, True])
 def test_operation_pins_one_store_and_releases_on_all_exits(
-    tmp_path, monkeypatch, fail
+    tmp_path, monkeypatch, fail, boundary
 ):
     import gc
     import weakref
@@ -1112,13 +1136,24 @@ def test_operation_pins_one_store_and_releases_on_all_exits(
     )
 
     monkeypatch.setattr(records, "_default_molt_cache", lambda: tmp_path)
+    clock = [100 * _DAY]
+    install_module_view(monkeypatch, "time", time, records, time_ns=lambda: clock[0])
+    scope = (
+        _source_tree_fingerprint_transaction
+        if boundary == "operation"
+        else _fresh_compiler_identity_inputs
+    )
     connections = []
     owner = None
     try:
-        with _source_tree_fingerprint_transaction():
+        with scope():
             store = records.shared_source_records()
             owner = weakref.ref(store)
             assert store.put("import-scan", "k", b"body", generation="g")
+            observation = store.get("import-scan", "k", generation="g", max_bytes=16)
+            clock[0] += 301 * 1_000_000_000
+            assert observation.refresh()
+            del observation
             connection = store._connect()
             connections.append(connection)
             del store
@@ -1130,10 +1165,16 @@ def test_operation_pins_one_store_and_releases_on_all_exits(
                 assert records.shared_source_records() is owner()
                 assert records.shared_source_records()._connect() is connection
             assert connection.execute("SELECT count(*) FROM records").fetchone() == (1,)
+            # Both nested boundaries borrow the outer owner: neither flushes it.
+            assert connection.execute("SELECT used_ns FROM recency").fetchall() == [
+                (100 * _DAY,)
+            ]
             if fail:
                 raise RuntimeError("operation failed")
     except RuntimeError as exc:
         assert fail and str(exc) == "operation failed"
+    with closing(sqlite3.connect(tmp_path / records.STORE_RELATIVE_PATH)) as peer:
+        assert peer.execute("SELECT used_ns FROM recency").fetchall() == [(clock[0],)]
     gc.collect()
     assert owner is not None and owner() is None
     for connection in connections:
@@ -1158,22 +1199,10 @@ def _exercise_inherited_owner(store, maintenance, pipe):
     else:
         raise AssertionError("inherited maintenance performed SQL")
     maintenance.close_snapshot()
-    fresh = records.source_record_store(store.path.parent)
+    fresh = records.source_record_store(store.cache_root)
     value = fresh.get("import-scan", "k", generation="g", max_bytes=16)
     pipe.send((refused, None if value is None else value.payload))
     pipe.close()
-
-
-def _close_fork_observer(child):
-    """Reap only the native child created by a bounded fork metadata oracle."""
-    if child.is_alive():
-        child.terminate()
-    child.join(10)
-    if child.is_alive():
-        child.kill()
-        child.join(10)
-    assert not child.is_alive(), "owned fork observer did not stop"
-    child.close()
 
 
 @pytest.mark.skipif(
@@ -1198,7 +1227,7 @@ def test_inherited_owner_refuses_before_a_parent_lock_and_fresh_owner_works(tmp_
                 assert child.exitcode == 0
             finally:
                 receive.close()
-                _close_fork_observer(child)
+                close_owned_multiprocessing_child(child)
         assert maintenance.inventory().entries == 1
     assert (
         store.get("import-scan", "k", generation="g", max_bytes=16).payload == b"body"
@@ -1302,23 +1331,369 @@ def test_fork_finalization_keeps_a_directly_constructed_handle_inert(
         assert child.exitcode == 0
     finally:
         receive.close()
-        _close_fork_observer(child)
+        close_owned_multiprocessing_child(child)
     holder.clear()
     assert connection_ref() is None
 
 
-def test_each_schema_owns_its_store_file(tmp_path: Path) -> None:
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_paused_metadata_page_releases_wal_and_fences_newer_rows(
+    tmp_path, monkeypatch, dry_run
+):
+    clock = [100 * _DAY]
+    install_module_view(monkeypatch, "time", time, records, time_ns=lambda: clock[0])
+    monkeypatch.setattr(records, "_PAGE_SIZE", 2)
+    store = _store(tmp_path)
+    for key in ("a", "b", "c", "d"):
+        assert store.put("module-analysis", key, b"original", generation="g")
+    with closing(sqlite3.connect(store.path, isolation_level=None, timeout=0)) as peer:
+        peer.execute("PRAGMA wal_autocheckpoint=0").close()
+        with store.maintenance(dry_run=dry_run) as maintenance:
+            iterator = maintenance.iter_lru(maintenance.inventory())
+            first = next(iterator)
+            assert first.key == "a"
+            # A real competing publication modifies pages that the paused sweep
+            # observed. Checkpoint success is the oracle for released read locks.
+            clock[0] += 301 * 1_000_000_000
+            peer.execute(
+                "UPDATE records SET payload=? WHERE key='a'", (b"renewed",)
+            ).close()
+            peer.execute(
+                "UPDATE recency SET used_ns=? WHERE key='a'", (clock[0],)
+            ).close()
+            peer.execute(
+                "INSERT INTO records VALUES('module-analysis','later','g',?,randomblob(16))",
+                (b"x" * (2 << 20),),
+            ).close()
+            peer.execute(
+                "INSERT INTO recency VALUES('module-analysis','later',?)", (clock[0],)
+            ).close()
+            with closing(peer.execute("PRAGMA wal_checkpoint(TRUNCATE)")) as cursor:
+                assert cursor.fetchone() == (0, 0, 0)
+            assert Path(str(store.path) + "-wal").stat().st_size == 0
+            assert maintenance.remove([first]) == ("busy",)
+            assert [row.key for row in iterator] == ["b", "c", "d"]
+            assert peer.execute(
+                "SELECT payload FROM records WHERE key='a'"
+            ).fetchone() == (b"renewed",)
+
+
+def test_fresh_schema_has_only_the_row_retention_authority(tmp_path):
+    store = _store(tmp_path)
+    assert store.put("module-lowering", "opaque", b"\x00body\xff", generation="g")
+    with closing(sqlite3.connect(store.path)) as peer:
+        assert peer.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        assert peer.execute("PRAGMA user_version").fetchone() == (
+            records._SCHEMA_VERSION,
+        )
+        assert (
+            peer.execute(
+                "SELECT name FROM sqlite_schema WHERE name IN ('generations','trims','records_generation')"
+            ).fetchall()
+            == []
+        )
+        assert peer.execute("PRAGMA index_info(records)").fetchall() == []
+        assert "recency_order" in {
+            r[1] for r in peer.execute("PRAGMA index_list(recency)")
+        }
+        assert "used_ns" not in {
+            row[1] for row in peer.execute("PRAGMA table_info(records)")
+        }
+        assert peer.execute("SELECT payload FROM records").fetchall() == [
+            (b"\x00body\xff",)
+        ]
+
+
+def test_backward_clock_and_interleaved_publication_have_finite_observation_budget(
+    tmp_path, monkeypatch
+):
+    clock = [100 * _DAY]
+    install_module_view(monkeypatch, "time", time, records, time_ns=lambda: clock[0])
+    monkeypatch.setattr(records, "_PAGE_SIZE", 1)
+    store = _store(tmp_path)
+    for offset, key in enumerate(("a", "b", "c", "d")):
+        clock[0] = (100 + offset) * _DAY
+        assert store.put("module-analysis", key, b"original", generation="g")
+    with store.maintenance(dry_run=False) as maintenance:
+        statements = []
+        maintenance._connection.set_trace_callback(statements.append)
+        inventory = maintenance.inventory()
+        iterator = maintenance.iter_lru(inventory)
+        first = next(iterator)
+        assert first.key == "a"
+        # Real admitted reuse occurs after wall time moves backward from the
+        # last publication. Its recency advances but remains below the fence.
+        clock[0] = 100 * _DAY + 301 * 1_000_000_000
+        admitted = store.get("module-analysis", "a", generation="g", max_bytes=None)
+        assert admitted is not None and admitted.refresh()
+        assert store.save_renewals() == 1
+        second = next(iterator)
+        assert second.key == "a" and second.used_ns > first.used_ns
+        assert maintenance.remove([first]) == ("busy",)
+        # Keep publishing between the forward cursor and captured upper key.
+        # The initial inventory, rather than publisher quiescence, ends work.
+        for index in range(inventory.entries - 2):
+            clock[0] += 1
+            key = f"interleaved-{index}"
+            assert store.put("module-analysis", key, b"new", generation="g")
+            assert next(iterator).key == key
+        clock[0] += 1
+        assert store.put("module-analysis", "must-wait", b"new", generation="g")
+        with pytest.raises(StopIteration):
+            next(iterator)
+        assert sum("SELECT count(*)" in statement for statement in statements) == 1
+        current = store.get("module-analysis", "a", generation="g", max_bytes=None)
+        assert current is not None and current.payload == b"original"
+
+
+def test_schema_namespaces_preserve_flat_legacy_and_unknown_future_state(tmp_path):
+    legacy = (
+        tmp_path / records.SHARED_SOURCE_RECORDS_DIRECTORY / "source_records.sqlite"
+    )
+    legacy.parent.mkdir(parents=True)
+    with closing(sqlite3.connect(legacy, isolation_level=None)) as peer:
+        peer.execute("PRAGMA journal_mode=WAL")
+        peer.execute("CREATE TABLE witness (value TEXT)")
+        peer.execute("INSERT INTO witness VALUES ('legacy')")
+        identity = legacy.stat().st_ino
+        store = _store(tmp_path)
+        assert store.put("import-scan", "k", b"new", generation="g")
+        assert store.path.parent.name == records._SCHEMA_DIGEST
+        assert legacy.stat().st_ino == identity
+        assert peer.execute("SELECT value FROM witness").fetchall() == [("legacy",)]
+        assert peer.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    for name in ["v1", "v2", "v3", "0" * 16]:
+        assert records.superseded_store_namespace(name)
+    for name in [
+        records._SCHEMA_DIGEST,
+        "v0",
+        "v4",
+        "v999999",
+        "v01",
+        "v-1",
+        "notes",
+    ]:
+        assert not records.superseded_store_namespace(name)
+
+
+def test_namespace_retirement_refusal_is_retryable_without_sqlite_open(
+    tmp_path, monkeypatch
+):
+    store = _store(tmp_path)
+    exclusive = records._try_acquire_file_lock(store.lifetime_lock)
+    assert exclusive is not None
+    original = sqlite3.connect
+    attempts = []
+
+    def observed(*args, **kwargs):
+        attempts.append(args)
+        return original(*args, **kwargs)
+
+    install_module_view(monkeypatch, "sqlite3", sqlite3, records, connect=observed)
+    try:
+        assert store.get("import-scan", "k", generation="g", max_bytes=8) is None
+        assert not store.put("import-scan", "k", b"value", generation="g")
+        assert attempts == [] and not store._unavailable
+    finally:
+        records._release_file_lock(exclusive)
+    assert store.put("import-scan", "k", b"value", generation="g")
+    assert len(attempts) == 1
+    for _ in range(3):
+        assert (
+            store.get("import-scan", "k", generation="g", max_bytes=8).payload
+            == b"value"
+        )
+    assert len(attempts) == 1
+    assert records._try_acquire_file_lock(store.lifetime_lock) is None
+    store.close()
+    exclusive = records._try_acquire_file_lock(store.lifetime_lock)
+    assert exclusive is not None
+    records._release_file_lock(exclusive)
+
+
+def _gc_inside_file_lock_mutex(cache_text, mutex_name, owner_kind, channel):
+    import gc
+    from molt import file_locks
+
+    gc.disable()
+    cache = Path(cache_text)
+    store = records.source_record_store(cache)
+    assert store.put("import-scan", "k", b"body", generation="g")
+    lifetime_lock = store.lifetime_lock
+    if owner_kind == "store":
+        connection, owner = store._connect(), store
+    else:
+        store.close()
+        owner = store.maintenance(dry_run=False)
+        maintenance = owner.__enter__()
+        connection = maintenance._connection
+        del maintenance
+    cycle = [owner]
+    cycle.append(cycle)
+    del store, owner, cycle
+    channel.send("ready")
+    with getattr(file_locks, mutex_name):
+        gc.collect()
+    try:
+        connection.execute("SELECT 1")
+    except sqlite3.ProgrammingError:
+        pass
+    else:
+        raise AssertionError("GC did not close the abandoned SQLite connection")
+    # A normal later cold open releases parked leases without doing lock work
+    # from GC. Its independent cache root must not reacquire the original lease.
+    probe = records.source_record_store(cache / "next")
+    assert probe.put("import-scan", "probe", b"body", generation="g")
+    exclusive = file_locks._try_acquire_file_lock(lifetime_lock)
+    assert exclusive is not None
+    file_locks._release_file_lock(exclusive)
+    probe.close()
+    channel.send("closed-and-released")
+    channel.close()
+
+
+@pytest.mark.parametrize("owner_kind", ["store", "maintenance"])
+@pytest.mark.parametrize(
+    "mutex_name", ["_IN_PROCESS_LOCK_REGISTRY_GUARD", "_FILE_LOCK_LIFECYCLE_CONDITION"]
+)
+def test_gc_cannot_reenter_file_lock_mutexes(tmp_path, mutex_name, owner_kind):
+    ctx = multiprocessing.get_context("spawn")
+    parent, channel = ctx.Pipe()
+    child = ctx.Process(
+        target=_gc_inside_file_lock_mutex,
+        args=(str(tmp_path), mutex_name, owner_kind, channel),
+    )
+    child.start()
+    channel.close()
+    try:
+        assert parent.poll(30) and parent.recv() == "ready", "observer did not start"
+        assert parent.poll(5), "GC reentered a non-reentrant file-lock mutex"
+        assert parent.recv() == "closed-and-released"
+        child.join(5)
+        assert child.exitcode == 0
+    finally:
+        parent.close()
+        close_owned_multiprocessing_child(child)
+
+
+@pytest.mark.parametrize("ending", ["close", "drop"])
+def test_renewals_batch_and_explicit_close_saves_but_gc_discards(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ending: str
+) -> None:
+    import gc
+
+    clock = [100 * _DAY]
+    install_module_view(monkeypatch, "time", time, records, time_ns=lambda: clock[0])
+    monkeypatch.setattr(records, "_RENEWAL_BATCH_LIMIT", 3)
+    store = _store(tmp_path)
+    for index in range(5):
+        assert store.put("import-scan", str(index), b"scan", generation="g")
+    observations = [
+        store.get("import-scan", str(index), generation="g", max_bytes=None)
+        for index in range(5)
+    ]
+    stamped = observations[0].used_ns
+    clock[0] += 301 * 1_000_000_000
+    connection = store._connect()
+    assert connection is not None
+    transactions: list[str] = []
+    connection.set_trace_callback(
+        lambda statement: (
+            transactions.append(statement) if statement == "BEGIN IMMEDIATE" else None
+        )
+    )
+    assert observations[0].refresh() and observations[1].refresh()
+    # Queued renewals write nothing until the batch fills.
+    assert transactions == []
+    assert observations[2].refresh()
+    assert transactions == ["BEGIN IMMEDIATE"]
+    assert observations[3].refresh() and observations[4].refresh()
+    if ending == "close":
+        store.close()
+    else:
+        del observations, connection, store
+        gc.collect()
+    assert transactions == ["BEGIN IMMEDIATE"] * (2 if ending == "close" else 1)
+    with closing(sqlite3.connect(tmp_path / records.STORE_RELATIVE_PATH)) as reader:
+        used = dict(reader.execute("SELECT key, used_ns FROM recency").fetchall())
+    assert stamped != clock[0]
+    assert used == {
+        str(index): clock[0] if index < 3 or ending == "close" else stamped
+        for index in range(5)
+    }
+
+
+def test_a_renewal_updates_only_the_stamp_not_the_payload_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [100 * _DAY]
+    install_module_view(monkeypatch, "time", time, records, time_ns=lambda: clock[0])
+    store = _store(tmp_path)
+    assert store.put("module-lowering", "k", b"x" * 100_000, generation="g")
+    observation = store.get("module-lowering", "k", generation="g", max_bytes=None)
+    assert observation is not None
+    clock[0] += 301 * 1_000_000_000
+    assert observation.refresh()
+    connection = store._connect()
+    assert connection is not None
+    updated: set[tuple[str, str]] = set()
+
+    def authorize(action, table, column, *_args):
+        if action == sqlite3.SQLITE_UPDATE:
+            updated.add((table, column))
+        return sqlite3.SQLITE_OK
+
+    connection.set_authorizer(authorize)
+    assert store.save_renewals() == 1
+    connection.set_authorizer(None)
+    # SQLite rewrites a whole row on UPDATE; the stamp must not share the payload's.
+    assert updated == {("recency", "used_ns")}
+
+
+def test_deleting_or_replacing_a_record_leaves_no_orphan_or_stale_stamp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [100 * _DAY]
+    install_module_view(monkeypatch, "time", time, records, time_ns=lambda: clock[0])
+    store = _store(tmp_path)
+    for index in range(3):
+        assert store.put("module-analysis", str(index), b"body", generation="g")
+    clock[0] += 301 * 1_000_000_000
+    assert store.put("module-analysis", "0", b"replacement", generation="g")
+    replaced = store.get("module-analysis", "0", generation="g", max_bytes=None)
+    assert replaced is not None and replaced.used_ns == clock[0]
+    with store.maintenance(dry_run=False) as maintenance:
+        oldest = next(maintenance.iter_lru(maintenance.inventory()))
+        assert (oldest.kind, oldest.key) == ("module-analysis", "1")
+        assert maintenance.remove([oldest]) == ("removed",)
+    connection = store._connect()
+    assert connection is not None
+    stamps = connection.execute("SELECT key, used_ns FROM recency ORDER BY key")
+    assert stamps.fetchall() == [("0", clock[0]), ("2", 100 * _DAY)]
+    orphans = connection.execute(
+        "SELECT count(*) FROM recency WHERE NOT EXISTS (SELECT 1 FROM records"
+        " WHERE records.kind = recency.kind AND records.key = recency.key)"
+    )
+    assert orphans.fetchone() == (0,)
+
+
+def test_each_schema_owns_its_store_namespace(tmp_path: Path) -> None:
     """A store another code version migrated in place made the shared cache
     unavailable to every older checkout. Each schema now names its own file,
     so a different schema beside it changes nothing."""
-    assert records.STORE_NAME == f"source_records.{records._SCHEMA_DIGEST}.sqlite"
+    assert records.STORE_RELATIVE_PATH == (
+        Path(records.SHARED_SOURCE_RECORDS_DIRECTORY)
+        / records._SCHEMA_DIGEST
+        / "records.sqlite"
+    )
     # The name is the schema's own text: any change to a statement, even one
     # two lanes both call "the next version", names a different file.
     changed = (*records._SCHEMA[:-1], records._SCHEMA[-1] + " ")
     assert records._schema_identity(changed) != records._SCHEMA_DIGEST
     assert records._schema_identity(records._SCHEMA) == records._SCHEMA_DIGEST
     assert 0 < records._SCHEMA_VERSION < 2**31
-    newer = tmp_path / "source_records.sqlite"
+    newer = tmp_path / records.SHARED_SOURCE_RECORDS_DIRECTORY / "source_records.sqlite"
+    newer.parent.mkdir(parents=True)
     with closing(sqlite3.connect(newer, isolation_level=None)) as peer:
         peer.execute("PRAGMA user_version = 99").close()
     store = records.source_record_store(tmp_path)
@@ -1334,7 +1709,7 @@ def test_an_unsupported_schema_disables_the_store_after_one_attempt(
 ) -> None:
     """An unsupported schema does not change within a process: one connect
     attempt, not one per record operation (21,646 in one build)."""
-    with closing(sqlite3.connect(tmp_path / records.STORE_NAME)) as peer:
+    with closing(sqlite3.connect(_fixture_path(tmp_path))) as peer:
         peer.execute("PRAGMA user_version = 99").close()
     store = _store(tmp_path)
     attempts = []
@@ -1351,15 +1726,148 @@ def test_an_unsupported_schema_disables_the_store_after_one_attempt(
     assert len(attempts) == 1
 
 
-def test_superseded_store_files_are_named_by_another_schema() -> None:
-    current = records.STORE_NAME
-    assert not records.superseded_store_file(current)
-    for suffix in ("-wal", "-shm", ".initialize.lock"):
-        assert not records.superseded_store_file(current + suffix)
-        assert records.superseded_store_file("source_records.sqlite" + suffix)
-        assert records.superseded_store_file("source_records.v2.sqlite" + suffix)
-    other = "source_records." + "0" * 16 + ".sqlite"
-    assert other != current and records.superseded_store_file(other)
-    assert records.superseded_store_file("source_records.sqlite")
-    for unrelated in ("source_records.sqlite.bak", "records.sqlite", "notes.txt"):
-        assert not records.superseded_store_file(unrelated)
+def test_flat_legacy_version_and_digest_files_are_report_only():
+    for base in (
+        "source_records.sqlite",
+        "source_records.v2.sqlite",
+        "source_records.v9999.sqlite",
+        "source_records." + "0" * 16 + ".sqlite",
+        "source_records." + records._SCHEMA_DIGEST + ".sqlite",
+    ):
+        for suffix in ("", "-wal", "-shm", ".initialize.lock"):
+            assert records.legacy_source_record_file(base + suffix)
+            assert not records.superseded_store_namespace(base + suffix)
+    for name in ("source_records.sqlite.bak", "records.sqlite", "notes.txt"):
+        assert not records.legacy_source_record_file(name)
+
+
+@pytest.mark.parametrize("ending", ["batch", "close", "save"])
+def test_advisory_batch_contention_drops_stamps_without_waiting(
+    tmp_path, monkeypatch, ending
+):
+    clock = [100 * _DAY]
+    install_module_view(monkeypatch, "time", time, records, time_ns=lambda: clock[0])
+    monkeypatch.setattr(records, "_RENEWAL_BATCH_LIMIT", 2)
+    store = _store(tmp_path)
+    for key in ("a", "b"):
+        assert store.put("module-analysis", key, b"body", generation="g")
+    observations = [
+        store.get("module-analysis", key, generation="g", max_bytes=None)
+        for key in ("a", "b")
+    ]
+    connection = store._connect()
+    connection.execute("PRAGMA busy_timeout = 12345").close()
+    clock[0] += 301 * 1_000_000_000
+    with closing(sqlite3.connect(store.path, isolation_level=None, timeout=0)) as peer:
+        original = peer.execute("SELECT * FROM recency ORDER BY key").fetchall()
+        peer.execute("BEGIN IMMEDIATE").close()
+        try:
+            assert observations[0].refresh()
+            if ending == "batch":
+                assert observations[1].refresh()
+            elif ending == "close":
+                store.close()
+            else:
+                assert store.save_renewals() == 0
+            assert not store._renewals
+            assert (
+                peer.execute("SELECT * FROM recency ORDER BY key").fetchall()
+                == original
+            )
+            assert not store._unavailable
+            if ending == "close":
+                assert store._connection_resources is None
+            else:
+                assert connection.execute("PRAGMA busy_timeout").fetchone() == (12345,)
+        finally:
+            peer.execute("ROLLBACK").close()
+    store.close()
+
+
+@pytest.mark.parametrize("cleanup_replaces_exit", [False, True])
+@pytest.mark.parametrize("boundary", ["operation", "fresh"])
+def test_abandoned_operation_drops_renewals_without_entering_save(
+    tmp_path, monkeypatch, boundary, cleanup_replaces_exit
+):
+    import gc
+    from contextlib import contextmanager
+    from molt.cli import cache_fingerprints as fingerprints
+
+    monkeypatch.setattr(records, "_default_molt_cache", lambda: tmp_path)
+    if cleanup_replaces_exit:
+
+        @contextmanager
+        def replacing_cleanup(*, fresh=False):
+            try:
+                yield
+            except GeneratorExit:
+                raise RuntimeError("graph cleanup replaced abandonment") from None
+
+        monkeypatch.setattr(
+            fingerprints, "local_python_import_graph_transaction", replacing_cleanup
+        )
+    clock = [100 * _DAY]
+    install_module_view(monkeypatch, "time", time, records, time_ns=lambda: clock[0])
+    scope = (
+        fingerprints._source_tree_fingerprint_transaction
+        if boundary == "operation"
+        else fingerprints._fresh_compiler_identity_inputs
+    )
+    context = scope()
+    context.__enter__()
+    store = records.shared_source_records()
+    assert store.put("import-scan", "k", b"body", generation="g")
+    observation = store.get("import-scan", "k", generation="g", max_bytes=16)
+    clock[0] += 301 * 1_000_000_000
+    assert observation.refresh()
+    saves = []
+    original = store.save_renewals
+    monkeypatch.setattr(store, "save_renewals", lambda: saves.append("unexpected save"))
+    with store._lock:
+        if cleanup_replaces_exit:
+            # close() injects the same GeneratorExit as GC, while exposing the
+            # replaced error directly without changing process-wide hooks.
+            # The other parameter exercises implicit finalization.
+            with pytest.raises(
+                RuntimeError, match="graph cleanup replaced abandonment"
+            ):
+                context.gen.close()
+        del context
+        gc.collect()
+    assert saves == []
+    assert fingerprints._SOURCE_TREE_FINGERPRINT_TRANSACTION.get() is None
+    assert store._connect().execute("SELECT used_ns FROM recency").fetchall() == [
+        (100 * _DAY,)
+    ]
+    monkeypatch.setattr(store, "save_renewals", original)
+    store.close()
+
+
+@pytest.mark.parametrize("operation", ["publish", "renew"])
+def test_record_and_recency_writes_roll_back_together(tmp_path, monkeypatch, operation):
+    clock = [100 * _DAY]
+    install_module_view(monkeypatch, "time", time, records, time_ns=lambda: clock[0])
+    store = _store(tmp_path)
+    for key in ("a", "b"):
+        assert store.put("module-analysis", key, b"original", generation="g")
+    observations = [
+        store.get("module-analysis", key, generation="g", max_bytes=None)
+        for key in ("a", "b")
+    ]
+    clock[0] += 301 * 1_000_000_000
+    with closing(sqlite3.connect(store.path, isolation_level=None)) as peer:
+        query = "SELECT * FROM records JOIN recency USING(kind,key) ORDER BY key"
+        original = peer.execute(query).fetchall()
+        event = "INSERT" if operation == "publish" else "UPDATE"
+        peer.execute(
+            f"CREATE TRIGGER refuse_stamp BEFORE {event} ON recency"
+            " WHEN new.key = 'b' BEGIN SELECT RAISE(ABORT, 'refuse stamp'); END"
+        )
+        if operation == "publish":
+            assert not store.put("module-analysis", "b", b"replacement", generation="g")
+        else:
+            assert all(observation.refresh() for observation in observations)
+            assert store.save_renewals() == 0
+        assert peer.execute(query).fetchall() == original
+        assert store._connection_resources is None
+        assert not store._renewals

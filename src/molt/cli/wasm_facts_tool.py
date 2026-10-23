@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from molt.cargo_execution_policy import cargo_profile_directory
+
 import os
 from collections.abc import Mapping
 from pathlib import Path
 
 from molt.cli.backend_binary import _ensure_backend_binary
 from molt.cli.command_runtime import _resolve_timeout_env
-from molt.cli.runtime_paths import _cargo_profile_dir
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.compiler_distribution import installed_compiler
 from molt.dx import project_cargo_target_dir
@@ -38,7 +39,7 @@ def ensure_wasm_facts_tool(root: Path, *, env: Mapping[str, str]) -> Path:
         name = product.executable_name(os_name=os.name, features=features)
         coordinate = (
             project_cargo_target_dir(root, env)
-            / _cargo_profile_dir(cargo_profile)
+            / cargo_profile_directory(cargo_profile)
             / name
         )
     timeout, error = _resolve_timeout_env("MOLT_CARGO_TIMEOUT", environment=env)

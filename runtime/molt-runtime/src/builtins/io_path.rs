@@ -992,7 +992,7 @@ pub extern "C" fn molt_path_glob(
                         "legacy glob parts must contain str",
                     );
                 };
-                parts.push(molt_runtime_core::text_storage::code_points(&text).collect());
+                parts.push(molt_obj_model::text_storage::code_points(&text).collect());
             }
             parts
         } else {
@@ -1042,7 +1042,7 @@ pub extern "C" fn molt_path_glob(
             parsed
                 .split(|byte| *byte == sep as u8 || (sep == '\\' && *byte == b'/'))
                 .filter(|part| !part.is_empty() && *part != b".")
-                .map(|part| molt_runtime_core::text_storage::code_points(part).collect())
+                .map(|part| molt_obj_model::text_storage::code_points(part).collect())
                 .collect()
         };
         if modern && parts.is_empty() {
@@ -1133,7 +1133,7 @@ pub extern "C" fn molt_path_glob(
         };
         let matches = match path_glob_matches(&dir, &parts, modern, |name| {
             let text = super::io::os_string_text(_py, name)?;
-            Ok::<_, u64>(molt_runtime_core::text_storage::code_points(&text).collect())
+            Ok::<_, u64>(molt_obj_model::text_storage::code_points(&text).collect())
         }) {
             Ok(values) => values,
             Err(error) => return error,

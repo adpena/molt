@@ -52,6 +52,7 @@ from molt.dx import (  # noqa: E402
 from molt.cargo_execution_policy import cargo_subprocess_environment  # noqa: E402
 from molt.memory_guard_paths import harness_guard_artifact_dir  # noqa: E402
 from molt.llvm_linker_roles import lexical_executable_path  # noqa: E402
+from molt import process_model as _process_model  # noqa: E402
 from molt.process_spawn import ProcessGroupKwargs, detached_process_group_kwargs  # noqa: E402
 from molt.process_environment import NameRule as NameRule  # noqa: E402
 from molt.process_environment import (  # noqa: E402
@@ -1811,6 +1812,7 @@ class RepoProcessMemorySentinel:
         self._daemon_suite_scope = contextlib.ExitStack()
         self._tree_tracker = memory_guard.ProcessTreeTracker(os.getpid())
         self._sample_observed_at_ns: int | None = None
+        self._custody_lineage: frozenset[int] | None = None
         self._suite_adopted_pids: set[int] = set()
         self._baseline_pgids: set[int] = set()
         self._observed_process_identities: dict[int, memory_guard.ProcessIdentity] = {}
@@ -2087,7 +2089,25 @@ class RepoProcessMemorySentinel:
         update_observed: bool = True,
     ) -> list[process_sentinel.ProcessGroup]:
         self._sample_observed_at_ns = time.monotonic_ns()
-        samples = memory_guard.sample_processes()
+        if self._scope_to_current_tree:
+            if self._custody_lineage is None:
+                self._custody_lineage = _process_model.posix_custody_lineage(
+                    os.getpid()
+                )
+            interest = self._suite_custody.sentinel_sampling_interest(
+                os.environ,
+                project_root=self._repo_root,
+                receiver=self._daemon_suite_lease,
+            )
+            samples = memory_guard.sample_processes_custody(
+                _process_model.CustodyInterest(
+                    tree_pids=frozenset(self._tree_tracker.known_pids or ())
+                    | interest.tree_pids,
+                    exact_pids=self._custody_lineage | interest.exact_pids,
+                )
+            )
+        else:
+            samples = memory_guard.sample_processes()
         owned_pids = self._owned_pids_from_samples(samples)
         self._record_skipped_protected_groups(
             samples,

@@ -388,6 +388,11 @@ class OwnedTemporaryDirectory:
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
         self.cleanup()
 
+    def retain(self) -> Path:
+        """Keep this allocation after the owner dies; explicit cleanup stays available."""
+        self._finalizer.detach()
+        return self._path
+
     def cleanup(self) -> None:
         self._finalizer.detach()
         _cleanup_temporary_directory(self._path, self._identity)

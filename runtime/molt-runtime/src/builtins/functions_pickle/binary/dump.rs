@@ -275,7 +275,7 @@ fn pickle_buffer_value_to_bytes(
         return Ok(MoltObject::from_ptr(out_ptr).bits());
     }
     let msg = format!("pickle.loads: {context} must provide a bytes-like payload");
-    Err(pickle_raise(_py, &msg))
+    Err(PickleError::Pickling.raise(_py, &msg))
 }
 
 pub(crate) fn pickle_buffer_value_to_memoryview(
@@ -286,7 +286,7 @@ pub(crate) fn pickle_buffer_value_to_memoryview(
     let view_bits = crate::molt_memoryview_new(value_bits);
     if exception_pending(_py) {
         let msg = format!("pickle.loads: {context} must provide a bytes-like payload");
-        return Err(pickle_raise(_py, &msg));
+        return Err(PickleError::Unpickling.raise(_py, &msg));
     }
     Ok(view_bits)
 }
@@ -306,7 +306,7 @@ fn pickle_external_buffer_to_memoryview(
         }
         return pickle_buffer_value_to_memoryview(_py, raw_bits, "out-of-band buffer");
     }
-    Err(pickle_raise(
+    Err(PickleError::Unpickling.raise(
         _py,
         "pickle.loads: out-of-band buffer must be bytes-like or expose raw()",
     ))
@@ -314,21 +314,20 @@ fn pickle_external_buffer_to_memoryview(
 
 pub(crate) fn pickle_next_external_buffer_bits(
     _py: &crate::PyToken<'_>,
-    buffers_iter_bits: Option<u64>,
+    buffers_iterator: Option<&molt_runtime_core::OwnedRuntimeValue<'_>>,
 ) -> Result<u64, u64> {
-    let Some(iter_bits) = buffers_iter_bits else {
-        return Err(pickle_raise(
-            _py,
-            "pickle.loads: NEXT_BUFFER requires buffers argument",
-        ));
+    let Some(iterator) = buffers_iterator else {
+        return Err(PickleError::Unpickling
+            .raise(_py, "pickle.loads: NEXT_BUFFER requires buffers argument"));
     };
-    let (item_bits, done) = iter_next_pair(_py, iter_bits)?;
-    if done {
-        return Err(pickle_raise(
-            _py,
-            "pickle.loads: not enough out-of-band buffers",
-        ));
-    }
+    let Some(item_owner) = molt_runtime_core::iter_next_owned(_py.core_token(), iterator)
+        .map_err(|_| MoltObject::none().bits())?
+    else {
+        return Err(
+            PickleError::Unpickling.raise(_py, "pickle.loads: not enough out-of-band buffers")
+        );
+    };
+    let item_bits = item_owner.bits();
     pickle_external_buffer_to_memoryview(_py, item_bits)
 }
 
@@ -377,7 +376,7 @@ fn pickle_extract_picklebuffer_payload(
     if !is_marker {
         return Ok(None);
     }
-    let raw_method_bits = pickle_attr_required(_py, obj_bits, b"raw")?;
+    let raw_method_bits = pickle_attr_required(_py, PickleError::Pickling, obj_bits, b"raw")?;
     let raw_bits = unsafe { call_callable0(_py, raw_method_bits) };
     dec_ref_bits(_py, raw_method_bits);
     if exception_pending(_py) {
@@ -469,26 +468,25 @@ fn pickle_reduce_value(
     Ok(None)
 }
 
-fn pickle_dump_items_from_iterable(
+// save_reduce already admitted these slots with the canonical PyIter_Check
+// predicate. Consume that exact iterator; __iter__ is not part of this path.
+fn pickle_dump_items_from_iterator(
     _py: &crate::PyToken<'_>,
     state: &mut PickleDumpState,
-    values_bits: u64,
+    iterator_bits: u64,
     dict_items: bool,
-    iterator_error_prefix: &str,
 ) -> Result<(), u64> {
-    let iter_bits = molt_iter(values_bits);
-    if exception_pending(_py) {
-        clear_exception(_py);
-        let value_type = type_name(_py, obj_from_bits(values_bits));
-        let msg = format!("{iterator_error_prefix}{value_type}");
-        return Err(pickle_raise(_py, &msg));
-    }
+    let iterator_owner =
+        molt_runtime_core::OwnedRuntimeValue::retain(_py.core_token(), iterator_bits);
     state.push(PICKLE_OP_MARK);
     loop {
-        let (item_bits, done) = iter_next_pair(_py, iter_bits)?;
-        if done {
+        let Some(item_owner) =
+            molt_runtime_core::iter_next_owned(_py.core_token(), &iterator_owner)
+                .map_err(|_| MoltObject::none().bits())?
+        else {
             break;
-        }
+        };
+        let item_bits = item_owner.bits();
         if dict_items {
             let Some(item_ptr) = obj_from_bits(item_bits).as_ptr() else {
                 return Err(raise_exception(
@@ -541,37 +539,30 @@ fn pickle_dump_reduce_value(
     obj_bits: Option<u64>,
 ) -> Result<(), u64> {
     let Some(ptr) = obj_from_bits(reduce_bits).as_ptr() else {
-        return Err(pickle_raise(
-            _py,
-            "__reduce__ must return a string or tuple",
-        ));
+        return Err(PickleError::Pickling.raise(_py, "__reduce__ must return a string or tuple"));
     };
     let reduce_type = unsafe { object_type_id(ptr) };
     if reduce_type == TYPE_ID_STRING {
         let Some(global_name) = string_obj_to_owned(obj_from_bits(reduce_bits)) else {
-            return Err(pickle_raise(
-                _py,
-                "__reduce__ must return a string or tuple",
-            ));
+            return Err(
+                PickleError::Pickling.raise(_py, "__reduce__ must return a string or tuple")
+            );
         };
         let Some(obj_bits) = obj_bits else {
-            return Err(pickle_raise(
-                _py,
-                "__reduce__ must return a string or tuple",
-            ));
+            return Err(
+                PickleError::Pickling.raise(_py, "__reduce__ must return a string or tuple")
+            );
         };
         let Some(module_bits) = pickle_attr_optional(_py, obj_bits, b"__module__")? else {
-            return Err(pickle_raise(
-                _py,
-                "__reduce__ must return a string or tuple",
-            ));
+            return Err(
+                PickleError::Pickling.raise(_py, "__reduce__ must return a string or tuple")
+            );
         };
         let Some(module_name) = string_obj_to_owned(obj_from_bits(module_bits)) else {
             dec_ref_bits(_py, module_bits);
-            return Err(pickle_raise(
-                _py,
-                "__reduce__ must return a string or tuple",
-            ));
+            return Err(
+                PickleError::Pickling.raise(_py, "__reduce__ must return a string or tuple")
+            );
         };
         dec_ref_bits(_py, module_bits);
         let resolved_bits =
@@ -586,7 +577,7 @@ fn pickle_dump_reduce_value(
                 "Can't pickle {obj_type}: it's not the same object as {}.{}",
                 module_name, global_name
             );
-            return Err(pickle_raise(_py, &msg));
+            return Err(PickleError::Pickling.raise(_py, &msg));
         }
         if state.protocol >= PICKLE_PROTO_4 {
             pickle_dump_unicode_binary(_py, state, module_name.as_str())?;
@@ -599,10 +590,7 @@ fn pickle_dump_reduce_value(
         return Ok(());
     }
     if reduce_type != TYPE_ID_TUPLE {
-        return Err(pickle_raise(
-            _py,
-            "__reduce__ must return a string or tuple",
-        ));
+        return Err(PickleError::Pickling.raise(_py, "__reduce__ must return a string or tuple"));
     }
     let Some(fields) = (unsafe {
         crate::object::seq_access::snapshot(_py, ptr, "sequence snapshot allocation failed")
@@ -610,7 +598,7 @@ fn pickle_dump_reduce_value(
         return Err(MoltObject::none().bits());
     };
     if !(2..=6).contains(&fields.len()) {
-        return Err(pickle_raise(
+        return Err(PickleError::Pickling.raise(
             _py,
             "tuple returned by __reduce__ must contain 2 through 6 elements",
         ));
@@ -618,50 +606,37 @@ fn pickle_dump_reduce_value(
     let callable_bits = fields[0];
     let callable_check = molt_is_callable(callable_bits);
     if !is_truthy(_py, obj_from_bits(callable_check)) {
-        return Err(pickle_raise(
+        return Err(PickleError::Pickling.raise(
             _py,
             "first item of the tuple returned by __reduce__ must be callable",
         ));
     }
     let args_bits = fields[1];
     let Some(args_ptr) = obj_from_bits(args_bits).as_ptr() else {
-        return Err(pickle_raise(
+        return Err(PickleError::Pickling.raise(
             _py,
             "second item of the tuple returned by __reduce__ must be a tuple",
         ));
     };
     if unsafe { object_type_id(args_ptr) } != TYPE_ID_TUPLE {
-        return Err(pickle_raise(
+        return Err(PickleError::Pickling.raise(
             _py,
             "second item of the tuple returned by __reduce__ must be a tuple",
         ));
     }
-    if fields.len() >= 4 && !obj_from_bits(fields[3]).is_none() {
-        let iter_bits = molt_iter(fields[3]);
-        if exception_pending(_py) {
-            clear_exception(_py);
-            let value_type = type_name(_py, obj_from_bits(fields[3]));
-            let msg = format!(
-                "fourth element of the tuple returned by __reduce__ must be an iterator, not {value_type}"
-            );
-            return Err(pickle_raise(_py, &msg));
-        }
-        if !obj_from_bits(iter_bits).is_none() {
-            dec_ref_bits(_py, iter_bits);
-        }
-    }
-    if fields.len() >= 5 && !obj_from_bits(fields[4]).is_none() {
-        let iter_bits = molt_iter(fields[4]);
-        if exception_pending(_py) {
-            clear_exception(_py);
-            let value_type = type_name(_py, obj_from_bits(fields[4]));
-            let msg = format!(
-                "fifth element of the tuple returned by __reduce__ must be an iterator, not {value_type}"
-            );
-            return Err(pickle_raise(_py, &msg));
-        }
-        if !obj_from_bits(iter_bits).is_none() {
-            dec_ref_bits(_py, iter_bits);
+    for (index, position) in [(3, "fourth"), (4, "fifth")] {
+        if let Some(&iterator) = fields.get(index)
+            && !obj_from_bits(iterator).is_none()
+        {
+            let valid = unsafe { crate::is_iterator_bits(_py, iterator) }
+                .map_err(|_| MoltObject::none().bits())?;
+            if !valid {
+                let value_type = type_name(_py, obj_from_bits(iterator));
+                let msg = format!(
+                    "{position} element of the tuple returned by __reduce__ must be an iterator, not {value_type}"
+                );
+                return Err(PickleError::Pickling.raise(_py, &msg));
+            }
         }
     }
     if fields.len() >= 6 && !obj_from_bits(fields[5]).is_none() {
@@ -671,7 +646,7 @@ fn pickle_dump_reduce_value(
             let msg = format!(
                 "sixth element of the tuple returned by __reduce__ must be a function, not {value_type}"
             );
-            return Err(pickle_raise(_py, &msg));
+            return Err(PickleError::Pickling.raise(_py, &msg));
         }
     }
     pickle_dump_obj_binary(_py, state, callable_bits, true)?;
@@ -696,10 +671,8 @@ fn pickle_dump_reduce_value(
         if let Some(state_setter_bits) = state_setter_bits {
             if !obj_from_bits(state_setter_bits).is_none() {
                 let Some(obj_bits) = obj_bits else {
-                    return Err(pickle_raise(
-                        _py,
-                        "pickle reducer state_setter requires object context",
-                    ));
+                    return Err(PickleError::Pickling
+                        .raise(_py, "pickle reducer state_setter requires object context"));
                 };
                 pickle_dump_obj_binary(_py, state, state_setter_bits, true)?;
                 pickle_dump_obj_binary(_py, state, obj_bits, true)?;
@@ -717,22 +690,10 @@ fn pickle_dump_reduce_value(
         }
     }
     if fields.len() >= 4 && !obj_from_bits(fields[3]).is_none() {
-        pickle_dump_items_from_iterable(
-            _py,
-            state,
-            fields[3],
-            false,
-            "fourth element of the tuple returned by __reduce__ must be an iterator, not ",
-        )?;
+        pickle_dump_items_from_iterator(_py, state, fields[3], false)?;
     }
     if fields.len() >= 5 && !obj_from_bits(fields[4]).is_none() {
-        pickle_dump_items_from_iterable(
-            _py,
-            state,
-            fields[4],
-            true,
-            "fifth element of the tuple returned by __reduce__ must be an iterator, not ",
-        )?;
+        pickle_dump_items_from_iterator(_py, state, fields[4], true)?;
     }
     Ok(())
 }
@@ -753,11 +714,11 @@ fn pickle_require_tuple_bits(
 ) -> Result<(), u64> {
     let Some(ptr) = obj_from_bits(bits).as_ptr() else {
         let msg = format!("pickle.dumps: {context} must be tuple");
-        return Err(pickle_raise(_py, &msg));
+        return Err(PickleError::Pickling.raise(_py, &msg));
     };
     if unsafe { object_type_id(ptr) } != TYPE_ID_TUPLE {
         let msg = format!("pickle.dumps: {context} must be tuple");
-        return Err(pickle_raise(_py, &msg));
+        return Err(PickleError::Pickling.raise(_py, &msg));
     }
     Ok(())
 }
@@ -765,11 +726,11 @@ fn pickle_require_tuple_bits(
 fn pickle_require_dict_bits(_py: &crate::PyToken<'_>, bits: u64, context: &str) -> Result<(), u64> {
     let Some(ptr) = obj_from_bits(bits).as_ptr() else {
         let msg = format!("pickle.dumps: {context} must be dict");
-        return Err(pickle_raise(_py, &msg));
+        return Err(PickleError::Pickling.raise(_py, &msg));
     };
     if unsafe { object_type_id(ptr) } != TYPE_ID_DICT {
         let msg = format!("pickle.dumps: {context} must be dict");
-        return Err(pickle_raise(_py, &msg));
+        return Err(PickleError::Pickling.raise(_py, &msg));
     }
     Ok(())
 }
@@ -788,14 +749,14 @@ fn pickle_default_newobj_args(
             if !obj_from_bits(out_bits).is_none() {
                 dec_ref_bits(_py, out_bits);
             }
-            return Err(pickle_raise(
+            return Err(PickleError::Pickling.raise(
                 _py,
                 "pickle.dumps: __getnewargs_ex__ must return tuple(size=2)",
             ));
         };
         if unsafe { object_type_id(tuple_ptr) } != TYPE_ID_TUPLE {
             dec_ref_bits(_py, out_bits);
-            return Err(pickle_raise(
+            return Err(PickleError::Pickling.raise(
                 _py,
                 "pickle.dumps: __getnewargs_ex__ must return tuple(size=2)",
             ));
@@ -812,7 +773,7 @@ fn pickle_default_newobj_args(
         };
         if fields.len() != 2 {
             dec_ref_bits(_py, out_bits);
-            return Err(pickle_raise(
+            return Err(PickleError::Pickling.raise(
                 _py,
                 "pickle.dumps: __getnewargs_ex__ must return tuple(size=2)",
             ));
@@ -894,10 +855,10 @@ fn pickle_dump_default_instance(
         let mut kwargs_effective = kwargs_bits;
         if let Some(bits) = kwargs_effective {
             let Some(dict_ptr) = obj_from_bits(bits).as_ptr() else {
-                return Err(pickle_raise(_py, "pickle.dumps: kwargs must be dict"));
+                return Err(PickleError::Pickling.raise(_py, "pickle.dumps: kwargs must be dict"));
             };
             if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
-                return Err(pickle_raise(_py, "pickle.dumps: kwargs must be dict"));
+                return Err(PickleError::Pickling.raise(_py, "pickle.dumps: kwargs must be dict"));
             }
             if unsafe { crate::dict_len(dict_ptr) == 0 } {
                 kwargs_effective = None;
@@ -955,10 +916,9 @@ pub(crate) fn pickle_dump_obj_binary(
     allow_persistent_id: bool,
 ) -> Result<(), u64> {
     if state.depth >= PICKLE_RECURSION_LIMIT {
-        return Err(pickle_raise(
-            _py,
-            "pickle.dumps: maximum recursion depth exceeded",
-        ));
+        return Err(
+            PickleError::Pickling.raise(_py, "pickle.dumps: maximum recursion depth exceeded")
+        );
     }
     state.depth += 1;
     let result = (|| -> Result<(), u64> {
@@ -993,19 +953,21 @@ pub(crate) fn pickle_dump_obj_binary(
         let Some(ptr) = obj.as_ptr() else {
             let type_name = type_name(_py, obj);
             let msg = format!("pickle.dumps: unsupported type: {type_name}");
-            return Err(pickle_raise(_py, &msg));
+            return Err(PickleError::Pickling.raise(_py, &msg));
         };
         let type_id = unsafe { object_type_id(ptr) };
         if type_id == TYPE_ID_STRING {
-            let text = string_obj_to_owned(obj)
-                .ok_or_else(|| pickle_raise(_py, "pickle.dumps: string conversion failed"))?;
+            let text = string_obj_to_owned(obj).ok_or_else(|| {
+                PickleError::Pickling.raise(_py, "pickle.dumps: string conversion failed")
+            })?;
             pickle_dump_unicode_binary(_py, state, text.as_str())?;
             let _ = pickle_memo_store_if_absent(state, obj_bits);
             return Ok(());
         }
         if type_id == crate::TYPE_ID_BYTES {
-            let raw = unsafe { bytes_like_slice(ptr) }
-                .ok_or_else(|| pickle_raise(_py, "pickle.dumps: bytes conversion failed"))?;
+            let raw = unsafe { bytes_like_slice(ptr) }.ok_or_else(|| {
+                PickleError::Pickling.raise(_py, "pickle.dumps: bytes conversion failed")
+            })?;
             if state.protocol < PICKLE_PROTO_3 {
                 pickle_emit_global_opcode(state, "_codecs", "encode");
                 let latin1 = pickle_decode_latin1(raw);
@@ -1020,8 +982,9 @@ pub(crate) fn pickle_dump_obj_binary(
             return Ok(());
         }
         if type_id == crate::TYPE_ID_BYTEARRAY {
-            let raw = unsafe { bytes_like_slice(ptr) }
-                .ok_or_else(|| pickle_raise(_py, "pickle.dumps: bytearray conversion failed"))?;
+            let raw = unsafe { bytes_like_slice(ptr) }.ok_or_else(|| {
+                PickleError::Pickling.raise(_py, "pickle.dumps: bytearray conversion failed")
+            })?;
             pickle_dump_bytearray_binary(_py, state, raw)?;
             let _ = pickle_memo_store_if_absent(state, obj_bits);
             return Ok(());
@@ -1035,13 +998,12 @@ pub(crate) fn pickle_dump_obj_binary(
                 return Ok(());
             }
             let Some(payload_ptr) = obj_from_bits(payload_bits).as_ptr() else {
-                return Err(pickle_raise(
-                    _py,
-                    "pickle.dumps: PickleBuffer.raw() must be bytes-like",
-                ));
+                return Err(PickleError::Pickling
+                    .raise(_py, "pickle.dumps: PickleBuffer.raw() must be bytes-like"));
             };
             let raw = unsafe { bytes_like_slice(payload_ptr) }.ok_or_else(|| {
-                pickle_raise(_py, "pickle.dumps: PickleBuffer.raw() must be bytes-like")
+                PickleError::Pickling
+                    .raise(_py, "pickle.dumps: PickleBuffer.raw() must be bytes-like")
             })?;
             if readonly {
                 pickle_dump_bytes_binary(_py, state, raw)?;

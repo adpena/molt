@@ -2381,32 +2381,13 @@ fn string_sequence_arg_from_bits(
     bits: u64,
     name: &str,
 ) -> Result<Vec<String>, u64> {
-    let iter_bits = molt_iter(bits);
-    if exception_pending(_py) {
+    let Some(mut iterator) = crate::object::iterable::OwnedIterator::new(_py, bits) else {
         return Err(MoltObject::none().bits());
-    }
+    };
     let mut out: Vec<String> = Vec::new();
-    loop {
-        let pair_bits = molt_iter_next(iter_bits);
-        let Some(pair_ptr) = maybe_ptr_from_bits(pair_bits) else {
-            return Err(MoltObject::none().bits());
-        };
-        unsafe {
-            if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-                return Err(MoltObject::none().bits());
-            }
-        }
-        if unsafe { crate::object::seq_access::locked_len(pair_ptr) } < 2 {
-            return Err(MoltObject::none().bits());
-        }
-        let Some(done) = (unsafe { crate::object::seq_access::pin_item(_py, pair_ptr, 1) }) else {
-            return Err(MoltObject::none().bits());
-        };
-        if is_truthy(_py, obj_from_bits(done.bits())) {
-            break;
-        }
-        let Some(value) = (unsafe { crate::object::seq_access::pin_item(_py, pair_ptr, 0) }) else {
-            return Err(MoltObject::none().bits());
+    while let Some(bits) = iterator.next().map_err(|_| MoltObject::none().bits())? {
+        let value = unsafe {
+            molt_runtime_core::OwnedRuntimeValue::from_owned_bits(_py.core_token(), bits)
         };
         let Some(text) = string_obj_to_owned(obj_from_bits(value.bits())) else {
             return Err(raise_exception::<_>(

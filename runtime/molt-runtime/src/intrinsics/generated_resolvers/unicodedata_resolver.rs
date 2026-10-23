@@ -44,19 +44,9 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             crate::molt_unicodedata_is_normalized as *const (),
         )),
         #[cfg(feature = "stdlib_text")]
-        "molt_unicodedata_lookup" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_unicodedata_lookup",
-            crate::molt_unicodedata_lookup as *const (),
-        )),
-        #[cfg(feature = "stdlib_text")]
         "molt_unicodedata_mirrored" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_unicodedata_mirrored",
             crate::molt_unicodedata_mirrored as *const (),
-        )),
-        #[cfg(feature = "stdlib_text")]
-        "molt_unicodedata_name" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_unicodedata_name",
-            crate::molt_unicodedata_name as *const (),
         )),
         #[cfg(feature = "stdlib_text")]
         "molt_unicodedata_normalize" => Some(crate::builtins::functions::runtime_fn_addr(
@@ -72,6 +62,16 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_unicodedata_unidata_version" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_unicodedata_unidata_version",
             crate::molt_unicodedata_unidata_version as *const (),
+        )),
+        #[cfg(feature = "stdlib_unicode_names")]
+        "molt_unicodedata_lookup" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_unicodedata_lookup",
+            crate::molt_unicodedata_lookup as *const (),
+        )),
+        #[cfg(feature = "stdlib_unicode_names")]
+        "molt_unicodedata_name" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_unicodedata_name",
+            crate::molt_unicodedata_name as *const (),
         )),
         _ => None,
     }
@@ -90,10 +90,17 @@ const _: () = {
     let _ = molt_unicodedata_digit;
     let _ = molt_unicodedata_east_asian_width;
     let _ = molt_unicodedata_is_normalized;
-    let _ = molt_unicodedata_lookup;
     let _ = molt_unicodedata_mirrored;
-    let _ = molt_unicodedata_name;
     let _ = molt_unicodedata_normalize;
     let _ = molt_unicodedata_numeric;
     let _ = molt_unicodedata_unidata_version;
+};
+
+#[cfg(not(feature = "stdlib_unicode_names"))]
+const _: () = {
+    use super::declared_absent::*;
+    #[allow(unused_imports)]
+    use crate::*;
+    let _ = molt_unicodedata_lookup;
+    let _ = molt_unicodedata_name;
 };

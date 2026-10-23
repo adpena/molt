@@ -620,24 +620,6 @@ def _capture_toolchains(
             proof_plan.validate_selected_python_runtime(
                 policies[name], selected_runtime
             )
-            runtime_env = toolchain_capture.toolchain_capture_environment(
-                policies[name],
-                environment=env,
-                cwd=cwd,
-                cargo_command=(admission._nested_command(exact) or exact)
-                if policies[name].data.get("compiler_tool_selector") == "build-python"
-                and admission.cargo_invocation_for_envelope(envelope) is not None
-                else ("cargo",),
-            )
-            if policies[name].data.get("compiler_tool_selector") == "build-python" and (
-                proof_plan.compiler_tool_path(
-                    policies[name], environment=runtime_env, cwd=cwd
-                )
-                != Path(selected_runtime["launch_argv"][0])
-            ):
-                raise ValueError(
-                    "build Python selector changed while live custody armed"
-                )
             fresh = command_identity._parse_json_output(
                 command_identity._run_captured(
                     [
@@ -647,7 +629,7 @@ def _capture_toolchains(
                         ),
                     ],
                     cwd=cwd,
-                    env=runtime_env,
+                    env=env,
                 ),
                 purpose=f"{name} fresh isolated startup selection",
             )
