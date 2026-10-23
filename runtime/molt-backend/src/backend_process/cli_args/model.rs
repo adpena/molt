@@ -76,6 +76,7 @@ pub(crate) struct WasmTargetOptions {
     pub(crate) data_base: Option<u32>,
     pub(crate) table_base: Option<u32>,
     pub(crate) split_runtime_app_table_base: Option<u32>,
+    pub(crate) runtime_poll_slots: Option<molt_backend::WasmRuntimePollSlots>,
 }
 
 #[cfg(feature = "wasm-backend")]
@@ -93,6 +94,9 @@ impl WasmTargetOptions {
         }
         if let Some(base) = self.split_runtime_app_table_base {
             options.split_runtime_app_table_base = Some(base);
+        }
+        if let Some(slots) = self.runtime_poll_slots {
+            options.runtime_poll_slots = slots;
         }
         options
     }

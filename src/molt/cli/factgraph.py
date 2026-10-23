@@ -110,6 +110,7 @@ def backend_command_prefix(
     wasm_data_base: int | None = None,
     wasm_table_base: int | None = None,
     wasm_split_runtime_app_table_base: int | None = None,
+    wasm_runtime_poll_slots: int | None = None,
 ) -> list[str]:
     cmd = [str(backend_bin)]
     if is_luau_transpile:
@@ -131,6 +132,8 @@ def backend_command_prefix(
                     str(wasm_split_runtime_app_table_base),
                 ]
             )
+        if wasm_runtime_poll_slots is not None:
+            cmd.extend(["--wasm-runtime-poll-slots", str(wasm_runtime_poll_slots)])
     elif target_triple:
         cmd.extend(["--target-triple", target_triple])
     if not is_luau_transpile and not is_rust_transpile and not is_wasm:

@@ -193,3 +193,89 @@ fn poll_table_slots_follow_manifest_slot_numbers() {
         );
     }
 }
+
+#[test]
+fn poll_slots_the_runtime_lacks_hold_the_sentinel_and_are_not_imported() {
+    // A runtime built without stdlib_net defines no networking poll function
+    // (HF-487). The app must not import one, and its slot holds the sentinel;
+    // the slot numbering, and so the table layout, stays fixed.
+    let absent = [
+        WasmRuntimeImport::AsyncioSockRecvPoll,
+        WasmRuntimeImport::IoWait,
+        WasmRuntimeImport::WsWait,
+    ];
+    let slot_of = |import: WasmRuntimeImport| {
+        crate::wasm_abi::poll_table_import_slot(import)
+            .unwrap_or_else(|| panic!("missing generated poll slot for {}", import.name()))
+    };
+    let mask = absent.iter().fold(
+        crate::wasm_options::WasmRuntimePollSlots::all().mask(),
+        |mask, &import| mask & !(1u64 << slot_of(import)),
+    );
+    let runtime_poll_slots = crate::wasm_options::WasmRuntimePollSlots::from_mask(mask)
+        .expect("a subset of the generated poll slots");
+    for reloc_enabled in [false, true] {
+        let ir = SimpleIR {
+            // A relocatable object needs the `molt_main` entry wrapper.
+            functions: vec![wasm_test_function(
+                "molt_main",
+                vec![],
+                None,
+                vec![wasm_test_op("ret_void", None, vec![])],
+            )],
+            profile: None,
+        };
+        let wasm = WasmBackend::with_options(WasmCompileOptions {
+            native_eh_enabled: false,
+            reloc_enabled,
+            runtime_poll_slots,
+            ..WasmCompileOptions::default()
+        })
+        .compile(ir);
+        wasmparser::Validator::new()
+            .validate_all(&wasm)
+            .expect("reduced poll table module must be structurally valid WASM");
+
+        let import_indices = wasm_function_import_indices(&wasm);
+        for import in absent {
+            assert!(
+                !import_indices.contains_key(import.name()),
+                "reloc={reloc_enabled}: the runtime lacks {}, so the app must not import it",
+                import.name()
+            );
+        }
+        assert!(
+            import_indices.contains_key(WasmRuntimeImport::AsyncSleepPoll.name()),
+            "reloc={reloc_enabled}: a defined poll function stays imported"
+        );
+        if !reloc_enabled {
+            // Slot 0 is never a poll slot, so it always holds the sentinel.
+            let element_indices = wasm_element_function_indices(&wasm);
+            for import in absent {
+                let slot = slot_of(import) as usize;
+                assert_eq!(
+                    element_indices[slot], element_indices[0],
+                    "absent poll slot {slot} must hold the sentinel"
+                );
+            }
+            assert_eq!(
+                element_indices[slot_of(WasmRuntimeImport::AsyncSleepPoll) as usize],
+                import_indices[WasmRuntimeImport::AsyncSleepPoll.name()],
+            );
+        }
+    }
+}
+
+#[test]
+fn runtime_poll_slot_masks_outside_the_generated_table_are_refused() {
+    use crate::wasm_options::WasmRuntimePollSlots;
+    let all = WasmRuntimePollSlots::all().mask();
+    assert_eq!(all & 1, 0, "slot 0 is the sentinel, never a poll slot");
+    assert!(WasmRuntimePollSlots::from_mask(all).is_ok());
+    assert!(WasmRuntimePollSlots::from_mask(0).is_ok());
+    let error = WasmRuntimePollSlots::from_mask(all | 1).expect_err("slot 0 is refused");
+    assert!(
+        error.contains("outside the generated poll table"),
+        "{error}"
+    );
+}

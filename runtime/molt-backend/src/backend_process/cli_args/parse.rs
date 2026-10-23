@@ -25,10 +25,11 @@ enum BackendOption {
     WasmDataBase,
     WasmTableBase,
     WasmSplitRuntimeAppTableBase,
+    WasmRuntimePollSlots,
 }
 
 impl BackendOption {
-    const ALL: [Self; 16] = [
+    const ALL: [Self; 17] = [
         Self::Features,
         Self::Daemon,
         Self::Socket,
@@ -45,6 +46,7 @@ impl BackendOption {
         Self::WasmDataBase,
         Self::WasmTableBase,
         Self::WasmSplitRuntimeAppTableBase,
+        Self::WasmRuntimePollSlots,
     ];
 
     fn flag(self) -> &'static str {
@@ -65,6 +67,7 @@ impl BackendOption {
             Self::WasmDataBase => "--wasm-data-base",
             Self::WasmTableBase => "--wasm-table-base",
             Self::WasmSplitRuntimeAppTableBase => "--wasm-split-runtime-app-table-base",
+            Self::WasmRuntimePollSlots => "--wasm-runtime-poll-slots",
         }
     }
 
@@ -79,7 +82,8 @@ impl BackendOption {
             Self::WasmLink
             | Self::WasmDataBase
             | Self::WasmTableBase
-            | Self::WasmSplitRuntimeAppTableBase => Some("wasm"),
+            | Self::WasmSplitRuntimeAppTableBase
+            | Self::WasmRuntimePollSlots => Some("wasm"),
             _ => None,
         }
     }
@@ -286,6 +290,18 @@ fn wasm_target(supplied: &SuppliedOptions<'_>) -> io::Result<BackendTarget> {
         data_base: u32_value(BackendOption::WasmDataBase)?,
         table_base: u32_value(BackendOption::WasmTableBase)?,
         split_runtime_app_table_base: u32_value(BackendOption::WasmSplitRuntimeAppTableBase)?,
+        runtime_poll_slots: supplied
+            .get(BackendOption::WasmRuntimePollSlots)
+            .map(|raw| {
+                let flag = BackendOption::WasmRuntimePollSlots.flag();
+                raw.parse::<u64>()
+                    .map_err(|error| invalid(format!("{flag} {raw:?} is not a u64: {error}")))
+                    .and_then(|mask| {
+                        molt_backend::WasmRuntimePollSlots::from_mask(mask)
+                            .map_err(|error| invalid(format!("{flag}: {error}")))
+                    })
+            })
+            .transpose()?,
     }))
 }
 
@@ -534,6 +550,8 @@ mod tests {
             "4096",
             "--wasm-split-runtime-app-table-base",
             "8192",
+            "--wasm-runtime-poll-slots",
+            "6",
             "--output",
             "app.wasm",
         ]);
@@ -544,7 +562,14 @@ mod tests {
                 data_base: Some(1_048_576),
                 table_base: Some(4096),
                 split_runtime_app_table_base: Some(8192),
+                runtime_poll_slots: Some(molt_backend::WasmRuntimePollSlots::from_mask(6).unwrap()),
             })
+        );
+        let (kind, message) = rejection(&["--target", "wasm", "--wasm-runtime-poll-slots", "1"]);
+        assert_eq!(kind, io::ErrorKind::InvalidInput);
+        assert!(
+            message.contains("--wasm-runtime-poll-slots: runtime poll-slot mask 0x1"),
+            "{message}"
         );
         let (kind, message) = rejection(&["--target", "wasm", "--wasm-data-base", "12x"]);
         assert_eq!(kind, io::ErrorKind::InvalidInput);

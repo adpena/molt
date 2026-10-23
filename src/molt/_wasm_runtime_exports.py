@@ -21,6 +21,7 @@ from molt._wasm_abi_generated import (
     WASM_EXTERNAL_NATIVE_LINK_IMPORT_SYMBOL_KINDS,
     WASM_IMPORT_REGISTRY,
     WASM_IMPORT_RUNTIME_FEATURES,
+    WASM_POLL_TABLE_IMPORTS,
     WASM_RUNTIME_HOST_EXPORTS,
     wasm_import_signature,
     wasm_runtime_export_name,
@@ -285,6 +286,22 @@ def wasm_runtime_import_names_for_features(
             continue
         selected.append(name)
     return tuple(selected)
+
+
+def wasm_runtime_poll_slot_mask(runtime_import_names: Collection[str]) -> int:
+    """The poll-table slots one runtime defines, as the backend's bit mask.
+
+    Bit ``s`` is set when the runtime exports the poll function of generated
+    slot ``s``; the backend fills every other slot with its sentinel and does
+    not import that function (HF-487: a runtime without a feature lacks its
+    poll functions).
+    """
+    defined = frozenset(runtime_import_names)
+    mask = 0
+    for slot, name in WASM_POLL_TABLE_IMPORTS:
+        if name in defined:
+            mask |= 1 << slot
+    return mask
 
 
 def _runtime_owned_module_path(repo_root: Path, module_name: str) -> Path | None:

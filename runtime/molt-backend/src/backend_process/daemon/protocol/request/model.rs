@@ -86,6 +86,7 @@ impl DaemonCacheKey {
                 data_base: _,
                 table_base: _,
                 split_runtime_app_table_base: _,
+                runtime_poll_slots: _,
             }) => 0,
         };
         std::mem::size_of::<Self>()
