@@ -905,7 +905,11 @@ class SuiteDaemonLease:
         )
         if interpreter_sha256 is None:
             raise RuntimeError("suite daemon guardian interpreter digest unavailable")
-        from molt.checkout_state import checkout_state_command_roots, checkout_state_use
+        from molt.checkout_state import (
+            bound_project_build_state_root,
+            checkout_state_command_roots,
+            checkout_state_use,
+        )
 
         state_use = contextlib.ExitStack()
         state_use.enter_context(
@@ -918,8 +922,11 @@ class SuiteDaemonLease:
         transferred = False
         try:
             token = uuid.uuid4().hex
-            daemon_root = daemon.backend_daemon_root_from_env(
-                environ, project_root=project_root
+            # The lease writes into the project's build control whether or not
+            # CARGO_TARGET_DIR names it among the command's roots, so it binds
+            # that root as a writer; its held owner lock then keeps the root.
+            daemon_root = (
+                bound_project_build_state_root(project_root, environ) / "backend_daemon"
             )
             directory = (daemon_root / "suite-leases" / token).resolve()
             directory.mkdir(parents=True)

@@ -170,6 +170,36 @@ def test_guard_root_prefers_explicit_and_repo_canonical_overrides(
     )
 
 
+def test_compile_slot_binds_the_owner_of_the_build_control_it_creates(
+    tmp_path: Path,
+) -> None:
+    """HF-469: the compile guard's slot lock created the project's build-control
+    root with no owner record (review round 5, C-2). The governor now creates
+    and binds the root as a writer before it takes a slot."""
+    from molt.build_state_layout import project_build_state_root
+    from molt.checkout_state import LAST_USE_STAMP, CheckoutOwner, read_checkout_owner
+    from molt.dx import project_cargo_target_dir
+
+    project = Path(compile_governor.__file__).resolve().parents[1]
+    env = {
+        "MOLT_EXT_ROOT": str(tmp_path / "artifact"),
+        "MOLT_PREFER_EXTERNAL_ARTIFACTS": "1",
+        "MOLT_COMPILE_GUARD_MAX_SLOTS": "1",
+        "MOLT_COMPILE_GUARD_MAX_ACTIVE_PROCS": "1000000",
+        "MOLT_COMPILE_GUARD_MAX_LOAD": "0",
+        "MOLT_COMPILE_GUARD_WAIT_SEC": "0",
+    }
+    control = project_build_state_root(project, env)
+    assert not control.exists()
+    with compile_governor.compile_slot(env=env, label="hf-469") as lease:
+        assert lease.lock_path is not None
+        assert lease.lock_path.parent == control / "compile_guard"
+        assert read_checkout_owner(control) == CheckoutOwner(
+            project_cargo_target_dir(project, env).resolve(), "build-control"
+        )
+        assert (control / LAST_USE_STAMP).is_file()
+
+
 def test_governor_default_target_matches_cli_and_daemon_with_artifact_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

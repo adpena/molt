@@ -19,7 +19,7 @@ from molt.cli import runtime_paths
 from molt.cli.runtime_paths import _build_state_root_cached
 from tools.build_control_path import build_control_output
 from tools.harness_memory_guard import canonical_harness_env
-from tests.process_guard_common import install_module_view
+from tests.process_guard_common import install_module_view, run_guarded_test_process
 
 
 @pytest.mark.parametrize("pinned_session", [False, True])
@@ -300,6 +300,131 @@ def test_daemon_session_sweep_stays_in_its_source_checkout(tmp_path, monkeypatch
     assert backend_execution._sweep_orphaned_backend_daemon_locks(first) == 2
     assert not current.exists() and not sibling.exists()
     assert foreign.exists() and obsolete.exists()
+
+
+def test_a_first_selection_binds_the_owner_of_a_root_no_one_made_yet(
+    tmp_path: Path,
+) -> None:
+    """HF-469: a root is selected before any consumer creates it, and an owner
+    record was written only into an existing root, so a target built once
+    left a root without an owner (6,609 of 7,475 on 2026-10-22). A selection
+    now creates the root under its use lock and binds its owner; so does a
+    writer that does not select through a build (the compile guard). A reader
+    of the daemon's root creates nothing."""
+    from molt import backend_daemon_custody, checkout_state
+    from molt.cli import runtime_paths
+    from molt.dx import project_cargo_target_dir
+
+    artifact = tmp_path / "artifact"
+    project = tmp_path / "project"
+    project.mkdir()
+    target = artifact / "target" / "checkouts" / "project-0123456789ab"
+    control = build_state_root(
+        project_root=project,
+        cargo_target=target,
+        environment={"MOLT_EXT_ROOT": str(artifact)},
+    )
+    assert not control.exists()
+    runtime_paths._build_state_root_cached.cache_clear()
+    selected = runtime_paths._build_state_root_cached(
+        str(project), None, str(target), str(artifact)
+    )
+    assert selected == control and control.is_dir()
+    assert checkout_state.read_checkout_owner(control) == (
+        checkout_state.CheckoutOwner(target.resolve(), "build-control")
+    )
+
+    env = {
+        "MOLT_EXT_ROOT": str(artifact),
+        "MOLT_PREFER_EXTERNAL_ARTIFACTS": "1",
+    }
+    project_target = project_cargo_target_dir(project, env)
+    project_control = build_state_root(
+        project_root=project, cargo_target=project_target, environment=env
+    )
+    daemon_root = backend_daemon_custody.backend_daemon_root_from_env(
+        env, project_root=project
+    )
+    assert daemon_root == project_control / "backend_daemon"
+    assert not project_control.exists(), "a reader created the root"
+    assert checkout_state.bound_project_build_state_root(project, env) == (
+        project_control
+    )
+    assert checkout_state.read_checkout_owner(project_control) == (
+        checkout_state.CheckoutOwner(project_target.resolve(), "build-control")
+    )
+
+
+def test_a_guarded_command_creates_no_build_control_and_stamps_an_existing_one(
+    tmp_path: Path,
+) -> None:
+    """HF-469: every guarded command holds a use of its selections, the build
+    control of its CARGO_TARGET_DIR among them. When that use created the root,
+    `memory_guard.py -- true` left a root holding only its owner record and
+    stamp for a target nothing built. A command's use now creates nothing; it
+    stamps a root a writer made."""
+    import sys
+
+    from molt import checkout_state
+
+    repo = Path(__file__).resolve().parents[1]
+    artifact = tmp_path / "artifact"
+    target = artifact / "target" / "checkouts" / "probe-0123456789ab"
+    env = {
+        **os.environ,
+        "MOLT_EXT_ROOT": str(artifact),
+        "CARGO_TARGET_DIR": str(target),
+    }
+    env.pop("MOLT_BUILD_STATE_DIR", None)
+    control = build_state_root(project_root=repo, cargo_target=target, environment=env)
+    guard = (sys.executable, "-B", str(repo / "tools" / "memory_guard.py"), "--")
+
+    def run_guarded_command() -> None:
+        result = run_guarded_test_process(
+            [*guard, sys.executable, "-c", "pass"],
+            cwd=repo,
+            env=env,
+            timeout=120,
+        )
+        assert result.returncode == 0, result.stderr
+
+    run_guarded_command()
+    assert not control.exists(), sorted(path.name for path in control.iterdir())
+    checkout_state.record_build_control_use(control, cargo_target=target)
+    assert checkout_state.read_checkout_owner(control) == (
+        checkout_state.CheckoutOwner(target.resolve(), "build-control")
+    )
+    stamp = control / checkout_state.LAST_USE_STAMP
+    stamp.unlink()
+    run_guarded_command()
+    assert stamp.is_file(), "a command's use did not stamp the existing root"
+
+
+def test_a_build_scope_recreates_and_binds_a_root_retired_after_its_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """HF-469: a process selects a build-control root once (an lru_cache); a
+    later build in that process reuses the selection. When the root retired
+    between the two builds, the build's own claim creates and binds it again,
+    so the build's writers never recreate it without an owner."""
+    from molt import checkout_state
+    from molt.cli.build_output_layout import build_scope
+
+    artifact = tmp_path / "artifact"
+    project = tmp_path / "project"
+    project.mkdir()
+    target = artifact / "target" / "checkouts" / "project-0123456789ab"
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact))
+    monkeypatch.delenv("MOLT_BUILD_STATE_DIR", raising=False)
+    owner = checkout_state.CheckoutOwner(target.resolve(), "build-control")
+    runtime_paths._build_state_root_cached.cache_clear()
+    with build_scope():
+        control = runtime_paths._build_state_root(project, target)
+    assert checkout_state.read_checkout_owner(control) == owner
+    shutil.rmtree(control)  # Retired between two builds of one process.
+    with build_scope():
+        assert runtime_paths._build_state_root(project, target) == control
+        assert checkout_state.read_checkout_owner(control) == owner
 
 
 def test_a_build_that_selects_shared_build_control_records_its_owner_and_use(

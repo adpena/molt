@@ -178,7 +178,9 @@ def _claim_checkout_state(root: Path, *, cargo_target: Path | None = None) -> No
     owner = (
         None if cargo_target is None else CheckoutOwner(cargo_target, "build-control")
     )
-    scope.stack.enter_context(checkout_state_use(((root, owner),)))
+    # A build writes into its selections, so its build control is created
+    # and bound under the use's lock.
+    scope.stack.enter_context(checkout_state_use(((root, owner),), create=True))
     scope.state_claimed.add(root)
 
 
