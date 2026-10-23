@@ -1,7 +1,7 @@
 use crate::bridge::*;
 use crate::compression_common::{CodecIndexRole, codec_index};
 use libz_rs_sys as zlib;
-use molt_cpython_abi::native_custody::ByteInput;
+use molt_runtime_capi::ByteInput;
 use molt_runtime_core::prelude::*;
 use std::borrow::Cow;
 use std::io::{self, BufRead, Read};

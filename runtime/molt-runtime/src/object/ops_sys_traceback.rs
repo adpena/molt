@@ -244,26 +244,26 @@ fn traceback_source_span_native(
 }
 
 fn traceback_chars(bytes: &[u8]) -> impl Iterator<Item = u32> + '_ {
-    molt_runtime_core::text_storage::code_points(bytes)
+    molt_obj_model::text_storage::code_points(bytes)
 }
 
-fn traceback_whitespace(code: u32) -> bool {
-    char::from_u32(code).is_some_and(char::is_whitespace)
+fn traceback_whitespace(data: &molt_obj_model::unicode::UnicodeData, code: u32) -> bool {
+    data.is_space(code)
 }
 
-fn traceback_trim(bytes: &[u8]) -> &[u8] {
+fn traceback_trim<'a>(data: &molt_obj_model::unicode::UnicodeData, bytes: &'a [u8]) -> &'a [u8] {
     let mut start = 0;
     let mut end = bytes.len();
     while start < end {
         let (next, code) = crate::object::ops_string::wtf8_step(bytes, start, false).unwrap();
-        if !traceback_whitespace(code) {
+        if !traceback_whitespace(data, code) {
             break;
         }
         start = next;
     }
     while end > start {
         let (previous, code) = crate::object::ops_string::wtf8_step(bytes, end, true).unwrap();
-        if !traceback_whitespace(code) {
+        if !traceback_whitespace(data, code) {
             break;
         }
         end = previous;
@@ -304,20 +304,24 @@ fn traceback_display_width(line: impl AsRef<[u8]>, offset: usize, target: (i64, 
     if line.is_ascii() {
         return offset;
     }
+    let data = molt_obj_model::unicode::UnicodeData::for_version(target)
+        .expect("unsupported target Python Unicode facts");
     traceback_chars(line)
         .take(offset)
-        .map(
-            |code| match crate::object::ops::unicode_east_asian_width_table::width(code, target) {
-                "W" | "F" => 2,
-                _ => 1,
-            },
-        )
+        .map(|code| match data.east_asian_width(code) {
+            "W" | "F" => 2,
+            _ => 1,
+        })
         .sum()
 }
 
 /// Return the CPython caret anchor as character offsets in the selected source
 /// segment. AST ranges and lexer token ranges are UTF-8 byte offsets.
-fn traceback_caret_anchor(segment: &str, include_calls: bool) -> Option<(usize, usize)> {
+fn traceback_caret_anchor(
+    data: &molt_obj_model::unicode::UnicodeData,
+    segment: &str,
+    include_calls: bool,
+) -> Option<(usize, usize)> {
     let wrapped = if include_calls {
         format!("(\n{segment}\n)")
     } else {
@@ -349,18 +353,21 @@ fn traceback_caret_anchor(segment: &str, include_calls: bool) -> Option<(usize, 
                 let left = column(node.left.range().end());
                 let right = column(node.right.range().start());
                 let gap = chars.get(normalize(left)..normalize(right))?;
-                let whitespace = gap.iter().take_while(|ch| ch.is_whitespace()).count();
+                let whitespace = gap
+                    .iter()
+                    .take_while(|ch| data.is_space(**ch as u32))
+                    .count();
                 let mut start = left + whitespace;
                 let mut end = start + 1;
                 if gap
                     .get(whitespace + 1)
-                    .is_some_and(|ch| !ch.is_whitespace())
+                    .is_some_and(|ch| !data.is_space(*ch as u32))
                 {
                     end += 1;
                 }
                 while chars
                     .get(start)
-                    .is_some_and(|ch| ch.is_whitespace() || matches!(ch, ')' | '#'))
+                    .is_some_and(|ch| data.is_space(*ch as u32) || matches!(ch, ')' | '#'))
                 {
                     start += 1;
                     end += 1;
@@ -385,7 +392,7 @@ fn traceback_caret_anchor(segment: &str, include_calls: bool) -> Option<(usize, 
         };
     }
     let position = |offset| normalize((u32::from(offset) as usize).saturating_sub(2));
-    let scan = |mut index: usize, stop: fn(char) -> bool| -> Option<usize> {
+    fn scan(chars: &[char], mut index: usize, stop: impl Fn(char) -> bool) -> Option<usize> {
         while let Some(&ch) = chars.get(index) {
             if matches!(ch, '\\' | '#') {
                 while chars.get(index).is_some_and(|ch| *ch != '\n') {
@@ -397,28 +404,28 @@ fn traceback_caret_anchor(segment: &str, include_calls: bool) -> Option<(usize, 
             index += 1;
         }
         None
-    };
+    }
     match expression {
         pyast::Expr::BinOp(node) => {
-            let start = scan(position(node.left.range().end()), |ch| {
-                !ch.is_whitespace() && ch != ')'
+            let start = scan(&chars, position(node.left.range().end()), |ch| {
+                !data.is_space(ch as u32) && ch != ')'
             })?;
             let mut end = start + 1;
             if end < position(node.right.range().start())
                 && chars
                     .get(end)
-                    .is_some_and(|ch| !ch.is_whitespace() && !matches!(ch, '\\' | '#'))
+                    .is_some_and(|ch| !data.is_space(*ch as u32) && !matches!(ch, '\\' | '#'))
             {
                 end += 1;
             }
             Some((start, end))
         }
         pyast::Expr::Subscript(node) => Some((
-            scan(position(node.value.range().end()), |ch| ch == '[')?,
+            scan(&chars, position(node.value.range().end()), |ch| ch == '[')?,
             position(node.range.end()),
         )),
         pyast::Expr::Call(node) => Some((
-            scan(position(node.func.range().end()), |ch| ch == '(')?,
+            scan(&chars, position(node.func.range().end()), |ch| ch == '(')?,
             position(node.range.end()),
         )),
         _ => None,
@@ -628,10 +635,38 @@ mod traceback_format_tests {
                 character
             );
         }
-        assert_eq!(traceback_caret_anchor("a + b", false), Some((2, 3)));
-        assert_eq!(traceback_caret_anchor("(a+b) * c", false), Some((6, 7)));
-        assert_eq!(traceback_caret_anchor("café / 0", false), Some((6, 7)));
-        assert_eq!(traceback_caret_anchor("café / 0", true), Some((5, 6)));
+        assert_eq!(
+            traceback_caret_anchor(
+                molt_obj_model::unicode::UnicodeData::for_version((3, 12)).unwrap(),
+                "a + b",
+                false
+            ),
+            Some((2, 3))
+        );
+        assert_eq!(
+            traceback_caret_anchor(
+                molt_obj_model::unicode::UnicodeData::for_version((3, 12)).unwrap(),
+                "(a+b) * c",
+                false
+            ),
+            Some((6, 7))
+        );
+        assert_eq!(
+            traceback_caret_anchor(
+                molt_obj_model::unicode::UnicodeData::for_version((3, 12)).unwrap(),
+                "café / 0",
+                false
+            ),
+            Some((6, 7))
+        );
+        assert_eq!(
+            traceback_caret_anchor(
+                molt_obj_model::unicode::UnicodeData::for_version((3, 12)).unwrap(),
+                "café / 0",
+                true
+            ),
+            Some((5, 6))
+        );
         for (source, expected) in [
             ("éé / 0", (3, 4)),
             ("漢字 / 0", (3, 4)),
@@ -640,31 +675,160 @@ mod traceback_format_tests {
             ("éé + z + q", (7, 8)),
         ] {
             assert_eq!(
-                traceback_caret_anchor(source, false),
+                traceback_caret_anchor(
+                    molt_obj_model::unicode::UnicodeData::for_version((3, 12)).unwrap(),
+                    source,
+                    false
+                ),
                 Some(expected),
                 "{source}"
             );
         }
-        assert_eq!(traceback_caret_anchor("a[\"=\"]", false), Some((1, 6)));
-        assert_eq!(traceback_caret_anchor("f(x=1)", false), None);
-        assert_eq!(traceback_caret_anchor("f(x=1)", true), Some((1, 6)));
-        assert_eq!(traceback_caret_anchor("a == b", true), None);
-        assert_eq!(traceback_caret_anchor("\"a+b\"", true), None);
+        assert_eq!(
+            traceback_caret_anchor(
+                molt_obj_model::unicode::UnicodeData::for_version((3, 12)).unwrap(),
+                "a[\"=\"]",
+                false
+            ),
+            Some((1, 6))
+        );
+        assert_eq!(
+            traceback_caret_anchor(
+                molt_obj_model::unicode::UnicodeData::for_version((3, 12)).unwrap(),
+                "f(x=1)",
+                false
+            ),
+            None
+        );
+        assert_eq!(
+            traceback_caret_anchor(
+                molt_obj_model::unicode::UnicodeData::for_version((3, 12)).unwrap(),
+                "f(x=1)",
+                true
+            ),
+            Some((1, 6))
+        );
+        assert_eq!(
+            traceback_caret_anchor(
+                molt_obj_model::unicode::UnicodeData::for_version((3, 12)).unwrap(),
+                "a == b",
+                true
+            ),
+            None
+        );
+        assert_eq!(
+            traceback_caret_anchor(
+                molt_obj_model::unicode::UnicodeData::for_version((3, 12)).unwrap(),
+                "\"a+b\"",
+                true
+            ),
+            None
+        );
     }
 
     #[test]
     fn aggregate_full_line_suppression_uses_parsed_anchor() {
         let one = |source: &str| [source.as_bytes().to_vec()];
-        assert!(traceback_summary_caret_plan(&one("a + b"), 0, 5, false).0);
-        assert!(traceback_summary_caret_plan(&one("a[0]"), 0, 4, false).0);
-        assert!(!traceback_summary_caret_plan(&one("f(x=1)"), 0, 6, false).0);
-        assert!(traceback_summary_caret_plan(&one("f(x=1)"), 0, 6, true).0);
-        assert!(!traceback_summary_caret_plan(&one("x = y"), 0, 5, true).0);
-        assert!(!traceback_summary_caret_plan(&one("a == b"), 0, 6, true).0);
-        assert!(!traceback_summary_caret_plan(&one("obj.attr"), 0, 8, true).0);
-        assert!(!traceback_summary_caret_plan(&one("\"a+b\""), 0, 5, true).0);
-        assert!(traceback_summary_caret_plan(&one("x = a + b"), 4, 9, true).0);
-        assert!(!traceback_summary_caret_plan(&one("x = f()"), 4, 7, true).0);
+        assert!(
+            traceback_summary_caret_plan(
+                molt_obj_model::unicode::UnicodeData::for_version((3, 14)).unwrap(),
+                &one("a + b"),
+                0,
+                5,
+                false
+            )
+            .0
+        );
+        assert!(
+            traceback_summary_caret_plan(
+                molt_obj_model::unicode::UnicodeData::for_version((3, 14)).unwrap(),
+                &one("a[0]"),
+                0,
+                4,
+                false
+            )
+            .0
+        );
+        assert!(
+            !traceback_summary_caret_plan(
+                molt_obj_model::unicode::UnicodeData::for_version((3, 14)).unwrap(),
+                &one("f(x=1)"),
+                0,
+                6,
+                false
+            )
+            .0
+        );
+        assert!(
+            traceback_summary_caret_plan(
+                molt_obj_model::unicode::UnicodeData::for_version((3, 14)).unwrap(),
+                &one("f(x=1)"),
+                0,
+                6,
+                true
+            )
+            .0
+        );
+        assert!(
+            !traceback_summary_caret_plan(
+                molt_obj_model::unicode::UnicodeData::for_version((3, 14)).unwrap(),
+                &one("x = y"),
+                0,
+                5,
+                true
+            )
+            .0
+        );
+        assert!(
+            !traceback_summary_caret_plan(
+                molt_obj_model::unicode::UnicodeData::for_version((3, 14)).unwrap(),
+                &one("a == b"),
+                0,
+                6,
+                true
+            )
+            .0
+        );
+        assert!(
+            !traceback_summary_caret_plan(
+                molt_obj_model::unicode::UnicodeData::for_version((3, 14)).unwrap(),
+                &one("obj.attr"),
+                0,
+                8,
+                true
+            )
+            .0
+        );
+        assert!(
+            !traceback_summary_caret_plan(
+                molt_obj_model::unicode::UnicodeData::for_version((3, 14)).unwrap(),
+                &one("\"a+b\""),
+                0,
+                5,
+                true
+            )
+            .0
+        );
+        assert!(
+            traceback_summary_caret_plan(
+                molt_obj_model::unicode::UnicodeData::for_version((3, 14)).unwrap(),
+                &one("x = a + b"),
+                4,
+                9,
+                true
+            )
+            .0
+        );
+        assert!(
+            !traceback_summary_caret_plan(
+                molt_obj_model::unicode::UnicodeData::for_version((3, 14)).unwrap(),
+                &one("x = f()"),
+                4,
+                7,
+                true
+            )
+            .0
+        );
     }
 
     #[test]
@@ -698,18 +862,19 @@ mod traceback_format_tests {
 
     #[test]
     fn diagnostic_width_and_public_ucd_version_follow_target_not_host() {
-        use crate::object::ops::unicode_east_asian_width_table::{for_version, width};
+        use molt_obj_model::unicode::UnicodeData;
         for (minor, version, emoji_width) in [
             (12, "15.0.0", "N"),
             (13, "15.1.0", "N"),
             (14, "16.0.0", "W"),
         ] {
-            assert_eq!(for_version((3, minor)).unwrap().0, version);
-            assert_eq!(width(0x1fae9, (3, minor)), emoji_width);
-            assert_eq!(width(0x231a, (3, minor)), "W");
-            assert_eq!(width(0xd800, (3, minor)), "N");
-            assert_eq!(width(0xff21, (3, minor)), "F");
-            assert_eq!(width(0x0301, (3, minor)), "A");
+            let data = UnicodeData::for_version((3, minor)).unwrap();
+            assert_eq!(data.version, version);
+            assert_eq!(data.east_asian_width(0x1fae9), emoji_width);
+            assert_eq!(data.east_asian_width(0x231a), "W");
+            assert_eq!(data.east_asian_width(0xd800), "N");
+            assert_eq!(data.east_asian_width(0xff21), "F");
+            assert_eq!(data.east_asian_width(0x0301), "A");
             assert_eq!(
                 super::traceback_display_width("\u{1fae9}", 1, (3, minor)),
                 if minor == 14 { 2 } else { 1 }
@@ -1558,6 +1723,7 @@ pub(crate) fn traceback_payload_to_list(
 }
 
 fn traceback_summary_caret_plan(
+    data: &molt_obj_model::unicode::UnicodeData,
     lines: &[Vec<u8>],
     start: i64,
     end: i64,
@@ -1584,7 +1750,7 @@ fn traceback_summary_caret_plan(
     let segment = traceback_slice(&source, start, selected_end);
     let anchor = std::str::from_utf8(segment)
         .ok()
-        .and_then(|segment| traceback_caret_anchor(segment, include_calls));
+        .and_then(|segment| traceback_caret_anchor(data, segment, include_calls));
     if anchor.is_some() {
         // CPython suppresses a call that is the entire RHS of a simple
         // assignment, even though the selected segment itself is a Call.
@@ -1620,10 +1786,10 @@ fn traceback_summary_caret_plan(
     (
         traceback_chars(first_line)
             .take(start)
-            .any(|ch| !traceback_whitespace(ch))
+            .any(|ch| !traceback_whitespace(data, ch))
             || traceback_chars(last_line)
                 .skip(end)
-                .any(|ch| !traceback_whitespace(ch)),
+                .any(|ch| !traceback_whitespace(data, ch)),
         anchor,
     )
 }
@@ -1643,11 +1809,13 @@ fn traceback_payload_frame_source_lines_for_target(
     frame: &TracebackPayloadFrame,
     target: (i64, i64),
 ) -> Vec<Vec<u8>> {
+    let data =
+        molt_obj_model::unicode::UnicodeData::for_version(target).expect("admitted Python target");
     let full_span = target >= (3, 13);
     let display_width = |line: &[u8], offset| traceback_display_width(line, offset, target);
     let raw_lines = traceback_text_lines(&frame.line);
     let first = raw_lines.first().copied().unwrap_or(b"");
-    if traceback_trim(&frame.line).is_empty() {
+    if traceback_trim(data, &frame.line).is_empty() {
         return Vec::new();
     }
     if !full_span {
@@ -1657,16 +1825,16 @@ fn traceback_payload_frame_source_lines_for_target(
             .split_inclusive(|byte| *byte == b'\n')
             .next()
             .unwrap_or(b"");
-        let mut result = vec![[b"    ".as_slice(), traceback_trim(first), b"\n"].concat()];
+        let mut result = vec![[b"    ".as_slice(), traceback_trim(data, first), b"\n"].concat()];
         if frame.colno < 0 || frame.end_colno < 0 {
             return result;
         }
         let start = traceback_byte_offset_to_char_offset(first, frame.colno) as usize;
         let end = if frame.end_lineno > frame.lineno {
             let leading = traceback_chars(first)
-                .take_while(|cp| traceback_whitespace(*cp))
+                .take_while(|cp| traceback_whitespace(data, *cp))
                 .count();
-            leading + traceback_chars(traceback_trim(first)).count()
+            leading + traceback_chars(traceback_trim(data, first)).count()
         } else {
             traceback_byte_offset_to_char_offset(first, frame.end_colno) as usize
         };
@@ -1674,15 +1842,15 @@ fn traceback_payload_frame_source_lines_for_target(
         let anchor = if frame.end_lineno == frame.lineno {
             std::str::from_utf8(segment)
                 .ok()
-                .and_then(|segment| traceback_caret_anchor(segment, false))
+                .and_then(|segment| traceback_caret_anchor(data, segment, false))
         } else {
             None
         };
-        if end.saturating_sub(start) < traceback_chars(traceback_trim(first)).count()
+        if end.saturating_sub(start) < traceback_chars(traceback_trim(data, first)).count()
             || anchor.is_some_and(|(left, right)| right > left)
         {
-            let stripped =
-                traceback_chars(first).count() - traceback_chars(traceback_trim(first)).count();
+            let stripped = traceback_chars(first).count()
+                - traceback_chars(traceback_trim(data, first)).count();
             let padding = (display_width(first, start) + 1).saturating_sub(stripped);
             let extent = display_width(first, end).saturating_sub(display_width(first, start));
             let mut indicator = format!("    {}", " ".repeat(padding));
@@ -1701,7 +1869,7 @@ fn traceback_payload_frame_source_lines_for_target(
         return result;
     }
     if frame.colno < 0 || frame.end_colno < 0 {
-        return vec![[b"    ".as_slice(), traceback_trim(first), b"\n"].concat()];
+        return vec![[b"    ".as_slice(), traceback_trim(data, first), b"\n"].concat()];
     }
     let dedented = molt_stdlib_text::textwrap::textwrap_dedent_bytes(&frame.line);
     let lines: Vec<Vec<u8>> = traceback_text_lines(&dedented)
@@ -1718,7 +1886,7 @@ fn traceback_payload_frame_source_lines_for_target(
     let start = (traceback_byte_offset_to_char_offset(first, frame.colno) - removed).max(0);
     let end = (traceback_byte_offset_to_char_offset(raw_last, frame.end_colno) - removed).max(0);
     let last = lines.len() - 1;
-    let (show, anchor) = traceback_summary_caret_plan(&lines, start, end, true);
+    let (show, anchor) = traceback_summary_caret_plan(data, &lines, start, end, true);
     let position = |offset: usize| {
         let mut remaining = offset + start as usize;
         for (index, line) in lines.iter().enumerate() {
@@ -1745,7 +1913,7 @@ fn traceback_payload_frame_source_lines_for_target(
             return;
         }
         let whitespace = traceback_chars(line)
-            .take_while(|cp| traceback_whitespace(*cp))
+            .take_while(|cp| traceback_whitespace(data, *cp))
             .count();
         let extent = display_width(
             line,
@@ -1810,7 +1978,8 @@ fn traceback_require_column_text(
     py: &PyToken<'_>,
     frame: &TracebackPayloadFrame,
 ) -> Result<(), u64> {
-    if frame.colno < 0 || frame.end_colno < 0 || traceback_trim(&frame.line).is_empty() {
+    let data = crate::object::ops::unicode_data(py);
+    if frame.colno < 0 || frame.end_colno < 0 || traceback_trim(data, &frame.line).is_empty() {
         return Ok(());
     }
     let validate = |bytes: &[u8]| {

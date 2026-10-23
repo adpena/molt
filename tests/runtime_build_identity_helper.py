@@ -29,7 +29,6 @@ from molt.cli.runtime_identity_schema import (
 )
 from molt.exact_json import canonical_json_sha256
 from molt.rust_toolchain import cargo_configuration_paths
-from tests.python_environment_test_support import runtime_identity_manifest
 from molt.cli.cargo_resource_custody import (
     CargoExecutableCustody,
     CargoResourceCustody,
@@ -264,21 +263,6 @@ def _tool_identity(name: str, seed: str) -> dict[str, object]:
     }
 
 
-def build_python_identity_fixture() -> dict[str, object]:
-    material = {
-        "schema": "molt.runtime-build-python.v1",
-        "logical_name": "build_python",
-        "runtime": runtime_identity_manifest(),
-        "selected_executable": {
-            "entrypoint": "python",
-            "content_filename": "python",
-            "size": 6,
-            "sha256": canonical_json_sha256("python"),
-        },
-    }
-    return {**material, "identity_sha256": canonical_json_sha256(material)}
-
-
 def runtime_toolchain_content_manifest(
     seed: str = "exact",
     *,
@@ -300,7 +284,6 @@ def runtime_toolchain_content_manifest(
             *(("wasm_linker",) if wasm else ("linker",)),
         )
     }
-    tools["build_python"] = build_python_identity_fixture()
     payload = {
         "target_triple": target_triple,
         "toolchain": {
@@ -371,13 +354,7 @@ def _identity(
 ) -> tuple[RuntimeBuildIdentity, ...]:
     wasm = target.startswith("wasm32-")
     build_script = {
-        "schema": "molt.runtime-build-script-environment.v3",
-        "build_python": {
-            "selected_by": "platform-default",
-            "selectors": {"MOLT_BUILD_PYTHON": "unset", "PYTHON": "unset"},
-            "content_digest": canonical_json_sha256(build_python_identity_fixture()),
-        },
-        "python_import_policy": "isolated-no-site-v1",
+        "schema": "molt.runtime-build-script-environment.v4",
         "MOLT_WASM_CPYTHON_ABI_EXPORTS": [] if wasm else "ignored-for-target",
         "MOLT_WASM_CPYTHON_ABI_DATA_EXPORTS": [] if wasm else "ignored-for-target",
         "MOLT_WASI_C_ABI_PLAN": (

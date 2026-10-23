@@ -2,6 +2,7 @@
 members = [
     "runtime/molt-runtime",
     "runtime/molt-runtime-core",
+    "runtime/molt-runtime-capi",
     "runtime/molt-runtime-net",
     "runtime/molt-runtime-asyncio",
     "runtime/molt-runtime-math",

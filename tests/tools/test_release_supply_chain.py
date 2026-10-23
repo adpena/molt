@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 from dataclasses import replace
 import copy
 import json
@@ -27,7 +28,7 @@ from tools.release import release_model
 from tools.release import release_evidence
 from tools import release_exit_gate
 from tools.command_execution import CommandExecutor
-from tools.git_identity import clean_checkout_status_arguments
+from tools.git_identity import clean_checkout_status_arguments, read_git_blob_batch
 from tools.release import update_manifests
 from tools.release import verify_consumer
 from tools.release import compiler_payload
@@ -615,6 +616,64 @@ def test_compiler_snapshot_excludes_only_development_evidence_before_blob_reads(
     full_files = {entry.relative.as_posix(): entry for entry in complete.files}
     assert full_files[omitted].sha256 == hashlib.sha256(evidence).hexdigest()
     assert full_files.keys() == files.keys() | {omitted}
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        None,
+        "header",
+        "missing",
+        "type",
+        "size",
+        "separator",
+        "truncated",
+        "hash",
+        "extra",
+    ],
+)
+def test_git_blob_batch_keeps_exact_framing(corruption):
+    # Binary body delimiters are not framing; declared byte lengths are.
+    bodies = [b"first\x00\r\nlast", b""]
+    objects = [
+        (hashlib.sha1(f"blob {len(body)}\0".encode() + body).hexdigest(), len(body))
+        for body in bodies
+    ]
+    header = f"{objects[0][0]} blob {objects[0][1]}\n".encode()
+    stream = b"".join(
+        f"{oid} blob {size}\n".encode() + body + b"\n"
+        for (oid, size), body in zip(objects, bodies, strict=True)
+    )
+    if corruption == "header":
+        stream = stream.replace(header, header.replace(b" ", b"\t", 1), 1)
+    elif corruption == "missing":
+        stream = f"{objects[0][0]} missing\n".encode()
+    elif corruption == "type":
+        stream = stream.replace(b" blob ", b" tree ", 1)
+    elif corruption == "size":
+        stream = stream.replace(header, f"{objects[0][0]} blob 999\n".encode(), 1)
+    elif corruption == "separator":
+        end = len(header) + len(bodies[0])
+        stream = stream[:end] + b"!" + stream[end + 1 :]
+    elif corruption == "truncated":
+        stream = stream[:-1]
+    elif corruption == "hash":
+        stream = stream.replace(b"first", b"other", 1)
+    elif corruption == "extra":
+        stream += b"unexpected\n"
+
+    class BoundedHeaderStream(io.BytesIO):
+        def readline(self, size=-1):
+            assert 0 < size <= len(header) + 1, "batch headers need bounded reads"
+            return super().readline(size)
+
+    if corruption is None:
+        assert list(read_git_blob_batch(BoundedHeaderStream(stream), objects)) == [
+            (body, hashlib.sha256(body).hexdigest()) for body in bodies
+        ]
+    else:
+        with pytest.raises(ValueError, match="Git source snapshot"):
+            list(read_git_blob_batch(BoundedHeaderStream(stream), objects))
 
 
 def test_guarded_git_snapshot_preserves_binary_blobs_beyond_capture_tail(tmp_path):

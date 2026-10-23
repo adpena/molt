@@ -820,9 +820,13 @@ fn py_long_from_scanned(scanned: &ScannedIntLiteral) -> *mut PyObject {
     unsafe { fresh_numeric_owned_to_pyobj(bits).0 }
 }
 
-fn normalize_float_literal(bytes: &[u8]) -> Result<String, NumericParseError> {
+fn normalize_float_literal(
+    bytes: &[u8],
+    data: Option<&molt_lang_obj_model::unicode::UnicodeData>,
+) -> Result<String, NumericParseError> {
     let text = std::str::from_utf8(bytes).map_err(|_| NumericParseError::InvalidLiteral)?;
-    let trimmed = text.trim();
+    let trimmed =
+        text.trim_matches(|ch| molt_lang_obj_model::unicode::numeric_whitespace(data, ch));
     if trimmed.is_empty() {
         return Err(NumericParseError::InvalidLiteral);
     }
@@ -845,8 +849,11 @@ fn normalize_float_literal(bytes: &[u8]) -> Result<String, NumericParseError> {
     Ok(out)
 }
 
-fn parse_python_float_literal(bytes: &[u8]) -> Result<f64, NumericParseError> {
-    let normalized = normalize_float_literal(bytes)?;
+fn parse_python_float_literal(
+    bytes: &[u8],
+    data: Option<&molt_lang_obj_model::unicode::UnicodeData>,
+) -> Result<f64, NumericParseError> {
+    let normalized = normalize_float_literal(bytes, data)?;
     let lower = normalized.to_ascii_lowercase();
     match lower.as_str() {
         "nan" | "+nan" | "-nan" => return Ok(f64::NAN),
@@ -859,7 +866,7 @@ fn parse_python_float_literal(bytes: &[u8]) -> Result<f64, NumericParseError> {
         .map_err(|_| NumericParseError::InvalidLiteral)
 }
 
-unsafe fn py_textlike_bytes(op: *mut PyObject) -> Result<Vec<u8>, NumericParseError> {
+unsafe fn py_textlike_bytes(op: *mut PyObject) -> Result<(Vec<u8>, bool), NumericParseError> {
     if op.is_null() {
         return Err(NumericParseError::Type);
     }
@@ -880,11 +887,14 @@ unsafe fn py_textlike_bytes(op: *mut PyObject) -> Result<Vec<u8>, NumericParseEr
         if data.is_null() {
             return Err(NumericParseError::InvalidLiteral);
         }
-        return Ok(unsafe { std::slice::from_raw_parts(data, len) }.to_vec());
+        return Ok((
+            unsafe { std::slice::from_raw_parts(data, len) }.to_vec(),
+            tag == crate::abi_types::MoltTypeTag::Str as u8,
+        ));
     }
     if unsafe { crate::api::strings::PyUnicode_Check(op) } != 0 {
         return unsafe { crate::api::strings::unicode_bytes(op) }
-            .map(<[u8]>::to_vec)
+            .map(|bytes| (bytes.to_vec(), true))
             .ok_or(NumericParseError::InvalidLiteral);
     }
     if unsafe { crate::api::strings::PyBytes_Check(op) } != 0 {
@@ -899,7 +909,7 @@ unsafe fn py_textlike_bytes(op: *mut PyObject) -> Result<Vec<u8>, NumericParseEr
             return Err(NumericParseError::InvalidLiteral);
         }
         let bytes = unsafe { std::slice::from_raw_parts(ptr_out.cast::<u8>(), len as usize) };
-        return Ok(bytes.to_vec());
+        return Ok((bytes.to_vec(), false));
     }
     Err(NumericParseError::Type)
 }
@@ -1104,13 +1114,16 @@ pub unsafe extern "C" fn PyLong_FromUnicodeObject(u: *mut PyObject, base: c_int)
         };
         return ptr::null_mut();
     };
+    let Some(data) = crate::api::strings::unicode_data() else {
+        return ptr::null_mut();
+    };
     let mut bytes = Vec::with_capacity(raw.len());
     for ch in text.code_points() {
         if ch < 0x80 {
             bytes.push(ch as u8);
-        } else if let Some(digit) = crate::api::strings::unicode_decimal_digit_value(ch) {
+        } else if let Some(digit) = data.decimal(ch) {
             bytes.push(b'0' + digit);
-        } else if crate::api::strings::unicode_is_space(ch) {
+        } else if data.is_space(ch) {
             bytes.push(b' ');
         } else {
             bytes.push(b'?');
@@ -1990,8 +2003,8 @@ pub unsafe extern "C" fn PyFloat_Unpack8(data: *const c_char, le: c_int) -> c_do
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyFloat_FromString(v: *mut PyObject) -> *mut PyObject {
-    let bytes = match unsafe { py_textlike_bytes(v) } {
-        Ok(bytes) => bytes,
+    let (bytes, is_unicode) = match unsafe { py_textlike_bytes(v) } {
+        Ok(value) => value,
         Err(kind) => {
             unsafe {
                 set_numeric_parse_error(kind, c"float() argument must be a string-like object")
@@ -1999,7 +2012,15 @@ pub unsafe extern "C" fn PyFloat_FromString(v: *mut PyObject) -> *mut PyObject {
             return ptr::null_mut();
         }
     };
-    match parse_python_float_literal(&bytes) {
+    let data = if is_unicode {
+        let Some(data) = crate::api::strings::unicode_data() else {
+            return ptr::null_mut();
+        };
+        Some(data)
+    } else {
+        None
+    };
+    match parse_python_float_literal(&bytes, data) {
         Ok(value) => unsafe { PyFloat_FromDouble(value) },
         Err(kind) => {
             unsafe { set_numeric_parse_error(kind, c"could not convert string to float") };
@@ -2986,10 +3007,10 @@ mod tests {
 
     #[test]
     fn parses_python_float_literals_with_special_values_and_underscores() {
-        assert_eq!(parse_python_float_literal(b"  1_024.5  "), Ok(1024.5));
-        assert!(parse_python_float_literal(b"nan").unwrap().is_nan());
+        assert_eq!(parse_python_float_literal(b"  1_024.5  ", None), Ok(1024.5));
+        assert!(parse_python_float_literal(b"nan", None).unwrap().is_nan());
         assert_eq!(
-            parse_python_float_literal(b"-Infinity"),
+            parse_python_float_literal(b"-Infinity", None),
             Ok(f64::NEG_INFINITY)
         );
     }
@@ -2997,11 +3018,11 @@ mod tests {
     #[test]
     fn rejects_invalid_python_float_literals() {
         assert_eq!(
-            parse_python_float_literal(b"1__0.0"),
+            parse_python_float_literal(b"1__0.0", None),
             Err(NumericParseError::InvalidLiteral)
         );
         assert_eq!(
-            parse_python_float_literal("π".as_bytes()),
+            parse_python_float_literal("π".as_bytes(), None),
             Err(NumericParseError::InvalidLiteral)
         );
     }

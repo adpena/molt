@@ -859,7 +859,6 @@ def test_canonical_cargo_envelope_declares_actual_python_and_rust_toolchains() -
         "cargo",
         "rustc",
         "git",
-        "build-python",
     ]
     assert envelope["python"]["prefix"] == command[: command.index("python")]
     assert envelope["delegated"]["argv"][:2] == ["cargo", "test"]
@@ -1542,29 +1541,17 @@ def test_focused_pytest_resolves_selections_in_the_plans_checkout(
         )
 
 
-def test_focused_pytest_carries_its_owners_cargo_build_python(monkeypatch) -> None:
-    # Review finding 5: the payload carries the one build-Python role its Cargo
-    # owners declare, as an exact row does.
+def test_focused_pytest_keeps_cargo_owners_without_retired_python_role() -> None:
     plan = proof_plan.ProofPlan.load()
     owner = next(row for row in plan.commands if row.id == "browser-simd.contract")
-    assert owner.data["cargo_build_python"] is False
     assert "cargo" in owner.toolchains
     envelope = command_admission.envelope_for_command(
         ["python", "-m", "pytest", "tests/tools/test_build_browser_simd.py"]
     )
     assert envelope["typed_command"]["owners"] == ["browser-simd.contract"]
-    assert envelope["typed_command"]["cargo_build_python"] is False
-    assert not command_admission.cargo_build_python_required(envelope)
+    assert "cargo" in envelope["toolchains"]
+    assert "cargo_build_python" not in envelope["typed_command"]
     assert "build-python" not in envelope["toolchains"]
-
-    cargo = ["python", "uv", "cargo", "rustc"]
-    _focused_plan(
-        monkeypatch,
-        ("fixture.generator", [_NAMED_TESTS], cargo, {"cargo_build_python": True}),
-        ("fixture.no-generator", [_NAMED_TESTS], cargo, {"cargo_build_python": False}),
-    )
-    with pytest.raises(ValueError, match="disagree on the Cargo build Python"):
-        command_admission.envelope_for_command(["python", "-m", "pytest", _NAMED_TESTS])
 
 
 @pytest.mark.parametrize(
@@ -1676,21 +1663,6 @@ def test_non_python_command_requires_a_closed_toolchain_registration() -> None:
         )
 
 
-def _admitted_plan_toolchains(
-    plan: proof_plan.ProofPlan, command: proof_plan.ProofCommand
-) -> list[str]:
-    """Static closure plus the contextual Cargo build generator a row declares.
-
-    Static preflight has no Cargo context, so ``required_toolchains`` never
-    names ``build-python``. A row that declares ``cargo_build_python = true``
-    admits that runtime role in its envelope (docs/agent/PROOF_QUEUE.md).
-    """
-    static = list(plan.required_toolchains(command))
-    if command.data.get("cargo_build_python") is not True:
-        return static
-    return list(dict.fromkeys([*static, *plan.toolchain_closure(["build-python"])]))
-
-
 def test_every_proof_plan_command_uses_its_exact_nonempty_toolchain_authority() -> None:
     plan = proof_plan.ProofPlan.load()
     assert plan.commands
@@ -1711,7 +1683,7 @@ def test_every_proof_plan_command_uses_its_exact_nonempty_toolchain_authority() 
         envelope = command_admission.envelope_for_command(command.argv)
         assert envelope["kind"] == "proof-plan", command.id
         assert command.id in envelope["proof_plan_command_ids"]
-        assert envelope["toolchains"] == _admitted_plan_toolchains(plan, command), (
+        assert envelope["toolchains"] == list(plan.required_toolchains(command)), (
             command.id
         )
         assert envelope["toolchains"], command.id
@@ -1758,7 +1730,7 @@ def test_exact_wasm_e2e_commands_own_declared_child_toolchains(
     assert envelope["process_closure"] == {
         "kind": "proof-plan",
         "descendants": "declared-toolchains",
-        "toolchains": _admitted_plan_toolchains(plan, command),
+        "toolchains": list(plan.required_toolchains(command)),
     }
 
     # An altered argv is a focused proof: it keeps every toolchain the exact
@@ -1766,7 +1738,7 @@ def test_exact_wasm_e2e_commands_own_declared_child_toolchains(
     focused = command_admission.envelope_for_command([*command.argv, "--tb=short"])
     assert focused["proof_plan_command_ids"] == []
     assert command_id in focused["typed_command"]["owners"]
-    assert set(_admitted_plan_toolchains(plan, command)) <= set(focused["toolchains"])
+    assert set(plan.required_toolchains(command)) <= set(focused["toolchains"])
     assert focused["process_closure"]["descendants"] == "declared-toolchains"
 
 
@@ -1933,7 +1905,7 @@ def test_native_toolchain_inference_and_declared_sdk_policy_coexist() -> None:
     assert selected["kind"] == "proof-plan"
     assert selected["proof_plan_command_ids"] == [command.id]
     assert "wasi-clang" in selected["toolchains"]
-    assert selected["toolchains"] == _admitted_plan_toolchains(plan, command)
+    assert selected["toolchains"] == list(plan.required_toolchains(command))
     verifier = next(
         item for item in plan.commands if item.id == "native.integration.python-custody"
     )
@@ -2590,7 +2562,6 @@ def test_proof_command_envelope_detects_nested_guarded_cargo() -> None:
         "cargo",
         "rustc",
         "git",
-        "build-python",
     ]
 
 
@@ -11639,7 +11610,6 @@ def test_proof_queue_cargo_lane_records_guarded_uv_envelope(
         "cargo",
         "rustc",
         "git",
-        "build-python",
     )
     assert terminal_payload["proof_receipt"]["status"] == "success"
     assert terminal_payload["proof_receipt"]["environment"]["python"] == "3.12"
@@ -19750,21 +19720,18 @@ def test_multiple_registered_variants_never_turn_transport_changes_into_leaves(
         commands[0], root=command_admission._REPO_ROOT
     )
     registry["entrypoints"][entrypoint] = list(ids)
-    # Each fixture row projects every registered field the real registry does,
-    # including its Cargo build-generator declaration (a compiling driver).
+    # Each fixture row projects every registered field the real registry does.
     for command_id, command in zip(ids, commands, strict=True):
         registry["exact"][command] = {
             "ids": [command_id],
             "toolchains": ("python", "uv", "cargo", "rustc"),
             "cargo_native_units": {},
-            "cargo_build_python": True,
         }
-        registry["cargo_build_python"][command_id] = True
     monkeypatch.setattr(command_admission, "_proof_command_registry", lambda: registry)
     for command in commands:
         envelope = command_admission.envelope_for_command(command)
         assert envelope["kind"] == "proof-plan"
-        assert {"cargo", "rustc", "build-python"} <= set(envelope["toolchains"])
+        assert {"cargo", "rustc"} <= set(envelope["toolchains"])
     for command in (
         (*commands[0], "--verbose"),
         (

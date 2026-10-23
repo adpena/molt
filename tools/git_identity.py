@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator, Sequence
+import hashlib
 import os
 from pathlib import Path
-from typing import TypeGuard
+from typing import BinaryIO, TypeGuard
 
 
 _HEX = frozenset("0123456789abcdef")
@@ -154,3 +155,34 @@ def branch_changed_paths(
             dict.fromkeys(path for path in run_git(arguments).split("\0") if path)
         )
     return sorted(paths)
+
+
+def read_git_blob_batch(
+    output: BinaryIO, objects: Sequence[tuple[str, int]]
+) -> Iterator[tuple[bytes, str]]:
+    """Yield verified blob bytes and SHA256 from Git's default --batch framing.
+
+    The caller owns execution and must exhaust this iterator to validate EOF.
+    Only one blob is retained by the reader; release consumers may stream it
+    directly to their unpublished destination. Protocol: git-scm.com/docs/git-cat-file.
+    """
+    for blob_oid, declared_size in objects:
+        require_git_object_id(blob_oid)
+        if type(declared_size) is not int or declared_size < 0:
+            raise ValueError("Git source snapshot blob size is invalid")
+        expected_header = f"{blob_oid} blob {declared_size}\n".encode("ascii")
+        if output.readline(len(expected_header) + 1) != expected_header:
+            raise ValueError(f"Git source snapshot blob header is invalid: {blob_oid}")
+        data = output.read(declared_size)
+        if len(data) != declared_size or output.read(1) != b"\n":
+            raise ValueError(f"Git source snapshot blob framing is invalid: {blob_oid}")
+        object_hash = hashlib.new({40: "sha1", 64: "sha256"}[len(blob_oid)])
+        object_hash.update(f"blob {declared_size}\0".encode("ascii"))
+        object_hash.update(data)
+        if object_hash.hexdigest() != blob_oid:
+            raise ValueError(
+                f"Git source snapshot blob content does not match its object ID: {blob_oid}"
+            )
+        yield data, hashlib.sha256(data).hexdigest()
+    if output.read(1):
+        raise ValueError("Git source snapshot has trailing blob data")

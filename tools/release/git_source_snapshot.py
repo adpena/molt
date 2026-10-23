@@ -6,7 +6,6 @@ from molt.temporary_artifacts import OwnedTemporaryDirectory
 
 from dataclasses import dataclass
 from contextlib import contextmanager
-import hashlib
 import os
 from pathlib import Path, PurePosixPath
 import subprocess
@@ -24,7 +23,7 @@ from molt.portable_paths import portable_path_identity, portable_relative_path
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
 from molt.compiler_distribution import verify_source_inventory
 from molt.toolchain_identity import capture_stable_regular_file
-from tools.git_identity import require_git_object_id
+from tools.git_identity import read_git_blob_batch, require_git_object_id
 from tools.command_execution import CommandExecutor
 
 
@@ -252,42 +251,16 @@ def _map_git_blobs(
             timeout=_CAPTURE_TIMEOUT_SECONDS,
         )
         with spool.open("rb") as output:
-            results: list[_BlobResult] = []
-            for relative, mode, blob_oid, declared_size in rows:
-                header = output.readline().rstrip(b"\n").split()
-                if header != [
-                    blob_oid.encode("ascii"),
-                    b"blob",
-                    str(declared_size).encode("ascii"),
-                ]:
-                    raise ValueError(
-                        f"Git source snapshot blob header is invalid: {relative}"
-                    )
-                data = output.read(declared_size)
-                if len(data) != declared_size or output.read(1) != b"\n":
-                    raise ValueError(
-                        f"Git source snapshot blob framing is invalid: {relative}"
-                    )
-                algorithm = {40: "sha1", 64: "sha256"}.get(len(blob_oid))
-                if algorithm is None:
-                    raise ValueError(
-                        f"Git source snapshot blob ID is invalid: {relative}"
-                    )
-                object_hash = hashlib.new(algorithm)
-                object_hash.update(f"blob {declared_size}\0".encode("ascii"))
-                object_hash.update(data)
-                if object_hash.hexdigest() != blob_oid:
-                    raise ValueError(
-                        f"Git source snapshot blob content does not match its object ID: {relative}"
-                    )
-                results.append(
-                    consume(
-                        relative, mode, blob_oid, data, hashlib.sha256(data).hexdigest()
-                    )
+            # strict zip exhausts the shared parser, including its EOF check.
+            blobs = read_git_blob_batch(
+                output, [(blob_oid, size) for _, _, blob_oid, size in rows]
+            )
+            return tuple(
+                consume(relative, mode, blob_oid, data, digest)
+                for (relative, mode, blob_oid, _), (data, digest) in zip(
+                    rows, blobs, strict=True
                 )
-            if output.read(1):
-                raise ValueError("Git source snapshot has trailing blob data")
-            return tuple(results)
+            )
 
 
 def _hash_git_blobs(

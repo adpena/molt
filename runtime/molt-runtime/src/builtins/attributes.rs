@@ -157,6 +157,7 @@ pub extern "C" fn molt_code_positions(code_bits: u64) -> u64 {
         };
 
         if needs_fallback {
+            let unicode = crate::object::ops::unicode_data(_py);
             let mut line = unsafe { code_firstlineno(code_ptr) };
             let mut start_col = 0i64;
             let mut end_col = 0i64;
@@ -173,7 +174,8 @@ pub extern "C" fn molt_code_positions(code_bits: u64) -> u64 {
                 if let Some(raw_line) = lines.get(line_index).copied() {
                     let mut trimmed = raw_line.trim_end_matches(['\r', '\n']);
                     let starts_def = {
-                        let lead = trimmed.trim_start();
+                        let lead =
+                            trimmed.trim_start_matches(|ch: char| unicode.is_space(ch as u32));
                         lead.starts_with("def ") || lead.starts_with("async def ")
                     };
                     if starts_def {
@@ -187,7 +189,9 @@ pub extern "C" fn molt_code_positions(code_bits: u64) -> u64 {
                     end_col = trimmed.chars().count() as i64;
                     if let Some(pos) = trimmed.find("return ") {
                         start_col = (pos + "return ".len()) as i64;
-                    } else if let Some(pos) = trimmed.chars().position(|ch| !ch.is_whitespace()) {
+                    } else if let Some(pos) =
+                        trimmed.chars().position(|ch| !unicode.is_space(ch as u32))
+                    {
                         start_col = pos as i64;
                     }
                     if line <= 0 {

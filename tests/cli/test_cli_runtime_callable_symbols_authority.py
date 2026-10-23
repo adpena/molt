@@ -276,10 +276,7 @@ def test_final_codegen_admission_recaptures_once_without_reselecting(
 ):
     from molt.cli import runtime_native_build
 
-    from molt.python_runtime_admission import BuildPythonAdmission
-
     state = admitted_runtime
-    state.build_python_admission = BuildPythonAdmission()
     original = state.native_runtime_codegen_binding
     captured = []
 
@@ -302,12 +299,9 @@ def test_final_codegen_admission_recaptures_once_without_reselecting(
                 "stdlib_profile": "micro",
                 "extra_runtime_features": (),
                 "rust_cpu": state.rust_cpu,
-                "build_python_admission": state.build_python_admission,
             },
         )
     ]
-
-    state.build_python_admission.close()
 
 
 def test_final_codegen_admission_reverifies_original_observed_environment(
@@ -388,7 +382,7 @@ def test_source_codegen_pins_original_generation_without_rehashing_archive(
         assert state.native_runtime_codegen_binding.manifest is generation.members[1][1]
 
 
-@pytest.mark.parametrize("changed_input", ["source", "configuration", "python"])
+@pytest.mark.parametrize("changed_input", ["source", "configuration", "rustc"])
 def test_final_codegen_admission_rejects_current_input_drift(
     admitted_runtime, tmp_path, monkeypatch, changed_input
 ):
@@ -402,8 +396,8 @@ def test_final_codegen_admission_rejects_current_input_drift(
 
     # Independently derive simulated resolver receipts from real mutable inputs.
     # These tests own the codegen/final-consumer boundary; resolver closure and
-    # isolated-Python capture behavior retain their existing dedicated tests.
-    inputs = {name: tmp_path / name for name in ("source", "configuration", "python")}
+    # executable/resource capture behavior retain their existing dedicated tests.
+    inputs = {name: tmp_path / name for name in ("source", "configuration", "rustc")}
     for path in inputs.values():
         path.write_bytes(b"before")
 
@@ -877,13 +871,9 @@ def test_native_object_output_rejects_runtime_generation_drift(
         _PreparedBackendSetup,
         _PreparedBuildConfig,
     )
-    from molt.python_runtime_admission import BuildPythonAdmission
     from molt.target_python import TargetPythonVersion
 
     state = admitted_runtime
-    admission = BuildPythonAdmission()
-    request.addfinalizer(admission.close)
-    state.build_python_admission = admission
     binding = state.native_runtime_codegen_binding
     calls = []
     staged_object = file_publication.staged_file_path(

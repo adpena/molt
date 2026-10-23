@@ -67,7 +67,6 @@ if TYPE_CHECKING:
     from molt.frontend import ClassId, ClassInfo
     from molt.cli.backend_artifact_contract import BackendArtifactContract
     from molt.capability_manifest import ResolvedRuntimePolicy
-    from molt.python_runtime_admission import BuildPythonAdmission
     from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
     from molt.cli.runtime_wasm_generation import RuntimeWasmCodegenBinding
     from molt.cli.runtime_native_codegen import NativeRuntimeCodegenBinding
@@ -722,7 +721,6 @@ class _RuntimeArtifactState:
     native_runtime_build_failure: _NativeRuntimeBuildFailure | None = None
     runtime_wasm_build_failure: _RuntimeWasmBuildFailure | None = None
     runtime_lib_ready_future: Future[bool] | None = None
-    build_python_admission: BuildPythonAdmission | None = None
 
     def revoke_native_runtime_admission(self) -> None:
         """Revoke all authority to use this operation's native generation."""

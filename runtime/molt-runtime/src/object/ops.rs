@@ -139,139 +139,20 @@ use crate::runtime_profile_schema_generated::{
 };
 
 #[inline]
-fn unicode_range_contains(ranges: &[(u32, u32)], code: u32) -> bool {
-    let mut lo = 0usize;
-    let mut hi = ranges.len();
-    while lo < hi {
-        let mid = (lo + hi) / 2;
-        let (start, end) = ranges[mid];
-        if code < start {
-            hi = mid;
-        } else if code > end {
-            lo = mid + 1;
-        } else {
-            return true;
-        }
-    }
-    false
+/// Borrow the current interpreter's pinned Unicode facts once per operation.
+pub(crate) fn unicode_data(py: &PyToken<'_>) -> &'static molt_obj_model::unicode::UnicodeData {
+    molt_obj_model::unicode::UnicodeData::for_version(super::ops_sys::runtime_target_version(py))
+        .expect("unsupported target Python Unicode facts")
 }
 
-pub(crate) mod unicode_digit_table {
-    include!(concat!(env!("OUT_DIR"), "/unicode_digit_ranges.rs"));
-
-    pub(crate) fn is_digit(code: u32) -> bool {
-        super::unicode_range_contains(UNICODE_DIGIT_RANGES, code)
-    }
-}
-
-pub(crate) mod unicode_decimal_table {
-    include!(concat!(env!("OUT_DIR"), "/unicode_decimal_ranges.rs"));
-
-    pub(crate) fn is_decimal(code: u32) -> bool {
-        decimal(code).is_some()
-    }
-
-    pub(crate) fn decimal(code: u32) -> Option<u32> {
-        if code <= 0x7f {
-            return code.checked_sub(u32::from('0')).filter(|digit| *digit < 10);
-        }
-        let index = UNICODE_DECIMAL_RANGES.partition_point(|entry| entry.1 < code);
-        let &(start, end) = UNICODE_DECIMAL_RANGES.get(index)?;
-        // Unicode Nd ranges contain consecutive, complete 0..9 sequences.
-        // Adjacent mathematical digit alphabets may share one range.
-        (start <= code && code <= end).then(|| (code - start) % 10)
-    }
-}
-
-pub(crate) mod unicode_numeric_table {
-    include!(concat!(env!("OUT_DIR"), "/unicode_numeric_ranges.rs"));
-
-    pub(crate) fn is_numeric(code: u32) -> bool {
-        super::unicode_range_contains(UNICODE_NUMERIC_RANGES, code)
-    }
-}
-
-pub(crate) mod unicode_space_table {
-    include!(concat!(env!("OUT_DIR"), "/unicode_space_ranges.rs"));
-
-    pub(crate) fn is_space(code: u32) -> bool {
-        super::unicode_range_contains(UNICODE_SPACE_RANGES, code)
-    }
-}
-
-pub(crate) mod unicode_printable_table {
-    include!(concat!(env!("OUT_DIR"), "/unicode_printable_ranges.rs"));
-
-    pub(crate) fn is_printable(code: u32) -> bool {
-        super::unicode_range_contains(UNICODE_PRINTABLE_RANGES, code)
-    }
-}
-
-/// Shared by public unicodedata and source diagnostics, selected by target
-/// Python rather than the interpreter used to build the compiler/runtime.
-pub(crate) mod unicode_east_asian_width_table {
-    include!("unicode_width_generated.rs");
-
-    pub(crate) fn width(code: u32, target: (i64, i64)) -> &'static str {
-        let (_, ranges) = for_version(target).expect("unsupported target Python Unicode version");
-        let index = ranges.partition_point(|entry| entry.1 < code);
-        ranges[index].2
-    }
-}
-
-/// Scalar classification follows the same selected CPython Unicode authority
-/// as digits, whitespace, and printability, including non-scalar surrogates.
-pub(crate) mod unicode_classification_table {
-    include!(concat!(env!("OUT_DIR"), "/unicode_alpha_ranges.rs"));
-    include!(concat!(env!("OUT_DIR"), "/unicode_lower_ranges.rs"));
-    include!(concat!(env!("OUT_DIR"), "/unicode_upper_ranges.rs"));
-    include!(concat!(env!("OUT_DIR"), "/unicode_title_ranges.rs"));
-    include!(concat!(
-        env!("OUT_DIR"),
-        "/unicode_identifier_start_ranges.rs"
-    ));
-    include!(concat!(
-        env!("OUT_DIR"),
-        "/unicode_identifier_continue_ranges.rs"
-    ));
-
-    pub(crate) fn is_alpha(code: u32) -> bool {
-        super::unicode_range_contains(UNICODE_ALPHA_RANGES, code)
-    }
-
-    pub(crate) fn is_lower(code: u32) -> bool {
-        super::unicode_range_contains(UNICODE_LOWER_RANGES, code)
-    }
-
-    pub(crate) fn is_upper(code: u32) -> bool {
-        super::unicode_range_contains(UNICODE_UPPER_RANGES, code)
-    }
-
-    pub(crate) fn is_title(code: u32) -> bool {
-        super::unicode_range_contains(UNICODE_TITLE_RANGES, code)
-    }
-
-    pub(crate) fn is_cased(code: u32) -> bool {
-        is_lower(code) || is_upper(code) || is_title(code)
-    }
-
-    pub(crate) fn is_identifier_start(code: u32) -> bool {
-        super::unicode_range_contains(UNICODE_IDENTIFIER_START_RANGES, code)
-    }
-
-    pub(crate) fn is_identifier_continue(code: u32) -> bool {
-        super::unicode_range_contains(UNICODE_IDENTIFIER_CONTINUE_RANGES, code)
-    }
-}
-
-pub(crate) mod unicode_titlecase_table {
-    include!(concat!(env!("OUT_DIR"), "/unicode_titlecase_map.rs"));
-
-    pub(crate) fn titlecase(code: u32) -> Option<&'static str> {
-        let idx = UNICODE_TITLECASE_MAP
-            .binary_search_by_key(&code, |entry| entry.0)
-            .ok()?;
-        Some(UNICODE_TITLECASE_MAP[idx].1)
+pub(crate) fn unicode_data_for_bytes(
+    py: &PyToken<'_>,
+    bytes: &[u8],
+) -> &'static molt_obj_model::unicode::UnicodeData {
+    if bytes.is_ascii() {
+        molt_obj_model::unicode::UnicodeData::ascii()
+    } else {
+        unicode_data(py)
     }
 }
 

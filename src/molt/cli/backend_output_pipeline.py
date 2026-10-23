@@ -104,14 +104,6 @@ def _emit_backend_pipeline_outputs(
     backend_daemon_cache_tier = prepared_backend_compile.backend_daemon_cache_tier
     backend_daemon_config_digest = prepared_backend_compile.backend_daemon_config_digest
     wasm_table_base = prepared_backend_compile.wasm_table_base
-    input_admission = (
-        prepared_backend_runtime_context.runtime_state.build_python_admission
-    )
-
-    def finalize_inputs() -> None:
-        validate_inputs()
-        if input_admission is not None:
-            input_admission.close()
 
     def snapshot_build_diagnostics() -> tuple[dict[str, Any] | None, Path | None]:
         if not prepared_build_preamble.diagnostics_enabled:
@@ -295,7 +287,7 @@ def _emit_backend_pipeline_outputs(
             },
             artifacts=prepared_non_native_result.artifacts,
             success_messages=prepared_non_native_result.success_messages,
-            finalize_inputs=finalize_inputs,
+            finalize_inputs=validate_inputs,
         )
 
     native_target = prepared_backend_setup.cache_setup.artifact_contract.native_target
@@ -436,7 +428,7 @@ def _emit_backend_pipeline_outputs(
             },
             artifacts={"object": str(prepared_object_output)},
             success_messages=[f"Successfully built {prepared_object_output}"],
-            finalize_inputs=finalize_inputs,
+            finalize_inputs=validate_inputs,
         )
 
     stdlib_link_obj_path = prepared_backend_setup.cache_setup.stdlib_object_path
@@ -552,6 +544,6 @@ def _emit_backend_pipeline_outputs(
         resolved_diagnostics_verbosity=prepared_build_preamble.resolved_diagnostics_verbosity,
         strip_after_link=prepared_native_link.strip_after_link,
         link_selection=prepared_native_link.link_selection,
-        finalize_inputs=finalize_inputs,
         validate_inputs=validate_inputs,
+        finalize_inputs=validate_inputs,
     )

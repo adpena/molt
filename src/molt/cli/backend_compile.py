@@ -79,7 +79,6 @@ from molt.cli.output import (
     subprocess_output_text as _subprocess_output_text,
 )
 from molt.cli.runtime_build import _initialize_runtime_artifact_state
-from molt.python_runtime_admission import BuildPythonAdmission
 from molt.cli.runtime_callable_symbols import (
     _stage_runtime_callable_symbols_for_native_codegen,
 )
@@ -236,7 +235,6 @@ def _prepare_backend_setup(
     codegen: CodegenSelection,
     rust_cpu: RustCpuPolicy,
     stage_timings_ms: dict[str, float] | None = None,
-    build_python_admission: BuildPythonAdmission | None = None,
 ) -> tuple[_PreparedBackendSetup | None, _CliFailure | None]:
     try:
         artifact_contract = resolve_backend_artifact_contract(
@@ -263,7 +261,6 @@ def _prepare_backend_setup(
         )
     except InstalledRuntimeError as exc:
         return None, _fail(str(exc), json_output, command="build")
-    runtime_state.build_python_admission = build_python_admission
     runtime_callable_symbols_digest = ""
     callable_symbols_start = time.perf_counter()
     runtime_callable_symbols_digest, callable_symbols_error = (

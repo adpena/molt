@@ -64,7 +64,7 @@ pub(crate) fn supports_buffer(py: &PyToken<'_>, source: u64) -> Result<bool, Buf
         return Ok(true);
     }
     unsafe {
-        let object = molt_cpython_abi::native_custody::project_buffer_object(source)
+        let object = molt_runtime_capi::project_buffer_object(source)
             .map_err(|_| BufferAccessError::Preparation)?;
         Ok(molt_cpython_abi::api::buffer::PyObject_CheckBuffer(object.as_ptr()) != 0)
     }
@@ -293,7 +293,7 @@ impl<'a, 'py> ScopedBuffer<'a, 'py> {
         let physical = is_exact_builtin_storage(py, source);
         if !physical {
             unsafe {
-                let lease = match molt_cpython_abi::native_custody::acquire_buffer(source, flags) {
+                let lease = match molt_runtime_capi::acquire_buffer(source, flags) {
                     Ok(lease) => lease,
                     Err(molt_cpython_abi::api::memory::BufferAcquireError::Preparation) => {
                         return Err(BufferAccessError::Preparation);

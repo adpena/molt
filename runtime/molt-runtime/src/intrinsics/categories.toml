@@ -239,6 +239,11 @@ feature = "stdlib_text"
 [stdlib.unicodedata]
 prefixes = ["unicodedata_"]
 feature = "stdlib_text"
+# A feature-only refinement keeps the public module identity unicodedata while
+# assigning its optional names API to the feature that defines those exports.
+[stdlib.unicodedata_names]
+feature_prefixes = ["unicodedata_name", "unicodedata_lookup"]
+feature = "stdlib_unicode_names"
 [stdlib.zoneinfo]
 prefixes = ["zoneinfo_"]
 feature = "stdlib_zoneinfo"

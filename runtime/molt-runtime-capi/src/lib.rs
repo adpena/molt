@@ -1,8 +1,12 @@
-//! Runtime-facing native-reference custody owned by the CPython object protocol.
+//! Runtime execution custody over the canonical C-API reference and buffer protocol.
 //! Storage, buffer descriptors, and release cookies remain owned by the ABI.
 
-pub use crate::abi_types::{PyBUF_FULL_RO, PyBUF_SIMPLE, PyBUF_WRITABLE};
-pub use crate::api::memory::BufferAcquireError;
+#[cfg(test)]
+#[path = "../../molt-runtime-core/src/bridge_test_stubs.rs"]
+mod bridge_test_stubs;
+
+pub use molt_cpython_abi::abi_types::{PyBUF_FULL_RO, PyBUF_SIMPLE, PyBUF_WRITABLE};
+pub use molt_cpython_abi::api::memory::BufferAcquireError;
 
 unsafe extern "C" {
     // Existing runtime completion boundary; this declaration moves with its
@@ -30,16 +34,17 @@ pub fn retire_native_reference<T>(release: impl FnOnce() -> T) -> T {
 /// imports any legal C-channel restoration before runtime error checks resume.
 pub enum NativeReferenceRetirement {}
 
-unsafe impl crate::api::refcount::ReferenceRetirement for NativeReferenceRetirement {
+unsafe impl molt_cpython_abi::api::refcount::ReferenceRetirement for NativeReferenceRetirement {
     #[inline]
     fn retire(release: impl FnOnce()) {
         retire_native_reference(release);
     }
 }
 
-pub type NativeObjectOwner = crate::api::refcount::PyObjectOwner<NativeReferenceRetirement>;
+pub type NativeObjectOwner =
+    molt_cpython_abi::api::refcount::PyObjectOwner<NativeReferenceRetirement>;
 
-pub type RuntimeBufferLease = crate::api::memory::BufferLease<NativeReferenceRetirement>;
+pub type RuntimeBufferLease = molt_cpython_abi::api::memory::BufferLease<NativeReferenceRetirement>;
 
 const _: () = {
     assert!(std::mem::size_of::<RuntimeBufferLease>() == std::mem::size_of::<usize>());
@@ -69,7 +74,7 @@ pub unsafe fn acquire_buffer(
 pub unsafe fn project_buffer_object(bits: u64) -> Result<NativeObjectOwner, BufferAcquireError> {
     unsafe {
         let object = NativeObjectOwner::from_owned(
-            crate::bridge::GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(bits),
+            molt_cpython_abi::bridge::GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(bits),
         );
         if object.as_ptr().is_null() {
             __molt_native_reference_complete();
@@ -79,11 +84,7 @@ pub unsafe fn project_buffer_object(bits: u64) -> Result<NativeObjectOwner, Buff
         // class. Resolve it fallibly here: the public CheckBuffer query is pure
         // and intentionally discards errors from its internal type projection.
         // No exporter is invoked until both instance and class are prepared.
-        let Some(resolved) = crate::bridge::observe_pyobject(object.as_ptr()) else {
-            __molt_native_reference_complete();
-            return Err(BufferAcquireError::Preparation);
-        };
-        if crate::bridge::semantic_type_for_resolved(object.as_ptr(), resolved).is_null() {
+        if !molt_cpython_abi::api::buffer::prepare_buffer_type(object.as_ptr()) {
             __molt_native_reference_complete();
             return Err(BufferAcquireError::Preparation);
         }
@@ -96,20 +97,23 @@ pub unsafe fn project_buffer_object(bits: u64) -> Result<NativeObjectOwner, Buff
 /// lease owns its exporter independently. All descriptor validation and native
 /// error completion are shared with runtime-handle acquisition.
 pub unsafe fn acquire_buffer_from_object(
-    object: *mut crate::abi_types::PyObject,
+    object: *mut molt_cpython_abi::abi_types::PyObject,
     flags: i32,
 ) -> Result<RuntimeBufferLease, BufferAcquireError> {
     unsafe {
-        let result =
-            RuntimeBufferLease::acquire(object, flags, crate::api::buffer::PyObject_GetBuffer);
+        let result = RuntimeBufferLease::acquire(
+            object,
+            flags,
+            molt_cpython_abi::api::buffer::PyObject_GetBuffer,
+        );
         // Preparation and exporter failures retain their distinct typed result,
         // while the existing completion owner imports the native error.
         __molt_native_reference_complete();
         let lease = result?;
         let descriptor = &*lease.descriptor();
         if descriptor.len < 0 || (descriptor.len != 0 && descriptor.buf.is_null()) {
-            crate::api::errors::PyErr_SetString(
-                (&raw mut crate::abi_types::PyExc_BufferError).cast(),
+            molt_cpython_abi::api::errors::PyErr_SetString(
+                (&raw mut molt_cpython_abi::abi_types::PyExc_BufferError).cast(),
                 c"invalid buffer span".as_ptr(),
             );
             drop(lease);
@@ -134,12 +138,12 @@ pub unsafe fn exact_bytes(
     bits: u64,
 ) -> Result<Option<&[u8]>, BufferAcquireError> {
     unsafe {
-        let class = crate::bridge::GLOBAL_BRIDGE.runtime_class_view(bits);
+        let class = molt_cpython_abi::bridge::GLOBAL_BRIDGE.runtime_class_view(bits);
         if class.is_null() {
             __molt_native_reference_complete();
             return Err(BufferAcquireError::Preparation);
         }
-        if !std::ptr::eq(class, &raw mut crate::abi_types::PyBytes_Type) {
+        if !std::ptr::eq(class, &raw mut molt_cpython_abi::abi_types::PyBytes_Type) {
             return Ok(None);
         }
         Ok(molt_runtime_core::rt_bytes_as_slice(bits))
@@ -201,7 +205,8 @@ impl<'py> ByteInput<'py> {
         match &self.0 {
             ByteInputStorage::Exact(_) => true,
             ByteInputStorage::Export(lease) => unsafe {
-                crate::api::buffer::PyBuffer_IsContiguous(lease.descriptor(), b'C' as _) != 0
+                molt_cpython_abi::api::buffer::PyBuffer_IsContiguous(lease.descriptor(), b'C' as _)
+                    != 0
             },
         }
     }

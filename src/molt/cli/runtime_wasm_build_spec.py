@@ -4,7 +4,6 @@ from molt.cargo_execution_policy import cargo_profile_directory
 
 from molt.process_environment import ProcessEnvironment
 
-from molt.python_runtime_admission import BuildPythonAdmission
 
 import os
 import time
@@ -52,7 +51,6 @@ from molt.cli.runtime_build_identity import (
     _tree_hash_worker_count,
     resolve_wasm_runtime_build_family_identities,
 )
-from molt.cli.runtime_build_python import pin_runtime_build_python_environment
 from molt.cli.runtime_identity_schema import (
     RuntimeBuildIdentity,
     RuntimeBuildMemberPlan,
@@ -177,9 +175,6 @@ def _resolve_runtime_wasm_cargo_specs(
         env=env,
         cargo_command=_cargo_cmd_with_json_artifact_messages(command),
         requested_target="wasm32-wasip1",
-        environment_transform=lambda env: pin_runtime_build_python_environment(
-            env, cwd=root
-        ),
         rustflags_transform=lambda flags: _wasm_runtime_codegen_flags(
             flags,
             simd_enabled=simd_enabled,
@@ -193,8 +188,6 @@ def _resolved_runtime_wasm_family_identities(
     root: Path,
     shared_spec: _RuntimeWasmBuildSpec,
     reloc_spec: _RuntimeWasmBuildSpec,
-    *,
-    build_python_admission: BuildPythonAdmission | None = None,
 ) -> tuple[RuntimeBuildIdentity, RuntimeBuildIdentity]:
     if (
         shared_spec.cargo_profile != reloc_spec.cargo_profile
@@ -232,7 +225,6 @@ def _resolved_runtime_wasm_family_identities(
             ),
         ),
         cargo_plan=shared_spec.cargo_plan,
-        build_python_admission=build_python_admission,
     )
     if len(identities) != 2:
         raise ValueError("runtime WASM build family must contain shared and reloc")

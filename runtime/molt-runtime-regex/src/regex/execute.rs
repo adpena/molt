@@ -38,7 +38,7 @@ pub(super) struct MatchResult {
 pub(super) fn prepare_text(bytes: &[u8]) -> Result<Vec<u32>, MatchError> {
     let mut units = Vec::new();
     units.try_reserve_exact(bytes.len())?;
-    units.extend(molt_runtime_core::text_storage::code_points(bytes));
+    units.extend(molt_obj_model::text_storage::code_points(bytes));
     Ok(units)
 }
 

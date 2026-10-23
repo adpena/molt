@@ -69,7 +69,6 @@ from molt.cli.runtime_wasm_generation import (
     publish_runtime_wasm_generation,
     runtime_wasm_generation_path,
 )
-from molt.exact_json import canonical_json_sha256
 from tests.executable_test_support import native_executable_donor, write_mock_executable
 from tests.process_guard_common import current_thread_only
 from tests.runtime_build_identity_helper import (
@@ -1141,9 +1140,17 @@ def _test_pair_context(
 
 
 @pytest.mark.parametrize("producer", ["pair", "cpython-abi"])
-def test_runtime_wasm_producer_binds_python_signature_before_actual_executor(
+def test_runtime_wasm_producer_preserves_actual_cargo_plan_at_executor(
     producer, tmp_path, monkeypatch, _synthetic_cargo_plan
 ):
+    from molt.python_runtime_admission import BuildPythonAdmission
+
+    monkeypatch.setattr(
+        BuildPythonAdmission,
+        "capture",
+        lambda *_a, **_k: pytest.fail("WASM Rust build admitted Python"),
+    )
+
     class AtExecutor(Exception):
         pass
 
@@ -1158,7 +1165,7 @@ def test_runtime_wasm_producer_binds_python_signature_before_actual_executor(
     root = _compiler_root()
     generator_environment = {
         **os.environ,
-        "MOLT_BUILD_PYTHON": os.path.relpath(sys.executable, root),
+        "MOLT_BUILD_PYTHON": "missing-rust-generator",
     }
     for owner in (runtime_wasm_build_spec, runtime_wasm_build_support):
         monkeypatch.setattr(owner, "_cargo_build_env", lambda: generator_environment)
@@ -1194,9 +1201,7 @@ def test_runtime_wasm_producer_binds_python_signature_before_actual_executor(
                 profile_dir=ctx.shared_spec.profile_dir,
                 json_output=True,
             )
-        python = captured.shared.toolchain_manifest.to_dict()["payload"]["toolchain"][
-            "tools"
-        ]["build_python"]
+        assert observed[0] is plan
     else:
         captured = native_runtime_staticlib_identity(target_triple="wasm32-wasip1")
         monkeypatch.setattr(
@@ -1221,16 +1226,13 @@ def test_runtime_wasm_producer_binds_python_signature_before_actual_executor(
                 cargo_profile="release",
                 cargo_timeout=5,
             )
-        python = captured.toolchain_manifest.to_dict()["payload"]["toolchain"]["tools"][
-            "build_python"
-        ]
+
     assert len(observed) == 1
-    executable = Path(observed[0].environment["MOLT_BUILD_PYTHON"])
-    assert executable.is_absolute()
-    assert executable.samefile(sys.executable)
-    assert observed[0].environment["MOLT_BUILD_PYTHON_SIGNATURE"] == (
-        canonical_json_sha256(python)
+    assert (
+        observed[0].environment["MOLT_BUILD_PYTHON"]
+        == generator_environment["MOLT_BUILD_PYTHON"]
     )
+    assert "MOLT_BUILD_PYTHON_SIGNATURE" not in observed[0].environment
 
 
 def test_pair_member_staging_is_identity_local_and_never_process_cached(

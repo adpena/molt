@@ -16,7 +16,7 @@ pub mod integer_decimal;
 pub mod itertools_tee;
 pub mod numeric_error_policy_generated;
 pub mod numeric_ratio;
-pub mod text_storage;
+pub mod unicode_target;
 
 // ---------------------------------------------------------------------------
 // Convenience helpers (mirror the signatures in molt-runtime/src/object/mod.rs)

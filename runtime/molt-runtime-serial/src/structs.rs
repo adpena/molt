@@ -2,7 +2,7 @@ use crate::bridge::*;
 use abi::abi_types::{PyObject, PyTypeObject};
 use abi::api::memory::BufferAcquireError;
 use molt_cpython_abi as abi;
-use molt_cpython_abi::native_custody::{
+use molt_runtime_capi::{
     NativeObjectOwner, PyBUF_SIMPLE, PyBUF_WRITABLE, RuntimeBufferLease, acquire_buffer,
     retire_native_reference,
 };

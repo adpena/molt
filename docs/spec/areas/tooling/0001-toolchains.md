@@ -457,12 +457,11 @@ making it absolute for a different child working directory. Resolving a virtual
 environment's interpreter symlink to its base executable changes its import
 environment. Guarded commands and benchmark interpreter selection share the
 lexical executable-path authority; content identity remains a separate check.
-The runtime build Python is the one exception: build scripts run it with
-`-B -I -S`, which imports no virtual environment site, and its path is a Cargo
-rerun input recorded with every stored product, so
-`molt.cli.runtime_build_python` pins the base interpreter (a link's target, or
-the `executable` or `home` that a launcher copy's `pyvenv.cfg` names, as on
-Windows) and every checkout of one host records one value.
+Runtime builds consume committed Unicode facts generated from pinned CPython
+source by `tools/gen_unicode_width.py`. Their Cargo inputs contain no Python
+generator or interpreter identity. Regenerating those facts is development
+work; frontend Python selection and source-package build interpreters retain
+their own executable and environment custody.
 Captured environment launchers include executable interpreter aliases in its
 scripts directory when their captured content matches the selected interpreter.
 Copied files, hardlinks and same-root or base-runtime symlinks retain their
@@ -1131,10 +1130,11 @@ the checkout), and any run that would not load the custody plugins. An in-proces
 `pytest.main()` that passes both an `addopts` override and `--noconftest` runs
 no repository code inside pytest, so no check sees it; that gap remains. Each
 selection needs a plan row that declares it, a directory holding it, or a node
-in it. The proof admits the union of the toolchains, native units and one
-`cargo_build_python` role of every row whose targets lie on, above or inside a
-selection, so it discards no authority those rows declare. It never stands in
-for a row's receipt.
+in it. The proof admits the union of the toolchains and native units of every
+row whose targets lie on, above or inside a selection, so it discards no
+authority those rows declare. Runtime Cargo builds have no build-Python role;
+source generators and frontend/oracle commands retain their declared Python
+toolchain. Focused admission never stands in for a row's receipt.
 
 ### Native C/C++ processes in development proofs
 

@@ -13,14 +13,9 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Callable, Iterator, Mapping, Sequence, TypeVar, cast
 
 from molt import input_report as _input_report
-from molt.python_runtime_admission import BuildPythonAdmission
 from molt.cli.cargo_source_closure import _cargo_crate_source_closure
 from molt.cli.runtime_artifact_selection import RuntimeArtifactSelection
 from molt.cli.runtime_source_closure import runtime_source_paths
-from molt.cli.runtime_build_python import (
-    BUILD_PYTHON_SIGNATURE,
-    pin_runtime_build_python_environment,
-)
 from molt.cli.runtime_cargo_plan import RuntimeCargoPlan, resolve_runtime_cargo_plan
 from molt.cli.runtime_identity_schema import (
     RuntimeBuildIdentity,
@@ -29,13 +24,9 @@ from molt.cli.runtime_identity_schema import (
     _FAMILY_SCHEMA,
     _digest,
     _freeze_json,
-    _runtime_toolchain_build_python,
 )
 from molt import host_capacity
 from molt.file_publication import metadata_is_link_like
-from molt.python_environment_identity import (
-    python_capture_authority_paths,
-)
 from molt.toolchain_identity import (
     StableRegularFileChangedError,
     StableRegularFileError,
@@ -55,6 +46,32 @@ _TREE_HASH_LOCAL = threading.local()
 
 
 _RUNTIME_BUILD_TOOLING_RELPATHS = (
+    "src/molt/__init__.py",
+    "src/molt/_version.py",
+    "src/molt/source_root.py",
+    "src/molt/temporary_artifacts.py",
+    "src/molt/disk_capacity.py",
+    "src/molt/file_deletion.py",
+    "src/molt/custody_layout.py",
+    "src/molt/memory_guard_paths.py",
+    "src/molt/process_spawn.py",
+    "src/molt/windows_process_api.py",
+    "src/molt/backend_daemon_paths.py",
+    "src/molt/host_capacity.py",
+    "src/molt/process_environment.py",
+    "src/molt/default_paths.py",
+    "src/molt/environment_registry.py",
+    "src/molt/_environment_registry.py",
+    "src/molt/tool_releases.py",
+    "src/molt/path_custody.py",
+    "src/molt/package_import_custody.py",
+    "src/molt/native_artifact_header.py",
+    "src/molt/native_target_shape.py",
+    "src/molt/python_identity_common.py",
+    "src/molt/input_report.py",
+    "src/molt/file_publication.py",
+    "src/molt/portable_paths.py",
+    "pyproject.toml",
     "src/molt/_host_capabilities_generated.py",
     "src/molt/_runtime_feature_gates.py",
     "src/molt/_wasm_abi_generated.py",
@@ -86,8 +103,6 @@ _RUNTIME_BUILD_TOOLING_RELPATHS = (
     "src/molt/cli/project_roots.py",
     "src/molt/cli/runtime_artifact_selection.py",
     "src/molt/cli/runtime_build_identity.py",
-    "src/molt/cli/runtime_build_python.py",
-    "src/molt/python_runtime_admission.py",
     "src/molt/process_guard.py",
     "src/molt/rust_toolchain.py",
     "tools/command_execution.py",
@@ -586,15 +601,6 @@ def _executable_identity(
     }
 
 
-def _python_identity(
-    env: Mapping[str, str], *, admission: BuildPythonAdmission | None = None
-) -> dict[str, object]:
-    if admission is not None:
-        return admission.capture(env)
-    with BuildPythonAdmission() as owned:
-        return owned.capture(env)
-
-
 def _build_script_path(
     raw: str,
     *,
@@ -626,43 +632,10 @@ def _build_script_symbol_environment_value(
     return symbols
 
 
-def _build_python_script_environment_identity(
-    env: Mapping[str, str],
-    *,
-    build_python_identity: Mapping[str, object],
-) -> dict[str, object]:
-    build_python_values = {
-        name: env.get(name, "").strip() for name in ("MOLT_BUILD_PYTHON", "PYTHON")
-    }
-    selected_python = next(
-        (name for name, value in build_python_values.items() if value),
-        "platform-default",
-    )
-    python_selectors = {
-        name: (
-            "selected" if name == selected_python else "shadowed" if value else "unset"
-        )
-        for name, value in build_python_values.items()
-    }
-    return {
-        "build_python": {
-            "selected_by": selected_python,
-            "selectors": python_selectors,
-            "content_digest": _digest(build_python_identity),
-        },
-        # Every Rust table generator uses build_support/build_python.rs.
-        # Its import isolation matches the attested -B -I -S interpreter probe;
-        # ambient project trees are not runtime build inputs.
-        "python_import_policy": "isolated-no-site-v1",
-    }
-
-
 def _runtime_build_script_environment_identity(
-    project_root: Path,
     env: Mapping[str, str],
     *,
     target_triple: str,
-    build_python_identity: Mapping[str, object],
 ) -> dict[str, object]:
     """Return every output-bearing environment input read by molt-runtime/build.rs."""
 
@@ -679,10 +652,7 @@ def _runtime_build_script_environment_identity(
         )
     wasm_target = target_triple.startswith("wasm32-")
     return {
-        "schema": "molt.runtime-build-script-environment.v3",
-        **_build_python_script_environment_identity(
-            env, build_python_identity=build_python_identity
-        ),
+        "schema": "molt.runtime-build-script-environment.v4",
         "MOLT_WASM_CPYTHON_ABI_EXPORTS": list(function_exports)
         if wasm_target
         else "ignored-for-target",
@@ -860,7 +830,6 @@ def runtime_build_tooling_paths(project_root: Path) -> tuple[Path, ...]:
     """Project the canonical implementation closure into a source checkout."""
     root = project_root.resolve(strict=False)
     paths = {root / relative for relative in _RUNTIME_BUILD_TOOLING_RELPATHS}
-    paths.update(python_capture_authority_paths(source_root=root))
     return tuple(sorted(paths))
 
 
@@ -886,23 +855,10 @@ def _capture_runtime_build_trees(
     return index.identity(source_roots, require_all=False), publication_authority
 
 
-def _capture_plan_toolchain(
-    cargo_plan: RuntimeCargoPlan,
-    *,
-    build_python_admission: BuildPythonAdmission | None = None,
-) -> dict[str, object]:
-    # Runtime generators execute Python; Cargo-only consumers do not. Capture
-    # that extra first, then close shared Cargo custody after its admission.
-    build_python = _python_identity(
-        cargo_plan.environment, admission=build_python_admission
-    )
-    signature = cargo_plan.environment.get(BUILD_PYTHON_SIGNATURE)
-    if signature is not None and signature != _digest(build_python):
-        raise ValueError("runtime build Python signature differs from captured content")
+def _capture_plan_toolchain(cargo_plan: RuntimeCargoPlan) -> dict[str, object]:
+    """Capture the validated Cargo plan's actual tools and resources."""
     cargo_plan.verify()
-    result = cargo_plan.toolchain_identity()
-    cast(dict[str, object], result["tools"])["build_python"] = build_python
-    return result
+    return cargo_plan.toolchain_identity()
 
 
 def _verify_plan_toolchain_content(
@@ -913,7 +869,7 @@ def _verify_plan_toolchain_content(
     observed_tools = {
         key: value
         for key, value in cast(Mapping[str, object], content["tools"]).items()
-        if key not in {"build_python", "wasm_linker"}
+        if key != "wasm_linker"
     }
     if (
         observed_tools != expected["tools"]
@@ -950,9 +906,6 @@ def _plan_for_capture(
             env=env,
             cargo_command=cargo_command,
             requested_target=target_triple,
-            environment_transform=lambda env: pin_runtime_build_python_environment(
-                env, cwd=project_root
-            ),
         )
     if cargo_plan.project_root != project_root.resolve(strict=False):
         raise ValueError("runtime Cargo plan belongs to another source root")
@@ -977,16 +930,12 @@ def _wasm_compile_toolchain_content(
     wasi_sysroot: Path,
     include_cxx: bool = True,
     cargo_plan: RuntimeCargoPlan | None = None,
-    build_python_admission: BuildPythonAdmission | None = None,
 ) -> dict[str, object]:
     plan = cargo_plan or resolve_runtime_cargo_plan(
         project_root,
         env=env,
         cargo_command=(env.get("CARGO", "cargo"), "rustc", "--target", target_triple),
         requested_target=target_triple,
-        environment_transform=lambda env: pin_runtime_build_python_environment(
-            env, cwd=project_root
-        ),
     )
     if plan.target != target_triple:
         raise ValueError("runtime WASM toolchain plan target is invalid")
@@ -995,9 +944,7 @@ def _wasm_compile_toolchain_content(
         raise ValueError("runtime WASI projection differs from captured Cargo plan")
     if wasi_sysroot != c_abi.sysroot:
         raise ValueError("runtime WASI sysroot differs from selected C ABI")
-    content = _capture_plan_toolchain(
-        plan, build_python_admission=build_python_admission
-    )
+    content = _capture_plan_toolchain(plan)
     tools = cast(Mapping[str, object], content["tools"])
     required = {"cc", "ar", "ranlib"} | ({"cxx"} if include_cxx else set())
     if not required.issubset(tools):
@@ -1011,13 +958,11 @@ def _wasm_runtime_toolchain_content(
     env: Mapping[str, str],
     target_triple: str,
     cargo_plan: RuntimeCargoPlan,
-    build_python_admission: BuildPythonAdmission | None = None,
 ) -> dict[str, object]:
     c_abi = cargo_plan.wasi_c_abi
     if c_abi is None:
         raise ValueError("runtime WASM requires the admitted C ABI")
     content = _wasm_compile_toolchain_content(
-        build_python_admission=build_python_admission,
         project_root=project_root,
         env=env,
         target_triple=target_triple,
@@ -1047,7 +992,6 @@ def provision_wasm_runtime_toolchain_content_manifest(
     env: Mapping[str, str],
     target_triple: str,
     cargo_plan: RuntimeCargoPlan,
-    build_python_admission: BuildPythonAdmission | None = None,
 ) -> RuntimeToolchainContentManifest:
     """Project the already-admitted operation's finite runtime toolchain."""
     return RuntimeToolchainContentManifest.from_payload(
@@ -1058,7 +1002,6 @@ def provision_wasm_runtime_toolchain_content_manifest(
                 env=env,
                 target_triple=target_triple,
                 cargo_plan=cargo_plan,
-                build_python_admission=build_python_admission,
             ),
         }
     )
@@ -1071,14 +1014,12 @@ def provision_wasm_cpython_abi_toolchain_content_manifest(
     target_triple: str,
     wasi_sysroot: Path,
     cargo_plan: RuntimeCargoPlan | None = None,
-    build_python_admission: BuildPythonAdmission | None = None,
 ) -> RuntimeToolchainContentManifest:
     """Capture the complete compiler inputs for the standalone ABI staticlib."""
 
     payload = {
         "target_triple": target_triple,
         "toolchain": _wasm_compile_toolchain_content(
-            build_python_admission=build_python_admission,
             project_root=project_root,
             env=env,
             target_triple=target_triple,
@@ -1097,7 +1038,6 @@ def provision_native_runtime_toolchain_content_manifest(
     target_triple: str | None,
     cargo_command: Sequence[str],
     cargo_plan: RuntimeCargoPlan | None = None,
-    build_python_admission: BuildPythonAdmission | None = None,
 ) -> RuntimeToolchainContentManifest:
     plan = _plan_for_capture(
         project_root,
@@ -1108,9 +1048,7 @@ def provision_native_runtime_toolchain_content_manifest(
     )
     payload = {
         "target_triple": target_triple or "native",
-        "toolchain": _capture_plan_toolchain(
-            plan, build_python_admission=build_python_admission
-        ),
+        "toolchain": _capture_plan_toolchain(plan),
     }
     return RuntimeToolchainContentManifest.from_payload(payload)
 
@@ -1125,7 +1063,6 @@ def resolve_native_runtime_build_identity(
     cargo_command: Sequence[str],
     artifact_selection: RuntimeArtifactSelection,
     cargo_plan: RuntimeCargoPlan | None = None,
-    build_python_admission: BuildPythonAdmission | None = None,
 ) -> RuntimeBuildIdentity:
     """Resolve one exact native staticlib identity through the shared family model."""
 
@@ -1146,7 +1083,6 @@ def resolve_native_runtime_build_identity(
     source_roots = runtime_source_roots(root, runtime_features)
     sources, publication_authority = _capture_runtime_build_trees(root, source_roots)
     toolchain_manifest = provision_native_runtime_toolchain_content_manifest(
-        build_python_admission=build_python_admission,
         project_root=root,
         env=env,
         cargo_plan=plan,
@@ -1155,7 +1091,6 @@ def resolve_native_runtime_build_identity(
     )
     if not cargo_command:
         raise ValueError("native runtime Cargo command is empty")
-    build_python_identity = _runtime_toolchain_build_python(toolchain_manifest)
     compile_command, final_link_arguments = plan.partition_command()
     command = flag_projection.rustflags(compile_command)
     rustflags = plan.rustflags
@@ -1187,10 +1122,8 @@ def resolve_native_runtime_build_identity(
                 cargo_profile=cargo_profile,
             ),
             "build_script_environment": _runtime_build_script_environment_identity(
-                root,
                 env,
                 target_triple=logical_target,
-                build_python_identity=build_python_identity,
             ),
         },
         publication_authority=publication_authority,
@@ -1271,7 +1204,6 @@ def resolve_wasm_cpython_abi_build_identity(
     artifact_selection: RuntimeArtifactSelection,
     wasi_sysroot: Path,
     cargo_plan: RuntimeCargoPlan | None = None,
-    build_python_admission: BuildPythonAdmission | None = None,
 ) -> RuntimeBuildIdentity:
     """Resolve the exact standalone CPython-ABI WASM staticlib identity."""
 
@@ -1304,7 +1236,6 @@ def resolve_wasm_cpython_abi_build_identity(
         source_roots.append((label, resolved))
     sources, publication_authority = _capture_runtime_build_trees(root, source_roots)
     toolchain_manifest = provision_wasm_cpython_abi_toolchain_content_manifest(
-        build_python_admission=build_python_admission,
         project_root=root,
         env=env,
         cargo_plan=plan,
@@ -1312,7 +1243,6 @@ def resolve_wasm_cpython_abi_build_identity(
         wasi_sysroot=wasi_sysroot,
     )
     _verify_plan_toolchain_manifest(plan, toolchain_manifest)
-    build_python_identity = _runtime_toolchain_build_python(toolchain_manifest)
     if not cargo_command:
         raise ValueError("CPython ABI Cargo command is empty")
     flag_projection = _RuntimeFlagProjection.capture(
@@ -1346,13 +1276,9 @@ def resolve_wasm_cpython_abi_build_identity(
                 cargo_profile=cargo_profile,
             ),
             "build_script_environment": {
-                "schema": "molt.cpython-abi-build-script-environment.v3",
+                "schema": "molt.cpython-abi-build-script-environment.v4",
                 WASI_C_ABI_PLAN_ENV: _wasi_c_abi_environment_identity(
                     env, target_triple
-                ),
-                **_build_python_script_environment_identity(
-                    env,
-                    build_python_identity=build_python_identity,
                 ),
             },
         },
@@ -1373,7 +1299,6 @@ def resolve_wasm_runtime_build_family_identities(
     producer_artifact_selection: RuntimeArtifactSelection,
     members: Sequence[RuntimeBuildMemberPlan],
     cargo_plan: RuntimeCargoPlan | None = None,
-    build_python_admission: BuildPythonAdmission | None = None,
 ) -> tuple[RuntimeBuildIdentity, ...]:
     root = project_root.resolve(strict=False)
     plan = _plan_for_capture(
@@ -1397,14 +1322,12 @@ def resolve_wasm_runtime_build_family_identities(
     source_roots = runtime_source_roots(root, runtime_features)
     sources, publication_authority = _capture_runtime_build_trees(root, source_roots)
     toolchain_manifest = provision_wasm_runtime_toolchain_content_manifest(
-        build_python_admission=build_python_admission,
         project_root=root,
         env=env,
         cargo_plan=plan,
         target_triple=target_triple,
     )
     _verify_plan_toolchain_manifest(plan, toolchain_manifest)
-    build_python_identity = _runtime_toolchain_build_python(toolchain_manifest)
     flag_projection = _RuntimeFlagProjection.capture(
         (
             *plan.logical_paths,
@@ -1457,10 +1380,8 @@ def resolve_wasm_runtime_build_family_identities(
                 cargo_profile=cargo_profile,
             ),
             "build_script_environment": _runtime_build_script_environment_identity(
-                root,
                 env,
                 target_triple=target_triple,
-                build_python_identity=build_python_identity,
             ),
         },
         publication_authority=publication_authority,

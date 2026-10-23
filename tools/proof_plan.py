@@ -125,6 +125,18 @@ REQUIRED_COMMAND_FIELDS = (
     "argv",
     "toolchains",
 )
+COMMAND_FIELDS = frozenset(REQUIRED_COMMAND_FIELDS) | {
+    "id",
+    "cargo_native_units",
+    "cwd",
+    "env",
+    "evidence_outputs",
+    "pytest",
+    "pytest_worker_memory_gb",
+    "timeout_budget",
+    "timeout_env",
+    "timeout_seconds",
+}
 REQUIRED_TOOLCHAIN_FIELDS = (
     "version_pattern",
     "setup_evidence",
@@ -190,21 +202,6 @@ class ScheduledFamily:
 class MatrixCell:
     id: str
     data: dict[str, str]
-
-
-def cargo_build_python(data: Mapping[str, Any]) -> bool | None:
-    """Declared Cargo generator role; absent ad hoc policy stays conservative."""
-    if "cargo_build_python" not in data:
-        return None
-    value = data["cargo_build_python"]
-    tools = data.get("toolchains", [])
-    if type(value) is not bool or not isinstance(tools, list) or "cargo" not in tools:
-        raise ValueError("cargo_build_python requires a boolean and Cargo toolchain")
-    if "build-python" in tools:
-        raise ValueError(
-            "build-python is contextual, not a static toolchain prerequisite"
-        )
-    return value
 
 
 def cargo_native_units(data: Mapping[str, Any]) -> dict[str, list[str]]:
@@ -1290,8 +1287,7 @@ class ProofPlan:
     def required_toolchains(self, command: ProofCommand) -> tuple[str, ...]:
         """Return the static process/tool identity closure for one command.
 
-        Queue admission adds contextual prerequisites that need the command's
-        Cargo context, such as the declared ``build-python`` generator.
+        Queue admission adds prerequisites from the concrete command context.
         """
 
         return self.toolchain_closure(command.toolchains)
@@ -1521,7 +1517,6 @@ class ProofPlan:
                     "id",
                     "cargo_output_lifetime",
                     "cargo_native_units",
-                    "cargo_build_python",
                     "differential_cases",
                     "pytest",
                 }
@@ -1538,7 +1533,6 @@ class ProofPlan:
                 )
             try:
                 cargo_native_units(lane.data)
-                cargo_build_python(lane.data)
             except ValueError as exc:
                 errors.append(f"{lane.id}: {exc}")
             if lane.data.get("cache_domain") not in {"none", "cargo-workspace"}:
@@ -1734,7 +1728,6 @@ class ProofPlan:
                     "native-strip": "llvm-strip",
                     "wasm-opt": "wasm-opt",
                     "llvm-sdk": "llvm-config",
-                    "build-python": "build-python",
                 }.get(selector)
                 != policy.data.get("executable")
                 or policy.data.get("wasi_sdk_tool") is not None
@@ -1794,15 +1787,9 @@ class ProofPlan:
             if python_role == "runtime" and (
                 not policy.data.get("selection_only")
                 or not policy.data.get("version_from_content_path")
-                or (
-                    policy.data.get("compiler_tool_selector") != "build-python"
-                    and (
-                        not isinstance(policy.data.get("content_path_command"), list)
-                        or not isinstance(policy.data.get("python_version"), str)
-                        or re.fullmatch(r"3\.[0-9]+", policy.data["python_version"])
-                        is None
-                    )
-                )
+                or not isinstance(policy.data.get("content_path_command"), list)
+                or not isinstance(policy.data.get("python_version"), str)
+                or re.fullmatch(r"3\.[0-9]+", policy.data["python_version"]) is None
             ):
                 errors.append(
                     f"{policy.name}: Python runtime role requires an explicit typed isolated selection"
@@ -1810,9 +1797,7 @@ class ProofPlan:
             content_path_command = policy.data.get("content_path_command")
             selected_version = policy.data.get("version_from_content_path", False)
             if type(selected_version) is not bool or (
-                selected_version
-                and content_path_command is None
-                and selector != "build-python"
+                selected_version and content_path_command is None
             ):
                 errors.append(
                     f"{policy.name}: selected version requires a typed content resolver"
@@ -2417,6 +2402,9 @@ class ProofPlan:
         command_graph: dict[str, tuple[str, ...]] = {}
         evidence_owners: dict[str, str] = {}
         for command in self.commands:
+            extra = set(command.data) - COMMAND_FIELDS
+            if extra:
+                errors.append(f"{command.id}: unknown command fields {sorted(extra)!r}")
             if re.fullmatch(r"[a-z0-9]+(?:[.-][a-z0-9]+)*", command.id) is None:
                 errors.append(f"{command.id}: command ID is not canonical")
             for field in REQUIRED_COMMAND_FIELDS:
@@ -2474,7 +2462,6 @@ class ProofPlan:
                         )
             try:
                 cargo_native_units(command.data)
-                cargo_build_python(command.data)
             except ValueError as exc:
                 errors.append(f"{command.id}: {exc}")
             errors.extend(
@@ -3427,10 +3414,6 @@ def compiler_tool_path(
             "strip", environment=environment, source_root=policy.root
         )
         selected = candidates[0] if candidates else None
-    elif selector == "build-python":
-        from molt.python_runtime_admission import resolve_build_python
-
-        selected = resolve_build_python(environment, cwd=cwd)
     elif selector == "llvm-sdk":
         from molt.llvm_toolchain import discover_llvm_toolchain
 

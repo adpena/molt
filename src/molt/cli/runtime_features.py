@@ -276,10 +276,6 @@ _WASM_PROFILE_POLICY_EXCLUDED_FEATURES = frozenset(
     {
         "stdlib_tk",
         "stdlib_net",
-        # unicode_names2 is target-capable but intentionally omitted from the
-        # stable WASM artifact for size. This is profile policy, unlike the
-        # generated provider-availability exclusion above.
-        "stdlib_unicode_names",
     }
 )
 

@@ -904,3 +904,17 @@ mod export_internal_tests {
         });
     }
 }
+
+/// Prepare the semantic exporter type before buffer protocol dispatch.
+/// This shares the admitted observation within one callback-free transaction.
+///
+/// # Safety
+/// `object` must be a live, owned native reference for this preparation.
+/// The caller owns error-channel completion and native-reference retirement.
+#[inline]
+pub unsafe fn prepare_buffer_type(object: *mut crate::abi_types::PyObject) -> bool {
+    let Some(resolved) = crate::bridge::observe_pyobject(object) else {
+        return false;
+    };
+    !unsafe { crate::bridge::semantic_type_for_resolved(object, resolved) }.is_null()
+}

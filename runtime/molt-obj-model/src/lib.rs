@@ -9,8 +9,11 @@ pub mod float_literal;
 pub mod hash_policy;
 pub mod hierarchy;
 pub mod int_literal;
+pub mod python_version_generated;
 pub mod sequence_compare;
+pub mod text_storage;
 pub mod timsort;
+pub mod unicode;
 
 pub use exception_layout::{
     BuiltinExceptionSpec, ExceptionAttributeDeclaration, ExceptionAttributeField,

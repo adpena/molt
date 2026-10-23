@@ -141,7 +141,7 @@ fn ascii_escape(bytes: &[u8]) -> String {
     // Copy the all-ASCII prefix in bulk
     out.push_str(std::str::from_utf8(&bytes[..first_non_ascii]).expect("ASCII prefix"));
     // Process remaining characters
-    for code in molt_runtime_core::text_storage::code_points(&bytes[first_non_ascii..]) {
+    for code in molt_obj_model::text_storage::code_points(&bytes[first_non_ascii..]) {
         if code < 128 {
             out.push(code as u8 as char);
         } else {
@@ -248,24 +248,33 @@ pub extern "C" fn molt_hex_builtin(val_bits: u64) -> u64 {
     })
 }
 
-fn parse_float_from_bytes(bytes: &[u8]) -> Result<f64, ()> {
+use molt_obj_model::unicode::numeric_whitespace;
+
+fn parse_float_from_bytes(
+    data: Option<&molt_obj_model::unicode::UnicodeData>,
+    bytes: &[u8],
+) -> Result<f64, ()> {
     let text = std::str::from_utf8(bytes).map_err(|_| ())?;
-    let trimmed = text.trim();
+    let trimmed = text.trim_matches(|ch: char| numeric_whitespace(data, ch));
     trimmed.parse::<f64>().map_err(|_| ())
 }
 
-fn parse_complex_from_str(text: &str) -> Result<ComplexParts, ()> {
-    let mut trimmed = text.trim();
+fn parse_complex_from_str(
+    data: &molt_obj_model::unicode::UnicodeData,
+    text: &str,
+) -> Result<ComplexParts, ()> {
+    let mut trimmed = text.trim_matches(|ch| numeric_whitespace(Some(data), ch));
     if trimmed.is_empty() {
         return Err(());
     }
     if trimmed.starts_with('(') && trimmed.ends_with(')') && trimmed.len() >= 2 {
-        trimmed = trimmed[1..trimmed.len() - 1].trim();
+        trimmed =
+            trimmed[1..trimmed.len() - 1].trim_matches(|ch| numeric_whitespace(Some(data), ch));
         if trimmed.is_empty() {
             return Err(());
         }
     }
-    if trimmed.chars().any(|ch| ch.is_whitespace()) {
+    if trimmed.chars().any(|ch| numeric_whitespace(Some(data), ch)) {
         return Err(());
     }
     let bytes = trimmed.as_bytes();
@@ -296,20 +305,20 @@ fn parse_complex_from_str(text: &str) -> Result<ComplexParts, ()> {
         if let Some(idx) = sep_idx {
             let real_part = &core[..idx];
             let imag_part = &core[idx..];
-            let real = parse_float_from_bytes(real_part.as_bytes())?;
+            let real = parse_float_from_bytes(Some(data), real_part.as_bytes())?;
             let imag = if imag_part == "+" {
                 1.0
             } else if imag_part == "-" {
                 -1.0
             } else {
-                parse_float_from_bytes(imag_part.as_bytes())?
+                parse_float_from_bytes(Some(data), imag_part.as_bytes())?
             };
             return Ok(ComplexParts { re: real, im: imag });
         }
-        let imag = parse_float_from_bytes(core.as_bytes())?;
+        let imag = parse_float_from_bytes(Some(data), core.as_bytes())?;
         return Ok(ComplexParts { re: 0.0, im: imag });
     }
-    let real = parse_float_from_bytes(trimmed.as_bytes())?;
+    let real = parse_float_from_bytes(Some(data), trimmed.as_bytes())?;
     Ok(ComplexParts { re: real, im: 0.0 })
 }
 
@@ -358,7 +367,7 @@ fn int_digit_limit_message(error: ParseIntError) -> Option<String> {
 
 #[inline(always)]
 fn parse_simple_ascii_decimal_i64(text: &str) -> Option<i64> {
-    let trimmed = text.trim();
+    let trimmed = text.trim_matches(|ch: char| matches!(ch, '\t'..='\r' | ' '));
     if trimmed.is_empty() {
         return None;
     }
@@ -477,21 +486,23 @@ pub extern "C" fn molt_float_from_obj(val_bits: u64) -> u64 {
                 if type_id == TYPE_ID_STRING {
                     let len = string_len(ptr);
                     let bytes = std::slice::from_raw_parts(string_bytes(ptr), len);
-                    if let Ok(parsed) = parse_float_from_bytes(bytes) {
+                    if let Ok(parsed) =
+                        parse_float_from_bytes(Some(super::ops::unicode_data(_py)), bytes)
+                    {
                         return float_result_bits(_py, parsed);
                     }
                     // CPython embeds `repr(arg)`: a str renders with quote
                     // selection and escapes (`"it's"`, `'a\nb'`), not raw bytes.
                     let msg = format!(
                         "could not convert string to float: {}",
-                        format_string_repr_bytes(bytes)
+                        format_string_repr_bytes(super::ops::unicode_data(_py), bytes)
                     );
                     return raise_exception::<_>(_py, "ValueError", &msg);
                 }
                 if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
                     let len = bytes_len(ptr);
                     let bytes = std::slice::from_raw_parts(bytes_data(ptr), len);
-                    if let Ok(parsed) = parse_float_from_bytes(bytes) {
+                    if let Ok(parsed) = parse_float_from_bytes(None, bytes) {
                         return float_result_bits(_py, parsed);
                     }
                     // CPython embeds `repr(arg)`: `b'...'` for bytes,
@@ -882,7 +893,7 @@ pub extern "C" fn molt_complex_from_obj(val_bits: u64, imag_bits: u64, has_imag_
             let bytes = unsafe { std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr)) };
             let parts = std::str::from_utf8(bytes)
                 .ok()
-                .and_then(|text| parse_complex_from_str(text).ok());
+                .and_then(|text| parse_complex_from_str(super::ops::unicode_data(py), text).ok());
             return match parts {
                 Some(parts) => complex_bits(py, parts.re, parts.im),
                 None => {
@@ -1684,6 +1695,23 @@ pub(crate) fn maybe_emit_runtime_feedback_file(py: &PyToken<'_>, payload: &serde
 mod int_literal_tests {
     use super::parse_int_from_str;
     use num_bigint::BigInt;
+
+    #[test]
+    fn numeric_whitespace_preserves_python_string_and_bytes_domains() {
+        let data = molt_obj_model::unicode::UnicodeData::for_version((3, 12)).unwrap();
+        for text in ["\u{b}1.5\u{c}", "\u{a0}1.5\u{2003}"] {
+            assert_eq!(
+                super::parse_float_from_bytes(Some(data), text.as_bytes()),
+                Ok(1.5)
+            );
+        }
+        assert_eq!(super::parse_float_from_bytes(None, b"\x0b1.5\x0c"), Ok(1.5));
+        assert!(super::parse_float_from_bytes(None, "\u{a0}1.5".as_bytes()).is_err());
+        for code in 0x1c..=0x1f {
+            let text = format!("{}1.5", char::from_u32(code).unwrap());
+            assert!(super::parse_float_from_bytes(Some(data), text.as_bytes()).is_err());
+        }
+    }
 
     #[test]
     fn bigint_literal_invalid_inputs_return_none_with_pending_exception() {

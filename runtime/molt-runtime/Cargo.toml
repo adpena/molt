@@ -74,7 +74,7 @@ stdlib_full = [
     "sqlite",
     "molt_gpu_primitives",
 ]
-stdlib_unicode_names = ["dep:unicode_names2", "molt-stdlib-text/stdlib_unicode_names"]
+stdlib_unicode_names = ["stdlib_text", "molt-stdlib-text/stdlib_unicode_names"]
 
 # Strict superset chain: micro -> edge -> standard -> server -> full.
 # Each tier includes ALL features of the tier below it plus its own additions.
@@ -198,6 +198,7 @@ molt_gpu_hip = ["molt-gpu-runtime?/hip-backend"]
 molt_gpu_primitives = ["dep:molt-gpu", "dep:molt-gpu-runtime"]
 
 [dependencies]
+molt-runtime-capi = { path = "../molt-runtime-capi" }
 # Core runtime (always required)
 molt-codegen-abi = { path = "../molt-codegen-abi" }
 molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
@@ -242,8 +243,10 @@ num-integer = "0.1"
 num-traits = "0.2"
 libm = "0.2"
 libc = "0.2"
-unicode-casefold = "0.2"
-unicode_names2 = { version = "4.0", optional = true }
+# Generic codec kernels accept runtime-selected named escapes and error policies.
+# Their table dependency is real even without the public unicodedata name API.
+# Linker section reachability owns removal when these kernels are not retained.
+unicode_names2 = "4.0"
 
 # Crypto (always-on subset used directly by molt-runtime internals)
 # Full crypto implementation lives in molt-runtime-crypto, gated by stdlib_crypto.

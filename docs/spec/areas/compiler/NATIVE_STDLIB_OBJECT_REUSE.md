@@ -35,7 +35,10 @@ with the codegen environment projected to the native-worker roles a job reads
 (`native_object_environment_inputs`). The program context (entry module and
 stdlib module set) only selects the functions of each job and never reaches the
 worker, so it stays out of the manifest; whole-program keys and the archive key
-bind it. A new import therefore keeps every unchanged constituent. The executing backend file's SHA256 and the effective Cranelift
+bind it. An import that leaves a constituent's closed job unchanged therefore
+keeps that object. Adding another retained body from the same source can change
+the batch and require recompilation, even when its existing bodies did not
+change. The executing backend file's SHA256 and the effective Cranelift
 target/shared/ISA flags plus host TIR SIMD facts are additional inputs. LLVM
 builds bind the host triple, CPU and features used by its target-machine owner.
 Transport paths and timestamps are never content identity. The existing CLI
@@ -59,6 +62,47 @@ buckets within its source group. Keeping sources separate can increase cold
 worker launches in exchange for avoiding cross-source recompilation. A single
 oversized function remains one compiler input under the existing megafunction
 authority.
+
+## Module production versus application reachability
+
+Source grouping does not yet establish independently compiled modules.
+`prune_and_partition_native_stdlib` eliminates unreachable functions before
+forming cached stdlib jobs. A source group containing `f` can therefore become
+a different object containing `f` and `g` after an application-root change.
+Published Python functions may already both be rooted by their initializer;
+this cost applies when the retained body set actually changes, not to every
+additional attribute call. Frontend native-support slicing also removes
+definitions and imports before lowering. The backend cannot reconstruct a
+complete provider module from those sliced inputs.
+
+The intended boundary is one admitted, closed module producer independent of
+application export selection, with application roots selecting final sections.
+Reuse the existing module payload, projected ABI, reference edges, object cache
+and linker; no body-only cache key or second compiler pipeline is needed.
+This follows [rustc's separation of stable module units from volatile instances](https://doc.rust-lang.org/nightly/nightly-rustc/src/rustc_monomorphize/partitioning.rs.html)
+and [ThinLTO's separate module summaries and cached backend work](https://clang.llvm.org/docs/ThinLTO.html).
+Neither mechanism permits reuse after a consumed body, signature or imported
+dependency changes.
+
+Moving the current elimination pass alone would change admission. Provider
+closure validation rejects references to application-defined functions, even
+when the referring body is uncalled. The application resolver currently also
+consumes the incoming body set. Retaining more bodies can introduce new
+resolver roots, unavailable intrinsics or code that is not lowerable on the
+selected target. A complete migration must supply target-lowerable closed
+provider units first, derive resolver and feature demand from the application
+reached view, and migrate both partition/externalization producers together.
+Module initializers and published/address-taken functions remain real roots.
+
+The decisive witness uses one unchanged provider with `f` and `g`: applications
+selecting `f`, then `f` and `g`, must reuse its object while producing correct
+outputs and final symbol sets. Body and ABI changes must invalidate reuse;
+dead unavailable-intrinsic and provider-to-application edges must preserve the
+declared admission boundary. Verify actual native linking and the distinct
+LLVM/WASM export/table contracts before expanding the claim. Measure cold
+lowering, object count, memory and disk costs alongside warm reuse: eagerly
+compiling all source modules or emitting one process/object per function is
+not an accepted substitute. This producer migration remains open under V1-07.
 
 Even zero- and one-body archives use this same path. An empty partition emits
 one real native object containing the ABI anchor. The former direct-only

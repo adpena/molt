@@ -356,8 +356,6 @@ def _cargo_build_env(
     # nested Cargo build obtains its environment through this authority.
     normalized_env, _applied = normalize_cargo_environment(env, default_incremental="1")
     env = ProcessEnvironmentBuilder(normalized_env)
-    if sys.executable:
-        env.setdefault("MOLT_BUILD_PYTHON", sys.executable)
     _apply_memory_bounded_cargo_jobs(env)
     _maybe_enable_lld_link(env)
     _maybe_enable_sccache(env)

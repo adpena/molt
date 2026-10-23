@@ -23,16 +23,12 @@ from molt.exact_json import (
     read_exact,
     string_keyed_mapping,
 )
-from molt.python_identity_common import PythonEnvironmentIdentityError, _valid_sha256
-from molt.python_runtime_identity import (
-    BUILD_PYTHON_IDENTITY_SCHEMA,
-    validate_python_runtime_identity,
-)
+from molt.python_identity_common import _valid_sha256
 
-_SCHEMA = "molt.runtime-build-member-identity.v3"
+_SCHEMA = "molt.runtime-build-member-identity.v4"
 RUNTIME_ARTIFACT_METADATA_MAX_BYTES = 16 * 1024 * 1024
-_FAMILY_SCHEMA = "molt.runtime-build-family.v3"
-_TOOLCHAIN_MANIFEST_SCHEMA = "molt.runtime-toolchain-content.v3"
+_FAMILY_SCHEMA = "molt.runtime-build-family.v4"
+_TOOLCHAIN_MANIFEST_SCHEMA = "molt.runtime-toolchain-content.v4"
 _RUNTIME_BUILD_OUTER_FIELDS = {
     "schema",
     "digest",
@@ -244,49 +240,22 @@ def _validated_common_config(payload: object) -> Mapping[str, object]:
     return value
 
 
-def _validated_build_script_environment(
-    payload: object, *, target: str, build_python: object
-) -> None:
+def _validated_build_script_environment(payload: object, *, target: str) -> None:
     value = string_keyed_mapping(payload)
     if value is None:
         raise ValueError("runtime build-script environment must be an object")
     schema = value.get("schema")
-    fields = {"schema", "build_python", "python_import_policy", WASI_C_ABI_PLAN_ENV}
-    runtime = schema == "molt.runtime-build-script-environment.v3"
+    fields = {"schema", WASI_C_ABI_PLAN_ENV}
+    runtime = schema == "molt.runtime-build-script-environment.v4"
     if runtime:
         fields |= {
             "MOLT_WASM_CPYTHON_ABI_EXPORTS",
             "MOLT_WASM_CPYTHON_ABI_DATA_EXPORTS",
         }
-    elif schema != "molt.cpython-abi-build-script-environment.v3":
+    elif schema != "molt.cpython-abi-build-script-environment.v4":
         raise ValueError("runtime build-script schema is invalid")
     if set(value) != fields:
         raise ValueError("runtime build-script environment shape is invalid")
-    python = string_keyed_mapping(value["build_python"])
-    if python is None or set(python) != {"selected_by", "selectors", "content_digest"}:
-        raise ValueError("runtime build-script Python selection is invalid")
-    selectors = string_keyed_mapping(python["selectors"])
-    selected = python["selected_by"]
-    if selectors is None or set(selectors) != {"MOLT_BUILD_PYTHON", "PYTHON"}:
-        raise ValueError("runtime build-script Python selectors are invalid")
-    if not isinstance(selected, str) or selected not in {
-        *selectors,
-        "platform-default",
-    }:
-        raise ValueError("runtime build-script Python selector is unknown")
-    if any(
-        not isinstance(state, str) or state not in {"selected", "shadowed", "unset"}
-        for state in selectors.values()
-    ):
-        raise ValueError("runtime build-script Python selector state is invalid")
-    if tuple(name for name, state in selectors.items() if state == "selected") != (
-        () if selected == "platform-default" else (selected,)
-    ):
-        raise ValueError("runtime build-script selected interpreter is inconsistent")
-    if python["content_digest"] != _digest(build_python):
-        raise ValueError("runtime build-script Python differs from toolchain custody")
-    if value["python_import_policy"] != "isolated-no-site-v1":
-        raise ValueError("runtime build-script Python import policy is invalid")
     c_abi = value[WASI_C_ABI_PLAN_ENV]
     if target in {"wasm32-wasip1", "wasm32-unknown-unknown"}:
         if (
@@ -441,57 +410,6 @@ def _validated_executable_content_identity(
     return value
 
 
-def _validated_build_python_identity(payload: object) -> Mapping[str, object]:
-    admission = (BUILD_PYTHON_IDENTITY_SCHEMA,)
-    if _has_schema_admission(payload, admission):
-        return cast(Mapping[str, object], payload)
-    value = string_keyed_mapping(payload)
-    if value is None or set(value) != {
-        "identity_sha256",
-        "logical_name",
-        "runtime",
-        "schema",
-        "selected_executable",
-    }:
-        raise ValueError("runtime build Python identity shape is invalid")
-    selected = string_keyed_mapping(value.get("selected_executable"))
-    if selected is None or set(selected) != {
-        "content_filename",
-        "entrypoint",
-        "sha256",
-        "size",
-    }:
-        raise ValueError("runtime build Python executable identity shape is invalid")
-    entrypoint = selected.get("entrypoint")
-    content_filename = selected.get("content_filename")
-    size = selected.get("size")
-    if (
-        value.get("schema") != BUILD_PYTHON_IDENTITY_SCHEMA
-        or value.get("logical_name") != "build_python"
-        or not isinstance(entrypoint, str)
-        or not entrypoint
-        or not _portable_filename(entrypoint)
-        or not isinstance(content_filename, str)
-        or not content_filename
-        or not _portable_filename(content_filename)
-        or not isinstance(size, int)
-        or isinstance(size, bool)
-        or size < 0
-        or not _valid_sha256(selected.get("sha256"))
-    ):
-        raise ValueError("runtime build Python executable identity is invalid")
-    runtime = _thaw_json(value.get("runtime"))
-    try:
-        validate_python_runtime_identity(runtime)
-    except PythonEnvironmentIdentityError as exc:
-        raise ValueError(f"runtime build Python closure is invalid: {exc}") from exc
-    material = {key: value[key] for key in value if key != "identity_sha256"}
-    if value.get("identity_sha256") != _digest(material):
-        raise ValueError("runtime build Python identity digest is invalid")
-    _remember_schema_admission(payload, admission)
-    return value
-
-
 def _validated_runtime_toolchain_content(
     payload: object,
     *,
@@ -516,7 +434,6 @@ def _validated_runtime_toolchain_content(
     tools = string_keyed_mapping(value.get("tools"))
     allowed_tools = {
         "ar",
-        "build_python",
         "cargo",
         "cc",
         "cxx",
@@ -532,15 +449,12 @@ def _validated_runtime_toolchain_content(
     }
     if (
         tools is None
-        or not {"build_python", "cargo", "rustc"}.issubset(tools)
+        or not {"cargo", "rustc"}.issubset(tools)
         or not set(tools).issubset(allowed_tools)
     ):
         raise ValueError("runtime toolchain tools are invalid")
     for name, raw in tools.items():
-        if name == "build_python":
-            _validated_build_python_identity(raw)
-        else:
-            _validated_executable_content_identity(raw, logical_name=name)
+        _validated_executable_content_identity(raw, logical_name=name)
     wrappers = string_keyed_mapping(value.get("wrappers"))
     if wrappers is None:
         raise ValueError("runtime toolchain wrapper identities are invalid")
@@ -626,14 +540,6 @@ def _validated_toolchain_manifest_payload(
     return value
 
 
-def _runtime_toolchain_build_python(
-    manifest: RuntimeToolchainContentManifest,
-) -> Mapping[str, object]:
-    toolchain = cast(Mapping[str, object], manifest.payload["toolchain"])
-    tools = cast(Mapping[str, object], toolchain["tools"])
-    return _validated_build_python_identity(tools["build_python"])
-
-
 def _validated_runtime_build_payload(
     payload: object,
     *,
@@ -674,11 +580,9 @@ def _validated_runtime_build_payload(
     _validated_runtime_toolchain_content(
         compile_payload["toolchain"], target_triple=target
     )
-    toolchain = cast(Mapping[str, object], compile_payload["toolchain"])
     _validated_build_script_environment(
         config["build_script_environment"],
         target=target,
-        build_python=cast(Mapping[str, object], toolchain["tools"])["build_python"],
     )
     _validated_publication_authority(publication)
     expected_members = (
@@ -952,7 +856,7 @@ class RuntimeBuildIdentity(Mapping[str, object]):
     ) -> RuntimeBuildIdentity:
         # A caller-trusted identity already proves the complete schema. Matching
         # a wire claim requires the same canonical content, not a second semantic
-        # admission of its Python/toolchain/family descendants. Return that owner;
+        # admission of its toolchain/family descendants. Return that owner;
         # the untrusted mapping never becomes an authority or a retained cache.
         if expected is not None:
             expected = RuntimeBuildIdentity.from_dict(expected)

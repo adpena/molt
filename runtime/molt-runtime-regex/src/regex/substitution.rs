@@ -18,7 +18,7 @@ fn match_limit(value: i64) -> Option<usize> {
 fn alloc_text_units(py: &CoreGilToken, units: &[u32]) -> *mut u8 {
     let mut bytes = Vec::with_capacity(units.len());
     for &unit in units {
-        molt_runtime_core::text_storage::push_code_point(&mut bytes, unit);
+        molt_obj_model::text_storage::push_code_point(&mut bytes, unit);
     }
     alloc_string(py, &bytes)
 }
@@ -243,7 +243,7 @@ pub extern "C" fn molt_re_sub(
 
             // Append text[last..m_start].
             for &unit in &units[last..m_start] {
-                molt_runtime_core::text_storage::push_code_point(&mut out, unit);
+                molt_obj_model::text_storage::push_code_point(&mut out, unit);
             }
 
             // Expand the replacement template.
@@ -260,7 +260,7 @@ pub extern "C" fn molt_re_sub(
                 }
             };
             for unit in expanded {
-                molt_runtime_core::text_storage::push_code_point(&mut out, unit);
+                molt_obj_model::text_storage::push_code_point(&mut out, unit);
             }
 
             last = m_end;
@@ -269,7 +269,7 @@ pub extern "C" fn molt_re_sub(
 
         // Append the remaining text.
         for &unit in &units[last..] {
-            molt_runtime_core::text_storage::push_code_point(&mut out, unit);
+            molt_obj_model::text_storage::push_code_point(&mut out, unit);
         }
 
         // Build result tuple: (result_string, num_replacements).

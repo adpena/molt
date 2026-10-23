@@ -371,11 +371,26 @@ def test_a_snapshot_that_disagrees_with_the_pins_fails_closed(
 # --- Refresh ---------------------------------------------------------------
 
 
+@pytest.mark.parametrize("changed", ["lib", "evidence"])
 def test_refresh_fails_closed_when_content_at_a_pinned_revision_changes(
     fixture_authority: Path,
+    changed: str,
 ) -> None:
+    prior = _snapshot()
+    prior = replace(prior, inputs=prior.inputs[:-1])
+    gen.SNAPSHOT_PATH.write_text(gen.render_snapshot({"3.12": prior}), encoding="utf-8")
     before = gen.SNAPSHOT_PATH.read_bytes()
     tampered = _snapshot(entries=("abc.py", "abc_fake.py"))
+    if changed == "evidence":
+        full = _snapshot()
+        original = full.inputs[0]
+        changed_text = "changed source at the same revision\n"
+        altered = replace(
+            original,
+            text=changed_text,
+            git_object=gen._git_blob_id(changed_text.encode()),
+        )
+        tampered = replace(full, inputs=(altered, *full.inputs[1:]))
 
     with pytest.raises(RuntimeError, match="does not match the receipt") as raised:
         gen.refresh_sources(fetch=lambda pin: tampered)
@@ -391,6 +406,20 @@ def test_refresh_replaces_a_moved_pin_and_keeps_an_unchanged_one(
     assert gen.refresh_sources(fetch=lambda pin: _snapshot()) == 0
     assert gen.SNAPSHOT_PATH.read_bytes() == before
     assert "current" in capsys.readouterr().out
+
+    # The previous source cohort predates the newly declared Unicode roles.
+    complete = _snapshot()
+    prior = replace(
+        complete,
+        inputs=tuple(
+            item for item in complete.inputs if not item.role.startswith("unicode_")
+        ),
+    )
+    gen.SNAPSHOT_PATH.write_text(gen.render_snapshot({"3.12": prior}), encoding="utf-8")
+    with pytest.raises(ValueError, match="complete source evidence"):
+        gen.load_snapshot(gen.SNAPSHOT_PATH)
+    assert gen.refresh_sources(fetch=lambda pin: complete) == 0
+    assert gen.load_snapshot(gen.SNAPSHOT_PATH) == {"3.12": complete}
 
     _write_pins(gen.PINS_PATH, {"3.12": ("v3.12.2", "d" * 40)})
     moved = _snapshot(tag="v3.12.2", revision="d" * 40, entries=("abc.py",))
@@ -420,7 +449,7 @@ def test_git_failure_fails_closed_through_the_memory_guard(
 
     monkeypatch.setattr(
         gen.harness_memory_guard,
-        "guarded_completed_process",
+        "guarded_completed_process_to_tempfiles",
         fake_guarded_completed_process,
     )
 
@@ -429,8 +458,44 @@ def test_git_failure_fails_closed_through_the_memory_guard(
 
     assert captured["cmd"] == ["git", "fetch", "origin"]
     assert captured["prefix"] == "MOLT_GENERATOR"
-    assert captured["text"] is False
+    assert captured["input"] is None
     assert captured["env"]["GIT_TERMINAL_PROMPT"] == "0"
+
+
+@pytest.mark.parametrize(
+    "corruption", ["missing", "type", "oid", "size", "extra", "truncated"]
+)
+def test_source_batch_metadata_refuses_incomplete_or_misbound_objects(
+    monkeypatch, tmp_path, corruption
+):
+    first = b"a" * 40 + b" blob 1\n"
+    second = b"b" * 40 + b" tree 12\n"
+    data = first + second
+    if corruption == "missing":
+        data = b"HEAD:source missing\n" + second
+    elif corruption == "type":
+        data = second + first
+    elif corruption == "oid":
+        data = data[1:]
+    elif corruption == "size":
+        data = data.replace(b" blob 1", b" blob -1")
+    elif corruption == "extra":
+        data += first
+    else:
+        data = data[:-1]
+    calls = []
+
+    def git(args, *, cwd, input=None):
+        calls.append(args)
+        assert args[-1] == "--batch-check", "invalid metadata reached blob read"
+        return data
+
+    monkeypatch.setattr(gen, "_git", git)
+    with pytest.raises(ValueError, match="Git source batch metadata"):
+        gen._git_source_objects(
+            tmp_path, "c" * 40, [("source", "blob"), ("Lib", "tree")]
+        )
+    assert len(calls) == 1
 
 
 def _fixture_remote(
@@ -478,13 +543,27 @@ def _fixture_remote(
     return root, git("rev-parse", "HEAD"), git("rev-parse", "HEAD:Lib")
 
 
-def test_fetch_reads_a_pinned_tag_without_blobs(tmp_path: Path) -> None:
+def test_fetch_reads_a_pinned_tag_without_blobs(
+    tmp_path: Path, monkeypatch, record_property
+) -> None:
     remote, revision, lib_object = _fixture_remote(tmp_path / "cpython")
     pin = gen.CPythonSource(
         python="3.12", revision=revision, tag="v3.12.1", git_url=remote.as_uri()
     )
 
+    calls = []
+    git = gen._git
+
+    def observe_git(args, *, cwd, **kwargs):
+        output = git(args, cwd=cwd, **kwargs)
+        arguments = list(args[2:]) if args[:1] == ["-C"] else list(args)
+        calls.append({"argv": arguments, "stdout_bytes": len(output)})
+        return output
+
+    monkeypatch.setattr(gen, "_git", observe_git)
     snapshot = gen.fetch_pinned_source(pin)
+    record_property("source_fetch_transport", json.dumps(calls, sort_keys=True))
+    record_property("source_receipts", json.dumps(snapshot.receipts(), sort_keys=True))
     roundtrip = json.loads(gen.render_snapshot({"3.12": snapshot}))["sources"][0]
     assert gen._snapshot_from_row(roundtrip, "fixture") == snapshot
 
@@ -510,6 +589,11 @@ def test_fetch_reads_a_pinned_tag_without_blobs(tmp_path: Path) -> None:
         "token_grammar",
         "token_module",
         "token_generator",
+        "unicode_type_table",
+        "unicode_database_table",
+        "unicode_generator",
+        "unicode_type_implementation",
+        "unicode_database_implementation",
     )
     for item in snapshot.inputs:
         if item.role == "public_headers":
@@ -522,6 +606,12 @@ def test_fetch_reads_a_pinned_tag_without_blobs(tmp_path: Path) -> None:
         EXPECTED_PY_MODULES,
         EXPECTED_PY_PACKAGES,
     )
+    assert len(calls) == 8, calls
+    assert sum(row["argv"][:1] == ["rev-parse"] for row in calls) == 1
+    assert [row["argv"] for row in calls if row["argv"][:1] == ["cat-file"]] == [
+        ["cat-file", "--batch-check"],
+        ["cat-file", "--batch"],
+    ]
 
     moved = gen.CPythonSource(
         python="3.12", revision="f" * 40, tag="v3.12.1", git_url=remote.as_uri()
@@ -939,7 +1029,14 @@ def test_source_comparison_refuses_changed_current_source(
 
 @pytest.mark.parametrize("mutation", ["missing", "role", "path", "text", "forged_hash"])
 @pytest.mark.parametrize(
-    "role", ["ast_schema", "token_grammar", "token_module", "token_generator"]
+    "role",
+    [
+        "ast_schema",
+        "token_grammar",
+        "token_module",
+        "token_generator",
+        "unicode_type_table",
+    ],
 )
 def test_source_evidence_rejects_missing_misbound_and_forged_bytes(
     fixture_authority, mutation, role
@@ -1005,23 +1102,82 @@ def test_declared_pending_pin_requires_captured_inputs(fixture_authority):
         gen.generated_outputs()
 
 
-@pytest.mark.parametrize("missing_role", ["ASDL", "grammar"])
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "ASDL",
+        "grammar",
+        "fetched_missing",
+        "fetched_pin",
+        "prior_text",
+        "prior_blob",
+        "prior_role",
+        "prior_duplicate",
+        "prior_reordered",
+        "prior_path",
+        "prior_canonical",
+    ],
+)
 def test_refresh_never_writes_partial_evidence_on_late_failure(
-    fixture_authority, missing_role
+    fixture_authority, failure
 ):
+    prior = _snapshot()
+    prior = replace(prior, inputs=prior.inputs[:-1])
+    gen.SNAPSHOT_PATH.write_text(gen.render_snapshot({"3.12": prior}), encoding="utf-8")
+    if failure.startswith("prior_"):
+
+        def corrupt(row):
+            inputs = row["inputs"]
+            if failure in ("prior_text", "prior_blob"):
+                inputs[0]["text"] = "changed\n"
+                if failure == "prior_blob":
+                    inputs[0]["sha256"] = gen._sha256(b"changed\n")
+            elif failure == "prior_role":
+                inputs[0]["role"] = "unknown_evidence"
+            elif failure == "prior_duplicate":
+                inputs.insert(1, dict(inputs[0]))
+            elif failure == "prior_reordered":
+                inputs[:2] = reversed(inputs[:2])
+            elif failure == "prior_path":
+                inputs[0]["path"] = "Include/other.h"
+
+        _rewrite_snapshot(gen.SNAPSHOT_PATH, corrupt)
+        if failure == "prior_canonical":
+            gen.SNAPSHOT_PATH.write_text(
+                json.dumps(json.loads(gen.SNAPSHOT_PATH.read_text())), encoding="utf-8"
+            )
     before = gen.SNAPSHOT_PATH.read_bytes()
     _write_pins(
         gen.PINS_PATH, {"3.12": ("v3.12.1", "a" * 40), "3.15": ("v3.15.0", "c" * 40)}
     )
+    fetched_versions = []
 
     def fetch(pin):
+        fetched_versions.append(pin.python)
         if pin.python == "3.15":
-            raise RuntimeError(f"missing pinned {missing_role} blob")
+            if failure in ("ASDL", "grammar"):
+                raise RuntimeError(f"missing pinned {failure} blob")
+            pending = _snapshot(python=pin.python, tag=pin.tag, revision=pin.revision)
+            if failure == "fetched_missing":
+                return replace(pending, inputs=pending.inputs[:-1])
+            return replace(pending, revision="d" * 40)
         return _snapshot()
 
-    with pytest.raises(RuntimeError, match=f"missing pinned {missing_role}"):
+    message = (
+        "canonical form"
+        if failure == "prior_canonical"
+        else "evidence"
+        if failure.startswith("prior_") or failure == "fetched_missing"
+        else "pin"
+        if failure == "fetched_pin"
+        else f"missing pinned {failure}"
+    )
+    with pytest.raises((RuntimeError, ValueError), match=message):
         gen.refresh_sources(fetch=fetch)
     assert gen.SNAPSHOT_PATH.read_bytes() == before
+    assert fetched_versions == (
+        [] if failure.startswith("prior_") else ["3.12", "3.15"]
+    )
 
 
 @pytest.mark.parametrize(

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from molt.cli import progress as _progress
 from molt.cli.build_locks import BuildLockAcquisitionError, _build_lock
-from molt.cli.runtime_build_python import bind_runtime_build_python, build_python_scope
 
 import contextlib
 import json
@@ -622,7 +621,6 @@ def _resolve_runtime_wasm_pair_identity(
             ctx.project_root,
             shared_spec,
             reloc_spec,
-            build_python_admission=ctx.runtime_state.build_python_admission,
         ),
         identity_tree=_runtime_source_identity_tree,
     )
@@ -709,12 +707,6 @@ def _prepare_runtime_wasm_pair_build(
             reloc_spec,
             mode="pre_build",
         )
-        assert shared_spec.cargo_plan is not None
-        bound_plan = bind_runtime_build_python(
-            shared_spec.cargo_plan, ctx.pre_identity.shared
-        )
-        ctx.shared_spec = shared_spec.with_cargo_plan(bound_plan)
-        ctx.reloc_spec = reloc_spec.with_cargo_plan(bound_plan)
         _bind_exact_family_fingerprints(ctx, ctx.pre_identity)
         ctx.pre_identity.toolchain.write(ctx.toolchain_manifest_path)
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
@@ -990,90 +982,87 @@ def _ensure_runtime_wasm_both(
             planned_exports=planned_exports,
             bind_for_codegen=bind_for_codegen,
         )
-    with build_python_scope(runtime_state):
-        ctx = _prepare_runtime_wasm_pair_build(
-            runtime_state,
-            json_output=json_output,
-            cargo_profile=cargo_profile,
-            cargo_timeout=cargo_timeout,
-            project_root=project_root,
-            simd_enabled=simd_enabled,
-            freestanding=freestanding,
-            stdlib_profile=stdlib_profile,
-            resolved_modules=resolved_modules,
-            required_link_features=required_link_features,
-            required_exports=planned_exports,
-            full_export_surface=bind_for_codegen or binding is not None,
-        )
-        if ctx is None:
-            return False
-        try:
-            if binding is not None:
-                generation = binding.generation
-                if ctx.pre_identity is None or (
-                    ctx.pre_identity.shared != generation.shared_identity
-                    or ctx.pre_identity.reloc != generation.reloc_identity
-                ):
-                    return ctx.fail(
-                        "codegen-identity-stability",
-                        "Runtime WASM build inputs changed after app layout was bound; "
-                        "refusing runtime reselection beneath compiled code.",
-                    )
-                ctx.generation_manifest = generation.manifest
-                ctx.required_exports = required_exports
-                try:
-                    binding.verify()
-                except (OSError, ValueError) as exc:
-                    return ctx.fail(
-                        "codegen-identity-stability",
-                        f"The bound runtime WASM generation changed: {exc}",
-                    )
-                if ctx.accept_generation(observed_generation=generation):
-                    return True
+    ctx = _prepare_runtime_wasm_pair_build(
+        runtime_state,
+        json_output=json_output,
+        cargo_profile=cargo_profile,
+        cargo_timeout=cargo_timeout,
+        project_root=project_root,
+        simd_enabled=simd_enabled,
+        freestanding=freestanding,
+        stdlib_profile=stdlib_profile,
+        resolved_modules=resolved_modules,
+        required_link_features=required_link_features,
+        required_exports=planned_exports,
+        full_export_surface=bind_for_codegen or binding is not None,
+    )
+    if ctx is None:
+        return False
+    try:
+        if binding is not None:
+            generation = binding.generation
+            if ctx.pre_identity is None or (
+                ctx.pre_identity.shared != generation.shared_identity
+                or ctx.pre_identity.reloc != generation.reloc_identity
+            ):
                 return ctx.fail(
-                    "codegen-generation-admission",
-                    "The runtime WASM pair bound before app code generation no longer "
-                    "satisfies its emitted import contract: "
-                    + json.dumps(ctx.generation_rejection_details(), sort_keys=True),
+                    "codegen-identity-stability",
+                    "Runtime WASM build inputs changed after app layout was bound; "
+                    "refusing runtime reselection beneath compiled code.",
                 )
-            # One builder at a time runs the combined Cargo transaction for a
-            # target and publishes its pair: another builder's Cargo run must
-            # not rewrite the archives while this one fingerprints them, and a
-            # builder that waited accepts the published generation instead of
-            # building again (HF-F227).
+            ctx.generation_manifest = generation.manifest
+            ctx.required_exports = required_exports
             try:
-                with _build_lock(
-                    ctx.project_root,
-                    f"runtime.{ctx.cargo_profile}.wasm32-wasip1.pair",
-                ):
-                    outcome = _materialize_runtime_wasm_pair(ctx)
-                    if outcome is _PairBuildOutcome.FAILED:
-                        return False
-                    if (
-                        outcome is _PairBuildOutcome.BUILT
-                        and not _publish_runtime_wasm_pair(ctx)
-                    ):
-                        return False
-            except BuildLockAcquisitionError as exc:
+                binding.verify()
+            except (OSError, ValueError) as exc:
                 return ctx.fail(
-                    "pair-build-lock", f"Runtime WASM pair build lock: {exc}"
+                    "codegen-identity-stability",
+                    f"The bound runtime WASM generation changed: {exc}",
                 )
-            if bind_for_codegen:
-                assert ctx.pre_identity is not None
-                generation = ctx.accepted_generation
-                if generation is None:
-                    return ctx.fail(
-                        "codegen-binding",
-                        "Runtime WASM pair lost admission before code generation.",
-                    )
-                try:
-                    binding = bind_runtime_wasm_codegen(generation, planned_exports)
-                except (OSError, ValueError) as exc:
-                    return ctx.fail(
-                        "codegen-binding", f"Runtime WASM codegen binding failed: {exc}"
-                    )
-                runtime_state.runtime_wasm_codegen_binding = binding
-                runtime_state.runtime_wasm_generation = binding.generation.manifest
-            return True
-        finally:
-            ctx.cleanup_staging()
+            if ctx.accept_generation(observed_generation=generation):
+                return True
+            return ctx.fail(
+                "codegen-generation-admission",
+                "The runtime WASM pair bound before app code generation no longer "
+                "satisfies its emitted import contract: "
+                + json.dumps(ctx.generation_rejection_details(), sort_keys=True),
+            )
+        # One builder at a time runs the combined Cargo transaction for a
+        # target and publishes its pair: another builder's Cargo run must
+        # not rewrite the archives while this one fingerprints them, and a
+        # builder that waited accepts the published generation instead of
+        # building again (HF-F227).
+        try:
+            with _build_lock(
+                ctx.project_root,
+                f"runtime.{ctx.cargo_profile}.wasm32-wasip1.pair",
+            ):
+                outcome = _materialize_runtime_wasm_pair(ctx)
+                if outcome is _PairBuildOutcome.FAILED:
+                    return False
+                if (
+                    outcome is _PairBuildOutcome.BUILT
+                    and not _publish_runtime_wasm_pair(ctx)
+                ):
+                    return False
+        except BuildLockAcquisitionError as exc:
+            return ctx.fail("pair-build-lock", f"Runtime WASM pair build lock: {exc}")
+        if bind_for_codegen:
+            assert ctx.pre_identity is not None
+            generation = ctx.accepted_generation
+            if generation is None:
+                return ctx.fail(
+                    "codegen-binding",
+                    "Runtime WASM pair lost admission before code generation.",
+                )
+            try:
+                binding = bind_runtime_wasm_codegen(generation, planned_exports)
+            except (OSError, ValueError) as exc:
+                return ctx.fail(
+                    "codegen-binding", f"Runtime WASM codegen binding failed: {exc}"
+                )
+            runtime_state.runtime_wasm_codegen_binding = binding
+            runtime_state.runtime_wasm_generation = binding.generation.manifest
+        return True
+    finally:
+        ctx.cleanup_staging()

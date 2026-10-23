@@ -1,12 +1,6 @@
 from __future__ import annotations
 
 from molt.cli import progress as _progress
-from molt.python_runtime_admission import BuildPythonAdmission
-from molt.cli.runtime_build_python import (
-    bind_runtime_build_python,
-    build_python_scope,
-    pin_runtime_build_python_environment,
-)
 
 import json
 import os
@@ -342,10 +336,6 @@ def _record_native_runtime_failure(
             attempt_count=execution_attempt_count,
             retry_reason=execution_retry_reason,
         )
-        if runtime_state.build_python_admission is not None:
-            runtime_state.build_python_admission.record_failure(
-                runtime_state.native_runtime_build_failure
-            )
     return False
 
 
@@ -550,7 +540,6 @@ def _ensure_native_runtime_lib_ready_before_link(
                 stdlib_profile=stdlib_profile,
                 extra_runtime_features=runtime_state.extra_runtime_features,
                 rust_cpu=runtime_state.rust_cpu,
-                build_python_admission=runtime_state.build_python_admission,
             )
             binding.link_facts.cargo_environment.verify(current.environment)
             binding.verify()
@@ -639,7 +628,6 @@ def _runtime_build_identity_for_plan(
     runtime_features: tuple[str, ...],
     cargo_command: Sequence[str],
     cargo_plan: RuntimeCargoPlan,
-    build_python_admission: BuildPythonAdmission | None = None,
 ) -> RuntimeBuildIdentity:
     return resolve_native_runtime_build_identity(
         project_root,
@@ -650,7 +638,6 @@ def _runtime_build_identity_for_plan(
         cargo_command=cargo_command,
         artifact_selection=RUNTIME_STATICLIB_ARTIFACTS,
         cargo_plan=cargo_plan,
-        build_python_admission=build_python_admission,
     )
 
 
@@ -668,7 +655,6 @@ class _NativeRuntimeBuildPlan:
     fingerprint_features: tuple[str, ...]
     build_identity: RuntimeBuildIdentity
     store: ProductStore
-    build_python_admission: BuildPythonAdmission | None = None
 
     @property
     def cmd(self) -> list[str]:
@@ -743,7 +729,6 @@ class _NativeRuntimeBuildPlan:
             runtime_features=self.fingerprint_features,
             cargo_command=self.cmd,
             cargo_plan=self.cargo_plan,
-            build_python_admission=self.build_python_admission,
         )
 
     def identity_is_current(self, *, stage: str) -> bool:
@@ -849,7 +834,6 @@ def _prepare_native_runtime_build(
     rust_cpu: RustCpuPolicy,
     stage_timings_ms: dict[str, float] | None,
     runtime_state: _RuntimeArtifactState | None,
-    build_python_admission: BuildPythonAdmission | None = None,
 ) -> _NativeRuntimeBuildPlan | None:
     if runtime_state is not None:
         runtime_state.revoke_native_runtime_admission()
@@ -885,9 +869,6 @@ def _prepare_native_runtime_build(
             env=build_env,
             cargo_command=cmd,
             requested_target=target_triple,
-            environment_transform=lambda env: pin_runtime_build_python_environment(
-                env, cwd=project_root
-            ),
             rustflags_transform=rust_cpu.rustflags,
         )
         cmd = list(cargo_plan.command)
@@ -915,9 +896,7 @@ def _prepare_native_runtime_build(
             runtime_features=fingerprint_features,
             cargo_command=cmd,
             cargo_plan=cargo_plan,
-            build_python_admission=build_python_admission,
         )
-        cargo_plan = bind_runtime_build_python(cargo_plan, build_identity)
     except (OSError, ValueError) as exc:
         summary = f"Failed to compute exact runtime native build identity: {exc}"
         if not json_output:
@@ -946,7 +925,6 @@ def _prepare_native_runtime_build(
         fingerprint_features=fingerprint_features,
         build_identity=build_identity,
         store=native_runtime_store(project_root),
-        build_python_admission=build_python_admission,
     )
 
 
@@ -967,7 +945,6 @@ def current_native_runtime_build_inputs(
     stdlib_profile: str | None,
     extra_runtime_features: Sequence[str] | None = None,
     rust_cpu: RustCpuPolicy,
-    build_python_admission: BuildPythonAdmission | None = None,
 ) -> NativeRuntimeBuildInputs:
     """Resolve the exact current native-runtime build-plan identity.
 
@@ -998,7 +975,6 @@ def current_native_runtime_build_inputs(
         rust_cpu=rust_cpu,
         stage_timings_ms=None,
         runtime_state=None,
-        build_python_admission=build_python_admission,
     )
     if plan is None:
         raise ValueError("cannot resolve the current native-runtime build identity")
@@ -1301,7 +1277,6 @@ def _ensure_runtime_lib(
     lock_start = time.perf_counter()
     try:
         with (
-            build_python_scope(runtime_state) as build_python_admission,
             _build_lock(
                 project_root,
                 f"runtime.{cargo_profile}.{target_triple or 'native'}",
@@ -1319,14 +1294,10 @@ def _ensure_runtime_lib(
                 rust_cpu=rust_cpu,
                 stage_timings_ms=stage_timings_ms,
                 runtime_state=runtime_state,
-                build_python_admission=build_python_admission,
             )
             if plan is None:
-                build_python_admission.record_failure()
                 return False
             ok = _ensure_stored_native_runtime(plan)
-            if not ok:
-                build_python_admission.record_failure()
             return ok
     except BuildLockAcquisitionError as exc:
         _record_runtime_build_stage_ms(

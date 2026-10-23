@@ -200,6 +200,18 @@ def test_ssl_intrinsic_abi_is_not_profile_gated() -> None:
     assert '#[cfg(feature = "stdlib_net")]' not in ssl_block
 
 
+def test_unicode_names_feature_refines_module_without_reclassifying_it() -> None:
+    module = gen_intrinsics
+    builtin, internal, stdlib = module._load_categories()
+    for symbol in ("molt_unicodedata_name", "molt_unicodedata_lookup"):
+        assert module._feature_gate_for_symbol(symbol) == "stdlib_unicode_names"
+        assert module._cfg_gate_for_symbol(symbol) == 'feature = "stdlib_unicode_names"'
+        assert (
+            module._classify_symbol(symbol, builtin, internal, stdlib) == "unicodedata"
+        )
+    assert module._feature_gate_for_symbol("molt_unicodedata_category") == "stdlib_text"
+
+
 def test_intrinsic_target_availability_is_toml_owned() -> None:
     module = gen_intrinsics
 
