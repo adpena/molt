@@ -451,8 +451,8 @@ brotli / gzip  -->  output_stripped.wasm.br
 
 **UPDATE 2026-07-29:** `src/molt/wasm_optimization.py` is the single executable
 policy authority for all Binaryen levels, feature gates, and Molt pass sets. Dev app/monolithic
-builds select a non-converging `O1` policy; release artifacts select the named
-shipping policy. Optimized publication is fail-closed and the exact pipeline
+builds run no post-link optimizer unless a level is named (`O1` runs a single
+pass); release artifacts select the named shipping policy. Optimized publication is fail-closed and the exact pipeline
 participates in the content cache identity. Cargo/LLVM runtime generation owns
 the current shared-runtime body optimization; app linking only performs cached
 structural cleanup over its canonical full export graph. Any future Binaryen
@@ -500,17 +500,22 @@ Its complete output family is a `final_link` bundle in the shared WASM link cach
 result instead of relinking. The per-output link receipt still skips republishing
 an unchanged deployment in place.
 
-Dev builds keep `wasm-opt -O1 -g`. Measured on `examples/hello.py` (macOS
-arm64, 2026-10-06): the dev link took 24.7-26.2 s with O1 and 22.7 s without it;
-O1 saves 1.66 MB (26.25 MB to 24.59 MB) and the Node run time did not change
-(0.49-0.75 s either way). The cost is the link of the whole 24 MB runtime, which
-the result cache removes for repeat builds (fresh output directory: 38.9-41.4 s
-to 15.2-17.2 s).
+Dev builds run no post-link optimizer, as Go and Cargo debug builds run none;
+`--wasm-opt-level` opts in. The earlier dev default, `wasm-opt -O1 -g`, was
+chosen on `examples/hello.py` (macOS arm64, 2026-10-06), where O1 cost 2-3.5 s
+of the link and saved 1.66 MB. A 91-line asyncio program links a 75 MB module.
+There O1 took 267 CPU seconds (4.3 trillion instructions), 54 s and 4.2 GB peak
+RSS, and saved 10.4 MB (2026-10-23, macOS arm64, load 8-14). Interleaved dev
+builds of that program took 388.6 and 387.6 CPU seconds with O1 and 105.7 and
+102.7 without it; the link phase fell from 240 and 207 s to 170 and 165 s. The
+cost moves to Node: the unoptimized module's code section is 42.3 MB against
+30.9 MB, and one run took 4.0-4.6 s against 2.1-2.3 s. The final-link result
+cache still serves repeat builds into fresh output directories.
 
 This document intentionally does not copy the pass sequences. Consumers obtain
 the exact command-line tuple through `wasm_opt_pipeline()` or
-`wasm_link_policy()` in that module. `WASM_OPT_DEV_DEFAULT` and
-`WASM_OPT_RELEASE_DEFAULT` own the default level names, while
+`wasm_link_policy()` in that module. `WASM_OPT_DEV_DEFAULT` (no optimizer)
+and `WASM_OPT_RELEASE_DEFAULT` own the defaults, while
 `WASM_OPT_FEATURE_FLAGS` owns the cross-engine feature envelope. Changing a
 pass, level, or feature gate therefore changes one executable authority and its
 cache identity instead of requiring a documentation recipe to stay in sync.
