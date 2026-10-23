@@ -143,9 +143,11 @@ The code that decides whether a change lands is never the change.
   changes from untrusted projects speculatively, but a change to a trusted
   config project takes effect only after it merges. bors and the GitHub merge
   queue run as services, not from the pull request.
-- **Design.** `integrate`, `land` and the queue runner fetch first. Then
-  they run the driver from main's tip: `git archive <tip>` of `tools`, `src/molt`,
-  `pyproject.toml`, `uv.lock` and `.python-version` extracts into
+- **Design.** `integrate`, `land`, the queue runner, `queue withdraw`,
+  `lane start` and `lane retire` fetch first. Then they run the driver from
+  main's tip: `git archive <tip>` of `tools`, `src/molt`, `config` (the data
+  the driver reads, such as tool release pins), `pyproject.toml`, `uv.lock`
+  and `.python-version` extracts into
   `<git-common-dir>/molt/controllers/<key>`, where the key is the digest of
   those tree and blob ids. `uv sync --frozen --no-dev` builds the
   controller's environment from main's lock, and the driver runs there as
@@ -154,8 +156,11 @@ The code that decides whether a change lands is never the change.
   selection from its `tools/proof_plan.toml`, and its tests. A change to the
   driver takes effect after it lands, as a stage0 bump does.
 - **Escape.** `--candidate-controller` runs the candidate's driver for a
-  repair of a broken controller on main. The progress stream and the receipt
-  record it.
+  repair of a broken controller on main. A landing's progress stream and
+  receipt record which controller ran; a lane command prints it
+  (`==> pinned controller <key>`). Each command refuses a pinned claim that
+  does not name the controller it runs from
+  (`molt_dev_controller.integration_controller`).
 - **Cost.** Two `git rev-parse` calls and one no-op `uv sync` per landing. A
   new controller tree costs one extraction (1.5 s, 33 MB) and one environment
   build from the warm uv cache (0.8 s, 35 MB). Retention keeps the four most
