@@ -16,11 +16,8 @@ import pytest
 from molt.cli import backend_ir as BACKEND_IR
 from molt.cli import required_features as RF
 from molt.cli import runtime_features as RUNTIME_FEATURES
-from molt._runtime_feature_gates import (
-    LINK_AFFECTING_FEATURES,
-    feature_gate_for_symbol,
-    link_affecting_feature_gate_for_symbol,
-)
+from molt._runtime_feature_gates import RUNTIME_FEATURES as DECLARED_FEATURES
+from molt._runtime_feature_gates import feature_for_symbol
 from molt.cli import compiler_metadata as cli_compiler_metadata
 
 
@@ -114,10 +111,10 @@ def test_full_profile_includes_stdlib_zoneinfo() -> None:
     assert "stdlib_zoneinfo" in _full_features()
 
 
-# --- Generated symbol -> link-affecting feature gates ----------------------
+# --- Generated symbol -> declared feature ---------------------------------
 
 
-def test_representative_symbols_map_to_link_affecting_features() -> None:
+def test_representative_symbols_map_to_their_declared_features() -> None:
     cases = {
         "molt_ast_parse": "stdlib_ast",
         "molt_hash_new": "stdlib_crypto",
@@ -131,38 +128,54 @@ def test_representative_symbols_map_to_link_affecting_features() -> None:
         "molt_email_message_new": "stdlib_email",
         "molt_math_sqrt": "stdlib_math",
         "molt_xml_fromstring": "stdlib_xml",
-        "molt_ipaddress_ip_address": "stdlib_ipaddress",
+        "molt_ipaddress_v4_int": "stdlib_ipaddress",
+        "molt_socketpair": "stdlib_net",
+        "molt_select_select": "stdlib_select",
     }
     for symbol, feature in cases.items():
-        assert link_affecting_feature_gate_for_symbol(symbol) == feature
+        assert feature_for_symbol(symbol) == feature
 
 
-def test_ungated_ssl_abi_is_never_link_refused() -> None:
-    # ssl keeps a deliberately always-linkable ABI; even if asyncio imports it
-    # eagerly, no ssl symbol maps to a link-affecting feature.
-    assert link_affecting_feature_gate_for_symbol("molt_ssl_context_new") is None
+def test_compile_is_a_core_builtin() -> None:
+    # The parser is linked into every runtime for traceback ranges, and the
+    # import system (zipimport) retains compile(); gating it moved every such
+    # program to the full tier. Only the ast module needs stdlib_ast.
+    assert feature_for_symbol("molt_compile_builtin") is None
+    assert feature_for_symbol("molt_ast_parse") == "stdlib_ast"
 
 
-def test_importlib_extra_is_resolver_only_not_link_affecting() -> None:
-    # importlib.machinery uses molt_importlib_resources_* resolver arms, but
-    # those symbols are compiled unconditionally. The raw resolver-arm gate may
-    # name stdlib_importlib_extra; the link-affecting predicate must not.
-    assert "stdlib_importlib_extra" not in LINK_AFFECTING_FEATURES
-    sym = "molt_importlib_resources_reader_contents_from_roots"
-    assert feature_gate_for_symbol(sym) == "stdlib_importlib_extra"
-    assert link_affecting_feature_gate_for_symbol(sym) is None
+def test_ssl_context_abi_is_core_and_socket_operations_are_networking() -> None:
+    # asyncio imports ssl eagerly; contexts and constants need no socket, so
+    # only the socket operations require the networking provider.
+    assert feature_for_symbol("molt_ssl_context_new") is None
+    assert feature_for_symbol("molt_ssl_wrap_socket") == "stdlib_net"
 
 
-def test_empty_cargo_group_features_are_resolver_only() -> None:
-    resolver_only = {
+def test_import_system_resources_are_always_defined() -> None:
+    # importlib.machinery binds its resource-reader intrinsics eagerly, so they
+    # belong to the import system, not to an optional feature.
+    assert (
+        feature_for_symbol("molt_importlib_resources_reader_contents_from_roots")
+        is None
+    )
+    assert "stdlib_importlib_extra" not in DECLARED_FEATURES
+
+
+def test_no_feature_only_hides_resolver_arms() -> None:
+    # A resolver-only feature hid defined symbols from the resolver, so a
+    # reached intrinsic failed at run time. Every declared feature now removes
+    # its definitions (the generated absence probes prove it), and the empty
+    # groups that gated nothing are gone.
+    cargo = _cargo_feature_graph()
+    for retired in (
         "stdlib_logging",
         "stdlib_concurrent",
-        "stdlib_dbm",
         "stdlib_importlib_extra",
         "stdlib_signal",
-        "stdlib_select",
-    }
-    assert resolver_only.isdisjoint(LINK_AFFECTING_FEATURES)
+    ):
+        assert retired not in cargo
+        assert retired not in DECLARED_FEATURES
+    assert DECLARED_FEATURES <= set(cargo)
 
 
 # --- Reachability-owned refusal -------------------------------------------
@@ -187,6 +200,60 @@ def test_micro_profile_refuses_reached_ast_callable_loudly() -> None:
     assert "'micro'" in message
     assert "--stdlib-profile full" in message
     assert "MOLT_STDLIB_PROFILE=full" in message
+
+
+def _socket_module_reaching_socketpair() -> list[dict[str, object]]:
+    # socket.py binds its intrinsics by name, as `require_intrinsic` lowers.
+    return [
+        {
+            "name": "molt_main",
+            "params": [],
+            "ops": [{"kind": "const_str", "s_value": "molt_socketpair", "out": "v0"}],
+        }
+    ]
+
+
+def test_explicit_profile_refuses_reached_networking_at_build_time() -> None:
+    # HF-487: a micro runtime linked a stub that raised "networking not
+    # available" when the program ran. Now the build refuses and names the
+    # symbol, the feature and the smallest tier that provides it.
+    message = BACKEND_IR._reachability_feature_refusal(
+        RF.reached_intrinsic_symbols(_socket_module_reaching_socketpair()),
+        stdlib_profile="micro",
+        target=admit_target("native"),
+    )
+    assert message is not None
+    assert "stdlib_net: reached intrinsic molt_socketpair" in message
+    assert "--stdlib-profile server" in message
+    assert "MOLT_STDLIB_PROFILE=server" in message
+
+
+@pytest.mark.parametrize("target_triple", [None, "wasm32-wasip1"])
+def test_auto_selects_the_networking_tier(target_triple: str | None) -> None:
+    reached = RF.reached_intrinsic_symbols(_socket_module_reaching_socketpair())
+    required = RF.required_link_features(reached)
+    assert required == {"stdlib_net"}
+    assert (
+        RUNTIME_FEATURES.runtime_stdlib_profile_for_required_features(
+            "auto", required, target_triple=target_triple
+        )
+        == "server"
+    )
+    assert (
+        _refusal_for_reached_symbols(
+            "molt_socketpair", profile="auto", target_triple=target_triple
+        )
+        is None
+    )
+
+
+def test_target_without_a_networking_provider_refuses_at_build_time() -> None:
+    message = _refusal_for_reached_symbols(
+        "molt_socketpair", profile="full", target_triple="x86_64-pc-windows-msvc"
+    )
+    assert message is not None
+    assert "has no runtime provider" in message
+    assert "molt_socketpair (unsupported on target OS windows)" in message
 
 
 def test_full_profile_allows_reached_ast_callable() -> None:
@@ -546,7 +613,6 @@ def test_native_feature_sets_unchanged_after_cargo_migration() -> None:
         "stdlib_asyncio",
         "stdlib_collections",
         "stdlib_fs_extra",
-        "stdlib_logging",
         "stdlib_logging_ext",
     }
     old_domain = {
@@ -555,13 +621,9 @@ def test_native_feature_sets_unchanged_after_cargo_migration() -> None:
         "stdlib_asyncio",
         "stdlib_email",
         "stdlib_decimal",
-        "stdlib_logging",
         "stdlib_logging_ext",
-        "stdlib_concurrent",
         "stdlib_dbm",
-        "stdlib_importlib_extra",
         "stdlib_csv",
-        "stdlib_signal",
         "stdlib_select",
         "stdlib_text",
         "stdlib_zoneinfo",

@@ -23,3 +23,11 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         _ => None,
     }
 }
+
+#[cfg(not(target_os = "windows"))]
+const _: () = {
+    use super::declared_absent::*;
+    #[allow(unused_imports)]
+    use crate::*;
+    let _ = molt_locale_getdefaultlocale;
+};

@@ -76,3 +76,24 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         _ => None,
     }
 }
+
+#[cfg(not(feature = "stdlib_text"))]
+const _: () = {
+    use super::declared_absent::*;
+    #[allow(unused_imports)]
+    use crate::*;
+    let _ = molt_unicodedata_bidirectional;
+    let _ = molt_unicodedata_category;
+    let _ = molt_unicodedata_combining;
+    let _ = molt_unicodedata_decimal;
+    let _ = molt_unicodedata_decomposition;
+    let _ = molt_unicodedata_digit;
+    let _ = molt_unicodedata_east_asian_width;
+    let _ = molt_unicodedata_is_normalized;
+    let _ = molt_unicodedata_lookup;
+    let _ = molt_unicodedata_mirrored;
+    let _ = molt_unicodedata_name;
+    let _ = molt_unicodedata_normalize;
+    let _ = molt_unicodedata_numeric;
+    let _ = molt_unicodedata_unidata_version;
+};

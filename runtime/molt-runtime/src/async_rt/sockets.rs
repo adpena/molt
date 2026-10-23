@@ -2,22 +2,14 @@ use crate::PyToken;
 use crate::audit::AuditArgs;
 use crate::*;
 
-// Re-export network utilities so that `sockets::*` includes them
-#[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
-#[allow(unused_imports)]
-pub use super::net_stubs::{
-    molt_socket_reader_at_eof, molt_socket_reader_drop, molt_socket_reader_new,
-    molt_socket_reader_read, molt_socket_reader_readline, molt_socket_reader_readline_limit,
-};
-
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 mod target_capability;
-#[cfg(target_arch = "wasm32")]
+#[cfg(molt_wasm_net)]
 mod wasm;
 #[allow(unused_imports)]
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 pub use super::sockets_net::*;
-#[cfg(target_arch = "wasm32")]
+#[cfg(molt_wasm_net)]
 pub use wasm::*;
 
 #[cfg(target_arch = "wasm32")]
@@ -25,7 +17,7 @@ use crate::libc_compat as libc;
 #[cfg(molt_has_net_io)]
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use std::ffi::OsString;
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 use std::io::ErrorKind;
 #[cfg(all(molt_has_net_io, unix))]
 use std::os::raw::c_int;
@@ -37,37 +29,37 @@ use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 use std::os::windows::io::{AsRawSocket, FromRawSocket, IntoRawSocket, RawSocket};
 #[cfg(molt_has_net_io)]
 use std::sync::atomic::Ordering as AtomicOrdering;
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 use std::time::Duration;
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 mod ancillary;
 #[cfg(all(molt_has_net_io, not(unix)))]
 use ancillary::socket_clip_ancillary_for_bufsize;
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 use ancillary::{
     build_ancillary_list_bits, build_recvmsg_result_with_anc, collect_recvmsg_into_targets,
     collect_sendmsg_payload, parse_sendmsg_ancillary_items, write_recvmsg_into_targets,
 };
-#[cfg(target_arch = "wasm32")]
+#[cfg(molt_wasm_net)]
 use ancillary::{decode_host_recvmsg_ancillary_buffer, encode_host_sendmsg_ancillary_buffer};
 #[cfg(all(molt_has_net_io, unix))]
 use ancillary::{encode_sendmsg_ancillary_buffer, parse_recvmsg_ancillary_items};
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 mod address;
-#[cfg(target_arch = "wasm32")]
+#[cfg(molt_wasm_net)]
 pub(crate) use address::decode_sockaddr;
-#[cfg(target_arch = "wasm32")]
+#[cfg(molt_wasm_net)]
 use address::encode_sockaddr;
-#[cfg(target_arch = "wasm32")]
+#[cfg(molt_wasm_net)]
 pub(crate) use address::port_from_bits;
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 pub(crate) use address::{host_from_bits, service_from_bits};
 #[cfg(molt_has_net_io)]
 pub(crate) use address::{sockaddr_from_bits, sockaddr_to_bits};
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 mod state;
 #[cfg(all(molt_has_net_io, not(unix)))]
 pub(crate) use state::socket_register_peer_pair;
@@ -76,11 +68,11 @@ use state::{
     MoltSocket, MoltSocketKind, socket_alloc, socket_close_ptr, socket_debug_fd, socket_detach_raw,
     socket_ref_dec, socket_set_timeout, trace_socket_recv, trace_socket_send,
 };
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 pub(crate) use state::{SocketRuntimeState, socket_runtime_state_clear};
-#[cfg(target_arch = "wasm32")]
+#[cfg(molt_wasm_net)]
 pub(crate) use state::{WasmSocketMeta, socket_timeout, wasm_socket_meta_insert};
-#[cfg(target_arch = "wasm32")]
+#[cfg(molt_wasm_net)]
 use state::{
     socket_connect_pending, socket_set_connect_pending, socket_set_timeout, wasm_socket_family,
     wasm_socket_meta_clone, wasm_socket_meta_remove,
@@ -102,20 +94,20 @@ use raw::{connect_raw_socket, socket_is_acceptor, socket_relisten, take_error_mi
 #[cfg(molt_has_net_io)]
 pub(crate) use raw::{libc_socket, sock_addr_from_storage};
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 mod wait;
 #[cfg(all(molt_has_net_io, windows))]
 pub(crate) use raw::{socket_close_raw_windows, socketpair_windows_loopback_raw};
-#[cfg(target_arch = "wasm32")]
+#[cfg(molt_wasm_net)]
 pub(crate) use wait::errno_from_rc;
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 pub(crate) use wait::socket_wait_ready;
-#[cfg(target_arch = "wasm32")]
+#[cfg(molt_wasm_net)]
 use wait::would_block_errno;
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 mod reader;
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 pub use reader::{
     molt_socket_reader_at_eof, molt_socket_reader_drop, molt_socket_reader_new,
     molt_socket_reader_read, molt_socket_reader_readline, molt_socket_reader_readline_limit,
@@ -149,7 +141,7 @@ pub(crate) fn io_wait_release_detached_resource(_py: &PyToken<'_>, socket_bits: 
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(molt_wasm_net)]
 pub(crate) fn io_wait_detach_resource(future_ptr: *mut u8) -> u64 {
     if future_ptr.is_null() {
         return MoltObject::none().bits();
@@ -162,7 +154,7 @@ pub(crate) fn io_wait_detach_resource(future_ptr: *mut u8) -> u64 {
     unsafe { payload_ptr.replace(MoltObject::none().bits()) }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(molt_wasm_net)]
 pub(crate) fn io_wait_release_detached_resource(_py: &PyToken<'_>, _resource_bits: u64) {}
 
 pub(crate) fn send_data_from_bits(bits: u64) -> Result<SendData, String> {
@@ -192,7 +184,7 @@ pub(crate) fn send_data_from_bits(bits: u64) -> Result<SendData, String> {
     Err("send expects bytes-like object".to_string())
 }
 
-#[cfg(any(test, molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(any(test, molt_net))]
 pub(crate) fn iter_values_from_bits<'a, 'py>(
     _py: &'a PyToken<'py>,
     iterable_bits: u64,
@@ -226,7 +218,7 @@ pub(crate) fn iter_values_from_bits<'a, 'py>(
     )
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(molt_wasm_net)]
 fn socket_handle_from_bits(_py: &PyToken<'_>, bits: u64) -> Result<i64, String> {
     let obj = obj_from_bits(bits);
     if obj.is_none() {
@@ -249,7 +241,7 @@ pub(crate) fn require_time_wall_capability<T: ExceptionSentinel>(
     require_operation(_py, operation, AuditArgs::None)
 }
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 pub(crate) fn require_net_capability<T: ExceptionSentinel>(
     _py: &PyToken<'_>,
     operation: OperationId,

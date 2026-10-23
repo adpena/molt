@@ -9,7 +9,7 @@ use super::*;
 use crate::runtime_flags::{self, RuntimeFlag};
 #[cfg(molt_has_net_io)]
 use socket2::Socket;
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 use std::collections::HashMap;
 #[cfg(all(molt_has_net_io, not(unix)))]
 use std::collections::VecDeque;
@@ -17,11 +17,11 @@ use std::collections::VecDeque;
 use std::os::unix::io::{AsRawFd, RawFd};
 #[cfg(all(molt_has_net_io, windows))]
 use std::os::windows::io::{AsRawSocket, RawSocket};
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 use std::sync::Mutex;
 #[cfg(molt_has_net_io)]
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 use std::time::Duration;
 
 #[cfg(molt_has_net_io)]
@@ -54,7 +54,7 @@ pub(super) struct MoltSocket {
     pub(super) refs: AtomicUsize,
 }
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 pub(crate) struct SocketRuntimeState {
     #[cfg(molt_has_net_io)]
     descriptor_map: Mutex<HashMap<NativeSocketDescriptor, PtrSlot>>,
@@ -73,7 +73,7 @@ struct PendingAncillaryChunk {
     items: Vec<AncillaryItem>,
 }
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 impl SocketRuntimeState {
     pub(crate) fn new() -> Self {
         Self {
@@ -247,12 +247,12 @@ impl SocketRuntimeState {
     }
 }
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 pub(super) fn socket_runtime_state_for_gil() -> Option<&'static SocketRuntimeState> {
     crate::state::runtime_state::runtime_state_for_gil().map(|state| &state.socket_state)
 }
 
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 pub(crate) fn socket_runtime_state_clear(state: &crate::state::runtime_state::RuntimeState) {
     state.socket_state.clear();
 }

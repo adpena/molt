@@ -264,6 +264,7 @@ def test_backend_command_prefix_uses_canonical_split_table_boundary(
         wasm_data_base=67_108_864,
         wasm_table_base=1,
         wasm_split_runtime_app_table_base=8_192,
+        wasm_runtime_poll_slots=6,
     ) == [
         str(backend_bin),
         "--target",
@@ -275,6 +276,8 @@ def test_backend_command_prefix_uses_canonical_split_table_boundary(
         "1",
         "--wasm-split-runtime-app-table-base",
         "8192",
+        "--wasm-runtime-poll-slots",
+        "6",
     ]
 
 

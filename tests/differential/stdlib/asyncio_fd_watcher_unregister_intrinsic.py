@@ -1,3 +1,4 @@
+# MOLT_ENV: MOLT_CAPABILITIES=net
 """Purpose: verify reader/writer unregister routes through intrinsic logic."""
 
 import asyncio

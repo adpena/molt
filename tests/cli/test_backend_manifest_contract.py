@@ -453,24 +453,26 @@ def test_runtime_manifest_uses_flate2_zip_deflate_only() -> None:
     assert zip_dependency["features"] == ["deflate"]
 
 
-def test_runtime_net_io_cfg_requires_supported_native_socket_abi() -> None:
+def test_runtime_net_cfgs_name_one_provider_per_target() -> None:
+    """stdlib_net selects a networking provider; nothing stands in for one.
+
+    `molt_has_net_io` is the native socket ABI (unix), `molt_wasm_net` the WASM
+    host-call ABI, `molt_net` either. A target without a provider (Windows)
+    defines no networking symbol: the intrinsic manifest declares those symbols
+    `not(target_os = "windows")`, so reachability refuses there at build time
+    instead of linking a stub that fails at run time (HF-487).
+    """
     build_rs = (ROOT / "runtime" / "molt-runtime" / "build.rs").read_text(
         encoding="utf-8"
     )
-    net_stubs = (
-        ROOT / "runtime" / "molt-runtime" / "src" / "async_rt" / "net_stubs.rs"
-    ).read_text(encoding="utf-8")
-
-    assert 'env::var("CARGO_CFG_TARGET_FAMILY")' in build_rs
-    assert 'target_arch != "wasm32"' in build_rs
-    assert "target_family.split(',')" in build_rs
+    for cfg in ("molt_has_net_io", "molt_wasm_net", "molt_net"):
+        assert f'println!("cargo:rustc-check-cfg=cfg({cfg})");' in build_rs
+        assert f'println!("cargo:rustc-cfg={cfg}");' in build_rs
+    assert 'env::var("CARGO_FEATURE_STDLIB_NET").is_ok()' in build_rs
     assert 'family == "unix"' in build_rs
-    assert "if native_net_target_supported" in build_rs
-    assert 'println!("cargo:rustc-cfg=molt_has_net_io")' in build_rs
-
-    assert '#[cfg(feature = "stdlib_net")]' in net_stubs
-    assert "networking not available for this runtime target" in net_stubs
-    assert "networking not available (compile with stdlib_net)" in net_stubs
+    assert not (
+        ROOT / "runtime" / "molt-runtime" / "src" / "async_rt" / "net_stubs.rs"
+    ).exists()
 
 
 def test_runtime_manifest_uses_minimal_rustpython_parser_features() -> None:
@@ -578,7 +580,6 @@ def test_runtime_micro_profile_includes_core_non_network_intrinsics() -> None:
         "stdlib_asyncio",
         "stdlib_collections",
         "stdlib_fs_extra",
-        "stdlib_logging",
         "stdlib_logging_ext",
     ]
     assert "stdlib_net" not in micro_features
@@ -635,36 +636,6 @@ def test_cli_profile_availability_covers_every_always_linked_micro_feature() -> 
                 f"profile={profile!r} target={target!r} omits always-linked "
                 f"micro-base feature(s) {sorted(micro_base - enabled)}"
             )
-
-
-def test_runtime_micro_tls_from_fd_stub_matches_intrinsic_arity() -> None:
-    manifest_source = (
-        ROOT / "runtime" / "molt-runtime" / "src" / "intrinsics" / "manifest.pyi"
-    ).read_text(encoding="utf-8")
-    generated_source = (
-        ROOT / "runtime" / "molt-runtime" / "src" / "intrinsics" / "generated.rs"
-    ).read_text(encoding="utf-8")
-    stub_source = (
-        ROOT / "runtime" / "molt-runtime" / "src" / "async_rt" / "net_stubs.rs"
-    ).read_text(encoding="utf-8")
-
-    assert (
-        "def molt_asyncio_tls_client_from_fd_new(\n"
-        "    fd: int, server_hostname: str | None = ...\n"
-        ") -> Any: ..."
-    ) in manifest_source
-    assert (
-        'name: "molt_asyncio_tls_client_from_fd_new",\n'
-        '        symbol: "molt_asyncio_tls_client_from_fd_new",\n'
-        "        arity: 2,"
-    ) in generated_source
-    stub_signature = re.search(
-        r"fn molt_asyncio_tls_client_from_fd_new\(([^)]*)\) -> u64",
-        stub_source,
-        re.MULTILINE,
-    )
-    assert stub_signature is not None
-    assert stub_signature.group(1).count(": u64") == 2
 
 
 def test_runtime_manifest_defaults_to_dependency_only_rlib() -> None:

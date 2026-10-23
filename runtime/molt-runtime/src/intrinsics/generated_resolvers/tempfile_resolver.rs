@@ -26,3 +26,14 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         _ => None,
     }
 }
+
+#[cfg(not(feature = "stdlib_fs_extra"))]
+const _: () = {
+    use super::declared_absent::*;
+    #[allow(unused_imports)]
+    use crate::*;
+    let _ = molt_tempfile_gettempdir;
+    let _ = molt_tempfile_mkdtemp;
+    let _ = molt_tempfile_mkstemp;
+    let _ = molt_tempfile_cleanup;
+};

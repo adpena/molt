@@ -323,6 +323,7 @@ def backend_operation_environment(
             "MOLT_WASM_DATA_BASE",
             "MOLT_WASM_TABLE_BASE",
             "MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE",
+            "MOLT_WASM_RUNTIME_POLL_SLOTS",
             "MOLT_WASM_RELOCATABLE",
         ):
             environment.pop(name, None)

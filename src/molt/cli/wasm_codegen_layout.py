@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from molt._wasm_runtime_exports import wasm_runtime_poll_slot_mask
 from molt.cli.runtime_wasm_generation import (
     RuntimeWasmCodegenBinding,
 )
@@ -16,11 +17,13 @@ class WasmCodegenLayout:
     table_base: int
     split_app_table_base: int | None
     relocatable: bool
+    runtime_poll_slots: int
 
     def backend_environment(self) -> dict[str, str]:
         env = {
             "MOLT_WASM_DATA_BASE": str(self.data_base),
             "MOLT_WASM_TABLE_BASE": str(self.table_base),
+            "MOLT_WASM_RUNTIME_POLL_SLOTS": str(self.runtime_poll_slots),
         }
         if self.split_app_table_base is not None:
             env["MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE"] = str(
@@ -80,4 +83,9 @@ def prepare_wasm_codegen_layout(
         table_base=table_base,
         split_app_table_base=split_app_table_base,
         relocatable=linked or os.environ.get("MOLT_WASM_RELOCATABLE") == "1",
+        # Both pair members share one feature set; the shared member's
+        # generated export obligations name the poll functions it defines.
+        runtime_poll_slots=wasm_runtime_poll_slot_mask(
+            binding.generation.shared_runtime_import_names()
+        ),
     )

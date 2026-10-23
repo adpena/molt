@@ -67,7 +67,8 @@ fn daemon_request_parse_reads_split_runtime_app_table_base() {
         "jobs": [{
             "id": "job0", "is_wasm": true, "wasm_link": true,
             "wasm_data_base": 1048576, "wasm_table_base": 4096,
-            "wasm_split_runtime_app_table_base": 8192, "output": "/tmp/out.wasm",
+            "wasm_split_runtime_app_table_base": 8192, "wasm_runtime_poll_slots": 6,
+            "output": "/tmp/out.wasm",
             "cache_key": "module", "probe_cache_only": true,
         }],
     }))
@@ -81,6 +82,7 @@ fn daemon_request_parse_reads_split_runtime_app_table_base() {
             data_base: Some(1048576),
             table_base: Some(4096),
             split_runtime_app_table_base: Some(8192),
+            runtime_poll_slots: Some(molt_backend::WasmRuntimePollSlots::from_mask(6).unwrap()),
         })
     );
 }

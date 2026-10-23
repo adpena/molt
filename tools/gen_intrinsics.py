@@ -32,6 +32,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 from tools.wasm_abi_gen.intrinsic_availability import (  # noqa: E402
+    IntrinsicAvailability,
     load_intrinsic_availability,
 )
 from tools.generator_io import (  # noqa: E402
@@ -46,7 +47,8 @@ from tools.intrinsic_manifest import (  # noqa: E402
 
 MANIFEST = ROOT / "runtime/molt-runtime/src/intrinsics/manifest.pyi"
 CATEGORIES_TOML = ROOT / "runtime/molt-runtime/src/intrinsics/categories.toml"
-_RUNTIME_AVAILABILITY = load_intrinsic_availability(CATEGORIES_TOML)
+RUNTIME_CARGO_TOML = ROOT / "runtime/molt-runtime/Cargo.toml"
+_RUNTIME_AVAILABILITY = load_intrinsic_availability(MANIFEST)
 OUT_PYI = ROOT / "src/molt/_intrinsics.pyi"
 OUT_INTRINSIC_SYMBOLS_PY = ROOT / "src/molt/_intrinsic_symbols.py"
 OUT_RUNTIME_FEATURE_GATES_PY = ROOT / "src/molt/_runtime_feature_gates.py"
@@ -306,49 +308,16 @@ RETIRED_OUTPUTS = (ROOT / "runtime/molt-backend/src/intrinsic_symbol_overrides.r
 # command line well inside the 32,767-character Windows limit.
 
 
-# Cargo.toml/cfg-gated Rust modules define whether a feature removes symbol
-# definitions from the linked runtime; categories.toml defines symbol-prefix
-# feature attribution. This generator emits the shipped Python lookup module.
-def _cfg_gated_mod_features(rust_source: str) -> set[str]:
-    """Features that cfg-gate a Rust `mod` declaration."""
-    pattern = re.compile(
-        r'#\[cfg\(feature\s*=\s*"([^"]+)"\)\]\s*\n'
-        r"\s*(?:pub\s+|pub\(crate\)\s+)?mod\b"
-    )
-    return set(pattern.findall(rust_source))
-
-
-def _feature_expands_to_dep(name: str, features: dict, seen: set[str]) -> bool:
-    """True iff *name* transitively enables an optional dependency."""
-    if name in seen:
-        return False
-    seen.add(name)
-    for item in features.get(name, []):
-        if item.startswith("dep:") or "/" in item:
-            return True
-        if item in features and _feature_expands_to_dep(item, features, seen):
-            return True
-    return False
-
-
-def _mechanically_derived_link_affecting_features(
-    feature_gates: list[tuple[str, str]],
-) -> tuple[str, ...]:
-    runtime_crate = ROOT / "runtime/molt-runtime"
-    cargo = tomllib.loads((runtime_crate / "Cargo.toml").read_text(encoding="utf-8"))
-    features = cargo.get("features", {})
-    mod_features = _cfg_gated_mod_features(
-        (runtime_crate / "src/builtins/mod.rs").read_text(encoding="utf-8")
-    ) | _cfg_gated_mod_features(
-        (runtime_crate / "src/lib.rs").read_text(encoding="utf-8")
-    )
-    dep_features = {
-        feature
-        for feature in features
-        if _feature_expands_to_dep(feature, features, set())
-    }
-    gate_features = {feature for _prefix, feature in feature_gates}
-    return tuple(sorted((mod_features | dep_features) & gate_features))
+def _validate_declared_features(availability: IntrinsicAvailability) -> None:
+    """Every declared feature must be a molt-runtime Cargo feature."""
+    cargo = tomllib.loads(RUNTIME_CARGO_TOML.read_text(encoding="utf-8"))
+    known = set(cargo.get("features", {}))
+    unknown = sorted(availability.features() - known)
+    if unknown:
+        raise RuntimeError(
+            "intrinsic cfg declarations name features molt-runtime does not "
+            f"define: {', '.join(unknown)}"
+        )
 
 
 def _strip_manifest_header(text: str) -> str:
@@ -399,8 +368,14 @@ def _load_categories() -> tuple[
     raw = CATEGORIES_TOML.read_bytes()
     data = tomllib.loads(raw.decode())
 
-    # Builtin exact ownership is parsed by the shared availability authority.
-    builtin_symbols = list(_RUNTIME_AVAILABILITY.builtin_symbols)
+    builtin_symbols: list[str] = []
+    for category, symbols in data.get("builtin", {}).items():
+        if not isinstance(symbols, list) or not all(
+            isinstance(symbol, str) and symbol for symbol in symbols
+        ):
+            raise TypeError(f"builtin.{category} must be a list of non-empty strings")
+        builtin_symbols.extend(symbols)
+    builtin_symbols = list(dict.fromkeys(builtin_symbols))
 
     # Internal: prefixes (need ``molt_`` prepended)
     internal_prefixes: list[str] = [
@@ -417,68 +392,14 @@ def _load_categories() -> tuple[
     return builtin_symbols, internal_prefixes, stdlib_modules
 
 
-def _load_runtime_feature_gates_from_categories() -> list[tuple[str, str]]:
-    """Return symbol-prefix feature gates declared in categories.toml."""
-    return list(_RUNTIME_AVAILABILITY.feature_gates)
-
-
-def _load_runtime_target_arch_exclusions_from_categories() -> list[
-    tuple[str, tuple[str, ...]]
-]:
-    """Return symbol-prefix target-architecture exclusions from categories.toml."""
-    return list(_RUNTIME_AVAILABILITY.target_arch_exclusions)
-
-
-def _load_runtime_feature_target_arch_exclusions_from_categories() -> list[
-    tuple[str, tuple[str, ...]]
-]:
-    """Return Cargo features wholly unavailable on target architectures."""
-    return list(_RUNTIME_AVAILABILITY.feature_target_arch_exclusions)
-
-
-_SYMBOL_FEATURE_GATES: list[tuple[str, str]] = (
-    _load_runtime_feature_gates_from_categories()
-)
-_SYMBOL_TARGET_ARCH_EXCLUSIONS: list[tuple[str, tuple[str, ...]]] = (
-    _load_runtime_target_arch_exclusions_from_categories()
-)
-_SYMBOL_TARGET_OS_REQUIREMENTS = _RUNTIME_AVAILABILITY.target_os_requirements
-_FEATURE_TARGET_ARCH_EXCLUSIONS: list[tuple[str, tuple[str, ...]]] = (
-    _load_runtime_feature_target_arch_exclusions_from_categories()
-)
-
-
 def _feature_gate_for_symbol(symbol: str) -> str | None:
-    """Return the Cargo feature gate for *symbol*, if categories declare one."""
+    """Return the Cargo feature *symbol*'s manifest entry declares, if any."""
     return _RUNTIME_AVAILABILITY.feature_gate_for_symbol(symbol)
 
 
-def _target_arch_exclusions_for_symbol(symbol: str) -> tuple[str, ...]:
-    """Return target architectures where *symbol* has no runtime definition."""
-    return _RUNTIME_AVAILABILITY.target_arch_exclusions_for_symbol(symbol)
-
-
 def _cfg_gate_for_symbol(symbol: str) -> str | None:
-    """Return the complete Rust cfg predicate controlling *symbol* resolution."""
-    predicates: list[str] = []
-    if feature := _feature_gate_for_symbol(symbol):
-        predicates.append(f'feature = "{feature}"')
-    predicates.extend(
-        f'not(target_arch = "{arch}")'
-        for arch in _target_arch_exclusions_for_symbol(symbol)
-    )
-    if oses := _RUNTIME_AVAILABILITY.supported_target_oses_for_symbol(symbol):
-        os_predicates = [f'target_os = "{target_os}"' for target_os in oses]
-        predicates.append(
-            os_predicates[0]
-            if len(os_predicates) == 1
-            else f"any({', '.join(os_predicates)})"
-        )
-    if not predicates:
-        return None
-    if len(predicates) == 1:
-        return predicates[0]
-    return f"all({', '.join(predicates)})"
+    """Return the complete Rust cfg predicate *symbol*'s entry declares."""
+    return _RUNTIME_AVAILABILITY.cfg_for_symbol(symbol).rust_predicate()
 
 
 # Additional prefix-to-module mapping for modules NOT yet in categories.toml.
@@ -791,6 +712,27 @@ def _leaf_resolver_cfg_gate(mod_name: str, symbols: list[str]) -> str:
     )
 
 
+def _append_declared_absence_probe(
+    lines: list[str], gate: str, symbols: Sequence[str]
+) -> None:
+    """Prove that no build outside *gate* defines *symbols*.
+
+    Outside the declared cfg each name must resolve to its sentinel in
+    ``declared_absent``. A definition that survives (a hand stub, or a
+    definition gated more widely than declared) is a second glob candidate,
+    and rustc rejects the ambiguous name.
+    """
+    lines.append("\n")
+    lines.append(f"#[cfg(not({gate}))]\n")
+    lines.append("const _: () = {\n")
+    lines.append("    #[allow(unused_imports)]\n")
+    lines.append("    use crate::*;\n")
+    lines.append("    use super::declared_absent::*;\n")
+    for sym in symbols:
+        lines.append(f"    let _ = {sym};\n")
+    lines.append("};\n")
+
+
 def _render_resolver_modules(
     module_symbols: OrderedDict[str, list[str]],
 ) -> tuple[dict[Path, str], tuple[Path, ...]]:
@@ -801,6 +743,7 @@ def _render_resolver_modules(
     """
     sources: dict[Path, str] = {}
     leaf_indexes: dict[Path, set[str]] = {}
+    declared_absent: list[str] = []
 
     mod_lines: list[str] = []
     mod_lines.append("// @generated by tools/gen_intrinsics.py. DO NOT EDIT.\n")
@@ -853,7 +796,29 @@ def _render_resolver_modules(
         lines.append("        _ => None,\n")
         lines.append("    }\n")
         lines.append("}\n")
+        for gate, syms in gated.items():
+            if gate is None:
+                continue
+            declared_absent.extend(syms)
+            _append_declared_absence_probe(lines, gate, syms)
         sources[OUT_RS_RESOLVERS_DIR / _resolver_file_name(mod_name)] = "".join(lines)
+    if declared_absent:
+        mod_lines.append("\n")
+        mod_lines.append(
+            "// One sentinel per declared-gated symbol. A build outside a symbol's\n"
+            "// declared cfg resolves its probe here; a definition that is still\n"
+            "// present makes the name ambiguous and fails to compile (HF-487).\n"
+        )
+        mod_lines.append("#[allow(dead_code, non_upper_case_globals)]\n")
+        mod_lines.append("mod declared_absent {\n")
+        # A marker type, not `()`: a probe's `let _ =` then binds no unit
+        # value (clippy::let_unit_value).
+        mod_lines.append("    pub(super) struct DeclaredAbsent;\n")
+        for sym in sorted(declared_absent):
+            mod_lines.append(
+                f"    pub(super) const {sym}: DeclaredAbsent = DeclaredAbsent;\n"
+            )
+        mod_lines.append("}\n")
     sources[OUT_RS_RESOLVERS_DIR / "mod.rs"] = "".join(mod_lines)
     for index_path, modules in leaf_indexes.items():
         sources[index_path] = _render_leaf_resolver_index(modules)
@@ -928,7 +893,13 @@ def _render_generated_rs(
 
 
 def _render_pyi(raw_manifest: str) -> str:
-    body = _strip_manifest_header(raw_manifest)
+    # Availability is a build fact owned by the manifest and its generated
+    # gate table; the typing projection carries signatures only.
+    body = "".join(
+        line
+        for line in _strip_manifest_header(raw_manifest).splitlines(keepends=True)
+        if not line.startswith("# cfg: ")
+    )
     header = (
         "# @generated by tools/gen_intrinsics.py from "
         "runtime/molt-runtime/src/intrinsics/manifest.pyi\n"
@@ -954,144 +925,143 @@ def _render_intrinsic_symbols_py(entries: list[IntrinsicEntry]) -> str:
     return "".join(lines)
 
 
-def _render_runtime_feature_gates_py() -> str:
-    link_affecting = _mechanically_derived_link_affecting_features(
-        _SYMBOL_FEATURE_GATES
+_RUNTIME_FEATURE_GATES_FUNCTIONS = """
+
+def feature_for_symbol(symbol: str) -> str | None:
+    \"\"\"Return the Cargo feature whose build defines *symbol*, or None.\"\"\"
+    return RUNTIME_SYMBOL_FEATURES.get(symbol)
+
+
+def target_arch_from_triple(target_triple: str | None) -> str | None:
+    \"\"\"Return the Rust target architecture component.\"\"\"
+    if target_triple is None:
+        return None
+    return target_triple.split("-", 1)[0]
+
+
+def target_os_from_triple(target_triple: str | None) -> str:
+    \"\"\"Return the target OS that availability facts name for *target_triple*.\"\"\"
+    if target_triple == "wasm32-wasip1":
+        return "wasi"
+    if target_triple == "wasm32-unknown-unknown":
+        return "none"
+    from molt.native_target import resolve_native_target_spec
+
+    return resolve_native_target_spec(target_triple).os
+
+
+def unsupported_target_arches_for_symbol(symbol: str) -> tuple[str, ...]:
+    \"\"\"Return architectures where *symbol* has no provider.\"\"\"
+    return RUNTIME_SYMBOL_UNSUPPORTED_TARGET_ARCHES.get(symbol, ())
+
+
+def supported_target_oses_for_symbol(symbol: str) -> tuple[str, ...]:
+    \"\"\"Return required OSes, or () for no OS requirement.\"\"\"
+    return RUNTIME_SYMBOL_SUPPORTED_TARGET_OSES.get(symbol, ())
+
+
+def unsupported_target_oses_for_symbol(symbol: str) -> tuple[str, ...]:
+    \"\"\"Return OSes where *symbol* has no provider.\"\"\"
+    return RUNTIME_SYMBOL_UNSUPPORTED_TARGET_OSES.get(symbol, ())
+
+
+def symbol_availability_depends_on_target_os(symbol: str) -> bool:
+    \"\"\"Whether deciding *symbol*'s availability needs the target OS.\"\"\"
+    return (
+        symbol in RUNTIME_SYMBOL_SUPPORTED_TARGET_OSES
+        or symbol in RUNTIME_SYMBOL_UNSUPPORTED_TARGET_OSES
     )
+
+
+def runtime_symbol_available_on_target(
+    symbol: str, *, target_triple: str | None, target_os: str | None
+) -> bool:
+    \"\"\"Whether *symbol* has a provider for *target_triple*.\"\"\"
+    if target_arch_from_triple(target_triple) in unsupported_target_arches_for_symbol(
+        symbol
+    ):
+        return False
+    supported_oses = supported_target_oses_for_symbol(symbol)
+    if supported_oses and target_os not in supported_oses:
+        return False
+    return target_os not in unsupported_target_oses_for_symbol(symbol)
+
+
+def features_unsupported_on_target(
+    *, target_arch: str | None, target_os: str | None
+) -> frozenset[str]:
+    \"\"\"Features with no provider on the target.\"\"\"
+    unsupported = {
+        feature
+        for feature, arches in RUNTIME_FEATURE_TARGET_ARCH_EXCLUSIONS.items()
+        if target_arch in arches
+    }
+    unsupported.update(
+        feature
+        for feature, oses in RUNTIME_FEATURE_TARGET_OS_EXCLUSIONS.items()
+        if target_os in oses
+    )
+    return frozenset(unsupported)
+"""
+
+
+def _render_tuple(values: Sequence[str]) -> str:
+    rendered = ", ".join(f'"{value}"' for value in values)
+    return f"({rendered},)" if len(values) == 1 else f"({rendered})"
+
+
+def _render_runtime_feature_gates_py(availability: IntrinsicAvailability) -> str:
     lines: list[str] = []
     lines.append(
-        '"""Generated runtime intrinsic feature and target-availability gates.\n\n'
-        "Source authorities:\n"
-        "- runtime/molt-runtime/src/intrinsics/categories.toml owns "
-        "exact builtin precedence and symbol-prefix feature attribution.\n"
-        "- runtime/molt-runtime/Cargo.toml and cfg-gated runtime modules own "
-        "whether disabling a feature removes linked symbols.\n"
+        '"""Generated runtime intrinsic availability: one exact fact per symbol.\n\n'
+        "Source authority: each entry's ``# cfg:`` declaration in\n"
+        "runtime/molt-runtime/src/intrinsics/manifest.pyi. The generated Rust\n"
+        "resolvers prove at compile time that each definition's cfg equals its\n"
+        "declaration, so a runtime built without a symbol's feature never\n"
+        "defines it, and reachability must select or refuse that feature.\n"
         '"""\n\n'
     )
     lines.append("# @generated by tools/gen_intrinsics.py. DO NOT EDIT.\n\n")
     lines.append("from __future__ import annotations\n\n")
-    lines.append("RUNTIME_BUILTIN_SYMBOLS: frozenset[str] = frozenset(\n")
-    lines.append("    {\n")
-    for symbol in sorted(_RUNTIME_AVAILABILITY.builtin_symbols):
-        lines.append(f'        "{symbol}",\n')
-    lines.append("    }\n")
-    lines.append(")\n\n")
-    lines.append("RUNTIME_FEATURE_GATES: tuple[tuple[str, str], ...] = (\n")
-    for prefix, feature in _SYMBOL_FEATURE_GATES:
-        lines.append(f'    ("{prefix}", "{feature}"),\n')
-    lines.append(")\n\n")
-    lines.append(
-        "RUNTIME_TARGET_ARCH_EXCLUSIONS: tuple[tuple[str, tuple[str, ...]], ...] = (\n"
-    )
-    for prefix, arches in _SYMBOL_TARGET_ARCH_EXCLUSIONS:
-        rendered = ", ".join(f'"{arch}"' for arch in arches)
-        if len(arches) == 1:
-            rendered += ","
-        lines.append(f'    ("{prefix}", ({rendered})),\n')
-    lines.append(")\n\n")
-    lines.append(
-        "RUNTIME_TARGET_OS_REQUIREMENTS: tuple[tuple[str, tuple[str, ...]], ...] = (\n"
-    )
-    for prefix, oses in _SYMBOL_TARGET_OS_REQUIREMENTS:
-        lines.append(f"    ({prefix!r}, {oses!r}),\n")
-    lines.append(")\n\n")
-    lines.append(
-        "RUNTIME_FEATURE_TARGET_ARCH_EXCLUSIONS: dict[str, frozenset[str]] = {\n"
-    )
-    for feature, arches in _FEATURE_TARGET_ARCH_EXCLUSIONS:
-        rendered = ", ".join(f'"{arch}"' for arch in arches)
-        lines.append(f'    "{feature}": frozenset({{{rendered}}}),\n')
+    symbol_cfgs = availability.symbol_cfgs
+    lines.append("RUNTIME_SYMBOL_FEATURES: dict[str, str] = {\n")
+    for symbol, cfg in symbol_cfgs.items():
+        if cfg.feature is not None:
+            lines.append(f'    "{symbol}": "{cfg.feature}",\n')
     lines.append("}\n\n")
-    lines.append("LINK_AFFECTING_FEATURES: frozenset[str] = frozenset(\n")
+    for name, field in (
+        ("RUNTIME_SYMBOL_UNSUPPORTED_TARGET_ARCHES", "unsupported_target_arches"),
+        ("RUNTIME_SYMBOL_SUPPORTED_TARGET_OSES", "supported_target_oses"),
+        ("RUNTIME_SYMBOL_UNSUPPORTED_TARGET_OSES", "unsupported_target_oses"),
+    ):
+        lines.append(f"{name}: dict[str, tuple[str, ...]] = {{\n")
+        for symbol, cfg in symbol_cfgs.items():
+            values = getattr(cfg, field)
+            if values:
+                lines.append(f'    "{symbol}": {_render_tuple(values)},\n')
+        lines.append("}\n\n")
+    for name, exclusions in (
+        (
+            "RUNTIME_FEATURE_TARGET_ARCH_EXCLUSIONS",
+            availability.feature_target_arch_exclusions(),
+        ),
+        (
+            "RUNTIME_FEATURE_TARGET_OS_EXCLUSIONS",
+            availability.feature_target_os_exclusions(),
+        ),
+    ):
+        lines.append(f"{name}: dict[str, frozenset[str]] = {{\n")
+        for feature, values in exclusions:
+            rendered = ", ".join(f'"{value}"' for value in values)
+            lines.append(f'    "{feature}": frozenset({{{rendered}}}),\n')
+        lines.append("}\n\n")
+    lines.append("RUNTIME_FEATURES: frozenset[str] = frozenset(\n")
     lines.append("    {\n")
-    for feature in link_affecting:
+    for feature in sorted(availability.features()):
         lines.append(f'        "{feature}",\n')
     lines.append("    }\n")
-    lines.append(")\n\n\n")
-    lines.append("def feature_gate_for_symbol(symbol: str) -> str | None:\n")
-    lines.append('    """Return the Cargo feature gate for *symbol*, or None."""\n')
-    lines.append("    if symbol in RUNTIME_BUILTIN_SYMBOLS:\n")
-    lines.append("        return None\n")
-    lines.append("    best: tuple[int, str] | None = None\n")
-    lines.append("    for prefix, feature in RUNTIME_FEATURE_GATES:\n")
-    lines.append("        if symbol.startswith(prefix):\n")
-    lines.append("            prefix_len = len(prefix)\n")
-    lines.append("            if best is None or prefix_len > best[0]:\n")
-    lines.append("                best = (prefix_len, feature)\n")
-    lines.append("    return best[1] if best is not None else None\n\n\n")
-    lines.append(
-        "def target_arch_from_triple(target_triple: str | None) -> str | None:\n"
-    )
-    lines.append('    """Return the Rust target architecture component."""\n')
-    lines.append("    if target_triple is None:\n")
-    lines.append("        return None\n")
-    lines.append('    return target_triple.split("-", 1)[0]\n\n\n')
-    lines.append(
-        "def unsupported_target_arches_for_symbol(symbol: str) -> tuple[str, ...]:\n"
-    )
-    lines.append('    """Return architectures where *symbol* has no provider."""\n')
-    lines.append("    if symbol in RUNTIME_BUILTIN_SYMBOLS:\n")
-    lines.append("        return ()\n")
-    lines.append("    best: tuple[int, tuple[str, ...]] | None = None\n")
-    lines.append("    for prefix, arches in RUNTIME_TARGET_ARCH_EXCLUSIONS:\n")
-    lines.append("        if symbol.startswith(prefix):\n")
-    lines.append("            prefix_len = len(prefix)\n")
-    lines.append("            if best is None or prefix_len > best[0]:\n")
-    lines.append("                best = (prefix_len, arches)\n")
-    lines.append("    return best[1] if best is not None else ()\n\n\n")
-    lines.append(
-        "def supported_target_oses_for_symbol(symbol: str) -> tuple[str, ...]:\n"
-    )
-    lines.append('    """Return required OSes, or () for no OS restriction."""\n')
-    lines.append("    if symbol in RUNTIME_BUILTIN_SYMBOLS:\n")
-    lines.append("        return ()\n")
-    lines.append("    best: tuple[int, tuple[str, ...]] | None = None\n")
-    lines.append("    for prefix, oses in RUNTIME_TARGET_OS_REQUIREMENTS:\n")
-    lines.append("        if symbol.startswith(prefix):\n")
-    lines.append("            prefix_len = len(prefix)\n")
-    lines.append("            if best is None or prefix_len > best[0]:\n")
-    lines.append("                best = (prefix_len, oses)\n")
-    lines.append("    return best[1] if best is not None else ()\n\n\n")
-    lines.append(
-        "def runtime_symbol_available_on_target(\n"
-        "    symbol: str, *, target_triple: str | None, target_os: str | None\n"
-        ") -> bool:\n"
-    )
-    lines.append('    """Whether *symbol* has a provider for *target_triple*."""\n')
-    lines.append("    arch = target_arch_from_triple(target_triple)\n")
-    lines.append("    supported_oses = supported_target_oses_for_symbol(symbol)\n")
-    lines.append(
-        "    return (\n"
-        "        arch not in unsupported_target_arches_for_symbol(symbol)\n"
-        "        and (not supported_oses or target_os in supported_oses)\n"
-        "    )\n\n\n"
-    )
-    lines.append(
-        "def link_affecting_features_unsupported_on_target(\n"
-        "    target_triple: str | None,\n"
-        ") -> frozenset[str]:\n"
-    )
-    lines.append('    """Features with no provider on *target_triple*."""\n')
-    lines.append("    arch = target_arch_from_triple(target_triple)\n")
-    lines.append("    if arch is None:\n")
-    lines.append("        return frozenset()\n")
-    lines.append("    return frozenset(\n")
-    lines.append("        feature\n")
-    lines.append(
-        "        for feature, arches in RUNTIME_FEATURE_TARGET_ARCH_EXCLUSIONS.items()\n"
-    )
-    lines.append("        if arch in arches and feature in LINK_AFFECTING_FEATURES\n")
-    lines.append("    )\n\n\n")
-    lines.append(
-        "def link_affecting_feature_gate_for_symbol(symbol: str) -> str | None:\n"
-    )
-    lines.append(
-        '    """Return *symbol*\'s feature only when disabling it breaks link."""\n'
-    )
-    lines.append("    feature = feature_gate_for_symbol(symbol)\n")
-    lines.append("    if feature is None or feature not in LINK_AFFECTING_FEATURES:\n")
-    lines.append("        return None\n")
-    lines.append("    return feature\n")
+    lines.append(")\n")
+    lines.append(_RUNTIME_FEATURE_GATES_FUNCTIONS)
     return "".join(lines)
 
 
@@ -1119,6 +1089,7 @@ def generated_outputs() -> dict[Path, str]:
     """
     raw, entries = _load_manifest()
     _validate_symbols(entries)
+    _validate_declared_features(_RUNTIME_AVAILABILITY)
     rust_sources, owned_dirs = _render_generated_rs(entries)
     stale = _stale_generated_files(rust_sources, owned_dirs)
     if stale:
@@ -1127,7 +1098,9 @@ def generated_outputs() -> dict[Path, str]:
             "renders: " + ", ".join(display_path(path) for path in stale)
         )
     outputs = rustfmt_sources(rust_sources, label="intrinsic Rust sources")
-    outputs[OUT_RUNTIME_FEATURE_GATES_PY] = _render_runtime_feature_gates_py()
+    outputs[OUT_RUNTIME_FEATURE_GATES_PY] = _render_runtime_feature_gates_py(
+        _RUNTIME_AVAILABILITY
+    )
     outputs[OUT_PYI] = _render_pyi(raw)
     outputs[OUT_INTRINSIC_SYMBOLS_PY] = _render_intrinsic_symbols_py(entries)
     return outputs

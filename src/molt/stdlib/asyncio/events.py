@@ -700,8 +700,25 @@ class _EventLoop(AbstractEventLoop):
                 self._default_executor = executor
         return wrap_future(executor.submit(func, *args), loop=self)
 
+    def _spawn_fd_watcher(self, watcher: Any) -> Any:
+        """Run one fd watcher, an internal poll future, as a task.
+
+        ``molt_asyncio_fd_watcher_register`` calls this. A Task takes a
+        coroutine, so the watcher is awaited through one, as
+        ``ensure_future`` wraps an awaitable; cancelling the task cancels the
+        watcher's I/O wait that it awaits.
+        """
+
+        async def watch() -> Any:
+            return await watcher
+
+        return self.create_task(watch())
+
     def add_reader(self, fd: Any, callback: Any, *args: Any) -> None:
         fileno = _fd_from_fileobj(fd)
+        # CPython's _add_reader checks the loop before it registers anything.
+        if self.is_closed():
+            raise RuntimeError("Event loop is closed")
         # Register with Rust event loop for I/O readiness notification.
         _require_asyncio_intrinsic(_molt_event_loop_add_reader, "event_loop_add_reader")(
             self._loop_handle, fileno, Handle(callback, args, self, None)
@@ -712,6 +729,8 @@ class _EventLoop(AbstractEventLoop):
 
     def remove_reader(self, fd: Any) -> bool:
         fileno = _fd_from_fileobj(fd)
+        if self.is_closed():
+            return False
         _require_asyncio_intrinsic(
             _molt_event_loop_remove_reader, "event_loop_remove_reader"
         )(self._loop_handle, fileno)
@@ -723,6 +742,8 @@ class _EventLoop(AbstractEventLoop):
 
     def add_writer(self, fd: Any, callback: Any, *args: Any) -> None:
         fileno = _fd_from_fileobj(fd)
+        if self.is_closed():
+            raise RuntimeError("Event loop is closed")
         # Register with Rust event loop for I/O writability notification.
         _require_asyncio_intrinsic(_molt_event_loop_add_writer, "event_loop_add_writer")(
             self._loop_handle, fileno, Handle(callback, args, self, None)
@@ -783,6 +804,8 @@ class _EventLoop(AbstractEventLoop):
 
     def remove_writer(self, fd: Any) -> bool:
         fileno = _fd_from_fileobj(fd)
+        if self.is_closed():
+            return False
         _require_asyncio_intrinsic(
             _molt_event_loop_remove_writer, "event_loop_remove_writer"
         )(self._loop_handle, fileno)

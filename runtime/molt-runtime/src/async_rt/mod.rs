@@ -6,16 +6,16 @@ pub(crate) mod channels;
 pub(crate) mod event_loop;
 pub(crate) mod generators;
 pub(crate) mod generators_async;
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(target_arch = "wasm32")]
+pub(crate) mod host_progress;
+#[cfg(molt_net)]
 pub(crate) mod io_poller;
-#[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
-pub(crate) mod net_stubs;
 pub(crate) mod poll;
 pub(crate) mod process;
 pub(crate) mod scheduler;
 pub(crate) mod socket_pure;
 pub(crate) mod sockets;
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 pub(crate) mod sockets_net;
 pub(crate) use generators_async::*;
 pub(crate) mod task;
@@ -82,7 +82,14 @@ pub(crate) use generators::*;
 pub(crate) use generators_async::*;
 
 pub(crate) use poll::{
-    anext_default_poll_fn_addr, async_sleep_poll_fn_addr, asyncgen_poll_fn_addr,
+    anext_default_poll_fn_addr, async_sleep_poll_fn_addr, asyncgen_poll_fn_addr, call_poll_fn,
+    contextlib_async_exitstack_enter_context_poll_fn_addr,
+    contextlib_async_exitstack_exit_poll_fn_addr, contextlib_asyncgen_enter_poll_fn_addr,
+    contextlib_asyncgen_exit_poll_fn_addr, poll_future_with_task_stack, process_poll_fn_addr,
+    promise_poll_fn_addr, thread_poll_fn_addr,
+};
+#[cfg(molt_net)]
+pub(crate) use poll::{
     asyncio_fd_watcher_poll_fn_addr, asyncio_server_accept_loop_poll_fn_addr,
     asyncio_sock_accept_poll_fn_addr, asyncio_sock_connect_poll_fn_addr,
     asyncio_sock_recv_into_poll_fn_addr, asyncio_sock_recv_poll_fn_addr,
@@ -90,11 +97,7 @@ pub(crate) use poll::{
     asyncio_sock_sendall_poll_fn_addr, asyncio_sock_sendto_poll_fn_addr,
     asyncio_socket_reader_read_poll_fn_addr, asyncio_socket_reader_readline_poll_fn_addr,
     asyncio_stream_reader_read_poll_fn_addr, asyncio_stream_reader_readline_poll_fn_addr,
-    asyncio_stream_send_all_poll_fn_addr, call_poll_fn,
-    contextlib_async_exitstack_enter_context_poll_fn_addr,
-    contextlib_async_exitstack_exit_poll_fn_addr, contextlib_asyncgen_enter_poll_fn_addr,
-    contextlib_asyncgen_exit_poll_fn_addr, io_wait_poll_fn_addr, poll_future_with_task_stack,
-    process_poll_fn_addr, promise_poll_fn_addr, thread_poll_fn_addr,
+    asyncio_stream_send_all_poll_fn_addr, io_wait_poll_fn_addr,
 };
 
 pub(crate) use task::resolve_task_ptr;

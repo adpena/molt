@@ -10,8 +10,7 @@ use crate::object::heap_lifecycle::DetachedEdgeSink;
 use crate::object::{dec_ref_ptr, inc_ref_ptr};
 use crate::{
     HEADER_FLAG_SPAWN_RETAIN, MoltObject, ProcessTaskState, PtrSlot, PyToken, header_from_obj_ptr,
-    io_wait_poll_fn_addr, process_poll_fn_addr, promise_poll_fn_addr, runtime_state,
-    thread_poll_fn_addr,
+    process_poll_fn_addr, promise_poll_fn_addr, runtime_state, thread_poll_fn_addr,
 };
 
 use super::{async_trace_enabled, wake_task_ptr};
@@ -435,7 +434,7 @@ pub(crate) fn task_waiting_on_event(py: &PyToken<'_>, task_ptr: *mut u8) -> bool
         let header = header_from_obj_ptr(awaited);
         let poll_fn = crate::object::object_poll_fn(awaited);
         ((*header).load_synchronized_flags() & HEADER_FLAG_SPAWN_RETAIN) != 0
-            || poll_fn == io_wait_poll_fn_addr()
+            || crate::async_rt::poll::is_io_wait_poll_fn(poll_fn)
             || poll_fn == thread_poll_fn_addr()
             || poll_fn == process_poll_fn_addr()
             || poll_fn == promise_poll_fn_addr()

@@ -473,35 +473,21 @@ pub(crate) use crate::async_rt::channels::{
 pub use crate::async_rt::event_loop::*;
 #[allow(unused_imports)]
 pub use crate::async_rt::generators::*;
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 pub(crate) use crate::async_rt::io_poller::IoPoller;
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 pub use crate::async_rt::io_poller::*;
-#[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
-pub(crate) use crate::async_rt::net_stubs::IoPoller;
-#[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
-pub use crate::async_rt::net_stubs::*;
-#[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
-pub(crate) use crate::async_rt::net_stubs::{
-    io_wait_detach_resource, io_wait_release_detached_resource,
-};
 pub use crate::async_rt::process::*;
 pub(crate) use crate::async_rt::scheduler::BLOCK_ON_TASK;
 pub use crate::async_rt::socket_pure::{
     molt_socket_cmsg_len, molt_socket_cmsg_space, molt_socket_htonl, molt_socket_htons,
     molt_socket_inet_ntop, molt_socket_inet_pton, molt_socket_ntohl, molt_socket_ntohs,
 };
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 pub use crate::async_rt::sockets::*;
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 pub(crate) use crate::async_rt::sockets::{
     io_wait_detach_resource, io_wait_release_detached_resource,
-};
-// Host-dependent socket helpers remain net-backed or no-net stubs.
-#[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
-pub use crate::async_rt::net_stubs::{
-    molt_socket_if_indextoname, molt_socket_if_nameindex, molt_socket_if_nametoindex,
-    molt_socket_recv_fds, molt_socket_send_fds, molt_socket_sendmsg_afalg, molt_socket_sethostname,
 };
 #[cfg(molt_has_net_io)]
 pub use crate::async_rt::sockets::{
@@ -509,21 +495,23 @@ pub use crate::async_rt::sockets::{
     molt_socket_recv_fds, molt_socket_send_fds, molt_socket_sendmsg_afalg, molt_socket_sethostname,
 };
 
-#[cfg(not(any(molt_has_net_io, target_arch = "wasm32")))]
-pub use crate::async_rt::net_stubs::{
-    molt_socket_getfqdn, molt_socket_gethostbyaddr, molt_socket_gethostbyname,
-    molt_socket_gethostbyname_ex,
-};
-
 #[cfg(all(not(target_arch = "wasm32"), molt_has_net_io))]
 pub(crate) use crate::async_rt::sockets::require_net_capability;
 #[cfg(not(target_arch = "wasm32"))]
+pub(crate) use crate::async_rt::sockets::{argv_from_bits, env_from_bits};
 pub(crate) use crate::async_rt::sockets::{
-    argv_from_bits, env_from_bits, require_process_capability, require_time_wall_capability,
+    require_process_capability, require_time_wall_capability,
 };
 pub use crate::async_rt::threads::*;
 pub(crate) use crate::async_rt::{
-    anext_default_poll_fn_addr, async_sleep_poll_fn_addr, asyncgen_poll_fn_addr,
+    anext_default_poll_fn_addr, async_sleep_poll_fn_addr, asyncgen_poll_fn_addr, call_poll_fn,
+    contextlib_async_exitstack_enter_context_poll_fn_addr,
+    contextlib_async_exitstack_exit_poll_fn_addr, contextlib_asyncgen_enter_poll_fn_addr,
+    contextlib_asyncgen_exit_poll_fn_addr, molt_block_on, poll_future_with_task_stack,
+    process_poll_fn_addr, resolve_task_ptr, thread_poll_fn_addr,
+};
+#[cfg(molt_net)]
+pub(crate) use crate::async_rt::{
     asyncio_fd_watcher_poll_fn_addr, asyncio_server_accept_loop_poll_fn_addr,
     asyncio_sock_accept_poll_fn_addr, asyncio_sock_connect_poll_fn_addr,
     asyncio_sock_recv_into_poll_fn_addr, asyncio_sock_recv_poll_fn_addr,
@@ -531,11 +519,7 @@ pub(crate) use crate::async_rt::{
     asyncio_sock_sendall_poll_fn_addr, asyncio_sock_sendto_poll_fn_addr,
     asyncio_socket_reader_read_poll_fn_addr, asyncio_socket_reader_readline_poll_fn_addr,
     asyncio_stream_reader_read_poll_fn_addr, asyncio_stream_reader_readline_poll_fn_addr,
-    asyncio_stream_send_all_poll_fn_addr, call_poll_fn,
-    contextlib_async_exitstack_enter_context_poll_fn_addr,
-    contextlib_async_exitstack_exit_poll_fn_addr, contextlib_asyncgen_enter_poll_fn_addr,
-    contextlib_asyncgen_exit_poll_fn_addr, io_wait_poll_fn_addr, molt_block_on,
-    poll_future_with_task_stack, process_poll_fn_addr, resolve_task_ptr, thread_poll_fn_addr,
+    asyncio_stream_send_all_poll_fn_addr, io_wait_poll_fn_addr,
 };
 #[cfg(feature = "stdlib_asyncio")]
 pub(crate) use crate::async_rt::{
@@ -580,6 +564,7 @@ pub use crate::builtins::context::*;
 pub use crate::builtins::contextlib::*;
 pub use crate::builtins::contextvars::*;
 pub use crate::builtins::copy_mod::*;
+#[cfg(feature = "stdlib_dbm")]
 pub use crate::builtins::dbm_dumb::*;
 pub use crate::builtins::enum_ext::*;
 pub(crate) use crate::builtins::exceptions::{
@@ -652,6 +637,7 @@ pub use crate::builtins::platform_mod::*;
 pub use crate::builtins::pprint_ext::*;
 pub use crate::builtins::punycode::*;
 pub use crate::builtins::pwd::*;
+#[cfg(feature = "stdlib_select")]
 pub use crate::builtins::select::*;
 pub use crate::builtins::shutil::*;
 pub use crate::builtins::signal_ext::*;

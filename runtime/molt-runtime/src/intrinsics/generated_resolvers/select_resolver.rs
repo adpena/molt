@@ -111,3 +111,31 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         _ => None,
     }
 }
+
+#[cfg(not(feature = "stdlib_select"))]
+const _: () = {
+    use super::declared_absent::*;
+    #[allow(unused_imports)]
+    use crate::*;
+    let _ = molt_select_select;
+    let _ = molt_select_constants;
+    let _ = molt_select_poll;
+    let _ = molt_select_epoll;
+    let _ = molt_select_devpoll;
+    let _ = molt_select_fileno;
+    let _ = molt_select_default_selector_kind;
+    let _ = molt_select_backend_available;
+    let _ = molt_select_selector_new;
+    let _ = molt_select_selector_fileno;
+    let _ = molt_select_selector_len;
+    let _ = molt_select_selector_events;
+    let _ = molt_select_selector_register;
+    let _ = molt_select_selector_register_fd;
+    let _ = molt_select_selector_unregister;
+    let _ = molt_select_selector_unregister_obj;
+    let _ = molt_select_selector_modify;
+    let _ = molt_select_selector_modify_obj;
+    let _ = molt_select_selector_poll;
+    let _ = molt_select_selector_close;
+    let _ = molt_select_selector_drop;
+};

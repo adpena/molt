@@ -1875,7 +1875,7 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
         "callable_arity": 5,
         "callable_dispatch": "trampoline",
         "trampoline_abi": "unpack_args",
-        "runtime_feature": None,
+        "runtime_cfg": None,
         "symbol_path": "molt_importlib_import_transaction",
     }
     assert shared_callables[24] == {
@@ -1885,7 +1885,7 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
         "callable_arity": 5,
         "callable_dispatch": "direct",
         "trampoline_abi": "unpack_args",
-        "runtime_feature": None,
+        "runtime_cfg": None,
         "symbol_path": "molt_importlib_module_spec_init",
     }
     assert all(
@@ -1995,7 +1995,9 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert imports["thread_current_native_id"]["callable_arity"] == 0
     assert imports["stream_drop"].get("runtime_feature") is None
     assert imports["asyncio_future_drop"]["runtime_feature"] == "stdlib_asyncio"
-    assert imports["pipe_transport_drop"]["runtime_feature"] == "stdlib_asyncio"
+    # Pipe transports live in the core runtime, not the asyncio crate; a
+    # zero-stdlib build defines them, so their declaration names no feature.
+    assert imports["pipe_transport_drop"].get("runtime_feature") is None
     assert imports["email_message_drop"]["runtime_feature"] == "stdlib_email"
     assert imports["xml_element_drop"]["runtime_feature"] == "stdlib_xml"
     assert imports["statistics_mean_slice"]["runtime_feature"] == "stdlib_math"
@@ -2312,6 +2314,14 @@ def test_runtime_features_are_derived_not_manifest_owned() -> None:
         "hash_digest",
     ):
         assert loaded_imports[name]["runtime_feature"] == "stdlib_crypto"
+        assert loaded_imports[name]["runtime_cfg"] == 'feature = "stdlib_crypto"'
+    # A non-intrinsic runtime export declares its own cfg on its import entry.
+    assert loaded_imports["cbor_parse_scalar"]["runtime_feature"] == (
+        "stdlib_serialization"
+    )
+    assert loaded_imports["socketpair"]["runtime_cfg"] == (
+        'all(feature = "stdlib_net", not(target_os = "windows"))'
+    )
 
     runtime_callables = gen.render_runtime_callables_rs(loaded)
     hash_builtin_projection = runtime_callables.split(
@@ -2330,9 +2340,36 @@ def test_runtime_features_are_derived_not_manifest_owned() -> None:
 
     with pytest.raises(
         manifest.WasmAbiManifestError,
-        match="runtime_feature is generated from intrinsics/categories.toml",
+        match="runtime_cfg and runtime_feature are generated from declared cfgs",
     ):
-        manifest.validate_loaded_manifest(raw, reject_manual_runtime_features=True)
+        manifest.validate_loaded_manifest(raw, reject_manual_runtime_cfgs=True)
+
+    raw = _raw_manifest()
+    for entry in raw["import"]:
+        if entry["name"] == "cbor_parse_scalar_obj":
+            entry["cfg"] = 'feature = "stdlib_serialization"'
+            break
+    else:  # pragma: no cover - fixture corruption
+        raise AssertionError("cbor_parse_scalar_obj import missing")
+    with pytest.raises(manifest.WasmAbiManifestError, match="is an intrinsic"):
+        manifest.validate_loaded_manifest(raw)
+
+
+def test_python_builtins_must_be_defined_in_every_runtime() -> None:
+    # A builtin is reached by a global name lookup, which reachability does
+    # not map to a feature, so a gated builtin would fail at run time.
+    gen = gen_wasm_abi
+    data = copy.deepcopy(gen.load_manifest())
+    gen._python_builtin_global_callables(data)
+    for entry in data["import"]:
+        if entry.get("runtime_name") == "molt_compile_builtin":
+            assert entry.get("runtime_cfg") is None
+            entry["runtime_cfg"] = 'feature = "stdlib_ast"'
+            break
+    else:  # pragma: no cover - fixture corruption
+        raise AssertionError("compile_builtin import missing")
+    with pytest.raises(ValueError, match="must be defined in every runtime"):
+        gen._python_builtin_global_callables(data)
 
 
 def test_wasm_abi_reserved_runtime_callable_import_names_are_fail_closed() -> None:

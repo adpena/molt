@@ -198,9 +198,6 @@ extern void molt_set_argv_utf16(int argc, const wchar_t** argv);
 #endif
 extern void molt_main();
 extern void molt_dec_ref(unsigned long long bits);
-extern int molt_json_parse_scalar(const char* ptr, long len, unsigned long long* out);
-extern int molt_msgpack_parse_scalar(const char* ptr, long len, unsigned long long* out);
-extern int molt_cbor_parse_scalar(const char* ptr, long len, unsigned long long* out);
 extern unsigned long long molt_get_attr_generic(void* obj, const char* attr, unsigned long long len);
 
 /* Per-app callable resolver: the backend emits molt_app_resolve_callable into
