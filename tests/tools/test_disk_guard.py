@@ -2175,7 +2175,7 @@ def completed_incremental(tmp_path):
     retired = root / "tmp/memory_guard/retired"
     retired.mkdir(parents=True)
     receipt = _guard_marker(retired, 761, "completed")
-    payload = json.loads(receipt.read_text())
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
     payload.update(
         cwd=str(source),
         command=argv,
@@ -2185,7 +2185,7 @@ def completed_incremental(tmp_path):
         descendants_closed=True,
     )
     payload["child_process"]["command"] = argv
-    receipt.write_text(json.dumps(payload))
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
     return root, source, session, cache, receipt
 
 
@@ -2255,9 +2255,9 @@ def test_incremental_retirement_requires_real_terminal_custody(
     completed_incremental, field, value
 ):
     receipt = completed_incremental[-1]
-    payload = json.loads(receipt.read_text())
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
     payload[field] = value
-    receipt.write_text(json.dumps(payload))
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(ValueError):
         _incremental_plan(completed_incremental)
     assert completed_incremental[-2].is_dir()
@@ -2319,7 +2319,7 @@ def test_incremental_retirement_rejects_changed_review(
     if change == "payload":
         (cache / "sample-session/query-cache.bin").write_bytes(b"different")
     elif change == "receipt":
-        receipt.write_text(receipt.read_text() + "\n")
+        receipt.write_text(receipt.read_text(encoding="utf-8") + "\n", encoding="utf-8")
     elif change == "new-file":
         (cache / "sample-session/added.o").write_bytes(b"new")
     elif change == "symlink":
@@ -2362,9 +2362,11 @@ def test_incremental_retirement_rechecks_after_final_inventory(
                 lock.rename(lock.with_suffix(".old"))
                 lock.touch()
             elif replacement == "receipt":
-                receipt.write_text(receipt.read_text() + "\n")
+                receipt.write_text(
+                    receipt.read_text(encoding="utf-8") + "\n", encoding="utf-8"
+                )
             else:
-                (session / ".molt-state-owner.json").write_text("{}")
+                (session / ".molt-state-owner.json").write_text("{}", encoding="utf-8")
         return value
 
     monkeypatch.setattr(dg, "_incremental_inventory", changed)
@@ -2403,14 +2405,14 @@ def test_incremental_retirement_targeted_profile(completed_incremental):
     cache.parent.rename(build / "wasm32-wasip1/release")
     (session / "wasm32-wasip1").mkdir()
     (session / "release").rename(session / "wasm32-wasip1/release")
-    payload = json.loads(receipt.read_text())
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
     for argv in (
         payload["command"],
         payload["launch_command"],
         payload["child_process"]["command"],
     ):
         argv.extend(["--target", "wasm32-wasip1"])
-    receipt.write_text(json.dumps(payload))
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
     fixture = (
         *completed_incremental[:3],
         build / "wasm32-wasip1/release/incremental",
