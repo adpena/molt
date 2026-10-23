@@ -151,6 +151,12 @@ prefer live code, tests, measurements and explicit user direction over stale pro
   unit, differential and integration tests, target execution, profiling, benchmarks). One green
   cell does not prove a family-wide claim; a narrow check that fully proves the owned invariant
   needs no broad suite. Repeat checks only for changed inputs, a new failure or an open claim.
+- Preflight every planned proof coordinate through the owning command authority before expensive
+  work; validate mutation targets against their canonical definitions. Turn a demonstrated mistake
+  into a deterministic check at that boundary, not a duplicate gate or a private exception.
+- After failure, classify product, harness, artifact drift or unknown before retrying. Preserve the
+  failed receipt and reuse completed phases only when source, tool, environment, workload and
+  artifact evidence still match; rerun only missing or invalidated obligations.
 - Run the owning proof families locally before pushing; CI arbitrates release candidates. Make
   repeated manual triage, profiling or log pipelines a tested tool and point to it below.
 - Every test file belongs to a proof cell; a test that no cell runs rots without notice.
