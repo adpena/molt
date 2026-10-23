@@ -6,7 +6,7 @@ and ``runtime/molt-jit/src/image.rs`` reads it. The layout is::
     #!<runner> --image
     #molt.jit-image.v3 <header bytes> <program bytes>
     <header: JSON>
-    <program: backend IR, MessagePack>
+    <program: content-addressed backend IR lease, MessagePack>
 
 The first line makes the runner the image's interpreter, so ``execve`` of the
 image starts ``<runner> --image <image> [args...]`` with no shell between: the
@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from molt import file_publication
-from molt.cli.backend_ir_transport import write_backend_ir
+from molt.cli.backend_ir_transport import BackendIrProgram
 from molt.cli.native_launch_abi_generated import (
     JIT_IMAGE_MARKER,
     JIT_RUNNER_IMAGE_FLAG,
@@ -92,9 +92,12 @@ def publish_jit_image(
     *,
     runner: Path,
     header: Mapping[str, Any],
-    ir: Any,
+    program: BackendIrProgram,
 ) -> None:
-    """Write the image for ``ir`` and publish it at ``destination`` atomically."""
+    """Write the image for ``program`` and publish it at ``destination`` atomically.
+
+    The image ships every function body: ``molt-jit`` keeps no function store.
+    """
     interpreter = jit_image_interpreter_line(runner)
     header_bytes = json.dumps(
         dict(header), sort_keys=True, separators=(",", ":"), allow_nan=False
@@ -116,10 +119,10 @@ def publish_jit_image(
             length_offset = handle.tell()
             handle.write(b"0" * _LENGTH_WIDTH + b"\n")
             handle.write(header_bytes)
-            program = _CountingWriter(handle)
-            write_backend_ir(program, ir)
+            counted = _CountingWriter(handle)
+            program.write(counted)
             handle.seek(length_offset)
-            handle.write(str(program.count).rjust(_LENGTH_WIDTH, "0").encode("ascii"))
+            handle.write(str(counted.count).rjust(_LENGTH_WIDTH, "0").encode("ascii"))
             handle.flush()
             os.fsync(handle.fileno())
         file_publication.durable_namespace_replace(staged, destination)

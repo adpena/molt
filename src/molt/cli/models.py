@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from molt.cli.link_input_observation import CompilationInputRecord
+
+from molt.backend_protocol import BackendDaemonJobOrigin
+
 from molt.compilation_target import Target
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 from molt.compiler_analysis.python_imports import (
@@ -1895,6 +1899,7 @@ class _PreparedBackendCompile:
     backend_daemon_cache_tier: str | None
     backend_daemon_health: dict[str, Any] | None
     backend_daemon_config_digest: str | None
+    backend_daemon_origin: BackendDaemonJobOrigin | None = None
 
 
 @dataclass(frozen=True)
@@ -1923,3 +1928,4 @@ class _PreparedNonNativeResult:
     success_messages: list[str]
     extra_fields: dict[str, Any]
     artifacts: dict[str, str] | None
+    link_input_observation: CompilationInputRecord | None = None

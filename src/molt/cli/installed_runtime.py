@@ -137,9 +137,15 @@ def installed_runtime_active(project_root: Path) -> bool:
     return _installed(project_root) is not None
 
 
-def installed_runtime_store(installed: InstalledCompiler) -> Path:
+def installed_runtime_store(
+    installed: InstalledCompiler, *, selected_store: Path | None = None
+) -> Path:
     """Mutable retention root; never inside the immutable installation."""
-    store = resolve_owned_path(_default_molt_home() / INSTALLED_RUNTIME_STORE)
+    store = resolve_owned_path(
+        _default_molt_home() / INSTALLED_RUNTIME_STORE
+        if selected_store is None
+        else selected_store
+    )
     bundle = resolve_owned_path(installed.source_root.parent)
     if store == bundle or bundle in store.parents:
         raise _runtime_contract.InstalledRuntimeError(
@@ -159,6 +165,24 @@ class InstalledRuntimeCell:
     installed: InstalledCompiler | None
     record: Mapping[str, Any]
     members_root: Path
+    retention_store: Path | None
+
+    def __post_init__(self) -> None:
+        if self.installed is None:
+            if self.retention_store is not None:
+                raise _runtime_contract.InstalledRuntimeError(
+                    "a staged runtime cell cannot retain a generation"
+                )
+        elif (
+            self.retention_store is None
+            or installed_runtime_store(
+                self.installed, selected_store=self.retention_store
+            )
+            != self.retention_store
+        ):
+            raise _runtime_contract.InstalledRuntimeError(
+                "installed runtime cell has no canonical bound retention store"
+            )
 
     @property
     def id(self) -> str:
@@ -248,7 +272,8 @@ class InstalledRuntimeCell:
             raise _runtime_contract.InstalledRuntimeError(
                 "a staged runtime cell has no retention store"
             )
-        return installed_runtime_store(self.installed) / self.id
+        assert self.retention_store is not None
+        return self.retention_store / self.id
 
     @property
     def runtime_lib(self) -> Path:
@@ -296,7 +321,11 @@ def _describe_cells(installed: InstalledCompiler, kind: str) -> str:
 
 
 def select_installed_runtime_cell(
-    installed: InstalledCompiler, *, kind: str, key: Mapping[str, Any]
+    installed: InstalledCompiler,
+    *,
+    kind: str,
+    key: Mapping[str, Any],
+    retention_store: Path | None = None,
 ) -> InstalledRuntimeCell:
     """Select exactly one declared cell by typed key; never a nearby substitute."""
     matches = [
@@ -318,7 +347,12 @@ def select_installed_runtime_cell(
             "to a Molt source checkout to build other runtime configurations."
         )
     return InstalledRuntimeCell(
-        installed, matches[0], installed.runtime_root / matches[0]["id"]
+        installed,
+        matches[0],
+        installed.runtime_root / matches[0]["id"],
+        installed_runtime_store(installed)
+        if retention_store is None
+        else retention_store,
     )
 
 
@@ -413,6 +447,60 @@ def select_installed_wasm_runtime(
         freestanding=freestanding,
     )
     return select_installed_runtime_cell(installed, kind=WASM_RUNTIME_CELL, key=key)
+
+
+def installed_runtime_selection(
+    project_root: Path,
+    *,
+    native: _runtime_contract.InstalledNativeAdmission | None,
+    wasm: RuntimeWasmGeneration | None,
+) -> dict[str, Any] | None:
+    """Describe the already admitted cell for admission preparation diagnostics.
+
+    The binding owns selection. This projection does not choose a tier from an
+    output digest or claim link consumption. Its retained directory supplies
+    the operation's bound store, never a later ambient MOLT_HOME value.
+    """
+    if native is None and wasm is None:
+        return None
+    if native is not None and wasm is not None:
+        raise _runtime_contract.InstalledRuntimeError(
+            "one output cannot select both installed runtime kinds"
+        )
+    installed = _installed(project_root)
+    if installed is None:
+        return None
+    if native is not None:
+        kind, cell_id, retained = (
+            NATIVE_RUNTIME_CELL,
+            native.cell_id,
+            native.runtime_lib.parent,
+        )
+    else:
+        assert wasm is not None
+        kind, cell_id, retained = (
+            WASM_RUNTIME_CELL,
+            wasm.shared.parent.name,
+            wasm.shared.parent,
+        )
+    records = [
+        row
+        for row in installed.runtime["cells"]
+        if row["kind"] == kind and row["id"] == cell_id
+    ]
+    if len(records) != 1:
+        raise _runtime_contract.InstalledRuntimeError(
+            "bound runtime generation is not a declared installed cell"
+        )
+    cell = select_installed_runtime_cell(
+        installed, kind=kind, key=records[0]["key"], retention_store=retained.parent
+    )
+    if native is not None:
+        reuse_installed_native_admission(cell, native)
+    else:
+        assert wasm is not None
+        reuse_installed_wasm_generation(cell, wasm)
+    return dict(cell.record)
 
 
 def installed_runtime_profile_readiness(
@@ -962,7 +1050,7 @@ def admit_runtime_cell_receipts(
     (content, receipt parsers, key agreement) without retention, then bind the
     returned identities' sources to the release source tree.
     """
-    cell = InstalledRuntimeCell(None, record, members_root)
+    cell = InstalledRuntimeCell(None, record, members_root, None)
     try:
         if cell.kind == NATIVE_RUNTIME_CELL:
             archive = cell.bundle_file("runtime_archive")

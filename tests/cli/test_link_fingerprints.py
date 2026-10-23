@@ -544,3 +544,249 @@ def test_native_consumer_reuses_published_bytes_and_relinks_tampering(
     binary.write_bytes(b"bad binary signed")
     os.utime(binary, ns=(before.st_atime_ns, before.st_mtime_ns))
     assert not prepare().link_skipped and len(linked) == 2
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [None, "runtime", "compiler_output", "omitted", "duplicate", "missing_origin"],
+)
+def test_admission_link_capture_checks_actual_buffers_before_publication(
+    tmp_path, monkeypatch, mutation
+):
+    import hashlib
+    import io
+    import tarfile
+    from molt.backend_protocol import BackendDaemonJobOrigin
+    from molt.cli.link_input_observation import LinkInputObservation
+
+    target = "x86_64-unknown-linux-gnu"
+    runtime, app, binary = (tmp_path / name for name in ("runtime.a", "app.a", "app"))
+    write_test_static_archive(runtime)
+    write_test_static_archive(app)
+    admitted_runtime, admitted_app = runtime.read_bytes(), app.read_bytes()
+    identity = write_test_native_link_manifest(runtime, target_triple=target)
+    binding = native_codegen_binding(runtime, identity)
+    origin = BackendDaemonJobOrigin.from_payload(
+        {
+            "schema": "molt.daemon-job-origin.v2",
+            "daemon_pid": 123,
+            "input": {
+                "schema": "molt.addressed-program-input.v1",
+                "lease": {"size": 3, "sha256": hashlib.sha256(b"IR!").hexdigest()},
+                "function_digests": "",
+            },
+            "output": {
+                "size": len(admitted_app),
+                "sha256": hashlib.sha256(admitted_app).hexdigest(),
+            },
+            "codegen": {"kind": "in-process", "process_id": 123},
+        }
+    )
+    monkeypatch.setattr(
+        native_link_command,
+        "_build_native_link_driver_command",
+        lambda **_: (["clang", "-target", target], "lld", target),
+    )
+    monkeypatch.setattr(link_pipeline, "native_link_cache_tool_facts", lambda _: [])
+    driver = tmp_path / "clang"
+    driver.write_bytes(b"fixture selected driver")
+    header = tmp_path / "stdio.h"
+    header.write_bytes(b"fixture standard header")
+    monkeypatch.setattr(
+        link_pipeline,
+        "native_link_tool_facts",
+        lambda _: [
+            {"role": "linker", "resolved": True, "path": "/ld.lld"},
+            {"role": "driver", "resolved": True, "path": str(driver)},
+        ],
+    )
+    # An existing final-link hit must not fabricate this session's consumed bytes.
+    monkeypatch.setattr(receipts, "_link_outputs_match", lambda **_: True)
+    calls, stages = [], []
+
+    def run(*, link_cmd, **_):
+        calls.append(link_cmd)
+        report = Path(
+            next(
+                arg.split("=", 1)[1]
+                for arg in link_cmd
+                if arg.startswith("--reproduce=")
+            )
+        )
+        output = Path(link_cmd[link_cmd.index("-o") + 1])
+        dependencies = Path(link_cmd[link_cmd.index("-MF") + 1])
+        stub = tmp_path / "main_stub.c"
+        dependencies.write_text(f"output: {stub} {header}\n")
+        stages.extend((report, output, dependencies))
+        output.write_bytes(b"new-private-output")
+        with tarfile.open(report, "w", format=tarfile.GNU_FORMAT) as archive:
+            values = [
+                ("response.txt", b"fixture command"),
+                ("version.txt", b"fixture linker"),
+            ]
+            for role, path, data in (
+                ("runtime", runtime, admitted_runtime),
+                ("compiler_output", app, admitted_app),
+            ):
+                if mutation == "omitted" and role == "runtime":
+                    continue
+                values.append(
+                    (
+                        str(path).lstrip("/"),
+                        b"X" * len(data) if mutation == role else data,
+                    )
+                )
+            if mutation == "duplicate":
+                values.append(values[-1])
+            for name, data in values:
+                member = tarfile.TarInfo(report.stem + "/" + name)
+                member.size = len(data)
+                archive.addfile(member, io.BytesIO(data))
+        return subprocess.CompletedProcess(link_cmd, 0, "", "")
+
+    monkeypatch.setattr(link_pipeline, "_run_native_link_command", run)
+    prepared, failure = link_pipeline._prepare_native_link(
+        output_artifact=app,
+        resolved_capability_policy=CapabilityManifest().resolve(),
+        artifacts_root=tmp_path,
+        json_output=True,
+        output_binary=binary,
+        runtime_codegen_binding=binding,
+        target=resolve_native_target_spec(target),
+        sysroot_path=None,
+        profile="dev",
+        project_root=tmp_path,
+        diagnostics_enabled=False,
+        phase_starts={},
+        link_timeout=None,
+        warnings=[],
+        capture_link_inputs=True,
+        daemon_job_origin=None if mutation == "missing_origin" else origin,
+    )
+    assert len(calls) == (0 if mutation == "missing_origin" else 1)
+    assert not binary.exists()
+    if mutation is not None:
+        assert prepared is None and failure == 2
+        assert all(not stage.exists() for stage in stages)
+    else:
+        assert failure is None and prepared is not None and not prepared.link_skipped
+        observed = LinkInputObservation.from_record(
+            prepared.link_input_observation["link"]
+        )
+        actual = {path: (size, digest) for path, size, digest in observed.inputs}
+        assert actual[str(runtime)] == (
+            len(admitted_runtime),
+            hashlib.sha256(admitted_runtime).hexdigest(),
+        )
+        assert actual[str(app)] == (
+            len(admitted_app),
+            hashlib.sha256(admitted_app).hexdigest(),
+        )
+        assert set(prepared.link_input_artifacts) == {
+            "input_observation",
+            "input_reproducer",
+            "driver_dependencies",
+            "driver_preparation",
+        }
+        preparation = json.loads(
+            prepared.link_input_artifacts["driver_preparation"][0].read_text()
+        )
+        assert (
+            preparation["driver"]["sha256"]
+            == hashlib.sha256(driver.read_bytes()).hexdigest()
+        )
+        assert (
+            next(row for row in preparation["files"] if row["path"] == str(header))[
+                "sha256"
+            ]
+            == hashlib.sha256(header.read_bytes()).hexdigest()
+        )
+        for stage, final in prepared.link_input_artifacts.values():
+            assert stage.is_file() and not final.exists()
+
+
+@pytest.mark.parametrize(
+    "damage", [None, "compiler", "runtime", "extra_role", "extra_field"]
+)
+def test_wasm_compilation_observation_retains_typed_runtime_without_verification(
+    tmp_path, damage
+):
+    import hashlib
+    from molt.cli.link_input_observation import (
+        compilation_input_observation,
+        validate_compilation_input_observation,
+    )
+
+    def content(data):
+        return {"size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+
+    compiler = content(b"original compiler output")
+    runtime = content(b"runtime module")
+    origin = {
+        "schema": "molt.daemon-job-origin.v2",
+        "daemon_pid": 123,
+        "input": {
+            "schema": "molt.addressed-program-input.v1",
+            "lease": content(b"partial lease"),
+            "function_digests": "",
+        },
+        "output": compiler,
+        "codegen": {"kind": "in-process", "process_id": 123},
+    }
+    link = {
+        "schema": "molt.wasm-link-inputs.v1",
+        "source_inputs": {
+            "compiler_output": compiler.copy(),
+            "runtime": runtime.copy(),
+            "deployment_runtime": None,
+        },
+        "links": {
+            "linked": {
+                "schema": "molt.link-input-observation.v1",
+                "dialect": "wasm",
+                "linker_path": "/wasm-ld",
+                "inputs": [
+                    {"path": "/app.wasm", **content(b"rewritten app")},
+                    {"path": "/runtime.wasm", **runtime},
+                ],
+                "roles": {
+                    "compiler_rewritten": "/app.wasm",
+                    "runtime": "/runtime.wasm",
+                },
+                "reproducer": content(b"actual reproducer"),
+            }
+        },
+    }
+    if damage in {"compiler", "runtime"}:
+        link["source_inputs"][
+            "compiler_output" if damage == "compiler" else "runtime"
+        ] = content(b"substitution")
+    elif damage == "extra_role":
+        link["links"]["linked"]["roles"]["invented"] = "/app.wasm"
+    elif damage == "extra_field":
+        link["source_inputs"]["verified"] = True
+    if damage:
+        with pytest.raises(ValueError):
+            compilation_input_observation(origin, link)
+        return
+    admitted = compilation_input_observation(origin, link)
+    assert (
+        validate_compilation_input_observation(json.loads(json.dumps(admitted)))
+        == admitted
+    )
+    # Admission owns a validated snapshot, not aliases into the untrusted record.
+    link["source_inputs"]["runtime"]["size"] = 999
+    output = tmp_path / "app.wasm"
+    output.write_bytes(b"linked app")
+    facts = build_results._observed_build_toolchain(
+        backend_bin=None,
+        runtime_lib=None,
+        output=output,
+        link_input_observation=admitted,
+    )
+    assert facts["runtime"] == {
+        "identity": runtime,
+        "observation": "linker-input-buffer",
+    }
+    assert facts["compiled_with_verified"] is False
+    assert facts["compiler"] is None

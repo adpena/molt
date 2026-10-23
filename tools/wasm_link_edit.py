@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+from tools.wasm_link_transaction import WasmArtifactState
+
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -149,13 +151,13 @@ def _extend_code_relocations(
 
 
 def _inject_app_export_adapters(
-    output: Path,
+    output: WasmArtifactState,
     temp_dir: OwnedTemporaryDirectory,
     *,
     public_export_names: Sequence[str],
     call_abi: Mapping[str, object],
     facts_provider: WasmFactsProvider,
-) -> tuple[Path, dict[str, str]]:
+) -> tuple[WasmArtifactState, dict[str, str]]:
     """Add exact contract-selected host adapters to a relocatable app object.
 
     Under the canonical call ABI the target entry adopts every argument and
@@ -192,7 +194,7 @@ def _inject_app_export_adapters(
     ):
         raise ValueError("unsupported canonical app-call ABI")
 
-    data = output.read_bytes()
+    data = output.data
     sections = _parse_sections(data)
     facts = facts_provider(data)
     types = facts["function_types"]
@@ -387,8 +389,7 @@ def _inject_app_export_adapters(
             "app export adapter symbols were not published to linking metadata"
         )
     adapter_path = Path(temp_dir.name) / "output_app_export_adapters.wasm"
-    adapter_path.write_bytes(with_symbols)
-    return adapter_path, adapter_symbol_map
+    return output.derive(adapter_path, with_symbols), adapter_symbol_map
 
 
 def _function_type_for_index(
@@ -1093,7 +1094,7 @@ def _rewrite_native_runtime_imports(
 
 
 def _rewrite_runtime_import_module_namespace(
-    module_path: Path,
+    module_path: WasmArtifactState,
     *,
     source_module: str,
     target_module: str,
@@ -1101,8 +1102,8 @@ def _rewrite_runtime_import_module_namespace(
     temp_dir: OwnedTemporaryDirectory,
     filename: str,
     provider_symbols: frozenset[str] = frozenset(),
-) -> tuple[Path, list[str]] | None:
-    data = module_path.read_bytes()
+) -> tuple[WasmArtifactState, list[str]] | None:
+    data = module_path.data
     try:
         rewritten, force_exports = _rewrite_runtime_imports_in_module(
             data,
@@ -1117,15 +1118,14 @@ def _rewrite_runtime_import_module_namespace(
     if rewritten is None:
         return module_path, force_exports
     staged = Path(temp_dir.name) / filename
-    staged.write_bytes(rewritten)
-    return staged, force_exports
+    return module_path.derive(staged, rewritten), force_exports
 
 
 def _rewrite_output_imports(
-    output: Path,
+    output: WasmArtifactState,
     runtime_exports: set[str],
     temp_dir: OwnedTemporaryDirectory,
-) -> tuple[Path, OwnedTemporaryDirectory, list[str]] | None:
+) -> tuple[WasmArtifactState, OwnedTemporaryDirectory, list[str]] | None:
     """Rewrite output imports to add the ``molt_`` prefix where needed.
 
     Returns ``(rewritten_path, temp_dir, force_exports)`` on success.
@@ -1134,7 +1134,7 @@ def _rewrite_output_imports(
     ``--export-if-defined`` flags to wasm-ld so the linker retains the
     symbols from a relocatable runtime input.
     """
-    data = output.read_bytes()
+    data = output.data
     try:
         sections = _parse_sections(data)
     except ValueError as exc:
@@ -1201,8 +1201,11 @@ def _rewrite_output_imports(
         return output, temp_dir, []
 
     wasm_path = Path(temp_dir.name) / "output_rewrite.wasm"
-    wasm_path.write_bytes(_build_sections(new_sections))
-    return wasm_path, temp_dir, force_exports
+    return (
+        output.derive(wasm_path, _build_sections(new_sections)),
+        temp_dir,
+        force_exports,
+    )
 
 
 def _canonicalize_standard_section_order(data: bytes) -> bytes | None:

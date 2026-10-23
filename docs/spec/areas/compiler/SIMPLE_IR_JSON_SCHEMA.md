@@ -48,16 +48,24 @@ whitespace and rejects any second value or other suffix. MessagePack and CBOR
 require immediate EOF after the decoded value, including for buffered stdin.
 Malformed input returns an error before target admission or emission.
 
-Compiler-owned leases use MessagePack for daemon, one-shot and factgraph
-dispatch. JSON exports and the MLIR stdin boundary retain JSON. Both file
-receivers use the same typed complete-document reader, including regular-file
-admission and EOF validation. File sizes are not bounded by the stdin ceiling.
-Daemon protocol 2 keeps its small control frame in JSON, but admits only a
-cache probe without an IR path or a compile with a nonempty MessagePack
-`ir_path`; inline `ir` is rejected, including null. A cache hit need not open
-an unused lease. Native batch jobs retain their separate complete JSON
-artifact/request decoding. None of these boundaries adds a cache receipt or
-changes the semantic digest domain.
+Compiler-owned leases use content-addressed MessagePack for daemon, one-shot,
+factgraph and JIT-image dispatch (`runtime/molt-ir/src/addressed_program.rs`):
+one map with the header fields `code_slots`, `module_registry` and `profile`,
+`function_digests` (one `bin` of 32-byte body digests in program order) and
+`function_bodies` (one `bin` per shipped body). Each receiver hashes every
+shipped body in the `molt.function-body.msgpack.v1\0` domain below; a body can
+only fill the slot its own bytes name. One-shot receivers require every body.
+The backend daemon fills the rest from its resident store and names the
+positions it lacks (`docs/design/backend_compile_daemon.md`). JSON, CBOR and
+NDJSON inputs keep their `functions` array, and JSON exports and the MLIR stdin
+boundary retain JSON. All file receivers share regular-file admission and EOF
+validation. File sizes are not bounded by the stdin ceiling. Daemon protocol 4
+keeps its small control frame in JSON and admits only a cache probe that names
+the program's digests (`function_digests`, hex) without an IR path, or a
+compile with a nonempty MessagePack `ir_path`; inline `ir` is rejected,
+including null. A cache hit need not open an unused lease. Native batch jobs
+retain their separate complete JSON artifact/request decoding. None of these
+boundaries adds a cache receipt or changes the semantic digest domain.
 
 The boundary follows [Serde JSON's whole-reader EOF contract](https://docs.rs/serde_json/1.0.151/serde_json/fn.from_reader.html).
 The binary value decoders require an explicit EOF check on their retained reader;
@@ -179,7 +187,7 @@ reference (design 20 §1.6). A `transferred` argument moves into the
 activation, which releases it at the binding's Python boundaries; a
 `borrowed` one stays the caller's. The field names every parameter and at
 least one `transferred` entry, never on the closure parameter; all-borrowed
-custody is the absent field. It belongs to the function contract (version 3),
+custody is the absent field. It belongs to the function contract (version 4),
 so every cache digest covers it. An extern declaration, a megafunction stub
 and a native linkage row keep it, and megafunction chunks borrow every
 parameter.
@@ -242,8 +250,9 @@ is `molt.cache-payload.merkle.msgpack-functions.v2\0`; rich header encoding is
 unchanged. `MOLT_VERIFY_FUNCTION_DIGESTS=1` deliberately re-encodes seeded bodies
 once for compiler debugging, following
 [rustc's incremental fingerprint verification](https://rustc-dev-guide.rust-lang.org/queries/incremental-compilation-in-detail.html).
-Normal builds pay no such verification walk. Whole-backend JSON/optional
-MessagePack transport and worker object IPC remain distinct measured costs.
+Normal builds pay no such verification walk. The backend lease reuses these
+digests, so an unchanged body is neither encoded nor sent to a daemon that holds
+it; worker object IPC remains a distinct measured cost.
 
 The pipeline creates that owner after final backend rewrites and shares it
 between optional binary-image analysis and every backend cache projection.

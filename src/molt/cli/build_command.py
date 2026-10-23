@@ -110,6 +110,7 @@ def _early_cutoff_request(request: BuildRequest) -> tuple[str, Path] | None:
         or request.diagnostics
         or request.diagnostics_file is not None
         or request.cache_report
+        or request.capture_link_inputs
         or request.audit_log is not None
         or request.codegen_backend != DEFAULT_CODEGEN_BACKEND
         # Inputs named by path whose loaders do not yet report to the record.
@@ -447,6 +448,7 @@ def build(request: BuildRequest) -> int:
             trusted=request.trusted,
             verbose=request.verbose,
             require_linked=request.require_linked,
+            capture_link_inputs=request.capture_link_inputs,
             wasm_opt_level=request.wasm_opt_level,
             precompile=request.precompile,
             snapshot=request.snapshot,

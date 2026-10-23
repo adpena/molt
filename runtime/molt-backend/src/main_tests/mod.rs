@@ -56,15 +56,22 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 static ENV_TEST_MUTEX: Mutex<()> = Mutex::new(());
 
-/// Publish fixture IR inside the caller's existing artifact root and lifetime.
+/// Publish fixture IR, given as a JSON backend document, as a content-addressed
+/// lease that ships every body, inside the caller's artifact root and lifetime.
 #[cfg(molt_backend_daemon)]
 fn write_daemon_ir_fixture(path: &std::path::Path, ir: &impl serde::Serialize) -> String {
+    let document = molt_ir::ir::BackendIrDocument::from_json_value(
+        &serde_json::to_value(ir).expect("fixture IR is JSON"),
+    )
+    .expect("fixture IR is a valid backend document");
+    let lease = molt_ir::addressed_program::encode_complete_lease(&document)
+        .expect("encode MessagePack IR lease fixture");
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(path)
         .expect("create MessagePack IR fixture");
-    rmp_serde::encode::write_named(&mut file, ir).expect("encode MessagePack IR fixture");
+    std::io::Write::write_all(&mut file, &lease).expect("write MessagePack IR fixture");
     path.to_str().expect("Unicode fixture path").to_owned()
 }
 

@@ -7,6 +7,8 @@ from tools.wasm_link_fact_provider import WasmFactsProvider
 from collections.abc import Mapping, Sequence
 import contextlib
 from dataclasses import dataclass
+import hashlib
+from molt.cli.link_input_observation import capture_link_inputs as observe_link_inputs
 from pathlib import Path
 import subprocess
 import sys
@@ -218,6 +220,7 @@ class _PlannedLinkCommands:
 
 @dataclass(frozen=True, slots=True)
 class _LoadedLinkContract:
+    runtime_data: bytes
     runtime_exports: frozenset[str]
     output_data: bytes
     app_export_contract: Mapping[str, object]
@@ -247,12 +250,12 @@ class _PreparedLinkInputs:
     app_identity_exports: Mapping[str, str]
     preserved_output_exports: tuple[str, ...]
     user_export_symbol_names: tuple[str, ...]
-    rewritten_path: Path
+    rewritten_path: WasmArtifactState
     rewritten_requirements: SourceExtensionLinkRequirements
     force_exports: tuple[str, ...]
     base_allowlist: Path
     allowlist: Path
-    linked_rewritten_path: Path
+    linked_rewritten_path: WasmArtifactState
     linked_requirements: SourceExtensionLinkRequirements
 
 
@@ -276,6 +279,7 @@ def _publish_final_outputs_stage(
     selection_roles: Mapping[str, Mapping[str, object]],
     staged_outputs: list[Path],
     failure_evidence_dir: Path,
+    link_input_artifacts: Mapping[str, tuple[Path, Path]],
 ) -> bool:
     """Validate and atomically publish one fully transformed artifact family."""
 
@@ -442,7 +446,10 @@ def _publish_final_outputs_stage(
             print(f"Failed to attest wasm optimizer execution: {exc}", file=sys.stderr)
             return False
 
-    publish_candidates = {"linked": (linked_artifact.path, linked_destination)}
+    publish_candidates = {
+        "linked": (linked_artifact.path, linked_destination),
+        **link_input_artifacts,
+    }
     if optimizer_attestation_stage is not None:
         publish_candidates["optimizer"] = (
             optimizer_attestation_stage,
@@ -767,6 +774,7 @@ def _load_link_contract_stage(
             )
             return None
     return _LoadedLinkContract(
+        runtime_data=runtime_data,
         runtime_exports=runtime_exports,
         output_data=output_data,
         app_export_contract=app_export_contract,
@@ -876,7 +884,10 @@ def _prepare_link_inputs_stage(
             file=sys.stderr,
         )
         return None
-    rewritten = _edit._rewrite_output_imports(output, set(runtime_exports), temp_dir)
+    original = WasmArtifactState.from_materialized_bytes(
+        output, output_data, facts_provider=facts_provider
+    )
+    rewritten = _edit._rewrite_output_imports(original, set(runtime_exports), temp_dir)
     if rewritten is None:
         return None
     rewritten_path, _returned_temp_dir, force_exports = rewritten
@@ -1318,11 +1329,23 @@ def _run_admitted_link(
     why_extract: Path,
     role: str,
     selection_roles: dict[str, Mapping[str, object]],
+    capture: tuple[Path, Mapping[str, tuple[Path, Mapping[str, object]]]] | None = None,
+    input_observations: dict[str, object] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     arguments = list(command)
+    if capture is not None:
+        arguments.append("--reproduce=" + str(capture[0]))
     if selection is not None and selection.lazy_archives:
         arguments.extend(("--trace", f"--why-extract={why_extract}"))
     result = _command._run_external_tool(arguments, capture_output=True, text=True)
+    if result.returncode == 0 and capture is not None:
+        assert input_observations is not None
+        input_observations[role] = observe_link_inputs(
+            capture[0],
+            dialect="wasm",
+            linker_path=Path(command[0]),
+            expected=capture[1],
+        ).as_record()
     if result.returncode == 0 and selection is not None:
         selection_roles[role] = selection.admit(
             dialect="wasm",
@@ -1345,6 +1368,8 @@ def _link_split_app_stage(
     selection: LinkSelectionAdmission | None,
     selection_roles: dict[str, Mapping[str, object]],
     why_extract: Path,
+    capture: tuple[Path, Mapping[str, tuple[Path, Mapping[str, object]]]] | None = None,
+    input_observations: dict[str, object] | None = None,
 ) -> _SplitAppLinkResult:
     """Run and admit the split-app native link as one typed transaction."""
 
@@ -1355,6 +1380,8 @@ def _link_split_app_stage(
             why_extract=why_extract,
             role="app",
             selection_roles=selection_roles,
+            capture=capture,
+            input_observations=input_observations,
         )
     except (OSError, ValueError) as exc:
         print(
@@ -1746,6 +1773,7 @@ def run_wasm_ld_with_custodied_inputs(
     facts_provider: _facts.WasmFactsProvider | None = None,
     app_export_contract_path: Path | None,
     link_receipt: FinalLinkReceiptRequest | None = None,
+    capture_link_inputs: bool = False,
 ) -> int:
     if phase_timings_ms is None:
         phase_timings_ms = {}
@@ -1791,6 +1819,7 @@ def run_wasm_ld_with_custodied_inputs(
             )
         link_outputs = wasm_link_output_paths(
             linked,
+            capture_inputs=capture_link_inputs,
             external_selection=bool(native_link_requirements.items),
             optimize=optimize,
             split_output_dir=(split_output_dir or linked.parent)
@@ -1932,8 +1961,8 @@ def run_wasm_ld_with_custodied_inputs(
                 callable_entry_symbol_names=callable_entry_symbol_names,
                 reserved_runtime_link_exports=reserved_runtime_link_exports,
                 work_linked=work_linked,
-                linked_rewritten_path=linked_rewritten_path,
-                rewritten_path=rewritten_path,
+                linked_rewritten_path=linked_rewritten_path.path,
+                rewritten_path=rewritten_path.path,
                 linked_requirements=linked_requirements,
                 rewritten_requirements=rewritten_requirements,
                 native_objects=native_objects,
@@ -1954,6 +1983,36 @@ def run_wasm_ld_with_custodied_inputs(
             return 1
 
         selection_roles: dict[str, Mapping[str, object]] = {}
+        input_observations: dict[str, object] = {}
+        link_input_artifacts: dict[str, tuple[Path, Path]] = {}
+        if capture_link_inputs:
+            for key in (
+                "input_observation",
+                "linked_input_reproducer",
+                *(("app_input_reproducer",) if split_runtime else ()),
+            ):
+                final = link_outputs[key]
+                stage = artifact_publish.staged_output_path(final)
+                staged_outputs.append(stage)
+                link_input_artifacts[key] = (stage, final)
+
+        def content(data: bytes) -> dict[str, object]:
+            return {"size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+
+        linked_capture = (
+            (
+                link_input_artifacts["linked_input_reproducer"][0],
+                {
+                    "compiler_rewritten": (
+                        linked_rewritten_path.path,
+                        content(linked_rewritten_path.data),
+                    ),
+                    "runtime": (runtime, content(loaded_contract.runtime_data)),
+                },
+            )
+            if capture_link_inputs
+            else None
+        )
         try:
             selection = (
                 LinkSelectionAdmission.capture(native_link_requirements)
@@ -1966,6 +2025,8 @@ def run_wasm_ld_with_custodied_inputs(
                 why_extract=Path(temp_dir.name) / "linked.why-extract",
                 role="linked",
                 selection_roles=selection_roles,
+                capture=linked_capture,
+                input_observations=input_observations,
             )
         except (OSError, ValueError) as exc:
             print(f"WASM external member admission failed: {exc}", file=sys.stderr)
@@ -2059,6 +2120,18 @@ def run_wasm_ld_with_custodied_inputs(
                 selection=selection,
                 selection_roles=selection_roles,
                 why_extract=Path(temp_dir.name) / "app.why-extract",
+                capture=(
+                    link_input_artifacts["app_input_reproducer"][0],
+                    {
+                        "compiler_rewritten": (
+                            rewritten_path.path,
+                            content(rewritten_path.data),
+                        )
+                    },
+                )
+                if capture_link_inputs
+                else None,
+                input_observations=input_observations,
             )
             if link_result.prepared is None:
                 return link_result.returncode or 1
@@ -2158,6 +2231,23 @@ def run_wasm_ld_with_custodied_inputs(
                 optimizer_attestation_path=app_optimizer_attestation_path,
                 optimizer_attestation_stage=app_optimizer_attestation_stage,
             )
+        if capture_link_inputs:
+            capture_record = {
+                "schema": "molt.wasm-link-inputs.v1",
+                "source_inputs": {
+                    "compiler_output": content(output_data),
+                    "runtime": content(loaded_contract.runtime_data),
+                    "deployment_runtime": content(
+                        planned_commands.split.deploy_runtime_data
+                    )
+                    if planned_commands.split is not None
+                    else None,
+                },
+                "links": input_observations,
+            }
+            link_input_artifacts["input_observation"][0].write_text(
+                dumps_exact(capture_record), encoding="utf-8"
+            )
         if not _publish_final_outputs_stage(
             linked_state,
             linked,
@@ -2175,6 +2265,7 @@ def run_wasm_ld_with_custodied_inputs(
             link_receipt=link_receipt,
             link_outputs=link_outputs,
             selection_roles=selection_roles,
+            link_input_artifacts=link_input_artifacts,
             staged_outputs=staged_outputs,
             failure_evidence_dir=failure_evidence_dir,
         ):

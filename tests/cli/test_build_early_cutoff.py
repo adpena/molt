@@ -305,3 +305,20 @@ def test_preflight_preserves_target_output_layout(
         project_root=tmp_path,
     )
     assert (layout.linked, layout.emit_mode) == (linked, mode)
+
+
+def test_input_capture_never_cuts_off_a_fresh_observation(
+    project, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(build_record, "_BUILDS_ENTERED", 0)
+    calls = []
+    build = build_command._with_early_cutoff(_fake_build(calls))
+    request = BuildRequest(
+        file_path=os.fspath(project / "app.py"),
+        output=os.fspath(tmp_path / "app"),
+        capture_link_inputs=True,
+    )
+    for _ in range(2):
+        build_record._BUILDS_ENTERED = 0
+        assert build(request) == 0
+    assert len(calls) == 2, "every capture must produce fresh input observations"

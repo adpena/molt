@@ -1,4 +1,5 @@
 use super::*;
+use crate::backend_process::daemon::origin::DaemonCacheEntry;
 use crate::backend_process::daemon::protocol::DaemonJobRequest;
 use std::sync::atomic::Ordering;
 use std::thread;
@@ -6,7 +7,7 @@ use std::thread;
 fn key(source: &str) -> Arc<DaemonCacheKey> {
     let mut job = DaemonJobRequest::from_json_value(
         &serde_json::json!({"id":"flight", "is_wasm":cfg!(feature="wasm-backend"),
-            "output":"unused", "cache_key":source, "probe_cache_only":true}),
+            "output":"unused", "cache_key":source, "probe_cache_only":true, "function_digests": ""}),
         "job",
     )
     .expect("job");
@@ -37,12 +38,19 @@ fn one_caller_compiles_and_concurrent_callers_reuse_its_output() {
             let key = Arc::clone(&key);
             thread::spawn(move || {
                 matches!(cache.begin(&key), Flight::Waited)
-                    && cache.get_bytes(&key).as_deref() == Some(b"out".as_slice())
+                    && cache
+                        .get_entry(&key)
+                        .as_ref()
+                        .map(|entry| entry.bytes.as_ref())
+                        == Some(b"out".as_slice())
             })
         })
         .collect();
     await_waiters(&guard.flight, 4);
-    cache.insert(Arc::clone(&key), Arc::from(b"out".as_slice()));
+    cache.insert(
+        Arc::clone(&key),
+        DaemonCacheEntry::fixture(b"out".as_slice()),
+    );
     drop(guard);
     for follower in followers {
         assert!(
@@ -66,7 +74,7 @@ fn a_leader_without_output_releases_its_followers() {
         let cache = Arc::clone(&cache);
         let key = Arc::clone(&key);
         thread::spawn(move || {
-            matches!(cache.begin(&key), Flight::Waited) && cache.get_bytes(&key).is_none()
+            matches!(cache.begin(&key), Flight::Waited) && cache.get_entry(&key).is_none()
         })
     };
     await_waiters(&guard.flight, 1);
@@ -93,7 +101,7 @@ fn same_source_different_target_has_independent_flight_state() {
     let first = key("same");
     let mut changed = DaemonJobRequest::from_json_value(
         &serde_json::json!({"id":"flight", "is_wasm":cfg!(feature="wasm-backend"),
-            "output":"unused", "cache_key":"same", "probe_cache_only":true,
+            "output":"unused", "cache_key":"same", "probe_cache_only":true, "function_digests": "",
             "wasm_data_base":4096, "target_triple":"aarch64-unknown-linux-gnu"}),
         "job",
     )
@@ -144,8 +152,11 @@ fn same_source_different_actual_semantics_has_independent_flight_state() {
         panic!("different actual semantics must lead independently");
     };
     assert_eq!(lock(&cache.in_flight).len(), 2);
-    cache.insert(Arc::clone(&first), Arc::from(b"first".as_slice()));
-    assert!(cache.get_bytes(&second).is_none());
+    cache.insert(
+        Arc::clone(&first),
+        DaemonCacheEntry::fixture(b"first".as_slice()),
+    );
+    assert!(cache.get_entry(&second).is_none());
     drop(first_guard);
     assert!(lock(&cache.in_flight).contains_key(second.as_ref()));
     drop(second_guard);

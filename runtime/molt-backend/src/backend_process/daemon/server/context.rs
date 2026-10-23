@@ -243,6 +243,7 @@ impl DaemonState {
                 .as_millis()
                 .min(u128::from(u64::MAX)) as u64,
             cache_entries,
+            resident_functions: self.cache.function_entries(),
             cache_bytes,
             cache_max_bytes: self.cache.max_bytes(),
             request_limit_bytes: Some(self.request_limit_bytes),

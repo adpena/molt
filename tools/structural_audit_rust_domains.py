@@ -142,6 +142,7 @@ def _validation_dominates(admission: str, ir: str, schema: str) -> bool:
     target = _body(admission, "validate_target_contract_with_representation_plan") or ""
     validate = _body(ir, "validate_simple_ir") or ""
     transport = _body(ir, "validate_simple_ir_transport_contract") or ""
+    function_body = _body(ir, "validate_function_transport_contract") or ""
     required = _body(schema, "validate_required_fields") or ""
     if not _compact(target).startswith(
         _compact("""
@@ -150,14 +151,22 @@ def _validation_dominates(admission: str, ir: str, schema: str) -> bool:
     """)
     ) or not _starts(validate, "validate_simple_ir_transport_contract(ir)?;"):
         return False
-    functions = _block(transport, "for func in &ir.functions", depth=0)
-    if functions is None or not _no_success_bypass(transport):
+    # Whole-program admission runs every function's own contract first and
+    # propagates its error (HF-516 split the per-function part out so a
+    # content-addressed store can run it once per body).
+    if not _starts(
+        transport,
+        "ir.functions.iter().try_for_each(validate_function_transport_contract)?;",
+    ) or not _no_success_bypass(transport):
         return False
-    function_body = transport[slice(*functions)]
     operations = _block(
         function_body, "for (op_index, op) in func.ops.iter().enumerate()", depth=0
     )
-    if operations is None or not _unshadowed(transport, ("ir", "func", "op")):
+    if (
+        operations is None
+        or not _no_success_bypass(function_body)
+        or not _unshadowed(function_body, ("func", "op"))
+    ):
         return False
     operation_body = function_body[slice(*operations)]
     if not _compact(operation_body).startswith(

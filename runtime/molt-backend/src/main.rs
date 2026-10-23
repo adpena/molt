@@ -83,7 +83,11 @@ fn main() -> io::Result<()> {
         BackendCommand::NativeBatchJob {
             job_file,
             output_path,
-        } => compile_native_batch_object_job_file(Path::new(job_file), Path::new(output_path)),
+        } => {
+            let origin =
+                compile_native_batch_object_job_file(Path::new(job_file), Path::new(output_path))?;
+            serde_json::to_writer(io::stdout().lock(), &origin).map_err(io::Error::other)
+        }
         BackendCommand::Compile(request) => compile_ir_document(request),
     }
 }

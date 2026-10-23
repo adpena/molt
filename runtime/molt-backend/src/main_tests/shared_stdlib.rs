@@ -793,6 +793,7 @@ fn compile_stdlib_cache_archive_emits_parseable_empty_member() {
     planned
         .assemble("MOLT_BACKEND(test)", None, |objects| {
             crate::backend_process::write_native_archive_objects(&stdlib, objects)
+                .map(|_unpersisted_content| ())
         })
         .expect("empty stdlib cache must emit an object");
 

@@ -80,6 +80,12 @@ class WasmArtifactState:
     def section_edit(self) -> WasmSectionEdit:
         return WasmSectionEdit(self)
 
+    def derive(self, path: Path, data: bytes) -> WasmArtifactState:
+        """Retain a rewrite's emitted buffer while materializing its link input."""
+        derived = type(self).from_bytes(path, data, facts_provider=self.facts_provider)
+        derived.persist()
+        return derived
+
     def persist(self) -> None:
         """Write the owned bytes without pretending the in-memory state changed."""
 

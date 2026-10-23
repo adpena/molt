@@ -267,6 +267,7 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
         .unwrap()
         .remove("ir_path");
     request_json["jobs"][0]["probe_cache_only"] = true.into();
+    request_json["jobs"][0]["function_digests"] = "".into();
     for (name, omit_optional) in [("evicted", false), ("omitted", true)] {
         if omit_optional {
             request_json["env"]
@@ -278,7 +279,7 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
         request_json["jobs"][0]["output"] = destination.to_string_lossy().as_ref().into();
         let hit = run_request(&request_json, &cache);
         assert!(
-            hit.ok && hit.cached && !hit.needs_ir,
+            hit.ok && hit.cached && !hit.missing_functions.is_some(),
             "{name}: {:?}",
             hit.message
         );

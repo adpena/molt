@@ -12,6 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from tools.wasm_link_transaction import WasmArtifactState
 from molt.cli.source_extension_link_requirements import (
     merge_source_extension_link_requirements,
     source_extension_link_requirements,
@@ -2147,13 +2148,13 @@ def test_app_export_adapters_sweep_arity_and_forward_owned_result_boundary(
     temp_dir = OwnedTemporaryDirectory(dir=tmp_path)
     try:
         adapted_path, adapter_map = wasm_link_edit._inject_app_export_adapters(
-            output,
+            _rewrite_input(output),
             temp_dir,
             public_export_names=("probe__f0", "probe__f1", "probe__f2"),
             call_abi=_app_adapter_call_abi(),
             facts_provider=_facts_provider,
         )
-        adapted = adapted_path.read_bytes()
+        adapted = adapted_path.path.read_bytes()
     finally:
         temp_dir.cleanup()
 
@@ -2199,13 +2200,13 @@ def test_app_export_adapter_validator_replaces_raw_target_identity(
     temp_dir = OwnedTemporaryDirectory(dir=tmp_path)
     try:
         adapted_path, adapter_map = wasm_link_edit._inject_app_export_adapters(
-            output,
+            _rewrite_input(output),
             temp_dir,
             public_export_names=("probe__f0", "probe__f1"),
             call_abi=_app_adapter_call_abi(),
             facts_provider=_facts_provider,
         )
-        adapted = adapted_path.read_bytes()
+        adapted = adapted_path.path.read_bytes()
     finally:
         temp_dir.cleanup()
 
@@ -2255,14 +2256,14 @@ def test_app_export_adapter_identity_survives_metadata_strip_and_rejects_wrong_c
     temp_dir = OwnedTemporaryDirectory(dir=tmp_path)
     try:
         adapted_path, adapter_map = wasm_link_edit._inject_app_export_adapters(
-            output,
+            _rewrite_input(output),
             temp_dir,
             public_export_names=("probe__f0", "probe__f1"),
             call_abi=_app_adapter_call_abi(),
             facts_provider=_facts_provider,
         )
         adapted = wasm_link_export_contract._restore_public_output_exports(
-            adapted_path.read_bytes(),
+            adapted_path.path.read_bytes(),
             adapter_map,
             facts_provider=_facts_provider,
         )
@@ -2345,13 +2346,13 @@ def test_app_export_adapters_have_no_ownership_import_dependency(
     temp_dir = OwnedTemporaryDirectory(dir=tmp_path)
     try:
         adapted_path, _adapter_map = wasm_link_edit._inject_app_export_adapters(
-            output,
+            _rewrite_input(output),
             temp_dir,
             public_export_names=("probe__f0",),
             call_abi=_app_adapter_call_abi(),
             facts_provider=_facts_provider,
         )
-        imports = wasm_link_format._collect_imports(adapted_path.read_bytes())
+        imports = wasm_link_format._collect_imports(adapted_path.path.read_bytes())
         assert all(
             name != "molt_inc_ref_obj" for _module, name, _kind, _desc in imports
         )
@@ -2368,7 +2369,7 @@ def test_app_export_adapters_fail_closed_on_noncanonical_target_signature(
     try:
         with pytest.raises(ValueError, match=r"canonical \(i64\.\.\.\) -> i64"):
             wasm_link_edit._inject_app_export_adapters(
-                output,
+                _rewrite_input(output),
                 temp_dir,
                 public_export_names=("probe__f0",),
                 call_abi=_app_adapter_call_abi(),
@@ -6042,6 +6043,7 @@ def test_link_transaction_cleans_owned_resources_when_command_planning_fails(
     timings = {}
     real_staged_output_path = wasm_link_pipeline.artifact_publish.staged_output_path
     loaded = wasm_link_pipeline._LoadedLinkContract(
+        runtime_data=b"\0asm\x01\0\0\0",
         runtime_exports=frozenset({"molt_main"}),
         output_data=b"\0asm\x01\0\0\0",
         app_export_contract={},
@@ -6069,12 +6071,16 @@ def test_link_transaction_cleans_owned_resources_when_command_planning_fails(
         app_identity_exports={},
         preserved_output_exports=(),
         user_export_symbol_names=(),
-        rewritten_path=output,
+        rewritten_path=WasmArtifactState.from_bytes(
+            output, loaded.output_data, facts_provider=_facts_provider
+        ),
         rewritten_requirements=_native_link_requirements(),
         force_exports=(),
         base_allowlist=tmp_path / "allowlist",
         allowlist=tmp_path / "allowlist",
-        linked_rewritten_path=output,
+        linked_rewritten_path=WasmArtifactState.from_bytes(
+            output, loaded.output_data, facts_provider=_facts_provider
+        ),
         linked_requirements=_native_link_requirements(),
     )
 
@@ -7706,7 +7712,7 @@ def test_rewrite_output_imports_uses_generated_runtime_export_names(
 
     owned_temp_dir = OwnedTemporaryDirectory()
     rewritten = wasm_link_edit._rewrite_output_imports(
-        output,
+        _rewrite_input(output),
         {"molt_socket_drop", "molt_alloc"},
         owned_temp_dir,
     )
@@ -7715,7 +7721,7 @@ def test_rewrite_output_imports_uses_generated_runtime_export_names(
     rewritten_path, temp_dir, force_exports = rewritten
     try:
         assert force_exports == []
-        assert _function_import_pairs(rewritten_path.read_bytes()) == [
+        assert _function_import_pairs(rewritten_path.path.read_bytes()) == [
             ("molt_runtime", "molt_socket_drop"),
             ("molt_runtime", "molt_alloc"),
         ]
@@ -12302,9 +12308,12 @@ def test_call_indirect_aliases_join_indices_and_batch_all_names(
         temporary = OwnedTemporaryDirectory(prefix="molt-alias-test-")
         with temporary:
             result = wasm_link_command._inject_call_indirect_alias(
-                output, runtime, temporary, facts_provider=_facts_provider
+                _rewrite_input(output),
+                runtime,
+                temporary,
+                facts_provider=_facts_provider,
             )
-            publications.append(result.read_bytes())
+            publications.append(result.path.read_bytes())
     assert publications[0] == publications[1]
     assert (
         wasm_link_command._call_indirect_alias_entries(
@@ -12411,7 +12420,10 @@ def test_call_indirect_aliases_refuse_incomplete_or_conflicting_edges(
     with temporary:
         with pytest.raises(ValueError, match=message):
             wasm_link_command._inject_call_indirect_alias(
-                output, runtime, temporary, facts_provider=_facts_provider
+                _rewrite_input(output),
+                runtime,
+                temporary,
+                facts_provider=_facts_provider,
             )
         assert not list(Path(temporary.name).iterdir())
     assert output.read_bytes() == app_bytes
@@ -12862,3 +12874,94 @@ def test_wasm_section_edit_rejects_validator_reentry_without_rollback(
     assert artifact.path.read_bytes() == replacement
     assert artifact.revision == 1
     assert artifact._facts is None  # No old/candidate facts attached to new bytes.
+
+
+def _rewrite_input(path):
+    return WasmArtifactState.from_materialized_bytes(
+        path, path.read_bytes(), facts_provider=_facts_provider
+    )
+
+
+@pytest.mark.parametrize("substitution", [None, "compiler", "runtime"])
+def test_admission_link_capture_uses_retained_rewrite_buffers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, substitution: str | None
+) -> None:
+    import io
+    import tarfile
+    from tools import wasm_link_pipeline as pipeline
+    from molt.cli.link_input_observation import LinkInputObservation
+
+    emitted = b"\x00asm\x01\x00\x00\x00"
+    rewritten = WasmArtifactState.from_bytes(
+        tmp_path / "rewrite.wasm", emitted, facts_provider=_facts_provider
+    )
+    rewritten.persist()
+    runtime = tmp_path / "runtime.wasm"
+    runtime_bytes = b"runtime-original"
+    runtime.write_bytes(runtime_bytes)
+    report = tmp_path / "inputs.tar"
+    expected = {
+        "compiler_rewritten": (
+            rewritten.path,
+            {
+                "size": len(rewritten.data),
+                "sha256": hashlib.sha256(rewritten.data).hexdigest(),
+            },
+        ),
+        "runtime": (
+            runtime,
+            {
+                "size": len(runtime_bytes),
+                "sha256": hashlib.sha256(runtime_bytes).hexdigest(),
+            },
+        ),
+    }
+    if substitution == "compiler":
+        rewritten.path.write_bytes(b"X" * len(emitted))
+    elif substitution == "runtime":
+        runtime.write_bytes(b"X" * len(runtime_bytes))
+
+    def linker(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        assert "--reproduce=" + str(report) in command
+        # The tool's retained buffers are independent of the expected emitter
+        # identities. This simulates actual post-substitution reads by LLD.
+        entries = {
+            "inputs/response.txt": b"wasm-ld",
+            "inputs/version.txt": b"23",
+            "inputs/" + str(rewritten.path).lstrip("/"): rewritten.path.read_bytes(),
+            "inputs/" + str(runtime).lstrip("/"): runtime.read_bytes(),
+        }
+        with tarfile.open(report, "w") as archive:
+            for name, data in entries.items():
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                archive.addfile(info, io.BytesIO(data))
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(pipeline._command, "_run_external_tool", linker)
+    observations: dict[str, object] = {}
+
+    def run() -> None:
+        pipeline._run_admitted_link(
+            ["/wasm-ld"],
+            selection=None,
+            why_extract=tmp_path / "why.txt",
+            role="linked",
+            selection_roles={},
+            capture=(report, expected),
+            input_observations=observations,
+        )
+
+    if substitution is None:
+        run()
+        observation = LinkInputObservation.from_record(observations["linked"])
+        assert dict(observation.roles) == {
+            "compiler_rewritten": str(rewritten.path),
+            "runtime": str(runtime),
+        }
+    else:
+        with pytest.raises(ValueError, match="did not consume the admitted"):
+            run()
+        assert observations == {}

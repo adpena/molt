@@ -1149,12 +1149,15 @@ def extension_build(
             compile_commands.append(cmd)
             object_paths.append(object_path)
             producer_unit = None
-            dependency_paths, dependency_error = _dependency_files.parse_make_depfile(
+            dependency_inputs, dependency_error = _dependency_files.parse_make_depfile(
                 dependency_file, cwd=project_root, producer="compiler"
             )
             if dependency_error is not None:
                 return _fail(dependency_error, json_output, command="extension-build")
-            assert dependency_paths is not None
+            assert dependency_inputs is not None
+            dependency_paths = tuple(
+                dict.fromkeys(row.resolved for row in dependency_inputs)
+            )
             if loaded_source_plan is not None:
                 assert plan_unit is not None
                 producer_unit = _source_extensions._SourceExtensionCompileUnitIdentity(
