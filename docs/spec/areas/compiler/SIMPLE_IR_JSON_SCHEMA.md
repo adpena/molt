@@ -271,21 +271,22 @@ content, reducing fan-out for large values. Source records include uncapped
 binary lowerings, so key lookup uses the narrow index, followed by a rowid-table
 lookup; record data lives in table leaves and their overflow pages. This changes no
 semantic key, byte bound, revision fence or consumer codec.
-Source-record initialization is a versioned database transition. Schema version
-zero or one enters one cold bootstrap owner through the existing portable file lock;
-that owner rechecks admission, establishes incremental vacuum and WAL, then
-publishes schema, legacy-row migration, indexes and the version in one SQL
-transaction. Existing `WITHOUT ROWID` records are copied once through SQL into
-the canonical table, preserving opaque payloads, revisions, timestamps and
-generation metadata; the old table is dropped in that same transaction. Existing
-peer read snapshots retain the old generation until they end. There is no second
-cache path or Python list of payloads. This cold transition holds the writer
-for one full live-record copy: work and changed-page WAL scale with live rows
-and indexes, temporary database space can include both table layouts, and
-memory scales with SQLite's page cache and the largest record being copied.
-It has no fixed wall-clock bound. Failure rolls back the whole transition and
-refuses the optional cache; migration does not reclaim or checkpoint peer-owned
-pages. An unknown version refuses the optional store. Ordinary opens
+Each schema version owns its own store file,
+`source_records.v<version>.sqlite`. Checkouts of different code versions share
+one cache root, so a store migrated in place by a newer checkout refused the
+whole cache to every older one: every record read missed, every write was
+dropped, and each operation reconnected. On 2026-10-23 a 27-line asyncio program
+spent 349 s in `module_graph`, 253 s of it reconnecting. As rustc keys
+incremental state by compiler version, a new schema version starts an empty
+store; the cache pruner retires the files of other versions, and of the
+unversioned store before them, by last use (`superseded_store_file`). A fresh
+file at version zero enters one cold bootstrap owner through the existing
+portable file lock; that owner rechecks admission, establishes incremental
+vacuum and WAL, then publishes the schema, indexes and the version in one SQL
+transaction. Failure rolls back the whole transition and refuses the optional
+cache. An unknown version refuses the optional store, and the store disables
+itself for the process at its first refusal instead of reconnecting for every
+operation; a busy bootstrap owner remains a retryable refusal. Ordinary opens
 read the admitted version and set connection-local synchronous mode; they
 do not repeat persistent pragmas, DDL or the bootstrap file lock. Write maintenance
 tries cold ownership once and preserves its nonwaiting refusal contract.

@@ -295,6 +295,23 @@ def _collect_entries(
                             continue
                         append(entry_root, lock)
             continue
+        if child.name == SHARED_SOURCE_RECORDS_DIRECTORY and _is_direct_directory(
+            child
+        ):
+            # Each schema version owns one store file; the current store keeps
+            # its row maintenance below. A superseded version's files (and the
+            # unversioned store before versioned names) are ordinary entries,
+            # retired by last use like any other cache file.
+            from molt.cli.source_record_store import superseded_store_file
+
+            for leaf in _children(child):
+                if (
+                    superseded_store_file(leaf.name)
+                    and leaf.is_file()
+                    and not leaf.is_symlink()
+                ):
+                    append(leaf)
+            continue
         if (
             is_backend_cache_artifact_name(child.name)
             and child.is_file()
