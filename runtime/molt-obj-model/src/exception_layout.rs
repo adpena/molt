@@ -202,6 +202,24 @@ impl ExceptionLayoutKind {
         &policies[first..]
     }
 
+    /// The CPython class whose constructor declares this layout's keyword
+    /// fields. Its name labels an unexpected keyword; a layout with no keyword
+    /// field has no owner, and CPython refuses every keyword by type name.
+    pub const fn constructor_keyword_owner(self) -> Option<&'static str> {
+        match self {
+            Self::Import => Some("ImportError"),
+            Self::NameError => Some("NameError"),
+            Self::AttributeError => Some("AttributeError"),
+            Self::Base
+            | Self::Group
+            | Self::Syntax
+            | Self::Unicode
+            | Self::SystemExit
+            | Self::OSError
+            | Self::StopIteration => None,
+        }
+    }
+
     pub fn constructor_keyword_policies(
         self,
     ) -> impl Clone + Iterator<Item = &'static ExceptionFieldPolicy> {
@@ -1272,6 +1290,17 @@ mod tests {
                 ExceptionTypedField::AttributeErrorName,
             ]
         );
+    }
+
+    #[test]
+    fn keyword_owner_exists_exactly_for_layouts_with_keyword_fields() {
+        for kind in ExceptionLayoutKind::ALL {
+            assert_eq!(
+                kind.constructor_keyword_owner().is_some(),
+                kind.constructor_keyword_policies().next().is_some(),
+                "{kind:?}"
+            );
+        }
     }
 
     #[test]

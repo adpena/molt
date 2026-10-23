@@ -317,6 +317,56 @@ fn generic_unpack_rolls_back_heap_outputs_when_iteration_raises() {
     });
 }
 
+/// The two iterator ABIs. Only the `(value, done)` pair ABI keeps a pair in
+/// the iterator's cache; the unboxed ABI that compiled loops call builds none.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum IteratorAbi {
+    Unboxed,
+    Pair,
+}
+
+impl IteratorAbi {
+    const ALL: [Self; 2] = [Self::Unboxed, Self::Pair];
+
+    /// Heap edges the iterator retains to its last item.
+    fn cache_edges(self) -> u32 {
+        u32::from(self == Self::Pair)
+    }
+
+    /// One advance: the done bits (`None` on error) and the owned item.
+    fn advance(self, _py: &PyToken<'_>, iter_bits: u64) -> (u64, u64) {
+        let none = MoltObject::none().bits();
+        match self {
+            Self::Unboxed => {
+                let mut output = none;
+                let done = unsafe {
+                    crate::molt_iter_next_unboxed(
+                        iter_bits,
+                        crate::provenance::abi::expose_address(&raw mut output),
+                    )
+                };
+                (done, output)
+            }
+            Self::Pair => {
+                let pair = crate::molt_iter_next(iter_bits);
+                let Some(pair_ptr) = obj_from_bits(pair).as_ptr() else {
+                    return (none, none);
+                };
+                let (value, done) =
+                    unsafe { crate::object::seq_access::tuple_pair(pair_ptr) }.expect("pair");
+                let value = if is_truthy(_py, obj_from_bits(done)) {
+                    none
+                } else {
+                    inc_ref_bits(_py, value);
+                    value
+                };
+                dec_ref_bits(_py, pair);
+                (done, value)
+            }
+        }
+    }
+}
+
 #[test]
 fn callable_iterator_exhaustion_clears_its_cached_heap_edge() {
     let _lock = crate::test_support::RuntimeTestTransaction::new();
@@ -326,32 +376,30 @@ fn callable_iterator_exhaustion_clears_its_cached_heap_edge() {
         let refcount = || unsafe { (*crate::header_from_obj_ptr(value_ptr)).ref_count_snapshot() };
         let baseline = refcount();
         FAILING_ITER_VALUE.store(value_bits, Ordering::Relaxed);
-        FAILING_ITER_CALLS.store(0, Ordering::Relaxed);
-        let iter_bits = alloc_test_call_iterator(_py, yield_heap_value_then_sentinel);
+        for abi in IteratorAbi::ALL {
+            FAILING_ITER_CALLS.store(0, Ordering::Relaxed);
+            let iter_bits = alloc_test_call_iterator(_py, yield_heap_value_then_sentinel);
 
-        let mut output = MoltObject::none().bits();
-        let done = unsafe {
-            crate::molt_iter_next_unboxed(
-                iter_bits,
-                crate::provenance::abi::expose_address(&raw mut output),
-            )
-        };
-        assert!(!is_truthy(_py, obj_from_bits(done)));
-        assert_eq!(output, value_bits);
-        dec_ref_bits(_py, output);
-        assert_eq!(refcount(), baseline + 1, "live cache owns one edge");
+            let (done, output) = abi.advance(_py, iter_bits);
+            assert!(!is_truthy(_py, obj_from_bits(done)));
+            assert_eq!(output, value_bits);
+            dec_ref_bits(_py, output);
+            assert_eq!(
+                refcount(),
+                baseline + abi.cache_edges(),
+                "{abi:?}: only a live pair cache owns an edge"
+            );
 
-        let done = unsafe {
-            crate::molt_iter_next_unboxed(
-                iter_bits,
-                crate::provenance::abi::expose_address(&raw mut output),
-            )
-        };
-        assert!(is_truthy(_py, obj_from_bits(done)));
-        assert_eq!(output, MoltObject::none().bits());
-        assert_eq!(refcount(), baseline, "exhaustion must clear the cache edge");
-
-        dec_ref_bits(_py, iter_bits);
+            let (done, output) = abi.advance(_py, iter_bits);
+            assert!(is_truthy(_py, obj_from_bits(done)));
+            assert_eq!(output, MoltObject::none().bits());
+            assert_eq!(
+                refcount(),
+                baseline,
+                "{abi:?}: exhaustion must clear the cache edge"
+            );
+            dec_ref_bits(_py, iter_bits);
+        }
         FAILING_ITER_VALUE.store(0, Ordering::Relaxed);
         dec_ref_bits(_py, value_bits);
     });
@@ -366,60 +414,41 @@ fn callable_iterator_exception_clears_cache_before_reentry() {
         let refcount = || unsafe { (*crate::header_from_obj_ptr(value_ptr)).ref_count_snapshot() };
         let baseline = refcount();
         FAILING_ITER_VALUE.store(value_bits, Ordering::Relaxed);
-        FAILING_ITER_CALLS.store(0, Ordering::Relaxed);
-        let iter_bits = alloc_test_call_iterator(_py, yield_raise_yield_then_sentinel);
-        let mut output = MoltObject::none().bits();
+        for abi in IteratorAbi::ALL {
+            FAILING_ITER_CALLS.store(0, Ordering::Relaxed);
+            let iter_bits = alloc_test_call_iterator(_py, yield_raise_yield_then_sentinel);
 
-        let first = unsafe {
-            crate::molt_iter_next_unboxed(
-                iter_bits,
-                crate::provenance::abi::expose_address(&raw mut output),
-            )
-        };
-        assert!(!is_truthy(_py, obj_from_bits(first)));
-        dec_ref_bits(_py, output);
-        assert_eq!(refcount(), baseline + 1);
+            let (first, output) = abi.advance(_py, iter_bits);
+            assert!(!is_truthy(_py, obj_from_bits(first)));
+            dec_ref_bits(_py, output);
+            assert_eq!(refcount(), baseline + abi.cache_edges(), "{abi:?}");
 
-        let failed = unsafe {
-            crate::molt_iter_next_unboxed(
-                iter_bits,
-                crate::provenance::abi::expose_address(&raw mut output),
-            )
-        };
-        assert_eq!(failed, MoltObject::none().bits());
-        assert_eq!(output, MoltObject::none().bits());
-        assert_eq!(
-            refcount(),
-            baseline,
-            "error propagation must clear the cache"
-        );
-        assert_eq!(crate::molt_exception_pending(), 1);
-        let _ = crate::molt_exception_clear();
+            let (failed, output) = abi.advance(_py, iter_bits);
+            assert_eq!(failed, MoltObject::none().bits());
+            assert_eq!(output, MoltObject::none().bits());
+            assert_eq!(
+                refcount(),
+                baseline,
+                "{abi:?}: error propagation must clear the cache"
+            );
+            assert_eq!(crate::molt_exception_pending(), 1);
+            let _ = crate::molt_exception_clear();
 
-        let resumed = unsafe {
-            crate::molt_iter_next_unboxed(
-                iter_bits,
-                crate::provenance::abi::expose_address(&raw mut output),
-            )
-        };
-        assert!(!is_truthy(_py, obj_from_bits(resumed)));
-        assert_eq!(output, value_bits);
-        dec_ref_bits(_py, output);
-        assert_eq!(
-            refcount(),
-            baseline + 1,
-            "re-entry may establish one new cache edge"
-        );
+            let (resumed, output) = abi.advance(_py, iter_bits);
+            assert!(!is_truthy(_py, obj_from_bits(resumed)));
+            assert_eq!(output, value_bits);
+            dec_ref_bits(_py, output);
+            assert_eq!(
+                refcount(),
+                baseline + abi.cache_edges(),
+                "{abi:?}: re-entry may establish one new cache edge"
+            );
 
-        let exhausted = unsafe {
-            crate::molt_iter_next_unboxed(
-                iter_bits,
-                crate::provenance::abi::expose_address(&raw mut output),
-            )
-        };
-        assert!(is_truthy(_py, obj_from_bits(exhausted)));
-        assert_eq!(refcount(), baseline);
-        dec_ref_bits(_py, iter_bits);
+            let (exhausted, _) = abi.advance(_py, iter_bits);
+            assert!(is_truthy(_py, obj_from_bits(exhausted)));
+            assert_eq!(refcount(), baseline, "{abi:?}");
+            dec_ref_bits(_py, iter_bits);
+        }
         FAILING_ITER_VALUE.store(0, Ordering::Relaxed);
         dec_ref_bits(_py, value_bits);
     });
@@ -434,26 +463,21 @@ fn callable_iterator_teardown_clears_cache_after_early_exit() {
         let refcount = || unsafe { (*crate::header_from_obj_ptr(value_ptr)).ref_count_snapshot() };
         let baseline = refcount();
         FAILING_ITER_VALUE.store(value_bits, Ordering::Relaxed);
-        FAILING_ITER_CALLS.store(0, Ordering::Relaxed);
-        let iter_bits = alloc_test_call_iterator(_py, yield_heap_value_then_sentinel);
-        let mut output = MoltObject::none().bits();
+        for abi in IteratorAbi::ALL {
+            FAILING_ITER_CALLS.store(0, Ordering::Relaxed);
+            let iter_bits = alloc_test_call_iterator(_py, yield_heap_value_then_sentinel);
 
-        let done = unsafe {
-            crate::molt_iter_next_unboxed(
-                iter_bits,
-                crate::provenance::abi::expose_address(&raw mut output),
-            )
-        };
-        assert!(!is_truthy(_py, obj_from_bits(done)));
-        dec_ref_bits(_py, output);
-        assert_eq!(refcount(), baseline + 1);
-        dec_ref_bits(_py, iter_bits);
-        assert_eq!(
-            refcount(),
-            baseline,
-            "iterator teardown must drain its cache owner"
-        );
-
+            let (done, output) = abi.advance(_py, iter_bits);
+            assert!(!is_truthy(_py, obj_from_bits(done)));
+            dec_ref_bits(_py, output);
+            assert_eq!(refcount(), baseline + abi.cache_edges(), "{abi:?}");
+            dec_ref_bits(_py, iter_bits);
+            assert_eq!(
+                refcount(),
+                baseline,
+                "{abi:?}: iterator teardown must drain its cache owner"
+            );
+        }
         FAILING_ITER_VALUE.store(0, Ordering::Relaxed);
         dec_ref_bits(_py, value_bits);
     });

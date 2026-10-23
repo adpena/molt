@@ -260,6 +260,14 @@ crate::builtins::methods::native_method_table!(generic_alias_method_bits, publis
         py, NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(py).generic_alias, "__mro_entries__"),
         fn_addr!(molt_generic_alias_mro_entries), 2,
     )),
+    "__instancecheck__" => Some(builtin_func_bits(
+        py, NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(py).generic_alias, "__instancecheck__"),
+        fn_addr!(crate::builtins::types::descriptor_objects::generic_alias_instancecheck), 2,
+    )),
+    "__subclasscheck__" => Some(builtin_func_bits(
+        py, NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(py).generic_alias, "__subclasscheck__"),
+        fn_addr!(crate::builtins::types::descriptor_objects::generic_alias_subclasscheck), 2,
+    )),
 });
 
 crate::builtins::methods::native_method_table!(

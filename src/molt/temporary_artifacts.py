@@ -801,7 +801,7 @@ def _retire_locked(
         "source_target": str(target),
         "closed": True,
         "success": success,
-        "closure": dict(closure),
+        "closure": _closure_facts(closure),
         "finished_ns": finished_ns,
         "retained_bytes": 0 if success else tree_bytes(target),
     }
@@ -830,6 +830,26 @@ def _retire_locked(
     owner = {**owner, "state": "retained"}
     write_exact(generation / "owner.json", owner, durability=_RECORDS)
     return owner
+
+
+def _closure_facts(closure: Mapping[str, object]) -> dict[str, object]:
+    """The closure evidence a scratch record keeps, bounded in size.
+
+    A guard's closure lists every nested guard generation it closed, and a long
+    run closes hundreds: on 2026-10-22 a 306-generation closure made a 69 KiB
+    terminal that the 64 KiB receipt reader then refused on every later
+    retention sweep, so every guarded command on the host failed. A record
+    keeps the scalar facts and, for each collection, its length and digest;
+    the guard's own record keeps the full evidence.
+    """
+    return {
+        key: (
+            {"count": len(value), "sha256": canonical_json_sha256(value)}
+            if isinstance(value, (list, dict))
+            else value
+        )
+        for key, value in closure.items()
+    }
 
 
 def _holds_target_receipt(target: Path, owner: Mapping[str, object]) -> bool:
@@ -895,7 +915,7 @@ def _adopt_locked(
             "source_target_absent": True,
             "closed": True,
             "success": False,
-            "closure": dict(closure),
+            "closure": _closure_facts(closure),
             "finished_ns": 0,
             "retained_bytes": 0,
         }
@@ -1110,7 +1130,11 @@ def _finish_guard_scratch_owned(
         if _identity(target) != owner["target_identity"]:
             raise ValueError("scratch target changed before terminal publication")
         if not closed:
-            owner = {**owner, "state": "indeterminate", "closure": dict(evidence)}
+            owner = {
+                **owner,
+                "state": "indeterminate",
+                "closure": _closure_facts(evidence),
+            }
             write_exact(generation / "owner.json", owner, durability=_RECORDS)
             return {"state": "indeterminate", "receipt": str(generation / "owner.json")}
         owner = _retire_locked(
@@ -1141,7 +1165,7 @@ def _finish_guard_scratch_owned(
                     "generation": str(generation),
                     "source_target": str(lease.target),
                     "closed": closed,
-                    "closure": dict(evidence),
+                    "closure": _closure_facts(evidence),
                     "error_type": type(error).__name__,
                     "error": str(error),
                     "finished_ns": time.time_ns(),

@@ -1086,6 +1086,31 @@ def test_scratch_generation_follows_receipt_or_lease_geometry(tmp_path):
         lease.release()
 
 
+def test_a_long_runs_closure_keeps_its_terminal_readable(tmp_path):
+    """A guard that closed hundreds of nested generations still leaves a
+    terminal the receipt reader accepts and retention reclaims. Copying the
+    whole closure made a 69 KiB terminal on 2026-10-22, past the 64 KiB
+    reader, and every later sweep on the host failed on it."""
+    lease, env = _lease(tmp_path)
+    lease.release()
+    generations = [
+        {"disposition": "closed", "path": f"/guard/retired/guard-{n}-{'0' * 32}.json"}
+        for n in range(2000)
+    ]
+    closure = {**_CLOSURE, "guard_generations": generations}
+    outcome = scratch.resolve_guard_scratch(
+        lease.generation, guard_marker=_marker_of(env), closure=closure
+    )
+    assert (outcome["state"], outcome["resolved"]) == ("retained", True)
+    terminal = _read(lease.generation / "terminal.json")
+    assert terminal["closure"]["closed"] is True
+    assert terminal["closure"]["guard_generations"]["count"] == 2000
+    result = scratch.reclaim_terminal_scratch(
+        lease.generation.parent, retention=scratch.ScratchRetention(0, 0)
+    )
+    assert result["reclaimed"] == [str(lease.generation)]
+
+
 def test_live_lease_and_unproven_closure_stay_unresolved(tmp_path):
     lease, env = _lease(tmp_path)
     marker = _marker_of(env)
