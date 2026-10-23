@@ -2486,6 +2486,18 @@ def test_rust_admitted_domain_numeric_total_rejection_requires_each_branch(
             "rust_backend_rejection_applicability",
         ),
         (
+            "runtime/molt-ir/src/ir.rs",
+            ".try_for_each(validate_function_transport_contract)?;",
+            ".for_each(drop);",
+            "rust_backend_rejection_applicability",
+        ),
+        (
+            "runtime/molt-ir/src/ir.rs",
+            "        ir_schema::validate_required_fields(op)\n",
+            "        let _ = op;\n        ir_schema::validate_function_param_types\n",
+            "rust_backend_rejection_applicability",
+        ),
+        (
             "runtime/molt-ir/src/ir_schema.rs",
             "validate_value_transport(op)?;",
             "",

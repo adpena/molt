@@ -365,20 +365,27 @@ pub fn validate_function_op_shapes(
 /// their operations. Internal function lowering uses the shape validator above
 /// and may re-lift explicitly registered backend-private carriers.
 pub fn validate_simple_ir_op_shapes(ir: &crate::SimpleIR) -> Result<(), FunctionOpShapeDiagnostic> {
-    for func in &ir.functions {
-        validate_function_op_shapes(func)?;
-        for (op_index, op) in func.ops.iter().enumerate() {
-            if let Some(backend) = simpleir_backend_private_owner(&op.kind) {
-                return Err(FunctionOpShapeDiagnostic {
-                    function: func.name.clone(),
-                    op_index,
-                    shape: OpShapeDiagnostic {
-                        family: "registration",
-                        kind: op.kind.clone(),
-                        violation: OpShapeViolation::BackendPrivate { backend },
-                    },
-                });
-            }
+    ir.functions
+        .iter()
+        .try_for_each(validate_function_admission_op_shapes)
+}
+
+/// The external-program admission of one function; it reads no other function.
+pub fn validate_function_admission_op_shapes(
+    func: &crate::FunctionIR,
+) -> Result<(), FunctionOpShapeDiagnostic> {
+    validate_function_op_shapes(func)?;
+    for (op_index, op) in func.ops.iter().enumerate() {
+        if let Some(backend) = simpleir_backend_private_owner(&op.kind) {
+            return Err(FunctionOpShapeDiagnostic {
+                function: func.name.clone(),
+                op_index,
+                shape: OpShapeDiagnostic {
+                    family: "registration",
+                    kind: op.kind.clone(),
+                    violation: OpShapeViolation::BackendPrivate { backend },
+                },
+            });
         }
     }
     Ok(())
