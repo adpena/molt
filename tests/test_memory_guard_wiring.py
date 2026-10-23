@@ -2296,14 +2296,74 @@ def test_pytest_current_test_phases_reuse_one_bounded_inode(
 
 def _current_test_record_lock(wrap):
     """The bound harness record lock, yielding ``wrap(path, record)``."""
-    exclusive, host_lock = pytest_memory_guard_bootstrap._CURRENT_TEST_LOCK
+    exclusive, host_lock, lock_timeout = (
+        pytest_memory_guard_bootstrap._CURRENT_TEST_LOCK
+    )
 
     @contextlib.contextmanager
     def wrapped(path, lock, **kwargs):
         with exclusive(path, lock, **kwargs) as record:
             yield wrap(path, record)
 
-    return (wrapped, host_lock)
+    return (wrapped, host_lock, lock_timeout)
+
+
+def test_a_reader_holding_the_record_past_the_deadline_skips_one_phase(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A sampler that holds a worker's record past the publication deadline
+    costs that phase's update, counted in the next record; it never fails the
+    test session, as a gate's INTERNALERROR did at load 17 on 2026-10-22."""
+    from tests.process_guard_common import (
+        close_owned_test_process,
+        start_owned_test_process,
+    )
+
+    current = tmp_path / "pytest-memory-guard" / "current-test.json"
+    monkeypatch.setattr(pytest_memory_guard_bootstrap, "_XDIST_WORKER_ID", None)
+    monkeypatch.setattr(
+        pytest_memory_guard_bootstrap, "_SKIPPED_CURRENT_TEST_PUBLICATIONS", 0
+    )
+    monkeypatch.setenv("MOLT_MEMORY_GUARD_STATE_ROOT", str(tmp_path / "memory_guard"))
+    monkeypatch.setenv("MOLT_PYTEST_CURRENT_TEST_FILE", str(current))
+
+    class Item:
+        nodeid = "tests/test_memory_guard_wiring.py::held_case"
+
+    pytest_memory_guard_bootstrap.pytest_runtest_call(Item())
+    # Another process holds the record's lock the way a reader does.
+    holder = start_owned_test_process(
+        [
+            sys.executable,
+            "-c",
+            "import sys,time\n"
+            "from molt import file_locks\n"
+            "f=open(sys.argv[1],'r+b')\n"
+            "file_locks._HOST_HANDLE_LOCK.acquire_nonblocking(f.fileno())\n"
+            "print('held',flush=True)\n"
+            "sys.stdin.readline()\n",
+            str(current),
+        ],
+        cwd=REPO_ROOT,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert holder.stdout.readline().strip() == "held"
+        pytest_memory_guard_bootstrap.pytest_runtest_teardown(Item(), None)
+        assert pytest_memory_guard_bootstrap._SKIPPED_CURRENT_TEST_PUBLICATIONS == 1
+    finally:
+        holder.stdin.write("release\n")
+        holder.stdin.flush()
+        close_owned_test_process(holder)
+    # The skipped phase left the earlier record in place.
+    record = memory_guard._read_pytest_current_test_json(current)
+    assert record["payload"]["phase"] == "call"
+    pytest_memory_guard_bootstrap.pytest_runtest_teardown(Item(), None)
+    record = memory_guard._read_pytest_current_test_json(current)
+    assert record["payload"]["phase"] == "teardown"
+    assert record["payload"]["skipped_publications"] == 1
 
 
 @pytest.mark.parametrize("failure", ["short", "zero", "body_error", "commit_zero"])
