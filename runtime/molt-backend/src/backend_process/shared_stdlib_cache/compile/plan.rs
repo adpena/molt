@@ -50,15 +50,15 @@ pub(super) fn log_stdlib_batch(
     log_prefix: &str,
     batch_idx: usize,
     total_batches: usize,
-    batch_funcs: &[molt_backend::FunctionIR],
+    batch_functions: usize,
+    batch_ops: usize,
     batch_ops_budget: usize,
 ) {
-    let batch_ops = batch_funcs.iter().map(|f| f.ops.len()).sum::<usize>();
     eprintln!(
         "{log_prefix}: stdlib batch {}/{} ({} functions, {} ops / budget {})",
         batch_idx + 1,
         total_batches,
-        batch_funcs.len(),
+        batch_functions,
         batch_ops,
         batch_ops_budget
     );

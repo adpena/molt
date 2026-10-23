@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 from collections import OrderedDict
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
@@ -129,8 +128,9 @@ class WasmFactsProvider(Protocol):
 
     def __call__(self, data: bytes) -> WasmLinkFacts: ...
 
-    def publish_in_place(
+    def publish(
         self,
+        data: bytes,
         artifact: Path,
         *,
         layout: CallableTableLayout | None = None,
@@ -586,73 +586,64 @@ class RustWasmFactsProvider:
             self.scanner_identity,
             label="WASM facts scanner before execution",
         )
-        artifact = self.scratch_root / f"wasm-facts-{digest}.wasm"
-        artifact.write_bytes(data)
         scan_start = time.perf_counter()
+        # The bytes are already in memory: a pipe replaces a scratch file, so a
+        # scan writes and rereads no module-sized file (HF-26).
+        process = _run_scanner(
+            [str(self.scanner_identity.path), "--scan-wasm-link-facts"], data
+        )
+        verify_stable_regular_file_identity(
+            self.scanner_identity,
+            label="WASM facts scanner after execution",
+        )
+        if self.metrics is not None:
+            self.metrics["wasm_facts_scan_ms"] += max(
+                0.0, (time.perf_counter() - scan_start) * 1000.0
+            )
+            self.metrics["wasm_facts_scan_calls"] += 1.0
+            self.metrics["wasm_facts_input_bytes"] += float(len(data))
+            self.metrics["wasm_facts_response_chars"] += float(len(process.stdout))
         try:
-            process = _COMMANDS.run(
-                [
-                    str(self.scanner_identity.path),
-                    "--scan-wasm-link-facts",
-                    str(artifact),
-                ],
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                capture_output=True,
-                check=False,
+            facts = _decode_wasm_facts_response(
+                process,
+                operation=f"Rust WASM facts scan for module {digest}",
             )
-            verify_stable_regular_file_identity(
-                self.scanner_identity,
-                label="WASM facts scanner after execution",
-            )
-            if self.metrics is not None:
-                self.metrics["wasm_facts_scan_ms"] += max(
-                    0.0, (time.perf_counter() - scan_start) * 1000.0
-                )
-                self.metrics["wasm_facts_scan_calls"] += 1.0
-                self.metrics["wasm_facts_input_bytes"] += float(len(data))
-                self.metrics["wasm_facts_response_chars"] += float(len(process.stdout))
+        except ValueError as exc:
             try:
-                facts = _decode_wasm_facts_response(
-                    process,
-                    operation=f"Rust WASM facts scan for {artifact.name}",
+                evidence = preserve_rejected_wasm(
+                    data, self.evidence_root, stage="facts-scan"
                 )
-            except ValueError as exc:
-                try:
-                    evidence = preserve_rejected_wasm(
-                        data, self.evidence_root, stage="facts-scan"
-                    )
-                except (OSError, ValueError) as evidence_error:
-                    raise ValueError(
-                        f"{exc}; failed to preserve rejected input under "
-                        f"{self.evidence_root}: {evidence_error}"
-                    ) from exc
-                raise ValueError(f"{exc}; rejected input kept at {evidence}") from exc
-            self._remember(digest, facts)
-            return facts
-        finally:
-            with contextlib.suppress(OSError):
-                artifact.unlink()
+            except (OSError, ValueError) as evidence_error:
+                raise ValueError(
+                    f"{exc}; failed to preserve rejected input under "
+                    f"{self.evidence_root}: {evidence_error}"
+                ) from exc
+            raise ValueError(f"{exc}; rejected input kept at {evidence}") from exc
+        self._remember(digest, facts)
+        return facts
 
-    def publish_in_place(
+    def publish(
         self,
+        data: bytes,
         artifact: Path,
         *,
         layout: CallableTableLayout | None = None,
         role: str = "monolithic",
     ) -> WasmLinkFacts:
-        """Publish an exclusively owned stage through the captured scanner.
+        """Publish `data` with its attestation to an exclusively owned stage.
 
-        The caller retains mutation custody until this call returns. Facts are
+        The scanner reads the bytes from a pipe and writes `artifact` once,
+        atomically: no persisted copy precedes the publication. The caller
+        retains custody of `artifact` until this call returns. Facts are
         admitted only for the stable generation committed by that publication.
         """
 
         with self._lock:
-            return self._publish_in_place(artifact, layout=layout, role=role)
+            return self._publish(data, artifact, layout=layout, role=role)
 
-    def _publish_in_place(
+    def _publish(
         self,
+        data: bytes,
         artifact: Path,
         *,
         layout: CallableTableLayout | None,
@@ -665,7 +656,6 @@ class RustWasmFactsProvider:
         command = [
             str(self.scanner_identity.path),
             "--publish-wasm-link-facts",
-            str(artifact),
             "--output",
             str(artifact),
         ]
@@ -689,14 +679,7 @@ class RustWasmFactsProvider:
             self.scanner_identity,
             label="WASM facts scanner before publication",
         )
-        process = _COMMANDS.run(
-            command,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            capture_output=True,
-            check=False,
-        )
+        process = _run_scanner(command, data)
         published_metadata = artifact.lstat() if process.returncode == 0 else None
         verify_stable_regular_file_identity(
             self.scanner_identity,
@@ -721,6 +704,18 @@ class RustWasmFactsProvider:
             )
         self._remember(published_identity.sha256, facts)
         return facts
+
+
+def _run_scanner(command: list[str], data: bytes) -> subprocess.CompletedProcess[str]:
+    """Run one scanner request with the module on stdin; decode its response."""
+
+    process = _COMMANDS.run(command, input=data, capture_output=True, check=False)
+    return subprocess.CompletedProcess(
+        process.args,
+        process.returncode,
+        process.stdout.decode("utf-8", errors="replace"),
+        process.stderr.decode("utf-8", errors="replace"),
+    )
 
 
 def make_rust_wasm_facts_provider(

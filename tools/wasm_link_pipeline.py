@@ -293,9 +293,9 @@ def _publish_final_outputs_stage(
     if canonical_sections is not None:
         linked_artifact.replace(canonical_sections)
     try:
-        linked_artifact.apply_atomic_facts_publication(
-            lambda path: linked_artifact.facts_provider.publish_in_place(
-                path, layout=monolithic_callable_layout
+        linked_artifact.apply_facts_publication(
+            lambda data, path: linked_artifact.facts_provider.publish(
+                data, path, layout=monolithic_callable_layout
             )
         )
     except ValueError as exc:
@@ -315,8 +315,9 @@ def _publish_final_outputs_stage(
                     facts_provider=split.app.facts_provider,
                 )
             )
-            app_facts = split.app.apply_atomic_facts_publication(
-                lambda path: split.app.facts_provider.publish_in_place(
+            app_facts = split.app.apply_facts_publication(
+                lambda data, path: split.app.facts_provider.publish(
+                    data,
                     path,
                     layout=split.callable_layout,
                     role="app",
@@ -332,8 +333,9 @@ def _publish_final_outputs_stage(
                 raise ValueError(
                     "final split app publication omitted callable-table layout"
                 )
-            split.runtime.apply_atomic_facts_publication(
-                lambda path: split.runtime.facts_provider.publish_in_place(
+            split.runtime.apply_facts_publication(
+                lambda data, path: split.runtime.facts_provider.publish(
+                    data,
                     path,
                     layout=final_split_callable_layout,
                     role="runtime",

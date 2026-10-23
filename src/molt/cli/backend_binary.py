@@ -1064,38 +1064,32 @@ def _ensure_backend_binary(
                     "metadata": {"target": probe_target, "deterministic": True},
                 }
             ).encode()
-            probe_suffix = ".o"
-            if probe_target == "wasm" or product is HostToolProduct.WASM_FACTS:
-                probe_suffix = ".wasm"
-            elif probe_target == "luau":
-                probe_suffix = ".luau"
-            elif probe_target == "rust":
-                probe_suffix = ".rs"
-            probe_tmp = tempfile.NamedTemporaryFile(
-                prefix="molt_backend_probe_",
-                suffix=probe_suffix,
-                delete=False,
-            )
-            probe_path = Path(probe_tmp.name)
-            probe_cmd = [str(binary), "--output", str(probe_path)]
+            # Only a compiler probe writes an output file. The facts tool reads
+            # its module from stdin, and the JIT runner writes nothing.
+            probe_path: Path | None = None
             if product is HostToolProduct.WASM_FACTS:
-                probe_ir = None
-                probe_cmd = [str(binary), "--scan-wasm-link-facts", str(probe_path)]
+                probe_ir = b"\0asm\x01\0\0\0"
+                probe_cmd = [str(binary), "--scan-wasm-link-facts"]
             elif product is HostToolProduct.JIT:
                 # Compile and run one function in executable memory: the
                 # host's W^X policy must admit the runner before any program.
                 probe_ir = None
                 probe_cmd = [str(binary), JIT_RUNNER_PROBE_FLAG]
-            elif probe_target == "wasm":
-                probe_cmd.extend(["--target", "wasm"])
-            elif probe_target == "luau":
-                probe_cmd.extend(["--target", "luau"])
-            elif probe_target == "rust":
-                probe_cmd.extend(["--target", "rust"])
-            try:
-                if product is HostToolProduct.WASM_FACTS:
-                    probe_tmp.write(b"\0asm\x01\0\0\0")
+            else:
+                probe_suffix = {"wasm": ".wasm", "luau": ".luau", "rust": ".rs"}.get(
+                    probe_target, ".o"
+                )
+                probe_tmp = tempfile.NamedTemporaryFile(
+                    prefix="molt_backend_probe_",
+                    suffix=probe_suffix,
+                    delete=False,
+                )
                 probe_tmp.close()
+                probe_path = Path(probe_tmp.name)
+                probe_cmd = [str(binary), "--output", str(probe_path)]
+                if probe_target in {"wasm", "luau", "rust"}:
+                    probe_cmd.extend(["--target", probe_target])
+            try:
                 with stable_executable_probe(
                     binary,
                     label="backend probe executable",
@@ -1147,11 +1141,11 @@ def _ensure_backend_binary(
                     "backend_feature_probe", str(exc), command=probe_cmd
                 )
             finally:
-                probe_tmp.close()
-                try:
-                    probe_path.unlink()
-                except OSError:
-                    pass
+                if probe_path is not None:
+                    try:
+                        probe_path.unlink()
+                    except OSError:
+                        pass
             stderr = probe.stderr.decode(errors="replace")
             stdout = probe.stdout.decode(errors="replace")
             if probe.returncode == 0 and payload is not None:

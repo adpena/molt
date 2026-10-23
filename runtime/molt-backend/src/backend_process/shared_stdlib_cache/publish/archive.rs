@@ -5,50 +5,58 @@ use super::lock::with_shared_stdlib_cache_publish_lock;
 use super::sidecars::{remove_shared_stdlib_cache_artifacts, write_shared_stdlib_cache_sidecars};
 use molt_artifact_publish::{AtomicPublicationError, PublicationState};
 
+/// Publish one archive generation and its sidecars under the entry's lock, and
+/// return the archive digest the sidecars record. `publish_archive` replaces the
+/// archive file and returns its digest when it copied verified bytes, or `None`
+/// for newly written bytes, which are then hashed.
 pub(crate) fn publish_shared_stdlib_cache_archive(
     stdlib_path: &Path,
-    publish_archive: impl FnOnce(&Path) -> io::Result<()>,
+    publish_archive: impl FnOnce(&Path) -> io::Result<Option<String>>,
     stdlib_count: usize,
     cache_key: Option<&str>,
     cache_manifest: Option<&str>,
     partition_manifest: &str,
-) -> io::Result<()> {
+) -> io::Result<String> {
     with_shared_stdlib_cache_publish_lock(stdlib_path, || {
         // A pre-transfer failure preserves the prior generation. A replacement
         // followed by a sidecar failure does not: invalidate its now-mixed
         // sidecars while still holding the publication lock.
-        if let Err(error) = publish_archive(stdlib_path) {
-            // The shared archive writer keeps the typed replacement state in
-            // its io::Error. Preserve it while invalidating only a committed
-            // mixed generation; ordinary pre-publication I/O leaves it intact.
-            if error
-                .get_ref()
-                .is_some_and(|inner| inner.is::<AtomicPublicationError>())
-            {
-                let publication = error
-                    .into_inner()
-                    .expect("typed publication error")
-                    .downcast::<AtomicPublicationError>()
-                    .expect("checked publication type");
-                return Err(abort_archive_publication(stdlib_path, *publication));
+        let known_digest = match publish_archive(stdlib_path) {
+            Ok(digest) => digest,
+            Err(error) => {
+                // The shared archive writer keeps the typed replacement state in
+                // its io::Error. Preserve it while invalidating only a committed
+                // mixed generation; ordinary pre-publication I/O leaves it intact.
+                if error
+                    .get_ref()
+                    .is_some_and(|inner| inner.is::<AtomicPublicationError>())
+                {
+                    let publication = error
+                        .into_inner()
+                        .expect("typed publication error")
+                        .downcast::<AtomicPublicationError>()
+                        .expect("checked publication type");
+                    return Err(abort_archive_publication(stdlib_path, *publication));
+                }
+                return Err(error);
             }
-            return Err(error);
-        }
-        if let Err(err) = write_shared_stdlib_cache_sidecars(
+        };
+        write_shared_stdlib_cache_sidecars(
             stdlib_path,
             stdlib_count,
             cache_key,
             cache_manifest,
             partition_manifest,
-        ) {
+            known_digest.as_deref(),
+        )
+        .map_err(|err| {
             // Replacement has committed. This is a fail-closed transaction
             // abort, not rollback: the old generation has already been replaced.
-            return Err(abort_archive_publication(
+            abort_archive_publication(
                 stdlib_path,
                 AtomicPublicationError::new(stdlib_path, PublicationState::Replaced, err),
-            ));
-        }
-        Ok(())
+            )
+        })
     })
 }
 
@@ -85,6 +93,7 @@ mod tests {
             Some("old-key"),
             Some("old-manifest"),
             "old-partition",
+            None,
         )
         .expect("seed previous sidecars");
         let missing = directory.join("missing-producer-output.a");
@@ -95,6 +104,7 @@ mod tests {
                     &missing,
                     destination
                 )
+                .map(|()| None)
                 .map_err(Into::into),
                 2,
                 Some("new-key"),
@@ -139,6 +149,7 @@ mod tests {
             Some("old-key"),
             Some("old-manifest"),
             "old-partition",
+            None,
         )
         .expect("seed old sidecars");
         let error = publish_shared_stdlib_cache_archive(
@@ -189,6 +200,7 @@ mod tests {
             &destination,
             |destination| {
                 molt_artifact_publish::commit_existing_file_atomically(&temporary, destination)
+                    .map(|()| None)
                     .map_err(Into::into)
             },
             1,

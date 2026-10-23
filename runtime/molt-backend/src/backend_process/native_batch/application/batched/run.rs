@@ -2,7 +2,7 @@ use std::io;
 use std::path::Path;
 
 use super::super::super::{
-    NativeBatchJobSpec, NativeBatchWork, release_native_backend_batch_memory_to_os,
+    MappedObject, NativeBatchJobSpec, NativeBatchWork, release_native_backend_batch_memory_to_os,
     run_native_batch_workers, write_native_archive_objects,
 };
 
@@ -32,9 +32,9 @@ pub(super) fn run_native_application_batches(
     run_native_batch_workers("native application batch worker", &works)?;
     release_native_backend_batch_memory_to_os();
 
-    let batch_paths: Vec<std::path::PathBuf> = batch_specs
+    let objects = batch_specs
         .iter()
-        .map(|spec| spec.object_path.clone())
-        .collect();
-    write_native_archive_objects(output_path, &batch_paths)
+        .map(|spec| MappedObject::file(&spec.object_path))
+        .collect::<io::Result<Vec<_>>>()?;
+    write_native_archive_objects(output_path, &objects)
 }

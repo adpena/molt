@@ -222,6 +222,7 @@ WASM_LINK_CACHE_FAMILIES = frozenset(
     {"runtime_tree_shake", "split_app_optimize", "final_link"}
 )
 NATIVE_STDLIB_OBJECT_CACHE_DIRECTORY = "native-stdlib-objects-v1"
+NATIVE_STDLIB_ARCHIVE_CACHE_DIRECTORY = "native-stdlib-archives-v1"
 SHARED_STDLIB_CACHE_DIRECTORY = "shared-stdlib"
 
 
@@ -292,6 +293,16 @@ def shared_stdlib_cache_entry(cache_root: Path, key: str) -> tuple[Path, Path]:
     return (
         cache_root / SHARED_STDLIB_CACHE_DIRECTORY / key,
         shared_cache_lock_path(cache_root, f"shared-stdlib.{key[:2]}"),
+    )
+
+
+def native_stdlib_archive_cache_entry(cache_root: Path, key: str) -> tuple[Path, Path]:
+    """One archive generation keyed by its ordered constituent inputs (content)."""
+    if re.fullmatch(r"[0-9a-f]{64}", key) is None:
+        raise ValueError("native stdlib archive key must be a lowercase SHA-256")
+    return (
+        cache_root / NATIVE_STDLIB_ARCHIVE_CACHE_DIRECTORY / key,
+        shared_cache_lock_path(cache_root, f"native-stdlib-archive.{key[:2]}"),
     )
 
 
