@@ -128,6 +128,27 @@ def test_resolver_uses_only_supplied_namespace_config_and_environment(monkeypatc
 
 
 @pytest.mark.parametrize(
+    "flags,expected",
+    [
+        ([], "auto"),
+        (["--wasm-profile=auto"], "auto"),
+        (["--wasm-profile=full"], "full"),
+        (["--wasm-profile=pure"], "pure"),
+        (["--platform=cloudflare"], "pure"),
+        (["--platform=cloudflare", "--wasm-profile=auto"], "auto"),
+    ],
+)
+def test_wasm_profile_default_and_explicit_deployment_override(flags, expected):
+    args = _build_entrypoint_parser().parse_args(
+        ["build", "main.py", "--target=wasm", *flags]
+    )
+    request = selection.resolve_build_request(
+        args, build_cfg={}, cfg_capabilities=None, env={}
+    )
+    assert request.wasm_profile == expected
+
+
+@pytest.mark.parametrize(
     "flags,profile,opt,split",
     [
         (["--platform=wasi"], "release", "O3", False),
