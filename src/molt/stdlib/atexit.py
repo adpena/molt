@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _MOLT_ATEXIT_REGISTER = _require_intrinsic("molt_atexit_register")
@@ -14,7 +12,7 @@ _MOLT_ATEXIT_NCALLBACKS = _require_intrinsic("molt_atexit_ncallbacks")
 
 
 def _normalize_no_args(
-    name: str, args: tuple[Any, ...], kwargs: dict[str, Any]
+    name: str, args: tuple[object, ...], kwargs: dict[str, object]
 ) -> None:
     if kwargs:
         raise TypeError(f"atexit.{name}() takes no keyword arguments")
@@ -23,7 +21,7 @@ def _normalize_no_args(
         raise TypeError(f"atexit.{name}() takes no arguments ({arg_count} given)")
 
 
-def register(*args: Any, **kwargs: Any) -> Any:
+def register(*args: object, **kwargs: object) -> object:
     if not args:
         raise TypeError("register() takes at least 1 argument (0 given)")
     func = args[0]
@@ -33,7 +31,7 @@ def register(*args: Any, **kwargs: Any) -> Any:
     return func
 
 
-def unregister(*args: Any, **kwargs: Any) -> None:
+def unregister(*args: object, **kwargs: object) -> None:
     if kwargs:
         raise TypeError("atexit.unregister() takes no keyword arguments")
     arg_count = len(args)
@@ -45,19 +43,19 @@ def unregister(*args: Any, **kwargs: Any) -> None:
     return None
 
 
-def _clear(*args: Any, **kwargs: Any) -> None:
+def _clear(*args: object, **kwargs: object) -> None:
     _normalize_no_args("_clear", args, kwargs)
     _MOLT_ATEXIT_CLEAR()
     return None
 
 
-def _run_exitfuncs(*args: Any, **kwargs: Any) -> None:
+def _run_exitfuncs(*args: object, **kwargs: object) -> None:
     _normalize_no_args("_run_exitfuncs", args, kwargs)
     _MOLT_ATEXIT_RUN_EXITFUNCS()
     return None
 
 
-def _ncallbacks(*args: Any, **kwargs: Any) -> int:
+def _ncallbacks(*args: object, **kwargs: object) -> int:
     _normalize_no_args("_ncallbacks", args, kwargs)
     return int(_MOLT_ATEXIT_NCALLBACKS())
 

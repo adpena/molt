@@ -801,8 +801,7 @@ pub use crate::object::weak_container::{
 };
 pub(crate) use crate::object::weakref::weakref_clear_for_ptr;
 pub use crate::object::weakref::{
-    molt_weakref_callback, molt_weakref_count, molt_weakref_finalize_track,
-    molt_weakref_finalize_untrack, molt_weakref_find_nocallback, molt_weakref_get,
+    molt_weakref_callback, molt_weakref_count, molt_weakref_find_nocallback, molt_weakref_get,
     molt_weakref_peek, molt_weakref_refs, molt_weakref_register,
 };
 pub(crate) use crate::object::{

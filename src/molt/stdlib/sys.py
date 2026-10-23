@@ -128,18 +128,22 @@ _MOLT_SYS_SET_INT_MAX_STR_DIGITS = _require_intrinsic("molt_sys_set_int_max_str_
 _MOLT_SYS_CALL_TRACING_VALIDATE = _require_intrinsic("molt_sys_call_tracing_validate")
 _MOLT_SYS_ADDAUDITHOOK = _require_intrinsic("molt_sys_addaudithook")
 _MOLT_SYS_AUDIT = _require_intrinsic("molt_sys_audit")
-_MOLT_SYS_EXIT = _require_intrinsic("molt_sys_exit")
-_MOLT_SYS_DISPLAYHOOK_WRITE = _require_intrinsic("molt_sys_displayhook_write")
-_MOLT_SYS_EXCEPTHOOK_WRITE = _require_intrinsic("molt_sys_excepthook_write")
 
 # Runtime sys module publication is the sole argv/executable authority.  Python
 # placeholders would execute after publication and could overwrite the process
 # values, making behavior depend on module/link initialization order.
 
 
-def exit(code: object = None) -> None:
-    _MOLT_SYS_EXIT(code)
-    raise SystemExit(code)
+def exit(status: object = None, /) -> None:
+    # CPython raises through _PyErr_SetObject: a SystemExit instance is raised
+    # as is, None means no arguments and a tuple supplies the arguments.
+    if issubclass(type(status), SystemExit):
+        raise status
+    if status is None:
+        raise SystemExit
+    if isinstance(status, tuple):
+        raise SystemExit(*status)
+    raise SystemExit(status)
 
 
 def __breakpointhook__(*args: object, **kwargs: object) -> object:
@@ -598,18 +602,27 @@ def getsizeof(obj: object, default: object = ...) -> int:
     return _MOLT_SYS_GETSIZEOF(obj, default)
 
 
-def displayhook(value: object) -> None:
-    if value is None:
-        return
-    _builtins = modules.get("builtins")
-    text = repr(value)
-    _MOLT_SYS_DISPLAYHOOK_WRITE(text)
-    _MOLT_SYS_DISPLAYHOOK_WRITE("\n")
-    if _builtins is not None:
-        _builtins._ = value  # type: ignore[attr-defined]
+# The default hooks write to the interpreter's current streams, as CPython's
+# do: `stdout` and `stderr` are this module's live attributes, so a reassigned
+# or redirected stream receives the text.
+_MISSING_STREAM = object()
 
 
-def excepthook(exc_type: object, exc_value: object, exc_tb: object) -> None:
+def _current_stream(name: str) -> object:
+    try:
+        return stdout if name == "stdout" else stderr  # noqa: F821
+    except NameError:
+        return _MISSING_STREAM
+
+
+def _flush_ignoring_errors(stream: object) -> None:
+    try:
+        stream.flush()  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _exception_text(exc_type: object, exc_value: object, exc_tb: object) -> str:
     try:
         lines = _MOLT_TRACEBACK_FORMAT_EXCEPTION(
             exc_type, exc_value, exc_tb, None, True
@@ -617,22 +630,52 @@ def excepthook(exc_type: object, exc_value: object, exc_tb: object) -> None:
     except BaseException:  # noqa: BLE001
         lines = None
     if isinstance(lines, list) and all(isinstance(line, str) for line in lines):
-        _MOLT_SYS_EXCEPTHOOK_WRITE("".join(lines))
-        return
-
+        return "".join(lines)
     type_name = getattr(exc_type, "__name__", None)
     if not isinstance(type_name, str):
         type_name = str(exc_type)
     detail = str(exc_value) if exc_value is not None else ""
     if detail:
-        _MOLT_SYS_EXCEPTHOOK_WRITE(f"{type_name}: {detail}\n")
+        return f"{type_name}: {detail}\n"
+    return f"{type_name}\n"
+
+
+def displayhook(value: object) -> None:
+    if value is None:
         return
-    _MOLT_SYS_EXCEPTHOOK_WRITE(f"{type_name}\n")
+    out = _current_stream("stdout")
+    if out is _MISSING_STREAM or out is None:
+        raise RuntimeError("lost sys.stdout")
+    _builtins = modules.get("builtins")
+    if _builtins is not None:
+        _builtins._ = None  # type: ignore[attr-defined]
+    out.write(repr(value))  # type: ignore[attr-defined]
+    out.write("\n")  # type: ignore[attr-defined]
+    if _builtins is not None:
+        _builtins._ = value  # type: ignore[attr-defined]
+
+
+def excepthook(exc_type: object, exc_value: object, exc_tb: object) -> None:
+    err = _current_stream("stderr")
+    if err is None:
+        return
+    text = _exception_text(exc_type, exc_value, exc_tb)
+    if err is _MISSING_STREAM:
+        original = globals().get("__stderr__")
+        if original is not None:
+            original.write(text)
+            original.write("lost sys.stderr\n")
+        return
+    err.write(text)  # type: ignore[attr-defined]
+    _flush_ignoring_errors(err)
 
 
 def unraisablehook(unraisable: object) -> None:
     if not _MOLT_UNRAISABLE_HOOK_ARGS_IS_EXACT(unraisable):
         raise TypeError("sys.unraisablehook argument type must be UnraisableHookArgs")
+    err = _current_stream("stderr")
+    if err is None or err is _MISSING_STREAM:
+        return
     err_msg = getattr(unraisable, "err_msg", None)
     obj = getattr(unraisable, "object", None)
     exc_value = getattr(unraisable, "exc_value", None)
@@ -641,30 +684,14 @@ def unraisablehook(unraisable: object) -> None:
 
     if err_msg is not None:
         if obj is not None:
-            _MOLT_SYS_EXCEPTHOOK_WRITE(f"{err_msg}: {obj!r}\n")
+            err.write(f"{err_msg}: {obj!r}\n")  # type: ignore[attr-defined]
         else:
-            _MOLT_SYS_EXCEPTHOOK_WRITE(f"{err_msg}:\n")
+            err.write(f"{err_msg}:\n")  # type: ignore[attr-defined]
     elif obj is not None:
-        _MOLT_SYS_EXCEPTHOOK_WRITE(f"Exception ignored in: {obj!r}\n")
-
+        err.write(f"Exception ignored in: {obj!r}\n")  # type: ignore[attr-defined]
     if exc_value is not None:
-        try:
-            lines = _MOLT_TRACEBACK_FORMAT_EXCEPTION(
-                exc_type, exc_value, exc_tb, None, True
-            )
-        except BaseException:  # noqa: BLE001
-            lines = None
-        if isinstance(lines, list) and all(isinstance(line, str) for line in lines):
-            _MOLT_SYS_EXCEPTHOOK_WRITE("".join(lines))
-            return
-        type_name = getattr(exc_type, "__name__", None)
-        if not isinstance(type_name, str):
-            type_name = str(exc_type)
-        detail = str(exc_value) if exc_value is not None else ""
-        if detail:
-            _MOLT_SYS_EXCEPTHOOK_WRITE(f"{type_name}: {detail}\n")
-        else:
-            _MOLT_SYS_EXCEPTHOOK_WRITE(f"{type_name}\n")
+        err.write(_exception_text(exc_type, exc_value, exc_tb))  # type: ignore[attr-defined]
+    _flush_ignoring_errors(err)
 
 
 def get_int_max_str_digits() -> int:

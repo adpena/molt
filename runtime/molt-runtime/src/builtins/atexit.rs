@@ -1,8 +1,5 @@
 use crate::object::ops_sys::runtime_target_minor;
-use crate::state::runtime_state::{
-    AtexitCallbackEntry, AtexitCallbackKind, ExitRegistry, WeakFinalizerPrepared,
-    WeakrefRunnerState,
-};
+use crate::state::runtime_state::{AtexitCallbackEntry, ExitRegistry};
 use crate::{
     MoltObject, PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_FUNCTION, bound_method_func_bits,
     bound_method_self_bits, clear_exception, dec_ref_bits, exception_pending,
@@ -16,7 +13,6 @@ pub(crate) enum ExitRegistryError {
     OutOfMemory,
     RegistrationIdExhausted,
     CapacityExhausted,
-    FinalizerGenerationExhausted,
     InvalidPreparedCapacity,
 }
 
@@ -107,11 +103,6 @@ fn raise_exit_registry_error(
         ExitRegistryError::CapacityExhausted => {
             raise_exception::<u64>(_py, "OverflowError", "atexit registry capacity exhausted")
         }
-        ExitRegistryError::FinalizerGenerationExhausted => raise_exception::<u64>(
-            _py,
-            "OverflowError",
-            "weakref finalizer generation space exhausted",
-        ),
         ExitRegistryError::InvalidPreparedCapacity => raise_exception::<u64>(
             _py,
             "RuntimeError",
@@ -195,7 +186,10 @@ fn atexit_unraisable_policy(_py: &PyToken<'_>, callback_bits: u64) -> (u64, Opti
             });
         (MoltObject::none().bits(), message)
     } else {
-        (callback_bits, None)
+        (
+            callback_bits,
+            Some("Exception ignored in atexit callback".to_string()),
+        )
     }
 }
 
@@ -247,7 +241,6 @@ fn atexit_register_impl(
 
     let mut entry = Some(AtexitCallbackEntry {
         registration_id: 0,
-        kind: AtexitCallbackKind::Python,
         func_bits,
         args_bits,
         kwargs_bits,
@@ -322,198 +315,6 @@ fn atexit_register_impl(
     }
 }
 
-fn weakref_runner_entry() -> AtexitCallbackEntry {
-    AtexitCallbackEntry {
-        registration_id: 0,
-        kind: AtexitCallbackKind::WeakrefFinalizerRunner,
-        func_bits: MoltObject::none().bits(),
-        args_bits: MoltObject::none().bits(),
-        kwargs_bits: MoltObject::none().bits(),
-    }
-}
-
-/// Atomically retain a finalizer and publish its one-time atexit runner. Both
-/// backing stores are prepared outside the registry lock, so publication uses
-/// only infallible pushes and no rollback can expose half a registration.
-pub(crate) fn weakref_finalizer_track(
-    _py: &PyToken<'_>,
-    finalizer_bits: u64,
-) -> Result<bool, ExitRegistryError> {
-    inc_ref_bits(_py, finalizer_bits);
-    let mut prepared_callbacks = None;
-    let mut prepared_finalizers = None;
-    loop {
-        let mut displaced_callbacks = None;
-        let mut displaced_finalizers = None;
-        let mut publish_error = None;
-        let (duplicate, committed, callback_capacity, finalizer_capacity) = {
-            let mut registry = runtime_state(_py).exit_registry.lock().unwrap();
-            if registry.weakref_finalizers.contains(finalizer_bits) {
-                (true, false, None, None)
-            } else if !registry.weakref_finalizers.generation_available() {
-                publish_error = Some(ExitRegistryError::FinalizerGenerationExhausted);
-                (false, false, None, None)
-            } else {
-                let publish_runner = registry.weakref_runner_state == WeakrefRunnerState::Available;
-                let callback_capacity = if publish_runner {
-                    match growth_capacity_for_insert(
-                        registry.callbacks.len(),
-                        registry.callbacks.capacity(),
-                    ) {
-                        Ok(capacity) => capacity,
-                        Err(error) => {
-                            publish_error = Some(error);
-                            None
-                        }
-                    }
-                } else {
-                    None
-                };
-                let finalizer_capacity = if registry.weakref_finalizers.can_insert() {
-                    None
-                } else {
-                    let required = registry.weakref_finalizers.len().checked_add(1);
-                    match required.and_then(|required| {
-                        geometric_capacity(registry.weakref_finalizers.capacity(), required).ok()
-                    }) {
-                        Some(capacity) => Some(capacity),
-                        None => {
-                            publish_error = Some(ExitRegistryError::CapacityExhausted);
-                            None
-                        }
-                    }
-                };
-                let callback_ready =
-                    callback_capacity.is_none_or(|required| {
-                        prepared_callbacks.as_ref().is_some_and(
-                            |buffer: &Vec<AtexitCallbackEntry>| buffer.capacity() >= required,
-                        )
-                    });
-                let finalizer_ready = finalizer_capacity.is_none_or(|required| {
-                    prepared_finalizers
-                        .as_ref()
-                        .is_some_and(|buffer: &WeakFinalizerPrepared| {
-                            // Prepared capacity is validated again while installing.
-                            let _ = required;
-                            buffer.capacity() >= required
-                        })
-                });
-                if publish_error.is_some() {
-                    (false, false, None, None)
-                } else if !callback_ready || !finalizer_ready {
-                    (false, false, callback_capacity, finalizer_capacity)
-                } else {
-                    if callback_capacity.is_some() {
-                        match install_prepared_vec(&mut registry.callbacks, &mut prepared_callbacks)
-                        {
-                            Ok(buffer) => displaced_callbacks = Some(buffer),
-                            Err(error) => publish_error = Some(error),
-                        }
-                    }
-                    if publish_error.is_none() && finalizer_capacity.is_some() {
-                        if let Some(prepared) = prepared_finalizers.take() {
-                            match registry.weakref_finalizers.install_prepared(prepared) {
-                                Ok(buffer) => displaced_finalizers = Some(buffer),
-                                Err(buffer) => {
-                                    prepared_finalizers = Some(buffer);
-                                    publish_error =
-                                        Some(ExitRegistryError::InvalidPreparedCapacity);
-                                }
-                            }
-                        } else {
-                            publish_error = Some(ExitRegistryError::InvalidPreparedCapacity);
-                        }
-                    }
-                    if publish_error.is_none() && publish_runner {
-                        let mut runner = Some(weakref_runner_entry());
-                        publish_error = push_callback(&mut registry, &mut runner).err();
-                        if publish_error.is_none() {
-                            registry.weakref_runner_state = WeakrefRunnerState::Registered;
-                        }
-                    }
-                    if publish_error.is_none() {
-                        match registry.weakref_finalizers.insert_prepared(finalizer_bits) {
-                            Ok(true) => (false, true, None, None),
-                            Ok(false) => (true, false, None, None),
-                            Err(()) => {
-                                if publish_runner {
-                                    let runner = registry.callbacks.pop();
-                                    if runner.as_ref().is_some_and(|callback| {
-                                        callback.kind == AtexitCallbackKind::WeakrefFinalizerRunner
-                                    }) {
-                                        registry.weakref_runner_state =
-                                            WeakrefRunnerState::Available;
-                                    } else if let Some(runner) = runner {
-                                        registry.callbacks.push(runner);
-                                    }
-                                }
-                                publish_error = Some(ExitRegistryError::InvalidPreparedCapacity);
-                                (false, false, None, None)
-                            }
-                        }
-                    } else {
-                        (false, false, None, None)
-                    }
-                }
-            }
-        };
-        drop(displaced_callbacks);
-        drop(displaced_finalizers);
-        if let Some(error) = publish_error {
-            dec_ref_bits(_py, finalizer_bits);
-            return Err(error);
-        }
-        if duplicate {
-            dec_ref_bits(_py, finalizer_bits);
-            return Ok(false);
-        }
-        if committed {
-            return Ok(true);
-        }
-        if let Some(required) = callback_capacity
-            && prepared_callbacks
-                .as_ref()
-                .is_none_or(|buffer| buffer.capacity() < required)
-        {
-            prepared_callbacks = match try_prepare_vec(required) {
-                Ok(buffer) => Some(buffer),
-                Err(error) => {
-                    dec_ref_bits(_py, finalizer_bits);
-                    return Err(error);
-                }
-            };
-        }
-        if let Some(required) = finalizer_capacity
-            && prepared_finalizers
-                .as_ref()
-                .is_none_or(|buffer| buffer.capacity() < required)
-        {
-            prepared_finalizers = match WeakFinalizerPrepared::try_with_capacity(required) {
-                Ok(buffer) => Some(buffer),
-                Err(()) => {
-                    dec_ref_bits(_py, finalizer_bits);
-                    return Err(ExitRegistryError::OutOfMemory);
-                }
-            };
-        }
-    }
-}
-
-pub(crate) fn weakref_finalizer_untrack(_py: &PyToken<'_>, finalizer_bits: u64) {
-    let removed = {
-        let mut registry = runtime_state(_py).exit_registry.lock().unwrap();
-        registry.weakref_finalizers.remove(finalizer_bits)
-    };
-    if let Some(bits) = removed {
-        dec_ref_bits(_py, bits);
-    }
-}
-
-pub(crate) fn pop_weakref_finalizer(_py: &PyToken<'_>) -> Option<u64> {
-    let mut registry = runtime_state(_py).exit_registry.lock().unwrap();
-    registry.weakref_finalizers.pop_lifo()
-}
-
 fn atexit_unregister_impl(_py: &PyToken<'_>, func_bits: u64) -> u64 {
     let compact_matches = unregister_compacts_for_target(runtime_target_minor(_py));
     let mut candidates: Vec<(u64, u64, bool)> = loop {
@@ -537,9 +338,7 @@ fn atexit_unregister_impl(_py: &PyToken<'_>, func_bits: u64) -> u64 {
                 false
             } else {
                 for callback in &registry.callbacks {
-                    if callback.kind == AtexitCallbackKind::Python
-                        && !obj_from_bits(callback.func_bits).is_none()
-                    {
+                    if !obj_from_bits(callback.func_bits).is_none() {
                         inc_ref_bits(_py, callback.func_bits);
                         candidates.push((callback.registration_id, callback.func_bits, false));
                     }
@@ -632,13 +431,7 @@ fn atexit_unregister_impl(_py: &PyToken<'_>, func_bits: u64) -> u64 {
 }
 
 fn detach_exit_callbacks(registry: &mut ExitRegistry) -> Vec<AtexitCallbackEntry> {
-    let callbacks = std::mem::take(&mut registry.callbacks);
-    // Clearing an already-published finalize runner is a persistent opt-out.
-    // A clear before the first finalizer does not prevent its lazy publish.
-    if registry.weakref_runner_state == WeakrefRunnerState::Registered {
-        registry.weakref_runner_state = WeakrefRunnerState::Cleared;
-    }
-    callbacks
+    std::mem::take(&mut registry.callbacks)
 }
 
 fn atexit_clear_impl(_py: &PyToken<'_>) -> u64 {
@@ -653,24 +446,16 @@ fn atexit_clear_impl(_py: &PyToken<'_>) -> u64 {
 }
 
 /// Release late registrations without starting another exit-callback phase.
-/// Keep monotonic identities and runner policy while detaching both owner
-/// cohorts before any decref can register replacement callbacks/finalizers.
+/// Keep monotonic identities while detaching every callback before any decref
+/// can register a replacement.
 pub(crate) fn atexit_clear_runtime_roots(_py: &PyToken<'_>) -> bool {
-    let (callbacks, finalizers) = {
+    let callbacks = {
         let mut registry = runtime_state(_py).exit_registry.lock().unwrap();
-        let mut finalizers = Vec::with_capacity(registry.weakref_finalizers.len());
-        let callbacks = detach_exit_callbacks(&mut registry);
-        while let Some(bits) = registry.weakref_finalizers.pop_lifo() {
-            finalizers.push(bits);
-        }
-        (callbacks, finalizers)
+        detach_exit_callbacks(&mut registry)
     };
-    let changed = !callbacks.is_empty() || !finalizers.is_empty();
+    let changed = !callbacks.is_empty();
     for callback in callbacks {
         atexit_callback_release_refs(_py, callback);
-    }
-    for bits in finalizers {
-        dec_ref_bits(_py, bits);
     }
     changed
 }
@@ -679,28 +464,15 @@ fn atexit_run_exitfuncs_impl(_py: &PyToken<'_>) -> u64 {
     #[cfg(test)]
     crate::state::runtime_state::run_finalizing_atexit_test_hook();
     loop {
-        let callback = {
-            let mut registry = runtime_state(_py).exit_registry.lock().unwrap();
-            let callback = registry.callbacks.pop();
-            if let Some(callback) = callback.as_ref()
-                && callback.kind == AtexitCallbackKind::WeakrefFinalizerRunner
-            {
-                registry.weakref_runner_state = WeakrefRunnerState::Cleared;
-            }
-            callback
-        };
+        let callback = runtime_state(_py)
+            .exit_registry
+            .lock()
+            .unwrap()
+            .callbacks
+            .pop();
         let Some(callback) = callback else {
             break;
         };
-        if callback.kind == AtexitCallbackKind::WeakrefFinalizerRunner {
-            crate::builtins::exceptions::run_unraisable(
-                _py,
-                MoltObject::none().bits(),
-                Some("Exception ignored while running weakref finalizers at exit"),
-                || crate::object::weakref::weakref_run_atexit_finalizers(_py),
-            );
-            continue;
-        }
         if obj_from_bits(callback.func_bits).is_none() {
             atexit_callback_release_refs(_py, callback);
             continue;
@@ -733,11 +505,6 @@ fn atexit_ncallbacks_impl(_py: &PyToken<'_>) -> u64 {
 
 pub(crate) fn atexit_run_exitfuncs_teardown(_py: &PyToken<'_>) {
     let _ = atexit_run_exitfuncs_impl(_py);
-    // `_clear()` intentionally disables exit execution, but the registry's
-    // retained references still belong to this runtime and must be released.
-    while let Some(finalizer_bits) = pop_weakref_finalizer(_py) {
-        dec_ref_bits(_py, finalizer_bits);
-    }
     if exception_pending(_py) {
         clear_exception(_py);
     }
@@ -776,7 +543,6 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
     static LATE_CALLBACK: AtomicU64 = AtomicU64::new(0);
-    static LATE_FINALIZER: AtomicU64 = AtomicU64::new(0);
     static EXIT_CALLS: AtomicUsize = AtomicUsize::new(0);
     static RELEASE_CALLS: AtomicUsize = AtomicUsize::new(0);
     static RELEASE_SAW_DETACHED_ROOTS: AtomicBool = AtomicBool::new(false);
@@ -786,7 +552,7 @@ mod tests {
         MoltObject::none().bits()
     }
 
-    extern "C" fn count_exit_finalizer() -> u64 {
+    extern "C" fn count_exit_once() -> u64 {
         EXIT_CALLS.fetch_add(1, Ordering::AcqRel);
         MoltObject::none().bits()
     }
@@ -797,9 +563,7 @@ mod tests {
             let detached = runtime_state(py)
                 .exit_registry
                 .try_lock()
-                .is_ok_and(|registry| {
-                    registry.callbacks.is_empty() && registry.weakref_finalizers.is_empty()
-                });
+                .is_ok_and(|registry| registry.callbacks.is_empty());
             RELEASE_SAW_DETACHED_ROOTS.store(detached, Ordering::Release);
             if detached {
                 // Real reentrant publication must survive the current detached
@@ -815,7 +579,6 @@ mod tests {
                     MoltObject::none().bits(),
                 );
                 dec_ref_bits(py, args);
-                crate::molt_weakref_finalize_track(LATE_FINALIZER.load(Ordering::Acquire));
             }
             MoltObject::none().bits()
         })
@@ -845,22 +608,21 @@ mod tests {
             RELEASE_CALLS.store(0, Ordering::Release);
             RELEASE_SAW_DETACHED_ROOTS.store(false, Ordering::Release);
             let callback = test_callable(py, count_exit_callback as *const (), 1);
-            let finalizer = test_callable(py, count_exit_finalizer as *const (), 0);
+            let exit_once = test_callable(py, count_exit_once as *const (), 0);
             let observer = test_callable(py, observe_exit_owner_release as *const (), 1);
             let callback_base = owner_count(callback);
-            let finalizer_base = owner_count(finalizer);
+            let exit_once_base = owner_count(exit_once);
             LATE_CALLBACK.store(callback, Ordering::Release);
-            LATE_FINALIZER.store(finalizer, Ordering::Release);
 
             // Run the actual one-time phase before introducing late owners.
             molt_atexit_register(
-                finalizer,
+                exit_once,
                 MoltObject::none().bits(),
                 MoltObject::none().bits(),
             );
             atexit_run_exitfuncs_teardown(py);
             assert_eq!(EXIT_CALLS.load(Ordering::Acquire), 1);
-            assert_eq!(owner_count(finalizer), finalizer_base);
+            assert_eq!(owner_count(exit_once), exit_once_base);
 
             let target_ptr = crate::object::builders::alloc_set_with_entries(py, &[]);
             assert!(!target_ptr.is_null());
@@ -875,10 +637,8 @@ mod tests {
             assert!(!args_ptr.is_null());
             let args = MoltObject::from_ptr(args_ptr).bits();
             molt_atexit_register(callback, args, MoltObject::none().bits());
-            crate::molt_weakref_finalize_track(finalizer);
             assert!(!exception_pending(py));
             assert_eq!(owner_count(callback), callback_base + 1);
-            assert_eq!(owner_count(finalizer), finalizer_base + 1);
             dec_ref_bits(py, args);
             dec_ref_bits(py, target);
             assert_eq!(RELEASE_CALLS.load(Ordering::Acquire), 0);
@@ -893,11 +653,6 @@ mod tests {
                 "only reentrant registration remains"
             );
             assert_eq!(
-                owner_count(finalizer),
-                finalizer_base + 1,
-                "only reentrant finalizer remains"
-            );
-            assert_eq!(
                 EXIT_CALLS.load(Ordering::Acquire),
                 1,
                 "root release never executes exit functions"
@@ -905,13 +660,11 @@ mod tests {
 
             assert!(atexit_clear_runtime_roots(py));
             assert_eq!(owner_count(callback), callback_base);
-            assert_eq!(owner_count(finalizer), finalizer_base);
             assert!(!atexit_clear_runtime_roots(py));
             assert_eq!(EXIT_CALLS.load(Ordering::Acquire), 1);
             assert!(!exception_pending(py));
             LATE_CALLBACK.store(0, Ordering::Release);
-            LATE_FINALIZER.store(0, Ordering::Release);
-            for bits in [weak, observer, callback, finalizer] {
+            for bits in [weak, observer, callback, exit_once] {
                 dec_ref_bits(py, bits);
             }
         });
