@@ -571,6 +571,28 @@ pub(crate) unsafe fn replace_unique_pair(
     Some((old_first, old_second))
 }
 
+/// Exchange every slot of an exclusively cache-owned tuple with `values`, as
+/// CPython's zip_next refills its result at refcount one. Ownership moves both
+/// ways: the tuple takes the new values and `values` receives the old ones.
+pub(crate) unsafe fn swap_unique_tuple_items(ptr: *mut u8, values: &mut [u64]) -> bool {
+    if ptr.is_null() || unsafe { object_type_id(ptr) } != TYPE_ID_TUPLE {
+        return false;
+    }
+    let header = unsafe { header_from_obj_ptr(ptr) };
+    if unsafe { (*header).ref_count_snapshot() } != 1
+        || unsafe { (*header).load_synchronized_flags() } & HEADER_FLAG_HAS_ABI_VIEW != 0
+    {
+        return false;
+    }
+    let items = unsafe { tuple_slice_mut(ptr) };
+    if items.len() != values.len() {
+        return false;
+    }
+    items.swap_with_slice(values);
+    unsafe { adjust_tuple_contains_refs(ptr, values, tuple_slice(ptr)) };
+    true
+}
+
 pub(crate) unsafe fn detach_tuple_edges(ptr: *mut u8, mut detach: impl FnMut(u64)) {
     let none = MoltObject::none().bits();
     // Tuple storage unwinds last-to-first, including finalizer reentry.
