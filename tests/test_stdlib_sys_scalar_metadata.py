@@ -212,7 +212,7 @@ def test_shaped_metadata_preserves_intrinsic_failure(monkeypatch):
         "molt_sys_settrace",
         "molt_sys_intern",
         "molt_traceback_format_exception",
-        "molt_sys_exit",
+        "molt_sys_is_finalizing",
     ],
 )
 @pytest.mark.parametrize("error_type", [RuntimeError, TypeError])

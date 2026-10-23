@@ -99,8 +99,6 @@ install_registry({{
     "molt_weakref_find_nocallback": lambda obj: None,
     "molt_weakref_refs": lambda obj: [],
     "molt_weakref_count": lambda obj: 0,
-    "molt_weakref_finalize_track": lambda finalizer, obj, func, args, kwargs, atexit: None,
-    "molt_weakref_finalize_untrack": lambda finalizer: None,
     "molt_weakcontainer_new": lambda kind: object(),
     "molt_weakcontainer_store_probe": lambda *args: False,
     "molt_weakcontainer_store_commit": lambda *args: None,

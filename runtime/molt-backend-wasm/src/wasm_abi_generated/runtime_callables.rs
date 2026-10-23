@@ -2799,16 +2799,6 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 1,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_weakref_finalize_track",
-        import: WasmRuntimeImport::WeakrefFinalizeTrack,
-        arity: 1,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_weakref_finalize_untrack",
-        import: WasmRuntimeImport::WeakrefFinalizeUntrack,
-        arity: 1,
-    },
-    RuntimeCallableImportSpec {
         runtime_name: "molt_weakref_find_nocallback",
         import: WasmRuntimeImport::WeakrefFindNocallback,
         arity: 1,
@@ -11434,21 +11424,6 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 1,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_sys_exit",
-        import: WasmRuntimeImport::SysExit,
-        arity: 1,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_sys_displayhook_write",
-        import: WasmRuntimeImport::SysDisplayhookWrite,
-        arity: 1,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_sys_excepthook_write",
-        import: WasmRuntimeImport::SysExcepthookWrite,
-        arity: 1,
-    },
-    RuntimeCallableImportSpec {
         runtime_name: "molt_os_makedirs",
         import: WasmRuntimeImport::OsMakedirs,
         arity: 3,
@@ -13148,8 +13123,6 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_weakref_call" => Some(WasmRuntimeImport::WeakrefCall),
         "molt_weakref_callback_get" => Some(WasmRuntimeImport::WeakrefCallbackGet),
         "molt_weakref_count" => Some(WasmRuntimeImport::WeakrefCount),
-        "molt_weakref_finalize_track" => Some(WasmRuntimeImport::WeakrefFinalizeTrack),
-        "molt_weakref_finalize_untrack" => Some(WasmRuntimeImport::WeakrefFinalizeUntrack),
         "molt_weakref_find_nocallback" => Some(WasmRuntimeImport::WeakrefFindNocallback),
         "molt_weakref_get" => Some(WasmRuntimeImport::WeakrefGet),
         "molt_weakref_hash" => Some(WasmRuntimeImport::WeakrefHash),
@@ -15171,9 +15144,6 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_sys_set_int_max_str_digits" => Some(WasmRuntimeImport::SysSetIntMaxStrDigits),
         "molt_sys_call_tracing_validate" => Some(WasmRuntimeImport::SysCallTracingValidate),
         "molt_sys_addaudithook" => Some(WasmRuntimeImport::SysAddaudithook),
-        "molt_sys_exit" => Some(WasmRuntimeImport::SysExit),
-        "molt_sys_displayhook_write" => Some(WasmRuntimeImport::SysDisplayhookWrite),
-        "molt_sys_excepthook_write" => Some(WasmRuntimeImport::SysExcepthookWrite),
         "molt_os_makedirs" => Some(WasmRuntimeImport::OsMakedirs),
         "molt_sys_path" => Some(WasmRuntimeImport::SysPath),
         "molt_tokenize_scan" => Some(WasmRuntimeImport::TokenizeScan),
