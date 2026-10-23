@@ -2264,30 +2264,6 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::StringSplitFieldOrdAtBounds],
             discard_result: false,
         }),
-        "statistics_mean_slice" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::StatisticsMeanSlice,
-            args: &[
-                OpLoopRuntimeArgSpec::Local(0),
-                OpLoopRuntimeArgSpec::Local(1),
-                OpLoopRuntimeArgSpec::Local(2),
-                OpLoopRuntimeArgSpec::Local(3),
-                OpLoopRuntimeArgSpec::Local(4),
-            ],
-            required_imports: &[WasmRuntimeImport::StatisticsMeanSlice],
-            discard_result: false,
-        }),
-        "statistics_stdev_slice" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::StatisticsStdevSlice,
-            args: &[
-                OpLoopRuntimeArgSpec::Local(0),
-                OpLoopRuntimeArgSpec::Local(1),
-                OpLoopRuntimeArgSpec::Local(2),
-                OpLoopRuntimeArgSpec::Local(3),
-                OpLoopRuntimeArgSpec::Local(4),
-            ],
-            required_imports: &[WasmRuntimeImport::StatisticsStdevSlice],
-            discard_result: false,
-        }),
         "string_split_sep_dict_inc" => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::StringSplitSepDictInc,
             args: &[

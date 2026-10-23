@@ -927,6 +927,7 @@ dependencies = [
  "crc32fast",
  "molt-lang-obj-model",
  "num-bigint 0.5.1",
+ "num-integer",
  "num-traits",
 ]
 

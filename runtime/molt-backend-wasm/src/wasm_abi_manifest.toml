@@ -2174,6 +2174,13 @@ type = 2
 runtime_name = "molt_iter_checked"
 callable_arity = 1
 
+# Public iter(object[, sentinel]) is distinct from unary protocol acquisition.
+[[import]]
+name = "iter_builtin"
+type = 3
+runtime_name = "molt_iter_builtin"
+callable_arity = 2
+
 [[import]]
 name = "iter_next"
 type = 2
@@ -2989,14 +2996,6 @@ name = "heapq_heapreplace"
 type = 3
 runtime_name = "molt_heapq_heapreplace"
 callable_arity = 2
-
-[[import]]
-name = "statistics_mean_slice"
-type = 10
-
-[[import]]
-name = "statistics_stdev_slice"
-type = 10
 
 [[import]]
 name = "io_wait_new"
@@ -6546,8 +6545,6 @@ arg_count = 5
 boxed_call = true
 kinds = [
   "string_split_field_ord_at_bounds",
-  "statistics_mean_slice",
-  "statistics_stdev_slice",
   "string_split_sep_dict_inc",
 ]
 

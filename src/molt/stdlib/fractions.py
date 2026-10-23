@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
+import numbers as _numbers
+import operator as _operator
+import sys as _sys
 
 # --- intrinsic bindings ---
 
@@ -15,7 +18,6 @@ _MOLT_FRACTION_MUL = _require_intrinsic("molt_fraction_mul")
 _MOLT_FRACTION_TRUEDIV = _require_intrinsic("molt_fraction_truediv")
 _MOLT_FRACTION_FLOORDIV = _require_intrinsic("molt_fraction_floordiv")
 _MOLT_FRACTION_MOD = _require_intrinsic("molt_fraction_mod")
-_MOLT_FRACTION_POW = _require_intrinsic("molt_fraction_pow")
 _MOLT_FRACTION_NEG = _require_intrinsic("molt_fraction_neg")
 _MOLT_FRACTION_ABS = _require_intrinsic("molt_fraction_abs")
 _MOLT_FRACTION_EQ = _require_intrinsic("molt_fraction_eq")
@@ -46,10 +48,11 @@ def _coerce_to_fraction(value):
     )
 
 
-class Fraction:
+class Fraction(_numbers.Rational):
     """Represents a rational number as numerator/denominator pair.
 
-    All arithmetic is delegated to Rust intrinsics.
+    Exact rational arithmetic uses native handles; mixed numeric protocols
+    follow CPython 3.12–3.14 (PSF license: collections/LICENSE.cpython).
     """
 
     __slots__ = ("_handle",)
@@ -126,61 +129,137 @@ class Fraction:
         )
         return result
 
-    def _binop(self, other, op):
-        """Helper for binary operations."""
-        other_handle = _coerce_to_fraction(other)
-        result = Fraction.__new__(Fraction)
-        result._handle = op(self._handle, other_handle)
-        return result
+    def _binop(self, other, op, fallback, fraction_result=True, handle_complex=True):
+        # CPython's forward arithmetic admits only types whose cooperation is
+        # known here. Constructor-only strings must reach reflected dispatch.
+        if isinstance(other, (Fraction, int)):
+            value = op(self._handle, _coerce_to_fraction(other))
+            if not fraction_result:
+                return value
+            result = Fraction.__new__(Fraction)
+            result._handle = value
+            return result
+        if isinstance(other, float):
+            return fallback(float(self), other)
+        if (handle_complex or _sys.version_info < (3, 13)) and isinstance(
+            other, complex
+        ):
+            value = float(self) if _sys.version_info >= (3, 14) else complex(self)
+            return fallback(value, other)
+        return NotImplemented
 
-    def _rbinop(self, other, op):
-        """Helper for reflected binary operations."""
-        other_handle = _coerce_to_fraction(other)
-        result = Fraction.__new__(Fraction)
-        result._handle = op(other_handle, self._handle)
-        return result
+    def _rbinop(self, other, op, fallback, fraction_result=True, handle_complex=True):
+        if isinstance(other, _numbers.Rational):
+            if isinstance(other, (Fraction, int)):
+                handle = _coerce_to_fraction(other)
+            else:
+                handle = _MOLT_FRACTION_NEW(other.numerator, other.denominator)
+            value = op(handle, self._handle)
+            if not fraction_result:
+                return value
+            result = Fraction.__new__(Fraction)
+            result._handle = value
+            return result
+        if isinstance(other, _numbers.Real):
+            return fallback(float(other), float(self))
+        if (handle_complex or _sys.version_info < (3, 13)) and isinstance(
+            other, _numbers.Complex
+        ):
+            value = float(self) if _sys.version_info >= (3, 14) else complex(self)
+            return fallback(complex(other), value)
+        return NotImplemented
 
     def __add__(self, other):
-        return self._binop(other, _MOLT_FRACTION_ADD)
+        return self._binop(other, _MOLT_FRACTION_ADD, _operator.add)
 
     def __radd__(self, other):
-        return self._rbinop(other, _MOLT_FRACTION_ADD)
+        return self._rbinop(other, _MOLT_FRACTION_ADD, _operator.add)
 
     def __sub__(self, other):
-        return self._binop(other, _MOLT_FRACTION_SUB)
+        return self._binop(other, _MOLT_FRACTION_SUB, _operator.sub)
 
     def __rsub__(self, other):
-        return self._rbinop(other, _MOLT_FRACTION_SUB)
+        return self._rbinop(other, _MOLT_FRACTION_SUB, _operator.sub)
 
     def __mul__(self, other):
-        return self._binop(other, _MOLT_FRACTION_MUL)
+        return self._binop(other, _MOLT_FRACTION_MUL, _operator.mul)
 
     def __rmul__(self, other):
-        return self._rbinop(other, _MOLT_FRACTION_MUL)
+        return self._rbinop(other, _MOLT_FRACTION_MUL, _operator.mul)
 
     def __truediv__(self, other):
-        return self._binop(other, _MOLT_FRACTION_TRUEDIV)
+        return self._binop(other, _MOLT_FRACTION_TRUEDIV, _operator.truediv)
 
     def __rtruediv__(self, other):
-        return self._rbinop(other, _MOLT_FRACTION_TRUEDIV)
+        return self._rbinop(other, _MOLT_FRACTION_TRUEDIV, _operator.truediv)
 
     def __floordiv__(self, other):
-        return self._binop(other, _MOLT_FRACTION_FLOORDIV)
+        return self._binop(
+            other, _MOLT_FRACTION_FLOORDIV, _operator.floordiv, False, False
+        )
 
     def __rfloordiv__(self, other):
-        return self._rbinop(other, _MOLT_FRACTION_FLOORDIV)
+        return self._rbinop(
+            other, _MOLT_FRACTION_FLOORDIV, _operator.floordiv, False, False
+        )
 
     def __mod__(self, other):
-        return self._binop(other, _MOLT_FRACTION_MOD)
+        return self._binop(other, _MOLT_FRACTION_MOD, _operator.mod, True, False)
 
     def __rmod__(self, other):
-        return self._rbinop(other, _MOLT_FRACTION_MOD)
+        return self._rbinop(other, _MOLT_FRACTION_MOD, _operator.mod, True, False)
 
-    def __pow__(self, other):
-        return self._binop(other, _MOLT_FRACTION_POW)
+    def _power(self, exponent):
+        # Adapted from pinned CPython Fraction.__pow__; integer powers use the
+        # general integer owner rather than a truncated native exponent lane.
+        if isinstance(exponent, _numbers.Rational):
+            if exponent.denominator == 1:
+                power = exponent.numerator
+                numerator = _MOLT_FRACTION_NUMERATOR(self._handle)
+                denominator = _MOLT_FRACTION_DENOMINATOR(self._handle)
+                if power >= 0:
+                    return Fraction(numerator**power, denominator**power)
+                if numerator > 0:
+                    return Fraction(denominator**-power, numerator**-power)
+                if numerator == 0:
+                    raise ZeroDivisionError("Fraction(%s, 0)" % (denominator**-power))
+                return Fraction((-denominator) ** -power, (-numerator) ** -power)
+            return float(self) ** float(exponent)
+        if isinstance(exponent, (float, complex)):
+            return float(self) ** exponent
+        return NotImplemented
 
-    def __rpow__(self, other):
-        return self._rbinop(other, _MOLT_FRACTION_POW)
+    def _reverse_power(self, base):
+        numerator = _MOLT_FRACTION_NUMERATOR(self._handle)
+        denominator = _MOLT_FRACTION_DENOMINATOR(self._handle)
+        if denominator == 1 and numerator >= 0:
+            return base**numerator
+        if isinstance(base, _numbers.Rational):
+            return Fraction(base.numerator, base.denominator) ** self
+        if denominator == 1:
+            return base**numerator
+        return base ** float(self)
+
+    # CPython 3.14 adds the explicit ternary-power calling contract. Keep one
+    # arithmetic body while retaining the target-specific public signatures.
+    if _sys.version_info >= (3, 14):
+
+        def __pow__(self, other, modulo=None):
+            if modulo is not None:
+                return NotImplemented
+            return Fraction._power(self, other)
+
+        def __rpow__(self, other, modulo=None):
+            if modulo is not None:
+                return NotImplemented
+            return Fraction._reverse_power(self, other)
+    else:
+
+        def __pow__(self, other):
+            return Fraction._power(self, other)
+
+        def __rpow__(self, other):
+            return Fraction._reverse_power(self, other)
 
     def __neg__(self):
         result = Fraction.__new__(Fraction)
@@ -235,6 +314,47 @@ class Fraction:
         except TypeError:
             return NotImplemented
         return bool(_MOLT_FRACTION_LE(oh, self._handle))
+
+    def __int__(self):
+        numerator = _MOLT_FRACTION_NUMERATOR(self._handle)
+        denominator = _MOLT_FRACTION_DENOMINATOR(self._handle)
+        if numerator < 0:
+            return -(-numerator // denominator)
+        return numerator // denominator
+
+    def __trunc__(self):
+        # Inherited truncation must not dispatch a subclass's __int__ override.
+        return Fraction.__int__(self)
+
+    def __floor__(self):
+        return _MOLT_FRACTION_NUMERATOR(self._handle) // _MOLT_FRACTION_DENOMINATOR(
+            self._handle
+        )
+
+    def __ceil__(self):
+        return -(
+            -_MOLT_FRACTION_NUMERATOR(self._handle)
+            // _MOLT_FRACTION_DENOMINATOR(self._handle)
+        )
+
+    def __round__(self, ndigits=None):
+        # Adapted from CPython 3.14.9 Lib/fractions.py, ead82c07db1f111d613926ed1b6667411d768125.
+        # PSF license: collections/LICENSE.cpython. Keep exact ties-to-even and
+        # the original ndigits abs/power protocol (not implicit index coercion).
+        if ndigits is None:
+            denominator = _MOLT_FRACTION_DENOMINATOR(self._handle)
+            floor, remainder = divmod(
+                _MOLT_FRACTION_NUMERATOR(self._handle), denominator
+            )
+            if remainder * 2 < denominator:
+                return floor
+            if remainder * 2 > denominator:
+                return floor + 1
+            return floor if floor % 2 == 0 else floor + 1
+        shift = 10 ** abs(ndigits)
+        if ndigits > 0:
+            return Fraction(round(self * shift), shift)
+        return Fraction(round(self / shift) * shift)
 
     def __float__(self):
         return float(_MOLT_FRACTION_TO_FLOAT(self._handle))

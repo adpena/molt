@@ -263,7 +263,6 @@ STDLIB_REQUIRED_INTRINSICS_BY_MODULE: dict[str, tuple[str, ...]] = {
         "molt_fraction_truediv",
         "molt_fraction_floordiv",
         "molt_fraction_mod",
-        "molt_fraction_pow",
         "molt_fraction_neg",
         "molt_fraction_abs",
         "molt_fraction_eq",

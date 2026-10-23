@@ -13,10 +13,15 @@ entrypoints used to validate them.
   wider addresses in every profile instead of truncating them.
 - Runtime and generated native pointer decoding preserve bit 47 and zero-extend
   the masked address. Decoding must also fit the target pointer width.
-- Debug `MoltObject::from_ptr` registers exposed addresses for provenance checking.
-  `as_ptr` preserves registered provenance when available; compiled-minted boxes
-  also recover through exposed provenance. A registry miss must not change
-  address identity or make debug and release decoding disagree.
+- `MoltObject::from_ptr` exposes provenance before boxing. `as_ptr` reconstructs
+  the canonical address directly in every profile, with no registry lookup,
+  allocation or lock. Generated object words obey the same exposure and lifetime
+  obligations. Debug boxing still registers addresses for explicit membership
+  diagnostics and raw-address consumers; membership does not establish a boxed
+  object's lifetime or alias validity. Neither decoding nor registry removal
+  extends an allocation's lifetime. This uses Rust's
+  [exposed-provenance contract](https://doc.rust-lang.org/1.99.1/std/ptr/fn.with_exposed_provenance_mut.html),
+  not a claim of Strict Provenance or model-checked memory safety.
 - `molt_handle_resolve` consumes this object-address contract. Opaque Rust handles
   use the separate generational ID protocol below.
 - `molt_alloc` returns boxed object bits; raw field-access pointers obey the same

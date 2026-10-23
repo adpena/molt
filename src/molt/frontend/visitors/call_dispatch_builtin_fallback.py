@@ -28,7 +28,7 @@ class CallNamedBuiltinFallbackDispatchMixin(GeneratorMixinBase):
             # Publication declares special binding protocols. Keep this call's
             # transport conservative; the live callee owns the actual binder.
             needs_bind = needs_bind or (
-                spec.bind_kind is not None
+                (spec.bind_kind is not None and spec.bind_kind.requires_custom_binding)
                 or spec.vararg is not None
                 or bool(spec.kwonly_params)
             )

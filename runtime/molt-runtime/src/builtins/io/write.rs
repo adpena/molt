@@ -384,38 +384,21 @@ pub extern "C" fn molt_file_writelines(handle_bits: u64, lines_bits: u64) -> u64
                 return raise_exception::<_>(_py, "UnsupportedOperation", "not writable");
             }
         }
-        let iter_bits = molt_iter(lines_bits);
-        if obj_from_bits(iter_bits).is_none() {
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                "writelines() argument must be iterable",
-            );
-        }
+        let Some(mut iterator) = crate::object::iterable::OwnedIterator::new(_py, lines_bits)
+        else {
+            return MoltObject::none().bits();
+        };
         loop {
-            let pair_bits = molt_iter_next(iter_bits);
+            let line = match iterator.next() {
+                Ok(Some(value)) => value,
+                Ok(None) => break,
+                Err(_) => return MoltObject::none().bits(),
+            };
+            let result = molt_file_write(handle_bits, line);
+            dec_ref_bits(_py, line);
+            dec_ref_bits(_py, result);
             if exception_pending(_py) {
                 return MoltObject::none().bits();
-            }
-            let pair_obj = obj_from_bits(pair_bits);
-            let Some(pair_ptr) = pair_obj.as_ptr() else {
-                return MoltObject::none().bits();
-            };
-            unsafe {
-                if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-                    return MoltObject::none().bits();
-                }
-                let Some((line_bits, done_bits)) = crate::object::seq_access::tuple_pair(pair_ptr)
-                else {
-                    return MoltObject::none().bits();
-                };
-                if is_truthy(_py, obj_from_bits(done_bits)) {
-                    break;
-                }
-                let _ = molt_file_write(handle_bits, line_bits);
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
-                }
             }
         }
         MoltObject::none().bits()

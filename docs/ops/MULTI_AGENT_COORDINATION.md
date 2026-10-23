@@ -128,6 +128,25 @@ If another active log already owns the same files or broad proof lane, switch to
 a non-colliding task, coordinate explicitly in the log, or wait only when the
 existing owner has a bounded finish condition.
 
+### Interpreter environments are mutable proof inputs
+
+Versioned CPython oracles use the existing interpreter and pinned-source
+authorities. Resolve the installed command and verify its complete version with
+`molt.python_interpreter.probe_python_command`; retain the interpreter identity
+separately from the guest target. Do not run project-scoped `uv run --python` for
+another minor in an active checkout: uv correctly replaces that checkout's
+environment, including packages another proof may still be importing.
+
+When dependencies require another environment, provision an explicitly owned
+`UV_PROJECT_ENVIRONMENT` and bind the consuming command to that environment.
+Reconcile live readers before a sync or replacement; a checkout being clean does
+not make its environment idle. If mutation occurs, preserve the command and
+identity evidence, classify the exact overlapping intervals, and requalify the
+affected claims. A completed proof before the mutation remains useful; a later
+proof on another verified interpreter must name that interpreter. Do not discard
+unchanged evidence or relabel interpreter versions. This is development custody
+and adds no work to compiled programs.
+
 ## Machine-Readable Discovery
 
 Agents must use the JSON coordination records as the machine-readable discovery

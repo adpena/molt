@@ -2118,15 +2118,18 @@ pub(super) fn urllib_raise_url_error(_py: &molt_runtime_core::CoreGilToken, reas
         return MoltObject::none().bits();
     }
     let reason_bits = MoltObject::from_ptr(reason_ptr).bits();
-    let exc_bits = unsafe {
-        call_class_init_with_args(_py, MoltObject::from_ptr(class_ptr).bits(), &[reason_bits])
+    let exception = unsafe {
+        molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
+            _py,
+            call_class_init_with_args(_py, MoltObject::from_ptr(class_ptr).bits(), &[reason_bits]),
+        )
     };
     dec_ref_bits(_py, reason_bits);
     dec_ref_bits(_py, class_bits);
     if exception_pending(_py) {
         return MoltObject::none().bits();
     }
-    crate::bridge::molt_raise(exc_bits)
+    crate::bridge::molt_raise(exception.bits())
 }
 
 pub(super) fn urllib_raise_http_error(
@@ -2169,11 +2172,14 @@ pub(super) fn urllib_raise_http_error(
             return bits;
         }
     };
-    let exc_bits = unsafe {
-        call_class_init_with_args(
+    let exception = unsafe {
+        molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
             _py,
-            MoltObject::from_ptr(class_ptr).bits(),
-            &[url_bits, code_bits, reason_bits, headers_bits, fp_bits],
+            call_class_init_with_args(
+                _py,
+                MoltObject::from_ptr(class_ptr).bits(),
+                &[url_bits, code_bits, reason_bits, headers_bits, fp_bits],
+            ),
         )
     };
     dec_ref_bits(_py, headers_bits);
@@ -2183,5 +2189,5 @@ pub(super) fn urllib_raise_http_error(
     if exception_pending(_py) {
         return MoltObject::none().bits();
     }
-    crate::bridge::molt_raise(exc_bits)
+    crate::bridge::molt_raise(exception.bits())
 }

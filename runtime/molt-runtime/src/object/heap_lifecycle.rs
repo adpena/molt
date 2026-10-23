@@ -674,6 +674,7 @@ pub(crate) unsafe fn visit_payload_owned_values(
                     }
                 }
                 visit_bits(super::layout::zip_strict_bits(ptr), visit);
+                visit_bits(super::layout::zip_result_bits(ptr), visit);
             }
             HeapLifecycleHandler::Map => {
                 visit_bits(super::layout::map_func_bits(ptr), visit);
@@ -1318,6 +1319,13 @@ pub(crate) unsafe fn clear_cycle_edges_with_sink(
                 super::weak_container::weakcontainer_detach_state(py, ptr, sink);
             }
             HeapLifecycleHandler::Iter => {
+                // Live clear can be observed after a source finalizer revives
+                // the iterator; preserve its class before releasing that source.
+                // A committed-dead prefix iterator needs no class observation
+                // and must not scan its otherwise untouched source on drop.
+                if !(*super::header_from_obj_ptr(ptr)).has_flag(super::HEADER_FLAG_DEALLOCATING) {
+                    super::ops_iter::resolve_deferred_iterator_class(py, ptr);
+                }
                 let target = super::layout::iter_target_bits(ptr);
                 let cached = super::layout::iter_cached_tuple(ptr);
                 super::layout::iter_set_target_bits(ptr, MoltObject::none().bits());
@@ -1642,13 +1650,16 @@ pub(crate) unsafe fn detach_terminal_owned_edges(
             HeapLifecycleHandler::Zip => {
                 let iters = super::layout::zip_iters_ptr(ptr);
                 if !iters.is_null() {
-                    for bits in std::mem::take(&mut *iters) {
+                    for bits in std::mem::take(&mut *iters).into_iter().rev() {
                         sink.detach_if_heap(bits);
                     }
                 }
                 let strict = super::layout::zip_strict_bits(ptr);
                 super::layout::zip_set_strict_bits(ptr, MoltObject::none().bits());
                 sink.detach_if_heap(strict);
+                let result = super::layout::zip_result_bits(ptr);
+                super::layout::zip_set_result_bits(ptr, MoltObject::none().bits());
+                sink.detach_if_heap(result);
             }
             HeapLifecycleHandler::Map => {
                 sink.detach_if_heap((ptr as *mut u64).replace(MoltObject::none().bits()));

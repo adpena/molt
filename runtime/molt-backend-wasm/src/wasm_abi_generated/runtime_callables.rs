@@ -804,6 +804,11 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 1,
     },
     RuntimeCallableImportSpec {
+        runtime_name: "molt_iter_builtin",
+        import: WasmRuntimeImport::IterBuiltin,
+        arity: 2,
+    },
+    RuntimeCallableImportSpec {
         runtime_name: "molt_iter_sentinel",
         import: WasmRuntimeImport::IterSentinel,
         arity: 2,
@@ -9064,11 +9069,6 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 1,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_fraction_pow",
-        import: WasmRuntimeImport::FractionPow,
-        arity: 2,
-    },
-    RuntimeCallableImportSpec {
         runtime_name: "molt_fraction_sub",
         import: WasmRuntimeImport::FractionSub,
         arity: 2,
@@ -12655,6 +12655,7 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_enumerate_builtin" => Some(WasmRuntimeImport::EnumerateBuiltin),
         "molt_filter_builtin" => Some(WasmRuntimeImport::FilterBuiltin),
         "molt_iter_checked" => Some(WasmRuntimeImport::Iter),
+        "molt_iter_builtin" => Some(WasmRuntimeImport::IterBuiltin),
         "molt_iter_sentinel" => Some(WasmRuntimeImport::IterSentinel),
         "molt_len" => Some(WasmRuntimeImport::Len),
         "molt_len_dict" => Some(WasmRuntimeImport::LenDict),
@@ -14643,7 +14644,6 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_fraction_neg" => Some(WasmRuntimeImport::FractionNeg),
         "molt_fraction_new" => Some(WasmRuntimeImport::FractionNew),
         "molt_fraction_numerator" => Some(WasmRuntimeImport::FractionNumerator),
-        "molt_fraction_pow" => Some(WasmRuntimeImport::FractionPow),
         "molt_fraction_sub" => Some(WasmRuntimeImport::FractionSub),
         "molt_fraction_to_float" => Some(WasmRuntimeImport::FractionToFloat),
         "molt_fraction_to_str" => Some(WasmRuntimeImport::FractionToStr),

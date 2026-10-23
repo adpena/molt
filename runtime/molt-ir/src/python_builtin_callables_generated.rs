@@ -167,8 +167,8 @@ pub const PYTHON_BUILTIN_CALLABLES: &[PythonBuiltinCallableSpec] = &[
     PythonBuiltinCallableSpec {
         python_name: "iter",
         python_module: "builtins",
-        runtime_name: "molt_iter_checked",
-        arity: 1,
+        runtime_name: "molt_iter_builtin",
+        arity: 2,
     },
     PythonBuiltinCallableSpec {
         python_name: "len",

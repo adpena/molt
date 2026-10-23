@@ -246,9 +246,11 @@ still run in separate processes to avoid unrelated live owners.
 
 ## 4. Locking Model And Ordering
 - The GIL is the outermost lock for runtime mutation.
-- Provenance-sensitive subsystems (pointer registry / handle resolution) use
-  internal sharded locks; resolve paths use read locks, registration uses write
-  locks.
+- Explicit raw-pointer and generational opaque-handle registries use internal
+  sharded locks; their resolution uses read locks and registration uses write
+  locks. Ordinary object-tag decoding reconstructs the canonical exposed address
+  without a lock or dereference. It grants no lifetime or mutation authority;
+  the caller must retain those independently.
 - Lock ordering is strictly: GIL -> handle table -> pointer registry. Locks must
   never be acquired in the reverse order.
 - Runtime-internal mutexes (scheduler, async registries, object pools, caches)
@@ -281,9 +283,9 @@ still run in separate processes to avoid unrelated live owners.
 ## 4.1 GIL-Exempt Operations (Explicit Exceptions)
 - Runtime entrypoints that mutate state must acquire a `PyToken` via
   `with_gil`/`with_gil_entry`; any GIL-exempt entrypoints must be listed here.
-- `molt_handle_resolve` is treated as GIL-exempt for long-term performance
-  goals; it must remain read-only against runtime state and rely solely on the
-  pointer registry's sharded read locks for safety.
+- `molt_handle_resolve` is GIL-exempt: it decodes the object address without
+  dereferencing it or changing runtime state. Its caller retains allocation
+  lifetime and access custody; decoding grants neither.
 - If `molt_handle_resolve` ever requires mutation or additional locks, the
   exception must be removed and this document updated before merging.
 

@@ -175,12 +175,13 @@ two without copying Lima's defaults.
   `restart_pending`. For each running VM that mounts host paths, one `lsof`
   reports what its process holds. It runs nothing in a guest.
 - `push <vm> [rev]` resolves `rev` (default `HEAD`) to a commit and runs `git
-  push --force` into the guest clone as `refs/heads/host/head` (`--ref <name>`
+  push` into the guest clone as `refs/heads/host/head` (`--ref <name>`
   picks `refs/heads/host/<name>`), over Lima's SSH config
   (`<instance>/ssh.config`, host `lima-<vm>`). Git sends only the objects the
-  clone lacks. Every push lands under `refs/heads/host/`, a namespace only the
-  host writes, so `--force` never moves a branch made in the guest; a name
-  Git would refuse is refused first. The SSH command goes in
+  clone lacks. Every push lands under `refs/heads/host/` and retains Git
+  fast-forward protection: divergent commits are never overwritten, and a
+  rejected push leaves the guest checkout unchanged. A name Git would refuse
+  is refused first. The SSH command goes in
   `GIT_SSH_COMMAND`, which Git prefers to `core.sshCommand` and `GIT_SSH`, so
   a caller's own `GIT_SSH_COMMAND` cannot redirect it; `GIT_SSH_VARIANT=ssh`
   keeps OpenSSH's argument form. `--checkout` runs one guest command that

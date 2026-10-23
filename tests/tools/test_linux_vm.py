@@ -1398,7 +1398,6 @@ def test_push_sends_the_resolved_commit_over_limas_ssh_and_checks_it_out(
         "-C",
         str(tmp_path / "repo"),
         "push",
-        "--force",
         "--no-verify",
         "--quiet",
         "lima-molt-linux:molt-main",
@@ -1467,7 +1466,7 @@ def test_push_reports_a_refused_checkout_with_the_exact_commit(
 def test_push_confines_every_ref_to_the_host_namespace(
     ref: str, full: str | None
 ) -> None:
-    """A-3: a forced push can move only a branch the host owns."""
+    """A-3: transport refs cannot name a guest branch."""
     assert linux_vm.push_ref(ref) == full
 
 
@@ -1691,6 +1690,37 @@ def test_push_moves_a_commit_into_the_guest_clone_through_real_git(
     )
     assert run_git("-C", str(clone), "rev-parse", "refs/heads/host/main") == head
     assert run_git("-C", str(clone), "rev-parse", "refs/heads/main") == guest_main
+
+
+def test_push_preserves_divergent_guest_commits_before_checkout(
+    definitions: linux_vm.Definitions, tmp_path: Path
+) -> None:
+    host, repo, clone, head = git_guest(definitions, tmp_path)
+    common = dict(
+        rev="HEAD",
+        ref=linux_vm.DEFAULT_PUSH_REF,
+        definitions=definitions,
+        host=host,
+        repo=repo,
+    )
+    assert linux_vm.push("molt-linux", checkout=False, **common) == 0
+    receive_ref = linux_vm.push_ref(linux_vm.DEFAULT_PUSH_REF)
+    assert receive_ref is not None
+    run_git("-C", str(clone), "checkout", "-q", "host/head")
+    (clone / "guest.txt").write_text("guest work\n", encoding="utf-8")
+    run_git("-C", str(clone), "add", "guest.txt")
+    run_git("-C", str(clone), "commit", "-qm", "guest work")
+    guest_head = run_git("-C", str(clone), "rev-parse", "HEAD")
+    run_git("-C", str(clone), "checkout", "--detach", "-q")
+    (repo / "host.txt").write_text("host work\n", encoding="utf-8")
+    run_git("-C", str(repo), "add", "host.txt")
+    run_git("-C", str(repo), "commit", "-qm", "host work")
+    host.calls.clear()
+    assert linux_vm.push("molt-linux", checkout=True, **common) == linux_vm.EXIT_FAIL
+    assert run_git("-C", str(clone), "rev-parse", receive_ref) == guest_head
+    assert run_git("-C", str(clone), "rev-parse", "HEAD") == guest_head
+    assert (clone / "guest.txt").read_text(encoding="utf-8") == "guest work\n"
+    assert not [call for call in host.calls if call[0] == "limactl" and "shell" in call]
 
 
 @pytest.mark.parametrize(

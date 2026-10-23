@@ -507,6 +507,7 @@ fn kahan_sum(values: &[f64]) -> f64 {
     sum
 }
 
+#[cfg(test)]
 fn kahan_sum_sq_diff(values: &[f64], mean: f64) -> f64 {
     let mut sum = 0.0_f64;
     let mut compensation = 0.0_f64;
@@ -627,77 +628,6 @@ fn sum_f64_simd(values: &[f64]) -> f64 {
     kahan_sum(values)
 }
 
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx")]
-unsafe fn sum_sq_diff_f64_simd_x86_avx(values: &[f64], mean: f64) -> f64 {
-    use std::arch::x86_64::*;
-    let mean_v = _mm256_set1_pd(mean);
-    let mut i = 0usize;
-    let mut acc = _mm256_setzero_pd();
-    while i + 4 <= values.len() {
-        let v = unsafe { _mm256_loadu_pd(values.as_ptr().add(i)) };
-        let d = _mm256_sub_pd(v, mean_v);
-        acc = _mm256_add_pd(acc, _mm256_mul_pd(d, d));
-        i += 4;
-    }
-    let mut lanes = [0.0_f64; 4];
-    unsafe { _mm256_storeu_pd(lanes.as_mut_ptr(), acc) };
-    let mut sum = lanes.iter().sum::<f64>();
-    for &v in &values[i..] {
-        let d = v - mean;
-        sum += d * d;
-    }
-    sum
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "sse2")]
-unsafe fn sum_sq_diff_f64_simd_x86_sse2(values: &[f64], mean: f64) -> f64 {
-    use std::arch::x86_64::*;
-    let mean_v = _mm_set1_pd(mean);
-    let mut i = 0usize;
-    let mut acc = _mm_setzero_pd();
-    while i + 2 <= values.len() {
-        let v = unsafe { _mm_loadu_pd(values.as_ptr().add(i)) };
-        let d = _mm_sub_pd(v, mean_v);
-        acc = _mm_add_pd(acc, _mm_mul_pd(d, d));
-        i += 2;
-    }
-    let mut lanes = [0.0_f64; 2];
-    unsafe { _mm_storeu_pd(lanes.as_mut_ptr(), acc) };
-    let mut sum = lanes[0] + lanes[1];
-    for &v in &values[i..] {
-        let d = v - mean;
-        sum += d * d;
-    }
-    sum
-}
-
-#[cfg(target_arch = "aarch64")]
-#[target_feature(enable = "neon")]
-unsafe fn sum_sq_diff_f64_simd_aarch64(values: &[f64], mean: f64) -> f64 {
-    unsafe {
-        use std::arch::aarch64::*;
-        let mean_v = vdupq_n_f64(mean);
-        let mut i = 0usize;
-        let mut acc = vdupq_n_f64(0.0);
-        while i + 2 <= values.len() {
-            let v = vld1q_f64(values.as_ptr().add(i));
-            let d = vsubq_f64(v, mean_v);
-            acc = vaddq_f64(acc, vmulq_f64(d, d));
-            i += 2;
-        }
-        let mut lanes = [0.0_f64; 2];
-        vst1q_f64(lanes.as_mut_ptr(), acc);
-        let mut sum = lanes[0] + lanes[1];
-        for &v in &values[i..] {
-            let d = v - mean;
-            sum += d * d;
-        }
-        sum
-    }
-}
-
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 unsafe fn sum_squares_f64_simd_aarch64(values: &[f64]) -> (f64, usize) {
@@ -716,100 +646,6 @@ unsafe fn sum_squares_f64_simd_aarch64(values: &[f64]) -> (f64, usize) {
         vst1q_f64(lanes.as_mut_ptr(), vector_sum);
         (lanes[0] + lanes[1], index)
     }
-}
-
-#[cfg(target_arch = "wasm32")]
-unsafe fn sum_sq_diff_f64_simd_wasm32(values: &[f64], mean: f64) -> f64 {
-    unsafe {
-        use std::arch::wasm32::*;
-        let mean_v = f64x2_splat(mean);
-        let mut i = 0usize;
-        let mut acc = f64x2_splat(0.0);
-        while i + 2 <= values.len() {
-            let v = v128_load(values.as_ptr().add(i) as *const v128);
-            let d = f64x2_sub(v, mean_v);
-            acc = f64x2_add(acc, f64x2_mul(d, d));
-            i += 2;
-        }
-        let mut sum = f64x2_extract_lane::<0>(acc) + f64x2_extract_lane::<1>(acc);
-        for &v in &values[i..] {
-            let d = v - mean;
-            sum += d * d;
-        }
-        sum
-    }
-}
-
-fn sum_sq_diff_f64_simd(values: &[f64], mean: f64) -> f64 {
-    #[cfg(target_arch = "x86_64")]
-    {
-        if std::arch::is_x86_feature_detected!("avx") {
-            return unsafe { sum_sq_diff_f64_simd_x86_avx(values, mean) };
-        }
-        if std::arch::is_x86_feature_detected!("sse2") {
-            return unsafe { sum_sq_diff_f64_simd_x86_sse2(values, mean) };
-        }
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        if std::arch::is_aarch64_feature_detected!("neon") {
-            return unsafe { sum_sq_diff_f64_simd_aarch64(values, mean) };
-        }
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        if values.len() >= 2 {
-            return unsafe { sum_sq_diff_f64_simd_wasm32(values, mean) };
-        }
-    }
-    kahan_sum_sq_diff(values, mean)
-}
-
-fn clamp_slice_step1_index(raw: i64, len: usize) -> usize {
-    let len_i = len as i128;
-    let mut idx = raw as i128;
-    if idx < 0 {
-        idx += len_i;
-        if idx < 0 {
-            idx = 0;
-        }
-    }
-    if idx > len_i {
-        idx = len_i;
-    }
-    idx as usize
-}
-
-fn normalize_slice_step1_bounds(
-    _py: &PyToken,
-    len: usize,
-    start_bits: u64,
-    end_bits: u64,
-    has_start_bits: u64,
-    has_end_bits: u64,
-) -> Option<(usize, usize)> {
-    let index_msg = "slice indices must be integers or None or have an __index__ method";
-    let has_start = is_truthy(_py, obj_from_bits(has_start_bits));
-    let has_end = is_truthy(_py, obj_from_bits(has_end_bits));
-    let start = if has_start {
-        let idx = index_i64_from_obj(_py, start_bits, index_msg);
-        if exception_pending(_py) {
-            return None;
-        }
-        clamp_slice_step1_index(idx, len)
-    } else {
-        0
-    };
-    let end = if has_end {
-        let idx = index_i64_from_obj(_py, end_bits, index_msg);
-        if exception_pending(_py) {
-            return None;
-        }
-        clamp_slice_step1_index(idx, len)
-    } else {
-        len
-    };
-    Some((start, end))
 }
 
 #[unsafe(no_mangle)]
@@ -1555,7 +1391,9 @@ pub extern "C" fn molt_math_gcd(args_bits: u64) -> u64 {
             if object_type_id(args_ptr) != TYPE_ID_TUPLE {
                 return raise_exception::<_>(_py, "TypeError", "gcd() expected arguments");
             }
-            let elems = seq_snapshot(args_ptr);
+            let Some(elems) = seq_snapshot(args_ptr) else {
+                return MoltObject::none().bits();
+            };
             if elems.is_empty() {
                 return MoltObject::from_int(0).bits();
             }
@@ -1593,7 +1431,9 @@ pub extern "C" fn molt_math_lcm(args_bits: u64) -> u64 {
             if object_type_id(args_ptr) != TYPE_ID_TUPLE {
                 return raise_exception::<_>(_py, "TypeError", "lcm() expected arguments");
             }
-            let elems = seq_snapshot(args_ptr);
+            let Some(elems) = seq_snapshot(args_ptr) else {
+                return MoltObject::none().bits();
+            };
             if elems.is_empty() {
                 return MoltObject::from_int(1).bits();
             }
@@ -1793,7 +1633,9 @@ pub extern "C" fn molt_math_hypot(args_bits: u64) -> u64 {
         if unsafe { object_type_id(args_ptr) } != TYPE_ID_TUPLE {
             return raise_exception::<_>(_py, "TypeError", "hypot() expected arguments");
         }
-        let elems = unsafe { seq_snapshot(args_ptr) };
+        let Some(elems) = (unsafe { seq_snapshot(args_ptr) }) else {
+            return MoltObject::none().bits();
+        };
         if elems.is_empty() {
             return float_result_bits(_py, 0.0);
         }
@@ -2065,55 +1907,299 @@ pub extern "C" fn molt_math_remainder(x_bits: u64, y_bits: u64) -> u64 {
     })
 }
 
-fn statistics_mean_value(_py: &PyToken, data_bits: u64) -> Option<f64> {
-    let values = collect_real_vec(_py, data_bits)?;
-    if values.is_empty() {
-        raise_exception::<()>(
-            _py,
-            "StatisticsError",
-            "mean requires at least one data point",
-        );
+/// The native projection of statistics._sum/_ss for exact builtin sequences.
+/// No iterator, conversion, or other Python callback is executed here. A guard
+/// miss leaves the input untouched for the compiled generic protocol owner.
+#[derive(Clone, Copy)]
+enum StatisticsReduction {
+    Mean,
+    Variance { population: bool, sqrt: bool },
+}
+
+// Inline exact arithmetic is a storage optimization, not a different sum.
+// Like CPython's compact longs and LLVM APInt's inline word, bounded values
+// avoid heap storage. Overflow promotes once; rounding stays at ratio_to_f64.
+// CPython 3.14.9: Objects/longobject.c at
+// ead82c07db1f111d613926ed1b6667411d768125 (long_add/long_mul).
+enum StatisticsSumStorage {
+    Small { sum: i128, squares: i128 },
+    Large { sum: BigInt, squares: BigInt },
+}
+
+impl Default for StatisticsSumStorage {
+    fn default() -> Self {
+        Self::Small { sum: 0, squares: 0 }
+    }
+}
+
+impl StatisticsSumStorage {
+    fn into_bigints(self) -> (BigInt, BigInt) {
+        match self {
+            Self::Small { sum, squares } => (BigInt::from(sum), BigInt::from(squares)),
+            Self::Large { sum, squares } => (sum, squares),
+        }
+    }
+}
+
+#[derive(Default)]
+struct StatisticsExactSum {
+    storage: StatisticsSumStorage,
+    exponent: i32,
+    count: usize,
+    float_domain: bool,
+}
+
+// checked_shl only checks the shift count. The arithmetic right-shift identity
+// also proves signed representability, including MIN and the sign-bit boundary.
+fn statistics_checked_shift(value: i128, shift: u32) -> Option<i128> {
+    if value == 0 {
+        return Some(0);
+    }
+    let shifted = value.checked_shl(shift)?;
+    (shifted >> shift == value).then_some(shifted)
+}
+
+impl StatisticsExactSum {
+    #[inline]
+    fn add_small(&mut self, numerator: i128, exponent: i32, float_domain: bool, squares: bool) {
+        let aligned_exponent = self.exponent.min(exponent);
+        let old_shift = (self.exponent - aligned_exponent) as u32;
+        let value_shift = (exponent - aligned_exponent) as u32;
+        if let StatisticsSumStorage::Small {
+            sum,
+            squares: prior_squares,
+        } = &self.storage
+        {
+            // Do not publish any field until every operation has succeeded.
+            // A failed square/shift/add promotes the original state exactly once.
+            let updated = (|| {
+                let sum = statistics_checked_shift(*sum, old_shift)?;
+                let value = statistics_checked_shift(numerator, value_shift)?;
+                let square_sum = if squares {
+                    statistics_checked_shift(*prior_squares, 2 * old_shift)?
+                        .checked_add(value.checked_mul(value)?)?
+                } else {
+                    *prior_squares
+                };
+                Some((sum.checked_add(value)?, square_sum))
+            })();
+            if let Some((sum, squares)) = updated {
+                self.storage = StatisticsSumStorage::Small { sum, squares };
+                self.exponent = aligned_exponent;
+                self.count += 1;
+                self.float_domain |= float_domain;
+                return;
+            }
+        }
+        self.add_large(BigInt::from(numerator), exponent, float_domain, squares);
+    }
+
+    fn add_integer(&mut self, numerator: BigInt, squares: bool) {
+        if let Some(value) = numerator.to_i128() {
+            self.add_small(value, 0, false, squares);
+        } else {
+            self.add_large(numerator, 0, false, squares);
+        }
+    }
+
+    fn add_large(&mut self, numerator: BigInt, exponent: i32, float_domain: bool, squares: bool) {
+        if let StatisticsSumStorage::Small { sum, squares } = &self.storage {
+            self.storage = StatisticsSumStorage::Large {
+                sum: BigInt::from(*sum),
+                squares: BigInt::from(*squares),
+            };
+        }
+        let StatisticsSumStorage::Large {
+            sum,
+            squares: square_sum,
+        } = &mut self.storage
+        else {
+            unreachable!("promotion installs large storage")
+        };
+        if exponent < self.exponent {
+            let shift = (self.exponent - exponent) as usize;
+            *sum <<= shift;
+            if squares {
+                *square_sum <<= 2 * shift;
+            }
+            self.exponent = exponent;
+        }
+        let value = numerator << (exponent - self.exponent) as usize;
+        if squares {
+            *square_sum += &value * &value;
+        }
+        *sum += value;
+        self.count += 1;
+        self.float_domain |= float_domain;
+    }
+}
+
+#[inline]
+fn statistics_float_ratio(value: f64) -> Option<(i64, i32)> {
+    if !value.is_finite() {
         return None;
     }
-    Some(sum_f64_simd(&values) / values.len() as f64)
+    let bits = value.to_bits();
+    let exponent = ((bits >> 52) & 0x7ff) as i32;
+    let fraction = bits & ((1_u64 << 52) - 1);
+    let (mantissa, exponent) = if exponent == 0 {
+        (fraction, -1074)
+    } else {
+        (fraction | (1_u64 << 52), exponent - 1023 - 52)
+    };
+    if mantissa == 0 {
+        return Some((0, 0));
+    }
+    let trailing = mantissa.trailing_zeros();
+    let mut numerator = (mantissa >> trailing) as i64;
+    if bits >> 63 != 0 {
+        numerator = -numerator;
+    }
+    Some((numerator, exponent + trailing as i32))
 }
 
-fn statistics_stdev_value(_py: &PyToken, data_bits: u64, xbar_bits: u64) -> Option<f64> {
-    let variance = statistics_variance_value(_py, data_bits, xbar_bits, false, "stdev")?;
-    Some(math_sqrt(variance))
+fn statistics_exact_accumulate(
+    py: &PyToken,
+    values: &[u64],
+    squares: bool,
+) -> Option<StatisticsExactSum> {
+    let mut total = StatisticsExactSum::default();
+    for &bits in values {
+        if !exact_builtin_real(py, bits) {
+            return None;
+        }
+        let value = obj_from_bits(bits);
+        // to_bigint accepts integral float carriers, so preserve the actual
+        // Python float domain before asking for an integer representation.
+        if let Some(float) = as_float_extended(value) {
+            let (numerator, exponent) = statistics_float_ratio(float)?;
+            total.add_small(i128::from(numerator), exponent, true, squares);
+        } else if let Some(integer) = value.as_int().or_else(|| value.as_bool().map(i64::from)) {
+            total.add_small(i128::from(integer), 0, false, squares);
+        } else {
+            total.add_integer(to_bigint(value)?, squares);
+        }
+    }
+    Some(total)
 }
 
-fn statistics_variance_value(
-    _py: &PyToken,
-    data_bits: u64,
-    center_bits: u64,
-    population: bool,
-    opname: &str,
-) -> Option<f64> {
-    let values = collect_real_vec(_py, data_bits)?;
-    let n = values.len();
-    if (!population && n < 2) || (population && n < 1) {
-        let msg = if population {
+fn statistics_ratio_float(py: &PyToken, numerator: &BigInt, denominator: &BigInt) -> u64 {
+    use molt_runtime_core::numeric_ratio::{RatioFloatError, ratio_to_f64};
+    match ratio_to_f64(numerator, denominator) {
+        Ok(value) => float_result_bits(py, value),
+        Err(RatioFloatError::Overflow) => raise_exception::<u64>(
+            py,
+            "OverflowError",
+            "integer division result too large for a float",
+        ),
+        Err(RatioFloatError::ZeroDenominator) => {
+            raise_exception::<u64>(py, "ZeroDivisionError", "division by zero")
+        }
+    }
+}
+
+/// CPython _float_sqrt_of_frac: round the integer root to odd before the one
+/// correctly rounded rational-to-binary64 conversion. sqrt(float(ratio)) would
+/// introduce double rounding and premature underflow/overflow.
+fn statistics_sqrt_ratio(numerator: BigInt, denominator: BigInt) -> (BigInt, BigInt) {
+    let q = (numerator.bits() as i128 - denominator.bits() as i128 - 109).div_euclid(2);
+    let (n, d) = if q >= 0 {
+        (numerator, denominator << (2 * q) as usize)
+    } else {
+        (numerator << (-2 * q) as usize, denominator)
+    };
+    let mut root = (&n / &d).sqrt();
+    if &root * &root * &d != n {
+        root |= BigInt::one();
+    }
+    if q >= 0 {
+        (root << q as usize, BigInt::one())
+    } else {
+        (root, BigInt::one() << (-q) as usize)
+    }
+}
+
+fn statistics_exact_result(
+    py: &PyToken,
+    total: StatisticsExactSum,
+    reduction: StatisticsReduction,
+) -> u64 {
+    let (minimum, opname) = match reduction {
+        StatisticsReduction::Mean => (1, "mean"),
+        StatisticsReduction::Variance {
+            population: false,
+            sqrt: false,
+        } => (2, "variance"),
+        StatisticsReduction::Variance {
+            population: true,
+            sqrt: false,
+        } => (1, "pvariance"),
+        StatisticsReduction::Variance {
+            population: false,
+            sqrt: true,
+        } => (2, "stdev"),
+        StatisticsReduction::Variance {
+            population: true,
+            sqrt: true,
+        } => (1, "pstdev"),
+    };
+    if total.count < minimum {
+        let message = if minimum == 1 {
             format!("{opname} requires at least one data point")
         } else {
             format!("{opname} requires at least two data points")
         };
-        raise_exception::<()>(_py, "StatisticsError", &msg);
-        return None;
+        return raise_exception::<u64>(py, "StatisticsError", &message);
     }
-    let mean = if obj_from_bits(center_bits).is_none() {
-        sum_f64_simd(&values) / n as f64
-    } else {
-        float_as_double(_py, center_bits)?
+    let count = BigInt::from(total.count);
+    let (sum, squares) = total.storage.into_bigints();
+    let (numerator, denominator, sqrt) = match reduction {
+        StatisticsReduction::Mean => (sum, count << (-total.exponent) as usize, false),
+        StatisticsReduction::Variance { population, sqrt } => {
+            let numerator = &count * squares - &sum * &sum;
+            let divisor = if population {
+                total.count
+            } else {
+                total.count - 1
+            };
+            (
+                numerator,
+                (count * divisor) << (-2 * total.exponent) as usize,
+                sqrt,
+            )
+        }
     };
-    let sum_sq = sum_sq_diff_f64_simd(&values, mean);
-    let denominator = if population { n as f64 } else { (n - 1) as f64 };
-    let variance = if sum_sq < 0.0 && sum_sq > -f64::EPSILON {
-        0.0
-    } else {
-        sum_sq / denominator
+    if sqrt {
+        let (numerator, denominator) = statistics_sqrt_ratio(numerator, denominator);
+        return statistics_ratio_float(py, &numerator, &denominator);
+    }
+    if !total.float_domain {
+        let (quotient, remainder) = numerator.div_rem(&denominator);
+        if remainder.is_zero() {
+            return int_bits_from_bigint(py, quotient);
+        }
+    }
+    statistics_ratio_float(py, &numerator, &denominator)
+}
+
+fn statistics_builtin_reduction(
+    py: &PyToken,
+    data: u64,
+    center: u64,
+    reduction: StatisticsReduction,
+) -> u64 {
+    if !obj_from_bits(center).is_none() || !exact_builtin_sequence(py, data) {
+        return not_implemented_bits(py);
+    }
+    let Some(values) = (unsafe { seq_snapshot(obj_from_bits(data).as_ptr().unwrap()) }) else {
+        return MoltObject::none().bits();
     };
-    Some(variance)
+    let Some(total) =
+        statistics_exact_accumulate(py, &values, !matches!(reduction, StatisticsReduction::Mean))
+    else {
+        return not_implemented_bits(py);
+    };
+    statistics_exact_result(py, total, reduction)
 }
 
 fn collect_values_vec<'py>(
@@ -2286,91 +2372,136 @@ fn statistics_multimode_value(_py: &PyToken, data_bits: u64) -> Option<u64> {
 }
 
 fn statistics_quantiles_value(
-    _py: &PyToken,
-    data_bits: u64,
+    py: &PyToken,
+    data: u64,
     n_bits: u64,
     inclusive_bits: u64,
 ) -> Option<u64> {
-    let n = index_i64_from_obj(_py, n_bits, "quantiles");
-    if exception_pending(_py) {
-        return None;
+    let Some(n) = obj_from_bits(n_bits).as_int().filter(|n| *n > 0) else {
+        return Some(not_implemented_bits(py));
+    };
+    if !exact_builtin_sequence(py, data) {
+        return Some(not_implemented_bits(py));
     }
-    if n < 1 {
-        raise_exception::<()>(_py, "StatisticsError", "n must be at least 1");
-        return None;
-    }
-    let mut values = collect_real_vec(_py, data_bits)?;
+    let values = unsafe { seq_snapshot(obj_from_bits(data).as_ptr().unwrap()) }?;
     if values.len() < 2 {
-        raise_exception::<()>(_py, "StatisticsError", "must have at least two data points");
-        return None;
+        return Some(not_implemented_bits(py));
     }
-    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let n_usize = usize::try_from(n).ok()?;
-    let inclusive = is_truthy(_py, obj_from_bits(inclusive_bits));
-    let mut out_floats: Vec<f64> = Vec::with_capacity(n_usize.saturating_sub(1));
-    if !inclusive {
-        let m = values.len() + 1;
-        for i in 1..n_usize {
-            let num = i * m;
-            let j = num / n_usize;
-            let delta = num % n_usize;
-            if j == 0 {
-                out_floats.push(values[0]);
-                continue;
-            }
-            if j >= values.len() {
-                out_floats.push(*values.last().unwrap_or(&values[0]));
-                continue;
-            }
-            let lo = values[j - 1];
-            let hi = values[j];
-            out_floats.push(lo + (delta as f64 / n_usize as f64) * (hi - lo));
+    let mut floats = Vec::with_capacity(values.len());
+    for &bits in values.iter() {
+        if !exact_builtin_real(py, bits) {
+            return Some(not_implemented_bits(py));
         }
+        let Some(value) = as_float_extended(obj_from_bits(bits)).filter(|v| v.is_finite()) else {
+            return Some(not_implemented_bits(py));
+        };
+        floats.push(value);
+    }
+    floats.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let inclusive = is_truthy(py, obj_from_bits(inclusive_bits));
+    let mut out = Vec::new();
+    // i*m uses u128: neither 32-bit hosts nor very large n can wrap the rank.
+    let ld = floats.len();
+    for i in 1..n as u64 {
+        let m = if inclusive { ld - 1 } else { ld + 1 };
+        let rank = u128::from(i) * m as u128;
+        let j = if inclusive {
+            (rank / n as u128) as usize
+        } else {
+            ((rank / n as u128) as usize).clamp(1, ld - 1)
+        };
+        let delta = rank as i128 - j as i128 * n as i128;
+        let (lo, hi) = if inclusive {
+            (floats[j], floats[j + 1])
+        } else {
+            (floats[j - 1], floats[j])
+        };
+        // Preserve CPython's operation order, including extrapolation.
+        let value = (lo * (n as i128 - delta) as f64 + hi * delta as f64) / n as f64;
+        out.push(unsafe { OwnedRuntimeValue::from_owned_bits(py, float_result_bits(py, value)) });
+    }
+    let bits: Vec<_> = out.iter().map(OwnedRuntimeValue::bits).collect();
+    let ptr = alloc_list(py, &bits);
+    if ptr.is_null() {
+        None
     } else {
-        let m = values.len() - 1;
-        for i in 1..n_usize {
-            let num = i * m;
-            let j = num / n_usize;
-            let delta = num % n_usize;
-            let lo = values[j];
-            let hi = values[j + 1];
-            out_floats.push(lo + (delta as f64 / n_usize as f64) * (hi - lo));
-        }
+        Some(MoltObject::from_ptr(ptr).bits())
     }
-    let out_bits: Vec<u64> = out_floats
-        .into_iter()
-        .map(|v| float_result_bits(_py, v))
-        .collect();
-    let list_ptr = alloc_list(_py, &out_bits);
-    if list_ptr.is_null() {
-        return None;
-    }
-    Some(MoltObject::from_ptr(list_ptr).bits())
 }
 
-fn statistics_harmonic_mean_value(_py: &PyToken, data_bits: u64) -> Option<f64> {
-    let values = collect_real_vec(_py, data_bits)?;
+fn statistics_harmonic_mean_value(py: &PyToken, data: u64) -> Option<u64> {
+    if !exact_builtin_sequence(py, data) {
+        return Some(not_implemented_bits(py));
+    }
+    let values = unsafe { seq_snapshot(obj_from_bits(data).as_ptr().unwrap()) }?;
     if values.is_empty() {
-        raise_exception::<()>(
-            _py,
+        return raise_exception::<Option<u64>>(
+            py,
             "StatisticsError",
             "harmonic_mean requires at least one data point",
         );
-        return None;
     }
-    if values.iter().any(|v| *v < 0.0) {
-        raise_exception::<()>(
-            _py,
+    let mut total = StatisticsExactSum::default();
+    for &bits in values.iter() {
+        if !exact_builtin_real(py, bits) {
+            return Some(not_implemented_bits(py));
+        }
+        let object = obj_from_bits(bits);
+        let reciprocal = if as_float_extended(object).is_none() {
+            let integer = to_bigint(object)?;
+            if integer.is_negative() {
+                return raise_exception::<Option<u64>>(
+                    py,
+                    "StatisticsError",
+                    "harmonic mean does not support negative values",
+                );
+            }
+            if values.len() == 1 {
+                inc_ref_bits(py, bits);
+                return Some(bits);
+            }
+            if integer.is_zero() {
+                return Some(MoltObject::from_int(0).bits());
+            }
+            use molt_runtime_core::numeric_ratio::ratio_to_f64;
+            // Positive integer reciprocals cannot overflow.
+            ratio_to_f64(&BigInt::one(), &integer).unwrap()
+        } else {
+            let value = as_float_extended(object)?;
+            if !value.is_finite() {
+                return Some(not_implemented_bits(py));
+            }
+            if value < 0.0 {
+                return raise_exception::<Option<u64>>(
+                    py,
+                    "StatisticsError",
+                    "harmonic mean does not support negative values",
+                );
+            }
+            if values.len() == 1 {
+                inc_ref_bits(py, bits);
+                return Some(bits);
+            }
+            if value == 0.0 {
+                return Some(MoltObject::from_int(0).bits());
+            }
+            1.0 / value
+        };
+        let Some((numerator, exponent)) = statistics_float_ratio(reciprocal) else {
+            return Some(not_implemented_bits(py));
+        };
+        total.add_small(i128::from(numerator), exponent, true, false);
+    }
+    let (sum, _) = total.storage.into_bigints();
+    if sum.is_zero() {
+        return raise_exception::<Option<u64>>(
+            py,
             "StatisticsError",
-            "harmonic mean does not support negative values",
+            "Weighted sum must be positive",
         );
-        return None;
     }
-    if values.contains(&0.0) {
-        return Some(0.0);
-    }
-    let denom = values.iter().fold(0.0_f64, |acc, v| acc + (1.0 / *v));
-    Some(values.len() as f64 / denom)
+    let numerator = BigInt::from(values.len()) << (-total.exponent) as usize;
+    Some(statistics_ratio_float(py, &numerator, &sum))
 }
 
 fn statistics_geometric_mean_value(_py: &PyToken, data_bits: u64) -> Option<f64> {
@@ -2524,10 +2655,6 @@ fn statistics_linear_regression_value(
     Some((slope, intercept))
 }
 
-fn statistics_coerce_elem_fast_f64(_py: &PyToken, val_bits: u64, _name: &str) -> Option<f64> {
-    float_as_double(_py, val_bits)
-}
-
 const STATISTICS_RANDOM_N: usize = 624;
 const STATISTICS_RANDOM_M: usize = 397;
 const STATISTICS_RANDOM_MATRIX_A: u32 = 0x9908_B0DF;
@@ -2538,3 +2665,359 @@ const STATISTICS_NORMAL_DIST_INV_CDF_MODE_MARKER: &[u8] = b"__statistics_inv_cdf
 
 pub mod statistics_tail;
 pub use statistics_tail::*;
+
+#[cfg(test)]
+mod statistics_reduction_tests {
+    use super::*;
+    use molt_runtime_core::numeric_ratio::ratio_to_f64;
+    use std::{hint::black_box, time::Instant};
+
+    // The previous variance primitive is retained only for the scoped cost
+    // comparison. It is not a production numeric implementation or fallback.
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx")]
+    unsafe fn sum_sq_diff_f64_simd_x86_avx(values: &[f64], mean: f64) -> f64 {
+        use std::arch::x86_64::*;
+        let mean_v = _mm256_set1_pd(mean);
+        let mut i = 0usize;
+        let mut acc = _mm256_setzero_pd();
+        while i + 4 <= values.len() {
+            let v = unsafe { _mm256_loadu_pd(values.as_ptr().add(i)) };
+            let d = _mm256_sub_pd(v, mean_v);
+            acc = _mm256_add_pd(acc, _mm256_mul_pd(d, d));
+            i += 4;
+        }
+        let mut lanes = [0.0_f64; 4];
+        unsafe { _mm256_storeu_pd(lanes.as_mut_ptr(), acc) };
+        let mut sum = lanes.iter().sum::<f64>();
+        for &v in &values[i..] {
+            let d = v - mean;
+            sum += d * d;
+        }
+        sum
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "sse2")]
+    unsafe fn sum_sq_diff_f64_simd_x86_sse2(values: &[f64], mean: f64) -> f64 {
+        use std::arch::x86_64::*;
+        let mean_v = _mm_set1_pd(mean);
+        let mut i = 0usize;
+        let mut acc = _mm_setzero_pd();
+        while i + 2 <= values.len() {
+            let v = unsafe { _mm_loadu_pd(values.as_ptr().add(i)) };
+            let d = _mm_sub_pd(v, mean_v);
+            acc = _mm_add_pd(acc, _mm_mul_pd(d, d));
+            i += 2;
+        }
+        let mut lanes = [0.0_f64; 2];
+        unsafe { _mm_storeu_pd(lanes.as_mut_ptr(), acc) };
+        let mut sum = lanes[0] + lanes[1];
+        for &v in &values[i..] {
+            let d = v - mean;
+            sum += d * d;
+        }
+        sum
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[target_feature(enable = "neon")]
+    unsafe fn sum_sq_diff_f64_simd_aarch64(values: &[f64], mean: f64) -> f64 {
+        unsafe {
+            use std::arch::aarch64::*;
+            let mean_v = vdupq_n_f64(mean);
+            let mut i = 0usize;
+            let mut acc = vdupq_n_f64(0.0);
+            while i + 2 <= values.len() {
+                let v = vld1q_f64(values.as_ptr().add(i));
+                let d = vsubq_f64(v, mean_v);
+                acc = vaddq_f64(acc, vmulq_f64(d, d));
+                i += 2;
+            }
+            let mut lanes = [0.0_f64; 2];
+            vst1q_f64(lanes.as_mut_ptr(), acc);
+            let mut sum = lanes[0] + lanes[1];
+            for &v in &values[i..] {
+                let d = v - mean;
+                sum += d * d;
+            }
+            sum
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    unsafe fn sum_sq_diff_f64_simd_wasm32(values: &[f64], mean: f64) -> f64 {
+        unsafe {
+            use std::arch::wasm32::*;
+            let mean_v = f64x2_splat(mean);
+            let mut i = 0usize;
+            let mut acc = f64x2_splat(0.0);
+            while i + 2 <= values.len() {
+                let v = v128_load(values.as_ptr().add(i) as *const v128);
+                let d = f64x2_sub(v, mean_v);
+                acc = f64x2_add(acc, f64x2_mul(d, d));
+                i += 2;
+            }
+            let mut sum = f64x2_extract_lane::<0>(acc) + f64x2_extract_lane::<1>(acc);
+            for &v in &values[i..] {
+                let d = v - mean;
+                sum += d * d;
+            }
+            sum
+        }
+    }
+
+    fn sum_sq_diff_f64_simd(values: &[f64], mean: f64) -> f64 {
+        #[cfg(target_arch = "x86_64")]
+        {
+            if std::arch::is_x86_feature_detected!("avx") {
+                return unsafe { sum_sq_diff_f64_simd_x86_avx(values, mean) };
+            }
+            if std::arch::is_x86_feature_detected!("sse2") {
+                return unsafe { sum_sq_diff_f64_simd_x86_sse2(values, mean) };
+            }
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            if std::arch::is_aarch64_feature_detected!("neon") {
+                return unsafe { sum_sq_diff_f64_simd_aarch64(values, mean) };
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            if values.len() >= 2 {
+                return unsafe { sum_sq_diff_f64_simd_wasm32(values, mean) };
+            }
+        }
+        kahan_sum_sq_diff(values, mean)
+    }
+
+    #[derive(Default)]
+    struct BeforeStatisticsExactSum {
+        sum: BigInt,
+        squares: BigInt,
+        exponent: i32,
+        count: usize,
+        float_domain: bool,
+    }
+
+    impl BeforeStatisticsExactSum {
+        fn add(&mut self, numerator: BigInt, exponent: i32, float_domain: bool, squares: bool) {
+            if exponent < self.exponent {
+                let shift = (self.exponent - exponent) as usize;
+                self.sum <<= shift;
+                if squares {
+                    self.squares <<= 2 * shift;
+                }
+                self.exponent = exponent;
+            }
+            let value = numerator << (exponent - self.exponent) as usize;
+            if squares {
+                self.squares += &value * &value;
+            }
+            self.sum += value;
+            self.count += 1;
+            self.float_domain |= float_domain;
+        }
+    }
+
+    fn before_statistics_float_ratio(value: f64) -> Option<(BigInt, i32)> {
+        if !value.is_finite() {
+            return None;
+        }
+        let bits = value.to_bits();
+        let exponent = ((bits >> 52) & 0x7ff) as i32;
+        let fraction = bits & ((1_u64 << 52) - 1);
+        let (mantissa, exponent) = if exponent == 0 {
+            (fraction, -1074)
+        } else {
+            (fraction | (1_u64 << 52), exponent - 1023 - 52)
+        };
+        if mantissa == 0 {
+            return Some((BigInt::zero(), 0));
+        }
+        let trailing = mantissa.trailing_zeros();
+        let mut numerator = BigInt::from(mantissa >> trailing);
+        if bits >> 63 != 0 {
+            numerator = -numerator;
+        }
+        Some((numerator, exponent + trailing as i32))
+    }
+
+    fn accumulate_before(values: &[f64], squares: bool) -> BeforeStatisticsExactSum {
+        let mut total = BeforeStatisticsExactSum::default();
+        for &value in values {
+            let (numerator, exponent) = before_statistics_float_ratio(value).unwrap();
+            total.add(numerator, exponent, true, squares);
+        }
+        total
+    }
+
+    fn accumulate(values: &[f64], squares: bool) -> StatisticsExactSum {
+        let mut total = StatisticsExactSum::default();
+        for &value in values {
+            let (numerator, exponent) = statistics_float_ratio(value).unwrap();
+            total.add_small(i128::from(numerator), exponent, true, squares);
+        }
+        total
+    }
+
+    fn small_storage_promotion_oracles() {
+        for (value, shift, expected) in [
+            (0, 128, Some(0)),
+            (-1, 127, Some(i128::MIN)),
+            (1, 127, None),
+            (i128::MIN, 0, Some(i128::MIN)),
+            (i128::MIN, 1, None),
+            (1, 128, None),
+        ] {
+            assert_eq!(statistics_checked_shift(value, shift), expected);
+        }
+        let total = accumulate(&[1.5, 0.25, -0.5], true);
+        assert!(matches!(total.storage, StatisticsSumStorage::Small { .. }));
+        assert_eq!(total.exponent, -2);
+        assert_eq!(
+            total.storage.into_bigints(),
+            (BigInt::from(5), BigInt::from(41))
+        );
+        let mut total = StatisticsExactSum::default();
+        total.add_small(i128::MAX, 0, false, false);
+        total.add_small(1, 0, false, false);
+        total.add_small(-i128::MAX, 0, false, false);
+        assert!(matches!(total.storage, StatisticsSumStorage::Large { .. }));
+        assert_eq!(total.count, 3);
+        assert!(!total.float_domain);
+        assert_eq!(total.storage.into_bigints().0, BigInt::one());
+        let mut total = StatisticsExactSum::default();
+        total.add_small(1_i128 << 64, 0, false, true);
+        total.add_small(-(1_i128 << 64), 0, false, true);
+        assert_eq!(total.count, 2);
+        assert_eq!(
+            total.storage.into_bigints(),
+            (BigInt::zero(), BigInt::one() << 129usize)
+        );
+        let mut total = StatisticsExactSum::default();
+        total.add_small(1_i128 << 63, 0, false, true);
+        assert!(matches!(total.storage, StatisticsSumStorage::Small { .. }));
+        total.add_small(1_i128 << 63, 0, false, true);
+        assert!(matches!(total.storage, StatisticsSumStorage::Large { .. }));
+        assert_eq!(total.count, 2);
+        assert_eq!(
+            total.storage.into_bigints(),
+            (BigInt::one() << 64usize, BigInt::one() << 127usize)
+        );
+        let tiny = f64::from_bits(1);
+        let total = accumulate(&[-tiny, tiny * 2.0], true);
+        assert!(matches!(total.storage, StatisticsSumStorage::Small { .. }));
+        assert_eq!(total.exponent, -1074);
+        assert_eq!(
+            total.storage.into_bigints(),
+            (BigInt::one(), BigInt::from(5))
+        );
+        let total = accumulate(&[1.0, tiny], true);
+        assert!(matches!(total.storage, StatisticsSumStorage::Large { .. }));
+        assert_eq!(total.exponent, -1074);
+        assert_eq!(
+            total.storage.into_bigints(),
+            (
+                (BigInt::one() << 1074usize) + 1,
+                (BigInt::one() << 2148usize) + 1
+            )
+        );
+        let mut total = StatisticsExactSum::default();
+        total.add_integer(BigInt::one() << 200usize, true);
+        total.add_integer(-(BigInt::one() << 200usize), true);
+        assert_eq!(
+            total.storage.into_bigints(),
+            (BigInt::zero(), BigInt::one() << 401usize)
+        );
+        // Independent retained pre-change tuple algorithm, across finite raw
+        // binary64 bit patterns, signs, cancellation, exponent gaps and zero.
+        let values: Vec<_> = [
+            0,
+            1,
+            2,
+            0x0010000000000000,
+            0x3ff0000000000000,
+            0x3fb999999999999a,
+            0x4008000000000000,
+            0x7fefffffffffffff,
+            0x8000000000000000,
+            0x8000000000000001,
+            0xbff0000000000000,
+            0xffefffffffffffff,
+        ]
+        .into_iter()
+        .map(f64::from_bits)
+        .collect();
+        for squares in [false, true] {
+            for prefix in 1..=values.len() {
+                let before = accumulate_before(&values[..prefix], squares);
+                let after = accumulate(&values[..prefix], squares);
+                assert_eq!(
+                    (after.exponent, after.count, after.float_domain),
+                    (before.exponent, before.count, before.float_domain)
+                );
+                assert_eq!(after.storage.into_bigints(), (before.sum, before.squares));
+            }
+        }
+    }
+
+    #[test]
+    fn exact_reduction_oracles_and_primitive_cost() {
+        let total = accumulate(&[1e50, 1.0, -1e50], false);
+        let denominator = BigInt::from(3) << (-total.exponent) as usize;
+        let (sum, _) = total.storage.into_bigints();
+        assert_eq!(ratio_to_f64(&sum, &denominator), Ok(1.0 / 3.0));
+        let total = accumulate(&[1.0, 2.0, 3.0], true);
+        assert!(total.float_domain);
+        let (sum, squares) = total.storage.into_bigints();
+        assert_eq!((&squares * 3 - &sum * &sum), BigInt::from(6));
+        small_storage_promotion_oracles();
+        let (n, d) = statistics_sqrt_ratio(BigInt::one(), BigInt::one() << 2148usize);
+        assert_eq!(ratio_to_f64(&n, &d).unwrap().to_bits(), 1);
+        let (n, d) = statistics_sqrt_ratio(BigInt::one() << 2044usize, BigInt::one());
+        assert_eq!(ratio_to_f64(&n, &d), Ok(2.0_f64.powi(1022)));
+
+        // Comparable primitive-only work; deliberately no timing threshold.
+        // Excludes Python iteration, snapshot allocation, boxing and callbacks.
+        let values: Vec<_> = (0..4096).map(|i| f64::from(i) / 8.0).collect();
+        // Isolate the additional ordinary-slice copy after unsafe elision is
+        // retired. This is a raw contiguous-copy cost, not a guest benchmark.
+        let materialize = Instant::now();
+        for _ in 0..8 {
+            black_box(black_box(&values).to_vec());
+        }
+        eprintln!(
+            "statistics slice materialization elements={} repeats=8 copy_ns={}",
+            values.len(),
+            materialize.elapsed().as_nanos()
+        );
+        for squares in [false, true] {
+            let before = Instant::now();
+            for _ in 0..8 {
+                let mean = sum_f64_simd(black_box(&values)) / values.len() as f64;
+                black_box(if squares {
+                    sum_sq_diff_f64_simd(&values, mean) / (values.len() - 1) as f64
+                } else {
+                    mean
+                });
+            }
+            let before_ns = before.elapsed().as_nanos();
+            let exact_bigint = Instant::now();
+            for _ in 0..8 {
+                black_box(accumulate_before(black_box(&values), squares));
+            }
+            let exact_bigint_ns = exact_bigint.elapsed().as_nanos();
+            let after = Instant::now();
+            for _ in 0..8 {
+                black_box(accumulate(black_box(&values), squares));
+            }
+            eprintln!(
+                "statistics primitive cost squares={squares} elements={} repeats=8 before_ns={before_ns} exact_bigint_ns={exact_bigint_ns} after_ns={}",
+                values.len(),
+                after.elapsed().as_nanos()
+            );
+        }
+    }
+}

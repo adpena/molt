@@ -86,6 +86,9 @@ def _parse_arguments():
     modes.add_argument("--capture-runtime", action="store_true")
     modes.add_argument("--runtime-selection", action="store_true")
     modes.add_argument("--locate-active-environment", action="store_true")
+    modes.add_argument(
+        "--editable-project", nargs=2, metavar=("ENVIRONMENT", "PROJECT")
+    )
     modes.add_argument("--capture-environment", type=Path, metavar="ROOT")
     modes.add_argument("--capture-active-environment", action="store_true")
     parser.add_argument("--runtime-session", action="store_true")
@@ -101,7 +104,7 @@ def _parse_arguments():
         or args.admit_site_bootstrap
         or args.admit_external_root
     )
-    if args.locate_active_environment and (
+    if (args.locate_active_environment or args.editable_project) and (
         args.with_custody or args.hash_workers != 1 or admissions
     ):
         parser.error("location accepts no capture or environment admission options")
@@ -117,7 +120,9 @@ def _parse_arguments():
 
 
 _arguments = _parse_arguments() if __name__ == "__main__" else None
-if _arguments is not None and _arguments.locate_active_environment:
+if _arguments is not None and (
+    _arguments.locate_active_environment or _arguments.editable_project
+):
     from molt.python_environment_location import (  # noqa: E402
         locate_current_python_environment as locate_current_python_environment,
     )
@@ -305,7 +310,12 @@ def _main() -> None:
     from molt import input_report
 
     input_report.worker_initializer(args.input_report_log_dir)
-    if args.locate_active_environment:
+    if args.editable_project:
+        from molt.python_environment_location import locate_editable_project
+
+        root, project = args.editable_project
+        payload = locate_editable_project(Path(root), project)
+    elif args.locate_active_environment:
         payload = locate_current_python_environment()
     elif args.runtime_selection:
         payload = current_python_runtime_selection()

@@ -2132,6 +2132,414 @@ def test_structural_use_scope_never_adopts_an_owner_or_deletion_permission(
         assert dg._is_reclaimable(selected, tmp_path, ("*",)) is None
 
 
+@pytest.fixture
+def completed_incremental(tmp_path):
+    from molt.checkout_state import record_checkout_owner
+
+    root = tmp_path / "artifacts"
+    source = tmp_path / "source"
+    source.mkdir()
+    session = (
+        root / "target/checkouts" / dx.checkout_component(source) / "sessions/finished"
+    )
+    build = session / ".molt-toolchains" / ("a" * 64)
+    cache = build / "release/incremental"
+    unit = cache / "sample-session"
+    unit.mkdir(parents=True)
+    (unit / "query-cache.bin").write_bytes(b"discardable generated cache")
+    (cache / "sample.lock").touch()
+    (cache.parent / ".cargo-build-lock").touch()
+    (session / "release").mkdir()
+    (session / "release/.cargo-lock").touch()
+    record_checkout_owner(session, owner=source, kind="cargo-target")
+    for name in (
+        "deps/keep.rlib",
+        "build/keep",
+        ".fingerprint/keep",
+        "keep.generation.json",
+    ):
+        kept = cache.parent / name
+        kept.parent.mkdir(exist_ok=True)
+        kept.write_bytes(b"retain product and evidence")
+    argv = [
+        "/toolchain/bin/cargo",
+        "build",
+        "--profile",
+        "release",
+        "--locked",
+        "--config",
+        "build.build-dir=" + json.dumps(str(build)),
+        "--config",
+        "build.target-dir=" + json.dumps(str(session)),
+    ]
+    retired = root / "tmp/memory_guard/retired"
+    retired.mkdir(parents=True)
+    receipt = _guard_marker(retired, 761, "completed")
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
+    payload.update(
+        cwd=str(source),
+        command=argv,
+        launch_command=argv,
+        returncode=0,
+        child_returncode=0,
+        descendants_closed=True,
+    )
+    payload["child_process"]["command"] = argv
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
+    return root, source, session, cache, receipt
+
+
+def _incremental_plan(fixture, **kwargs):
+    root, _, _, cache, receipt = fixture
+    return dg.retire_cargo_incremental(
+        cache, root=root, guard_receipt=receipt, env={}, **kwargs
+    )
+
+
+def test_incremental_retirement_removes_only_reviewed_cache(completed_incremental):
+    root, _, session, cache, receipt = completed_incremental
+    receipt_bytes = receipt.read_bytes()
+    # A real hardlink into retained deps must remain byte-identical and its
+    # storage must never be counted as reclaimed merely by unlinking the cache.
+    kept = cache.parent / "deps/keep.rlib"
+    os.link(kept, cache / "sample-session/external.rmeta")
+    plan = _incremental_plan(completed_incremental)
+    assert plan["applied"] is False and cache.is_dir()
+    assert (
+        plan["externally_linked_bytes_retained"]
+        == getattr(kept.stat(), "st_blocks", 0) * 512
+    )
+    result = _incremental_plan(
+        completed_incremental,
+        apply=True,
+        expected_inventory_sha256=plan["inventory_sha256"],
+    )
+    assert result["applied"] is True and not cache.exists()
+    assert session.is_dir() and receipt.read_bytes() == receipt_bytes
+    assert (
+        kept.read_bytes() == b"retain product and evidence"
+        and kept.stat().st_nlink == 1
+    )
+    for name in ("build/keep", ".fingerprint/keep", "keep.generation.json"):
+        assert (cache.parent / name).read_bytes() == b"retain product and evidence"
+    assert (cache.parent / ".cargo-build-lock").exists()
+
+
+@pytest.mark.parametrize("relative", ["deps", "build", ".fingerprint", ".", "../.."])
+def test_incremental_retirement_refuses_outside_scope(completed_incremental, relative):
+    root, _, _, cache, receipt = completed_incremental
+    with pytest.raises(ValueError):
+        dg.retire_cargo_incremental(
+            cache.parent / relative,
+            root=root,
+            guard_receipt=receipt,
+            env={},
+            apply=True,
+            expected_inventory_sha256="0" * 64,
+        )
+    assert cache.is_dir()
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("returncode", False),
+        ("child_returncode", False),
+        ("returncode", 1),
+        ("descendants_closed", False),
+        ("status", "child_running"),
+        ("cwd", "/foreign"),
+    ],
+)
+def test_incremental_retirement_requires_real_terminal_custody(
+    completed_incremental, field, value
+):
+    receipt = completed_incremental[-1]
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
+    payload[field] = value
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError):
+        _incremental_plan(completed_incremental)
+    assert completed_incremental[-2].is_dir()
+
+
+@pytest.mark.parametrize("kind", ["managed-reader", "cargo-build", "cargo-output"])
+def test_incremental_retirement_refuses_live_owners(completed_incremental, kind):
+    from contextlib import ExitStack
+    from molt.checkout_state import checkout_state_use
+    from molt.file_locks import _try_acquire_file_lock, _release_file_lock
+
+    _, _, session, cache, _ = completed_incremental
+    with ExitStack() as stack:
+        if kind == "managed-reader":
+            stack.enter_context(checkout_state_use(((session, None),), publish=False))
+        else:
+            name = ".cargo-build-lock" if kind == "cargo-build" else ".cargo-lock"
+            lock = (
+                cache.parent if kind == "cargo-build" else session / "release"
+            ) / name
+            handle = _try_acquire_file_lock(lock)
+            assert handle is not None
+            stack.callback(_release_file_lock, handle)
+        with pytest.raises(ValueError, match="live|active"):
+            _incremental_plan(completed_incremental)
+    assert cache.is_dir()
+
+
+def test_incremental_retirement_does_not_require_a_surviving_source(
+    completed_incremental,
+):
+    _, source, _, cache, _ = completed_incremental
+    source.rmdir()
+    plan = _incremental_plan(completed_incremental)
+    _incremental_plan(
+        completed_incremental,
+        apply=True,
+        expected_inventory_sha256=plan["inventory_sha256"],
+    )
+    assert not cache.exists()
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "payload",
+        "receipt",
+        "new-file",
+        "symlink",
+        "missing-lock",
+        "missing-output-lock",
+    ],
+)
+def test_incremental_retirement_rejects_changed_review(
+    completed_incremental, change, tmp_path
+):
+    _, _, session, cache, receipt = completed_incremental
+    plan = _incremental_plan(completed_incremental)
+    if change == "payload":
+        (cache / "sample-session/query-cache.bin").write_bytes(b"different")
+    elif change == "receipt":
+        receipt.write_text(receipt.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    elif change == "new-file":
+        (cache / "sample-session/added.o").write_bytes(b"new")
+    elif change == "symlink":
+        outside = tmp_path / "valuable.bin"
+        outside.write_bytes(b"keep")
+        selected = cache / "sample-session/query-cache.bin"
+        selected.unlink()
+        selected.symlink_to(outside)
+    elif change == "missing-lock":
+        (cache.parent / ".cargo-build-lock").unlink()
+    else:
+        (session / "release/.cargo-lock").unlink()
+    with pytest.raises((ValueError, OSError)):
+        _incremental_plan(
+            completed_incremental,
+            apply=True,
+            expected_inventory_sha256=plan["inventory_sha256"],
+        )
+    assert cache.is_dir()
+    if change == "symlink":
+        assert outside.read_bytes() == b"keep"
+
+
+@pytest.mark.parametrize("replacement", ["lock", "receipt", "owner"])
+def test_incremental_retirement_rechecks_after_final_inventory(
+    completed_incremental, monkeypatch, replacement
+):
+    _, _, session, cache, receipt = completed_incremental
+    plan = _incremental_plan(completed_incremental)
+    original = dg._incremental_inventory
+    calls = 0
+
+    def changed(path):
+        nonlocal calls
+        value = original(path)
+        calls += 1
+        if calls == 2:
+            if replacement == "lock":
+                lock = cache.parent / ".cargo-build-lock"
+                lock.rename(lock.with_suffix(".old"))
+                lock.touch()
+            elif replacement == "receipt":
+                receipt.write_text(
+                    receipt.read_text(encoding="utf-8") + "\n", encoding="utf-8"
+                )
+            else:
+                (session / ".molt-state-owner.json").write_text("{}", encoding="utf-8")
+        return value
+
+    monkeypatch.setattr(dg, "_incremental_inventory", changed)
+    with pytest.raises(ValueError, match="changed|owner"):
+        _incremental_plan(
+            completed_incremental,
+            apply=True,
+            expected_inventory_sha256=plan["inventory_sha256"],
+        )
+    assert cache.is_dir()
+
+
+def test_incremental_retirement_cli_requires_review_before_apply(
+    completed_incremental, capsys
+):
+    root, _, _, cache, receipt = completed_incremental
+    argv = [
+        "--root",
+        str(root),
+        "--retire-cargo-incremental",
+        str(cache),
+        "--guard-receipt",
+        str(receipt),
+    ]
+    assert dg.main(argv) == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert not plan["applied"] and cache.exists()
+    assert dg.main([*argv, "--apply"]) == 1
+    assert "reviewed" in capsys.readouterr().out and cache.exists()
+
+
+def test_incremental_retirement_targeted_profile(completed_incremental):
+    _, _, session, cache, receipt = completed_incremental
+    build = cache.parent.parent
+    (build / "wasm32-wasip1").mkdir()
+    cache.parent.rename(build / "wasm32-wasip1/release")
+    (session / "wasm32-wasip1").mkdir()
+    (session / "release").rename(session / "wasm32-wasip1/release")
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
+    for argv in (
+        payload["command"],
+        payload["launch_command"],
+        payload["child_process"]["command"],
+    ):
+        argv.extend(["--target", "wasm32-wasip1"])
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
+    fixture = (
+        *completed_incremental[:3],
+        build / "wasm32-wasip1/release/incremental",
+        receipt,
+    )
+    plan = _incremental_plan(fixture)
+    _incremental_plan(
+        fixture, apply=True, expected_inventory_sha256=plan["inventory_sha256"]
+    )
+    assert not fixture[-2].exists()
+    assert (
+        fixture[-2].parent / "deps/keep.rlib"
+    ).read_bytes() == b"retain product and evidence"
+
+
+def test_incremental_retirement_refuses_indirect_ancestor(completed_incremental):
+    root, _, session, cache, receipt = completed_incremental
+    actual = session.with_name("retained-session")
+    session.rename(actual)
+    session.symlink_to(actual, target_is_directory=True)
+    with pytest.raises(ValueError, match="link|junction"):
+        dg.retire_cargo_incremental(cache, root=root, guard_receipt=receipt, env={})
+    assert (actual / cache.relative_to(session)).is_dir()
+
+
+def test_incremental_retirement_preserves_durable_failure_evidence(
+    completed_incremental, monkeypatch
+):
+    from molt import file_publication
+
+    _, _, _, cache, receipt = completed_incremental
+    plan = _incremental_plan(completed_incremental)
+    original = file_publication._reclaim_retired_leaf
+    retained = []
+
+    def deny_reclamation(path, identity):
+        retained.append(path)
+        raise file_publication.RetirementError(
+            path, "physical reclamation", OSError("injected storage error")
+        )
+
+    monkeypatch.setattr(file_publication, "_reclaim_retired_leaf", deny_reclamation)
+    with pytest.raises(file_publication.RetirementError):
+        _incremental_plan(
+            completed_incremental,
+            apply=True,
+            expected_inventory_sha256=plan["inventory_sha256"],
+        )
+    assert not cache.exists() and len(retained) == 1 and retained[0].is_dir()
+    assert (
+        retained[0] / "sample-session/query-cache.bin"
+    ).read_bytes() == b"discardable generated cache"
+    assert receipt.exists() and (cache.parent / "deps/keep.rlib").exists()
+    # The canonical deletion owner remains responsible for explicit recovery;
+    # the failed operation must not report success or recreate the live name.
+    monkeypatch.setattr(file_publication, "_reclaim_retired_leaf", original)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="independent POSIX flock holder")
+@pytest.mark.parametrize("name", [".cargo-lock", ".cargo-build-lock"])
+def test_incremental_retirement_observes_native_cargo_locks(
+    completed_incremental, name
+):
+    import fcntl
+
+    _, _, session, cache, _ = completed_incremental
+    lock = (cache.parent if name == ".cargo-build-lock" else session / "release") / name
+    with lock.open("a+b") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(ValueError, match="active|live"):
+            _incremental_plan(completed_incremental)
+    assert cache.is_dir()
+
+
+@pytest.mark.parametrize("missing", ["receipt", "cache"])
+def test_incremental_retirement_refuses_missing_admission_inputs(
+    completed_incremental, missing
+):
+    _, _, _, cache, receipt = completed_incremental
+    plan = _incremental_plan(completed_incremental)
+    selected = receipt if missing == "receipt" else cache
+    retained = selected.with_name(selected.name + ".retained")
+    selected.rename(retained)
+    with pytest.raises((ValueError, OSError)):
+        _incremental_plan(
+            completed_incremental,
+            apply=True,
+            expected_inventory_sha256=plan["inventory_sha256"],
+        )
+    assert retained.exists()
+    assert (
+        cache.parent / "deps/keep.rlib"
+    ).read_bytes() == b"retain product and evidence"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="independent POSIX flock oracle")
+def test_incremental_retirement_holds_both_split_locks_through_deletion(
+    completed_incremental, monkeypatch
+):
+    import fcntl
+    from molt import file_publication
+
+    _, _, session, cache, _ = completed_incremental
+    plan = _incremental_plan(completed_incremental)
+    original = file_publication.durable_remove_path
+    observed = []
+
+    def check_locks(path, **kwargs):
+        for lock in (
+            cache.parent / ".cargo-build-lock",
+            session / "release/.cargo-lock",
+        ):
+            with lock.open("rb") as handle:
+                with pytest.raises(BlockingIOError):
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            observed.append(lock)
+        original(path, **kwargs)
+
+    monkeypatch.setattr(file_publication, "durable_remove_path", check_locks)
+    _incremental_plan(
+        completed_incremental,
+        apply=True,
+        expected_inventory_sha256=plan["inventory_sha256"],
+    )
+    assert len(observed) == 2 and not cache.exists()
+
+
 def _superseded_fixture(tmp_path: Path):
     """A live checkout whose target and build control hold the replaced layout.
 

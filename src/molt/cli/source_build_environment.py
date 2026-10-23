@@ -24,6 +24,7 @@ from molt.dx import checkout_custody
 from molt.exact_json import ExactJsonError, canonical_json_sha256, loads_exact
 from molt import process_guard
 from molt import python_environment_identity
+from molt.python_environment_location import environment_python_path
 from molt.python_environment_identity import (
     PythonEnvironmentIdentityError,
     environment_matches_lock_closure,
@@ -156,9 +157,7 @@ def _environment_spec(
     }
     custody_root = _source_build_custody_root(repo_root)
     root = custody_root / environment_id
-    python_executable = root / (
-        "Scripts/python.exe" if os.name == "nt" else "bin/python"
-    )
+    python_executable = environment_python_path(root)
     return (
         root,
         python_executable,

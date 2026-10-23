@@ -4,13 +4,18 @@ This is an executable semantic protocol, not an exception-site exemption list.
 Every outcome checks its applicability before it can emit NotImplementedError.
 The audit verifies both complete projections and inventories all consumer calls.
 Unrecognized contexts, modified projections and raw raises remain obligations.
+
+--refresh-sources captures pin-bound source-body receipts for explicit review;
+--check and --write remain offline. Receipt refresh is not semantic approval.
 """
 
 from __future__ import annotations
 
+import argparse
 import ast
+import hashlib
 import json
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
@@ -30,6 +35,7 @@ from tools.generator_io import (  # noqa: E402
     generated_file_matches,
     generator_main,
     rustfmt_source,
+    write_generated_text,
 )
 from tools.cpython_regrtest import CPYTHON_SOURCES, load_cpython_sources  # noqa: E402
 
@@ -494,11 +500,21 @@ class InventoryHit:
     detail: str
 
 
-def source_errors(root: Path) -> list[str]:
-    """Pinned CPython source receipts and differential witnesses for every outcome."""
+def _pinned_source_coordinates(root: Path) -> dict[tuple[str, str], str]:
+    pins = load_cpython_sources(root / CPYTHON_SOURCES.relative_to(_REPO_ROOT))
+    return {
+        (pins[version].tag.removeprefix("v"), path): pins[version].revision
+        for facts in OUTCOMES.values()
+        for version in facts.versions
+        for path in facts.pinned_source_paths
+    }
+
+
+def _source_errors_from_document(root: Path, receipt: object) -> list[str]:
+    if not isinstance(receipt, dict):
+        return ["compatibility source receipts are missing or malformed"]
     errors = []
     try:
-        receipt = json.loads((root / SOURCE_RECEIPTS).read_text(encoding="utf-8"))
         sources = receipt["sources"]
         coordinates = {(row["version"], row["path"]) for row in sources}
         expected_coordinates = {
@@ -516,13 +532,7 @@ def source_errors(root: Path) -> list[str]:
                 "Lib/posixpath.py",
             )
         }
-        pins = load_cpython_sources(root / CPYTHON_SOURCES.relative_to(_REPO_ROOT))
-        pinned_coordinates = {
-            (pins[version].tag.removeprefix("v"), path): pins[version].revision
-            for facts in OUTCOMES.values()
-            for version in facts.versions
-            for path in facts.pinned_source_paths
-        }
+        pinned_coordinates = _pinned_source_coordinates(root)
         expected_coordinates.update(pinned_coordinates)
         valid = (
             receipt["schema_version"] == 1
@@ -557,6 +567,81 @@ def source_errors(root: Path) -> list[str]:
     return errors
 
 
+def source_errors(root: Path) -> list[str]:
+    """Pinned source-body receipts and differential witnesses for every outcome."""
+    try:
+        receipt = json.loads((root / SOURCE_RECEIPTS).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ["compatibility source receipts are missing or malformed"]
+    return _source_errors_from_document(root, receipt)
+
+
+def refresh_sources(root: Path, *, fetch: Callable[[str], bytes] | None = None) -> int:
+    """Refresh pin-bound body receipts, never semantic or execution attestation."""
+    if fetch is None:
+        from tools.pin_freshness import fetch_bytes
+
+        fetch = fetch_bytes
+    path = root / SOURCE_RECEIPTS
+    original = path.read_bytes()
+    receipt = json.loads(original)
+    if (
+        not isinstance(receipt, dict)
+        or receipt.get("schema_version") != 1
+        or not isinstance(receipt.get("sources"), list)
+    ):
+        raise ValueError("compatibility source receipts are missing or malformed")
+    coordinates = _pinned_source_coordinates(root)
+    owned = {(version.rpartition(".")[0], source) for version, source in coordinates}
+    independent = []
+    previous = {}
+    for row in receipt["sources"]:
+        if not isinstance(row, dict):
+            raise ValueError("compatibility source receipts are missing or malformed")
+        if "revision" not in row:
+            independent.append(row)
+            continue
+        if not all(
+            isinstance(row.get(key), str) for key in ("version", "path", "revision")
+        ):
+            raise ValueError("malformed pin-bound compatibility source receipt")
+        key = (row["version"].rpartition(".")[0], row["path"])
+        if key not in owned or key in previous:
+            raise ValueError(
+                "unknown or duplicate pin-bound compatibility source receipt"
+            )
+        previous[key] = row
+    captured = []
+    for (version, source), revision in sorted(coordinates.items()):
+        url = f"https://raw.githubusercontent.com/python/cpython/{revision}/{source}"
+        payload = fetch(url)
+        payload.decode("utf-8")
+        captured.append(
+            {
+                "version": version,
+                "revision": revision,
+                "path": source,
+                "url": url,
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        )
+    candidate = {**receipt, "sources": [*independent, *captured]}
+    errors = _source_errors_from_document(root, candidate)
+    if errors:
+        raise ValueError("compatibility source refresh refused: " + "; ".join(errors))
+    if path.read_bytes() != original:
+        raise ValueError("compatibility source receipts changed during refresh")
+    write_generated_text(path, json.dumps(candidate, indent=2) + "\n")
+    print(
+        "Source receipts refreshed; review changed body hashes. No semantic or execution attestation."
+    )
+    for row in captured:
+        key = (row["version"].rpartition(".")[0], row["path"])
+        old = previous.get(key, {}).get("sha256", "MISSING")
+        print(f"{row['version']} {row['path']}: {old} -> {row['sha256']}")
+    return 0
+
+
 def projection_errors(root: Path) -> list[str]:
     errors = source_errors(root)
     for name, expected in projections().items():
@@ -573,7 +658,11 @@ def generated_outputs() -> dict[Path, str]:
     errors = source_errors(ROOT)
     if errors:
         raise ValueError(
-            "compatibility error protocol sources invalid:\n" + "\n".join(errors)
+            "compatibility error protocol sources invalid:\n"
+            + "\n".join(errors)
+            + "\nFor reviewed canonical pin changes, capture body receipts with "
+            "python tools/compatibility_error_protocol.py --refresh-sources; "
+            "changed hashes still require semantic review."
         )
     return {ROOT / name: text for name, text in projections().items()}
 
@@ -724,7 +813,21 @@ def rust_inventory(text: str, code: str, proved: bool) -> list[InventoryHit]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    return generator_main(generated_outputs, argv, description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--check", action="store_true", help="check offline projections")
+    mode.add_argument("--write", action="store_true", help="rewrite stale projections")
+    mode.add_argument(
+        "--refresh-sources",
+        action="store_true",
+        help="capture pin-bound source receipts for review without approving semantics",
+    )
+    args = parser.parse_args(argv)
+    if args.refresh_sources:
+        return refresh_sources(ROOT)
+    return generator_main(
+        generated_outputs, ["--write" if args.write else "--check"], description=__doc__
+    )
 
 
 if __name__ == "__main__":
