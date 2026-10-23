@@ -478,10 +478,10 @@ def test_link_plan_is_immutable_and_preserves_elf_function_identity(
     assert plan.target.object_format is NativeObjectFormat.ELF
     assert plan.policy.preserve_function_identity
     assert "-Wl,--icf=none" in plan.command
-    assert "-Wl,--strip-all" not in plan.command
+    assert "-Wl,--strip-all" in plan.command
     assert "-Wl,/Brepro" not in plan.command
     assert plan.command.count(str(tmp_path / "libmolt_runtime.a")) == 1
-    assert plan.policy.strip_after_link
+    assert plan.policy.symbol_strip is native_link_plan.NativeSymbolStrip.AT_LINK
     with pytest.raises(FrozenInstanceError):
         plan.linker_hint = None  # type: ignore[misc]
 
@@ -573,8 +573,10 @@ def test_macho_plan_preserves_identity_without_suppressing_warnings(
 
     assert "-Wl,-no_deduplicate" in plan.command
     assert "-Wl,-w" not in plan.command
-    assert "-Wl,-x" not in plan.command
-    assert "-Wl,-S" not in plan.command
+    # A release image is stripped by ld64 itself, so its signature stands.
+    assert plan.policy.symbol_strip is native_link_plan.NativeSymbolStrip.AT_LINK
+    assert "-Wl,-x" in plan.command
+    assert "-Wl,-S" in plan.command
     assert "-Wl,/Brepro" not in plan.command
     # ld64 archive extraction is order-sensitive; the deliberate second pass
     # is confined to Mach-O rather than leaking into COFF.
@@ -765,7 +767,7 @@ def test_coff_plan_explicitly_disables_icf(
     assert "-Wl,/OPT:NOICF" in plan.command
     assert "-Wl,/Brepro" in plan.command
     assert plan.command.count(str(tmp_path / "libmolt_runtime.a")) == 1
-    assert not plan.policy.strip_after_link
+    assert plan.policy.symbol_strip is native_link_plan.NativeSymbolStrip.NONE
 
 
 def test_bolt_release_plan_emits_relocations_and_defers_stripping(
@@ -781,7 +783,7 @@ def test_bolt_release_plan_emits_relocations_and_defers_stripping(
 
     assert "-Wl,--emit-relocs" in plan.command
     assert "-Wl,--strip-all" not in plan.command
-    assert not plan.policy.strip_after_link
+    assert plan.policy.symbol_strip is native_link_plan.NativeSymbolStrip.NONE
     assert plan.policy.bolt_requested
 
 
@@ -1143,6 +1145,135 @@ def test_native_identity_flags_are_driver_ready(
         )
         == expected
     )
+
+
+_AT_LINK = native_link_plan.NativeSymbolStrip.AT_LINK
+_AFTER_LINK = native_link_plan.NativeSymbolStrip.AFTER_LINK
+_NO_STRIP = native_link_plan.NativeSymbolStrip.NONE
+
+
+@pytest.mark.parametrize(
+    ("host_platform", "cc", "profile", "keep_symbols", "bolt", "expected"),
+    [
+        ("darwin", ("clang",), "release", False, False, _AT_LINK),
+        ("darwin", ("clang", "-fuse-ld=lld"), "release", False, False, _AT_LINK),
+        # zig's Mach-O linker keeps the local thunks it synthesizes under -x.
+        ("darwin", ("zig", "cc"), "release", False, False, _AFTER_LINK),
+        ("linux", ("clang",), "release", False, False, _AT_LINK),
+        ("linux", ("clang", "-fuse-ld=mold"), "release", False, False, _AT_LINK),
+        ("linux", ("zig", "cc"), "release", False, False, _AT_LINK),
+        ("linux", ("clang",), "release", False, True, _NO_STRIP),
+        ("darwin", ("clang",), "dev", False, False, _NO_STRIP),
+        ("darwin", ("clang",), "release", True, False, _NO_STRIP),
+        ("win32", ("clang-cl",), "release", False, False, _NO_STRIP),
+    ],
+)
+def test_release_symbol_strip_stage_follows_the_linker_capability(
+    host_platform: str,
+    cc: tuple[str, ...],
+    profile: str,
+    keep_symbols: bool,
+    bolt: bool,
+    expected: native_link_plan.NativeSymbolStrip,
+) -> None:
+    target = native_target.resolve_native_target_spec(
+        None, host_platform=host_platform, host_arch="x86_64"
+    )
+    capabilities = native_link_plan.native_link_capabilities(
+        target=target,
+        linker_hint=native_link_plan.native_linker_name_from_driver_command(cc),
+    )
+    policy = native_link_plan.native_link_policy(
+        target=target,
+        capabilities=capabilities,
+        profile=profile,
+        keep_symbols=keep_symbols,
+        bolt_requested=bolt,
+    )
+    assert policy.symbol_strip is expected
+
+
+def test_link_time_strip_flags_match_the_post_link_strip_per_format() -> None:
+    def spec(host_platform: str):
+        return native_target.resolve_native_target_spec(
+            None, host_platform=host_platform, host_arch="x86_64"
+        )
+
+    # ld64 -x drops what strip -x drops except the debug-map stabs; -S drops those.
+    assert native_link_plan.native_link_strip_flags(spec("darwin")) == (
+        "-Wl,-x",
+        "-Wl,-S",
+    )
+    assert native_link_plan.native_strip_flags(spec("darwin")) == ("-x",)
+    assert native_link_plan.native_link_strip_flags(spec("linux")) == (
+        "-Wl,--strip-all",
+    )
+    assert native_link_plan.native_strip_flags(spec("linux")) == ("--strip-all",)
+    with pytest.raises(RuntimeError, match="Link-time stripping has no policy"):
+        native_link_plan.native_link_strip_flags(spec("win32"))
+
+
+@pytest.mark.parametrize(
+    ("zig_target", "host_platform", "strips"),
+    [
+        ("x86_64-linux-gnu", "linux", True),
+        ("aarch64-macos", "darwin", False),
+    ],
+)
+def test_zig_linker_strip_capability_matches_its_output(
+    tmp_path: Path, zig_target: str, host_platform: str, strips: bool
+) -> None:
+    import shutil
+
+    from molt.llvm_wasi_tools import llvm_named_tool_candidates
+    from tests.cli.process_guard import run_cli_test_process
+
+    zig = shutil.which("zig")
+    nm = llvm_named_tool_candidates("llvm-nm")
+    if zig is None or not nm:
+        pytest.skip("zig and llvm-nm are the oracle for zig's own linker")
+    target = native_target.resolve_native_target_spec(
+        None, host_platform=host_platform, host_arch="x86_64"
+    )
+    capabilities = native_link_plan.native_link_capabilities(
+        target=target,
+        linker_hint=native_link_plan.native_linker_name_from_driver_command(
+            (zig, "cc")
+        ),
+    )
+    assert capabilities.strips_local_symbols is strips
+    source = tmp_path / "main.c"
+    source.write_text(
+        "static int helper(int x) { return x * 3; }\n"
+        "int visible(int x) { return helper(x) + 1; }\n"
+        "int main(int argc, char **argv) { return visible(argc); }\n",
+        encoding="utf-8",
+    )
+    image = tmp_path / "app"
+    run_cli_test_process(
+        [
+            zig,
+            "cc",
+            "-target",
+            zig_target,
+            str(source),
+            "-o",
+            str(image),
+            *native_link_plan.native_link_strip_flags(target),
+        ],
+        check=True,
+        timeout=300,
+    )
+    listing = run_cli_test_process(
+        [str(nm[0]), "--defined-only", str(image)], check=False, timeout=30
+    ).stdout
+    # nm prints "<address> <type> <name>"; a lower-case type is a local symbol.
+    local = [
+        line
+        for line in listing.splitlines()
+        if len(line.split()) == 3 and line.split()[1].islower()
+    ]
+    assert (not local) is strips, local[:5]
 
 
 @pytest.mark.parametrize(

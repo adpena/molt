@@ -34,10 +34,12 @@ from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
 from molt.cli.native_link_plan import (
     NativeLinkPlan,
     NativeLinkSidecar,
+    NativeSymbolStrip,
     native_link_capabilities,
     native_artifact_link_arguments,
     native_link_output_flags,
     native_link_policy_flags,
+    native_link_strip_flags,
     native_linker_name_from_driver_command,
     native_link_policy,
 )
@@ -349,6 +351,7 @@ def _build_native_link_plan(
     )
     policy = native_link_policy(
         target=target,
+        capabilities=capabilities,
         profile=profile,
         keep_symbols=os.environ.get("MOLT_KEEP_SYMBOLS") == "1",
         bolt_requested=bolt_requested,
@@ -477,6 +480,8 @@ def _build_native_link_plan(
             dead_strip=policy.dead_strip,
         )
     )
+    if policy.symbol_strip is NativeSymbolStrip.AT_LINK:
+        link_cmd.extend(native_link_strip_flags(target))
     _append_darwin_runtime_frameworks(link_cmd, target=target)
     runtime_inputs = _collect_cargo_native_link_deps(
         runtime_lib,
@@ -591,6 +596,7 @@ def _build_native_runtime_image_link_plan(
         capabilities=capabilities,
         policy=native_link_policy(
             target=target,
+            capabilities=capabilities,
             profile=profile,
             keep_symbols=True,
             bolt_requested=False,

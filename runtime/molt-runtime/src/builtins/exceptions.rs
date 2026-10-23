@@ -23,9 +23,9 @@ use crate::{
     index_bigint_from_obj, init_atomic_bits, int_bits_from_i64, intern_static_name, is_truthy,
     isinstance_bits, issubclass_bits, maybe_ptr_from_bits, module_dict_bits, molt_class_set_base,
     molt_dec_ref, molt_repr_from_obj, molt_str_from_obj, obj_from_bits, object_class_bits,
-    object_type_id, profile_enabled, runtime_state, string_obj_to_owned, task_exception_depths,
-    task_exception_handler_stacks, task_exception_stacks, task_last_exceptions, to_i64,
-    token_is_cancelled, traceback_suppressed, tuple_from_iter_bits, type_name, type_of_bits,
+    object_type_id, profile_enabled, runtime_state, string_obj_to_owned, task_last_exceptions,
+    to_i64, token_is_cancelled, traceback_suppressed, tuple_from_iter_bits, type_name,
+    type_of_bits,
 };
 use molt_obj_model::{
     BuiltinExceptionSpec, ExceptionBaseSpec, ExceptionFieldStorage, ExceptionLayoutKind,
@@ -180,14 +180,18 @@ impl<T> ExceptionSentinel for Option<T> {
     }
 }
 
+mod activation;
 mod state;
 
+pub(crate) use activation::{
+    ActivationExceptionScope, ActivationKind, activation_exception_state_detach,
+    activation_exception_state_drop, activation_exception_state_visit,
+};
 use internals::{exception_type_cache, module_cache};
 pub(crate) use state::{
     ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, EXCEPTION_STACK, EXCEPTION_STACK_BASELINE,
-    ExceptionContextFallback, ExceptionsRuntimeState, GENERATOR_EXCEPTION_STACKS, GENERATOR_RAISE,
-    TASK_RAISE_ACTIVE, THREAD_LAST_EXCEPTION, exception_clear_reason_set, exception_pending_flag,
-    internals,
+    ExceptionContextFallback, ExceptionsRuntimeState, GENERATOR_RAISE, TASK_RAISE_ACTIVE,
+    THREAD_LAST_EXCEPTION, exception_clear_reason_set, exception_pending_flag, internals,
 };
 use state::{
     LAST_EXCEPTION_COL, debug_exception_clear, debug_exception_flow, debug_exception_pending,
@@ -2417,14 +2421,16 @@ pub(crate) fn exception_context_set_abi(_py: &PyToken<'_>, bits: u64) {
 
 pub(crate) fn exception_context_align_depth(_py: &PyToken<'_>, target: usize) {
     crate::gil_assert();
+    // Every resume aligns a stack that is already aligned; that case costs
+    // one length check and never touches the buffer.
     let detached = ACTIVE_EXCEPTION_STACK.with(|stack| {
         let mut stack = stack.borrow_mut();
-        let split = target.min(stack.len());
-        let detached = stack.split_off(split);
-        while stack.len() < target {
-            stack.push(MoltObject::none().bits());
+        if stack.len() > target {
+            stack.split_off(target)
+        } else {
+            stack.resize(target, MoltObject::none().bits());
+            Vec::new()
         }
-        detached
     });
     for bits in detached {
         if !obj_from_bits(bits).is_none() {
@@ -2627,67 +2633,8 @@ pub(crate) fn exception_stack_depth() -> usize {
 
 pub(crate) fn exception_stack_set_depth(_py: &PyToken<'_>, target: usize) {
     crate::gil_assert();
-    EXCEPTION_STACK.with(|stack| {
-        let mut stack = stack.borrow_mut();
-        while stack.len() > target {
-            stack.pop();
-        }
-        while stack.len() < target {
-            stack.push(0);
-        }
-    });
+    EXCEPTION_STACK.with(|stack| stack.borrow_mut().resize(target, 0));
     exception_context_align_depth(_py, target);
-}
-
-pub(crate) fn generator_exception_stack_take(ptr: *mut u8) -> Vec<u64> {
-    GENERATOR_EXCEPTION_STACKS
-        .with(|map| map.borrow_mut().remove(&(ptr as usize)).unwrap_or_default())
-}
-
-pub(crate) fn generator_exception_stack_store(ptr: *mut u8, stack: Vec<u64>) {
-    GENERATOR_EXCEPTION_STACKS.with(|map| {
-        map.borrow_mut().insert(ptr as usize, stack);
-    });
-}
-
-pub(crate) fn generator_exception_stack_visit(ptr: *mut u8, mut visit: impl FnMut(u64)) {
-    GENERATOR_EXCEPTION_STACKS.with(|map| {
-        if let Some(stack) = map.borrow().get(&(ptr as usize)) {
-            for &bits in stack {
-                visit(bits);
-            }
-        }
-    });
-}
-
-pub(crate) fn task_exception_stack_take(_py: &PyToken<'_>, ptr: *mut u8) -> Vec<u64> {
-    task_exception_stacks(_py)
-        .lock()
-        .unwrap()
-        .remove(&PtrSlot(ptr))
-        .unwrap_or_default()
-}
-
-pub(crate) fn task_exception_stack_store(_py: &PyToken<'_>, ptr: *mut u8, stack: Vec<u64>) {
-    task_exception_stacks(_py)
-        .lock()
-        .unwrap()
-        .insert(PtrSlot(ptr), stack);
-}
-
-pub(crate) fn task_exception_stack_drop(_py: &PyToken<'_>, ptr: *mut u8) {
-    crate::gil_assert();
-    let stack = task_exception_stacks(_py)
-        .lock()
-        .unwrap()
-        .remove(&PtrSlot(ptr));
-    if let Some(stack) = stack {
-        for bits in stack {
-            if !obj_from_bits(bits).is_none() {
-                dec_ref_bits(_py, bits);
-            }
-        }
-    }
 }
 
 /// Reserve the existing task raised-state entry before the task can execute.
@@ -2750,109 +2697,15 @@ pub(crate) fn task_exception_detach_owned_edges(
     sink: &mut DetachedEdgeSink,
 ) {
     crate::gil_assert();
-    let slot = PtrSlot(ptr);
-
-    let stack = task_exception_stacks(_py)
-        .lock()
-        .unwrap()
-        .remove(&slot)
-        .unwrap_or_default();
-    for bits in stack {
-        sink.detach_if_heap(bits);
-    }
-
+    activation_exception_state_detach(ptr, sink);
     let last = task_last_exceptions(_py)
         .lock()
         .unwrap()
-        .get_mut(&slot)
+        .get_mut(&PtrSlot(ptr))
         .and_then(Option::take);
     if let Some(exception) = last {
         sink.detach(MoltObject::from_ptr(exception.0).bits());
     }
-
-    task_exception_handler_stacks(_py)
-        .lock()
-        .unwrap()
-        .remove(&slot);
-    task_exception_depths(_py).lock().unwrap().remove(&slot);
-    runtime_state(_py)
-        .task_exception_baselines
-        .lock()
-        .unwrap()
-        .remove(&slot);
-}
-
-pub(crate) fn task_exception_handler_stack_take(_py: &PyToken<'_>, ptr: *mut u8) -> Vec<usize> {
-    task_exception_handler_stacks(_py)
-        .lock()
-        .unwrap()
-        .remove(&PtrSlot(ptr))
-        .unwrap_or_default()
-}
-
-pub(crate) fn task_exception_handler_stack_store(
-    _py: &PyToken<'_>,
-    ptr: *mut u8,
-    stack: Vec<usize>,
-) {
-    task_exception_handler_stacks(_py)
-        .lock()
-        .unwrap()
-        .insert(PtrSlot(ptr), stack);
-}
-
-pub(crate) fn task_exception_handler_stack_drop(_py: &PyToken<'_>, ptr: *mut u8) {
-    task_exception_handler_stacks(_py)
-        .lock()
-        .unwrap()
-        .remove(&PtrSlot(ptr));
-}
-
-pub(crate) fn task_exception_depth_take(_py: &PyToken<'_>, ptr: *mut u8) -> usize {
-    task_exception_depths(_py)
-        .lock()
-        .unwrap()
-        .remove(&PtrSlot(ptr))
-        .unwrap_or(0)
-}
-
-pub(crate) fn task_exception_depth_store(_py: &PyToken<'_>, ptr: *mut u8, depth: usize) {
-    task_exception_depths(_py)
-        .lock()
-        .unwrap()
-        .insert(PtrSlot(ptr), depth);
-}
-
-pub(crate) fn task_exception_depth_drop(_py: &PyToken<'_>, ptr: *mut u8) {
-    task_exception_depths(_py)
-        .lock()
-        .unwrap()
-        .remove(&PtrSlot(ptr));
-}
-
-pub(crate) fn task_exception_baseline_take(_py: &PyToken<'_>, ptr: *mut u8) -> usize {
-    runtime_state(_py)
-        .task_exception_baselines
-        .lock()
-        .unwrap()
-        .remove(&PtrSlot(ptr))
-        .unwrap_or_else(exception_stack_baseline_get)
-}
-
-pub(crate) fn task_exception_baseline_store(_py: &PyToken<'_>, ptr: *mut u8, baseline: usize) {
-    runtime_state(_py)
-        .task_exception_baselines
-        .lock()
-        .unwrap()
-        .insert(PtrSlot(ptr), baseline);
-}
-
-pub(crate) fn task_exception_baseline_drop(_py: &PyToken<'_>, ptr: *mut u8) {
-    runtime_state(_py)
-        .task_exception_baselines
-        .lock()
-        .unwrap()
-        .remove(&PtrSlot(ptr));
 }
 
 pub(crate) fn task_last_exception_drop(_py: &PyToken<'_>, ptr: *mut u8) {
@@ -4997,9 +4850,7 @@ mod tests {
         alloc_exception, clear_exception, exception_context_set, exception_last_pending_bits,
         exception_last_public_bits, exception_method_bits, exception_pending, exception_stack_pop,
         exception_stack_push, exceptions_clear_runtime_state, format_exception_message,
-        generator_exception_stack_store, generator_exception_stack_take,
-        molt_exception_new_builtin_one, record_exception, task_exception_detach_owned_edges,
-        task_exception_stack_drop, task_exception_stack_store, task_exception_stack_take,
+        molt_exception_new_builtin_one, record_exception,
     };
     use crate::builtins::containers::tuple_len;
     use crate::{
@@ -6465,140 +6316,6 @@ mod tests {
             for slot in state.exceptions.object_slots() {
                 assert_eq!(slot.load(Ordering::Acquire), 0);
             }
-        });
-    }
-
-    #[test]
-    fn generator_lifecycle_detach_drains_exception_stack() {
-        let _guard = crate::test_support::RuntimeTestTransaction::new();
-        crate::with_gil_entry_nopanic!(_py, {
-            let generator_bits = crate::molt_task_new(
-                0,
-                crate::GEN_CONTROL_SIZE as u64,
-                crate::TASK_KIND_GENERATOR,
-            );
-            let ptr = obj_from_bits(generator_bits)
-                .as_ptr()
-                .expect("generator allocation");
-            let value_ptr = crate::alloc_string(_py, b"generator-exception-stack");
-            assert!(!value_ptr.is_null());
-            let value_bits = MoltObject::from_ptr(value_ptr).bits();
-            generator_exception_stack_store(ptr, vec![value_bits]);
-            let (edge_capacity, resource_capacity) =
-                unsafe { crate::object::heap_lifecycle::terminal_detach_capacity(_py, ptr) };
-            let mut sink = crate::object::heap_lifecycle::DetachedEdgeSink::try_with_capacities(
-                edge_capacity,
-                resource_capacity,
-            )
-            .expect("generator lifecycle sink allocation");
-            unsafe { crate::object::heap_lifecycle::detach_generator_owned_edges(ptr, &mut sink) };
-            let after = generator_exception_stack_take(ptr);
-            assert!(
-                after.is_empty(),
-                "generator lifecycle detachment must publish an empty exception stack"
-            );
-            sink.release_all(_py);
-            dec_ref_bits(_py, generator_bits);
-        });
-    }
-
-    #[test]
-    fn task_exception_stack_drop_clears_entries() {
-        let _guard = crate::test_support::RuntimeTestTransaction::new();
-        crate::with_gil_entry_nopanic!(_py, {
-            let boxed = Box::new(0_u8);
-            let ptr = Box::into_raw(boxed);
-            let bits = vec![MoltObject::none().bits()];
-            task_exception_stack_store(_py, ptr, bits);
-            task_exception_stack_drop(_py, ptr);
-            let after = task_exception_stack_take(_py, ptr);
-            assert!(after.is_empty(), "task exception stack should be cleared");
-            unsafe {
-                drop(Box::from_raw(ptr));
-            }
-        });
-    }
-
-    #[test]
-    fn task_exception_detach_publishes_all_side_registries_empty_before_release() {
-        let _guard = crate::test_support::RuntimeTestTransaction::new();
-        crate::with_gil_entry_nopanic!(_py, {
-            let task = crate::alloc_list(_py, &[]);
-            let stacked = crate::alloc_list(_py, &[]);
-            let last = crate::alloc_list(_py, &[]);
-            let task_slot = crate::PtrSlot(task);
-            let stacked_bits = MoltObject::from_ptr(stacked).bits();
-            let last_bits = MoltObject::from_ptr(last).bits();
-
-            crate::inc_ref_bits(_py, stacked_bits);
-            task_exception_stack_store(_py, task, vec![stacked_bits]);
-            crate::inc_ref_bits(_py, last_bits);
-            super::task_last_exceptions(_py)
-                .lock()
-                .unwrap()
-                .insert(task_slot, Some(crate::PtrSlot(last)));
-            let state = runtime_state(_py);
-            state
-                .task_exception_handler_stacks
-                .lock()
-                .unwrap()
-                .insert(task_slot, vec![7]);
-            state
-                .task_exception_depths
-                .lock()
-                .unwrap()
-                .insert(task_slot, 3);
-            state
-                .task_exception_baselines
-                .lock()
-                .unwrap()
-                .insert(task_slot, 2);
-
-            let mut sink =
-                crate::object::heap_lifecycle::DetachedEdgeSink::try_with_capacities(2, 0)
-                    .expect("test detach sink");
-            task_exception_detach_owned_edges(_py, task, &mut sink);
-
-            assert!(
-                !super::task_exception_stacks(_py)
-                    .lock()
-                    .unwrap()
-                    .contains_key(&task_slot)
-            );
-            assert!(
-                super::task_last_exceptions(_py)
-                    .lock()
-                    .unwrap()
-                    .get(&task_slot)
-                    .is_some_and(Option::is_none)
-            );
-            assert!(
-                !state
-                    .task_exception_handler_stacks
-                    .lock()
-                    .unwrap()
-                    .contains_key(&task_slot)
-            );
-            assert!(
-                !state
-                    .task_exception_depths
-                    .lock()
-                    .unwrap()
-                    .contains_key(&task_slot)
-            );
-            assert!(
-                !state
-                    .task_exception_baselines
-                    .lock()
-                    .unwrap()
-                    .contains_key(&task_slot)
-            );
-
-            sink.release_all(_py);
-            super::task_raised_slot_forget(_py, task);
-            dec_ref_bits(_py, MoltObject::from_ptr(task).bits());
-            dec_ref_bits(_py, stacked_bits);
-            dec_ref_bits(_py, last_bits);
         });
     }
 

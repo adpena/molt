@@ -82,7 +82,7 @@ def _record(kind, key) -> SourceRecord:
 def _age_record(kind, key) -> SourceRecord:
     with sqlite3.connect(shared_source_records().path) as connection:
         connection.execute(
-            "UPDATE records SET used_ns = 0 WHERE kind = ? AND key = ?", (kind, key)
+            "UPDATE recency SET used_ns = 0 WHERE kind = ? AND key = ?", (kind, key)
         )
     return _record(kind, key)
 
@@ -236,6 +236,7 @@ def test_analysis_reuse_across_sessions_uses_same_row(tmp_path, monkeypatch):
     assert result is not None
     defaults, kinds = result
     assert kinds == {"f": "sync"} and defaults["f"]["defaults"] == [2]
+    assert shared_source_records().save_renewals() == 1
     after = _record("module-analysis", key)
     assert after.revision == before.revision and after.payload == before.payload
     assert after.used_ns > before.used_ns
@@ -284,6 +285,7 @@ def test_lowering_reuse_across_sessions_no_relower(tmp_path, monkeypatch):
     (seed,) = loaded["function_digest_seeds"]
     assert seed.function is loaded["functions"][0] and seed.function is not function
     assert seed.digest == writer_seeds[0].digest and len(seed.digest) == 32
+    assert shared_source_records().save_renewals() == 1
     after = _record("module-lowering", digest)
     assert after.revision == before.revision and after.payload == before.payload
     assert after.used_ns > before.used_ns

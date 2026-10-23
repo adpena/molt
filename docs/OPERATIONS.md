@@ -1037,20 +1037,23 @@ fail closed; the inventory itself makes no claim about current file bytes.
 - `MOLT_CLI_PROFILE=<dir>/{pid}.prof` writes a cProfile of each `molt` command;
   `{pid}` keeps parallel builds apart. Read it with `python -m pstats`.
 - Import scans, intrinsic source facts, module analyses and binary module
-  lowerings share `v<schema>/records.sqlite` (one namespace per schema
-  version, so checkouts of different versions keep independent stores) under
-  `<Molt cache>/toolchain_source_records` (`molt.cli.source_record_store`). Every
-  project/session uses that store; no project copy is hydrated. Connection
-  lifetime holds one shared cache-control lock; warm record operations add no
-  lock syscall. The pruner exclusively locks and atomically retires only older
-  namespaces. Flat legacy stores remain visible in `legacy_source_record_state`
-  until their owners can be reconciled; their SQLite/WAL/SHM files are never
-  independently unlinked. Source/context
-  admission precedes recency refresh. Exact compiler generation remains part
-  of read admission; retention belongs solely to the configured global byte/age
-  cache budget for all four kinds. Schema three contains only record retention
-  metadata; other schema namespaces and flat legacy stores are never migrated.
-  Run the existing `molt_cache_prune.py`
+  lowerings share `<schema digest>/records.sqlite`, named by the DDL digest,
+  under `<Molt cache>/toolchain_source_records`
+  (`molt.cli.source_record_store`). Every project/session uses that store;
+  no project copy is hydrated. Each SQLite connection holds one shared
+  cache-control lifetime lock; warm record operations add no lock syscall.
+  Other recognized namespaces retire only under an exclusive lifetime lock
+  through atomic whole-directory retirement. Unknown future version namespaces
+  and flat legacy stores remain protected; the latter are reported in
+  `legacy_source_record_state`. SQLite/WAL/SHM files never retire independently.
+  Source/context admission precedes recency refresh. Due renewals enter a bounded
+  queue, saved in one nonwaiting transaction per 4,096 observations, at
+  the owning operation boundary or explicit close, into a narrow `recency` table that leaves payload rows untouched.
+  GC closes SQLite without writing advisory renewals and defers only the lifetime
+  lease until safe normal-context release. Exact compiler generation remains
+  part of read admission; retention belongs solely to the configured global
+  byte/age cache budget for all four kinds. There is no generation trim or
+  in-place migration. Run the existing `molt_cache_prune.py`
   command to inspect or apply it. Its totals combine file bytes and logical
   source payload bytes; separate DB/WAL/SHM measurements report physical storage.
   Each metadata page releases its read snapshot before yielding to row or file
@@ -1063,7 +1066,7 @@ fail closed; the inventory itself makes no claim about current file bytes.
   DB/WAL physical-size limit. Admitted source-record reuse keeps the five-minute
   recency interval and exact generation/revision/use comparison, but skips a busy
   process-local lock or SQLite writer. It does not reopen a closed store solely
-  for advisory recency. A due attempt saves, temporarily disables, then restores
+  for advisory recency. A flush saves, temporarily disables, then restores
   the existing connection busy timeout under its lock: three constant metadata
   statements replace up to 60 seconds of writer-lock waiting. Ordinary reads,
   publication and initialization retain their policies. This bounds contention

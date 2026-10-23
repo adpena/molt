@@ -1268,7 +1268,7 @@ def test_source_record_dry_run_and_age_policy_preserve_database_owner(
     assert store.put("module-lowering", "old", b"payload", generation="g")
     with sqlite3.connect(store.path) as connection:
         connection.execute(
-            "UPDATE records SET used_ns = ?",
+            "UPDATE recency SET used_ns = ?",
             (time.time_ns() - 2 * 86400 * 1_000_000_000,),
         )
         before = connection.execute("SELECT * FROM records").fetchall()
@@ -1317,6 +1317,7 @@ def test_source_record_prune_cannot_delete_a_changed_observation(
         clock[0] += 301 * 1_000_000_000
         if change == "refresh":
             assert candidate.refresh()
+            assert store.save_renewals() == 1
         else:
             assert store.put("module-analysis", "k", b"replacement", generation="g")
         return remove(maintenance, observed)
@@ -1426,14 +1427,13 @@ def test_dry_run_reports_an_unmigrated_store_without_failing(tmp_path: Path) -> 
     assert swept["entries_failed"] == 0
 
 
-def _source_namespace_peer(cache_text, channel):
+def _source_namespace_peer(cache_text, namespace, channel):
     import sqlite3
     from molt.cli import source_record_store as records
     from molt.default_paths import shared_cache_lock_path
     from molt.file_locks import _try_acquire_file_lock, _release_file_lock
 
     cache = Path(cache_text)
-    namespace = f"v{records._SCHEMA_VERSION - 1}"
     directory = cache / records.SHARED_SOURCE_RECORDS_DIRECTORY / namespace
     lock = shared_cache_lock_path(cache, f"source-records.{namespace}")
     lifetime = _try_acquire_file_lock(lock, shared=True)
@@ -1460,8 +1460,9 @@ def _source_namespace_peer(cache_text, channel):
         channel.close()
 
 
+@pytest.mark.parametrize("namespace", ["v2", "0" * 16])
 def test_source_namespace_retirement_waits_for_real_peer_and_preserves_other_versions(
-    tmp_path,
+    tmp_path, namespace,
 ):
     import multiprocessing
     import sqlite3
@@ -1471,7 +1472,7 @@ def test_source_namespace_retirement_waits_for_real_peer_and_preserves_other_ver
     cache = tmp_path / "cache"
     root = cache / records.SHARED_SOURCE_RECORDS_DIRECTORY
     root.mkdir(parents=True)
-    future = root / f"v{records._SCHEMA_VERSION + 1}"
+    future = root / "v4"
     future.mkdir()
     (future / "records.sqlite").write_bytes(b"future schema")
     legacy = root / "source_records.sqlite"
@@ -1481,13 +1482,14 @@ def test_source_namespace_retirement_waits_for_real_peer_and_preserves_other_ver
     peer.execute("INSERT INTO witness VALUES('legacy')")
     legacy_lock = root / "source_records.sqlite.initialize.lock"
     legacy_lock.write_bytes(b"legacy control")
+    flat_digest = root / ("source_records." + "f" * 16 + ".sqlite")
+    flat_digest.write_bytes(b"unqualified legacy digest database")
     legacy_files = {str(path) for path in root.iterdir() if path.is_file()}
     ctx = multiprocessing.get_context("spawn")
     parent, channel = ctx.Pipe()
-    child = ctx.Process(target=_source_namespace_peer, args=(str(cache), channel))
+    child = ctx.Process(target=_source_namespace_peer, args=(str(cache), namespace, channel))
     child.start()
     channel.close()
-    namespace = f"v{records._SCHEMA_VERSION - 1}"
     directory = root / namespace
     lock = shared_cache_lock_path(cache, f"source-records.{namespace}")
     module = _load_molt_cache_prune()
@@ -1542,7 +1544,7 @@ def test_source_namespace_reclamation_failure_cannot_mix_wal_generations(
 
     cache = tmp_path / "cache"
     root, lock = records.source_record_namespace_paths(
-        cache, f"v{records._SCHEMA_VERSION - 1}"
+        cache, "v2"
     )
     root.mkdir(parents=True)
     with sqlite3.connect(root / "records.sqlite") as old:
@@ -1596,7 +1598,7 @@ def test_row_batches_commit_before_interleaved_file_eviction(tmp_path, monkeypat
     try:
         for key, stamp in (("first", 10), ("second", 30), ("third", 50)):
             peer.execute(
-                "UPDATE records SET used_ns=? WHERE key=?", (stamp * 10**9, key)
+                "UPDATE recency SET used_ns=? WHERE key=?", (stamp * 10**9, key)
             )
         entry = _cache_entry(cache, "middle-file")
         with _locked_wasm_link_cache_entry(entry):
@@ -1708,7 +1710,7 @@ def test_malformed_source_retirement_preserves_evidence_and_continues_sweep(tmp_
 
     cache = tmp_path / "cache"
     namespace, _ = records.source_record_namespace_paths(
-        cache, f"v{records._SCHEMA_VERSION - 1}"
+        cache, "v2"
     )
     namespace.mkdir(parents=True)
     (namespace / "records.sqlite").write_bytes(b"idle older namespace")

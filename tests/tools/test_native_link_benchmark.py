@@ -22,6 +22,7 @@ from molt.cli.native_link_plan import (
     NativeLinkPlan,
     NativeLinkSidecar,
     NativeLinkPolicy,
+    NativeSymbolStrip,
 )
 from molt.native_target import NativeTargetSpec
 from molt.native_target_shape import NativeObjectFormat
@@ -49,12 +50,13 @@ def _plan(tmp_path: Path) -> NativeLinkPlan:
             object_format=NativeObjectFormat.COFF,
             explicit_no_icf_flag="identity-policy",
             signs_as_final_output=False,
+            strips_local_symbols=True,
         ),
         policy=NativeLinkPolicy(
             preserve_function_identity=True,
             dead_strip=True,
             emit_relocations=False,
-            strip_after_link=False,
+            symbol_strip=NativeSymbolStrip.NONE,
             bolt_requested=False,
         ),
         command=("clang", str(obj), "-o", str(output)),
