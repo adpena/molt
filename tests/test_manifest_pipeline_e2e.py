@@ -370,8 +370,7 @@ def test_native_stdlib_objects_reuse_across_code_slot_layouts() -> None:
     from molt.memory_guard_paths import harness_guard_artifact_dir
     from molt.toolchain_identity import stable_file_content_identity
     from molt.cli.function_records import decode_lowering_record
-    from molt.cli.source_record_store import STORE_NAME
-    from molt.default_paths import SHARED_SOURCE_RECORDS_DIRECTORY
+    from molt.cli.source_record_store import STORE_RELATIVE_PATH
     import sqlite3
     from tests.executable_test_support import native_executable_name
 
@@ -462,7 +461,7 @@ def test_native_stdlib_objects_reuse_across_code_slot_layouts() -> None:
             assert output.is_file()
             # Inspect the real producer records from this same build. Object
             # reuse must not turn a missing source selection into completeness.
-            source_store = cache / SHARED_SOURCE_RECORDS_DIRECTORY / STORE_NAME
+            source_store = cache / STORE_RELATIVE_PATH
             assert source_store.is_file()
             with sqlite3.connect(source_store.as_uri() + "?mode=ro", uri=True) as db:
                 producer_rows = db.execute(

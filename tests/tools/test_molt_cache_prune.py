@@ -1211,11 +1211,10 @@ def test_global_budget_combines_all_source_record_kinds_and_file_entries(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from molt.cli import source_record_store as records
-    from molt.default_paths import SHARED_SOURCE_RECORDS_DIRECTORY
 
     module = _load_molt_cache_prune()
     cache = tmp_path / "cache"
-    store = records.source_record_store(cache / SHARED_SOURCE_RECORDS_DIRECTORY)
+    store = records.source_record_store(cache)
     clock = [100 * 86400 * 1_000_000_000]
     install_module_view(monkeypatch, "time", time, records, time_ns=lambda: clock[0])
     kinds: tuple[records.RecordKind, ...] = (
@@ -1263,10 +1262,9 @@ def test_source_record_dry_run_and_age_policy_preserve_database_owner(
 ) -> None:
     import sqlite3
     from molt.cli import source_record_store as records
-    from molt.default_paths import SHARED_SOURCE_RECORDS_DIRECTORY
 
     cache = tmp_path / "cache"
-    store = records.source_record_store(cache / SHARED_SOURCE_RECORDS_DIRECTORY)
+    store = records.source_record_store(cache)
     assert store.put("module-lowering", "old", b"payload", generation="g")
     with sqlite3.connect(store.path) as connection:
         connection.execute(
@@ -1295,10 +1293,9 @@ def test_source_record_prune_cannot_delete_a_changed_observation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str, future_timestamp: bool
 ) -> None:
     from molt.cli import source_record_store as records
-    from molt.default_paths import SHARED_SOURCE_RECORDS_DIRECTORY
 
     cache = tmp_path / "cache"
-    store = records.source_record_store(cache / SHARED_SOURCE_RECORDS_DIRECTORY)
+    store = records.source_record_store(cache)
     clock = [100 * 86400 * 1_000_000_000]
     install_module_view(monkeypatch, "time", time, records, time_ns=lambda: clock[0])
     assert store.put("module-analysis", "k", b"observed", generation="g")
@@ -1338,10 +1335,9 @@ def test_source_record_prune_cannot_delete_a_changed_observation(
 
 def test_corrupt_source_database_is_reported_and_never_unlinked(tmp_path: Path) -> None:
     from molt.cli import source_record_store as records
-    from molt.default_paths import SHARED_SOURCE_RECORDS_DIRECTORY
 
     root = tmp_path / "cache"
-    database = root / SHARED_SOURCE_RECORDS_DIRECTORY / records.STORE_NAME
+    database = root / records.STORE_RELATIVE_PATH
     database.parent.mkdir(parents=True)
     database.write_bytes(b"corrupt optional records")
     before = (database.stat().st_ino, database.read_bytes())
@@ -1354,29 +1350,23 @@ def test_corrupt_source_database_is_reported_and_never_unlinked(tmp_path: Path) 
     assert (database.stat().st_ino, database.read_bytes()) == before
 
 
-def test_source_record_busy_migration_is_reported_separately(tmp_path: Path) -> None:
+def test_source_record_busy_initialization_is_reported_separately(
+    tmp_path: Path,
+) -> None:
     import sqlite3
-    from molt.cli.source_record_store import STORE_NAME
+    from molt.cli.source_record_store import STORE_RELATIVE_PATH
     from molt.default_paths import SHARED_SOURCE_RECORDS_DIRECTORY
 
     cache = tmp_path / "cache"
     record_root = cache / SHARED_SOURCE_RECORDS_DIRECTORY
     record_root.mkdir(parents=True)
-    database = record_root / STORE_NAME
+    database = cache / STORE_RELATIVE_PATH
+    database.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(database, isolation_level=None)
     try:
-        connection.execute("PRAGMA auto_vacuum=INCREMENTAL")
-        connection.execute("PRAGMA journal_mode=WAL")
-        # An actual historical store awaiting the metadata migration. A peer
-        # writer owns its transaction; the nonwaiting pruner must defer it.
-        connection.executescript("""
-            CREATE TABLE records(kind TEXT,key TEXT,generation TEXT,payload BLOB,
-                PRIMARY KEY(kind,key)) WITHOUT ROWID;
-            CREATE INDEX records_generation ON records(generation);
-            CREATE TABLE generations(generation TEXT PRIMARY KEY,used_ns INTEGER) WITHOUT ROWID;
-            CREATE TABLE trims(singleton INTEGER PRIMARY KEY,trimmed_ns INTEGER);
-            INSERT INTO records VALUES('module-lowering','old','g',X'616263');
-        """)
+        # A store file awaiting initialization. A peer writer owns its
+        # transaction; the nonwaiting pruner must defer it.
+        connection.execute("CREATE TABLE sentinel(value BLOB)")
         identity = database.stat().st_ino
         connection.execute("BEGIN IMMEDIATE")
         result = _load_molt_cache_prune()._prune(
@@ -1385,9 +1375,6 @@ def test_source_record_busy_migration_is_reported_separately(tmp_path: Path) -> 
         assert result["source_record_maintenance_busy"] is True
         assert result["source_record_maintenance_failed"] is False
         assert result["entries_failed"] == result["entries_removed"] == 0
-        assert connection.execute("SELECT payload FROM records").fetchall() == [
-            (b"abc",)
-        ]
         assert database.stat().st_ino == identity
         connection.execute("COMMIT")
         completed = _load_molt_cache_prune()._prune(
@@ -1395,35 +1382,35 @@ def test_source_record_busy_migration_is_reported_separately(tmp_path: Path) -> 
         )
         assert completed["source_record_maintenance_busy"] is False
         assert completed["entries_failed"] == 0
-        assert completed["source_records_removed"] == 1
-        assert connection.execute("SELECT payload FROM records").fetchall() == []
         assert database.stat().st_ino == identity
+        assert connection.execute("PRAGMA user_version").fetchone() != (0,)
     finally:
         connection.close()
 
 
 def test_dry_run_reports_an_unmigrated_store_without_failing(tmp_path: Path) -> None:
-    # A dry run opens the store read-only, so it cannot migrate a historical
-    # schema; that is an unmigrated store to report, not a failed entry. The
-    # writing sweep migrates it and manages its rows.
+    # A dry run opens the store without initializing it, so an uninitialized
+    # store is one to report, not a failed entry. The writing sweep
+    # initializes it.
     import sqlite3
-    from molt.cli.source_record_store import STORE_NAME
+    from molt.cli.source_record_store import STORE_RELATIVE_PATH, source_record_store
+    from molt.file_locks import _try_acquire_file_lock, _release_file_lock
     from molt.default_paths import SHARED_SOURCE_RECORDS_DIRECTORY
 
     cache = tmp_path / "cache"
     record_root = cache / SHARED_SOURCE_RECORDS_DIRECTORY
     record_root.mkdir(parents=True)
-    connection = sqlite3.connect(record_root / STORE_NAME, isolation_level=None)
+    (cache / STORE_RELATIVE_PATH).parent.mkdir(parents=True, exist_ok=True)
+    lease = _try_acquire_file_lock(
+        source_record_store(cache).lifetime_lock, shared=True
+    )
+    assert lease is not None
+    connection = sqlite3.connect(cache / STORE_RELATIVE_PATH, isolation_level=None)
     try:
-        connection.executescript("""
-            CREATE TABLE records(kind TEXT,key TEXT,generation TEXT,payload BLOB,
-                PRIMARY KEY(kind,key)) WITHOUT ROWID;
-            CREATE TABLE generations(generation TEXT PRIMARY KEY,used_ns INTEGER) WITHOUT ROWID;
-            CREATE TABLE trims(singleton INTEGER PRIMARY KEY,trimmed_ns INTEGER);
-            INSERT INTO records VALUES('module-lowering','old','g',X'616263');
-        """)
+        connection.execute("CREATE TABLE sentinel(value BLOB)")
     finally:
         connection.close()
+        _release_file_lock(lease)
     module = _load_molt_cache_prune()
 
     dry = module._prune(cache, max_bytes=0, max_age_days=None, dry_run=True)
@@ -1436,17 +1423,173 @@ def test_dry_run_reports_an_unmigrated_store_without_failing(tmp_path: Path) -> 
 
     swept = module._prune(cache, max_bytes=0, max_age_days=None, dry_run=False)
     assert swept["source_record_store_unmigrated"] is False
-    assert swept["entries_failed"] == 0 and swept["source_records_removed"] == 1
+    assert swept["entries_failed"] == 0
+
+
+def _source_namespace_peer(cache_text, channel):
+    import sqlite3
+    from molt.cli import source_record_store as records
+    from molt.default_paths import shared_cache_lock_path
+    from molt.file_locks import _try_acquire_file_lock, _release_file_lock
+
+    cache = Path(cache_text)
+    namespace = f"v{records._SCHEMA_VERSION - 1}"
+    directory = cache / records.SHARED_SOURCE_RECORDS_DIRECTORY / namespace
+    lock = shared_cache_lock_path(cache, f"source-records.{namespace}")
+    lifetime = _try_acquire_file_lock(lock, shared=True)
+    assert lifetime is not None
+    directory.mkdir(parents=True)
+    database = sqlite3.connect(directory / "records.sqlite", isolation_level=None)
+    try:
+        database.execute("PRAGMA journal_mode=WAL")
+        database.execute("CREATE TABLE witness(value TEXT)")
+        database.execute("INSERT INTO witness VALUES('before')")
+        channel.send("ready")
+        assert channel.recv() == "write"
+        database.execute("INSERT INTO witness VALUES('after')")
+        channel.send(
+            (
+                database.execute("SELECT value FROM witness").fetchall(),
+                database.execute("PRAGMA integrity_check").fetchone(),
+            )
+        )
+        assert channel.recv() == "close"
+    finally:
+        database.close()
+        _release_file_lock(lifetime)
+        channel.close()
+
+
+def test_source_namespace_retirement_waits_for_real_peer_and_preserves_other_versions(
+    tmp_path,
+):
+    import multiprocessing
+    import sqlite3
+    from molt.cli import source_record_store as records
+    from molt.default_paths import shared_cache_lock_path
+
+    cache = tmp_path / "cache"
+    root = cache / records.SHARED_SOURCE_RECORDS_DIRECTORY
+    root.mkdir(parents=True)
+    future = root / f"v{records._SCHEMA_VERSION + 1}"
+    future.mkdir()
+    (future / "records.sqlite").write_bytes(b"future schema")
+    legacy = root / "source_records.sqlite"
+    peer = sqlite3.connect(legacy, isolation_level=None)
+    peer.execute("PRAGMA journal_mode=WAL")
+    peer.execute("CREATE TABLE witness(value TEXT)")
+    peer.execute("INSERT INTO witness VALUES('legacy')")
+    legacy_lock = root / "source_records.sqlite.initialize.lock"
+    legacy_lock.write_bytes(b"legacy control")
+    legacy_files = {str(path) for path in root.iterdir() if path.is_file()}
+    ctx = multiprocessing.get_context("spawn")
+    parent, channel = ctx.Pipe()
+    child = ctx.Process(target=_source_namespace_peer, args=(str(cache), channel))
+    child.start()
+    channel.close()
+    namespace = f"v{records._SCHEMA_VERSION - 1}"
+    directory = root / namespace
+    lock = shared_cache_lock_path(cache, f"source-records.{namespace}")
+    module = _load_molt_cache_prune()
+    try:
+        assert parent.poll(30) and parent.recv() == "ready"
+        observed = {p.name: p.stat().st_ino for p in directory.iterdir()}
+        busy = module._prune(cache, max_bytes=0, max_age_days=None, dry_run=False)
+        assert busy["entries_busy"] == 1 and busy["entries_removed"] == 0
+        assert {p.name: p.stat().st_ino for p in directory.iterdir()} == observed
+        assert set(busy["legacy_source_record_state"]) == legacy_files
+        parent.send("write")
+        assert parent.poll(30)
+        assert parent.recv() == ([("before",), ("after",)], ("ok",))
+        parent.send("close")
+        child.join(30)
+        assert child.exitcode == 0
+        retired = module._prune(cache, max_bytes=0, max_age_days=None, dry_run=False)
+        assert retired["entries_removed"] == 1 and retired["entries_failed"] == 0
+        assert not directory.exists() and lock.exists()
+        assert not lock.is_relative_to(root), (
+            "lifetime control survives payload retirement"
+        )
+        assert (future / "records.sqlite").read_bytes() == b"future schema"
+        assert all(Path(path).exists() for path in legacy_files)
+        assert peer.execute("SELECT value FROM witness").fetchall() == [("legacy",)]
+        assert peer.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        # The already-deployed v2 collector only recognizes flat regular files;
+        # it cannot mistake any version namespace directory for a database.
+        import re
+
+        old_flat = re.compile(
+            r"source_records(?:\.v[0-9]+)?\.sqlite(?:-wal|-shm|\.initialize\.lock)?"
+        )
+        assert not any(
+            old_flat.fullmatch(path.name) for path in root.iterdir() if path.is_dir()
+        )
+    finally:
+        parent.close()
+        peer.close()
+        if child.is_alive():
+            child.terminate()
+        child.join(30)
+
+
+def test_source_namespace_reclamation_failure_cannot_mix_wal_generations(
+    tmp_path, monkeypatch
+):
+    import sqlite3
+    from molt.cli import source_record_store as records
+    from molt import file_publication as publication
+    from molt.file_locks import _try_acquire_file_lock, _release_file_lock
+
+    cache = tmp_path / "cache"
+    root, lock = records.source_record_namespace_paths(
+        cache, f"v{records._SCHEMA_VERSION - 1}"
+    )
+    root.mkdir(parents=True)
+    with sqlite3.connect(root / "records.sqlite") as old:
+        old.execute("CREATE TABLE witness(value TEXT)")
+        old.execute("INSERT INTO witness VALUES('old')")
+    # An interrupted physical reclamation after the live name was retired.
+    real_delete = publication.delete_path
+
+    def partial_delete(path):
+        (path / "records.sqlite").unlink()
+        (path / "records.sqlite-wal").write_bytes(b"old incomplete WAL")
+        return False, "fixture sharing violation"
+
+    monkeypatch.setattr(publication, "delete_path", partial_delete)
+    module = _load_molt_cache_prune()
+    first = module._prune(cache, max_bytes=0, max_age_days=None, dry_run=False)
+    assert first["entries_failed"] == 1 and not root.exists()
+    residue = [
+        p for p in root.parent.iterdir() if p.name.startswith(".molt-retired-v1-")
+    ]
+    assert len(residue) == 1
+    lease = _try_acquire_file_lock(lock, shared=True)
+    assert lease is not None
+    root.mkdir()
+    fresh = sqlite3.connect(root / "records.sqlite", isolation_level=None)
+    try:
+        fresh.execute("PRAGMA journal_mode=WAL")
+        fresh.execute("CREATE TABLE witness(value TEXT)")
+        fresh.execute("INSERT INTO witness VALUES('new')")
+        monkeypatch.setattr(publication, "delete_path", real_delete)
+        second = module._prune(cache, max_bytes=0, max_age_days=None, dry_run=False)
+        assert second["entries_busy"] == 1 and second["entries_failed"] == 0
+        assert not any(p.exists() for p in residue)
+        assert fresh.execute("SELECT value FROM witness").fetchall() == [("new",)]
+        assert fresh.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    finally:
+        fresh.close()
+        _release_file_lock(lease)
 
 
 def test_row_batches_commit_before_interleaved_file_eviction(tmp_path, monkeypatch):
     import sqlite3
     from contextlib import closing
     from molt.cli import source_record_store as records
-    from molt.default_paths import SHARED_SOURCE_RECORDS_DIRECTORY
 
     cache = tmp_path / "cache"
-    store = records.source_record_store(cache / SHARED_SOURCE_RECORDS_DIRECTORY)
+    store = records.source_record_store(cache)
     for key in ("first", "second", "third"):
         assert store.put("module-lowering", key, key.encode(), generation="g")
     peer = sqlite3.connect(store.path, isolation_level=None)
@@ -1495,10 +1638,9 @@ def test_row_batches_commit_before_interleaved_file_eviction(tmp_path, monkeypat
 def test_later_zero_delete_sweep_continues_bounded_physical_reclamation(tmp_path):
     import sqlite3
     from molt.cli import source_record_store as records
-    from molt.default_paths import SHARED_SOURCE_RECORDS_DIRECTORY
 
     cache = tmp_path / "cache"
-    store = records.source_record_store(cache / SHARED_SOURCE_RECORDS_DIRECTORY)
+    store = records.source_record_store(cache)
     for index in range(256):
         assert store.put("module-lowering", str(index), b"x" * 8192, generation="g")
     peer = sqlite3.connect(store.path)
@@ -1533,10 +1675,9 @@ def test_global_row_budget_replaces_generation_count_retirement(tmp_path, monkey
     import sqlite3
     from contextlib import closing
     from molt.cli import source_record_store as records
-    from molt.default_paths import SHARED_SOURCE_RECORDS_DIRECTORY
 
     cache = tmp_path / "cache"
-    store = records.source_record_store(cache / SHARED_SOURCE_RECORDS_DIRECTORY)
+    store = records.source_record_store(cache)
     clock = [100 * 86400 * 1_000_000_000]
     install_module_view(monkeypatch, "time", time, records, time_ns=lambda: clock[0])
     kinds = ("import-scan", "intrinsic-facts", "module-analysis", "module-lowering")

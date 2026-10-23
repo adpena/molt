@@ -1037,13 +1037,19 @@ fail closed; the inventory itself makes no claim about current file bytes.
 - `MOLT_CLI_PROFILE=<dir>/{pid}.prof` writes a cProfile of each `molt` command;
   `{pid}` keeps parallel builds apart. Read it with `python -m pstats`.
 - Import scans, intrinsic source facts, module analyses and binary module
-  lowerings share `source_records.sqlite` under
+  lowerings share `v<schema>/records.sqlite` (one namespace per schema
+  version, so checkouts of different versions keep independent stores) under
   `<Molt cache>/toolchain_source_records` (`molt.cli.source_record_store`). Every
-  project/session uses that store; no project copy is hydrated. Source/context
+  project/session uses that store; no project copy is hydrated. Connection
+  lifetime holds one shared cache-control lock; warm record operations add no
+  lock syscall. The pruner exclusively locks and atomically retires only older
+  namespaces. Flat legacy stores remain visible in `legacy_source_record_state`
+  until their owners can be reconciled; their SQLite/WAL/SHM files are never
+  independently unlinked. Source/context
   admission precedes recency refresh. Exact compiler generation remains part
   of read admission; retention belongs solely to the configured global byte/age
-  cache budget for all four kinds. Schema three retires the former four-generation,
-  seven-day trim and its metadata after preserving legacy row observations.
+  cache budget for all four kinds. Schema three contains only record retention
+  metadata; other schema namespaces and flat legacy stores are never migrated.
   Run the existing `molt_cache_prune.py`
   command to inspect or apply it. Its totals combine file bytes and logical
   source payload bytes; separate DB/WAL/SHM measurements report physical storage.
