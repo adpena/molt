@@ -244,3 +244,52 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         _ => None,
     }
 }
+
+#[cfg(not(feature = "stdlib_http"))]
+const _: () = {
+    use super::declared_absent::*;
+    #[allow(unused_imports)]
+    use crate::*;
+    let _ = molt_urllib_quote;
+    let _ = molt_urllib_quote_plus;
+    let _ = molt_urllib_unquote;
+    let _ = molt_urllib_unquote_plus;
+    let _ = molt_urllib_parse_qsl;
+    let _ = molt_urllib_parse_qs;
+    let _ = molt_urllib_urlencode;
+    let _ = molt_urllib_urlsplit;
+    let _ = molt_urllib_urlparse;
+    let _ = molt_urllib_urlunsplit;
+    let _ = molt_urllib_urlunparse;
+    let _ = molt_urllib_urldefrag;
+    let _ = molt_urllib_urljoin;
+    let _ = molt_urllib_error_urlerror_init;
+    let _ = molt_urllib_error_urlerror_str;
+    let _ = molt_urllib_error_httperror_init;
+    let _ = molt_urllib_error_httperror_str;
+    let _ = molt_urllib_error_content_too_short_init;
+    let _ = molt_urllib_request_request_init;
+    let _ = molt_urllib_request_opener_init;
+    let _ = molt_urllib_request_add_handler;
+    let _ = molt_urllib_request_open;
+    let _ = molt_urllib_request_process_http_error;
+    let _ = molt_urllib_request_response_read;
+    let _ = molt_urllib_request_response_readinto;
+    let _ = molt_urllib_request_response_read1;
+    let _ = molt_urllib_request_response_readinto1;
+    let _ = molt_urllib_request_response_readline;
+    let _ = molt_urllib_request_response_readlines;
+    let _ = molt_urllib_request_response_readable;
+    let _ = molt_urllib_request_response_writable;
+    let _ = molt_urllib_request_response_seekable;
+    let _ = molt_urllib_request_response_tell;
+    let _ = molt_urllib_request_response_seek;
+    let _ = molt_urllib_request_response_close;
+    let _ = molt_urllib_request_response_drop;
+    let _ = molt_urllib_request_response_geturl;
+    let _ = molt_urllib_request_response_getcode;
+    let _ = molt_urllib_request_response_getreason;
+    let _ = molt_urllib_request_response_getheader;
+    let _ = molt_urllib_request_response_getheaders_list;
+    let _ = molt_urllib_request_response_message;
+};

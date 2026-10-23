@@ -2,7 +2,6 @@
 // runtime/molt-backend-wasm/src/wasm_abi_manifest.toml
 // runtime/molt-runtime/src/intrinsics/manifest.pyi
 // src/molt/builtin_callables.py
-// runtime/molt-runtime/src/intrinsics/categories.toml
 // DO NOT EDIT BY HAND.
 
 use super::import_tokens::WasmRuntimeImport;

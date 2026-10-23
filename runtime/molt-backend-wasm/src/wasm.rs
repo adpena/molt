@@ -1,4 +1,4 @@
-pub use crate::wasm_options::{WasmCompileOptions, WasmProfile};
+pub use crate::wasm_options::{WasmCompileOptions, WasmProfile, WasmRuntimePollSlots};
 mod backend;
 pub(crate) mod body;
 mod class_def_layout;

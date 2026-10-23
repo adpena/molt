@@ -3,7 +3,7 @@ use super::*;
 // Registration must succeed before changing timeout interpretation or releasing
 // a float-subclass timeout whose finalizer can reenter the waiter.
 // The caller owns the payload across release; Some admits reference slot two.
-#[cfg(any(molt_has_net_io, target_arch = "wasm32", test))]
+#[cfg(any(molt_net, test))]
 pub(crate) unsafe fn publish_registered_wait(
     py: &PyToken<'_>,
     owner: *mut u8,

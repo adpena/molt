@@ -913,7 +913,12 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
         complement.argv.index("--features") + 1
     ].split(",")
     assert core.dependencies == complement.dependencies == ()
-    assert {"regex::", "text_storage::"} <= set(core.argv[core.argv.index("--") + 1 :])
+    # Text storage moved to the object-model crate. Its whole library is owned
+    # by the compiler cohort; a runtime-cohort filter would select no test.
+    assert "molt-lang-obj-model" in test_packages(complement)
+    assert "--lib" in complement.argv
+    assert "regex::" in core.argv[core.argv.index("--") + 1 :]
+    assert "text_storage::" not in core.argv[core.argv.index("--") + 1 :]
     assert set(core.toolchains) == {"rustc", "cargo", "node", "wasm-ld"}
     assert proof_plan.cargo_native_units(core.data) == {"target": ["c"]}
     assert "seq_snapshot_bridge::" in core.argv[core.argv.index("--") + 1 :]
@@ -946,13 +951,15 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
         assert "--nocapture" in command.argv[command.argv.index("--") + 1 :]
     assert "profile.dev-fast.package.molt-runtime.opt-level=0" in core.argv
     filters = core.argv[core.argv.index("--") + 1 :]
+    # HF-487 removes the disabled-feature stub producer, including its tests.
+    # A stale filter silently selects no test and cannot qualify that boundary.
+    assert "async_rt::net_stubs::" not in filters
     assert {
         "errno_build_tests::",
         "socket_constants::tests::",
         "libc_compat::tests::synthetic_errno_",
         "wasm_abi::",
         "async_rt::channels::",
-        "async_rt::net_stubs::",
         "concurrency::gil::tests::",
         "numeric_ratio::",
         "math::statistics_reduction_tests::",
@@ -1015,7 +1022,8 @@ def test_compression_export_proofs_select_both_feature_coordinates() -> None:
     assert "test_builtins" in [
         cargo[index + 1] for index, arg in enumerate(cargo[:-1]) if arg == "--test"
     ]
-    assert "test_raw_compression_c_exports_are_linkable" in filters
+    # The feature-off runtime has no compression symbol to witness.
+    assert "test_raw_compression_c_exports_are_linkable" not in filters
 
 
 def test_extension_admission_proof_executes_required_public_resolver_witness() -> None:

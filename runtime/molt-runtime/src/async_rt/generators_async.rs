@@ -18,9 +18,10 @@ use crate::*;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{process_task_state, thread_task_state};
 
+#[cfg(molt_net)]
+use super::generators::asyncio_connect_trace_enabled;
 use super::generators::{
-    asyncio_connect_trace_enabled, debug_current_task, promise_trace_enabled, resolve_sleep_target,
-    sleep_trace_enabled,
+    debug_current_task, promise_trace_enabled, resolve_sleep_target, sleep_trace_enabled,
 };
 use super::scheduler::trace_task_result;
 
@@ -32,8 +33,12 @@ pub(crate) use generators_async_future::*;
 mod generators_async_pyops;
 pub(crate) use generators_async_pyops::*;
 
+// Socket, stream, fd-watcher and accept-loop futures wait on the networking
+// I/O driver, so they exist only with a networking provider (HF-487).
+#[cfg(molt_net)]
 #[path = "generators_async_io.rs"]
 mod generators_async_io;
+#[cfg(molt_net)]
 pub(crate) use generators_async_io::*;
 
 /// # Safety
@@ -621,6 +626,93 @@ pub unsafe extern "C" fn molt_asyncio_event_set_waiters(
             }
             dec_ref_bits(_py, waiter_tuple_bits);
             MoltObject::from_int(woke).bits()
+        })
+    }
+}
+
+// StreamReader buffer edits are pure bytearray operations; they need no I/O
+// driver, unlike the stream futures in `generators_async_io`.
+
+/// # Safety
+/// - `buffer_bits` must be bytes-like.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_asyncio_stream_buffer_snapshot(buffer_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let out_bits = molt_bytes_from_obj(buffer_bits);
+        if exception_pending(_py) {
+            return out_bits;
+        }
+        out_bits
+    })
+}
+
+/// # Safety
+/// - `buffer_bits` must be a mutable bytearray-like object.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_asyncio_stream_buffer_consume(
+    buffer_bits: u64,
+    count_bits: u64,
+) -> u64 {
+    unsafe {
+        crate::with_gil_entry_nopanic!(_py, {
+            let Some(mut count) = to_i64(obj_from_bits(count_bits)) else {
+                return raise_exception::<u64>(
+                    _py,
+                    "TypeError",
+                    "stream consume count must be int",
+                );
+            };
+            if count <= 0 {
+                return MoltObject::from_int(0).bits();
+            }
+            let len_bits = molt_len(buffer_bits);
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            let Some(buf_len) = to_i64(obj_from_bits(len_bits)) else {
+                if !obj_from_bits(len_bits).is_none() {
+                    dec_ref_bits(_py, len_bits);
+                }
+                return raise_exception::<u64>(_py, "TypeError", "stream buffer must be sized");
+            };
+            if !obj_from_bits(len_bits).is_none() {
+                dec_ref_bits(_py, len_bits);
+            }
+            if buf_len <= 0 {
+                return MoltObject::from_int(0).bits();
+            }
+            count = count.min(buf_len);
+
+            if count == buf_len {
+                let clear_bits = asyncio_call_method0(_py, buffer_bits, b"clear");
+                if exception_pending(_py) {
+                    return clear_bits;
+                }
+                if !obj_from_bits(clear_bits).is_none() {
+                    dec_ref_bits(_py, clear_bits);
+                }
+                return MoltObject::from_int(count).bits();
+            }
+
+            let slice_bits = molt_slice_new(
+                MoltObject::from_int(0).bits(),
+                MoltObject::from_int(count).bits(),
+                MoltObject::none().bits(),
+            );
+            if obj_from_bits(slice_bits).is_none() {
+                return slice_bits;
+            }
+            let del_bits = asyncio_call_method1(_py, buffer_bits, b"__delitem__", slice_bits);
+            if !obj_from_bits(slice_bits).is_none() {
+                dec_ref_bits(_py, slice_bits);
+            }
+            if exception_pending(_py) {
+                return del_bits;
+            }
+            if !obj_from_bits(del_bits).is_none() {
+                dec_ref_bits(_py, del_bits);
+            }
+            MoltObject::from_int(count).bits()
         })
     }
 }

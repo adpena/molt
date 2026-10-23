@@ -1167,6 +1167,7 @@ callable_arity = 3
 name = "gpu_kernel_descriptor_set"
 boxed_call = true
 type = 3
+cfg = 'feature = "molt_gpu_primitives"'
 
 [[import]]
 name = "gpu_thread_id"
@@ -2917,6 +2918,7 @@ callable_arity = 2
 [[import]]
 name = "cbor_parse_scalar"
 type = 16
+cfg = 'feature = "stdlib_serialization"'
 
 [[import]]
 name = "cbor_parse_scalar_obj"
@@ -2939,6 +2941,7 @@ callable_arity = 4
 [[import]]
 name = "msgpack_parse_scalar"
 type = 16
+cfg = 'feature = "stdlib_serialization"'
 
 [[import]]
 name = "msgpack_parse_scalar_obj"
@@ -3042,76 +3045,91 @@ poll_table_slot = 3
 [[import]]
 name = "asyncio_fd_watcher_poll"
 type = 2
+cfg = 'feature = "stdlib_net", not(target_os = "windows")'
 poll_table_slot = 22
 
 [[import]]
 name = "asyncio_server_accept_loop_poll"
 type = 2
+cfg = 'feature = "stdlib_net", not(target_os = "windows")'
 poll_table_slot = 23
 
 [[import]]
 name = "asyncio_sock_accept_poll"
 type = 2
+cfg = 'feature = "stdlib_net", not(target_os = "windows")'
 poll_table_slot = 16
 
 [[import]]
 name = "asyncio_sock_connect_poll"
 type = 2
+cfg = 'feature = "stdlib_net", not(target_os = "windows")'
 poll_table_slot = 15
 
 [[import]]
 name = "asyncio_sock_recv_into_poll"
 type = 2
+cfg = 'feature = "stdlib_net", not(target_os = "windows")'
 poll_table_slot = 17
 
 [[import]]
 name = "asyncio_sock_recv_poll"
 type = 2
+cfg = 'feature = "stdlib_net", not(target_os = "windows")'
 poll_table_slot = 14
 
 [[import]]
 name = "asyncio_sock_recvfrom_into_poll"
 type = 2
+cfg = 'feature = "stdlib_net", not(target_os = "windows")'
 poll_table_slot = 20
 
 [[import]]
 name = "asyncio_sock_recvfrom_poll"
 type = 2
+cfg = 'feature = "stdlib_net", not(target_os = "windows")'
 poll_table_slot = 19
 
 [[import]]
 name = "asyncio_sock_sendall_poll"
 type = 2
+cfg = 'feature = "stdlib_net", not(target_os = "windows")'
 poll_table_slot = 18
 
 [[import]]
 name = "asyncio_sock_sendto_poll"
 type = 2
+cfg = 'feature = "stdlib_net", not(target_os = "windows")'
 poll_table_slot = 21
 
 [[import]]
 name = "asyncio_socket_reader_read_poll"
 type = 2
+cfg = 'feature = "stdlib_net", not(target_os = "windows")'
 poll_table_slot = 9
 
 [[import]]
 name = "asyncio_socket_reader_readline_poll"
 type = 2
+cfg = 'feature = "stdlib_net", not(target_os = "windows")'
 poll_table_slot = 10
 
 [[import]]
 name = "asyncio_stream_reader_read_poll"
 type = 2
+cfg = 'feature = "stdlib_net", not(target_os = "windows")'
 poll_table_slot = 11
 
 [[import]]
 name = "asyncio_stream_reader_readline_poll"
 type = 2
+cfg = 'feature = "stdlib_net", not(target_os = "windows")'
 poll_table_slot = 12
 
 [[import]]
 name = "asyncio_stream_send_all_poll"
 type = 2
+cfg = 'feature = "stdlib_net", not(target_os = "windows")'
 poll_table_slot = 13
 
 [[import]]
@@ -5121,6 +5139,7 @@ callable_arity = 1
 [[import]]
 name = "ws_connect"
 type = 16
+cfg = 'feature = "stdlib_net", not(target_os = "windows")'
 
 [[import]]
 name = "ws_connect_obj"
@@ -5167,6 +5186,7 @@ callable_arity = 2
 name = "ws_wait"
 type = 2
 poll_table_slot = 8
+cfg = 'feature = "stdlib_net", not(target_os = "windows")'
 
 [[import]]
 name = "ws_wait_new"

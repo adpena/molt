@@ -492,7 +492,7 @@ pub unsafe extern "C" fn molt_process_poll(obj_bits: u64) -> i64 {
             // Directly spawned process futures own this retry themselves;
             // inline futures register their scheduled awaiter at the shared
             // sleep_register_impl boundary after returning Pending.
-            crate::async_rt::io_poller::register_host_progress_retry(_py, obj_ptr);
+            crate::async_rt::host_progress::register_host_progress_retry(_py, obj_ptr);
             return pending_bits_i64();
         }
         raise_exception::<i64>(_py, "RuntimeError", "process wait failed")

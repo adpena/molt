@@ -248,3 +248,56 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         _ => None,
     }
 }
+
+#[cfg(not(feature = "stdlib_http"))]
+const _: () = {
+    use super::declared_absent::*;
+    #[allow(unused_imports)]
+    use crate::*;
+    let _ = molt_http_cookiejar_new;
+    let _ = molt_http_cookiejar_len;
+    let _ = molt_http_cookiejar_clear;
+    let _ = molt_http_cookiejar_extract;
+    let _ = molt_http_cookiejar_header_for_url;
+    let _ = molt_http_cookies_parse;
+    let _ = molt_http_cookies_render_morsel;
+    let _ = molt_http_client_connection_new;
+    let _ = molt_http_client_connection_new_https;
+    let _ = molt_http_client_connection_putrequest;
+    let _ = molt_http_client_validate_header_name;
+    let _ = molt_http_client_validate_header_value;
+    let _ = molt_http_client_connection_send;
+    let _ = molt_http_client_connection_getresponse;
+    let _ = molt_http_client_connection_close;
+    let _ = molt_http_client_connection_drop;
+    let _ = molt_http_message_new;
+    let _ = molt_http_message_parse;
+    let _ = molt_http_message_set_raw;
+    let _ = molt_http_message_get;
+    let _ = molt_http_message_get_all;
+    let _ = molt_http_message_items;
+    let _ = molt_http_message_contains;
+    let _ = molt_http_message_len;
+    let _ = molt_http_message_drop;
+    let _ = molt_http_parse_header_pairs;
+    let _ = molt_http_client_urlsplit;
+    let _ = molt_http_client_response_read;
+    let _ = molt_http_client_response_close;
+    let _ = molt_http_client_response_drop;
+    let _ = molt_http_client_response_getstatus;
+    let _ = molt_http_client_response_getreason;
+    let _ = molt_http_client_response_getheader;
+    let _ = molt_http_client_response_getheaders;
+    let _ = molt_http_client_response_message;
+    let _ = molt_http_server_handle_one_request;
+    let _ = molt_http_server_send_response;
+    let _ = molt_http_server_send_response_only;
+    let _ = molt_http_server_send_header;
+    let _ = molt_http_server_end_headers;
+    let _ = molt_http_server_send_error;
+    let _ = molt_http_server_version_string;
+    let _ = molt_http_server_date_time_string;
+    let _ = molt_http_status_reason;
+    let _ = molt_http_status_constants;
+    let _ = molt_http_status_responses;
+};

@@ -53,6 +53,6 @@ pub(crate) use native::IoPoller;
 use native::socket_debug_fd;
 pub use wait_api::*;
 #[cfg(target_arch = "wasm32")]
-pub(crate) use wasm::{HOST_PROGRESS_POLL_SLICE, IoPoller, register_host_progress_retry};
+pub(crate) use wasm::IoPoller;
 #[cfg(molt_has_net_io)]
 use worker::io_worker;

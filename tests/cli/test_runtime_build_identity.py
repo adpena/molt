@@ -1855,8 +1855,17 @@ class _CaptureSession:
         self.verifications = 0
         self.verify = None
         self.respond_to_verify = True
+        self.wait_timeouts = []
 
     def poll(self):
+        return self.returncode
+
+    def wait(self, timeout=None):
+        # The guarded command's own wait: closure follows the child's exit.
+        self.wait_timeouts.append(timeout)
+        assert self.closed
+        self.returncode = self.returncode or 0
+        self.terminal = True
         return self.returncode
 
 
@@ -1879,13 +1888,6 @@ def python_session(tmp_path, monkeypatch, runtime_receipt):
 
             session.fresh_calls.append((command, kwargs))
             return SimpleNamespace(stdout=json.dumps(session.fresh_selection))
-
-        def wait_owned(self, process, **kwargs):
-            assert process is session
-            assert process.closed
-            process.returncode = process.returncode or 0
-            process.terminal = True
-            return process.returncode
 
     monkeypatch.setattr(
         admission.process_guard, "source_command_executor", lambda _prefix: Executor()
@@ -2199,7 +2201,7 @@ def test_build_python_cleanup_retains_owner_and_primary_exception(
     def forbidden_close():
         raise AssertionError("must not close a potentially reader-locked stream")
 
-    monkeypatch.setattr(owner._executor, "wait_owned", blocked_wait)
+    monkeypatch.setattr(session, "wait", blocked_wait)
     monkeypatch.setattr(original_stdout, "close", forbidden_close)
     primary = LookupError("primary operation failed")
     with pytest.raises(LookupError) as caught:
@@ -2218,9 +2220,23 @@ def test_build_python_cleanup_retains_owner_and_primary_exception(
         session.returncode = 0
         return 0
 
-    monkeypatch.setattr(owner._executor, "wait_owned", terminal_wait)
+    monkeypatch.setattr(session, "wait", terminal_wait)
     owner.close()
     assert owner.terminal
+
+
+def test_build_python_close_waits_for_the_helper_exit_without_a_deadline(
+    python_session,
+):
+    """A fixed 10 s bound failed builds that had succeeded when host load
+    slowed the helper's exit (HF-512). After EOF the close waits as
+    `subprocess.Popen.__exit__` does."""
+    admission, selected, session, _calls = python_session
+    owner = admission.BuildPythonAdmission()
+    owner.capture({"MOLT_BUILD_PYTHON": str(selected)})
+    owner.close()
+    assert session.closed and owner.terminal
+    assert session.wait_timeouts == [None]
 
 
 def test_build_python_cleanup_preserves_recorded_failure(

@@ -3,7 +3,7 @@ use crate::runtime_flags::{self, RuntimeFlag};
 use module_retirement::ModuleRetirement;
 
 use crate::PyToken;
-#[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+#[cfg(molt_net)]
 use crate::async_rt::sockets::socket_runtime_state_clear;
 use crate::builtins::attr::clear_attr_tls_caches;
 use crate::builtins::attributes::attributes_clear_runtime_state;
@@ -190,6 +190,7 @@ fn shutdown_started_runtime_workers(_py: &PyToken<'_>, state: &RuntimeState) {
     // Only inspect published owners: teardown must never initialize a service.
     let scheduler = state.scheduler.get();
     let timer = state.sleep_queue.get();
+    #[cfg(molt_net)]
     let poller = state.io_poller.get();
     #[cfg(not(target_arch = "wasm32"))]
     let pool = state.thread_pool.get();
@@ -199,11 +200,11 @@ fn shutdown_started_runtime_workers(_py: &PyToken<'_>, state: &RuntimeState) {
     if let Some(timer) = timer {
         timer.stop();
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(molt_has_net_io)]
     if let Some(poller) = poller {
         poller.stop();
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(molt_wasm_net)]
     if let Some(poller) = poller {
         poller.shutdown();
     }
@@ -212,7 +213,9 @@ fn shutdown_started_runtime_workers(_py: &PyToken<'_>, state: &RuntimeState) {
         pool.stop();
     }
     let executors = crate::builtins::concurrent::concurrent_stop_runtime_workers(state);
-    let any = scheduler.is_some() || timer.is_some() || poller.is_some() || executors;
+    let any = scheduler.is_some() || timer.is_some() || executors;
+    #[cfg(molt_net)]
+    let any = any || poller.is_some();
     #[cfg(not(target_arch = "wasm32"))]
     let any = any || pool.is_some();
     if !any {
@@ -228,7 +231,7 @@ fn shutdown_started_runtime_workers(_py: &PyToken<'_>, state: &RuntimeState) {
         if let Some(timer) = timer {
             closed &= timer.join();
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(molt_has_net_io)]
         if let Some(poller) = poller {
             closed &= poller.join();
         }
@@ -320,7 +323,7 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, mode: Runtime
     clear_stopped_runtime_worker_queues(_py, state);
     trace_shutdown("clear_concurrent_runtime_state");
     concurrent_clear_runtime_state(_py, state);
-    #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
+    #[cfg(molt_net)]
     {
         trace_shutdown("clear_socket_state");
         socket_runtime_state_clear(state);

@@ -187,8 +187,9 @@ fn test_range_builtin_one_arg() {
 
 // Resolve through exact C names, not Rust reexports. These references make the
 // test binary's linker reject a missing ABI symbol without running a compressor.
-// Run this owner with and without stdlib_compression; no nested native build.
-#[cfg(not(target_arch = "wasm32"))]
+// A runtime without stdlib_compression defines neither symbol (HF-487); the
+// generated resolvers' absence probes prove that side at compile time.
+#[cfg(all(feature = "stdlib_compression", not(target_arch = "wasm32")))]
 #[test]
 fn test_raw_compression_c_exports_are_linkable() {
     unsafe extern "C" {
@@ -197,19 +198,14 @@ fn test_raw_compression_c_exports_are_linkable() {
     }
     let deflate = std::hint::black_box(molt_deflate_raw as unsafe extern "C" fn(u64, u64) -> u64);
     let inflate = std::hint::black_box(molt_inflate_raw as unsafe extern "C" fn(u64) -> u64);
-    assert_ne!(deflate as usize, 0);
-    assert_ne!(inflate as usize, 0);
-    #[cfg(feature = "stdlib_compression")]
-    {
-        assert_eq!(
-            deflate as usize,
-            molt_runtime::molt_deflate_raw as *const () as usize
-        );
-        assert_eq!(
-            inflate as usize,
-            molt_runtime::molt_inflate_raw as *const () as usize
-        );
-    }
+    assert_eq!(
+        deflate as usize,
+        molt_runtime::molt_deflate_raw as *const () as usize
+    );
+    assert_eq!(
+        inflate as usize,
+        molt_runtime::molt_inflate_raw as *const () as usize
+    );
 }
 
 #[cfg(all(feature = "stdlib_compression", not(target_arch = "wasm32")))]

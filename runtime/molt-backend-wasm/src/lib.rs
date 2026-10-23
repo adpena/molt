@@ -41,7 +41,7 @@ mod wasm;
 #[cfg(feature = "wasm-backend")]
 pub use wasm::{
     WasmBackend, WasmCompileDiagnostics, WasmCompileOptions, WasmCompileOutput,
-    WasmNumericLaneStats, WasmProfile,
+    WasmNumericLaneStats, WasmProfile, WasmRuntimePollSlots,
 };
 #[cfg(feature = "wasm-backend")]
 mod wasm_abi;

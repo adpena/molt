@@ -21,6 +21,7 @@ pub(crate) mod context;
 pub(crate) mod contextlib;
 pub(crate) mod contextvars;
 pub(crate) mod copy_mod;
+#[cfg(feature = "stdlib_dbm")]
 pub(crate) mod dbm_dumb;
 pub(crate) mod diagnostic_suggestions;
 pub(crate) mod enum_ext;
@@ -48,7 +49,6 @@ pub(crate) mod json;
 #[path = "lzma_wasm.rs"]
 pub(crate) mod lzma;
 pub(crate) mod methods;
-mod micro_stubs;
 pub(crate) mod module_table;
 pub(crate) mod modules;
 pub(crate) mod native_arguments;
@@ -65,6 +65,7 @@ pub(crate) mod platform_mod;
 pub(crate) mod pprint_ext;
 pub(crate) mod punycode;
 pub(crate) mod pwd;
+#[cfg(feature = "stdlib_select")]
 pub(crate) mod select;
 pub(crate) mod shutil;
 pub(crate) mod signal_ext;

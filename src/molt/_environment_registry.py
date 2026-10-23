@@ -8239,6 +8239,16 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
+      "audience": "internal",
+      "default": "",
+      "kind": "int",
+      "name": "MOLT_WASM_RUNTIME_POLL_SLOTS",
+      "output_neutral": false,
+      "owner": "src/molt/cli/wasm_codegen_layout.py",
+      "summary": "molt build strips any inherited value and sets it for the wasm backend process from the bound runtime: a u64 bit mask of the generated poll-table slots whose poll functions that runtime defines (a runtime without stdlib_net lacks the networking poll functions); the backend fills an absent slot with the sentinel and does not import it, refuses a mask with bits outside the generated slots, and unset means every generated slot.",
+      "values": []
+    },
+    {
       "audience": "developer",
       "default": "auto",
       "kind": "enum",

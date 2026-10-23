@@ -169,7 +169,7 @@ unsafe fn asyncio_pending_with_wait(
                 // real task-owned deadline, using the same host-progress
                 // interval as process and socket waits, rather than sleep(0).
                 #[cfg(target_arch = "wasm32")]
-                let delay = crate::async_rt::io_poller::HOST_PROGRESS_POLL_SLICE.as_secs_f64();
+                let delay = crate::async_rt::host_progress::HOST_PROGRESS_POLL_SLICE.as_secs_f64();
                 #[cfg(not(target_arch = "wasm32"))]
                 let delay = 0.0;
                 molt_async_sleep(
@@ -292,6 +292,42 @@ pub extern "C" fn molt_asyncio_fd_watcher_new(
     })
 }
 
+/// Remove a failed registration's pending entry for `fileno` and propagate
+/// the failure. The pending exception is taken before the registry runs
+/// Python code and raised again after it, so the entry is removed and a
+/// cleanup error cannot replace the original one.
+unsafe fn asyncio_fd_watcher_retract(
+    _py: &PyToken<'_>,
+    registry_bits: u64,
+    fileno_bits: u64,
+) -> u64 {
+    unsafe {
+        let failure_bits = if exception_pending(_py) {
+            Some(asyncio_take_pending_exception_bits(_py))
+        } else {
+            None
+        };
+        let removed_bits = asyncio_call_method2(
+            _py,
+            registry_bits,
+            b"pop",
+            fileno_bits,
+            MoltObject::none().bits(),
+        );
+        if exception_pending(_py) {
+            asyncio_clear_pending_exception(_py);
+        } else if !obj_from_bits(removed_bits).is_none() {
+            dec_ref_bits(_py, removed_bits);
+        }
+        let Some(failure_bits) = failure_bits else {
+            return MoltObject::none().bits();
+        };
+        let raised = molt_raise(failure_bits);
+        dec_ref_bits(_py, failure_bits);
+        raised
+    }
+}
+
 /// # Safety
 /// - All arguments must be valid runtime objects.
 #[unsafe(no_mangle)]
@@ -364,49 +400,22 @@ pub unsafe extern "C" fn molt_asyncio_fd_watcher_register(
                 events_bits,
             );
             if obj_from_bits(watcher_bits).is_none() {
-                let cleanup_bits = asyncio_call_method2(
-                    _py,
-                    registry_bits,
-                    b"pop",
-                    fileno_bits,
-                    MoltObject::none().bits(),
-                );
-                if !obj_from_bits(cleanup_bits).is_none() {
-                    dec_ref_bits(_py, cleanup_bits);
-                }
-                return watcher_bits;
+                return asyncio_fd_watcher_retract(_py, registry_bits, fileno_bits);
             }
-            let task_bits = asyncio_call_method1(_py, loop_bits, b"create_task", watcher_bits);
+            // A Task takes a coroutine; the loop awaits this internal poll
+            // future through one, as `asyncio.ensure_future` wraps an awaitable.
+            let task_bits =
+                asyncio_call_method1(_py, loop_bits, b"_spawn_fd_watcher", watcher_bits);
             dec_ref_bits(_py, watcher_bits);
             if exception_pending(_py) {
-                let cleanup_bits = asyncio_call_method2(
-                    _py,
-                    registry_bits,
-                    b"pop",
-                    fileno_bits,
-                    MoltObject::none().bits(),
-                );
-                if !obj_from_bits(cleanup_bits).is_none() {
-                    dec_ref_bits(_py, cleanup_bits);
-                }
-                return task_bits;
+                return asyncio_fd_watcher_retract(_py, registry_bits, fileno_bits);
             }
             let entry_ptr = alloc_tuple(_py, &[callback_bits, args_bits, task_bits]);
             if entry_ptr.is_null() {
-                let cleanup_bits = asyncio_call_method2(
-                    _py,
-                    registry_bits,
-                    b"pop",
-                    fileno_bits,
-                    MoltObject::none().bits(),
-                );
-                if !obj_from_bits(cleanup_bits).is_none() {
-                    dec_ref_bits(_py, cleanup_bits);
-                }
                 if !obj_from_bits(task_bits).is_none() {
                     dec_ref_bits(_py, task_bits);
                 }
-                return MoltObject::none().bits();
+                return asyncio_fd_watcher_retract(_py, registry_bits, fileno_bits);
             }
             let entry_bits = MoltObject::from_ptr(entry_ptr).bits();
             let setitem_bits =

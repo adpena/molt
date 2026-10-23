@@ -83,42 +83,50 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_ssl_protocol_tls_server",
             crate::molt_ssl_protocol_tls_server as *const (),
         )),
-        "molt_ssl_socket_cipher" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_ssl_socket_cipher",
-            crate::molt_ssl_socket_cipher as *const (),
-        )),
         "molt_ssl_socket_close" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ssl_socket_close",
             crate::molt_ssl_socket_close as *const (),
-        )),
-        "molt_ssl_socket_do_handshake" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_ssl_socket_do_handshake",
-            crate::molt_ssl_socket_do_handshake as *const (),
         )),
         "molt_ssl_socket_drop" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ssl_socket_drop",
             crate::molt_ssl_socket_drop as *const (),
         )),
+        #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
+        "molt_ssl_socket_cipher" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_ssl_socket_cipher",
+            crate::molt_ssl_socket_cipher as *const (),
+        )),
+        #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
+        "molt_ssl_socket_do_handshake" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_ssl_socket_do_handshake",
+            crate::molt_ssl_socket_do_handshake as *const (),
+        )),
+        #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
         "molt_ssl_socket_getpeercert" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ssl_socket_getpeercert",
             crate::molt_ssl_socket_getpeercert as *const (),
         )),
+        #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
         "molt_ssl_socket_read" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ssl_socket_read",
             crate::molt_ssl_socket_read as *const (),
         )),
+        #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
         "molt_ssl_socket_unwrap" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ssl_socket_unwrap",
             crate::molt_ssl_socket_unwrap as *const (),
         )),
+        #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
         "molt_ssl_socket_version" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ssl_socket_version",
             crate::molt_ssl_socket_version as *const (),
         )),
+        #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
         "molt_ssl_socket_write" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ssl_socket_write",
             crate::molt_ssl_socket_write as *const (),
         )),
+        #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
         "molt_ssl_wrap_socket" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_ssl_wrap_socket",
             crate::molt_ssl_wrap_socket as *const (),
@@ -126,3 +134,18 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         _ => None,
     }
 }
+
+#[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
+const _: () = {
+    use super::declared_absent::*;
+    #[allow(unused_imports)]
+    use crate::*;
+    let _ = molt_ssl_socket_cipher;
+    let _ = molt_ssl_socket_do_handshake;
+    let _ = molt_ssl_socket_getpeercert;
+    let _ = molt_ssl_socket_read;
+    let _ = molt_ssl_socket_unwrap;
+    let _ = molt_ssl_socket_version;
+    let _ = molt_ssl_socket_write;
+    let _ = molt_ssl_wrap_socket;
+};

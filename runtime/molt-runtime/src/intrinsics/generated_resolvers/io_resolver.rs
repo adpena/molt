@@ -167,14 +167,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_stringio_init",
             crate::molt_stringio_init as *const (),
         )),
-        "molt_io_wait" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_io_wait",
-            crate::molt_io_wait as *const (),
-        )),
-        "molt_io_wait_new" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_io_wait_new",
-            crate::molt_io_wait_new as *const (),
-        )),
         "molt_stream_new" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_stream_new",
             crate::molt_stream_new as *const (),
@@ -219,6 +211,25 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_stream_reader_drop",
             crate::molt_stream_reader_drop as *const (),
         )),
+        #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
+        "molt_io_wait" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_io_wait",
+            crate::molt_io_wait as *const (),
+        )),
+        #[cfg(all(feature = "stdlib_net", not(target_os = "windows")))]
+        "molt_io_wait_new" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_io_wait_new",
+            crate::molt_io_wait_new as *const (),
+        )),
         _ => None,
     }
 }
+
+#[cfg(not(all(feature = "stdlib_net", not(target_os = "windows"))))]
+const _: () = {
+    use super::declared_absent::*;
+    #[allow(unused_imports)]
+    use crate::*;
+    let _ = molt_io_wait;
+    let _ = molt_io_wait_new;
+};

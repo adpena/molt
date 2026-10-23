@@ -295,7 +295,7 @@ impl WasmBackend {
         let table_base = split_runtime_app_table_base.unwrap_or(self.options.table_base);
         let fixed_shared_runtime_abi_base =
             split_runtime_app_table_base.map(|_| self.options.table_base);
-        let poll_table = WasmPollTableLayout::build();
+        let poll_table = WasmPollTableLayout::build(self.options.runtime_poll_slots);
         let poll_table_prefix = poll_table.prefix_len();
         // Wrapper functions are part of the defined-function prefix. Emit them
         // before freezing the region layout so every downstream user/trampoline

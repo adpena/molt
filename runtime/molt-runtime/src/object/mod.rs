@@ -104,6 +104,7 @@ use aux_header::{
     MoltAuxSidecar, alloc_aux_sidecar, aux_sidecar_from_word, aux_sidecar_size, free_aux_sidecar,
 };
 
+#[cfg(molt_net)]
 use crate::async_rt::poll::ws_wait_poll_fn_addr;
 use crate::{
     ALLOC_BYTES_DICT, ALLOC_BYTES_EXCEPTION, ALLOC_BYTES_LIST, ALLOC_BYTES_STRING,
@@ -115,6 +116,16 @@ use crate::{
     TYPE_ID_ASYNC_GENERATOR, TYPE_ID_BIGINT, TYPE_ID_BYTEARRAY, TYPE_ID_CODE, TYPE_ID_DICT,
     TYPE_ID_EXCEPTION, TYPE_ID_FILE_HANDLE, TYPE_ID_FUNCTION, TYPE_ID_GENERATOR, TYPE_ID_ITER,
     TYPE_ID_LIST_BUILDER, TYPE_ID_OBJECT, TYPE_ID_STRING, TYPE_ID_TUPLE, asyncgen_call_finalizer,
+    builtin_classes_if_initialized, bytearray_data, bytearray_len, bytearray_vec_ptr,
+    code_filename_bits, code_name_bits, code_names_bits, code_varnames_bits,
+    contextlib_async_exitstack_enter_context_poll_fn_addr,
+    contextlib_async_exitstack_exit_poll_fn_addr, contextlib_asyncgen_enter_poll_fn_addr,
+    contextlib_asyncgen_exit_poll_fn_addr, dict_entries_ptr, dict_table_ptr, map_iters_ptr,
+    process_poll_fn_addr, profile_hit, profile_hit_bytes, seq_vec_ptr, set_entries_ptr,
+    set_table_ptr, thread_poll_fn_addr, utf8_cache_remove, weakref_clear_for_ptr, zip_iters_ptr,
+};
+#[cfg(molt_net)]
+use crate::{
     asyncio_fd_watcher_poll_fn_addr, asyncio_server_accept_loop_poll_fn_addr,
     asyncio_sock_accept_poll_fn_addr, asyncio_sock_connect_poll_fn_addr,
     asyncio_sock_recv_into_poll_fn_addr, asyncio_sock_recv_poll_fn_addr,
@@ -122,15 +133,8 @@ use crate::{
     asyncio_sock_sendall_poll_fn_addr, asyncio_sock_sendto_poll_fn_addr,
     asyncio_socket_reader_read_poll_fn_addr, asyncio_socket_reader_readline_poll_fn_addr,
     asyncio_stream_reader_read_poll_fn_addr, asyncio_stream_reader_readline_poll_fn_addr,
-    asyncio_stream_send_all_poll_fn_addr, builtin_classes_if_initialized, bytearray_data,
-    bytearray_len, bytearray_vec_ptr, code_filename_bits, code_name_bits, code_names_bits,
-    code_varnames_bits, contextlib_async_exitstack_enter_context_poll_fn_addr,
-    contextlib_async_exitstack_exit_poll_fn_addr, contextlib_asyncgen_enter_poll_fn_addr,
-    contextlib_asyncgen_exit_poll_fn_addr, dict_entries_ptr, dict_table_ptr,
-    io_wait_detach_resource, io_wait_poll_fn_addr, map_iters_ptr, process_poll_fn_addr,
-    profile_hit, profile_hit_bytes, seq_vec_ptr, set_entries_ptr, set_table_ptr,
-    thread_poll_fn_addr, utf8_cache_remove, weakref_clear_for_ptr, ws_wait_detach_resource,
-    zip_iters_ptr,
+    asyncio_stream_send_all_poll_fn_addr, io_wait_detach_resource, io_wait_poll_fn_addr,
+    ws_wait_detach_resource,
 };
 fn debug_alloc_list_builder() -> bool {
     runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_ALLOC_LIST_BUILDER)
@@ -1970,6 +1974,10 @@ pub(crate) unsafe fn object_init_shape_unpublished(
 /// This conversion runs once while the object is unpublished; lifecycle paths
 /// dispatch only on the resulting compact ID.
 pub(crate) fn task_shape_for_poll_fn(poll_fn: u64) -> ObjectShapeId {
+    #[cfg(molt_net)]
+    if let Some(shape) = net_task_shape_for_poll_fn(poll_fn) {
+        return shape;
+    }
     if poll_fn == crate::promise_poll_fn_addr() {
         ObjectShapeId::Promise
     } else if poll_fn == crate::async_sleep_poll_fn_addr() {
@@ -1978,10 +1986,6 @@ pub(crate) fn task_shape_for_poll_fn(poll_fn: u64) -> ObjectShapeId {
         ObjectShapeId::AsyncGeneratorFuture
     } else if poll_fn == crate::anext_default_poll_fn_addr() {
         ObjectShapeId::AnextDefault
-    } else if poll_fn == asyncio_fd_watcher_poll_fn_addr() {
-        ObjectShapeId::AsyncioFdWatcher
-    } else if poll_fn == asyncio_server_accept_loop_poll_fn_addr() {
-        ObjectShapeId::AsyncioServerAcceptLoop
     } else if poll_fn == contextlib_asyncgen_enter_poll_fn_addr() {
         ObjectShapeId::ContextlibAsyncgenEnter
     } else if poll_fn == contextlib_asyncgen_exit_poll_fn_addr() {
@@ -1990,45 +1994,88 @@ pub(crate) fn task_shape_for_poll_fn(poll_fn: u64) -> ObjectShapeId {
         ObjectShapeId::ContextlibAsyncExitstackEnter
     } else if poll_fn == contextlib_async_exitstack_exit_poll_fn_addr() {
         ObjectShapeId::ContextlibAsyncExitstackExit
-    } else if poll_fn == asyncio_socket_reader_read_poll_fn_addr() {
-        ObjectShapeId::AsyncioSocketReaderRead
-    } else if poll_fn == asyncio_socket_reader_readline_poll_fn_addr() {
-        ObjectShapeId::AsyncioSocketReaderReadline
-    } else if poll_fn == asyncio_stream_reader_read_poll_fn_addr() {
-        ObjectShapeId::AsyncioStreamReaderRead
-    } else if poll_fn == asyncio_stream_reader_readline_poll_fn_addr() {
-        ObjectShapeId::AsyncioStreamReaderReadline
-    } else if poll_fn == asyncio_stream_send_all_poll_fn_addr() {
-        ObjectShapeId::AsyncioStreamSendAll
-    } else if poll_fn == asyncio_sock_recv_poll_fn_addr() {
-        ObjectShapeId::AsyncioSockRecv
-    } else if poll_fn == asyncio_sock_connect_poll_fn_addr() {
-        ObjectShapeId::AsyncioSockConnect
-    } else if poll_fn == asyncio_sock_accept_poll_fn_addr() {
-        ObjectShapeId::AsyncioSockAccept
-    } else if poll_fn == asyncio_sock_recv_into_poll_fn_addr() {
-        ObjectShapeId::AsyncioSockRecvInto
-    } else if poll_fn == asyncio_sock_sendall_poll_fn_addr() {
-        ObjectShapeId::AsyncioSockSendAll
-    } else if poll_fn == asyncio_sock_recvfrom_poll_fn_addr() {
-        ObjectShapeId::AsyncioSockRecvFrom
-    } else if poll_fn == asyncio_sock_recvfrom_into_poll_fn_addr() {
-        ObjectShapeId::AsyncioSockRecvFromInto
-    } else if poll_fn == asyncio_sock_sendto_poll_fn_addr() {
-        ObjectShapeId::AsyncioSockSendTo
     } else if poll_fn == thread_poll_fn_addr() {
         ObjectShapeId::ThreadTask
     } else if poll_fn == process_poll_fn_addr() {
         ObjectShapeId::ProcessTask
-    } else if poll_fn == io_wait_poll_fn_addr() {
-        ObjectShapeId::IoWait
-    } else if poll_fn == ws_wait_poll_fn_addr() {
-        ObjectShapeId::WebsocketWait
     } else {
         // Task construction owns capture storage even when no callable address
         // has been installed. Zero cannot turn that payload into class fields.
         ObjectShapeId::GenericTaskPayload
     }
+}
+
+/// Shapes of the futures that wait on the networking I/O driver; they exist
+/// only with a networking provider (HF-487).
+#[cfg(molt_net)]
+fn net_task_shape_for_poll_fn(poll_fn: u64) -> Option<ObjectShapeId> {
+    [
+        (
+            asyncio_fd_watcher_poll_fn_addr(),
+            ObjectShapeId::AsyncioFdWatcher,
+        ),
+        (
+            asyncio_server_accept_loop_poll_fn_addr(),
+            ObjectShapeId::AsyncioServerAcceptLoop,
+        ),
+        (
+            asyncio_socket_reader_read_poll_fn_addr(),
+            ObjectShapeId::AsyncioSocketReaderRead,
+        ),
+        (
+            asyncio_socket_reader_readline_poll_fn_addr(),
+            ObjectShapeId::AsyncioSocketReaderReadline,
+        ),
+        (
+            asyncio_stream_reader_read_poll_fn_addr(),
+            ObjectShapeId::AsyncioStreamReaderRead,
+        ),
+        (
+            asyncio_stream_reader_readline_poll_fn_addr(),
+            ObjectShapeId::AsyncioStreamReaderReadline,
+        ),
+        (
+            asyncio_stream_send_all_poll_fn_addr(),
+            ObjectShapeId::AsyncioStreamSendAll,
+        ),
+        (
+            asyncio_sock_recv_poll_fn_addr(),
+            ObjectShapeId::AsyncioSockRecv,
+        ),
+        (
+            asyncio_sock_connect_poll_fn_addr(),
+            ObjectShapeId::AsyncioSockConnect,
+        ),
+        (
+            asyncio_sock_accept_poll_fn_addr(),
+            ObjectShapeId::AsyncioSockAccept,
+        ),
+        (
+            asyncio_sock_recv_into_poll_fn_addr(),
+            ObjectShapeId::AsyncioSockRecvInto,
+        ),
+        (
+            asyncio_sock_sendall_poll_fn_addr(),
+            ObjectShapeId::AsyncioSockSendAll,
+        ),
+        (
+            asyncio_sock_recvfrom_poll_fn_addr(),
+            ObjectShapeId::AsyncioSockRecvFrom,
+        ),
+        (
+            asyncio_sock_recvfrom_into_poll_fn_addr(),
+            ObjectShapeId::AsyncioSockRecvFromInto,
+        ),
+        (
+            asyncio_sock_sendto_poll_fn_addr(),
+            ObjectShapeId::AsyncioSockSendTo,
+        ),
+        (io_wait_poll_fn_addr(), ObjectShapeId::IoWait),
+        (ws_wait_poll_fn_addr(), ObjectShapeId::WebsocketWait),
+    ]
+    .into_iter()
+    .find(|(addr, _)| *addr == poll_fn)
+    .map(|(_, shape)| shape)
 }
 
 /// Initialize a poll function before publication, selecting sidecar storage if
@@ -3881,6 +3928,14 @@ pub(crate) unsafe fn object_shape_clear_cycle_edges(
         let slots = unsafe { object_payload_size(ptr) } / std::mem::size_of::<u64>();
         let none = MoltObject::none().bits();
         let resource_slot = object_shape_resource_slot(shape);
+        // Only an I/O-driver future owns a socket or websocket slot, and such
+        // futures exist only with a networking provider.
+        #[cfg(not(molt_net))]
+        assert!(
+            resource_slot == ObjectShapeResourceSlot::None,
+            "I/O wait futures require a networking provider"
+        );
+        #[cfg(molt_net)]
         let detached_resource = match resource_slot {
             ObjectShapeResourceSlot::IoSocket => io_wait_detach_resource(ptr),
             ObjectShapeResourceSlot::Websocket => ws_wait_detach_resource(ptr),
@@ -3892,6 +3947,7 @@ pub(crate) unsafe fn object_shape_clear_cycle_edges(
             detached_sink.detach_if_heap(bits);
         }
         crate::async_rt::scheduler::task_detach_owned_edges(py, ptr, detached_sink);
+        #[cfg(molt_net)]
         match resource_slot {
             ObjectShapeResourceSlot::IoSocket => detached_sink.detach_resource(
                 heap_lifecycle::DetachedResource::IoSocket(detached_resource),

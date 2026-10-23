@@ -401,7 +401,9 @@ def _identity(
         common_config={
             "cargo_profile": cargo_profile,
             "target_triple": target,
-            "runtime_features": [],
+            # A recorded request always carries one default-feature marker;
+            # the WASM fixture pair is a no-default (micro-like) runtime.
+            "runtime_features": ["no-default-features"] if wasm else [],
             "producer_artifact_selection": artifact_selection.source_identity,
             "cargo_command": ["cargo", "rustc"],
             "environment": {},

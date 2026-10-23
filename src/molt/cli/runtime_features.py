@@ -5,7 +5,9 @@ import os
 from typing import Collection
 
 from molt._runtime_feature_gates import (
-    link_affecting_features_unsupported_on_target,
+    features_unsupported_on_target,
+    target_arch_from_triple,
+    target_os_from_triple,
 )
 from molt.cli.compiler_metadata import _compiler_root
 from molt.cli.config_resolution import (
@@ -220,7 +222,7 @@ def profile_link_features(
     *,
     target_triple: str | None,
 ) -> frozenset[str]:
-    """Link-affecting + builtin feature names provided by ``profile``.
+    """Runtime feature names provided by ``profile`` on ``target_triple``.
 
     Reads the runtime Cargo feature ladder and transitively expands the profile
     feature (``micro`` -> ``stdlib_micro`` ... ``full`` -> ``stdlib_full``),
@@ -239,12 +241,23 @@ def profile_link_features(
         effective_profile = "full"
     cargo_feature = runtime_cargo_feature_for_profile(effective_profile)
     reached = _expand_cargo_feature(cargo_feature)
-    unavailable = link_affecting_features_unsupported_on_target(target_triple)
+    unavailable = runtime_features_unsupported_on_target(target_triple)
     if target_triple is not None and target_triple.startswith("wasm32"):
         unavailable = unavailable | _WASM_PROFILE_POLICY_EXCLUDED_FEATURES
     if unavailable:
         reached = reached.difference(unavailable)
     return reached
+
+
+@functools.lru_cache(maxsize=32)
+def runtime_features_unsupported_on_target(
+    target_triple: str | None,
+) -> frozenset[str]:
+    """Declared runtime features with no provider on ``target_triple``."""
+    return features_unsupported_on_target(
+        target_arch=target_arch_from_triple(target_triple),
+        target_os=target_os_from_triple(target_triple),
+    )
 
 
 def runtime_stdlib_profile_for_required_features(
@@ -255,7 +268,7 @@ def runtime_stdlib_profile_for_required_features(
 ) -> str:
     """Resolve user stdlib intent to one concrete runtime artifact tier.
 
-    ``auto`` selects the smallest Cargo ladder tier whose link-affecting feature
+    ``auto`` selects the smallest Cargo ladder tier whose runtime feature
     ceiling contains every reached required feature. Explicit tiers remain
     concrete artifact requests; the reachability ceiling check has already
     rejected programs that exceed them.
@@ -275,7 +288,6 @@ def runtime_stdlib_profile_for_required_features(
 _WASM_PROFILE_POLICY_EXCLUDED_FEATURES = frozenset(
     {
         "stdlib_tk",
-        "stdlib_net",
     }
 )
 
@@ -284,7 +296,6 @@ _MICRO_BASE_RUNTIME_FEATURES: tuple[str, ...] = (
     "stdlib_asyncio",
     "stdlib_collections",
     "stdlib_fs_extra",
-    "stdlib_logging",
     "stdlib_logging_ext",
 )
 
