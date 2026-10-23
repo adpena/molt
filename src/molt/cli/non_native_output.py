@@ -748,8 +748,7 @@ def _prepare_non_native_build_result(
     is_luau_transpile: bool,
     is_wasm: bool,
     is_wasm_freestanding: bool = False,
-    wasm_opt_enabled: bool = True,
-    wasm_opt_level: str = "Oz",
+    wasm_opt_level: str | None = "Oz",
     wasm_table_base: int | None = None,
     linked: bool,
     require_linked: bool,
@@ -783,7 +782,6 @@ def _prepare_non_native_build_result(
             is_luau_transpile=is_luau_transpile,
             is_wasm=is_wasm,
             is_wasm_freestanding=is_wasm_freestanding,
-            wasm_opt_enabled=wasm_opt_enabled,
             wasm_opt_level=wasm_opt_level,
             wasm_table_base=wasm_table_base,
             linked=linked,
@@ -818,8 +816,7 @@ def _prepare_non_native_build_result_in_generation(
     is_luau_transpile: bool,
     is_wasm: bool,
     is_wasm_freestanding: bool = False,
-    wasm_opt_enabled: bool = True,
-    wasm_opt_level: str = "Oz",
+    wasm_opt_level: str | None = "Oz",
     wasm_table_base: int | None = None,
     linked: bool,
     require_linked: bool,
@@ -1057,7 +1054,7 @@ def _prepare_non_native_build_result_in_generation(
                 link_outputs = wasm_link_output_paths(
                     resolved_linked_output,
                     external_selection=bool(wasm_link_requirements.items),
-                    optimize=wasm_opt_enabled,
+                    optimize=wasm_opt_level is not None,
                     split_output_dir=output_wasm.parent if _split_runtime else None,
                     inputs=(
                         output_wasm,
@@ -1141,7 +1138,7 @@ def _prepare_non_native_build_result_in_generation(
                 )
             if is_wasm_freestanding:
                 link_cmd.append("--freestanding")
-            if wasm_opt_enabled:
+            if wasm_opt_level is not None:
                 link_cmd.extend(["--optimize", "--optimize-level", wasm_opt_level])
             if profile == "dev":
                 link_cmd.append("--preserve-debug-sections")
@@ -1173,7 +1170,7 @@ def _prepare_non_native_build_result_in_generation(
                     )
                 ]
                 link_cmd.extend(expected_input_args)
-                if wasm_opt_enabled:
+                if wasm_opt_level is not None:
                     optimizer_cache_fact = wasm_optimizer_cache_fact()
                 deploy_asset_root = molt_root / "wasm"
                 browser_asset_names = (
@@ -1348,7 +1345,7 @@ def _prepare_non_native_build_result_in_generation(
                 fingerprint=link_fingerprint,
                 receipt_path=link_fingerprint_path,
             )
-            if link_skipped and wasm_opt_enabled:
+            if link_skipped and wasm_opt_level is not None:
                 try:
                     assert optimizer_cache_fact is not None
                     optimizer_attestation = _load_optimizer_publication(
@@ -1486,7 +1483,7 @@ def _prepare_non_native_build_result_in_generation(
                             selection_policy,
                             roles={"linked", "app"} if _split_runtime else {"linked"},
                         )
-                    if wasm_opt_enabled:
+                    if wasm_opt_level is not None:
                         assert optimizer_cache_fact is not None
                         optimizer_attestation = _load_optimizer_publication(
                             deployment.outputs,

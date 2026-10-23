@@ -69,7 +69,7 @@ def _run_build_pipeline(
     trusted: bool,
     verbose: bool,
     require_linked: bool,
-    wasm_opt_level: str = "Oz",
+    wasm_opt_level: str | None = "Oz",
     precompile: bool = False,
     snapshot: bool = False,
     stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,

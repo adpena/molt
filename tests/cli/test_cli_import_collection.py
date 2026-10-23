@@ -26372,7 +26372,7 @@ def test_wasm_optimizer_level_follows_build_intent_and_explicit_override(
         monkeypatch.setattr(sys, "argv", command)
         assert cli.main() == 0
 
-    assert seen == ["O1", "Oz", "O3", "O4"]
+    assert seen == [None, "Oz", "O3", "O4"]
 
 
 def test_build_cli_defaults_to_auto_wasm_profile(
