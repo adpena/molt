@@ -453,8 +453,8 @@ pub(crate) enum ClassReferenceSlot {
     /// Captured native creation module; zero for ordinary Python heap classes.
     /// Static classes also use it for their immutable public module metadata.
     NativeModule = 13,
-    /// Conditional tail after the compiled class definition scalar at14.
-    StructSequence = 15,
+    /// Conditional tail after the definition (14) and native-next (15) scalars.
+    StructSequence = 16,
 }
 
 /// Capture the native constructor module before publication. Static types retire
@@ -1618,7 +1618,12 @@ mod tests {
             }
             assert_eq!(fixture.words[last], 0x9ab1_3476);
             assert_eq!(super::super::layout::CLASS_DEFINITION_WORD, 14);
-            assert_eq!(super::super::layout::CLASS_PAYLOAD_WORDS, 15);
+            assert_eq!(super::super::layout::CLASS_NATIVE_NEXT_WORD, 15);
+            assert_eq!(super::super::layout::CLASS_PAYLOAD_WORDS, 16);
+            assert_eq!(
+                ClassReferenceSlot::StructSequence as usize,
+                super::super::layout::CLASS_PAYLOAD_WORDS
+            );
         });
     }
 
@@ -1642,7 +1647,12 @@ mod tests {
                 words[super::super::layout::CLASS_DECLARATIONS_WORD],
                 ClassDeclaration::StructSequence as u64,
             );
-            for index in [8, 9, super::super::layout::CLASS_DEFINITION_WORD] {
+            for index in [
+                8,
+                9,
+                super::super::layout::CLASS_DEFINITION_WORD,
+                super::super::layout::CLASS_NATIVE_NEXT_WORD,
+            ] {
                 assert_eq!(words[index], 0xA55A);
             }
         });

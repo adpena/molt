@@ -674,6 +674,7 @@ pub(crate) unsafe fn visit_payload_owned_values(
                     }
                 }
                 visit_bits(super::layout::zip_strict_bits(ptr), visit);
+                visit_ptr(*super::layout::zip_cached_tuple_slot(ptr), visit);
             }
             HeapLifecycleHandler::Map => {
                 visit_bits(super::layout::map_func_bits(ptr), visit);
@@ -1649,6 +1650,13 @@ pub(crate) unsafe fn detach_terminal_owned_edges(
                 let strict = super::layout::zip_strict_bits(ptr);
                 super::layout::zip_set_strict_bits(ptr, MoltObject::none().bits());
                 sink.detach_if_heap(strict);
+                let cached = std::ptr::replace(
+                    super::layout::zip_cached_tuple_slot(ptr),
+                    std::ptr::null_mut(),
+                );
+                if !cached.is_null() {
+                    sink.detach(MoltObject::from_ptr(cached).bits());
+                }
             }
             HeapLifecycleHandler::Map => {
                 sink.detach_if_heap((ptr as *mut u64).replace(MoltObject::none().bits()));

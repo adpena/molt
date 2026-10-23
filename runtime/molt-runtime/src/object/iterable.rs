@@ -62,21 +62,7 @@ pub(crate) fn special_iteration_step(
                 ));
         if exhausted {
             let payload = if stop && matches!(kind, SpecialIterationKind::Next) {
-                obj_from_bits(exception)
-                    .as_ptr()
-                    .and_then(|ptr| unsafe {
-                        (object_type_id(ptr) == TYPE_ID_EXCEPTION)
-                            .then(|| {
-                                crate::builtins::exceptions::exception_typed_field_get(
-                                    py,
-                                    ptr,
-                                    molt_obj_model::ExceptionTypedField::StopIterationValue,
-                                )
-                                .and_then(Result::ok)
-                            })
-                            .flatten()
-                    })
-                    .unwrap_or_else(|| MoltObject::none().bits())
+                stop_iteration_payload(py, exception)
             } else {
                 MoltObject::none().bits()
             };
@@ -93,6 +79,25 @@ pub(crate) fn special_iteration_step(
     Ok(value
         .map(SpecialIterationStep::Item)
         .unwrap_or(SpecialIterationStep::Missing))
+}
+
+/// The owned value a raised StopIteration carries; None when it has none.
+pub(crate) fn stop_iteration_payload(py: &PyToken<'_>, exception: u64) -> u64 {
+    obj_from_bits(exception)
+        .as_ptr()
+        .and_then(|ptr| unsafe {
+            (object_type_id(ptr) == TYPE_ID_EXCEPTION)
+                .then(|| {
+                    crate::builtins::exceptions::exception_typed_field_get(
+                        py,
+                        ptr,
+                        molt_obj_model::ExceptionTypedField::StopIterationValue,
+                    )
+                    .and_then(Result::ok)
+                })
+                .flatten()
+        })
+        .unwrap_or_else(|| MoltObject::none().bits())
 }
 
 pub(crate) unsafe fn builtin_receiver(py: &PyToken<'_>, ptr: *mut u8) -> bool {
