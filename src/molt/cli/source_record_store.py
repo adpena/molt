@@ -15,6 +15,7 @@ remain optional cache misses or failed writes, with no alternate cache lane.
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -26,6 +27,7 @@ from typing import Any, Literal
 from weakref import WeakValueDictionary, finalize
 
 from molt.file_locks import (
+    _FileLockHandle,
     _acquire_file_lock,
     _release_file_lock,
     _try_acquire_file_lock,
@@ -34,16 +36,49 @@ from molt.default_paths import (
     CACHE_MAINTENANCE_INTERVAL_SECONDS,
     SHARED_SOURCE_RECORDS_DIRECTORY,
     _default_molt_cache,
+    shared_cache_lock_path,
 )
 
 RecordKind = Literal[
     "import-scan", "intrinsic-facts", "module-analysis", "module-lowering"
 ]
-STORE_NAME = "source_records.sqlite"
 SOURCE_RECORD_BATCH_MAX_RECORDS = 256
 SOURCE_RECORD_BATCH_MAX_BYTES = 1 << 20
 
 _SCHEMA_VERSION = 3
+_STORE_NAMESPACE = f"v{_SCHEMA_VERSION}"
+STORE_RELATIVE_PATH = (
+    Path(SHARED_SOURCE_RECORDS_DIRECTORY) / _STORE_NAMESPACE / "records.sqlite"
+)
+SOURCE_RECORD_RETIREMENT_SCOPE = "source-records"
+_NAMESPACE = re.compile(r"v(?P<version>0|[1-9][0-9]*)")
+_LEGACY_FILE = re.compile(
+    r"source_records(?:\.v[0-9]+)?\.sqlite(?:-wal|-shm|\.initialize\.lock)?"
+)
+
+
+def source_record_namespace_paths(
+    cache_root: Path, namespace: str
+) -> tuple[Path, Path]:
+    """One namespace and its persistent lifetime lock outside its payload."""
+    if _NAMESPACE.fullmatch(namespace) is None:
+        raise ValueError("invalid source-record namespace")
+    return (
+        cache_root / SHARED_SOURCE_RECORDS_DIRECTORY / namespace,
+        shared_cache_lock_path(cache_root, f"source-records.{namespace}"),
+    )
+
+
+def superseded_store_namespace(name: str) -> bool:
+    match = _NAMESPACE.fullmatch(name)
+    return match is not None and int(match["version"]) < _SCHEMA_VERSION
+
+
+def legacy_source_record_file(name: str) -> bool:
+    """Old flat stores have no lifetime protocol; inventory without unlinking."""
+    return _LEGACY_FILE.fullmatch(name) is not None
+
+
 _SCHEMA = (
     """CREATE TABLE IF NOT EXISTS records (
         kind TEXT NOT NULL,
@@ -54,6 +89,7 @@ _SCHEMA = (
         used_ns INTEGER NOT NULL,
         PRIMARY KEY (kind, key)
     )""",
+    "CREATE INDEX IF NOT EXISTS records_recency ON records (used_ns, kind, key)",
 )
 
 _RECORD_REFRESH_NS = int(CACHE_MAINTENANCE_INTERVAL_SECONDS * 1_000_000_000)
@@ -67,11 +103,15 @@ _RECORD_OBSERVATION_PREDICATE = "kind = ? AND key = ? AND revision = ? AND used_
 _INHERITED_CONNECTIONS: list[sqlite3.Connection] = []
 
 
-def _close_connection(connection: sqlite3.Connection, pid: int) -> None:
+def _close_connection(
+    connection: sqlite3.Connection, pid: int, lifetime: _FileLockHandle | None
+) -> None:
     if pid != os.getpid():
         _INHERITED_CONNECTIONS.append(connection)
     else:
         connection.close()
+        if lifetime is not None:
+            _release_file_lock(lifetime)
 
 
 @dataclass(frozen=True, slots=True)
@@ -302,7 +342,7 @@ class SourceRecordMaintenance:
                         pass
                 except BaseException:
                     # A failed rollback cannot leave an admitted write owner.
-                    _close_connection(self._current, self._pid)
+                    _close_connection(self._current, self._pid, None)
                     raise
             if isinstance(error, SourceRecordBusy):
                 return ("busy",) * len(batch)
@@ -310,7 +350,7 @@ class SourceRecordMaintenance:
 
     def close_snapshot(self) -> None:
         if not self._snapshot_closed:
-            _close_connection(self._connection, self._pid)
+            _close_connection(self._connection, self._pid, None)
             self._snapshot_closed = True
 
     def reclaim(self) -> None:
@@ -337,8 +377,12 @@ class SourceRecordMaintenance:
 class SourceRecordStore:
     """This process's connection to one shared record table."""
 
-    def __init__(self, path: Path) -> None:
-        self.path = path
+    def __init__(self, cache_root: Path) -> None:
+        self.cache_root = cache_root
+        self.namespace, self.lifetime_lock = source_record_namespace_paths(
+            cache_root, _STORE_NAMESPACE
+        )
+        self.path = cache_root / STORE_RELATIVE_PATH
         self._pid = os.getpid()
         self._lock = threading.Lock()
         self._connection: sqlite3.Connection | None = None
@@ -482,35 +526,40 @@ class SourceRecordStore:
         if self._connection is not None:
             return self._connection
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
+            lifetime = _try_acquire_file_lock(self.lifetime_lock, shared=True)
+        except OSError:
+            return None
+        if lifetime is None:
+            return None
+        connection = None
+        admitted = False
+        try:
+            self.namespace.mkdir(parents=True, exist_ok=True)
             connection = sqlite3.connect(
                 self.path,
                 timeout=_BUSY_TIMEOUT_SECONDS,
                 isolation_level=None,
                 check_same_thread=False,
             )
-        except (OSError, sqlite3.Error):
-            return None
-        try:
             self._initialize(connection)
-        except (OSError, SourceRecordUnavailable, sqlite3.OperationalError):
-            connection.close()
+            self._connection = connection
+            # The finalizer owns both resources without keeping this store alive.
+            # Close SQLite before releasing the namespace's shared lifetime lock.
+            self._connection_finalizer = finalize(
+                self, _close_connection, connection, self._pid, lifetime
+            )
+            admitted = True
+            return connection
+        except (SourceRecordBusy, OSError, sqlite3.OperationalError):
             return None
-        except sqlite3.DatabaseError:
-            connection.close()
+        except (SourceRecordUnavailable, sqlite3.DatabaseError):
             self._disable()
             return None
-        except BaseException:
-            connection.close()
-            raise
-        self._connection = connection
-        # The callback owns no reference to this store. Weak references have
-        # already cleared when it runs, so a concurrent factory lookup cannot
-        # resurrect a store while SQLite releases the GIL during close.
-        self._connection_finalizer = finalize(
-            self, _close_connection, connection, self._pid
-        )
-        return connection
+        finally:
+            if not admitted:
+                if connection is not None:
+                    connection.close()
+                _release_file_lock(lifetime)
 
     def _initialize(self, connection: sqlite3.Connection, *, wait: bool = True) -> None:
         connection.execute("PRAGMA synchronous = NORMAL").close()
@@ -547,7 +596,6 @@ class SourceRecordStore:
             try:
                 for statement in _SCHEMA:
                     connection.execute(statement).close()
-                self._migrate(connection)
                 connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}").close()
                 connection.execute("COMMIT").close()
             except BaseException:
@@ -561,57 +609,9 @@ class SourceRecordStore:
     def _schema_ready(connection: sqlite3.Connection) -> bool:
         with closing(connection.execute("PRAGMA user_version")) as cursor:
             version = cursor.fetchone()[0]
-        if version not in (0, 1, 2, _SCHEMA_VERSION):
+        if version not in (0, _SCHEMA_VERSION):
             raise SourceRecordUnavailable("source record schema version is unsupported")
         return version == _SCHEMA_VERSION
-
-    def _migrate(self, connection: sqlite3.Connection) -> None:
-        # The initialization owner holds one write transaction for schema,
-        # legacy row migration, indexes and the version's publication.
-        with closing(connection.execute("PRAGMA table_info(records)")) as cursor:
-            columns = {row[1] for row in cursor}
-        if "revision" not in columns:
-            connection.execute(
-                "ALTER TABLE records ADD COLUMN revision BLOB NOT NULL DEFAULT X''"
-            ).close()
-            connection.execute("UPDATE records SET revision = randomblob(16)").close()
-        if "used_ns" not in columns:
-            connection.execute(
-                "ALTER TABLE records ADD COLUMN used_ns INTEGER NOT NULL DEFAULT 0"
-            ).close()
-            connection.execute(
-                "UPDATE records SET used_ns = coalesce((SELECT used_ns FROM generations"
-                " WHERE generations.generation = records.generation), ?)",
-                (time.time_ns(),),
-            ).close()
-        # Large opaque payloads belong in rowid-table leaves, not in the
-        # search tree's interior keys. index_info(table) returns rows only for
-        # WITHOUT ROWID tables; a fresh version-two table needs no copy.
-        with closing(connection.execute("PRAGMA index_info(records)")) as cursor:
-            without_rowid = cursor.fetchone() is not None
-        if without_rowid:
-            connection.execute("DROP INDEX IF EXISTS records_generation").close()
-            connection.execute("DROP INDEX IF EXISTS records_recency").close()
-            connection.execute(
-                "ALTER TABLE records RENAME TO records_without_rowid"
-            ).close()
-            connection.execute(_SCHEMA[0]).close()
-            # SQLite streams this copy inside the existing bootstrap
-            # transaction. No Python payload list or second store escapes.
-            connection.execute(
-                "INSERT INTO records (kind, key, generation, payload, revision, used_ns)"
-                " SELECT kind, key, generation, payload, revision, used_ns"
-                " FROM records_without_rowid"
-            ).close()
-            connection.execute("DROP TABLE records_without_rowid").close()
-        connection.execute(
-            "CREATE INDEX IF NOT EXISTS records_recency ON records (used_ns, kind, key)"
-        ).close()
-        # The existing row budget/age owner supersedes generation-count trim.
-        # Legacy used_ns above must be recovered before deleting its metadata.
-        connection.execute("DROP INDEX IF EXISTS records_generation").close()
-        connection.execute("DROP TABLE IF EXISTS generations").close()
-        connection.execute("DROP TABLE IF EXISTS trims").close()
 
     def _disable(self) -> None:
         self._unavailable = True
@@ -627,7 +627,13 @@ class SourceRecordStore:
         snapshot: sqlite3.Connection | None = None
         current: sqlite3.Connection | None = None
         maintenance: SourceRecordMaintenance | None = None
+        lifetime = None
         try:
+            lifetime = _try_acquire_file_lock(
+                self.lifetime_lock, create=not dry_run, shared=True
+            )
+            if lifetime is None:
+                raise SourceRecordBusy("source record namespace is retiring")
             current = sqlite3.connect(
                 self.path.absolute().as_uri() + ("?mode=ro" if dry_run else "?mode=rw"),
                 uri=True,
@@ -673,9 +679,11 @@ class SourceRecordStore:
             if maintenance is not None:
                 maintenance.close_snapshot()
             elif snapshot is not None:
-                _close_connection(snapshot, self._pid)
+                _close_connection(snapshot, self._pid, None)
             if current is not None:
-                _close_connection(current, self._pid)
+                _close_connection(current, self._pid, None)
+            if lifetime is not None:
+                _release_file_lock(lifetime)
 
     def physical_bytes(self) -> dict[str, int | None]:
         sizes: dict[str, int | None] = {}
@@ -711,13 +719,13 @@ if hasattr(os, "register_at_fork"):
     os.register_at_fork(after_in_child=_after_fork)
 
 
-def source_record_store(state_root: Path) -> SourceRecordStore:
+def source_record_store(cache_root: Path) -> SourceRecordStore:
     """Share a process-owned store only while a caller still owns it."""
-    key = (os.fspath(state_root), os.getpid())
+    key = (os.fspath(cache_root), os.getpid())
     with _STORES_LOCK:
         store = _STORES.get(key)
         if store is None:
-            store = _STORES[key] = SourceRecordStore(state_root / STORE_NAME)
+            store = _STORES[key] = SourceRecordStore(cache_root)
     return store
 
 
@@ -728,9 +736,7 @@ def shared_source_records() -> SourceRecordStore:
     store = transaction.source_records if transaction is not None else None
     if store is None or store._pid != os.getpid():
         root = (
-            store.path.parent
-            if store is not None
-            else (_default_molt_cache() / SHARED_SOURCE_RECORDS_DIRECTORY).resolve()
+            store.cache_root if store is not None else _default_molt_cache().resolve()
         )
         store = source_record_store(root)
         if transaction is not None:

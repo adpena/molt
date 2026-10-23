@@ -22,40 +22,17 @@ _LIMIT = 1 << 20
 
 
 def _store(tmp_path: Path) -> records.SourceRecordStore:
-    return records.SourceRecordStore(tmp_path / records.STORE_NAME)
+    return records.SourceRecordStore(tmp_path)
 
 
-def _seed_version_one_store(path: Path):
-    now = time.time_ns()
-    kinds = ("import-scan", "intrinsic-facts", "module-analysis", "module-lowering")
-    rows = tuple(
-        (
-            kind,
-            "old",
-            "g",
-            b"\x00" + kind.encode() + b"\xff" + b"x" * (65536 if index == 3 else 32),
-            bytes([index]) * 16,
-            now - _HOUR - index,
-        )
-        for index, kind in enumerate(kinds)
-    )
-    with closing(sqlite3.connect(path, isolation_level=None)) as peer:
-        peer.execute("PRAGMA auto_vacuum=INCREMENTAL").close()
-        peer.execute("PRAGMA journal_mode=WAL").close()
-        peer.executescript(
-            "CREATE TABLE records(kind TEXT NOT NULL,key TEXT NOT NULL,"
-            "generation TEXT NOT NULL,payload BLOB NOT NULL,revision BLOB NOT NULL,"
-            "used_ns INTEGER NOT NULL,PRIMARY KEY(kind,key)) WITHOUT ROWID;"
-            "CREATE INDEX records_generation ON records(generation);"
-            "CREATE INDEX records_recency ON records(used_ns,kind,key);"
-            "CREATE TABLE generations(generation TEXT PRIMARY KEY,used_ns INTEGER NOT NULL) WITHOUT ROWID;"
-            "CREATE TABLE trims(singleton INTEGER PRIMARY KEY CHECK(singleton=0),trimmed_ns INTEGER NOT NULL);"
-            "PRAGMA user_version=1;"
-        )
-        peer.executemany("INSERT INTO records VALUES(?,?,?,?,?,?)", rows).close()
-        peer.execute("INSERT INTO generations VALUES('g',?)", (now,)).close()
-        peer.execute("INSERT INTO trims VALUES(0,?)", (now,)).close()
-    return rows
+def _fixture_path(cache_root: Path) -> Path:
+    path = cache_root / records.STORE_RELATIVE_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _, lock = records.source_record_namespace_paths(cache_root, path.parent.name)
+    lease = records._try_acquire_file_lock(lock, shared=True)
+    assert lease is not None
+    records._release_file_lock(lease)
+    return path
 
 
 def test_records_round_trip_per_kind_and_key(tmp_path: Path) -> None:
@@ -83,7 +60,7 @@ def test_a_later_record_replaces_the_earlier_one(tmp_path: Path) -> None:
         store.get("import-scan", "k", generation="g", max_bytes=_LIMIT).payload
         == b"new"
     )
-    with sqlite3.connect(tmp_path / records.STORE_NAME) as connection:
+    with sqlite3.connect(tmp_path / records.STORE_RELATIVE_PATH) as connection:
         assert connection.execute("SELECT count(*) FROM records").fetchone() == (1,)
 
 
@@ -194,7 +171,7 @@ def test_generation_is_provenance_and_global_policy_owns_retirement(
 def test_corrupt_store_is_unavailable_without_unlinking_peer_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    path = tmp_path / records.STORE_NAME
+    path = _fixture_path(tmp_path)
     original = b"not a database" * 512
     path.write_bytes(original)
     before = (path.stat().st_ino, path.read_bytes())
@@ -449,94 +426,6 @@ def test_metadata_pages_do_not_select_payload_and_deletion_is_observation_fenced
     assert store.get("module-analysis", "2", generation="g", max_bytes=None) is None
 
 
-def test_old_four_column_store_migrates_without_losing_opaque_payload(
-    tmp_path: Path,
-) -> None:
-    path = tmp_path / records.STORE_NAME
-    with sqlite3.connect(path) as connection:
-        connection.execute("PRAGMA auto_vacuum=INCREMENTAL")
-        connection.execute("PRAGMA journal_mode=WAL")
-        connection.executescript(
-            "CREATE TABLE records(kind TEXT NOT NULL, key TEXT NOT NULL, generation TEXT NOT NULL, payload BLOB NOT NULL, PRIMARY KEY(kind,key)) WITHOUT ROWID; CREATE TABLE generations(generation TEXT PRIMARY KEY, used_ns INTEGER NOT NULL) WITHOUT ROWID;"
-        )
-        connection.execute(
-            "INSERT INTO generations VALUES (?,?)", ("g", time.time_ns())
-        )
-        connection.execute(
-            "INSERT INTO records VALUES (?,?,?,?)",
-            ("import-scan", "old", "g", b"\x00old\xff"),
-        )
-    store = _store(tmp_path)
-    observed = store.get("import-scan", "old", generation="g", max_bytes=_LIMIT)
-    assert (
-        observed is not None
-        and observed.payload == b"\x00old\xff"
-        and len(observed.revision) == 16
-    )
-    assert store.put("module-lowering", "new", b"new", generation="g")
-    with sqlite3.connect(path) as connection:
-        assert {row[1] for row in connection.execute("PRAGMA table_info(records)")} == {
-            "kind",
-            "key",
-            "generation",
-            "payload",
-            "revision",
-            "used_ns",
-        }
-        assert connection.execute("SELECT count(*) FROM records").fetchone() == (2,)
-        assert connection.execute("PRAGMA auto_vacuum").fetchone() == (2,)
-        assert connection.execute("PRAGMA user_version").fetchone() == (
-            records._SCHEMA_VERSION,
-        )
-        assert connection.execute("PRAGMA index_info(records)").fetchall() == []
-
-
-def test_version_one_migration_preserves_observations_and_live_peer_snapshot(tmp_path):
-    path = tmp_path / records.STORE_NAME
-    expected = _seed_version_one_store(path)
-    store = _store(tmp_path)
-    with closing(sqlite3.connect(path, isolation_level=None)) as peer:
-        peer.execute("BEGIN").close()
-        assert set(peer.execute("SELECT * FROM records")) == set(expected)
-        assert peer.execute("PRAGMA index_info(records)").fetchall()
-        for kind, key, generation, payload, revision, used_ns in expected:
-            record = store.get(kind, key, generation=generation, max_bytes=None)
-            assert record is not None
-            assert (record.payload, record.revision, record.used_ns) == (
-                payload,
-                revision,
-                used_ns,
-            )
-        # The real old read snapshot remains coherent across atomic publication.
-        assert set(peer.execute("SELECT * FROM records")) == set(expected)
-        assert peer.execute("PRAGMA user_version").fetchone() == (1,)
-        peer.execute("ROLLBACK").close()
-        assert peer.execute("PRAGMA user_version").fetchone() == (
-            records._SCHEMA_VERSION,
-        )
-        assert peer.execute("PRAGMA index_info(records)").fetchall() == []
-        assert set(peer.execute("SELECT * FROM records")) == set(expected)
-        assert peer.execute("PRAGMA integrity_check").fetchone() == ("ok",)
-        indexes = {row[1] for row in peer.execute("PRAGMA index_list(records)")}
-        assert "records_recency" in indexes and "records_generation" not in indexes
-        assert (
-            peer.execute(
-                "SELECT name FROM sqlite_schema WHERE name IN ('generations','trims')"
-            ).fetchall()
-            == []
-        )
-        observed = store.get("import-scan", "old", generation="g", max_bytes=None)
-        peer.execute(
-            "UPDATE records SET payload=?,revision=? WHERE kind=? AND key=?",
-            (b"replacement", b"r" * 16, "import-scan", "old"),
-        ).close()
-        assert observed is not None and observed.refresh() is False
-        assert (
-            store.get("import-scan", "old", generation="g", max_bytes=None).payload
-            == b"replacement"
-        )
-
-
 def _write_concurrent_record(arguments):
     root, index = arguments
     kinds: tuple[records.RecordKind, ...] = (
@@ -550,29 +439,12 @@ def _write_concurrent_record(arguments):
 
 
 @pytest.mark.parametrize("executor", ["threads", "spawn"])
-@pytest.mark.parametrize("initial", ["virgin", "legacy", "version-one", "current"])
+@pytest.mark.parametrize("initial", ["virgin", "current"])
 def test_concurrent_connections_keep_all_record_kinds(
     tmp_path: Path, executor: str, initial: str
 ) -> None:
-    path = tmp_path / records.STORE_NAME
-    if initial == "legacy":
-        with closing(sqlite3.connect(path, isolation_level=None)) as connection:
-            connection.executescript(
-                "CREATE TABLE records(kind TEXT NOT NULL, key TEXT NOT NULL,"
-                " generation TEXT NOT NULL, payload BLOB NOT NULL,"
-                " PRIMARY KEY(kind,key)) WITHOUT ROWID;"
-                "CREATE TABLE generations(generation TEXT PRIMARY KEY,"
-                " used_ns INTEGER NOT NULL) WITHOUT ROWID;"
-            )
-            connection.execute(
-                "INSERT INTO generations VALUES ('g', ?)", (time.time_ns(),)
-            )
-            connection.execute(
-                "INSERT INTO records VALUES ('import-scan','old','g',X'00FF')"
-            )
-    elif initial == "version-one":
-        _seed_version_one_store(path)
-    elif initial == "current":
+    path = _fixture_path(tmp_path)
+    if initial == "current":
         store = _store(tmp_path)
         assert store.put("import-scan", "old", b"\x00\xff", generation="g")
         store.close()
@@ -588,16 +460,7 @@ def test_concurrent_connections_keep_all_record_kinds(
     # opaque row. It does not use the store's read or maintenance projection.
     kinds = ("import-scan", "intrinsic-facts", "module-analysis", "module-lowering")
     expected = {(kinds[i % 4], str(i), str(i).encode()) for i in range(20)}
-    if initial == "version-one":
-        expected.update(
-            (
-                kind,
-                "old",
-                b"\x00" + kind.encode() + b"\xff" + b"x" * (65536 if i == 3 else 32),
-            )
-            for i, kind in enumerate(kinds)
-        )
-    elif initial != "virgin":
+    if initial == "current":
         expected.add(("import-scan", "old", b"\x00\xff"))
     with closing(sqlite3.connect(path)) as connection:
         assert (
@@ -636,6 +499,7 @@ def test_initialization_lock_is_nonwaiting_for_maintenance(tmp_path, monkeypatch
     from molt.file_locks import _release_file_lock, _try_acquire_file_lock
 
     store = _store(tmp_path)
+    _fixture_path(tmp_path)
     with closing(sqlite3.connect(store.path)):
         pass
     handle = _try_acquire_file_lock(
@@ -666,13 +530,11 @@ def _probe_cold_bootstrap(root):
 
 
 @pytest.mark.parametrize("executor", ["threads", "spawn"])
-@pytest.mark.parametrize("initial", ["virgin", "version-one"])
+@pytest.mark.parametrize("initial", ["virgin"])
 def test_cold_peer_cannot_bypass_initialization_owner(tmp_path, executor, initial):
     from molt.file_locks import _release_file_lock, _try_acquire_file_lock
 
-    path = tmp_path / records.STORE_NAME
-    if initial == "version-one":
-        _seed_version_one_store(path)
+    path = _fixture_path(tmp_path)
     with closing(sqlite3.connect(path)) as peer:
         original = list(peer.iterdump())
     handle = _try_acquire_file_lock(path.with_name(path.name + ".initialize.lock"))
@@ -692,9 +554,7 @@ def test_cold_peer_cannot_bypass_initialization_owner(tmp_path, executor, initia
         assert outcome is False
         with closing(sqlite3.connect(path)) as peer:
             assert list(peer.iterdump()) == original
-            assert peer.execute("PRAGMA user_version").fetchone() == (
-                1 if initial == "version-one" else 0,
-            )
+            assert peer.execute("PRAGMA user_version").fetchone() == (0,)
     finally:
         records._BUSY_TIMEOUT_SECONDS = old_timeout
         _release_file_lock(handle)
@@ -718,7 +578,13 @@ def test_ready_connection_trace_contains_no_persistent_setup(tmp_path, monkeypat
 
     install_module_view(monkeypatch, "sqlite3", sqlite3, records, connect=connect)
     monkeypatch.setattr(records, "_acquire_file_lock", no_bootstrap_lock)
-    monkeypatch.setattr(records, "_try_acquire_file_lock", no_bootstrap_lock)
+    original_try_lock = records._try_acquire_file_lock
+
+    def lease_only(path, **kwargs):
+        assert kwargs.get("shared") is True, "ready connections never bootstrap"
+        return original_try_lock(path, **kwargs)
+
+    monkeypatch.setattr(records, "_try_acquire_file_lock", lease_only)
     assert (
         store.get("import-scan", "k", generation="g", max_bytes=None).payload
         == b"opaque"
@@ -734,11 +600,10 @@ def test_ready_connection_trace_contains_no_persistent_setup(tmp_path, monkeypat
     )
 
 
-@pytest.mark.parametrize("initial", ["virgin", "version-one"])
+@pytest.mark.parametrize("initial", ["virgin"])
 def test_schema_failure_rolls_back_the_whole_bootstrap(tmp_path, initial):
     store = _store(tmp_path)
-    if initial == "version-one":
-        _seed_version_one_store(store.path)
+    _fixture_path(tmp_path)
     with closing(sqlite3.connect(store.path, isolation_level=None)) as connection:
         connection.execute("PRAGMA auto_vacuum = INCREMENTAL").close()
         connection.execute("PRAGMA journal_mode = WAL").close()
@@ -754,26 +619,44 @@ def test_schema_failure_rolls_back_the_whole_bootstrap(tmp_path, initial):
             store._initialize(connection)
         connection.set_authorizer(None)
         assert not connection.in_transaction
-        assert connection.execute("PRAGMA user_version").fetchone() == (
-            1 if initial == "version-one" else 0,
-        )
+        assert connection.execute("PRAGMA user_version").fetchone() == (0,)
         assert list(connection.iterdump()) == original
     assert store.put("import-scan", "after", b"yes", generation="g")
 
 
-@pytest.mark.parametrize("version", [-1, records._SCHEMA_VERSION + 1])
+@pytest.mark.parametrize("version", [-1, 1, 2, records._SCHEMA_VERSION + 1])
 @pytest.mark.parametrize("dry_run", [False, True])
-def test_unknown_schema_is_unavailable_without_downgrade(tmp_path, version, dry_run):
+def test_unknown_schema_is_unavailable_without_downgrade(
+    tmp_path, version, dry_run, monkeypatch
+):
     store = _store(tmp_path)
+    _fixture_path(tmp_path)
     assert store.put("import-scan", "k", b"preserved", generation="g")
     store.close()
     with closing(sqlite3.connect(store.path, isolation_level=None)) as peer:
         peer.execute(f"PRAGMA user_version = {version}").close()
         original = list(peer.iterdump())
-        assert not store.put("import-scan", "new", b"no", generation="g")
         with pytest.raises(records.SourceRecordUnavailable, match="unsupported"):
             with store.maintenance(dry_run=dry_run):
                 pytest.fail("unsupported schema must not be migrated")
+        original_initialize = store._initialize
+        attempts = []
+
+        def initialize(connection, **kwargs):
+            attempts.append(1)
+            return original_initialize(connection, **kwargs)
+
+        monkeypatch.setattr(store, "_initialize", initialize)
+        for _ in range(3):
+            assert not store.put("import-scan", "new", b"no", generation="g")
+            assert store.get("import-scan", "k", generation="g", max_bytes=32) is None
+        assert attempts == [1]
+        assert store._unavailable
+        with pytest.raises(
+            records.SourceRecordUnavailable, match="store is unavailable"
+        ):
+            with store.maintenance(dry_run=dry_run):
+                pytest.fail("a disabled optional store cannot reconnect")
         assert list(peer.iterdump()) == original
         assert peer.execute("PRAGMA user_version").fetchone() == (version,)
         assert peer.execute("SELECT payload FROM records").fetchall() == [
@@ -781,20 +664,17 @@ def test_unknown_schema_is_unavailable_without_downgrade(tmp_path, version, dry_
         ]
 
 
-@pytest.mark.parametrize("initial", ["virgin", "version-one"])
+@pytest.mark.parametrize("initial", ["virgin"])
 def test_dry_run_refuses_uninitialized_schema_without_bootstrap(tmp_path, initial):
     store = _store(tmp_path)
-    if initial == "version-one":
-        _seed_version_one_store(store.path)
+    _fixture_path(tmp_path)
     with closing(sqlite3.connect(store.path, isolation_level=None)) as peer:
         peer.execute("CREATE TABLE sentinel(value BLOB)").close()
         original = list(peer.iterdump())
         with pytest.raises(records.SourceRecordUnavailable, match="not initialized"):
             with store.maintenance(dry_run=True):
                 pytest.fail("dry-run cannot bootstrap a legacy database")
-        assert peer.execute("PRAGMA user_version").fetchone() == (
-            1 if initial == "version-one" else 0,
-        )
+        assert peer.execute("PRAGMA user_version").fetchone() == (0,)
         assert list(peer.iterdump()) == original
     assert not store.path.with_name(store.path.name + ".initialize.lock").exists()
 
@@ -1281,7 +1161,7 @@ def _exercise_inherited_owner(store, maintenance, pipe):
     else:
         raise AssertionError("inherited maintenance performed SQL")
     maintenance.close_snapshot()
-    fresh = records.source_record_store(store.path.parent)
+    fresh = records.source_record_store(store.cache_root)
     value = fresh.get("import-scan", "k", generation="g", max_bytes=16)
     pipe.send((refused, None if value is None else value.payload))
     pipe.close()
@@ -1467,31 +1347,10 @@ def test_paused_metadata_page_releases_wal_and_fences_newer_rows(
             ).fetchone() == (b"renewed",)
 
 
-def test_version_two_migration_retires_only_redundant_policy_metadata(tmp_path):
-    path = tmp_path / records.STORE_NAME
-    expected = _seed_version_one_store(path)
-    with closing(sqlite3.connect(path, isolation_level=None)) as peer:
-        peer.executescript("""
-            DROP INDEX records_generation;
-            DROP INDEX records_recency;
-            ALTER TABLE records RENAME TO old_records;
-            CREATE TABLE records(kind TEXT NOT NULL,key TEXT NOT NULL,generation TEXT NOT NULL,payload BLOB NOT NULL,revision BLOB NOT NULL,used_ns INTEGER NOT NULL,PRIMARY KEY(kind,key));
-            INSERT INTO records SELECT * FROM old_records;
-            DROP TABLE old_records;
-            CREATE INDEX records_generation ON records(generation);
-            CREATE INDEX records_recency ON records(used_ns,kind,key);
-            PRAGMA user_version=2;
-        """)
+def test_fresh_schema_has_only_the_row_retention_authority(tmp_path):
     store = _store(tmp_path)
-    for kind, key, generation, payload, revision, used_ns in expected:
-        observed = store.get(kind, key, generation=generation, max_bytes=None)
-        assert observed is not None
-        assert (observed.payload, observed.revision, observed.used_ns) == (
-            payload,
-            revision,
-            used_ns,
-        )
-    with closing(sqlite3.connect(path)) as peer:
+    assert store.put("module-lowering", "opaque", b"\x00body\xff", generation="g")
+    with closing(sqlite3.connect(store.path)) as peer:
         assert peer.execute("PRAGMA integrity_check").fetchone() == ("ok",)
         assert peer.execute("PRAGMA user_version").fetchone() == (
             records._SCHEMA_VERSION,
@@ -1502,7 +1361,13 @@ def test_version_two_migration_retires_only_redundant_policy_metadata(tmp_path):
             ).fetchall()
             == []
         )
-        assert set(peer.execute("SELECT * FROM records")) == set(expected)
+        assert peer.execute("PRAGMA index_info(records)").fetchall() == []
+        assert "records_recency" in {
+            r[1] for r in peer.execute("PRAGMA index_list(records)")
+        }
+        assert peer.execute("SELECT payload FROM records").fetchall() == [
+            (b"\x00body\xff",)
+        ]
 
 
 def test_backward_clock_and_interleaved_publication_have_finite_observation_budget(
@@ -1544,3 +1409,65 @@ def test_backward_clock_and_interleaved_publication_have_finite_observation_budg
         assert sum("SELECT count(*)" in statement for statement in statements) == 1
         current = store.get("module-analysis", "a", generation="g", max_bytes=None)
         assert current is not None and current.payload == b"original"
+
+
+def test_version_namespaces_preserve_flat_legacy_and_unknown_future_state(tmp_path):
+    legacy = (
+        tmp_path / records.SHARED_SOURCE_RECORDS_DIRECTORY / "source_records.sqlite"
+    )
+    legacy.parent.mkdir(parents=True)
+    with closing(sqlite3.connect(legacy, isolation_level=None)) as peer:
+        peer.execute("PRAGMA journal_mode=WAL")
+        peer.execute("CREATE TABLE witness (value TEXT)")
+        peer.execute("INSERT INTO witness VALUES ('legacy')")
+        identity = legacy.stat().st_ino
+        store = _store(tmp_path)
+        assert store.put("import-scan", "k", b"new", generation="g")
+        assert store.path.parent.name == f"v{records._SCHEMA_VERSION}"
+        assert legacy.stat().st_ino == identity
+        assert peer.execute("SELECT value FROM witness").fetchall() == [("legacy",)]
+        assert peer.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    assert records.superseded_store_namespace(f"v{records._SCHEMA_VERSION - 1}")
+    for name in [
+        f"v{records._SCHEMA_VERSION}",
+        f"v{records._SCHEMA_VERSION + 1}",
+        "v01",
+        "v-1",
+        "notes",
+    ]:
+        assert not records.superseded_store_namespace(name)
+
+
+def test_namespace_retirement_refusal_is_retryable_without_sqlite_open(
+    tmp_path, monkeypatch
+):
+    store = _store(tmp_path)
+    exclusive = records._try_acquire_file_lock(store.lifetime_lock)
+    assert exclusive is not None
+    original = sqlite3.connect
+    attempts = []
+
+    def observed(*args, **kwargs):
+        attempts.append(args)
+        return original(*args, **kwargs)
+
+    install_module_view(monkeypatch, "sqlite3", sqlite3, records, connect=observed)
+    try:
+        assert store.get("import-scan", "k", generation="g", max_bytes=8) is None
+        assert not store.put("import-scan", "k", b"value", generation="g")
+        assert attempts == [] and not store._unavailable
+    finally:
+        records._release_file_lock(exclusive)
+    assert store.put("import-scan", "k", b"value", generation="g")
+    assert len(attempts) == 1
+    for _ in range(3):
+        assert (
+            store.get("import-scan", "k", generation="g", max_bytes=8).payload
+            == b"value"
+        )
+    assert len(attempts) == 1
+    assert records._try_acquire_file_lock(store.lifetime_lock) is None
+    store.close()
+    exclusive = records._try_acquire_file_lock(store.lifetime_lock)
+    assert exclusive is not None
+    records._release_file_lock(exclusive)

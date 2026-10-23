@@ -177,7 +177,7 @@ guest binary pays none of this test-observer cost.
 ## Storage
 
 Capacity includes where state lives. The frontend's source record store
-(`toolchain_source_records/source_records.sqlite`) sits under the artifact
+(`toolchain_source_records/v<schema>/records.sqlite`) sits under the artifact
 root, which on the primary Mac is an external USB volume: 285 MB holding
 50,315 records of 5 compiler generations, interleaved. A keyed lookup costs
 2.26 ms cold and 0.034 ms warm, and discovery for `import scipy.ndimage` reads

@@ -263,34 +263,51 @@ semantic inputs, and import requests complete against the current project
 roots and custody after reuse. SQL applies each reader's byte bound before
 payload allocation; lowering explicitly retains its uncapped role. There is
 one decode per hit, no retained parsed-document cache, and no per-project copy.
-Schema version two stores opaque payloads in an ordinary rowid table with a
-unique `(kind, key)` primary-key index. The small generation table retains its
-`WITHOUT ROWID` layout. [SQLite's layout guidance](https://sqlite.org/withoutrowid.html#when_to_use_without_rowid)
-recommends small rows for `WITHOUT ROWID`: its intermediate nodes carry record
-content, reducing fan-out for large values. Source records include uncapped
-binary lowerings, so key lookup uses the narrow index, followed by a rowid-table
-lookup; record data lives in table leaves and their overflow pages. This changes no
-semantic key, byte bound, revision fence or consumer codec.
-Source-record initialization is a versioned database transition. Schema version
-zero or one enters one cold bootstrap owner through the existing portable file lock;
-that owner rechecks admission, establishes incremental vacuum and WAL, then
-publishes schema, legacy-row migration, indexes and the version in one SQL
-transaction. Existing `WITHOUT ROWID` records are copied once through SQL into
-the canonical table, preserving opaque payloads, revisions, timestamps and
-generation metadata; the old table is dropped in that same transaction. Existing
-peer read snapshots retain the old generation until they end. There is no second
-cache path or Python list of payloads. This cold transition holds the writer
-for one full live-record copy: work and changed-page WAL scale with live rows
-and indexes, temporary database space can include both table layouts, and
-memory scales with SQLite's page cache and the largest record being copied.
-It has no fixed wall-clock bound. Failure rolls back the whole transition and
-refuses the optional cache; migration does not reclaim or checkpoint peer-owned
-pages. An unknown version refuses the optional store. Ordinary opens
+Opaque payloads live in an ordinary rowid table with a unique `(kind, key)`
+primary-key index and one record-recency index. There is no generation-level
+retention table. [SQLite's layout guidance](https://sqlite.org/withoutrowid.html#when_to_use_without_rowid)
+recommends small rows for `WITHOUT ROWID`, whose intermediate nodes carry record
+content. Uncapped lowerings therefore live in table leaves and overflow pages;
+the narrow key index preserves lookup fan-out.
+
+Each schema owns `toolchain_source_records/v<schema>/records.sqlite`, as rustc
+keys incremental state by compiler version. A new version starts an empty
+optional cache, without migrating or reading another version's records. The
+store derives its database, namespace and persistent lifetime lock from one
+cache root. A shared lock in the existing cache control directory protects every
+SQLite connection, including maintenance, until SQLite closes. Warm record
+operations take no additional file lock or syscall. A contested retirement lock
+is a retryable miss before SQLite opens.
+
+The existing pruner exclusively locks only older namespaces, then uses the
+shared atomic namespace-retirement authority before physical deletion. A
+partial reclamation remains isolated from any new live database and is retried
+under the existing prune owner. Current and newer schemas remain outside file
+eviction; current rows keep their bounded metadata/CAS policy. Flat legacy
+stores cannot prove connection lifetime and are reported as
+`legacy_source_record_state`, without automatic unlinking. New namespace
+directories also prevent the previously deployed flat-file pruner from deleting
+future stores. This follows [SQLite's live-file safety contract](https://sqlite.org/howtocorrupt.html#_unlinking_or_renaming_a_database_file_while_in_use):
+a database and its WAL/SHM are one identity, never independent eviction leaves.
+
+The earlier in-place schema change made older checkouts refuse every record
+and repeatedly reconnect; the original namespace repair's measured build cost
+is retained under HF-513. These are development-side cache costs; emitted
+programs perform none of this storage or retention work.
+
+A fresh
+file at version zero enters one cold bootstrap owner through the existing
+portable file lock; that owner rechecks admission, establishes incremental
+vacuum and WAL, then publishes the schema, indexes and the version in one SQL
+transaction. Failure rolls back the whole transition and refuses the optional
+cache. An unknown version refuses the optional store, and the store disables
+itself for the process at its first refusal instead of reconnecting for every
+operation; a busy bootstrap owner remains a retryable refusal. Ordinary opens
 read the admitted version and set connection-local synchronous mode; they
 do not repeat persistent pragmas, DDL or the bootstrap file lock. Write maintenance
 tries cold ownership once and preserves its nonwaiting refusal contract.
 Read-only maintenance admits the same version inside its read snapshot and
-never bootstraps or migrates the database.
+never bootstraps the database.
 This distinction follows [SQLite’s busy-handler contract](https://sqlite.org/c3ref/busy_handler.html):
 a deadlock-prone lock upgrade may return `SQLITE_BUSY` without calling the
 configured handler, so a larger timeout cannot serialize competing WAL
