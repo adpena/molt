@@ -1437,10 +1437,6 @@ def _ensure_sccache_wrapper(env: MutableMapping[str, str]) -> None:
             )
         return
     env["RUSTC_WRAPPER"] = sccache
-    # sccache silently SKIPS incremental compilation units — without this the
-    # wrapper we just wired would cache nothing on paths that default incremental
-    # on (e.g. the proof-queue lane). Force it off wherever sccache is enabled.
-    env["CARGO_INCREMENTAL"] = "0"
 
 
 def _install_dx_defaults(repo_root: Path, env: MutableMapping[str, str]) -> None:
@@ -1665,10 +1661,9 @@ class RunContext:
         )
         install_default("CARGO_TARGET_DIR", session_target)
         install_default("MOLT_DIFF_CARGO_TARGET_DIR", env["CARGO_TARGET_DIR"])
-        # Incremental ON by default (fast warm rebuilds against the persistent
-        # per-checkout CARGO_TARGET_DIR above). _ensure_sccache_wrapper forces
-        # it back to "0" wherever it actually enables sccache (mutually exclusive).
-        install_default("CARGO_INCREMENTAL", "1")
+        # CARGO_INCREMENTAL stays unset: the Cargo profile decides (dev and
+        # dev-fast build workspace crates incrementally against the persistent
+        # per-checkout target above), and sccache caches registry crates.
         install_default("MOLT_CACHE", ext_root / ".molt_cache")
         run_scratch = _scratch_root_for(ext_root, self.root, env)
         install_default("MOLT_DIFF_ROOT", run_scratch / "diff")

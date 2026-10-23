@@ -184,7 +184,9 @@ def test_both_cargo_callers_bind_stats_to_the_actual_build_environment(
         command = ["cargo", "rustc"]
         expected_environment = dict(environment)
         if outcome != "no_wrapper":
-            expected_environment["CARGO_INCREMENTAL"] = "0"
+            # sccache refuses an explicit nonzero CARGO_INCREMENTAL; the Cargo
+            # profile decides instead.
+            del expected_environment["CARGO_INCREMENTAL"]
             # An sccache client may start the shared server, which keeps its
             # temporary directory: the durable one beside the selected cache.
             expected_environment.update(
@@ -304,8 +306,11 @@ def test_retry_stats_preserves_wrapped_attempt_context_and_direct_retry_policy(
     assert builds[0] == (
         tmp_path,
         {
-            **environment,
-            "CARGO_INCREMENTAL": "0",
+            **{
+                key: value
+                for key, value in environment.items()
+                if key != "CARGO_INCREMENTAL"
+            },
             **dict.fromkeys(
                 ("TMPDIR", "TMP", "TEMP"), str(sccache_server_temp_dir(environment))
             ),
@@ -404,7 +409,7 @@ def test_failed_sccache_probe_has_no_counter_attestation(
         '"C:\\Program Files\\sccache.exe"',
     ],
 )
-def test_canonical_cargo_environment_forces_incremental_off_with_sccache(
+def test_canonical_cargo_environment_leaves_incremental_to_the_profile_with_sccache(
     monkeypatch: pytest.MonkeyPatch,
     wrapper: str,
 ) -> None:
@@ -418,6 +423,21 @@ def test_canonical_cargo_environment_forces_incremental_off_with_sccache(
     env = CARGO._cargo_build_env()
 
     assert env["RUSTC_WRAPPER"] == wrapper
+    assert "CARGO_INCREMENTAL" not in env
+
+
+def test_sccache_keeps_an_explicit_zero_incremental(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CI pins CARGO_INCREMENTAL=0; sccache accepts it and it stays."""
+    monkeypatch.setenv("RUSTC_WRAPPER", "sccache")
+    monkeypatch.setenv("CARGO_INCREMENTAL", "0")
+    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
+    monkeypatch.delenv("MOLT_REQUIRE_EXTERNAL_ARTIFACTS", raising=False)
+    monkeypatch.delenv("MOLT_PREFER_EXTERNAL_ARTIFACTS", raising=False)
+
+    env = CARGO._cargo_build_env()
+
     assert env["CARGO_INCREMENTAL"] == "0"
 
 
@@ -452,11 +472,11 @@ def test_existing_sccache_wrapper_is_normalized_before_nested_build(
 
     CARGO._maybe_enable_sccache(env)
 
-    assert env["CARGO_INCREMENTAL"] == "0"
+    assert "CARGO_INCREMENTAL" not in env
 
 
 @pytest.mark.parametrize("wrapper_env", CARGO_WRAPPER_ENV_NAMES)
-def test_every_cargo_wrapper_alias_disables_incremental(
+def test_every_cargo_wrapper_alias_removes_explicit_incremental(
     monkeypatch: pytest.MonkeyPatch,
     wrapper_env: str,
 ) -> None:
@@ -468,7 +488,7 @@ def test_every_cargo_wrapper_alias_disables_incremental(
     env = CARGO._cargo_build_env()
 
     assert env[wrapper_env] == r"C:\tools\sccache.exe"
-    assert env["CARGO_INCREMENTAL"] == "0"
+    assert "CARGO_INCREMENTAL" not in env
 
 
 def test_real_rustc_failure_with_sccache_command_is_never_retry_authority(

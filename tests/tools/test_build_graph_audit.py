@@ -582,7 +582,8 @@ def test_metadata_probe_normalizes_workspace_wrapper(
 
     bga.run_cargo_metadata(tmp_path)
 
-    assert captured["env"]["CARGO_INCREMENTAL"] == "0"  # type: ignore[index]
+    # sccache refuses an explicit nonzero value; the Cargo profile decides.
+    assert "CARGO_INCREMENTAL" not in captured["env"]  # type: ignore[operator]
     assert captured["command"] == [
         "cargo",
         "metadata",
